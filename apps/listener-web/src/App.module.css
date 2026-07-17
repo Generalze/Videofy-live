@@ -1,0 +1,472 @@
+.root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.5rem;
+  background: var(--color-surface);
+  border-bottom: 1px solid #2a2a38;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.brandIcon {
+  font-size: 1.25rem;
+  color: var(--color-brand-light);
+}
+
+.brandName {
+  font-weight: 700;
+  font-size: 1.1rem;
+  letter-spacing: -0.02em;
+  color: var(--color-text);
+}
+
+.connectionBadge {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.main {
+  flex: 1;
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.eventInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.eventTitle {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.streamStatusRow {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.liveIndicator {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--radius-sm);
+  color: var(--color-bg);
+}
+
+.bufferingBadge {
+  font-size: 0.8rem;
+  color: var(--color-warn);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.videoSection {
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: #000;
+  box-shadow: var(--shadow-md);
+}
+
+.videoWrapper {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: #111;
+}
+
+.videoPlayer {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.videoOverlay {
+  position: absolute;
+  bottom: 0.75rem;
+  right: 0.75rem;
+  pointer-events: none;
+}
+
+.mockLabel {
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius-sm);
+}
+
+.videoPlaybackError {
+  padding: 0.75rem 1rem;
+  background: rgba(239, 68, 68, 0.16);
+  color: var(--color-error);
+  font-size: 0.85rem;
+  border-top: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+.controlsSection {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  background: var(--color-surface);
+  padding: 1rem 1.25rem;
+  border-radius: var(--radius-md);
+}
+
+.controlGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 140px;
+}
+
+.label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sourceLanguage {
+  font-size: 0.9rem;
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+.select {
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  border: 1px solid #3a3a4e;
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.6rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.modeToggle {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.modeBtn {
+  padding: 0.35rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid #3a3a4e;
+  background: var(--color-surface-raised);
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  transition: all 0.15s;
+}
+
+.modeBtnActive {
+  background: var(--color-brand);
+  color: #fff;
+  border-color: var(--color-brand);
+}
+
+.audioSection {
+  background: var(--color-surface);
+  padding: 1rem 1.25rem;
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.volumeRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 1.5rem;
+}
+
+.volumeControl {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 160px;
+}
+
+.slider {
+  width: 100%;
+  accent-color: var(--color-brand);
+}
+
+.volValue {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.muteBtn {
+  padding: 0.5rem 1.25rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid #3a3a4e;
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  font-size: 0.9rem;
+  align-self: flex-end;
+  transition: all 0.15s;
+}
+
+.muteBtnActive {
+  background: var(--color-error);
+  border-color: var(--color-error);
+  color: #fff;
+}
+
+.audioStatus {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.audioPending {
+  color: #555577;
+  font-style: italic;
+}
+
+.subtitleSection {
+  background: var(--color-surface);
+  padding: 1rem 1.25rem;
+  border-radius: var(--radius-md);
+}
+
+.subtitleHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.toggleLabel {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: var(--color-text-muted);
+}
+
+.subtitleBox {
+  min-height: 80px;
+  padding: 0.75rem 1rem;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: var(--radius-sm);
+  border: 1px solid #2a2a38;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.35rem;
+}
+
+.translatedText {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--color-text);
+  line-height: 1.4;
+}
+
+.sourceText {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.subtitlePlaceholder {
+  color: var(--color-text-muted);
+  font-style: italic;
+  font-size: 0.9rem;
+}
+
+.phrasesSection {
+  background: var(--color-surface);
+  padding: 1rem 1.25rem;
+  border-radius: var(--radius-md);
+}
+
+.sectionTitle {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.75rem;
+}
+
+.phrasesList {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.phraseItem {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+  font-size: 0.9rem;
+}
+
+.phraseTime {
+  font-family: monospace;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  min-width: 50px;
+}
+
+.phraseText {
+  flex: 1;
+  color: var(--color-text);
+}
+
+.phraseSeq {
+  font-family: monospace;
+  font-size: 0.7rem;
+  color: #444466;
+}
+
+.startSection {
+  background: var(--color-surface);
+  border: 1px solid var(--color-brand);
+  border-radius: var(--radius-lg);
+  padding: 2rem;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.startHint {
+  color: var(--color-text-muted);
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+.startHint small {
+  font-size: 0.8rem;
+  color: #555577;
+}
+
+.startBtn {
+  background: var(--color-brand);
+  color: #fff;
+  border: none;
+  padding: 0.85rem 2.5rem;
+  border-radius: var(--radius-md);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  transition: background 0.2s;
+  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.4);
+}
+
+.startBtn:hover {
+  background: #6d28d9;
+}
+
+.devDiagnostics {
+  background: rgba(14, 165, 233, 0.08);
+  border: 1px solid rgba(14, 165, 233, 0.35);
+  border-radius: var(--radius-md);
+  padding: 0.85rem 1rem;
+}
+
+.devDiagnosticsTitle {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.75rem;
+}
+
+.devDiagnosticsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.65rem;
+  margin: 0;
+}
+
+.devDiagnosticsGrid div {
+  min-width: 0;
+}
+
+.devDiagnosticsGrid dt {
+  font-size: 0.68rem;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.devDiagnosticsGrid dd {
+  margin: 0.15rem 0 0;
+  color: var(--color-text);
+  font-family: monospace;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .main {
+    padding: 1rem;
+  }
+
+  .header {
+    padding: 0.6rem 1rem;
+  }
+
+  .controlsSection {
+    flex-direction: column;
+  }
+
+  .volumeRow {
+    flex-direction: column;
+  }
+}
