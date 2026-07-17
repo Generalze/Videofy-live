@@ -45,8 +45,12 @@ interface OperatorControlEvent {
 
 export class Gateway {
   private readonly io: SocketServer;
-  private readonly store = new EventStore();
+  private readonly store = new EventStore({
+    onReady: (events) => this.broadcastTranslationEvents(events),
+  });
   private readonly clients = new Map<string, ClientState>();
+  private readonly activeWorkers = new Set<string>();
+  private readonly activeIngestClients = new Set<string>();
   private listenerCount = 0;
 
   constructor(httpServer: HttpServer, corsOrigins: string[]) {
@@ -83,12 +87,14 @@ export class Gateway {
         break;
       case 'worker':
         void socket.join(WORKER_ROOM);
+        this.activeWorkers.add(socket.id);
         this.handleWorkerSocket(socket);
         this.broadcastServiceStatus('speech-worker', 'healthy', socket.id);
         logger.info('Speech worker connected', { socketId: socket.id });
         break;
       case 'ingest':
         void socket.join(INGEST_ROOM);
+        this.activeIngestClients.add(socket.id);
         this.handleIngestSocket(socket);
         this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
         logger.info('Media ingest connected', { socketId: socket.id });
@@ -131,7 +137,7 @@ export class Gateway {
   }
 
   private handleOperatorSocket(socket: Socket): void {
-    socket.emit(SOCKET_EVENTS.SERVICE_STATUS, this.serviceStatus('gateway', 'healthy'));
+    this.emitServiceSnapshot(socket);
 
     socket.on(SOCKET_EVENTS.OPERATOR_CONTROL, (raw: unknown) => {
       const control = this.parseOperatorControl(raw);
@@ -191,19 +197,7 @@ export class Gateway {
         return;
       }
 
-      for (const readyEvent of accepted.ready) {
-        this.io
-          .to(languageRoom(readyEvent.targetLanguage))
-          .emit(SOCKET_EVENTS.TRANSLATION_EVENT, readyEvent);
-        this.io.to(OPERATOR_ROOM).emit(SOCKET_EVENTS.TRANSLATION_EVENT, readyEvent);
-
-        logger.info('Translation event broadcast', {
-          eventId: readyEvent.eventId,
-          sequence: readyEvent.sequence,
-          targetLanguage: readyEvent.targetLanguage,
-          final: readyEvent.final,
-        });
-      }
+      this.broadcastTranslationEvents(accepted.ready);
     });
   }
 
@@ -240,9 +234,15 @@ export class Gateway {
     if (state?.role === 'listener') {
       this.listenerCount = Math.max(0, this.listenerCount - 1);
     } else if (state?.role === 'worker') {
-      this.broadcastServiceStatus('speech-worker', 'unhealthy', socket.id);
+      this.activeWorkers.delete(socket.id);
+      if (this.activeWorkers.size === 0) {
+        this.broadcastServiceStatus('speech-worker', 'unhealthy', socket.id);
+      }
     } else if (state?.role === 'ingest') {
-      this.broadcastServiceStatus('media-ingest', 'unhealthy', socket.id);
+      this.activeIngestClients.delete(socket.id);
+      if (this.activeIngestClients.size === 0) {
+        this.broadcastServiceStatus('media-ingest', 'unhealthy', socket.id);
+      }
     }
     this.clients.delete(socket.id);
     logger.info('Client disconnected', { socketId: socket.id, role: state?.role });
@@ -272,12 +272,46 @@ export class Gateway {
     });
   }
 
+  private emitServiceSnapshot(socket: Socket): void {
+    const snapshot: ServiceStatusEvent[] = [
+      this.serviceStatus('gateway', 'healthy'),
+      this.serviceStatus(
+        'media-ingest',
+        this.activeIngestClients.size > 0 ? 'healthy' : 'unhealthy',
+      ),
+      this.serviceStatus(
+        'speech-worker',
+        this.activeWorkers.size > 0 ? 'healthy' : 'unhealthy',
+      ),
+    ];
+
+    for (const status of snapshot) {
+      socket.emit(SOCKET_EVENTS.SERVICE_STATUS, status);
+    }
+  }
+
   private serviceStatus(service: ServiceName, status: HealthStatus): ServiceStatusEvent {
     return {
       service,
       status,
       timestamp: new Date().toISOString(),
     };
+  }
+
+  private broadcastTranslationEvents(events: TranslationEvent[]): void {
+    for (const readyEvent of events) {
+      this.io
+        .to(languageRoom(readyEvent.targetLanguage))
+        .emit(SOCKET_EVENTS.TRANSLATION_EVENT, readyEvent);
+      this.io.to(OPERATOR_ROOM).emit(SOCKET_EVENTS.TRANSLATION_EVENT, readyEvent);
+
+      logger.info('Translation event broadcast', {
+        eventId: readyEvent.eventId,
+        sequence: readyEvent.sequence,
+        targetLanguage: readyEvent.targetLanguage,
+        final: readyEvent.final,
+      });
+    }
   }
 
   private parseOperatorControl(raw: unknown): OperatorControlEvent | null {

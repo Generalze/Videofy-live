@@ -1,5 +1,5 @@
 import type { TranslationEvent } from '@videofy-live/shared-types';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventStore } from '../event-store.js';
 
 function makeEvent(
@@ -38,6 +38,10 @@ describe('EventStore', () => {
     store = new EventStore({ maxGap: 5, maxBufferedEvents: 10 });
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('delivers 1, 2, 3 immediately in order', () => {
     expect(store.offer(makeEvent(1)).ready.map((event) => event.sequence)).toEqual([1]);
     expect(store.offer(makeEvent(2)).ready.map((event) => event.sequence)).toEqual([2]);
@@ -48,6 +52,47 @@ describe('EventStore', () => {
     expect(store.offer(makeEvent(1)).ready.map((event) => event.sequence)).toEqual([1]);
     expect(store.offer(makeEvent(3)).ready).toEqual([]);
     expect(store.offer(makeEvent(2)).ready.map((event) => event.sequence)).toEqual([2, 3]);
+  });
+
+  it('releases a buffered event after a missing sequence times out', () => {
+    vi.useFakeTimers();
+    const released: TranslationEvent[] = [];
+    store = new EventStore({
+      gapTimeoutMs: 25,
+      maxBufferedEvents: 10,
+      maxGap: 5,
+      onReady: (events) => released.push(...events),
+    });
+
+    expect(store.offer(makeEvent(1)).ready.map((event) => event.sequence)).toEqual([1]);
+    expect(store.offer(makeEvent(3)).ready).toEqual([]);
+
+    vi.advanceTimersByTime(24);
+    expect(released).toEqual([]);
+
+    vi.advanceTimersByTime(1);
+    expect(released.map((event) => event.sequence)).toEqual([3]);
+    expect(store.getNextSequence('demo-event', 'fr')).toBe(4);
+  });
+
+  it('rejects a stale missing sequence after timeout recovery', () => {
+    vi.useFakeTimers();
+    const released: TranslationEvent[] = [];
+    store = new EventStore({
+      gapTimeoutMs: 25,
+      maxBufferedEvents: 10,
+      maxGap: 5,
+      onReady: (events) => released.push(...events),
+    });
+
+    store.offer(makeEvent(1));
+    store.offer(makeEvent(3));
+    vi.advanceTimersByTime(25);
+
+    const stale = store.offer(makeEvent(2));
+    expect(released.map((event) => event.sequence)).toEqual([3]);
+    expect(stale.accepted).toBe(false);
+    expect(stale.reason).toBe('stale');
   });
 
   it('rejects duplicates', () => {
@@ -79,6 +124,26 @@ describe('EventStore', () => {
     expect(store.offer(makeEvent(1, 'es')).ready.map((event) => event.targetLanguage)).toEqual([
       'es',
     ]);
+  });
+
+  it('keeps timeout recovery independent across channels', () => {
+    vi.useFakeTimers();
+    const released: TranslationEvent[] = [];
+    store = new EventStore({
+      gapTimeoutMs: 25,
+      maxBufferedEvents: 10,
+      maxGap: 5,
+      onReady: (events) => released.push(...events),
+    });
+
+    store.offer(makeEvent(1, 'fr'));
+    store.offer(makeEvent(3, 'fr'));
+    expect(store.offer(makeEvent(1, 'es')).ready.map((event) => event.sequence)).toEqual([1]);
+    expect(store.offer(makeEvent(2, 'es')).ready.map((event) => event.sequence)).toEqual([2]);
+
+    vi.advanceTimersByTime(25);
+    expect(released.map((event) => `${event.targetLanguage}:${event.sequence}`)).toEqual(['fr:3']);
+    expect(store.getNextSequence('demo-event', 'es')).toBe(3);
   });
 
   it('handles gaps deterministically by buffering within maxGap', () => {

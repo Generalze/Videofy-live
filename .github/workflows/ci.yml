@@ -51,3 +51,6 @@ jobs:
       - name: Run Python tests
         working-directory: services/speech-worker
         run: python -m pytest -v
+
+      - name: Run cross-process integration smoke
+        run: npm run test:integration

@@ -9,8 +9,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "npm run build -w @videofy-live/shared-types && npm run build -w @videofy-live/media-contracts && tsc --noEmit",
-    "test": "npm run build -w @videofy-live/shared-types && npm run build -w @videofy-live/media-contracts && vitest run",
-    "test:integration": "npm run build -w @videofy-live/shared-types && npm run build -w @videofy-live/media-contracts && vitest run src/__tests__/integration.test.ts",
+    "test": "npm run build -w @videofy-live/shared-types && npm run build -w @videofy-live/media-contracts && vitest run src/__tests__/app.test.ts src/__tests__/config.test.ts src/__tests__/event-store.test.ts src/__tests__/integration.test.ts",
+    "test:integration": "npm run build -w @videofy-live/shared-types && npm run build -w @videofy-live/media-contracts && npm run build && vitest run src/__tests__/integration.test.ts src/__tests__/python-worker-smoke.test.ts",
     "test:watch": "vitest"
   },
   "dependencies": {

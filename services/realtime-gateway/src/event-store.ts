@@ -10,16 +10,22 @@ export interface EventStoreResult {
 interface ChannelState {
   nextSequence: number;
   buffered: Map<number, TranslationEvent>;
+  gapTimer: ReturnType<typeof setTimeout> | null;
+  timerStartedAtSequence: number | null;
 }
 
 export interface EventStoreOptions {
   maxGap: number;
   maxBufferedEvents: number;
+  gapTimeoutMs: number;
+  onReady: (events: TranslationEvent[]) => void;
 }
 
 const DEFAULT_OPTIONS: EventStoreOptions = {
   maxGap: 20,
   maxBufferedEvents: 50,
+  gapTimeoutMs: 750,
+  onReady: () => undefined,
 };
 
 /**
@@ -79,7 +85,8 @@ export class EventStore {
     }
 
     state.buffered.set(sequence, event);
-    const ready = this.releaseReady(state);
+    const ready = this.releaseReady(channelKey, state);
+    this.ensureGapTimer(channelKey, state);
     return { accepted: true, ready };
   }
 
@@ -93,8 +100,14 @@ export class EventStore {
 
   reset(eventId?: string, targetLanguage?: string): void {
     if (eventId && targetLanguage) {
-      this.channels.delete(this.channelKey(eventId, targetLanguage));
+      const channelKey = this.channelKey(eventId, targetLanguage);
+      const state = this.channels.get(channelKey);
+      if (state?.gapTimer) clearTimeout(state.gapTimer);
+      this.channels.delete(channelKey);
       return;
+    }
+    for (const state of this.channels.values()) {
+      if (state.gapTimer) clearTimeout(state.gapTimer);
     }
     this.channels.clear();
   }
@@ -106,12 +119,14 @@ export class EventStore {
     const created: ChannelState = {
       nextSequence: 1,
       buffered: new Map(),
+      gapTimer: null,
+      timerStartedAtSequence: null,
     };
     this.channels.set(channelKey, created);
     return created;
   }
 
-  private releaseReady(state: ChannelState): TranslationEvent[] {
+  private releaseReady(channelKey: string, state: ChannelState): TranslationEvent[] {
     const ready: TranslationEvent[] = [];
     while (state.buffered.has(state.nextSequence)) {
       const event = state.buffered.get(state.nextSequence)!;
@@ -119,7 +134,56 @@ export class EventStore {
       ready.push(event);
       state.nextSequence += 1;
     }
+    if (!this.hasGap(state)) {
+      this.clearGapTimer(state);
+    } else {
+      this.ensureGapTimer(channelKey, state);
+    }
     return ready;
+  }
+
+  private ensureGapTimer(channelKey: string, state: ChannelState): void {
+    if (!this.hasGap(state) || state.gapTimer) return;
+
+    state.timerStartedAtSequence = state.nextSequence;
+    state.gapTimer = setTimeout(() => {
+      this.skipExpiredGap(channelKey);
+    }, this.options.gapTimeoutMs);
+  }
+
+  private skipExpiredGap(channelKey: string): void {
+    const state = this.channels.get(channelKey);
+    if (!state || !this.hasGap(state)) return;
+
+    const lowestBufferedSequence = Math.min(...state.buffered.keys());
+    const skippedFrom = state.nextSequence;
+    const skippedTo = lowestBufferedSequence - 1;
+    const timerStartedAtSequence = state.timerStartedAtSequence;
+    this.clearGapTimer(state);
+    state.nextSequence = lowestBufferedSequence;
+
+    logger.warn('Translation event sequence gap skipped', {
+      channelKey,
+      skippedFrom,
+      skippedTo,
+      timerStartedAtSequence,
+    });
+
+    const ready = this.releaseReady(channelKey, state);
+    if (ready.length > 0) {
+      this.options.onReady(ready);
+    }
+  }
+
+  private hasGap(state: ChannelState): boolean {
+    if (state.buffered.size === 0 || state.buffered.has(state.nextSequence)) return false;
+    return Math.min(...state.buffered.keys()) > state.nextSequence;
+  }
+
+  private clearGapTimer(state: ChannelState): void {
+    if (state.gapTimer) clearTimeout(state.gapTimer);
+    state.gapTimer = null;
+    state.timerStartedAtSequence = null;
   }
 
   private channelKey(eventId: string, targetLanguage: string): string {

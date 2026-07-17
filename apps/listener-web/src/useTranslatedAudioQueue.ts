@@ -9,146 +9,233 @@ interface QueueItem {
   revoke: boolean;
 }
 
-export function useTranslatedAudioQueue(volume: number, muted: boolean) {
-  const [status, setStatus] = useState<AudioQueueStatus>('waiting');
-  const [pendingCount, setPendingCount] = useState(0);
-  const startedRef = useRef(false);
-  const playingRef = useRef(false);
-  const queueRef = useRef<QueueItem[]>([]);
-  const seenRef = useRef(new Set<string>());
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+export interface QueueAudio {
+  volume: number;
+  onended: (() => void) | null;
+  onerror: (() => void) | null;
+  onplaying: (() => void) | null;
+  pause(): void;
+  play(): Promise<void>;
+}
 
-  const cleanupItem = useCallback((item: QueueItem): void => {
-    if (item.revoke) {
-      URL.revokeObjectURL(item.url);
+export interface QueueUrlDependencies {
+  createObjectURL(blob: Blob): string;
+  revokeObjectURL(url: string): void;
+}
+
+export interface TranslatedAudioQueueControllerOptions {
+  createAudio: (url: string) => QueueAudio;
+  urls: QueueUrlDependencies;
+  onStatusChange?: (status: AudioQueueStatus) => void;
+  onPendingCountChange?: (count: number) => void;
+}
+
+export class TranslatedAudioQueueController {
+  private readonly createAudio: (url: string) => QueueAudio;
+  private readonly urls: QueueUrlDependencies;
+  private readonly onStatusChange: ((status: AudioQueueStatus) => void) | undefined;
+  private readonly onPendingCountChange: ((count: number) => void) | undefined;
+  private readonly queue: QueueItem[] = [];
+  private readonly seen = new Set<string>();
+  private started = false;
+  private playing = false;
+  private currentItem: QueueItem | null = null;
+  private audio: QueueAudio | null = null;
+  private volume = 1;
+  private muted = false;
+  status: AudioQueueStatus = 'waiting';
+  pendingCount = 0;
+
+  constructor(options: TranslatedAudioQueueControllerOptions) {
+    this.createAudio = options.createAudio;
+    this.urls = options.urls;
+    this.onStatusChange = options.onStatusChange;
+    this.onPendingCountChange = options.onPendingCountChange;
+  }
+
+  setOutput(volume: number, muted: boolean): void {
+    this.volume = volume;
+    this.muted = muted;
+    if (this.audio) {
+      this.audio.volume = this.currentVolume();
     }
-  }, []);
+  }
 
-  const playNext = useCallback((): void => {
-    if (!startedRef.current || playingRef.current) return;
+  start(): void {
+    this.started = true;
+    this.playNext();
+  }
 
-    const item = queueRef.current.shift();
-    setPendingCount(queueRef.current.length);
+  enqueue(event: TranslationEvent): boolean {
+    const key = `${event.eventId}:${event.targetLanguage}:${event.sequence}`;
+    if (this.seen.has(key)) return false;
+    this.seen.add(key);
+
+    const generated = !event.audioUrl;
+    this.queue.push({
+      key,
+      url: event.audioUrl ?? this.createMockToneUrl(event.sequence),
+      revoke: generated,
+    });
+    this.setPendingCount(this.queue.length);
+    this.playNext();
+    return true;
+  }
+
+  reset(): void {
+    this.audio?.pause();
+    this.audio = null;
+    if (this.currentItem) {
+      this.cleanupItem(this.currentItem);
+      this.currentItem = null;
+    }
+    for (const item of this.queue.splice(0)) {
+      this.cleanupItem(item);
+    }
+    this.seen.clear();
+    this.playing = false;
+    this.setPendingCount(0);
+    this.setStatus('waiting');
+  }
+
+  dispose(): void {
+    this.reset();
+    this.started = false;
+  }
+
+  private playNext(): void {
+    if (!this.started || this.playing) return;
+
+    const item = this.queue.shift() ?? null;
+    this.setPendingCount(this.queue.length);
     if (!item) {
-      setStatus(seenRef.current.size > 0 ? 'completed' : 'waiting');
+      this.setStatus(this.seen.size > 0 ? 'completed' : 'waiting');
       return;
     }
 
-    playingRef.current = true;
-    setStatus('buffering');
+    this.playing = true;
+    this.currentItem = item;
+    this.setStatus('buffering');
 
-    const audio = new Audio(item.url);
-    audioRef.current = audio;
-    audio.volume = muted ? 0 : volume;
+    const audio = this.createAudio(item.url);
+    this.audio = audio;
+    audio.volume = this.currentVolume();
 
     audio.onended = () => {
-      cleanupItem(item);
-      audioRef.current = null;
-      playingRef.current = false;
-      setStatus('completed');
-      playNext();
+      this.finishCurrent('completed');
+      this.playNext();
     };
     audio.onerror = () => {
-      cleanupItem(item);
-      audioRef.current = null;
-      playingRef.current = false;
-      setStatus('error');
-      playNext();
+      this.finishCurrent('error');
+      this.playNext();
     };
-    audio.onplaying = () => setStatus('playing');
+    audio.onplaying = () => this.setStatus('playing');
 
-    audio
-      .play()
-      .catch(() => {
-        cleanupItem(item);
-        audioRef.current = null;
-        playingRef.current = false;
-        setStatus('error');
-      });
-  }, [cleanupItem, muted, volume]);
+    audio.play().catch(() => {
+      this.finishCurrent('error');
+      this.playNext();
+    });
+  }
 
-  const start = useCallback((): void => {
-    startedRef.current = true;
-    playNext();
-  }, [playNext]);
+  private finishCurrent(status: AudioQueueStatus): void {
+    if (this.currentItem) {
+      this.cleanupItem(this.currentItem);
+    }
+    this.currentItem = null;
+    this.audio = null;
+    this.playing = false;
+    this.setStatus(status);
+  }
 
-  const enqueue = useCallback(
-    (event: TranslationEvent): boolean => {
-      const key = `${event.eventId}:${event.targetLanguage}:${event.sequence}`;
-      if (seenRef.current.has(key)) return false;
-      seenRef.current.add(key);
+  private cleanupItem(item: QueueItem): void {
+    if (item.revoke) {
+      this.urls.revokeObjectURL(item.url);
+    }
+  }
 
-      const generated = !event.audioUrl;
-      queueRef.current.push({
-        key,
-        url: event.audioUrl ?? createMockToneUrl(event.sequence),
-        revoke: generated,
-      });
-      setPendingCount(queueRef.current.length);
-      playNext();
-      return true;
-    },
-    [playNext],
-  );
+  private currentVolume(): number {
+    return this.muted ? 0 : this.volume;
+  }
 
-  const reset = useCallback((): void => {
-    audioRef.current?.pause();
-    audioRef.current = null;
-    for (const item of queueRef.current) cleanupItem(item);
-    queueRef.current = [];
-    seenRef.current.clear();
-    playingRef.current = false;
-    setPendingCount(0);
-    setStatus('waiting');
-  }, [cleanupItem]);
+  private setPendingCount(count: number): void {
+    this.pendingCount = count;
+    this.onPendingCountChange?.(count);
+  }
+
+  private setStatus(status: AudioQueueStatus): void {
+    this.status = status;
+    this.onStatusChange?.(status);
+  }
+
+  private createMockToneUrl(sequence: number): string {
+    const sampleRate = 8000;
+    const durationSeconds = 0.18;
+    const sampleCount = Math.floor(sampleRate * durationSeconds);
+    const frequency = 440 + (sequence % 5) * 55;
+    const buffer = new ArrayBuffer(44 + sampleCount * 2);
+    const view = new DataView(buffer);
+
+    writeAscii(view, 0, 'RIFF');
+    view.setUint32(4, 36 + sampleCount * 2, true);
+    writeAscii(view, 8, 'WAVE');
+    writeAscii(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeAscii(view, 36, 'data');
+    view.setUint32(40, sampleCount * 2, true);
+
+    for (let i = 0; i < sampleCount; i += 1) {
+      const envelope = 1 - i / sampleCount;
+      const sample = Math.sin((2 * Math.PI * frequency * i) / sampleRate) * envelope * 0.25;
+      view.setInt16(44 + i * 2, sample * 0x7fff, true);
+    }
+
+    return this.urls.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
+  }
+}
+
+export function useTranslatedAudioQueue(volume: number, muted: boolean) {
+  const [status, setStatus] = useState<AudioQueueStatus>('waiting');
+  const [pendingCount, setPendingCount] = useState(0);
+  const controllerRef = useRef<TranslatedAudioQueueController | null>(null);
+
+  if (!controllerRef.current) {
+    controllerRef.current = new TranslatedAudioQueueController({
+      createAudio: (url) => new Audio(url) as unknown as QueueAudio,
+      urls: URL,
+      onStatusChange: setStatus,
+      onPendingCountChange: setPendingCount,
+    });
+  }
 
   useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = muted ? 0 : volume;
-    }
+    controllerRef.current?.setOutput(volume, muted);
   }, [muted, volume]);
 
   useEffect(() => {
     return () => {
-      audioRef.current?.pause();
-      audioRef.current = null;
-      for (const item of queueRef.current) cleanupItem(item);
-      queueRef.current = [];
+      controllerRef.current?.dispose();
     };
-  }, [cleanupItem]);
+  }, []);
+
+  const start = useCallback((): void => {
+    controllerRef.current?.start();
+  }, []);
+
+  const enqueue = useCallback((event: TranslationEvent): boolean => {
+    return controllerRef.current?.enqueue(event) ?? false;
+  }, []);
+
+  const reset = useCallback((): void => {
+    controllerRef.current?.reset();
+  }, []);
 
   return { enqueue, pendingCount, reset, start, status };
-}
-
-function createMockToneUrl(sequence: number): string {
-  const sampleRate = 8000;
-  const durationSeconds = 0.18;
-  const sampleCount = Math.floor(sampleRate * durationSeconds);
-  const frequency = 440 + (sequence % 5) * 55;
-  const buffer = new ArrayBuffer(44 + sampleCount * 2);
-  const view = new DataView(buffer);
-
-  writeAscii(view, 0, 'RIFF');
-  view.setUint32(4, 36 + sampleCount * 2, true);
-  writeAscii(view, 8, 'WAVE');
-  writeAscii(view, 12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeAscii(view, 36, 'data');
-  view.setUint32(40, sampleCount * 2, true);
-
-  for (let i = 0; i < sampleCount; i += 1) {
-    const envelope = 1 - i / sampleCount;
-    const sample = Math.sin((2 * Math.PI * frequency * i) / sampleRate) * envelope * 0.25;
-    view.setInt16(44 + i * 2, sample * 0x7fff, true);
-  }
-
-  return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
 }
 
 function writeAscii(view: DataView, offset: number, value: string): void {

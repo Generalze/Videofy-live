@@ -59,6 +59,12 @@ function waitForEvent<T>(socket: Socket, eventName: string): Promise<T> {
   });
 }
 
+type ServiceStatusEvent = {
+  service: 'gateway' | 'media-ingest' | 'speech-worker';
+  status: 'healthy' | 'unhealthy';
+  timestamp: string;
+};
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -168,7 +174,103 @@ describe('gateway Socket.IO integration', () => {
       connectedListeners: 2,
     });
   });
+
+  it('emits a complete unhealthy service snapshot when an operator connects before services', async () => {
+    const operator = client('operator');
+    const statuses = collectServiceStatuses(operator);
+
+    await waitForConnect(operator);
+    await waitUntil(() => statuses.length >= 3);
+
+    expect(latestStatuses(statuses)).toMatchObject({
+      gateway: 'healthy',
+      'media-ingest': 'unhealthy',
+      'speech-worker': 'unhealthy',
+    });
+  });
+
+  it('emits a complete healthy service snapshot when an operator connects after services', async () => {
+    const ingest = client('ingest');
+    const worker = client('worker');
+    await Promise.all([waitForConnect(ingest), waitForConnect(worker)]);
+
+    const operator = client('operator');
+    const statuses = collectServiceStatuses(operator);
+    await waitForConnect(operator);
+    await waitUntil(() => statuses.length >= 3);
+
+    expect(latestStatuses(statuses)).toMatchObject({
+      gateway: 'healthy',
+      'media-ingest': 'healthy',
+      'speech-worker': 'healthy',
+    });
+  });
+
+  it('preserves healthy speech-worker status with multiple workers', async () => {
+    const operator = client('operator');
+    const statuses = collectServiceStatuses(operator);
+    const workerA = client('worker');
+    const workerB = client('worker');
+    await Promise.all([waitForConnect(operator), waitForConnect(workerA), waitForConnect(workerB)]);
+    await waitUntil(() => latestStatuses(statuses)['speech-worker'] === 'healthy');
+
+    expect(latestStatuses(statuses)['speech-worker']).toBe('healthy');
+  });
+
+  it('does not mark speech-worker unhealthy when one of multiple workers disconnects', async () => {
+    const operator = client('operator');
+    const statuses = collectServiceStatuses(operator);
+    const workerA = client('worker');
+    const workerB = client('worker');
+    await Promise.all([waitForConnect(operator), waitForConnect(workerA), waitForConnect(workerB)]);
+    await waitUntil(() => latestStatuses(statuses)['speech-worker'] === 'healthy');
+
+    workerA.disconnect();
+    await delay(75);
+
+    expect(statuses.filter((event) => event.service === 'speech-worker').at(-1)?.status).toBe(
+      'healthy',
+    );
+  });
+
+  it('marks speech-worker unhealthy after the final worker disconnects', async () => {
+    const operator = client('operator');
+    const statuses = collectServiceStatuses(operator);
+    const workerA = client('worker');
+    const workerB = client('worker');
+    await Promise.all([waitForConnect(operator), waitForConnect(workerA), waitForConnect(workerB)]);
+    await waitUntil(() => latestStatuses(statuses)['speech-worker'] === 'healthy');
+
+    workerA.disconnect();
+    await delay(50);
+    workerB.disconnect();
+    await waitUntil(() => latestStatuses(statuses)['speech-worker'] === 'unhealthy');
+
+    expect(latestStatuses(statuses)['speech-worker']).toBe('unhealthy');
+  });
 });
+
+function collectServiceStatuses(socket: Socket): ServiceStatusEvent[] {
+  const statuses: ServiceStatusEvent[] = [];
+  socket.on(SOCKET_EVENTS.SERVICE_STATUS, (event: ServiceStatusEvent) => {
+    statuses.push(event);
+  });
+  return statuses;
+}
+
+function latestStatuses(statuses: ServiceStatusEvent[]): Record<ServiceStatusEvent['service'], string> {
+  return statuses.reduce(
+    (acc, event) => {
+      acc[event.service] = event.status;
+      return acc;
+    },
+    {
+      gateway: 'unknown',
+      'media-ingest': 'unknown',
+      'speech-worker': 'unknown',
+    },
+  );
+}
 
 async function waitUntil(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
   const startedAt = Date.now();

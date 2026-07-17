@@ -59,6 +59,7 @@ export default function App(): React.ReactElement {
   const [currentPhrase, setCurrentPhrase] = useState<PhraseEntry | null>(null);
   const [recentPhrases, setRecentPhrases] = useState<PhraseEntry[]>([]);
   const [buffering, setBuffering] = useState(false);
+  const [videoPlaybackError, setVideoPlaybackError] = useState<string | null>(null);
   const audioQueue = useTranslatedAudioQueue(translatedVolume, muted);
 
   useEffect(() => {
@@ -78,9 +79,6 @@ export default function App(): React.ReactElement {
     const feed = startMockVideoFeed();
     mockFeedRef.current = feed;
     video.srcObject = feed.stream;
-    video.play().catch(() => {
-      // Browser autoplay may wait until Start Listening; the stream is attached.
-    });
 
     return () => {
       video.pause();
@@ -150,6 +148,11 @@ export default function App(): React.ReactElement {
 
   const handleStart = useCallback((): void => {
     setHasStarted(true);
+    setVideoPlaybackError(null);
+    videoRef.current?.play().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : 'The browser rejected video playback.';
+      setVideoPlaybackError(`Video playback failed: ${message}`);
+    });
     audioQueue.start();
     connect();
   }, [audioQueue, connect]);
@@ -240,6 +243,11 @@ export default function App(): React.ReactElement {
               <span className={styles.mockLabel}>Mock video source</span>
             </div>
           </div>
+          {videoPlaybackError && (
+            <div className={styles.videoPlaybackError} role="alert">
+              {videoPlaybackError}
+            </div>
+          )}
         </section>
 
         <section className={styles.controlsSection} aria-label="Language and audio controls">

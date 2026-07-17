@@ -139,6 +139,14 @@
   border-radius: var(--radius-sm);
 }
 
+.videoPlaybackError {
+  padding: 0.75rem 1rem;
+  background: rgba(239, 68, 68, 0.16);
+  color: var(--color-error);
+  font-size: 0.85rem;
+  border-top: 1px solid rgba(239, 68, 68, 0.4);
+}
+
 .controlsSection {
   display: flex;
   flex-wrap: wrap;
