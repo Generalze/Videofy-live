@@ -411,6 +411,48 @@
   background: #6d28d9;
 }
 
+.devDiagnostics {
+  background: rgba(14, 165, 233, 0.08);
+  border: 1px solid rgba(14, 165, 233, 0.35);
+  border-radius: var(--radius-md);
+  padding: 0.85rem 1rem;
+}
+
+.devDiagnosticsTitle {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.75rem;
+}
+
+.devDiagnosticsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.65rem;
+  margin: 0;
+}
+
+.devDiagnosticsGrid div {
+  min-width: 0;
+}
+
+.devDiagnosticsGrid dt {
+  font-size: 0.68rem;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.devDiagnosticsGrid dd {
+  margin: 0.15rem 0 0;
+  color: var(--color-text);
+  font-family: monospace;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 600px) {
   .main {
     padding: 1rem;

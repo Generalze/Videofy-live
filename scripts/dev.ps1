@@ -176,8 +176,13 @@ New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 Confirm-PythonVenv
 Confirm-PortsFree
 
+if (-not $env:VITE_SOCKET_TRANSPORT) {
+  $env:VITE_SOCKET_TRANSPORT = "polling"
+}
+
 Write-Host "Starting Videofy Live development services..." -ForegroundColor Cyan
 Write-Host "Logs: $LogDir" -ForegroundColor DarkGray
+Write-Host "Browser Socket.IO transport: $($env:VITE_SOCKET_TRANSPORT)" -ForegroundColor DarkGray
 
 try {
   Start-DevProcess "Realtime Gateway" $Root "cmd.exe" "/c npm.cmd run dev -w services/realtime-gateway"

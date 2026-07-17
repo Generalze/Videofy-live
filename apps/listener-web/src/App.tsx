@@ -31,6 +31,28 @@ interface PhraseEntry {
   receivedAt: number;
 }
 
+interface SocketDiagnostics {
+  connected: boolean;
+  transport: string;
+  lastConnectError: string;
+  reconnectAttempts: number;
+  disconnectReason: string;
+}
+
+const initialSocketDiagnostics: SocketDiagnostics = {
+  connected: false,
+  transport: 'not connected',
+  lastConnectError: 'none',
+  reconnectAttempts: 0,
+  disconnectReason: 'none',
+};
+
+function logSocketDiagnostics(event: string, details: SocketDiagnostics): void {
+  if (import.meta.env.DEV) {
+    console.info('[Videofy Live listener socket]', event, details);
+  }
+}
+
 function formatTimestamp(ms: number): string {
   const seconds = Math.floor(ms / 1000);
   const minutes = Math.floor(seconds / 60);
@@ -61,7 +83,20 @@ export default function App(): React.ReactElement {
   const [recentPhrases, setRecentPhrases] = useState<PhraseEntry[]>([]);
   const [buffering, setBuffering] = useState(false);
   const [videoPlaybackError, setVideoPlaybackError] = useState<string | null>(null);
+  const [socketDiagnostics, setSocketDiagnostics] =
+    useState<SocketDiagnostics>(initialSocketDiagnostics);
   const audioQueue = useTranslatedAudioQueue(translatedVolume, muted);
+
+  const updateSocketDiagnostics = useCallback(
+    (event: string, next: Partial<SocketDiagnostics>): void => {
+      setSocketDiagnostics((current) => {
+        const updated = { ...current, ...next };
+        logSocketDiagnostics(event, updated);
+        return updated;
+      });
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!videoRef.current) {
@@ -102,15 +137,42 @@ export default function App(): React.ReactElement {
 
     socket.on(SOCKET_EVENTS.CONNECTED, () => {
       setConnectionStatus('connected');
+      updateSocketDiagnostics('connect', {
+        connected: true,
+        transport: socket.io.engine.transport.name,
+        lastConnectError: 'none',
+        disconnectReason: 'none',
+      });
       socket.emit(SOCKET_EVENTS.JOIN_LANGUAGE, targetLanguage);
     });
 
-    socket.on(SOCKET_EVENTS.DISCONNECTED, () => {
+    socket.on(SOCKET_EVENTS.DISCONNECTED, (reason: string) => {
       setConnectionStatus('disconnected');
+      updateSocketDiagnostics('disconnect', {
+        connected: false,
+        transport: 'not connected',
+        disconnectReason: reason,
+      });
     });
 
-    socket.on('connect_error', () => {
+    socket.on('connect_error', (error: Error) => {
       setConnectionStatus('error');
+      updateSocketDiagnostics('connect_error', {
+        connected: false,
+        lastConnectError: error.message,
+      });
+    });
+
+    socket.io.engine?.on('upgrade', () => {
+      updateSocketDiagnostics('transport_upgrade', {
+        transport: socket.io.engine?.transport.name ?? 'unknown',
+      });
+    });
+
+    socket.io.on('reconnect_attempt', (attempt: number) => {
+      updateSocketDiagnostics('reconnect_attempt', {
+        reconnectAttempts: attempt,
+      });
     });
 
     socket.on(SOCKET_EVENTS.TRANSLATION_EVENT, (event: TranslationEvent) => {
@@ -142,7 +204,7 @@ export default function App(): React.ReactElement {
       setStreamStatus(data.status);
       setBuffering(data.status === 'connecting');
     });
-  }, [audioQueue, targetLanguage]);
+  }, [audioQueue, targetLanguage, updateSocketDiagnostics]);
 
   const handleStart = useCallback((): void => {
     setHasStarted(true);
@@ -423,6 +485,37 @@ export default function App(): React.ReactElement {
               Start Listening
             </button>
           </div>
+        )}
+        {import.meta.env.DEV && (
+          <section className={styles.devDiagnostics} aria-label="Development socket diagnostics">
+            <h2 className={styles.devDiagnosticsTitle}>Development socket diagnostics</h2>
+            <dl className={styles.devDiagnosticsGrid}>
+              <div>
+                <dt>Gateway URL</dt>
+                <dd>{GATEWAY_URL}</dd>
+              </div>
+              <div>
+                <dt>Connected</dt>
+                <dd>{socketDiagnostics.connected ? 'true' : 'false'}</dd>
+              </div>
+              <div>
+                <dt>Transport</dt>
+                <dd>{socketDiagnostics.transport}</dd>
+              </div>
+              <div>
+                <dt>Last connect_error</dt>
+                <dd>{socketDiagnostics.lastConnectError}</dd>
+              </div>
+              <div>
+                <dt>Reconnect attempts</dt>
+                <dd>{socketDiagnostics.reconnectAttempts}</dd>
+              </div>
+              <div>
+                <dt>Disconnect reason</dt>
+                <dd>{socketDiagnostics.disconnectReason}</dd>
+              </div>
+            </dl>
+          </section>
         )}
       </main>
     </div>

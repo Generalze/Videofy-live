@@ -44,6 +44,28 @@ type OperatorControlAction =
   | 'trigger-mock-phrase'
   | 'reset-mock-sequence';
 
+interface SocketDiagnostics {
+  connected: boolean;
+  transport: string;
+  lastConnectError: string;
+  reconnectAttempts: number;
+  disconnectReason: string;
+}
+
+const initialSocketDiagnostics: SocketDiagnostics = {
+  connected: false,
+  transport: 'not connected',
+  lastConnectError: 'none',
+  reconnectAttempts: 0,
+  disconnectReason: 'none',
+};
+
+function logSocketDiagnostics(event: string, details: SocketDiagnostics): void {
+  if (import.meta.env.DEV) {
+    console.info('[Videofy Live operator socket]', event, details);
+  }
+}
+
 function StatusDot({ ok }: { ok: boolean }): React.ReactElement {
   return (
     <span
@@ -98,6 +120,19 @@ export default function App(): React.ReactElement {
   const [workerOk, setWorkerOk] = useState(false);
   const [ingestOk, setIngestOk] = useState(false);
   const [lastControlAck, setLastControlAck] = useState<string>('No control sent');
+  const [socketDiagnostics, setSocketDiagnostics] =
+    useState<SocketDiagnostics>(initialSocketDiagnostics);
+
+  const updateSocketDiagnostics = useCallback(
+    (event: string, next: Partial<SocketDiagnostics>): void => {
+      setSocketDiagnostics((current) => {
+        const updated = { ...current, ...next };
+        logSocketDiagnostics(event, updated);
+        return updated;
+      });
+    },
+    [],
+  );
 
   const connect = useCallback((): void => {
     if (socketRef.current) return;
@@ -107,14 +142,41 @@ export default function App(): React.ReactElement {
     socket.on(SOCKET_EVENTS.CONNECTED, () => {
       setConnected(true);
       setGatewayOk(true);
+      updateSocketDiagnostics('connect', {
+        connected: true,
+        transport: socket.io.engine.transport.name,
+        lastConnectError: 'none',
+        disconnectReason: 'none',
+      });
     });
-    socket.on(SOCKET_EVENTS.DISCONNECTED, () => {
+    socket.on(SOCKET_EVENTS.DISCONNECTED, (reason: string) => {
       setConnected(false);
       setGatewayOk(false);
+      updateSocketDiagnostics('disconnect', {
+        connected: false,
+        transport: 'not connected',
+        disconnectReason: reason,
+      });
     });
-    socket.on('connect_error', () => {
+    socket.on('connect_error', (error: Error) => {
       setConnected(false);
       setGatewayOk(false);
+      updateSocketDiagnostics('connect_error', {
+        connected: false,
+        lastConnectError: error.message,
+      });
+    });
+
+    socket.io.engine?.on('upgrade', () => {
+      updateSocketDiagnostics('transport_upgrade', {
+        transport: socket.io.engine?.transport.name ?? 'unknown',
+      });
+    });
+
+    socket.io.on('reconnect_attempt', (attempt: number) => {
+      updateSocketDiagnostics('reconnect_attempt', {
+        reconnectAttempts: attempt,
+      });
     });
 
     socket.on(SOCKET_EVENTS.MEDIA_STATE, (state: MediaStateEvent) => {
@@ -151,7 +213,7 @@ export default function App(): React.ReactElement {
     socket.on(SOCKET_EVENTS.CONTROL_ACK, (event: { action: string; accepted: boolean }) => {
       setLastControlAck(`${event.action}: ${event.accepted ? 'accepted' : 'rejected'}`);
     });
-  }, []);
+  }, [updateSocketDiagnostics]);
 
   const sendControl = useCallback((action: OperatorControlAction): void => {
     socketRef.current?.emit(SOCKET_EVENTS.OPERATOR_CONTROL, {
@@ -166,6 +228,7 @@ export default function App(): React.ReactElement {
     connect();
     return () => {
       socketRef.current?.disconnect();
+      socketRef.current = null;
     };
   }, [connect]);
 
@@ -394,6 +457,37 @@ export default function App(): React.ReactElement {
             </button>
           </div>
         </section>
+        {import.meta.env.DEV && (
+          <section className={styles.devDiagnostics} aria-label="Development socket diagnostics">
+            <h2 className={styles.devDiagnosticsTitle}>Development socket diagnostics</h2>
+            <dl className={styles.devDiagnosticsGrid}>
+              <div>
+                <dt>Gateway URL</dt>
+                <dd>{GATEWAY_URL}</dd>
+              </div>
+              <div>
+                <dt>Connected</dt>
+                <dd>{socketDiagnostics.connected ? 'true' : 'false'}</dd>
+              </div>
+              <div>
+                <dt>Transport</dt>
+                <dd>{socketDiagnostics.transport}</dd>
+              </div>
+              <div>
+                <dt>Last connect_error</dt>
+                <dd>{socketDiagnostics.lastConnectError}</dd>
+              </div>
+              <div>
+                <dt>Reconnect attempts</dt>
+                <dd>{socketDiagnostics.reconnectAttempts}</dd>
+              </div>
+              <div>
+                <dt>Disconnect reason</dt>
+                <dd>{socketDiagnostics.disconnectReason}</dd>
+              </div>
+            </dl>
+          </section>
+        )}
       </main>
     </div>
   );

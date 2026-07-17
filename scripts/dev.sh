@@ -24,6 +24,8 @@ fi
 mkdir -p "$LOG_DIR"
 cd "$ROOT"
 
+export VITE_SOCKET_TRANSPORT="${VITE_SOCKET_TRANSPORT:-polling}"
+
 cleanup() {
   for ((i=${#SERVICE_PIDS[@]} - 1; i>=0; i--)); do
     local pid="${SERVICE_PIDS[$i]}"
@@ -108,6 +110,7 @@ watch_services() {
 
 echo "Starting Videofy Live development services..."
 echo "Logs: $LOG_DIR"
+echo "Browser Socket.IO transport: $VITE_SOCKET_TRANSPORT"
 
 start_service "Realtime Gateway" "$ROOT" npm run dev -w services/realtime-gateway
 wait_for_gateway

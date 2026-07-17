@@ -28,7 +28,9 @@ export class IngestService {
 
     this.socket.on(SOCKET_EVENTS.CONNECTED, () => {
       logger.info('Connected to gateway');
-      this.streamStatus = 'connecting';
+      if (this.streamStatus === 'idle') {
+        this.streamStatus = 'connecting';
+      }
       this.socket?.emit(SOCKET_EVENTS.INGEST_HEALTH, { status: 'healthy' });
       this.emitState();
     });
