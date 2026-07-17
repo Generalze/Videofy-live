@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "outDir": "./dist",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "paths": {
+      "@videofy-live/shared-types": ["../../packages/shared-types/src/index.ts"]
+    }
+  },
+  "include": ["src"]
+}

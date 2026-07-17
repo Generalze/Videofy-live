@@ -1,0 +1,29 @@
+{
+  "name": "videofy-live",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Videofy Live – real-time multilingual video streaming and audio interpretation platform",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "services/realtime-gateway",
+    "services/media-ingest"
+  ],
+  "scripts": {
+    "dev": "concurrently -n gateway,ingest,listener,operator -c cyan,yellow,green,magenta \"npm run dev -w services/realtime-gateway\" \"npm run dev -w services/media-ingest\" \"npm run dev -w apps/listener-web\" \"npm run dev -w apps/operator-web\"",
+    "build": "npm run build -w packages/shared-types && npm run build -w packages/media-contracts && npm run build -w services/realtime-gateway && npm run build -w services/media-ingest && npm run build -w apps/listener-web && npm run build -w apps/operator-web",
+    "test": "npm run test -w packages/shared-types && npm run test -w packages/media-contracts && npm run test -w services/realtime-gateway",
+    "lint": "npm run lint -w apps/listener-web && npm run lint -w apps/operator-web",
+    "typecheck": "npm run typecheck -w packages/shared-types && npm run typecheck -w packages/media-contracts && npm run typecheck -w services/realtime-gateway && npm run typecheck -w services/media-ingest && npm run typecheck -w apps/listener-web && npm run typecheck -w apps/operator-web",
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\" --ignore-path .gitignore"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "prettier": "^3.9.5",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  }
+}

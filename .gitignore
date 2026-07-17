@@ -141,3 +141,62 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Python virtual environments
+venv/
+.venv/
+env/
+.env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+.Python
+
+# Python cache
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+pip-log.txt
+
+# Temporary audio / generated speech
+tmp/audio/
+generated_speech/
+recordings/
+uploads/
+*.wav
+*.mp3
+*.ogg
+*.webm.tmp
+
+# Local test videos
+*.mp4
+*.mkv
+*.avi
+sample_video.*
+
+# Downloaded AI models
+models/
+model_cache/
+*.gguf
+*.bin
+*.safetensors
+
+# Logs
+*.log
+
+# Build output
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Python test cache
+.pytest_cache/
+*.tsbuildinfo
