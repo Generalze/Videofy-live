@@ -4,6 +4,7 @@ import type { MediaStateEvent, TranslationEvent } from '@videofy-live/shared-typ
 import { SOCKET_EVENTS } from '@videofy-live/shared-types';
 import styles from './App.module.css';
 import { startMockVideoFeed, type MockVideoFeed } from './mockVideoFeed';
+import { createListenerSocketOptions } from './socketConfig';
 import { useTranslatedAudioQueue } from './useTranslatedAudioQueue';
 
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
@@ -95,10 +96,7 @@ export default function App(): React.ReactElement {
 
     setConnectionStatus('connecting');
 
-    const socket = io(GATEWAY_URL, {
-      query: { role: 'listener' },
-      transports: ['websocket', 'polling'],
-    });
+    const socket = io(GATEWAY_URL, createListenerSocketOptions());
 
     socketRef.current = socket;
 

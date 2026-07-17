@@ -38,7 +38,7 @@ def load_config() -> WorkerConfig:
         mode=os.getenv("SPEECH_WORKER_MODE", "mock"),
         mock_phrase_interval_s=_read_positive_int("MOCK_PHRASE_INTERVAL_MS", 4000) / 1000.0,
         sequence_start=_read_positive_int("SEQUENCE_START", 1),
-        log_level=os.getenv("LOG_LEVEL", "INFO"),
+        log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         health_port=_read_port("SPEECH_WORKER_PORT", 8001),
     )
 

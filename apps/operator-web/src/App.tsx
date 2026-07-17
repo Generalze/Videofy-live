@@ -3,6 +3,7 @@ import { io, Socket } from 'socket.io-client';
 import type { TranslationEvent, MediaStateEvent } from '@videofy-live/shared-types';
 import { SOCKET_EVENTS } from '@videofy-live/shared-types';
 import styles from './App.module.css';
+import { createOperatorSocketOptions } from './socketConfig';
 
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
 
@@ -100,10 +101,7 @@ export default function App(): React.ReactElement {
 
   const connect = useCallback((): void => {
     if (socketRef.current) return;
-    const socket = io(GATEWAY_URL, {
-      query: { role: 'operator' },
-      transports: ['websocket', 'polling'],
-    });
+    const socket = io(GATEWAY_URL, createOperatorSocketOptions());
     socketRef.current = socket;
 
     socket.on(SOCKET_EVENTS.CONNECTED, () => {
