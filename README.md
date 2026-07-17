@@ -6,6 +6,22 @@ This repository is a Phase 1 mock proof of concept. It does not include real AI
 speech recognition, translation, text-to-speech, production streaming,
 authentication, billing, databases, or cloud integrations.
 
+## Phase 1 Status
+
+Phase 1 is complete and released at `v0.1.0-phase1`.
+
+This release is a mock-only foundation. It includes the listener app, operator
+app, Socket.IO gateway, mock media ingest, mock speech worker, shared event
+contracts, local development launchers, and automated validation.
+
+Current limitations remain intentional: no real AI providers, no production
+streaming, no authentication or authorization, no database, no billing, no
+persistence, and local polling transport is used for Windows compatibility.
+Phase 2 has not yet been implemented.
+
+See [docs/PHASE_1_CLOSURE.md](docs/PHASE_1_CLOSURE.md) for the formal Phase 1
+closure record.
+
 ## Architecture
 
 ```text
@@ -34,7 +50,7 @@ packages/
 ```powershell
 git clone https://github.com/masterzee001/videofy-live.git
 cd videofy-live
-git checkout copilot/initial-repo-foundation
+git checkout main
 
 npm ci
 
