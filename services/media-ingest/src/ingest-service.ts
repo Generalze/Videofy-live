@@ -29,6 +29,7 @@ export class IngestService {
     this.socket.on(SOCKET_EVENTS.CONNECTED, () => {
       logger.info('Connected to gateway');
       this.streamStatus = 'connecting';
+      this.socket?.emit(SOCKET_EVENTS.INGEST_HEALTH, { status: 'healthy' });
       this.emitState();
     });
 
@@ -40,13 +41,35 @@ export class IngestService {
       logger.error('Gateway connection error', { message: err.message });
     });
 
-    await this.provider.start();
-    this.streamStatus = 'live';
-    logger.info('Mock video source started');
+    this.socket.on(SOCKET_EVENTS.INGEST_START_STREAM, () => {
+      logger.info('Operator requested mock stream start');
+      void this.startMockStream();
+    });
+
+    this.socket.on(SOCKET_EVENTS.INGEST_STOP_STREAM, () => {
+      logger.info('Operator requested mock stream stop');
+      void this.stopMockStream();
+    });
+
+    await this.startMockStream();
 
     this.ticker = setInterval(() => {
       this.emitState();
     }, this.config.mockTickMs);
+  }
+
+  private async startMockStream(): Promise<void> {
+    await this.provider.start();
+    this.streamStatus = 'live';
+    this.emitState();
+    logger.info('Mock video source started');
+  }
+
+  private async stopMockStream(): Promise<void> {
+    this.streamStatus = 'ended';
+    this.emitState();
+    await this.provider.stop();
+    logger.info('Mock video source stopped');
   }
 
   private emitState(): void {

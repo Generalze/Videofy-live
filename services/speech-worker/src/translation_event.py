@@ -41,7 +41,9 @@ class TranslationEvent:
     audio_format: Optional[str] = None
     audio_duration_ms: Optional[int] = None
     created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+        default_factory=lambda: datetime.now(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
     )
 
     def to_dict(self) -> dict:

@@ -74,6 +74,14 @@ describe('TranslationEventSchema validation', () => {
     expect(result.success).toBe(false);
   });
 
+  it('accepts Python UTC Z timestamps with millisecond precision', () => {
+    const result = safeParseTranslationEvent({
+      ...validEvent,
+      createdAt: '2026-07-17T08:30:00.000Z',
+    });
+    expect(result.success).toBe(true);
+  });
+
   it('rejects negative latency values', () => {
     const result = safeParseTranslationEvent({
       ...validEvent,

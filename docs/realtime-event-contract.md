@@ -107,6 +107,25 @@ Submit a media-state update. The gateway validates it with Zod before broadcasti
 
 Payload: same shape as `media:state` above.
 
+### `service:status` (gateway -> operator)
+
+Reports gateway-observed connection status for Phase 1 services.
+
+```json
+{ "service": "speech-worker", "status": "healthy", "timestamp": "2026-07-17T00:00:00.000Z" }
+```
+
+### `operator:control` (operator -> gateway)
+
+Accepted mock actions are `start-mock-stream`, `stop-mock-stream`,
+`trigger-mock-phrase`, and `reset-mock-sequence`.
+
+```json
+{ "action": "trigger-mock-phrase", "eventId": "demo-event", "targetLanguage": "fr" }
+```
+
+Production use requires operator authorization; authentication is not implemented in Phase 1.
+
 ## Validation
 
 All incoming events from workers and ingest services are validated using Zod schemas.
@@ -116,10 +135,12 @@ Invalid events are rejected with an `error` event:
 { "message": "Invalid translation event", "issues": [...] }
 ```
 
-## Duplicate and stale event handling
+## Duplicate, stale, and out-of-order handling
 
-The gateway maintains an `EventStore` per language channel.
+The gateway maintains an `EventStore` per `eventId + targetLanguage` channel.
 
-- **Duplicate**: an event with the same sequence number as a previously seen event is silently dropped.
-- **Stale**: an event with a sequence number more than 20 below the current highest accepted sequence is dropped.
-- **Out-of-order within threshold**: accepted and forwarded.
+- **In order**: `1, 2, 3` is delivered immediately.
+- **Out of order**: `1, 3, 2` buffers `3` and then delivers `2, 3` when `2` arrives.
+- **Duplicate or stale**: a sequence lower than the next expected sequence is rejected.
+- **Large gap**: a sequence more than 20 ahead of the next expected sequence is rejected.
+- **Reset**: a reset can target one event-language channel.

@@ -1,17 +1,31 @@
 import { fileURLToPath, URL } from 'node:url';
-import { defineConfig } from 'vite';
+import { resolve } from 'node:path';
+import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
-export default defineConfig({
-  plugins: [react()],
-  resolve: {
-    alias: {
-      '@videofy-live/shared-types': fileURLToPath(
-        new URL('../../packages/shared-types/src/index.ts', import.meta.url),
+const appDir = fileURLToPath(new URL('.', import.meta.url));
+const repoRoot = resolve(appDir, '../..');
+
+export default defineConfig(({ mode }) => {
+  const rootEnv = loadEnv(mode, repoRoot, 'VITE_');
+
+  return {
+    envDir: repoRoot,
+    define: {
+      'import.meta.env.VITE_GATEWAY_URL': JSON.stringify(
+        rootEnv['VITE_GATEWAY_URL'] ?? 'http://localhost:3001',
       ),
     },
-  },
-  server: {
-    port: 5173,
-  },
+    plugins: [react()],
+    resolve: {
+      alias: {
+        '@videofy-live/shared-types': fileURLToPath(
+          new URL('../../packages/shared-types/src/index.ts', import.meta.url),
+        ),
+      },
+    },
+    server: {
+      port: 5173,
+    },
+  };
 });

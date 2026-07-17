@@ -55,11 +55,11 @@ interface AudioSyncDescriptor {
 
 ## Current state (this release)
 
-- `videoTimestampMs` is carried in every event ✅
-- `AudioSyncDescriptor` interface is defined ✅
-- No video buffering is implemented ❌
-- No audio queue is implemented ❌
-- Translated audio is not generated ❌
+- `videoTimestampMs` is carried in every event.
+- `AudioSyncDescriptor` interface is defined.
+- No video buffering is implemented.
+- A basic browser translated-audio queue is implemented for ordered mock clips.
+- Real translated speech audio is not generated.
 
 ## Planned synchronisation flow (next phase)
 

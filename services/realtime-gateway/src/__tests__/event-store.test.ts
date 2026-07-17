@@ -1,20 +1,25 @@
+import type { TranslationEvent } from '@videofy-live/shared-types';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { EventStore } from '../event-store.js';
 
-function makeEvent(sequence: number, targetLanguage = 'fr') {
+function makeEvent(
+  sequence: number,
+  targetLanguage = 'fr',
+  eventId = 'demo-event',
+): TranslationEvent {
   return {
-    eventId: 'demo-event',
+    eventId,
     sequence,
     sourceLanguage: 'en',
     targetLanguage,
     sourceText: 'Hello',
     translatedText: 'Bonjour',
     audioUrl: null,
-    audioFormat: null as null,
+    audioFormat: null,
     audioDurationMs: null,
     final: true,
     videoTimestampMs: sequence * 1000,
-    createdAt: new Date().toISOString(),
+    createdAt: '2026-07-17T08:30:00.000Z',
     latency: {
       audioCaptureMs: 0,
       transcriptionMs: 0,
@@ -30,52 +35,63 @@ describe('EventStore', () => {
   let store: EventStore;
 
   beforeEach(() => {
-    store = new EventStore();
+    store = new EventStore({ maxGap: 5, maxBufferedEvents: 10 });
   });
 
-  it('accepts a new event', () => {
-    expect(store.accept(makeEvent(1))).toBe(true);
+  it('delivers 1, 2, 3 immediately in order', () => {
+    expect(store.offer(makeEvent(1)).ready.map((event) => event.sequence)).toEqual([1]);
+    expect(store.offer(makeEvent(2)).ready.map((event) => event.sequence)).toEqual([2]);
+    expect(store.offer(makeEvent(3)).ready.map((event) => event.sequence)).toEqual([3]);
   });
 
-  it('rejects a duplicate sequence', () => {
-    store.accept(makeEvent(1));
-    expect(store.accept(makeEvent(1))).toBe(false);
+  it('buffers 1, 3, 2 and releases accepted events in sequence order', () => {
+    expect(store.offer(makeEvent(1)).ready.map((event) => event.sequence)).toEqual([1]);
+    expect(store.offer(makeEvent(3)).ready).toEqual([]);
+    expect(store.offer(makeEvent(2)).ready.map((event) => event.sequence)).toEqual([2, 3]);
   });
 
-  it('accepts events in order', () => {
-    expect(store.accept(makeEvent(1))).toBe(true);
-    expect(store.accept(makeEvent(2))).toBe(true);
-    expect(store.accept(makeEvent(3))).toBe(true);
+  it('rejects duplicates', () => {
+    expect(store.offer(makeEvent(1)).accepted).toBe(true);
+    const duplicate = store.offer(makeEvent(1));
+    expect(duplicate.accepted).toBe(false);
+    expect(duplicate.reason).toBe('stale');
   });
 
-  it('accepts out-of-order events within threshold', () => {
-    store.accept(makeEvent(10));
-    expect(store.accept(makeEvent(5))).toBe(true);
+  it('rejects large stale gaps', () => {
+    const result = store.offer(makeEvent(10));
+    expect(result.accepted).toBe(false);
+    expect(result.reason).toBe('gap-too-large');
   });
 
-  it('rejects events beyond the stale threshold', () => {
-    store.accept(makeEvent(100));
-    expect(store.accept(makeEvent(1))).toBe(false);
+  it('keeps simultaneous French channels for different event IDs independent', () => {
+    expect(store.offer(makeEvent(1, 'fr', 'event-a')).ready.map((event) => event.eventId)).toEqual([
+      'event-a',
+    ]);
+    expect(store.offer(makeEvent(1, 'fr', 'event-b')).ready.map((event) => event.eventId)).toEqual([
+      'event-b',
+    ]);
   });
 
-  it('tracks last sequence per language', () => {
-    store.accept(makeEvent(1, 'fr'));
-    store.accept(makeEvent(3, 'fr'));
-    store.accept(makeEvent(2, 'es'));
-    expect(store.getLastSequence('fr')).toBe(3);
-    expect(store.getLastSequence('es')).toBe(2);
-    expect(store.getLastSequence('de')).toBe(0);
+  it('keeps French and Spanish channels independent', () => {
+    expect(store.offer(makeEvent(1, 'fr')).ready.map((event) => event.targetLanguage)).toEqual([
+      'fr',
+    ]);
+    expect(store.offer(makeEvent(1, 'es')).ready.map((event) => event.targetLanguage)).toEqual([
+      'es',
+    ]);
   });
 
-  it('tracks duplicates independently per language', () => {
-    store.accept(makeEvent(1, 'fr'));
-    expect(store.accept(makeEvent(1, 'es'))).toBe(true);
-    expect(store.accept(makeEvent(1, 'fr'))).toBe(false);
+  it('handles gaps deterministically by buffering within maxGap', () => {
+    expect(store.offer(makeEvent(2)).accepted).toBe(true);
+    expect(store.getBufferedCount('demo-event', 'fr')).toBe(1);
+    expect(store.offer(makeEvent(1)).ready.map((event) => event.sequence)).toEqual([1, 2]);
   });
 
-  it('resets cleanly', () => {
-    store.accept(makeEvent(5));
-    store.reset();
-    expect(store.accept(makeEvent(5))).toBe(true);
+  it('resets a single event-language channel without clearing others', () => {
+    store.offer(makeEvent(1, 'fr', 'event-a'));
+    store.offer(makeEvent(1, 'es', 'event-a'));
+    store.reset('event-a', 'fr');
+    expect(store.getNextSequence('event-a', 'fr')).toBe(1);
+    expect(store.getNextSequence('event-a', 'es')).toBe(2);
   });
 });

@@ -10,6 +10,8 @@ export const SOCKET_EVENTS = {
   MEDIA_STATE: 'media:state',
   STREAM_STATUS: 'stream:status',
   TRANSLATED_AUDIO: 'audio:translated',
+  SERVICE_STATUS: 'service:status',
+  CONTROL_ACK: 'operator:control_ack',
   ERROR: 'error',
 
   // Client → server
@@ -19,10 +21,17 @@ export const SOCKET_EVENTS = {
   // Speech worker → gateway
   WORKER_TRANSLATION: 'worker:translation',
   WORKER_HEALTH: 'worker:health',
+  WORKER_TRIGGER_PHRASE: 'worker:trigger_phrase',
+  WORKER_RESET_SEQUENCE: 'worker:reset_sequence',
 
   // Media ingest → gateway
   INGEST_STATE: 'ingest:state',
   INGEST_HEALTH: 'ingest:health',
+  INGEST_START_STREAM: 'ingest:start_stream',
+  INGEST_STOP_STREAM: 'ingest:stop_stream',
+
+  // Operator → gateway
+  OPERATOR_CONTROL: 'operator:control',
 
   // Shared
   CONNECTED: 'connect',

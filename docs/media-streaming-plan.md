@@ -4,7 +4,7 @@
 
 The `media-ingest` service runs in mock mode. It generates a synthetic video timestamp ticker and emits `MediaStateEvent` updates to the gateway at 1-second intervals. No real video is captured or streamed.
 
-The `listener-web` application includes a `<video>` element configured to load `sample-video.mp4` from the public directory. No real live stream is delivered.
+The `listener-web` application attaches a deterministic browser-generated canvas stream to the `<video>` element with `canvas.captureStream()`. No real live stream is delivered and no media file is committed.
 
 ## Provider interface
 

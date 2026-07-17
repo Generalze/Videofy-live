@@ -6,10 +6,11 @@
 - [x] Shared TypeScript interfaces (`TranslationEvent`, `MediaStateEvent`, `AudioSyncDescriptor`)
 - [x] Zod validation schemas
 - [x] Realtime gateway (Express + Socket.IO)
-- [x] Event deduplication and sequence tracking
+- [x] Event deduplication and ordered delivery per event-language channel
 - [x] Mock media-ingest service
-- [x] Mock speech worker (Python)
+- [x] Mock speech worker (Python Socket.IO client)
 - [x] Listener web application (React + Vite)
+- [x] Browser mock video feed and basic mock translated-audio queue
 - [x] Operator web dashboard (React + Vite)
 - [x] Mock end-to-end demonstration
 - [x] Documentation

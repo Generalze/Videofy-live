@@ -3,6 +3,8 @@ import { io, Socket } from 'socket.io-client';
 import type { MediaStateEvent, TranslationEvent } from '@videofy-live/shared-types';
 import { SOCKET_EVENTS } from '@videofy-live/shared-types';
 import styles from './App.module.css';
+import { startMockVideoFeed, type MockVideoFeed } from './mockVideoFeed';
+import { useTranslatedAudioQueue } from './useTranslatedAudioQueue';
 
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
 
@@ -41,6 +43,7 @@ function formatTimestamp(ms: number): string {
 export default function App(): React.ReactElement {
   const socketRef = useRef<Socket | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const mockFeedRef = useRef<MockVideoFeed | null>(null);
 
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle');
   const [hasStarted, setHasStarted] = useState(false);
@@ -55,8 +58,8 @@ export default function App(): React.ReactElement {
   const [audioMode, setAudioMode] = useState<'interpretation' | 'replacement'>('interpretation');
   const [currentPhrase, setCurrentPhrase] = useState<PhraseEntry | null>(null);
   const [recentPhrases, setRecentPhrases] = useState<PhraseEntry[]>([]);
-  const [translatedAudioStatus, setTranslatedAudioStatus] = useState<string>('waiting');
   const [buffering, setBuffering] = useState(false);
+  const audioQueue = useTranslatedAudioQueue(translatedVolume, muted);
 
   useEffect(() => {
     if (!videoRef.current) {
@@ -65,6 +68,27 @@ export default function App(): React.ReactElement {
 
     videoRef.current.volume = muted ? 0 : audioMode === 'replacement' ? 0 : originalVolume;
   }, [audioMode, muted, originalVolume]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || mockFeedRef.current) {
+      return;
+    }
+
+    const feed = startMockVideoFeed();
+    mockFeedRef.current = feed;
+    video.srcObject = feed.stream;
+    video.play().catch(() => {
+      // Browser autoplay may wait until Start Listening; the stream is attached.
+    });
+
+    return () => {
+      video.pause();
+      video.srcObject = null;
+      feed.stop();
+      mockFeedRef.current = null;
+    };
+  }, []);
 
   const connect = useCallback((): void => {
     if (socketRef.current) {
@@ -108,7 +132,7 @@ export default function App(): React.ReactElement {
       };
 
       setCurrentPhrase(entry);
-      setTranslatedAudioStatus(event.audioUrl ? 'playing' : 'text-only (audio pending)');
+      audioQueue.enqueue(event);
       setRecentPhrases((prev) => [entry, ...prev].slice(0, 8));
     });
 
@@ -122,12 +146,13 @@ export default function App(): React.ReactElement {
       setStreamStatus(data.status);
       setBuffering(data.status === 'connecting');
     });
-  }, [targetLanguage]);
+  }, [audioQueue, targetLanguage]);
 
   const handleStart = useCallback((): void => {
     setHasStarted(true);
+    audioQueue.start();
     connect();
-  }, [connect]);
+  }, [audioQueue, connect]);
 
   const handleLanguageChange = useCallback(
     (event: React.ChangeEvent<HTMLSelectElement>): void => {
@@ -139,9 +164,9 @@ export default function App(): React.ReactElement {
       setTargetLanguage(newLanguage);
       setCurrentPhrase(null);
       setRecentPhrases([]);
-      setTranslatedAudioStatus('waiting');
+      audioQueue.reset();
     },
-    [targetLanguage],
+    [audioQueue, targetLanguage],
   );
 
   useEffect(() => {
@@ -210,13 +235,7 @@ export default function App(): React.ReactElement {
               muted={muted}
               aria-label="Live event video"
               poster="/mock-video-poster.svg"
-            >
-              <source src="/sample-video.mp4" type="video/mp4" />
-              <p>
-                Your browser does not support the video element.{' '}
-                <a href="/sample-video.mp4">Download the video</a>.
-              </p>
-            </video>
+            />
             <div className={styles.videoOverlay} aria-hidden>
               <span className={styles.mockLabel}>Mock video source</span>
             </div>
@@ -329,8 +348,11 @@ export default function App(): React.ReactElement {
 
           <div className={styles.audioStatus} aria-live="polite">
             <span className={styles.label}>Translated audio status: </span>
-            <span>{translatedAudioStatus}</span>
-            <span className={styles.audioPending}> · Audio generation not active in this preview</span>
+            <span>{audioQueue.status}</span>
+            <span className={styles.audioPending}>
+              {' '}
+              · {audioQueue.pendingCount} queued mock clip{audioQueue.pendingCount === 1 ? '' : 's'}
+            </span>
           </div>
         </section>
 

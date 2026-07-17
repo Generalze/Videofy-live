@@ -94,3 +94,6 @@ def test_created_at_is_iso8601():
     )
     dt = datetime.fromisoformat(event.created_at.replace("Z", "+00:00"))
     assert dt.tzinfo is not None
+    assert event.created_at.endswith("Z")
+    assert "." in event.created_at
+    assert "+" not in event.created_at

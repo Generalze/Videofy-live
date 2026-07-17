@@ -31,6 +31,18 @@ interface PhraseLogEntry {
   };
 }
 
+interface ServiceStatusEvent {
+  service: 'gateway' | 'media-ingest' | 'speech-worker';
+  status: 'healthy' | 'unhealthy';
+  timestamp: string;
+}
+
+type OperatorControlAction =
+  | 'start-mock-stream'
+  | 'stop-mock-stream'
+  | 'trigger-mock-phrase'
+  | 'reset-mock-sequence';
+
 function StatusDot({ ok }: { ok: boolean }): React.ReactElement {
   return (
     <span
@@ -81,10 +93,10 @@ export default function App(): React.ReactElement {
   const [translatedMix, setTranslatedMix] = useState(1.0);
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
 
-  // Worker / ingest service status (placeholder)
   const [gatewayOk, setGatewayOk] = useState(false);
-  const [workerOk] = useState(false);
+  const [workerOk, setWorkerOk] = useState(false);
   const [ingestOk, setIngestOk] = useState(false);
+  const [lastControlAck, setLastControlAck] = useState<string>('No control sent');
 
   const connect = useCallback((): void => {
     if (socketRef.current) return;
@@ -110,7 +122,6 @@ export default function App(): React.ReactElement {
     socket.on(SOCKET_EVENTS.MEDIA_STATE, (state: MediaStateEvent) => {
       setMediaState(state);
       setStreamStatus(state.streamStatus);
-      setIngestOk(state.streamStatus !== 'error');
     });
 
     socket.on(SOCKET_EVENTS.STREAM_STATUS, (data: { status: string }) => {
@@ -131,7 +142,27 @@ export default function App(): React.ReactElement {
       };
       setPhraseLog((prev) => [entry, ...prev].slice(0, 20));
     });
+
+    socket.on(SOCKET_EVENTS.SERVICE_STATUS, (event: ServiceStatusEvent) => {
+      const ok = event.status === 'healthy';
+      if (event.service === 'gateway') setGatewayOk(ok);
+      if (event.service === 'media-ingest') setIngestOk(ok);
+      if (event.service === 'speech-worker') setWorkerOk(ok);
+    });
+
+    socket.on(SOCKET_EVENTS.CONTROL_ACK, (event: { action: string; accepted: boolean }) => {
+      setLastControlAck(`${event.action}: ${event.accepted ? 'accepted' : 'rejected'}`);
+    });
   }, []);
+
+  const sendControl = useCallback((action: OperatorControlAction): void => {
+    socketRef.current?.emit(SOCKET_EVENTS.OPERATOR_CONTROL, {
+      action,
+      eventId: mediaState?.eventId ?? 'demo-event',
+      targetLanguage: targetLanguages[0] ?? 'fr',
+    });
+    setLastControlAck(`${action}: sent`);
+  }, [mediaState?.eventId, targetLanguages]);
 
   useEffect(() => {
     connect();
@@ -347,20 +378,20 @@ export default function App(): React.ReactElement {
         <section className={styles.card}>
           <h2 className={styles.cardTitle}>Mock controls</h2>
           <p className={styles.mockNote}>
-            These controls are placeholders for the prototype. Production controls will be
-            implemented in a later phase.
+            Phase 1 mock controls. Production use requires operator authorization.
           </p>
+          <p className={styles.mockNote}>{lastControlAck}</p>
           <div className={styles.mockButtons}>
-            <button className={styles.mockBtn} disabled>
+            <button className={styles.mockBtn} onClick={() => sendControl('start-mock-stream')}>
               Start mock stream
             </button>
-            <button className={styles.mockBtn} disabled>
+            <button className={styles.mockBtn} onClick={() => sendControl('stop-mock-stream')}>
               Stop mock stream
             </button>
-            <button className={styles.mockBtn} disabled>
+            <button className={styles.mockBtn} onClick={() => sendControl('trigger-mock-phrase')}>
               Trigger mock phrase
             </button>
-            <button className={styles.mockBtn} disabled>
+            <button className={styles.mockBtn} onClick={() => sendControl('reset-mock-sequence')}>
               Reset sequence
             </button>
           </div>

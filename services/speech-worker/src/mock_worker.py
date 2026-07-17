@@ -1,25 +1,16 @@
 """
 Mock speech worker.
 
-Emits sample English-to-French (or configured language) translation events
-to the realtime gateway at a configurable interval without requiring any
-AI models, paid APIs, or audio processing.
-
-Design:
-- Uses SocketIO via websocket-client to connect as role=worker
-- Generates sequential TranslationEvents with mock phrases
-- Associates each event with a simulated video timestamp
-- Supports retry on connection loss
-- Graceful shutdown on SIGTERM/SIGINT
+Uses the official Python Socket.IO client to connect to the realtime gateway
+as role=worker and emit typed mock translation events.
 """
 from __future__ import annotations
 
-import json
 import threading
 import time
 from typing import Optional
 
-import websocket
+import socketio
 
 from .config import WorkerConfig
 from .logger import Logger
@@ -38,13 +29,22 @@ class MockWorker:
         self.logger = logger
         self._sequence = config.sequence_start
         self._running = False
-        self._ws: Optional[websocket.WebSocketApp] = None
-        self._ws_connected = False
+        self._connected = False
         self._start_time: Optional[float] = None
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._lock = threading.Lock()
 
-        # Providers
+        self._socket = socketio.Client(
+            reconnection=True,
+            reconnection_attempts=0,
+            reconnection_delay=1,
+            reconnection_delay_max=10,
+            logger=False,
+            engineio_logger=False,
+        )
+        self._register_socket_handlers()
+
         self._recognition = MockRecognitionProvider()
         self._translation = MockTranslationProvider()
         self._tts = MockTextToSpeechProvider()
@@ -58,81 +58,78 @@ class MockWorker:
             source_language=self.config.source_language,
             target_language=self.config.target_language,
         )
-        self._connect_with_retry()
+        separator = "&" if "?" in self.config.gateway_url else "?"
+        self._socket.connect(
+            f"{self.config.gateway_url}{separator}role=worker",
+            transports=["websocket", "polling"],
+            socketio_path="socket.io",
+            wait_timeout=10,
+            auth=None,
+            headers=None,
+            namespaces=["/"],
+        )
+        self._socket.wait()
 
     def stop(self) -> None:
         self.logger.info("Mock worker stopping")
         self._running = False
         self._stop_event.set()
-        if self._ws:
-            self._ws.close()
+        if self._socket.connected:
+            self._socket.disconnect()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5)
 
-    def _gateway_ws_url(self) -> str:
-        """Convert http://host:port to ws://host:port/socket.io/?EIO=4&..."""
-        base = self.config.gateway_url.replace("http://", "ws://").replace("https://", "wss://")
-        return f"{base}/socket.io/?EIO=4&transport=websocket&role=worker"
+    def _register_socket_handlers(self) -> None:
+        @self._socket.event
+        def connect() -> None:
+            self.logger.info("Connected to gateway Socket.IO")
+            self._connected = True
+            self._socket.emit("worker:health", {"status": "healthy"})
+            if not self._thread or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._emit_loop, daemon=True)
+                self._thread.start()
 
-    def _connect_with_retry(self) -> None:
-        max_attempts = 20
-        attempt = 0
-        while self._running and attempt < max_attempts:
-            attempt += 1
-            self.logger.info("Connecting to gateway", attempt=attempt, url=self.config.gateway_url)
-            try:
-                ws = websocket.WebSocketApp(
-                    self._gateway_ws_url(),
-                    on_open=self._on_open,
-                    on_message=self._on_message,
-                    on_error=self._on_error,
-                    on_close=self._on_close,
-                )
-                self._ws = ws
-                ws.run_forever(ping_interval=20, ping_timeout=10)
-            except Exception as exc:  # noqa: BLE001
-                self.logger.error("WebSocket exception", error=str(exc))
+        @self._socket.event
+        def disconnect() -> None:
+            self.logger.warn("Disconnected from gateway Socket.IO")
+            self._connected = False
 
-            if not self._running:
-                break
-            wait = min(2 ** attempt, 30)
-            self.logger.warn("Reconnecting", wait_s=wait)
-            self._stop_event.wait(timeout=wait)
+        @self._socket.event
+        def connect_error(data: object) -> None:
+            self.logger.error("Gateway connection error", error=str(data))
+            self._connected = False
 
-    def _on_open(self, ws: websocket.WebSocketApp) -> None:
-        self.logger.info("Connected to gateway WebSocket")
-        self._ws_connected = True
-        self._thread = threading.Thread(target=self._emit_loop, daemon=True)
-        self._thread.start()
+        @self._socket.on("worker:trigger_phrase")
+        def trigger_phrase(_data: object = None) -> None:
+            self.logger.info("Operator requested mock phrase")
+            self._emit_phrase()
 
-    def _on_message(self, ws: websocket.WebSocketApp, message: str) -> None:
-        self.logger.debug("Gateway message received", raw=message[:120])
-
-    def _on_error(self, ws: websocket.WebSocketApp, error: Exception) -> None:
-        self.logger.error("WebSocket error", error=str(error))
-        self._ws_connected = False
-
-    def _on_close(self, ws: websocket.WebSocketApp, code: int, reason: str) -> None:
-        self.logger.info("WebSocket closed", code=code, reason=reason)
-        self._ws_connected = False
+        @self._socket.on("worker:reset_sequence")
+        def reset_sequence(_data: object = None) -> None:
+            with self._lock:
+                self._sequence = self.config.sequence_start
+            self.logger.info("Mock sequence reset", sequence_start=self.config.sequence_start)
 
     def _emit_loop(self) -> None:
-        """Emit mock translation events at the configured interval."""
         self.logger.info(
             "Phrase emission loop started",
             interval_s=self.config.mock_phrase_interval_s,
         )
-        phrase_index = 0
         while self._running and not self._stop_event.is_set():
-            if self._ws_connected:
-                self._emit_phrase(phrase_index)
-                phrase_index += 1
+            if self._connected:
+                self._emit_phrase()
             self._stop_event.wait(timeout=self.config.mock_phrase_interval_s)
 
         self.logger.info("Phrase emission loop ended")
 
-    def _emit_phrase(self, phrase_index: int) -> None:
-        source_text, _ = get_mock_phrase_pair(phrase_index)
+    def _emit_phrase(self) -> None:
+        with self._lock:
+            sequence = self._sequence
+            self._sequence += 1
 
-        recognition = self._recognition.recognise(b"", self.config.source_language)
+        source_text, _ = get_mock_phrase_pair(sequence - self.config.sequence_start)
+
+        recognition = self._recognition.recognise(source_text.encode("utf-8"), self.config.source_language)
         translation = self._translation.translate(
             source_text, self.config.source_language, self.config.target_language
         )
@@ -142,7 +139,7 @@ class MockWorker:
 
         event = TranslationEvent(
             event_id=self.config.event_id,
-            sequence=self._sequence,
+            sequence=sequence,
             source_language=self.config.source_language,
             target_language=self.config.target_language,
             source_text=recognition.text,
@@ -158,21 +155,18 @@ class MockWorker:
                 translation_ms=0,
                 speech_generation_ms=0,
                 delivery_ms=0,
-                synchronization_offset_ms=video_ts_ms + int(self.config.mock_phrase_interval_s * 1000),
+                synchronization_offset_ms=video_ts_ms
+                + int(self.config.mock_phrase_interval_s * 1000),
             ),
         )
 
-        self._sequence += 1
-
-        payload = json.dumps(["worker:translation", event.to_dict()])
         try:
-            if self._ws:
-                self._ws.send("42" + payload)
-                self.logger.info(
-                    "Translation event emitted",
-                    sequence=event.sequence,
-                    target_language=event.target_language,
-                    video_timestamp_ms=event.video_timestamp_ms,
-                )
+            self._socket.emit("worker:translation", event.to_dict())
+            self.logger.info(
+                "Translation event emitted",
+                sequence=event.sequence,
+                target_language=event.target_language,
+                video_timestamp_ms=event.video_timestamp_ms,
+            )
         except Exception as exc:  # noqa: BLE001
             self.logger.error("Failed to send translation event", error=str(exc))

@@ -1,5 +1,6 @@
 """Tests for configuration loading."""
 import os
+import pytest
 
 from src.config import load_config
 
@@ -35,3 +36,10 @@ def test_env_override(monkeypatch):
     assert config.gateway_url == "http://gateway:9000"
     assert config.target_language == "es"
     assert config.mock_phrase_interval_s == 2.0
+
+
+def test_invalid_numeric_config_fails(monkeypatch):
+    monkeypatch.setenv("MOCK_PHRASE_INTERVAL_MS", "not-a-number")
+
+    with pytest.raises(ValueError, match="MOCK_PHRASE_INTERVAL_MS"):
+        load_config()

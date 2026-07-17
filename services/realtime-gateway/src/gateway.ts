@@ -22,6 +22,27 @@ interface ClientState {
   targetLanguage: string | undefined;
 }
 
+type ServiceName = 'gateway' | 'media-ingest' | 'speech-worker';
+type HealthStatus = 'healthy' | 'unhealthy';
+type OperatorControlAction =
+  | 'start-mock-stream'
+  | 'stop-mock-stream'
+  | 'trigger-mock-phrase'
+  | 'reset-mock-sequence';
+
+interface ServiceStatusEvent {
+  service: ServiceName;
+  status: HealthStatus;
+  socketId?: string;
+  timestamp: string;
+}
+
+interface OperatorControlEvent {
+  action: OperatorControlAction;
+  eventId?: string;
+  targetLanguage?: string;
+}
+
 export class Gateway {
   private readonly io: SocketServer;
   private readonly store = new EventStore();
@@ -57,16 +78,19 @@ export class Gateway {
         break;
       case 'operator':
         void socket.join(OPERATOR_ROOM);
+        this.handleOperatorSocket(socket);
         logger.info('Operator connected', { socketId: socket.id });
         break;
       case 'worker':
         void socket.join(WORKER_ROOM);
         this.handleWorkerSocket(socket);
+        this.broadcastServiceStatus('speech-worker', 'healthy', socket.id);
         logger.info('Speech worker connected', { socketId: socket.id });
         break;
       case 'ingest':
         void socket.join(INGEST_ROOM);
         this.handleIngestSocket(socket);
+        this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
         logger.info('Media ingest connected', { socketId: socket.id });
         break;
     }
@@ -106,7 +130,49 @@ export class Gateway {
     });
   }
 
+  private handleOperatorSocket(socket: Socket): void {
+    socket.emit(SOCKET_EVENTS.SERVICE_STATUS, this.serviceStatus('gateway', 'healthy'));
+
+    socket.on(SOCKET_EVENTS.OPERATOR_CONTROL, (raw: unknown) => {
+      const control = this.parseOperatorControl(raw);
+      if (!control) {
+        socket.emit(SOCKET_EVENTS.ERROR, { message: 'Invalid operator control' });
+        return;
+      }
+
+      switch (control.action) {
+        case 'start-mock-stream':
+          this.io.to(INGEST_ROOM).emit(SOCKET_EVENTS.INGEST_START_STREAM);
+          break;
+        case 'stop-mock-stream':
+          this.io.to(INGEST_ROOM).emit(SOCKET_EVENTS.INGEST_STOP_STREAM);
+          break;
+        case 'trigger-mock-phrase':
+          this.io.to(WORKER_ROOM).emit(SOCKET_EVENTS.WORKER_TRIGGER_PHRASE);
+          break;
+        case 'reset-mock-sequence':
+          this.store.reset(control.eventId, control.targetLanguage);
+          this.io.to(WORKER_ROOM).emit(SOCKET_EVENTS.WORKER_RESET_SEQUENCE, {
+            eventId: control.eventId,
+            targetLanguage: control.targetLanguage,
+          });
+          break;
+      }
+
+      socket.emit(SOCKET_EVENTS.CONTROL_ACK, {
+        action: control.action,
+        accepted: true,
+        timestamp: new Date().toISOString(),
+      });
+      logger.info('Operator control accepted', { action: control.action });
+    });
+  }
+
   private handleWorkerSocket(socket: Socket): void {
+    socket.on(SOCKET_EVENTS.WORKER_HEALTH, () => {
+      this.broadcastServiceStatus('speech-worker', 'healthy', socket.id);
+    });
+
     socket.on(SOCKET_EVENTS.WORKER_TRANSLATION, (raw: unknown) => {
       const result = safeParseTranslationEvent(raw);
       if (!result.success) {
@@ -120,23 +186,32 @@ export class Gateway {
 
       const event = result.data as TranslationEvent;
 
-      if (!this.store.accept(event)) {
+      const accepted = this.store.offer(event);
+      if (!accepted.accepted) {
         return;
       }
 
-      this.io.to(languageRoom(event.targetLanguage)).emit(SOCKET_EVENTS.TRANSLATION_EVENT, event);
-      this.io.to(OPERATOR_ROOM).emit(SOCKET_EVENTS.TRANSLATION_EVENT, event);
+      for (const readyEvent of accepted.ready) {
+        this.io
+          .to(languageRoom(readyEvent.targetLanguage))
+          .emit(SOCKET_EVENTS.TRANSLATION_EVENT, readyEvent);
+        this.io.to(OPERATOR_ROOM).emit(SOCKET_EVENTS.TRANSLATION_EVENT, readyEvent);
 
-      logger.info('Translation event broadcast', {
-        eventId: event.eventId,
-        sequence: event.sequence,
-        targetLanguage: event.targetLanguage,
-        final: event.final,
-      });
+        logger.info('Translation event broadcast', {
+          eventId: readyEvent.eventId,
+          sequence: readyEvent.sequence,
+          targetLanguage: readyEvent.targetLanguage,
+          final: readyEvent.final,
+        });
+      }
     });
   }
 
   private handleIngestSocket(socket: Socket): void {
+    socket.on(SOCKET_EVENTS.INGEST_HEALTH, () => {
+      this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
+    });
+
     socket.on(SOCKET_EVENTS.INGEST_STATE, (raw: unknown) => {
       const result = safeParseMediaStateEvent(raw);
       if (!result.success) {
@@ -155,6 +230,7 @@ export class Gateway {
       };
 
       this.io.emit(SOCKET_EVENTS.MEDIA_STATE, enriched);
+      this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
       logger.debug('Media state broadcast', { streamStatus: enriched.streamStatus });
     });
   }
@@ -163,6 +239,10 @@ export class Gateway {
     const state = this.clients.get(socket.id);
     if (state?.role === 'listener') {
       this.listenerCount = Math.max(0, this.listenerCount - 1);
+    } else if (state?.role === 'worker') {
+      this.broadcastServiceStatus('speech-worker', 'unhealthy', socket.id);
+    } else if (state?.role === 'ingest') {
+      this.broadcastServiceStatus('media-ingest', 'unhealthy', socket.id);
     }
     this.clients.delete(socket.id);
     logger.info('Client disconnected', { socketId: socket.id, role: state?.role });
@@ -179,5 +259,48 @@ export class Gateway {
 
   getConnectedCount(): number {
     return this.clients.size;
+  }
+
+  private broadcastServiceStatus(
+    service: ServiceName,
+    status: HealthStatus,
+    socketId?: string,
+  ): void {
+    this.io.to(OPERATOR_ROOM).emit(SOCKET_EVENTS.SERVICE_STATUS, {
+      ...this.serviceStatus(service, status),
+      socketId,
+    });
+  }
+
+  private serviceStatus(service: ServiceName, status: HealthStatus): ServiceStatusEvent {
+    return {
+      service,
+      status,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  private parseOperatorControl(raw: unknown): OperatorControlEvent | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const action = (raw as { action?: unknown }).action;
+    if (
+      action !== 'start-mock-stream' &&
+      action !== 'stop-mock-stream' &&
+      action !== 'trigger-mock-phrase' &&
+      action !== 'reset-mock-sequence'
+    ) {
+      return null;
+    }
+
+    const eventId = (raw as { eventId?: unknown }).eventId;
+    const targetLanguage = (raw as { targetLanguage?: unknown }).targetLanguage;
+
+    if (eventId !== undefined && typeof eventId !== 'string') return null;
+    if (targetLanguage !== undefined && typeof targetLanguage !== 'string') return null;
+
+    const control: OperatorControlEvent = { action };
+    if (eventId !== undefined) control.eventId = eventId;
+    if (targetLanguage !== undefined) control.targetLanguage = targetLanguage;
+    return control;
   }
 }
