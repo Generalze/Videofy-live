@@ -1,24 +1,250 @@
 import express from 'express';
 import http from 'http';
+import multer from 'multer';
+import { mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { loadConfig } from './config.js';
+import { registerGeneratedAudioDeliveryRoute } from './generated-audio-delivery-route.js';
 import { IngestService } from './ingest-service.js';
 import { logger, setLogLevel } from './logger.js';
+import { MediaIngestError } from './ingest-error.js';
 
 const config = loadConfig();
 setLogLevel(config.logLevel);
 
 const app = express();
 const server = http.createServer(app);
+const uploadDir = resolve(process.cwd(), '../../uploads/media-ingest');
+mkdirSync(uploadDir, { recursive: true });
+const upload = multer({
+  dest: uploadDir,
+  limits: { fileSize: config.uploadMaxBytes },
+});
+const ingest = new IngestService(config);
+
+app.use(express.json({ limit: '1mb' }));
+
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Range');
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
+  next();
+});
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: 'media-ingest', timestamp: new Date().toISOString() });
 });
 
-server.listen(config.port, () => {
-  logger.info('Media ingest health endpoint started', { port: config.port });
+app.post('/microphone/sessions', async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as {
+      deviceId?: unknown;
+      deviceLabel?: unknown;
+      targetLanguage?: unknown;
+    };
+    const input: Parameters<typeof ingest.createMicrophoneSession>[0] = {};
+    if (typeof body.deviceId === 'string') input.deviceId = body.deviceId;
+    if (typeof body.deviceLabel === 'string') input.deviceLabel = body.deviceLabel;
+    if (typeof body.targetLanguage === 'string') input.targetLanguage = body.targetLanguage;
+    const session = await ingest.createMicrophoneSession(input);
+    res.status(201).json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
 });
 
-const ingest = new IngestService(config);
+app.post('/microphone/sessions/:sessionId/chunks', upload.single('audio'), async (req, res) => {
+  if (!req.file) {
+    res.status(400).json({ error: 'Upload a microphone chunk using the "audio" form field.' });
+    return;
+  }
+
+  try {
+    const sequence = parseIntegerField(req.body?.sequence, 'sequence');
+    const startMs = parseIntegerField(req.body?.startMs, 'startMs');
+    const endMs = parseIntegerField(req.body?.endMs, 'endMs');
+    const sessionId = requireRouteParam(req.params.sessionId, 'sessionId');
+    const session = await ingest.ingestMicrophoneChunk(sessionId, {
+      sequence,
+      startMs,
+      endMs,
+      mimeType: req.file.mimetype,
+      sizeBytes: req.file.size,
+      sourcePath: req.file.path,
+    });
+    res.json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.post('/microphone/sessions/:sessionId/stop', (req, res) => {
+  try {
+    const session = ingest.stopMicrophoneSession(req.params.sessionId);
+    res.json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.post('/microphone/sessions/:sessionId/device-disconnected', (req, res) => {
+  try {
+    const session = ingest.failMicrophoneDeviceDisconnected(req.params.sessionId);
+    res.json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.post('/sessions', upload.single('media'), async (req, res) => {
+  if (!req.file) {
+    res.status(400).json({ error: 'Upload a media file using the "media" form field.' });
+    return;
+  }
+
+  try {
+    const targetLanguage =
+      typeof req.body?.targetLanguage === 'string' ? req.body.targetLanguage : undefined;
+    const upload = {
+      path: req.file.path,
+      originalName: req.file.originalname,
+      sizeBytes: req.file.size,
+      mimeType: req.file.mimetype,
+      ...(targetLanguage ? { targetLanguage } : {}),
+    };
+    const session = await ingest.createProcessingSession(upload);
+    res.status(201).json({ session });
+  } catch (error) {
+    if (error instanceof MediaIngestError) {
+      res.status(error.statusCode).json({
+        error: error.message,
+        code: error.code,
+        session: error.session,
+      });
+      return;
+    }
+
+    const message = error instanceof Error ? error.message : 'Media ingest failed.';
+    logger.error('Unexpected media upload failure', { message });
+    res.status(500).json({ error: 'Media ingest failed.' });
+  }
+});
+
+app.post('/sessions/:sessionId/audio/retry', async (req, res) => {
+  try {
+    const session = await ingest.retryAudioExtraction(req.params.sessionId);
+    res.json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.delete('/sessions/:sessionId/audio', async (req, res) => {
+  try {
+    const session = await ingest.cleanupFailedAudio(req.params.sessionId);
+    res.json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.post('/sessions/:sessionId/pause', (req, res) => {
+  try {
+    const session = ingest.pauseSession(req.params.sessionId);
+    res.json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.post('/sessions/:sessionId/resume', (req, res) => {
+  try {
+    const session = ingest.resumeSession(req.params.sessionId);
+    res.json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.post('/sessions/:sessionId/cancel', (req, res) => {
+  try {
+    const session = ingest.cancelSession(req.params.sessionId);
+    res.json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.post('/sessions/:sessionId/transcription/chunks/:chunkId/retry', async (req, res) => {
+  try {
+    const session = await ingest.retryTranscriptionChunk(req.params.sessionId, req.params.chunkId);
+    res.json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.get('/sessions/:sessionId/transcript', (req, res) => {
+  try {
+    const transcript = ingest.exportTranscript(req.params.sessionId);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${req.params.sessionId}-transcript.txt"`,
+    );
+    res.send(transcript);
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.post('/sessions/:sessionId/translation/segments/:segmentId/retry', async (req, res) => {
+  try {
+    const session = await ingest.retryTranslationSegment(
+      req.params.sessionId,
+      req.params.segmentId,
+    );
+    res.json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.get('/sessions/:sessionId/translation/export', (req, res) => {
+  try {
+    const paired = ingest.exportPairedTranslation(req.params.sessionId);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${req.params.sessionId}-translation.txt"`,
+    );
+    res.send(paired);
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.post('/sessions/:sessionId/generated-audio/segments/:segmentId/retry', async (req, res) => {
+  try {
+    const session = await ingest.retryGeneratedAudioSegment(
+      req.params.sessionId,
+      req.params.segmentId,
+    );
+    res.json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+registerGeneratedAudioDeliveryRoute(app, ingest);
+
+server.listen(config.port, () => {
+  logger.info('Media ingest endpoint started', { port: config.port, uploadDir });
+});
 
 ingest.start().catch((err: Error) => {
   logger.error('Failed to start ingest service', { message: err.message });
@@ -35,3 +261,33 @@ async function shutdown(signal: string): Promise<void> {
 
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));
+
+function sendIngestError(res: express.Response, error: unknown): void {
+  if (error instanceof MediaIngestError) {
+    res.status(error.statusCode).json({
+      error: error.message,
+      code: error.code,
+      session: error.session,
+    });
+    return;
+  }
+
+  const message = error instanceof Error ? error.message : 'Media ingest failed.';
+  logger.error('Unexpected media ingest failure', { message });
+  res.status(500).json({ error: 'Media ingest failed.' });
+}
+
+function parseIntegerField(value: unknown, fieldName: string): number {
+  const parsed = typeof value === 'string' ? Number(value) : NaN;
+  if (!Number.isInteger(parsed)) {
+    throw new MediaIngestError(`${fieldName} must be an integer.`, 'invalid-media', 400);
+  }
+  return parsed;
+}
+
+function requireRouteParam(value: string | undefined, fieldName: string): string {
+  if (!value) {
+    throw new MediaIngestError(`${fieldName} is required.`, 'invalid-transition', 400);
+  }
+  return value;
+}

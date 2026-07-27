@@ -213,6 +213,309 @@
   font-style: italic;
 }
 
+.ingestPanel {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.microphonePanel {
+  border-top: 1px solid var(--color-border);
+  margin-top: 0.75rem;
+  padding-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.microphoneControls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.microphoneMeta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.65rem;
+  margin: 0;
+}
+
+.microphoneMeta div {
+  min-width: 0;
+}
+
+.microphoneMeta dt {
+  color: var(--color-text-muted);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.microphoneMeta dd {
+  margin: 0.15rem 0 0;
+  color: var(--color-text);
+  font-family: monospace;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.filePicker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.45rem 0.85rem;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.filePicker input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.selectedFile {
+  min-width: 0;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.ingestError {
+  color: var(--color-error);
+  font-size: 0.85rem;
+  margin-bottom: 0.75rem;
+}
+
+.mediaMetadata {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.mediaMetadata div {
+  min-width: 0;
+}
+
+.mediaMetadata dt {
+  color: var(--color-text-muted);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mediaMetadata dd {
+  margin: 0.15rem 0 0;
+  color: var(--color-text);
+  font-family: monospace;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.extractionPanel {
+  border-top: 1px solid var(--color-border);
+  margin-top: 1rem;
+  padding-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.extractionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.extractionHeader div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.extractionLabel {
+  color: var(--color-text-muted);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.extractionCount,
+.extractionMeta {
+  color: var(--color-text-muted);
+  font-family: monospace;
+  font-size: 0.78rem;
+}
+
+.progressTrack {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--color-surface-raised);
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  background: var(--color-brand-light);
+  transition: width 180ms ease;
+}
+
+.extractionMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.chunkList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.chunkChip {
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface-raised);
+  color: var(--color-text-muted);
+  font-family: monospace;
+  font-size: 0.72rem;
+  padding: 0.25rem 0.4rem;
+}
+
+.extractionActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.extractionActions .mockBtn {
+  cursor: pointer;
+  opacity: 1;
+}
+
+.extractionActions .mockBtn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.actionBtn {
+  cursor: pointer;
+  opacity: 1;
+}
+
+.actionBtn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.monitorActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.monitorPanel {
+  border-top: 1px solid var(--color-border);
+  margin-top: 1rem;
+  padding-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.monitorGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.65rem;
+  margin: 0;
+}
+
+.monitorGrid div {
+  min-width: 0;
+}
+
+.monitorGrid dt {
+  font-size: 0.68rem;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.monitorGrid dd {
+  margin: 0.15rem 0 0;
+  color: var(--color-text);
+  font-family: monospace;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.monitorWide {
+  grid-column: 1 / -1;
+}
+
+.failedSegments,
+.recoveryLog {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.failedSegmentRow,
+.recoveryLogEntry {
+  background: var(--color-surface-raised);
+  border-radius: 6px;
+  padding: 0.55rem 0.65rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+.failedSegmentRow span,
+.recoveryLogEntry span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.recoveryLogEntry {
+  justify-content: flex-start;
+  font-family: monospace;
+}
+
+.transcriptList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.transcriptEntry {
+  background: var(--color-surface-raised);
+  border-radius: 6px;
+  padding: 0.65rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
 .latencyTable {
   width: 100%;
   border-collapse: collapse;

@@ -24,11 +24,20 @@ export interface LatencyBreakdown {
 
 export type AudioFormat = 'mp3' | 'ogg' | 'wav' | 'webm' | null;
 
-export type StreamStatus = 'idle' | 'connecting' | 'live' | 'paused' | 'ended' | 'error';
+export type StreamStatus =
+  | 'created'
+  | 'validating'
+  | 'ready'
+  | 'processing'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
 
 export type VideoSource =
   | 'mock'
   | 'local-file'
+  | 'microphone'
   | 'webcam'
   | 'zoom'
   | 'teams'

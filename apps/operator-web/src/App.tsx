@@ -1,11 +1,45 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
-import type { TranslationEvent, MediaStateEvent } from '@videofy-live/shared-types';
+import type {
+  MediaStateEvent,
+  MicrophoneCaptureMetadata,
+  TimestampedTranslationEvent,
+  TranscriptionEvent,
+  TranslationEvent,
+} from '@videofy-live/shared-types';
 import { SOCKET_EVENTS } from '@videofy-live/shared-types';
 import styles from './App.module.css';
 import { createOperatorSocketOptions } from './socketConfig';
+import {
+  cancelProcessingSession,
+  cleanupFailedAudio,
+  createProcessingSession,
+  createMicrophoneSession,
+  exportPairedTranslation,
+  exportTranscript,
+  IngestClientError,
+  pauseProcessingSession,
+  retryGeneratedAudioSegment,
+  reportMicrophoneDeviceDisconnected,
+  retryAudioExtraction,
+  retryTranslationSegment,
+  retryTranscriptionChunk,
+  resumeProcessingSession,
+  sendMicrophoneChunk,
+  stopMicrophoneSession,
+  type ProcessingSessionDto,
+} from './ingestClient';
+import {
+  chooseRecorderMimeType,
+  isDuplicateCaptureStatus,
+  listMicrophoneDevices,
+  MICROPHONE_CHUNK_DURATION_MS,
+  requestMicrophoneStream,
+  type BrowserMicrophoneStatus,
+} from './microphoneCapture';
 
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
+const INGEST_URL = import.meta.env['VITE_INGEST_URL'] ?? 'http://localhost:3002';
 
 const LANGUAGE_OPTIONS = ['fr', 'es', 'de', 'pt', 'it', 'ja', 'zh', 'ar'];
 
@@ -39,10 +73,7 @@ interface ServiceStatusEvent {
 }
 
 type OperatorControlAction =
-  | 'start-mock-stream'
-  | 'stop-mock-stream'
-  | 'trigger-mock-phrase'
-  | 'reset-mock-sequence';
+  'start-mock-stream' | 'stop-mock-stream' | 'trigger-mock-phrase' | 'reset-mock-sequence';
 
 interface SocketDiagnostics {
   connected: boolean;
@@ -101,15 +132,61 @@ function MetricCard({
   );
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDuration(durationMs: number): string {
+  const totalSeconds = Math.round(durationMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function mapMicrophoneStatus(capture: MicrophoneCaptureMetadata): BrowserMicrophoneStatus {
+  if (capture.status === 'capturing') return 'capturing';
+  if (capture.status === 'paused') return 'paused';
+  if (capture.status === 'stopped' || capture.status === 'cancelled') return 'stopped';
+  if (capture.status === 'failed') return 'failed';
+  return 'idle';
+}
+
 export default function App(): React.ReactElement {
   const socketRef = useRef<Socket | null>(null);
   const [connected, setConnected] = useState(false);
 
   const [mediaState, setMediaState] = useState<MediaStateEvent | null>(null);
-  const [streamStatus, setStreamStatus] = useState('idle');
+  const [streamStatus, setStreamStatus] = useState('created');
+  const [processingSession, setProcessingSession] = useState<ProcessingSessionDto | null>(null);
+  const [selectedFileName, setSelectedFileName] = useState<string>('No file selected');
+  const [uploadingMedia, setUploadingMedia] = useState(false);
+  const [sessionCommandRunning, setSessionCommandRunning] = useState(false);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const [transcriptionFeed, setTranscriptionFeed] = useState<TranscriptionEvent[]>([]);
+  const [timestampedTranslationFeed, setTimestampedTranslationFeed] = useState<
+    TimestampedTranslationEvent[]
+  >([]);
+  const [exportMessage, setExportMessage] = useState<string | null>(null);
   const [phraseLog, setPhraseLog] = useState<PhraseLogEntry[]>([]);
   const [sourceLanguage, setSourceLanguage] = useState('en');
+  const [sessionTargetLanguage, setSessionTargetLanguage] = useState('fr');
   const [targetLanguages, setTargetLanguages] = useState<string[]>(['fr']);
+  const [microphoneDevices, setMicrophoneDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedMicrophoneDeviceId, setSelectedMicrophoneDeviceId] = useState('');
+  const [microphoneStatus, setMicrophoneStatus] = useState<BrowserMicrophoneStatus>('idle');
+  const [microphoneError, setMicrophoneError] = useState<string | null>(null);
+  const [captureDurationMs, setCaptureDurationMs] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const microphoneStreamRef = useRef<MediaStream | null>(null);
+  const microphoneSessionIdRef = useRef<string | null>(null);
+  const microphoneSequenceRef = useRef(0);
+  const microphoneChunkStartMsRef = useRef(0);
+  const microphoneStartedAtRef = useRef(0);
+  const microphonePausedAtRef = useRef<number | null>(null);
+  const microphonePausedMsRef = useRef(0);
+  const microphoneUploadChainRef = useRef<Promise<void>>(Promise.resolve());
 
   // Mix controls (UI only in this prototype)
   const [originalMix, setOriginalMix] = useState(0.2);
@@ -133,6 +210,29 @@ export default function App(): React.ReactElement {
     },
     [],
   );
+
+  const applyProcessingSession = useCallback((session: ProcessingSessionDto): void => {
+    setProcessingSession(session);
+    setStreamStatus(session.state);
+    setTranscriptionFeed(session.transcription.events.slice().reverse());
+    setTimestampedTranslationFeed(session.translation.events.slice().reverse());
+    if (session.sourceKind === 'microphone') {
+      const nextStatus =
+        session.microphoneCapture.status === 'capturing'
+          ? 'capturing'
+          : session.microphoneCapture.status === 'paused'
+            ? 'paused'
+            : session.microphoneCapture.status === 'stopped'
+              ? 'stopped'
+              : session.microphoneCapture.status === 'failed'
+                ? 'failed'
+                : session.microphoneCapture.status === 'cancelled'
+                  ? 'stopped'
+                  : microphoneStatus;
+      setMicrophoneStatus(nextStatus);
+      setCaptureDurationMs(session.microphoneCapture.durationMs);
+    }
+  }, [microphoneStatus]);
 
   const connect = useCallback((): void => {
     if (socketRef.current) return;
@@ -182,6 +282,10 @@ export default function App(): React.ReactElement {
     socket.on(SOCKET_EVENTS.MEDIA_STATE, (state: MediaStateEvent) => {
       setMediaState(state);
       setStreamStatus(state.streamStatus);
+      if (state.microphoneCapture) {
+        setCaptureDurationMs(state.microphoneCapture.durationMs);
+        setMicrophoneStatus(mapMicrophoneStatus(state.microphoneCapture));
+      }
     });
 
     socket.on(SOCKET_EVENTS.STREAM_STATUS, (data: { status: string }) => {
@@ -203,6 +307,20 @@ export default function App(): React.ReactElement {
       setPhraseLog((prev) => [entry, ...prev].slice(0, 20));
     });
 
+    socket.on(SOCKET_EVENTS.TRANSCRIPTION_EVENT, (event: TranscriptionEvent) => {
+      setTranscriptionFeed((prev) => {
+        const withoutCurrent = prev.filter((item) => item.chunkId !== event.chunkId);
+        return [event, ...withoutCurrent].slice(0, 40);
+      });
+    });
+
+    socket.on(SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT, (event: TimestampedTranslationEvent) => {
+      setTimestampedTranslationFeed((prev) => {
+        const withoutCurrent = prev.filter((item) => item.segmentId !== event.segmentId);
+        return [event, ...withoutCurrent].slice(0, 40);
+      });
+    });
+
     socket.on(SOCKET_EVENTS.SERVICE_STATUS, (event: ServiceStatusEvent) => {
       const ok = event.status === 'healthy';
       if (event.service === 'gateway') setGatewayOk(ok);
@@ -215,14 +333,450 @@ export default function App(): React.ReactElement {
     });
   }, [updateSocketDiagnostics]);
 
-  const sendControl = useCallback((action: OperatorControlAction): void => {
-    socketRef.current?.emit(SOCKET_EVENTS.OPERATOR_CONTROL, {
-      action,
-      eventId: mediaState?.eventId ?? 'demo-event',
-      targetLanguage: targetLanguages[0] ?? 'fr',
-    });
-    setLastControlAck(`${action}: sent`);
-  }, [mediaState?.eventId, targetLanguages]);
+  useEffect(() => {
+    void listMicrophoneDevices(navigator.mediaDevices)
+      .then(setMicrophoneDevices)
+      .catch(() => setMicrophoneDevices([]));
+  }, []);
+
+  useEffect(() => {
+    if (microphoneStatus !== 'capturing') return undefined;
+    const timer = window.setInterval(() => {
+      const elapsed =
+        Date.now() - microphoneStartedAtRef.current - microphonePausedMsRef.current;
+      setCaptureDurationMs(Math.max(0, elapsed));
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [microphoneStatus]);
+
+  useEffect(
+    () => () => {
+      mediaRecorderRef.current?.state !== 'inactive' && mediaRecorderRef.current?.stop();
+      microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
+    },
+    [],
+  );
+
+  const sendControl = useCallback(
+    (action: OperatorControlAction): void => {
+      socketRef.current?.emit(SOCKET_EVENTS.OPERATOR_CONTROL, {
+        action,
+        eventId: mediaState?.eventId ?? 'demo-event',
+        targetLanguage: targetLanguages[0] ?? 'fr',
+      });
+      setLastControlAck(`${action}: sent`);
+    },
+    [mediaState?.eventId, targetLanguages],
+  );
+
+  const handleMediaSelection = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>): Promise<void> => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      setSelectedFileName(file.name);
+      setUploadingMedia(true);
+      setMediaError(null);
+
+      try {
+        const session = await createProcessingSession(INGEST_URL, file, sessionTargetLanguage);
+        applyProcessingSession(session);
+      } catch (error) {
+        const message =
+          error instanceof IngestClientError
+            ? error.message
+            : error instanceof Error
+              ? error.message
+              : 'Media upload failed.';
+        setMediaError(message);
+      } finally {
+        setUploadingMedia(false);
+        event.target.value = '';
+      }
+    },
+    [applyProcessingSession, sessionTargetLanguage],
+  );
+
+  const handleStartMicrophone = useCallback(async (): Promise<void> => {
+    if (isDuplicateCaptureStatus(microphoneStatus)) {
+      setMicrophoneError('A microphone capture session is already active.');
+      return;
+    }
+
+    setMicrophoneStatus('requesting-permission');
+    setMicrophoneError(null);
+    setMediaError(null);
+
+    let stream: MediaStream | null = null;
+    try {
+      stream = await requestMicrophoneStream(
+        navigator.mediaDevices,
+        selectedMicrophoneDeviceId || undefined,
+      );
+      const devices = await listMicrophoneDevices(navigator.mediaDevices);
+      setMicrophoneDevices(devices);
+      const activeTrack = stream.getAudioTracks()[0];
+      const activeDevice =
+        devices.find((device) => device.deviceId === selectedMicrophoneDeviceId) ?? devices[0];
+      const microphoneSessionInput: Parameters<typeof createMicrophoneSession>[1] = {
+        targetLanguage: sessionTargetLanguage,
+      };
+      const deviceId = activeDevice?.deviceId || selectedMicrophoneDeviceId;
+      const deviceLabel = activeTrack?.label || activeDevice?.label;
+      if (deviceId) microphoneSessionInput.deviceId = deviceId;
+      if (deviceLabel) microphoneSessionInput.deviceLabel = deviceLabel;
+      const session = await createMicrophoneSession(INGEST_URL, microphoneSessionInput);
+      applyProcessingSession(session);
+
+      const mimeType = chooseRecorderMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      microphoneStreamRef.current = stream;
+      microphoneSessionIdRef.current = session.id;
+      microphoneSequenceRef.current = 0;
+      microphoneChunkStartMsRef.current = 0;
+      microphoneStartedAtRef.current = Date.now();
+      microphonePausedMsRef.current = 0;
+      microphonePausedAtRef.current = null;
+      microphoneUploadChainRef.current = Promise.resolve();
+
+      stream.getAudioTracks().forEach((track) => {
+        track.onended = () => {
+          const sessionId = microphoneSessionIdRef.current;
+          if (!sessionId || microphoneStatus === 'stopping' || microphoneStatus === 'stopped') return;
+          setMicrophoneStatus('failed');
+          setMicrophoneError('Microphone device disconnected.');
+          void reportMicrophoneDeviceDisconnected(INGEST_URL, sessionId).catch(() => undefined);
+        };
+      });
+
+      recorder.ondataavailable = (dataEvent) => {
+        if (!dataEvent.data.size || !microphoneSessionIdRef.current) return;
+        const sequence = microphoneSequenceRef.current;
+        const startMs = microphoneChunkStartMsRef.current;
+        const elapsed = Date.now() - microphoneStartedAtRef.current - microphonePausedMsRef.current;
+        const endMs = Math.max(startMs + 1, Math.round(elapsed));
+        microphoneSequenceRef.current += 1;
+        microphoneChunkStartMsRef.current = endMs;
+        microphoneUploadChainRef.current = microphoneUploadChainRef.current
+          .then(async () => {
+            const nextSession = await sendMicrophoneChunk(INGEST_URL, microphoneSessionIdRef.current!, {
+              blob: dataEvent.data,
+              sequence,
+              startMs,
+              endMs,
+            });
+            applyProcessingSession(nextSession);
+          })
+          .catch((error: unknown) => {
+            const message =
+              error instanceof IngestClientError
+                ? error.message
+                : error instanceof Error
+                  ? error.message
+                  : 'Microphone chunk upload failed.';
+            setMicrophoneStatus('failed');
+            setMicrophoneError(message);
+            setMediaError(message);
+          });
+      };
+
+      recorder.onstop = () => {
+        const sessionId = microphoneSessionIdRef.current;
+        if (!sessionId) return;
+        microphoneUploadChainRef.current = microphoneUploadChainRef.current
+          .then(async () => {
+            const nextSession = await stopMicrophoneSession(INGEST_URL, sessionId);
+            applyProcessingSession(nextSession);
+            setMicrophoneStatus('stopped');
+            microphoneSessionIdRef.current = null;
+          })
+          .catch((error: unknown) => {
+            const message =
+              error instanceof IngestClientError
+                ? error.message
+                : error instanceof Error
+                  ? error.message
+                  : 'Microphone stop failed.';
+            setMicrophoneStatus('failed');
+            setMicrophoneError(message);
+          })
+          .finally(() => {
+            microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
+            microphoneStreamRef.current = null;
+            mediaRecorderRef.current = null;
+          });
+      };
+
+      recorder.start(MICROPHONE_CHUNK_DURATION_MS);
+      setCaptureDurationMs(0);
+      setMicrophoneStatus('capturing');
+    } catch (error) {
+      stream?.getTracks().forEach((track) => track.stop());
+      const message = error instanceof Error ? error.message : 'Microphone capture failed.';
+      setMicrophoneStatus('failed');
+      setMicrophoneError(message);
+      setMediaError(message);
+    }
+  }, [
+    applyProcessingSession,
+    microphoneStatus,
+    selectedMicrophoneDeviceId,
+    sessionTargetLanguage,
+  ]);
+
+  const handlePauseMicrophone = useCallback(async (): Promise<void> => {
+    const recorder = mediaRecorderRef.current;
+    const sessionId = microphoneSessionIdRef.current;
+    if (!recorder || recorder.state !== 'recording' || !sessionId) return;
+    try {
+      recorder.pause();
+      microphonePausedAtRef.current = Date.now();
+      const session = await pauseProcessingSession(INGEST_URL, sessionId);
+      applyProcessingSession(session);
+      setMicrophoneStatus('paused');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Microphone pause failed.';
+      setMicrophoneError(message);
+      setMediaError(message);
+    }
+  }, [applyProcessingSession]);
+
+  const handleResumeMicrophone = useCallback(async (): Promise<void> => {
+    const recorder = mediaRecorderRef.current;
+    const sessionId = microphoneSessionIdRef.current;
+    if (!recorder || recorder.state !== 'paused' || !sessionId) return;
+    try {
+      if (microphonePausedAtRef.current !== null) {
+        microphonePausedMsRef.current += Date.now() - microphonePausedAtRef.current;
+        microphonePausedAtRef.current = null;
+      }
+      recorder.resume();
+      const session = await resumeProcessingSession(INGEST_URL, sessionId);
+      applyProcessingSession(session);
+      setMicrophoneStatus('capturing');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Microphone resume failed.';
+      setMicrophoneError(message);
+      setMediaError(message);
+    }
+  }, [applyProcessingSession]);
+
+  const handleStopMicrophone = useCallback((): void => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === 'inactive') return;
+    setMicrophoneStatus('stopping');
+    recorder.stop();
+  }, []);
+
+  const handleRetryExtraction = useCallback(async (): Promise<void> => {
+    const sessionId = mediaState?.processingSessionId ?? processingSession?.id;
+    if (!sessionId) return;
+
+    setSessionCommandRunning(true);
+    setMediaError(null);
+    try {
+      const session = await retryAudioExtraction(INGEST_URL, sessionId);
+      applyProcessingSession(session);
+    } catch (error) {
+      const message =
+        error instanceof IngestClientError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : 'Audio extraction retry failed.';
+      setMediaError(message);
+    } finally {
+      setSessionCommandRunning(false);
+    }
+  }, [applyProcessingSession, mediaState?.processingSessionId, processingSession?.id]);
+
+  const handleCleanupExtraction = useCallback(async (): Promise<void> => {
+    const sessionId = mediaState?.processingSessionId ?? processingSession?.id;
+    if (!sessionId) return;
+
+    setSessionCommandRunning(true);
+    setMediaError(null);
+    try {
+      const session = await cleanupFailedAudio(INGEST_URL, sessionId);
+      applyProcessingSession(session);
+    } catch (error) {
+      const message =
+        error instanceof IngestClientError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : 'Audio extraction cleanup failed.';
+      setMediaError(message);
+    } finally {
+      setSessionCommandRunning(false);
+    }
+  }, [applyProcessingSession, mediaState?.processingSessionId, processingSession?.id]);
+
+  const handleSessionLifecycleCommand = useCallback(
+    async (command: 'pause' | 'resume' | 'cancel'): Promise<void> => {
+      const sessionId = mediaState?.processingSessionId ?? processingSession?.id;
+      if (!sessionId) return;
+
+      setSessionCommandRunning(true);
+      setMediaError(null);
+      try {
+        const session =
+          command === 'pause'
+            ? await pauseProcessingSession(INGEST_URL, sessionId)
+            : command === 'resume'
+              ? await resumeProcessingSession(INGEST_URL, sessionId)
+              : await cancelProcessingSession(INGEST_URL, sessionId);
+        applyProcessingSession(session);
+      } catch (error) {
+        const message =
+          error instanceof IngestClientError
+            ? error.message
+            : error instanceof Error
+              ? error.message
+              : `Session ${command} failed.`;
+        setMediaError(message);
+      } finally {
+        setSessionCommandRunning(false);
+      }
+    },
+    [applyProcessingSession, mediaState?.processingSessionId, processingSession?.id],
+  );
+
+  const handleRetryTranscription = useCallback(
+    async (chunkId: string): Promise<void> => {
+      const sessionId = mediaState?.processingSessionId ?? processingSession?.id;
+      if (!sessionId) return;
+
+      setSessionCommandRunning(true);
+      setMediaError(null);
+      try {
+        const session = await retryTranscriptionChunk(INGEST_URL, sessionId, chunkId);
+        applyProcessingSession(session);
+      } catch (error) {
+        const message =
+          error instanceof IngestClientError
+            ? error.message
+            : error instanceof Error
+              ? error.message
+              : 'Transcription retry failed.';
+        setMediaError(message);
+      } finally {
+        setSessionCommandRunning(false);
+      }
+    },
+    [applyProcessingSession, mediaState?.processingSessionId, processingSession?.id],
+  );
+
+  const handleExportTranscript = useCallback(async (): Promise<void> => {
+    const sessionId = mediaState?.processingSessionId ?? processingSession?.id;
+    if (!sessionId) return;
+
+    setSessionCommandRunning(true);
+    setMediaError(null);
+    setExportMessage(null);
+    try {
+      const transcript = await exportTranscript(INGEST_URL, sessionId);
+      const blob = new Blob([transcript], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${sessionId}-transcript.txt`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setExportMessage('Transcript exported.');
+    } catch (error) {
+      const message =
+        error instanceof IngestClientError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : 'Transcript export failed.';
+      setMediaError(message);
+    } finally {
+      setSessionCommandRunning(false);
+    }
+  }, [mediaState?.processingSessionId, processingSession?.id]);
+
+  const handleRetryTranslation = useCallback(
+    async (segmentId: string): Promise<void> => {
+      const sessionId = mediaState?.processingSessionId ?? processingSession?.id;
+      if (!sessionId) return;
+
+      setSessionCommandRunning(true);
+      setMediaError(null);
+      try {
+        const session = await retryTranslationSegment(INGEST_URL, sessionId, segmentId);
+        applyProcessingSession(session);
+      } catch (error) {
+        const message =
+          error instanceof IngestClientError
+            ? error.message
+            : error instanceof Error
+              ? error.message
+              : 'Translation retry failed.';
+        setMediaError(message);
+      } finally {
+        setSessionCommandRunning(false);
+      }
+    },
+    [applyProcessingSession, mediaState?.processingSessionId, processingSession?.id],
+  );
+
+  const handleRetryGeneratedAudio = useCallback(
+    async (segmentId: string): Promise<void> => {
+      const sessionId = mediaState?.processingSessionId ?? processingSession?.id;
+      if (!sessionId) return;
+
+      setSessionCommandRunning(true);
+      setMediaError(null);
+      try {
+        const session = await retryGeneratedAudioSegment(INGEST_URL, sessionId, segmentId);
+        applyProcessingSession(session);
+      } catch (error) {
+        const message =
+          error instanceof IngestClientError
+            ? error.message
+            : error instanceof Error
+              ? error.message
+              : 'Generated audio retry failed.';
+        setMediaError(message);
+      } finally {
+        setSessionCommandRunning(false);
+      }
+    },
+    [applyProcessingSession, mediaState?.processingSessionId, processingSession?.id],
+  );
+
+  const handleExportTranslation = useCallback(async (): Promise<void> => {
+    const sessionId = mediaState?.processingSessionId ?? processingSession?.id;
+    if (!sessionId) return;
+
+    setSessionCommandRunning(true);
+    setMediaError(null);
+    setExportMessage(null);
+    try {
+      const translation = await exportPairedTranslation(INGEST_URL, sessionId);
+      const blob = new Blob([translation], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${sessionId}-translation.txt`;
+      link.click();
+      URL.revokeObjectURL(url);
+      setExportMessage('Paired translation exported.');
+    } catch (error) {
+      const message =
+        error instanceof IngestClientError
+          ? error.message
+          : error instanceof Error
+            ? error.message
+            : 'Translation export failed.';
+      setMediaError(message);
+    } finally {
+      setSessionCommandRunning(false);
+    }
+  }, [mediaState?.processingSessionId, processingSession?.id]);
 
   useEffect(() => {
     connect();
@@ -243,6 +797,47 @@ export default function App(): React.ReactElement {
         { label: 'Sync offset', valueMs: phraseLog[0].latency.synchronizationOffsetMs },
       ]
     : [];
+  const extraction = mediaState?.audioExtraction ?? processingSession?.audioExtraction ?? null;
+  const microphoneCapture =
+    mediaState?.microphoneCapture ?? processingSession?.microphoneCapture ?? null;
+  const transcription = mediaState?.transcription ?? processingSession?.transcription ?? null;
+  const timestampedTranslation = mediaState?.translation ?? processingSession?.translation ?? null;
+  const generatedAudio = mediaState?.generatedAudio ?? processingSession?.generatedAudio ?? null;
+  const monitoring = mediaState?.monitoring ?? processingSession?.monitoring ?? null;
+  const transcriptEvents = transcription?.events.length
+    ? transcription.events.slice().sort((a, b) => a.sequence - b.sequence)
+    : transcriptionFeed.slice().sort((a, b) => a.sequence - b.sequence);
+  const timestampedTranslationEvents = timestampedTranslation?.events.length
+    ? timestampedTranslation.events.slice().sort((a, b) => a.sequence - b.sequence)
+    : timestampedTranslationFeed.slice().sort((a, b) => a.sequence - b.sequence);
+  const translatedLatencyMs =
+    timestampedTranslationEvents
+      .slice()
+      .reverse()
+      .find((event) => event.status === 'translated')?.latency.totalMs ?? null;
+  const failedTranscriptionEvents = transcriptEvents.filter((event) => event.status === 'failed');
+  const failedTranslationEvents = timestampedTranslationEvents.filter(
+    (event) => event.status === 'failed',
+  );
+  const generatedAudioEvents = generatedAudio?.events.slice().sort((a, b) => a.sequence - b.sequence) ?? [];
+  const failedGeneratedAudioEvents = generatedAudioEvents.filter((event) => event.status === 'failed');
+  const currentTranscription = transcriptEvents
+    .slice()
+    .reverse()
+    .find((event) => event.status === 'transcribed' || event.status === 'transcribing');
+  const currentTranslation = timestampedTranslationEvents
+    .slice()
+    .reverse()
+    .find((event) => event.status === 'translated' || event.status === 'translating');
+  const activeMicrophoneDevice =
+    microphoneCapture?.deviceLabel ??
+    microphoneDevices.find((device) => device.deviceId === selectedMicrophoneDeviceId)?.label ??
+    'Default microphone';
+  const microphoneChunkCount = microphoneCapture?.chunkCount ?? microphoneSequenceRef.current;
+  const canPause = streamStatus === 'processing';
+  const canResume = streamStatus === 'paused';
+  const canCancel =
+    streamStatus !== 'completed' && streamStatus !== 'cancelled' && streamStatus !== 'created';
 
   return (
     <div className={styles.root}>
@@ -324,7 +919,9 @@ export default function App(): React.ReactElement {
             />
           </div>
           <div className={styles.mixControl}>
-            <label className={styles.configLabel}>Translated {Math.round(translatedMix * 100)}%</label>
+            <label className={styles.configLabel}>
+              Translated {Math.round(translatedMix * 100)}%
+            </label>
             <input
               type="range"
               min={0}
@@ -356,8 +953,10 @@ export default function App(): React.ReactElement {
             className={styles.liveChip}
             style={{
               background:
-                streamStatus === 'live' ? 'var(--color-success)' : 'var(--color-surface-raised)',
-              color: streamStatus === 'live' ? '#000' : 'var(--color-text-muted)',
+                streamStatus === 'processing'
+                  ? 'var(--color-success)'
+                  : 'var(--color-surface-raised)',
+              color: streamStatus === 'processing' ? '#000' : 'var(--color-text-muted)',
             }}
           >
             {streamStatus.toUpperCase()}
@@ -372,6 +971,52 @@ export default function App(): React.ReactElement {
 
         <section className={styles.metricsGrid}>
           <MetricCard label="Stream status" value={streamStatus} />
+          <MetricCard label="Extraction" value={extraction?.status ?? '-'} />
+          <MetricCard label="Chunks" value={extraction?.chunkCount ?? 0} />
+          <MetricCard
+            label="Progress"
+            value={extraction ? Math.round(extraction.progressPct) : 0}
+            unit="%"
+          />
+          <MetricCard label="Transcription" value={transcription?.status ?? '-'} />
+          <MetricCard
+            label="Transcript progress"
+            value={transcription ? Math.round(transcription.progressPct) : 0}
+            unit="%"
+          />
+          <MetricCard label="Detected language" value={transcription?.detectedLanguage ?? '-'} />
+          <MetricCard label="Translation" value={timestampedTranslation?.status ?? '-'} />
+          <MetricCard
+            label="Translation progress"
+            value={timestampedTranslation ? Math.round(timestampedTranslation.progressPct) : 0}
+            unit="%"
+          />
+          <MetricCard
+            label="Target language"
+            value={timestampedTranslation?.targetLanguage.toUpperCase() ?? '-'}
+          />
+          <MetricCard
+            label="Translation latency"
+            value={translatedLatencyMs === null ? '-' : translatedLatencyMs}
+            unit={translatedLatencyMs === null ? '' : ' ms'}
+          />
+          <MetricCard label="Generated audio" value={generatedAudio?.status ?? '-'} />
+          <MetricCard
+            label="TTS progress"
+            value={generatedAudio ? Math.round(generatedAudio.progressPct) : 0}
+            unit="%"
+          />
+          <MetricCard label="Microphone" value={microphoneStatus} />
+          <MetricCard label="Capture duration" value={formatDuration(captureDurationMs)} />
+          <MetricCard label="Mic chunks" value={microphoneChunkCount} />
+          <MetricCard
+            label="Stream ID"
+            value={mediaState?.streamId ?? processingSession?.streamId ?? 'â€”'}
+          />
+          <MetricCard
+            label="Session ID"
+            value={mediaState?.processingSessionId ?? processingSession?.id ?? 'â€”'}
+          />
           <MetricCard label="Video source" value={mediaState?.videoSource ?? '—'} />
           <MetricCard
             label="Video timestamp"
@@ -385,6 +1030,696 @@ export default function App(): React.ReactElement {
           <MetricCard label="Connected listeners" value={mediaState?.connectedListeners ?? 0} />
           <MetricCard label="Active channels" value={targetLanguages.length} />
           <MetricCard label="Phrases received" value={phraseLog.length} />
+        </section>
+
+        <section className={styles.card}>
+          <div className={styles.extractionHeader}>
+            <div>
+              <h2 className={styles.cardTitle}>Session monitor</h2>
+              <span className={styles.extractionLabel}>
+                {monitoring?.currentStage ?? 'No processing session'}
+              </span>
+            </div>
+            <div className={styles.monitorActions}>
+              <button
+                type="button"
+                className={`${styles.mockBtn} ${styles.actionBtn}`}
+                onClick={() => void handleSessionLifecycleCommand('pause')}
+                disabled={sessionCommandRunning || !canPause}
+              >
+                Pause
+              </button>
+              <button
+                type="button"
+                className={`${styles.mockBtn} ${styles.actionBtn}`}
+                onClick={() => void handleSessionLifecycleCommand('resume')}
+                disabled={sessionCommandRunning || !canResume}
+              >
+                Resume
+              </button>
+              <button
+                type="button"
+                className={`${styles.mockBtn} ${styles.actionBtn}`}
+                onClick={() => void handleSessionLifecycleCommand('cancel')}
+                disabled={sessionCommandRunning || !canCancel}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+          {monitoring ? (
+            <div className={styles.monitorPanel}>
+              <div className={styles.progressTrack} aria-label="Overall processing progress">
+                <div
+                  className={styles.progressFill}
+                  style={{
+                    width: `${Math.max(0, Math.min(100, monitoring.overallProgressPct))}%`,
+                  }}
+                />
+              </div>
+              <dl className={styles.monitorGrid}>
+                <div>
+                  <dt>Session state</dt>
+                  <dd>{streamStatus}</dd>
+                </div>
+                <div>
+                  <dt>Stage</dt>
+                  <dd>{monitoring.currentStage}</dd>
+                </div>
+                <div>
+                  <dt>Overall progress</dt>
+                  <dd>{Math.round(monitoring.overallProgressPct)}%</dd>
+                </div>
+                <div>
+                  <dt>Transcription</dt>
+                  <dd>{transcription ? `${Math.round(transcription.progressPct)}%` : '-'}</dd>
+                </div>
+                <div>
+                  <dt>Translation</dt>
+                  <dd>
+                    {timestampedTranslation
+                      ? `${Math.round(timestampedTranslation.progressPct)}%`
+                      : '-'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Translation provider</dt>
+                  <dd>
+                    {timestampedTranslation?.providerName
+                      ? `${timestampedTranslation.providerName}:${timestampedTranslation.providerStatus ?? timestampedTranslation.status}`
+                      : '-'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>TTS</dt>
+                  <dd>{generatedAudio ? `${Math.round(generatedAudio.progressPct)}%` : '-'}</dd>
+                </div>
+                <div>
+                  <dt>TTS provider</dt>
+                  <dd>
+                    {generatedAudio?.providerName
+                      ? `${generatedAudio.providerName}:${generatedAudio.providerStatus ?? generatedAudio.status}`
+                      : '-'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Failed segments</dt>
+                  <dd>{monitoring.failedSegmentCount}</dd>
+                </div>
+                <div>
+                  <dt>Average latency</dt>
+                  <dd>
+                    {monitoring.averageLatencyMs === null
+                      ? '-'
+                      : `${monitoring.averageLatencyMs} ms`}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Latest latency</dt>
+                  <dd>
+                    {monitoring.latestLatencyMs === null ? '-' : `${monitoring.latestLatencyMs} ms`}
+                  </dd>
+                </div>
+                <div className={styles.monitorWide}>
+                  <dt>Last error</dt>
+                  <dd>{monitoring.lastError ?? '-'}</dd>
+                </div>
+              </dl>
+              {(failedTranscriptionEvents.length > 0 ||
+                failedTranslationEvents.length > 0 ||
+                failedGeneratedAudioEvents.length > 0) && (
+                <div className={styles.failedSegments}>
+                  {failedTranscriptionEvents.map((event) => (
+                    <div key={event.chunkId} className={styles.failedSegmentRow}>
+                      <span>
+                        Transcription #{event.sequence + 1}: {event.error ?? 'failed'}
+                      </span>
+                      <button
+                        type="button"
+                        className={`${styles.mockBtn} ${styles.actionBtn}`}
+                        onClick={() => void handleRetryTranscription(event.chunkId)}
+                        disabled={sessionCommandRunning || streamStatus === 'paused'}
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  ))}
+                  {failedTranslationEvents.map((event) => (
+                    <div key={event.segmentId} className={styles.failedSegmentRow}>
+                      <span>
+                        Translation #{event.sequence + 1}: {event.error ?? 'failed'}
+                      </span>
+                      <button
+                        type="button"
+                        className={`${styles.mockBtn} ${styles.actionBtn}`}
+                        onClick={() => void handleRetryTranslation(event.segmentId)}
+                        disabled={sessionCommandRunning || streamStatus === 'paused'}
+                      >
+                        Retry
+                      </button>
+                    </div>
+                  ))}
+                  {failedGeneratedAudioEvents.map((event) => (
+                    <div key={event.segmentId} className={styles.failedSegmentRow}>
+                      <span>
+                        TTS #{event.sequence + 1}: {event.error ?? 'failed'}
+                      </span>
+                      <button
+                        type="button"
+                        className={`${styles.mockBtn} ${styles.actionBtn}`}
+                        onClick={() => void handleRetryGeneratedAudio(event.segmentId)}
+                        disabled={sessionCommandRunning}
+                      >
+                        Retry audio
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {monitoring.events.length > 0 && (
+                <div className={styles.recoveryLog}>
+                  {monitoring.events.slice(0, 8).map((event) => (
+                    <div key={event.id} className={styles.recoveryLogEntry}>
+                      <span>{event.action}</span>
+                      <span>{event.status}</span>
+                      <span>{event.message}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className={styles.empty}>Upload media to create a monitored processing session.</p>
+          )}
+        </section>
+
+        <section className={styles.card}>
+          <h2 className={styles.cardTitle}>Media ingest</h2>
+          <div className={styles.ingestPanel}>
+            <div className={styles.langConfig}>
+              <label className={styles.configLabel}>Session target</label>
+              <select
+                className={styles.configSelect}
+                value={sessionTargetLanguage}
+                onChange={(event) => setSessionTargetLanguage(event.target.value)}
+                disabled={uploadingMedia}
+              >
+                {LANGUAGE_OPTIONS.map((lang) => (
+                  <option key={lang} value={lang}>
+                    {lang.toUpperCase()}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <label className={styles.filePicker}>
+              <span>{uploadingMedia ? 'Validating media...' : 'Choose media'}</span>
+              <input
+                type="file"
+                accept=".mp4,.mov,.mp3,.wav,video/mp4,video/quicktime,audio/mpeg,audio/mp3,audio/wav,audio/x-wav"
+                onChange={(event) => void handleMediaSelection(event)}
+                disabled={uploadingMedia}
+              />
+            </label>
+            <span className={styles.selectedFile}>{selectedFileName}</span>
+          </div>
+          <div className={styles.microphonePanel}>
+            <div className={styles.extractionHeader}>
+              <div>
+                <span className={styles.extractionLabel}>Browser microphone</span>
+                <strong>{microphoneStatus}</strong>
+              </div>
+              <span className={styles.extractionCount}>
+                {microphoneChunkCount} chunk{microphoneChunkCount === 1 ? '' : 's'}
+              </span>
+            </div>
+            <div className={styles.microphoneControls}>
+              <select
+                className={styles.configSelect}
+                value={selectedMicrophoneDeviceId}
+                onChange={(event) => setSelectedMicrophoneDeviceId(event.target.value)}
+                disabled={isDuplicateCaptureStatus(microphoneStatus)}
+              >
+                <option value="">Default microphone</option>
+                {microphoneDevices.map((device) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label || `Microphone ${device.deviceId.slice(0, 8)}`}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className={`${styles.mockBtn} ${styles.actionBtn}`}
+                onClick={() => void handleStartMicrophone()}
+                disabled={isDuplicateCaptureStatus(microphoneStatus)}
+              >
+                Start
+              </button>
+              <button
+                type="button"
+                className={`${styles.mockBtn} ${styles.actionBtn}`}
+                onClick={() => void handlePauseMicrophone()}
+                disabled={microphoneStatus !== 'capturing'}
+              >
+                Pause
+              </button>
+              <button
+                type="button"
+                className={`${styles.mockBtn} ${styles.actionBtn}`}
+                onClick={() => void handleResumeMicrophone()}
+                disabled={microphoneStatus !== 'paused'}
+              >
+                Resume
+              </button>
+              <button
+                type="button"
+                className={`${styles.mockBtn} ${styles.actionBtn}`}
+                onClick={handleStopMicrophone}
+                disabled={microphoneStatus !== 'capturing' && microphoneStatus !== 'paused'}
+              >
+                Stop
+              </button>
+            </div>
+            <dl className={styles.microphoneMeta}>
+              <div>
+                <dt>Active device</dt>
+                <dd>{activeMicrophoneDevice}</dd>
+              </div>
+              <div>
+                <dt>Capture duration</dt>
+                <dd>{formatDuration(captureDurationMs)}</dd>
+              </div>
+              <div>
+                <dt>Current transcription</dt>
+                <dd>
+                  {currentTranscription?.sourceText ||
+                    currentTranscription?.status ||
+                    'Waiting for speech'}
+                </dd>
+              </div>
+              <div>
+                <dt>Current translation</dt>
+                <dd>
+                  {currentTranslation?.translatedText ||
+                    currentTranslation?.status ||
+                    'Waiting for transcript'}
+                </dd>
+              </div>
+              <div>
+                <dt>Latency</dt>
+                <dd>{translatedLatencyMs === null ? '-' : `${translatedLatencyMs} ms`}</dd>
+              </div>
+            </dl>
+            <div className={styles.extractionMeta}>
+              <span>Browser MediaRecorder capture</span>
+              <span>{Math.round(MICROPHONE_CHUNK_DURATION_MS / 1000)}s ordered chunks</span>
+            </div>
+            {microphoneError && (
+              <p className={styles.ingestError} role="alert">
+                {microphoneError}
+              </p>
+            )}
+          </div>
+          {mediaError && (
+            <p className={styles.ingestError} role="alert">
+              {mediaError}
+            </p>
+          )}
+          {(mediaState?.media ?? processingSession?.media) ? (
+            <dl className={styles.mediaMetadata}>
+              {(() => {
+                const media = mediaState?.media ?? processingSession?.media;
+                if (!media) return null;
+                return (
+                  <>
+                    <div>
+                      <dt>Filename</dt>
+                      <dd>{media.filename}</dd>
+                    </div>
+                    <div>
+                      <dt>Size</dt>
+                      <dd>{formatBytes(media.fileSizeBytes)}</dd>
+                    </div>
+                    <div>
+                      <dt>MIME type</dt>
+                      <dd>{media.mimeType}</dd>
+                    </div>
+                    <div>
+                      <dt>Duration</dt>
+                      <dd>{formatDuration(media.durationMs)}</dd>
+                    </div>
+                    <div>
+                      <dt>Audio</dt>
+                      <dd>{media.hasAudio ? 'Present' : 'Missing'}</dd>
+                    </div>
+                    <div>
+                      <dt>Video</dt>
+                      <dd>{media.hasVideo ? 'Present' : 'Missing'}</dd>
+                    </div>
+                    <div>
+                      <dt>Codecs</dt>
+                      <dd>
+                        {media.codecs.length > 0
+                          ? media.codecs
+                              .map((codec) => `${codec.type}:${codec.codecName}`)
+                              .join(', ')
+                          : 'Unavailable'}
+                      </dd>
+                    </div>
+                  </>
+                );
+              })()}
+            </dl>
+          ) : (
+            <p className={styles.empty}>Upload MP4, MOV, MP3, or WAV media to create a session.</p>
+          )}
+          {extraction && (
+            <div className={styles.extractionPanel}>
+              <div className={styles.extractionHeader}>
+                <div>
+                  <span className={styles.extractionLabel}>Audio extraction</span>
+                  <strong>{extraction.status}</strong>
+                </div>
+                <span className={styles.extractionCount}>
+                  {extraction.chunkCount} chunk{extraction.chunkCount === 1 ? '' : 's'}
+                </span>
+              </div>
+              <div className={styles.progressTrack} aria-label="Audio extraction progress">
+                <div
+                  className={styles.progressFill}
+                  style={{ width: `${Math.max(0, Math.min(100, extraction.progressPct))}%` }}
+                />
+              </div>
+              <div className={styles.extractionMeta}>
+                <span>{Math.round(extraction.progressPct)}%</span>
+                <span>
+                  WAV mono 16 kHz PCM16, {Math.round(extraction.chunkDurationMs / 1000)}s chunks
+                </span>
+              </div>
+              {extraction.error && (
+                <p className={styles.ingestError} role="alert">
+                  {extraction.error}
+                </p>
+              )}
+              {extraction.chunks.length > 0 && (
+                <div className={styles.chunkList}>
+                  {extraction.chunks.slice(0, 6).map((chunk) => (
+                    <span key={chunk.index} className={styles.chunkChip}>
+                      #{chunk.index + 1} {formatDuration(chunk.startMs)}-
+                      {formatDuration(chunk.endMs)}
+                    </span>
+                  ))}
+                  {extraction.chunks.length > 6 && (
+                    <span className={styles.chunkChip}>+{extraction.chunks.length - 6}</span>
+                  )}
+                </div>
+              )}
+              {extraction.status === 'failed' && (
+                <div className={styles.extractionActions}>
+                  <button
+                    type="button"
+                    className={styles.mockBtn}
+                    onClick={() => void handleRetryExtraction()}
+                    disabled={sessionCommandRunning}
+                  >
+                    Retry extraction
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.mockBtn}
+                    onClick={() => void handleCleanupExtraction()}
+                    disabled={sessionCommandRunning}
+                  >
+                    Cleanup chunks
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+
+        <section className={styles.card}>
+          <div className={styles.extractionHeader}>
+            <div>
+              <h2 className={styles.cardTitle}>Transcription</h2>
+              <span className={styles.extractionLabel}>
+                {transcription
+                  ? `${transcription.transcribedChunks}/${transcription.totalChunks} chunks`
+                  : 'Waiting for extracted chunks'}
+              </span>
+            </div>
+            <button
+              type="button"
+              className={`${styles.mockBtn} ${styles.actionBtn}`}
+              onClick={() => void handleExportTranscript()}
+              disabled={
+                sessionCommandRunning ||
+                !transcription ||
+                transcription.totalChunks === 0 ||
+                transcription.transcribedChunks !== transcription.totalChunks ||
+                transcription.failedChunks > 0
+              }
+            >
+              Export transcript
+            </button>
+          </div>
+          {exportMessage && <p className={styles.mockNote}>{exportMessage}</p>}
+          {transcription ? (
+            <div className={styles.extractionPanel}>
+              <div className={styles.progressTrack} aria-label="Transcription progress">
+                <div
+                  className={styles.progressFill}
+                  style={{ width: `${Math.max(0, Math.min(100, transcription.progressPct))}%` }}
+                />
+              </div>
+              <div className={styles.extractionMeta}>
+                <span>{Math.round(transcription.progressPct)}%</span>
+                <span>Language {transcription.detectedLanguage ?? 'pending'}</span>
+                <span>
+                  {transcription.failedChunks} failure
+                  {transcription.failedChunks === 1 ? '' : 's'}
+                </span>
+              </div>
+              {transcription.error && (
+                <p className={styles.ingestError} role="alert">
+                  {transcription.error}
+                </p>
+              )}
+              {transcriptEvents.length > 0 ? (
+                <div className={styles.transcriptList}>
+                  {transcriptEvents.map((event) => (
+                    <div key={event.chunkId} className={styles.transcriptEntry}>
+                      <div className={styles.phraseMeta}>
+                        <span>#{event.sequence + 1}</span>
+                        <span>
+                          {formatDuration(event.startMs)}-{formatDuration(event.endMs)}
+                        </span>
+                        <span>{event.status}</span>
+                        <span>{event.detectedLanguage.toUpperCase()}</span>
+                      </div>
+                      <div className={styles.phraseTranslated}>
+                        {event.sourceText || event.status === 'transcribed'
+                          ? event.sourceText || '[empty speech]'
+                          : event.error || 'Pending transcription'}
+                      </div>
+                      {event.status === 'failed' && (
+                        <button
+                          type="button"
+                          className={`${styles.mockBtn} ${styles.actionBtn}`}
+                          onClick={() => void handleRetryTranscription(event.chunkId)}
+                          disabled={sessionCommandRunning}
+                        >
+                          Retry chunk
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className={styles.empty}>No transcription events received yet.</p>
+              )}
+            </div>
+          ) : (
+            <p className={styles.empty}>Transcription starts after audio chunks are ready.</p>
+          )}
+        </section>
+
+        <section className={styles.card}>
+          <div className={styles.extractionHeader}>
+            <div>
+              <h2 className={styles.cardTitle}>Timestamped translation</h2>
+              <span className={styles.extractionLabel}>
+                {timestampedTranslation
+                  ? `${timestampedTranslation.translatedSegments}/${timestampedTranslation.totalSegments} segments`
+                  : 'Waiting for transcribed segments'}
+              </span>
+            </div>
+            <button
+              type="button"
+              className={`${styles.mockBtn} ${styles.actionBtn}`}
+              onClick={() => void handleExportTranslation()}
+              disabled={
+                sessionCommandRunning ||
+                !timestampedTranslation ||
+                timestampedTranslation.totalSegments === 0 ||
+                timestampedTranslation.translatedSegments !==
+                  timestampedTranslation.totalSegments ||
+                timestampedTranslation.failedSegments > 0
+              }
+            >
+              Export paired text
+            </button>
+          </div>
+          {timestampedTranslation ? (
+            <div className={styles.extractionPanel}>
+              <div className={styles.progressTrack} aria-label="Translation progress">
+                <div
+                  className={styles.progressFill}
+                  style={{
+                    width: `${Math.max(0, Math.min(100, timestampedTranslation.progressPct))}%`,
+                  }}
+                />
+              </div>
+              <div className={styles.extractionMeta}>
+                <span>{Math.round(timestampedTranslation.progressPct)}%</span>
+                <span>
+                  {timestampedTranslation.sourceLanguage?.toUpperCase() ?? 'PENDING'} to{' '}
+                  {timestampedTranslation.targetLanguage.toUpperCase()}
+                </span>
+                <span>
+                  Provider {timestampedTranslation.providerName ?? 'mock'}:{' '}
+                  {timestampedTranslation.providerStatus ?? timestampedTranslation.status}
+                </span>
+                <span>
+                  {timestampedTranslation.failedSegments} failure
+                  {timestampedTranslation.failedSegments === 1 ? '' : 's'}
+                </span>
+              </div>
+              {timestampedTranslation.error && (
+                <p className={styles.ingestError} role="alert">
+                  {timestampedTranslation.error}
+                </p>
+              )}
+              {timestampedTranslationEvents.length > 0 ? (
+                <div className={styles.transcriptList}>
+                  {timestampedTranslationEvents.map((event) => (
+                    <div key={event.segmentId} className={styles.transcriptEntry}>
+                      <div className={styles.phraseMeta}>
+                        <span>#{event.sequence + 1}</span>
+                        <span>
+                          {formatDuration(event.startMs)}-{formatDuration(event.endMs)}
+                        </span>
+                        <span>{event.status}</span>
+                        <span>
+                          {event.sourceLanguage.toUpperCase()} to{' '}
+                          {event.targetLanguage.toUpperCase()}
+                        </span>
+                        <span>{event.latency.totalMs} ms</span>
+                      </div>
+                      <div className={styles.phraseSource}>
+                        {event.sourceText || '[empty source]'}
+                      </div>
+                      <div className={styles.phraseTranslated}>
+                        {event.translatedText ||
+                          event.error ||
+                          (event.status === 'translated' ? '[empty translation]' : 'Pending')}
+                      </div>
+                      {event.status === 'failed' && (
+                        <button
+                          type="button"
+                          className={`${styles.mockBtn} ${styles.actionBtn}`}
+                          onClick={() => void handleRetryTranslation(event.segmentId)}
+                          disabled={sessionCommandRunning}
+                        >
+                          Retry segment
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className={styles.empty}>No timestamped translation events received yet.</p>
+              )}
+            </div>
+          ) : (
+            <p className={styles.empty}>Translation starts after transcription completes.</p>
+          )}
+        </section>
+
+        <section className={styles.card}>
+          <div className={styles.extractionHeader}>
+            <div>
+              <h2 className={styles.cardTitle}>Generated audio</h2>
+              <span className={styles.extractionLabel}>
+                {generatedAudio
+                  ? `${generatedAudio.generatedSegments}/${generatedAudio.totalSegments} segments`
+                  : 'Waiting for translated segments'}
+              </span>
+            </div>
+          </div>
+          {generatedAudio ? (
+            <div className={styles.extractionPanel}>
+              <div className={styles.progressTrack} aria-label="Text-to-speech progress">
+                <div
+                  className={styles.progressFill}
+                  style={{ width: `${Math.max(0, Math.min(100, generatedAudio.progressPct))}%` }}
+                />
+              </div>
+              <div className={styles.extractionMeta}>
+                <span>{Math.round(generatedAudio.progressPct)}%</span>
+                <span>{generatedAudio.targetLanguage.toUpperCase()}</span>
+                <span>Voice {generatedAudio.voiceId}</span>
+                <span>
+                  Provider {generatedAudio.providerName ?? 'mock'}:{' '}
+                  {generatedAudio.providerStatus ?? generatedAudio.status}
+                </span>
+                <span>
+                  {generatedAudio.failedSegments} failure
+                  {generatedAudio.failedSegments === 1 ? '' : 's'}
+                </span>
+              </div>
+              {generatedAudio.error && (
+                <p className={styles.ingestError} role="alert">
+                  {generatedAudio.error}
+                </p>
+              )}
+              {generatedAudioEvents.length > 0 ? (
+                <div className={styles.transcriptList}>
+                  {generatedAudioEvents.map((event) => (
+                    <div key={event.segmentId} className={styles.transcriptEntry}>
+                      <div className={styles.phraseMeta}>
+                        <span>#{event.sequence + 1}</span>
+                        <span>
+                          {formatDuration(event.startMs)}-{formatDuration(event.endMs)}
+                        </span>
+                        <span>{event.status}</span>
+                        <span>{event.providerLatencyMs ?? 0} ms</span>
+                        <span>{event.audioFilename}</span>
+                      </div>
+                      <div className={styles.phraseTranslated}>
+                        {event.translatedText ||
+                          event.error ||
+                          (event.status === 'generated' ? '[empty audio text]' : 'Pending')}
+                      </div>
+                      {event.status === 'failed' && (
+                        <button
+                          type="button"
+                          className={`${styles.mockBtn} ${styles.actionBtn}`}
+                          onClick={() => void handleRetryGeneratedAudio(event.segmentId)}
+                          disabled={sessionCommandRunning}
+                        >
+                          Retry audio
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className={styles.empty}>No generated-audio segments yet.</p>
+              )}
+            </div>
+          ) : (
+            <p className={styles.empty}>TTS starts after translation completes.</p>
+          )}
         </section>
 
         <section className={styles.card}>

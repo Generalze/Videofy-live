@@ -1,10 +1,18 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import type { MediaStateEvent, TranslationEvent } from '@videofy-live/shared-types';
+import type {
+  GeneratedAudioReadyEvent,
+  MediaStateEvent,
+  TranslationEvent,
+} from '@videofy-live/shared-types';
 import { SOCKET_EVENTS } from '@videofy-live/shared-types';
 import styles from './App.module.css';
 import { startMockVideoFeed, type MockVideoFeed } from './mockVideoFeed';
 import { createListenerSocketOptions } from './socketConfig';
+import {
+  useInterpretationAudioMixer,
+  type AudioMixMode,
+} from './useInterpretationAudioMixer';
 import { useTranslatedAudioQueue } from './useTranslatedAudioQueue';
 
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
@@ -71,21 +79,44 @@ export default function App(): React.ReactElement {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle');
   const [hasStarted, setHasStarted] = useState(false);
   const [mediaState, setMediaState] = useState<MediaStateEvent | null>(null);
-  const [streamStatus, setStreamStatus] = useState<string>('idle');
+  const [streamStatus, setStreamStatus] = useState<string>('created');
   const [sourceLanguage] = useState('en');
   const [targetLanguage, setTargetLanguage] = useState('fr');
   const [originalVolume, setOriginalVolume] = useState(0.2);
   const [translatedVolume, setTranslatedVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
-  const [audioMode, setAudioMode] = useState<'interpretation' | 'replacement'>('interpretation');
   const [currentPhrase, setCurrentPhrase] = useState<PhraseEntry | null>(null);
   const [recentPhrases, setRecentPhrases] = useState<PhraseEntry[]>([]);
+  const [deliveredAudio, setDeliveredAudio] = useState<GeneratedAudioReadyEvent[]>([]);
   const [buffering, setBuffering] = useState(false);
   const [videoPlaybackError, setVideoPlaybackError] = useState<string | null>(null);
   const [socketDiagnostics, setSocketDiagnostics] =
     useState<SocketDiagnostics>(initialSocketDiagnostics);
-  const audioQueue = useTranslatedAudioQueue(translatedVolume, muted);
+  const getListenerClockMs = useCallback((): number => {
+    const video = videoRef.current;
+    if (video && Number.isFinite(video.currentTime) && video.currentTime > 0) {
+      return Math.round(video.currentTime * 1000);
+    }
+    return mediaState?.videoTimestampMs ?? 0;
+  }, [mediaState?.videoTimestampMs]);
+  const {
+    attachOriginalElement,
+    createTranslatedAudio,
+    resetDefaults: resetMixDefaults,
+    resume: resumeMixer,
+    setMode: setMixMode,
+    setOriginalLevel: setMixOriginalLevel,
+    setTranslatedLevel: setMixTranslatedLevel,
+    setTranslatedMuted: setMixTranslatedMuted,
+    state: mixState,
+  } = useInterpretationAudioMixer();
+  const audioQueue = useTranslatedAudioQueue(
+    1,
+    false,
+    getListenerClockMs,
+    createTranslatedAudio,
+  );
 
   const updateSocketDiagnostics = useCallback(
     (event: string, next: Partial<SocketDiagnostics>): void => {
@@ -103,8 +134,8 @@ export default function App(): React.ReactElement {
       return;
     }
 
-    videoRef.current.volume = muted ? 0 : audioMode === 'replacement' ? 0 : originalVolume;
-  }, [audioMode, muted, originalVolume]);
+    videoRef.current.volume = 1;
+  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -112,6 +143,7 @@ export default function App(): React.ReactElement {
       return;
     }
 
+    attachOriginalElement(video);
     const feed = startMockVideoFeed();
     mockFeedRef.current = feed;
     video.srcObject = feed.stream;
@@ -122,7 +154,37 @@ export default function App(): React.ReactElement {
       feed.stop();
       mockFeedRef.current = null;
     };
-  }, []);
+  }, [attachOriginalElement]);
+
+  useEffect(() => {
+    setMixOriginalLevel(originalVolume);
+  }, [originalVolume, setMixOriginalLevel]);
+
+  useEffect(() => {
+    setMixTranslatedLevel(translatedVolume);
+  }, [setMixTranslatedLevel, translatedVolume]);
+
+  useEffect(() => {
+    setMixTranslatedMuted(muted);
+  }, [muted, setMixTranslatedMuted]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const handlePause = (): void => audioQueue.pause();
+    const handlePlay = (): void => {
+      if (hasStarted) audioQueue.resume();
+    };
+
+    video.addEventListener('pause', handlePause);
+    video.addEventListener('play', handlePlay);
+
+    return () => {
+      video.removeEventListener('pause', handlePause);
+      video.removeEventListener('play', handlePlay);
+    };
+  }, [audioQueue, hasStarted]);
 
   const connect = useCallback((): void => {
     if (socketRef.current) {
@@ -194,28 +256,64 @@ export default function App(): React.ReactElement {
       setRecentPhrases((prev) => [entry, ...prev].slice(0, 8));
     });
 
+    socket.on(SOCKET_EVENTS.GENERATED_AUDIO_READY, (event: GeneratedAudioReadyEvent) => {
+      audioQueue.enqueueGenerated(event);
+      setDeliveredAudio((current) => {
+        const withoutDuplicate = current.filter(
+          (item) => !(item.sessionId === event.sessionId && item.segmentId === event.segmentId),
+        );
+        return [...withoutDuplicate, event]
+          .sort((a, b) => a.sequence - b.sequence)
+          .slice(-20);
+      });
+    });
+
     socket.on(SOCKET_EVENTS.MEDIA_STATE, (state: MediaStateEvent) => {
       setMediaState(state);
       setStreamStatus(state.streamStatus);
-      setBuffering(state.streamStatus === 'connecting');
+      setBuffering(state.streamStatus === 'validating');
     });
 
     socket.on(SOCKET_EVENTS.STREAM_STATUS, (data: { status: string }) => {
       setStreamStatus(data.status);
-      setBuffering(data.status === 'connecting');
+      setBuffering(data.status === 'validating');
     });
   }, [audioQueue, targetLanguage, updateSocketDiagnostics]);
 
   const handleStart = useCallback((): void => {
     setHasStarted(true);
+    resumeMixer();
     setVideoPlaybackError(null);
     videoRef.current?.play().catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : 'The browser rejected video playback.';
+      const message =
+        error instanceof Error ? error.message : 'The browser rejected video playback.';
       setVideoPlaybackError(`Video playback failed: ${message}`);
     });
     audioQueue.start();
     connect();
-  }, [audioQueue, connect]);
+  }, [audioQueue, connect, resumeMixer]);
+
+  const handleResetMixDefaults = useCallback((): void => {
+    setOriginalVolume(0.2);
+    setTranslatedVolume(1);
+    setMuted(false);
+    resetMixDefaults();
+  }, [resetMixDefaults]);
+
+  const handleAudioModeChange = useCallback(
+    (mode: AudioMixMode): void => {
+      setMixMode(mode);
+    },
+    [setMixMode],
+  );
+
+  const handleResetGeneratedQueue = useCallback((): void => {
+    audioQueue.resetGenerated();
+  }, [audioQueue]);
+
+  const handleReplayGeneratedQueue = useCallback((): void => {
+    audioQueue.replayGenerated(deliveredAudio);
+  }, [audioQueue, deliveredAudio]);
 
   const handleLanguageChange = useCallback(
     (event: React.ChangeEvent<HTMLSelectElement>): void => {
@@ -227,7 +325,9 @@ export default function App(): React.ReactElement {
       setTargetLanguage(newLanguage);
       setCurrentPhrase(null);
       setRecentPhrases([]);
+      setDeliveredAudio([]);
       audioQueue.reset();
+      audioQueue.resetGenerated();
     },
     [audioQueue, targetLanguage],
   );
@@ -276,10 +376,10 @@ export default function App(): React.ReactElement {
               className={styles.liveIndicator}
               style={{
                 background:
-                  streamStatus === 'live' ? 'var(--color-live)' : 'var(--color-text-muted)',
+                  streamStatus === 'processing' ? 'var(--color-live)' : 'var(--color-text-muted)',
               }}
             >
-              {streamStatus === 'live' ? 'LIVE' : streamStatus.toUpperCase()}
+              {streamStatus === 'processing' ? 'LIVE' : streamStatus.toUpperCase()}
             </span>
             {buffering && (
               <span className={styles.bufferingBadge} aria-live="polite">
@@ -295,7 +395,6 @@ export default function App(): React.ReactElement {
               ref={videoRef}
               className={styles.videoPlayer}
               controls
-              muted={muted}
               aria-label="Live event video"
               poster="/mock-video-poster.svg"
             />
@@ -341,20 +440,24 @@ export default function App(): React.ReactElement {
 
           <div className={styles.controlGroup}>
             <label className={styles.label}>Audio mode</label>
-            <div className={styles.modeToggle} role="group" aria-label="Audio mode">
+            <div className={styles.modeToggle} role="group" aria-label="Listener audio mode">
               <button
                 type="button"
-                className={`${styles.modeBtn} ${audioMode === 'interpretation' ? styles.modeBtnActive : ''}`}
-                onClick={() => setAudioMode('interpretation')}
-                aria-pressed={audioMode === 'interpretation'}
+                className={`${styles.modeBtn} ${
+                  mixState.mode === 'interpretation' ? styles.modeBtnActive : ''
+                }`}
+                onClick={() => handleAudioModeChange('interpretation')}
+                aria-pressed={mixState.mode === 'interpretation'}
               >
                 Interpretation
               </button>
               <button
                 type="button"
-                className={`${styles.modeBtn} ${audioMode === 'replacement' ? styles.modeBtnActive : ''}`}
-                onClick={() => setAudioMode('replacement')}
-                aria-pressed={audioMode === 'replacement'}
+                className={`${styles.modeBtn} ${
+                  mixState.mode === 'replacement' ? styles.modeBtnActive : ''
+                }`}
+                onClick={() => handleAudioModeChange('replacement')}
+                aria-pressed={mixState.mode === 'replacement'}
               >
                 Replacement
               </button>
@@ -378,10 +481,12 @@ export default function App(): React.ReactElement {
                 onChange={(event) => setOriginalVolume(Number(event.target.value))}
                 aria-label="Original audio volume"
                 className={styles.slider}
-                disabled={audioMode === 'replacement'}
+                disabled={mixState.mode === 'replacement'}
               />
               <span className={styles.volValue}>
-                {audioMode === 'replacement' ? 'Muted' : `${Math.round(originalVolume * 100)}%`}
+                {mixState.mode === 'replacement'
+                  ? `${Math.round(originalVolume * 100)}% saved, muted by replacement`
+                  : `${Math.round(originalVolume * 100)}%`}
               </span>
             </div>
 
@@ -408,9 +513,12 @@ export default function App(): React.ReactElement {
               className={`${styles.muteBtn} ${muted ? styles.muteBtnActive : ''}`}
               onClick={() => setMuted((current) => !current)}
               aria-pressed={muted}
-              aria-label="Mute all audio"
+              aria-label="Mute translated audio"
             >
               {muted ? '🔇 Muted' : '🔊 Mute'}
+            </button>
+            <button type="button" className={styles.resetMixBtn} onClick={handleResetMixDefaults}>
+              Reset mix
             </button>
           </div>
 
@@ -421,6 +529,85 @@ export default function App(): React.ReactElement {
               {' '}
               · {audioQueue.pendingCount} queued mock clip{audioQueue.pendingCount === 1 ? '' : 's'}
             </span>
+          </div>
+
+          <div className={styles.mixStatePanel} aria-live="polite">
+            <span className={styles.label}>Mix state: </span>
+            <span>{mixState.mode}</span>
+            <span className={styles.audioPending}>
+              {' '}
+              - original{' '}
+              {mixState.mode === 'replacement'
+                ? '0%'
+                : `${Math.round(mixState.originalLevel * 100)}%`}{' '}
+              - translated{' '}
+              {mixState.translatedMuted
+                ? 'muted'
+                : `${Math.round(mixState.translatedLevel * 100)}%`}{' '}
+              - context {mixState.contextState}
+              {mixState.limiterActive ? ' - limiter on' : ''}
+            </span>
+            {mixState.error && <p className={styles.generatedQueueError}>{mixState.error}</p>}
+          </div>
+
+          <div className={styles.generatedQueuePanel} aria-live="polite">
+            <div className={styles.generatedQueueHeader}>
+              <span className={styles.label}>Generated audio queue</span>
+              <div className={styles.queueActions}>
+                <button
+                  type="button"
+                  className={styles.queueBtn}
+                  onClick={handleResetGeneratedQueue}
+                >
+                  Reset
+                </button>
+                <button
+                  type="button"
+                  className={styles.queueBtn}
+                  onClick={handleReplayGeneratedQueue}
+                  disabled={deliveredAudio.length === 0}
+                >
+                  Replay
+                </button>
+              </div>
+            </div>
+            <dl className={styles.generatedQueueGrid}>
+              <div>
+                <dt>State</dt>
+                <dd>{audioQueue.generatedState.status}</dd>
+              </div>
+              <div>
+                <dt>Queued</dt>
+                <dd>{audioQueue.generatedState.pendingCount}</dd>
+              </div>
+              <div>
+                <dt>Played</dt>
+                <dd>{audioQueue.generatedState.playedCount}</dd>
+              </div>
+              <div>
+                <dt>Skipped</dt>
+                <dd>{audioQueue.generatedState.skippedCount}</dd>
+              </div>
+              <div>
+                <dt>Current</dt>
+                <dd>
+                  {audioQueue.generatedState.currentSegment
+                    ? `#${audioQueue.generatedState.currentSegment.sequence}`
+                    : '-'}
+                </dd>
+              </div>
+              <div>
+                <dt>Sync offset</dt>
+                <dd>
+                  {audioQueue.generatedState.syncOffsetMs === null
+                    ? '-'
+                    : `${audioQueue.generatedState.syncOffsetMs} ms`}
+                </dd>
+              </div>
+            </dl>
+            {audioQueue.generatedState.error && (
+              <p className={styles.generatedQueueError}>{audioQueue.generatedState.error}</p>
+            )}
           </div>
         </section>
 
@@ -459,10 +646,57 @@ export default function App(): React.ReactElement {
             <h2 className={styles.sectionTitle}>Recent phrases</h2>
             <ol className={styles.phrasesList} reversed>
               {recentPhrases.map((phrase) => (
-                <li key={phrase.id} className={styles.phraseItem} title={`Received at ${new Date(phrase.receivedAt).toLocaleTimeString()}`}>
-                  <span className={styles.phraseTime}>{formatTimestamp(phrase.videoTimestampMs)}</span>
+                <li
+                  key={phrase.id}
+                  className={styles.phraseItem}
+                  title={`Received at ${new Date(phrase.receivedAt).toLocaleTimeString()}`}
+                >
+                  <span className={styles.phraseTime}>
+                    {formatTimestamp(phrase.videoTimestampMs)}
+                  </span>
                   <span className={styles.phraseText}>{phrase.translatedText}</span>
                   <span className={styles.phraseSeq}>#{phrase.sequence}</span>
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
+
+        {deliveredAudio.length > 0 && (
+          <section className={styles.deliveredAudioSection} aria-label="Delivered generated audio">
+            <div className={styles.deliveredAudioHeader}>
+              <h2 className={styles.sectionTitle}>Generated audio</h2>
+              <span className={styles.deliveredAudioCount}>
+                {deliveredAudio.length} delivered
+              </span>
+            </div>
+            <ol className={styles.deliveredAudioList}>
+              {deliveredAudio.map((segment) => (
+                <li
+                  key={`${segment.sessionId}-${segment.segmentId}`}
+                  className={styles.deliveredAudioItem}
+                >
+                  <div className={styles.deliveredAudioMeta}>
+                    <span className={styles.phraseTime}>{formatTimestamp(segment.startMs)}</span>
+                    <span className={styles.deliveredAudioText}>{segment.translatedText}</span>
+                    <span className={styles.phraseSeq}>#{segment.sequence}</span>
+                  </div>
+                  <div className={styles.deliveredAudioDetails}>
+                    <span>{segment.targetLanguage.toUpperCase()}</span>
+                    <span>Voice {segment.voiceId}</span>
+                    <span>{formatTimestamp(segment.durationMs)}</span>
+                    <span>
+                      {segment.providerLatencyMs === null
+                        ? 'Latency unavailable'
+                        : `${segment.providerLatencyMs} ms`}
+                    </span>
+                  </div>
+                  <audio
+                    className={styles.deliveredAudioPlayer}
+                    controls
+                    preload="metadata"
+                    src={segment.audioUrl}
+                  />
                 </li>
               ))}
             </ol>

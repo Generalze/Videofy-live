@@ -17,16 +17,27 @@
 
 ## Phase 2 – Local speech pipeline
 
-- [ ] Browser microphone capture
-- [ ] Local Whisper (faster-whisper) speech recognition
-- [ ] Local OPUS-MT or Argos translation
-- [ ] Local Piper text-to-speech
+- [x] P2.1 media ingest and processing-session creation
+- [x] P2.2 audio extraction and chunking
+- [x] P2.3 timestamped transcription
+- [x] P2.4 timestamped translation
+- [x] P2.5 operator monitoring and recovery
+- [x] P2.6 browser microphone capture
+- [x] P2.7 local faster-whisper speech recognition provider
+- [x] P2.8 local Argos translation provider
+- [x] P2.9 Phase 2 validation and closure
+
+## Phase 3A - Local generated audio foundation
+
+- [x] P3.0 real local-provider smoke test
+- [x] P3.1 local Piper text-to-speech foundation
+- [x] P3.1A real Piper smoke test
 - [ ] Generated audio file delivery to listener
 - [ ] Browser audio queue with video timestamp alignment
 - [ ] Interpretation-mode audio mixing (Web Audio API)
 - [ ] Replacement-mode audio (mute original)
 
-## Phase 3 – Local video and HLS
+## Phase 3B - Local video and HLS
 
 - [ ] Local camera/microphone input
 - [ ] FFmpeg audio extraction from video

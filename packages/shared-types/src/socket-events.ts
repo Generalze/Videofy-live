@@ -7,6 +7,9 @@
 export const SOCKET_EVENTS = {
   // Server → client
   TRANSLATION_EVENT: 'translation:event',
+  TRANSCRIPTION_EVENT: 'transcription:event',
+  TIMESTAMPED_TRANSLATION_EVENT: 'translation:timestamped',
+  GENERATED_AUDIO_READY: 'audio:generated-ready',
   MEDIA_STATE: 'media:state',
   STREAM_STATUS: 'stream:status',
   TRANSLATED_AUDIO: 'audio:translated',
@@ -26,6 +29,9 @@ export const SOCKET_EVENTS = {
 
   // Media ingest → gateway
   INGEST_STATE: 'ingest:state',
+  INGEST_TRANSCRIPTION: 'ingest:transcription',
+  INGEST_TRANSLATION: 'ingest:translation',
+  INGEST_GENERATED_AUDIO: 'ingest:generated-audio',
   INGEST_HEALTH: 'ingest:health',
   INGEST_START_STREAM: 'ingest:start_stream',
   INGEST_STOP_STREAM: 'ingest:stop_stream',

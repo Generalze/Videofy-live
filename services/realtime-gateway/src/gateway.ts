@@ -1,6 +1,12 @@
 import type { Server as HttpServer } from 'node:http';
 import { Server as SocketServer, type Socket } from 'socket.io';
-import type { MediaStateEvent, TranslationEvent } from '@videofy-live/shared-types';
+import type {
+  GeneratedAudioReadyEvent,
+  MediaStateEvent,
+  TimestampedTranslationEvent,
+  TranscriptionEvent,
+  TranslationEvent,
+} from '@videofy-live/shared-types';
 import {
   INGEST_ROOM,
   languageRoom,
@@ -8,8 +14,15 @@ import {
   SOCKET_EVENTS,
   WORKER_ROOM,
 } from '@videofy-live/shared-types';
-import { safeParseMediaStateEvent, safeParseTranslationEvent } from '@videofy-live/media-contracts';
+import {
+  safeParseMediaStateEvent,
+  safeParseGeneratedAudioReadyEvent,
+  safeParseTimestampedTranslationEvent,
+  safeParseTranscriptionEvent,
+  safeParseTranslationEvent,
+} from '@videofy-live/media-contracts';
 import { EventStore } from './event-store.js';
+import { GeneratedAudioStore } from './generated-audio-store.js';
 import { logger } from './logger.js';
 
 /** Client role determined by query parameter on connect. */
@@ -25,10 +38,7 @@ interface ClientState {
 type ServiceName = 'gateway' | 'media-ingest' | 'speech-worker';
 type HealthStatus = 'healthy' | 'unhealthy';
 type OperatorControlAction =
-  | 'start-mock-stream'
-  | 'stop-mock-stream'
-  | 'trigger-mock-phrase'
-  | 'reset-mock-sequence';
+  'start-mock-stream' | 'stop-mock-stream' | 'trigger-mock-phrase' | 'reset-mock-sequence';
 
 interface ServiceStatusEvent {
   service: ServiceName;
@@ -48,6 +58,7 @@ export class Gateway {
   private readonly store = new EventStore({
     onReady: (events) => this.broadcastTranslationEvents(events),
   });
+  private readonly generatedAudioStore = new GeneratedAudioStore();
   private readonly clients = new Map<string, ClientState>();
   private readonly activeWorkers = new Set<string>();
   private readonly activeIngestClients = new Set<string>();
@@ -78,7 +89,10 @@ export class Gateway {
         this.listenerCount++;
         void socket.join('listeners');
         this.handleListenerSocket(socket, state);
-        logger.info('Listener connected', { socketId: socket.id, listenerCount: this.listenerCount });
+        logger.info('Listener connected', {
+          socketId: socket.id,
+          listenerCount: this.listenerCount,
+        });
         break;
       case 'operator':
         void socket.join(OPERATOR_ROOM);
@@ -227,6 +241,63 @@ export class Gateway {
       this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
       logger.debug('Media state broadcast', { streamStatus: enriched.streamStatus });
     });
+
+    socket.on(SOCKET_EVENTS.INGEST_TRANSCRIPTION, (raw: unknown) => {
+      const result = safeParseTranscriptionEvent(raw);
+      if (!result.success) {
+        socket.emit(SOCKET_EVENTS.ERROR, {
+          message: 'Invalid transcription event',
+          issues: result.error.issues,
+        });
+        logger.warn('Ingest sent invalid transcription event', { socketId: socket.id });
+        return;
+      }
+
+      const event = result.data as TranscriptionEvent;
+      this.io.to(OPERATOR_ROOM).emit(SOCKET_EVENTS.TRANSCRIPTION_EVENT, event);
+      logger.info('Transcription event broadcast', {
+        sessionId: event.sessionId,
+        chunkId: event.chunkId,
+        status: event.status,
+      });
+    });
+
+    socket.on(SOCKET_EVENTS.INGEST_TRANSLATION, (raw: unknown) => {
+      const result = safeParseTimestampedTranslationEvent(raw);
+      if (!result.success) {
+        socket.emit(SOCKET_EVENTS.ERROR, {
+          message: 'Invalid timestamped translation event',
+          issues: result.error.issues,
+        });
+        logger.warn('Ingest sent invalid timestamped translation event', { socketId: socket.id });
+        return;
+      }
+
+      const event = result.data as TimestampedTranslationEvent;
+      this.io.to(OPERATOR_ROOM).emit(SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT, event);
+      logger.info('Timestamped translation event broadcast', {
+        sessionId: event.sessionId,
+        segmentId: event.segmentId,
+        status: event.status,
+      });
+    });
+
+    socket.on(SOCKET_EVENTS.INGEST_GENERATED_AUDIO, (raw: unknown) => {
+      const result = safeParseGeneratedAudioReadyEvent(raw);
+      if (!result.success) {
+        socket.emit(SOCKET_EVENTS.ERROR, {
+          message: 'Invalid generated-audio ready event',
+          issues: result.error.issues,
+        });
+        logger.warn('Ingest sent invalid generated-audio ready event', { socketId: socket.id });
+        return;
+      }
+
+      const event = result.data as GeneratedAudioReadyEvent;
+      const accepted = this.generatedAudioStore.offer(event);
+      if (!accepted.accepted) return;
+      this.broadcastGeneratedAudioReadyEvents(accepted.ready);
+    });
   }
 
   private handleDisconnect(socket: Socket): void {
@@ -279,10 +350,7 @@ export class Gateway {
         'media-ingest',
         this.activeIngestClients.size > 0 ? 'healthy' : 'unhealthy',
       ),
-      this.serviceStatus(
-        'speech-worker',
-        this.activeWorkers.size > 0 ? 'healthy' : 'unhealthy',
-      ),
+      this.serviceStatus('speech-worker', this.activeWorkers.size > 0 ? 'healthy' : 'unhealthy'),
     ];
 
     for (const status of snapshot) {
@@ -310,6 +378,19 @@ export class Gateway {
         sequence: readyEvent.sequence,
         targetLanguage: readyEvent.targetLanguage,
         final: readyEvent.final,
+      });
+    }
+  }
+
+  private broadcastGeneratedAudioReadyEvents(events: GeneratedAudioReadyEvent[]): void {
+    for (const event of events) {
+      this.io.to(languageRoom(event.targetLanguage)).emit(SOCKET_EVENTS.GENERATED_AUDIO_READY, event);
+      this.io.to(OPERATOR_ROOM).emit(SOCKET_EVENTS.GENERATED_AUDIO_READY, event);
+      logger.info('Generated audio ready event broadcast', {
+        sessionId: event.sessionId,
+        segmentId: event.segmentId,
+        sequence: event.sequence,
+        targetLanguage: event.targetLanguage,
       });
     }
   }

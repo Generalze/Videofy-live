@@ -15,6 +15,9 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.VITE_GATEWAY_URL': JSON.stringify(
         rootEnv['VITE_GATEWAY_URL'] ?? 'http://localhost:3001',
       ),
+      'import.meta.env.VITE_INGEST_URL': JSON.stringify(
+        rootEnv['VITE_INGEST_URL'] ?? 'http://localhost:3002',
+      ),
       'import.meta.env.VITE_SOCKET_TRANSPORT': JSON.stringify(
         rootEnv['VITE_SOCKET_TRANSPORT'] ?? process.env['VITE_SOCKET_TRANSPORT'],
       ),

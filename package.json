@@ -12,7 +12,7 @@
   "scripts": {
     "dev": "concurrently -n gateway,ingest,listener,operator -c cyan,yellow,green,magenta \"npm run dev -w services/realtime-gateway\" \"npm run dev -w services/media-ingest\" \"npm run dev -w apps/listener-web\" \"npm run dev -w apps/operator-web\"",
     "build": "npm run build -w packages/shared-types && npm run build -w packages/media-contracts && npm run build -w services/realtime-gateway && npm run build -w services/media-ingest && npm run build -w apps/listener-web && npm run build -w apps/operator-web",
-    "test": "npm run test -w packages/shared-types && npm run test -w packages/media-contracts && npm run test -w services/realtime-gateway && npm run test -w apps/listener-web && npm run test -w apps/operator-web",
+    "test": "npm run test -w packages/shared-types && npm run test -w packages/media-contracts && npm run test -w services/realtime-gateway && npm run test -w services/media-ingest && npm run test -w apps/listener-web && npm run test -w apps/operator-web",
     "test:integration": "npm run test:integration -w services/realtime-gateway",
     "lint": "npm run lint -w apps/listener-web && npm run lint -w apps/operator-web",
     "typecheck": "npm run typecheck -w packages/shared-types && npm run typecheck -w packages/media-contracts && npm run typecheck -w services/realtime-gateway && npm run typecheck -w services/media-ingest && npm run typecheck -w apps/listener-web && npm run typecheck -w apps/operator-web",

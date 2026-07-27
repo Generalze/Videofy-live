@@ -1,7 +1,13 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { io as connectClient, type Socket } from 'socket.io-client';
-import type { MediaStateEvent, TranslationEvent } from '@videofy-live/shared-types';
+import type {
+  GeneratedAudioReadyEvent,
+  MediaStateEvent,
+  TimestampedTranslationEvent,
+  TranscriptionEvent,
+  TranslationEvent,
+} from '@videofy-live/shared-types';
 import { SOCKET_EVENTS } from '@videofy-live/shared-types';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../app.js';
@@ -35,12 +41,71 @@ function makeTranslation(sequence: number, targetLanguage = 'fr'): TranslationEv
 function makeMediaState(): MediaStateEvent {
   return {
     eventId: 'integration-event',
-    streamStatus: 'live',
+    streamStatus: 'processing',
     videoSource: 'mock',
     videoTimestampMs: 12_000,
     sourceAudioActive: true,
     translatedLanguages: ['fr', 'es'],
     connectedListeners: 0,
+    createdAt: '2026-07-17T08:30:00.000Z',
+  };
+}
+
+function makeTranscriptionEvent(): TranscriptionEvent {
+  return {
+    sessionId: 'ps_integration',
+    streamId: 'stream_integration',
+    chunkId: 'ps_integration:chunk:0',
+    sequence: 0,
+    sourceText: 'hello from source audio',
+    detectedLanguage: 'en',
+    startMs: 0,
+    endMs: 15_000,
+    confidence: 0.91,
+    status: 'transcribed',
+    createdAt: '2026-07-17T08:30:00.000Z',
+  };
+}
+
+function makeTimestampedTranslationEvent(): TimestampedTranslationEvent {
+  return {
+    sessionId: 'ps_integration',
+    streamId: 'stream_integration',
+    segmentId: 'ps_integration:chunk:0',
+    sequence: 0,
+    sourceLanguage: 'en',
+    targetLanguage: 'fr',
+    sourceText: 'hello from source audio',
+    translatedText: '[fr] hello from source audio',
+    startMs: 0,
+    endMs: 15_000,
+    status: 'translated',
+    latency: {
+      queuedMs: 0,
+      providerMs: 3,
+      totalMs: 3,
+    },
+    createdAt: '2026-07-17T08:30:00.000Z',
+  };
+}
+
+function makeGeneratedAudioReadyEvent(
+  sequence: number,
+  targetLanguage = 'es',
+): GeneratedAudioReadyEvent {
+  return {
+    sessionId: 'ps_integration',
+    streamId: 'stream_integration',
+    segmentId: `ps_integration:chunk:${sequence}`,
+    sequence,
+    targetLanguage,
+    translatedText: `audio translated ${sequence}`,
+    startMs: sequence * 15_000,
+    endMs: sequence * 15_000 + 15_000,
+    voiceId: 'es-test',
+    durationMs: 900,
+    providerLatencyMs: 12,
+    audioUrl: `http://localhost:3002/sessions/ps_integration/generated-audio/segments/ps_integration%3Achunk%3A${sequence}/audio`,
     createdAt: '2026-07-17T08:30:00.000Z',
   };
 }
@@ -121,9 +186,13 @@ describe('gateway Socket.IO integration', () => {
 
     frenchListener.emit(SOCKET_EVENTS.JOIN_LANGUAGE, 'fr');
     spanishListener.emit(SOCKET_EVENTS.JOIN_LANGUAGE, 'es');
-    await waitUntil(() => operator.connected && frenchListener.connected && spanishListener.connected);
+    await waitUntil(
+      () => operator.connected && frenchListener.connected && spanishListener.connected,
+    );
     await delay(150);
-    await waitUntil(() => operator.connected && frenchListener.connected && spanishListener.connected);
+    await waitUntil(
+      () => operator.connected && frenchListener.connected && spanishListener.connected,
+    );
     await delay(25);
 
     const frenchEvents: TranslationEvent[] = [];
@@ -165,14 +234,85 @@ describe('gateway Socket.IO integration', () => {
 
     await expect(listenerMedia).resolves.toMatchObject({
       eventId: 'integration-event',
-      streamStatus: 'live',
+      streamStatus: 'processing',
       connectedListeners: 2,
     });
     await expect(operatorMedia).resolves.toMatchObject({
       eventId: 'integration-event',
-      streamStatus: 'live',
+      streamStatus: 'processing',
       connectedListeners: 2,
     });
+
+    const operatorTranscription = waitForEvent<TranscriptionEvent>(
+      operator,
+      SOCKET_EVENTS.TRANSCRIPTION_EVENT,
+    );
+    ingest.emit(SOCKET_EVENTS.INGEST_TRANSCRIPTION, makeTranscriptionEvent());
+
+    await expect(operatorTranscription).resolves.toMatchObject({
+      sessionId: 'ps_integration',
+      chunkId: 'ps_integration:chunk:0',
+      sourceText: 'hello from source audio',
+      status: 'transcribed',
+    });
+
+    const operatorTimestampedTranslation = waitForEvent<TimestampedTranslationEvent>(
+      operator,
+      SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT,
+    );
+    ingest.emit(SOCKET_EVENTS.INGEST_TRANSLATION, makeTimestampedTranslationEvent());
+
+    await expect(operatorTimestampedTranslation).resolves.toMatchObject({
+      sessionId: 'ps_integration',
+      segmentId: 'ps_integration:chunk:0',
+      translatedText: '[fr] hello from source audio',
+      status: 'translated',
+    });
+  });
+
+  it('delivers generated audio to listeners in order and rejects duplicates', async () => {
+    const ingest = client('ingest');
+    const operator = client('operator');
+    const spanishListener = client('listener');
+    const frenchListener = client('listener');
+    await Promise.all([
+      waitForConnect(ingest),
+      waitForConnect(operator),
+      waitForConnect(spanishListener),
+      waitForConnect(frenchListener),
+    ]);
+
+    spanishListener.emit(SOCKET_EVENTS.JOIN_LANGUAGE, 'es');
+    frenchListener.emit(SOCKET_EVENTS.JOIN_LANGUAGE, 'fr');
+    await delay(50);
+
+    const spanishEvents: GeneratedAudioReadyEvent[] = [];
+    const frenchEvents: GeneratedAudioReadyEvent[] = [];
+    const operatorEvents: GeneratedAudioReadyEvent[] = [];
+    spanishListener.on(SOCKET_EVENTS.GENERATED_AUDIO_READY, (event: GeneratedAudioReadyEvent) => {
+      spanishEvents.push(event);
+    });
+    frenchListener.on(SOCKET_EVENTS.GENERATED_AUDIO_READY, (event: GeneratedAudioReadyEvent) => {
+      frenchEvents.push(event);
+    });
+    operator.on(SOCKET_EVENTS.GENERATED_AUDIO_READY, (event: GeneratedAudioReadyEvent) => {
+      operatorEvents.push(event);
+    });
+
+    ingest.emit(SOCKET_EVENTS.INGEST_GENERATED_AUDIO, makeGeneratedAudioReadyEvent(0));
+    ingest.emit(SOCKET_EVENTS.INGEST_GENERATED_AUDIO, makeGeneratedAudioReadyEvent(2));
+    await waitUntil(() => spanishEvents.length === 1 && operatorEvents.length === 1);
+    expect(spanishEvents.map((event) => event.sequence)).toEqual([0]);
+
+    ingest.emit(SOCKET_EVENTS.INGEST_GENERATED_AUDIO, makeGeneratedAudioReadyEvent(1));
+    await waitUntil(() => spanishEvents.length === 3 && operatorEvents.length === 3);
+    expect(spanishEvents.map((event) => event.sequence)).toEqual([0, 1, 2]);
+    expect(operatorEvents.map((event) => event.sequence)).toEqual([0, 1, 2]);
+    expect(frenchEvents).toHaveLength(0);
+
+    ingest.emit(SOCKET_EVENTS.INGEST_GENERATED_AUDIO, makeGeneratedAudioReadyEvent(1));
+    await delay(50);
+    expect(spanishEvents.map((event) => event.sequence)).toEqual([0, 1, 2]);
   });
 
   it('emits a complete unhealthy service snapshot when an operator connects before services', async () => {
@@ -258,7 +398,9 @@ function collectServiceStatuses(socket: Socket): ServiceStatusEvent[] {
   return statuses;
 }
 
-function latestStatuses(statuses: ServiceStatusEvent[]): Record<ServiceStatusEvent['service'], string> {
+function latestStatuses(
+  statuses: ServiceStatusEvent[],
+): Record<ServiceStatusEvent['service'], string> {
   return statuses.reduce(
     (acc, event) => {
       acc[event.service] = event.status;

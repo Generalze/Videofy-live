@@ -1,18 +1,97 @@
 import { Socket, io } from 'socket.io-client';
-import type { MediaStateEvent } from '@videofy-live/shared-types';
+import type {
+  GeneratedAudioEvent,
+  GeneratedAudioReadyEvent,
+  MediaStateEvent,
+  TimestampedTranslationEvent,
+  TranscriptionEvent,
+} from '@videofy-live/shared-types';
 import { SOCKET_EVENTS } from '@videofy-live/shared-types';
 import type { IngestConfig } from './config.js';
 import { MockProvider, type MediaProvider } from './providers/index.js';
 import { logger } from './logger.js';
+import {
+  ProcessingSessionStore,
+  type MicrophoneChunkInput,
+  type MicrophoneSessionInput,
+  type ProcessingSession,
+  type UploadedMediaFile,
+} from './media-session.js';
+import { createTranscriptionProvider } from './transcription-provider.js';
+import { createTimestampedTranslationProvider } from './translation-provider.js';
+import { createTextToSpeechProvider } from './text-to-speech-provider.js';
 
 export class IngestService {
   private socket: Socket | null = null;
   private provider: MediaProvider;
   private ticker: ReturnType<typeof setInterval> | null = null;
-  private streamStatus: MediaStateEvent['streamStatus'] = 'idle';
+  private streamStatus: MediaStateEvent['streamStatus'] = 'created';
+  private currentSession: ProcessingSession | null = null;
+  private readonly sessions: ProcessingSessionStore;
 
   constructor(private readonly config: IngestConfig) {
     this.provider = new MockProvider();
+    this.sessions = new ProcessingSessionStore({
+      outputBaseDir: config.audioChunkDir,
+      transcriptionProvider: createTranscriptionProvider({
+        providerName: config.transcriptionProvider,
+        sourceLanguage: config.transcriptionSourceLanguage,
+        timeoutMs: config.transcriptionTimeoutMs,
+        fasterWhisper: {
+          pythonExecutable: config.fasterWhisperPythonExecutable,
+          ffmpegExecutable: config.fasterWhisperFfmpegExecutable,
+          modelSize: config.fasterWhisperModelSize,
+          device: config.fasterWhisperDevice,
+          computeType: config.fasterWhisperComputeType,
+          modelCacheDir: config.fasterWhisperModelCacheDir,
+          allowGpuFallback: config.fasterWhisperAllowGpuFallback,
+          timeoutMs: config.transcriptionTimeoutMs,
+        },
+      }),
+      transcriptionTimeoutMs: config.transcriptionTimeoutMs,
+      translationProvider: createTimestampedTranslationProvider({
+        providerName: config.translationProvider,
+        supportedTargetLanguages: config.translationSupportedTargetLanguages,
+        argos: {
+          pythonExecutable: config.argosPythonExecutable,
+          packageDir: config.argosPackageDir,
+          supportedTargetLanguages: config.translationSupportedTargetLanguages,
+          timeoutMs: config.translationTimeoutMs,
+        },
+      }),
+      translationTimeoutMs: config.translationTimeoutMs,
+      translationTargetLanguage: config.translationTargetLanguage,
+      translationSupportedTargetLanguages: config.translationSupportedTargetLanguages,
+      textToSpeechProvider: createTextToSpeechProvider({
+        providerName: config.textToSpeechProvider,
+        timeoutMs: config.textToSpeechTimeoutMs,
+        supportedLanguages: config.textToSpeechSupportedLanguages,
+        defaultVoiceId: config.textToSpeechDefaultVoiceId,
+        piper: {
+          executable: config.piperExecutable,
+          timeoutMs: config.textToSpeechTimeoutMs,
+          voices: [
+            {
+              voiceId: config.piperVoiceId,
+              language: config.piperVoiceLanguage,
+              modelPath: config.piperModelPath,
+              configPath: config.piperConfigPath,
+            },
+          ],
+        },
+      }),
+      textToSpeechTimeoutMs: config.textToSpeechTimeoutMs,
+      textToSpeechVoiceId: config.textToSpeechDefaultVoiceId,
+      textToSpeechSupportedLanguages: config.textToSpeechSupportedLanguages,
+      onSessionChange: (session) => {
+        this.currentSession = session;
+        this.streamStatus = session.state;
+        this.emitState();
+      },
+      onTranscriptionEvent: (event) => this.emitTranscriptionEvent(event),
+      onTranslationEvent: (event) => this.emitTranslationEvent(event),
+      onGeneratedAudioReady: (event, session) => this.emitGeneratedAudioReady(event, session),
+    });
   }
 
   async start(): Promise<void> {
@@ -28,11 +107,9 @@ export class IngestService {
 
     this.socket.on(SOCKET_EVENTS.CONNECTED, () => {
       logger.info('Connected to gateway');
-      if (this.streamStatus === 'idle') {
-        this.streamStatus = 'connecting';
-      }
       this.socket?.emit(SOCKET_EVENTS.INGEST_HEALTH, { status: 'healthy' });
       this.emitState();
+      this.emitGeneratedAudioReadySnapshot();
     });
 
     this.socket.on(SOCKET_EVENTS.DISCONNECTED, () => {
@@ -53,22 +130,160 @@ export class IngestService {
       void this.stopMockStream();
     });
 
-    await this.startMockStream();
+    if (this.config.videoSource === 'mock') {
+      await this.startMockStream();
+    }
 
     this.ticker = setInterval(() => {
       this.emitState();
     }, this.config.mockTickMs);
   }
 
+  async createProcessingSession(upload: UploadedMediaFile): Promise<ProcessingSession> {
+    const session = await this.sessions.createFromUpload(upload);
+    logger.info('Processing session ready', {
+      sessionId: session.id,
+      streamId: session.streamId,
+      filename: session.media?.filename,
+      chunkCount: session.audioExtraction.chunkCount,
+      targetLanguage: session.targetLanguage,
+    });
+    return session;
+  }
+
+  async createMicrophoneSession(input: MicrophoneSessionInput): Promise<ProcessingSession> {
+    const session = await this.sessions.createMicrophoneSession(input);
+    logger.info('Microphone capture session started', {
+      sessionId: session.id,
+      streamId: session.streamId,
+      deviceLabel: session.microphoneCapture.deviceLabel,
+      targetLanguage: session.targetLanguage,
+    });
+    return session;
+  }
+
+  async ingestMicrophoneChunk(
+    sessionId: string,
+    input: MicrophoneChunkInput,
+  ): Promise<ProcessingSession> {
+    const session = await this.sessions.ingestMicrophoneChunk(sessionId, input);
+    logger.info('Microphone chunk processed', {
+      sessionId: session.id,
+      chunkCount: session.microphoneCapture.chunkCount,
+      transcription: session.transcription.status,
+      translation: session.translation.status,
+    });
+    return session;
+  }
+
+  stopMicrophoneSession(sessionId: string): ProcessingSession {
+    const session = this.sessions.stopMicrophoneSession(sessionId);
+    logger.info('Microphone capture session stopped', {
+      sessionId: session.id,
+      chunkCount: session.microphoneCapture.chunkCount,
+    });
+    return session;
+  }
+
+  failMicrophoneDeviceDisconnected(sessionId: string): ProcessingSession {
+    const session = this.sessions.failMicrophoneDeviceDisconnected(sessionId);
+    logger.warn('Microphone device disconnected', { sessionId });
+    return session;
+  }
+
+  async retryAudioExtraction(sessionId: string): Promise<ProcessingSession> {
+    const session = await this.sessions.retryAudioExtraction(sessionId);
+    logger.info('Audio extraction retry finished', {
+      sessionId: session.id,
+      state: session.state,
+      chunkCount: session.audioExtraction.chunkCount,
+    });
+    return session;
+  }
+
+  async cleanupFailedAudio(sessionId: string): Promise<ProcessingSession> {
+    const session = await this.sessions.cleanupFailedAudio(sessionId);
+    logger.info('Failed audio extraction artifacts cleaned', { sessionId: session.id });
+    return session;
+  }
+
+  pauseSession(sessionId: string): ProcessingSession {
+    const session = this.sessions.pauseSession(sessionId);
+    logger.info('Processing session paused', { sessionId: session.id });
+    return session;
+  }
+
+  resumeSession(sessionId: string): ProcessingSession {
+    const session = this.sessions.resumeSession(sessionId);
+    logger.info('Processing session resumed', { sessionId: session.id });
+    return session;
+  }
+
+  cancelSession(sessionId: string): ProcessingSession {
+    const session = this.sessions.cancelSession(sessionId);
+    logger.info('Processing session cancelled', { sessionId: session.id });
+    return session;
+  }
+
+  async retryTranscriptionChunk(sessionId: string, chunkId: string): Promise<ProcessingSession> {
+    const session = await this.sessions.retryTranscriptionChunk(sessionId, chunkId);
+    logger.info('Transcription chunk retry finished', {
+      sessionId: session.id,
+      chunkId,
+      state: session.state,
+    });
+    return session;
+  }
+
+  exportTranscript(sessionId: string): string {
+    return this.sessions.exportTranscript(sessionId);
+  }
+
+  async retryTranslationSegment(sessionId: string, segmentId: string): Promise<ProcessingSession> {
+    const session = await this.sessions.retryTranslationSegment(sessionId, segmentId);
+    logger.info('Translation segment retry finished', {
+      sessionId: session.id,
+      segmentId,
+      state: session.state,
+    });
+    return session;
+  }
+
+  exportPairedTranslation(sessionId: string): string {
+    return this.sessions.exportPairedTranslation(sessionId);
+  }
+
+  async retryGeneratedAudioSegment(
+    sessionId: string,
+    segmentId: string,
+  ): Promise<ProcessingSession> {
+    const session = await this.sessions.retryGeneratedAudioSegment(sessionId, segmentId);
+    logger.info('Generated audio segment retry finished', {
+      sessionId: session.id,
+      segmentId,
+      state: session.state,
+    });
+    return session;
+  }
+
+  async getGeneratedAudioFile(
+    sessionId: string,
+    segmentId: string,
+  ): ReturnType<ProcessingSessionStore['getGeneratedAudioFile']> {
+    return await this.sessions.getGeneratedAudioFile(sessionId, segmentId);
+  }
+
   private async startMockStream(): Promise<void> {
     await this.provider.start();
-    this.streamStatus = 'live';
+    this.currentSession = null;
+    this.streamStatus = 'processing';
     this.emitState();
     logger.info('Mock video source started');
   }
 
   private async stopMockStream(): Promise<void> {
-    this.streamStatus = 'ended';
+    this.currentSession = null;
+    this.streamStatus = 'completed';
     this.emitState();
     await this.provider.stop();
     logger.info('Mock video source stopped');
@@ -77,16 +292,40 @@ export class IngestService {
   private emitState(): void {
     if (!this.socket?.connected) return;
 
-    const state: MediaStateEvent = {
-      eventId: this.config.eventId,
-      streamStatus: this.streamStatus,
-      videoSource: this.config.videoSource,
-      videoTimestampMs: this.provider.getVideoTimestampMs(),
-      sourceAudioActive: this.provider.isAudioActive(),
-      translatedLanguages: this.config.translatedLanguages,
-      connectedListeners: 0,
-      createdAt: new Date().toISOString(),
-    };
+    const state: MediaStateEvent = this.currentSession
+      ? {
+          eventId: this.currentSession.streamId,
+          streamId: this.currentSession.streamId,
+          processingSessionId: this.currentSession.id,
+          streamStatus: this.currentSession.state,
+          videoSource:
+            this.currentSession.sourceKind === 'microphone' ? 'microphone' : 'local-file',
+          ...(this.currentSession.media ? { media: this.currentSession.media } : {}),
+          audioExtraction: this.currentSession.audioExtraction,
+          microphoneCapture: this.currentSession.microphoneCapture,
+          transcription: this.currentSession.transcription,
+          translation: this.currentSession.translation,
+          generatedAudio: this.currentSession.generatedAudio,
+          monitoring: this.currentSession.monitoring,
+          videoTimestampMs: 0,
+          sourceAudioActive:
+            this.currentSession.sourceKind === 'microphone'
+              ? this.currentSession.microphoneCapture.status === 'capturing'
+              : (this.currentSession.media?.hasAudio ?? false),
+          translatedLanguages: [this.currentSession.targetLanguage],
+          connectedListeners: 0,
+          createdAt: new Date().toISOString(),
+        }
+      : {
+          eventId: this.config.eventId,
+          streamStatus: this.streamStatus,
+          videoSource: this.config.videoSource,
+          videoTimestampMs: this.provider.getVideoTimestampMs(),
+          sourceAudioActive: this.provider.isAudioActive(),
+          translatedLanguages: this.config.translatedLanguages,
+          connectedListeners: 0,
+          createdAt: new Date().toISOString(),
+        };
 
     this.socket.emit(SOCKET_EVENTS.INGEST_STATE, state);
     logger.debug('Media state emitted', {
@@ -95,9 +334,61 @@ export class IngestService {
     });
   }
 
+  private emitTranscriptionEvent(event: TranscriptionEvent): void {
+    if (!this.socket?.connected) return;
+    this.socket.emit(SOCKET_EVENTS.INGEST_TRANSCRIPTION, event);
+    logger.debug('Transcription event emitted', {
+      sessionId: event.sessionId,
+      chunkId: event.chunkId,
+      status: event.status,
+    });
+  }
+
+  private emitTranslationEvent(event: TimestampedTranslationEvent): void {
+    if (!this.socket?.connected) return;
+    this.socket.emit(SOCKET_EVENTS.INGEST_TRANSLATION, event);
+    logger.debug('Timestamped translation event emitted', {
+      sessionId: event.sessionId,
+      segmentId: event.segmentId,
+      status: event.status,
+    });
+  }
+
+  private emitGeneratedAudioReady(event: GeneratedAudioEvent, session: ProcessingSession): void {
+    if (!this.socket?.connected || event.status !== 'generated' || event.durationMs === null) return;
+    const readyEvent: GeneratedAudioReadyEvent = {
+      ...event,
+      sessionId: session.id,
+      streamId: session.streamId,
+      durationMs: event.durationMs,
+      audioUrl: this.generatedAudioUrl(session.id, event.segmentId),
+    };
+    this.socket.emit(SOCKET_EVENTS.INGEST_GENERATED_AUDIO, readyEvent);
+    logger.info('Generated audio ready event emitted', {
+      sessionId: event.sessionId,
+      segmentId: event.segmentId,
+      sequence: event.sequence,
+      targetLanguage: event.targetLanguage,
+    });
+  }
+
+  private emitGeneratedAudioReadySnapshot(): void {
+    if (!this.currentSession) return;
+    for (const event of this.currentSession.generatedAudio.events
+      .filter((item) => item.status === 'generated')
+      .sort((a, b) => a.sequence - b.sequence)) {
+      this.emitGeneratedAudioReady(event, this.currentSession);
+    }
+  }
+
+  private generatedAudioUrl(sessionId: string, segmentId: string): string {
+    const baseUrl = this.config.ingestPublicUrl.replace(/\/+$/, '');
+    return `${baseUrl}/sessions/${encodeURIComponent(sessionId)}/generated-audio/segments/${encodeURIComponent(segmentId)}/audio`;
+  }
+
   async stop(): Promise<void> {
     logger.info('Media ingest stopping');
-    this.streamStatus = 'ended';
+    this.streamStatus = 'completed';
     this.emitState();
 
     if (this.ticker) {
