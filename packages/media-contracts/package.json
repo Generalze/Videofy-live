@@ -14,7 +14,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "npm run build -w @videofy-live/shared-types && vitest run",
     "dev": "tsc --watch"
   },
   "dependencies": {

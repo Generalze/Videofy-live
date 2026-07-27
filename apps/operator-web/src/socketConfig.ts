@@ -21,3 +21,10 @@ export function createOperatorSocketOptions(): SocketClientOptions {
     ...resolveSocketTransportOptions(import.meta.env['VITE_SOCKET_TRANSPORT']),
   };
 }
+
+export function createBroadcasterSocketOptions(): SocketClientOptions {
+  return {
+    query: { role: 'broadcaster' },
+    ...resolveSocketTransportOptions(import.meta.env['VITE_SOCKET_TRANSPORT']),
+  };
+}

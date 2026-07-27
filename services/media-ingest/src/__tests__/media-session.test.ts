@@ -1,5 +1,8 @@
 import type { AudioExtractionMetadata, AudioChunkMetadata } from '@videofy-live/shared-types';
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { afterEach, describe, expect, it } from 'vitest';
 import { emptyAudioExtraction } from '../audio-extraction.js';
 import {
   MediaIngestError,
@@ -51,6 +54,13 @@ function store(extractAudio: AudioExtractor = successfulExtractor): ProcessingSe
   });
 }
 
+const tempDirs: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  tempDirs.length = 0;
+});
+
 function chunk(index: number, startMs: number, endMs: number): AudioChunkMetadata {
   return {
     chunkId: `ps_test:chunk:${index}`,
@@ -71,6 +81,37 @@ function completedExtraction(chunks: AudioChunkMetadata[]): AudioExtractionMetad
     chunks,
     completedAt: '2026-07-27T00:00:00.000Z',
   };
+}
+
+async function createTempDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'videofy-ingest-webrtc-'));
+  tempDirs.push(dir);
+  return dir;
+}
+
+async function createStagedWav(stagingDir: string, filename: string): Promise<string> {
+  const path = join(stagingDir, filename);
+  await writeFile(path, wavFixture());
+  return path;
+}
+
+function wavFixture(): Buffer {
+  const samples = Buffer.alloc(320);
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + samples.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(16000, 24);
+  header.writeUInt32LE(32000, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(samples.length, 40);
+  return Buffer.concat([header, samples]);
 }
 
 describe('ProcessingSessionStore', () => {
@@ -258,5 +299,113 @@ describe('ProcessingSessionStore', () => {
       status: 'cleaned',
       chunkCount: 0,
     });
+  });
+
+  it('creates a WebRTC transcription session and transcribes an ordered chunk without translation', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    const events: string[] = [];
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+      onTranscriptionEvent: (event) => events.push(`${event.sequence}:${event.status}`),
+    });
+    const session = await sessionStore.createWebRtcSession({
+      sessionId: 'wrs_demo',
+      broadcastId: 'broadcast_demo',
+      broadcasterPeerId: 'peer_broadcaster',
+      revision: 1,
+    });
+    const sourcePath = await createStagedWav(stagingDir, 'chunk.wav');
+
+    const updated = await sessionStore.ingestWebRtcChunk(session.id, {
+      sequence: 0,
+      startMs: 0,
+      endMs: 10,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: wavFixture().length,
+      sourcePath,
+    });
+
+    expect(updated.sourceKind).toBe('webrtc');
+    expect(updated.transcription.events[0]).toMatchObject({
+      sessionId: 'wrs_demo',
+      streamId: 'broadcast_demo',
+      sequence: 0,
+      startMs: 0,
+      endMs: 10,
+      status: 'transcribed',
+    });
+    expect(updated.translation.events).toHaveLength(0);
+    expect(updated.generatedAudio.events).toHaveLength(0);
+    expect(updated.webrtcTranscriptionBridge).toMatchObject({
+      status: 'chunking',
+      chunkCount: 1,
+      transcribedChunks: 1,
+      latestTranscript: 'Mock transcript chunk 1',
+    });
+    expect(events).toEqual(['0:queued', '0:transcribing', '0:transcribed']);
+  });
+
+  it('rejects duplicate and out-of-order WebRTC chunks clearly', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+    });
+    const session = await sessionStore.createWebRtcSession({
+      sessionId: 'wrs_order',
+      broadcastId: 'broadcast_demo',
+      broadcasterPeerId: 'peer_broadcaster',
+      revision: 1,
+    });
+
+    await expect(
+      sessionStore.ingestWebRtcChunk(session.id, {
+        sequence: 1,
+        startMs: 0,
+        endMs: 10,
+        sampleRate: 16000,
+        channelCount: 1,
+        pcmFormat: 'pcm_s16le',
+        mimeType: 'audio/wav',
+        sizeBytes: wavFixture().length,
+        sourcePath: await createStagedWav(stagingDir, 'out-of-order.wav'),
+      }),
+    ).rejects.toMatchObject({ code: 'audio-timeline-invalid' });
+  });
+
+  it('rejects unsafe WebRTC staged paths', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    const outsideDir = await createTempDir();
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+    });
+    const session = await sessionStore.createWebRtcSession({
+      sessionId: 'wrs_safe',
+      broadcastId: 'broadcast_demo',
+      broadcasterPeerId: 'peer_broadcaster',
+      revision: 1,
+    });
+
+    await expect(
+      sessionStore.ingestWebRtcChunk(session.id, {
+        sequence: 0,
+        startMs: 0,
+        endMs: 10,
+        sampleRate: 16000,
+        channelCount: 1,
+        pcmFormat: 'pcm_s16le',
+        mimeType: 'audio/wav',
+        sizeBytes: wavFixture().length,
+        sourcePath: await createStagedWav(outsideDir, 'outside.wav'),
+      }),
+    ).rejects.toMatchObject({ code: 'unsafe-filename' });
   });
 });

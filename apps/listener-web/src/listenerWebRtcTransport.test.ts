@@ -1,0 +1,185 @@
+import { describe, expect, it, vi } from 'vitest';
+import {
+  WEBRTC_BACKEND_MEDIA_PEER_ID,
+  WEBRTC_SIGNALLING_PROTOCOL_VERSION,
+  WebRtcSignallingClient,
+  type WebRtcSdpOfferEnvelope,
+} from '@videofy-live/shared-types';
+import { ListenerWebRtcTransportController } from './listenerWebRtcTransport';
+
+class FakeSignallingTransport {
+  connected = true;
+  readonly emitted: { event: string; payload: unknown }[] = [];
+  private readonly listeners = new Map<string, ((payload?: unknown) => void)[]>();
+  on(event: string, listener: (payload?: unknown) => void): void {
+    this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener]);
+  }
+  off(event: string, listener: (payload?: unknown) => void): void {
+    this.listeners.set(
+      event,
+      (this.listeners.get(event) ?? []).filter((item) => item !== listener),
+    );
+  }
+  emit(event: string, payload: unknown): void {
+    this.emitted.push({ event, payload });
+  }
+  fire(event: string, payload?: unknown): void {
+    for (const listener of this.listeners.get(event) ?? []) listener(payload);
+  }
+}
+
+class FakePeer {
+  connectionState: RTCPeerConnectionState = 'new';
+  iceConnectionState: RTCIceConnectionState = 'new';
+  localDescription: RTCSessionDescription | null = null;
+  remoteDescription: RTCSessionDescription | null = null;
+  onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null;
+  ontrack: ((event: RTCTrackEvent) => void) | null = null;
+  onconnectionstatechange: ((event?: Event) => void) | null = null;
+  oniceconnectionstatechange: ((event?: Event) => void) | null = null;
+  addTransceiver = vi.fn();
+  setRemoteDescription = vi.fn(async (offer: RTCSessionDescriptionInit) => {
+    this.remoteDescription = offer as RTCSessionDescription;
+  });
+  createAnswer = vi.fn(async () => ({ type: 'answer' as const, sdp: 'opaque-answer-sdp' }));
+  setLocalDescription = vi.fn(async (answer: RTCSessionDescriptionInit) => {
+    this.localDescription = answer as RTCSessionDescription;
+  });
+  addIceCandidate = vi.fn(async () => undefined);
+  close = vi.fn(() => {
+    this.connectionState = 'closed';
+  });
+}
+
+function createClient(): { client: WebRtcSignallingClient; transport: FakeSignallingTransport } {
+  const transport = new FakeSignallingTransport();
+  const client = new WebRtcSignallingClient({
+    role: 'listener',
+    broadcastId: 'broadcast_demo',
+    sessionId: 'wrs_demo',
+    peerId: 'peer_listener',
+    createId: () => 'id',
+  });
+  client.attach(transport as never);
+  return { client, transport };
+}
+
+function offer(overrides: Partial<WebRtcSdpOfferEnvelope> = {}): WebRtcSdpOfferEnvelope {
+  return {
+    type: 'sdp-offer',
+    protocolVersion: WEBRTC_SIGNALLING_PROTOCOL_VERSION,
+    messageId: 'msg_offer',
+    broadcastId: 'broadcast_demo',
+    sessionId: 'wrs_demo',
+    peerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+    senderRole: 'server',
+    revision: 1,
+    createdAt: '2026-07-27T00:00:00.000Z',
+    payload: { targetPeerId: 'peer_listener', sdp: 'opaque-offer-sdp' },
+    ...overrides,
+  };
+}
+
+describe('ListenerWebRtcTransportController', () => {
+  it('answers backend offers without creating local media tracks', async () => {
+    const { client, transport } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+    });
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+
+    expect(peer.addTransceiver).toHaveBeenCalledWith('audio', { direction: 'recvonly' });
+    expect(peer.setRemoteDescription).toHaveBeenCalledWith({ type: 'offer', sdp: 'opaque-offer-sdp' });
+    expect(peer.createAnswer).toHaveBeenCalledOnce();
+    expect(transport.emitted.at(-1)?.payload).toMatchObject({
+      type: 'sdp-answer',
+      peerId: 'peer_listener',
+      payload: { targetPeerId: WEBRTC_BACKEND_MEDIA_PEER_ID, sdp: 'opaque-answer-sdp' },
+    });
+  });
+
+  it('receives one remote audio stream and rejects duplicate tracks', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const onRemoteStream = vi.fn();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+      onRemoteStream,
+    });
+    const track = {
+      kind: 'audio',
+      readyState: 'live',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const secondTrack = {
+      kind: 'audio',
+      readyState: 'live',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const stream = { getTracks: () => [track] } as unknown as MediaStream;
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track, streams: [stream] } as unknown as RTCTrackEvent);
+    peer.ontrack?.({ track: secondTrack, streams: [] } as unknown as RTCTrackEvent);
+
+    expect(onRemoteStream).toHaveBeenCalledWith(stream);
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'failed',
+      remoteAudioTrackReceived: true,
+      lastError: { code: 'duplicate-peer' },
+    });
+  });
+
+  it('ignores stale offers and reports blocked playback truthfully', async () => {
+    const { client } = createClient();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => new FakePeer() as never,
+    });
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer({ revision: 1 }));
+    await controller.handleSignallingEvent(offer({ revision: 0, messageId: 'stale' }));
+    controller.markPlaybackBlocked('Autoplay requires user gesture.');
+
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'playback-blocked',
+      lastError: { code: 'playback-blocked' },
+    });
+  });
+
+  it('stops listener transport retries after the configured bound', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      maxRecoveryAttempts: 0,
+    });
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.iceConnectionState = 'failed';
+    peer.oniceconnectionstatechange?.();
+
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'failed',
+      recoveryAttempts: 0,
+      lastError: { code: 'negotiation-timeout', retryable: false },
+    });
+  });
+});

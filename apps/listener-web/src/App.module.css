@@ -156,6 +156,74 @@
   border-radius: var(--radius-md);
 }
 
+.signallingSection {
+  background: var(--color-surface);
+  padding: 1rem 1.25rem;
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.signallingHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.signallingSubtitle,
+.signallingState {
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+}
+
+.signallingControls {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.signallingInputLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: min(100%, 280px);
+  flex: 1;
+}
+
+.signallingInput {
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  border: 1px solid #3a3a4e;
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.6rem;
+  font-size: 0.9rem;
+}
+
+.signallingGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.55rem;
+  margin: 0;
+}
+
+.signallingGrid dt {
+  font-size: 0.68rem;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.signallingGrid dd {
+  margin: 0.15rem 0 0;
+  color: var(--color-text);
+  font-family: monospace;
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
 .controlGroup {
   display: flex;
   flex-direction: column;

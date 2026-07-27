@@ -9,7 +9,12 @@ setLogLevel(config.logLevel);
 
 const app = createApp();
 const server = createServer(app);
-const gateway = new Gateway(server, config.corsOrigins);
+const gateway = new Gateway(server, config.corsOrigins, {
+  mediaIngestUrl: config.mediaIngestUrl,
+  internalWebRtcToken: config.internalWebRtcToken,
+  webRtcTranscriptionChunkMs: config.webRtcTranscriptionChunkMs,
+  webRtcTranscriptionStagingDir: config.webRtcTranscriptionStagingDir,
+});
 
 server.listen(config.port, config.host, () => {
   logger.info('Realtime gateway started', {

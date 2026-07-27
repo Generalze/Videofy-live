@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, stat } from 'node:fs/promises';
-import { extname, relative, resolve } from 'node:path';
+import { extname, isAbsolute, relative, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type {
@@ -24,6 +24,7 @@ import type {
   TranscriptionEvent,
   TranscriptionSessionMetadata,
   TranscriptionStatus,
+  WebRtcTranscriptionBridgeMetadata,
 } from '@videofy-live/shared-types';
 import {
   cleanupAudioChunks,
@@ -90,14 +91,37 @@ export interface MicrophoneChunkInput {
   sourcePath?: string;
 }
 
+export interface WebRtcSessionInput {
+  sessionId: string;
+  broadcastId: string;
+  broadcasterPeerId: string;
+  revision: number;
+  targetLanguage?: string;
+}
+
+export interface WebRtcChunkInput {
+  sequence: number;
+  startMs: number;
+  endMs: number;
+  sampleRate: 16000;
+  channelCount: 1;
+  pcmFormat: 'pcm_s16le';
+  discontinuity?: boolean;
+  endOfStream?: boolean;
+  mimeType: 'audio/wav';
+  sizeBytes: number;
+  sourcePath: string;
+}
+
 export interface ProcessingSession {
   id: string;
   streamId: string;
   state: StreamStatus;
-  sourceKind: 'upload' | 'microphone';
+  sourceKind: 'upload' | 'microphone' | 'webrtc';
   media: MediaFileMetadata | null;
   audioExtraction: AudioExtractionMetadata;
   microphoneCapture: MicrophoneCaptureMetadata;
+  webrtcTranscriptionBridge?: WebRtcTranscriptionBridgeMetadata;
   transcription: TranscriptionSessionMetadata;
   translation: TranslationSessionMetadata;
   generatedAudio: TextToSpeechSessionMetadata;
@@ -122,6 +146,7 @@ export type AudioCleanup = (outputBaseDir: string, sessionId: string) => Promise
 
 export interface ProcessingSessionStoreOptions {
   outputBaseDir: string;
+  webRtcStagingDir?: string;
   onSessionChange?: (session: ProcessingSession) => void;
   onTranscriptionEvent?: (event: TranscriptionEvent) => void;
   onTranslationEvent?: (event: TimestampedTranslationEvent) => void;
@@ -303,7 +328,9 @@ export class ProcessingSessionStore {
   private readonly fingerprints = new Map<string, string>();
   private readonly resumeWaiters = new Map<string, Set<() => void>>();
   private readonly activeMicrophoneChunkSessions = new Set<string>();
+  private readonly activeWebRtcChunkSessions = new Set<string>();
   private readonly outputBaseDir: string;
+  private readonly webRtcStagingDir: string;
   private readonly onSessionChange: (session: ProcessingSession) => void;
   private readonly extractAudio: AudioExtractor;
   private readonly cleanupAudio: AudioCleanup;
@@ -324,6 +351,7 @@ export class ProcessingSessionStore {
 
   constructor(options: ProcessingSessionStoreOptions) {
     this.outputBaseDir = options.outputBaseDir;
+    this.webRtcStagingDir = options.webRtcStagingDir ?? resolve(process.cwd(), '../../uploads/webrtc-staging');
     this.onSessionChange = options.onSessionChange ?? (() => undefined);
     this.onTranscriptionEvent = options.onTranscriptionEvent ?? (() => undefined);
     this.onTranslationEvent = options.onTranslationEvent ?? (() => undefined);
@@ -481,6 +509,87 @@ export class ProcessingSessionStore {
     return { ...session };
   }
 
+  async createWebRtcSession(input: WebRtcSessionInput): Promise<ProcessingSession> {
+    assertSafeWebRtcSessionInput(input);
+    const existing = this.sessions.get(input.sessionId);
+    if (existing) {
+      if (existing.sourceKind !== 'webrtc') {
+        throw new MediaIngestError(
+          `WebRTC processing session ${input.sessionId} already exists for another source.`,
+          'duplicate-processing',
+          409,
+          { ...existing },
+        );
+      }
+      if (existing.webrtcTranscriptionBridge?.revision === input.revision) {
+        return { ...existing };
+      }
+      if (existing.state === 'processing' || existing.state === 'paused') {
+        throw new MediaIngestError(
+          `WebRTC processing session ${input.sessionId} is still active for revision ${existing.webrtcTranscriptionBridge?.revision}.`,
+          'duplicate-processing',
+          409,
+          { ...existing },
+        );
+      }
+      await rm(safeSessionOutputDir(this.outputBaseDir, existing.id), {
+        recursive: true,
+        force: true,
+      });
+      this.sessions.delete(existing.id);
+    }
+
+    const targetLanguage = this.resolveSessionTargetLanguage(input.targetLanguage);
+    const now = new Date().toISOString();
+    const session: ProcessingSession = {
+      id: input.sessionId,
+      streamId: input.broadcastId,
+      state: 'created',
+      sourceKind: 'webrtc',
+      media: null,
+      audioExtraction: {
+        ...emptyAudioExtraction('completed'),
+        completedAt: now,
+      },
+      microphoneCapture: emptyMicrophoneCapture('idle'),
+      webrtcTranscriptionBridge: {
+        status: 'ready',
+        broadcastId: input.broadcastId,
+        webRtcSessionId: input.sessionId,
+        broadcasterPeerId: input.broadcasterPeerId,
+        revision: input.revision,
+        chunkCount: 0,
+        processingChunks: 0,
+        transcribedChunks: 0,
+        failedChunks: 0,
+        latestTranscript: null,
+        lastError: null,
+        startedAt: now,
+      },
+      transcription: emptyTranscription('queued'),
+      translation: emptyTranslation('queued', targetLanguage, this.translationProvider.name),
+      generatedAudio: emptyGeneratedAudio(
+        'queued',
+        targetLanguage,
+        this.textToSpeechVoiceId,
+        this.textToSpeechProvider.name,
+      ),
+      monitoring: emptyMonitoring(),
+      targetLanguage,
+      sourcePath: '',
+      createdAt: now,
+      updatedAt: now,
+      error: null,
+    };
+
+    this.sessions.set(session.id, session);
+    this.emitSession(session);
+    this.transition(session.id, 'validating');
+    this.transition(session.id, 'ready');
+    this.transition(session.id, 'processing');
+    return { ...session };
+  }
+
   async ingestMicrophoneChunk(
     sessionId: string,
     input: MicrophoneChunkInput,
@@ -542,6 +651,57 @@ export class ProcessingSessionStore {
     }
   }
 
+  async ingestWebRtcChunk(sessionId: string, input: WebRtcChunkInput): Promise<ProcessingSession> {
+    const session = this.requireWebRtcSession(sessionId);
+    if (this.activeWebRtcChunkSessions.has(session.id)) {
+      throw new MediaIngestError(
+        `A WebRTC transcription chunk is already being processed for ${session.id}.`,
+        'duplicate-processing',
+        409,
+        { ...session },
+      );
+    }
+    this.activeWebRtcChunkSessions.add(session.id);
+    try {
+      this.assertWebRtcChunkAccepted(session, input);
+      const chunk = await this.storeWebRtcChunk(session, input);
+      session.audioExtraction = {
+        ...session.audioExtraction,
+        status: 'completed',
+        progressPct: 100,
+        chunkCount: session.audioExtraction.chunks.length,
+        chunks: session.audioExtraction.chunks,
+        completedAt: new Date().toISOString(),
+      };
+      this.updateWebRtcBridgeMetadata(session);
+      session.error = null;
+      this.emitSession(session);
+
+      const transcriptionEvent = this.createTranscriptionEvent(
+        session,
+        chunk.chunkId,
+        chunk.index,
+        '',
+        'und',
+        null,
+        'queued',
+      );
+      session.transcription.events = [...session.transcription.events, transcriptionEvent].sort(
+        (a, b) => a.sequence - b.sequence,
+      );
+      this.updateTranscriptionProgress(session);
+      this.updateWebRtcBridgeMetadata(session);
+      this.onTranscriptionEvent(transcriptionEvent);
+      this.emitSession(session);
+      return await this.processWebRtcTranscriptionEvent(session, transcriptionEvent);
+    } catch (error) {
+      await rm(input.sourcePath, { force: true });
+      return this.failWebRtcSession(session, error, 'WebRTC transcription chunk ingest failed.');
+    } finally {
+      this.activeWebRtcChunkSessions.delete(session.id);
+    }
+  }
+
   stopMicrophoneSession(sessionId: string): ProcessingSession {
     const session = this.requireMicrophoneSession(sessionId);
     if (session.state !== 'processing' && session.state !== 'paused') {
@@ -564,6 +724,36 @@ export class ProcessingSessionStore {
       this.transition(session.id, 'processing');
     }
     this.transition(session.id, 'completed');
+    return { ...session };
+  }
+
+  stopWebRtcSession(sessionId: string): ProcessingSession {
+    const session = this.requireWebRtcSession(sessionId);
+    if (session.state !== 'processing' && session.state !== 'paused' && session.state !== 'failed') {
+      throw new MediaIngestError(
+        `Only active WebRTC transcription sessions can be stopped.`,
+        'invalid-transition',
+        409,
+        { ...session },
+      );
+    }
+
+    if (session.webrtcTranscriptionBridge) {
+      session.webrtcTranscriptionBridge = {
+        ...session.webrtcTranscriptionBridge,
+        status: session.state === 'failed' ? 'failed' : 'stopped',
+        stoppedAt: new Date().toISOString(),
+      };
+    }
+    session.error = null;
+    if (session.state === 'paused') {
+      this.transition(session.id, 'processing');
+    }
+    if (session.state !== 'failed') {
+      this.transition(session.id, 'completed');
+    } else {
+      this.emitSession(session);
+    }
     return { ...session };
   }
 
@@ -1196,6 +1386,45 @@ export class ProcessingSessionStore {
     throw new MediaIngestError(message, 'invalid-media', 400, { ...session });
   }
 
+  private failWebRtcSession(
+    session: ProcessingSession,
+    error: unknown,
+    fallbackMessage: string,
+  ): ProcessingSession {
+    const message = error instanceof Error ? error.message : fallbackMessage;
+    session.error = message;
+    session.audioExtraction = {
+      ...session.audioExtraction,
+      status: 'failed',
+      error: message,
+    };
+    if (session.webrtcTranscriptionBridge) {
+      session.webrtcTranscriptionBridge = {
+        ...session.webrtcTranscriptionBridge,
+        status: 'failed',
+        lastError: message,
+        stoppedAt: new Date().toISOString(),
+      };
+    }
+    if (session.transcription.events.some((event) => event.status === 'failed')) {
+      session.transcription = {
+        ...session.transcription,
+        status: 'failed',
+        error: message,
+      };
+    }
+    if (session.state !== 'failed') {
+      this.transition(session.id, 'failed');
+    } else {
+      this.emitSession(session);
+    }
+
+    if (error instanceof MediaIngestError) {
+      throw new MediaIngestError(error.message, error.code, error.statusCode, { ...session });
+    }
+    throw new MediaIngestError(message, 'invalid-media', 400, { ...session });
+  }
+
   private markMicrophoneSessionFailed(
     session: ProcessingSession,
     message: string,
@@ -1323,6 +1552,19 @@ export class ProcessingSessionStore {
     return session;
   }
 
+  private requireWebRtcSession(sessionId: string): ProcessingSession {
+    const session = this.requireSession(sessionId);
+    if (session.sourceKind !== 'webrtc') {
+      throw new MediaIngestError(
+        `Session ${sessionId} is not a WebRTC transcription session.`,
+        'invalid-transition',
+        409,
+        { ...session },
+      );
+    }
+    return session;
+  }
+
   private emitSession(session: ProcessingSession): void {
     session.updatedAt = new Date().toISOString();
     session.monitoring = buildSessionMonitoring(session, session.monitoring.events);
@@ -1436,6 +1678,117 @@ export class ProcessingSessionStore {
     return chunk;
   }
 
+  private assertWebRtcChunkAccepted(session: ProcessingSession, input: WebRtcChunkInput): void {
+    if (session.state !== 'processing') {
+      throw new MediaIngestError(
+        `WebRTC transcription chunks can only be accepted while the session is processing.`,
+        'invalid-transition',
+        409,
+        { ...session },
+      );
+    }
+    if (
+      session.transcription.events.some(
+        (event) => event.status === 'transcribing' || event.status === 'retrying',
+      )
+    ) {
+      throw new MediaIngestError(
+        `A WebRTC transcription chunk is already being processed for ${session.id}.`,
+        'duplicate-processing',
+        409,
+        { ...session },
+      );
+    }
+    if (!Number.isInteger(input.sequence) || input.sequence < 0) {
+      throw new MediaIngestError(
+        'WebRTC chunk sequence must be a non-negative integer.',
+        'audio-timeline-invalid',
+        400,
+        { ...session },
+      );
+    }
+    if (input.sequence !== session.audioExtraction.chunks.length) {
+      throw new MediaIngestError(
+        'WebRTC chunk ordering failed: unexpected sequence number.',
+        'audio-timeline-invalid',
+        409,
+        { ...session },
+      );
+    }
+    if (
+      !Number.isInteger(input.startMs) ||
+      !Number.isInteger(input.endMs) ||
+      input.startMs < 0 ||
+      input.endMs <= input.startMs ||
+      input.endMs - input.startMs > 30_000
+    ) {
+      throw new MediaIngestError(
+        'WebRTC chunk timestamps are invalid.',
+        'audio-timeline-invalid',
+        400,
+        { ...session },
+      );
+    }
+    const previous = session.audioExtraction.chunks.at(-1);
+    if (previous && input.startMs !== previous.endMs && !input.discontinuity) {
+      throw new MediaIngestError(
+        'WebRTC chunk timeline failed: gap or overlap detected.',
+        'audio-timeline-invalid',
+        409,
+        { ...session },
+      );
+    }
+    if (
+      input.sampleRate !== 16000 ||
+      input.channelCount !== 1 ||
+      input.pcmFormat !== 'pcm_s16le' ||
+      input.mimeType !== 'audio/wav'
+    ) {
+      throw new MediaIngestError(
+        'WebRTC chunk format must be WAV mono 16 kHz PCM 16-bit.',
+        'invalid-media',
+        400,
+        { ...session },
+      );
+    }
+    if (input.sizeBytes <= 44 || !Number.isInteger(input.sizeBytes)) {
+      throw new MediaIngestError('WebRTC chunk is empty or invalid.', 'invalid-media', 400, {
+        ...session,
+      });
+    }
+    if (!isPathInside(this.webRtcStagingDir, input.sourcePath)) {
+      throw new MediaIngestError('Unsafe WebRTC chunk path rejected.', 'unsafe-filename', 400, {
+        ...session,
+      });
+    }
+  }
+
+  private async storeWebRtcChunk(
+    session: ProcessingSession,
+    input: WebRtcChunkInput,
+  ): Promise<MicrophoneCaptureChunkMetadata> {
+    const outputDir = safeSessionOutputDir(this.outputBaseDir, session.id);
+    await mkdir(outputDir, { recursive: true });
+    const filename = `webrtc-chunk-${String(input.sequence).padStart(6, '0')}.wav`;
+    await rename(input.sourcePath, resolve(outputDir, filename));
+
+    const chunk: MicrophoneCaptureChunkMetadata = {
+      chunkId: `${session.id}:webrtc:${session.webrtcTranscriptionBridge?.revision ?? 0}:${input.sequence}`,
+      index: input.sequence,
+      filename,
+      startMs: input.startMs,
+      endMs: input.endMs,
+      durationMs: input.endMs - input.startMs,
+      status: 'ready',
+      receivedAt: new Date().toISOString(),
+      mimeType: 'audio/wav',
+      sizeBytes: input.sizeBytes,
+    };
+
+    session.audioExtraction.chunks = [...session.audioExtraction.chunks, chunk];
+    return chunk;
+  }
+
   private async processMicrophoneTranscriptionEvent(
     session: ProcessingSession,
     event: TranscriptionEvent,
@@ -1501,6 +1854,75 @@ export class ProcessingSessionStore {
       return this.failMicrophoneSession(session, error, 'Microphone transcription failed.');
     }
     return await this.processMicrophoneTranslationEvent(session, transcribed);
+  }
+
+  private async processWebRtcTranscriptionEvent(
+    session: ProcessingSession,
+    event: TranscriptionEvent,
+  ): Promise<ProcessingSession> {
+    const chunk = session.audioExtraction.chunks.find((item) => item.chunkId === event.chunkId);
+    if (!chunk || chunk.status !== 'ready') {
+      throw new MediaIngestError(
+        `Unknown ready WebRTC chunk: ${event.chunkId}.`,
+        'invalid-transition',
+        404,
+        { ...session },
+      );
+    }
+
+    const { error: _eventError, ...eventWithoutError } = event;
+    const transcribing = {
+      ...eventWithoutError,
+      status: 'transcribing' as const,
+      createdAt: new Date().toISOString(),
+    };
+    this.replaceTranscriptionEvent(session, transcribing);
+    this.updateTranscriptionProgress(session);
+    this.updateWebRtcBridgeMetadata(session);
+    this.onTranscriptionEvent(transcribing);
+    this.emitSession(session);
+
+    try {
+      const result = await transcribeWithTimeout(
+        this.transcriptionProvider,
+        {
+          sessionId: session.id,
+          streamId: session.streamId,
+          chunk,
+          audioPath: resolve(safeSessionOutputDir(this.outputBaseDir, session.id), chunk.filename),
+        },
+        this.transcriptionTimeoutMs,
+      );
+      const transcribed = {
+        ...transcribing,
+        sourceText: result.sourceText,
+        detectedLanguage: result.detectedLanguage,
+        confidence: result.confidence,
+        providerLatencyMs: result.providerLatencyMs ?? null,
+        status: 'transcribed' as const,
+        createdAt: new Date().toISOString(),
+      };
+      this.replaceTranscriptionEvent(session, transcribed);
+      this.updateTranscriptionProgress(session);
+      this.updateWebRtcBridgeMetadata(session);
+      this.onTranscriptionEvent(transcribed);
+      this.emitSession(session);
+      return { ...session };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Transcription failed.';
+      const failed = {
+        ...transcribing,
+        status: 'failed' as const,
+        error: message,
+        createdAt: new Date().toISOString(),
+      };
+      this.replaceTranscriptionEvent(session, failed);
+      this.updateTranscriptionProgress(session);
+      this.updateWebRtcBridgeMetadata(session);
+      this.onTranscriptionEvent(failed);
+      this.emitSession(session);
+      return this.failWebRtcSession(session, error, 'WebRTC transcription failed.');
+    }
   }
 
   private async processMicrophoneTranslationEvent(
@@ -1817,6 +2239,41 @@ export class ProcessingSessionStore {
       failedChunks,
       detectedLanguage,
       progressPct: events.length === 0 ? 0 : Math.round((transcribedChunks / events.length) * 100),
+    };
+  }
+
+  private updateWebRtcBridgeMetadata(session: ProcessingSession): void {
+    if (!session.webrtcTranscriptionBridge) return;
+    const events = session.transcription.events;
+    const processingChunks = events.filter(
+      (event) => event.status === 'queued' || event.status === 'transcribing' || event.status === 'retrying',
+    ).length;
+    const transcribedChunks = events.filter((event) => event.status === 'transcribed').length;
+    const failedChunks = events.filter((event) => event.status === 'failed').length;
+    const latestTranscript =
+      events
+        .filter((event) => event.status === 'transcribed')
+        .sort((a, b) => b.sequence - a.sequence)[0]?.sourceText ?? null;
+    const lastError =
+      events
+        .filter((event) => event.error)
+        .sort((a, b) => b.sequence - a.sequence)[0]?.error ?? null;
+    session.webrtcTranscriptionBridge = {
+      ...session.webrtcTranscriptionBridge,
+      status:
+        failedChunks > 0
+          ? 'failed'
+          : processingChunks > 0
+            ? 'processing'
+            : events.length > 0
+              ? 'chunking'
+              : session.webrtcTranscriptionBridge.status,
+      chunkCount: session.audioExtraction.chunks.length,
+      processingChunks,
+      transcribedChunks,
+      failedChunks,
+      latestTranscript,
+      lastError,
     };
   }
 
@@ -2440,6 +2897,28 @@ function assertSafeOriginalFilename(filename: string): void {
   ) {
     throw new MediaIngestError('Unsafe media filename rejected.', 'unsafe-filename', 400);
   }
+}
+
+function assertSafeWebRtcSessionInput(input: WebRtcSessionInput): void {
+  for (const [field, value] of [
+    ['sessionId', input.sessionId],
+    ['broadcastId', input.broadcastId],
+    ['broadcasterPeerId', input.broadcasterPeerId],
+  ] as const) {
+    if (!/^[A-Za-z0-9_-]{1,120}$/.test(value)) {
+      throw new MediaIngestError(`Unsafe WebRTC ${field} rejected.`, 'unsafe-filename', 400);
+    }
+  }
+  if (!Number.isInteger(input.revision) || input.revision < 0) {
+    throw new MediaIngestError('WebRTC revision must be a non-negative integer.', 'invalid-media', 400);
+  }
+}
+
+function isPathInside(parentDir: string, childPath: string): boolean {
+  const parent = resolve(parentDir);
+  const child = resolve(childPath);
+  const relation = relative(parent, child);
+  return relation !== '' && !relation.startsWith('..') && !isAbsolute(relation);
 }
 
 function isSupportedExtension(extension: string): extension is SupportedMediaExtension {

@@ -39,6 +39,15 @@ export const SOCKET_EVENTS = {
   // Operator → gateway
   OPERATOR_CONTROL: 'operator:control',
 
+  // WebRTC signalling (P4.0 contracts only; no media transport)
+  WEBRTC_SESSION_CREATE: 'webrtc:session:create',
+  WEBRTC_SESSION_JOIN: 'webrtc:session:join',
+  WEBRTC_SIGNAL: 'webrtc:signal',
+  WEBRTC_SESSION_LEAVE: 'webrtc:session:leave',
+  WEBRTC_SESSION_CLOSE: 'webrtc:session:close',
+  WEBRTC_SESSION_EVENT: 'webrtc:session:event',
+  WEBRTC_ERROR: 'webrtc:error',
+
   // Shared
   CONNECTED: 'connect',
   DISCONNECTED: 'disconnect',

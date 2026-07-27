@@ -6,12 +6,15 @@ import type {
   TimestampedTranslationEvent,
   TranscriptionEvent,
   TranslationEvent,
+  WebRtcIncomingSignallingEnvelope,
 } from '@videofy-live/shared-types';
 import {
   INGEST_ROOM,
   languageRoom,
   OPERATOR_ROOM,
   SOCKET_EVENTS,
+  WEBRTC_BACKEND_MEDIA_PEER_ID,
+  WEBRTC_SIGNALLING_LIMITS,
   WORKER_ROOM,
 } from '@videofy-live/shared-types';
 import {
@@ -20,19 +23,37 @@ import {
   safeParseTimestampedTranslationEvent,
   safeParseTranscriptionEvent,
   safeParseTranslationEvent,
+  safeParseWebRtcSignallingEnvelope,
+  isUnsupportedWebRtcProtocolVersion,
 } from '@videofy-live/media-contracts';
 import { EventStore } from './event-store.js';
 import { GeneratedAudioStore } from './generated-audio-store.js';
 import { logger } from './logger.js';
+import {
+  WebRtcSessionRegistry,
+  WebRtcSignallingError,
+  signallingErrorEnvelope,
+  type WebRtcRouteResult,
+} from './webrtc-session-registry.js';
+import {
+  BackendMediaPeerError,
+  BackendWebRtcMediaPeerRegistry,
+  BACKEND_WEBRTC_MEDIA_SOCKET_ID,
+  backendSignalEnvelope,
+} from './webrtc-media-peer-registry.js';
+import { BackendWebRtcListenerPeerRegistry } from './webrtc-listener-peer-registry.js';
+import { WebRtcTranscriptionBridge } from './webrtc-transcription-bridge.js';
 
 /** Client role determined by query parameter on connect. */
-type ClientRole = 'listener' | 'operator' | 'worker' | 'ingest';
+type ClientRole = 'listener' | 'operator' | 'worker' | 'ingest' | 'broadcaster' | 'server';
 
 interface ClientState {
   role: ClientRole;
   socketId: string;
   connectedAt: string;
   targetLanguage: string | undefined;
+  signallingWindowStartedAt: number;
+  signallingMessageCount: number;
 }
 
 type ServiceName = 'gateway' | 'media-ingest' | 'speech-worker';
@@ -59,12 +80,69 @@ export class Gateway {
     onReady: (events) => this.broadcastTranslationEvents(events),
   });
   private readonly generatedAudioStore = new GeneratedAudioStore();
+  private readonly webrtcSessions = new WebRtcSessionRegistry();
+  private readonly webRtcTranscriptionBridge: WebRtcTranscriptionBridge;
+  private readonly backendMediaPeers: BackendWebRtcMediaPeerRegistry;
+  private readonly listenerMediaPeers: BackendWebRtcListenerPeerRegistry;
   private readonly clients = new Map<string, ClientState>();
   private readonly activeWorkers = new Set<string>();
   private readonly activeIngestClients = new Set<string>();
   private listenerCount = 0;
 
-  constructor(httpServer: HttpServer, corsOrigins: string[]) {
+  constructor(
+    httpServer: HttpServer,
+    corsOrigins: string[],
+    options: {
+      mediaIngestUrl?: string;
+      internalWebRtcToken?: string | null;
+      webRtcTranscriptionChunkMs?: number;
+      webRtcTranscriptionStagingDir?: string;
+    } = {},
+  ) {
+    this.webRtcTranscriptionBridge = new WebRtcTranscriptionBridge({
+      ...(options.mediaIngestUrl ? { mediaIngestUrl: options.mediaIngestUrl } : {}),
+      ...(options.internalWebRtcToken ? { internalAuthToken: options.internalWebRtcToken } : {}),
+      stagingDir: options.webRtcTranscriptionStagingDir ?? '../../uploads/webrtc-staging',
+      ...(options.webRtcTranscriptionChunkMs
+        ? { chunkDurationMs: options.webRtcTranscriptionChunkMs }
+        : {}),
+    });
+    this.listenerMediaPeers = new BackendWebRtcListenerPeerRegistry({
+      onLocalSignal: (envelope) => this.routeBackendWebRtcSignal(envelope),
+    });
+    this.backendMediaPeers = new BackendWebRtcMediaPeerRegistry({
+      onLocalSignal: (envelope) => this.routeBackendWebRtcSignal(envelope),
+      onPeerReady: (envelope) => {
+        this.routeBackendWebRtcSignal(backendSignalEnvelope(envelope));
+        void this.startListenerDeliveryForSession(envelope.sessionId);
+      },
+      onAudioFrame: (context, data) => {
+        try {
+          this.webRtcTranscriptionBridge.handleFrame(context, data);
+        } catch (error) {
+          logger.warn('WebRTC transcription bridge frame handling failed', {
+            sessionId: context.sessionId,
+            broadcastId: context.broadcastId,
+            revision: context.revision,
+            message: error instanceof Error ? error.message : 'unknown transcription bridge failure',
+          });
+        }
+        try {
+          this.listenerMediaPeers.fanOutAudioFrame(context.sessionId, data);
+        } catch (error) {
+          logger.warn('WebRTC listener programme-audio fanout failed', {
+            sessionId: context.sessionId,
+            broadcastId: context.broadcastId,
+            revision: context.revision,
+            message: error instanceof Error ? error.message : 'unknown listener fanout failure',
+          });
+        }
+      },
+      onAudioPeerClosed: (context, reason) => {
+        this.webRtcTranscriptionBridge.endSession(context, reason);
+        this.listenerMediaPeers.closeSession(context.sessionId, reason);
+      },
+    });
     this.io = new SocketServer(httpServer, {
       cors: { origin: corsOrigins, methods: ['GET', 'POST'] },
       transports: ['websocket', 'polling'],
@@ -81,6 +159,8 @@ export class Gateway {
       socketId: socket.id,
       connectedAt: new Date().toISOString(),
       targetLanguage: undefined,
+      signallingWindowStartedAt: Date.now(),
+      signallingMessageCount: 0,
     };
     this.clients.set(socket.id, state);
 
@@ -113,6 +193,14 @@ export class Gateway {
         this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
         logger.info('Media ingest connected', { socketId: socket.id });
         break;
+      case 'broadcaster':
+        this.handleWebRtcSocket(socket, role);
+        logger.info('WebRTC broadcaster signalling socket connected', { socketId: socket.id });
+        break;
+      case 'server':
+        this.handleWebRtcSocket(socket, role);
+        logger.info('WebRTC server signalling socket connected', { socketId: socket.id });
+        break;
     }
 
     socket.on('disconnect', () => this.handleDisconnect(socket));
@@ -123,10 +211,14 @@ export class Gateway {
     if (role === 'operator') return 'operator';
     if (role === 'worker') return 'worker';
     if (role === 'ingest') return 'ingest';
+    if (role === 'broadcaster') return 'broadcaster';
+    if (role === 'server') return 'server';
     return 'listener';
   }
 
   private handleListenerSocket(socket: Socket, state: ClientState): void {
+    this.handleWebRtcSocket(socket, 'listener');
+
     socket.on(SOCKET_EVENTS.JOIN_LANGUAGE, (targetLanguage: unknown) => {
       if (typeof targetLanguage !== 'string' || targetLanguage.length < 2) {
         socket.emit(SOCKET_EVENTS.ERROR, { message: 'Invalid targetLanguage' });
@@ -147,6 +239,138 @@ export class Gateway {
           state.targetLanguage = undefined;
         }
       }
+    });
+  }
+
+  private handleWebRtcSocket(socket: Socket, role: 'broadcaster' | 'listener' | 'server'): void {
+    socket.on(SOCKET_EVENTS.WEBRTC_SESSION_CREATE, (raw: unknown) => {
+      const parsed = this.parseWebRtcEnvelope(raw, socket);
+      if (!parsed) return;
+      if (parsed.type !== 'session-create') {
+        this.emitWebRtcError(socket, parsed, new WebRtcSignallingError(
+          'invalid-payload',
+          'Expected WebRTC session-create message.',
+          false,
+        ));
+        return;
+      }
+      if (!this.assertWebRtcSocketRole(socket, role, parsed)) return;
+      const result = this.tryWebRtc(socket, parsed, () =>
+        this.webrtcSessions.createSession(socket.id, parsed),
+      );
+      if (result?.outgoing.sessionId) void socket.join(this.webrtcRoom(result.outgoing.sessionId));
+      this.applyWebRtcRoute(socket, result);
+    });
+
+    socket.on(SOCKET_EVENTS.WEBRTC_SESSION_JOIN, (raw: unknown) => {
+      const parsed = this.parseWebRtcEnvelope(raw, socket);
+      if (!parsed) return;
+      if (parsed.type !== 'session-join') {
+        this.emitWebRtcError(socket, parsed, new WebRtcSignallingError(
+          'invalid-payload',
+          'Expected WebRTC session-join message.',
+          false,
+        ));
+        return;
+      }
+      if (!this.assertWebRtcSocketRole(socket, role, parsed)) return;
+      const result = this.tryWebRtc(socket, parsed, () =>
+        this.webrtcSessions.joinSession(socket.id, parsed),
+      );
+      if (result && parsed.sessionId) void socket.join(this.webrtcRoom(parsed.sessionId));
+      this.applyWebRtcRoute(socket, result);
+      if (result && parsed.sessionId && role === 'listener') {
+        void this.startListenerDeliveryForSession(parsed.sessionId);
+      }
+    });
+
+    socket.on(SOCKET_EVENTS.WEBRTC_SIGNAL, (raw: unknown) => {
+      const parsed = this.parseWebRtcEnvelope(raw, socket);
+      if (!parsed) return;
+      if (
+        parsed.type === 'session-create' ||
+        parsed.type === 'session-join' ||
+        parsed.type === 'session-close'
+      ) {
+        this.emitWebRtcError(socket, parsed, new WebRtcSignallingError(
+          'invalid-payload',
+          'Expected WebRTC signal message.',
+          false,
+        ));
+        return;
+      }
+      if (!this.assertWebRtcSocketRole(socket, role, parsed)) return;
+      if (this.isBackendMediaOffer(parsed)) {
+        this.handleBackendMediaOffer(socket, parsed);
+        return;
+      }
+      if (this.isBackendMediaIce(parsed)) {
+        this.handleBackendMediaIce(socket, parsed);
+        return;
+      }
+      if (this.isBackendListenerAnswer(parsed)) {
+        this.handleBackendListenerAnswer(socket, parsed);
+        return;
+      }
+      if (parsed.type === 'peer-disconnect') {
+        if (parsed.payload.targetPeerId === WEBRTC_BACKEND_MEDIA_PEER_ID) {
+          this.handleBackendMediaDisconnect(socket, parsed);
+          return;
+        }
+        this.emitWebRtcError(socket, parsed, new WebRtcSignallingError(
+          'invalid-payload',
+          'Expected backend-targeted WebRTC peer-disconnect signal.',
+          false,
+        ));
+        return;
+      }
+      this.applyWebRtcRoute(socket, this.tryWebRtc(socket, parsed, () =>
+        this.webrtcSessions.signal(socket.id, parsed),
+      ));
+    });
+
+    socket.on(SOCKET_EVENTS.WEBRTC_SESSION_LEAVE, (raw: unknown) => {
+      const parsed = this.parseWebRtcEnvelope(raw, socket);
+      if (!parsed) return;
+      if (parsed.type !== 'peer-disconnect') {
+        this.emitWebRtcError(socket, parsed, new WebRtcSignallingError(
+          'invalid-payload',
+          'Expected WebRTC peer-disconnect message.',
+          false,
+        ));
+        return;
+      }
+      if (!this.assertWebRtcSocketRole(socket, role, parsed)) return;
+      const result = this.tryWebRtc(socket, parsed, () =>
+        this.webrtcSessions.signal(socket.id, parsed),
+      );
+      this.applyWebRtcRoute(socket, result);
+      if (result && parsed.sessionId && role === 'listener') {
+        this.listenerMediaPeers.closeListenerPeer(parsed.sessionId, parsed.peerId, 'listener left signalling session');
+      }
+      if (result && parsed.sessionId) void socket.leave(this.webrtcRoom(parsed.sessionId));
+    });
+
+    socket.on(SOCKET_EVENTS.WEBRTC_SESSION_CLOSE, (raw: unknown) => {
+      const parsed = this.parseWebRtcEnvelope(raw, socket);
+      if (!parsed) return;
+      if (parsed.type !== 'session-close') {
+        this.emitWebRtcError(socket, parsed, new WebRtcSignallingError(
+          'invalid-payload',
+          'Expected WebRTC session-close message.',
+          false,
+        ));
+        return;
+      }
+      if (!this.assertWebRtcSocketRole(socket, role, parsed)) return;
+      const result = this.tryWebRtc(socket, parsed, () =>
+        this.webrtcSessions.signal(socket.id, parsed),
+      );
+      if (result?.outgoing.sessionId) {
+        this.backendMediaPeers.closeSession(result.outgoing.sessionId, 'broadcaster closed signalling session');
+        this.listenerMediaPeers.closeSession(result.outgoing.sessionId, 'broadcaster closed signalling session');
+      }
+      this.applyWebRtcRoute(socket, result);
     });
   }
 
@@ -301,6 +525,23 @@ export class Gateway {
   }
 
   private handleDisconnect(socket: Socket): void {
+    this.backendMediaPeers.closeByBroadcasterSocket(socket.id);
+    this.listenerMediaPeers.closeByListenerSocket(socket.id);
+    for (const result of this.webrtcSessions.cleanupSocket(socket.id)) {
+      if (result.outgoing.sessionId) {
+        this.backendMediaPeers.closeSession(result.outgoing.sessionId, 'socket disconnected');
+        if (result.outgoing.senderRole === 'broadcaster') {
+          this.listenerMediaPeers.closeSession(result.outgoing.sessionId, 'broadcaster socket disconnected');
+        } else if (result.outgoing.senderRole === 'listener') {
+          this.listenerMediaPeers.closeListenerPeer(
+            result.outgoing.sessionId,
+            result.outgoing.peerId,
+            'listener socket disconnected',
+          );
+        }
+      }
+      this.applyWebRtcRoute(socket, result);
+    }
     const state = this.clients.get(socket.id);
     if (state?.role === 'listener') {
       this.listenerCount = Math.max(0, this.listenerCount - 1);
@@ -319,6 +560,295 @@ export class Gateway {
     logger.info('Client disconnected', { socketId: socket.id, role: state?.role });
   }
 
+  private parseWebRtcEnvelope(
+    raw: unknown,
+    socket: Socket,
+  ): WebRtcIncomingSignallingEnvelope | null {
+    if (!this.consumeWebRtcRateLimit(socket)) {
+      this.emitWebRtcError(socket, raw, new WebRtcSignallingError(
+        'invalid-state-transition',
+        'WebRTC signalling rate limit exceeded. Retry after a short backoff.',
+        true,
+      ));
+      return null;
+    }
+    if (estimateJsonBytes(raw) > WEBRTC_SIGNALLING_LIMITS.rawPayloadMaxBytes) {
+      this.emitWebRtcError(socket, raw, new WebRtcSignallingError(
+        'payload-too-large',
+        'WebRTC signalling payload is too large.',
+        false,
+      ));
+      logger.warn('Oversized WebRTC signalling payload rejected', { socketId: socket.id });
+      return null;
+    }
+    if (isUnsupportedWebRtcProtocolVersion(raw)) {
+      this.emitWebRtcError(socket, raw, new WebRtcSignallingError(
+        'unsupported-protocol-version',
+        'Unsupported WebRTC signalling protocol version.',
+        false,
+      ));
+      return null;
+    }
+    const result = safeParseWebRtcSignallingEnvelope(raw);
+    if (!result.success) {
+      this.emitWebRtcError(socket, raw, new WebRtcSignallingError(
+        'invalid-payload',
+        'Invalid WebRTC signalling payload.',
+        false,
+      ));
+      logger.warn('Invalid WebRTC signalling payload rejected', { socketId: socket.id });
+      return null;
+    }
+    return result.data as WebRtcIncomingSignallingEnvelope;
+  }
+
+  private consumeWebRtcRateLimit(socket: Socket): boolean {
+    const state = this.clients.get(socket.id);
+    if (!state) return false;
+    const now = Date.now();
+    if (now - state.signallingWindowStartedAt >= WEBRTC_SIGNALLING_LIMITS.rateLimitWindowMs) {
+      state.signallingWindowStartedAt = now;
+      state.signallingMessageCount = 0;
+    }
+    state.signallingMessageCount++;
+    return state.signallingMessageCount <= WEBRTC_SIGNALLING_LIMITS.maxMessagesPerSocketWindow;
+  }
+
+  private assertWebRtcSocketRole(
+    socket: Socket,
+    socketRole: 'broadcaster' | 'listener' | 'server',
+    envelope: WebRtcIncomingSignallingEnvelope,
+  ): boolean {
+    if (socketRole !== envelope.senderRole) {
+      this.emitWebRtcError(socket, envelope, new WebRtcSignallingError(
+        'forbidden-role',
+        'Socket role cannot send WebRTC signalling for another role.',
+        false,
+      ));
+      return false;
+    }
+    return true;
+  }
+
+  private tryWebRtc(
+    socket: Socket,
+    envelope: WebRtcIncomingSignallingEnvelope,
+    action: () => WebRtcRouteResult,
+  ): WebRtcRouteResult | null {
+    try {
+      const result = action();
+      logger.info('WebRTC signalling accepted', {
+        type: envelope.type,
+        sessionId: envelope.sessionId,
+        peerId: envelope.peerId,
+        role: envelope.senderRole,
+        revision: envelope.revision,
+      });
+      return result;
+    } catch (error) {
+      this.emitWebRtcError(socket, envelope, error);
+      return null;
+    }
+  }
+
+  private isBackendMediaOffer(
+    envelope: WebRtcIncomingSignallingEnvelope,
+  ): envelope is Extract<WebRtcIncomingSignallingEnvelope, { type: 'sdp-offer' }> {
+    return envelope.type === 'sdp-offer' && envelope.payload.targetPeerId === WEBRTC_BACKEND_MEDIA_PEER_ID;
+  }
+
+  private isBackendMediaIce(
+    envelope: WebRtcIncomingSignallingEnvelope,
+  ): envelope is Extract<WebRtcIncomingSignallingEnvelope, { type: 'ice-candidate' | 'ice-complete' }> {
+    return (
+      (envelope.type === 'ice-candidate' || envelope.type === 'ice-complete') &&
+      envelope.payload.targetPeerId === WEBRTC_BACKEND_MEDIA_PEER_ID
+    );
+  }
+
+  private isBackendListenerAnswer(
+    envelope: WebRtcIncomingSignallingEnvelope,
+  ): envelope is Extract<WebRtcIncomingSignallingEnvelope, { type: 'sdp-answer' }> {
+    return (
+      envelope.type === 'sdp-answer' &&
+      envelope.senderRole === 'listener' &&
+      envelope.payload.targetPeerId === WEBRTC_BACKEND_MEDIA_PEER_ID
+    );
+  }
+
+  private handleBackendMediaOffer(
+    socket: Socket,
+    parsed: Extract<WebRtcIncomingSignallingEnvelope, { type: 'sdp-offer' }>,
+  ): void {
+    void this.completeBackendMediaOffer(socket, parsed).catch((error: unknown) => {
+      this.emitWebRtcError(socket, parsed, normalizeBackendGatewayError(error));
+    });
+  }
+
+  private async completeBackendMediaOffer(
+    socket: Socket,
+    parsed: Extract<WebRtcIncomingSignallingEnvelope, { type: 'sdp-offer' }>,
+  ): Promise<void> {
+    this.webrtcSessions.ensureBackendMediaPeer(
+      parsed.sessionId,
+      BACKEND_WEBRTC_MEDIA_SOCKET_ID,
+      WEBRTC_BACKEND_MEDIA_PEER_ID,
+    );
+    const offerRoute = this.tryWebRtc(socket, parsed, () =>
+      this.webrtcSessions.signal(socket.id, parsed),
+    );
+    if (!offerRoute) return;
+    const sessionId = parsed.sessionId;
+    if (!sessionId) {
+      throw new BackendMediaPeerError('peer-not-found', 'Backend media signalling session was not found.', false);
+    }
+    const summary = this.webrtcSessions.getSessionSummary(sessionId);
+    if (!summary) {
+      throw new BackendMediaPeerError('peer-not-found', 'Backend media signalling session was not found.', false);
+    }
+    const answer = await this.backendMediaPeers.acceptOffer(socket.id, parsed, summary);
+    this.routeBackendWebRtcSignal(backendSignalEnvelope(answer));
+  }
+
+  private handleBackendMediaIce(
+    socket: Socket,
+    parsed: Extract<WebRtcIncomingSignallingEnvelope, { type: 'ice-candidate' | 'ice-complete' }>,
+  ): void {
+    const route = this.tryWebRtc(socket, parsed, () => this.webrtcSessions.signal(socket.id, parsed));
+    if (!route) return;
+    if (parsed.type === 'ice-candidate') {
+      const registry =
+        parsed.senderRole === 'listener' ? this.listenerMediaPeers : this.backendMediaPeers;
+      void registry.addRemoteCandidate(parsed).catch((error: unknown) => {
+        this.emitWebRtcError(socket, parsed, normalizeBackendGatewayError(error));
+      });
+    }
+  }
+
+  private handleBackendListenerAnswer(
+    socket: Socket,
+    parsed: Extract<WebRtcIncomingSignallingEnvelope, { type: 'sdp-answer' }>,
+  ): void {
+    const route = this.tryWebRtc(socket, parsed, () => this.webrtcSessions.signal(socket.id, parsed));
+    if (!route) return;
+    void this.listenerMediaPeers.acceptAnswer(parsed).catch((error: unknown) => {
+      this.emitWebRtcError(socket, parsed, normalizeBackendGatewayError(error));
+    });
+  }
+
+  private handleBackendMediaDisconnect(
+    socket: Socket,
+    parsed: Extract<WebRtcIncomingSignallingEnvelope, { type: 'peer-disconnect' }>,
+  ): void {
+    const result = this.tryWebRtc(socket, parsed, () => {
+      this.webrtcSessions.disconnectBackendMediaPeer(socket.id, parsed);
+      this.backendMediaPeers.closeSession(parsed.sessionId, parsed.payload.reason ?? 'backend media peer disconnected');
+      return {
+        outgoing: {
+          ...parsed,
+          peerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+          senderRole: 'server',
+        },
+      };
+    });
+    this.applyWebRtcRoute(socket, result);
+  }
+
+  private routeBackendWebRtcSignal(
+    envelope: Exclude<
+      WebRtcIncomingSignallingEnvelope,
+      Extract<WebRtcIncomingSignallingEnvelope, { type: 'session-create' | 'session-join' }>
+    >,
+  ): void {
+    try {
+      const route = this.webrtcSessions.signal(BACKEND_WEBRTC_MEDIA_SOCKET_ID, envelope);
+      this.applyBackendWebRtcRoute(route);
+    } catch (error) {
+      logger.warn('Backend WebRTC signalling rejected', {
+        code: error instanceof WebRtcSignallingError ? error.code : 'internal-signalling-error',
+        sessionId: envelope.sessionId,
+        peerId: envelope.peerId,
+      });
+    }
+  }
+
+  private async startListenerDeliveryForSession(sessionId: string | undefined): Promise<void> {
+    if (!sessionId) return;
+    const broadcaster = this.backendMediaPeers.getSnapshot(sessionId);
+    if (!broadcaster || !broadcaster.audioActivityDetected || broadcaster.audioTrackState !== 'active') {
+      return;
+    }
+    const summary = this.webrtcSessions.getSessionSummary(sessionId);
+    if (!summary) return;
+    const listeners = this.webrtcSessions.getListenerPeers(sessionId);
+    for (const listener of listeners) {
+      if (this.listenerMediaPeers.hasActivePeer(sessionId, listener.peerId)) continue;
+      try {
+        this.webrtcSessions.ensureBackendMediaPeer(
+          sessionId,
+          BACKEND_WEBRTC_MEDIA_SOCKET_ID,
+          WEBRTC_BACKEND_MEDIA_PEER_ID,
+        );
+        const current = this.webrtcSessions.getSessionSummary(sessionId);
+        if (!current) return;
+        const offer = await this.listenerMediaPeers.createOffer(listener, current, current.revision + 1);
+        if (offer) this.routeBackendWebRtcSignal(offer);
+      } catch (error) {
+        logger.warn('Backend listener WebRTC offer failed', {
+          code: error instanceof BackendMediaPeerError ? error.code : 'internal-signalling-error',
+          sessionId,
+          listenerPeerId: listener.peerId,
+        });
+      }
+    }
+  }
+
+  private applyBackendWebRtcRoute(result: WebRtcRouteResult | null): void {
+    if (!result) return;
+    if (result.targetSocketId) {
+      this.io.to(result.targetSocketId).emit(SOCKET_EVENTS.WEBRTC_SESSION_EVENT, result.outgoing);
+      return;
+    }
+    if (result.broadcastSessionId) {
+      this.io
+        .to(this.webrtcRoom(result.broadcastSessionId))
+        .emit(SOCKET_EVENTS.WEBRTC_SESSION_EVENT, result.outgoing);
+    }
+  }
+
+  private applyWebRtcRoute(sourceSocket: Socket, result: WebRtcRouteResult | null): void {
+    if (!result) return;
+    if (result.targetSocketId) {
+      this.io.to(result.targetSocketId).emit(SOCKET_EVENTS.WEBRTC_SESSION_EVENT, result.outgoing);
+      return;
+    }
+    if (result.broadcastSessionId) {
+      this.io
+        .to(this.webrtcRoom(result.broadcastSessionId))
+        .emit(SOCKET_EVENTS.WEBRTC_SESSION_EVENT, result.outgoing);
+      return;
+    }
+    sourceSocket.emit(SOCKET_EVENTS.WEBRTC_SESSION_EVENT, result.outgoing);
+  }
+
+  private emitWebRtcError(socket: Socket, raw: unknown, error: unknown): void {
+    const envelope = raw && typeof raw === 'object'
+      ? signallingErrorEnvelope(raw as Partial<WebRtcIncomingSignallingEnvelope>, error)
+      : signallingErrorEnvelope({}, error);
+    socket.emit(SOCKET_EVENTS.WEBRTC_ERROR, envelope);
+    logger.warn('WebRTC signalling rejected', {
+      code: envelope.payload.code,
+      correlationId: envelope.correlationId,
+      sessionId: envelope.sessionId,
+      peerId: envelope.peerId,
+      retryable: envelope.payload.retryable,
+    });
+  }
+
+  private webrtcRoom(sessionId: string): string {
+    return `webrtc:${sessionId}`;
+  }
+
   /** Broadcast a stream-status change to all connected clients. */
   broadcastStreamStatus(status: string): void {
     this.io.emit(SOCKET_EVENTS.STREAM_STATUS, { status, timestamp: new Date().toISOString() });
@@ -330,6 +860,26 @@ export class Gateway {
 
   getConnectedCount(): number {
     return this.clients.size;
+  }
+
+  getWebRtcDiagnostics(): {
+    clientCount: number;
+    listenerCount: number;
+    activeSignallingSessions: number;
+    broadcasterPeerCount: number;
+    listenerPeerCount: number;
+    transcriptionBridgeSessionCount: number;
+  } {
+    const signalling = this.webrtcSessions.getDiagnostics();
+    const transcriptionBridge = this.webRtcTranscriptionBridge.getDiagnostics();
+    return {
+      clientCount: this.clients.size,
+      listenerCount: this.listenerCount,
+      activeSignallingSessions: signalling.activeSessionCount,
+      broadcasterPeerCount: this.backendMediaPeers.getSnapshots().length,
+      listenerPeerCount: this.listenerMediaPeers.getSnapshots().length,
+      transcriptionBridgeSessionCount: transcriptionBridge.sessionCount,
+    };
   }
 
   private broadcastServiceStatus(
@@ -417,5 +967,25 @@ export class Gateway {
     if (eventId !== undefined) control.eventId = eventId;
     if (targetLanguage !== undefined) control.targetLanguage = targetLanguage;
     return control;
+  }
+}
+
+function normalizeBackendGatewayError(error: unknown): WebRtcSignallingError {
+  if (error instanceof WebRtcSignallingError) return error;
+  if (error instanceof BackendMediaPeerError) {
+    return new WebRtcSignallingError(error.code, error.message, error.retryable);
+  }
+  return new WebRtcSignallingError(
+    'internal-signalling-error',
+    'Backend WebRTC media transport failed.',
+    true,
+  );
+}
+
+function estimateJsonBytes(raw: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(raw), 'utf8');
+  } catch {
+    return WEBRTC_SIGNALLING_LIMITS.rawPayloadMaxBytes + 1;
   }
 }

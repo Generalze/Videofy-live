@@ -16,6 +16,8 @@ import {
   type MicrophoneSessionInput,
   type ProcessingSession,
   type UploadedMediaFile,
+  type WebRtcChunkInput,
+  type WebRtcSessionInput,
 } from './media-session.js';
 import { createTranscriptionProvider } from './transcription-provider.js';
 import { createTimestampedTranslationProvider } from './translation-provider.js';
@@ -33,6 +35,7 @@ export class IngestService {
     this.provider = new MockProvider();
     this.sessions = new ProcessingSessionStore({
       outputBaseDir: config.audioChunkDir,
+      webRtcStagingDir: config.webrtcAudioChunkStagingDir,
       transcriptionProvider: createTranscriptionProvider({
         providerName: config.transcriptionProvider,
         sourceLanguage: config.transcriptionSourceLanguage,
@@ -162,6 +165,17 @@ export class IngestService {
     return session;
   }
 
+  async createWebRtcSession(input: WebRtcSessionInput): Promise<ProcessingSession> {
+    const session = await this.sessions.createWebRtcSession(input);
+    logger.info('WebRTC transcription session ready', {
+      sessionId: session.id,
+      streamId: session.streamId,
+      sourceKind: session.sourceKind,
+      revision: session.webrtcTranscriptionBridge?.revision,
+    });
+    return session;
+  }
+
   async ingestMicrophoneChunk(
     sessionId: string,
     input: MicrophoneChunkInput,
@@ -176,11 +190,33 @@ export class IngestService {
     return session;
   }
 
+  async ingestWebRtcChunk(
+    sessionId: string,
+    input: WebRtcChunkInput,
+  ): Promise<ProcessingSession> {
+    const session = await this.sessions.ingestWebRtcChunk(sessionId, input);
+    logger.info('WebRTC transcription chunk processed', {
+      sessionId: session.id,
+      chunkCount: session.webrtcTranscriptionBridge?.chunkCount,
+      transcription: session.transcription.status,
+    });
+    return session;
+  }
+
   stopMicrophoneSession(sessionId: string): ProcessingSession {
     const session = this.sessions.stopMicrophoneSession(sessionId);
     logger.info('Microphone capture session stopped', {
       sessionId: session.id,
       chunkCount: session.microphoneCapture.chunkCount,
+    });
+    return session;
+  }
+
+  stopWebRtcSession(sessionId: string): ProcessingSession {
+    const session = this.sessions.stopWebRtcSession(sessionId);
+    logger.info('WebRTC transcription session stopped', {
+      sessionId: session.id,
+      chunkCount: session.webrtcTranscriptionBridge?.chunkCount,
     });
     return session;
   }
@@ -299,10 +335,17 @@ export class IngestService {
           processingSessionId: this.currentSession.id,
           streamStatus: this.currentSession.state,
           videoSource:
-            this.currentSession.sourceKind === 'microphone' ? 'microphone' : 'local-file',
+            this.currentSession.sourceKind === 'microphone'
+              ? 'microphone'
+              : this.currentSession.sourceKind === 'webrtc'
+                ? 'webrtc'
+                : 'local-file',
           ...(this.currentSession.media ? { media: this.currentSession.media } : {}),
           audioExtraction: this.currentSession.audioExtraction,
           microphoneCapture: this.currentSession.microphoneCapture,
+          ...(this.currentSession.webrtcTranscriptionBridge
+            ? { webrtcTranscriptionBridge: this.currentSession.webrtcTranscriptionBridge }
+            : {}),
           transcription: this.currentSession.transcription,
           translation: this.currentSession.translation,
           generatedAudio: this.currentSession.generatedAudio,
@@ -311,6 +354,9 @@ export class IngestService {
           sourceAudioActive:
             this.currentSession.sourceKind === 'microphone'
               ? this.currentSession.microphoneCapture.status === 'capturing'
+              : this.currentSession.sourceKind === 'webrtc'
+                ? this.currentSession.webrtcTranscriptionBridge?.status === 'processing' ||
+                  this.currentSession.webrtcTranscriptionBridge?.status === 'chunking'
               : (this.currentSession.media?.hasAudio ?? false),
           translatedLanguages: [this.currentSession.targetLanguage],
           connectedListeners: 0,

@@ -212,6 +212,30 @@ describe('MediaStateEventSchema validation', () => {
     expect(result.success).toBe(true);
   });
 
+  it('accepts P4.4 WebRTC transcription bridge metadata', () => {
+    const result = safeParseMediaStateEvent({
+      ...validState,
+      streamId: 'broadcast_demo',
+      processingSessionId: 'wrs_demo',
+      videoSource: 'webrtc',
+      webrtcTranscriptionBridge: {
+        status: 'processing',
+        broadcastId: 'broadcast_demo',
+        webRtcSessionId: 'wrs_demo',
+        broadcasterPeerId: 'peer_broadcaster',
+        revision: 1,
+        chunkCount: 2,
+        processingChunks: 1,
+        transcribedChunks: 1,
+        failedChunks: 0,
+        latestTranscript: 'hello',
+        lastError: null,
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
   it('accepts P3.1 generated-audio metadata', () => {
     const result = safeParseMediaStateEvent({
       ...validState,

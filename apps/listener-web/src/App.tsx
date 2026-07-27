@@ -4,9 +4,20 @@ import type {
   GeneratedAudioReadyEvent,
   MediaStateEvent,
   TranslationEvent,
+  WebRtcSignallingClientSnapshot,
 } from '@videofy-live/shared-types';
-import { SOCKET_EVENTS } from '@videofy-live/shared-types';
+import {
+  parseShareableWebRtcSessionId,
+  SOCKET_EVENTS,
+  WebRtcSignallingClient,
+} from '@videofy-live/shared-types';
 import styles from './App.module.css';
+import { ListenerSignallingPanel } from './ListenerSignallingPanel';
+import {
+  createInitialListenerWebRtcTransportSnapshot,
+  ListenerWebRtcTransportController,
+  type ListenerWebRtcTransportSnapshot,
+} from './listenerWebRtcTransport';
 import { startMockVideoFeed, type MockVideoFeed } from './mockVideoFeed';
 import { createListenerSocketOptions } from './socketConfig';
 import {
@@ -73,8 +84,11 @@ function formatTimestamp(ms: number): string {
 
 export default function App(): React.ReactElement {
   const socketRef = useRef<Socket | null>(null);
+  const listenerSignallingClientRef = useRef<WebRtcSignallingClient | null>(null);
+  const listenerTransportRef = useRef<ListenerWebRtcTransportController | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const mockFeedRef = useRef<MockVideoFeed | null>(null);
+  const hasStartedRef = useRef(false);
 
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle');
   const [hasStarted, setHasStarted] = useState(false);
@@ -93,6 +107,15 @@ export default function App(): React.ReactElement {
   const [videoPlaybackError, setVideoPlaybackError] = useState<string | null>(null);
   const [socketDiagnostics, setSocketDiagnostics] =
     useState<SocketDiagnostics>(initialSocketDiagnostics);
+  const [listenerSignalling, setListenerSignalling] =
+    useState<WebRtcSignallingClientSnapshot>(() =>
+      new WebRtcSignallingClient({ role: 'listener' }).getSnapshot(),
+    );
+  const [signallingSessionInput, setSignallingSessionInput] = useState('');
+  const [signallingInputError, setSignallingInputError] = useState<string | null>(null);
+  const [listenerTransport, setListenerTransport] = useState<ListenerWebRtcTransportSnapshot>(
+    createInitialListenerWebRtcTransportSnapshot,
+  );
   const getListenerClockMs = useCallback((): number => {
     const video = videoRef.current;
     if (video && Number.isFinite(video.currentTime) && video.currentTime > 0) {
@@ -128,6 +151,56 @@ export default function App(): React.ReactElement {
     },
     [],
   );
+
+  useEffect(() => {
+    const client = new WebRtcSignallingClient({
+      role: 'listener',
+      onStateChange: setListenerSignalling,
+      onSignalEvent: (event) => {
+        if (event.type === 'sdp-answer' || event.type === 'peer-ready') return;
+        void listenerTransportRef.current?.handleSignallingEvent(event);
+      },
+      onSafeLog: (event, metadata) => {
+        if (import.meta.env.DEV) {
+          console.info('[Videofy Live listener signalling]', event, metadata);
+        }
+      },
+    });
+    const transport = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      onStateChange: setListenerTransport,
+      onRemoteStream: (stream) => {
+        const video = videoRef.current;
+        if (!video) return;
+        mockFeedRef.current?.stop();
+        mockFeedRef.current = null;
+        video.srcObject = stream;
+        setVideoPlaybackError(null);
+        if (!hasStartedRef.current) return;
+        video.play().then(
+          () => transport.markPlaybackStarted(),
+          (playError: unknown) => {
+            const message =
+              playError instanceof Error
+                ? playError.message
+                : 'The browser blocked programme audio playback.';
+            transport.markPlaybackBlocked(message);
+            setVideoPlaybackError(`Programme audio playback blocked: ${message}`);
+          },
+        );
+      },
+    });
+    listenerSignallingClientRef.current = client;
+    listenerTransportRef.current = transport;
+    setListenerSignalling(client.getSnapshot());
+    setListenerTransport(transport.getSnapshot());
+    return () => {
+      listenerTransportRef.current = null;
+      transport.dispose();
+      listenerSignallingClientRef.current = null;
+      client.dispose();
+    };
+  }, []);
 
   useEffect(() => {
     if (!videoRef.current) {
@@ -196,6 +269,7 @@ export default function App(): React.ReactElement {
     const socket = io(GATEWAY_URL, createListenerSocketOptions());
 
     socketRef.current = socket;
+    listenerSignallingClientRef.current?.attach(socket);
 
     socket.on(SOCKET_EVENTS.CONNECTED, () => {
       setConnectionStatus('connected');
@@ -282,6 +356,7 @@ export default function App(): React.ReactElement {
 
   const handleStart = useCallback((): void => {
     setHasStarted(true);
+    hasStartedRef.current = true;
     resumeMixer();
     setVideoPlaybackError(null);
     videoRef.current?.play().catch((error: unknown) => {
@@ -332,8 +407,40 @@ export default function App(): React.ReactElement {
     [audioQueue, targetLanguage],
   );
 
+  const handleJoinSignallingSession = useCallback(async (): Promise<void> => {
+    const parsed = parseShareableWebRtcSessionId(signallingSessionInput);
+    if (!parsed) {
+      setSignallingInputError('Enter a broadcaster share identifier like broadcast_demo/wrs_demo.');
+      return;
+    }
+    setSignallingInputError(null);
+    const snapshot = await listenerSignallingClientRef.current?.joinSession(parsed).catch(() => undefined);
+    if (snapshot?.state === 'joined') {
+      listenerTransportRef.current?.startWaiting();
+    }
+  }, [signallingSessionInput]);
+
+  const handleLeaveSignallingSession = useCallback(async (): Promise<void> => {
+    setSignallingInputError(null);
+    listenerTransportRef.current?.close('listener left signalling session');
+    await listenerSignallingClientRef.current
+      ?.leaveSession('listener left signalling session')
+      .catch(() => undefined);
+  }, []);
+
+  const handleRecoverSignallingSession = useCallback(async (): Promise<void> => {
+    setSignallingInputError(null);
+    const snapshot = await listenerSignallingClientRef.current
+      ?.recoverSessionWithBackoff({ maxAttempts: 3, initialDelayMs: 250 })
+      .catch(() => undefined);
+    if (snapshot?.state === 'joined') {
+      listenerTransportRef.current?.startWaiting();
+    }
+  }, []);
+
   useEffect(() => {
     return () => {
+      listenerSignallingClientRef.current?.dispose();
       socketRef.current?.disconnect();
       socketRef.current = null;
     };
@@ -379,7 +486,11 @@ export default function App(): React.ReactElement {
                   streamStatus === 'processing' ? 'var(--color-live)' : 'var(--color-text-muted)',
               }}
             >
-              {streamStatus === 'processing' ? 'LIVE' : streamStatus.toUpperCase()}
+              {streamStatus === 'processing' && connectionStatus === 'connected'
+                ? 'LIVE'
+                : connectionStatus === 'disconnected' || connectionStatus === 'error'
+                  ? 'INTERRUPTED'
+                  : streamStatus.toUpperCase()}
             </span>
             {buffering && (
               <span className={styles.bufferingBadge} aria-live="polite">
@@ -464,6 +575,20 @@ export default function App(): React.ReactElement {
             </div>
           </div>
         </section>
+
+        <ListenerSignallingPanel
+          signalling={listenerSignalling}
+          listenerTransport={listenerTransport}
+          sessionInput={signallingSessionInput}
+          onSessionInputChange={(value) => {
+            setSignallingSessionInput(value);
+            setSignallingInputError(null);
+          }}
+          onJoin={() => void handleJoinSignallingSession()}
+          onLeave={() => void handleLeaveSignallingSession()}
+          onRecover={() => void handleRecoverSignallingSession()}
+          inputError={signallingInputError}
+        />
 
         <section className={styles.audioSection} aria-label="Volume controls">
           <div className={styles.volumeRow}>
