@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createOperatorSocketOptions, resolveSocketTransportOptions } from './socketConfig';
+import {
+  createBroadcasterSocketOptions,
+  createOperatorSocketOptions,
+  resolveSocketTransportOptions,
+} from './socketConfig';
 
 describe('createOperatorSocketOptions', () => {
   it('allows Socket.IO to start with polling and upgrade automatically', () => {
@@ -15,5 +19,9 @@ describe('createOperatorSocketOptions', () => {
       transports: ['polling'],
       upgrade: false,
     });
+  });
+
+  it('creates a dedicated broadcaster signalling role', () => {
+    expect(createBroadcasterSocketOptions().query).toEqual({ role: 'broadcaster' });
   });
 });

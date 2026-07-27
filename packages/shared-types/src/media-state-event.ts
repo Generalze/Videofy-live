@@ -54,6 +54,30 @@ export interface AudioExtractionMetadata {
   error?: string;
 }
 
+export type WebRtcTranscriptionBridgeStatus =
+  | 'idle'
+  | 'ready'
+  | 'chunking'
+  | 'processing'
+  | 'stopped'
+  | 'failed';
+
+export interface WebRtcTranscriptionBridgeMetadata {
+  status: WebRtcTranscriptionBridgeStatus;
+  broadcastId: string;
+  webRtcSessionId: string;
+  broadcasterPeerId: string;
+  revision: number;
+  chunkCount: number;
+  processingChunks: number;
+  transcribedChunks: number;
+  failedChunks: number;
+  latestTranscript: string | null;
+  lastError: string | null;
+  startedAt?: string;
+  stoppedAt?: string;
+}
+
 /**
  * MediaStateEvent - broadcast by the media-ingest service to describe the
  * current state of the live stream.
@@ -75,6 +99,8 @@ export interface MediaStateEvent {
   audioExtraction?: AudioExtractionMetadata;
   /** Browser microphone capture status when an operator capture session exists. */
   microphoneCapture?: MicrophoneCaptureMetadata;
+  /** Browser WebRTC audio-to-transcription bridge status when backend media ingest is active. */
+  webrtcTranscriptionBridge?: WebRtcTranscriptionBridgeMetadata;
   /** Timestamped transcription status when extracted chunks are being transcribed. */
   transcription?: TranscriptionSessionMetadata;
   /** Timestamped translation status when transcribed segments are being translated. */

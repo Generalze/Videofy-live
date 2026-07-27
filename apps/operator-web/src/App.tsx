@@ -6,10 +6,24 @@ import type {
   TimestampedTranslationEvent,
   TranscriptionEvent,
   TranslationEvent,
+  WebRtcSignallingClientSnapshot,
 } from '@videofy-live/shared-types';
-import { SOCKET_EVENTS } from '@videofy-live/shared-types';
+import { SOCKET_EVENTS, WebRtcSignallingClient } from '@videofy-live/shared-types';
 import styles from './App.module.css';
-import { createOperatorSocketOptions } from './socketConfig';
+import { BroadcasterCapturePanel } from './BroadcasterCapturePanel';
+import { BroadcasterSignallingPanel } from './BroadcasterSignallingPanel';
+import { BroadcasterWebRtcTransportPanel } from './BroadcasterWebRtcTransportPanel';
+import {
+  BroadcasterCaptureController,
+  createInitialBroadcasterCaptureSnapshot,
+  type BroadcasterCaptureSnapshot,
+} from './broadcasterCapture';
+import {
+  BroadcasterWebRtcTransportController,
+  createInitialBroadcasterWebRtcTransportSnapshot,
+  type BroadcasterWebRtcTransportSnapshot,
+} from './broadcasterWebRtcTransport';
+import { createBroadcasterSocketOptions, createOperatorSocketOptions } from './socketConfig';
 import {
   cancelProcessingSession,
   cleanupFailedAudio,
@@ -155,6 +169,7 @@ function mapMicrophoneStatus(capture: MicrophoneCaptureMetadata): BrowserMicroph
 
 export default function App(): React.ReactElement {
   const socketRef = useRef<Socket | null>(null);
+  const broadcasterSocketRef = useRef<Socket | null>(null);
   const [connected, setConnected] = useState(false);
 
   const [mediaState, setMediaState] = useState<MediaStateEvent | null>(null);
@@ -187,6 +202,21 @@ export default function App(): React.ReactElement {
   const microphonePausedAtRef = useRef<number | null>(null);
   const microphonePausedMsRef = useRef(0);
   const microphoneUploadChainRef = useRef<Promise<void>>(Promise.resolve());
+  const broadcasterCaptureControllerRef = useRef<BroadcasterCaptureController | null>(null);
+  const broadcasterSignallingClientRef = useRef<WebRtcSignallingClient | null>(null);
+  const broadcasterTransportControllerRef =
+    useRef<BroadcasterWebRtcTransportController | null>(null);
+  const [broadcasterCapture, setBroadcasterCapture] = useState<BroadcasterCaptureSnapshot>(
+    createInitialBroadcasterCaptureSnapshot,
+  );
+  const [broadcasterSignalling, setBroadcasterSignalling] =
+    useState<WebRtcSignallingClientSnapshot>(() =>
+      new WebRtcSignallingClient({ role: 'broadcaster' }).getSnapshot(),
+    );
+  const [broadcasterTransport, setBroadcasterTransport] =
+    useState<BroadcasterWebRtcTransportSnapshot>(
+      createInitialBroadcasterWebRtcTransportSnapshot,
+    );
 
   // Mix controls (UI only in this prototype)
   const [originalMix, setOriginalMix] = useState(0.2);
@@ -252,6 +282,9 @@ export default function App(): React.ReactElement {
     socket.on(SOCKET_EVENTS.DISCONNECTED, (reason: string) => {
       setConnected(false);
       setGatewayOk(false);
+      void broadcasterCaptureControllerRef.current?.handleSignallingTeardown(
+        `gateway disconnected: ${reason}`,
+      );
       updateSocketDiagnostics('disconnect', {
         connected: false,
         transport: 'not connected',
@@ -357,6 +390,80 @@ export default function App(): React.ReactElement {
     [],
   );
 
+  useEffect(() => {
+    const controller = new BroadcasterCaptureController({
+      mediaDevices: navigator.mediaDevices,
+      isSecureContext: window.isSecureContext,
+      onStateChange: setBroadcasterCapture,
+      onSafeLog: (event, metadata) => {
+        if (import.meta.env.DEV) {
+          console.info('[Videofy Live broadcaster capture]', event, metadata);
+        }
+      },
+    });
+    broadcasterCaptureControllerRef.current = controller;
+    void controller.refreshDevices().catch(() => undefined);
+
+    return () => {
+      broadcasterCaptureControllerRef.current = null;
+      void controller.dispose();
+    };
+  }, []);
+
+  useEffect(() => {
+    const socket = io(GATEWAY_URL, createBroadcasterSocketOptions());
+    const client = new WebRtcSignallingClient({
+      role: 'broadcaster',
+      onStateChange: (snapshot) => {
+        setBroadcasterSignalling(snapshot);
+        if (
+          snapshot.state === 'reconnecting' ||
+          snapshot.state === 'disconnected' ||
+          snapshot.state === 'closed' ||
+          snapshot.state === 'failed'
+        ) {
+          void broadcasterTransportControllerRef.current?.close(
+            `broadcaster signalling ${snapshot.state}`,
+          );
+          void broadcasterCaptureControllerRef.current?.handleSignallingTeardown(
+            `broadcaster signalling ${snapshot.state}`,
+          );
+        }
+      },
+      onSignalEvent: (event) => {
+        if (event.type === 'sdp-offer') return;
+        void broadcasterTransportControllerRef.current?.handleSignallingEvent(event);
+      },
+      onSafeLog: (event, metadata) => {
+        if (import.meta.env.DEV) {
+          console.info('[Videofy Live broadcaster signalling]', event, metadata);
+        }
+      },
+    });
+    broadcasterSocketRef.current = socket;
+    broadcasterSignallingClientRef.current = client;
+    const transport = new BroadcasterWebRtcTransportController({
+      signallingClient: client,
+      onStateChange: setBroadcasterTransport,
+      onSafeLog: (event, metadata) => {
+        if (import.meta.env.DEV) {
+          console.info('[Videofy Live broadcaster transport]', event, metadata);
+        }
+      },
+    });
+    broadcasterTransportControllerRef.current = transport;
+    client.attach(socket);
+
+    return () => {
+      broadcasterSignallingClientRef.current = null;
+      broadcasterSocketRef.current = null;
+      broadcasterTransportControllerRef.current = null;
+      transport.dispose();
+      client.dispose();
+      socket.disconnect();
+    };
+  }, []);
+
   const sendControl = useCallback(
     (action: OperatorControlAction): void => {
       socketRef.current?.emit(SOCKET_EVENTS.OPERATOR_CONTROL, {
@@ -396,6 +503,71 @@ export default function App(): React.ReactElement {
     },
     [applyProcessingSession, sessionTargetLanguage],
   );
+
+  const handleRequestBroadcasterPermission = useCallback(async (): Promise<void> => {
+    await broadcasterCaptureControllerRef.current?.requestPermission().catch(() => undefined);
+  }, []);
+
+  const handleStartBroadcasterCapture = useCallback(async (): Promise<void> => {
+    await broadcasterCaptureControllerRef.current?.startCapture().catch(() => undefined);
+  }, []);
+
+  const handleStopBroadcasterCapture = useCallback(async (): Promise<void> => {
+    await broadcasterTransportControllerRef.current
+      ?.close('operator stopped local broadcaster capture')
+      .catch(() => undefined);
+    await broadcasterCaptureControllerRef.current
+      ?.stopCapture('operator stopped local broadcaster capture')
+      .catch(() => undefined);
+  }, []);
+
+  const handleRetryBroadcasterCapture = useCallback(async (): Promise<void> => {
+    await broadcasterCaptureControllerRef.current?.retry().catch(() => undefined);
+  }, []);
+
+  const handleSelectBroadcasterDevice = useCallback(async (deviceId: string): Promise<void> => {
+    await broadcasterCaptureControllerRef.current?.selectDevice(deviceId).catch(() => undefined);
+  }, []);
+
+  const handleCreateBroadcasterSession = useCallback(async (): Promise<void> => {
+    await broadcasterSignallingClientRef.current?.createSession().catch(() => undefined);
+  }, []);
+
+  const handleCloseBroadcasterSession = useCallback(async (): Promise<void> => {
+    await broadcasterTransportControllerRef.current
+      ?.close('operator closed broadcaster signalling')
+      .catch(() => undefined);
+    await broadcasterSignallingClientRef.current
+      ?.closeSession('operator closed broadcaster signalling')
+      .catch(() => undefined);
+    await broadcasterCaptureControllerRef.current
+      ?.handleSignallingTeardown('operator closed broadcaster signalling')
+      .catch(() => undefined);
+  }, []);
+
+  const handleRecoverBroadcasterSession = useCallback(async (): Promise<void> => {
+    await broadcasterSignallingClientRef.current
+      ?.recoverSessionWithBackoff({ maxAttempts: 3, initialDelayMs: 250 })
+      .catch(() => undefined);
+  }, []);
+
+  const handleStartBroadcasterTransport = useCallback(async (): Promise<void> => {
+    await broadcasterTransportControllerRef.current
+      ?.start(broadcasterCaptureControllerRef.current?.getOwnedStream() ?? null)
+      .catch(() => undefined);
+  }, []);
+
+  const handleStopBroadcasterTransport = useCallback(async (): Promise<void> => {
+    await broadcasterTransportControllerRef.current
+      ?.close('operator stopped backend audio transport')
+      .catch(() => undefined);
+  }, []);
+
+  const handleRecoverBroadcasterTransport = useCallback(async (): Promise<void> => {
+    await broadcasterTransportControllerRef.current
+      ?.recover(broadcasterCaptureControllerRef.current?.getOwnedStream() ?? null)
+      .catch(() => undefined);
+  }, []);
 
   const handleStartMicrophone = useCallback(async (): Promise<void> => {
     if (isDuplicateCaptureStatus(microphoneStatus)) {
@@ -1212,6 +1384,37 @@ export default function App(): React.ReactElement {
             <p className={styles.empty}>Upload media to create a monitored processing session.</p>
           )}
         </section>
+
+        <BroadcasterSignallingPanel
+          signalling={broadcasterSignalling}
+          captureState={broadcasterCapture.status}
+          mediaTransportState={broadcasterTransport.state}
+          onCreateSession={() => void handleCreateBroadcasterSession()}
+          onCloseSession={() => void handleCloseBroadcasterSession()}
+          onRecoverSession={() => void handleRecoverBroadcasterSession()}
+        />
+
+        <BroadcasterCapturePanel
+          capture={broadcasterCapture}
+          signallingConnected={broadcasterSignalling.connected}
+          onRequestPermission={() => void handleRequestBroadcasterPermission()}
+          onStartCapture={() => void handleStartBroadcasterCapture()}
+          onStopCapture={() => void handleStopBroadcasterCapture()}
+          onRetry={() => void handleRetryBroadcasterCapture()}
+          onSelectDevice={(deviceId) => void handleSelectBroadcasterDevice(deviceId)}
+        />
+
+        <BroadcasterWebRtcTransportPanel
+          capture={broadcasterCapture}
+          signallingSessionReady={Boolean(
+            broadcasterSignalling.connected && broadcasterSignalling.sessionId,
+          )}
+          transport={broadcasterTransport}
+          transcriptionBridge={mediaState?.webrtcTranscriptionBridge ?? null}
+          onStartTransport={() => void handleStartBroadcasterTransport()}
+          onStopTransport={() => void handleStopBroadcasterTransport()}
+          onRecoverTransport={() => void handleRecoverBroadcasterTransport()}
+        />
 
         <section className={styles.card}>
           <h2 className={styles.cardTitle}>Media ingest</h2>

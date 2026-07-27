@@ -236,6 +236,13 @@ declare module '@videofy-live/shared-types' {
     readonly INGEST_START_STREAM: 'ingest:start_stream';
     readonly INGEST_STOP_STREAM: 'ingest:stop_stream';
     readonly OPERATOR_CONTROL: 'operator:control';
+    readonly WEBRTC_SESSION_CREATE: 'webrtc:session:create';
+    readonly WEBRTC_SESSION_JOIN: 'webrtc:session:join';
+    readonly WEBRTC_SIGNAL: 'webrtc:signal';
+    readonly WEBRTC_SESSION_LEAVE: 'webrtc:session:leave';
+    readonly WEBRTC_SESSION_CLOSE: 'webrtc:session:close';
+    readonly WEBRTC_SESSION_EVENT: 'webrtc:session:event';
+    readonly WEBRTC_ERROR: 'webrtc:error';
     readonly CONNECTED: 'connect';
     readonly DISCONNECTED: 'disconnect';
     readonly RECONNECT: 'reconnect';
@@ -246,6 +253,366 @@ declare module '@videofy-live/shared-types' {
   export const OPERATOR_ROOM: 'operators';
   export const INGEST_ROOM: 'ingest';
   export const WORKER_ROOM: 'workers';
+
+  export const WEBRTC_SIGNALLING_PROTOCOL_VERSION: 1;
+  export const WEBRTC_BACKEND_MEDIA_PEER_ID: 'peer_backend_media';
+  export const WEBRTC_SIGNALLING_LIMITS: {
+    readonly identifierMaxLength: 128;
+    readonly rawPayloadMaxBytes: 131072;
+    readonly sdpMaxLength: 65536;
+    readonly iceCandidateMaxLength: 4096;
+    readonly reasonMaxLength: 512;
+    readonly messageCacheSize: 512;
+    readonly maxPeersPerSession: 64;
+    readonly maxActiveSessions: 100;
+    readonly maxMessagesPerSocketWindow: 120;
+    readonly rateLimitWindowMs: 10000;
+  };
+
+  export type WebRtcSignallingRole = 'broadcaster' | 'listener' | 'server';
+  export type WebRtcSessionState =
+    | 'created'
+    | 'waiting'
+    | 'negotiating'
+    | 'ready'
+    | 'closing'
+    | 'closed'
+    | 'failed';
+  export type WebRtcPeerState =
+    | 'registered'
+    | 'joined'
+    | 'negotiating'
+    | 'ready'
+    | 'disconnected'
+    | 'closed';
+  export type WebRtcSignallingMessageType =
+    | 'session-create'
+    | 'session-created'
+    | 'session-join'
+    | 'session-joined'
+    | 'sdp-offer'
+    | 'sdp-answer'
+    | 'ice-candidate'
+    | 'ice-complete'
+    | 'peer-ready'
+    | 'peer-disconnect'
+    | 'session-close'
+    | 'signalling-error'
+    | 'heartbeat-ack';
+  export type WebRtcSignallingErrorCode =
+    | 'invalid-payload'
+    | 'unsupported-protocol-version'
+    | 'unauthorized'
+    | 'forbidden-role'
+    | 'session-not-found'
+    | 'session-already-exists'
+    | 'peer-not-found'
+    | 'duplicate-peer'
+    | 'duplicate-broadcaster'
+    | 'duplicate-message'
+    | 'stale-session'
+    | 'stale-negotiation'
+    | 'invalid-state-transition'
+    | 'offer-required'
+    | 'session-closed'
+    | 'payload-too-large'
+    | 'backend-webrtc-unavailable'
+    | 'dependency-initialization-failure'
+    | 'peer-already-exists'
+    | 'missing-audio-track'
+    | 'duplicate-audio-track'
+    | 'unexpected-video-track'
+    | 'invalid-offer'
+    | 'answer-creation-failure'
+    | 'invalid-answer'
+    | 'remote-description-failure'
+    | 'local-description-failure'
+    | 'ice-candidate-failure'
+    | 'ice-connection-failure'
+    | 'negotiation-timeout'
+    | 'connection-closed'
+    | 'audio-track-ended'
+    | 'ingest-bridge-failure'
+    | 'cleanup-failure'
+    | 'unsupported-runtime'
+    | 'internal-signalling-error';
+
+  export interface WebRtcSignallingEnvelopeBase<TType extends WebRtcSignallingMessageType, TPayload> {
+    type: TType;
+    protocolVersion: 1;
+    messageId: string;
+    correlationId?: string;
+    broadcastId: string;
+    sessionId?: string;
+    peerId: string;
+    senderRole: WebRtcSignallingRole;
+    revision: number;
+    createdAt: string;
+    payload: TPayload;
+  }
+
+  export interface WebRtcPeerSummary {
+    peerId: string;
+    role: WebRtcSignallingRole;
+    state: WebRtcPeerState;
+    revision: number;
+  }
+
+  export interface WebRtcSessionSummary {
+    sessionId: string;
+    broadcastId: string;
+    state: WebRtcSessionState;
+    revision: number;
+    broadcasterPeerId: string;
+    peerCount: number;
+    peers: WebRtcPeerSummary[];
+    createdAt: string;
+    updatedAt: string;
+  }
+
+  export type WebRtcSessionCreateEnvelope = WebRtcSignallingEnvelopeBase<
+    'session-create',
+    { requestedSessionId?: string }
+  >;
+  export type WebRtcSessionCreatedEnvelope = WebRtcSignallingEnvelopeBase<
+    'session-created',
+    { sessionState: WebRtcSessionState; peerState: WebRtcPeerState; expiresAt?: string }
+  >;
+  export type WebRtcSessionJoinEnvelope = WebRtcSignallingEnvelopeBase<
+    'session-join',
+    { requestedRole: WebRtcSignallingRole }
+  >;
+  export type WebRtcSessionJoinedEnvelope = WebRtcSignallingEnvelopeBase<
+    'session-joined',
+    { sessionState: WebRtcSessionState; peerState: WebRtcPeerState; peers: WebRtcPeerSummary[] }
+  >;
+  export type WebRtcSdpOfferEnvelope = WebRtcSignallingEnvelopeBase<
+    'sdp-offer',
+    { targetPeerId: string; sdp: string }
+  >;
+  export type WebRtcSdpAnswerEnvelope = WebRtcSignallingEnvelopeBase<
+    'sdp-answer',
+    { targetPeerId: string; sdp: string }
+  >;
+  export type WebRtcIceCandidateEnvelope = WebRtcSignallingEnvelopeBase<
+    'ice-candidate',
+    {
+      targetPeerId: string;
+      candidate: string;
+      sdpMid?: string | null;
+      sdpMLineIndex?: number | null;
+      usernameFragment?: string | null;
+    }
+  >;
+  export type WebRtcIceCompleteEnvelope = WebRtcSignallingEnvelopeBase<
+    'ice-complete',
+    { targetPeerId: string }
+  >;
+  export type WebRtcPeerReadyEnvelope = WebRtcSignallingEnvelopeBase<
+    'peer-ready',
+    { state: WebRtcPeerState }
+  >;
+  export type WebRtcPeerDisconnectEnvelope = WebRtcSignallingEnvelopeBase<
+    'peer-disconnect',
+    { reason?: string; targetPeerId?: string }
+  >;
+  export type WebRtcSessionCloseEnvelope = WebRtcSignallingEnvelopeBase<
+    'session-close',
+    { reason?: string }
+  >;
+  export type WebRtcHeartbeatAckEnvelope = WebRtcSignallingEnvelopeBase<
+    'heartbeat-ack',
+    { observedAt: string }
+  >;
+  export type WebRtcSignallingErrorEnvelope = WebRtcSignallingEnvelopeBase<
+    'signalling-error',
+    {
+      code: WebRtcSignallingErrorCode;
+      message: string;
+      retryable: boolean;
+      currentState?: WebRtcSessionState | WebRtcPeerState;
+    }
+  >;
+
+  export type WebRtcIncomingSignallingEnvelope =
+    | WebRtcSessionCreateEnvelope
+    | WebRtcSessionJoinEnvelope
+    | WebRtcSdpOfferEnvelope
+    | WebRtcSdpAnswerEnvelope
+    | WebRtcIceCandidateEnvelope
+    | WebRtcIceCompleteEnvelope
+    | WebRtcPeerReadyEnvelope
+    | WebRtcPeerDisconnectEnvelope
+    | WebRtcSessionCloseEnvelope
+    | WebRtcHeartbeatAckEnvelope;
+
+  export type WebRtcOutgoingSignallingEnvelope =
+    | WebRtcSessionCreatedEnvelope
+    | WebRtcSessionJoinedEnvelope
+    | WebRtcSdpOfferEnvelope
+    | WebRtcSdpAnswerEnvelope
+    | WebRtcIceCandidateEnvelope
+    | WebRtcIceCompleteEnvelope
+    | WebRtcPeerReadyEnvelope
+    | WebRtcPeerDisconnectEnvelope
+    | WebRtcSessionCloseEnvelope
+    | WebRtcHeartbeatAckEnvelope
+    | WebRtcSignallingErrorEnvelope;
+
+  export type WebRtcClientLifecycleState =
+    | 'idle'
+    | 'connecting'
+    | 'connected'
+    | 'creating-session'
+    | 'joining-session'
+    | 'joined'
+    | 'ready'
+    | 'reconnecting'
+    | 'recovering-session'
+    | 'leaving'
+    | 'closing'
+    | 'disconnected'
+    | 'closed'
+    | 'failed';
+
+  export type WebRtcClientErrorCode =
+    | 'gateway-unavailable'
+    | 'connection-timeout'
+    | 'acknowledgement-timeout'
+    | 'malformed-acknowledgement'
+    | 'unsupported-protocol-version'
+    | 'unauthorized'
+    | 'forbidden-role'
+    | 'session-not-found'
+    | 'session-already-exists'
+    | 'duplicate-broadcaster'
+    | 'duplicate-peer'
+    | 'stale-session'
+    | 'stale-connection-generation'
+    | 'invalid-transition'
+    | 'session-closed'
+    | 'payload-too-large'
+    | 'reconnect-failed'
+    | 'cleanup-failed'
+    | 'internal-client-signalling-failure';
+
+  export interface WebRtcClientErrorDetails {
+    code: WebRtcClientErrorCode;
+    message: string;
+    retryable: boolean;
+  }
+
+  export class WebRtcClientSignallingError extends Error {
+    readonly code: WebRtcClientErrorCode;
+    readonly retryable: boolean;
+    constructor(code: WebRtcClientErrorCode, message: string, retryable?: boolean);
+  }
+
+  export interface WebRtcSignallingTransport {
+    connected?: boolean;
+    on(event: string, listener: (...args: unknown[]) => void): void;
+    off(event: string, listener: (...args: unknown[]) => void): void;
+    emit(event: string, payload: unknown): void;
+  }
+
+  export interface WebRtcSignallingClientSnapshot {
+    state: WebRtcClientLifecycleState;
+    role: WebRtcSignallingRole;
+    broadcastId: string;
+    sessionId: string | null;
+    shareableSessionId: string | null;
+    peerId: string;
+    connectionGeneration: number;
+    revision: number;
+    connected: boolean;
+    peers: WebRtcPeerSummary[];
+    listenerCount: number;
+    pendingRequestCount: number;
+    lastEventType: WebRtcOutgoingSignallingEnvelope['type'] | null;
+    lastError: WebRtcClientErrorDetails | null;
+    mediaTransportStarted: false;
+    updatedAt: string;
+  }
+
+  export interface WebRtcSignallingClientOptions {
+    role: 'broadcaster' | 'listener';
+    broadcastId?: string;
+    sessionId?: string;
+    peerId?: string;
+    ackTimeoutMs?: number;
+    createId?: () => string;
+    now?: () => string;
+    onStateChange?: (snapshot: WebRtcSignallingClientSnapshot) => void;
+    onSignalEvent?: (
+      event:
+        | WebRtcSdpAnswerEnvelope
+        | WebRtcSdpOfferEnvelope
+        | WebRtcIceCandidateEnvelope
+        | WebRtcIceCompleteEnvelope
+        | WebRtcPeerReadyEnvelope,
+    ) => void;
+    onSafeLog?: (
+      event: string,
+      metadata: Record<string, string | number | boolean | null>,
+    ) => void;
+  }
+
+  export function parseShareableWebRtcSessionId(
+    input: string,
+  ): { broadcastId: string; sessionId: string } | null;
+
+  export function createShareableWebRtcSessionId(broadcastId: string, sessionId: string): string;
+
+  export class WebRtcSignallingClient {
+    constructor(options: WebRtcSignallingClientOptions);
+    attach(transport: WebRtcSignallingTransport): WebRtcSignallingClientSnapshot;
+    detach(): void;
+    getSnapshot(): WebRtcSignallingClientSnapshot;
+    setTargetSession(input: {
+      broadcastId: string;
+      sessionId: string;
+    }): WebRtcSignallingClientSnapshot;
+    createSession(requestedSessionId?: string): Promise<WebRtcSignallingClientSnapshot>;
+    joinSession(input?: {
+      broadcastId: string;
+      sessionId: string;
+    }): Promise<WebRtcSignallingClientSnapshot>;
+    leaveSession(reason?: string): Promise<WebRtcSignallingClientSnapshot>;
+    closeSession(reason?: string): Promise<WebRtcSignallingClientSnapshot>;
+    recoverSession(): Promise<WebRtcSignallingClientSnapshot>;
+    recoverSessionWithBackoff(options?: {
+      maxAttempts?: number;
+      initialDelayMs?: number;
+    }): Promise<WebRtcSignallingClientSnapshot>;
+    sendSdpOffer(input: {
+      targetPeerId: string;
+      sdp: string;
+      revision?: number;
+    }): WebRtcSdpOfferEnvelope;
+    sendIceCandidate(input: {
+      targetPeerId: string;
+      candidate: string;
+      sdpMid?: string | null;
+      sdpMLineIndex?: number | null;
+      usernameFragment?: string | null;
+      revision?: number;
+    }): WebRtcIceCandidateEnvelope;
+    sendIceComplete(input: {
+      targetPeerId: string;
+      revision?: number;
+    }): WebRtcIceCompleteEnvelope;
+    sendSdpAnswer(input: {
+      targetPeerId: string;
+      sdp: string;
+      revision?: number;
+    }): WebRtcSdpAnswerEnvelope;
+    sendPeerDisconnect(input: {
+      targetPeerId: string;
+      reason?: string;
+      revision?: number;
+    }): WebRtcPeerDisconnectEnvelope;
+    dispose(): void;
+  }
 }
 
 declare module '@videofy-live/media-contracts' {
@@ -255,6 +622,7 @@ declare module '@videofy-live/media-contracts' {
     TranscriptionEvent,
     TimestampedTranslationEvent,
     TranslationEvent,
+    WebRtcIncomingSignallingEnvelope,
   } from '@videofy-live/shared-types';
 
   type SafeParseSuccess<T> = {
@@ -288,4 +656,10 @@ declare module '@videofy-live/media-contracts' {
   export function safeParseGeneratedAudioReadyEvent(
     raw: unknown,
   ): SafeParseSuccess<GeneratedAudioReadyEvent> | SafeParseFailure;
+
+  export function safeParseWebRtcSignallingEnvelope(
+    raw: unknown,
+  ): SafeParseSuccess<WebRtcIncomingSignallingEnvelope> | SafeParseFailure;
+
+  export function isUnsupportedWebRtcProtocolVersion(raw: unknown): boolean;
 }

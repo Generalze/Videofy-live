@@ -16,6 +16,7 @@ const app = express();
 const server = http.createServer(app);
 const uploadDir = resolve(process.cwd(), '../../uploads/media-ingest');
 mkdirSync(uploadDir, { recursive: true });
+mkdirSync(config.webrtcAudioChunkStagingDir, { recursive: true });
 const upload = multer({
   dest: uploadDir,
   limits: { fileSize: config.uploadMaxBytes },
@@ -85,6 +86,63 @@ app.post('/microphone/sessions/:sessionId/chunks', upload.single('audio'), async
 app.post('/microphone/sessions/:sessionId/stop', (req, res) => {
   try {
     const session = ingest.stopMicrophoneSession(req.params.sessionId);
+    res.json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.post('/internal/webrtc/sessions', async (req, res) => {
+  if (!assertInternalWebRtcRequest(req, res)) return;
+  try {
+    const body = (req.body ?? {}) as {
+      sessionId?: unknown;
+      broadcastId?: unknown;
+      broadcasterPeerId?: unknown;
+      revision?: unknown;
+      targetLanguage?: unknown;
+    };
+    const session = await ingest.createWebRtcSession({
+      sessionId: requireStringField(body.sessionId, 'sessionId'),
+      broadcastId: requireStringField(body.broadcastId, 'broadcastId'),
+      broadcasterPeerId: requireStringField(body.broadcasterPeerId, 'broadcasterPeerId'),
+      revision: parseIntegerField(body.revision, 'revision'),
+      ...(typeof body.targetLanguage === 'string' ? { targetLanguage: body.targetLanguage } : {}),
+    });
+    res.status(201).json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.post('/internal/webrtc/sessions/:sessionId/chunks', async (req, res) => {
+  if (!assertInternalWebRtcRequest(req, res)) return;
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const sessionId = requireRouteParam(req.params.sessionId, 'sessionId');
+    const session = await ingest.ingestWebRtcChunk(sessionId, {
+      sequence: parseIntegerField(body.sequence, 'sequence'),
+      startMs: parseIntegerField(body.startMs, 'startMs'),
+      endMs: parseIntegerField(body.endMs, 'endMs'),
+      sampleRate: parseLiteralInteger(body.sampleRate, 16000, 'sampleRate'),
+      channelCount: parseLiteralInteger(body.channelCount, 1, 'channelCount'),
+      pcmFormat: parseLiteralString(body.pcmFormat, 'pcm_s16le', 'pcmFormat'),
+      discontinuity: body.discontinuity === true,
+      endOfStream: body.endOfStream === true,
+      mimeType: parseLiteralString(body.mimeType, 'audio/wav', 'mimeType'),
+      sizeBytes: parseIntegerField(body.sizeBytes, 'sizeBytes'),
+      sourcePath: requireStringField(body.sourcePath, 'sourcePath'),
+    });
+    res.json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.post('/internal/webrtc/sessions/:sessionId/stop', (req, res) => {
+  if (!assertInternalWebRtcRequest(req, res)) return;
+  try {
+    const session = ingest.stopWebRtcSession(req.params.sessionId);
     res.json({ session });
   } catch (error) {
     sendIngestError(res, error);
@@ -278,11 +336,33 @@ function sendIngestError(res: express.Response, error: unknown): void {
 }
 
 function parseIntegerField(value: unknown, fieldName: string): number {
-  const parsed = typeof value === 'string' ? Number(value) : NaN;
+  const parsed = typeof value === 'string' || typeof value === 'number' ? Number(value) : NaN;
   if (!Number.isInteger(parsed)) {
     throw new MediaIngestError(`${fieldName} must be an integer.`, 'invalid-media', 400);
   }
   return parsed;
+}
+
+function requireStringField(value: unknown, fieldName: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new MediaIngestError(`${fieldName} is required.`, 'invalid-media', 400);
+  }
+  return value;
+}
+
+function parseLiteralInteger<T extends number>(value: unknown, expected: T, fieldName: string): T {
+  const parsed = parseIntegerField(value, fieldName);
+  if (parsed !== expected) {
+    throw new MediaIngestError(`${fieldName} must be ${expected}.`, 'invalid-media', 400);
+  }
+  return expected;
+}
+
+function parseLiteralString<T extends string>(value: unknown, expected: T, fieldName: string): T {
+  if (value !== expected) {
+    throw new MediaIngestError(`${fieldName} must be ${expected}.`, 'invalid-media', 400);
+  }
+  return expected;
 }
 
 function requireRouteParam(value: string | undefined, fieldName: string): string {
@@ -290,4 +370,11 @@ function requireRouteParam(value: string | undefined, fieldName: string): string
     throw new MediaIngestError(`${fieldName} is required.`, 'invalid-transition', 400);
   }
   return value;
+}
+
+function assertInternalWebRtcRequest(req: express.Request, res: express.Response): boolean {
+  if (!config.internalWebRtcToken) return true;
+  if (req.header('X-Videofy-Internal-Token') === config.internalWebRtcToken) return true;
+  res.status(403).json({ error: 'Forbidden internal WebRTC request.' });
+  return false;
 }

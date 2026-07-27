@@ -232,7 +232,7 @@ export async function cleanupAudioChunks(outputBaseDir: string, sessionId: strin
 }
 
 export function safeSessionOutputDir(outputBaseDir: string, sessionId: string): string {
-  if (!/^ps_[a-f0-9-]+$/i.test(sessionId)) {
+  if (!/^(ps|wrs)_[a-z0-9_-]+$/i.test(sessionId)) {
     throw new MediaIngestError('Unsafe processing session ID.', 'unsafe-path', 400);
   }
 

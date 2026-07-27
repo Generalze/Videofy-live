@@ -150,6 +150,23 @@ export const MediaStateEventSchema = z.object({
       error: z.string().min(1).optional(),
     })
     .optional(),
+  webrtcTranscriptionBridge: z
+    .object({
+      status: z.enum(['idle', 'ready', 'chunking', 'processing', 'stopped', 'failed']),
+      broadcastId: z.string().min(1),
+      webRtcSessionId: z.string().min(1),
+      broadcasterPeerId: z.string().min(1),
+      revision: z.number().int().nonnegative(),
+      chunkCount: z.number().int().nonnegative(),
+      processingChunks: z.number().int().nonnegative(),
+      transcribedChunks: z.number().int().nonnegative(),
+      failedChunks: z.number().int().nonnegative(),
+      latestTranscript: z.string().nullable(),
+      lastError: z.string().nullable(),
+      startedAt: z.string().datetime().optional(),
+      stoppedAt: z.string().datetime().optional(),
+    })
+    .optional(),
   transcription: z
     .object({
       status: z.enum(['queued', 'transcribing', 'transcribed', 'failed', 'retrying']),

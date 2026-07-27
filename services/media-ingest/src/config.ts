@@ -5,10 +5,12 @@ export interface IngestConfig {
   port: number;
   ingestPublicUrl: string;
   gatewayUrl: string;
+  internalWebRtcToken: string | null;
   eventId: string;
   videoSource: 'mock' | 'local-file';
   uploadMaxBytes: number;
   audioChunkDir: string;
+  webrtcAudioChunkStagingDir: string;
   transcriptionProvider: 'mock' | 'faster-whisper';
   transcriptionTimeoutMs: number;
   transcriptionSourceLanguage: string;
@@ -79,11 +81,15 @@ export function loadConfig(): IngestConfig {
     port,
     ingestPublicUrl: process.env['INGEST_PUBLIC_URL'] ?? `http://localhost:${port}`,
     gatewayUrl: process.env['GATEWAY_URL'] ?? 'http://localhost:3001',
+    internalWebRtcToken: process.env['INTERNAL_WEBRTC_TOKEN']?.trim() || null,
     eventId: process.env['EVENT_ID'] ?? 'demo-event',
     videoSource,
     uploadMaxBytes: readPositiveInt('INGEST_UPLOAD_MAX_BYTES', 2_147_483_648),
     audioChunkDir:
       process.env['AUDIO_CHUNK_DIR'] ?? resolve(process.cwd(), '../../uploads/audio-chunks'),
+    webrtcAudioChunkStagingDir:
+      process.env['WEBRTC_AUDIO_CHUNK_STAGING_DIR'] ??
+      resolve(process.cwd(), '../../uploads/webrtc-staging'),
     transcriptionProvider,
     transcriptionTimeoutMs: readPositiveInt('TRANSCRIPTION_TIMEOUT_MS', 30_000),
     transcriptionSourceLanguage: process.env['TRANSCRIPTION_SOURCE_LANGUAGE'] ?? 'en',
