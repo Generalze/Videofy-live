@@ -41,6 +41,12 @@ class FakeAudioSource {
   createTrack = vi.fn(() => this.track);
 }
 
+class FakeVideoSource {
+  readonly track = { stop: vi.fn() };
+  readonly onFrame = vi.fn();
+  createTrack = vi.fn(() => this.track);
+}
+
 function listener(): WebRtcPeerRecord {
   return {
     peerId: 'peer_listener',
@@ -135,6 +141,30 @@ describe('BackendWebRtcListenerPeerRegistry', () => {
       payload: { targetPeerId: 'peer_listener', sdp: 'opaque-offer-sdp' },
     });
     expect(signals).toHaveLength(1);
+  });
+
+  it('includes one outbound video track when broadcaster video is available', async () => {
+    const peer = new FakePeer();
+    const audioSource = new FakeAudioSource();
+    const videoSource = new FakeVideoSource();
+    const registry = new BackendWebRtcListenerPeerRegistry({
+      createPeerConnection: () => peer as never,
+      createAudioSource: () => audioSource,
+      createVideoSource: () => videoSource,
+    });
+
+    await registry.createOffer(listener(), summary(), 2, { includeVideo: true });
+    registry.fanOutAudioFrame('wrs_demo', frame());
+    registry.fanOutVideoFrame('wrs_demo', { width: 640, height: 360 });
+
+    expect(audioSource.createTrack).toHaveBeenCalledOnce();
+    expect(videoSource.createTrack).toHaveBeenCalledOnce();
+    expect(peer.addTrack).toHaveBeenCalledTimes(2);
+    expect(audioSource.onData).toHaveBeenCalledOnce();
+    expect(videoSource.onFrame).toHaveBeenCalledWith({ width: 640, height: 360 });
+    expect(registry.getSnapshots()[0]).toMatchObject({
+      videoTrackIncluded: true,
+    });
   });
 
   it('accepts listener answers, applies ICE once and fans out broadcaster frames', async () => {

@@ -25,10 +25,25 @@ function audioTrack() {
   } as unknown as MediaStreamTrack & { emitEnded: () => void };
 }
 
+function videoTrack() {
+  const listeners = new Set<() => void>();
+  return {
+    kind: 'video',
+    readyState: 'live',
+    addEventListener: vi.fn((event: string, listener: () => void) => {
+      if (event === 'ended') listeners.add(listener);
+    }),
+    removeEventListener: vi.fn((event: string, listener: () => void) => {
+      if (event === 'ended') listeners.delete(listener);
+    }),
+    emitEnded: () => listeners.forEach((listener) => listener()),
+  } as unknown as MediaStreamTrack & { emitEnded: () => void };
+}
+
 function mediaStream(tracks: MediaStreamTrack[]) {
   return {
-    getAudioTracks: vi.fn(() => tracks),
-    getVideoTracks: vi.fn(() => []),
+    getAudioTracks: vi.fn(() => tracks.filter((track) => track.kind === 'audio')),
+    getVideoTracks: vi.fn(() => tracks.filter((track) => track.kind === 'video')),
     getTracks: vi.fn(() => tracks),
   } as unknown as MediaStream;
 }
@@ -159,6 +174,37 @@ describe('BroadcasterWebRtcTransportController', () => {
       state: 'awaiting-answer',
       localAudioTrackAttached: true,
     });
+  });
+
+  it('creates one programme peer offer with optional video in the same transport', async () => {
+    const peer = new FakePeer();
+    const client = signallingClient();
+    const controller = new BroadcasterWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+    });
+
+    await controller.start(mediaStream([audioTrack(), videoTrack()]));
+    await controller.handleSignallingEvent(ready());
+
+    expect(peer.addTrack).toHaveBeenCalledTimes(2);
+    expect(controller.getSnapshot()).toMatchObject({
+      localAudioTrackAttached: true,
+      localVideoTrackAttached: true,
+      backendAudioTrackReceived: true,
+      backendVideoTrackReceived: true,
+    });
+  });
+
+  it('rejects duplicate programme video tracks', async () => {
+    const controller = new BroadcasterWebRtcTransportController({
+      signallingClient: signallingClient(),
+      createPeerConnection: () => new FakePeer() as never,
+    });
+
+    await expect(
+      controller.start(mediaStream([audioTrack(), videoTrack(), videoTrack()])),
+    ).rejects.toMatchObject({ code: 'duplicate-video-track' });
   });
 
   it('applies backend answer, local ICE and backend ready events', async () => {

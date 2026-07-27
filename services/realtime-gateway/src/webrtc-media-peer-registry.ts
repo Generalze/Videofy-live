@@ -30,6 +30,8 @@ export type BackendMediaPeerErrorCode =
   | 'peer-not-found'
   | 'missing-audio-track'
   | 'duplicate-audio-track'
+  | 'missing-video-track'
+  | 'duplicate-video-track'
   | 'unexpected-video-track'
   | 'invalid-offer'
   | 'answer-creation-failure'
@@ -41,6 +43,7 @@ export type BackendMediaPeerErrorCode =
   | 'stale-negotiation'
   | 'connection-closed'
   | 'audio-track-ended'
+  | 'video-track-ended'
   | 'ingest-bridge-failure'
   | 'cleanup-failure'
   | 'unsupported-runtime';
@@ -67,9 +70,12 @@ export interface BackendMediaPeerSnapshot {
   connectionState: string;
   iceConnectionState: string;
   audioTrackState: BackendMediaTrackState;
+  videoTrackState: BackendMediaTrackState;
   ingestBridgeState: WebRtcAudioIngestBridgeSnapshot['state'];
   audioFrameCount: number;
+  videoFrameCount: number;
   audioActivityDetected: boolean;
+  videoActivityDetected: boolean;
   createdAt: string;
   updatedAt: string;
   lastActivityAt: string | null;
@@ -83,6 +89,7 @@ export interface BackendMediaPeerRegistryOptions {
   maxQueuedCandidates?: number;
   createPeerConnection?: () => PeerConnectionLike;
   createAudioSink?: (track: TrackLike) => AudioSinkLike;
+  createVideoSink?: (track: TrackLike) => VideoSinkLike;
   now?: () => Date;
   setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
@@ -97,6 +104,10 @@ export interface BackendMediaPeerRegistryOptions {
     context: BackendMediaPeerAudioContext,
     data: WebRtcAudioDataLike,
     frame: ReturnType<WebRtcAudioIngestBridge['recordFrame']>,
+  ) => void;
+  onVideoFrame?: (
+    context: BackendMediaPeerAudioContext,
+    frame: WebRtcVideoFrameLike,
   ) => void;
   onAudioPeerClosed?: (context: BackendMediaPeerAudioContext, reason: string) => void;
 }
@@ -157,6 +168,17 @@ interface AudioSinkLike {
   stop(): void;
 }
 
+export interface WebRtcVideoFrameLike {
+  width?: number;
+  height?: number;
+  data?: unknown;
+}
+
+interface VideoSinkLike {
+  onframe: ((event: { frame?: WebRtcVideoFrameLike } | WebRtcVideoFrameLike) => void) | null;
+  stop(): void;
+}
+
 interface BackendIceServerConfig {
   urls: string | string[];
   username?: string;
@@ -173,11 +195,15 @@ interface BackendMediaPeerRecord {
   peer: PeerConnectionLike;
   bridge: WebRtcAudioIngestBridge;
   audioSink: AudioSinkLike | null;
+  videoSink: VideoSinkLike | null;
   audioTrack: TrackLike | null;
+  videoTrack: TrackLike | null;
+  videoFrameCount: number;
   queuedRemoteCandidates: CandidateInitLike[];
   seenRemoteCandidates: Set<string>;
   state: BackendMediaPeerState;
   audioTrackState: BackendMediaTrackState;
+  videoTrackState: BackendMediaTrackState;
   createdAt: Date;
   updatedAt: Date;
   lastActivityAt: Date | null;
@@ -201,6 +227,7 @@ export class BackendWebRtcMediaPeerRegistry {
   private readonly maxQueuedCandidates: number;
   private readonly createPeerConnection: () => PeerConnectionLike;
   private readonly createAudioSink: (track: TrackLike) => AudioSinkLike;
+  private readonly createVideoSink: (track: TrackLike) => VideoSinkLike;
   private readonly now: () => Date;
   private readonly setTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   private readonly clearTimer: (timer: ReturnType<typeof setTimeout>) => void;
@@ -219,6 +246,9 @@ export class BackendWebRtcMediaPeerRegistry {
         data: WebRtcAudioDataLike,
         frame: ReturnType<WebRtcAudioIngestBridge['recordFrame']>,
       ) => void)
+    | undefined;
+  private readonly onVideoFrame:
+    | ((context: BackendMediaPeerAudioContext, frame: WebRtcVideoFrameLike) => void)
     | undefined;
   private readonly onAudioPeerClosed:
     | ((context: BackendMediaPeerAudioContext, reason: string) => void)
@@ -239,12 +269,16 @@ export class BackendWebRtcMediaPeerRegistry {
     this.createAudioSink =
       options.createAudioSink ??
       ((track) => new wrtc.nonstandard.RTCAudioSink(track as never) as unknown as AudioSinkLike);
+    this.createVideoSink =
+      options.createVideoSink ??
+      ((track) => new wrtc.nonstandard.RTCVideoSink(track as never) as unknown as VideoSinkLike);
     this.now = options.now ?? (() => new Date());
     this.setTimer = options.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearTimer = options.clearTimer ?? ((timer) => clearTimeout(timer));
     this.onLocalSignal = options.onLocalSignal;
     this.onPeerReady = options.onPeerReady;
     this.onAudioFrame = options.onAudioFrame;
+    this.onVideoFrame = options.onVideoFrame;
     this.onAudioPeerClosed = options.onAudioPeerClosed;
   }
 
@@ -290,11 +324,15 @@ export class BackendWebRtcMediaPeerRegistry {
       peer,
       bridge,
       audioSink: null,
+      videoSink: null,
       audioTrack: null,
+      videoTrack: null,
+      videoFrameCount: 0,
       queuedRemoteCandidates: [],
       seenRemoteCandidates: new Set(),
       state: 'creating',
       audioTrackState: 'none',
+      videoTrackState: 'none',
       createdAt: now,
       updatedAt: now,
       lastActivityAt: null,
@@ -451,7 +489,7 @@ export class BackendWebRtcMediaPeerRegistry {
       return;
     }
     if (track.kind === 'video') {
-      this.fail(record, new BackendMediaPeerError('unexpected-video-track', 'Backend rejected unexpected video track.', false));
+      this.handleVideoTrack(record, track);
       return;
     }
     if (track.kind !== 'audio') {
@@ -496,11 +534,55 @@ export class BackendWebRtcMediaPeerRegistry {
     }
   }
 
+  private handleVideoTrack(record: BackendMediaPeerRecord, track: TrackLike): void {
+    if (record.videoTrack) {
+      this.fail(record, new BackendMediaPeerError('duplicate-video-track', 'Backend rejected duplicate video track.', false));
+      return;
+    }
+    record.videoTrack = track;
+    record.videoTrackState = 'received';
+    logger.info('Backend WebRTC video track received', {
+      sessionId: record.sessionId,
+      broadcastId: record.broadcastId,
+      backendPeerId: record.backendPeerId,
+      revision: record.revision,
+      videoTrackCount: 1,
+      trackState: track.readyState ?? 'unknown',
+    });
+    track.addEventListener?.('ended', () => this.handleVideoTrackEnded(record));
+    track.onended = () => this.handleVideoTrackEnded(record);
+    try {
+      const sink = this.createVideoSink(track);
+      record.videoSink = sink;
+      sink.onframe = (event: { frame?: WebRtcVideoFrameLike } | WebRtcVideoFrameLike) => {
+        const frame = 'frame' in event && event.frame ? event.frame : event as WebRtcVideoFrameLike;
+        record.videoFrameCount++;
+        record.videoTrackState = 'active';
+        record.lastActivityAt = this.now();
+        this.onVideoFrame?.(audioContext(record), frame);
+        this.touch(record);
+      };
+    } catch (error) {
+      this.fail(record, normalizeBackendError(error, 'dependency-initialization-failure', 'Backend video sink failed.'));
+    }
+  }
+
   private handleTrackEnded(record: BackendMediaPeerRecord): void {
     record.audioTrackState = 'ended';
     record.bridge.endTrack();
     this.onAudioPeerClosed?.(audioContext(record), 'audio track ended');
     this.fail(record, new BackendMediaPeerError('audio-track-ended', 'Backend audio track ended.'));
+  }
+
+  private handleVideoTrackEnded(record: BackendMediaPeerRecord): void {
+    record.videoTrackState = 'ended';
+    this.onVideoFrame?.(audioContext(record), { width: 0, height: 0 });
+    this.touch(record);
+    logger.info('Backend WebRTC video track ended', {
+      sessionId: record.sessionId,
+      broadcastId: record.broadcastId,
+      revision: record.revision,
+    });
   }
 
   private emitReadyOnce(record: BackendMediaPeerRecord): void {
@@ -536,6 +618,8 @@ export class BackendWebRtcMediaPeerRegistry {
     try {
       record.audioSink?.stop();
       record.audioSink = null;
+      record.videoSink?.stop();
+      record.videoSink = null;
       record.bridge.close();
       this.onAudioPeerClosed?.(audioContext(record), reason);
       record.peer.close();
@@ -598,6 +682,7 @@ export class BackendWebRtcMediaPeerRegistry {
   private fail(record: BackendMediaPeerRecord, error: BackendMediaPeerError): BackendMediaPeerError {
     record.state = 'failed';
     record.audioTrackState = record.audioTrackState === 'none' ? 'failed' : record.audioTrackState;
+    record.videoTrackState = record.videoTrackState === 'none' ? 'none' : record.videoTrackState;
     record.bridge.fail(error.message);
     record.lastError = { code: error.code, message: error.message, retryable: error.retryable };
     this.clearOfferTimer(record);
@@ -605,6 +690,8 @@ export class BackendWebRtcMediaPeerRegistry {
     try {
       record.audioSink?.stop();
       record.audioSink = null;
+      record.videoSink?.stop();
+      record.videoSink = null;
       record.peer.close();
       record.queuedRemoteCandidates = [];
       record.seenRemoteCandidates.clear();
@@ -650,9 +737,12 @@ export class BackendWebRtcMediaPeerRegistry {
       connectionState: record.peer.connectionState,
       iceConnectionState: record.peer.iceConnectionState,
       audioTrackState: record.audioTrackState,
+      videoTrackState: record.videoTrackState,
       ingestBridgeState: bridge.state,
       audioFrameCount: bridge.frameCount,
+      videoFrameCount: record.videoFrameCount,
       audioActivityDetected: bridge.frameCount > 0,
+      videoActivityDetected: record.videoFrameCount > 0,
       createdAt: record.createdAt.toISOString(),
       updatedAt: record.updatedAt.toISOString(),
       lastActivityAt: record.lastActivityAt?.toISOString() ?? null,

@@ -175,6 +175,7 @@ export default function App(): React.ReactElement {
         mockFeedRef.current?.stop();
         mockFeedRef.current = null;
         video.srcObject = stream;
+        attachOriginalElement(video);
         setVideoPlaybackError(null);
         if (!hasStartedRef.current) return;
         video.play().then(
@@ -200,7 +201,7 @@ export default function App(): React.ReactElement {
       listenerSignallingClientRef.current = null;
       client.dispose();
     };
-  }, []);
+  }, [attachOriginalElement]);
 
   useEffect(() => {
     if (!videoRef.current) {
@@ -510,7 +511,13 @@ export default function App(): React.ReactElement {
               poster="/mock-video-poster.svg"
             />
             <div className={styles.videoOverlay} aria-hidden>
-              <span className={styles.mockLabel}>Mock video source</span>
+              <span className={styles.mockLabel}>
+                {listenerTransport.remoteVideoTrackReceived
+                  ? 'Programme video'
+                  : listenerTransport.remoteAudioTrackReceived
+                    ? 'Audio-only programme'
+                    : 'Mock video source'}
+              </span>
             </div>
           </div>
           {videoPlaybackError && (

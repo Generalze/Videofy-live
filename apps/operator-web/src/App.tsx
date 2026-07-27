@@ -13,6 +13,7 @@ import styles from './App.module.css';
 import { BroadcasterCapturePanel } from './BroadcasterCapturePanel';
 import { BroadcasterSignallingPanel } from './BroadcasterSignallingPanel';
 import { BroadcasterWebRtcTransportPanel } from './BroadcasterWebRtcTransportPanel';
+import { ProgrammeSourcePanel } from './ProgrammeSourcePanel';
 import {
   BroadcasterCaptureController,
   createInitialBroadcasterCaptureSnapshot,
@@ -23,6 +24,11 @@ import {
   createInitialBroadcasterWebRtcTransportSnapshot,
   type BroadcasterWebRtcTransportSnapshot,
 } from './broadcasterWebRtcTransport';
+import {
+  ProgrammeSourceManager,
+  createInitialProgrammeSourceSnapshot,
+  type ProgrammeSourceSnapshot,
+} from './programmeSourceManager';
 import { createBroadcasterSocketOptions, createOperatorSocketOptions } from './socketConfig';
 import {
   cancelProcessingSession,
@@ -202,12 +208,16 @@ export default function App(): React.ReactElement {
   const microphonePausedAtRef = useRef<number | null>(null);
   const microphonePausedMsRef = useRef(0);
   const microphoneUploadChainRef = useRef<Promise<void>>(Promise.resolve());
+  const programmeSourceManagerRef = useRef<ProgrammeSourceManager | null>(null);
   const broadcasterCaptureControllerRef = useRef<BroadcasterCaptureController | null>(null);
   const broadcasterSignallingClientRef = useRef<WebRtcSignallingClient | null>(null);
   const broadcasterTransportControllerRef =
     useRef<BroadcasterWebRtcTransportController | null>(null);
   const [broadcasterCapture, setBroadcasterCapture] = useState<BroadcasterCaptureSnapshot>(
     createInitialBroadcasterCaptureSnapshot,
+  );
+  const [programmeSource, setProgrammeSource] = useState<ProgrammeSourceSnapshot>(
+    createInitialProgrammeSourceSnapshot,
   );
   const [broadcasterSignalling, setBroadcasterSignalling] =
     useState<WebRtcSignallingClientSnapshot>(() =>
@@ -391,6 +401,33 @@ export default function App(): React.ReactElement {
   );
 
   useEffect(() => {
+    const manager = new ProgrammeSourceManager({
+      mediaDevices: navigator.mediaDevices,
+      isSecureContext: window.isSecureContext,
+      onStateChange: setProgrammeSource,
+      onRevisionChange: (_revision, reason) => {
+        void broadcasterTransportControllerRef.current?.close(reason).catch(() => undefined);
+      },
+      onTrackEnded: () => {
+        void broadcasterTransportControllerRef.current
+          ?.close('programme source track ended')
+          .catch(() => undefined);
+      },
+      onFailure: () => {
+        void broadcasterTransportControllerRef.current
+          ?.close('programme source failed')
+          .catch(() => undefined);
+      },
+    });
+    programmeSourceManagerRef.current = manager;
+    void manager.refreshDevices().catch(() => undefined);
+    return () => {
+      programmeSourceManagerRef.current = null;
+      void manager.teardown();
+    };
+  }, []);
+
+  useEffect(() => {
     const controller = new BroadcasterCaptureController({
       mediaDevices: navigator.mediaDevices,
       isSecureContext: window.isSecureContext,
@@ -504,6 +541,83 @@ export default function App(): React.ReactElement {
     [applyProcessingSession, sessionTargetLanguage],
   );
 
+  const prepareProgrammeSourceSwitch = useCallback(async (reason: string): Promise<void> => {
+    await broadcasterTransportControllerRef.current?.close(reason).catch(() => undefined);
+    await programmeSourceManagerRef.current?.clear().catch(() => undefined);
+  }, []);
+
+  const handleRefreshProgrammeDevices = useCallback((): void => {
+    void programmeSourceManagerRef.current?.refreshDevices().catch(() => undefined);
+  }, []);
+
+  const handleSelectProgrammeCamera = useCallback(
+    async (
+      input: { audioDeviceId?: string; videoDeviceId?: string },
+      preview: HTMLVideoElement,
+    ): Promise<void> => {
+      await prepareProgrammeSourceSwitch('programme source switched to camera');
+      await programmeSourceManagerRef.current?.selectCamera(input, preview).catch(() => undefined);
+    },
+    [prepareProgrammeSourceSwitch],
+  );
+
+  const handleSelectProgrammeScreen = useCallback(
+    async (preview: HTMLVideoElement): Promise<void> => {
+      await prepareProgrammeSourceSwitch('programme source switched to screen');
+      await programmeSourceManagerRef.current?.selectScreen(preview).catch(() => undefined);
+    },
+    [prepareProgrammeSourceSwitch],
+  );
+
+  const handleSelectUploadedProgrammeVideo = useCallback(
+    async (file: File, preview: HTMLVideoElement): Promise<void> => {
+      await prepareProgrammeSourceSwitch('programme source switched to uploaded video');
+      await programmeSourceManagerRef.current
+        ?.selectUploadedVideo(file, preview)
+        .catch(() => undefined);
+    },
+    [prepareProgrammeSourceSwitch],
+  );
+
+  const handleStartProgrammeSource = useCallback(async (): Promise<void> => {
+    const source = await programmeSourceManagerRef.current?.start().catch(() => undefined);
+    if (source?.broadcasting) {
+      await broadcasterTransportControllerRef.current
+        ?.start(programmeSourceManagerRef.current?.getStream() ?? null)
+        .catch(() => undefined);
+    }
+  }, []);
+
+  const handlePauseProgrammeSource = useCallback(async (): Promise<void> => {
+    await programmeSourceManagerRef.current?.pause().catch(() => undefined);
+  }, []);
+
+  const handleResumeProgrammeSource = useCallback(async (): Promise<void> => {
+    await programmeSourceManagerRef.current?.resume().catch(() => undefined);
+  }, []);
+
+  const handleSeekProgrammeSource = useCallback(async (ms: number): Promise<void> => {
+    await programmeSourceManagerRef.current?.seek(ms).catch(() => undefined);
+  }, []);
+
+  const handleRestartProgrammeSource = useCallback(async (): Promise<void> => {
+    await programmeSourceManagerRef.current?.restart().catch(() => undefined);
+  }, []);
+
+  const handleStopProgrammeSource = useCallback(async (): Promise<void> => {
+    await broadcasterTransportControllerRef.current
+      ?.close('operator stopped programme source')
+      .catch(() => undefined);
+    await programmeSourceManagerRef.current?.stop().catch(() => undefined);
+  }, []);
+
+  const handleClearProgrammeSource = useCallback(async (): Promise<void> => {
+    await broadcasterTransportControllerRef.current
+      ?.close('operator cleared programme source')
+      .catch(() => undefined);
+    await programmeSourceManagerRef.current?.clear().catch(() => undefined);
+  }, []);
+
   const handleRequestBroadcasterPermission = useCallback(async (): Promise<void> => {
     await broadcasterCaptureControllerRef.current?.requestPermission().catch(() => undefined);
   }, []);
@@ -543,6 +657,7 @@ export default function App(): React.ReactElement {
     await broadcasterCaptureControllerRef.current
       ?.handleSignallingTeardown('operator closed broadcaster signalling')
       .catch(() => undefined);
+    await programmeSourceManagerRef.current?.stop('operator closed broadcaster signalling').catch(() => undefined);
   }, []);
 
   const handleRecoverBroadcasterSession = useCallback(async (): Promise<void> => {
@@ -553,7 +668,11 @@ export default function App(): React.ReactElement {
 
   const handleStartBroadcasterTransport = useCallback(async (): Promise<void> => {
     await broadcasterTransportControllerRef.current
-      ?.start(broadcasterCaptureControllerRef.current?.getOwnedStream() ?? null)
+      ?.start(
+        programmeSourceManagerRef.current?.getStream() ??
+          broadcasterCaptureControllerRef.current?.getOwnedStream() ??
+          null,
+      )
       .catch(() => undefined);
   }, []);
 
@@ -565,7 +684,11 @@ export default function App(): React.ReactElement {
 
   const handleRecoverBroadcasterTransport = useCallback(async (): Promise<void> => {
     await broadcasterTransportControllerRef.current
-      ?.recover(broadcasterCaptureControllerRef.current?.getOwnedStream() ?? null)
+      ?.recover(
+        programmeSourceManagerRef.current?.getStream() ??
+          broadcasterCaptureControllerRef.current?.getOwnedStream() ??
+          null,
+      )
       .catch(() => undefined);
   }, []);
 
@@ -1387,11 +1510,32 @@ export default function App(): React.ReactElement {
 
         <BroadcasterSignallingPanel
           signalling={broadcasterSignalling}
-          captureState={broadcasterCapture.status}
+          captureState={
+            programmeSource.sourceType === 'none'
+              ? broadcasterCapture.status
+              : programmeSource.status
+          }
           mediaTransportState={broadcasterTransport.state}
           onCreateSession={() => void handleCreateBroadcasterSession()}
           onCloseSession={() => void handleCloseBroadcasterSession()}
           onRecoverSession={() => void handleRecoverBroadcasterSession()}
+        />
+
+        <ProgrammeSourcePanel
+          source={programmeSource}
+          onRefreshDevices={handleRefreshProgrammeDevices}
+          onSelectCamera={(input, preview) => void handleSelectProgrammeCamera(input, preview)}
+          onSelectScreen={(preview) => void handleSelectProgrammeScreen(preview)}
+          onSelectUploadedVideo={(file, preview) =>
+            handleSelectUploadedProgrammeVideo(file, preview)
+          }
+          onStart={() => void handleStartProgrammeSource()}
+          onPause={() => void handlePauseProgrammeSource()}
+          onResume={() => void handleResumeProgrammeSource()}
+          onSeek={(ms) => void handleSeekProgrammeSource(ms)}
+          onRestart={() => void handleRestartProgrammeSource()}
+          onStop={() => void handleStopProgrammeSource()}
+          onClear={() => void handleClearProgrammeSource()}
         />
 
         <BroadcasterCapturePanel
@@ -1406,6 +1550,7 @@ export default function App(): React.ReactElement {
 
         <BroadcasterWebRtcTransportPanel
           capture={broadcasterCapture}
+          programmeSource={programmeSource}
           signallingSessionReady={Boolean(
             broadcasterSignalling.connected && broadcasterSignalling.sessionId,
           )}

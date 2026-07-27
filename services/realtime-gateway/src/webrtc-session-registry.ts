@@ -461,7 +461,9 @@ export class WebRtcSessionRegistry {
         peer.state,
       );
     }
-    session.revision = envelope.revision;
+    if (!serverListenerOffer) {
+      session.revision = envelope.revision;
+    }
     session.currentOffer = {
       revision: envelope.revision,
       senderPeerId: peer.peerId,
@@ -530,7 +532,7 @@ export class WebRtcSessionRegistry {
         session.state,
       );
     }
-    if (envelope.revision !== session.revision) {
+    if (envelope.revision !== session.currentOffer.revision) {
       throw new WebRtcSignallingError(
         'stale-negotiation',
         'ICE candidate revision is stale.',

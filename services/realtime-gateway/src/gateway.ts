@@ -138,6 +138,18 @@ export class Gateway {
           });
         }
       },
+      onVideoFrame: (context, frame) => {
+        try {
+          this.listenerMediaPeers.fanOutVideoFrame(context.sessionId, frame);
+        } catch (error) {
+          logger.warn('WebRTC listener programme-video fanout failed', {
+            sessionId: context.sessionId,
+            broadcastId: context.broadcastId,
+            revision: context.revision,
+            message: error instanceof Error ? error.message : 'unknown listener video fanout failure',
+          });
+        }
+      },
       onAudioPeerClosed: (context, reason) => {
         this.webRtcTranscriptionBridge.endSession(context, reason);
         this.listenerMediaPeers.closeSession(context.sessionId, reason);
@@ -714,7 +726,30 @@ export class Gateway {
     socket: Socket,
     parsed: Extract<WebRtcIncomingSignallingEnvelope, { type: 'ice-candidate' | 'ice-complete' }>,
   ): void {
-    const route = this.tryWebRtc(socket, parsed, () => this.webrtcSessions.signal(socket.id, parsed));
+    let route: WebRtcRouteResult;
+    try {
+      route = this.webrtcSessions.signal(socket.id, parsed);
+      logger.info('WebRTC signalling accepted', {
+        type: parsed.type,
+        sessionId: parsed.sessionId,
+        peerId: parsed.peerId,
+        role: parsed.senderRole,
+        revision: parsed.revision,
+      });
+    } catch (error) {
+      if (isIgnorableLateIce(error)) {
+        logger.info('Late WebRTC ICE ignored', {
+          type: parsed.type,
+          sessionId: parsed.sessionId,
+          peerId: parsed.peerId,
+          role: parsed.senderRole,
+          revision: parsed.revision,
+        });
+        return;
+      }
+      this.emitWebRtcError(socket, parsed, error);
+      return;
+    }
     if (!route) return;
     if (parsed.type === 'ice-candidate') {
       const registry =
@@ -778,6 +813,9 @@ export class Gateway {
     if (!broadcaster || !broadcaster.audioActivityDetected || broadcaster.audioTrackState !== 'active') {
       return;
     }
+    const includeVideo =
+      broadcaster.videoTrackState === 'received' ||
+      broadcaster.videoTrackState === 'active';
     const summary = this.webrtcSessions.getSessionSummary(sessionId);
     if (!summary) return;
     const listeners = this.webrtcSessions.getListenerPeers(sessionId);
@@ -791,7 +829,9 @@ export class Gateway {
         );
         const current = this.webrtcSessions.getSessionSummary(sessionId);
         if (!current) return;
-        const offer = await this.listenerMediaPeers.createOffer(listener, current, current.revision + 1);
+        const offer = await this.listenerMediaPeers.createOffer(listener, current, current.revision + 1, {
+          includeVideo,
+        });
         if (offer) this.routeBackendWebRtcSignal(offer);
       } catch (error) {
         logger.warn('Backend listener WebRTC offer failed', {
@@ -979,6 +1019,13 @@ function normalizeBackendGatewayError(error: unknown): WebRtcSignallingError {
     'internal-signalling-error',
     'Backend WebRTC media transport failed.',
     true,
+  );
+}
+
+function isIgnorableLateIce(error: unknown): boolean {
+  return (
+    error instanceof WebRtcSignallingError &&
+    (error.code === 'stale-negotiation' || error.code === 'offer-required')
   );
 }
 

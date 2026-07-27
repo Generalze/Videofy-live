@@ -39,10 +39,10 @@ describe('BroadcasterWebRtcTransportPanel', () => {
       iceConnectionState: 'connected',
     });
 
-    expect(html).toContain('Backend audio transport');
+    expect(html).toContain('Backend programme transport');
     expect(html).toContain('aria-label="Start backend audio transport"');
     expect(html).toContain('Audio activity detected');
-    expect(html).toContain('No listener WebRTC playback');
+    expect(html).toContain('Listener programme playback enabled');
     expect(html).not.toContain('Listener playback active');
   });
 

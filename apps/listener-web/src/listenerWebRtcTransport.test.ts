@@ -144,6 +144,54 @@ describe('ListenerWebRtcTransportController', () => {
     });
   });
 
+  it('receives one remote video track on the same programme stream', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const onRemoteStream = vi.fn();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+      onRemoteStream,
+    });
+    const audio = {
+      kind: 'audio',
+      readyState: 'live',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const video = {
+      kind: 'video',
+      readyState: 'live',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const tracks: MediaStreamTrack[] = [audio, video];
+    const programmeStream = {
+      addTrack: vi.fn((track: MediaStreamTrack) => tracks.push(track)),
+      getTracks: vi.fn(() => tracks),
+      getAudioTracks: vi.fn(() => tracks.filter((track) => track.kind === 'audio')),
+      getVideoTracks: vi.fn(() => tracks.filter((track) => track.kind === 'video')),
+    } as unknown as MediaStream;
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track: audio, streams: [programmeStream] } as unknown as RTCTrackEvent);
+    peer.ontrack?.({ track: video, streams: [programmeStream] } as unknown as RTCTrackEvent);
+
+    expect(peer.addTransceiver).toHaveBeenCalledWith('audio', { direction: 'recvonly' });
+    expect(peer.addTransceiver).toHaveBeenCalledWith('video', { direction: 'recvonly' });
+    expect(onRemoteStream).toHaveBeenCalledWith(programmeStream);
+    expect(controller.getSnapshot()).toMatchObject({
+      remoteAudioTrackReceived: true,
+      remoteVideoTrackReceived: true,
+      remoteVideoTrackActive: true,
+    });
+  });
+
   it('ignores stale offers and reports blocked playback truthfully', async () => {
     const { client } = createClient();
     const controller = new ListenerWebRtcTransportController({

@@ -56,7 +56,7 @@ describe('ListenerSignallingPanel', () => {
     const html = renderPanel(snapshot({ state: 'joined', sessionId: 'wrs_demo' }));
 
     expect(html).toContain('Available to signalling');
-    expect(html).toContain('WebRTC programme audio not active');
+    expect(html).toContain('WebRTC programme media not active');
     expect(html).not.toContain('WebRTC audio playing');
   });
 
@@ -79,7 +79,7 @@ describe('ListenerSignallingPanel', () => {
       />,
     );
 
-    expect(html).toContain('WebRTC programme audio playing');
+    expect(html).toContain('WebRTC programme playing');
     expect(html).toContain('Live original programme audio active');
   });
 

@@ -24,6 +24,7 @@ export type BroadcasterWebRtcTransportErrorCode =
   | 'webrtc-api-unavailable'
   | 'missing-audio-track'
   | 'duplicate-audio-track'
+  | 'duplicate-video-track'
   | 'offer-creation-failure'
   | 'local-description-failure'
   | 'invalid-answer'
@@ -33,6 +34,7 @@ export type BroadcasterWebRtcTransportErrorCode =
   | 'stale-negotiation'
   | 'connection-closed'
   | 'audio-track-ended'
+  | 'video-track-ended'
   | 'cleanup-failure';
 
 export interface BroadcasterWebRtcTransportErrorDetails {
@@ -58,8 +60,10 @@ export interface BroadcasterWebRtcTransportSnapshot {
   connectionState: RTCPeerConnectionState | 'none';
   iceConnectionState: RTCIceConnectionState | 'none';
   localAudioTrackAttached: boolean;
+  localVideoTrackAttached: boolean;
   backendPeerConnected: boolean;
   backendAudioTrackReceived: boolean;
+  backendVideoTrackReceived: boolean;
   backendAudioActivityDetected: boolean;
   queuedRemoteCandidates: number;
   recoveryAttempts: number;
@@ -110,10 +114,12 @@ export function createInitialBroadcasterWebRtcTransportSnapshot(): BroadcasterWe
     revision: 0,
     connectionState: 'none',
     iceConnectionState: 'none',
-    localAudioTrackAttached: false,
-    backendPeerConnected: false,
-    backendAudioTrackReceived: false,
-    backendAudioActivityDetected: false,
+  localAudioTrackAttached: false,
+  localVideoTrackAttached: false,
+  backendPeerConnected: false,
+  backendAudioTrackReceived: false,
+  backendVideoTrackReceived: false,
+  backendAudioActivityDetected: false,
     queuedRemoteCandidates: 0,
     recoveryAttempts: 0,
     lastError: null,
@@ -141,7 +147,8 @@ export class BroadcasterWebRtcTransportController {
 
   private snapshot = createInitialBroadcasterWebRtcTransportSnapshot();
   private peer: PeerConnectionLike | null = null;
-  private attachedTrack: MediaStreamTrack | null = null;
+  private attachedAudioTrack: MediaStreamTrack | null = null;
+  private attachedVideoTrack: MediaStreamTrack | null = null;
   private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
   private seenRemoteCandidates = new Set<string>();
   private answerTimer: number | null = null;
@@ -194,7 +201,7 @@ export class BroadcasterWebRtcTransportController {
         ),
       );
     }
-    const audioTrack = this.requireSingleActiveAudioTrack(stream);
+    const tracks = this.requireProgrammeTracks(stream);
     this.sourceStream = stream;
     const signalling = this.signallingClient.getSnapshot();
     if (!signalling.connected || !signalling.sessionId) {
@@ -211,6 +218,7 @@ export class BroadcasterWebRtcTransportController {
       revision: signalling.revision + 1,
       backendPeerConnected: false,
       backendAudioTrackReceived: false,
+      backendVideoTrackReceived: false,
       backendAudioActivityDetected: false,
       recoveryAttempts: this.snapshot.recoveryAttempts,
       lastError: null,
@@ -222,10 +230,18 @@ export class BroadcasterWebRtcTransportController {
       peer.onicecandidate = this.handleLocalIceCandidate;
       peer.onconnectionstatechange = this.handleConnectionStateChange;
       peer.oniceconnectionstatechange = this.handleIceConnectionStateChange;
-      audioTrack.addEventListener?.('ended', this.handleTrackEnded);
-      peer.addTrack(audioTrack, stream!);
-      this.attachedTrack = audioTrack;
-      this.update({ localAudioTrackAttached: true });
+      tracks.audioTrack.addEventListener?.('ended', this.handleAudioTrackEnded);
+      peer.addTrack(tracks.audioTrack, stream!);
+      this.attachedAudioTrack = tracks.audioTrack;
+      if (tracks.videoTrack) {
+        tracks.videoTrack.addEventListener?.('ended', this.handleVideoTrackEnded);
+        peer.addTrack(tracks.videoTrack, stream!);
+        this.attachedVideoTrack = tracks.videoTrack;
+      }
+      this.update({
+        localAudioTrackAttached: true,
+        localVideoTrackAttached: Boolean(tracks.videoTrack),
+      });
 
       this.update({ state: 'creating-offer' });
       const offer = await peer.createOffer().catch((error: unknown) => {
@@ -290,6 +306,7 @@ export class BroadcasterWebRtcTransportController {
         backendAudioActivityDetected: true,
         state: this.snapshot.state === 'connected' ? 'connected' : this.snapshot.state,
       });
+      this.update({ backendVideoTrackReceived: this.snapshot.localVideoTrackAttached });
     }
   }
 
@@ -300,8 +317,10 @@ export class BroadcasterWebRtcTransportController {
       this.signalBackendPeerDisconnect(reason);
       this.clearTimers();
       this.clearRecoveryTimer();
-      this.attachedTrack?.removeEventListener?.('ended', this.handleTrackEnded);
-      this.attachedTrack = null;
+      this.attachedAudioTrack?.removeEventListener?.('ended', this.handleAudioTrackEnded);
+      this.attachedAudioTrack = null;
+      this.attachedVideoTrack?.removeEventListener?.('ended', this.handleVideoTrackEnded);
+      this.attachedVideoTrack = null;
       this.pendingRemoteCandidates = [];
       this.seenRemoteCandidates.clear();
       this.peer?.close();
@@ -311,6 +330,7 @@ export class BroadcasterWebRtcTransportController {
         connectionState: 'closed',
         iceConnectionState: 'closed',
         localAudioTrackAttached: false,
+        localVideoTrackAttached: false,
         queuedRemoteCandidates: 0,
       });
       this.safeLog('transport-closed', { reason });
@@ -430,12 +450,27 @@ export class BroadcasterWebRtcTransportController {
     }
   };
 
-  private handleTrackEnded = (): void => {
+  private handleAudioTrackEnded = (): void => {
     this.fail(new BroadcasterWebRtcTransportError('audio-track-ended', 'Local programme audio track ended.'));
     void this.close('local programme audio track ended').catch(() => undefined);
   };
 
-  private requireSingleActiveAudioTrack(stream: MediaStream | null): MediaStreamTrack {
+  private handleVideoTrackEnded = (): void => {
+    this.update({
+      backendVideoTrackReceived: false,
+      lastError: errorDetails(
+        new BroadcasterWebRtcTransportError(
+          'video-track-ended',
+          'Local programme video track ended.',
+        ),
+      ),
+    });
+  };
+
+  private requireProgrammeTracks(stream: MediaStream | null): {
+    audioTrack: MediaStreamTrack;
+    videoTrack: MediaStreamTrack | null;
+  } {
     const audioTracks = stream?.getAudioTracks() ?? [];
     const activeTracks = audioTracks.filter((track) => track.readyState === 'live');
     if (activeTracks.length === 0) {
@@ -450,7 +485,15 @@ export class BroadcasterWebRtcTransportController {
         'Only one programme audio track can be sent to the backend.',
       );
     }
-    return activeTracks[0]!;
+    const videoTracks = stream?.getVideoTracks() ?? [];
+    const activeVideoTracks = videoTracks.filter((track) => track.readyState === 'live');
+    if (activeVideoTracks.length > 1) {
+      throw new BroadcasterWebRtcTransportError(
+        'duplicate-video-track',
+        'Only one programme video track can be sent to the backend.',
+      );
+    }
+    return { audioTrack: activeTracks[0]!, videoTrack: activeVideoTracks[0] ?? null };
   }
 
   private requirePeer(): PeerConnectionLike {
@@ -536,7 +579,10 @@ export class BroadcasterWebRtcTransportController {
   private canRecoverSourceStream(): boolean {
     const stream = this.sourceStream;
     if (!stream) return false;
-    return stream.getAudioTracks().filter((track) => track.readyState === 'live').length === 1;
+    return (
+      stream.getAudioTracks().filter((track) => track.readyState === 'live').length === 1 &&
+      stream.getVideoTracks().filter((track) => track.readyState === 'live').length <= 1
+    );
   }
 
   private update(next: Partial<BroadcasterWebRtcTransportSnapshot>): void {
