@@ -4,7 +4,7 @@ Date: 2026-07-28
 
 Branch: `phase-5-partner-preview`
 
-Baseline: `2f199bd2b00d933923ba2980f5868146d8bf5064`
+Baseline: `97e2ac9f1046f0e090a3397e699ba5719b671164`
 
 ## Scope
 
@@ -36,6 +36,8 @@ The `EN to ES preset` sets the validated demo controls only. It does not start a
 The final acceptance request requires the actual partner-demonstration hardware, human reviewers, separate internet connections, TURN infrastructure, physical microphones, OBS/capture devices, and a one-hour monitored run.
 
 This Codex session was not given access to those external devices, networks, or human reviewers. The final acceptance therefore could not be honestly marked as 100%. The local technical evidence was refreshed, and the stale Phase 4 recovery harness was updated to validate the current P5 unified programme-source architecture.
+
+Final acceptance rerun on 2026-07-28 confirmed the same closure status. Local runtime and browser recovery checks passed, but OBS, TURN, separate-network listeners, human language review, physical Nigerian-accented speech, and one-hour stability evidence were still unavailable.
 
 ## Real-World Tests Completed
 
@@ -76,6 +78,10 @@ These are recorded as partner-demo readiness limitations and must not be represe
 - CPU: Intel Core Ultra 7 255H, 16 cores, 16 logical processors.
 - RAM: 23.96 GB visible, 5.62 GB free during the resource probe.
 - GPU: NVIDIA GeForce RTX 5060 Laptop GPU, 8151 MiB VRAM, 575 MiB used during the probe.
+- Detected DirectShow video devices: `HP True Vision FHD Camera`, `OMEN Cam & Voice`.
+- Detected DirectShow audio device: `Microphone Array (Intel Smart Sound Technology for Digital Microphones)`.
+- OBS: not found in standard install paths during the final acceptance rerun.
+- Additional browser detected: Microsoft Edge `150.0.4078.99`; additional-browser listener acceptance was not run.
 - Python runtime: project-local `.venv-ai`.
 - Piper executable: `1.2.0`.
 
@@ -98,15 +104,15 @@ Human review status:
 
 ## Latency And Resource Results
 
-Fresh real `ProcessingSessionStore` run:
+Fresh real `ProcessingSessionStore` run on 2026-07-28:
 
 - Input duration: 7952 ms.
-- faster-whisper provider latency: 4214 ms.
-- OPUS-MT provider latency: 4192 ms.
-- Piper provider latency: 740 ms.
-- Generated WAV duration: 7340 ms.
-- Total wall time: 9263 ms.
-- Monitoring average latency: 2466 ms.
+- faster-whisper provider latency: 10873 ms.
+- OPUS-MT provider latency: 11641 ms.
+- Piper provider latency: 1858 ms.
+- Generated WAV duration: 7096 ms.
+- Total wall time: 24675 ms.
+- Monitoring average latency: 6750 ms.
 - Failed segments: 0.
 
 Fresh real Chrome partner-preview run:
@@ -169,6 +175,8 @@ Updated recovery harness:
 - It now uses the P5 unified programme-source camera route instead of the legacy local-microphone transport route.
 - It validated fake browser camera capture, one audio and one video track from broadcaster to backend, one audio and one video track at the listener, gateway interruption, broadcaster recovery with a new signalling session, listener refresh/rejoin, interpretation/replacement mode preservation, and cleanup.
 - Latest run passed in Chrome `149.0.7827.55`.
+- Final acceptance rerun generated `.videofy-dev-logs/p4-7-browser-recovery-result.json` at `2026-07-28T04:39:16.106Z`.
+- Backend media peers created: 2; backend audio/video activity events: 2; listener offer failures: 0.
 - The harness observed one non-fatal browser media `play()` interruption during stream reassignment; live audio/video tracks remained attached and recovery passed.
 
 ## Failure And Recovery
