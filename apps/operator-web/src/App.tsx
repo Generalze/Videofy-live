@@ -29,6 +29,7 @@ import {
   createInitialProgrammeSourceSnapshot,
   type ProgrammeSourceSnapshot,
 } from './programmeSourceManager';
+import { buildPartnerPreviewReadiness } from './partnerPreviewReadiness';
 import { createBroadcasterSocketOptions, createOperatorSocketOptions } from './socketConfig';
 import {
   cancelProcessingSession,
@@ -1186,6 +1187,28 @@ export default function App(): React.ReactElement {
   const canResume = streamStatus === 'paused';
   const canCancel =
     streamStatus !== 'completed' && streamStatus !== 'cancelled' && streamStatus !== 'created';
+  const readinessItems = buildPartnerPreviewReadiness({
+    gatewayConnected: connected,
+    mediaIngestHealthy: ingestOk,
+    programmeSource,
+    mediaState,
+    sourceLanguageControl: processingSession?.sourceLanguageControl ?? mediaState?.sourceLanguageControl,
+    targetLanguageCatalogue:
+      processingSession?.targetLanguageCatalogue ?? mediaState?.targetLanguageCatalogue,
+    translation: timestampedTranslation,
+    generatedAudio,
+    selectedTargetLanguages: targetLanguages,
+  });
+  const applyEnglishSpanishDemoPreset = useCallback(() => {
+    setSourceLanguage('en');
+    setSourceLanguageMode('auto-detect');
+    setSessionTargetLanguage('es');
+    setTargetLanguages(['es']);
+    setOriginalMix(0.2);
+    setTranslatedMix(1);
+    setSubtitlesEnabled(true);
+    setMediaError(null);
+  }, []);
 
   return (
     <div className={styles.root}>
@@ -1322,6 +1345,37 @@ export default function App(): React.ReactElement {
                 ))}
               </div>
             )}
+          </div>
+        </section>
+
+        <section className={styles.sideSection}>
+          <h3 className={styles.sideTitle}>Preview readiness</h3>
+          <button
+            type="button"
+            className={`${styles.mockBtn} ${styles.actionBtn}`}
+            onClick={applyEnglishSpanishDemoPreset}
+          >
+            EN to ES preset
+          </button>
+          <div className={styles.readinessList}>
+            {readinessItems.map((item) => (
+              <div key={item.id} className={styles.readinessItem}>
+                <span
+                  className={`${styles.readinessState} ${
+                    item.state === 'ready'
+                      ? styles.readinessReady
+                      : item.state === 'blocked'
+                        ? styles.readinessBlocked
+                        : styles.readinessWarning
+                  }`}
+                  aria-label={`${item.label} ${item.state}`}
+                />
+                <span>
+                  <strong>{item.label}</strong>
+                  <small>{item.detail}</small>
+                </span>
+              </div>
+            ))}
           </div>
         </section>
 

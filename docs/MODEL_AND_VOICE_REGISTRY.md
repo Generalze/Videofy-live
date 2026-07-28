@@ -6,7 +6,7 @@ This registry documents local open-source AI assets approved or proposed for par
 
 Local validation on 2026-07-28 used FFmpeg 8.1.2, Python 3.11.9 in `.venv-ai`, Piper 1.2.0, and an NVIDIA GeForce RTX 5060 Laptop GPU. Model, voice, generated media, and browser evidence are stored only in ignored local paths.
 
-## Validated P5.2 Path
+## Validated P5.2-P5.3 Path
 
 | Provider | Model or voice | Language | Version or revision | Licence evidence | Commercial review | Local path or cache | Hardware | Quality status | Status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -14,6 +14,28 @@ Local validation on 2026-07-28 used FFmpeg 8.1.2, Python 3.11.9 in `.venv-ai`, P
 | faster-whisper | `Systran/faster-whisper-small.en` | English ASR | revision `d1d751a5f8271d482d14ca55d9e2deeebbae577f` | local model card: MIT | reviewable | `services/media-ingest/model_cache/faster-whisper/.../d1d751a5f8271d482d14ca55d9e2deeebbae577f` | CPU int8, CUDA float16 | CPU and GPU transcription validated | validated |
 | OPUS-MT | `Helsinki-NLP/opus-mt-en-es` | English to Spanish | revision `5bc4493d463cf000c1f0b50f8d56886a392ed4ab` | local model card: Apache-2.0 | reviewable | `services/media-ingest/model_cache/opus-mt/.../5bc4493d463cf000c1f0b50f8d56886a392ed4ab` | CPU | real translation validated | validated |
 | Piper | `es_ES-sharvard-medium` | Spanish TTS | voice config `piper_version` 1.0.0; runtime 1.2.0 | upstream `rhasspy/piper-voices`: MIT; local config has no embedded licence file | reviewable | `services/media-ingest/model_cache/piper/es_ES-sharvard-medium` | CPU | real speech generation and listener playback validated | validated |
+
+## P5.3 Quality Review Status
+
+The English-to-Spanish technical path remains validated for local Chrome partner-preview use.
+
+Latest P5.3 evidence:
+
+- faster-whisper transcript confidence: `1` on the deterministic English validation WAV.
+- OPUS-MT translated the deterministic English sentence to Spanish with provider latency `4485 ms` in the browser run.
+- Piper generated Spanish listener audio with provider latency `845 ms` in the browser run.
+- Listener playback succeeded with 3 audio play calls and 0 audio play failures.
+
+Human review remains pending for:
+
+- Nigerian-accented English.
+- Names.
+- Numbers and dates.
+- Meeting or presentation language.
+- Difficult or noisy audio.
+- Commercial voice and translation quality approval.
+
+Final P5.3 acceptance did not complete those human-review items because no human reviewer or approved physical audio samples were available in the Codex environment.
 
 ## Proposed Or Blocked Targets
 
