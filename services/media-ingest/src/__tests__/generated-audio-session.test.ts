@@ -290,7 +290,7 @@ describe('generated-audio sessions', () => {
     });
   });
 
-  it('rejects unsupported TTS language or voice clearly', async () => {
+  it('keeps translated text-only output when no approved voice exists and rejects unsupported voice clearly', async () => {
     const unsupportedLanguage = await sessionStore(
       ttsProvider(async (input) => {
         await writeTestWav(input.outputPath);
@@ -299,10 +299,15 @@ describe('generated-audio sessions', () => {
       { supportedLanguages: ['es'], targetLanguage: 'fr' },
     );
 
-    await expect(
-      unsupportedLanguage.store.createFromUpload(upload({ targetLanguage: 'fr' }), async () => validProbe),
-    ).rejects.toMatchObject({
-      code: 'unsupported-tts-language',
+    const textOnlySession = await unsupportedLanguage.store.createFromUpload(
+      upload({ targetLanguage: 'fr' }),
+      async () => validProbe,
+    );
+    expect(textOnlySession.translation.status).toBe('translated');
+    expect(textOnlySession.generatedAudio).toMatchObject({
+      status: 'generated',
+      providerStatus: 'text-only',
+      textOnlyLanguages: ['fr'],
     });
 
     const unsupportedVoice = await sessionStore(

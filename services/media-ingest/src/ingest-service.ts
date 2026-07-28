@@ -61,6 +61,15 @@ export class IngestService {
           supportedTargetLanguages: config.translationSupportedTargetLanguages,
           timeoutMs: config.translationTimeoutMs,
         },
+        opusMt: {
+          pythonExecutable: config.opusMtPythonExecutable,
+          modelCacheDir: config.opusMtModelCacheDir,
+          supportedTargetLanguages: config.translationSupportedTargetLanguages,
+          languageModels: config.opusMtLanguageModels,
+          timeoutMs: config.translationTimeoutMs,
+          maxConcurrency: config.opusMtMaxConcurrency,
+          allowModelDownload: config.opusMtAllowModelDownload,
+        },
       }),
       translationTimeoutMs: config.translationTimeoutMs,
       translationTargetLanguage: config.translationTargetLanguage,
@@ -72,6 +81,7 @@ export class IngestService {
         defaultVoiceId: config.textToSpeechDefaultVoiceId,
         piper: {
           executable: config.piperExecutable,
+          ffmpegExecutable: config.piperFfmpegExecutable,
           timeoutMs: config.textToSpeechTimeoutMs,
           voices: [
             {
@@ -302,6 +312,20 @@ export class IngestService {
     return session;
   }
 
+  updateSourceLanguageControl(
+    sessionId: string,
+    input: Parameters<ProcessingSessionStore['updateSourceLanguageControl']>[1],
+  ): ProcessingSession {
+    const session = this.sessions.updateSourceLanguageControl(sessionId, input);
+    logger.info('Source language control updated', {
+      sessionId: session.id,
+      activeLanguage: session.sourceLanguageControl.activeLanguage,
+      revision: session.sourceLanguageControl.revision,
+      status: session.sourceLanguageControl.status,
+    });
+    return session;
+  }
+
   async getGeneratedAudioFile(
     sessionId: string,
     segmentId: string,
@@ -349,6 +373,9 @@ export class IngestService {
           transcription: this.currentSession.transcription,
           translation: this.currentSession.translation,
           generatedAudio: this.currentSession.generatedAudio,
+          sourceLanguageControl: this.currentSession.sourceLanguageControl,
+          targetLanguageCatalogue: this.currentSession.targetLanguageCatalogue,
+          aiProviderStatus: this.currentSession.aiProviderStatus,
           monitoring: this.currentSession.monitoring,
           videoTimestampMs: 0,
           sourceAudioActive:
@@ -358,7 +385,7 @@ export class IngestService {
                 ? this.currentSession.webrtcTranscriptionBridge?.status === 'processing' ||
                   this.currentSession.webrtcTranscriptionBridge?.status === 'chunking'
               : (this.currentSession.media?.hasAudio ?? false),
-          translatedLanguages: [this.currentSession.targetLanguage],
+          translatedLanguages: this.currentSession.targetLanguages,
           connectedListeners: 0,
           createdAt: new Date().toISOString(),
         }

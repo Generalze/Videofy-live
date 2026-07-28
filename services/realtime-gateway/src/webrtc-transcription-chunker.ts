@@ -34,6 +34,16 @@ export interface WebRtcTranscriptionChunkerOptions extends WebRtcTranscriptionCh
   maxBufferedDurationMs?: number;
   maxQueuedChunks?: number;
   maxQueuedBytes?: number;
+  vad?: WebRtcVadOptions;
+}
+
+export interface WebRtcVadOptions {
+  enabled: boolean;
+  mode: 'silero' | 'fallback';
+  speechThreshold?: number;
+  endSilenceMs?: number;
+  minSpeechMs?: number;
+  maxSegmentMs?: number;
 }
 
 export class WebRtcTranscriptionChunkerError extends Error {
@@ -64,6 +74,12 @@ export class WebRtcTranscriptionChunker {
   private queuedBytes = 0;
   private nextDiscontinuity = false;
   private closed = false;
+  private readonly vad: Required<WebRtcVadOptions> | null;
+  private vadSpeechBuffer: Int16Array<ArrayBufferLike> = new Int16Array(0);
+  private vadSpeechStartSample: number | null = null;
+  private vadSilenceBuffer: Int16Array<ArrayBufferLike> = new Int16Array(0);
+  private inputSampleCount = 0;
+  private skippedSilenceSamples = 0;
 
   constructor(options: WebRtcTranscriptionChunkerOptions) {
     this.context = {
@@ -81,6 +97,16 @@ export class WebRtcTranscriptionChunker {
     );
     this.maxQueuedChunks = options.maxQueuedChunks ?? 8;
     this.maxQueuedBytes = options.maxQueuedBytes ?? 8 * 1024 * 1024;
+    this.vad = options.vad?.enabled
+      ? {
+          enabled: true,
+          mode: options.vad.mode,
+          speechThreshold: options.vad.speechThreshold ?? 0.012,
+          endSilenceMs: options.vad.endSilenceMs ?? 650,
+          minSpeechMs: options.vad.minSpeechMs ?? 180,
+          maxSegmentMs: options.vad.maxSegmentMs ?? 8_000,
+        }
+      : null;
   }
 
   pushFrame(data: WebRtcAudioDataLike): WebRtcTranscriptionChunk[] {
@@ -88,11 +114,13 @@ export class WebRtcTranscriptionChunker {
       throw new WebRtcTranscriptionChunkerError('closed', 'WebRTC transcription chunker is closed.');
     }
     const normalized = normalizePcmFrame(data);
+    if (this.vad) return this.pushVadFrame(normalized);
     this.appendSamples(normalized);
     return this.drain(false);
   }
 
   flush(endOfStream = true): WebRtcTranscriptionChunk[] {
+    if (this.vad) return this.flushVad(endOfStream);
     if (this.closed && this.buffer.length === 0) return [];
     const chunks = this.buffer.length > 0 ? [this.createChunk(this.buffer, endOfStream)] : [];
     this.buffer = new Int16Array(0);
@@ -118,8 +146,70 @@ export class WebRtcTranscriptionChunker {
       queuedChunks: this.queuedChunks,
       queuedBytes: this.queuedBytes,
       emittedChunkCount: this.emittedChunkCount,
+      vadMode: this.vad?.mode ?? 'disabled',
+      skippedSilenceMs: Math.round((this.skippedSilenceSamples / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
       closed: this.closed,
     };
+  }
+
+  private pushVadFrame(samples: Int16Array): WebRtcTranscriptionChunk[] {
+    const startSample = this.inputSampleCount;
+    this.inputSampleCount += samples.length;
+    const vad = this.vad;
+    if (!vad) return [];
+    const isSpeech = frameEnergy(samples) >= vad.speechThreshold;
+    if (isSpeech) {
+      if (this.vadSpeechStartSample === null) {
+        this.vadSpeechStartSample = startSample;
+      }
+      if (this.vadSilenceBuffer.length > 0) {
+        this.vadSpeechBuffer = concatSamples(this.vadSpeechBuffer, this.vadSilenceBuffer);
+        this.vadSilenceBuffer = new Int16Array(0);
+      }
+      this.vadSpeechBuffer = concatSamples(this.vadSpeechBuffer, samples);
+    } else if (this.vadSpeechStartSample === null) {
+      this.skippedSilenceSamples += samples.length;
+      return [];
+    } else {
+      this.vadSilenceBuffer = concatSamples(this.vadSilenceBuffer, samples);
+    }
+
+    const segmentLength = this.vadSpeechBuffer.length + this.vadSilenceBuffer.length;
+    const endSilenceSamples = Math.round((vad.endSilenceMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+    const maxSegmentSamples = Math.round((vad.maxSegmentMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+    const minSpeechSamples = Math.round((vad.minSpeechMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+    if (
+      this.vadSpeechStartSample !== null &&
+      this.vadSpeechBuffer.length >= minSpeechSamples &&
+      (this.vadSilenceBuffer.length >= endSilenceSamples || segmentLength >= maxSegmentSamples)
+    ) {
+      const segment = concatSamples(this.vadSpeechBuffer, this.vadSilenceBuffer);
+      const chunk = this.createChunk(segment, false, this.vadSpeechStartSample);
+      this.vadSpeechStartSample = null;
+      this.vadSpeechBuffer = new Int16Array(0);
+      this.vadSilenceBuffer = new Int16Array(0);
+      return [chunk];
+    }
+    return [];
+  }
+
+  private flushVad(endOfStream: boolean): WebRtcTranscriptionChunk[] {
+    if (this.closed && this.vadSpeechBuffer.length === 0 && this.vadSilenceBuffer.length === 0) return [];
+    const chunks =
+      this.vadSpeechStartSample !== null && this.vadSpeechBuffer.length > 0
+        ? [
+            this.createChunk(
+              concatSamples(this.vadSpeechBuffer, this.vadSilenceBuffer),
+              endOfStream,
+              this.vadSpeechStartSample,
+            ),
+          ]
+        : [];
+    this.vadSpeechStartSample = null;
+    this.vadSpeechBuffer = new Int16Array(0);
+    this.vadSilenceBuffer = new Int16Array(0);
+    this.closed = true;
+    return chunks;
   }
 
   private appendSamples(samples: Int16Array): void {
@@ -146,7 +236,11 @@ export class WebRtcTranscriptionChunker {
     return chunks;
   }
 
-  private createChunk(samples: Int16Array, endOfStream: boolean): WebRtcTranscriptionChunk {
+  private createChunk(
+    samples: Int16Array,
+    endOfStream: boolean,
+    explicitStartSample?: number,
+  ): WebRtcTranscriptionChunk {
     const byteLength = samples.byteLength;
     if (this.queuedChunks + 1 > this.maxQueuedChunks || this.queuedBytes + byteLength > this.maxQueuedBytes) {
       this.nextDiscontinuity = true;
@@ -155,7 +249,7 @@ export class WebRtcTranscriptionChunker {
         'WebRTC transcription chunk queue limit exceeded.',
       );
     }
-    const startSample = this.emittedSampleCount;
+    const startSample = explicitStartSample ?? this.emittedSampleCount;
     const endSample = startSample + samples.length;
     const startMs = Math.round((startSample / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000);
     const endMs = Math.round((endSample / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000);
@@ -175,7 +269,7 @@ export class WebRtcTranscriptionChunker {
     };
     this.nextDiscontinuity = false;
     this.emittedChunkCount += 1;
-    this.emittedSampleCount = endSample;
+    this.emittedSampleCount = Math.max(this.emittedSampleCount, endSample);
     this.queuedChunks += 1;
     this.queuedBytes += byteLength;
     return chunk;
@@ -250,4 +344,23 @@ function float32ToInt16(samples: Float32Array): Int16Array {
     output[index] = sample < 0 ? Math.round(sample * 32768) : Math.round(sample * 32767);
   }
   return output;
+}
+
+function concatSamples(left: Int16Array, right: Int16Array): Int16Array {
+  if (left.length === 0) return right.slice();
+  if (right.length === 0) return left.slice();
+  const output = new Int16Array(left.length + right.length);
+  output.set(left, 0);
+  output.set(right, left.length);
+  return output;
+}
+
+function frameEnergy(samples: Int16Array): number {
+  if (samples.length === 0) return 0;
+  let total = 0;
+  for (const sample of samples) {
+    const normalized = sample / 32768;
+    total += normalized * normalized;
+  }
+  return Math.sqrt(total / samples.length);
 }

@@ -68,20 +68,21 @@ describe('text-to-speech providers', () => {
     await expect(readFile(outputPath)).resolves.toHaveLength(44);
   });
 
-  it('runs Piper successfully and writes the requested output file', async () => {
+  it('runs Piper successfully and normalizes the requested output file', async () => {
     const { modelPath, configPath } = await modelFiles();
     const outputPath = join(await tempDir(), 'piper.wav');
+    const rawOutputPath = `${outputPath}.piper.wav`;
     const runCommand: PiperCommandRunner = async (_command, args, options) => {
       expect(args).toEqual([
         '--model',
         modelPath,
         '--output_file',
-        outputPath,
+        rawOutputPath,
         '--config',
         configPath,
       ]);
       expect(options.input).toBe('hola');
-      await writeFile(outputPath, 'wav');
+      await writeFile(rawOutputPath, 'native wav');
       return { stdout: '', stderr: '' };
     };
     const provider = new PiperTextToSpeechProvider({
@@ -89,13 +90,33 @@ describe('text-to-speech providers', () => {
       timeoutMs: 30_000,
       voices: [{ voiceId: 'es-test', language: 'es', modelPath, configPath }],
       runCommand,
+      runNormalizeCommand: async (_command, args) => {
+        expect(args).toEqual([
+          '-y',
+          '-i',
+          rawOutputPath,
+          '-vn',
+          '-ac',
+          '1',
+          '-ar',
+          '16000',
+          '-acodec',
+          'pcm_s16le',
+          '-f',
+          'wav',
+          outputPath,
+        ]);
+        await writeFile(outputPath, 'normalized wav');
+        return { stdout: '', stderr: '' };
+      },
     });
 
     const result = await provider.generate(input(outputPath));
 
     expect(result.audioPath).toBe(outputPath);
     expect(result.providerLatencyMs).toEqual(expect.any(Number));
-    await expect(readFile(outputPath, 'utf8')).resolves.toBe('wav');
+    await expect(readFile(outputPath, 'utf8')).resolves.toBe('normalized wav');
+    await expect(readFile(rawOutputPath, 'utf8')).rejects.toThrow();
   });
 
   it('rejects unsupported language or voice clearly', async () => {
@@ -178,6 +199,30 @@ describe('text-to-speech providers', () => {
     await expect(failedProvider.generate(input(join(await tempDir(), 'failed.wav')))).rejects.toMatchObject({
       code: 'tts-failed',
       message: expect.stringContaining('piper crashed'),
+    });
+  });
+
+  it('fails clearly when Piper output normalisation cannot run', async () => {
+    const { modelPath } = await modelFiles();
+    const provider = new PiperTextToSpeechProvider({
+      executable: 'piper',
+      timeoutMs: 30_000,
+      voices: [{ voiceId: 'es-test', language: 'es', modelPath, configPath: null }],
+      runCommand: async (_command, args) => {
+        const rawOutputPath = args[args.indexOf('--output_file') + 1];
+        if (typeof rawOutputPath !== 'string') throw new Error('missing raw output path');
+        await writeFile(rawOutputPath, 'native wav');
+        return { stdout: '', stderr: '' };
+      },
+      runNormalizeCommand: async () => {
+        const error = new Error('spawn ffmpeg ENOENT');
+        (error as { code?: string }).code = 'ENOENT';
+        throw error;
+      },
+    });
+
+    await expect(provider.generate(input(join(await tempDir(), 'normalize.wav')))).rejects.toMatchObject({
+      code: 'tts-ffmpeg-unavailable',
     });
   });
 });

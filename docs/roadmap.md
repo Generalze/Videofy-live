@@ -53,7 +53,7 @@
 
 - [x] P5.0 unified live and uploaded-video programme sources
 - [x] P5.1 OBS/capture-device partner-preview hardening
-- [ ] P5.2 meeting-platform operator runbooks through browser or screen capture
+- [x] P5.2 real open-source AI providers and operator language controls
 - [ ] P5.3 partner-preview validation and closure
 
 ## Phase 6 - Scale and production

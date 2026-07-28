@@ -1,8 +1,11 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { promisify } from 'node:util';
 import { MediaIngestError } from './ingest-error.js';
+
+const execFileAsync = promisify(execFile);
 
 export interface TextToSpeechProviderInput {
   sessionId: string;
@@ -44,6 +47,7 @@ export interface TextToSpeechProviderConfig {
 
 export interface PiperConfig {
   executable: string;
+  ffmpegExecutable?: string;
   voices: PiperVoiceConfig[];
   timeoutMs: number;
 }
@@ -61,6 +65,11 @@ export type PiperCommandRunner = (
 
 export interface PiperTextToSpeechProviderOptions extends PiperConfig {
   runCommand?: PiperCommandRunner;
+  runNormalizeCommand?: (
+    command: string,
+    args: readonly string[],
+    options: { timeoutMs: number },
+  ) => Promise<PiperCommandResult>;
 }
 
 export function createTextToSpeechProvider(
@@ -130,10 +139,12 @@ export class MockTextToSpeechProvider implements TextToSpeechProvider {
 export class PiperTextToSpeechProvider implements TextToSpeechProvider {
   readonly name = 'piper';
   private readonly runCommand: PiperCommandRunner;
+  private readonly runNormalizeCommand: NonNullable<PiperTextToSpeechProviderOptions['runNormalizeCommand']>;
 
   constructor(private readonly options: PiperTextToSpeechProviderOptions) {
     validatePiperConfig(options);
     this.runCommand = options.runCommand ?? defaultPiperCommandRunner;
+    this.runNormalizeCommand = options.runNormalizeCommand ?? defaultNormalizeCommandRunner;
   }
 
   async generate(input: TextToSpeechProviderInput): Promise<TextToSpeechProviderResult> {
@@ -148,18 +159,48 @@ export class PiperTextToSpeechProvider implements TextToSpeechProvider {
     }
 
     const startedAt = Date.now();
+    const rawOutputPath = `${input.outputPath}.piper.wav`;
     try {
       await mkdir(dirname(input.outputPath), { recursive: true });
-      await this.runCommand(this.options.executable, buildPiperArgs(voice, input.outputPath), {
+      await this.runCommand(this.options.executable, buildPiperArgs(voice, rawOutputPath), {
         timeoutMs: this.options.timeoutMs,
         input: input.translatedText,
       });
+      await this.normalizeOutput(rawOutputPath, input.outputPath);
       return {
         audioPath: input.outputPath,
         providerLatencyMs: Math.max(0, Date.now() - startedAt),
       };
     } catch (error) {
       throw classifyPiperError(error);
+    }
+  }
+
+  private async normalizeOutput(inputPath: string, outputPath: string): Promise<void> {
+    try {
+      await this.runNormalizeCommand(
+        this.options.ffmpegExecutable ?? 'ffmpeg',
+        [
+          '-y',
+          '-i',
+          inputPath,
+          '-vn',
+          '-ac',
+          '1',
+          '-ar',
+          '16000',
+          '-acodec',
+          'pcm_s16le',
+          '-f',
+          'wav',
+          outputPath,
+        ],
+        { timeoutMs: this.options.timeoutMs },
+      );
+    } catch (error) {
+      throw classifyPiperNormalizeError(error);
+    } finally {
+      await rm(inputPath, { force: true }).catch(() => undefined);
     }
   }
 
@@ -237,6 +278,22 @@ async function defaultPiperCommandRunner(
   });
 }
 
+async function defaultNormalizeCommandRunner(
+  command: string,
+  args: readonly string[],
+  options: { timeoutMs: number },
+): Promise<PiperCommandResult> {
+  const result = await execFileAsync(command, [...args], {
+    encoding: 'utf8',
+    timeout: options.timeoutMs,
+    windowsHide: true,
+  });
+  return {
+    stdout: String(result.stdout ?? ''),
+    stderr: String(result.stderr ?? ''),
+  };
+}
+
 function classifyPiperError(error: unknown): MediaIngestError {
   if (error instanceof MediaIngestError) return error;
   const err = error as { code?: unknown; signal?: unknown; stderr?: unknown; message?: unknown };
@@ -263,6 +320,31 @@ function classifyPiperError(error: unknown): MediaIngestError {
   }
 
   return new MediaIngestError(`Piper generation failed. ${message}`, 'tts-failed', 500);
+}
+
+function classifyPiperNormalizeError(error: unknown): MediaIngestError {
+  if (error instanceof MediaIngestError) return error;
+  const err = error as { code?: unknown; signal?: unknown; stderr?: unknown; message?: unknown };
+  const stderr = typeof err.stderr === 'string' ? err.stderr : '';
+  const message =
+    typeof err.message === 'string' ? err.message : 'Piper output normalisation failed.';
+  const combined = `${message}\n${stderr}`.toLowerCase();
+
+  if (err.code === 'ENOENT') {
+    return new MediaIngestError(
+      'FFmpeg executable not found for Piper output normalisation.',
+      'tts-ffmpeg-unavailable',
+      500,
+    );
+  }
+  if (err.signal === 'SIGTERM' || combined.includes('timed out')) {
+    return new MediaIngestError('Piper output normalisation timed out.', 'tts-timeout', 504);
+  }
+  return new MediaIngestError(
+    `Piper output normalisation failed. ${message}`,
+    'tts-failed',
+    500,
+  );
 }
 
 function validatePiperConfig(config: PiperConfig): void {

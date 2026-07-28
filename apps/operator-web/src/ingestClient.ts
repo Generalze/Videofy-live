@@ -7,13 +7,16 @@ import type {
   TextToSpeechSessionMetadata,
   TranslationSessionMetadata,
   TranscriptionSessionMetadata,
+  SourceLanguageControlMetadata,
+  TargetLanguageCapability,
+  AiProviderStatusMetadata,
 } from '@videofy-live/shared-types';
 
 export interface ProcessingSessionDto {
   id: string;
   streamId: string;
   state: StreamStatus;
-  sourceKind: 'upload' | 'microphone';
+  sourceKind: 'upload' | 'microphone' | 'webrtc';
   media: MediaFileMetadata | null;
   audioExtraction: AudioExtractionMetadata;
   microphoneCapture: MicrophoneCaptureMetadata;
@@ -22,6 +25,10 @@ export interface ProcessingSessionDto {
   generatedAudio: TextToSpeechSessionMetadata;
   monitoring: SessionMonitoringMetadata;
   targetLanguage: string;
+  targetLanguages?: string[];
+  sourceLanguageControl?: SourceLanguageControlMetadata;
+  targetLanguageCatalogue?: TargetLanguageCapability[];
+  aiProviderStatus?: AiProviderStatusMetadata;
   createdAt: string;
   updatedAt: string;
   error: string | null;
@@ -42,12 +49,18 @@ export async function createProcessingSession(
   ingestUrl: string,
   file: File,
   targetLanguage?: string,
+  input: { targetLanguages?: string[]; sourceLanguage?: string; sourceLanguageMode?: string } = {},
 ): Promise<ProcessingSessionDto> {
   const body = new FormData();
   body.append('media', file);
   if (targetLanguage) {
     body.append('targetLanguage', targetLanguage);
   }
+  for (const language of input.targetLanguages ?? []) {
+    body.append('targetLanguages', language);
+  }
+  if (input.sourceLanguage) body.append('sourceLanguage', input.sourceLanguage);
+  if (input.sourceLanguageMode) body.append('sourceLanguageMode', input.sourceLanguageMode);
 
   const response = await fetch(`${ingestUrl.replace(/\/$/, '')}/sessions`, {
     method: 'POST',
@@ -80,7 +93,14 @@ export async function createProcessingSession(
 
 export async function createMicrophoneSession(
   ingestUrl: string,
-  input: { deviceId?: string; deviceLabel?: string; targetLanguage?: string },
+  input: {
+    deviceId?: string;
+    deviceLabel?: string;
+    targetLanguage?: string;
+    targetLanguages?: string[];
+    sourceLanguage?: string;
+    sourceLanguageMode?: string;
+  },
 ): Promise<ProcessingSessionDto> {
   const response = await fetch(`${ingestUrl.replace(/\/$/, '')}/microphone/sessions`, {
     method: 'POST',
@@ -88,6 +108,22 @@ export async function createMicrophoneSession(
     body: JSON.stringify(input),
   });
 
+  return await readSessionResponse(response);
+}
+
+export async function updateSourceLanguageControl(
+  ingestUrl: string,
+  sessionId: string,
+  input: { action: 'confirm' | 'reject' | 'override' | 'lock' | 'unlock' | 'detect-again'; language?: string },
+): Promise<ProcessingSessionDto> {
+  const response = await fetch(
+    `${ingestUrl.replace(/\/$/, '')}/sessions/${encodeURIComponent(sessionId)}/source-language`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  );
   return await readSessionResponse(response);
 }
 

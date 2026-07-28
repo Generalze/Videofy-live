@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ArgosTimestampedTranslationProvider,
   MockTimestampedTranslationProvider,
+  OpusMtTimestampedTranslationProvider,
   createTimestampedTranslationProvider,
   type CommandRunner,
 } from '../translation-provider.js';
@@ -146,6 +147,65 @@ describe('translation providers', () => {
 
     await expect(argos.translate(input())).rejects.toMatchObject({
       code: 'translation-failed',
+    });
+  });
+
+  it('runs OPUS-MT through the existing translation provider interface without downloading models', async () => {
+    const calls: Array<{ command: string; args: readonly string[] }> = [];
+    const opus = new OpusMtTimestampedTranslationProvider({
+      pythonExecutable: 'C:/ai/python312/python.exe',
+      modelCacheDir: 'C:/models/opus',
+      supportedTargetLanguages: ['fr', 'es'],
+      languageModels: [
+        {
+          sourceLanguage: 'en',
+          targetLanguage: 'fr',
+          modelId: 'Helsinki-NLP/opus-mt-en-fr',
+          localPath: 'C:/models/opus/en-fr',
+        },
+      ],
+      timeoutMs: 30_000,
+      maxConcurrency: 1,
+      allowModelDownload: false,
+      runCommand: async (command, args) => {
+        calls.push({ command, args });
+        return { stdout: JSON.stringify({ translatedText: 'bonjour' }), stderr: '' };
+      },
+    });
+
+    await expect(opus.translate(input())).resolves.toMatchObject({
+      translatedText: 'bonjour',
+      providerName: 'opus-mt',
+      modelId: 'Helsinki-NLP/opus-mt-en-fr',
+    });
+    expect(calls[0]?.command).toBe('C:/ai/python312/python.exe');
+    expect(calls[0]?.args.at(-1)).toBe('0');
+  });
+
+  it('fails clearly when OPUS-MT dependencies or models are unavailable', async () => {
+    const opus = new OpusMtTimestampedTranslationProvider({
+      pythonExecutable: 'python',
+      modelCacheDir: null,
+      supportedTargetLanguages: ['fr'],
+      languageModels: [
+        {
+          sourceLanguage: 'en',
+          targetLanguage: 'fr',
+          modelId: 'Helsinki-NLP/opus-mt-en-fr',
+          localPath: null,
+        },
+      ],
+      timeoutMs: 1000,
+      maxConcurrency: 1,
+      allowModelDownload: false,
+      runCommand: async () => {
+        const error = new Error('No module named transformers');
+        throw error;
+      },
+    });
+
+    await expect(opus.translate(input())).rejects.toMatchObject({
+      code: 'translation-python-unavailable',
     });
   });
 });

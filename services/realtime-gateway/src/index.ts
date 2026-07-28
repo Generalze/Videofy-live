@@ -13,6 +13,16 @@ const gateway = new Gateway(server, config.corsOrigins, {
   mediaIngestUrl: config.mediaIngestUrl,
   internalWebRtcToken: config.internalWebRtcToken,
   webRtcTranscriptionChunkMs: config.webRtcTranscriptionChunkMs,
+  vad: config.webRtcVadEnabled
+    ? {
+        enabled: true,
+        mode: config.webRtcVadMode,
+        speechThreshold: config.webRtcVadSpeechThreshold,
+        endSilenceMs: config.webRtcVadEndSilenceMs,
+        minSpeechMs: config.webRtcVadMinSpeechMs,
+        maxSegmentMs: config.webRtcVadMaxSegmentMs,
+      }
+    : undefined,
   webRtcTranscriptionStagingDir: config.webRtcTranscriptionStagingDir,
 });
 

@@ -46,11 +46,21 @@ app.post('/microphone/sessions', async (req, res) => {
       deviceId?: unknown;
       deviceLabel?: unknown;
       targetLanguage?: unknown;
+      targetLanguages?: unknown;
+      sourceLanguage?: unknown;
+      sourceLanguageMode?: unknown;
     };
     const input: Parameters<typeof ingest.createMicrophoneSession>[0] = {};
     if (typeof body.deviceId === 'string') input.deviceId = body.deviceId;
     if (typeof body.deviceLabel === 'string') input.deviceLabel = body.deviceLabel;
     if (typeof body.targetLanguage === 'string') input.targetLanguage = body.targetLanguage;
+    if (Array.isArray(body.targetLanguages)) {
+      input.targetLanguages = body.targetLanguages.filter((value): value is string => typeof value === 'string');
+    }
+    if (typeof body.sourceLanguage === 'string') input.sourceLanguage = body.sourceLanguage;
+    if (body.sourceLanguageMode === 'manual' || body.sourceLanguageMode === 'auto-detect') {
+      input.sourceLanguageMode = body.sourceLanguageMode;
+    }
     const session = await ingest.createMicrophoneSession(input);
     res.status(201).json({ session });
   } catch (error) {
@@ -101,6 +111,9 @@ app.post('/internal/webrtc/sessions', async (req, res) => {
       broadcasterPeerId?: unknown;
       revision?: unknown;
       targetLanguage?: unknown;
+      targetLanguages?: unknown;
+      sourceLanguage?: unknown;
+      sourceLanguageMode?: unknown;
     };
     const session = await ingest.createWebRtcSession({
       sessionId: requireStringField(body.sessionId, 'sessionId'),
@@ -108,6 +121,13 @@ app.post('/internal/webrtc/sessions', async (req, res) => {
       broadcasterPeerId: requireStringField(body.broadcasterPeerId, 'broadcasterPeerId'),
       revision: parseIntegerField(body.revision, 'revision'),
       ...(typeof body.targetLanguage === 'string' ? { targetLanguage: body.targetLanguage } : {}),
+      ...(Array.isArray(body.targetLanguages)
+        ? { targetLanguages: body.targetLanguages.filter((value): value is string => typeof value === 'string') }
+        : {}),
+      ...(typeof body.sourceLanguage === 'string' ? { sourceLanguage: body.sourceLanguage } : {}),
+      ...(body.sourceLanguageMode === 'manual' || body.sourceLanguageMode === 'auto-detect'
+        ? { sourceLanguageMode: body.sourceLanguageMode }
+        : {}),
     });
     res.status(201).json({ session });
   } catch (error) {
@@ -167,12 +187,26 @@ app.post('/sessions', upload.single('media'), async (req, res) => {
   try {
     const targetLanguage =
       typeof req.body?.targetLanguage === 'string' ? req.body.targetLanguage : undefined;
+    const targetLanguages = Array.isArray(req.body?.targetLanguages)
+      ? req.body.targetLanguages.filter((value: unknown): value is string => typeof value === 'string')
+      : typeof req.body?.targetLanguages === 'string'
+        ? [req.body.targetLanguages]
+        : undefined;
+    const sourceLanguage =
+      typeof req.body?.sourceLanguage === 'string' ? req.body.sourceLanguage : undefined;
+    const sourceLanguageMode =
+      req.body?.sourceLanguageMode === 'manual' || req.body?.sourceLanguageMode === 'auto-detect'
+        ? req.body.sourceLanguageMode
+        : undefined;
     const upload = {
       path: req.file.path,
       originalName: req.file.originalname,
       sizeBytes: req.file.size,
       mimeType: req.file.mimetype,
       ...(targetLanguage ? { targetLanguage } : {}),
+      ...(targetLanguages ? { targetLanguages } : {}),
+      ...(sourceLanguage ? { sourceLanguage } : {}),
+      ...(sourceLanguageMode ? { sourceLanguageMode } : {}),
     };
     const session = await ingest.createProcessingSession(upload);
     res.status(201).json({ session });
@@ -292,6 +326,22 @@ app.post('/sessions/:sessionId/generated-audio/segments/:segmentId/retry', async
       req.params.sessionId,
       req.params.segmentId,
     );
+    res.json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.post('/sessions/:sessionId/source-language', (req, res) => {
+  try {
+    const body = (req.body ?? {}) as { action?: unknown; language?: unknown };
+    const action = requireStringField(body.action, 'action') as Parameters<
+      typeof ingest.updateSourceLanguageControl
+    >[1]['action'];
+    const session = ingest.updateSourceLanguageControl(req.params.sessionId, {
+      action,
+      ...(typeof body.language === 'string' ? { language: body.language } : {}),
+    });
     res.json({ session });
   } catch (error) {
     sendIngestError(res, error);

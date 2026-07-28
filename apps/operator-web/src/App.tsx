@@ -47,6 +47,7 @@ import {
   resumeProcessingSession,
   sendMicrophoneChunk,
   stopMicrophoneSession,
+  updateSourceLanguageControl,
   type ProcessingSessionDto,
 } from './ingestClient';
 import {
@@ -61,7 +62,13 @@ import {
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
 const INGEST_URL = import.meta.env['VITE_INGEST_URL'] ?? 'http://localhost:3002';
 
-const LANGUAGE_OPTIONS = ['fr', 'es', 'de', 'pt', 'it', 'ja', 'zh', 'ar'];
+const SOURCE_LANGUAGE_OPTIONS = [
+  { code: 'en', label: 'English' },
+  { code: 'fr', label: 'French' },
+  { code: 'es', label: 'Spanish' },
+  { code: 'pt', label: 'Portuguese' },
+];
+const LANGUAGE_OPTIONS = ['yo', 'pt', 'es', 'fr'];
 
 interface LatencyRow {
   label: string;
@@ -192,6 +199,7 @@ export default function App(): React.ReactElement {
   const [exportMessage, setExportMessage] = useState<string | null>(null);
   const [phraseLog, setPhraseLog] = useState<PhraseLogEntry[]>([]);
   const [sourceLanguage, setSourceLanguage] = useState('en');
+  const [sourceLanguageMode, setSourceLanguageMode] = useState<'manual' | 'auto-detect'>('manual');
   const [sessionTargetLanguage, setSessionTargetLanguage] = useState('fr');
   const [targetLanguages, setTargetLanguages] = useState<string[]>(['fr']);
   const [microphoneDevices, setMicrophoneDevices] = useState<MediaDeviceInfo[]>([]);
@@ -528,7 +536,11 @@ export default function App(): React.ReactElement {
       setMediaError(null);
 
       try {
-        const session = await createProcessingSession(INGEST_URL, file, sessionTargetLanguage);
+        const session = await createProcessingSession(INGEST_URL, file, sessionTargetLanguage, {
+          targetLanguages,
+          sourceLanguage,
+          sourceLanguageMode,
+        });
         applyProcessingSession(session);
       } catch (error) {
         const message =
@@ -543,7 +555,7 @@ export default function App(): React.ReactElement {
         event.target.value = '';
       }
     },
-    [applyProcessingSession, sessionTargetLanguage],
+    [applyProcessingSession, sessionTargetLanguage, sourceLanguage, sourceLanguageMode, targetLanguages],
   );
 
   const prepareProgrammeSourceSwitch = useCallback(async (reason: string): Promise<void> => {
@@ -720,6 +732,9 @@ export default function App(): React.ReactElement {
         devices.find((device) => device.deviceId === selectedMicrophoneDeviceId) ?? devices[0];
       const microphoneSessionInput: Parameters<typeof createMicrophoneSession>[1] = {
         targetLanguage: sessionTargetLanguage,
+        targetLanguages,
+        sourceLanguage,
+        sourceLanguageMode,
       };
       const deviceId = activeDevice?.deviceId || selectedMicrophoneDeviceId;
       const deviceLabel = activeTrack?.label || activeDevice?.label;
@@ -823,6 +838,9 @@ export default function App(): React.ReactElement {
     microphoneStatus,
     selectedMicrophoneDeviceId,
     sessionTargetLanguage,
+    sourceLanguage,
+    sourceLanguageMode,
+    targetLanguages,
   ]);
 
   const handlePauseMicrophone = useCallback(async (): Promise<void> => {
@@ -1078,6 +1096,36 @@ export default function App(): React.ReactElement {
     }
   }, [mediaState?.processingSessionId, processingSession?.id]);
 
+  const handleSourceLanguageAction = useCallback(
+    async (
+      action: 'confirm' | 'reject' | 'override' | 'lock' | 'unlock' | 'detect-again',
+      language?: string,
+    ): Promise<void> => {
+      const sessionId = mediaState?.processingSessionId ?? processingSession?.id;
+      if (!sessionId) return;
+      setSessionCommandRunning(true);
+      setMediaError(null);
+      try {
+        const session = await updateSourceLanguageControl(INGEST_URL, sessionId, {
+          action,
+          ...(language ? { language } : {}),
+        });
+        applyProcessingSession(session);
+      } catch (error) {
+        const message =
+          error instanceof IngestClientError
+            ? error.message
+            : error instanceof Error
+              ? error.message
+              : 'Source language update failed.';
+        setMediaError(message);
+      } finally {
+        setSessionCommandRunning(false);
+      }
+    },
+    [applyProcessingSession, mediaState?.processingSessionId, processingSession?.id],
+  );
+
   useEffect(() => {
     connect();
     return () => {
@@ -1173,14 +1221,78 @@ export default function App(): React.ReactElement {
             <select
               className={styles.configSelect}
               value={sourceLanguage}
-              onChange={(e) => setSourceLanguage(e.target.value)}
+              onChange={(e) => {
+                setSourceLanguage(e.target.value);
+                setSourceLanguageMode('manual');
+              }}
             >
-              <option value="en">English</option>
-              <option value="fr">Français</option>
-              <option value="es">Español</option>
-              <option value="de">Deutsch</option>
+              {SOURCE_LANGUAGE_OPTIONS.map((languageOption) => (
+                <option key={`p5-source-${languageOption.code}`} value={languageOption.code}>
+                  {languageOption.label}
+                </option>
+              ))}
             </select>
           </div>
+          <div className={styles.langConfig}>
+            <label className={styles.configLabel}>Detection</label>
+            <select
+              className={styles.configSelect}
+              value={sourceLanguageMode}
+              onChange={(event) =>
+                setSourceLanguageMode(event.target.value as 'manual' | 'auto-detect')
+              }
+            >
+              <option value="manual">Manual</option>
+              <option value="auto-detect">Auto-detect Beta</option>
+            </select>
+          </div>
+          <p className={styles.mockNote}>
+            {processingSession?.sourceLanguageControl
+              ? `Source ${processingSession.sourceLanguageControl.activeLanguage.toUpperCase()} · ${processingSession.sourceLanguageControl.status} · rev ${processingSession.sourceLanguageControl.revision}`
+              : sourceLanguageMode === 'manual'
+                ? `Manual ${sourceLanguage.toUpperCase()}`
+                : 'Auto-detect requires confirmation when confidence is low.'}
+          </p>
+          {processingSession?.sourceLanguageControl && (
+            <div className={styles.mockButtons}>
+              <button
+                type="button"
+                className={styles.mockBtn}
+                onClick={() => void handleSourceLanguageAction('confirm')}
+                disabled={sessionCommandRunning}
+              >
+                Confirm
+              </button>
+              <button
+                type="button"
+                className={styles.mockBtn}
+                onClick={() => void handleSourceLanguageAction('reject')}
+                disabled={sessionCommandRunning}
+              >
+                Reject
+              </button>
+              <button
+                type="button"
+                className={styles.mockBtn}
+                onClick={() => void handleSourceLanguageAction('override', sourceLanguage)}
+                disabled={sessionCommandRunning}
+              >
+                Override
+              </button>
+              <button
+                type="button"
+                className={styles.mockBtn}
+                onClick={() =>
+                  void handleSourceLanguageAction(
+                    processingSession.sourceLanguageControl?.locked ? 'unlock' : 'lock',
+                  )
+                }
+                disabled={sessionCommandRunning}
+              >
+                {processingSession.sourceLanguageControl.locked ? 'Unlock' : 'Lock'}
+              </button>
+            </div>
+          )}
           <div className={styles.langConfig}>
             <label className={styles.configLabel}>Target channels</label>
             <div className={styles.targetLangs}>
@@ -1201,6 +1313,15 @@ export default function App(): React.ReactElement {
                 </label>
               ))}
             </div>
+            {processingSession?.targetLanguageCatalogue && (
+              <div className={styles.extractionMeta}>
+                {processingSession.targetLanguageCatalogue.map((target) => (
+                  <span key={target.language}>
+                    {target.label}: {target.availability}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         </section>
 

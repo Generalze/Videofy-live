@@ -1,0 +1,14 @@
+# P5.2 project-local AI runtime.
+# Create with Python 3.11: py -3.11 -m venv .venv-ai
+# Install with: .\.venv-ai\Scripts\python.exe -m pip install -r services\media-ingest\requirements-ai.txt
+faster-whisper==1.2.1
+ctranslate2==4.8.1
+transformers==5.14.1
+sentencepiece==0.2.2
+silero-vad==6.2.1
+torch==2.13.0
+torchaudio==2.11.0
+numpy==2.4.6
+soundfile==0.14.0
+psutil==7.2.2
+huggingface-hub==1.25.1

@@ -10,6 +10,7 @@ export interface TranscriptionEvent {
   startMs: number;
   endMs: number;
   confidence: number | null;
+  sourceLanguageRevision?: number;
   providerLatencyMs?: number | null;
   status: TranscriptionStatus;
   error?: string;
@@ -23,6 +24,9 @@ export interface TranscriptionSessionMetadata {
   transcribedChunks: number;
   failedChunks: number;
   detectedLanguage: string | null;
+  sourceLanguage?: string | null;
+  sourceLanguageRevision?: number;
+  languageDetectionConfidence?: number | null;
   events: TranscriptionEvent[];
   error?: string;
 }

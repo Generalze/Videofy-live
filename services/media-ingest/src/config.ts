@@ -21,17 +21,28 @@ export interface IngestConfig {
   fasterWhisperComputeType: string;
   fasterWhisperModelCacheDir: string | null;
   fasterWhisperAllowGpuFallback: boolean;
-  translationProvider: 'mock' | 'argos';
+  translationProvider: 'mock' | 'argos' | 'opus-mt';
   translationTimeoutMs: number;
   translationTargetLanguage: string;
   translationSupportedTargetLanguages: string[];
   argosPythonExecutable: string;
   argosPackageDir: string | null;
+  opusMtPythonExecutable: string;
+  opusMtModelCacheDir: string | null;
+  opusMtMaxConcurrency: number;
+  opusMtAllowModelDownload: boolean;
+  opusMtLanguageModels: {
+    sourceLanguage: string;
+    targetLanguage: string;
+    modelId: string;
+    localPath: string | null;
+  }[];
   textToSpeechProvider: 'mock' | 'piper';
   textToSpeechTimeoutMs: number;
   textToSpeechSupportedLanguages: string[];
   textToSpeechDefaultVoiceId: string;
   piperExecutable: string;
+  piperFfmpegExecutable: string;
   piperVoiceId: string;
   piperVoiceLanguage: string;
   piperModelPath: string;
@@ -61,9 +72,9 @@ export function loadConfig(): IngestConfig {
     );
   }
   const translationProvider = process.env['TRANSLATION_PROVIDER'] ?? 'mock';
-  if (translationProvider !== 'mock' && translationProvider !== 'argos') {
+  if (translationProvider !== 'mock' && translationProvider !== 'argos' && translationProvider !== 'opus-mt') {
     throw new Error(
-      `TRANSLATION_PROVIDER must be "mock" or "argos"; received "${translationProvider}"`,
+      `TRANSLATION_PROVIDER must be "mock", "argos", or "opus-mt"; received "${translationProvider}"`,
     );
   }
   const textToSpeechProvider = process.env['TEXT_TO_SPEECH_PROVIDER'] ?? 'mock';
@@ -107,18 +118,28 @@ export function loadConfig(): IngestConfig {
       process.env['TRANSLATION_TARGET_LANGUAGE'] ?? process.env['TARGET_LANGUAGE'] ?? 'fr',
     translationSupportedTargetLanguages: readCsv(
       'TRANSLATION_SUPPORTED_TARGET_LANGUAGES',
-      'fr,es,de,pt,it,ja,zh,ar',
+      'fr,es,de,pt,it,ja,zh,ar,yo',
     ),
     argosPythonExecutable: process.env['ARGOS_TRANSLATE_PYTHON'] ?? 'python',
     argosPackageDir: process.env['ARGOS_TRANSLATE_PACKAGE_DIR']?.trim() || null,
+    opusMtPythonExecutable:
+      process.env['OPUS_MT_PYTHON'] ??
+      process.env['AI_PYTHON_EXECUTABLE'] ??
+      process.env['ARGOS_TRANSLATE_PYTHON'] ??
+      'python',
+    opusMtModelCacheDir: process.env['OPUS_MT_MODEL_CACHE_DIR']?.trim() || null,
+    opusMtMaxConcurrency: readPositiveInt('OPUS_MT_MAX_CONCURRENCY', 1),
+    opusMtAllowModelDownload: (process.env['OPUS_MT_ALLOW_MODEL_DOWNLOAD'] ?? 'false').toLowerCase() === 'true',
+    opusMtLanguageModels: readOpusMtLanguageModels(),
     textToSpeechProvider,
     textToSpeechTimeoutMs: readPositiveInt('TEXT_TO_SPEECH_TIMEOUT_MS', 30_000),
     textToSpeechSupportedLanguages: readCsv(
       'TEXT_TO_SPEECH_SUPPORTED_LANGUAGES',
-      process.env['TRANSLATION_SUPPORTED_TARGET_LANGUAGES'] ?? 'fr,es,de,pt,it,ja,zh,ar',
+      process.env['TRANSLATION_SUPPORTED_TARGET_LANGUAGES'] ?? 'fr,es,de,pt,it,ja,zh,ar,yo',
     ),
     textToSpeechDefaultVoiceId: process.env['TEXT_TO_SPEECH_DEFAULT_VOICE_ID'] ?? piperVoiceId,
     piperExecutable: process.env['PIPER_EXECUTABLE'] ?? 'piper',
+    piperFfmpegExecutable: process.env['PIPER_FFMPEG'] ?? 'ffmpeg',
     piperVoiceId,
     piperVoiceLanguage,
     piperModelPath: process.env['PIPER_MODEL_PATH'] ?? resolve(process.cwd(), '../../models/piper/model.onnx'),
@@ -128,4 +149,29 @@ export function loadConfig(): IngestConfig {
     translatedLanguages: readCsv('TRANSLATED_LANGUAGES', 'fr'),
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
   };
+}
+
+function readOpusMtLanguageModels(): IngestConfig['opusMtLanguageModels'] {
+  const raw =
+    process.env['OPUS_MT_LANGUAGE_MODELS'] ??
+    'en:fr:Helsinki-NLP/opus-mt-en-fr,en:es:Helsinki-NLP/opus-mt-en-es,en:pt:Helsinki-NLP/opus-mt-en-ROMANCE';
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [sourceLanguage, targetLanguage, modelId, ...localPathParts] = entry.split(':');
+      const localPath = localPathParts.join(':');
+      if (!sourceLanguage || !targetLanguage || !modelId) {
+        throw new Error(
+          'OPUS_MT_LANGUAGE_MODELS entries must use source:target:modelId[:localPath].',
+        );
+      }
+      return {
+        sourceLanguage: sourceLanguage.toLowerCase(),
+        targetLanguage: targetLanguage.toLowerCase(),
+        modelId,
+        localPath: localPath?.trim() || null,
+      };
+    });
 }

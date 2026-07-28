@@ -9,6 +9,12 @@ export interface GatewayConfig {
   mediaIngestUrl: string;
   internalWebRtcToken: string | null;
   webRtcTranscriptionChunkMs: number;
+  webRtcVadEnabled: boolean;
+  webRtcVadMode: 'silero' | 'fallback';
+  webRtcVadSpeechThreshold: number;
+  webRtcVadEndSilenceMs: number;
+  webRtcVadMinSpeechMs: number;
+  webRtcVadMaxSegmentMs: number;
   webRtcTranscriptionStagingDir: string;
 }
 
@@ -23,10 +29,26 @@ export function loadConfig(): GatewayConfig {
     mediaIngestUrl: process.env['MEDIA_INGEST_URL'] ?? 'http://localhost:3002',
     internalWebRtcToken: process.env['INTERNAL_WEBRTC_TOKEN']?.trim() || null,
     webRtcTranscriptionChunkMs: readPositiveGatewayInt('WEBRTC_TRANSCRIPTION_CHUNK_MS', 15_000),
+    webRtcVadEnabled: (process.env['WEBRTC_VAD_ENABLED'] ?? 'false').toLowerCase() === 'true',
+    webRtcVadMode: process.env['WEBRTC_VAD_MODE'] === 'silero' ? 'silero' : 'fallback',
+    webRtcVadSpeechThreshold: readPositiveGatewayFloat('WEBRTC_VAD_SPEECH_THRESHOLD', 0.012),
+    webRtcVadEndSilenceMs: readPositiveGatewayInt('WEBRTC_VAD_END_SILENCE_MS', 650),
+    webRtcVadMinSpeechMs: readPositiveGatewayInt('WEBRTC_VAD_MIN_SPEECH_MS', 180),
+    webRtcVadMaxSegmentMs: readPositiveGatewayInt('WEBRTC_VAD_MAX_SEGMENT_MS', 8_000),
     webRtcTranscriptionStagingDir:
       process.env['WEBRTC_AUDIO_CHUNK_STAGING_DIR'] ??
       resolve(process.cwd(), '../../uploads/webrtc-staging'),
   };
+}
+
+function readPositiveGatewayFloat(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive number.`);
+  }
+  return parsed;
 }
 
 function readPositiveGatewayInt(name: string, fallback: number): number {

@@ -86,6 +86,75 @@ describe('WebRtcTranscriptionChunker', () => {
     });
   });
 
+  it('uses VAD-driven boundaries while preserving programme timestamps and skipped silence', () => {
+    const chunker = new WebRtcTranscriptionChunker({
+      ...context,
+      vad: {
+        enabled: true,
+        mode: 'fallback',
+        speechThreshold: 0.01,
+        minSpeechMs: 100,
+        endSilenceMs: 100,
+        maxSegmentMs: 1000,
+      },
+    });
+    const silence100Ms = new Int16Array(1600);
+    const speech200Ms = new Int16Array(3200).fill(10_000);
+
+    expect(
+      chunker.pushFrame({
+        samples: silence100Ms,
+        sampleRate: 16000,
+        channelCount: 1,
+        bitsPerSample: 16,
+      }),
+    ).toHaveLength(0);
+    expect(
+      chunker.pushFrame({
+        samples: speech200Ms,
+        sampleRate: 16000,
+        channelCount: 1,
+        bitsPerSample: 16,
+      }),
+    ).toHaveLength(0);
+    const chunks = chunker.pushFrame({
+      samples: silence100Ms,
+      sampleRate: 16000,
+      channelCount: 1,
+      bitsPerSample: 16,
+    });
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toMatchObject({
+      sequence: 0,
+      startMs: 100,
+      endMs: 400,
+      durationMs: 300,
+    });
+    expect(chunker.snapshot()).toMatchObject({
+      vadMode: 'fallback',
+      skippedSilenceMs: 100,
+    });
+  });
+
+  it('falls back to fixed chunking when VAD is disabled', () => {
+    const chunker = new WebRtcTranscriptionChunker({
+      ...context,
+      chunkDurationMs: 100,
+      vad: { enabled: false, mode: 'fallback' },
+    });
+
+    const chunks = chunker.pushFrame({
+      samples: new Int16Array(1600),
+      sampleRate: 16000,
+      channelCount: 1,
+      bitsPerSample: 16,
+    });
+
+    expect(chunks).toHaveLength(1);
+    expect(chunker.snapshot()).toMatchObject({ vadMode: 'disabled' });
+  });
+
   it('marks discontinuity after a bounded buffer failure', () => {
     const chunker = new WebRtcTranscriptionChunker({
       ...context,

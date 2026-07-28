@@ -33,6 +33,7 @@ export interface WebRtcTranscriptionBridgeOptions {
   maxRetries?: number;
   maxQueuedChunks?: number;
   maxQueuedBytes?: number;
+  vad?: ConstructorParameters<typeof WebRtcTranscriptionChunker>[0]['vad'];
   client?: WebRtcTranscriptionSubmissionClient;
 }
 
@@ -54,6 +55,7 @@ export class WebRtcTranscriptionBridge {
   private readonly chunkDurationMs: number;
   private readonly maxQueuedChunks: number | undefined;
   private readonly maxQueuedBytes: number | undefined;
+  private readonly vad: WebRtcTranscriptionBridgeOptions['vad'];
   private readonly maxRetries: number;
   private readonly client: WebRtcTranscriptionSubmissionClient;
   private readonly sessions = new Map<string, WebRtcTranscriptionSessionState>();
@@ -63,6 +65,7 @@ export class WebRtcTranscriptionBridge {
     this.chunkDurationMs = options.chunkDurationMs ?? 15_000;
     this.maxQueuedChunks = options.maxQueuedChunks;
     this.maxQueuedBytes = options.maxQueuedBytes;
+    this.vad = options.vad;
     this.maxRetries = options.maxRetries ?? 1;
     this.client =
       options.client ??
@@ -172,6 +175,7 @@ export class WebRtcTranscriptionBridge {
         chunkDurationMs: this.chunkDurationMs,
         ...(this.maxQueuedChunks ? { maxQueuedChunks: this.maxQueuedChunks } : {}),
         ...(this.maxQueuedBytes ? { maxQueuedBytes: this.maxQueuedBytes } : {}),
+        ...(this.vad ? { vad: this.vad } : {}),
       }),
       queue: [],
       created: false,

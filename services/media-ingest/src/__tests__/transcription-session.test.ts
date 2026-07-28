@@ -7,6 +7,7 @@ import {
   type ProbeResult,
   type UploadedMediaFile,
 } from '../media-session.js';
+import { MockTimestampedTranslationProvider } from '../translation-provider.js';
 import type {
   TranscriptionProvider,
   TranscriptionProviderInput,
@@ -269,6 +270,158 @@ describe('timestamped transcription sessions', () => {
     expect(sessionStore.exportTranscript(session.id)).toBe(
       '[00:00.000 - 00:15.000] line 0\n[00:15.000 - 00:30.000] line 1\n[00:30.000 - 00:31.000] line 2',
     );
+  });
+
+  it('stores manual source language and passes it to the transcription provider', async () => {
+    const seen: Array<{ language?: string; mode?: string }> = [];
+    const session = await store(
+      provider(async (input) => {
+        seen.push({
+          ...(input.sourceLanguage ? { language: input.sourceLanguage } : {}),
+          ...(input.sourceLanguageMode ? { mode: input.sourceLanguageMode } : {}),
+        });
+        return {
+          sourceText: 'manual language',
+          detectedLanguage: 'en',
+          confidence: 0.98,
+        };
+      }),
+    ).createFromUpload(
+      {
+        ...upload(),
+        sourceLanguage: 'en',
+        sourceLanguageMode: 'manual',
+        targetLanguage: 'fr',
+      },
+      async () => validProbe,
+    );
+
+    expect(seen.every((item) => item.language === 'en' && item.mode === 'manual')).toBe(true);
+    expect(session.sourceLanguageControl).toMatchObject({
+      activeLanguage: 'en',
+      mode: 'manual',
+      status: 'manual',
+      revision: 0,
+    });
+    expect(session.transcription.sourceLanguageRevision).toBe(0);
+  });
+
+  it('marks low-confidence auto-detect results for confirmation without switching silently', async () => {
+    const session = await store(
+      provider(async () => ({
+        sourceText: 'low confidence language',
+        detectedLanguage: 'pt',
+        confidence: 0.5,
+      })),
+    ).createFromUpload(
+      {
+        ...upload(),
+        sourceLanguageMode: 'auto-detect',
+        targetLanguage: 'fr',
+      },
+      async () => validProbe,
+    );
+
+    expect(session.sourceLanguageControl).toMatchObject({
+      activeLanguage: 'en',
+      detectedLanguage: 'pt',
+      detectionConfidence: 0.5,
+      status: 'needs-confirmation',
+      revision: 0,
+    });
+  });
+
+  it('creates a language revision boundary on operator override', async () => {
+    const sessionStore = store(
+      provider(async () => ({
+        sourceText: 'source',
+        detectedLanguage: 'en',
+        confidence: 0.99,
+      })),
+    );
+    const session = await sessionStore.createFromUpload(upload(), async () => validProbe);
+
+    const updated = sessionStore.updateSourceLanguageControl(session.id, {
+      action: 'override',
+      language: 'pt',
+    });
+
+    expect(updated.sourceLanguageControl).toMatchObject({
+      activeLanguage: 'pt',
+      revision: 1,
+      status: 'manual',
+    });
+    expect(updated.translation.events).toEqual([]);
+    expect(updated.generatedAudio.events).toEqual([]);
+  });
+
+  it('locks and unlocks the confirmed source language without changing revision', async () => {
+    const sessionStore = store(
+      provider(async () => ({
+        sourceText: 'source',
+        detectedLanguage: 'en',
+        confidence: 0.99,
+      })),
+    );
+    const session = await sessionStore.createFromUpload(
+      {
+        ...upload(),
+        sourceLanguageMode: 'auto-detect',
+      },
+      async () => validProbe,
+    );
+
+    const locked = sessionStore.updateSourceLanguageControl(session.id, { action: 'lock' });
+    expect(locked.sourceLanguageControl).toMatchObject({
+      activeLanguage: 'en',
+      locked: true,
+      status: 'locked',
+      revision: 0,
+    });
+
+    const unlocked = sessionStore.updateSourceLanguageControl(session.id, { action: 'unlock' });
+    expect(unlocked.sourceLanguageControl).toMatchObject({
+      activeLanguage: 'en',
+      locked: false,
+      mode: 'auto-detect',
+      status: 'detecting',
+      revision: 0,
+    });
+  });
+
+  it('supports configured text-only target languages without failing translated text', async () => {
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: 'C:/tmp/chunks',
+      extractAudio: async (input) => completedExtraction([chunk(input.sessionId, 0, 0, 1000)]),
+      transcriptionProvider: provider(async () => ({
+        sourceText: 'hello',
+        detectedLanguage: 'en',
+        confidence: 0.99,
+      })),
+      translationProvider: new MockTimestampedTranslationProvider(['yo', 'fr']),
+      translationSupportedTargetLanguages: ['yo', 'fr'],
+      textToSpeechSupportedLanguages: ['fr'],
+    });
+
+    const session = await sessionStore.createFromUpload(
+      {
+        ...upload(),
+        targetLanguage: 'yo',
+        targetLanguages: ['yo', 'fr'],
+      },
+      async () => validProbe,
+    );
+
+    expect(session.translation.status).toBe('translated');
+    expect(session.generatedAudio).toMatchObject({
+      status: 'generated',
+      providerStatus: 'text-only',
+      textOnlyLanguages: ['yo'],
+      totalSegments: 1,
+    });
+    expect(session.targetLanguageCatalogue.find((item) => item.language === 'yo')).toMatchObject({
+      textOnly: true,
+    });
   });
 });
 

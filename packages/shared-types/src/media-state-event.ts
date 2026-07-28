@@ -4,6 +4,11 @@ import type { TranslationSessionMetadata } from './timestamped-translation-event
 import type { TextToSpeechSessionMetadata } from './generated-audio-event.js';
 import type { TranscriptionSessionMetadata } from './transcription-event.js';
 import type { MicrophoneCaptureMetadata } from './microphone-capture.js';
+import type {
+  AiProviderStatusMetadata,
+  SourceLanguageControlMetadata,
+  TargetLanguageCapability,
+} from './language-controls.js';
 
 export interface MediaCodecInfo {
   type: 'audio' | 'video';
@@ -107,6 +112,12 @@ export interface MediaStateEvent {
   translation?: TranslationSessionMetadata;
   /** Generated translated-audio status. Audio is not delivered to listeners in P3.1. */
   generatedAudio?: TextToSpeechSessionMetadata;
+  /** Operator source-language state and language-revision boundary. */
+  sourceLanguageControl?: SourceLanguageControlMetadata;
+  /** Configured target-language catalogue and voice/translation availability. */
+  targetLanguageCatalogue?: TargetLanguageCapability[];
+  /** Local AI provider readiness and processing status. */
+  aiProviderStatus?: AiProviderStatusMetadata;
   /** Unified monitoring and recovery metadata for the file-backed processing session. */
   monitoring?: SessionMonitoringMetadata;
   /** Current playback position in the mock or live video (ms from start). */

@@ -97,6 +97,7 @@ export class Gateway {
       internalWebRtcToken?: string | null;
       webRtcTranscriptionChunkMs?: number;
       webRtcTranscriptionStagingDir?: string;
+      vad?: ConstructorParameters<typeof WebRtcTranscriptionBridge>[0]['vad'];
     } = {},
   ) {
     this.webRtcTranscriptionBridge = new WebRtcTranscriptionBridge({
@@ -106,6 +107,7 @@ export class Gateway {
       ...(options.webRtcTranscriptionChunkMs
         ? { chunkDurationMs: options.webRtcTranscriptionChunkMs }
         : {}),
+      ...(options.vad ? { vad: options.vad } : {}),
     });
     this.listenerMediaPeers = new BackendWebRtcListenerPeerRegistry({
       onLocalSignal: (envelope) => this.routeBackendWebRtcSignal(envelope),

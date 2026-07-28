@@ -55,6 +55,7 @@ export const SessionMonitoringSchema = z.object({
         'retry-transcription',
         'retry-translation',
         'retry-tts',
+        'set-source-language',
       ]),
       status: z.enum(['accepted', 'rejected', 'succeeded', 'failed']),
       message: z.string().min(1),
@@ -175,6 +176,9 @@ export const MediaStateEventSchema = z.object({
       transcribedChunks: z.number().int().nonnegative(),
       failedChunks: z.number().int().nonnegative(),
       detectedLanguage: z.string().min(2).max(16).nullable(),
+      sourceLanguage: z.string().min(2).max(16).nullable().optional(),
+      sourceLanguageRevision: z.number().int().nonnegative().optional(),
+      languageDetectionConfidence: z.number().min(0).max(1).nullable().optional(),
       events: z.array(
         z.object({
           sessionId: z.string().min(1),
@@ -186,6 +190,7 @@ export const MediaStateEventSchema = z.object({
           startMs: z.number().int().nonnegative(),
           endMs: z.number().int().positive(),
           confidence: z.number().min(0).max(1).nullable(),
+          sourceLanguageRevision: z.number().int().nonnegative().optional(),
           providerLatencyMs: z.number().int().nonnegative().nullable().optional(),
           status: z.enum(['queued', 'transcribing', 'transcribed', 'failed', 'retrying']),
           error: z.string().min(1).optional(),
@@ -205,7 +210,9 @@ export const MediaStateEventSchema = z.object({
       translatedSegments: z.number().int().nonnegative(),
       failedSegments: z.number().int().nonnegative(),
       sourceLanguage: z.string().min(2).max(16).nullable(),
+      sourceLanguageRevision: z.number().int().nonnegative().optional(),
       targetLanguage: z.string().min(2).max(16),
+      targetLanguages: z.array(z.string().min(2).max(16)).optional(),
       events: z.array(
         z.object({
           sessionId: z.string().min(1),
@@ -213,6 +220,7 @@ export const MediaStateEventSchema = z.object({
           segmentId: z.string().min(1),
           sequence: z.number().int().nonnegative(),
           sourceLanguage: z.string().min(2).max(16),
+          sourceLanguageRevision: z.number().int().nonnegative().optional(),
           targetLanguage: z.string().min(2).max(16),
           sourceText: z.string(),
           translatedText: z.string(),
@@ -235,13 +243,15 @@ export const MediaStateEventSchema = z.object({
     .object({
       status: z.enum(['queued', 'generating', 'generated', 'failed', 'retrying']),
       providerName: z.string().min(1).optional(),
-      providerStatus: z.enum(['idle', 'ready', 'generating', 'failed']).optional(),
+      providerStatus: z.enum(['idle', 'ready', 'generating', 'failed', 'text-only']).optional(),
       progressPct: z.number().min(0).max(100),
       totalSegments: z.number().int().nonnegative(),
       generatedSegments: z.number().int().nonnegative(),
       failedSegments: z.number().int().nonnegative(),
       targetLanguage: z.string().min(2).max(16),
+      targetLanguages: z.array(z.string().min(2).max(16)).optional(),
       voiceId: z.string().min(1),
+      textOnlyLanguages: z.array(z.string().min(2).max(16)).optional(),
       outputFormat: z.object({
         container: z.literal('wav'),
         codec: z.literal('pcm_s16le'),
@@ -269,6 +279,63 @@ export const MediaStateEventSchema = z.object({
     })
     .optional(),
   monitoring: SessionMonitoringSchema.optional(),
+  sourceLanguageControl: z
+    .object({
+      defaultLanguage: z.string().min(2).max(16),
+      activeLanguage: z.string().min(2).max(16),
+      mode: z.enum(['manual', 'auto-detect']),
+      status: z.enum([
+        'manual',
+        'detecting',
+        'detected',
+        'needs-confirmation',
+        'confirmed',
+        'rejected',
+        'locked',
+      ]),
+      detectedLanguage: z.string().min(2).max(16).nullable(),
+      detectionConfidence: z.number().min(0).max(1).nullable(),
+      confirmedLanguage: z.string().min(2).max(16).nullable(),
+      rejectedLanguage: z.string().min(2).max(16).nullable(),
+      locked: z.boolean(),
+      revision: z.number().int().nonnegative(),
+      confidenceThreshold: z.number().min(0).max(1),
+      updatedAt: z.string().datetime(),
+    })
+    .optional(),
+  targetLanguageCatalogue: z
+    .array(
+      z.object({
+        language: z.string().min(2).max(16),
+        label: z.string().min(1),
+        translationAvailable: z.boolean(),
+        voiceAvailable: z.boolean(),
+        textOnly: z.boolean(),
+        experimental: z.boolean(),
+        availability: z.enum([
+          'translation-available',
+          'voice-available',
+          'text-only',
+          'unavailable',
+          'experimental',
+        ]),
+        translationModel: z.string().min(1).nullable(),
+        voiceId: z.string().min(1).nullable(),
+        license: z.string().min(1),
+        commercialUse: z.enum(['allowed', 'unknown', 'restricted']),
+      }),
+    )
+    .optional(),
+  aiProviderStatus: z
+    .object({
+      worker: z.enum(['offline', 'ready', 'processing', 'delayed', 'failed']),
+      vad: z.enum(['inactive', 'active', 'fallback', 'failed']),
+      transcription: z.enum(['idle', 'loading', 'ready', 'processing', 'failed']),
+      translation: z.enum(['idle', 'loading', 'ready', 'processing', 'failed']),
+      textToSpeech: z.enum(['idle', 'loading', 'ready', 'text-only', 'processing', 'failed']),
+      lastError: z.string().min(1).nullable(),
+    })
+    .optional(),
   videoTimestampMs: z.number().nonnegative(),
   sourceAudioActive: z.boolean(),
   translatedLanguages: z.array(z.string().min(2).max(10)),

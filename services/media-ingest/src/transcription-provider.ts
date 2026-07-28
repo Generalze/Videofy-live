@@ -13,6 +13,8 @@ export interface TranscriptionProviderInput {
   streamId: string;
   chunk: AudioChunkMetadata;
   audioPath: string;
+  sourceLanguage?: string;
+  sourceLanguageMode?: 'manual' | 'auto-detect';
 }
 
 export interface TranscriptionProviderResult {
@@ -129,7 +131,10 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
   async transcribe(input: TranscriptionProviderInput): Promise<TranscriptionProviderResult> {
     const startedAt = Date.now();
     const audioPath = await this.prepareAudioPath(input);
-    const result = await this.runFasterWhisper(audioPath);
+    const result = await this.runFasterWhisper(
+      audioPath,
+      input.sourceLanguageMode === 'manual' ? input.sourceLanguage : undefined,
+    );
     const providerLatencyMs = Math.max(0, Date.now() - startedAt);
     if (
       this.options.device === 'cuda' &&
@@ -177,9 +182,12 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
     }
   }
 
-  private async runFasterWhisper(audioPath: string): Promise<FasterWhisperJsonResult> {
+  private async runFasterWhisper(
+    audioPath: string,
+    languageHint: string | undefined,
+  ): Promise<FasterWhisperJsonResult> {
     try {
-      return await this.runFasterWhisperOnDevice(audioPath, this.options.device);
+      return await this.runFasterWhisperOnDevice(audioPath, this.options.device, languageHint);
     } catch (error) {
       if (
         this.options.device === 'cuda' &&
@@ -187,7 +195,7 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
         error instanceof MediaIngestError &&
         error.code === 'transcription-gpu-unavailable'
       ) {
-        return await this.runFasterWhisperOnDevice(audioPath, 'cpu');
+        return await this.runFasterWhisperOnDevice(audioPath, 'cpu', languageHint);
       }
       throw error;
     }
@@ -196,6 +204,7 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
   private async runFasterWhisperOnDevice(
     audioPath: string,
     device: FasterWhisperConfig['device'],
+    languageHint: string | undefined,
   ): Promise<FasterWhisperJsonResult> {
     const args = [
       '-c',
@@ -205,6 +214,7 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
       device,
       this.options.computeType,
       this.options.modelCacheDir ?? '',
+      languageHint ?? '',
     ];
 
     try {
@@ -388,6 +398,7 @@ model_size = sys.argv[2]
 device = sys.argv[3]
 compute_type = sys.argv[4]
 model_cache_dir = sys.argv[5] or None
+language_hint = sys.argv[6] or None
 
 from faster_whisper import WhisperModel
 
@@ -396,7 +407,10 @@ if model_cache_dir:
     kwargs["download_root"] = model_cache_dir
 
 model = WhisperModel(model_size, **kwargs)
-segments, info = model.transcribe(audio_path, vad_filter=True)
+transcribe_kwargs = {"vad_filter": True}
+if language_hint:
+    transcribe_kwargs["language"] = language_hint
+segments, info = model.transcribe(audio_path, **transcribe_kwargs)
 texts = []
 for segment in segments:
     text = (segment.text or "").strip()

@@ -4,12 +4,15 @@ import { extname, isAbsolute, relative, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type {
+  AiProviderStatusMetadata,
   AudioExtractionMetadata,
   GeneratedAudioEvent,
   MediaCodecInfo,
   MediaFileMetadata,
   MicrophoneCaptureMetadata,
   MicrophoneCaptureChunkMetadata,
+  SourceLanguageControlMetadata,
+  SourceLanguageMode,
   SessionMonitoringMetadata,
   SessionRecoveryAction,
   SessionRecoveryEventKind,
@@ -25,6 +28,7 @@ import type {
   TranscriptionSessionMetadata,
   TranscriptionStatus,
   WebRtcTranscriptionBridgeMetadata,
+  TargetLanguageCapability,
 } from '@videofy-live/shared-types';
 import {
   cleanupAudioChunks,
@@ -49,6 +53,14 @@ import {
   generateSpeechWithTimeout,
   type TextToSpeechProvider,
 } from './text-to-speech-provider.js';
+import {
+  applySourceLanguageAction,
+  applySourceLanguageDetection,
+  buildTargetLanguageCatalogue,
+  createInitialSourceLanguageControl,
+  defaultAiProviderStatus,
+  type SourceLanguageActionInput,
+} from './language-controls.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -74,12 +86,18 @@ export interface UploadedMediaFile {
   sizeBytes: number;
   mimeType: string;
   targetLanguage?: string;
+  targetLanguages?: string[];
+  sourceLanguage?: string;
+  sourceLanguageMode?: SourceLanguageMode;
 }
 
 export interface MicrophoneSessionInput {
   deviceId?: string;
   deviceLabel?: string;
   targetLanguage?: string;
+  targetLanguages?: string[];
+  sourceLanguage?: string;
+  sourceLanguageMode?: SourceLanguageMode;
 }
 
 export interface MicrophoneChunkInput {
@@ -97,6 +115,9 @@ export interface WebRtcSessionInput {
   broadcasterPeerId: string;
   revision: number;
   targetLanguage?: string;
+  targetLanguages?: string[];
+  sourceLanguage?: string;
+  sourceLanguageMode?: SourceLanguageMode;
 }
 
 export interface WebRtcChunkInput {
@@ -127,6 +148,10 @@ export interface ProcessingSession {
   generatedAudio: TextToSpeechSessionMetadata;
   monitoring: SessionMonitoringMetadata;
   targetLanguage: string;
+  targetLanguages: string[];
+  sourceLanguageControl: SourceLanguageControlMetadata;
+  targetLanguageCatalogue: TargetLanguageCapability[];
+  aiProviderStatus: AiProviderStatusMetadata;
   sourcePath: string;
   createdAt: string;
   updatedAt: string;
@@ -163,6 +188,7 @@ export interface ProcessingSessionStoreOptions {
   textToSpeechTimeoutMs?: number;
   textToSpeechVoiceId?: string;
   textToSpeechSupportedLanguages?: readonly string[];
+  sourceLanguageConfidenceThreshold?: number;
 }
 
 export interface GeneratedAudioFile {
@@ -346,6 +372,8 @@ export class ProcessingSessionStore {
   private readonly textToSpeechTimeoutMs: number;
   private readonly textToSpeechVoiceId: string;
   private readonly textToSpeechSupportedLanguages: readonly string[];
+  private readonly sourceLanguageConfidenceThreshold: number;
+  private readonly targetLanguageCatalogue: TargetLanguageCapability[];
   private readonly onGeneratedAudioReady: (event: GeneratedAudioEvent, session: ProcessingSession) => void;
   private readonly generatedAudioReadyKeys = new Set<string>();
 
@@ -388,6 +416,17 @@ export class ProcessingSessionStore {
       new MockTextToSpeechProvider(this.textToSpeechSupportedLanguages);
     this.textToSpeechTimeoutMs = options.textToSpeechTimeoutMs ?? 30_000;
     this.textToSpeechVoiceId = normalizeVoiceId(options.textToSpeechVoiceId ?? 'mock-voice');
+    this.sourceLanguageConfidenceThreshold = options.sourceLanguageConfidenceThreshold ?? 0.82;
+    this.targetLanguageCatalogue = buildTargetLanguageCatalogue({
+      supportedTranslationLanguages: this.translationSupportedTargetLanguages,
+      supportedVoiceLanguages: this.textToSpeechSupportedLanguages,
+      voiceIds: new Map(
+        this.textToSpeechSupportedLanguages.map((language) => [
+          language,
+          this.textToSpeechVoiceId,
+        ]),
+      ),
+    });
   }
 
   async createFromUpload(
@@ -396,6 +435,12 @@ export class ProcessingSessionStore {
   ): Promise<ProcessingSession> {
     const supported = resolveSupportedMedia(upload.originalName, upload.mimeType);
     const targetLanguage = this.resolveSessionTargetLanguage(upload.targetLanguage);
+    const targetLanguages = this.resolveSessionTargetLanguages(upload.targetLanguages, targetLanguage);
+    const sourceLanguageControl = createInitialSourceLanguageControl({
+      ...(upload.sourceLanguage ? { sourceLanguage: upload.sourceLanguage } : {}),
+      ...(upload.sourceLanguageMode ? { sourceLanguageMode: upload.sourceLanguageMode } : {}),
+      confidenceThreshold: this.sourceLanguageConfidenceThreshold,
+    });
     const duplicate = this.findDuplicate(upload);
     if (duplicate) {
       throw new MediaIngestError(
@@ -425,6 +470,10 @@ export class ProcessingSessionStore {
       ),
       monitoring: emptyMonitoring(),
       targetLanguage,
+      targetLanguages,
+      sourceLanguageControl,
+      targetLanguageCatalogue: this.targetLanguageCatalogue,
+      aiProviderStatus: defaultAiProviderStatus(),
       sourcePath: upload.path,
       createdAt: now,
       updatedAt: now,
@@ -468,6 +517,12 @@ export class ProcessingSessionStore {
     }
 
     const targetLanguage = this.resolveSessionTargetLanguage(input.targetLanguage);
+    const targetLanguages = this.resolveSessionTargetLanguages(input.targetLanguages, targetLanguage);
+    const sourceLanguageControl = createInitialSourceLanguageControl({
+      ...(input.sourceLanguage ? { sourceLanguage: input.sourceLanguage } : {}),
+      ...(input.sourceLanguageMode ? { sourceLanguageMode: input.sourceLanguageMode } : {}),
+      confidenceThreshold: this.sourceLanguageConfidenceThreshold,
+    });
     const now = new Date().toISOString();
     const session: ProcessingSession = {
       id: `ps_${randomUUID()}`,
@@ -495,6 +550,10 @@ export class ProcessingSessionStore {
       ),
       monitoring: emptyMonitoring(),
       targetLanguage,
+      targetLanguages,
+      sourceLanguageControl,
+      targetLanguageCatalogue: this.targetLanguageCatalogue,
+      aiProviderStatus: defaultAiProviderStatus(),
       sourcePath: '',
       createdAt: now,
       updatedAt: now,
@@ -540,6 +599,12 @@ export class ProcessingSessionStore {
     }
 
     const targetLanguage = this.resolveSessionTargetLanguage(input.targetLanguage);
+    const targetLanguages = this.resolveSessionTargetLanguages(input.targetLanguages, targetLanguage);
+    const sourceLanguageControl = createInitialSourceLanguageControl({
+      ...(input.sourceLanguage ? { sourceLanguage: input.sourceLanguage } : {}),
+      ...(input.sourceLanguageMode ? { sourceLanguageMode: input.sourceLanguageMode } : {}),
+      confidenceThreshold: this.sourceLanguageConfidenceThreshold,
+    });
     const now = new Date().toISOString();
     const session: ProcessingSession = {
       id: input.sessionId,
@@ -576,6 +641,10 @@ export class ProcessingSessionStore {
       ),
       monitoring: emptyMonitoring(),
       targetLanguage,
+      targetLanguages,
+      sourceLanguageControl,
+      targetLanguageCatalogue: this.targetLanguageCatalogue,
+      aiProviderStatus: defaultAiProviderStatus(),
       sourcePath: '',
       createdAt: now,
       updatedAt: now,
@@ -1256,6 +1325,21 @@ export class ProcessingSessionStore {
     }
   }
 
+  updateSourceLanguageControl(
+    sessionId: string,
+    input: SourceLanguageActionInput,
+  ): ProcessingSession {
+    const session = this.requireSession(sessionId);
+    const previousRevision = session.sourceLanguageControl.revision;
+    session.sourceLanguageControl = applySourceLanguageAction(session.sourceLanguageControl, input);
+    if (session.sourceLanguageControl.revision !== previousRevision) {
+      this.createLanguageRevisionBoundary(session);
+    }
+    session.error = null;
+    this.emitSession(session);
+    return { ...session };
+  }
+
   transition(sessionId: string, nextState: StreamStatus): ProcessingSession {
     const session = this.requireSession(sessionId);
 
@@ -1823,14 +1907,21 @@ export class ProcessingSessionStore {
           streamId: session.streamId,
           chunk,
           audioPath: resolve(safeSessionOutputDir(this.outputBaseDir, session.id), chunk.filename),
+          sourceLanguage: session.sourceLanguageControl.activeLanguage,
+          sourceLanguageMode: session.sourceLanguageControl.mode,
         },
         this.transcriptionTimeoutMs,
       );
+      this.reconcileDetectedLanguage(session, {
+        language: result.detectedLanguage,
+        confidence: result.confidence,
+      });
       transcribed = {
         ...transcribing,
         sourceText: result.sourceText,
         detectedLanguage: result.detectedLanguage,
         confidence: result.confidence,
+        sourceLanguageRevision: session.sourceLanguageControl.revision,
         providerLatencyMs: result.providerLatencyMs ?? null,
         status: 'transcribed' as const,
         createdAt: new Date().toISOString(),
@@ -1890,14 +1981,21 @@ export class ProcessingSessionStore {
           streamId: session.streamId,
           chunk,
           audioPath: resolve(safeSessionOutputDir(this.outputBaseDir, session.id), chunk.filename),
+          sourceLanguage: session.sourceLanguageControl.activeLanguage,
+          sourceLanguageMode: session.sourceLanguageControl.mode,
         },
         this.transcriptionTimeoutMs,
       );
+      this.reconcileDetectedLanguage(session, {
+        language: result.detectedLanguage,
+        confidence: result.confidence,
+      });
       const transcribed = {
         ...transcribing,
         sourceText: result.sourceText,
         detectedLanguage: result.detectedLanguage,
         confidence: result.confidence,
+        sourceLanguageRevision: session.sourceLanguageControl.revision,
         providerLatencyMs: result.providerLatencyMs ?? null,
         status: 'transcribed' as const,
         createdAt: new Date().toISOString(),
@@ -1929,6 +2027,27 @@ export class ProcessingSessionStore {
     session: ProcessingSession,
     segment: TranscriptionEvent,
   ): Promise<ProcessingSession> {
+    if (this.isStaleSourceLanguageRevision(session, segment)) {
+      const failed = this.createTranslationEvent(
+        session,
+        segment,
+        '',
+        'failed',
+        zeroTranslationLatency(),
+        'Stale transcription rejected after source-language revision changed.',
+      );
+      session.translation.events = [...session.translation.events, failed].sort(
+        (a, b) => a.sequence - b.sequence,
+      );
+      this.updateTranslationProgress(session);
+      this.onTranslationEvent(failed);
+      this.emitSession(session);
+      return this.failMicrophoneSession(
+        session,
+        new MediaIngestError(failed.error ?? 'Stale transcription rejected.', 'stale-source-language', 409),
+        'Microphone translation failed.',
+      );
+    }
     const queued = this.createTranslationEvent(
       session,
       segment,
@@ -2110,16 +2229,23 @@ export class ProcessingSessionStore {
               safeSessionOutputDir(this.outputBaseDir, session.id),
               chunk.filename,
             ),
+            sourceLanguage: session.sourceLanguageControl.activeLanguage,
+            sourceLanguageMode: session.sourceLanguageControl.mode,
           },
           this.transcriptionTimeoutMs,
         );
+        this.reconcileDetectedLanguage(session, {
+          language: result.detectedLanguage,
+          confidence: result.confidence,
+        });
         const transcribed = {
           ...transcribing,
           sourceText: result.sourceText,
           detectedLanguage: result.detectedLanguage,
-        confidence: result.confidence,
-        providerLatencyMs: result.providerLatencyMs ?? null,
-        status: 'transcribed' as const,
+          confidence: result.confidence,
+          sourceLanguageRevision: session.sourceLanguageControl.revision,
+          providerLatencyMs: result.providerLatencyMs ?? null,
+          status: 'transcribed' as const,
           createdAt: new Date().toISOString(),
         };
         this.replaceTranscriptionEvent(session, transcribed);
@@ -2202,6 +2328,7 @@ export class ProcessingSessionStore {
       startMs: chunk.startMs,
       endMs: chunk.endMs,
       confidence,
+      sourceLanguageRevision: session.sourceLanguageControl.revision,
       status,
       createdAt: new Date().toISOString(),
     };
@@ -2311,7 +2438,6 @@ export class ProcessingSessionStore {
   private async startGeneratedAudio(sessionId: string): Promise<ProcessingSession> {
     const session = this.requireSession(sessionId);
     this.assertNoActiveGeneratedAudio(session);
-    this.assertTextToSpeechLanguageSupported(session.targetLanguage);
     const translatedSegments = session.translation.events
       .filter((event) => event.status === 'translated')
       .sort((a, b) => a.sequence - b.sequence);
@@ -2324,6 +2450,29 @@ export class ProcessingSessionStore {
       );
     }
 
+    if (!this.textToSpeechSupportedLanguages.includes(session.targetLanguage)) {
+      session.generatedAudio = {
+        ...emptyGeneratedAudio(
+          'generated',
+          session.targetLanguage,
+          this.textToSpeechVoiceId,
+          this.textToSpeechProvider.name,
+        ),
+        providerStatus: 'text-only',
+        progressPct: 100,
+        totalSegments: translatedSegments.length,
+        generatedSegments: 0,
+        targetLanguages: session.targetLanguages,
+        textOnlyLanguages: [session.targetLanguage],
+        events: [],
+      };
+      this.emitSession(session);
+      if (session.state === 'processing') {
+        return this.transition(session.id, 'completed');
+      }
+      return { ...session };
+    }
+
     session.generatedAudio = {
       ...emptyGeneratedAudio(
         'queued',
@@ -2331,6 +2480,7 @@ export class ProcessingSessionStore {
         this.textToSpeechVoiceId,
         this.textToSpeechProvider.name,
       ),
+      targetLanguages: session.targetLanguages,
       totalSegments: translatedSegments.length,
       events: translatedSegments.map((segment) => this.createGeneratedAudioEvent(session, segment, 'queued')),
     };
@@ -2473,6 +2623,19 @@ export class ProcessingSessionStore {
       if (!segment) {
         continue;
       }
+      if (this.isStaleSourceLanguageRevision(session, segment)) {
+        const failed = {
+          ...event,
+          status: 'failed' as const,
+          error: 'Stale transcription rejected after source-language revision changed.',
+          createdAt: new Date().toISOString(),
+        };
+        this.replaceTranslationEvent(session, failed);
+        this.onTranslationEvent(failed);
+        this.updateTranslationProgress(session);
+        this.emitSession(session);
+        continue;
+      }
 
       const queuedAt = Date.now();
       const { error: _eventError, ...eventWithoutError } = event;
@@ -2588,7 +2751,8 @@ export class ProcessingSessionStore {
       streamId: session.streamId,
       segmentId: segment.chunkId,
       sequence: segment.sequence,
-      sourceLanguage: segment.detectedLanguage,
+      sourceLanguage: session.sourceLanguageControl.activeLanguage,
+      sourceLanguageRevision: segment.sourceLanguageRevision ?? session.sourceLanguageControl.revision,
       targetLanguage: session.targetLanguage,
       sourceText: segment.sourceText,
       translatedText,
@@ -2600,6 +2764,16 @@ export class ProcessingSessionStore {
     };
     if (error) event.error = error;
     return event;
+  }
+
+  private isStaleSourceLanguageRevision(
+    session: ProcessingSession,
+    segment: TranscriptionEvent,
+  ): boolean {
+    return (
+      segment.sourceLanguageRevision !== undefined &&
+      segment.sourceLanguageRevision !== session.sourceLanguageControl.revision
+    );
   }
 
   private replaceTranslationEvent(
@@ -2720,8 +2894,12 @@ export class ProcessingSessionStore {
       translatedSegments,
       failedSegments,
       sourceLanguage:
-        events.find((event) => event.sourceLanguage !== 'und')?.sourceLanguage ?? null,
+        session.sourceLanguageControl.activeLanguage ??
+        events.find((event) => event.sourceLanguage !== 'und')?.sourceLanguage ??
+        null,
+      sourceLanguageRevision: session.sourceLanguageControl.revision,
       targetLanguage: session.targetLanguage,
+      targetLanguages: session.targetLanguages,
       providerName: this.translationProvider.name,
       providerStatus: active ? 'translating' : failedSegments > 0 ? 'failed' : 'ready',
       progressPct: events.length === 0 ? 0 : Math.round((translatedSegments / events.length) * 100),
@@ -2741,6 +2919,69 @@ export class ProcessingSessionStore {
       );
     }
     return normalized;
+  }
+
+  private resolveSessionTargetLanguages(
+    targetLanguages: readonly string[] | undefined,
+    fallback: string,
+  ): string[] {
+    const normalized = normalizeSupportedTargetLanguages(targetLanguages ?? [fallback]);
+    const selected = normalized.length === 0 ? [fallback] : normalized;
+    for (const targetLanguage of selected) {
+      if (!this.translationSupportedTargetLanguages.includes(targetLanguage)) {
+        throw new MediaIngestError(
+          `Unsupported target language: ${targetLanguage}. Supported languages: ${this.translationSupportedTargetLanguages.join(', ')}.`,
+          'unsupported-language',
+          400,
+        );
+      }
+    }
+    return selected;
+  }
+
+  private reconcileDetectedLanguage(
+    session: ProcessingSession,
+    detection: { language: string; confidence: number | null },
+  ): void {
+    const previousRevision = session.sourceLanguageControl.revision;
+    session.sourceLanguageControl = applySourceLanguageDetection(session.sourceLanguageControl, detection);
+    session.transcription = {
+      ...session.transcription,
+      sourceLanguage: session.sourceLanguageControl.activeLanguage,
+      sourceLanguageRevision: session.sourceLanguageControl.revision,
+      languageDetectionConfidence: session.sourceLanguageControl.detectionConfidence,
+    };
+    if (session.sourceLanguageControl.revision !== previousRevision) {
+      this.createLanguageRevisionBoundary(session);
+    }
+  }
+
+  private createLanguageRevisionBoundary(session: ProcessingSession): void {
+    session.translation = {
+      ...emptyTranslation('queued', session.targetLanguage, this.translationProvider.name),
+      sourceLanguage: session.sourceLanguageControl.activeLanguage,
+      sourceLanguageRevision: session.sourceLanguageControl.revision,
+      targetLanguages: session.targetLanguages,
+    };
+    session.generatedAudio = {
+      ...emptyGeneratedAudio(
+        'queued',
+        session.targetLanguage,
+        this.textToSpeechVoiceId,
+        this.textToSpeechProvider.name,
+      ),
+      targetLanguages: session.targetLanguages,
+      textOnlyLanguages: session.targetLanguages.filter(
+        (language) => !this.textToSpeechSupportedLanguages.includes(language),
+      ),
+    };
+    this.recordSessionEvent(
+      session,
+      'operator-action',
+      'set-source-language',
+      'accepted',
+      `Source language revision ${session.sourceLanguageControl.revision} active: ${session.sourceLanguageControl.activeLanguage}.`,
+    );
   }
 
   private resolveConfiguredTargetLanguage(targetLanguage: string): string {
@@ -2949,6 +3190,9 @@ function emptyTranscription(status: TranscriptionStatus): TranscriptionSessionMe
     transcribedChunks: 0,
     failedChunks: 0,
     detectedLanguage: null,
+    sourceLanguage: 'en',
+    sourceLanguageRevision: 0,
+    languageDetectionConfidence: null,
     events: [],
   };
 }
@@ -2967,7 +3211,9 @@ function emptyTranslation(
     translatedSegments: 0,
     failedSegments: 0,
     sourceLanguage: null,
+    sourceLanguageRevision: 0,
     targetLanguage,
+    targetLanguages: [targetLanguage],
     events: [],
   };
 }
@@ -2987,7 +3233,9 @@ function emptyGeneratedAudio(
     generatedSegments: 0,
     failedSegments: 0,
     targetLanguage,
+    targetLanguages: [targetLanguage],
     voiceId,
+    textOnlyLanguages: [],
     outputFormat: {
       container: 'wav',
       codec: 'pcm_s16le',
