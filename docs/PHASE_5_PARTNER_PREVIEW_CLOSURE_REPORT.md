@@ -37,7 +37,7 @@ The final acceptance request requires the actual partner-demonstration hardware,
 
 This Codex session was not given access to those external devices, networks, or human reviewers. The final acceptance therefore could not be honestly marked as 100%. The local technical evidence was refreshed, and the stale Phase 4 recovery harness was updated to validate the current P5 unified programme-source architecture.
 
-Final acceptance rerun on 2026-07-28 confirmed the same closure status. Local runtime and browser recovery checks passed, but OBS, TURN, separate-network listeners, human language review, physical Nigerian-accented speech, and one-hour stability evidence were still unavailable.
+Final acceptance rerun on 2026-07-28 confirmed the same closure status. After the Windows partner-demo stack installation, OBS Studio, OBS Virtual Camera, VB-CABLE, Zoom Workplace, Firefox, Chrome, and the local Videofy stack were available and partially validated. Local OBS/VB-CABLE/Chrome browser delivery passed, including three Chrome listener clients. TURN, separate-network listeners, human language review, physical Nigerian-accented speech, Firefox listener execution, real Zoom meeting capture, and one-hour stability evidence were still unavailable.
 
 ## Real-World Tests Completed
 
@@ -47,25 +47,26 @@ Completed on the development machine:
 - Uploaded WAV real-provider demonstration through real Chrome.
 - Browser fake-device live camera path through real Chrome.
 - Screen/tab capture path through Chrome fake screen sharing.
-- Multiple-listener logic through automated and browser listener-session coverage; one real listener tab was used in the current browser harnesses.
+- Multiple-listener logic through automated and browser listener-session coverage; the latest real Chrome harness used three listener clients.
 - Source switching between uploaded video and live sources.
 - Stop, restart, pause, resume, replacement mode, interpretation mode, reconnect, and cleanup paths.
 - AI worker/model/voice/provider failure behaviour through focused automated tests.
 - Gateway interruption and reconnect recovery through current P5 browser harnesses.
 - Updated P4.7 recovery harness using the P5 unified programme-source camera path.
 - Repeated teardown/resource cleanup through P5.0 and P5.1 real-browser harnesses.
+- OBS Virtual Camera detection and separate VB-CABLE programme-audio capture through real Chrome.
+- Local Chrome one-listener and three-listener WebRTC delivery from OBS/VB-CABLE to listener clients.
 
 Not completed because the required hardware or infrastructure was unavailable in this environment:
 
 - Physical microphone validation.
 - Nigerian-accented English spoken-audio validation.
-- Physical OBS Virtual Camera validation.
 - Physical capture-card validation.
 - Real Zoom, Teams, Meet, or YouTube meeting capture.
 - Separate-network WebRTC validation.
 - TURN relay validation.
 - One-hour stability run.
-- Additional browser validation beyond Chrome.
+- Firefox listener validation beyond installation detection.
 - Human transcript, translation, and voice-quality review.
 
 These are recorded as partner-demo readiness limitations and must not be represented as completed.
@@ -73,15 +74,19 @@ These are recorded as partner-demo readiness limitations and must not be represe
 ## Hardware And Browser
 
 - OS: Windows x64.
-- Browser: Chrome `149.0.0.0`.
+- Browser: Chrome `149.0.7827.55`.
+- Additional browser installed: Firefox `153.0`; listener validation was not run because no Firefox automation driver or manual control was available in this session.
 - Node: `v24.18.0`.
 - CPU: Intel Core Ultra 7 255H, 16 cores, 16 logical processors.
 - RAM: 23.96 GB visible, 5.62 GB free during the resource probe.
 - GPU: NVIDIA GeForce RTX 5060 Laptop GPU, 8151 MiB VRAM, 575 MiB used during the probe.
-- Detected DirectShow video devices: `HP True Vision FHD Camera`, `OMEN Cam & Voice`.
-- Detected DirectShow audio device: `Microphone Array (Intel Smart Sound Technology for Digital Microphones)`.
-- OBS: not found in standard install paths during the final acceptance rerun.
-- Additional browser detected: Microsoft Edge `150.0.4078.99`; additional-browser listener acceptance was not run.
+- Detected DirectShow video devices: `HP True Vision FHD Camera`, `OMEN Cam & Voice`, `OBS Virtual Camera`.
+- Detected browser video source: `OBS Virtual Camera`, captured at `1280x720`, `30 fps`.
+- Detected browser audio devices: `Microphone Array (Intel Smart Sound Technology for Digital Microphones)`, `CABLE Output (VB-Audio Virtual Cable)`.
+- VB-CABLE endpoints: `CABLE Input`, `CABLE Output`, and `CABLE In 16ch` were present as Windows audio endpoints. One secondary `VB-Audio Virtual Cable` media node reported `CM_PROB_FAILED_START`; the usable endpoints still started and passed loopback.
+- OBS Studio: `32.1.2`; Virtual Camera produced a Chrome-compatible DirectShow stream.
+- Zoom Workplace: `7.1.5.43453`; installed and available for manual meeting routing, but no live meeting capture was executed.
+- Additional browser also detected previously: Microsoft Edge `150.0.4078.99`; additional-browser listener acceptance was not run.
 - Python runtime: project-local `.venv-ai`.
 - Piper executable: `1.2.0`.
 
@@ -179,6 +184,20 @@ Updated recovery harness:
 - Backend media peers created: 2; backend audio/video activity events: 2; listener offer failures: 0.
 - The harness observed one non-fatal browser media `play()` interruption during stream reassignment; live audio/video tracks remained attached and recovery passed.
 
+OBS/VB-CABLE partner-stack evidence from 2026-07-28:
+
+- OBS Virtual Camera was captured directly with FFmpeg as rawvideo `NV12`, `1280x720`, `30 fps`.
+- Chrome device capture selected `OBS Virtual Camera` and `CABLE Output (VB-Audio Virtual Cable)`.
+- Chrome reported one live video track and one live audio track, with audio settings `48000 Hz`, `16-bit`, mono.
+- VB-CABLE loopback selected `CABLE Input` for output and `CABLE Output` for capture; measured maximum RMS was `0.5557746104363237` in the latest Videofy smoke run.
+- Videofy local one-listener smoke test passed with one live video track and one separate programme-audio track reaching the listener.
+- Videofy local three-listener smoke test passed after the signalling registry fix. All three Chrome listener clients received one live audio track and one live video track.
+- Backend evidence showed `Backend WebRTC audio track received`, `Backend WebRTC video track received`, and `Backend WebRTC audio activity detected`.
+- Cleanup evidence showed `listenerMediaPeerClosed: 3`, `backendMediaPeerClosed: 1`, and the operator source cleared.
+- Interpretation Mode remained available at original `20%` and translated `100%`.
+- Replacement Mode muted original audio to `0%` while video remained live.
+- A non-fatal browser `play()` interruption was observed during media element reassignment on two listener pages; the remote audio/video tracks remained live and the harness result was `passed`.
+
 ## Failure And Recovery
 
 Validated through focused tests and browser harnesses:
@@ -198,6 +217,13 @@ Validated through focused tests and browser harnesses:
 - Generated-audio failure without breaking video.
 - Cleanup invalidation after failed or stopped sessions.
 
+Production defect found during the latest acceptance run:
+
+- The first three-listener Chrome smoke test exposed a genuine WebRTC signalling defect: concurrent backend-to-listener SDP offers shared the same revision and overwrote the single session-level current offer. Earlier listener SDP answers were rejected as stale, so only the last listener could complete media negotiation.
+- Fix applied in `services/realtime-gateway/src/webrtc-session-registry.ts`: active offers are now tracked by sender peer, target peer, and revision, while preserving the session revision rule for broadcaster-to-backend negotiation.
+- Regression added in `services/realtime-gateway/src/__tests__/webrtc-session-registry.test.ts`: two concurrent backend listener delivery offers at the same revision can both receive listener answers without stale-offer collisions.
+- Post-fix real Chrome three-listener harness passed.
+
 ## Validation Results
 
 Passed:
@@ -209,9 +235,12 @@ Passed:
 - Real Chrome P5.2 partner-preview harness.
 - Real Chrome P5.0 uploaded-video harness.
 - Real Chrome P5.1 external-source harness.
+- Real Chrome OBS/VB-CABLE one-listener smoke harness.
+- Real Chrome OBS/VB-CABLE three-listener smoke harness.
 
 Final automated validation passed:
 
+- Realtime gateway focused tests: 58 tests passed, including the new concurrent-listener signalling regression.
 - Focused P5.3 readiness/operator tests: 26 tests passed.
 - Focused P5.2 media-ingest provider/session tests: 41 tests passed.
 - Focused Phase 4/P5 gateway WebRTC regression tests passed.
@@ -220,6 +249,7 @@ Final automated validation passed:
 - `npm run lint` passed for listener and operator apps.
 - `npm run typecheck` passed across all workspaces.
 - `npm audit --omit=dev` passed with 0 vulnerabilities.
+- `.\.venv-ai\Scripts\python.exe -m pip check` passed.
 
 Final acceptance items still unavailable in this environment:
 
@@ -228,12 +258,11 @@ Final acceptance items still unavailable in this environment:
 - Human English transcript review.
 - Human English-to-Spanish translation review.
 - Piper Spanish voice human intelligibility review.
-- Physical OBS Virtual Camera with separate programme-audio device.
-- Real Zoom, Teams, Meet, or YouTube capture.
+- Real Zoom, Teams, Meet, or YouTube meeting capture through OBS/VB-CABLE.
 - Broadcaster and listener on separate internet connections.
 - TURN relay proof from WebRTC stats.
-- Multiple real listener browsers receiving programme video, original audio, and translated audio.
-- Chrome plus additional supported browser validation.
+- Multiple real listener devices on separate networks receiving programme video, original audio, and translated audio.
+- Firefox listener validation.
 - Continuous one-hour stability run.
 
 ## Security Findings
@@ -249,7 +278,7 @@ Final acceptance items still unavailable in this environment:
 - Partner preview is validated locally in Chrome only.
 - No production TURN relay was available.
 - Separate-network WebRTC was not validated.
-- Physical OBS, capture card, virtual audio cable, and physical microphone validation remain required on demo hardware.
+- OBS Virtual Camera and VB-CABLE were validated locally; physical capture-card, real meeting-platform routing, and physical microphone language validation remain required on demo hardware.
 - Nigerian-accented English, noisy audio, and human translation/pronunciation quality approval remain pending.
 - One-hour stability was not performed.
 - Horizontal scaling, persistent peer state, high listener concurrency, and production auth remain future Phase 6 work.
