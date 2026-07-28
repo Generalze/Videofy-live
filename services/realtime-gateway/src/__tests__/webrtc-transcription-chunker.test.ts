@@ -27,6 +27,24 @@ describe('WebRtcTranscriptionChunker', () => {
     expect(normalized[0]).toBe(2000);
   });
 
+  it('normalizes browser Float32 frames and tolerates first-frame 32-bit metadata', () => {
+    const floatFrame = normalizePcmFrame({
+      samples: new Float32Array([0.5, -0.5]),
+      sampleRate: 16000,
+      channelCount: 1,
+      bitsPerSample: 32,
+    });
+    const int16MetadataMismatch = normalizePcmFrame({
+      samples: new Int16Array([1234, -1234]),
+      sampleRate: 16000,
+      channelCount: 1,
+      bitsPerSample: 32,
+    });
+
+    expect(floatFrame).toEqual(new Int16Array([16384, -16384]));
+    expect(int16MetadataMismatch).toEqual(new Int16Array([1234, -1234]));
+  });
+
   it('creates ordered chunks with preserved sample-count timestamps and final partial flush', () => {
     const chunker = new WebRtcTranscriptionChunker({
       ...context,

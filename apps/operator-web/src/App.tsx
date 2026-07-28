@@ -421,7 +421,12 @@ export default function App(): React.ReactElement {
     });
     programmeSourceManagerRef.current = manager;
     void manager.refreshDevices().catch(() => undefined);
+    const refreshProgrammeDevices = (): void => {
+      void manager.refreshDevices().catch(() => undefined);
+    };
+    navigator.mediaDevices?.addEventListener?.('devicechange', refreshProgrammeDevices);
     return () => {
+      navigator.mediaDevices?.removeEventListener?.('devicechange', refreshProgrammeDevices);
       programmeSourceManagerRef.current = null;
       void manager.teardown();
     };

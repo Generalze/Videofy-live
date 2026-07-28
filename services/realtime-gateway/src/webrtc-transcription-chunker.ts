@@ -183,7 +183,10 @@ export class WebRtcTranscriptionChunker {
 }
 
 export function normalizePcmFrame(data: WebRtcAudioDataLike): Int16Array {
-  if (!(data.samples instanceof Int16Array) || data.samples.length === 0) {
+  if (!(data.samples instanceof Int16Array) && !(data.samples instanceof Float32Array)) {
+    throw new WebRtcTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame has no PCM samples.');
+  }
+  if (data.samples.length === 0) {
     throw new WebRtcTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame has no PCM samples.');
   }
   const sourceRate = data.sampleRate;
@@ -194,14 +197,15 @@ export function normalizePcmFrame(data: WebRtcAudioDataLike): Int16Array {
   if (typeof channelCount !== 'number' || !Number.isInteger(channelCount) || channelCount <= 0 || channelCount > 8) {
     throw new WebRtcTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame channel count is invalid.');
   }
-  if (data.bitsPerSample !== undefined && data.bitsPerSample !== 16) {
+  if (data.bitsPerSample !== undefined && data.bitsPerSample !== 16 && data.bitsPerSample !== 32) {
     throw new WebRtcTranscriptionChunkerError('unsupported-format', 'WebRTC audio frame must be 16-bit PCM.');
   }
   if (data.samples.length % channelCount !== 0) {
     throw new WebRtcTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame sample layout is invalid.');
   }
 
-  const mono = downmixToMono(data.samples, channelCount);
+  const pcm16 = data.samples instanceof Int16Array ? data.samples : float32ToInt16(data.samples);
+  const mono = downmixToMono(pcm16, channelCount);
   if (sourceRate === WEBRTC_TRANSCRIPTION_SAMPLE_RATE) return mono;
   return resampleLinear(mono, sourceRate, WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
 }
@@ -237,4 +241,13 @@ function resampleLinear(samples: Int16Array, sourceRate: number, targetRate: num
 
 function clampInt16(value: number): number {
   return Math.max(-32768, Math.min(32767, value));
+}
+
+function float32ToInt16(samples: Float32Array): Int16Array {
+  const output = new Int16Array(samples.length);
+  for (let index = 0; index < samples.length; index++) {
+    const sample = Math.max(-1, Math.min(1, samples[index] ?? 0));
+    output[index] = sample < 0 ? Math.round(sample * 32768) : Math.round(sample * 32767);
+  }
+  return output;
 }

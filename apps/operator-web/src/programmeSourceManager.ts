@@ -45,6 +45,19 @@ export interface ProgrammeSourceSnapshot {
   videoDetected: boolean;
   audioTrackId: string | null;
   videoTrackId: string | null;
+  audioSourceLabel: string;
+  videoSourceLabel: string;
+  audioTrackState: MediaStreamTrackState | 'none';
+  videoTrackState: MediaStreamTrackState | 'none';
+  videoWidth: number | null;
+  videoHeight: number | null;
+  frameRate: number | null;
+  audioMissingReason: string | null;
+  sourceEnded: boolean;
+  captureInterrupted: boolean;
+  browserLimitation: string | null;
+  isObsVirtualCamera: boolean;
+  isCaptureDeviceCandidate: boolean;
   previewReady: boolean;
   broadcasting: boolean;
   paused: boolean;
@@ -107,6 +120,19 @@ export function createInitialProgrammeSourceSnapshot(): ProgrammeSourceSnapshot 
     videoDetected: false,
     audioTrackId: null,
     videoTrackId: null,
+    audioSourceLabel: 'No audio source',
+    videoSourceLabel: 'No video source',
+    audioTrackState: 'none',
+    videoTrackState: 'none',
+    videoWidth: null,
+    videoHeight: null,
+    frameRate: null,
+    audioMissingReason: null,
+    sourceEnded: false,
+    captureInterrupted: false,
+    browserLimitation: null,
+    isObsVirtualCamera: false,
+    isCaptureDeviceCandidate: false,
     previewReady: false,
     broadcasting: false,
     paused: false,
@@ -184,6 +210,7 @@ export class ProgrammeSourceManager {
         kind: device.kind as 'audioinput' | 'videoinput',
       }));
     this.update({ availableDevices: devices, error: null });
+    this.auditSelectedDeviceAvailability(devices);
     return this.snapshot;
   }
 
@@ -199,6 +226,10 @@ export class ProgrammeSourceManager {
       status: 'selecting',
       selectedAudioDeviceId: input.audioDeviceId ?? '',
       selectedVideoDeviceId: input.videoDeviceId ?? '',
+      audioMissingReason: null,
+      sourceEnded: false,
+      captureInterrupted: false,
+      browserLimitation: null,
       error: null,
     });
     let stream: MediaStream | null = null;
@@ -209,7 +240,11 @@ export class ProgrammeSourceManager {
       });
       this.assertUsableTracks(stream, { requireVideo: true });
       this.attachPreviewElement(previewElement ?? null, stream);
-      this.installStream('camera', input.videoDeviceId || 'Browser camera', stream, {
+      const videoLabel = this.resolveDeviceLabel('videoinput', input.videoDeviceId, 'Browser default camera');
+      const audioLabel = this.resolveDeviceLabel('audioinput', input.audioDeviceId, 'Browser default audio');
+      this.installStream('camera', formatCameraIdentity(videoLabel, audioLabel), stream, {
+        audioSourceLabel: audioLabel,
+        videoSourceLabel: videoLabel,
         canPause: true,
         canResume: true,
         preservePreview: Boolean(previewElement),
@@ -228,6 +263,10 @@ export class ProgrammeSourceManager {
       sourceType: 'screen',
       sourceIdentity: 'Screen or tab',
       status: 'selecting',
+      audioMissingReason: null,
+      sourceEnded: false,
+      captureInterrupted: false,
+      browserLimitation: null,
       error: null,
     });
     let stream: MediaStream | null = null;
@@ -236,6 +275,12 @@ export class ProgrammeSourceManager {
       this.assertUsableTracks(stream, { requireVideo: true });
       this.attachPreviewElement(previewElement ?? null, stream);
       this.installStream('screen', 'Screen or browser tab', stream, {
+        audioSourceLabel: stream.getAudioTracks()[0]?.label || 'Screen audio',
+        videoSourceLabel: stream.getVideoTracks()[0]?.label || 'Screen or browser tab',
+        audioMissingReason:
+          stream.getAudioTracks().length === 0
+            ? 'Browser or platform did not provide screen-share audio.'
+            : null,
         canPause: true,
         canResume: true,
         preservePreview: Boolean(previewElement),
@@ -273,6 +318,10 @@ export class ProgrammeSourceManager {
       sourceIdentity: file.name,
       status: 'selecting',
       durationMs: null,
+      audioMissingReason: null,
+      sourceEnded: false,
+      captureInterrupted: false,
+      browserLimitation: null,
       error: null,
     });
 
@@ -290,6 +339,12 @@ export class ProgrammeSourceManager {
       const stream = (videoElement.captureStream ?? videoElement.mozCaptureStream)!.call(videoElement);
       this.assertUsableTracks(stream, { requireVideo: false });
       this.installStream('uploaded-video', file.name, stream, {
+        audioSourceLabel: stream.getAudioTracks()[0]?.label || 'Uploaded video audio',
+        videoSourceLabel: stream.getVideoTracks()[0]?.label || file.name,
+        audioMissingReason:
+          stream.getAudioTracks().length === 0
+            ? 'Uploaded video did not expose a browser-playable audio track.'
+            : null,
         durationMs: Number.isFinite(videoElement.duration) ? Math.round(videoElement.duration * 1000) : null,
         canPause: true,
         canResume: true,
@@ -405,6 +460,19 @@ export class ProgrammeSourceManager {
       videoDetected: false,
       audioTrackId: null,
       videoTrackId: null,
+      audioSourceLabel: 'No audio source',
+      videoSourceLabel: 'No video source',
+      audioTrackState: 'none',
+      videoTrackState: 'none',
+      videoWidth: null,
+      videoHeight: null,
+      frameRate: null,
+      audioMissingReason: null,
+      sourceEnded: false,
+      captureInterrupted: false,
+      browserLimitation: null,
+      isObsVirtualCamera: false,
+      isCaptureDeviceCandidate: false,
       programmeTimestampMs: 0,
       sourceIdentity: reason,
       error: null,
@@ -444,6 +512,9 @@ export class ProgrammeSourceManager {
       canRestart?: boolean;
       preserveObjectUrl?: boolean;
       preservePreview?: boolean;
+      audioSourceLabel?: string;
+      videoSourceLabel?: string;
+      audioMissingReason?: string | null;
     } = {},
   ): void {
     this.releaseResources({
@@ -457,6 +528,9 @@ export class ProgrammeSourceManager {
     }
     const audioTrack = stream.getAudioTracks()[0] ?? null;
     const videoTrack = stream.getVideoTracks()[0] ?? null;
+    const videoSettings = readVideoSettings(videoTrack);
+    const audioSourceLabel = options.audioSourceLabel ?? audioTrack?.label ?? 'Programme audio';
+    const videoSourceLabel = options.videoSourceLabel ?? videoTrack?.label ?? sourceIdentity;
     this.update({
       sourceType,
       sourceIdentity,
@@ -465,6 +539,23 @@ export class ProgrammeSourceManager {
       videoDetected: Boolean(videoTrack),
       audioTrackId: audioTrack?.id ?? null,
       videoTrackId: videoTrack?.id ?? null,
+      audioSourceLabel,
+      videoSourceLabel,
+      audioTrackState: audioTrack?.readyState ?? 'none',
+      videoTrackState: videoTrack?.readyState ?? 'none',
+      videoWidth: videoSettings.width,
+      videoHeight: videoSettings.height,
+      frameRate: videoSettings.frameRate,
+      audioMissingReason:
+        options.audioMissingReason ??
+        (audioTrack ? null : 'No programme audio track is available for transcription.'),
+      sourceEnded: false,
+      captureInterrupted: false,
+      browserLimitation: sourceType === 'screen' && !audioTrack
+        ? 'Screen or tab audio depends on browser, operating system, and platform support.'
+        : null,
+      isObsVirtualCamera: isObsLikeDevice(videoSourceLabel),
+      isCaptureDeviceCandidate: isCaptureDeviceLike(videoSourceLabel) || isCaptureDeviceLike(audioSourceLabel),
       previewReady: true,
       broadcasting: false,
       paused: false,
@@ -555,12 +646,22 @@ export class ProgrammeSourceManager {
   }
 
   private handleTrackEnded = (): void => {
+    const audioTrack = this.stream?.getAudioTracks()[0] ?? null;
+    const videoTrack = this.stream?.getVideoTracks()[0] ?? null;
+    const videoSettings = readVideoSettings(videoTrack);
     this.update({
       status: 'ended',
       broadcasting: false,
       paused: false,
-      audioDetected: this.stream?.getAudioTracks().some((track) => track.readyState !== 'ended') ?? false,
-      videoDetected: this.stream?.getVideoTracks().some((track) => track.readyState !== 'ended') ?? false,
+      audioDetected: Boolean(audioTrack && audioTrack.readyState !== 'ended'),
+      videoDetected: Boolean(videoTrack && videoTrack.readyState !== 'ended'),
+      audioTrackState: audioTrack?.readyState ?? 'none',
+      videoTrackState: videoTrack?.readyState ?? 'none',
+      videoWidth: videoSettings.width,
+      videoHeight: videoSettings.height,
+      frameRate: videoSettings.frameRate,
+      sourceEnded: true,
+      captureInterrupted: true,
       error: errorDetails(new ProgrammeSourceError('source-ended', 'Programme source track ended.')),
     });
     this.incrementRevision('programme source track ended');
@@ -603,6 +704,7 @@ export class ProgrammeSourceManager {
       broadcasting: false,
       paused: false,
       previewReady: false,
+      captureInterrupted: true,
       error: details,
     });
     this.onFailure?.(details);
@@ -616,6 +718,42 @@ export class ProgrammeSourceManager {
       updatedAt: new Date().toISOString(),
     };
     this.onStateChange?.(this.snapshot);
+  }
+
+  private auditSelectedDeviceAvailability(devices: ProgrammeSourceDevice[]): void {
+    if (this.snapshot.sourceType !== 'camera') return;
+    if (this.snapshot.status === 'idle' || this.snapshot.status === 'stopped' || this.snapshot.status === 'failed') return;
+    const missingVideo =
+      this.snapshot.selectedVideoDeviceId &&
+      !devices.some((device) => device.kind === 'videoinput' && device.deviceId === this.snapshot.selectedVideoDeviceId);
+    const missingAudio =
+      this.snapshot.selectedAudioDeviceId &&
+      !devices.some((device) => device.kind === 'audioinput' && device.deviceId === this.snapshot.selectedAudioDeviceId);
+    if (!missingVideo && !missingAudio) return;
+    this.update({
+      status: 'ended',
+      broadcasting: false,
+      paused: false,
+      sourceEnded: true,
+      captureInterrupted: true,
+      error: errorDetails(
+        new ProgrammeSourceError(
+          'device-unavailable',
+          `${missingVideo ? 'Selected video device' : 'Selected audio device'} disappeared. Reconnect it and select the source again.`,
+        ),
+      ),
+    });
+    this.incrementRevision('programme source device disappeared');
+    this.onTrackEnded?.(this.snapshot);
+  }
+
+  private resolveDeviceLabel(
+    kind: ProgrammeSourceDevice['kind'],
+    deviceId: string | undefined,
+    fallback: string,
+  ): string {
+    if (!deviceId) return fallback;
+    return this.snapshot.availableDevices.find((device) => device.kind === kind && device.deviceId === deviceId)?.label ?? fallback;
   }
 }
 
@@ -691,4 +829,29 @@ function errorDetails(error: ProgrammeSourceError): ProgrammeSourceErrorDetails 
     message: error.message,
     recoverable: error.recoverable,
   };
+}
+
+function readVideoSettings(track: MediaStreamTrack | null): {
+  width: number | null;
+  height: number | null;
+  frameRate: number | null;
+} {
+  const settings = track?.getSettings?.();
+  return {
+    width: typeof settings?.width === 'number' ? settings.width : null,
+    height: typeof settings?.height === 'number' ? settings.height : null,
+    frameRate: typeof settings?.frameRate === 'number' ? settings.frameRate : null,
+  };
+}
+
+function formatCameraIdentity(videoLabel: string, audioLabel: string): string {
+  return `${videoLabel} + ${audioLabel}`;
+}
+
+function isObsLikeDevice(label: string): boolean {
+  return /\bobs\b|virtual camera/i.test(label);
+}
+
+function isCaptureDeviceLike(label: string): boolean {
+  return /capture|cam link|decklink|ultra ?studio|aja|magewell|elgato|blackmagic|atem|ndi|virtual cable|vb-audio/i.test(label);
 }

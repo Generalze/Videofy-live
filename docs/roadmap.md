@@ -52,7 +52,7 @@
 ## Phase 5 - Partner preview programme sources
 
 - [x] P5.0 unified live and uploaded-video programme sources
-- [ ] P5.1 OBS/capture-device partner-preview hardening
+- [x] P5.1 OBS/capture-device partner-preview hardening
 - [ ] P5.2 meeting-platform operator runbooks through browser or screen capture
 - [ ] P5.3 partner-preview validation and closure
 

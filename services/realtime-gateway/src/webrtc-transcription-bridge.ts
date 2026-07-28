@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import type { WebRtcAudioDataLike } from './webrtc-audio-ingest-bridge.js';
 import {
   WebRtcTranscriptionChunker,
+  WebRtcTranscriptionChunkerError,
   type WebRtcTranscriptionChunk,
 } from './webrtc-transcription-chunker.js';
 import { logger } from './logger.js';
@@ -44,6 +45,8 @@ interface WebRtcTranscriptionSessionState {
   closed: boolean;
   stopped: boolean;
   failure: string | null;
+  skippedFrameCount: number;
+  lastSkippedFrameReason: string | null;
 }
 
 export class WebRtcTranscriptionBridge {
@@ -73,9 +76,24 @@ export class WebRtcTranscriptionBridge {
   handleFrame(context: WebRtcTranscriptionBridgeContext, data: WebRtcAudioDataLike): void {
     const session = this.getOrCreateSession(context);
     if (session.closed) return;
-    const chunks = session.chunker.pushFrame(data);
-    for (const chunk of chunks) {
-      session.queue.push(chunk);
+    try {
+      const chunks = session.chunker.pushFrame(data);
+      for (const chunk of chunks) {
+        session.queue.push(chunk);
+      }
+    } catch (error) {
+      if (!(error instanceof WebRtcTranscriptionChunkerError)) throw error;
+      session.chunker.markDiscontinuity();
+      session.skippedFrameCount += 1;
+      session.lastSkippedFrameReason = error.message;
+      logger.warn('WebRTC transcription frame skipped', {
+        sessionId: context.sessionId,
+        broadcastId: context.broadcastId,
+        revision: context.revision,
+        code: error.code,
+        message: error.message,
+      });
+      return;
     }
     this.processQueue(session);
   }
@@ -111,6 +129,8 @@ export class WebRtcTranscriptionBridge {
       active: session.active,
       closed: session.closed,
       failure: session.failure,
+      skippedFrameCount: session.skippedFrameCount,
+      lastSkippedFrameReason: session.lastSkippedFrameReason,
     };
   }
 
@@ -159,6 +179,8 @@ export class WebRtcTranscriptionBridge {
       closed: false,
       stopped: false,
       failure: null,
+      skippedFrameCount: 0,
+      lastSkippedFrameReason: null,
     };
     this.sessions.set(key, state);
     return state;

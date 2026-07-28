@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type {
   ProgrammeSourceSnapshot,
   ProgrammeSourceType,
@@ -42,13 +42,18 @@ export function ProgrammeSourcePanel({
   onClear,
 }: ProgrammeSourcePanelProps): React.ReactElement {
   const previewRef = useRef<HTMLVideoElement>(null);
-  const audioDeviceRef = useRef<HTMLSelectElement>(null);
-  const videoDeviceRef = useRef<HTMLSelectElement>(null);
   const seekRef = useRef<HTMLInputElement>(null);
+  const [pendingAudioDeviceId, setPendingAudioDeviceId] = useState(source.selectedAudioDeviceId);
+  const [pendingVideoDeviceId, setPendingVideoDeviceId] = useState(source.selectedVideoDeviceId);
   const audioDevices = source.availableDevices.filter((device) => device.kind === 'audioinput');
   const videoDevices = source.availableDevices.filter((device) => device.kind === 'videoinput');
   const canSelect = source.status !== 'selecting';
   const canStart = source.previewReady && source.status === 'preview-ready';
+
+  useEffect(() => {
+    setPendingAudioDeviceId(source.selectedAudioDeviceId);
+    setPendingVideoDeviceId(source.selectedVideoDeviceId);
+  }, [source.selectedAudioDeviceId, source.selectedVideoDeviceId, source.sourceType]);
 
   return (
     <section className={styles.card} aria-labelledby="programme-source-title">
@@ -67,10 +72,12 @@ export function ProgrammeSourcePanel({
           <div className={styles.langConfig}>
             <label className={styles.configLabel}>Camera video</label>
             <select
-              ref={videoDeviceRef}
               className={styles.configSelect}
-              value={source.selectedVideoDeviceId}
-              onChange={onRefreshDevices}
+              value={pendingVideoDeviceId}
+              onChange={(event) => {
+                setPendingVideoDeviceId(event.target.value);
+                onRefreshDevices();
+              }}
               disabled={!canSelect}
             >
               <option value="">Browser default camera</option>
@@ -84,10 +91,12 @@ export function ProgrammeSourcePanel({
           <div className={styles.langConfig}>
             <label className={styles.configLabel}>Camera audio</label>
             <select
-              ref={audioDeviceRef}
               className={styles.configSelect}
-              value={source.selectedAudioDeviceId}
-              onChange={onRefreshDevices}
+              value={pendingAudioDeviceId}
+              onChange={(event) => {
+                setPendingAudioDeviceId(event.target.value);
+                onRefreshDevices();
+              }}
               disabled={!canSelect}
             >
               <option value="">Browser default audio</option>
@@ -105,7 +114,7 @@ export function ProgrammeSourcePanel({
               className={`${styles.mockBtn} ${styles.actionBtn}`}
               onClick={() =>
                 previewRef.current &&
-                onSelectCamera(selectedCameraDevices(audioDeviceRef.current, videoDeviceRef.current), previewRef.current)
+                onSelectCamera(selectedCameraDevices(pendingAudioDeviceId, pendingVideoDeviceId), previewRef.current)
               }
               disabled={!canSelect}
             >
@@ -221,13 +230,31 @@ export function ProgrammeSourcePanel({
           <dl className={styles.microphoneMeta} aria-label="Programme source state">
             <ProgrammeMetric label="Source" value={SOURCE_LABELS[source.sourceType]} />
             <ProgrammeMetric label="Selected" value={source.sourceIdentity} />
+            <ProgrammeMetric label="Video source" value={source.videoSourceLabel} />
+            <ProgrammeMetric label="Audio source" value={source.audioSourceLabel} />
             <ProgrammeMetric label="Video" value={source.videoDetected ? 'Detected' : 'Unavailable'} />
             <ProgrammeMetric label="Audio" value={source.audioDetected ? 'Detected' : 'Unavailable'} />
+            <ProgrammeMetric label="Video track" value={source.videoTrackState} />
+            <ProgrammeMetric label="Audio track" value={source.audioTrackState} />
+            <ProgrammeMetric label="Dimensions" value={formatDimensions(source.videoWidth, source.videoHeight)} />
+            <ProgrammeMetric label="Frame rate" value={source.frameRate ? `${source.frameRate} fps` : 'Unknown'} />
+            <ProgrammeMetric label="OBS" value={source.isObsVirtualCamera ? 'Detected as camera source' : 'Not detected'} />
+            <ProgrammeMetric label="Capture device" value={source.isCaptureDeviceCandidate ? 'Possible professional device' : 'Not detected'} />
             <ProgrammeMetric label="Preview" value={source.previewReady ? 'Ready' : 'Not ready'} />
             <ProgrammeMetric label="Broadcasting" value={source.broadcasting ? 'Backend confirmed after start' : 'No'} />
             <ProgrammeMetric label="Paused" value={source.paused ? 'Yes' : 'No'} />
             <ProgrammeMetric label="Revision" value={String(source.revision)} />
           </dl>
+          {source.audioMissingReason && (
+            <p className={styles.warningNote} role="status">
+              {source.audioMissingReason}
+            </p>
+          )}
+          {source.browserLimitation && (
+            <p className={styles.warningNote} role="status">
+              {source.browserLimitation}
+            </p>
+          )}
           {source.error && (
             <p className={styles.ingestError} role="alert">
               {source.error.message}
@@ -258,11 +285,15 @@ function formatMs(ms: number): string {
 }
 
 function selectedCameraDevices(
-  audio: HTMLSelectElement | null,
-  video: HTMLSelectElement | null,
+  audioDeviceId: string,
+  videoDeviceId: string,
 ): { audioDeviceId?: string; videoDeviceId?: string } {
   return {
-    ...(audio?.value ? { audioDeviceId: audio.value } : {}),
-    ...(video?.value ? { videoDeviceId: video.value } : {}),
+    ...(audioDeviceId ? { audioDeviceId } : {}),
+    ...(videoDeviceId ? { videoDeviceId } : {}),
   };
+}
+
+function formatDimensions(width: number | null, height: number | null): string {
+  return width && height ? `${width}x${height}` : 'Unknown';
 }

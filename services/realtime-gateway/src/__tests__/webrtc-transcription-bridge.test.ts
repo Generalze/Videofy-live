@@ -138,6 +138,40 @@ describe('WebRtcTranscriptionBridge', () => {
     ]);
   });
 
+  it('skips malformed first frames without interrupting later transcription', async () => {
+    const stagingDir = await tempDir();
+    const client = fakeClient();
+    const bridge = new WebRtcTranscriptionBridge({
+      stagingDir,
+      chunkDurationMs: 100,
+      client,
+    });
+
+    bridge.handleFrame(context, {
+      samples: new Int16Array([1, 2]),
+      sampleRate: 16000,
+      channelCount: 1,
+      bitsPerSample: 24,
+    });
+    bridge.handleFrame(context, {
+      samples: new Int16Array(1600),
+      sampleRate: 16000,
+      channelCount: 1,
+      bitsPerSample: 16,
+    });
+
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(1));
+    expect(bridge.getSnapshot(context)).toMatchObject({
+      skippedFrameCount: 1,
+      lastSkippedFrameReason: 'WebRTC audio frame must be 16-bit PCM.',
+      failure: null,
+    });
+    expect(client.submitted[0]?.chunk).toMatchObject({
+      sequence: 0,
+      discontinuity: true,
+    });
+  });
+
   it('reports diagnostics and cleans closed sessions after queues drain', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();

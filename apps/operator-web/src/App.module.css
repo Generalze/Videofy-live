@@ -625,6 +625,16 @@
   margin-bottom: 0.75rem;
 }
 
+.warningNote {
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.1);
+  color: #f8d48a;
+  border-radius: 6px;
+  padding: 0.55rem 0.65rem;
+  font-size: 0.8rem;
+  margin: 0;
+}
+
 .mockButtons {
   display: flex;
   flex-wrap: wrap;
