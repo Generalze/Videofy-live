@@ -1,6 +1,7 @@
 import type { Server as HttpServer } from 'node:http';
 import { Server as SocketServer, type Socket } from 'socket.io';
 import type {
+  AudioMixPreferences,
   GeneratedAudioReadyEvent,
   MediaStateEvent,
   TimestampedTranslationEvent,
@@ -87,6 +88,11 @@ export class Gateway {
   private readonly clients = new Map<string, ClientState>();
   private readonly activeWorkers = new Set<string>();
   private readonly activeIngestClients = new Set<string>();
+  private audioModePreferences: AudioMixPreferences = {
+    originalVolume: 0.2,
+    translatedVolume: 1,
+    subtitlesEnabled: true,
+  };
   private listenerCount = 0;
 
   constructor(
@@ -232,6 +238,7 @@ export class Gateway {
 
   private handleListenerSocket(socket: Socket, state: ClientState): void {
     this.handleWebRtcSocket(socket, 'listener');
+    socket.emit(SOCKET_EVENTS.AUDIO_MODE_PREFERENCES, this.audioModePreferences);
 
     socket.on(SOCKET_EVENTS.JOIN_LANGUAGE, (targetLanguage: unknown) => {
       if (typeof targetLanguage !== 'string' || targetLanguage.length < 2) {
@@ -390,6 +397,22 @@ export class Gateway {
 
   private handleOperatorSocket(socket: Socket): void {
     this.emitServiceSnapshot(socket);
+
+    socket.on(SOCKET_EVENTS.OPERATOR_AUDIO_MODE_PREFERENCES, (raw: unknown) => {
+      const preferences = this.parseAudioModePreferences(raw);
+      if (!preferences) {
+        socket.emit(SOCKET_EVENTS.ERROR, { message: 'Invalid audio mode preferences' });
+        return;
+      }
+
+      this.audioModePreferences = preferences;
+      this.io.to('listeners').emit(SOCKET_EVENTS.AUDIO_MODE_PREFERENCES, preferences);
+      logger.info('Operator audio mode preferences updated', {
+        originalVolume: preferences.originalVolume,
+        translatedVolume: preferences.translatedVolume,
+        subtitlesEnabled: preferences.subtitlesEnabled,
+      });
+    });
 
     socket.on(SOCKET_EVENTS.OPERATOR_CONTROL, (raw: unknown) => {
       const control = this.parseOperatorControl(raw);
@@ -1010,6 +1033,20 @@ export class Gateway {
     if (targetLanguage !== undefined) control.targetLanguage = targetLanguage;
     return control;
   }
+
+  private parseAudioModePreferences(raw: unknown): AudioMixPreferences | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const candidate = raw as Partial<AudioMixPreferences>;
+    if (!isAudioLevel(candidate.originalVolume) || !isAudioLevel(candidate.translatedVolume)) {
+      return null;
+    }
+    if (typeof candidate.subtitlesEnabled !== 'boolean') return null;
+    return {
+      originalVolume: candidate.originalVolume,
+      translatedVolume: candidate.translatedVolume,
+      subtitlesEnabled: candidate.subtitlesEnabled,
+    };
+  }
 }
 
 function normalizeBackendGatewayError(error: unknown): WebRtcSignallingError {
@@ -1037,4 +1074,8 @@ function estimateJsonBytes(raw: unknown): number {
   } catch {
     return WEBRTC_SIGNALLING_LIMITS.rawPayloadMaxBytes + 1;
   }
+}
+
+function isAudioLevel(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
 }

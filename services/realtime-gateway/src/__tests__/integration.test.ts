@@ -2,6 +2,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { io as connectClient, type Socket } from 'socket.io-client';
 import type {
+  AudioMixPreferences,
   GeneratedAudioReadyEvent,
   MediaStateEvent,
   TimestampedTranslationEvent,
@@ -327,6 +328,45 @@ describe('gateway Socket.IO integration', () => {
       'media-ingest': 'unhealthy',
       'speech-worker': 'unhealthy',
     });
+  });
+
+  it('validates, broadcasts and retains operator audio mix preferences', async () => {
+    const operator = client('operator');
+    const listener = client('listener');
+    const listenerEvents: AudioMixPreferences[] = [];
+    listener.on(
+      SOCKET_EVENTS.AUDIO_MODE_PREFERENCES,
+      (preferences: AudioMixPreferences) => listenerEvents.push(preferences),
+    );
+    await Promise.all([waitForConnect(operator), waitForConnect(listener)]);
+    await waitUntil(() => listenerEvents.length === 1);
+
+    const preferences: AudioMixPreferences = {
+      originalVolume: 0.45,
+      translatedVolume: 0.7,
+      subtitlesEnabled: false,
+    };
+    operator.emit(SOCKET_EVENTS.OPERATOR_AUDIO_MODE_PREFERENCES, preferences);
+    await waitUntil(() => listenerEvents.length === 2);
+    expect(listenerEvents.at(-1)).toEqual(preferences);
+
+    const operatorError = waitForEvent<{ message: string }>(operator, SOCKET_EVENTS.ERROR);
+    operator.emit(SOCKET_EVENTS.OPERATOR_AUDIO_MODE_PREFERENCES, {
+      ...preferences,
+      originalVolume: 2,
+    });
+    await expect(operatorError).resolves.toEqual({
+      message: 'Invalid audio mode preferences',
+    });
+    expect(listenerEvents).toHaveLength(2);
+
+    const laterListener = client('listener');
+    const retained = waitForEvent<AudioMixPreferences>(
+      laterListener,
+      SOCKET_EVENTS.AUDIO_MODE_PREFERENCES,
+    );
+    await waitForConnect(laterListener);
+    await expect(retained).resolves.toEqual(preferences);
   });
 
   it('emits a complete healthy service snapshot when an operator connects after services', async () => {

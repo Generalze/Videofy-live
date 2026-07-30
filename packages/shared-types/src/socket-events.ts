@@ -14,6 +14,7 @@ export const SOCKET_EVENTS = {
   STREAM_STATUS: 'stream:status',
   TRANSLATED_AUDIO: 'audio:translated',
   SERVICE_STATUS: 'service:status',
+  AUDIO_MODE_PREFERENCES: 'audio:mode-preferences',
   CONTROL_ACK: 'operator:control_ack',
   ERROR: 'error',
 
@@ -38,6 +39,7 @@ export const SOCKET_EVENTS = {
 
   // Operator → gateway
   OPERATOR_CONTROL: 'operator:control',
+  OPERATOR_AUDIO_MODE_PREFERENCES: 'operator:audio-mode-preferences',
 
   // WebRTC signalling (P4.0 contracts only; no media transport)
   WEBRTC_SESSION_CREATE: 'webrtc:session:create',

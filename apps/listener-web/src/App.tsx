@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type {
+  AudioMixPreferences,
   GeneratedAudioReadyEvent,
   MediaStateEvent,
   TranslationEvent,
@@ -18,8 +19,15 @@ import {
   ListenerWebRtcTransportController,
   type ListenerWebRtcTransportSnapshot,
 } from './listenerWebRtcTransport';
-import { startMockVideoFeed, type MockVideoFeed } from './mockVideoFeed';
-import { createListenerSocketOptions } from './socketConfig';
+import {
+  shouldUseMockVideoFeed,
+  startMockVideoFeed,
+  type MockVideoFeed,
+} from './mockVideoFeed';
+import {
+  createListenerSocketOptions,
+  joinCurrentListenerLanguage,
+} from './socketConfig';
 import {
   useInterpretationAudioMixer,
   type AudioMixMode,
@@ -96,6 +104,8 @@ export default function App(): React.ReactElement {
   const [streamStatus, setStreamStatus] = useState<string>('created');
   const [sourceLanguage] = useState('en');
   const [targetLanguage, setTargetLanguage] = useState('fr');
+  const targetLanguageRef = useRef(targetLanguage);
+  targetLanguageRef.current = targetLanguage;
   const [originalVolume, setOriginalVolume] = useState(0.2);
   const [translatedVolume, setTranslatedVolume] = useState(1);
   const [muted, setMuted] = useState(false);
@@ -135,8 +145,8 @@ export default function App(): React.ReactElement {
     state: mixState,
   } = useInterpretationAudioMixer();
   const audioQueue = useTranslatedAudioQueue(
-    1,
-    false,
+    translatedVolume,
+    muted,
     getListenerClockMs,
     createTranslatedAudio,
   );
@@ -213,22 +223,43 @@ export default function App(): React.ReactElement {
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || mockFeedRef.current) {
+    if (!video) {
       return;
     }
 
     attachOriginalElement(video);
+    if (!shouldUseMockVideoFeed(mediaState?.videoSource)) {
+      const activeFeed = mockFeedRef.current;
+      if (activeFeed) {
+        if (video.srcObject === activeFeed.stream) {
+          video.pause();
+          video.srcObject = null;
+        }
+        activeFeed.stop();
+        mockFeedRef.current = null;
+      }
+      return;
+    }
+
+    if (mockFeedRef.current) {
+      return;
+    }
+
     const feed = startMockVideoFeed();
     mockFeedRef.current = feed;
     video.srcObject = feed.stream;
 
     return () => {
-      video.pause();
-      video.srcObject = null;
+      if (video.srcObject === feed.stream) {
+        video.pause();
+        video.srcObject = null;
+      }
       feed.stop();
-      mockFeedRef.current = null;
+      if (mockFeedRef.current === feed) {
+        mockFeedRef.current = null;
+      }
     };
-  }, [attachOriginalElement]);
+  }, [attachOriginalElement, mediaState?.videoSource]);
 
   useEffect(() => {
     setMixOriginalLevel(originalVolume);
@@ -280,7 +311,7 @@ export default function App(): React.ReactElement {
         lastConnectError: 'none',
         disconnectReason: 'none',
       });
-      socket.emit(SOCKET_EVENTS.JOIN_LANGUAGE, targetLanguage);
+      joinCurrentListenerLanguage(socket, () => targetLanguageRef.current);
     });
 
     socket.on(SOCKET_EVENTS.DISCONNECTED, (reason: string) => {
@@ -343,6 +374,13 @@ export default function App(): React.ReactElement {
       });
     });
 
+    socket.on(SOCKET_EVENTS.AUDIO_MODE_PREFERENCES, (preferences: AudioMixPreferences) => {
+      setOriginalVolume(preferences.originalVolume);
+      setTranslatedVolume(preferences.translatedVolume);
+      setSubtitlesEnabled(preferences.subtitlesEnabled);
+      resumeMixer();
+    });
+
     socket.on(SOCKET_EVENTS.MEDIA_STATE, (state: MediaStateEvent) => {
       setMediaState(state);
       setStreamStatus(state.streamStatus);
@@ -353,7 +391,7 @@ export default function App(): React.ReactElement {
       setStreamStatus(data.status);
       setBuffering(data.status === 'validating');
     });
-  }, [audioQueue, targetLanguage, updateSocketDiagnostics]);
+  }, [audioQueue, resumeMixer, updateSocketDiagnostics]);
 
   const handleStart = useCallback((): void => {
     setHasStarted(true);
@@ -370,18 +408,41 @@ export default function App(): React.ReactElement {
   }, [audioQueue, connect, resumeMixer]);
 
   const handleResetMixDefaults = useCallback((): void => {
+    resumeMixer();
     setOriginalVolume(0.2);
     setTranslatedVolume(1);
     setMuted(false);
     resetMixDefaults();
-  }, [resetMixDefaults]);
+  }, [resetMixDefaults, resumeMixer]);
 
   const handleAudioModeChange = useCallback(
     (mode: AudioMixMode): void => {
+      resumeMixer();
       setMixMode(mode);
     },
-    [setMixMode],
+    [resumeMixer, setMixMode],
   );
+
+  const handleOriginalVolumeChange = useCallback(
+    (value: number): void => {
+      resumeMixer();
+      setOriginalVolume(value);
+    },
+    [resumeMixer],
+  );
+
+  const handleTranslatedVolumeChange = useCallback(
+    (value: number): void => {
+      resumeMixer();
+      setTranslatedVolume(value);
+    },
+    [resumeMixer],
+  );
+
+  const handleTranslatedMute = useCallback((): void => {
+    resumeMixer();
+    setMuted((current) => !current);
+  }, [resumeMixer]);
 
   const handleResetGeneratedQueue = useCallback((): void => {
     audioQueue.resetGenerated();
@@ -394,8 +455,10 @@ export default function App(): React.ReactElement {
   const handleLanguageChange = useCallback(
     (event: React.ChangeEvent<HTMLSelectElement>): void => {
       const newLanguage = event.target.value;
+      const previousLanguage = targetLanguageRef.current;
+      targetLanguageRef.current = newLanguage;
       if (socketRef.current) {
-        socketRef.current.emit(SOCKET_EVENTS.LEAVE_LANGUAGE, targetLanguage);
+        socketRef.current.emit(SOCKET_EVENTS.LEAVE_LANGUAGE, previousLanguage);
         socketRef.current.emit(SOCKET_EVENTS.JOIN_LANGUAGE, newLanguage);
       }
       setTargetLanguage(newLanguage);
@@ -405,7 +468,7 @@ export default function App(): React.ReactElement {
       audioQueue.reset();
       audioQueue.resetGenerated();
     },
-    [audioQueue, targetLanguage],
+    [audioQueue],
   );
 
   const handleJoinSignallingSession = useCallback(async (): Promise<void> => {
@@ -508,7 +571,11 @@ export default function App(): React.ReactElement {
               className={styles.videoPlayer}
               controls
               aria-label="Live event video"
-              poster="/mock-video-poster.svg"
+              poster={
+                shouldUseMockVideoFeed(mediaState?.videoSource)
+                  ? '/mock-video-poster.svg'
+                  : undefined
+              }
             />
             <div className={styles.videoOverlay} aria-hidden>
               <span className={styles.mockLabel}>
@@ -516,7 +583,9 @@ export default function App(): React.ReactElement {
                   ? 'Programme video'
                   : listenerTransport.remoteAudioTrackReceived
                     ? 'Audio-only programme'
-                    : 'Mock video source'}
+                    : shouldUseMockVideoFeed(mediaState?.videoSource)
+                      ? 'Mock video source'
+                      : 'Programme video unavailable'}
               </span>
             </div>
           </div>
@@ -533,7 +602,7 @@ export default function App(): React.ReactElement {
               Source language
             </label>
             <div id="source-lang" className={styles.sourceLanguage}>
-              {sourceLanguage.toUpperCase()} · {mediaState?.videoSource ?? 'mock'}
+              {sourceLanguage.toUpperCase()} · {mediaState?.videoSource ?? 'no source'}
             </div>
           </div>
 
@@ -610,7 +679,7 @@ export default function App(): React.ReactElement {
                 max={1}
                 step={0.05}
                 value={originalVolume}
-                onChange={(event) => setOriginalVolume(Number(event.target.value))}
+                onChange={(event) => handleOriginalVolumeChange(Number(event.target.value))}
                 aria-label="Original audio volume"
                 className={styles.slider}
                 disabled={mixState.mode === 'replacement'}
@@ -633,7 +702,7 @@ export default function App(): React.ReactElement {
                 max={1}
                 step={0.05}
                 value={translatedVolume}
-                onChange={(event) => setTranslatedVolume(Number(event.target.value))}
+                onChange={(event) => handleTranslatedVolumeChange(Number(event.target.value))}
                 aria-label="Translated audio volume"
                 className={styles.slider}
               />
@@ -643,7 +712,7 @@ export default function App(): React.ReactElement {
             <button
               type="button"
               className={`${styles.muteBtn} ${muted ? styles.muteBtnActive : ''}`}
-              onClick={() => setMuted((current) => !current)}
+              onClick={handleTranslatedMute}
               aria-pressed={muted}
               aria-label="Mute translated audio"
             >
@@ -659,7 +728,8 @@ export default function App(): React.ReactElement {
             <span>{audioQueue.status}</span>
             <span className={styles.audioPending}>
               {' '}
-              · {audioQueue.pendingCount} queued mock clip{audioQueue.pendingCount === 1 ? '' : 's'}
+              · {audioQueue.pendingCount} queued audio segment
+              {audioQueue.pendingCount === 1 ? '' : 's'}
             </span>
           </div>
 

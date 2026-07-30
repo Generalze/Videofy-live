@@ -75,6 +75,7 @@ export class InterpretationAudioMixerController {
   private translatedGain: MixerGain | null = null;
   private limiter: MixerDynamicsCompressor | null = null;
   private originalElement: HTMLMediaElement | null = null;
+  private readonly translatedElements = new Set<HTMLAudioElement>();
   private mixState: InterpretationMixState = initialMixState;
 
   constructor(options: InterpretationAudioMixerOptions = {}) {
@@ -98,6 +99,7 @@ export class InterpretationAudioMixerController {
     this.setState({ enabled, error: null });
     if (!enabled) {
       this.disconnectOriginal();
+      this.applyGains();
       return;
     }
     this.ensureContext();
@@ -162,13 +164,15 @@ export class InterpretationAudioMixerController {
     this.applyGains();
   }
 
-  resume(): void {
+  async resume(): Promise<void> {
     const context = this.ensureContext();
     if (!context) return;
-    context.resume().catch((error: unknown) => {
+    try {
+      await context.resume();
+      this.setState({ contextState: context.state, error: null });
+    } catch (error: unknown) {
       this.setFailure(error, 'Browser audio context failed to resume.');
-    });
-    this.setState({ contextState: context.state });
+    }
   }
 
   createTranslatedAudio(url: string): QueueAudio {
@@ -181,7 +185,7 @@ export class InterpretationAudioMixerController {
         this.ensureTranslatedPath(context);
         source = context.createMediaElementSource(element);
         source.connect(this.translatedGain!);
-        element.volume = 1;
+        element.volume = this.currentTranslatedDirectVolume();
       } catch (error) {
         this.setFailure(error, 'Generated audio could not be connected to the mixer.');
       }
@@ -190,10 +194,12 @@ export class InterpretationAudioMixerController {
     if (!source) {
       element.volume = this.currentTranslatedDirectVolume();
     }
+    this.translatedElements.add(element);
 
     this.setState({ activeTranslatedCount: this.mixState.activeTranslatedCount + 1 });
     return new MixedQueueAudio(element, () => {
       source?.disconnect?.();
+      this.translatedElements.delete(element);
       this.setState({
         activeTranslatedCount: Math.max(0, this.mixState.activeTranslatedCount - 1),
       });
@@ -249,6 +255,7 @@ export class InterpretationAudioMixerController {
       return true;
     } catch (error) {
       this.setFailure(error, 'Original programme audio could not be connected to the mixer.');
+      this.applyGains();
       return false;
     }
   }
@@ -259,13 +266,17 @@ export class InterpretationAudioMixerController {
   }
 
   private applyGains(): void {
-    if (this.originalGain) {
-      this.originalGain.gain.value = this.effectiveOriginalLevel();
+    if (this.originalSource && this.originalGain) {
+      this.originalGain.gain.value = 1;
+    }
+    if (this.originalElement) {
+      this.originalElement.volume = this.effectiveOriginalLevel();
     }
     if (this.translatedGain) {
-      this.translatedGain.gain.value = this.mixState.translatedMuted
-        ? 0
-        : this.mixState.translatedLevel;
+      this.translatedGain.gain.value = 1;
+    }
+    for (const element of this.translatedElements) {
+      element.volume = this.currentTranslatedDirectVolume();
     }
   }
 
@@ -335,7 +346,7 @@ export function useInterpretationAudioMixer() {
   }, []);
 
   const resume = useCallback((): void => {
-    controllerRef.current?.resume();
+    void controllerRef.current?.resume();
   }, []);
 
   return useMemo(() => ({

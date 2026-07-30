@@ -10,6 +10,12 @@ declare module '@videofy-live/shared-types' {
 
   export type AudioFormat = 'mp3' | 'ogg' | 'wav' | 'webm' | null;
 
+  export interface AudioMixPreferences {
+    originalVolume: number;
+    translatedVolume: number;
+    subtitlesEnabled: boolean;
+  }
+
   export type StreamStatus =
     | 'created'
     | 'validating'
@@ -220,6 +226,7 @@ declare module '@videofy-live/shared-types' {
     readonly STREAM_STATUS: 'stream:status';
     readonly TRANSLATED_AUDIO: 'audio:translated';
     readonly SERVICE_STATUS: 'service:status';
+    readonly AUDIO_MODE_PREFERENCES: 'audio:mode-preferences';
     readonly CONTROL_ACK: 'operator:control_ack';
     readonly ERROR: 'error';
     readonly JOIN_LANGUAGE: 'join:language';
@@ -236,6 +243,7 @@ declare module '@videofy-live/shared-types' {
     readonly INGEST_START_STREAM: 'ingest:start_stream';
     readonly INGEST_STOP_STREAM: 'ingest:stop_stream';
     readonly OPERATOR_CONTROL: 'operator:control';
+    readonly OPERATOR_AUDIO_MODE_PREFERENCES: 'operator:audio-mode-preferences';
     readonly WEBRTC_SESSION_CREATE: 'webrtc:session:create';
     readonly WEBRTC_SESSION_JOIN: 'webrtc:session:join';
     readonly WEBRTC_SIGNAL: 'webrtc:signal';

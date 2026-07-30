@@ -28,6 +28,10 @@ export interface PartnerPreviewReadinessItem {
   detail: string;
 }
 
+export function shouldShowMockControls(mediaState: MediaStateEvent | null): boolean {
+  return mediaState?.videoSource === 'mock';
+}
+
 export function buildPartnerPreviewReadiness(
   input: PartnerPreviewReadinessInput,
 ): PartnerPreviewReadinessItem[] {

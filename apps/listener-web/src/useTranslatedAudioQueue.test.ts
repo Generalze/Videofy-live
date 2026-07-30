@@ -293,6 +293,23 @@ describe('TranslatedAudioQueueController', () => {
     expect(audios[0]!.volume).toBe(0.6);
   });
 
+  it('applies current output volume when generated audio playback starts', () => {
+    const { audios, controller, setClock } = createHarness();
+    setClock(0);
+
+    controller.setOutput(0.25, false);
+    controller.enqueueGenerated(makeGenerated(0, 0));
+    controller.start();
+
+    expect(audios[0]!.volume).toBe(0.25);
+
+    controller.setOutput(0.75, true);
+    expect(audios[0]!.volume).toBe(0);
+
+    controller.setOutput(0.5, false);
+    expect(audios[0]!.volume).toBe(0.5);
+  });
+
   it('resets during mock playback and revokes the current generated URL', () => {
     const { audios, controller, revoked } = createHarness();
 

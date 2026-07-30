@@ -192,6 +192,59 @@ describe('ListenerWebRtcTransportController', () => {
     });
   });
 
+  it('keeps both programme tracks when video arrives before audio on separate streams', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const onRemoteStream = vi.fn();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+      onRemoteStream,
+    });
+    const audio = {
+      kind: 'audio',
+      readyState: 'live',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const video = {
+      kind: 'video',
+      readyState: 'live',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const videoTracks: MediaStreamTrack[] = [video];
+    const videoStream = {
+      addTrack: vi.fn((track: MediaStreamTrack) => videoTracks.push(track)),
+      getTracks: vi.fn(() => videoTracks),
+    } as unknown as MediaStream;
+    const audioStream = {
+      addTrack: vi.fn(),
+      getTracks: vi.fn(() => [audio]),
+    } as unknown as MediaStream;
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track: video, streams: [videoStream] } as unknown as RTCTrackEvent);
+    peer.ontrack?.({ track: audio, streams: [audioStream] } as unknown as RTCTrackEvent);
+
+    expect(videoStream.addTrack).toHaveBeenCalledWith(audio);
+    expect(audioStream.addTrack).not.toHaveBeenCalled();
+    expect(onRemoteStream).toHaveBeenCalledTimes(1);
+    expect(onRemoteStream).toHaveBeenLastCalledWith(videoStream);
+    expect(videoTracks).toEqual([video, audio]);
+    expect(controller.getSnapshot()).toMatchObject({
+      remoteAudioTrackReceived: true,
+      remoteVideoTrackReceived: true,
+      remoteAudioTrackActive: true,
+      remoteVideoTrackActive: true,
+    });
+  });
+
   it('ignores stale offers and reports blocked playback truthfully', async () => {
     const { client } = createClient();
     const controller = new ListenerWebRtcTransportController({

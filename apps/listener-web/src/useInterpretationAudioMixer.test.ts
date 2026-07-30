@@ -81,6 +81,7 @@ class FakeContext implements MixerAudioContext {
 
   async resume(): Promise<void> {
     this.resumeCalls += 1;
+    this.state = 'running';
   }
 }
 
@@ -176,73 +177,97 @@ describe('InterpretationAudioMixerController', () => {
 
   it('uses default mix levels and reduces original programme volume', () => {
     const { context, controller } = createHarness();
+    const original = mediaElement();
 
-    controller.attachOriginalElement(mediaElement());
+    controller.attachOriginalElement(original);
 
-    expect(context.gains[0]!.gain.value).toBe(0.2);
+    expect(original.volume).toBe(0.2);
+    expect(context.gains[0]!.gain.value).toBe(1);
     expect(context.gains[1]!.gain.value).toBe(1);
 
     controller.setOriginalLevel(0.35);
-    expect(context.gains[0]!.gain.value).toBe(0.35);
+    expect(original.volume).toBe(0.35);
+  });
+
+  it('updates the context state after a suspended mixer resumes', async () => {
+    const { context, controller } = createHarness();
+    context.state = 'suspended';
+    controller.attachOriginalElement(mediaElement());
+
+    await controller.resume();
+
+    expect(context.resumeCalls).toBe(1);
+    expect(controller.state.contextState).toBe('running');
   });
 
   it('sets effective original gain to zero in replacement mode', () => {
     const { context, controller } = createHarness();
-    controller.attachOriginalElement(mediaElement());
+    const original = mediaElement();
+    controller.attachOriginalElement(original);
 
     expect(controller.setMode('replacement')).toBe(true);
 
     expect(controller.state.mode).toBe('replacement');
-    expect(context.gains[0]!.gain.value).toBe(0);
+    expect(original.volume).toBe(0);
+    expect(context.gains[0]!.gain.value).toBe(1);
     expect(context.gains[1]!.gain.value).toBe(1);
   });
 
   it('keeps translated volume controllable in replacement mode', () => {
     const { context, controller } = createHarness();
-    controller.attachOriginalElement(mediaElement());
+    const original = mediaElement();
+    controller.attachOriginalElement(original);
+    const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
     controller.setMode('replacement');
 
     controller.setTranslatedLevel(0.4);
 
-    expect(context.gains[0]!.gain.value).toBe(0);
-    expect(context.gains[1]!.gain.value).toBe(0.4);
+    expect(original.volume).toBe(0);
+    expect(mixed.volume).toBe(0.4);
+    expect(context.gains[1]!.gain.value).toBe(1);
   });
 
   it('keeps translated mute independent in replacement mode', () => {
     const { context, controller } = createHarness();
-    controller.attachOriginalElement(mediaElement());
+    const original = mediaElement();
+    controller.attachOriginalElement(original);
+    const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
     controller.setMode('replacement');
 
     controller.setTranslatedMuted(true);
 
-    expect(context.gains[0]!.gain.value).toBe(0);
-    expect(context.gains[1]!.gain.value).toBe(0);
+    expect(original.volume).toBe(0);
+    expect(mixed.volume).toBe(0);
+    expect(context.gains[1]!.gain.value).toBe(1);
   });
 
   it('restores the previous interpretation original volume after replacement mode', () => {
     const { context, controller } = createHarness();
-    controller.attachOriginalElement(mediaElement());
+    const original = mediaElement();
+    controller.attachOriginalElement(original);
     controller.setOriginalLevel(0.35);
     controller.setMode('replacement');
 
-    expect(context.gains[0]!.gain.value).toBe(0);
+    expect(original.volume).toBe(0);
 
     controller.setMode('interpretation');
 
     expect(controller.state.mode).toBe('interpretation');
     expect(controller.state.originalLevel).toBe(0.35);
-    expect(context.gains[0]!.gain.value).toBe(0.35);
+    expect(original.volume).toBe(0.35);
+    expect(context.gains[0]!.gain.value).toBe(1);
   });
 
   it('controls translated volume, mute and reset defaults', () => {
     const { context, controller } = createHarness();
     controller.attachOriginalElement(mediaElement());
+    const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
 
     controller.setTranslatedLevel(0.45);
-    expect(context.gains[1]!.gain.value).toBe(0.45);
+    expect(mixed.volume).toBe(0.45);
 
     controller.setTranslatedMuted(true);
-    expect(context.gains[1]!.gain.value).toBe(0);
+    expect(mixed.volume).toBe(0);
 
     controller.resetDefaults();
     expect(controller.state).toMatchObject({
@@ -251,8 +276,9 @@ describe('InterpretationAudioMixerController', () => {
       translatedLevel: 1,
       translatedMuted: false,
     });
-    expect(context.gains[0]!.gain.value).toBe(0.2);
+    expect(context.gains[0]!.gain.value).toBe(1);
     expect(context.gains[1]!.gain.value).toBe(1);
+    expect(mixed.volume).toBe(1);
   });
 
   it('preserves pause and resume for mixed translated audio', async () => {
@@ -396,12 +422,14 @@ describe('InterpretationAudioMixerController', () => {
 
   it('can switch modes before playback begins', () => {
     const { audios, context, controller } = createHarness();
-    controller.attachOriginalElement(mediaElement());
+    const original = mediaElement();
+    controller.attachOriginalElement(original);
 
     expect(controller.setMode('replacement')).toBe(true);
 
     expect(audios).toHaveLength(0);
-    expect(context.gains[0]!.gain.value).toBe(0);
+    expect(original.volume).toBe(0);
+    expect(context.gains[0]!.gain.value).toBe(1);
   });
 
   it('does not restart active translated playback when switching modes', async () => {
@@ -460,6 +488,32 @@ describe('InterpretationAudioMixerController', () => {
       contextState: 'failed',
       error: 'audio context blocked',
     });
+  });
+
+  it('controls original playback directly when Web Audio is unavailable', () => {
+    const { controller } = createHarness({ failContext: true });
+    const original = mediaElement();
+    controller.attachOriginalElement(original);
+
+    controller.setOriginalLevel(0.35);
+    expect(original.volume).toBe(0.35);
+
+    controller.setEnabled(false);
+    expect(original.volume).toBe(1);
+  });
+
+  it('updates direct translated playback when Web Audio is unavailable', () => {
+    const { controller } = createHarness({ failContext: true });
+    const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
+
+    controller.setTranslatedLevel(0.35);
+    expect(mixed.volume).toBe(0.35);
+
+    controller.setTranslatedMuted(true);
+    expect(mixed.volume).toBe(0);
+
+    controller.resetDefaults();
+    expect(mixed.volume).toBe(1);
   });
 
   it('does not claim replacement mode when browser audio-context creation fails', () => {

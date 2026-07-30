@@ -393,15 +393,17 @@ export class ListenerWebRtcTransportController {
     }
     this.audioTrack = track;
     track.addEventListener?.('ended', this.handleTrackEnded);
-    const stream = event.streams[0] ?? new MediaStream([track]);
-    this.stream = stream;
+    const shouldPublishStream = this.stream === null;
+    const stream = this.mergeRemoteTrack(track, event);
     this.clearNegotiationTimer();
     this.update({
       state: this.snapshot.remoteVideoTrackReceived ? 'video-connected' : 'audio-connected',
       remoteAudioTrackReceived: true,
       remoteAudioTrackActive: track.readyState !== 'ended',
     });
-    this.onRemoteStream?.(stream);
+    if (shouldPublishStream) {
+      this.onRemoteStream?.(stream);
+    }
   };
 
   private handleVideoTrack(track: MediaStreamTrack, event: RTCTrackEvent): void {
@@ -411,19 +413,26 @@ export class ListenerWebRtcTransportController {
     }
     this.videoTrack = track;
     track.addEventListener?.('ended', this.handleVideoTrackEnded);
-    const stream = event.streams[0] ?? this.stream ?? new MediaStream([track]);
-    if (this.stream && !this.stream.getVideoTracks().includes(track)) {
-      this.stream.addTrack(track);
-    } else {
-      this.stream = stream;
-    }
+    const shouldPublishStream = this.stream === null;
+    const stream = this.mergeRemoteTrack(track, event);
     this.clearNegotiationTimer();
     this.update({
       state: this.snapshot.remoteAudioTrackReceived ? 'video-connected' : 'track-received',
       remoteVideoTrackReceived: true,
       remoteVideoTrackActive: track.readyState !== 'ended',
     });
-    this.onRemoteStream?.(this.stream);
+    if (shouldPublishStream) {
+      this.onRemoteStream?.(stream);
+    }
+  }
+
+  private mergeRemoteTrack(track: MediaStreamTrack, event: RTCTrackEvent): MediaStream {
+    const stream = this.stream ?? event.streams[0] ?? new MediaStream();
+    if (!stream.getTracks().includes(track)) {
+      stream.addTrack(track);
+    }
+    this.stream = stream;
+    return stream;
   }
 
   private handleTrackEnded = (): void => {

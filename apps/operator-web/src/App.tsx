@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type {
+  AudioMixPreferences,
   MediaStateEvent,
   MicrophoneCaptureMetadata,
   TimestampedTranslationEvent,
@@ -29,7 +30,10 @@ import {
   createInitialProgrammeSourceSnapshot,
   type ProgrammeSourceSnapshot,
 } from './programmeSourceManager';
-import { buildPartnerPreviewReadiness } from './partnerPreviewReadiness';
+import {
+  buildPartnerPreviewReadiness,
+  shouldShowMockControls,
+} from './partnerPreviewReadiness';
 import { createBroadcasterSocketOptions, createOperatorSocketOptions } from './socketConfig';
 import {
   cancelProcessingSession,
@@ -237,7 +241,6 @@ export default function App(): React.ReactElement {
       createInitialBroadcasterWebRtcTransportSnapshot,
     );
 
-  // Mix controls (UI only in this prototype)
   const [originalMix, setOriginalMix] = useState(0.2);
   const [translatedMix, setTranslatedMix] = useState(1.0);
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
@@ -1135,6 +1138,16 @@ export default function App(): React.ReactElement {
     };
   }, [connect]);
 
+  useEffect(() => {
+    if (!connected) return;
+    const preferences: AudioMixPreferences = {
+      originalVolume: originalMix,
+      translatedVolume: translatedMix,
+      subtitlesEnabled,
+    };
+    socketRef.current?.emit(SOCKET_EVENTS.OPERATOR_AUDIO_MODE_PREFERENCES, preferences);
+  }, [connected, originalMix, subtitlesEnabled, translatedMix]);
+
   const latencyRows: LatencyRow[] = phraseLog[0]
     ? [
         { label: 'Video delivery', valueMs: null },
@@ -1231,10 +1244,12 @@ export default function App(): React.ReactElement {
             <StatusDot ok={ingestOk} />
             <span>Media Ingest</span>
           </div>
-          <div className={styles.serviceRow}>
-            <StatusDot ok={workerOk} />
-            <span>Speech Worker</span>
-          </div>
+          {shouldShowMockControls(mediaState) && (
+            <div className={styles.serviceRow}>
+              <StatusDot ok={workerOk} />
+              <span>Speech Worker</span>
+            </div>
+          )}
         </section>
 
         <section className={styles.sideSection}>
@@ -2299,27 +2314,29 @@ export default function App(): React.ReactElement {
           )}
         </section>
 
-        <section className={styles.card}>
-          <h2 className={styles.cardTitle}>Mock controls</h2>
-          <p className={styles.mockNote}>
-            Phase 1 mock controls. Production use requires operator authorization.
-          </p>
-          <p className={styles.mockNote}>{lastControlAck}</p>
-          <div className={styles.mockButtons}>
-            <button className={styles.mockBtn} onClick={() => sendControl('start-mock-stream')}>
-              Start mock stream
-            </button>
-            <button className={styles.mockBtn} onClick={() => sendControl('stop-mock-stream')}>
-              Stop mock stream
-            </button>
-            <button className={styles.mockBtn} onClick={() => sendControl('trigger-mock-phrase')}>
-              Trigger mock phrase
-            </button>
-            <button className={styles.mockBtn} onClick={() => sendControl('reset-mock-sequence')}>
-              Reset sequence
-            </button>
-          </div>
-        </section>
+        {shouldShowMockControls(mediaState) && (
+          <section className={styles.card}>
+            <h2 className={styles.cardTitle}>Mock controls</h2>
+            <p className={styles.mockNote}>
+              Phase 1 mock controls. Production use requires operator authorization.
+            </p>
+            <p className={styles.mockNote}>{lastControlAck}</p>
+            <div className={styles.mockButtons}>
+              <button className={styles.mockBtn} onClick={() => sendControl('start-mock-stream')}>
+                Start mock stream
+              </button>
+              <button className={styles.mockBtn} onClick={() => sendControl('stop-mock-stream')}>
+                Stop mock stream
+              </button>
+              <button className={styles.mockBtn} onClick={() => sendControl('trigger-mock-phrase')}>
+                Trigger mock phrase
+              </button>
+              <button className={styles.mockBtn} onClick={() => sendControl('reset-mock-sequence')}>
+                Reset sequence
+              </button>
+            </div>
+          </section>
+        )}
         {import.meta.env.DEV && (
           <section className={styles.devDiagnostics} aria-label="Development socket diagnostics">
             <h2 className={styles.devDiagnosticsTitle}>Development socket diagnostics</h2>

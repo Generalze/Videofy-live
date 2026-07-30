@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { MediaStateEvent, TargetLanguageCapability } from '@videofy-live/shared-types';
-import { buildPartnerPreviewReadiness } from './partnerPreviewReadiness';
+import {
+  buildPartnerPreviewReadiness,
+  shouldShowMockControls,
+} from './partnerPreviewReadiness';
 import { createInitialProgrammeSourceSnapshot } from './programmeSourceManager';
 
 const spanish: TargetLanguageCapability = {
@@ -31,6 +34,12 @@ function mediaState(listeners = 1): MediaStateEvent {
 }
 
 describe('partner preview readiness', () => {
+  it('shows Phase 1 mock controls only for an explicitly configured mock source', () => {
+    expect(shouldShowMockControls(null)).toBe(false);
+    expect(shouldShowMockControls(mediaState())).toBe(false);
+    expect(shouldShowMockControls({ ...mediaState(), videoSource: 'mock' })).toBe(true);
+  });
+
   it('marks the validated English-to-Spanish path ready when real providers are visible', () => {
     const items = buildPartnerPreviewReadiness({
       gatewayConnected: true,
