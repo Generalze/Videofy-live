@@ -115,6 +115,26 @@ describe('operator workflow summary', () => {
     expect(summary.canEnd).toBe(true);
   });
 
+  it('shows completed when a direct stream URL reaches its natural end', () => {
+    const summary = buildOperatorWorkflowSummary({
+      connected: true,
+      ingestHealthy: true,
+      programmeSource: source({
+        sourceType: 'direct-url',
+        sourceIdentity: 'cdn.example.com/show.mp4',
+        status: 'ended',
+        sourceEnded: true,
+      }),
+      mediaState: mediaState({ streamStatus: 'completed' }),
+      streamStatus: 'completed',
+      starting: false,
+      mediaError: null,
+    });
+
+    expect(summary.status).toBe('Completed');
+    expect(summary.canStartInterpretation).toBe(false);
+  });
+
   it('exposes one actionable readiness warning for disconnected services', () => {
     const summary = buildOperatorWorkflowSummary({
       connected: false,

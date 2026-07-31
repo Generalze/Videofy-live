@@ -21,6 +21,7 @@ function renderPanel(): string {
       onSelectCamera={vi.fn()}
       onSelectScreen={vi.fn()}
       onSelectUploadedVideo={vi.fn()}
+      onSelectDirectStreamUrl={vi.fn()}
       onStart={vi.fn()}
       onPause={vi.fn()}
       onResume={vi.fn()}
@@ -40,6 +41,8 @@ describe('ProgrammeSourcePanel standard workflow', () => {
     expect(html).toContain('Camera / capture device');
     expect(html).toContain('Screen / window');
     expect(html).toContain('Meeting through OBS');
+    expect(html).toContain('Direct media URL');
+    expect(html).toContain('Use URL');
     expect(html).not.toContain('Start programme');
   });
 

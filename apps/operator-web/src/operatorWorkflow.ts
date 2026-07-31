@@ -48,7 +48,10 @@ export function buildOperatorWorkflowSummary(
     };
   }
 
-  if (source.sourceType === 'uploaded-video' && source.status === 'ended') {
+  if (
+    (source.sourceType === 'uploaded-video' || source.sourceType === 'direct-url') &&
+    source.status === 'ended'
+  ) {
     return {
       status: 'Completed',
       actionableWarning: null,

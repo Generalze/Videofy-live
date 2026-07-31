@@ -1,4 +1,4 @@
-export type ProgrammeSourceType = 'none' | 'camera' | 'screen' | 'uploaded-video';
+export type ProgrammeSourceType = 'none' | 'camera' | 'screen' | 'uploaded-video' | 'direct-url';
 
 export type ProgrammePlaybackState =
   | 'idle'
@@ -98,6 +98,8 @@ const UPLOADED_VIDEO_MIME_TYPES = new Set([
   'video/quicktime',
   'video/x-quicktime',
 ]);
+const DIRECT_STREAM_EXTENSIONS = new Set(['mp4', 'webm', 'm3u8']);
+const NATIVE_HLS_MIME_TYPES = ['application/vnd.apple.mpegurl', 'application/x-mpegURL'];
 
 export class ProgrammeSourceError extends Error {
   constructor(
@@ -156,6 +158,42 @@ export function isUploadedProgrammeVideoSupported(file: File): boolean {
   if (!UPLOADED_VIDEO_EXTENSIONS.has(extension)) return false;
   if (!mimeType) return true;
   return UPLOADED_VIDEO_MIME_TYPES.has(mimeType);
+}
+
+export function validateDirectProgrammeUrl(rawUrl: string): {
+  url: string;
+  format: 'mp4' | 'webm' | 'hls';
+} {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl.trim());
+  } catch {
+    throw new ProgrammeSourceError(
+      'unsupported-format',
+      'Enter a direct HTTPS MP4, WebM, or HLS .m3u8 URL.',
+      false,
+    );
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new ProgrammeSourceError(
+      'unsupported-format',
+      'Stream URLs must use HTTP or HTTPS.',
+      false,
+    );
+  }
+  const extension = parsed.pathname.split('.').pop()?.toLowerCase() ?? '';
+  if (!DIRECT_STREAM_EXTENSIONS.has(extension)) {
+    throw new ProgrammeSourceError(
+      'unsupported-format',
+      'Only direct MP4, WebM, and HLS .m3u8 URLs are supported. Platform pages are not direct media streams.',
+      false,
+    );
+  }
+  const format = extension === 'm3u8' ? 'hls' : extension === 'mp4' ? 'mp4' : 'webm';
+  return {
+    url: parsed.toString(),
+    format,
+  };
 }
 
 export class ProgrammeSourceManager {
@@ -333,7 +371,7 @@ export class ProgrammeSourceManager {
       videoElement.playsInline = true;
       videoElement.preload = 'metadata';
       videoElement.src = objectUrl;
-      videoElement.addEventListener('ended', this.handleUploadedVideoEnded);
+      videoElement.addEventListener('ended', this.handleMediaElementEnded);
       videoElement.load?.();
       void videoElement.play?.().catch(() => undefined);
       await waitForMediaReady(videoElement);
@@ -362,11 +400,91 @@ export class ProgrammeSourceManager {
     }
   }
 
+  async selectDirectStreamUrl(rawUrl: string, videoElement: CaptureVideoElement): Promise<ProgrammeSourceSnapshot> {
+    this.assertNoActiveSource();
+    const direct = validateDirectProgrammeUrl(rawUrl);
+    if (!videoElement.captureStream && !videoElement.mozCaptureStream) {
+      throw this.fail(
+        new ProgrammeSourceError(
+          'capture-stream-unavailable',
+          'This browser cannot publish stream URLs through captureStream().',
+          false,
+        ),
+      );
+    }
+    if (
+      direct.format === 'hls' &&
+      !NATIVE_HLS_MIME_TYPES.some((mimeType) => videoElement.canPlayType?.(mimeType))
+    ) {
+      throw this.fail(
+        new ProgrammeSourceError(
+          'unsupported-format',
+          'This browser does not support native HLS playback. Use a direct MP4/WebM URL in Chrome or add an approved HLS runtime later.',
+          false,
+        ),
+      );
+    }
+
+    this.update({
+      sourceType: 'direct-url',
+      sourceIdentity: direct.url,
+      status: 'selecting',
+      durationMs: null,
+      audioMissingReason: null,
+      sourceEnded: false,
+      captureInterrupted: false,
+      browserLimitation:
+        direct.format === 'hls'
+          ? 'HLS playback depends on native browser support in this milestone.'
+          : 'Remote media must allow browser playback and WebRTC capture.',
+      error: null,
+    });
+
+    this.videoElement = videoElement;
+    try {
+      videoElement.muted = true;
+      videoElement.playsInline = true;
+      videoElement.preload = 'metadata';
+      videoElement.crossOrigin = 'anonymous';
+      videoElement.src = direct.url;
+      videoElement.addEventListener('ended', this.handleMediaElementEnded);
+      videoElement.load?.();
+      void videoElement.play?.().catch(() => undefined);
+      await waitForMediaReady(videoElement);
+      const stream = (videoElement.captureStream ?? videoElement.mozCaptureStream)!.call(videoElement);
+      this.assertUsableTracks(stream, { requireVideo: true });
+      const durationMs = Number.isFinite(videoElement.duration) ? Math.round(videoElement.duration * 1000) : null;
+      this.installStream('direct-url', formatDirectSourceIdentity(direct.url), stream, {
+        audioSourceLabel: stream.getAudioTracks()[0]?.label || 'Stream URL audio',
+        videoSourceLabel: stream.getVideoTracks()[0]?.label || direct.url,
+        audioMissingReason:
+          stream.getAudioTracks().length === 0
+            ? 'Stream URL did not expose a browser-playable audio track.'
+            : null,
+        durationMs,
+        canPause: true,
+        canResume: true,
+        canSeek: durationMs !== null,
+        canRestart: durationMs !== null,
+        preservePreview: true,
+        browserLimitation:
+          direct.format === 'hls'
+            ? 'Native HLS playback only; Chrome requires MP4/WebM until an approved HLS runtime is added.'
+            : null,
+      });
+      this.update({ programmeTimestampMs: Math.round((videoElement.currentTime || 0) * 1000) });
+      return this.snapshot;
+    } catch (error) {
+      this.releaseResources();
+      throw this.fail(normalizeProgrammeSourceError(error, 'decode-failed'));
+    }
+  }
+
   async start(): Promise<ProgrammeSourceSnapshot> {
     if (!this.stream || this.snapshot.status !== 'preview-ready') {
       throw this.fail(new ProgrammeSourceError('missing-media-track', 'Select a programme source before starting.'));
     }
-    if (this.snapshot.sourceType === 'uploaded-video' && this.videoElement) {
+    if (this.isMediaElementSource() && this.videoElement) {
       await this.videoElement.play().catch((error: unknown) => {
         throw normalizeProgrammeSourceError(error, 'decode-failed');
       });
@@ -388,7 +506,7 @@ export class ProgrammeSourceManager {
 
   async pause(): Promise<ProgrammeSourceSnapshot> {
     if (!this.stream || this.snapshot.status !== 'broadcasting') return this.snapshot;
-    if (this.snapshot.sourceType === 'uploaded-video') {
+    if (this.isMediaElementSource()) {
       this.videoElement?.pause();
     } else {
       this.livePausedAtMs = this.now();
@@ -405,7 +523,7 @@ export class ProgrammeSourceManager {
 
   async resume(): Promise<ProgrammeSourceSnapshot> {
     if (!this.stream || this.snapshot.status !== 'paused') return this.snapshot;
-    if (this.snapshot.sourceType === 'uploaded-video' && this.videoElement) {
+    if (this.isMediaElementSource() && this.videoElement) {
       await this.videoElement.play();
     } else {
       if (this.livePausedAtMs !== null) {
@@ -516,6 +634,7 @@ export class ProgrammeSourceManager {
       audioSourceLabel?: string;
       videoSourceLabel?: string;
       audioMissingReason?: string | null;
+      browserLimitation?: string | null;
     } = {},
   ): void {
     this.releaseResources({
@@ -552,9 +671,11 @@ export class ProgrammeSourceManager {
         (audioTrack ? null : 'No programme audio track is available for transcription.'),
       sourceEnded: false,
       captureInterrupted: false,
-      browserLimitation: sourceType === 'screen' && !audioTrack
-        ? 'Screen or tab audio depends on browser, operating system, and platform support.'
-        : null,
+      browserLimitation:
+        options.browserLimitation ??
+        (sourceType === 'screen' && !audioTrack
+          ? 'Screen or tab audio depends on browser, operating system, and platform support.'
+          : null),
       isObsVirtualCamera: isObsLikeDevice(videoSourceLabel),
       isCaptureDeviceCandidate: isCaptureDeviceLike(videoSourceLabel) || isCaptureDeviceLike(audioSourceLabel),
       previewReady: true,
@@ -623,7 +744,7 @@ export class ProgrammeSourceManager {
   }
 
   private readProgrammeTimestampMs(): number {
-    if (this.snapshot.sourceType === 'uploaded-video' && this.videoElement) {
+    if (this.isMediaElementSource() && this.videoElement) {
       return Math.round((this.videoElement.currentTime || 0) * 1000);
     }
     if (this.liveStartedAtMs === null) return this.snapshot.programmeTimestampMs;
@@ -669,8 +790,8 @@ export class ProgrammeSourceManager {
     this.onTrackEnded?.(this.snapshot);
   };
 
-  private handleUploadedVideoEnded = (): void => {
-    if (this.snapshot.sourceType !== 'uploaded-video') return;
+  private handleMediaElementEnded = (): void => {
+    if (!this.isMediaElementSource()) return;
     if (this.snapshot.status === 'ended' || this.snapshot.status === 'stopped') return;
     this.enableTracks(false);
     this.update({
@@ -682,7 +803,7 @@ export class ProgrammeSourceManager {
       captureInterrupted: false,
       error: null,
     });
-    this.incrementRevision('uploaded video ended');
+    this.incrementRevision(`${this.snapshot.sourceType} ended`);
     this.onTrackEnded?.(this.snapshot);
   };
 
@@ -694,9 +815,10 @@ export class ProgrammeSourceManager {
     if (this.stream) this.stopStream(this.stream);
     this.stream = null;
     if (this.videoElement && !options.preservePreview) {
-      this.videoElement.removeEventListener('ended', this.handleUploadedVideoEnded);
+      this.videoElement.removeEventListener('ended', this.handleMediaElementEnded);
       this.videoElement.pause();
       this.videoElement.srcObject = null;
+      this.videoElement.crossOrigin = '';
       this.videoElement.removeAttribute('src');
       this.videoElement.load?.();
       this.videoElement = null;
@@ -774,6 +896,10 @@ export class ProgrammeSourceManager {
     if (!deviceId) return fallback;
     return this.snapshot.availableDevices.find((device) => device.kind === kind && device.deviceId === deviceId)?.label ?? fallback;
   }
+
+  private isMediaElementSource(): boolean {
+    return this.snapshot.sourceType === 'uploaded-video' || this.snapshot.sourceType === 'direct-url';
+  }
 }
 
 function waitForMediaReady(video: HTMLVideoElement): Promise<void> {
@@ -848,6 +974,15 @@ function errorDetails(error: ProgrammeSourceError): ProgrammeSourceErrorDetails 
     message: error.message,
     recoverable: error.recoverable,
   };
+}
+
+function formatDirectSourceIdentity(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.hostname}${parsed.pathname}`;
+  } catch {
+    return url;
+  }
 }
 
 function readVideoSettings(track: MediaStreamTrack | null): {

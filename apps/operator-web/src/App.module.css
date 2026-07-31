@@ -979,6 +979,40 @@
   background: rgba(88, 80, 236, 0.18);
 }
 
+.directUrlRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 0.34fr);
+  gap: 0.7rem;
+  align-items: stretch;
+}
+
+.directUrlLabel {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.directUrlLabel span {
+  color: #a5b4fc;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.directUrlInput {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.52);
+  color: #f8fafc;
+  padding: 0 0.8rem;
+}
+
+.directUrlInput::placeholder {
+  color: rgba(148, 163, 184, 0.72);
+}
+
 .devicePickerGrid,
 .setupGrid,
 .outputGrid {
@@ -1116,7 +1150,8 @@
 
   .heroActions,
   .sourceChoiceGrid,
-  .devicePickerGrid {
+  .devicePickerGrid,
+  .directUrlRow {
     grid-template-columns: 1fr;
     min-width: 0;
   }

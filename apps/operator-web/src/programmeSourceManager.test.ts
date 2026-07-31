@@ -3,6 +3,7 @@ import {
   ProgrammeSourceManager,
   createInitialProgrammeSourceSnapshot,
   isUploadedProgrammeVideoSupported,
+  validateDirectProgrammeUrl,
 } from './programmeSourceManager';
 
 function track(
@@ -90,6 +91,7 @@ function videoElement(captured: MediaStream) {
     }),
     load: vi.fn(),
     removeAttribute: vi.fn(),
+    canPlayType: vi.fn(() => ''),
     addEventListener: vi.fn((event: string, listener: () => void) => {
       const eventListeners = listeners.get(event) ?? new Set<() => void>();
       eventListeners.add(listener);
@@ -253,6 +255,93 @@ describe('ProgrammeSourceManager', () => {
     expect(preview.play).toHaveBeenCalled();
     expect(manager.getSnapshot()).toMatchObject({ sourceType: 'none' });
     expect(revoke).toHaveBeenCalledWith('blob:uploaded-video');
+  });
+
+  it('validates direct MP4, WebM, and HLS URLs without accepting platform pages', () => {
+    expect(validateDirectProgrammeUrl('https://cdn.example.com/demo.mp4')).toMatchObject({
+      format: 'mp4',
+      url: 'https://cdn.example.com/demo.mp4',
+    });
+    expect(validateDirectProgrammeUrl('https://cdn.example.com/live/programme.webm?clip=abc')).toMatchObject({
+      format: 'webm',
+      url: 'https://cdn.example.com/live/programme.webm?clip=abc',
+    });
+    expect(validateDirectProgrammeUrl('https://cdn.example.com/live/index.m3u8')).toMatchObject({
+      format: 'hls',
+      url: 'https://cdn.example.com/live/index.m3u8',
+    });
+    expect(() => validateDirectProgrammeUrl('file:///C:/demo.mp4')).toThrow(/HTTP or HTTPS/);
+    expect(() => validateDirectProgrammeUrl('https://youtube.com/watch?v=demo')).toThrow(
+      /Only direct MP4, WebM, and HLS/,
+    );
+  });
+
+  it('selects a direct MP4 URL through the media element capture path', async () => {
+    const source = stream([track('audio', 'stream_audio'), track('video', 'stream_video')]);
+    const preview = videoElement(source);
+    const manager = new ProgrammeSourceManager();
+
+    await manager.selectDirectStreamUrl('https://cdn.example.com/show.mp4', preview);
+    await manager.start();
+    await manager.pause();
+    await manager.resume();
+
+    expect(preview.src).toBe('https://cdn.example.com/show.mp4');
+    expect(preview.crossOrigin).toBe('anonymous');
+    expect(manager.getSnapshot()).toMatchObject({
+      sourceType: 'direct-url',
+      sourceIdentity: 'cdn.example.com/show.mp4',
+      audioDetected: true,
+      videoDetected: true,
+      status: 'broadcasting',
+      canSeek: true,
+      canRestart: true,
+    });
+  });
+
+  it('reports direct URL missing audio without blocking preview selection', async () => {
+    const source = stream([track('video', 'stream_video')]);
+    const manager = new ProgrammeSourceManager();
+
+    await manager.selectDirectStreamUrl('https://cdn.example.com/silent.webm', videoElement(source));
+
+    expect(manager.getSnapshot()).toMatchObject({
+      sourceType: 'direct-url',
+      audioDetected: false,
+      videoDetected: true,
+      audioMissingReason: 'Stream URL did not expose a browser-playable audio track.',
+    });
+  });
+
+  it('rejects HLS URLs when the browser does not support native HLS', async () => {
+    const manager = new ProgrammeSourceManager();
+
+    await expect(
+      manager.selectDirectStreamUrl('https://cdn.example.com/live.m3u8', videoElement(stream([]))),
+    ).rejects.toMatchObject({
+      code: 'unsupported-format',
+    });
+  });
+
+  it('accepts native HLS URLs when the browser reports HLS playback support', async () => {
+    const source = stream([track('audio', 'hls_audio'), track('video', 'hls_video')]);
+    const preview = {
+      ...videoElement(source),
+      canPlayType: vi.fn((mimeType: string) =>
+        mimeType === 'application/vnd.apple.mpegurl' ? 'probably' : '',
+      ),
+    } as unknown as HTMLVideoElement;
+    const manager = new ProgrammeSourceManager();
+
+    await manager.selectDirectStreamUrl('https://cdn.example.com/live.m3u8', preview);
+
+    expect(manager.getSnapshot()).toMatchObject({
+      sourceType: 'direct-url',
+      audioDetected: true,
+      videoDetected: true,
+      browserLimitation:
+        'Native HLS playback only; Chrome requires MP4/WebM until an approved HLS runtime is added.',
+    });
   });
 
   it('cleans up uploaded video before switching to a live source', async () => {

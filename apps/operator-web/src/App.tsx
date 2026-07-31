@@ -662,6 +662,17 @@ export default function App(): React.ReactElement {
     [prepareProgrammeSourceSwitch, setProgrammeSessionBinding],
   );
 
+  const handleSelectDirectProgrammeUrl = useCallback(
+    async (url: string, preview: HTMLVideoElement): Promise<void> => {
+      await prepareProgrammeSourceSwitch('programme source switched to direct stream URL');
+      const source = await programmeSourceManagerRef.current
+        ?.selectDirectStreamUrl(url, preview)
+        .catch(() => undefined);
+      if (source) setProgrammeSessionBinding(createPendingProgrammeSessionBinding(source));
+    },
+    [prepareProgrammeSourceSwitch, setProgrammeSessionBinding],
+  );
+
   const ensureBroadcasterSignallingSession = useCallback(async () => {
     const client = broadcasterSignallingClientRef.current;
     if (!client) {
@@ -1677,6 +1688,9 @@ export default function App(): React.ReactElement {
             onSelectUploadedVideo={(file, preview) =>
               handleSelectUploadedProgrammeVideo(file, preview)
             }
+            onSelectDirectStreamUrl={(url, preview) =>
+              handleSelectDirectProgrammeUrl(url, preview)
+            }
             onStart={() => void handleStartInterpretation()}
             onPause={() => void handlePauseProgrammeSource()}
             onResume={() => void handleResumeProgrammeSource()}
@@ -2227,6 +2241,9 @@ export default function App(): React.ReactElement {
           onSelectScreen={(preview) => void handleSelectProgrammeScreen(preview)}
           onSelectUploadedVideo={(file, preview) =>
             handleSelectUploadedProgrammeVideo(file, preview)
+          }
+          onSelectDirectStreamUrl={(url, preview) =>
+            handleSelectDirectProgrammeUrl(url, preview)
           }
           onStart={() => void handleStartProgrammeSource()}
           onPause={() => void handlePauseProgrammeSource()}

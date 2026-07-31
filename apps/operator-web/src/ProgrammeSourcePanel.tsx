@@ -11,6 +11,7 @@ interface ProgrammeSourcePanelProps {
   onSelectCamera: (input: { audioDeviceId?: string; videoDeviceId?: string }, preview: HTMLVideoElement) => void;
   onSelectScreen: (preview: HTMLVideoElement) => void;
   onSelectUploadedVideo: (file: File, preview: HTMLVideoElement) => Promise<void> | void;
+  onSelectDirectStreamUrl: (url: string, preview: HTMLVideoElement) => Promise<void> | void;
   onStart: () => void;
   onPause: () => void;
   onResume: () => void;
@@ -25,6 +26,7 @@ const SOURCE_LABELS: Record<ProgrammeSourceType, string> = {
   camera: 'Camera or capture device',
   screen: 'Screen or browser tab',
   'uploaded-video': 'Uploaded video',
+  'direct-url': 'Direct stream URL',
 };
 
 export function ProgrammeSourcePanel({
@@ -33,11 +35,13 @@ export function ProgrammeSourcePanel({
   onSelectCamera,
   onSelectScreen,
   onSelectUploadedVideo,
+  onSelectDirectStreamUrl,
   onSeek,
 }: ProgrammeSourcePanelProps): React.ReactElement {
   const previewRef = useRef<HTMLVideoElement>(null);
   const [pendingAudioDeviceId, setPendingAudioDeviceId] = useState(source.selectedAudioDeviceId);
   const [pendingVideoDeviceId, setPendingVideoDeviceId] = useState(source.selectedVideoDeviceId);
+  const [directUrl, setDirectUrl] = useState('');
   const audioDevices = source.availableDevices.filter((device) => device.kind === 'audioinput');
   const videoDevices = source.availableDevices.filter((device) => device.kind === 'videoinput');
   const canSelect = source.status !== 'selecting' && source.status !== 'broadcasting';
@@ -56,6 +60,13 @@ export function ProgrammeSourcePanel({
   const selectCamera = (): void => {
     if (!previewRef.current) return;
     onSelectCamera(selectedCameraDevices(pendingAudioDeviceId, pendingVideoDeviceId), previewRef.current);
+  };
+
+  const selectDirectStreamUrl = (): void => {
+    const preview = previewRef.current;
+    const url = directUrl.trim();
+    if (!preview || !url) return;
+    void Promise.resolve(onSelectDirectStreamUrl(url, preview));
   };
 
   return (
@@ -120,6 +131,30 @@ export function ProgrammeSourcePanel({
             >
               <span>Meeting through OBS</span>
               <small>OBS Virtual Camera plus programme audio</small>
+            </button>
+          </div>
+
+          <div className={styles.directUrlRow}>
+            <label className={styles.directUrlLabel}>
+              <span>Direct media URL</span>
+              <input
+                className={styles.directUrlInput}
+                type="url"
+                value={directUrl}
+                placeholder="https://example.com/programme.mp4"
+                onChange={(event) => setDirectUrl(event.target.value)}
+                disabled={!canSelect}
+                aria-label="Direct MP4 WebM or HLS URL"
+              />
+            </label>
+            <button
+              type="button"
+              className={`${styles.sourceChoice} ${source.sourceType === 'direct-url' ? styles.sourceChoiceActive : ''}`}
+              onClick={selectDirectStreamUrl}
+              disabled={!canSelect || directUrl.trim().length === 0}
+            >
+              <span>Use URL</span>
+              <small>Direct MP4, WebM, or HLS .m3u8 only</small>
             </button>
           </div>
 
@@ -200,7 +235,7 @@ export function ProgrammeSourcePanel({
             className={styles.programmePreview}
             muted
             playsInline
-            controls={source.sourceType === 'uploaded-video'}
+            controls={source.sourceType === 'uploaded-video' || source.sourceType === 'direct-url'}
             aria-label="Operator programme preview"
           />
           <div className={styles.previewStatusStrip}>
