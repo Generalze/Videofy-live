@@ -22,6 +22,7 @@ export type ProgrammeSourceErrorCode =
   | 'duplicate-source'
   | 'capture-stream-unavailable'
   | 'source-ended'
+  | 'stream-interrupted'
   | 'cleanup-failure';
 
 export interface ProgrammeSourceErrorDetails {
@@ -79,6 +80,9 @@ export interface ProgrammeSourceManagerOptions {
   isSecureContext?: boolean;
   createObjectUrl?: (file: File) => string;
   revokeObjectUrl?: (url: string) => void;
+  createHlsController?: () => HlsController;
+  isHlsSupported?: () => boolean;
+  loadHlsRuntime?: () => Promise<HlsRuntime>;
   now?: () => number;
   onStateChange?: (snapshot: ProgrammeSourceSnapshot) => void;
   onRevisionChange?: (revision: number, reason: string) => void;
@@ -91,6 +95,26 @@ interface CaptureVideoElement extends HTMLVideoElement {
   mozCaptureStream?: () => MediaStream;
 }
 
+interface HlsController {
+  attachMedia(media: HTMLMediaElement): void;
+  loadSource(url: string): void;
+  destroy(): void;
+  on(event: string, listener: (event: string, data: HlsErrorData) => void): void;
+}
+
+interface HlsRuntime {
+  isSupported(): boolean;
+  createController(): HlsController;
+}
+
+interface HlsErrorData {
+  fatal?: boolean;
+  details?: string;
+  type?: string;
+  error?: { message?: string };
+  reason?: string;
+}
+
 const UPLOADED_VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov']);
 const UPLOADED_VIDEO_MIME_TYPES = new Set([
   'video/mp4',
@@ -100,6 +124,22 @@ const UPLOADED_VIDEO_MIME_TYPES = new Set([
 ]);
 const DIRECT_STREAM_EXTENSIONS = new Set(['mp4', 'webm', 'm3u8']);
 const NATIVE_HLS_MIME_TYPES = ['application/vnd.apple.mpegurl', 'application/x-mpegURL'];
+const HLS_ERROR_EVENT = 'hlsError';
+const HLS_ERROR_DETAILS = {
+  manifestParsing: 'manifestParsingError',
+  manifestIncompatibleCodecs: 'manifestIncompatibleCodecsError',
+  bufferAddCodec: 'bufferAddCodecError',
+  bufferIncompatibleCodecs: 'bufferIncompatibleCodecsError',
+  fragmentLoad: 'fragLoadError',
+  fragmentLoadTimeout: 'fragLoadTimeOut',
+  bufferStalled: 'bufferStalledError',
+  manifestLoad: 'manifestLoadError',
+  manifestLoadTimeout: 'manifestLoadTimeOut',
+  levelLoad: 'levelLoadError',
+} as const;
+const HLS_ERROR_TYPES = {
+  network: 'networkError',
+} as const;
 
 export class ProgrammeSourceError extends Error {
   constructor(
@@ -201,6 +241,9 @@ export class ProgrammeSourceManager {
   private readonly isSecureContext: boolean;
   private readonly createObjectUrl: (file: File) => string;
   private readonly revokeObjectUrl: (url: string) => void;
+  private readonly createHlsController: (() => HlsController) | undefined;
+  private readonly isHlsSupported: (() => boolean) | undefined;
+  private readonly loadHlsRuntime: () => Promise<HlsRuntime>;
   private readonly now: () => number;
   private readonly onStateChange: ((snapshot: ProgrammeSourceSnapshot) => void) | undefined;
   private readonly onRevisionChange: ((revision: number, reason: string) => void) | undefined;
@@ -212,6 +255,9 @@ export class ProgrammeSourceManager {
   private ownedTracks = new Set<MediaStreamTrack>();
   private objectUrl: string | null = null;
   private videoElement: CaptureVideoElement | null = null;
+  private hlsController: HlsController | null = null;
+  private hlsFatalError: ProgrammeSourceError | null = null;
+  private hlsRuntimePromise: Promise<HlsRuntime> | null = null;
   private liveStartedAtMs: number | null = null;
   private livePausedAtMs: number | null = null;
   private livePausedDurationMs = 0;
@@ -223,6 +269,9 @@ export class ProgrammeSourceManager {
       options.createObjectUrl ?? ((file) => URL.createObjectURL(file));
     this.revokeObjectUrl =
       options.revokeObjectUrl ?? ((url) => URL.revokeObjectURL(url));
+    this.createHlsController = options.createHlsController;
+    this.isHlsSupported = options.isHlsSupported;
+    this.loadHlsRuntime = options.loadHlsRuntime ?? loadDefaultHlsRuntime;
     this.now = options.now ?? (() => Date.now());
     this.onStateChange = options.onStateChange;
     this.onRevisionChange = options.onRevisionChange;
@@ -412,14 +461,15 @@ export class ProgrammeSourceManager {
         ),
       );
     }
-    if (
-      direct.format === 'hls' &&
-      !NATIVE_HLS_MIME_TYPES.some((mimeType) => videoElement.canPlayType?.(mimeType))
-    ) {
+    const hlsMode =
+      direct.format === 'hls'
+        ? await this.resolveHlsPlaybackMode(videoElement)
+        : 'not-hls';
+    if (hlsMode === 'unsupported') {
       throw this.fail(
         new ProgrammeSourceError(
           'unsupported-format',
-          'This browser does not support native HLS playback. Use a direct MP4/WebM URL in Chrome or add an approved HLS runtime later.',
+          'This browser cannot play HLS .m3u8 streams. Use Chrome or Firefox with MediaSource support, or use a direct MP4/WebM URL.',
           false,
         ),
       );
@@ -435,7 +485,9 @@ export class ProgrammeSourceManager {
       captureInterrupted: false,
       browserLimitation:
         direct.format === 'hls'
-          ? 'HLS playback depends on native browser support in this milestone.'
+          ? hlsMode === 'native'
+            ? 'Using native browser HLS playback.'
+            : 'Using hls.js fallback for browser HLS playback.'
           : 'Remote media must allow browser playback and WebRTC capture.',
       error: null,
     });
@@ -446,11 +498,15 @@ export class ProgrammeSourceManager {
       videoElement.playsInline = true;
       videoElement.preload = 'metadata';
       videoElement.crossOrigin = 'anonymous';
-      videoElement.src = direct.url;
       videoElement.addEventListener('ended', this.handleMediaElementEnded);
-      videoElement.load?.();
+      if (direct.format === 'hls') {
+        await this.attachHlsPlayback(direct.url, videoElement, hlsMode);
+      } else {
+        videoElement.src = direct.url;
+        videoElement.load?.();
+      }
       void videoElement.play?.().catch(() => undefined);
-      await waitForMediaReady(videoElement);
+      await waitForMediaReady(videoElement, () => this.hlsFatalError);
       const stream = (videoElement.captureStream ?? videoElement.mozCaptureStream)!.call(videoElement);
       this.assertUsableTracks(stream, { requireVideo: true });
       const durationMs = Number.isFinite(videoElement.duration) ? Math.round(videoElement.duration * 1000) : null;
@@ -469,7 +525,9 @@ export class ProgrammeSourceManager {
         preservePreview: true,
         browserLimitation:
           direct.format === 'hls'
-            ? 'Native HLS playback only; Chrome requires MP4/WebM until an approved HLS runtime is added.'
+            ? hlsMode === 'native'
+              ? 'Native HLS playback active.'
+              : 'hls.js playback active.'
             : null,
       });
       this.update({ programmeTimestampMs: Math.round((videoElement.currentTime || 0) * 1000) });
@@ -814,6 +872,11 @@ export class ProgrammeSourceManager {
     this.ownedTracks.clear();
     if (this.stream) this.stopStream(this.stream);
     this.stream = null;
+    if (this.hlsController) {
+      this.hlsController.destroy();
+      this.hlsController = null;
+      this.hlsFatalError = null;
+    }
     if (this.videoElement && !options.preservePreview) {
       this.videoElement.removeEventListener('ended', this.handleMediaElementEnded);
       this.videoElement.pause();
@@ -835,6 +898,67 @@ export class ProgrammeSourceManager {
   private stopStream(stream: MediaStream): void {
     for (const track of stream.getTracks()) {
       if (track.readyState !== 'ended') track.stop();
+    }
+  }
+
+  private async resolveHlsPlaybackMode(videoElement: HTMLVideoElement): Promise<'native' | 'hls-js' | 'unsupported' | 'not-hls'> {
+    if (NATIVE_HLS_MIME_TYPES.some((mimeType) => videoElement.canPlayType?.(mimeType))) {
+      return 'native';
+    }
+    if (this.isHlsSupported) {
+      return this.isHlsSupported() ? 'hls-js' : 'unsupported';
+    }
+    const runtime = await this.getHlsRuntime();
+    return runtime.isSupported() ? 'hls-js' : 'unsupported';
+  }
+
+  private async attachHlsPlayback(
+    url: string,
+    videoElement: HTMLVideoElement,
+    hlsMode: 'native' | 'hls-js' | 'unsupported' | 'not-hls',
+  ): Promise<void> {
+    if (hlsMode === 'native') {
+      videoElement.src = url;
+      videoElement.load?.();
+      return;
+    }
+    if (hlsMode !== 'hls-js') {
+      throw new ProgrammeSourceError('unsupported-format', 'This browser cannot play HLS .m3u8 streams.', false);
+    }
+    this.hlsFatalError = null;
+    const controller = await this.createFallbackHlsController();
+    this.hlsController = controller;
+    controller.on(HLS_ERROR_EVENT, (_event, data) => {
+      if (data.fatal) {
+        this.handleHlsFatalError(data);
+      }
+    });
+    controller.attachMedia(videoElement);
+    controller.loadSource(url);
+  }
+
+  private async getHlsRuntime(): Promise<HlsRuntime> {
+    this.hlsRuntimePromise ??= this.loadHlsRuntime();
+    return this.hlsRuntimePromise;
+  }
+
+  private async createFallbackHlsController(): Promise<HlsController> {
+    if (this.createHlsController) return this.createHlsController();
+    const runtime = await this.getHlsRuntime();
+    return runtime.createController();
+  }
+
+  private handleHlsFatalError(data: HlsErrorData): void {
+    const error = mapHlsError(data);
+    this.hlsFatalError = error;
+    if (
+      this.snapshot.sourceType === 'direct-url' &&
+      this.snapshot.status !== 'selecting' &&
+      this.snapshot.status !== 'failed' &&
+      this.snapshot.status !== 'stopped'
+    ) {
+      this.enableTracks(false);
+      this.fail(error);
     }
   }
 
@@ -902,14 +1026,24 @@ export class ProgrammeSourceManager {
   }
 }
 
-function waitForMediaReady(video: HTMLVideoElement): Promise<void> {
+function waitForMediaReady(
+  video: HTMLVideoElement,
+  getFatalPlaybackError: () => ProgrammeSourceError | null = () => null,
+): Promise<void> {
   if (video.readyState >= 1) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
-    const poll = window.setInterval(() => {
+    const poll = globalThis.setInterval(() => {
+      const fatalPlaybackError = getFatalPlaybackError();
+      if (fatalPlaybackError) {
+        cleanup();
+        reject(fatalPlaybackError);
+        return;
+      }
       if (video.readyState >= 1) {
         cleanup();
         resolve();
+        return;
       }
       if (Date.now() - startedAt > 30_000) {
         cleanup();
@@ -920,7 +1054,7 @@ function waitForMediaReady(video: HTMLVideoElement): Promise<void> {
       }
     }, 100);
     const cleanup = (): void => {
-      window.clearInterval(poll);
+      globalThis.clearInterval(poll);
       video.removeEventListener('loadedmetadata', onReady);
       video.removeEventListener('canplay', onReady);
       video.removeEventListener('error', onError);
@@ -931,12 +1065,88 @@ function waitForMediaReady(video: HTMLVideoElement): Promise<void> {
     };
     const onError = (): void => {
       cleanup();
-      reject(new ProgrammeSourceError('decode-failed', 'The browser could not decode the selected video.'));
+      reject(mediaElementError(video));
     };
     video.addEventListener('loadedmetadata', onReady, { once: true });
     video.addEventListener('canplay', onReady, { once: true });
     video.addEventListener('error', onError, { once: true });
   });
+}
+
+function mediaElementError(video: HTMLVideoElement): ProgrammeSourceError {
+  switch (video.error?.code) {
+    case MediaError.MEDIA_ERR_NETWORK:
+      return new ProgrammeSourceError(
+        'decode-failed',
+        'The stream URL is unreachable or blocked by CORS.',
+      );
+    case MediaError.MEDIA_ERR_DECODE:
+      return new ProgrammeSourceError(
+        'decode-failed',
+        'The browser could not decode the stream. Check codec compatibility or media integrity.',
+      );
+    case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+      return new ProgrammeSourceError(
+        'unsupported-format',
+        'The stream uses an unsupported codec or invalid media container.',
+        false,
+      );
+    default:
+      return new ProgrammeSourceError('decode-failed', 'The browser could not decode the selected video.');
+  }
+}
+
+function mapHlsError(data: HlsErrorData): ProgrammeSourceError {
+  const details = String(data.details ?? '');
+  const type = String(data.type ?? '');
+  const message = [
+    data.error?.message,
+    data.reason,
+    details,
+    type,
+  ].filter(Boolean).join(' ');
+  if (/cors|cross.?origin|access-control/i.test(message)) {
+    return new ProgrammeSourceError('decode-failed', 'HLS stream is blocked by CORS.');
+  }
+  if (
+    data.details === HLS_ERROR_DETAILS.manifestParsing ||
+    /manifest.*parsing|invalid.*manifest/i.test(message)
+  ) {
+    return new ProgrammeSourceError('decode-failed', 'Invalid HLS manifest.');
+  }
+  if (
+    data.details === HLS_ERROR_DETAILS.manifestIncompatibleCodecs ||
+    data.details === HLS_ERROR_DETAILS.bufferAddCodec ||
+    data.details === HLS_ERROR_DETAILS.bufferIncompatibleCodecs ||
+    /codec|not supported|unsupported/i.test(message)
+  ) {
+    return new ProgrammeSourceError('unsupported-format', 'HLS stream uses an unsupported codec.', false);
+  }
+  if (
+    data.details === HLS_ERROR_DETAILS.fragmentLoad ||
+    data.details === HLS_ERROR_DETAILS.fragmentLoadTimeout ||
+    data.details === HLS_ERROR_DETAILS.bufferStalled
+  ) {
+    return new ProgrammeSourceError('stream-interrupted', 'HLS stream playback was interrupted.');
+  }
+  if (
+    data.type === HLS_ERROR_TYPES.network ||
+    data.details === HLS_ERROR_DETAILS.manifestLoad ||
+    data.details === HLS_ERROR_DETAILS.manifestLoadTimeout ||
+    data.details === HLS_ERROR_DETAILS.levelLoad
+  ) {
+    return new ProgrammeSourceError('decode-failed', 'HLS stream is unreachable or interrupted.');
+  }
+  return new ProgrammeSourceError('decode-failed', 'HLS playback failed.');
+}
+
+async function loadDefaultHlsRuntime(): Promise<HlsRuntime> {
+  const module = await import('hls.js/light');
+  const HlsClass = module.default;
+  return {
+    isSupported: () => HlsClass.isSupported(),
+    createController: () => new HlsClass({ enableWorker: true }) as HlsController,
+  };
 }
 
 function normalizeProgrammeSourceError(

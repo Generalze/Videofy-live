@@ -70,11 +70,16 @@ function mediaDevices(input: {
   } as unknown as MediaDevices;
 }
 
-function videoElement(captured: MediaStream) {
+function videoElement(
+  captured: MediaStream,
+  options: { readyState?: number; duration?: number } = {},
+) {
   const listeners = new Map<string, Set<() => void>>();
   return {
-    readyState: 1,
-    duration: 12.4,
+    readyState: options.readyState ?? 1,
+    duration: options.duration ?? 12.4,
+    networkState: 1,
+    error: null,
     currentTime: 0,
     paused: true,
     muted: false,
@@ -104,6 +109,41 @@ function videoElement(captured: MediaStream) {
       listeners.get(event)?.forEach((listener) => listener());
     },
   } as unknown as HTMLVideoElement & { emit: (event: string) => void };
+}
+
+function hlsController(input: {
+  onAttach?: () => void;
+  onLoad?: () => void;
+  fatalError?: { details: string; type: string; message?: string };
+} = {}) {
+  const listeners = new Map<string, (event: string, data: unknown) => void>();
+  const controller = {
+    attachMedia: vi.fn(() => input.onAttach?.()),
+    loadSource: vi.fn(() => {
+      input.onLoad?.();
+      if (input.fatalError) {
+        listeners.get('hlsError')?.('hlsError', {
+          fatal: true,
+          details: input.fatalError.details,
+          type: input.fatalError.type,
+          error: input.fatalError.message ? new Error(input.fatalError.message) : undefined,
+        });
+      }
+    }),
+    destroy: vi.fn(),
+    on: vi.fn((event: string, listener: (event: string, data: unknown) => void) => {
+      listeners.set(event, listener);
+    }),
+    emitFatal: (fatalError: { details: string; type: string; message?: string }) => {
+      listeners.get('hlsError')?.('hlsError', {
+        fatal: true,
+        details: fatalError.details,
+        type: fatalError.type,
+        error: fatalError.message ? new Error(fatalError.message) : undefined,
+      });
+    },
+  };
+  return controller;
 }
 
 function file(name: string, type: string): File {
@@ -279,7 +319,10 @@ describe('ProgrammeSourceManager', () => {
   it('selects a direct MP4 URL through the media element capture path', async () => {
     const source = stream([track('audio', 'stream_audio'), track('video', 'stream_video')]);
     const preview = videoElement(source);
-    const manager = new ProgrammeSourceManager();
+    const loadHlsRuntime = vi.fn(async () => {
+      throw new Error('hls.js should not load for MP4.');
+    });
+    const manager = new ProgrammeSourceManager({ loadHlsRuntime });
 
     await manager.selectDirectStreamUrl('https://cdn.example.com/show.mp4', preview);
     await manager.start();
@@ -297,6 +340,24 @@ describe('ProgrammeSourceManager', () => {
       canSeek: true,
       canRestart: true,
     });
+    expect(loadHlsRuntime).not.toHaveBeenCalled();
+  });
+
+  it('does not load hls.js for direct WebM URLs', async () => {
+    const source = stream([track('audio', 'stream_audio'), track('video', 'stream_video')]);
+    const loadHlsRuntime = vi.fn(async () => {
+      throw new Error('hls.js should not load for WebM.');
+    });
+    const manager = new ProgrammeSourceManager({ loadHlsRuntime });
+
+    await manager.selectDirectStreamUrl('https://cdn.example.com/show.webm', videoElement(source));
+
+    expect(manager.getSnapshot()).toMatchObject({
+      sourceType: 'direct-url',
+      audioDetected: true,
+      videoDetected: true,
+    });
+    expect(loadHlsRuntime).not.toHaveBeenCalled();
   });
 
   it('reports direct URL missing audio without blocking preview selection', async () => {
@@ -314,7 +375,7 @@ describe('ProgrammeSourceManager', () => {
   });
 
   it('rejects HLS URLs when the browser does not support native HLS', async () => {
-    const manager = new ProgrammeSourceManager();
+    const manager = new ProgrammeSourceManager({ isHlsSupported: () => false });
 
     await expect(
       manager.selectDirectStreamUrl('https://cdn.example.com/live.m3u8', videoElement(stream([]))),
@@ -331,7 +392,10 @@ describe('ProgrammeSourceManager', () => {
         mimeType === 'application/vnd.apple.mpegurl' ? 'probably' : '',
       ),
     } as unknown as HTMLVideoElement;
-    const manager = new ProgrammeSourceManager();
+    const loadHlsRuntime = vi.fn(async () => {
+      throw new Error('hls.js should not load for native HLS.');
+    });
+    const manager = new ProgrammeSourceManager({ loadHlsRuntime });
 
     await manager.selectDirectStreamUrl('https://cdn.example.com/live.m3u8', preview);
 
@@ -339,9 +403,164 @@ describe('ProgrammeSourceManager', () => {
       sourceType: 'direct-url',
       audioDetected: true,
       videoDetected: true,
-      browserLimitation:
-        'Native HLS playback only; Chrome requires MP4/WebM until an approved HLS runtime is added.',
+      browserLimitation: 'Native HLS playback active.',
     });
+    expect(loadHlsRuntime).not.toHaveBeenCalled();
+  });
+
+  it('loads hls.js once for fallback HLS playback', async () => {
+    const source = stream([track('audio', 'hls_audio'), track('video', 'hls_video')]);
+    const controller = hlsController();
+    const loadHlsRuntime = vi.fn(async () => ({
+      isSupported: () => true,
+      createController: () => controller,
+    }));
+    const manager = new ProgrammeSourceManager({ loadHlsRuntime });
+
+    await manager.selectDirectStreamUrl('https://cdn.example.com/live.m3u8', videoElement(source));
+
+    expect(loadHlsRuntime).toHaveBeenCalledTimes(1);
+    expect(controller.attachMedia).toHaveBeenCalledTimes(1);
+    expect(controller.loadSource).toHaveBeenCalledWith('https://cdn.example.com/live.m3u8');
+  });
+
+  it('uses hls.js fallback for HLS URLs when native HLS is unavailable', async () => {
+    const source = stream([track('audio', 'hls_audio'), track('video', 'hls_video')]);
+    const preview = videoElement(source);
+    const controller = hlsController();
+    const manager = new ProgrammeSourceManager({
+      isHlsSupported: () => true,
+      createHlsController: () => controller,
+    });
+
+    await manager.selectDirectStreamUrl('https://cdn.example.com/live.m3u8', preview);
+
+    expect(controller.attachMedia).toHaveBeenCalledWith(preview);
+    expect(controller.loadSource).toHaveBeenCalledWith('https://cdn.example.com/live.m3u8');
+    expect(preview.src).toBe('');
+    expect(manager.getSnapshot()).toMatchObject({
+      sourceType: 'direct-url',
+      audioDetected: true,
+      videoDetected: true,
+      browserLimitation: 'hls.js playback active.',
+    });
+  });
+
+  it('maps hls.js fatal manifest errors to clear operator failures', async () => {
+    vi.useFakeTimers();
+    const controller = hlsController({
+      fatalError: {
+        details: 'manifestParsingError',
+        type: 'networkError',
+        message: 'invalid manifest',
+      },
+    });
+    const manager = new ProgrammeSourceManager({
+      isHlsSupported: () => true,
+      createHlsController: () => controller,
+    });
+    const selection = manager.selectDirectStreamUrl(
+      'https://cdn.example.com/bad.m3u8',
+      videoElement(stream([]), { readyState: 0 }),
+    );
+    const expectation = expect(selection).rejects.toMatchObject({
+      code: 'decode-failed',
+      message: 'Invalid HLS manifest.',
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    await expectation;
+    vi.useRealTimers();
+  });
+
+  it('maps hls.js fatal CORS and codec errors without silent fallback', async () => {
+    vi.useFakeTimers();
+    const corsManager = new ProgrammeSourceManager({
+      isHlsSupported: () => true,
+      createHlsController: () =>
+        hlsController({
+          fatalError: {
+            details: 'manifestLoadError',
+            type: 'networkError',
+            message: 'No Access-Control-Allow-Origin header',
+          },
+        }),
+    });
+    const corsSelection = corsManager.selectDirectStreamUrl(
+      'https://cdn.example.com/cors.m3u8',
+      videoElement(stream([]), { readyState: 0 }),
+    );
+    const corsExpectation = expect(corsSelection).rejects.toMatchObject({
+      code: 'decode-failed',
+      message: 'HLS stream is blocked by CORS.',
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    await corsExpectation;
+
+    const codecManager = new ProgrammeSourceManager({
+      isHlsSupported: () => true,
+      createHlsController: () =>
+        hlsController({
+          fatalError: {
+            details: 'manifestIncompatibleCodecsError',
+            type: 'mediaError',
+            message: 'unsupported codec',
+          },
+        }),
+    });
+    const codecSelection = codecManager.selectDirectStreamUrl(
+      'https://cdn.example.com/codec.m3u8',
+      videoElement(stream([]), { readyState: 0 }),
+    );
+    const codecExpectation = expect(codecSelection).rejects.toMatchObject({
+      code: 'unsupported-format',
+      message: 'HLS stream uses an unsupported codec.',
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    await codecExpectation;
+    vi.useRealTimers();
+  });
+
+  it('destroys hls.js playback on cleanup', async () => {
+    const source = stream([track('audio', 'hls_audio'), track('video', 'hls_video')]);
+    const controller = hlsController();
+    const manager = new ProgrammeSourceManager({
+      isHlsSupported: () => true,
+      createHlsController: () => controller,
+    });
+
+    await manager.selectDirectStreamUrl('https://cdn.example.com/live.m3u8', videoElement(source));
+    await manager.clear();
+
+    expect(controller.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces hls.js stream interruption after preview readiness', async () => {
+    const source = stream([track('audio', 'hls_audio'), track('video', 'hls_video')]);
+    const controller = hlsController();
+    const manager = new ProgrammeSourceManager({
+      isHlsSupported: () => true,
+      createHlsController: () => controller,
+    });
+
+    await manager.selectDirectStreamUrl('https://cdn.example.com/live.m3u8', videoElement(source));
+    controller.emitFatal({
+      details: 'fragLoadError',
+      type: 'networkError',
+      message: 'segment disappeared',
+    });
+
+    expect(manager.getSnapshot()).toMatchObject({
+      status: 'failed',
+      captureInterrupted: true,
+      error: {
+        code: 'stream-interrupted',
+        message: 'HLS stream playback was interrupted.',
+      },
+    });
+    expect(source.getTracks().every((item) => item.enabled === false)).toBe(true);
   });
 
   it('cleans up uploaded video before switching to a live source', async () => {
