@@ -233,7 +233,7 @@ export class ListenerWebRtcTransportController {
     });
   }
 
-  close(reason = 'listener transport closed'): ListenerWebRtcTransportSnapshot {
+  close(reason = 'listener transport closed', notifySignalling = true): ListenerWebRtcTransportSnapshot {
     if (this.snapshot.state === 'closed' || this.snapshot.state === 'closing') return this.snapshot;
     this.update({ state: 'closing' });
     this.clearNegotiationTimer();
@@ -249,11 +249,13 @@ export class ListenerWebRtcTransportController {
       this.seenRemoteCandidates.clear();
       this.peer?.close();
       this.peer = null;
-      this.signallingClient.sendPeerDisconnect({
-        targetPeerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
-        revision: this.snapshot.revision,
-        reason,
-      });
+      if (notifySignalling) {
+        this.signallingClient.sendPeerDisconnect({
+          targetPeerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+          revision: this.snapshot.revision,
+          reason,
+        });
+      }
       this.update({
         state: 'closed',
         connectionState: 'none',
@@ -461,16 +463,52 @@ export class ListenerWebRtcTransportController {
     ) {
       this.markPlaybackStarted();
     }
-    if (state === 'failed') this.fail(error('connection-closed', 'Listener WebRTC connection failed.'));
+    if (state === 'failed') {
+      if (this.hasEndedRemoteMedia()) {
+        this.clearNegotiationTimer();
+        this.clearRecoveryTimer();
+        this.update({
+          state: 'source-ended',
+          remoteAudioTrackActive: false,
+          remoteVideoTrackActive: false,
+          lastError: null,
+        });
+      } else {
+        this.fail(error('connection-closed', 'Listener WebRTC connection failed.'));
+      }
+    }
     if (state === 'closed') this.update({ state: 'closed' });
     this.update({ connectionState: state });
   };
 
   private handleIceConnectionStateChange = (): void => {
     const state = this.peer?.iceConnectionState ?? 'none';
-    if (state === 'failed') this.fail(error('ice-candidate-failure', 'Listener ICE connection failed.'));
+    if (state === 'failed') {
+      if (this.hasEndedRemoteMedia()) {
+        this.clearNegotiationTimer();
+        this.clearRecoveryTimer();
+        this.update({
+          state: 'source-ended',
+          remoteAudioTrackActive: false,
+          remoteVideoTrackActive: false,
+          lastError: null,
+        });
+      } else {
+        this.fail(error('ice-candidate-failure', 'Listener ICE connection failed.'));
+      }
+    }
     this.update({ iceConnectionState: state });
   };
+
+  private hasEndedRemoteMedia(): boolean {
+    const receivedMedia = this.snapshot.remoteAudioTrackReceived || this.snapshot.remoteVideoTrackReceived;
+    if (!receivedMedia) return false;
+    const audioEnded =
+      !this.snapshot.remoteAudioTrackReceived || this.audioTrack?.readyState === 'ended';
+    const videoEnded =
+      !this.snapshot.remoteVideoTrackReceived || this.videoTrack?.readyState === 'ended';
+    return audioEnded && videoEnded;
+  }
 
   private startNegotiationTimer(): void {
     this.clearNegotiationTimer();

@@ -386,11 +386,21 @@ export default function App(): React.ReactElement {
       setMediaState(state);
       setStreamStatus(state.streamStatus);
       setBuffering(state.streamStatus === 'validating');
+      if (
+        state.streamStatus === 'completed' ||
+        state.streamStatus === 'cancelled' ||
+        state.streamStatus === 'failed'
+      ) {
+        listenerTransportRef.current?.close(`programme source ${state.streamStatus}`, false);
+      }
     });
 
     socket.on(SOCKET_EVENTS.STREAM_STATUS, (data: { status: string }) => {
       setStreamStatus(data.status);
       setBuffering(data.status === 'validating');
+      if (data.status === 'completed' || data.status === 'cancelled' || data.status === 'failed') {
+        listenerTransportRef.current?.close(`programme source ${data.status}`, false);
+      }
     });
   }, [audioQueue, resumeMixer, updateSocketDiagnostics]);
 

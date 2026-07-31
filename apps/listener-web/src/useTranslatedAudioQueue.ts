@@ -351,11 +351,27 @@ export class TranslatedAudioQueueController {
 
     const clockMs = this.currentClockMs();
     const lateByMs = Math.max(0, clockMs - item.event.startMs);
+    const sourceWindowStillActive = clockMs < item.event.endMs;
+    const seekOffsetMs =
+      lateByMs > this.lateToleranceMs && sourceWindowStillActive ? lateByMs : 0;
+    if (seekOffsetMs > 0 && seekOffsetMs >= Math.max(0, item.event.durationMs - this.lateToleranceMs)) {
+      this.setGeneratedState({
+        status: this.generatedQueue.length > 0 ? 'buffering' : 'completed',
+        pendingCount: this.generatedQueue.length,
+        bufferedCount: this.generatedQueue.length,
+        skippedCount: this.generatedState.skippedCount + 1,
+        currentSegment: null,
+        syncOffsetMs: clockMs - item.event.startMs,
+        error: null,
+      });
+      this.scheduleGeneratedPlayback();
+      return;
+    }
+
     const audio = this.createAudio(item.event.audioUrl);
     audio.volume = this.currentVolume();
-    const sourceWindowStillActive = clockMs < item.event.endMs;
-    if (lateByMs > this.lateToleranceMs && sourceWindowStillActive) {
-      audio.currentTime = Math.max(0, lateByMs / 1000);
+    if (seekOffsetMs > 0) {
+      audio.currentTime = Math.max(0, seekOffsetMs / 1000);
     }
 
     this.generatedAudio = audio;

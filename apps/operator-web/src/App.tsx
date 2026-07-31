@@ -76,6 +76,7 @@ import {
   selectSessionTargetLanguage,
   toggleTargetLanguage,
 } from './targetLanguageSelection';
+import { buildOperatorWorkflowSummary } from './operatorWorkflow';
 
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
 const INGEST_URL = import.meta.env['VITE_INGEST_URL'] ?? 'http://localhost:3002';
@@ -259,6 +260,7 @@ export default function App(): React.ReactElement {
   const [originalMix, setOriginalMix] = useState(0.2);
   const [translatedMix, setTranslatedMix] = useState(1.0);
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
+  const [interpretationStarting, setInterpretationStarting] = useState(false);
 
   const [gatewayOk, setGatewayOk] = useState(false);
   const [workerOk, setWorkerOk] = useState(false);
@@ -701,6 +703,37 @@ export default function App(): React.ReactElement {
       setMediaError(message);
     }
   }, [ensureBroadcasterSignallingSession, publishProgrammeSessionConfig, setProgrammeSessionBinding]);
+
+  const handleStartInterpretation = useCallback(async (): Promise<void> => {
+    const source = programmeSourceManagerRef.current?.getSnapshot() ?? programmeSource;
+    if (source.sourceType === 'none') {
+      setMediaError('Select a programme source before starting interpretation.');
+      return;
+    }
+    if (!source.videoDetected) {
+      setMediaError('Selected programme source must include video.');
+      return;
+    }
+    if (!source.audioDetected) {
+      setMediaError(source.audioMissingReason ?? 'Selected programme source must include audio for transcription.');
+      return;
+    }
+    if (!connected) {
+      setMediaError('Realtime gateway is unavailable. Start the gateway before interpretation.');
+      return;
+    }
+    if (!ingestOk) {
+      setMediaError('Media ingest is unavailable. Start media ingest before interpretation.');
+      return;
+    }
+
+    setInterpretationStarting(true);
+    try {
+      await handleStartProgrammeSource();
+    } finally {
+      setInterpretationStarting(false);
+    }
+  }, [connected, handleStartProgrammeSource, ingestOk, programmeSource]);
 
   const handlePauseProgrammeSource = useCallback(async (): Promise<void> => {
     await programmeSourceManagerRef.current?.pause().catch(() => undefined);
@@ -1310,6 +1343,30 @@ export default function App(): React.ReactElement {
     generatedAudio,
     selectedTargetLanguages: targetLanguages,
   });
+  const workflowSummary = buildOperatorWorkflowSummary({
+    connected,
+    ingestHealthy: ingestOk,
+    programmeSource,
+    mediaState,
+    streamStatus,
+    starting: interpretationStarting,
+    mediaError,
+  });
+  const sourceLanguageLabel =
+    SOURCE_LANGUAGE_OPTIONS.find((languageOption) => languageOption.code === sourceLanguage)?.label ??
+    sourceLanguage.toUpperCase();
+  const targetLanguageLabel = sessionTargetLanguage.toUpperCase();
+  const compactStatusItems = [
+    programmeSource.videoDetected ? 'Video live' : 'Video waiting',
+    programmeSource.audioDetected ? 'Audio detected' : 'Audio waiting',
+    transcription?.status ? `Transcription ${transcription.status}` : 'Transcription waiting',
+    timestampedTranslation?.status
+      ? `${targetLanguageLabel} ${timestampedTranslation.status}`
+      : `${targetLanguageLabel} waiting`,
+    `${mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0} listener${
+      (mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0) === 1 ? '' : 's'
+    }`,
+  ];
   const applyEnglishSpanishDemoPreset = useCallback(() => {
     setSourceLanguage('en');
     setSourceLanguageMode('auto-detect');
@@ -1546,6 +1603,341 @@ export default function App(): React.ReactElement {
       </aside>
 
       <main className={styles.main}>
+        <section className={styles.heroConsole} aria-labelledby="operator-session-title">
+          <div className={styles.heroTopline}>
+            <span className={styles.statusPill}>{workflowSummary.status}</span>
+            <span>{mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0} listeners</span>
+            <span>{sourceLanguageLabel}</span>
+            <span>{targetLanguageLabel}</span>
+          </div>
+          <div className={styles.heroGrid}>
+            <div>
+              <p className={styles.kicker}>Videofy Live Operator</p>
+              <h1 id="operator-session-title" className={styles.heroTitle}>
+                Start interpretation from one programme source.
+              </h1>
+              <p className={styles.heroCopy}>
+                Select video, choose languages, then start. Videofy handles signalling,
+                transport, transcription, translation, speech generation, and listener delivery.
+              </p>
+            </div>
+            <div className={styles.heroActions}>
+              <button
+                type="button"
+                className={styles.primaryAction}
+                onClick={() => void handleStartInterpretation()}
+                disabled={interpretationStarting || !workflowSummary.canStartInterpretation}
+              >
+                {interpretationStarting ? 'Starting...' : 'Start Interpretation'}
+              </button>
+              <button
+                type="button"
+                className={styles.secondaryAction}
+                onClick={() => void handlePauseProgrammeSource()}
+                disabled={!workflowSummary.canPause}
+              >
+                Pause
+              </button>
+              <button
+                type="button"
+                className={styles.secondaryAction}
+                onClick={() => void handleResumeProgrammeSource()}
+                disabled={!workflowSummary.canResume}
+              >
+                Resume
+              </button>
+              <button
+                type="button"
+                className={styles.dangerAction}
+                onClick={() => void handleStopProgrammeSource()}
+                disabled={!workflowSummary.canEnd}
+              >
+                End session
+              </button>
+            </div>
+          </div>
+          {workflowSummary.actionableWarning && (
+            <p className={styles.readinessWarningBanner} role="status">
+              {workflowSummary.actionableWarning}
+            </p>
+          )}
+          <div className={styles.compactStatusStrip}>
+            {compactStatusItems.map((item) => (
+              <span key={item}>{item}</span>
+            ))}
+          </div>
+        </section>
+
+        <section className={styles.workflowGrid}>
+          <ProgrammeSourcePanel
+            source={programmeSource}
+            onRefreshDevices={handleRefreshProgrammeDevices}
+            onSelectCamera={(input, preview) => void handleSelectProgrammeCamera(input, preview)}
+            onSelectScreen={(preview) => void handleSelectProgrammeScreen(preview)}
+            onSelectUploadedVideo={(file, preview) =>
+              handleSelectUploadedProgrammeVideo(file, preview)
+            }
+            onStart={() => void handleStartInterpretation()}
+            onPause={() => void handlePauseProgrammeSource()}
+            onResume={() => void handleResumeProgrammeSource()}
+            onSeek={(ms) => void handleSeekProgrammeSource(ms)}
+            onRestart={() => void handleRestartProgrammeSource()}
+            onStop={() => void handleStopProgrammeSource()}
+            onClear={() => void handleClearProgrammeSource()}
+          />
+
+          <section className={`${styles.card} ${styles.setupCard}`} aria-labelledby="interpretation-setup-title">
+            <div className={styles.sectionHeader}>
+              <div>
+                <p className={styles.kicker}>Step 2</p>
+                <h2 id="interpretation-setup-title" className={styles.sectionTitle}>
+                  Interpretation setup
+                </h2>
+              </div>
+              <button
+                type="button"
+                className={styles.secondaryAction}
+                onClick={applyEnglishSpanishDemoPreset}
+              >
+                EN to ES preset
+              </button>
+            </div>
+            <div className={styles.setupGrid}>
+              <div className={styles.langConfig}>
+                <label className={styles.configLabel}>Source language</label>
+                <select
+                  className={styles.configSelect}
+                  value={sourceLanguage}
+                  onChange={(e) => {
+                    setSourceLanguage(e.target.value);
+                    setSourceLanguageMode('manual');
+                  }}
+                >
+                  {SOURCE_LANGUAGE_OPTIONS.map((languageOption) => (
+                    <option key={`standard-source-${languageOption.code}`} value={languageOption.code}>
+                      {languageOption.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <label className={styles.toggleRow}>
+                <input
+                  type="checkbox"
+                  checked={sourceLanguageMode === 'auto-detect'}
+                  onChange={(event) =>
+                    setSourceLanguageMode(event.target.checked ? 'auto-detect' : 'manual')
+                  }
+                />
+                Auto-detect source
+              </label>
+              <div className={styles.langConfig}>
+                <label className={styles.configLabel}>Target language</label>
+                <select
+                  className={styles.configSelect}
+                  value={sessionTargetLanguage}
+                  onChange={(event) => handleSessionTargetLanguageChange(event.target.value)}
+                >
+                  {LANGUAGE_OPTIONS.map((lang) => (
+                    <option key={`standard-target-${lang}`} value={lang}>
+                      {lang.toUpperCase()}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className={styles.modeToggle} aria-label="Interpretation mode">
+                <span>Interpretation</span>
+                <span>Replacement</span>
+              </div>
+              <div className={styles.mixControl}>
+                <label className={styles.configLabel}>Original audio {Math.round(originalMix * 100)}%</label>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={originalMix}
+                  onChange={(e) => setOriginalMix(Number(e.target.value))}
+                  className={styles.slider}
+                />
+              </div>
+              <div className={styles.mixControl}>
+                <label className={styles.configLabel}>
+                  Translated audio {Math.round(translatedMix * 100)}%
+                </label>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={translatedMix}
+                  onChange={(e) => setTranslatedMix(Number(e.target.value))}
+                  className={styles.slider}
+                />
+              </div>
+            </div>
+            <div className={styles.readinessListCompact}>
+              {readinessItems.map((item) => (
+                <span key={item.id} className={styles.readinessChip}>
+                  {item.label}: {item.state}
+                </span>
+              ))}
+            </div>
+          </section>
+        </section>
+
+        <section className={styles.outputGrid}>
+          <section className={styles.card}>
+            <div className={styles.sectionHeader}>
+              <div>
+                <p className={styles.kicker}>Step 3</p>
+                <h2 className={styles.sectionTitle}>Transcript</h2>
+              </div>
+              <span className={styles.statusPill}>{transcription?.status ?? 'waiting'}</span>
+            </div>
+            <div className={styles.progressTrack} aria-label="Transcription progress">
+              <div
+                className={styles.progressFill}
+                style={{ width: `${Math.max(0, Math.min(100, transcription?.progressPct ?? 0))}%` }}
+              />
+            </div>
+            <p className={styles.liveText}>
+              {currentTranscription?.sourceText ||
+                currentTranscription?.status ||
+                'Transcript will appear when programme audio is detected.'}
+            </p>
+          </section>
+
+          <section className={styles.card}>
+            <div className={styles.sectionHeader}>
+              <div>
+                <p className={styles.kicker}>Step 4</p>
+                <h2 className={styles.sectionTitle}>Translation</h2>
+              </div>
+              <span className={styles.statusPill}>{timestampedTranslation?.status ?? 'waiting'}</span>
+            </div>
+            <div className={styles.progressTrack} aria-label="Translation progress">
+              <div
+                className={styles.progressFill}
+                style={{
+                  width: `${Math.max(0, Math.min(100, timestampedTranslation?.progressPct ?? 0))}%`,
+                }}
+              />
+            </div>
+            <p className={styles.liveText}>
+              {currentTranslation?.translatedText ||
+                currentTranslation?.status ||
+                'Translated text will appear after transcription.'}
+            </p>
+          </section>
+
+          <section className={styles.card}>
+            <div className={styles.sectionHeader}>
+              <div>
+                <p className={styles.kicker}>Step 5</p>
+                <h2 className={styles.sectionTitle}>Generated voice</h2>
+              </div>
+              <span className={styles.statusPill}>{generatedAudio?.status ?? 'waiting'}</span>
+            </div>
+            <div className={styles.progressTrack} aria-label="Text-to-speech progress">
+              <div
+                className={styles.progressFill}
+                style={{ width: `${Math.max(0, Math.min(100, generatedAudio?.progressPct ?? 0))}%` }}
+              />
+            </div>
+            <p className={styles.liveText}>
+              {generatedAudioEvents[generatedAudioEvents.length - 1]?.translatedText ||
+                generatedAudio?.providerStatus ||
+                'Piper audio will be delivered to listeners after translation.'}
+            </p>
+          </section>
+        </section>
+
+        <details className={styles.technicalDiagnostics}>
+          <summary>Technical diagnostics</summary>
+          <div className={styles.diagnosticsGrid}>
+            <BroadcasterSignallingPanel
+              signalling={broadcasterSignalling}
+              captureState={
+                programmeSource.sourceType === 'none'
+                  ? broadcasterCapture.status
+                  : programmeSource.status
+              }
+              mediaTransportState={broadcasterTransport.state}
+              onCreateSession={() => void handleCreateBroadcasterSession()}
+              onCloseSession={() => void handleCloseBroadcasterSession()}
+              onRecoverSession={() => void handleRecoverBroadcasterSession()}
+            />
+            <BroadcasterCapturePanel
+              capture={broadcasterCapture}
+              signallingConnected={broadcasterSignalling.connected}
+              onRequestPermission={() => void handleRequestBroadcasterPermission()}
+              onStartCapture={() => void handleStartBroadcasterCapture()}
+              onStopCapture={() => void handleStopBroadcasterCapture()}
+              onRetry={() => void handleRetryBroadcasterCapture()}
+              onSelectDevice={(deviceId) => void handleSelectBroadcasterDevice(deviceId)}
+            />
+            <BroadcasterWebRtcTransportPanel
+              capture={broadcasterCapture}
+              programmeSource={programmeSource}
+              signallingSessionReady={Boolean(
+                broadcasterSignalling.connected && broadcasterSignalling.sessionId,
+              )}
+              transport={broadcasterTransport}
+              transcriptionBridge={mediaState?.webrtcTranscriptionBridge ?? null}
+              onStartTransport={() => void handleStartBroadcasterTransport()}
+              onStopTransport={() => void handleStopBroadcasterTransport()}
+              onRecoverTransport={() => void handleRecoverBroadcasterTransport()}
+            />
+            <section className={styles.card}>
+              <h2 className={styles.cardTitle}>Processing diagnostics</h2>
+              <section className={styles.metricsGrid}>
+                <MetricCard label="Stream status" value={streamStatus} />
+                <MetricCard label="Extraction" value={extraction?.status ?? '-'} />
+                <MetricCard label="Chunks" value={extraction?.chunkCount ?? 0} />
+                <MetricCard label="Transcription" value={transcription?.status ?? '-'} />
+                <MetricCard label="Translation" value={timestampedTranslation?.status ?? '-'} />
+                <MetricCard label="Generated audio" value={generatedAudio?.status ?? '-'} />
+                <MetricCard label="Session ID" value={mediaState?.processingSessionId ?? processingSession?.id ?? '-'} />
+                <MetricCard label="Source audio" value={mediaState?.sourceAudioActive ? 'Active' : 'Inactive'} />
+              </section>
+              {mediaError && (
+                <p className={styles.ingestError} role="alert">
+                  {mediaError}
+                </p>
+              )}
+              {import.meta.env.DEV && (
+                <dl className={styles.devDiagnosticsGrid} aria-label="Development socket diagnostics">
+                  <div>
+                    <dt>Gateway URL</dt>
+                    <dd>{GATEWAY_URL}</dd>
+                  </div>
+                  <div>
+                    <dt>Connected</dt>
+                    <dd>{socketDiagnostics.connected ? 'true' : 'false'}</dd>
+                  </div>
+                  <div>
+                    <dt>Transport</dt>
+                    <dd>{socketDiagnostics.transport}</dd>
+                  </div>
+                  <div>
+                    <dt>Last connect_error</dt>
+                    <dd>{socketDiagnostics.lastConnectError}</dd>
+                  </div>
+                  <div>
+                    <dt>Reconnect attempts</dt>
+                    <dd>{socketDiagnostics.reconnectAttempts}</dd>
+                  </div>
+                  <div>
+                    <dt>Disconnect reason</dt>
+                    <dd>{socketDiagnostics.disconnectReason}</dd>
+                  </div>
+                </dl>
+              )}
+            </section>
+          </div>
+        </details>
+
+        <div className={styles.hiddenLegacySurface} aria-hidden="true">
         <div className={styles.statusBar}>
           <div className={styles.statusItem}>
             <StatusDot ok={connected} />
@@ -2480,6 +2872,7 @@ export default function App(): React.ReactElement {
             </dl>
           </section>
         )}
+        </div>
       </main>
     </div>
   );

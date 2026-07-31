@@ -201,6 +201,23 @@ describe('TranslatedAudioQueueController', () => {
     );
   });
 
+  it('skips a late generated segment when the seek offset consumes the generated WAV', () => {
+    const { audios, controller, generatedStates, setClock } = createHarness();
+    setClock(1600);
+    const generated = makeGenerated(0, 0, 3000);
+    generated.durationMs = 1200;
+
+    controller.enqueueGenerated(generated);
+    controller.start();
+
+    expect(audios).toHaveLength(0);
+    expect(generatedStates.at(-1)).toMatchObject({
+      status: 'waiting',
+      skippedCount: 1,
+      error: null,
+    });
+  });
+
   it('recovers delayed generated audio after the source timestamp window has ended', () => {
     const { audios, controller, generatedStates, setClock } = createHarness();
     setClock(2000);

@@ -51,6 +51,67 @@ class FakePeer {
   });
 }
 
+class FakeTrack implements MediaStreamTrack {
+  readonly contentHint = '';
+  enabled = true;
+  readonly id: string;
+  readonly isolated = false;
+  readonly kind: string;
+  label = 'test track';
+  muted = false;
+  onended: ((this: MediaStreamTrack, ev: Event) => unknown) | null = null;
+  onmute: ((this: MediaStreamTrack, ev: Event) => unknown) | null = null;
+  onunmute: ((this: MediaStreamTrack, ev: Event) => unknown) | null = null;
+  readyState: MediaStreamTrackState = 'live';
+  private readonly listeners = new Map<string, EventListener[]>();
+
+  constructor(kind: 'audio' | 'video') {
+    this.kind = kind;
+    this.id = `track-${kind}`;
+  }
+
+  addEventListener(type: string, listener: EventListener): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+  }
+
+  removeEventListener(type: string, listener: EventListener): void {
+    this.listeners.set(
+      type,
+      (this.listeners.get(type) ?? []).filter((candidate) => candidate !== listener),
+    );
+  }
+
+  dispatchEvent(event: Event): boolean {
+    for (const listener of this.listeners.get(event.type) ?? []) listener.call(this, event);
+    if (event.type === 'ended') this.onended?.call(this, event);
+    return true;
+  }
+
+  applyConstraints(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  clone(): MediaStreamTrack {
+    return new FakeTrack(this.kind as 'audio' | 'video') as unknown as MediaStreamTrack;
+  }
+
+  getCapabilities(): MediaTrackCapabilities {
+    return {};
+  }
+
+  getConstraints(): MediaTrackConstraints {
+    return {};
+  }
+
+  getSettings(): MediaTrackSettings {
+    return {};
+  }
+
+  stop(): void {
+    this.readyState = 'ended';
+  }
+}
+
 function createClient(): { client: WebRtcSignallingClient; transport: FakeSignallingTransport } {
   const transport = new FakeSignallingTransport();
   const client = new WebRtcSignallingClient({
@@ -282,5 +343,65 @@ describe('ListenerWebRtcTransportController', () => {
       recoveryAttempts: 0,
       lastError: { code: 'negotiation-timeout', retryable: false },
     });
+  });
+
+  it('treats peer failure after both remote tracks end as normal source completion', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      maxRecoveryAttempts: 2,
+    });
+    const audio = new FakeTrack('audio');
+    const video = new FakeTrack('video');
+    const programmeStream = {
+      addTrack: vi.fn(),
+      getTracks: vi.fn(() => [audio, video]),
+    } as unknown as MediaStream;
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track: audio, streams: [programmeStream] } as unknown as RTCTrackEvent);
+    peer.ontrack?.({ track: video, streams: [programmeStream] } as unknown as RTCTrackEvent);
+
+    audio.stop();
+    video.stop();
+    peer.connectionState = 'failed';
+    peer.onconnectionstatechange?.();
+    peer.iceConnectionState = 'failed';
+    peer.oniceconnectionstatechange?.();
+
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'source-ended',
+      recoveryAttempts: 0,
+      remoteAudioTrackActive: false,
+      remoteVideoTrackActive: false,
+      lastError: null,
+    });
+  });
+
+  it('can close terminal source media without sending a redundant peer disconnect', async () => {
+    const { client, transport } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+    });
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    controller.close('programme source completed', false);
+
+    expect(peer.close).toHaveBeenCalledOnce();
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'closed',
+      lastError: null,
+    });
+    expect(
+      transport.emitted.some(
+        (event) => (event.payload as { type?: string }).type === 'peer-disconnect',
+      ),
+    ).toBe(false);
   });
 });

@@ -33,189 +33,165 @@ export function ProgrammeSourcePanel({
   onSelectCamera,
   onSelectScreen,
   onSelectUploadedVideo,
-  onStart,
-  onPause,
-  onResume,
   onSeek,
-  onRestart,
-  onStop,
-  onClear,
 }: ProgrammeSourcePanelProps): React.ReactElement {
   const previewRef = useRef<HTMLVideoElement>(null);
-  const seekRef = useRef<HTMLInputElement>(null);
   const [pendingAudioDeviceId, setPendingAudioDeviceId] = useState(source.selectedAudioDeviceId);
   const [pendingVideoDeviceId, setPendingVideoDeviceId] = useState(source.selectedVideoDeviceId);
   const audioDevices = source.availableDevices.filter((device) => device.kind === 'audioinput');
   const videoDevices = source.availableDevices.filter((device) => device.kind === 'videoinput');
-  const canSelect = source.status !== 'selecting';
-  const canStart = source.previewReady && source.status === 'preview-ready';
+  const canSelect = source.status !== 'selecting' && source.status !== 'broadcasting';
+  const selectedAudioLabel =
+    audioDevices.find((device) => device.deviceId === pendingAudioDeviceId)?.label ??
+    'Browser default audio';
+  const selectedVideoLabel =
+    videoDevices.find((device) => device.deviceId === pendingVideoDeviceId)?.label ??
+    'Browser default camera';
 
   useEffect(() => {
     setPendingAudioDeviceId(source.selectedAudioDeviceId);
     setPendingVideoDeviceId(source.selectedVideoDeviceId);
   }, [source.selectedAudioDeviceId, source.selectedVideoDeviceId, source.sourceType]);
 
+  const selectCamera = (): void => {
+    if (!previewRef.current) return;
+    onSelectCamera(selectedCameraDevices(pendingAudioDeviceId, pendingVideoDeviceId), previewRef.current);
+  };
+
   return (
-    <section className={styles.card} aria-labelledby="programme-source-title">
-      <div className={styles.extractionHeader}>
+    <section className={`${styles.card} ${styles.programmeCard}`} aria-labelledby="programme-source-title">
+      <div className={styles.sectionHeader}>
         <div>
-          <h2 id="programme-source-title" className={styles.cardTitle}>
+          <p className={styles.kicker}>Step 1</p>
+          <h2 id="programme-source-title" className={styles.sectionTitle}>
             Programme source
           </h2>
-          <span className={styles.extractionLabel}>Unified live and uploaded-video source</span>
         </div>
-        <span className={styles.extractionCount}>{source.status}</span>
+        <span className={styles.statusPill}>{source.status}</span>
       </div>
 
       <div className={styles.programmeSourceLayout}>
         <div className={styles.programmeSourceControls}>
-          <div className={styles.langConfig}>
-            <label className={styles.configLabel}>Camera video</label>
-            <select
-              className={styles.configSelect}
-              value={pendingVideoDeviceId}
-              onChange={(event) => {
-                setPendingVideoDeviceId(event.target.value);
-                onRefreshDevices();
-              }}
-              disabled={!canSelect}
-            >
-              <option value="">Browser default camera</option>
-              {videoDevices.map((device) => (
-                <option key={device.deviceId} value={device.deviceId}>
-                  {device.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className={styles.langConfig}>
-            <label className={styles.configLabel}>Camera audio</label>
-            <select
-              className={styles.configSelect}
-              value={pendingAudioDeviceId}
-              onChange={(event) => {
-                setPendingAudioDeviceId(event.target.value);
-                onRefreshDevices();
-              }}
-              disabled={!canSelect}
-            >
-              <option value="">Browser default audio</option>
-              {audioDevices.map((device) => (
-                <option key={device.deviceId} value={device.deviceId}>
-                  {device.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className={styles.mockButtons}>
+          <div className={styles.sourceChoiceGrid} aria-label="Programme source selector">
+            <label className={`${styles.sourceChoice} ${source.sourceType === 'uploaded-video' ? styles.sourceChoiceActive : ''}`}>
+              <span>Upload video</span>
+              <small>MP4, WebM, or MOV with audio</small>
+              <input
+                type="file"
+                accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov"
+                disabled={!canSelect}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  const preview = previewRef.current;
+                  const input = event.currentTarget;
+                  if (file && preview) {
+                    void Promise.resolve(onSelectUploadedVideo(file, preview)).finally(() => {
+                      input.value = '';
+                    });
+                  } else {
+                    input.value = '';
+                  }
+                }}
+              />
+            </label>
             <button
               type="button"
-              className={`${styles.mockBtn} ${styles.actionBtn}`}
-              onClick={() =>
-                previewRef.current &&
-                onSelectCamera(selectedCameraDevices(pendingAudioDeviceId, pendingVideoDeviceId), previewRef.current)
-              }
+              className={`${styles.sourceChoice} ${source.sourceType === 'camera' ? styles.sourceChoiceActive : ''}`}
+              onClick={selectCamera}
               disabled={!canSelect}
             >
-              Select camera
+              <span>Camera / capture device</span>
+              <small>Webcam, capture card, or virtual camera</small>
             </button>
             <button
               type="button"
-              className={`${styles.mockBtn} ${styles.actionBtn}`}
+              className={`${styles.sourceChoice} ${source.sourceType === 'screen' ? styles.sourceChoiceActive : ''}`}
               onClick={() => previewRef.current && onSelectScreen(previewRef.current)}
               disabled={!canSelect}
             >
-              Select screen
+              <span>Screen / window</span>
+              <small>Browser tab, desktop, or meeting window</small>
             </button>
-          </div>
-
-          <label className={styles.filePicker}>
-            <span>Select uploaded video</span>
-            <input
-              type="file"
-              accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov"
+            <button
+              type="button"
+              className={`${styles.sourceChoice} ${source.isObsVirtualCamera ? styles.sourceChoiceActive : ''}`}
+              onClick={selectCamera}
               disabled={!canSelect}
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                const preview = previewRef.current;
-                const input = event.currentTarget;
-                if (file && preview) {
-                  void Promise.resolve(onSelectUploadedVideo(file, preview)).finally(() => {
-                    input.value = '';
-                  });
-                } else {
-                  input.value = '';
-                }
-              }}
-            />
-          </label>
-
-          <div className={styles.mockButtons}>
-            <button
-              type="button"
-              className={`${styles.mockBtn} ${styles.actionBtn}`}
-              onClick={onStart}
-              disabled={!canStart}
             >
-              Start programme
-            </button>
-            <button
-              type="button"
-              className={`${styles.mockBtn} ${styles.actionBtn}`}
-              onClick={onPause}
-              disabled={!source.canPause || source.status !== 'broadcasting'}
-            >
-              Pause
-            </button>
-            <button
-              type="button"
-              className={`${styles.mockBtn} ${styles.actionBtn}`}
-              onClick={onResume}
-              disabled={!source.canResume || source.status !== 'paused'}
-            >
-              Resume
-            </button>
-            <button
-              type="button"
-              className={`${styles.mockBtn} ${styles.actionBtn}`}
-              onClick={onRestart}
-              disabled={!source.canRestart}
-            >
-              Restart
-            </button>
-            <button
-              type="button"
-              className={`${styles.mockBtn} ${styles.actionBtn}`}
-              onClick={onStop}
-              disabled={source.status === 'idle' || source.status === 'stopped'}
-            >
-              Stop
-            </button>
-            <button
-              type="button"
-              className={`${styles.mockBtn} ${styles.actionBtn}`}
-              onClick={onClear}
-            >
-              Clear source
+              <span>Meeting through OBS</span>
+              <small>OBS Virtual Camera plus programme audio</small>
             </button>
           </div>
 
-          <div className={styles.programmeSeekRow}>
-            <input
-              ref={seekRef}
-              type="range"
-              min={0}
-              max={Math.max(1, Math.round((source.durationMs ?? 0) / 1000))}
-              step={1}
-              value={Math.round(source.programmeTimestampMs / 1000)}
-              disabled={!source.canSeek}
-              onChange={(event) => onSeek(Number(event.target.value) * 1000)}
-              aria-label="Programme video seek"
-              className={styles.slider}
-            />
-            <span>{formatMs(source.programmeTimestampMs)}</span>
+          <div className={styles.devicePickerGrid}>
+            <div className={styles.langConfig}>
+              <label className={styles.configLabel}>Video device</label>
+              <select
+                className={styles.configSelect}
+                value={pendingVideoDeviceId}
+                onChange={(event) => {
+                  setPendingVideoDeviceId(event.target.value);
+                  onRefreshDevices();
+                }}
+                disabled={!canSelect}
+              >
+                <option value="">Browser default camera</option>
+                {videoDevices.map((device) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className={styles.langConfig}>
+              <label className={styles.configLabel}>Programme audio</label>
+              <select
+                className={styles.configSelect}
+                value={pendingAudioDeviceId}
+                onChange={(event) => {
+                  setPendingAudioDeviceId(event.target.value);
+                  onRefreshDevices();
+                }}
+                disabled={!canSelect}
+              >
+                <option value="">Browser default audio</option>
+                {audioDevices.map((device) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
+
+          <div className={styles.sourceReadout}>
+            <span>{SOURCE_LABELS[source.sourceType]}</span>
+            <strong>{source.sourceIdentity}</strong>
+            <small>
+              {source.sourceType === 'none'
+                ? `${selectedVideoLabel} + ${selectedAudioLabel}`
+                : source.audioDetected
+                  ? 'Video and audio detected'
+                  : source.audioMissingReason ?? 'Waiting for programme audio'}
+            </small>
+          </div>
+
+          {source.canSeek && (
+            <div className={styles.programmeSeekRow}>
+              <input
+                type="range"
+                min={0}
+                max={Math.max(1, Math.round((source.durationMs ?? 0) / 1000))}
+                step={1}
+                value={Math.round(source.programmeTimestampMs / 1000)}
+                disabled={!source.canSeek}
+                onChange={(event) => onSeek(Number(event.target.value) * 1000)}
+                aria-label="Programme video seek"
+                className={styles.slider}
+              />
+              <span>{formatMs(source.programmeTimestampMs)}</span>
+            </div>
+          )}
         </div>
 
         <div className={styles.programmePreviewPane}>
@@ -227,24 +203,12 @@ export function ProgrammeSourcePanel({
             controls={source.sourceType === 'uploaded-video'}
             aria-label="Operator programme preview"
           />
-          <dl className={styles.microphoneMeta} aria-label="Programme source state">
-            <ProgrammeMetric label="Source" value={SOURCE_LABELS[source.sourceType]} />
-            <ProgrammeMetric label="Selected" value={source.sourceIdentity} />
-            <ProgrammeMetric label="Video source" value={source.videoSourceLabel} />
-            <ProgrammeMetric label="Audio source" value={source.audioSourceLabel} />
-            <ProgrammeMetric label="Video" value={source.videoDetected ? 'Detected' : 'Unavailable'} />
-            <ProgrammeMetric label="Audio" value={source.audioDetected ? 'Detected' : 'Unavailable'} />
-            <ProgrammeMetric label="Video track" value={source.videoTrackState} />
-            <ProgrammeMetric label="Audio track" value={source.audioTrackState} />
-            <ProgrammeMetric label="Dimensions" value={formatDimensions(source.videoWidth, source.videoHeight)} />
-            <ProgrammeMetric label="Frame rate" value={source.frameRate ? `${source.frameRate} fps` : 'Unknown'} />
-            <ProgrammeMetric label="OBS" value={source.isObsVirtualCamera ? 'Detected as camera source' : 'Not detected'} />
-            <ProgrammeMetric label="Capture device" value={source.isCaptureDeviceCandidate ? 'Possible professional device' : 'Not detected'} />
-            <ProgrammeMetric label="Preview" value={source.previewReady ? 'Ready' : 'Not ready'} />
-            <ProgrammeMetric label="Broadcasting" value={source.broadcasting ? 'Backend confirmed after start' : 'No'} />
-            <ProgrammeMetric label="Paused" value={source.paused ? 'Yes' : 'No'} />
-            <ProgrammeMetric label="Revision" value={String(source.revision)} />
-          </dl>
+          <div className={styles.previewStatusStrip}>
+            <span>{source.videoDetected ? 'Video detected' : 'Video waiting'}</span>
+            <span>{source.audioDetected ? 'Audio detected' : 'Audio waiting'}</span>
+            <span>{source.durationMs === null ? 'Live source' : formatMs(source.durationMs)}</span>
+            <span>{source.broadcasting ? 'Publishing' : source.previewReady ? 'Ready' : 'Not ready'}</span>
+          </div>
           {source.audioMissingReason && (
             <p className={styles.warningNote} role="status">
               {source.audioMissingReason}
@@ -260,9 +224,20 @@ export function ProgrammeSourcePanel({
               {source.error.message}
             </p>
           )}
-          <p className={styles.mockNote}>
-            Preview is muted to prevent local speaker feedback during live capture.
-          </p>
+          <details className={styles.inlineDiagnostics}>
+            <summary>Source details</summary>
+            <dl className={styles.microphoneMeta} aria-label="Programme source state">
+              <ProgrammeMetric label="Video source" value={source.videoSourceLabel} />
+              <ProgrammeMetric label="Audio source" value={source.audioSourceLabel} />
+              <ProgrammeMetric label="Video track" value={source.videoTrackState} />
+              <ProgrammeMetric label="Audio track" value={source.audioTrackState} />
+              <ProgrammeMetric label="Dimensions" value={formatDimensions(source.videoWidth, source.videoHeight)} />
+              <ProgrammeMetric label="Frame rate" value={source.frameRate ? `${source.frameRate} fps` : 'Unknown'} />
+              <ProgrammeMetric label="OBS" value={source.isObsVirtualCamera ? 'Detected as camera source' : 'Not detected'} />
+              <ProgrammeMetric label="Capture device" value={source.isCaptureDeviceCandidate ? 'Possible professional device' : 'Not detected'} />
+              <ProgrammeMetric label="Revision" value={String(source.revision)} />
+            </dl>
+          </details>
         </div>
       </div>
     </section>
