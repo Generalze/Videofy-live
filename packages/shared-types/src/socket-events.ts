@@ -1,3 +1,5 @@
+import type { SourceLanguageMode } from './language-controls.js';
+
 /**
  * Socket.IO event name constants shared between the gateway server and all
  * clients (listener, operator, speech worker, media ingest).
@@ -40,6 +42,7 @@ export const SOCKET_EVENTS = {
   // Operator → gateway
   OPERATOR_CONTROL: 'operator:control',
   OPERATOR_AUDIO_MODE_PREFERENCES: 'operator:audio-mode-preferences',
+  OPERATOR_PROGRAMME_SESSION_CONFIG: 'operator:programme-session-config',
 
   // WebRTC signalling (P4.0 contracts only; no media transport)
   WEBRTC_SESSION_CREATE: 'webrtc:session:create',
@@ -71,3 +74,13 @@ export const INGEST_ROOM = 'ingest';
 
 /** Room for speech-worker connections. */
 export const WORKER_ROOM = 'workers';
+
+export interface OperatorProgrammeSessionConfig {
+  sessionId: string;
+  broadcastId: string;
+  sourceRevision: number;
+  targetLanguage: string;
+  targetLanguages: string[];
+  sourceLanguage: string;
+  sourceLanguageMode: SourceLanguageMode;
+}

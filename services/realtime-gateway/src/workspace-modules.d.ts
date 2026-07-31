@@ -16,6 +16,18 @@ declare module '@videofy-live/shared-types' {
     subtitlesEnabled: boolean;
   }
 
+  export type SourceLanguageMode = 'manual' | 'auto-detect';
+
+  export interface OperatorProgrammeSessionConfig {
+    sessionId: string;
+    broadcastId: string;
+    sourceRevision: number;
+    targetLanguage: string;
+    targetLanguages: string[];
+    sourceLanguage: string;
+    sourceLanguageMode: SourceLanguageMode;
+  }
+
   export type StreamStatus =
     | 'created'
     | 'validating'
@@ -244,6 +256,7 @@ declare module '@videofy-live/shared-types' {
     readonly INGEST_STOP_STREAM: 'ingest:stop_stream';
     readonly OPERATOR_CONTROL: 'operator:control';
     readonly OPERATOR_AUDIO_MODE_PREFERENCES: 'operator:audio-mode-preferences';
+    readonly OPERATOR_PROGRAMME_SESSION_CONFIG: 'operator:programme-session-config';
     readonly WEBRTC_SESSION_CREATE: 'webrtc:session:create';
     readonly WEBRTC_SESSION_JOIN: 'webrtc:session:join';
     readonly WEBRTC_SIGNAL: 'webrtc:signal';

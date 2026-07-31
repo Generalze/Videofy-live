@@ -35,6 +35,7 @@ import {
 import { useTranslatedAudioQueue } from './useTranslatedAudioQueue';
 
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
+export const DEFAULT_LISTENER_TARGET_LANGUAGE = 'es';
 
 const LANGUAGES = [
   { code: 'fr', label: 'Français' },
@@ -103,7 +104,7 @@ export default function App(): React.ReactElement {
   const [mediaState, setMediaState] = useState<MediaStateEvent | null>(null);
   const [streamStatus, setStreamStatus] = useState<string>('created');
   const [sourceLanguage] = useState('en');
-  const [targetLanguage, setTargetLanguage] = useState('fr');
+  const [targetLanguage, setTargetLanguage] = useState(DEFAULT_LISTENER_TARGET_LANGUAGE);
   const targetLanguageRef = useRef(targetLanguage);
   targetLanguageRef.current = targetLanguage;
   const [originalVolume, setOriginalVolume] = useState(0.2);

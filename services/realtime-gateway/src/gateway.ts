@@ -4,6 +4,7 @@ import type {
   AudioMixPreferences,
   GeneratedAudioReadyEvent,
   MediaStateEvent,
+  OperatorProgrammeSessionConfig,
   TimestampedTranslationEvent,
   TranscriptionEvent,
   TranslationEvent,
@@ -41,9 +42,10 @@ import {
   BackendWebRtcMediaPeerRegistry,
   BACKEND_WEBRTC_MEDIA_SOCKET_ID,
   backendSignalEnvelope,
+  type BackendMediaPeerAudioContext,
 } from './webrtc-media-peer-registry.js';
 import { BackendWebRtcListenerPeerRegistry } from './webrtc-listener-peer-registry.js';
-import { WebRtcTranscriptionBridge } from './webrtc-transcription-bridge.js';
+import { WebRtcTranscriptionBridge, type WebRtcTranscriptionBridgeContext } from './webrtc-transcription-bridge.js';
 
 /** Client role determined by query parameter on connect. */
 type ClientRole = 'listener' | 'operator' | 'worker' | 'ingest' | 'broadcaster' | 'server';
@@ -86,6 +88,7 @@ export class Gateway {
   private readonly backendMediaPeers: BackendWebRtcMediaPeerRegistry;
   private readonly listenerMediaPeers: BackendWebRtcListenerPeerRegistry;
   private readonly clients = new Map<string, ClientState>();
+  private readonly programmeSessionConfigs = new Map<string, OperatorProgrammeSessionConfig>();
   private readonly activeWorkers = new Set<string>();
   private readonly activeIngestClients = new Set<string>();
   private audioModePreferences: AudioMixPreferences = {
@@ -126,7 +129,10 @@ export class Gateway {
       },
       onAudioFrame: (context, data) => {
         try {
-          this.webRtcTranscriptionBridge.handleFrame(context, data);
+          this.webRtcTranscriptionBridge.handleFrame(
+            this.applyProgrammeSessionConfig(context),
+            data,
+          );
         } catch (error) {
           logger.warn('WebRTC transcription bridge frame handling failed', {
             sessionId: context.sessionId,
@@ -159,7 +165,7 @@ export class Gateway {
         }
       },
       onAudioPeerClosed: (context, reason) => {
-        this.webRtcTranscriptionBridge.endSession(context, reason);
+        this.webRtcTranscriptionBridge.endSession(this.applyProgrammeSessionConfig(context), reason);
         this.listenerMediaPeers.closeSession(context.sessionId, reason);
       },
     });
@@ -390,6 +396,7 @@ export class Gateway {
       if (result?.outgoing.sessionId) {
         this.backendMediaPeers.closeSession(result.outgoing.sessionId, 'broadcaster closed signalling session');
         this.listenerMediaPeers.closeSession(result.outgoing.sessionId, 'broadcaster closed signalling session');
+        this.programmeSessionConfigs.delete(result.outgoing.sessionId);
       }
       this.applyWebRtcRoute(socket, result);
     });
@@ -411,6 +418,29 @@ export class Gateway {
         originalVolume: preferences.originalVolume,
         translatedVolume: preferences.translatedVolume,
         subtitlesEnabled: preferences.subtitlesEnabled,
+      });
+    });
+
+    socket.on(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, (raw: unknown) => {
+      const config = this.parseProgrammeSessionConfig(raw);
+      if (!config) {
+        socket.emit(SOCKET_EVENTS.ERROR, { message: 'Invalid programme session configuration' });
+        return;
+      }
+      this.programmeSessionConfigs.set(config.sessionId, config);
+      socket.emit(SOCKET_EVENTS.CONTROL_ACK, {
+        action: 'programme-session-config',
+        accepted: true,
+        timestamp: new Date().toISOString(),
+      });
+      logger.info('Operator programme session configuration accepted', {
+        sessionId: config.sessionId,
+        broadcastId: config.broadcastId,
+        sourceRevision: config.sourceRevision,
+        targetLanguage: config.targetLanguage,
+        targetLanguageCount: config.targetLanguages.length,
+        sourceLanguage: config.sourceLanguage,
+        sourceLanguageMode: config.sourceLanguageMode,
       });
     });
 
@@ -569,6 +599,7 @@ export class Gateway {
         this.backendMediaPeers.closeSession(result.outgoing.sessionId, 'socket disconnected');
         if (result.outgoing.senderRole === 'broadcaster') {
           this.listenerMediaPeers.closeSession(result.outgoing.sessionId, 'broadcaster socket disconnected');
+          this.programmeSessionConfigs.delete(result.outgoing.sessionId);
         } else if (result.outgoing.senderRole === 'listener') {
           this.listenerMediaPeers.closeListenerPeer(
             result.outgoing.sessionId,
@@ -1010,6 +1041,55 @@ export class Gateway {
     }
   }
 
+  private applyProgrammeSessionConfig(
+    context: BackendMediaPeerAudioContext,
+  ): WebRtcTranscriptionBridgeContext {
+    const config = this.programmeSessionConfigs.get(context.sessionId);
+    if (!config) return context;
+    return {
+      ...context,
+      targetLanguage: config.targetLanguage,
+      targetLanguages: config.targetLanguages,
+      sourceLanguage: config.sourceLanguage,
+      sourceLanguageMode: config.sourceLanguageMode,
+    };
+  }
+
+  private parseProgrammeSessionConfig(raw: unknown): OperatorProgrammeSessionConfig | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const candidate = raw as Partial<OperatorProgrammeSessionConfig>;
+    if (!isSafeIdentifier(candidate.sessionId)) return null;
+    if (!isSafeIdentifier(candidate.broadcastId)) return null;
+    const sourceRevision = candidate.sourceRevision;
+    if (
+      typeof sourceRevision !== 'number' ||
+      !Number.isInteger(sourceRevision) ||
+      sourceRevision < 0
+    ) {
+      return null;
+    }
+    if (!isLanguageTag(candidate.targetLanguage)) return null;
+    if (!Array.isArray(candidate.targetLanguages)) return null;
+    const targetLanguages = [...new Set(candidate.targetLanguages.filter(isLanguageTag))];
+    if (targetLanguages.length === 0 || !targetLanguages.includes(candidate.targetLanguage)) return null;
+    if (!isLanguageTag(candidate.sourceLanguage)) return null;
+    if (
+      candidate.sourceLanguageMode !== 'manual' &&
+      candidate.sourceLanguageMode !== 'auto-detect'
+    ) {
+      return null;
+    }
+    return {
+      sessionId: candidate.sessionId,
+      broadcastId: candidate.broadcastId,
+      sourceRevision,
+      targetLanguage: candidate.targetLanguage,
+      targetLanguages,
+      sourceLanguage: candidate.sourceLanguage,
+      sourceLanguageMode: candidate.sourceLanguageMode,
+    };
+  }
+
   private parseOperatorControl(raw: unknown): OperatorControlEvent | null {
     if (!raw || typeof raw !== 'object') return null;
     const action = (raw as { action?: unknown }).action;
@@ -1078,4 +1158,12 @@ function estimateJsonBytes(raw: unknown): number {
 
 function isAudioLevel(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function isSafeIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-zA-Z0-9:_/-]{1,128}$/.test(value);
+}
+
+function isLanguageTag(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z]{2,3}(?:-[A-Z]{2})?$/.test(value);
 }

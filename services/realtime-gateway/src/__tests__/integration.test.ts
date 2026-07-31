@@ -139,12 +139,13 @@ function delay(ms: number): Promise<void> {
 
 describe('gateway Socket.IO integration', () => {
   let server: Server;
+  let gateway: Gateway;
   let baseUrl: string;
   let clients: Socket[];
 
   beforeEach(async () => {
     server = createServer(createApp());
-    new Gateway(server, ['http://localhost:5173', 'http://localhost:5174']);
+    gateway = new Gateway(server, ['http://localhost:5173', 'http://localhost:5174']);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${address.port}`;
@@ -367,6 +368,58 @@ describe('gateway Socket.IO integration', () => {
     );
     await waitForConnect(laterListener);
     await expect(retained).resolves.toEqual(preferences);
+  });
+
+  it('stores operator programme-session language config for WebRTC processing', async () => {
+    const operator = client('operator');
+    await waitForConnect(operator);
+    const ack = waitForEvent<{ action: string; accepted: boolean }>(
+      operator,
+      SOCKET_EVENTS.CONTROL_ACK,
+    );
+
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+      sessionId: 'wrs_uploaded',
+      broadcastId: 'broadcast_uploaded',
+      sourceRevision: 2,
+      targetLanguage: 'es',
+      targetLanguages: ['es'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'auto-detect',
+    });
+
+    await expect(ack).resolves.toMatchObject({
+      action: 'programme-session-config',
+      accepted: true,
+    });
+    const inspected = gateway as unknown as {
+      programmeSessionConfigs: Map<string, unknown>;
+    };
+    expect(inspected.programmeSessionConfigs.get('wrs_uploaded')).toMatchObject({
+      targetLanguage: 'es',
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'auto-detect',
+    });
+  });
+
+  it('rejects invalid programme-session language config visibly', async () => {
+    const operator = client('operator');
+    await waitForConnect(operator);
+    const error = waitForEvent<{ message: string }>(operator, SOCKET_EVENTS.ERROR);
+
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+      sessionId: 'wrs_uploaded',
+      broadcastId: 'broadcast_uploaded',
+      sourceRevision: 2,
+      targetLanguage: 'zz',
+      targetLanguages: [],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'auto-detect',
+    });
+
+    await expect(error).resolves.toEqual({
+      message: 'Invalid programme session configuration',
+    });
   });
 
   it('emits a complete healthy service snapshot when an operator connects after services', async () => {

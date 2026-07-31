@@ -3,6 +3,7 @@ import {
   WebRtcTranscriptionChunker,
   WebRtcTranscriptionChunkerError,
   normalizePcmFrame,
+  normalizePcmFrameWithDiagnostics,
 } from '../webrtc-transcription-chunker.js';
 
 const context = {
@@ -43,6 +44,31 @@ describe('WebRtcTranscriptionChunker', () => {
 
     expect(floatFrame).toEqual(new Int16Array([16384, -16384]));
     expect(int16MetadataMismatch).toEqual(new Int16Array([1234, -1234]));
+  });
+
+  it('reports PCM diagnostics without logging raw audio', () => {
+    const normalized = normalizePcmFrameWithDiagnostics({
+      samples: new Float32Array([0, 0.25, -0.25, 1]),
+      sampleRate: 32000,
+      channelCount: 2,
+      bitsPerSample: 32,
+      numberOfFrames: 2,
+    });
+
+    expect(normalized.samples).toBeInstanceOf(Int16Array);
+    expect(normalized.diagnostics).toMatchObject({
+      inputSampleRate: 32000,
+      inputChannelCount: 2,
+      inputBitsPerSample: 32,
+      inputSampleType: 'float32',
+      normalizedSampleRate: 16000,
+      normalizedChannelCount: 1,
+      normalizedBitsPerSample: 16,
+      silent: false,
+      metadataWarnings: [],
+    });
+    expect(normalized.diagnostics.rms).toBeGreaterThan(0);
+    expect(normalized.diagnostics.peak).toBeGreaterThan(0);
   });
 
   it('creates ordered chunks with preserved sample-count timestamps and final partial flush', () => {
@@ -184,11 +210,11 @@ describe('WebRtcTranscriptionChunker', () => {
 
     expect(() =>
       normalizePcmFrame({
-        samples: new Int16Array([1, 2]),
-        sampleRate: 16000,
+        samples: new Float32Array([1, 2]),
+        sampleRate: 0,
         channelCount: 1,
-        bitsPerSample: 24,
+        bitsPerSample: 32,
       }),
-    ).toThrow('16-bit PCM');
+    ).toThrow('sample rate');
   });
 });

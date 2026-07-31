@@ -31,6 +31,14 @@ import {
   type ProgrammeSourceSnapshot,
 } from './programmeSourceManager';
 import {
+  buildOperatorProgrammeSessionConfig,
+  createActiveProgrammeSessionBinding,
+  createPendingProgrammeSessionBinding,
+  shouldAcceptMediaStateForProgrammeBinding,
+  shouldAcceptProcessingEventForProgrammeBinding,
+  type ProgrammeSessionBinding,
+} from './programmeSessionBinding';
+import {
   buildPartnerPreviewReadiness,
   shouldShowMockControls,
 } from './partnerPreviewReadiness';
@@ -63,6 +71,11 @@ import {
   requestMicrophoneStream,
   type BrowserMicrophoneStatus,
 } from './microphoneCapture';
+import {
+  DEFAULT_TARGET_LANGUAGE,
+  selectSessionTargetLanguage,
+  toggleTargetLanguage,
+} from './targetLanguageSelection';
 
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
 const INGEST_URL = import.meta.env['VITE_INGEST_URL'] ?? 'http://localhost:3002';
@@ -74,7 +87,6 @@ const SOURCE_LANGUAGE_OPTIONS = [
   { code: 'pt', label: 'Portuguese' },
 ];
 const LANGUAGE_OPTIONS = ['yo', 'pt', 'es', 'fr'];
-
 interface LatencyRow {
   label: string;
   valueMs: number | null;
@@ -205,8 +217,8 @@ export default function App(): React.ReactElement {
   const [phraseLog, setPhraseLog] = useState<PhraseLogEntry[]>([]);
   const [sourceLanguage, setSourceLanguage] = useState('en');
   const [sourceLanguageMode, setSourceLanguageMode] = useState<'manual' | 'auto-detect'>('manual');
-  const [sessionTargetLanguage, setSessionTargetLanguage] = useState('fr');
-  const [targetLanguages, setTargetLanguages] = useState<string[]>(['fr']);
+  const [sessionTargetLanguage, setSessionTargetLanguage] = useState(DEFAULT_TARGET_LANGUAGE);
+  const [targetLanguages, setTargetLanguages] = useState<string[]>([DEFAULT_TARGET_LANGUAGE]);
   const [microphoneDevices, setMicrophoneDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedMicrophoneDeviceId, setSelectedMicrophoneDeviceId] = useState('');
   const [microphoneStatus, setMicrophoneStatus] = useState<BrowserMicrophoneStatus>('idle');
@@ -232,6 +244,9 @@ export default function App(): React.ReactElement {
   const [programmeSource, setProgrammeSource] = useState<ProgrammeSourceSnapshot>(
     createInitialProgrammeSourceSnapshot,
   );
+  const [, setProgrammeSessionBindingState] =
+    useState<ProgrammeSessionBinding | null>(null);
+  const programmeSessionBindingRef = useRef<ProgrammeSessionBinding | null>(null);
   const [broadcasterSignalling, setBroadcasterSignalling] =
     useState<WebRtcSignallingClientSnapshot>(() =>
       new WebRtcSignallingClient({ role: 'broadcaster' }).getSnapshot(),
@@ -262,6 +277,27 @@ export default function App(): React.ReactElement {
     },
     [],
   );
+
+  const setProgrammeSessionBinding = useCallback((binding: ProgrammeSessionBinding | null): void => {
+    programmeSessionBindingRef.current = binding;
+    setProgrammeSessionBindingState(binding);
+  }, []);
+
+  const clearDisplayedProcessingSession = useCallback((): void => {
+    setMediaState(null);
+    setProcessingSession(null);
+    setTranscriptionFeed([]);
+    setTimestampedTranslationFeed([]);
+    setPhraseLog([]);
+    setStreamStatus('created');
+    setExportMessage(null);
+  }, []);
+
+  const blockProgrammeProcessingEvents = useCallback((): void => {
+    const source = programmeSourceManagerRef.current?.getSnapshot() ?? programmeSource;
+    setProgrammeSessionBinding(createPendingProgrammeSessionBinding(source));
+    clearDisplayedProcessingSession();
+  }, [clearDisplayedProcessingSession, programmeSource, setProgrammeSessionBinding]);
 
   const applyProcessingSession = useCallback((session: ProcessingSessionDto): void => {
     setProcessingSession(session);
@@ -335,6 +371,9 @@ export default function App(): React.ReactElement {
     });
 
     socket.on(SOCKET_EVENTS.MEDIA_STATE, (state: MediaStateEvent) => {
+      if (!shouldAcceptMediaStateForProgrammeBinding(state, programmeSessionBindingRef.current)) {
+        return;
+      }
       setMediaState(state);
       setStreamStatus(state.streamStatus);
       if (state.microphoneCapture) {
@@ -363,6 +402,9 @@ export default function App(): React.ReactElement {
     });
 
     socket.on(SOCKET_EVENTS.TRANSCRIPTION_EVENT, (event: TranscriptionEvent) => {
+      if (!shouldAcceptProcessingEventForProgrammeBinding(event, programmeSessionBindingRef.current)) {
+        return;
+      }
       setTranscriptionFeed((prev) => {
         const withoutCurrent = prev.filter((item) => item.chunkId !== event.chunkId);
         return [event, ...withoutCurrent].slice(0, 40);
@@ -370,6 +412,9 @@ export default function App(): React.ReactElement {
     });
 
     socket.on(SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT, (event: TimestampedTranslationEvent) => {
+      if (!shouldAcceptProcessingEventForProgrammeBinding(event, programmeSessionBindingRef.current)) {
+        return;
+      }
       setTimestampedTranslationFeed((prev) => {
         const withoutCurrent = prev.filter((item) => item.segmentId !== event.segmentId);
         return [event, ...withoutCurrent].slice(0, 40);
@@ -535,6 +580,7 @@ export default function App(): React.ReactElement {
       const file = event.target.files?.[0];
       if (!file) return;
 
+      setProgrammeSessionBinding(null);
       setSelectedFileName(file.name);
       setUploadingMedia(true);
       setMediaError(null);
@@ -559,13 +605,22 @@ export default function App(): React.ReactElement {
         event.target.value = '';
       }
     },
-    [applyProcessingSession, sessionTargetLanguage, sourceLanguage, sourceLanguageMode, targetLanguages],
+    [
+      applyProcessingSession,
+      sessionTargetLanguage,
+      setProgrammeSessionBinding,
+      sourceLanguage,
+      sourceLanguageMode,
+      targetLanguages,
+    ],
   );
 
   const prepareProgrammeSourceSwitch = useCallback(async (reason: string): Promise<void> => {
     await broadcasterTransportControllerRef.current?.close(reason).catch(() => undefined);
     await programmeSourceManagerRef.current?.clear().catch(() => undefined);
-  }, []);
+    setProgrammeSessionBinding(null);
+    clearDisplayedProcessingSession();
+  }, [clearDisplayedProcessingSession, setProgrammeSessionBinding]);
 
   const handleRefreshProgrammeDevices = useCallback((): void => {
     void programmeSourceManagerRef.current?.refreshDevices().catch(() => undefined);
@@ -577,37 +632,75 @@ export default function App(): React.ReactElement {
       preview: HTMLVideoElement,
     ): Promise<void> => {
       await prepareProgrammeSourceSwitch('programme source switched to camera');
-      await programmeSourceManagerRef.current?.selectCamera(input, preview).catch(() => undefined);
+      const source = await programmeSourceManagerRef.current
+        ?.selectCamera(input, preview)
+        .catch(() => undefined);
+      if (source) setProgrammeSessionBinding(createPendingProgrammeSessionBinding(source));
     },
-    [prepareProgrammeSourceSwitch],
+    [prepareProgrammeSourceSwitch, setProgrammeSessionBinding],
   );
 
   const handleSelectProgrammeScreen = useCallback(
     async (preview: HTMLVideoElement): Promise<void> => {
       await prepareProgrammeSourceSwitch('programme source switched to screen');
-      await programmeSourceManagerRef.current?.selectScreen(preview).catch(() => undefined);
+      const source = await programmeSourceManagerRef.current?.selectScreen(preview).catch(() => undefined);
+      if (source) setProgrammeSessionBinding(createPendingProgrammeSessionBinding(source));
     },
-    [prepareProgrammeSourceSwitch],
+    [prepareProgrammeSourceSwitch, setProgrammeSessionBinding],
   );
 
   const handleSelectUploadedProgrammeVideo = useCallback(
     async (file: File, preview: HTMLVideoElement): Promise<void> => {
       await prepareProgrammeSourceSwitch('programme source switched to uploaded video');
-      await programmeSourceManagerRef.current
+      const source = await programmeSourceManagerRef.current
         ?.selectUploadedVideo(file, preview)
         .catch(() => undefined);
+      if (source) setProgrammeSessionBinding(createPendingProgrammeSessionBinding(source));
     },
-    [prepareProgrammeSourceSwitch],
+    [prepareProgrammeSourceSwitch, setProgrammeSessionBinding],
+  );
+
+  const ensureBroadcasterSignallingSession = useCallback(async () => {
+    const client = broadcasterSignallingClientRef.current;
+    if (!client) {
+      throw new Error('Broadcaster signalling client is not ready.');
+    }
+    const snapshot = client.getSnapshot();
+    if (snapshot.sessionId && snapshot.connected) return snapshot;
+    return await client.createSession();
+  }, []);
+
+  const publishProgrammeSessionConfig = useCallback(
+    (binding: ProgrammeSessionBinding): void => {
+      const config = buildOperatorProgrammeSessionConfig(binding, {
+        targetLanguage: sessionTargetLanguage,
+        targetLanguages,
+        sourceLanguage,
+        sourceLanguageMode,
+      });
+      socketRef.current?.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, config);
+      setLastControlAck('programme-session-config: sent');
+    },
+    [sessionTargetLanguage, sourceLanguage, sourceLanguageMode, targetLanguages],
   );
 
   const handleStartProgrammeSource = useCallback(async (): Promise<void> => {
-    const source = await programmeSourceManagerRef.current?.start().catch(() => undefined);
-    if (source?.broadcasting) {
-      await broadcasterTransportControllerRef.current
-        ?.start(programmeSourceManagerRef.current?.getStream() ?? null)
-        .catch(() => undefined);
+    setMediaError(null);
+    try {
+      const source = await programmeSourceManagerRef.current?.start();
+      if (!source?.broadcasting) return;
+      const signalling = await ensureBroadcasterSignallingSession();
+      const binding = createActiveProgrammeSessionBinding(signalling, source);
+      setProgrammeSessionBinding(binding);
+      publishProgrammeSessionConfig(binding);
+      await broadcasterTransportControllerRef.current?.start(
+        programmeSourceManagerRef.current?.getStream() ?? null,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Programme source start failed.';
+      setMediaError(message);
     }
-  }, []);
+  }, [ensureBroadcasterSignallingSession, publishProgrammeSessionConfig, setProgrammeSessionBinding]);
 
   const handlePauseProgrammeSource = useCallback(async (): Promise<void> => {
     await programmeSourceManagerRef.current?.pause().catch(() => undefined);
@@ -630,14 +723,16 @@ export default function App(): React.ReactElement {
       ?.close('operator stopped programme source')
       .catch(() => undefined);
     await programmeSourceManagerRef.current?.stop().catch(() => undefined);
-  }, []);
+    blockProgrammeProcessingEvents();
+  }, [blockProgrammeProcessingEvents]);
 
   const handleClearProgrammeSource = useCallback(async (): Promise<void> => {
     await broadcasterTransportControllerRef.current
       ?.close('operator cleared programme source')
       .catch(() => undefined);
     await programmeSourceManagerRef.current?.clear().catch(() => undefined);
-  }, []);
+    blockProgrammeProcessingEvents();
+  }, [blockProgrammeProcessingEvents]);
 
   const handleRequestBroadcasterPermission = useCallback(async (): Promise<void> => {
     await broadcasterCaptureControllerRef.current?.requestPermission().catch(() => undefined);
@@ -679,7 +774,8 @@ export default function App(): React.ReactElement {
       ?.handleSignallingTeardown('operator closed broadcaster signalling')
       .catch(() => undefined);
     await programmeSourceManagerRef.current?.stop('operator closed broadcaster signalling').catch(() => undefined);
-  }, []);
+    blockProgrammeProcessingEvents();
+  }, [blockProgrammeProcessingEvents]);
 
   const handleRecoverBroadcasterSession = useCallback(async (): Promise<void> => {
     await broadcasterSignallingClientRef.current
@@ -719,6 +815,7 @@ export default function App(): React.ReactElement {
       return;
     }
 
+    setProgrammeSessionBinding(null);
     setMicrophoneStatus('requesting-permission');
     setMicrophoneError(null);
     setMediaError(null);
@@ -842,6 +939,7 @@ export default function App(): React.ReactElement {
     microphoneStatus,
     selectedMicrophoneDeviceId,
     sessionTargetLanguage,
+    setProgrammeSessionBinding,
     sourceLanguage,
     sourceLanguageMode,
     targetLanguages,
@@ -1215,13 +1313,33 @@ export default function App(): React.ReactElement {
   const applyEnglishSpanishDemoPreset = useCallback(() => {
     setSourceLanguage('en');
     setSourceLanguageMode('auto-detect');
-    setSessionTargetLanguage('es');
-    setTargetLanguages(['es']);
+    setSessionTargetLanguage(DEFAULT_TARGET_LANGUAGE);
+    setTargetLanguages([DEFAULT_TARGET_LANGUAGE]);
     setOriginalMix(0.2);
     setTranslatedMix(1);
     setSubtitlesEnabled(true);
     setMediaError(null);
   }, []);
+
+  const handleSessionTargetLanguageChange = useCallback((language: string): void => {
+    const selection = selectSessionTargetLanguage(targetLanguages, language);
+    setSessionTargetLanguage(selection.targetLanguage);
+    setTargetLanguages(selection.targetLanguages);
+  }, [targetLanguages]);
+
+  const handleTargetLanguageToggle = useCallback(
+    (language: string, checked: boolean): void => {
+      const selection = toggleTargetLanguage(
+        targetLanguages,
+        sessionTargetLanguage,
+        language,
+        checked,
+      );
+      setSessionTargetLanguage(selection.targetLanguage);
+      setTargetLanguages(selection.targetLanguages);
+    },
+    [sessionTargetLanguage, targetLanguages],
+  );
 
   return (
     <div className={styles.root}>
@@ -1339,13 +1457,7 @@ export default function App(): React.ReactElement {
                   <input
                     type="checkbox"
                     checked={targetLanguages.includes(lang)}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setTargetLanguages((prev) => [...prev, lang]);
-                      } else {
-                        setTargetLanguages((prev) => prev.filter((l) => l !== lang));
-                      }
-                    }}
+                    onChange={(e) => handleTargetLanguageToggle(lang, e.target.checked)}
                   />
                   {lang.toUpperCase()}
                 </label>
@@ -1764,7 +1876,7 @@ export default function App(): React.ReactElement {
               <select
                 className={styles.configSelect}
                 value={sessionTargetLanguage}
-                onChange={(event) => setSessionTargetLanguage(event.target.value)}
+                onChange={(event) => handleSessionTargetLanguageChange(event.target.value)}
                 disabled={uploadingMedia}
               >
                 {LANGUAGE_OPTIONS.map((lang) => (

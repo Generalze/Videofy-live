@@ -63,9 +63,11 @@ export interface TranslatedAudioQueueControllerOptions {
   onPendingCountChange?: (count: number) => void;
   onGeneratedStateChange?: (state: GeneratedAudioQueueState) => void;
   lateToleranceMs?: number;
+  staleToleranceMs?: number;
 }
 
 const DEFAULT_LATE_TOLERANCE_MS = 750;
+const DEFAULT_STALE_TOLERANCE_MS = 30_000;
 
 const initialGeneratedState: GeneratedAudioQueueState = {
   status: 'waiting',
@@ -88,6 +90,7 @@ export class TranslatedAudioQueueController {
     | ((state: GeneratedAudioQueueState) => void)
     | undefined;
   private readonly lateToleranceMs: number;
+  private readonly staleToleranceMs: number;
   private readonly queue: QueueItem[] = [];
   private readonly seen = new Set<string>();
   private readonly generatedQueue: GeneratedQueueItem[] = [];
@@ -115,6 +118,7 @@ export class TranslatedAudioQueueController {
     this.onPendingCountChange = options.onPendingCountChange;
     this.onGeneratedStateChange = options.onGeneratedStateChange;
     this.lateToleranceMs = options.lateToleranceMs ?? DEFAULT_LATE_TOLERANCE_MS;
+    this.staleToleranceMs = options.staleToleranceMs ?? DEFAULT_STALE_TOLERANCE_MS;
   }
 
   setClock(getClockMs: () => number): void {
@@ -320,7 +324,8 @@ export class TranslatedAudioQueueController {
     while (this.generatedQueue.length > 0) {
       const candidate = this.generatedQueue[0]!;
       const clockMs = this.currentClockMs();
-      if (clockMs >= candidate.event.endMs) {
+      const staleAtMs = candidate.event.endMs + this.staleToleranceMs;
+      if (clockMs > staleAtMs) {
         this.generatedQueue.shift();
         this.setGeneratedState({
           status: 'buffering',
@@ -348,7 +353,8 @@ export class TranslatedAudioQueueController {
     const lateByMs = Math.max(0, clockMs - item.event.startMs);
     const audio = this.createAudio(item.event.audioUrl);
     audio.volume = this.currentVolume();
-    if (lateByMs > this.lateToleranceMs) {
+    const sourceWindowStillActive = clockMs < item.event.endMs;
+    if (lateByMs > this.lateToleranceMs && sourceWindowStillActive) {
       audio.currentTime = Math.max(0, lateByMs / 1000);
     }
 
@@ -362,7 +368,9 @@ export class TranslatedAudioQueueController {
       currentSegment: queueSegment(item.event),
       syncOffsetMs: clockMs - item.event.startMs,
       error:
-        lateByMs > this.lateToleranceMs ? `Recovered late segment #${item.event.sequence}.` : null,
+        lateByMs > this.lateToleranceMs
+          ? `Recovered late segment #${item.event.sequence}.`
+          : null,
     });
 
     audio.onended = () => {

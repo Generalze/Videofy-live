@@ -333,6 +333,7 @@ export class ProgrammeSourceManager {
       videoElement.playsInline = true;
       videoElement.preload = 'metadata';
       videoElement.src = objectUrl;
+      videoElement.addEventListener('ended', this.handleUploadedVideoEnded);
       videoElement.load?.();
       void videoElement.play?.().catch(() => undefined);
       await waitForMediaReady(videoElement);
@@ -668,6 +669,23 @@ export class ProgrammeSourceManager {
     this.onTrackEnded?.(this.snapshot);
   };
 
+  private handleUploadedVideoEnded = (): void => {
+    if (this.snapshot.sourceType !== 'uploaded-video') return;
+    if (this.snapshot.status === 'ended' || this.snapshot.status === 'stopped') return;
+    this.enableTracks(false);
+    this.update({
+      status: 'ended',
+      broadcasting: false,
+      paused: false,
+      programmeTimestampMs: this.readProgrammeTimestampMs(),
+      sourceEnded: true,
+      captureInterrupted: false,
+      error: null,
+    });
+    this.incrementRevision('uploaded video ended');
+    this.onTrackEnded?.(this.snapshot);
+  };
+
   private releaseResources(options: { preserveObjectUrl?: boolean; preservePreview?: boolean } = {}): void {
     for (const track of this.ownedTracks) {
       track.removeEventListener?.('ended', this.handleTrackEnded);
@@ -676,6 +694,7 @@ export class ProgrammeSourceManager {
     if (this.stream) this.stopStream(this.stream);
     this.stream = null;
     if (this.videoElement && !options.preservePreview) {
+      this.videoElement.removeEventListener('ended', this.handleUploadedVideoEnded);
       this.videoElement.pause();
       this.videoElement.srcObject = null;
       this.videoElement.removeAttribute('src');

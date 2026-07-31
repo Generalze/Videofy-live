@@ -4,9 +4,11 @@ import http from 'node:http';
 import https from 'node:https';
 import { resolve } from 'node:path';
 import type { WebRtcAudioDataLike } from './webrtc-audio-ingest-bridge.js';
+import type { SourceLanguageMode } from '@videofy-live/shared-types';
 import {
   WebRtcTranscriptionChunker,
   WebRtcTranscriptionChunkerError,
+  inspectPcm16Samples,
   type WebRtcTranscriptionChunk,
 } from './webrtc-transcription-chunker.js';
 import { logger } from './logger.js';
@@ -16,6 +18,10 @@ export interface WebRtcTranscriptionBridgeContext {
   broadcastId: string;
   broadcasterPeerId: string;
   revision: number;
+  targetLanguage?: string;
+  targetLanguages?: string[];
+  sourceLanguage?: string;
+  sourceLanguageMode?: SourceLanguageMode;
 }
 
 export interface WebRtcTranscriptionSubmissionClient {
@@ -212,6 +218,7 @@ export class WebRtcTranscriptionBridge {
       sourcePath = await this.writeStagedChunk(chunk);
       await this.submitWithRetry(session.context.sessionId, chunk, sourcePath);
       session.chunker.ackChunk(chunk);
+      const audio = inspectPcm16Samples(chunk.samples);
       logger.debug('WebRTC transcription chunk submitted', {
         sessionId: chunk.sessionId,
         broadcastId: chunk.broadcastId,
@@ -219,6 +226,14 @@ export class WebRtcTranscriptionBridge {
         sequence: chunk.sequence,
         startMs: chunk.startMs,
         endMs: chunk.endMs,
+        sampleRate: chunk.sampleRate,
+        channelCount: chunk.channelCount,
+        pcmFormat: chunk.pcmFormat,
+        durationMs: chunk.durationMs,
+        rms: Number(audio.rms.toFixed(6)),
+        peak: Number(audio.peak.toFixed(6)),
+        clippedSampleCount: audio.clippedSampleCount,
+        silent: audio.silent,
       });
     } catch (error) {
       session.chunker.markDiscontinuity();
@@ -292,6 +307,10 @@ export class HttpWebRtcTranscriptionSubmissionClient
       broadcastId: input.broadcastId,
       broadcasterPeerId: input.broadcasterPeerId,
       revision: input.revision,
+      ...(input.targetLanguage ? { targetLanguage: input.targetLanguage } : {}),
+      ...(input.targetLanguages ? { targetLanguages: input.targetLanguages } : {}),
+      ...(input.sourceLanguage ? { sourceLanguage: input.sourceLanguage } : {}),
+      ...(input.sourceLanguageMode ? { sourceLanguageMode: input.sourceLanguageMode } : {}),
     });
   }
 

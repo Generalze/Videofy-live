@@ -1497,6 +1497,22 @@ export class ProcessingSessionStore {
         error: message,
       };
     }
+    if (session.translation.events.some((event) => event.status === 'failed')) {
+      session.translation = {
+        ...session.translation,
+        status: 'failed',
+        providerStatus: 'failed',
+        error: message,
+      };
+    }
+    if (session.generatedAudio.events.some((event) => event.status === 'failed')) {
+      session.generatedAudio = {
+        ...session.generatedAudio,
+        status: 'failed',
+        providerStatus: 'failed',
+        error: message,
+      };
+    }
     if (session.state !== 'failed') {
       this.transition(session.id, 'failed');
     } else {
@@ -1555,6 +1571,16 @@ export class ProcessingSessionStore {
       this.emitSession(session);
     }
     return { ...session };
+  }
+
+  private failRealtimeAudioSession(
+    session: ProcessingSession,
+    error: unknown,
+    fallbackMessage: string,
+  ): ProcessingSession {
+    return session.sourceKind === 'webrtc'
+      ? this.failWebRtcSession(session, error, fallbackMessage)
+      : this.failMicrophoneSession(session, error, fallbackMessage);
   }
 
   private validateProbeResult(kind: MediaKind, probeResult: ProbeResult): void {
@@ -2005,7 +2031,7 @@ export class ProcessingSessionStore {
       this.updateWebRtcBridgeMetadata(session);
       this.onTranscriptionEvent(transcribed);
       this.emitSession(session);
-      return { ...session };
+      return await this.processMicrophoneTranslationEvent(session, transcribed);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Transcription failed.';
       const failed = {
@@ -2042,10 +2068,10 @@ export class ProcessingSessionStore {
       this.updateTranslationProgress(session);
       this.onTranslationEvent(failed);
       this.emitSession(session);
-      return this.failMicrophoneSession(
+      return this.failRealtimeAudioSession(
         session,
         new MediaIngestError(failed.error ?? 'Stale transcription rejected.', 'stale-source-language', 409),
-        'Microphone translation failed.',
+        `${session.sourceKind === 'webrtc' ? 'WebRTC' : 'Microphone'} translation failed.`,
       );
     }
     const queued = this.createTranslationEvent(
@@ -2123,7 +2149,11 @@ export class ProcessingSessionStore {
       this.updateTranslationProgress(session);
       this.onTranslationEvent(failed);
       this.emitSession(session);
-      return this.failMicrophoneSession(session, error, 'Microphone translation failed.');
+      return this.failRealtimeAudioSession(
+        session,
+        error,
+        `${session.sourceKind === 'webrtc' ? 'WebRTC' : 'Microphone'} translation failed.`,
+      );
     }
   }
 
@@ -2185,7 +2215,11 @@ export class ProcessingSessionStore {
       this.replaceGeneratedAudioEvent(session, failed);
       this.updateGeneratedAudioProgress(session);
       this.emitSession(session);
-      return this.failMicrophoneSession(session, error, 'Microphone text-to-speech failed.');
+      return this.failRealtimeAudioSession(
+        session,
+        error,
+        `${session.sourceKind === 'webrtc' ? 'WebRTC' : 'Microphone'} text-to-speech failed.`,
+      );
     }
   }
 

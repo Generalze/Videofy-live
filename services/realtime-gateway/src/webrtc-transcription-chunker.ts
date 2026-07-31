@@ -29,6 +29,30 @@ export interface WebRtcTranscriptionChunk {
   endOfStream: boolean;
 }
 
+export interface WebRtcAudioPcmDiagnostics {
+  inputSampleRate: number;
+  inputChannelCount: number;
+  inputBitsPerSample: number | null;
+  inputSampleType: 'int16' | 'float32';
+  inputSampleCount: number;
+  inputDurationMs: number;
+  normalizedSampleRate: 16000;
+  normalizedChannelCount: 1;
+  normalizedBitsPerSample: 16;
+  normalizedSampleCount: number;
+  normalizedDurationMs: number;
+  rms: number;
+  peak: number;
+  clippedSampleCount: number;
+  silent: boolean;
+  metadataWarnings: string[];
+}
+
+export interface NormalizedWebRtcPcmFrame {
+  samples: Int16Array;
+  diagnostics: WebRtcAudioPcmDiagnostics;
+}
+
 export interface WebRtcTranscriptionChunkerOptions extends WebRtcTranscriptionChunkerContext {
   chunkDurationMs?: number;
   maxBufferedDurationMs?: number;
@@ -113,7 +137,7 @@ export class WebRtcTranscriptionChunker {
     if (this.closed) {
       throw new WebRtcTranscriptionChunkerError('closed', 'WebRTC transcription chunker is closed.');
     }
-    const normalized = normalizePcmFrame(data);
+    const { samples: normalized } = normalizePcmFrameWithDiagnostics(data);
     if (this.vad) return this.pushVadFrame(normalized);
     this.appendSamples(normalized);
     return this.drain(false);
@@ -277,6 +301,10 @@ export class WebRtcTranscriptionChunker {
 }
 
 export function normalizePcmFrame(data: WebRtcAudioDataLike): Int16Array {
+  return normalizePcmFrameWithDiagnostics(data).samples;
+}
+
+export function normalizePcmFrameWithDiagnostics(data: WebRtcAudioDataLike): NormalizedWebRtcPcmFrame {
   if (!(data.samples instanceof Int16Array) && !(data.samples instanceof Float32Array)) {
     throw new WebRtcTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame has no PCM samples.');
   }
@@ -291,17 +319,42 @@ export function normalizePcmFrame(data: WebRtcAudioDataLike): Int16Array {
   if (typeof channelCount !== 'number' || !Number.isInteger(channelCount) || channelCount <= 0 || channelCount > 8) {
     throw new WebRtcTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame channel count is invalid.');
   }
-  if (data.bitsPerSample !== undefined && data.bitsPerSample !== 16 && data.bitsPerSample !== 32) {
-    throw new WebRtcTranscriptionChunkerError('unsupported-format', 'WebRTC audio frame must be 16-bit PCM.');
-  }
   if (data.samples.length % channelCount !== 0) {
     throw new WebRtcTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame sample layout is invalid.');
   }
 
-  const pcm16 = data.samples instanceof Int16Array ? data.samples : float32ToInt16(data.samples);
+  const inputSampleType: 'int16' | 'float32' =
+    data.samples instanceof Int16Array ? 'int16' : 'float32';
+  const metadataWarnings = frameMetadataWarnings(inputSampleType, data.bitsPerSample);
+  const pcm16 =
+    data.samples instanceof Int16Array ? data.samples : float32ToInt16(data.samples);
   const mono = downmixToMono(pcm16, channelCount);
-  if (sourceRate === WEBRTC_TRANSCRIPTION_SAMPLE_RATE) return mono;
-  return resampleLinear(mono, sourceRate, WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+  const normalized =
+    sourceRate === WEBRTC_TRANSCRIPTION_SAMPLE_RATE
+      ? mono
+      : resampleLinear(mono, sourceRate, WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+
+  return {
+    samples: normalized,
+    diagnostics: {
+      inputSampleRate: sourceRate,
+      inputChannelCount: channelCount,
+      inputBitsPerSample:
+        typeof data.bitsPerSample === 'number' && Number.isFinite(data.bitsPerSample)
+          ? data.bitsPerSample
+          : null,
+      inputSampleType,
+      inputSampleCount: data.samples.length,
+      inputDurationMs: Math.round(((data.samples.length / channelCount) / sourceRate) * 1000),
+      normalizedSampleRate: WEBRTC_TRANSCRIPTION_SAMPLE_RATE,
+      normalizedChannelCount: WEBRTC_TRANSCRIPTION_CHANNEL_COUNT,
+      normalizedBitsPerSample: 16,
+      normalizedSampleCount: normalized.length,
+      normalizedDurationMs: Math.round((normalized.length / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
+      ...inspectPcm16Samples(normalized),
+      metadataWarnings,
+    },
+  };
 }
 
 function downmixToMono(samples: Int16Array, channelCount: number): Int16Array {
@@ -344,6 +397,47 @@ function float32ToInt16(samples: Float32Array): Int16Array {
     output[index] = sample < 0 ? Math.round(sample * 32768) : Math.round(sample * 32767);
   }
   return output;
+}
+
+export function inspectPcm16Samples(samples: Int16Array): Pick<
+  WebRtcAudioPcmDiagnostics,
+  'rms' | 'peak' | 'clippedSampleCount' | 'silent'
+> {
+  if (samples.length === 0) {
+    return {
+      rms: 0,
+      peak: 0,
+      clippedSampleCount: 0,
+      silent: true,
+    };
+  }
+  let sumSquares = 0;
+  let peak = 0;
+  let clippedSampleCount = 0;
+  for (const sample of samples) {
+    const absolute = Math.abs(sample);
+    peak = Math.max(peak, absolute / 32768);
+    if (absolute >= 32767) clippedSampleCount++;
+    const normalized = sample / 32768;
+    sumSquares += normalized * normalized;
+  }
+  const rms = Math.sqrt(sumSquares / samples.length);
+  return {
+    rms,
+    peak,
+    clippedSampleCount,
+    silent: rms < 0.0001 && peak < 0.0005,
+  };
+}
+
+function frameMetadataWarnings(
+  sampleType: 'int16' | 'float32',
+  bitsPerSample: number | undefined,
+): string[] {
+  if (bitsPerSample === undefined) return [];
+  const expectedBits = sampleType === 'int16' ? 16 : 32;
+  if (bitsPerSample === expectedBits) return [];
+  return [`bitsPerSample metadata ${bitsPerSample} did not match ${sampleType} samples`];
 }
 
 function concatSamples(left: Int16Array, right: Int16Array): Int16Array {

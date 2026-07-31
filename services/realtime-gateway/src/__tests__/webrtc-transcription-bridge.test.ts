@@ -138,6 +138,40 @@ describe('WebRtcTranscriptionBridge', () => {
     ]);
   });
 
+  it('creates one configured processing session for programme WebRTC transcription', async () => {
+    const stagingDir = await tempDir();
+    const client = fakeClient();
+    const bridge = new WebRtcTranscriptionBridge({
+      stagingDir,
+      chunkDurationMs: 100,
+      client,
+    });
+    const configuredContext: WebRtcTranscriptionBridgeContext = {
+      ...context,
+      targetLanguage: 'es',
+      targetLanguages: ['es'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'auto-detect',
+    };
+
+    bridge.handleFrame(configuredContext, {
+      samples: new Int16Array(1600),
+      sampleRate: 16000,
+      channelCount: 1,
+      bitsPerSample: 16,
+    });
+    bridge.handleFrame(configuredContext, {
+      samples: new Int16Array(1600),
+      sampleRate: 16000,
+      channelCount: 1,
+      bitsPerSample: 16,
+    });
+
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(2));
+    expect(client.created).toEqual([configuredContext]);
+    expect(client.submitted.map((entry) => entry.sessionId)).toEqual(['wrs_demo', 'wrs_demo']);
+  });
+
   it('skips malformed first frames without interrupting later transcription', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
@@ -148,9 +182,9 @@ describe('WebRtcTranscriptionBridge', () => {
     });
 
     bridge.handleFrame(context, {
-      samples: new Int16Array([1, 2]),
+      samples: new Int16Array([1, 2, 3]),
       sampleRate: 16000,
-      channelCount: 1,
+      channelCount: 2,
       bitsPerSample: 24,
     });
     bridge.handleFrame(context, {
@@ -163,12 +197,43 @@ describe('WebRtcTranscriptionBridge', () => {
     await vi.waitFor(() => expect(client.submitted).toHaveLength(1));
     expect(bridge.getSnapshot(context)).toMatchObject({
       skippedFrameCount: 1,
-      lastSkippedFrameReason: 'WebRTC audio frame must be 16-bit PCM.',
+      lastSkippedFrameReason: 'WebRTC audio frame sample layout is invalid.',
       failure: null,
     });
     expect(client.submitted[0]?.chunk).toMatchObject({
       sequence: 0,
       discontinuity: true,
+    });
+  });
+
+  it('normalizes metadata-mismatched Int16 frames instead of dropping valid speech', async () => {
+    const stagingDir = await tempDir();
+    const client = fakeClient();
+    const bridge = new WebRtcTranscriptionBridge({
+      stagingDir,
+      chunkDurationMs: 100,
+      client,
+    });
+
+    bridge.handleFrame(context, {
+      samples: new Int16Array(1600).fill(4000),
+      sampleRate: 16000,
+      channelCount: 1,
+      bitsPerSample: 24,
+    });
+
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(1));
+    expect(bridge.getSnapshot(context)).toMatchObject({
+      skippedFrameCount: 0,
+      lastSkippedFrameReason: null,
+      failure: null,
+    });
+    expect(client.submitted[0]?.chunk).toMatchObject({
+      sequence: 0,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      discontinuity: false,
     });
   });
 

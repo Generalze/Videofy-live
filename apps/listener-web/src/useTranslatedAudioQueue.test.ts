@@ -82,7 +82,10 @@ function makeGenerated(
   };
 }
 
-function createHarness(rejectUrls = new Set<string>()) {
+function createHarness(
+  rejectUrls = new Set<string>(),
+  options: { staleToleranceMs?: number } = {},
+) {
   const audios: TestAudio[] = [];
   const revoked: string[] = [];
   const generatedStates: GeneratedAudioQueueState[] = [];
@@ -103,6 +106,7 @@ function createHarness(rejectUrls = new Set<string>()) {
       revokeObjectURL: (url) => revoked.push(url),
     },
     onGeneratedStateChange: (state) => generatedStates.push({ ...state }),
+    ...(options.staleToleranceMs === undefined ? {} : { staleToleranceMs: options.staleToleranceMs }),
   });
   return {
     audios,
@@ -197,8 +201,24 @@ describe('TranslatedAudioQueueController', () => {
     );
   });
 
-  it('skips generated audio whose timestamp window has ended', () => {
+  it('recovers delayed generated audio after the source timestamp window has ended', () => {
     const { audios, controller, generatedStates, setClock } = createHarness();
+    setClock(2000);
+
+    controller.enqueueGenerated(makeGenerated(0, 0));
+    controller.start();
+
+    expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-0.wav']);
+    expect(audios[0]!.currentTime).toBe(0);
+    expect(generatedStates.some((state) => state.error?.includes('Recovered late segment'))).toBe(
+      true,
+    );
+  });
+
+  it('skips generated audio whose timestamp is beyond the stale recovery window', () => {
+    const { audios, controller, generatedStates, setClock } = createHarness(new Set(), {
+      staleToleranceMs: 250,
+    });
     setClock(2000);
 
     controller.enqueueGenerated(makeGenerated(0, 0));

@@ -70,6 +70,7 @@ function mediaDevices(input: {
 }
 
 function videoElement(captured: MediaStream) {
+  const listeners = new Map<string, Set<() => void>>();
   return {
     readyState: 1,
     duration: 12.4,
@@ -89,9 +90,18 @@ function videoElement(captured: MediaStream) {
     }),
     load: vi.fn(),
     removeAttribute: vi.fn(),
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  } as unknown as HTMLVideoElement;
+    addEventListener: vi.fn((event: string, listener: () => void) => {
+      const eventListeners = listeners.get(event) ?? new Set<() => void>();
+      eventListeners.add(listener);
+      listeners.set(event, eventListeners);
+    }),
+    removeEventListener: vi.fn((event: string, listener: () => void) => {
+      listeners.get(event)?.delete(listener);
+    }),
+    emit: (event: string) => {
+      listeners.get(event)?.forEach((listener) => listener());
+    },
+  } as unknown as HTMLVideoElement & { emit: (event: string) => void };
 }
 
 function file(name: string, type: string): File {
@@ -266,6 +276,36 @@ describe('ProgrammeSourceManager', () => {
       sourceType: 'camera',
       previewReady: true,
     });
+  });
+
+  it('ends uploaded-video broadcasting when the media element ends naturally', async () => {
+    const audio = track('audio');
+    const video = track('video');
+    const source = stream([audio, video]);
+    const preview = videoElement(source);
+    const onTrackEnded = vi.fn();
+    const manager = new ProgrammeSourceManager({
+      createObjectUrl: () => 'blob:uploaded-video',
+      onTrackEnded,
+    });
+
+    await manager.selectUploadedVideo(file('clip.webm', 'video/webm'), preview);
+    await manager.start();
+    preview.currentTime = 4.2;
+    preview.emit('ended');
+
+    expect(manager.getSnapshot()).toMatchObject({
+      status: 'ended',
+      broadcasting: false,
+      paused: false,
+      programmeTimestampMs: 4_200,
+      sourceEnded: true,
+      captureInterrupted: false,
+      revision: 1,
+    });
+    expect(audio.enabled).toBe(false);
+    expect(video.enabled).toBe(false);
+    expect(onTrackEnded).toHaveBeenCalledTimes(1);
   });
 
   it('rejects unsupported uploaded files and duplicate active source selection clearly', async () => {
