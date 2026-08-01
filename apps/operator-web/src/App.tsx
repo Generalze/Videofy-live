@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type {
+  AudioModePreferences,
   AudioMixPreferences,
   MediaStateEvent,
   MicrophoneCaptureMetadata,
@@ -260,6 +261,7 @@ export default function App(): React.ReactElement {
 
   const [originalMix, setOriginalMix] = useState(0.2);
   const [translatedMix, setTranslatedMix] = useState(1.0);
+  const [operatorAudioMode, setOperatorAudioMode] = useState<AudioModePreferences['mode']>('interpretation');
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
   const [interpretationStarting, setInterpretationStarting] = useState(false);
 
@@ -712,15 +714,22 @@ export default function App(): React.ReactElement {
   const handleStartProgrammeSource = useCallback(async (): Promise<void> => {
     setMediaError(null);
     try {
-      const source = await programmeSourceManagerRef.current?.start();
-      if (!source?.broadcasting) return;
+      const manager = programmeSourceManagerRef.current;
+      if (!manager) return;
+      const preparedSource = await manager.prepareForInterpretationStart();
       const signalling = await ensureBroadcasterSignallingSession();
-      const binding = createActiveProgrammeSessionBinding(signalling, source);
+      const binding = createActiveProgrammeSessionBinding(signalling, preparedSource);
       setProgrammeSessionBinding(binding);
       publishProgrammeSessionConfig(binding);
       await broadcasterTransportControllerRef.current?.start(
-        programmeSourceManagerRef.current?.getStream() ?? null,
+        manager.getStream() ?? null,
       );
+      const source = await manager.start();
+      if (!source.broadcasting) {
+        await broadcasterTransportControllerRef.current
+          ?.close('programme source did not start playback')
+          .catch(() => undefined);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Programme source start failed.';
       setMediaError(message);
@@ -767,12 +776,23 @@ export default function App(): React.ReactElement {
   }, []);
 
   const handleSeekProgrammeSource = useCallback(async (ms: number): Promise<void> => {
-    await programmeSourceManagerRef.current?.seek(ms).catch(() => undefined);
-  }, []);
+    const source = await programmeSourceManagerRef.current?.seek(ms).catch(() => undefined);
+    if (source) {
+      setProgrammeSessionBinding(createPendingProgrammeSessionBinding(source));
+      clearDisplayedProcessingSession();
+    }
+  }, [clearDisplayedProcessingSession, setProgrammeSessionBinding]);
 
   const handleRestartProgrammeSource = useCallback(async (): Promise<void> => {
-    await programmeSourceManagerRef.current?.restart().catch(() => undefined);
-  }, []);
+    await broadcasterTransportControllerRef.current
+      ?.close('operator restarted programme source')
+      .catch(() => undefined);
+    const source = await programmeSourceManagerRef.current?.restart().catch(() => undefined);
+    if (source) {
+      setProgrammeSessionBinding(createPendingProgrammeSessionBinding(source));
+      clearDisplayedProcessingSession();
+    }
+  }, [clearDisplayedProcessingSession, setProgrammeSessionBinding]);
 
   const handleStopProgrammeSource = useCallback(async (): Promise<void> => {
     await broadcasterTransportControllerRef.current
@@ -1295,12 +1315,13 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     if (!connected) return;
     const preferences: AudioMixPreferences = {
+      mode: operatorAudioMode,
       originalVolume: originalMix,
       translatedVolume: translatedMix,
       subtitlesEnabled,
     };
     socketRef.current?.emit(SOCKET_EVENTS.OPERATOR_AUDIO_MODE_PREFERENCES, preferences);
-  }, [connected, originalMix, subtitlesEnabled, translatedMix]);
+  }, [connected, operatorAudioMode, originalMix, subtitlesEnabled, translatedMix]);
 
   const latencyRows: LatencyRow[] = phraseLog[0]
     ? [
@@ -1395,6 +1416,7 @@ export default function App(): React.ReactElement {
     setSourceLanguageMode('auto-detect');
     setSessionTargetLanguage(DEFAULT_TARGET_LANGUAGE);
     setTargetLanguages([DEFAULT_TARGET_LANGUAGE]);
+    setOperatorAudioMode('interpretation');
     setOriginalMix(0.2);
     setTranslatedMix(1);
     setSubtitlesEnabled(true);
@@ -1645,38 +1667,58 @@ export default function App(): React.ReactElement {
               </p>
             </div>
             <div className={styles.heroActions}>
-              <button
-                type="button"
-                className={styles.primaryAction}
-                onClick={() => void handleStartInterpretation()}
-                disabled={interpretationStarting || !workflowSummary.canStartInterpretation}
-              >
-                {interpretationStarting ? 'Starting...' : 'Start Interpretation'}
-              </button>
-              <button
-                type="button"
-                className={styles.secondaryAction}
-                onClick={() => void handlePauseProgrammeSource()}
-                disabled={!workflowSummary.canPause}
-              >
-                Pause
-              </button>
-              <button
-                type="button"
-                className={styles.secondaryAction}
-                onClick={() => void handleResumeProgrammeSource()}
-                disabled={!workflowSummary.canResume}
-              >
-                Resume
-              </button>
-              <button
-                type="button"
-                className={styles.dangerAction}
-                onClick={() => void handleStopProgrammeSource()}
-                disabled={!workflowSummary.canEnd}
-              >
-                End session
-              </button>
+              {workflowSummary.status === 'Completed' ? (
+                <button
+                  type="button"
+                  className={styles.primaryAction}
+                  onClick={() => void handleRestartProgrammeSource()}
+                >
+                  Restart
+                </button>
+              ) : workflowSummary.canResume ? (
+                <>
+                  <button
+                    type="button"
+                    className={styles.primaryAction}
+                    onClick={() => void handleResumeProgrammeSource()}
+                  >
+                    Resume
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.dangerAction}
+                    onClick={() => void handleStopProgrammeSource()}
+                  >
+                    End
+                  </button>
+                </>
+              ) : workflowSummary.canPause ? (
+                <>
+                  <button
+                    type="button"
+                    className={styles.primaryAction}
+                    onClick={() => void handlePauseProgrammeSource()}
+                  >
+                    Pause
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.dangerAction}
+                    onClick={() => void handleStopProgrammeSource()}
+                  >
+                    End
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className={styles.primaryAction}
+                  onClick={() => void handleStartInterpretation()}
+                  disabled={interpretationStarting || !workflowSummary.canStartInterpretation}
+                >
+                  {interpretationStarting ? 'Starting...' : 'Start Interpretation'}
+                </button>
+              )}
             </div>
           </div>
           {workflowSummary.actionableWarning && (
@@ -1773,10 +1815,26 @@ export default function App(): React.ReactElement {
                   ))}
                 </select>
               </div>
-              <div className={styles.modeToggle} aria-label="Interpretation mode">
-                <span>Interpretation</span>
-                <span>Replacement</span>
-              </div>
+              {(mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0) > 0 && (
+                <div className={styles.modeToggle} role="group" aria-label="Operator audio mode">
+                  <button
+                    type="button"
+                    className={operatorAudioMode === 'interpretation' ? styles.modeToggleActive : ''}
+                    onClick={() => setOperatorAudioMode('interpretation')}
+                    aria-pressed={operatorAudioMode === 'interpretation'}
+                  >
+                    Interpretation
+                  </button>
+                  <button
+                    type="button"
+                    className={operatorAudioMode === 'replacement' ? styles.modeToggleActive : ''}
+                    onClick={() => setOperatorAudioMode('replacement')}
+                    aria-pressed={operatorAudioMode === 'replacement'}
+                  >
+                    Replacement
+                  </button>
+                </div>
+              )}
               <div className={styles.mixControl}>
                 <label className={styles.configLabel}>Original audio {Math.round(originalMix * 100)}%</label>
                 <input

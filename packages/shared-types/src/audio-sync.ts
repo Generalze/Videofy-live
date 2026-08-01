@@ -49,4 +49,4 @@ export interface AudioModePreferences {
 }
 
 /** Operator-directed mix defaults applied to connected listener clients. */
-export type AudioMixPreferences = Omit<AudioModePreferences, 'mode'>;
+export type AudioMixPreferences = AudioModePreferences;

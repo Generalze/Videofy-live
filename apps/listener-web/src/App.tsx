@@ -376,6 +376,7 @@ export default function App(): React.ReactElement {
     });
 
     socket.on(SOCKET_EVENTS.AUDIO_MODE_PREFERENCES, (preferences: AudioMixPreferences) => {
+      setMixMode(preferences.mode);
       setOriginalVolume(preferences.originalVolume);
       setTranslatedVolume(preferences.translatedVolume);
       setSubtitlesEnabled(preferences.subtitlesEnabled);
@@ -402,7 +403,7 @@ export default function App(): React.ReactElement {
         listenerTransportRef.current?.close(`programme source ${data.status}`, false);
       }
     });
-  }, [audioQueue, resumeMixer, updateSocketDiagnostics]);
+  }, [audioQueue, resumeMixer, setMixMode, updateSocketDiagnostics]);
 
   const handleStart = useCallback((): void => {
     setHasStarted(true);

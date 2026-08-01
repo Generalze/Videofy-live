@@ -11,6 +11,7 @@ declare module '@videofy-live/shared-types' {
   export type AudioFormat = 'mp3' | 'ogg' | 'wav' | 'webm' | null;
 
   export interface AudioMixPreferences {
+    mode: 'interpretation' | 'replacement';
     originalVolume: number;
     translatedVolume: number;
     subtitlesEnabled: boolean;

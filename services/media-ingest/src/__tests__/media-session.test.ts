@@ -328,19 +328,21 @@ describe('ProcessingSessionStore', () => {
       sourceLanguage: 'en',
       sourceLanguageMode: 'manual',
     });
-    const sourcePath = await createStagedWav(stagingDir, 'chunk.wav');
-
-    const updated = await sessionStore.ingestWebRtcChunk(session.id, {
-      sequence: 0,
-      startMs: 0,
-      endMs: 10,
-      sampleRate: 16000,
-      channelCount: 1,
-      pcmFormat: 'pcm_s16le',
-      mimeType: 'audio/wav',
-      sizeBytes: wavFixture().length,
-      sourcePath,
-    });
+    let updated = session;
+    for (let sequence = 0; sequence < 5; sequence += 1) {
+      updated = await sessionStore.ingestWebRtcChunk(session.id, {
+        sequence,
+        startMs: sequence * 15_000,
+        endMs: (sequence + 1) * 15_000,
+        sampleRate: 16000,
+        channelCount: 1,
+        pcmFormat: 'pcm_s16le',
+        mimeType: 'audio/wav',
+        sizeBytes: wavFixture().length,
+        sourcePath: await createStagedWav(stagingDir, `chunk-${sequence}.wav`),
+      });
+      expect(updated.state).toBe('processing');
+    }
 
     expect(updated.sourceKind).toBe('webrtc');
     expect(updated.transcription.events[0]).toMatchObject({
@@ -348,7 +350,7 @@ describe('ProcessingSessionStore', () => {
       streamId: 'broadcast_demo',
       sequence: 0,
       startMs: 0,
-      endMs: 10,
+      endMs: 15_000,
       status: 'transcribed',
     });
     expect(updated.translation.events[0]).toMatchObject({
@@ -359,7 +361,7 @@ describe('ProcessingSessionStore', () => {
       translatedText: '[es] Mock transcript chunk 1',
       targetLanguage: 'es',
       startMs: 0,
-      endMs: 10,
+      endMs: 15_000,
       status: 'translated',
     });
     expect(updated.generatedAudio.events[0]).toMatchObject({
@@ -368,18 +370,81 @@ describe('ProcessingSessionStore', () => {
       sequence: 0,
       targetLanguage: 'es',
       startMs: 0,
-      endMs: 10,
+      endMs: 15_000,
       status: 'generated',
     });
     expect(updated.webrtcTranscriptionBridge).toMatchObject({
       status: 'chunking',
-      chunkCount: 1,
-      transcribedChunks: 1,
-      latestTranscript: 'Mock transcript chunk 1',
+      chunkCount: 5,
+      transcribedChunks: 5,
+      latestTranscript: 'Mock transcript chunk 5',
     });
-    expect(events).toEqual(['0:queued', '0:transcribing', '0:transcribed']);
-    expect(translations).toEqual(['0:queued:es', '0:translating:es', '0:translated:es']);
-    expect(generatedAudioReady).toEqual(['0:es:wrs_demo:webrtc:1:0']);
+
+    expect(updated.transcription.events[4]).toMatchObject({
+      sequence: 4,
+      startMs: 60_000,
+      endMs: 75_000,
+      sourceText: 'Mock transcript chunk 5',
+      status: 'transcribed',
+    });
+    expect(updated.translation.events[4]).toMatchObject({
+      sequence: 4,
+      startMs: 60_000,
+      endMs: 75_000,
+      translatedText: '[es] Mock transcript chunk 5',
+      status: 'translated',
+    });
+    expect(updated.generatedAudio.events[4]).toMatchObject({
+      sequence: 4,
+      startMs: 60_000,
+      endMs: 75_000,
+      status: 'generated',
+    });
+
+    const stopped = sessionStore.stopWebRtcSession(session.id);
+    expect(stopped.state).toBe('completed');
+    expect(stopped.webrtcTranscriptionBridge?.status).toBe('stopped');
+    expect(events).toEqual([
+      '0:queued',
+      '0:transcribing',
+      '0:transcribed',
+      '1:queued',
+      '1:transcribing',
+      '1:transcribed',
+      '2:queued',
+      '2:transcribing',
+      '2:transcribed',
+      '3:queued',
+      '3:transcribing',
+      '3:transcribed',
+      '4:queued',
+      '4:transcribing',
+      '4:transcribed',
+    ]);
+    expect(translations).toEqual([
+      '0:queued:es',
+      '0:translating:es',
+      '0:translated:es',
+      '1:queued:es',
+      '1:translating:es',
+      '1:translated:es',
+      '2:queued:es',
+      '2:translating:es',
+      '2:translated:es',
+      '3:queued:es',
+      '3:translating:es',
+      '3:translated:es',
+      '4:queued:es',
+      '4:translating:es',
+      '4:translated:es',
+    ]);
+    expect(generatedAudioReady).toEqual([
+      '0:es:wrs_demo:webrtc:1:0',
+      '1:es:wrs_demo:webrtc:1:1',
+      '2:es:wrs_demo:webrtc:1:2',
+      '3:es:wrs_demo:webrtc:1:3',
+      '4:es:wrs_demo:webrtc:1:4',
+    ]);
   });
 
   it('rejects duplicate and out-of-order WebRTC chunks clearly', async () => {

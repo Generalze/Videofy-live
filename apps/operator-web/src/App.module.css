@@ -988,7 +988,7 @@
 
 .rtmpSourceGrid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(140px, 0.42fr) minmax(0, 0.8fr) minmax(150px, 0.34fr);
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 0.7rem;
   align-items: stretch;
 }
@@ -1100,13 +1100,17 @@
   color: #cbd5e1;
 }
 
-.modeToggle span {
+.modeToggle button {
   padding: 0.65rem;
   text-align: center;
   background: rgba(30, 41, 59, 0.72);
+  border: 0;
+  color: #cbd5e1;
+  cursor: pointer;
+  font-weight: 750;
 }
 
-.modeToggle span:first-child {
+.modeToggleActive {
   background: rgba(124, 58, 237, 0.28);
   color: #f5f3ff;
 }

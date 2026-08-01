@@ -343,6 +343,7 @@ describe('gateway Socket.IO integration', () => {
     await waitUntil(() => listenerEvents.length === 1);
 
     const preferences: AudioMixPreferences = {
+      mode: 'replacement',
       originalVolume: 0.45,
       translatedVolume: 0.7,
       subtitlesEnabled: false,

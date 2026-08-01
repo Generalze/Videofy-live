@@ -2626,7 +2626,10 @@ export class ProcessingSessionStore {
         status: 'generated',
         progressPct: 100,
       };
-      if (session.sourceKind === 'microphone') {
+      if (
+        session.sourceKind === 'microphone' ||
+        (session.sourceKind === 'webrtc' && session.webrtcTranscriptionBridge?.status !== 'stopped')
+      ) {
         this.emitSession(session);
         return { ...session };
       }

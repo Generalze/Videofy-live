@@ -558,10 +558,11 @@ export class ProgrammeSourceManager {
       videoElement.src = objectUrl;
       videoElement.addEventListener('ended', this.handleMediaElementEnded);
       videoElement.load?.();
-      void videoElement.play?.().catch(() => undefined);
       await waitForMediaReady(videoElement);
+      videoElement.pause();
+      videoElement.currentTime = 0;
       const stream = (videoElement.captureStream ?? videoElement.mozCaptureStream)!.call(videoElement);
-      this.assertUsableTracks(stream, { requireVideo: false });
+      this.assertUsableTracks(stream, { requireVideo: true });
       this.installStream('uploaded-video', file.name, stream, {
         audioSourceLabel: stream.getAudioTracks()[0]?.label || 'Uploaded video audio',
         videoSourceLabel: stream.getVideoTracks()[0]?.label || file.name,
@@ -790,7 +791,7 @@ export class ProgrammeSourceManager {
       throw this.fail(new ProgrammeSourceError('missing-media-track', 'Select a programme source before starting.'));
     }
     if (this.isMediaElementSource() && this.videoElement) {
-      requestMediaElementPlayback(this.videoElement, (error) => this.fail(error));
+      await requestMediaElementPlayback(this.videoElement, (error) => this.fail(error));
     } else {
       this.liveStartedAtMs = this.now();
       this.livePausedAtMs = null;
@@ -804,6 +805,29 @@ export class ProgrammeSourceManager {
       programmeTimestampMs: this.readProgrammeTimestampMs(),
       error: null,
     });
+    return this.snapshot;
+  }
+
+  async prepareForInterpretationStart(): Promise<ProgrammeSourceSnapshot> {
+    if (!this.stream || this.snapshot.status !== 'preview-ready') {
+      throw this.fail(new ProgrammeSourceError('missing-media-track', 'Select a programme source before starting.'));
+    }
+    if (this.snapshot.sourceType === 'uploaded-video' && this.videoElement) {
+      this.videoElement.pause();
+      if (Math.abs((this.videoElement.currentTime || 0)) > 0.05) {
+        await seekMediaElement(this.videoElement, 0);
+        this.incrementRevision('uploaded video start rewind');
+      } else {
+        this.videoElement.currentTime = 0;
+      }
+      this.update({
+        programmeTimestampMs: 0,
+        sourceEnded: false,
+        captureInterrupted: false,
+        error: null,
+      });
+    }
+    this.enableTracks(false);
     return this.snapshot;
   }
 
@@ -827,7 +851,7 @@ export class ProgrammeSourceManager {
   async resume(): Promise<ProgrammeSourceSnapshot> {
     if (!this.stream || this.snapshot.status !== 'paused') return this.snapshot;
     if (this.isMediaElementSource() && this.videoElement) {
-      requestMediaElementPlayback(this.videoElement, (error) => this.fail(error));
+      await requestMediaElementPlayback(this.videoElement, (error) => this.fail(error));
     } else {
       if (this.livePausedAtMs !== null) {
         this.livePausedDurationMs += this.now() - this.livePausedAtMs;
@@ -850,7 +874,7 @@ export class ProgrammeSourceManager {
       throw this.fail(new ProgrammeSourceError('unsupported-format', 'The selected source cannot seek.', false));
     }
     this.update({ status: 'seeking', broadcasting: false, paused: true });
-    this.videoElement.currentTime = Math.max(0, ms / 1000);
+    await seekMediaElement(this.videoElement, Math.max(0, ms / 1000));
     this.incrementRevision('uploaded video seek');
     this.update({
       status: 'preview-ready',
@@ -1449,13 +1473,40 @@ function waitForCapturedTracks(
   });
 }
 
+function seekMediaElement(video: HTMLVideoElement, timeSeconds: number): Promise<void> {
+  const clamped = Math.max(0, timeSeconds);
+  if (Math.abs((video.currentTime || 0) - clamped) <= 0.05) {
+    video.currentTime = clamped;
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const cleanup = (): void => {
+      video.removeEventListener('seeked', onSeeked);
+      video.removeEventListener('error', onError);
+    };
+    const onSeeked = (): void => {
+      cleanup();
+      resolve();
+    };
+    const onError = (): void => {
+      cleanup();
+      reject(mediaElementError(video));
+    };
+    video.addEventListener('seeked', onSeeked, { once: true });
+    video.addEventListener('error', onError, { once: true });
+    video.currentTime = clamped;
+  });
+}
+
 function requestMediaElementPlayback(
   video: HTMLVideoElement,
   onFailure: (error: ProgrammeSourceError) => void,
-): void {
-  void video.play().catch((error: unknown) => {
+): Promise<void> {
+  return video.play().catch((error: unknown) => {
     if (isInterruptedPlaybackRequest(error)) return;
-    onFailure(normalizeProgrammeSourceError(error, 'decode-failed'));
+    const normalized = normalizeProgrammeSourceError(error, 'decode-failed');
+    onFailure(normalized);
+    throw normalized;
   });
 }
 

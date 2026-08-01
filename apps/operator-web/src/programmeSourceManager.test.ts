@@ -76,12 +76,22 @@ function videoElement(
   options: { readyState?: number; duration?: number } = {},
 ) {
   const listeners = new Map<string, Set<() => void>>();
+  let currentTime = 0;
+  const emit = (event: string): void => {
+    listeners.get(event)?.forEach((listener) => listener());
+  };
   return {
     readyState: options.readyState ?? 1,
     duration: options.duration ?? 12.4,
     networkState: 1,
     error: null,
-    currentTime: 0,
+    get currentTime() {
+      return currentTime;
+    },
+    set currentTime(value: number) {
+      currentTime = value;
+      queueMicrotask(() => emit('seeked'));
+    },
     paused: true,
     muted: false,
     volume: 1,
@@ -107,9 +117,7 @@ function videoElement(
     removeEventListener: vi.fn((event: string, listener: () => void) => {
       listeners.get(event)?.delete(listener);
     }),
-    emit: (event: string) => {
-      listeners.get(event)?.forEach((listener) => listener());
-    },
+    emit,
   } as unknown as HTMLVideoElement & { emit: (event: string) => void };
 }
 
@@ -286,7 +294,7 @@ describe('ProgrammeSourceManager', () => {
     });
   });
 
-  it('validates uploaded video support and preserves media element timeline', async () => {
+  it('loads uploaded video as a paused preview, rewinds before start, and preserves timeline controls', async () => {
     const source = stream([track('audio'), track('video')]);
     const preview = videoElement(source);
     const revoke = vi.fn();
@@ -300,6 +308,9 @@ describe('ProgrammeSourceManager', () => {
     expect(isUploadedProgrammeVideoSupported(file('clip.avi', 'video/x-msvideo'))).toBe(false);
 
     await manager.selectUploadedVideo(file('clip.webm', 'video/webm'), preview);
+    expect(preview.play).not.toHaveBeenCalled();
+    expect(preview.pause).toHaveBeenCalled();
+    expect(preview.currentTime).toBe(0);
     await manager.seek(2_000);
 
     expect(manager.getSnapshot()).toMatchObject({
@@ -307,6 +318,14 @@ describe('ProgrammeSourceManager', () => {
       broadcasting: false,
       paused: false,
       programmeTimestampMs: 2_000,
+    });
+
+    await manager.prepareForInterpretationStart();
+    expect(preview.currentTime).toBe(0);
+    expect(manager.getSnapshot()).toMatchObject({
+      status: 'preview-ready',
+      broadcasting: false,
+      programmeTimestampMs: 0,
     });
 
     await manager.start();

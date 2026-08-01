@@ -92,6 +92,7 @@ export class Gateway {
   private readonly activeWorkers = new Set<string>();
   private readonly activeIngestClients = new Set<string>();
   private audioModePreferences: AudioMixPreferences = {
+    mode: 'interpretation',
     originalVolume: 0.2,
     translatedVolume: 1,
     subtitlesEnabled: true,
@@ -1131,11 +1132,13 @@ export class Gateway {
   private parseAudioModePreferences(raw: unknown): AudioMixPreferences | null {
     if (!raw || typeof raw !== 'object') return null;
     const candidate = raw as Partial<AudioMixPreferences>;
+    if (candidate.mode !== 'interpretation' && candidate.mode !== 'replacement') return null;
     if (!isAudioLevel(candidate.originalVolume) || !isAudioLevel(candidate.translatedVolume)) {
       return null;
     }
     if (typeof candidate.subtitlesEnabled !== 'boolean') return null;
     return {
+      mode: candidate.mode,
       originalVolume: candidate.originalVolume,
       translatedVolume: candidate.translatedVolume,
       subtitlesEnabled: candidate.subtitlesEnabled,
