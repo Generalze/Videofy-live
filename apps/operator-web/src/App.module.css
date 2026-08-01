@@ -986,6 +986,13 @@
   align-items: stretch;
 }
 
+.rtmpSourceGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 0.42fr) minmax(0, 0.8fr) minmax(150px, 0.34fr);
+  gap: 0.7rem;
+  align-items: stretch;
+}
+
 .directUrlLabel {
   display: grid;
   gap: 0.35rem;
@@ -1151,7 +1158,8 @@
   .heroActions,
   .sourceChoiceGrid,
   .devicePickerGrid,
-  .directUrlRow {
+  .directUrlRow,
+  .rtmpSourceGrid {
     grid-template-columns: 1fr;
     min-width: 0;
   }

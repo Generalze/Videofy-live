@@ -22,6 +22,7 @@ function renderPanel(): string {
       onSelectScreen={vi.fn()}
       onSelectUploadedVideo={vi.fn()}
       onSelectDirectStreamUrl={vi.fn()}
+      onSelectRtmpSource={vi.fn()}
       onStart={vi.fn()}
       onPause={vi.fn()}
       onResume={vi.fn()}
@@ -43,6 +44,8 @@ describe('ProgrammeSourcePanel standard workflow', () => {
     expect(html).toContain('Meeting through OBS');
     expect(html).toContain('Direct media URL');
     expect(html).toContain('Use URL');
+    expect(html).toContain('RTMP publish URL');
+    expect(html).toContain('Use RTMP');
     expect(html).not.toContain('Start programme');
   });
 

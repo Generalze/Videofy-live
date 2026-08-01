@@ -1,6 +1,9 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   WebRtcTranscriptionBridge,
@@ -172,6 +175,41 @@ describe('WebRtcTranscriptionBridge', () => {
     expect(client.submitted.map((entry) => entry.sessionId)).toEqual(['wrs_demo', 'wrs_demo']);
   });
 
+  it('uses RTMP HLS external audio instead of silent browser-captured HLS frames', async () => {
+    const stagingDir = await tempDir();
+    const client = fakeClient();
+    const external = fakeExternalAudioProcess();
+    const bridge = new WebRtcTranscriptionBridge({
+      stagingDir,
+      chunkDurationMs: 100,
+      client,
+      createExternalAudioProcess: () => external.process,
+    });
+    const rtmpContext: WebRtcTranscriptionBridgeContext = {
+      ...context,
+      externalAudioSource: 'rtmp-hls',
+      externalAudioUrl: 'http://127.0.0.1:8888/live/videofy-demo/index.m3u8',
+    };
+
+    bridge.handleFrame(rtmpContext, {
+      samples: new Int16Array(1600),
+      sampleRate: 16000,
+      channelCount: 1,
+      bitsPerSample: 16,
+    });
+    external.writePcm(new Int16Array(1600).fill(4000));
+
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(1));
+    expect(client.created).toEqual([rtmpContext]);
+    expect(client.submitted[0]?.chunk.sequence).toBe(0);
+    expect(client.submitted[0]?.chunk.samples.every((sample) => sample === 0)).toBe(false);
+    expect(bridge.getSnapshot(rtmpContext)).toMatchObject({
+      externalAudioStarted: true,
+      skippedFrameCount: 0,
+      failure: null,
+    });
+  });
+
   it('skips malformed first frames without interrupting later transcription', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
@@ -293,6 +331,27 @@ function fakeClient(options: { failSubmitAttempts?: number } = {}) {
     },
   };
   return client;
+}
+
+function fakeExternalAudioProcess() {
+  const process = new EventEmitter() as ChildProcessWithoutNullStreams;
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  Object.assign(process, {
+    stdout,
+    stderr,
+    stdin: new PassThrough(),
+    kill: vi.fn(() => true),
+  });
+  return {
+    process,
+    writePcm(samples: Int16Array) {
+      stdout.write(Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength));
+    },
+    close(code = 0) {
+      process.emit('close', code);
+    },
+  };
 }
 
 async function tempDir(): Promise<string> {

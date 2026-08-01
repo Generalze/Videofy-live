@@ -79,6 +79,8 @@ export interface OperatorProgrammeSessionConfig {
   sessionId: string;
   broadcastId: string;
   sourceRevision: number;
+  programmeSourceType?: string;
+  rtmpPlaybackUrl?: string;
   targetLanguage: string;
   targetLanguages: string[];
   sourceLanguage: string;

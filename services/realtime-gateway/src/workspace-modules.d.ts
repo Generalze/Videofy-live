@@ -22,6 +22,8 @@ declare module '@videofy-live/shared-types' {
     sessionId: string;
     broadcastId: string;
     sourceRevision: number;
+    programmeSourceType?: string;
+    rtmpPlaybackUrl?: string;
     targetLanguage: string;
     targetLanguages: string[];
     sourceLanguage: string;

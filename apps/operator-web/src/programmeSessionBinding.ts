@@ -12,6 +12,7 @@ export interface ProgrammeSessionBinding {
   broadcastId: string | null;
   sourceType: ProgrammeSourceType;
   sourceRevision: number;
+  rtmpPlaybackUrl?: string | null;
   pending: boolean;
 }
 
@@ -30,6 +31,7 @@ export function createPendingProgrammeSessionBinding(
     broadcastId: null,
     sourceType: source.sourceType,
     sourceRevision: source.revision,
+    rtmpPlaybackUrl: source.rtmpPlaybackUrl,
     pending: true,
   };
 }
@@ -46,6 +48,7 @@ export function createActiveProgrammeSessionBinding(
     broadcastId: signalling.broadcastId,
     sourceType: source.sourceType,
     sourceRevision: source.revision,
+    rtmpPlaybackUrl: source.rtmpPlaybackUrl,
     pending: false,
   };
 }
@@ -61,6 +64,10 @@ export function buildOperatorProgrammeSessionConfig(
     sessionId: binding.sessionId,
     broadcastId: binding.broadcastId,
     sourceRevision: binding.sourceRevision,
+    programmeSourceType: binding.sourceType,
+    ...(binding.sourceType === 'rtmp' && binding.rtmpPlaybackUrl
+      ? { rtmpPlaybackUrl: binding.rtmpPlaybackUrl }
+      : {}),
     targetLanguage: language.targetLanguage,
     targetLanguages: language.targetLanguages,
     sourceLanguage: language.sourceLanguage,

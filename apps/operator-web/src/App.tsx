@@ -28,6 +28,7 @@ import {
 import {
   ProgrammeSourceManager,
   createInitialProgrammeSourceSnapshot,
+  type RtmpProgrammeSourceInput,
   type ProgrammeSourceSnapshot,
 } from './programmeSourceManager';
 import {
@@ -667,6 +668,17 @@ export default function App(): React.ReactElement {
       await prepareProgrammeSourceSwitch('programme source switched to direct stream URL');
       const source = await programmeSourceManagerRef.current
         ?.selectDirectStreamUrl(url, preview)
+        .catch(() => undefined);
+      if (source) setProgrammeSessionBinding(createPendingProgrammeSessionBinding(source));
+    },
+    [prepareProgrammeSourceSwitch, setProgrammeSessionBinding],
+  );
+
+  const handleSelectRtmpProgrammeSource = useCallback(
+    async (input: RtmpProgrammeSourceInput, preview: HTMLVideoElement): Promise<void> => {
+      await prepareProgrammeSourceSwitch('programme source switched to RTMP gateway');
+      const source = await programmeSourceManagerRef.current
+        ?.selectRtmpProgrammeSource(input, preview)
         .catch(() => undefined);
       if (source) setProgrammeSessionBinding(createPendingProgrammeSessionBinding(source));
     },
@@ -1691,6 +1703,9 @@ export default function App(): React.ReactElement {
             onSelectDirectStreamUrl={(url, preview) =>
               handleSelectDirectProgrammeUrl(url, preview)
             }
+            onSelectRtmpSource={(input, preview) =>
+              handleSelectRtmpProgrammeSource(input, preview)
+            }
             onStart={() => void handleStartInterpretation()}
             onPause={() => void handlePauseProgrammeSource()}
             onResume={() => void handleResumeProgrammeSource()}
@@ -2244,6 +2259,9 @@ export default function App(): React.ReactElement {
           }
           onSelectDirectStreamUrl={(url, preview) =>
             handleSelectDirectProgrammeUrl(url, preview)
+          }
+          onSelectRtmpSource={(input, preview) =>
+            handleSelectRtmpProgrammeSource(input, preview)
           }
           onStart={() => void handleStartProgrammeSource()}
           onPause={() => void handlePauseProgrammeSource()}

@@ -1048,6 +1048,9 @@ export class Gateway {
     if (!config) return context;
     return {
       ...context,
+      ...(config.programmeSourceType === 'rtmp' && config.rtmpPlaybackUrl
+        ? { externalAudioSource: 'rtmp-hls' as const, externalAudioUrl: config.rtmpPlaybackUrl }
+        : {}),
       targetLanguage: config.targetLanguage,
       targetLanguages: config.targetLanguages,
       sourceLanguage: config.sourceLanguage,
@@ -1079,10 +1082,21 @@ export class Gateway {
     ) {
       return null;
     }
+    const programmeSourceType =
+      typeof candidate.programmeSourceType === 'string'
+        ? candidate.programmeSourceType
+        : undefined;
+    const rtmpPlaybackUrl =
+      programmeSourceType === 'rtmp' && isSafeLocalHttpUrl(candidate.rtmpPlaybackUrl)
+        ? candidate.rtmpPlaybackUrl
+        : undefined;
+    if (programmeSourceType === 'rtmp' && !rtmpPlaybackUrl) return null;
     return {
       sessionId: candidate.sessionId,
       broadcastId: candidate.broadcastId,
       sourceRevision,
+      ...(programmeSourceType ? { programmeSourceType } : {}),
+      ...(rtmpPlaybackUrl ? { rtmpPlaybackUrl } : {}),
       targetLanguage: candidate.targetLanguage,
       targetLanguages,
       sourceLanguage: candidate.sourceLanguage,
@@ -1162,6 +1176,19 @@ function isAudioLevel(value: unknown): value is number {
 
 function isSafeIdentifier(value: unknown): value is string {
   return typeof value === 'string' && /^[a-zA-Z0-9:_/-]{1,128}$/.test(value);
+}
+
+function isSafeLocalHttpUrl(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) return false;
+    if (!url.pathname.endsWith('/index.m3u8')) return false;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isLanguageTag(value: unknown): value is string {

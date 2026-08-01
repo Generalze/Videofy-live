@@ -129,10 +129,33 @@ describe('programme session binding', () => {
       sessionId: 'wrs_uploaded',
       broadcastId: 'broadcast_demo',
       sourceRevision: 3,
+      programmeSourceType: 'uploaded-video',
       targetLanguage: 'es',
       targetLanguages: ['es'],
       sourceLanguage: 'en',
       sourceLanguageMode: 'auto-detect',
+    });
+  });
+
+  it('includes RTMP playback URL for gateway-side audio extraction', () => {
+    const source = {
+      ...uploadedSource(),
+      sourceType: 'rtmp' as const,
+      sourceIdentity: 'MediaMTX live/videofy-demo',
+      rtmpPlaybackUrl: 'http://127.0.0.1:8888/live/videofy-demo/index.m3u8',
+    };
+    const binding = createActiveProgrammeSessionBinding(signalling(), source);
+
+    expect(
+      buildOperatorProgrammeSessionConfig(binding, {
+        targetLanguage: 'es',
+        targetLanguages: ['es'],
+        sourceLanguage: 'en',
+        sourceLanguageMode: 'manual',
+      }),
+    ).toMatchObject({
+      programmeSourceType: 'rtmp',
+      rtmpPlaybackUrl: 'http://127.0.0.1:8888/live/videofy-demo/index.m3u8',
     });
   });
 });

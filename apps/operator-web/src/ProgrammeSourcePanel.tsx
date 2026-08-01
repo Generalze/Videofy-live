@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import type {
   ProgrammeSourceSnapshot,
   ProgrammeSourceType,
+  RtmpProgrammeSourceInput,
 } from './programmeSourceManager';
 import styles from './App.module.css';
 
@@ -12,6 +13,7 @@ interface ProgrammeSourcePanelProps {
   onSelectScreen: (preview: HTMLVideoElement) => void;
   onSelectUploadedVideo: (file: File, preview: HTMLVideoElement) => Promise<void> | void;
   onSelectDirectStreamUrl: (url: string, preview: HTMLVideoElement) => Promise<void> | void;
+  onSelectRtmpSource: (input: RtmpProgrammeSourceInput, preview: HTMLVideoElement) => Promise<void> | void;
   onStart: () => void;
   onPause: () => void;
   onResume: () => void;
@@ -27,6 +29,7 @@ const SOURCE_LABELS: Record<ProgrammeSourceType, string> = {
   screen: 'Screen or browser tab',
   'uploaded-video': 'Uploaded video',
   'direct-url': 'Direct stream URL',
+  rtmp: 'RTMP via MediaMTX',
 };
 
 export function ProgrammeSourcePanel({
@@ -36,12 +39,16 @@ export function ProgrammeSourcePanel({
   onSelectScreen,
   onSelectUploadedVideo,
   onSelectDirectStreamUrl,
+  onSelectRtmpSource,
   onSeek,
 }: ProgrammeSourcePanelProps): React.ReactElement {
   const previewRef = useRef<HTMLVideoElement>(null);
   const [pendingAudioDeviceId, setPendingAudioDeviceId] = useState(source.selectedAudioDeviceId);
   const [pendingVideoDeviceId, setPendingVideoDeviceId] = useState(source.selectedVideoDeviceId);
   const [directUrl, setDirectUrl] = useState('');
+  const [rtmpPublishUrl, setRtmpPublishUrl] = useState('rtmp://localhost:1935/live');
+  const [rtmpStreamKey, setRtmpStreamKey] = useState('videofy-demo');
+  const [rtmpHlsBaseUrl, setRtmpHlsBaseUrl] = useState('http://localhost:8888');
   const audioDevices = source.availableDevices.filter((device) => device.kind === 'audioinput');
   const videoDevices = source.availableDevices.filter((device) => device.kind === 'videoinput');
   const canSelect = source.status !== 'selecting' && source.status !== 'broadcasting';
@@ -67,6 +74,16 @@ export function ProgrammeSourcePanel({
     const url = directUrl.trim();
     if (!preview || !url) return;
     void Promise.resolve(onSelectDirectStreamUrl(url, preview));
+  };
+
+  const selectRtmpSource = (): void => {
+    const preview = previewRef.current;
+    if (!preview || !rtmpPublishUrl.trim() || !rtmpStreamKey.trim()) return;
+    void Promise.resolve(onSelectRtmpSource({
+      publishUrl: rtmpPublishUrl,
+      streamKey: rtmpStreamKey,
+      hlsBaseUrl: rtmpHlsBaseUrl,
+    }, preview));
   };
 
   return (
@@ -158,6 +175,54 @@ export function ProgrammeSourcePanel({
             </button>
           </div>
 
+          <div className={styles.rtmpSourceGrid}>
+            <label className={styles.directUrlLabel}>
+              <span>RTMP publish URL</span>
+              <input
+                className={styles.directUrlInput}
+                type="text"
+                value={rtmpPublishUrl}
+                placeholder="rtmp://localhost:1935/live"
+                onChange={(event) => setRtmpPublishUrl(event.target.value)}
+                disabled={!canSelect}
+                aria-label="RTMP publish URL"
+              />
+            </label>
+            <label className={styles.directUrlLabel}>
+              <span>Stream key</span>
+              <input
+                className={styles.directUrlInput}
+                type="text"
+                value={rtmpStreamKey}
+                placeholder="videofy-demo"
+                onChange={(event) => setRtmpStreamKey(event.target.value)}
+                disabled={!canSelect}
+                aria-label="RTMP stream key"
+              />
+            </label>
+            <label className={styles.directUrlLabel}>
+              <span>HLS base URL</span>
+              <input
+                className={styles.directUrlInput}
+                type="url"
+                value={rtmpHlsBaseUrl}
+                placeholder="http://localhost:8888"
+                onChange={(event) => setRtmpHlsBaseUrl(event.target.value)}
+                disabled={!canSelect}
+                aria-label="MediaMTX HLS base URL"
+              />
+            </label>
+            <button
+              type="button"
+              className={`${styles.sourceChoice} ${source.sourceType === 'rtmp' ? styles.sourceChoiceActive : ''}`}
+              onClick={selectRtmpSource}
+              disabled={!canSelect || rtmpPublishUrl.trim().length === 0 || rtmpStreamKey.trim().length === 0}
+            >
+              <span>Use RTMP</span>
+              <small>Local MediaMTX bridge</small>
+            </button>
+          </div>
+
           <div className={styles.devicePickerGrid}>
             <div className={styles.langConfig}>
               <label className={styles.configLabel}>Video device</label>
@@ -203,7 +268,9 @@ export function ProgrammeSourcePanel({
             <span>{SOURCE_LABELS[source.sourceType]}</span>
             <strong>{source.sourceIdentity}</strong>
             <small>
-              {source.sourceType === 'none'
+              {source.sourceType === 'rtmp' && source.rtmpState !== 'idle'
+                ? `RTMP ${formatRtmpState(source.rtmpState)}`
+                : source.sourceType === 'none'
                 ? `${selectedVideoLabel} + ${selectedAudioLabel}`
                 : source.audioDetected
                   ? 'Video and audio detected'
@@ -270,6 +337,13 @@ export function ProgrammeSourcePanel({
               <ProgrammeMetric label="Frame rate" value={source.frameRate ? `${source.frameRate} fps` : 'Unknown'} />
               <ProgrammeMetric label="OBS" value={source.isObsVirtualCamera ? 'Detected as camera source' : 'Not detected'} />
               <ProgrammeMetric label="Capture device" value={source.isCaptureDeviceCandidate ? 'Possible professional device' : 'Not detected'} />
+              {source.sourceType === 'rtmp' && (
+                <>
+                  <ProgrammeMetric label="RTMP state" value={formatRtmpState(source.rtmpState)} />
+                  <ProgrammeMetric label="RTMP path" value={source.rtmpStreamPath ?? 'Not configured'} />
+                  <ProgrammeMetric label="HLS playback" value={source.rtmpPlaybackUrl ?? 'Not configured'} />
+                </>
+              )}
               <ProgrammeMetric label="Revision" value={String(source.revision)} />
             </dl>
           </details>
@@ -292,6 +366,10 @@ function formatMs(ms: number): string {
   const seconds = Math.floor(ms / 1000);
   const minutes = Math.floor(seconds / 60);
   return `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+function formatRtmpState(state: ProgrammeSourceSnapshot['rtmpState']): string {
+  return state.split('-').join(' ');
 }
 
 function selectedCameraDevices(

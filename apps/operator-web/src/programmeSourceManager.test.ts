@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ProgrammeSourceManager,
   createInitialProgrammeSourceSnapshot,
+  deriveRtmpHlsPlaybackUrl,
   isUploadedProgrammeVideoSupported,
   validateDirectProgrammeUrl,
 } from './programmeSourceManager';
@@ -83,6 +84,7 @@ function videoElement(
     currentTime: 0,
     paused: true,
     muted: false,
+    volume: 1,
     playsInline: false,
     preload: '',
     src: '',
@@ -148,6 +150,26 @@ function hlsController(input: {
 
 function file(name: string, type: string): File {
   return new File(['demo'], name, { type });
+}
+
+async function withNavigator<T>(
+  value: Pick<Navigator, 'userAgent' | 'vendor'>,
+  run: () => Promise<T>,
+): Promise<T> {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value,
+  });
+  try {
+    return await run();
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(globalThis, 'navigator', descriptor);
+    } else {
+      Reflect.deleteProperty(globalThis, 'navigator');
+    }
+  }
 }
 
 describe('ProgrammeSourceManager', () => {
@@ -316,6 +338,48 @@ describe('ProgrammeSourceManager', () => {
     );
   });
 
+  it('maps a local RTMP publish URL and stream key to the expected MediaMTX HLS URL', () => {
+    expect(
+      deriveRtmpHlsPlaybackUrl({
+        publishUrl: 'rtmp://localhost:1935/live',
+        streamKey: 'videofy-demo',
+      }),
+    ).toMatchObject({
+      publishUrl: 'rtmp://localhost:1935/live',
+      streamKeyRedacted: 'vi...mo',
+      streamPath: 'live/videofy-demo',
+      hlsPlaybackUrl: 'http://localhost:8888/live/videofy-demo/index.m3u8',
+    });
+    expect(
+      deriveRtmpHlsPlaybackUrl({
+        publishUrl: 'rtmp://127.0.0.1:1935/channel',
+        streamKey: 'demo_01',
+        hlsBaseUrl: 'http://127.0.0.1:8888/custom',
+      }).hlsPlaybackUrl,
+    ).toBe('http://127.0.0.1:8888/custom/channel/demo_01/index.m3u8');
+  });
+
+  it('rejects unsafe RTMP gateway inputs before deriving playback', () => {
+    expect(() =>
+      deriveRtmpHlsPlaybackUrl({
+        publishUrl: 'https://localhost/live',
+        streamKey: 'videofy-demo',
+      }),
+    ).toThrow(/rtmp/);
+    expect(() =>
+      deriveRtmpHlsPlaybackUrl({
+        publishUrl: 'rtmp://example.com/live',
+        streamKey: 'videofy-demo',
+      }),
+    ).toThrow(/local RTMP gateway/);
+    expect(() =>
+      deriveRtmpHlsPlaybackUrl({
+        publishUrl: 'rtmp://localhost:1935/live',
+        streamKey: '../secret',
+      }),
+    ).toThrow(/cannot include slashes/);
+  });
+
   it('selects a direct MP4 URL through the media element capture path', async () => {
     const source = stream([track('audio', 'stream_audio'), track('video', 'stream_video')]);
     const preview = videoElement(source);
@@ -385,27 +449,72 @@ describe('ProgrammeSourceManager', () => {
   });
 
   it('accepts native HLS URLs when the browser reports HLS playback support', async () => {
-    const source = stream([track('audio', 'hls_audio'), track('video', 'hls_video')]);
-    const preview = {
-      ...videoElement(source),
-      canPlayType: vi.fn((mimeType: string) =>
-        mimeType === 'application/vnd.apple.mpegurl' ? 'probably' : '',
-      ),
-    } as unknown as HTMLVideoElement;
-    const loadHlsRuntime = vi.fn(async () => {
-      throw new Error('hls.js should not load for native HLS.');
-    });
-    const manager = new ProgrammeSourceManager({ loadHlsRuntime });
+    await withNavigator(
+      {
+        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15',
+        vendor: 'Apple Computer, Inc.',
+      },
+      async () => {
+        const source = stream([track('audio', 'hls_audio'), track('video', 'hls_video')]);
+        const preview = {
+          ...videoElement(source),
+          canPlayType: vi.fn((mimeType: string) =>
+            mimeType === 'application/vnd.apple.mpegurl' ? 'probably' : '',
+          ),
+        } as unknown as HTMLVideoElement;
+        const loadHlsRuntime = vi.fn(async () => {
+          throw new Error('hls.js should not load for native HLS.');
+        });
+        const manager = new ProgrammeSourceManager({ loadHlsRuntime });
 
-    await manager.selectDirectStreamUrl('https://cdn.example.com/live.m3u8', preview);
+        await manager.selectDirectStreamUrl('https://cdn.example.com/live.m3u8', preview);
 
-    expect(manager.getSnapshot()).toMatchObject({
-      sourceType: 'direct-url',
-      audioDetected: true,
-      videoDetected: true,
-      browserLimitation: 'Native HLS playback active.',
-    });
-    expect(loadHlsRuntime).not.toHaveBeenCalled();
+        expect(manager.getSnapshot()).toMatchObject({
+          sourceType: 'direct-url',
+          audioDetected: true,
+          videoDetected: true,
+          browserLimitation: 'Native HLS playback active.',
+        });
+        expect(loadHlsRuntime).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  it('uses hls.js when Chromium reports false native HLS support', async () => {
+    await withNavigator(
+      {
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36',
+        vendor: 'Google Inc.',
+      },
+      async () => {
+        const source = stream([track('audio', 'hls_audio'), track('video', 'hls_video')]);
+        const preview = {
+          ...videoElement(source),
+          canPlayType: vi.fn((mimeType: string) =>
+            mimeType === 'application/vnd.apple.mpegurl' ? 'probably' : '',
+          ),
+        } as unknown as HTMLVideoElement;
+        const controller = hlsController();
+        const loadHlsRuntime = vi.fn(async () => ({
+          isSupported: () => true,
+          createController: () => controller,
+        }));
+        const manager = new ProgrammeSourceManager({ loadHlsRuntime });
+
+        await manager.selectDirectStreamUrl('https://cdn.example.com/live.m3u8', preview);
+
+        expect(loadHlsRuntime).toHaveBeenCalledTimes(1);
+        expect(controller.attachMedia).toHaveBeenCalledWith(preview);
+        expect(controller.loadSource).toHaveBeenCalledWith('https://cdn.example.com/live.m3u8');
+        expect(preview.src).toBe('');
+        expect(manager.getSnapshot()).toMatchObject({
+          sourceType: 'direct-url',
+          audioDetected: true,
+          videoDetected: true,
+          browserLimitation: 'hls.js playback active.',
+        });
+      },
+    );
   });
 
   it('loads hls.js once for fallback HLS playback', async () => {
@@ -561,6 +670,199 @@ describe('ProgrammeSourceManager', () => {
       },
     });
     expect(source.getTracks().every((item) => item.enabled === false)).toBe(true);
+  });
+
+  it('keeps RTMP processing unavailable until gateway HLS metadata is ready', async () => {
+    vi.useFakeTimers();
+    const source = stream([track('audio', 'rtmp_audio'), track('video', 'rtmp_video')]);
+    const preview = videoElement(source, { readyState: 0 });
+    const controller = hlsController();
+    const manager = new ProgrammeSourceManager({
+      isHlsSupported: () => true,
+      createHlsController: () => controller,
+    });
+
+    const selection = manager.selectRtmpProgrammeSource({
+      publishUrl: 'rtmp://localhost:1935/live',
+      streamKey: 'videofy-demo',
+    }, preview);
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(manager.getStream()).toBeNull();
+    expect(manager.getSnapshot()).toMatchObject({
+      sourceType: 'rtmp',
+      status: 'selecting',
+      previewReady: false,
+      rtmpState: 'waiting-for-stream',
+      rtmpPlaybackUrl: 'http://localhost:8888/live/videofy-demo/index.m3u8',
+    });
+
+    (preview as { readyState: number }).readyState = 1;
+    preview.emit('loadedmetadata');
+    await selection;
+    vi.useRealTimers();
+
+    expect(manager.getSnapshot()).toMatchObject({
+      sourceType: 'rtmp',
+      status: 'preview-ready',
+      previewReady: true,
+      audioDetected: true,
+      videoDetected: true,
+      rtmpState: 'live',
+    });
+  });
+
+  it('waits for RTMP HLS capture to expose audio after video metadata', async () => {
+    vi.useFakeTimers();
+    const tracks = [track('video', 'rtmp_video')] as MediaStreamTrack[];
+    const source = stream(tracks);
+    const preview = videoElement(source, { readyState: 0 });
+    const controller = hlsController();
+    const manager = new ProgrammeSourceManager({
+      isHlsSupported: () => true,
+      createHlsController: () => controller,
+    });
+
+    const selection = manager.selectRtmpProgrammeSource({
+      publishUrl: 'rtmp://localhost:1935/live',
+      streamKey: 'videofy-demo',
+    }, preview);
+
+    (preview as { readyState: number }).readyState = 1;
+    preview.emit('loadedmetadata');
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(manager.getStream()).toBeNull();
+    expect(manager.getSnapshot()).toMatchObject({
+      sourceType: 'rtmp',
+      status: 'selecting',
+      audioDetected: false,
+      videoDetected: false,
+    });
+
+    tracks.push(track('audio', 'rtmp_audio'));
+    await vi.advanceTimersByTimeAsync(100);
+    await selection;
+    vi.useRealTimers();
+
+    expect(manager.getSnapshot()).toMatchObject({
+      sourceType: 'rtmp',
+      status: 'preview-ready',
+      audioDetected: true,
+      videoDetected: true,
+      rtmpState: 'live',
+    });
+  });
+
+  it('uses Web Audio to capture RTMP HLS audio when captureStream exposes video only', async () => {
+    const capturedVideo = track('video', 'rtmp_video');
+    const webAudio = track('audio', 'rtmp_web_audio');
+    const captured = stream([capturedVideo]);
+    const destination = {
+      stream: stream([webAudio]),
+      disconnect: vi.fn(),
+    };
+    const sourceNode = {
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    const close = vi.fn(async () => undefined);
+    const mediaStreamDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'MediaStream');
+    const audioContextDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'AudioContext');
+    Object.defineProperty(globalThis, 'MediaStream', {
+      configurable: true,
+      value: vi.fn((tracks: MediaStreamTrack[]) => stream(tracks)),
+    });
+    Object.defineProperty(globalThis, 'AudioContext', {
+      configurable: true,
+      value: vi.fn(() => ({
+        createMediaElementSource: vi.fn(() => sourceNode),
+        createMediaStreamDestination: vi.fn(() => destination),
+        resume: vi.fn(async () => undefined),
+        close,
+      })),
+    });
+
+    try {
+      const manager = new ProgrammeSourceManager({
+        isHlsSupported: () => true,
+        createHlsController: () => hlsController(),
+      });
+      const preview = videoElement(captured);
+
+      await manager.selectRtmpProgrammeSource({
+        publishUrl: 'rtmp://localhost:1935/live',
+        streamKey: 'videofy-demo',
+      }, preview);
+
+      expect(sourceNode.connect).toHaveBeenCalledWith(destination);
+      expect(preview.muted).toBe(false);
+      expect(preview.volume).toBe(1);
+      expect(manager.getSnapshot()).toMatchObject({
+        sourceType: 'rtmp',
+        status: 'preview-ready',
+        audioDetected: true,
+        videoDetected: true,
+        audioSourceLabel: 'rtmp_web_audio',
+        videoSourceLabel: 'rtmp_video',
+      });
+
+      await manager.clear();
+
+      expect(sourceNode.disconnect).toHaveBeenCalledTimes(1);
+      expect(destination.disconnect).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(webAudio.readyState).toBe('ended');
+    } finally {
+      if (mediaStreamDescriptor) {
+        Object.defineProperty(globalThis, 'MediaStream', mediaStreamDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, 'MediaStream');
+      }
+      if (audioContextDescriptor) {
+        Object.defineProperty(globalThis, 'AudioContext', audioContextDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, 'AudioContext');
+      }
+    }
+  });
+
+  it('marks RTMP interruption and recovery without creating a duplicate active source', async () => {
+    const first = stream([track('audio', 'rtmp_audio_1'), track('video', 'rtmp_video_1')]);
+    const firstController = hlsController();
+    const manager = new ProgrammeSourceManager({
+      isHlsSupported: () => true,
+      createHlsController: () => firstController,
+    });
+
+    await manager.selectRtmpProgrammeSource({
+      publishUrl: 'rtmp://localhost:1935/live',
+      streamKey: 'videofy-demo',
+    }, videoElement(first));
+    await manager.start();
+    firstController.emitFatal({
+      details: 'fragLoadError',
+      type: 'networkError',
+      message: 'stream interrupted',
+    });
+
+    expect(manager.getSnapshot()).toMatchObject({
+      status: 'failed',
+      rtmpState: 'interrupted',
+      captureInterrupted: true,
+    });
+    const second = stream([track('audio', 'rtmp_audio_2'), track('video', 'rtmp_video_2')]);
+    await manager.selectRtmpProgrammeSource({
+      publishUrl: 'rtmp://localhost:1935/live',
+      streamKey: 'videofy-demo',
+    }, videoElement(second));
+
+    expect(first.getTracks().every((item) => item.readyState === 'ended')).toBe(true);
+    expect(manager.getSnapshot()).toMatchObject({
+      status: 'preview-ready',
+      rtmpState: 'recovered',
+      sourceIdentity: 'MediaMTX live/videofy-demo',
+    });
   });
 
   it('cleans up uploaded video before switching to a live source', async () => {

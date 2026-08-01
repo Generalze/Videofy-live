@@ -135,6 +135,50 @@ describe('operator workflow summary', () => {
     expect(summary.canStartInterpretation).toBe(false);
   });
 
+  it('keeps RTMP source in starting state while the MediaMTX stream is unavailable', () => {
+    const summary = buildOperatorWorkflowSummary({
+      connected: true,
+      ingestHealthy: true,
+      programmeSource: source({
+        sourceType: 'rtmp',
+        sourceIdentity: 'RTMP live/videofy-demo',
+        status: 'selecting',
+        previewReady: false,
+        audioDetected: false,
+        videoDetected: false,
+        rtmpState: 'waiting-for-stream',
+      }),
+      mediaState: null,
+      streamStatus: 'created',
+      starting: false,
+      mediaError: null,
+    });
+
+    expect(summary.status).toBe('Starting');
+    expect(summary.canStartInterpretation).toBe(false);
+    expect(summary.progressLabel).toBe('Validating source');
+  });
+
+  it('starts one authoritative workflow after RTMP gateway playback is ready', () => {
+    const summary = buildOperatorWorkflowSummary({
+      connected: true,
+      ingestHealthy: true,
+      programmeSource: source({
+        sourceType: 'rtmp',
+        sourceIdentity: 'MediaMTX live/videofy-demo',
+        rtmpState: 'live',
+        rtmpPlaybackUrl: 'http://localhost:8888/live/videofy-demo/index.m3u8',
+      }),
+      mediaState: null,
+      streamStatus: 'created',
+      starting: false,
+      mediaError: null,
+    });
+
+    expect(summary.status).toBe('Ready');
+    expect(summary.canStartInterpretation).toBe(true);
+  });
+
   it('exposes one actionable readiness warning for disconnected services', () => {
     const summary = buildOperatorWorkflowSummary({
       connected: false,

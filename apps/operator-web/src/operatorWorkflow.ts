@@ -49,7 +49,7 @@ export function buildOperatorWorkflowSummary(
   }
 
   if (
-    (source.sourceType === 'uploaded-video' || source.sourceType === 'direct-url') &&
+    (source.sourceType === 'uploaded-video' || source.sourceType === 'direct-url' || source.sourceType === 'rtmp') &&
     source.status === 'ended'
   ) {
     return {
@@ -104,8 +104,10 @@ export function buildOperatorWorkflowSummary(
     actionableWarning:
       serviceWarning ??
       (!sourceSelected
-        ? 'Select an uploaded video, camera, screen, or OBS meeting source.'
-        : !source.videoDetected
+        ? 'Select an uploaded video, camera, screen, OBS meeting source, direct URL, or RTMP gateway source.'
+        : source.sourceType === 'rtmp' && source.rtmpState === 'waiting-for-stream'
+          ? 'Waiting for OBS or an encoder to publish the RTMP stream to MediaMTX.'
+          : !source.videoDetected
           ? 'Selected source does not have video.'
           : !source.audioDetected
             ? source.audioMissingReason ?? 'Selected source does not have programme audio.'

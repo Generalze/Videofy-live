@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
@@ -18,6 +19,8 @@ export interface WebRtcTranscriptionBridgeContext {
   broadcastId: string;
   broadcasterPeerId: string;
   revision: number;
+  externalAudioSource?: 'rtmp-hls';
+  externalAudioUrl?: string;
   targetLanguage?: string;
   targetLanguages?: string[];
   sourceLanguage?: string;
@@ -41,6 +44,8 @@ export interface WebRtcTranscriptionBridgeOptions {
   maxQueuedBytes?: number;
   vad?: ConstructorParameters<typeof WebRtcTranscriptionChunker>[0]['vad'];
   client?: WebRtcTranscriptionSubmissionClient;
+  ffmpegPath?: string;
+  createExternalAudioProcess?: (url: string) => ChildProcessWithoutNullStreams;
 }
 
 interface WebRtcTranscriptionSessionState {
@@ -54,6 +59,10 @@ interface WebRtcTranscriptionSessionState {
   failure: string | null;
   skippedFrameCount: number;
   lastSkippedFrameReason: string | null;
+  externalAudioStarted: boolean;
+  externalAudioProcess: ChildProcessWithoutNullStreams | null;
+  externalAudioRemainder: Buffer;
+  externalAudioStderr: string;
 }
 
 export class WebRtcTranscriptionBridge {
@@ -64,6 +73,8 @@ export class WebRtcTranscriptionBridge {
   private readonly vad: WebRtcTranscriptionBridgeOptions['vad'];
   private readonly maxRetries: number;
   private readonly client: WebRtcTranscriptionSubmissionClient;
+  private readonly ffmpegPath: string;
+  private readonly createExternalAudioProcess: (url: string) => ChildProcessWithoutNullStreams;
   private readonly sessions = new Map<string, WebRtcTranscriptionSessionState>();
 
   constructor(options: WebRtcTranscriptionBridgeOptions) {
@@ -73,6 +84,23 @@ export class WebRtcTranscriptionBridge {
     this.maxQueuedBytes = options.maxQueuedBytes;
     this.vad = options.vad;
     this.maxRetries = options.maxRetries ?? 1;
+    this.ffmpegPath = options.ffmpegPath ?? process.env['FFMPEG_PATH'] ?? 'ffmpeg';
+    this.createExternalAudioProcess =
+      options.createExternalAudioProcess ?? ((url) => spawn(this.ffmpegPath, [
+        '-hide_banner',
+        '-loglevel',
+        'warning',
+        '-i',
+        url,
+        '-vn',
+        '-ac',
+        '1',
+        '-ar',
+        '16000',
+        '-f',
+        's16le',
+        'pipe:1',
+      ]));
     this.client =
       options.client ??
       new HttpWebRtcTranscriptionSubmissionClient({
@@ -85,6 +113,10 @@ export class WebRtcTranscriptionBridge {
   handleFrame(context: WebRtcTranscriptionBridgeContext, data: WebRtcAudioDataLike): void {
     const session = this.getOrCreateSession(context);
     if (session.closed) return;
+    if (context.externalAudioSource === 'rtmp-hls' && context.externalAudioUrl) {
+      this.startExternalAudio(session);
+      return;
+    }
     try {
       const chunks = session.chunker.pushFrame(data);
       for (const chunk of chunks) {
@@ -111,6 +143,10 @@ export class WebRtcTranscriptionBridge {
     const session = this.sessions.get(sessionKey(context));
     if (!session || session.closed) return;
     session.closed = true;
+    if (session.externalAudioProcess) {
+      session.externalAudioProcess.kill('SIGTERM');
+      session.externalAudioProcess = null;
+    }
     try {
       for (const chunk of session.chunker.flush(true)) {
         session.queue.push(chunk);
@@ -140,6 +176,7 @@ export class WebRtcTranscriptionBridge {
       failure: session.failure,
       skippedFrameCount: session.skippedFrameCount,
       lastSkippedFrameReason: session.lastSkippedFrameReason,
+      externalAudioStarted: session.externalAudioStarted,
     };
   }
 
@@ -191,6 +228,10 @@ export class WebRtcTranscriptionBridge {
       failure: null,
       skippedFrameCount: 0,
       lastSkippedFrameReason: null,
+      externalAudioStarted: false,
+      externalAudioProcess: null,
+      externalAudioRemainder: Buffer.alloc(0),
+      externalAudioStderr: '',
     };
     this.sessions.set(key, state);
     return state;
@@ -203,6 +244,98 @@ export class WebRtcTranscriptionBridge {
       session.active = false;
       if (session.queue.length > 0) this.processQueue(session);
       else this.maybeStopSession(session);
+    });
+  }
+
+  private startExternalAudio(session: WebRtcTranscriptionSessionState): void {
+    if (session.externalAudioStarted || session.closed) return;
+    const url = session.context.externalAudioUrl;
+    if (!url) return;
+    session.externalAudioStarted = true;
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = this.createExternalAudioProcess(url);
+    } catch (error) {
+      session.failure = error instanceof Error ? error.message : 'RTMP HLS audio extraction failed to start.';
+      logger.warn('RTMP HLS audio extraction failed to start', {
+        sessionId: session.context.sessionId,
+        broadcastId: session.context.broadcastId,
+        revision: session.context.revision,
+        message: session.failure,
+      });
+      return;
+    }
+    session.externalAudioProcess = child;
+    child.stdout.on('data', (data: Buffer) => {
+      if (session.closed) return;
+      const samples = pcm16BufferToSamples(Buffer.concat([session.externalAudioRemainder, data]));
+      session.externalAudioRemainder = samples.remainder;
+      if (samples.pcm.length === 0) return;
+      try {
+        const chunks = session.chunker.pushFrame({
+          samples: samples.pcm,
+          sampleRate: 16000,
+          channelCount: 1,
+          bitsPerSample: 16,
+        });
+        for (const chunk of chunks) session.queue.push(chunk);
+        this.processQueue(session);
+      } catch (error) {
+        session.chunker.markDiscontinuity();
+        session.failure = error instanceof Error ? error.message : 'RTMP HLS audio chunking failed.';
+        logger.warn('RTMP HLS audio frame skipped', {
+          sessionId: session.context.sessionId,
+          broadcastId: session.context.broadcastId,
+          revision: session.context.revision,
+          message: session.failure,
+        });
+      }
+    });
+    child.stderr.on('data', (data: Buffer) => {
+      session.externalAudioStderr = `${session.externalAudioStderr}${data.toString('utf8')}`.slice(-4000);
+    });
+    child.on('error', (error) => {
+      session.failure = error.message;
+      logger.warn('RTMP HLS audio extraction process failed', {
+        sessionId: session.context.sessionId,
+        broadcastId: session.context.broadcastId,
+        revision: session.context.revision,
+        message: error.message,
+      });
+    });
+    child.on('close', (code) => {
+      if (session.externalAudioProcess === child) session.externalAudioProcess = null;
+      if (session.closed) return;
+      try {
+        if (session.externalAudioRemainder.length > 0) {
+          const samples = pcm16BufferToSamples(session.externalAudioRemainder);
+          session.externalAudioRemainder = samples.remainder;
+          if (samples.pcm.length > 0) {
+            for (const chunk of session.chunker.pushFrame({
+              samples: samples.pcm,
+              sampleRate: 16000,
+              channelCount: 1,
+              bitsPerSample: 16,
+            })) session.queue.push(chunk);
+          }
+        }
+        session.closed = true;
+        for (const chunk of session.chunker.flush(true)) session.queue.push(chunk);
+      } catch (error) {
+        session.failure = error instanceof Error ? error.message : 'RTMP HLS audio flush failed.';
+      }
+      if (code !== 0 && session.queue.length === 0) {
+        session.failure =
+          session.externalAudioStderr.trim() ||
+          `RTMP HLS audio extraction exited with code ${code ?? 'unknown'}.`;
+      }
+      this.processQueue(session);
+      this.maybeStopSession(session);
+    });
+    logger.info('RTMP HLS audio extraction started', {
+      sessionId: session.context.sessionId,
+      broadcastId: session.context.broadcastId,
+      revision: session.context.revision,
     });
   }
 
@@ -396,4 +529,16 @@ export function wavBufferFromPcm(samples: Int16Array, sampleRate: number, channe
 
 function sessionKey(context: WebRtcTranscriptionBridgeContext): string {
   return `${context.sessionId}:${context.revision}`;
+}
+
+function pcm16BufferToSamples(buffer: Buffer): { pcm: Int16Array; remainder: Buffer } {
+  const byteLength = buffer.length - (buffer.length % 2);
+  const pcm = new Int16Array(byteLength / 2);
+  for (let index = 0; index < pcm.length; index++) {
+    pcm[index] = buffer.readInt16LE(index * 2);
+  }
+  return {
+    pcm,
+    remainder: byteLength === buffer.length ? Buffer.alloc(0) : buffer.subarray(byteLength),
+  };
 }

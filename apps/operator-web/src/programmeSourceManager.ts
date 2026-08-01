@@ -1,4 +1,12 @@
-export type ProgrammeSourceType = 'none' | 'camera' | 'screen' | 'uploaded-video' | 'direct-url';
+export type ProgrammeSourceType = 'none' | 'camera' | 'screen' | 'uploaded-video' | 'direct-url' | 'rtmp';
+
+export type RtmpProgrammeState =
+  | 'idle'
+  | 'waiting-for-stream'
+  | 'live'
+  | 'interrupted'
+  | 'recovered'
+  | 'ended';
 
 export type ProgrammePlaybackState =
   | 'idle'
@@ -71,8 +79,18 @@ export interface ProgrammeSourceSnapshot {
   availableDevices: ProgrammeSourceDevice[];
   selectedAudioDeviceId: string;
   selectedVideoDeviceId: string;
+  rtmpState: RtmpProgrammeState;
+  rtmpPublishUrl: string | null;
+  rtmpStreamPath: string | null;
+  rtmpPlaybackUrl: string | null;
   error: ProgrammeSourceErrorDetails | null;
   updatedAt: string;
+}
+
+export interface RtmpProgrammeSourceInput {
+  publishUrl: string;
+  streamKey: string;
+  hlsBaseUrl?: string;
 }
 
 export interface ProgrammeSourceManagerOptions {
@@ -123,6 +141,8 @@ const UPLOADED_VIDEO_MIME_TYPES = new Set([
   'video/x-quicktime',
 ]);
 const DIRECT_STREAM_EXTENSIONS = new Set(['mp4', 'webm', 'm3u8']);
+const SAFE_RTMP_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const LOCAL_RTMP_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 const NATIVE_HLS_MIME_TYPES = ['application/vnd.apple.mpegurl', 'application/x-mpegURL'];
 const HLS_ERROR_EVENT = 'hlsError';
 const HLS_ERROR_DETAILS = {
@@ -187,6 +207,10 @@ export function createInitialProgrammeSourceSnapshot(): ProgrammeSourceSnapshot 
     availableDevices: [],
     selectedAudioDeviceId: '',
     selectedVideoDeviceId: '',
+    rtmpState: 'idle',
+    rtmpPublishUrl: null,
+    rtmpStreamPath: null,
+    rtmpPlaybackUrl: null,
     error: null,
     updatedAt: new Date(0).toISOString(),
   };
@@ -236,6 +260,114 @@ export function validateDirectProgrammeUrl(rawUrl: string): {
   };
 }
 
+export function deriveRtmpHlsPlaybackUrl(input: RtmpProgrammeSourceInput): {
+  publishUrl: string;
+  streamKeyRedacted: string;
+  streamPath: string;
+  hlsPlaybackUrl: string;
+} {
+  const publishUrl = parseRtmpPublishUrl(input.publishUrl);
+  const streamKey = input.streamKey.trim();
+  if (!SAFE_RTMP_SEGMENT.test(streamKey)) {
+    throw new ProgrammeSourceError(
+      'unsupported-format',
+      'Stream key must use only letters, numbers, dots, dashes, or underscores and cannot include slashes.',
+      false,
+    );
+  }
+  const pathSegments = publishUrl.pathname
+    .split('/')
+    .filter(Boolean)
+    .map(validateRtmpPathSegment);
+  const streamPath = [...pathSegments, streamKey].join('/');
+  const hlsBase = parseRtmpHlsBaseUrl(input.hlsBaseUrl ?? 'http://localhost:8888');
+  hlsBase.pathname = joinUrlPath(hlsBase.pathname, ...pathSegments, streamKey, 'index.m3u8');
+  hlsBase.search = '';
+  hlsBase.hash = '';
+  return {
+    publishUrl: publishUrl.toString(),
+    streamKeyRedacted: redactStreamKey(streamKey),
+    streamPath,
+    hlsPlaybackUrl: hlsBase.toString(),
+  };
+}
+
+function parseRtmpPublishUrl(rawUrl: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl.trim());
+  } catch {
+    throw new ProgrammeSourceError(
+      'unsupported-format',
+      'Enter a local RTMP publish URL such as rtmp://localhost:1935/live.',
+      false,
+    );
+  }
+  if (parsed.protocol !== 'rtmp:' && parsed.protocol !== 'rtmps:') {
+    throw new ProgrammeSourceError('unsupported-format', 'RTMP publish URLs must use rtmp:// or rtmps://.', false);
+  }
+  if (!LOCAL_RTMP_HOSTS.has(parsed.hostname)) {
+    throw new ProgrammeSourceError(
+      'unsupported-format',
+      'Only local RTMP gateway hosts are supported for this demo configuration.',
+      false,
+    );
+  }
+  return parsed;
+}
+
+function parseRtmpHlsBaseUrl(rawUrl: string): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl.trim());
+  } catch {
+    throw new ProgrammeSourceError(
+      'unsupported-format',
+      'Enter a local MediaMTX HLS base URL such as http://localhost:8888.',
+      false,
+    );
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new ProgrammeSourceError('unsupported-format', 'MediaMTX HLS playback must use HTTP or HTTPS.', false);
+  }
+  if (!LOCAL_RTMP_HOSTS.has(parsed.hostname)) {
+    throw new ProgrammeSourceError(
+      'unsupported-format',
+      'Only local MediaMTX HLS hosts are supported for this demo configuration.',
+      false,
+    );
+  }
+  return parsed;
+}
+
+function validateRtmpPathSegment(segment: string): string {
+  let decoded = segment;
+  try {
+    decoded = decodeURIComponent(segment);
+  } catch {
+    throw new ProgrammeSourceError('unsupported-format', 'RTMP publish path contains invalid encoding.', false);
+  }
+  if (!SAFE_RTMP_SEGMENT.test(decoded)) {
+    throw new ProgrammeSourceError(
+      'unsupported-format',
+      'RTMP publish path must use only safe path segments.',
+      false,
+    );
+  }
+  return decoded;
+}
+
+function joinUrlPath(basePath: string, ...segments: string[]): string {
+  const baseSegments = basePath.split('/').filter(Boolean).map(validateRtmpPathSegment);
+  const encoded = [...baseSegments, ...segments].map((segment) => encodeURIComponent(segment));
+  return `/${encoded.join('/')}`;
+}
+
+function redactStreamKey(streamKey: string): string {
+  if (streamKey.length <= 4) return '****';
+  return `${streamKey.slice(0, 2)}...${streamKey.slice(-2)}`;
+}
+
 export class ProgrammeSourceManager {
   private readonly mediaDevices: MediaDevices | undefined;
   private readonly isSecureContext: boolean;
@@ -258,6 +390,10 @@ export class ProgrammeSourceManager {
   private hlsController: HlsController | null = null;
   private hlsFatalError: ProgrammeSourceError | null = null;
   private hlsRuntimePromise: Promise<HlsRuntime> | null = null;
+  private mediaElementAudioContext: AudioContext | null = null;
+  private mediaElementAudioSource: MediaElementAudioSourceNode | null = null;
+  private mediaElementAudioDestination: MediaStreamAudioDestinationNode | null = null;
+  private lastInterruptedRtmpStreamPath: string | null = null;
   private liveStartedAtMs: number | null = null;
   private livePausedAtMs: number | null = null;
   private livePausedDurationMs = 0;
@@ -538,14 +674,123 @@ export class ProgrammeSourceManager {
     }
   }
 
+  async selectRtmpProgrammeSource(
+    input: RtmpProgrammeSourceInput,
+    videoElement: CaptureVideoElement,
+  ): Promise<ProgrammeSourceSnapshot> {
+    this.assertNoActiveSource();
+    const rtmp = deriveRtmpHlsPlaybackUrl(input);
+    const direct = validateDirectProgrammeUrl(rtmp.hlsPlaybackUrl);
+    if (!videoElement.captureStream && !videoElement.mozCaptureStream) {
+      throw this.fail(
+        new ProgrammeSourceError(
+          'capture-stream-unavailable',
+          'This browser cannot publish RTMP gateway playback through captureStream().',
+          false,
+        ),
+      );
+    }
+    const hlsMode = await this.resolveHlsPlaybackMode(videoElement);
+    if (hlsMode === 'unsupported') {
+      throw this.fail(
+        new ProgrammeSourceError(
+          'unsupported-format',
+          'This browser cannot play the MediaMTX HLS output. Use Chrome or Firefox with MediaSource support.',
+          false,
+        ),
+      );
+    }
+
+    this.update({
+      sourceType: 'rtmp',
+      sourceIdentity: `RTMP ${rtmp.streamPath}`,
+      status: 'selecting',
+      durationMs: null,
+      audioMissingReason: null,
+      sourceEnded: false,
+      captureInterrupted: false,
+      browserLimitation:
+        hlsMode === 'native'
+          ? 'Using native browser HLS playback from MediaMTX.'
+          : 'Using hls.js fallback for MediaMTX HLS playback.',
+      rtmpState: 'waiting-for-stream',
+      rtmpPublishUrl: rtmp.publishUrl,
+      rtmpStreamPath: rtmp.streamPath,
+      rtmpPlaybackUrl: rtmp.hlsPlaybackUrl,
+      error: null,
+    });
+
+    this.videoElement = videoElement;
+    try {
+      videoElement.muted = true;
+      videoElement.playsInline = true;
+      videoElement.preload = 'metadata';
+      videoElement.crossOrigin = 'anonymous';
+      videoElement.addEventListener('ended', this.handleMediaElementEnded);
+      await this.attachHlsPlayback(direct.url, videoElement, hlsMode);
+      void videoElement.play?.().catch(() => undefined);
+      await waitForMediaReady(videoElement, () => this.hlsFatalError);
+      const capturedStream = (videoElement.captureStream ?? videoElement.mozCaptureStream)!.call(videoElement);
+      const stream =
+        capturedStream.getAudioTracks().length === 0
+          ? (await this.combineWithMediaElementAudioTrack(videoElement, capturedStream)) ?? capturedStream
+          : capturedStream;
+      await waitForCapturedTracks(stream, {
+        requireAudio: true,
+        requireVideo: true,
+        missingAudioMessage: 'RTMP gateway stream did not expose browser-playable audio.',
+        missingVideoMessage: 'RTMP gateway stream did not expose browser-playable video.',
+        getFatalPlaybackError: () => this.hlsFatalError,
+      });
+      this.assertUsableTracks(stream, { requireVideo: true });
+      this.installStream('rtmp', `MediaMTX ${rtmp.streamPath}`, stream, {
+        audioSourceLabel: stream.getAudioTracks()[0]?.label || 'RTMP programme audio',
+        videoSourceLabel: stream.getVideoTracks()[0]?.label || `RTMP ${rtmp.streamPath}`,
+        audioMissingReason:
+          stream.getAudioTracks().length === 0
+            ? 'RTMP gateway stream did not expose browser-playable audio.'
+            : null,
+        canPause: true,
+        canResume: true,
+        preservePreview: true,
+        browserLimitation:
+          hlsMode === 'native'
+            ? 'Native HLS playback active for RTMP gateway.'
+            : 'hls.js playback active for RTMP gateway.',
+        rtmpState:
+          this.lastInterruptedRtmpStreamPath === rtmp.streamPath
+            ? 'recovered'
+            : 'live',
+        rtmpPublishUrl: rtmp.publishUrl,
+        rtmpStreamPath: rtmp.streamPath,
+        rtmpPlaybackUrl: rtmp.hlsPlaybackUrl,
+      });
+      if (this.snapshot.rtmpState === 'recovered') {
+        this.lastInterruptedRtmpStreamPath = null;
+      }
+      this.update({ programmeTimestampMs: Math.round((videoElement.currentTime || 0) * 1000) });
+      return this.snapshot;
+    } catch (error) {
+      this.lastInterruptedRtmpStreamPath = rtmp.streamPath;
+      this.releaseResources();
+      const normalized = normalizeProgrammeSourceError(error, 'decode-failed');
+      throw this.fail(
+        normalized.code === 'decode-failed' && /Timed out waiting/.test(normalized.message)
+          ? new ProgrammeSourceError(
+              'decode-failed',
+              'Waiting for the RTMP stream. Confirm OBS is publishing to MediaMTX and try again.',
+            )
+          : normalized,
+      );
+    }
+  }
+
   async start(): Promise<ProgrammeSourceSnapshot> {
     if (!this.stream || this.snapshot.status !== 'preview-ready') {
       throw this.fail(new ProgrammeSourceError('missing-media-track', 'Select a programme source before starting.'));
     }
     if (this.isMediaElementSource() && this.videoElement) {
-      await this.videoElement.play().catch((error: unknown) => {
-        throw normalizeProgrammeSourceError(error, 'decode-failed');
-      });
+      requestMediaElementPlayback(this.videoElement, (error) => this.fail(error));
     } else {
       this.liveStartedAtMs = this.now();
       this.livePausedAtMs = null;
@@ -582,7 +827,7 @@ export class ProgrammeSourceManager {
   async resume(): Promise<ProgrammeSourceSnapshot> {
     if (!this.stream || this.snapshot.status !== 'paused') return this.snapshot;
     if (this.isMediaElementSource() && this.videoElement) {
-      await this.videoElement.play();
+      requestMediaElementPlayback(this.videoElement, (error) => this.fail(error));
     } else {
       if (this.livePausedAtMs !== null) {
         this.livePausedDurationMs += this.now() - this.livePausedAtMs;
@@ -650,6 +895,10 @@ export class ProgrammeSourceManager {
       browserLimitation: null,
       isObsVirtualCamera: false,
       isCaptureDeviceCandidate: false,
+      rtmpState: 'idle',
+      rtmpPublishUrl: null,
+      rtmpStreamPath: null,
+      rtmpPlaybackUrl: null,
       programmeTimestampMs: 0,
       sourceIdentity: reason,
       error: null,
@@ -693,6 +942,10 @@ export class ProgrammeSourceManager {
       videoSourceLabel?: string;
       audioMissingReason?: string | null;
       browserLimitation?: string | null;
+      rtmpState?: RtmpProgrammeState;
+      rtmpPublishUrl?: string | null;
+      rtmpStreamPath?: string | null;
+      rtmpPlaybackUrl?: string | null;
     } = {},
   ): void {
     this.releaseResources({
@@ -734,6 +987,10 @@ export class ProgrammeSourceManager {
         (sourceType === 'screen' && !audioTrack
           ? 'Screen or tab audio depends on browser, operating system, and platform support.'
           : null),
+      rtmpState: options.rtmpState ?? (sourceType === 'rtmp' ? 'live' : 'idle'),
+      rtmpPublishUrl: options.rtmpPublishUrl ?? null,
+      rtmpStreamPath: options.rtmpStreamPath ?? null,
+      rtmpPlaybackUrl: options.rtmpPlaybackUrl ?? null,
       isObsVirtualCamera: isObsLikeDevice(videoSourceLabel),
       isCaptureDeviceCandidate: isCaptureDeviceLike(videoSourceLabel) || isCaptureDeviceLike(audioSourceLabel),
       previewReady: true,
@@ -842,6 +1099,7 @@ export class ProgrammeSourceManager {
       frameRate: videoSettings.frameRate,
       sourceEnded: true,
       captureInterrupted: true,
+      rtmpState: this.snapshot.sourceType === 'rtmp' ? 'interrupted' : this.snapshot.rtmpState,
       error: errorDetails(new ProgrammeSourceError('source-ended', 'Programme source track ended.')),
     });
     this.incrementRevision('programme source track ended');
@@ -859,6 +1117,7 @@ export class ProgrammeSourceManager {
       programmeTimestampMs: this.readProgrammeTimestampMs(),
       sourceEnded: true,
       captureInterrupted: false,
+      rtmpState: this.snapshot.sourceType === 'rtmp' ? 'ended' : this.snapshot.rtmpState,
       error: null,
     });
     this.incrementRevision(`${this.snapshot.sourceType} ended`);
@@ -877,6 +1136,7 @@ export class ProgrammeSourceManager {
       this.hlsController = null;
       this.hlsFatalError = null;
     }
+    this.releaseMediaElementAudioCapture();
     if (this.videoElement && !options.preservePreview) {
       this.videoElement.removeEventListener('ended', this.handleMediaElementEnded);
       this.videoElement.pause();
@@ -901,8 +1161,53 @@ export class ProgrammeSourceManager {
     }
   }
 
+  private async combineWithMediaElementAudioTrack(
+    videoElement: HTMLVideoElement,
+    capturedStream: MediaStream,
+  ): Promise<MediaStream | null> {
+    const AudioContextConstructor =
+      globalThis.AudioContext ??
+      (globalThis as typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextConstructor) return null;
+    try {
+      this.releaseMediaElementAudioCapture();
+      videoElement.muted = false;
+      videoElement.volume = 1;
+      const audioContext = new AudioContextConstructor();
+      const source = audioContext.createMediaElementSource(videoElement);
+      const destination = audioContext.createMediaStreamDestination();
+      source.connect(destination);
+      await audioContext.resume?.().catch(() => undefined);
+      const audioTracks = destination.stream.getAudioTracks().filter((track) => track.readyState !== 'ended');
+      if (audioTracks.length === 0) {
+        source.disconnect();
+        void audioContext.close?.().catch(() => undefined);
+        return null;
+      }
+      this.mediaElementAudioContext = audioContext;
+      this.mediaElementAudioSource = source;
+      this.mediaElementAudioDestination = destination;
+      return new MediaStream([...capturedStream.getVideoTracks(), ...audioTracks]);
+    } catch {
+      this.releaseMediaElementAudioCapture();
+      return null;
+    }
+  }
+
+  private releaseMediaElementAudioCapture(): void {
+    this.mediaElementAudioSource?.disconnect();
+    this.mediaElementAudioDestination?.disconnect();
+    void this.mediaElementAudioContext?.close?.().catch(() => undefined);
+    this.mediaElementAudioSource = null;
+    this.mediaElementAudioDestination = null;
+    this.mediaElementAudioContext = null;
+  }
+
   private async resolveHlsPlaybackMode(videoElement: HTMLVideoElement): Promise<'native' | 'hls-js' | 'unsupported' | 'not-hls'> {
-    if (NATIVE_HLS_MIME_TYPES.some((mimeType) => videoElement.canPlayType?.(mimeType))) {
+    if (
+      supportsNativeHls(videoElement) &&
+      isReliableNativeHlsBrowser()
+    ) {
       return 'native';
     }
     if (this.isHlsSupported) {
@@ -952,11 +1257,15 @@ export class ProgrammeSourceManager {
     const error = mapHlsError(data);
     this.hlsFatalError = error;
     if (
-      this.snapshot.sourceType === 'direct-url' &&
+      (this.snapshot.sourceType === 'direct-url' || this.snapshot.sourceType === 'rtmp') &&
       this.snapshot.status !== 'selecting' &&
       this.snapshot.status !== 'failed' &&
       this.snapshot.status !== 'stopped'
     ) {
+      if (this.snapshot.sourceType === 'rtmp') {
+        this.lastInterruptedRtmpStreamPath = this.snapshot.rtmpStreamPath;
+        this.update({ rtmpState: 'interrupted' });
+      }
       this.enableTracks(false);
       this.fail(error);
     }
@@ -970,6 +1279,7 @@ export class ProgrammeSourceManager {
       paused: false,
       previewReady: false,
       captureInterrupted: true,
+      rtmpState: this.snapshot.sourceType === 'rtmp' ? 'interrupted' : this.snapshot.rtmpState,
       error: details,
     });
     this.onFailure?.(details);
@@ -1022,7 +1332,11 @@ export class ProgrammeSourceManager {
   }
 
   private isMediaElementSource(): boolean {
-    return this.snapshot.sourceType === 'uploaded-video' || this.snapshot.sourceType === 'direct-url';
+    return (
+      this.snapshot.sourceType === 'uploaded-video' ||
+      this.snapshot.sourceType === 'direct-url' ||
+      this.snapshot.sourceType === 'rtmp'
+    );
   }
 }
 
@@ -1071,6 +1385,84 @@ function waitForMediaReady(
     video.addEventListener('canplay', onReady, { once: true });
     video.addEventListener('error', onError, { once: true });
   });
+}
+
+function waitForCapturedTracks(
+  stream: MediaStream,
+  options: {
+    requireAudio: boolean;
+    requireVideo: boolean;
+    missingAudioMessage: string;
+    missingVideoMessage: string;
+    getFatalPlaybackError?: () => ProgrammeSourceError | null;
+    timeoutMs?: number;
+  },
+): Promise<void> {
+  const hasRequiredTracks = (): boolean =>
+    (!options.requireAudio || stream.getAudioTracks().some((track) => track.readyState !== 'ended')) &&
+    (!options.requireVideo || stream.getVideoTracks().some((track) => track.readyState !== 'ended'));
+
+  if (hasRequiredTracks()) return Promise.resolve();
+
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const timeoutMs = options.timeoutMs ?? 10_000;
+    const poll = globalThis.setInterval(() => {
+      const fatalPlaybackError = options.getFatalPlaybackError?.();
+      if (fatalPlaybackError) {
+        cleanup();
+        reject(fatalPlaybackError);
+        return;
+      }
+      if (hasRequiredTracks()) {
+        cleanup();
+        resolve();
+        return;
+      }
+      if (Date.now() - startedAt > timeoutMs) {
+        cleanup();
+        reject(
+          new ProgrammeSourceError(
+            'missing-media-track',
+            options.requireAudio && stream.getAudioTracks().length === 0
+              ? options.missingAudioMessage
+              : options.missingVideoMessage,
+            false,
+          ),
+        );
+      }
+    }, 100);
+
+    const cleanup = (): void => {
+      globalThis.clearInterval(poll);
+      stream.removeEventListener?.('addtrack', onTrackChanged);
+      stream.removeEventListener?.('removetrack', onTrackChanged);
+    };
+    const onTrackChanged = (): void => {
+      if (hasRequiredTracks()) {
+        cleanup();
+        resolve();
+      }
+    };
+    stream.addEventListener?.('addtrack', onTrackChanged);
+    stream.addEventListener?.('removetrack', onTrackChanged);
+  });
+}
+
+function requestMediaElementPlayback(
+  video: HTMLVideoElement,
+  onFailure: (error: ProgrammeSourceError) => void,
+): void {
+  void video.play().catch((error: unknown) => {
+    if (isInterruptedPlaybackRequest(error)) return;
+    onFailure(normalizeProgrammeSourceError(error, 'decode-failed'));
+  });
+}
+
+function isInterruptedPlaybackRequest(error: unknown): boolean {
+  const name = typeof DOMException !== 'undefined' && error instanceof DOMException ? error.name : '';
+  const message = error instanceof Error ? error.message : String(error);
+  return name === 'AbortError' || /interrupted by a call to pause|play request was interrupted/i.test(message);
 }
 
 function mediaElementError(video: HTMLVideoElement): ProgrammeSourceError {
@@ -1138,6 +1530,19 @@ function mapHlsError(data: HlsErrorData): ProgrammeSourceError {
     return new ProgrammeSourceError('decode-failed', 'HLS stream is unreachable or interrupted.');
   }
   return new ProgrammeSourceError('decode-failed', 'HLS playback failed.');
+}
+
+function supportsNativeHls(videoElement: HTMLVideoElement): boolean {
+  return NATIVE_HLS_MIME_TYPES.some((mimeType) => Boolean(videoElement.canPlayType?.(mimeType)));
+}
+
+function isReliableNativeHlsBrowser(): boolean {
+  const userAgent = globalThis.navigator?.userAgent ?? '';
+  const vendor = globalThis.navigator?.vendor ?? '';
+  const isAppleWebKit = /Safari/i.test(userAgent) && /Apple/i.test(vendor);
+  const isChromium = /Chrome|Chromium|CriOS|Edg|OPR/i.test(userAgent);
+  const isFirefox = /Firefox|FxiOS/i.test(userAgent);
+  return isAppleWebKit && !isChromium && !isFirefox;
 }
 
 async function loadDefaultHlsRuntime(): Promise<HlsRuntime> {
