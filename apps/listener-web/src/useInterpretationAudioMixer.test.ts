@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   InterpretationAudioMixerController,
   type InterpretationMixState,
@@ -60,6 +60,25 @@ class FakeContext implements MixerAudioContext {
   sources: FakeSource[] = [];
   limiters: FakeLimiter[] = [];
   resumeCalls = 0;
+  currentTime = 0;
+  decodedBuffers: ArrayBuffer[] = [];
+  bufferSources: FakeBufferSource[] = [];
+  createBufferSource?: () => FakeBufferSource;
+  decodeAudioData?: (audioData: ArrayBuffer) => Promise<AudioBuffer>;
+
+  constructor(options: { bufferPlayback?: boolean } = {}) {
+    if (options.bufferPlayback) {
+      this.createBufferSource = () => {
+        const source = new FakeBufferSource();
+        this.bufferSources.push(source);
+        return source;
+      };
+      this.decodeAudioData = async (audioData: ArrayBuffer): Promise<AudioBuffer> => {
+        this.decodedBuffers.push(audioData);
+        return { duration: 1.2 } as AudioBuffer;
+      };
+    }
+  }
 
   createGain(): MixerGain {
     const gain = new FakeGain();
@@ -85,6 +104,32 @@ class FakeContext implements MixerAudioContext {
   }
 }
 
+class FakeBufferSource {
+  buffer: AudioBuffer | null = null;
+  connected: unknown[] = [];
+  disconnected = false;
+  started: { when?: number | undefined; offset?: number | undefined } | null = null;
+  stopCalls = 0;
+  onended: (() => void) | null = null;
+
+  connect(destination: unknown): unknown {
+    this.connected.push(destination);
+    return destination;
+  }
+
+  disconnect(): void {
+    this.disconnected = true;
+  }
+
+  start(when?: number, offset?: number): void {
+    this.started = { when, offset };
+  }
+
+  stop(): void {
+    this.stopCalls += 1;
+  }
+}
+
 class FakeAudioElement {
   currentTime = 0;
   volume = 1;
@@ -104,8 +149,10 @@ class FakeAudioElement {
   }
 }
 
-function createHarness(options: { failContext?: boolean } = {}) {
-  const context = new FakeContext();
+function createHarness(options: { failContext?: boolean; bufferPlayback?: boolean } = {}) {
+  const context = new FakeContext(
+    options.bufferPlayback === undefined ? {} : { bufferPlayback: options.bufferPlayback },
+  );
   const states: InterpretationMixState[] = [];
   const audios: FakeAudioElement[] = [];
   const controller = new InterpretationAudioMixerController({
@@ -181,12 +228,13 @@ describe('InterpretationAudioMixerController', () => {
 
     controller.attachOriginalElement(original);
 
-    expect(original.volume).toBe(0.2);
-    expect(context.gains[0]!.gain.value).toBe(1);
+    expect(original.volume).toBe(1);
+    expect(context.gains[0]!.gain.value).toBe(0.2);
     expect(context.gains[1]!.gain.value).toBe(1);
 
     controller.setOriginalLevel(0.35);
-    expect(original.volume).toBe(0.35);
+    expect(original.volume).toBe(1);
+    expect(context.gains[0]!.gain.value).toBe(0.35);
   });
 
   it('updates the context state after a suspended mixer resumes', async () => {
@@ -208,8 +256,8 @@ describe('InterpretationAudioMixerController', () => {
     expect(controller.setMode('replacement')).toBe(true);
 
     expect(controller.state.mode).toBe('replacement');
-    expect(original.volume).toBe(0);
-    expect(context.gains[0]!.gain.value).toBe(1);
+    expect(original.volume).toBe(1);
+    expect(context.gains[0]!.gain.value).toBe(0);
     expect(context.gains[1]!.gain.value).toBe(1);
   });
 
@@ -222,9 +270,10 @@ describe('InterpretationAudioMixerController', () => {
 
     controller.setTranslatedLevel(0.4);
 
-    expect(original.volume).toBe(0);
-    expect(mixed.volume).toBe(0.4);
-    expect(context.gains[1]!.gain.value).toBe(1);
+    expect(original.volume).toBe(1);
+    expect(context.gains[0]!.gain.value).toBe(0);
+    expect(mixed.volume).toBe(1);
+    expect(context.gains[1]!.gain.value).toBe(0.4);
   });
 
   it('keeps translated mute independent in replacement mode', () => {
@@ -236,9 +285,10 @@ describe('InterpretationAudioMixerController', () => {
 
     controller.setTranslatedMuted(true);
 
-    expect(original.volume).toBe(0);
-    expect(mixed.volume).toBe(0);
-    expect(context.gains[1]!.gain.value).toBe(1);
+    expect(original.volume).toBe(1);
+    expect(context.gains[0]!.gain.value).toBe(0);
+    expect(mixed.volume).toBe(1);
+    expect(context.gains[1]!.gain.value).toBe(0);
   });
 
   it('restores the previous interpretation original volume after replacement mode', () => {
@@ -248,14 +298,15 @@ describe('InterpretationAudioMixerController', () => {
     controller.setOriginalLevel(0.35);
     controller.setMode('replacement');
 
-    expect(original.volume).toBe(0);
+    expect(original.volume).toBe(1);
+    expect(context.gains[0]!.gain.value).toBe(0);
 
     controller.setMode('interpretation');
 
     expect(controller.state.mode).toBe('interpretation');
     expect(controller.state.originalLevel).toBe(0.35);
-    expect(original.volume).toBe(0.35);
-    expect(context.gains[0]!.gain.value).toBe(1);
+    expect(original.volume).toBe(1);
+    expect(context.gains[0]!.gain.value).toBe(0.35);
   });
 
   it('controls translated volume, mute and reset defaults', () => {
@@ -264,10 +315,12 @@ describe('InterpretationAudioMixerController', () => {
     const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
 
     controller.setTranslatedLevel(0.45);
-    expect(mixed.volume).toBe(0.45);
+    expect(mixed.volume).toBe(1);
+    expect(context.gains[1]!.gain.value).toBe(0.45);
 
     controller.setTranslatedMuted(true);
-    expect(mixed.volume).toBe(0);
+    expect(mixed.volume).toBe(1);
+    expect(context.gains[1]!.gain.value).toBe(0);
 
     controller.resetDefaults();
     expect(controller.state).toMatchObject({
@@ -276,7 +329,7 @@ describe('InterpretationAudioMixerController', () => {
       translatedLevel: 1,
       translatedMuted: false,
     });
-    expect(context.gains[0]!.gain.value).toBe(1);
+    expect(context.gains[0]!.gain.value).toBe(0.2);
     expect(context.gains[1]!.gain.value).toBe(1);
     expect(mixed.volume).toBe(1);
   });
@@ -428,8 +481,8 @@ describe('InterpretationAudioMixerController', () => {
     expect(controller.setMode('replacement')).toBe(true);
 
     expect(audios).toHaveLength(0);
-    expect(original.volume).toBe(0);
-    expect(context.gains[0]!.gain.value).toBe(1);
+    expect(original.volume).toBe(1);
+    expect(context.gains[0]!.gain.value).toBe(0);
   });
 
   it('does not restart active translated playback when switching modes', async () => {
@@ -488,6 +541,33 @@ describe('InterpretationAudioMixerController', () => {
       contextState: 'failed',
       error: 'audio context blocked',
     });
+  });
+
+  it('plays generated speech through the resumed Web Audio graph when available', async () => {
+    const { audios, context, controller } = createHarness({ bufferPlayback: true });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      arrayBuffer: async () => new ArrayBuffer(8),
+    })) as unknown as typeof fetch;
+
+    try {
+      controller.attachOriginalElement(mediaElement());
+      await controller.resume();
+      const mixed = controller.createTranslatedAudio('http://localhost/generated.wav');
+      mixed.currentTime = 0.25;
+      await mixed.play();
+
+      expect(globalThis.fetch).toHaveBeenCalledWith('http://localhost/generated.wav');
+      expect(context.decodedBuffers).toHaveLength(1);
+      expect(context.bufferSources).toHaveLength(1);
+      expect(context.bufferSources[0]!.connected).toContain(context.gains[1]);
+      expect(context.bufferSources[0]!.started).toEqual({ when: 0, offset: 0.25 });
+      expect(audios).toHaveLength(1);
+      expect(audios[0]!.playCalls).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('controls original playback directly when Web Audio is unavailable', () => {

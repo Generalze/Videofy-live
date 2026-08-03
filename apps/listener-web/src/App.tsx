@@ -13,12 +13,21 @@ import {
   WebRtcSignallingClient,
 } from '@videofy-live/shared-types';
 import styles from './App.module.css';
-import { ListenerSignallingPanel } from './ListenerSignallingPanel';
 import {
   createInitialListenerWebRtcTransportSnapshot,
   ListenerWebRtcTransportController,
   type ListenerWebRtcTransportSnapshot,
 } from './listenerWebRtcTransport';
+import {
+  shouldAcceptGeneratedAudioForSession,
+  shouldAcceptMediaStateForListener,
+  shouldExposeMediaStateProgrammeSession,
+  describeProgrammeVideoLabel,
+  shouldInitializeGeneratedAudioClock,
+  shouldJoinProgrammeSession,
+  shouldReplaceProgrammeSession,
+  shouldTreatTransportAsSourceEnded,
+} from './listenerProgrammeBinding';
 import {
   shouldUseMockVideoFeed,
   startMockVideoFeed,
@@ -28,6 +37,7 @@ import {
   createListenerSocketOptions,
   joinCurrentListenerLanguage,
 } from './socketConfig';
+import { applyDeliveredGeneratedAudioOutput } from './listenerDeliveredAudio';
 import {
   useInterpretationAudioMixer,
   type AudioMixMode,
@@ -55,7 +65,8 @@ interface PhraseEntry {
   translatedText: string;
   sourceText: string;
   sequence: number;
-  videoTimestampMs: number;
+  startMs: number;
+  endMs: number;
   receivedAt: number;
 }
 
@@ -74,6 +85,13 @@ const initialSocketDiagnostics: SocketDiagnostics = {
   reconnectAttempts: 0,
   disconnectReason: 'none',
 };
+
+interface ProgrammeClockAnchor {
+  timestampMs: number;
+  observedAtMs: number;
+  status: string;
+  durationMs: number | null;
+}
 
 function logSocketDiagnostics(event: string, details: SocketDiagnostics): void {
   if (import.meta.env.DEV) {
@@ -114,6 +132,7 @@ export default function App(): React.ReactElement {
   const [currentPhrase, setCurrentPhrase] = useState<PhraseEntry | null>(null);
   const [recentPhrases, setRecentPhrases] = useState<PhraseEntry[]>([]);
   const [deliveredAudio, setDeliveredAudio] = useState<GeneratedAudioReadyEvent[]>([]);
+  const [hasReceivedProgrammeVideo, setHasReceivedProgrammeVideo] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [videoPlaybackError, setVideoPlaybackError] = useState<string | null>(null);
   const [socketDiagnostics, setSocketDiagnostics] =
@@ -127,13 +146,37 @@ export default function App(): React.ReactElement {
   const [listenerTransport, setListenerTransport] = useState<ListenerWebRtcTransportSnapshot>(
     createInitialListenerWebRtcTransportSnapshot,
   );
+  const [remoteProgrammeStream, setRemoteProgrammeStream] = useState<MediaStream | null>(null);
+  const [activeShareableSessionId, setActiveShareableSessionId] = useState<string | null>(null);
+  const [activeProcessingSessionId, setActiveProcessingSessionId] = useState<string | null>(null);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const phraseSourceBySequenceRef = useRef(new Map<string, string>());
+  const lastJoinedShareableSessionRef = useRef<string | null>(null);
+  const activeProcessingSessionIdRef = useRef<string | null>(null);
+  const generatedPlaybackClockStartedRef = useRef(false);
+  const programmeClockRef = useRef<ProgrammeClockAnchor>({
+    timestampMs: 0,
+    observedAtMs: Date.now(),
+    status: 'created',
+    durationMs: null,
+  });
+  activeProcessingSessionIdRef.current = activeProcessingSessionId;
   const getListenerClockMs = useCallback((): number => {
-    const video = videoRef.current;
-    if (video && Number.isFinite(video.currentTime) && video.currentTime > 0) {
-      return Math.round(video.currentTime * 1000);
+    const anchor = programmeClockRef.current;
+    if (anchor.status === 'processing') {
+      const elapsedMs = Date.now() - anchor.observedAtMs;
+      const progressed = anchor.timestampMs + Math.max(0, elapsedMs);
+      return anchor.durationMs === null ? progressed : Math.min(progressed, anchor.durationMs);
     }
-    return mediaState?.videoTimestampMs ?? 0;
-  }, [mediaState?.videoTimestampMs]);
+    if (anchor.status === 'completed' && anchor.durationMs !== null) {
+      return anchor.durationMs;
+    }
+    if (anchor.status === 'completed') {
+      const elapsedMs = Date.now() - anchor.observedAtMs;
+      return anchor.timestampMs + Math.max(0, elapsedMs);
+    }
+    return anchor.timestampMs;
+  }, []);
   const {
     attachOriginalElement,
     createTranslatedAudio,
@@ -151,6 +194,9 @@ export default function App(): React.ReactElement {
     getListenerClockMs,
     createTranslatedAudio,
   );
+  const audioQueueRef = useRef(audioQueue);
+  const previousProcessingSessionIdRef = useRef<string | null>(null);
+  audioQueueRef.current = audioQueue;
 
   const updateSocketDiagnostics = useCallback(
     (event: string, next: Partial<SocketDiagnostics>): void => {
@@ -163,7 +209,46 @@ export default function App(): React.ReactElement {
     [],
   );
 
-  useEffect(() => {
+  const bindRemoteProgrammeStream = useCallback(
+    (
+      stream: MediaStream,
+      transport: ListenerWebRtcTransportController | null = listenerTransportRef.current,
+    ): boolean => {
+      const video = videoRef.current;
+      if (!video) return false;
+      mockFeedRef.current?.stop();
+      mockFeedRef.current = null;
+      const isNewStream = video.srcObject !== stream;
+      if (isNewStream) {
+        video.srcObject = stream;
+      }
+      attachOriginalElement(video);
+      setVideoPlaybackError(null);
+      if (!hasStartedRef.current) return true;
+      if (!isNewStream && !video.paused) {
+        transport?.markPlaybackStarted();
+        return true;
+      }
+      video.play().then(
+        () => transport?.markPlaybackStarted(),
+        (playError: unknown) => {
+          const message =
+            playError instanceof Error
+              ? playError.message
+              : 'The browser blocked programme audio playback.';
+          transport?.markPlaybackBlocked(message);
+          setVideoPlaybackError(`Programme audio playback blocked: ${message}`);
+        },
+      );
+      return true;
+    },
+    [attachOriginalElement],
+  );
+
+  const createListenerProgrammeControllers = useCallback((): {
+    client: WebRtcSignallingClient;
+    transport: ListenerWebRtcTransportController;
+  } => {
     const client = new WebRtcSignallingClient({
       role: 'listener',
       onStateChange: setListenerSignalling,
@@ -181,38 +266,46 @@ export default function App(): React.ReactElement {
       signallingClient: client,
       onStateChange: setListenerTransport,
       onRemoteStream: (stream) => {
-        const video = videoRef.current;
-        if (!video) return;
-        mockFeedRef.current?.stop();
-        mockFeedRef.current = null;
-        video.srcObject = stream;
-        attachOriginalElement(video);
-        setVideoPlaybackError(null);
-        if (!hasStartedRef.current) return;
-        video.play().then(
-          () => transport.markPlaybackStarted(),
-          (playError: unknown) => {
-            const message =
-              playError instanceof Error
-                ? playError.message
-                : 'The browser blocked programme audio playback.';
-            transport.markPlaybackBlocked(message);
-            setVideoPlaybackError(`Programme audio playback blocked: ${message}`);
-          },
-        );
+        setRemoteProgrammeStream(stream);
+        bindRemoteProgrammeStream(stream, transport);
       },
     });
     listenerSignallingClientRef.current = client;
     listenerTransportRef.current = transport;
     setListenerSignalling(client.getSnapshot());
     setListenerTransport(transport.getSnapshot());
+    return { client, transport };
+  }, [bindRemoteProgrammeStream]);
+
+  useEffect(() => {
+    const { client, transport } = createListenerProgrammeControllers();
     return () => {
       listenerTransportRef.current = null;
       transport.dispose();
       listenerSignallingClientRef.current = null;
       client.dispose();
     };
-  }, [attachOriginalElement]);
+  }, [createListenerProgrammeControllers]);
+
+  useEffect(() => {
+    if (!remoteProgrammeStream) return;
+    bindRemoteProgrammeStream(remoteProgrammeStream);
+  }, [bindRemoteProgrammeStream, remoteProgrammeStream]);
+
+  useEffect(() => {
+    if (!listenerTransport.remoteAudioTrackReceived && !listenerTransport.remoteVideoTrackReceived) {
+      return;
+    }
+    const stream = listenerTransportRef.current?.getRemoteStream() ?? null;
+    if (!stream) return;
+    setRemoteProgrammeStream(stream);
+    bindRemoteProgrammeStream(stream);
+  }, [
+    bindRemoteProgrammeStream,
+    listenerTransport.remoteAudioTrackReceived,
+    listenerTransport.remoteVideoTrackReceived,
+    listenerTransport.updatedAt,
+  ]);
 
   useEffect(() => {
     if (!videoRef.current) {
@@ -221,6 +314,32 @@ export default function App(): React.ReactElement {
 
     videoRef.current.volume = 1;
   }, []);
+
+  useEffect(() => {
+    applyDeliveredGeneratedAudioOutput(document, translatedVolume, muted);
+  }, [deliveredAudio, muted, translatedVolume]);
+
+  useEffect(() => {
+    if (previousProcessingSessionIdRef.current === activeProcessingSessionId) {
+      return;
+    }
+    previousProcessingSessionIdRef.current = activeProcessingSessionId;
+    phraseSourceBySequenceRef.current.clear();
+    generatedPlaybackClockStartedRef.current = false;
+    setCurrentPhrase(null);
+    setRecentPhrases([]);
+    setDeliveredAudio([]);
+    setHasReceivedProgrammeVideo(false);
+    audioQueueRef.current.reset();
+    audioQueueRef.current.resetGenerated();
+    audioQueueRef.current.setSourceEnded(false);
+  }, [activeProcessingSessionId]);
+
+  useEffect(() => {
+    if (listenerTransport.remoteVideoTrackReceived || mediaState?.media?.hasVideo === true) {
+      setHasReceivedProgrammeVideo(true);
+    }
+  }, [listenerTransport.remoteVideoTrackReceived, mediaState?.media?.hasVideo]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -292,9 +411,39 @@ export default function App(): React.ReactElement {
     };
   }, [audioQueue, hasStarted]);
 
-  const connect = useCallback((): void => {
+  useEffect(() => {
+    if (!currentPhrase || !subtitlesEnabled) return;
+    const delayMs = Math.max(1200, currentPhrase.endMs - getListenerClockMs());
+    const timer = setTimeout(() => {
+      setCurrentPhrase((current) => (current?.id === currentPhrase.id ? null : current));
+    }, delayMs);
+    return () => clearTimeout(timer);
+  }, [currentPhrase, getListenerClockMs, subtitlesEnabled]);
+
+  useEffect(() => {
+    if (
+      shouldTreatTransportAsSourceEnded({
+        state: listenerTransport.state,
+        remoteAudioTrackReceived: listenerTransport.remoteAudioTrackReceived,
+        remoteAudioTrackActive: listenerTransport.remoteAudioTrackActive,
+        remoteVideoTrackReceived: listenerTransport.remoteVideoTrackReceived,
+        remoteVideoTrackActive: listenerTransport.remoteVideoTrackActive,
+      })
+    ) {
+      audioQueue.setSourceEnded(true);
+    }
+  }, [
+    audioQueue,
+    listenerTransport.remoteAudioTrackActive,
+    listenerTransport.remoteAudioTrackReceived,
+    listenerTransport.remoteVideoTrackActive,
+    listenerTransport.remoteVideoTrackReceived,
+    listenerTransport.state,
+  ]);
+
+  const connect = useCallback((): Socket | null => {
     if (socketRef.current) {
-      return;
+      return socketRef.current;
     }
 
     setConnectionStatus('connecting');
@@ -348,23 +497,43 @@ export default function App(): React.ReactElement {
       if (!event.final) {
         return;
       }
-
-      const entry: PhraseEntry = {
-        id: `${event.sequence}-${event.targetLanguage}-${Date.now()}`,
-        translatedText: event.translatedText,
-        sourceText: event.sourceText,
-        sequence: event.sequence,
-        videoTimestampMs: event.videoTimestampMs,
-        receivedAt: Date.now(),
-      };
-
-      setCurrentPhrase(entry);
-      audioQueue.enqueue(event);
-      setRecentPhrases((prev) => [entry, ...prev].slice(0, 8));
+      phraseSourceBySequenceRef.current.set(
+        `${event.targetLanguage}:${event.sequence}`,
+        event.sourceText,
+      );
     });
 
     socket.on(SOCKET_EVENTS.GENERATED_AUDIO_READY, (event: GeneratedAudioReadyEvent) => {
+      const activeSession = activeProcessingSessionIdRef.current;
+      if (!shouldAcceptGeneratedAudioForSession(event, activeSession)) {
+        return;
+      }
+      if (
+        !generatedPlaybackClockStartedRef.current &&
+        shouldInitializeGeneratedAudioClock(programmeClockRef.current.status)
+      ) {
+        generatedPlaybackClockStartedRef.current = true;
+        programmeClockRef.current = {
+          timestampMs: event.startMs,
+          observedAtMs: Date.now(),
+          status: 'processing',
+          durationMs: null,
+        };
+      }
       audioQueue.enqueueGenerated(event);
+      const sourceText =
+        phraseSourceBySequenceRef.current.get(`${event.targetLanguage}:${event.sequence}`) ?? '';
+      const entry: PhraseEntry = {
+        id: `${event.sessionId}-${event.segmentId}-${event.targetLanguage}`,
+        translatedText: event.translatedText,
+        sourceText,
+        sequence: event.sequence,
+        startMs: event.startMs,
+        endMs: event.endMs,
+        receivedAt: Date.now(),
+      };
+      setCurrentPhrase(entry);
+      setRecentPhrases((prev) => [entry, ...prev.filter((item) => item.id !== entry.id)].slice(0, 8));
       setDeliveredAudio((current) => {
         const withoutDuplicate = current.filter(
           (item) => !(item.sessionId === event.sessionId && item.segmentId === event.segmentId),
@@ -384,11 +553,24 @@ export default function App(): React.ReactElement {
     });
 
     socket.on(SOCKET_EVENTS.MEDIA_STATE, (state: MediaStateEvent) => {
+      if (!shouldAcceptMediaStateForListener(state, activeProcessingSessionIdRef.current)) {
+        return;
+      }
+      programmeClockRef.current = {
+        timestampMs: state.videoTimestampMs,
+        observedAtMs: Date.now(),
+        status: state.streamStatus,
+        durationMs: state.media?.durationMs ?? programmeClockRef.current.durationMs,
+      };
       setMediaState(state);
       setStreamStatus(state.streamStatus);
+      if (shouldExposeMediaStateProgrammeSession(state)) {
+        setActiveProcessingSessionId(state.processingSessionId ?? null);
+        setActiveShareableSessionId(state.shareableWebRtcSessionId ?? null);
+      }
+      audioQueue.setSourceEnded(state.streamStatus === 'completed');
       setBuffering(state.streamStatus === 'validating');
       if (
-        state.streamStatus === 'completed' ||
         state.streamStatus === 'cancelled' ||
         state.streamStatus === 'failed'
       ) {
@@ -397,13 +579,22 @@ export default function App(): React.ReactElement {
     });
 
     socket.on(SOCKET_EVENTS.STREAM_STATUS, (data: { status: string }) => {
+      const currentClock = getListenerClockMs();
+      programmeClockRef.current = {
+        ...programmeClockRef.current,
+        timestampMs: currentClock,
+        observedAtMs: Date.now(),
+        status: data.status,
+      };
+      audioQueue.setSourceEnded(data.status === 'completed');
       setStreamStatus(data.status);
       setBuffering(data.status === 'validating');
-      if (data.status === 'completed' || data.status === 'cancelled' || data.status === 'failed') {
+      if (data.status === 'cancelled' || data.status === 'failed') {
         listenerTransportRef.current?.close(`programme source ${data.status}`, false);
       }
     });
-  }, [audioQueue, resumeMixer, setMixMode, updateSocketDiagnostics]);
+    return socket;
+  }, [audioQueue, getListenerClockMs, resumeMixer, setMixMode, updateSocketDiagnostics]);
 
   const handleStart = useCallback((): void => {
     setHasStarted(true);
@@ -483,27 +674,6 @@ export default function App(): React.ReactElement {
     [audioQueue],
   );
 
-  const handleJoinSignallingSession = useCallback(async (): Promise<void> => {
-    const parsed = parseShareableWebRtcSessionId(signallingSessionInput);
-    if (!parsed) {
-      setSignallingInputError('Enter a broadcaster share identifier like broadcast_demo/wrs_demo.');
-      return;
-    }
-    setSignallingInputError(null);
-    const snapshot = await listenerSignallingClientRef.current?.joinSession(parsed).catch(() => undefined);
-    if (snapshot?.state === 'joined') {
-      listenerTransportRef.current?.startWaiting();
-    }
-  }, [signallingSessionInput]);
-
-  const handleLeaveSignallingSession = useCallback(async (): Promise<void> => {
-    setSignallingInputError(null);
-    listenerTransportRef.current?.close('listener left signalling session');
-    await listenerSignallingClientRef.current
-      ?.leaveSession('listener left signalling session')
-      .catch(() => undefined);
-  }, []);
-
   const handleRecoverSignallingSession = useCallback(async (): Promise<void> => {
     setSignallingInputError(null);
     const snapshot = await listenerSignallingClientRef.current
@@ -513,6 +683,59 @@ export default function App(): React.ReactElement {
       listenerTransportRef.current?.startWaiting();
     }
   }, []);
+
+  useEffect(() => {
+    if (!activeShareableSessionId) return;
+    const previousShareableSessionId = lastJoinedShareableSessionRef.current;
+    if (!shouldJoinProgrammeSession(previousShareableSessionId, activeShareableSessionId)) {
+      return;
+    }
+    const parsed = parseShareableWebRtcSessionId(activeShareableSessionId);
+    if (!parsed) {
+      setVideoPlaybackError('Programme session identity is invalid. Reconnect from the operator.');
+      return;
+    }
+
+    setSignallingSessionInput(activeShareableSessionId);
+    setSignallingInputError(null);
+    void (async () => {
+      let client = listenerSignallingClientRef.current;
+      if (!client) {
+        client = createListenerProgrammeControllers().client;
+        if (socketRef.current) client.attach(socketRef.current);
+      }
+      if (shouldReplaceProgrammeSession(previousShareableSessionId, activeShareableSessionId)) {
+        setRemoteProgrammeStream(null);
+        if (videoRef.current?.srcObject) {
+          videoRef.current.pause();
+          videoRef.current.srcObject = null;
+        }
+        listenerTransportRef.current?.close('programme session changed', false);
+        await client.leaveSession('programme session changed').catch(() => undefined);
+        listenerTransportRef.current?.dispose();
+        listenerSignallingClientRef.current?.dispose();
+        client = createListenerProgrammeControllers().client;
+        if (socketRef.current) client.attach(socketRef.current);
+      }
+
+      lastJoinedShareableSessionRef.current = activeShareableSessionId;
+      return client.joinSession(parsed);
+    })()
+      .then((snapshot) => {
+        if (snapshot.state === 'joined') {
+          listenerTransportRef.current?.startWaiting();
+        }
+      })
+      .catch((error: unknown) => {
+        lastJoinedShareableSessionRef.current = previousShareableSessionId ?? null;
+        const message = error instanceof Error ? error.message : 'Unable to join programme media.';
+        setVideoPlaybackError(`Programme media connection failed: ${message}`);
+      });
+  }, [activeShareableSessionId, createListenerProgrammeControllers]);
+
+  useEffect(() => {
+    connect();
+  }, [connect]);
 
   useEffect(() => {
     return () => {
@@ -529,6 +752,34 @@ export default function App(): React.ReactElement {
     error: 'var(--color-error)',
     disconnected: 'var(--color-error)',
   }[connectionStatus];
+  const generatedQueueActive =
+    audioQueue.generatedState.pendingCount > 0 ||
+    audioQueue.generatedState.status === 'playing' ||
+    audioQueue.generatedState.status === 'buffering' ||
+    audioQueue.generatedState.status === 'scheduled';
+  const programmeCompleted = streamStatus === 'completed' && !generatedQueueActive;
+  const displayStreamStatus =
+    streamStatus === 'completed' && generatedQueueActive ? 'finishing interpretation' : streamStatus;
+  const reconnectVisible =
+    hasStarted &&
+    connectionStatus !== 'connected' &&
+    (connectionStatus === 'error' ||
+      connectionStatus === 'disconnected' ||
+      listenerTransport.state === 'failed' ||
+      listenerSignalling.state === 'failed' ||
+      listenerSignalling.state === 'reconnecting');
+  const activeCaption =
+    subtitlesEnabled && currentPhrase
+      ? currentPhrase
+      : null;
+  const programmeVideoLabel = describeProgrammeVideoLabel({
+    remoteVideoTrackReceived: listenerTransport.remoteVideoTrackReceived,
+    remoteAudioTrackReceived: listenerTransport.remoteAudioTrackReceived,
+    mediaHasVideo: hasReceivedProgrammeVideo,
+    streamStatus,
+    transportState: listenerTransport.state,
+    usesMockVideoFeed: shouldUseMockVideoFeed(mediaState?.videoSource),
+  });
 
   return (
     <div className={styles.root}>
@@ -566,7 +817,9 @@ export default function App(): React.ReactElement {
                 ? 'LIVE'
                 : connectionStatus === 'disconnected' || connectionStatus === 'error'
                   ? 'INTERRUPTED'
-                  : streamStatus.toUpperCase()}
+                  : programmeCompleted
+                    ? 'COMPLETED'
+                    : displayStreamStatus.toUpperCase()}
             </span>
             {buffering && (
               <span className={styles.bufferingBadge} aria-live="polite">
@@ -590,16 +843,16 @@ export default function App(): React.ReactElement {
               }
             />
             <div className={styles.videoOverlay} aria-hidden>
-              <span className={styles.mockLabel}>
-                {listenerTransport.remoteVideoTrackReceived
-                  ? 'Programme video'
-                  : listenerTransport.remoteAudioTrackReceived
-                    ? 'Audio-only programme'
-                    : shouldUseMockVideoFeed(mediaState?.videoSource)
-                      ? 'Mock video source'
-                      : 'Programme video unavailable'}
-              </span>
+              <span className={styles.mockLabel}>{programmeVideoLabel}</span>
             </div>
+            {activeCaption && (
+              <div className={styles.captionOverlay} aria-live="polite" aria-atomic="true">
+                <p className={styles.captionText}>{activeCaption.translatedText}</p>
+                {activeCaption.sourceText && (
+                  <p className={styles.captionSource}>{activeCaption.sourceText}</p>
+                )}
+              </div>
+            )}
           </div>
           {videoPlaybackError && (
             <div className={styles.videoPlaybackError} role="alert">
@@ -637,46 +890,34 @@ export default function App(): React.ReactElement {
             </select>
           </div>
 
-          <div className={styles.controlGroup}>
-            <label className={styles.label}>Audio mode</label>
-            <div className={styles.modeToggle} role="group" aria-label="Listener audio mode">
-              <button
-                type="button"
-                className={`${styles.modeBtn} ${
-                  mixState.mode === 'interpretation' ? styles.modeBtnActive : ''
-                }`}
-                onClick={() => handleAudioModeChange('interpretation')}
-                aria-pressed={mixState.mode === 'interpretation'}
-              >
-                Interpretation
-              </button>
-              <button
-                type="button"
-                className={`${styles.modeBtn} ${
-                  mixState.mode === 'replacement' ? styles.modeBtnActive : ''
-                }`}
-                onClick={() => handleAudioModeChange('replacement')}
-                aria-pressed={mixState.mode === 'replacement'}
-              >
-                Replacement
-              </button>
+          {hasStarted && (
+            <div className={styles.controlGroup}>
+              <label className={styles.label}>Mode</label>
+              <div className={styles.modeToggle} role="group" aria-label="Listener audio mode">
+                <button
+                  type="button"
+                  className={`${styles.modeBtn} ${
+                    mixState.mode === 'interpretation' ? styles.modeBtnActive : ''
+                  }`}
+                  onClick={() => handleAudioModeChange('interpretation')}
+                  aria-pressed={mixState.mode === 'interpretation'}
+                >
+                  Interpretation
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.modeBtn} ${
+                    mixState.mode === 'replacement' ? styles.modeBtnActive : ''
+                  }`}
+                  onClick={() => handleAudioModeChange('replacement')}
+                  aria-pressed={mixState.mode === 'replacement'}
+                >
+                  Replacement
+                </button>
+              </div>
             </div>
-          </div>
+          )}
         </section>
-
-        <ListenerSignallingPanel
-          signalling={listenerSignalling}
-          listenerTransport={listenerTransport}
-          sessionInput={signallingSessionInput}
-          onSessionInputChange={(value) => {
-            setSignallingSessionInput(value);
-            setSignallingInputError(null);
-          }}
-          onJoin={() => void handleJoinSignallingSession()}
-          onLeave={() => void handleLeaveSignallingSession()}
-          onRecover={() => void handleRecoverSignallingSession()}
-          inputError={signallingInputError}
-        />
 
         <section className={styles.audioSection} aria-label="Volume controls">
           <div className={styles.volumeRow}>
@@ -733,16 +974,23 @@ export default function App(): React.ReactElement {
             <button type="button" className={styles.resetMixBtn} onClick={handleResetMixDefaults}>
               Reset mix
             </button>
+            <label className={styles.toggleLabel}>
+              <input
+                type="checkbox"
+                checked={subtitlesEnabled}
+                onChange={(event) => setSubtitlesEnabled(event.target.checked)}
+                aria-label="Toggle captions"
+              />
+              Captions
+            </label>
           </div>
 
           <div className={styles.audioStatus} aria-live="polite">
-            <span className={styles.label}>Translated audio status: </span>
-            <span>{audioQueue.status}</span>
-            <span className={styles.audioPending}>
-              {' '}
-              · {audioQueue.pendingCount} queued audio segment
-              {audioQueue.pendingCount === 1 ? '' : 's'}
-            </span>
+            <span className={styles.label}>Status: </span>
+            <span>{audioQueue.generatedState.status}</span>
+            {deliveredAudio.length > 0 && (
+              <span className={styles.audioPending}> - {deliveredAudio.length} delivered</span>
+            )}
           </div>
 
           <div className={styles.mixStatePanel} aria-live="polite">
@@ -848,7 +1096,7 @@ export default function App(): React.ReactElement {
                 </>
               ) : (
                 <p className={styles.subtitlePlaceholder}>
-                  {hasStarted ? 'Waiting for translated text…' : 'Press Start Listening to begin'}
+                  {hasStarted ? 'Waiting for translated text...' : 'Press play to begin'}
                 </p>
               )}
             </div>
@@ -866,7 +1114,7 @@ export default function App(): React.ReactElement {
                   title={`Received at ${new Date(phrase.receivedAt).toLocaleTimeString()}`}
                 >
                   <span className={styles.phraseTime}>
-                    {formatTimestamp(phrase.videoTimestampMs)}
+                    {formatTimestamp(phrase.startMs)}
                   </span>
                   <span className={styles.phraseText}>{phrase.translatedText}</span>
                   <span className={styles.phraseSeq}>#{phrase.sequence}</span>
@@ -908,6 +1156,8 @@ export default function App(): React.ReactElement {
                   <audio
                     className={styles.deliveredAudioPlayer}
                     controls
+                    data-delivered-generated-audio="true"
+                    muted={muted}
                     preload="metadata"
                     src={segment.audioUrl}
                   />
@@ -920,7 +1170,7 @@ export default function App(): React.ReactElement {
         {!hasStarted && (
           <div className={styles.startSection}>
             <p className={styles.startHint}>
-              Click below to connect and enable translated audio.
+              Click below to play the interpreted programme.
               <br />
               <small>Browser autoplay policy requires a user gesture before audio can play.</small>
             </p>
@@ -928,15 +1178,27 @@ export default function App(): React.ReactElement {
               type="button"
               className={styles.startBtn}
               onClick={handleStart}
-              aria-label="Start listening"
+              aria-label="Play interpreted programme"
             >
-              Start Listening
+              Play interpreted programme
             </button>
           </div>
         )}
-        {import.meta.env.DEV && (
-          <section className={styles.devDiagnostics} aria-label="Development socket diagnostics">
-            <h2 className={styles.devDiagnosticsTitle}>Development socket diagnostics</h2>
+        {reconnectVisible && (
+          <button
+            type="button"
+            className={styles.reconnectBtn}
+            onClick={() => void handleRecoverSignallingSession()}
+          >
+            Reconnect
+          </button>
+        )}
+        <details
+          className={styles.devDiagnostics}
+          open={showDiagnostics}
+          onToggle={(event) => setShowDiagnostics(event.currentTarget.open)}
+        >
+            <summary className={styles.devDiagnosticsTitle}>Technical diagnostics</summary>
             <dl className={styles.devDiagnosticsGrid}>
               <div>
                 <dt>Gateway URL</dt>
@@ -962,9 +1224,30 @@ export default function App(): React.ReactElement {
                 <dt>Disconnect reason</dt>
                 <dd>{socketDiagnostics.disconnectReason}</dd>
               </div>
+              <div>
+                <dt>Programme session</dt>
+                <dd>{signallingSessionInput || activeShareableSessionId || '-'}</dd>
+              </div>
+              <div>
+                <dt>Media transport</dt>
+                <dd>{listenerTransport.state}</dd>
+              </div>
+              <div>
+                <dt>Original tracks</dt>
+                <dd>
+                  audio {listenerTransport.remoteAudioTrackReceived ? 'yes' : 'no'} / video{' '}
+                  {listenerTransport.remoteVideoTrackReceived ? 'yes' : 'no'}
+                </dd>
+              </div>
             </dl>
-          </section>
-        )}
+          {(signallingInputError || listenerSignalling.lastError || listenerTransport.lastError) && (
+            <p className={styles.videoPlaybackError} role="alert">
+              {signallingInputError ??
+                listenerSignalling.lastError?.message ??
+                listenerTransport.lastError?.message}
+            </p>
+          )}
+        </details>
       </main>
     </div>
   );

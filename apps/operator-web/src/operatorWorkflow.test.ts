@@ -55,6 +55,8 @@ describe('operator workflow summary', () => {
       connected: true,
       ingestHealthy: true,
       programmeSource: source(),
+      programmeMediaReady: false,
+      programmeMediaError: null,
       mediaState: null,
       streamStatus: 'created',
       starting: false,
@@ -74,6 +76,8 @@ describe('operator workflow summary', () => {
         sourceType: 'camera',
         sourceIdentity: 'OBS Virtual Camera + CABLE Output',
       }),
+      programmeMediaReady: false,
+      programmeMediaError: null,
       mediaState: null,
       streamStatus: 'created',
       starting: false,
@@ -89,6 +93,8 @@ describe('operator workflow summary', () => {
       connected: true,
       ingestHealthy: true,
       programmeSource: source({ status: 'broadcasting', broadcasting: true }),
+      programmeMediaReady: true,
+      programmeMediaError: null,
       mediaState: mediaState(),
       streamStatus: 'processing',
       starting: false,
@@ -99,13 +105,35 @@ describe('operator workflow summary', () => {
     expect(summary.actionableWarning).toBeNull();
   });
 
-  it('shows completed when uploaded video reaches its natural end', () => {
+  it('keeps an ended uploaded video live while interpretation is finishing', () => {
     const summary = buildOperatorWorkflowSummary({
       connected: true,
       ingestHealthy: true,
       programmeSource: source({ status: 'ended', sourceEnded: true }),
+      programmeMediaReady: true,
+      programmeMediaError: null,
       mediaState: mediaState({ streamStatus: 'processing' }),
       streamStatus: 'processing',
+      starting: false,
+      mediaError: null,
+    });
+
+    expect(summary.status).toBe('Live');
+    expect(summary.progressLabel).toBe('Finishing interpretation');
+    expect(summary.canPause).toBe(false);
+    expect(summary.canStartInterpretation).toBe(false);
+    expect(summary.canEnd).toBe(true);
+  });
+
+  it('shows completed when uploaded video and interpretation are both complete', () => {
+    const summary = buildOperatorWorkflowSummary({
+      connected: true,
+      ingestHealthy: true,
+      programmeSource: source({ status: 'ended', sourceEnded: true }),
+      programmeMediaReady: true,
+      programmeMediaError: null,
+      mediaState: mediaState({ streamStatus: 'completed' }),
+      streamStatus: 'completed',
       starting: false,
       mediaError: null,
     });
@@ -125,6 +153,8 @@ describe('operator workflow summary', () => {
         status: 'ended',
         sourceEnded: true,
       }),
+      programmeMediaReady: true,
+      programmeMediaError: null,
       mediaState: mediaState({ streamStatus: 'completed' }),
       streamStatus: 'completed',
       starting: false,
@@ -148,6 +178,8 @@ describe('operator workflow summary', () => {
         videoDetected: false,
         rtmpState: 'waiting-for-stream',
       }),
+      programmeMediaReady: false,
+      programmeMediaError: null,
       mediaState: null,
       streamStatus: 'created',
       starting: false,
@@ -169,6 +201,8 @@ describe('operator workflow summary', () => {
         rtmpState: 'live',
         rtmpPlaybackUrl: 'http://localhost:8888/live/videofy-demo/index.m3u8',
       }),
+      programmeMediaReady: false,
+      programmeMediaError: null,
       mediaState: null,
       streamStatus: 'created',
       starting: false,
@@ -184,6 +218,8 @@ describe('operator workflow summary', () => {
       connected: false,
       ingestHealthy: true,
       programmeSource: source(),
+      programmeMediaReady: false,
+      programmeMediaError: null,
       mediaState: null,
       streamStatus: 'created',
       starting: false,
@@ -193,5 +229,40 @@ describe('operator workflow summary', () => {
     expect(summary.status).toBe('Needs attention');
     expect(summary.actionableWarning).toContain('Realtime gateway');
     expect(summary.canStartInterpretation).toBe(false);
+  });
+
+  it('does not report subtitle-only processing as live before programme media is ready', () => {
+    const summary = buildOperatorWorkflowSummary({
+      connected: true,
+      ingestHealthy: true,
+      programmeSource: source({ status: 'broadcasting', broadcasting: true }),
+      programmeMediaReady: false,
+      programmeMediaError: null,
+      mediaState: mediaState({ sourceAudioActive: true }),
+      streamStatus: 'processing',
+      starting: false,
+      mediaError: null,
+    });
+
+    expect(summary.status).toBe('Starting');
+    expect(summary.progressLabel).toBe('Starting programme media');
+    expect(summary.canPause).toBe(false);
+  });
+
+  it('shows one actionable media transport error instead of continuing live', () => {
+    const summary = buildOperatorWorkflowSummary({
+      connected: true,
+      ingestHealthy: true,
+      programmeSource: source({ status: 'broadcasting', broadcasting: true }),
+      programmeMediaReady: false,
+      programmeMediaError: 'Timed out waiting for backend programme audio and video.',
+      mediaState: mediaState({ sourceAudioActive: true }),
+      streamStatus: 'processing',
+      starting: false,
+      mediaError: null,
+    });
+
+    expect(summary.status).toBe('Needs attention');
+    expect(summary.actionableWarning).toContain('backend programme audio and video');
   });
 });

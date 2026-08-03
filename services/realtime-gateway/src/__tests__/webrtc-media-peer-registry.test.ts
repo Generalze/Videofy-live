@@ -56,8 +56,8 @@ class FakeSink {
 class FakeVideoSink {
   onframe: ((event: WebRtcVideoFrameLike | { frame?: WebRtcVideoFrameLike }) => void) | null = null;
   stop = vi.fn();
-  emitFrame(): void {
-    this.onframe?.({ frame: { width: 640, height: 360 } });
+  emitFrame(frame: WebRtcVideoFrameLike = { width: 640, height: 360 }): void {
+    this.onframe?.({ frame });
   }
 }
 
@@ -171,6 +171,50 @@ describe('BackendWebRtcMediaPeerRegistry', () => {
       ingestBridgeState: 'active',
       audioFrameCount: 2,
       audioActivityDetected: true,
+    });
+    expect(ready).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not emit peer-ready for video offers until a backend video frame is active', async () => {
+    const peer = new FakePeer();
+    const sink = new FakeSink();
+    const videoSink = new FakeVideoSink();
+    const ready = vi.fn();
+    const registry = new BackendWebRtcMediaPeerRegistry({
+      createPeerConnection: () => peer as never,
+      createAudioSink: () => sink,
+      createVideoSink: () => videoSink,
+      onPeerReady: ready,
+    });
+
+    await registry.acceptOffer(
+      'socket_broadcaster',
+      offer({
+        payload: {
+          targetPeerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+          sdp: 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n',
+        },
+      }),
+      sessionSummary(),
+    );
+    peer.emitTrack('audio');
+    peer.emitTrack('video');
+    sink.emitFrame();
+
+    expect(registry.getSnapshot('wrs_demo')).toMatchObject({
+      audioTrackState: 'active',
+      videoTrackState: 'received',
+      audioActivityDetected: true,
+      videoActivityDetected: false,
+    });
+    expect(ready).not.toHaveBeenCalled();
+
+    videoSink.emitFrame({ width: 1280, height: 720 });
+
+    expect(registry.getSnapshot('wrs_demo')).toMatchObject({
+      videoTrackState: 'active',
+      videoFrameCount: 1,
+      videoActivityDetected: true,
     });
     expect(ready).toHaveBeenCalledTimes(1);
   });

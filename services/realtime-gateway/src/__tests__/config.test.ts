@@ -22,4 +22,12 @@ describe('gateway config', () => {
 
     expect(() => loadConfig()).toThrow(/GATEWAY_PORT/);
   });
+
+  it('defaults WebRTC transcription submit timeout for local AI providers and accepts overrides', () => {
+    delete process.env['WEBRTC_TRANSCRIPTION_REQUEST_TIMEOUT_MS'];
+    expect(loadConfig().webRtcTranscriptionRequestTimeoutMs).toBe(180_000);
+
+    process.env['WEBRTC_TRANSCRIPTION_REQUEST_TIMEOUT_MS'] = '240000';
+    expect(loadConfig().webRtcTranscriptionRequestTimeoutMs).toBe(240_000);
+  });
 });

@@ -303,7 +303,15 @@ export class BackendWebRtcListenerPeerRegistry {
         record.videoSource.onFrame(frame);
         record.lastVideoFrameAt = this.now();
         this.touch(record);
-      } catch {
+      } catch (error) {
+        logger.warn('Backend listener WebRTC video frame fan-out failed', {
+          sessionId: record.sessionId,
+          listenerPeerId: record.listenerPeerId,
+          revision: record.revision,
+          width: frame.width ?? null,
+          height: frame.height ?? null,
+          message: error instanceof Error ? error.message : String(error),
+        });
         this.fail(record);
       }
     }

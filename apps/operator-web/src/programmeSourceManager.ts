@@ -393,6 +393,9 @@ export class ProgrammeSourceManager {
   private mediaElementAudioContext: AudioContext | null = null;
   private mediaElementAudioSource: MediaElementAudioSourceNode | null = null;
   private mediaElementAudioDestination: MediaStreamAudioDestinationNode | null = null;
+  private mediaElementVideoCanvas: HTMLCanvasElement | null = null;
+  private mediaElementVideoCanvasStream: MediaStream | null = null;
+  private mediaElementVideoAnimationFrame: number | null = null;
   private lastInterruptedRtmpStreamPath: string | null = null;
   private liveStartedAtMs: number | null = null;
   private livePausedAtMs: number | null = null;
@@ -642,8 +645,14 @@ export class ProgrammeSourceManager {
         videoElement.src = direct.url;
         videoElement.load?.();
       }
-      void videoElement.play?.().catch(() => undefined);
+      if (direct.format === 'hls') {
+        void videoElement.play?.().catch(() => undefined);
+      }
       await waitForMediaReady(videoElement, () => this.hlsFatalError);
+      if (direct.format !== 'hls') {
+        videoElement.pause();
+        videoElement.currentTime = 0;
+      }
       const stream = (videoElement.captureStream ?? videoElement.mozCaptureStream)!.call(videoElement);
       this.assertUsableTracks(stream, { requireVideo: true });
       const durationMs = Number.isFinite(videoElement.duration) ? Math.round(videoElement.duration * 1000) : null;
@@ -733,9 +742,9 @@ export class ProgrammeSourceManager {
       await waitForMediaReady(videoElement, () => this.hlsFatalError);
       const capturedStream = (videoElement.captureStream ?? videoElement.mozCaptureStream)!.call(videoElement);
       const stream =
-        capturedStream.getAudioTracks().length === 0
-          ? (await this.combineWithMediaElementAudioTrack(videoElement, capturedStream)) ?? capturedStream
-          : capturedStream;
+        capturedStream.getAudioTracks().some((track) => track.readyState !== 'ended')
+          ? capturedStream
+          : (await this.combineWithMediaElementAudioTrack(videoElement, capturedStream)) ?? capturedStream;
       await waitForCapturedTracks(stream, {
         requireAudio: true,
         requireVideo: true,
@@ -791,7 +800,11 @@ export class ProgrammeSourceManager {
       throw this.fail(new ProgrammeSourceError('missing-media-track', 'Select a programme source before starting.'));
     }
     if (this.isMediaElementSource() && this.videoElement) {
+      this.videoElement.muted = false;
+      this.videoElement.volume = 1;
+      await this.mediaElementAudioContext?.resume?.().catch(() => undefined);
       await requestMediaElementPlayback(this.videoElement, (error) => this.fail(error));
+      await this.replaceMediaElementAudioForTransport();
     } else {
       this.liveStartedAtMs = this.now();
       this.livePausedAtMs = null;
@@ -812,11 +825,11 @@ export class ProgrammeSourceManager {
     if (!this.stream || this.snapshot.status !== 'preview-ready') {
       throw this.fail(new ProgrammeSourceError('missing-media-track', 'Select a programme source before starting.'));
     }
-    if (this.snapshot.sourceType === 'uploaded-video' && this.videoElement) {
+    if (this.isMediaElementSource() && this.videoElement && this.snapshot.canRestart) {
       this.videoElement.pause();
       if (Math.abs((this.videoElement.currentTime || 0)) > 0.05) {
         await seekMediaElement(this.videoElement, 0);
-        this.incrementRevision('uploaded video start rewind');
+        this.incrementRevision('programme media start rewind');
       } else {
         this.videoElement.currentTime = 0;
       }
@@ -827,7 +840,9 @@ export class ProgrammeSourceManager {
         error: null,
       });
     }
-    this.enableTracks(false);
+    if (this.isMediaElementSource()) {
+      await this.replaceMediaElementAudioForTransport();
+    }
     return this.snapshot;
   }
 
@@ -1161,6 +1176,7 @@ export class ProgrammeSourceManager {
       this.hlsFatalError = null;
     }
     this.releaseMediaElementAudioCapture();
+    this.releaseMediaElementVideoCanvasCapture();
     if (this.videoElement && !options.preservePreview) {
       this.videoElement.removeEventListener('ended', this.handleMediaElementEnded);
       this.videoElement.pause();
@@ -1185,9 +1201,47 @@ export class ProgrammeSourceManager {
     }
   }
 
+  private captureMediaElementStream(videoElement: HTMLVideoElement): MediaStream | null {
+    const capture = (videoElement as CaptureVideoElement).captureStream ?? (videoElement as CaptureVideoElement).mozCaptureStream;
+    if (!capture) return null;
+    return capture.call(videoElement as CaptureVideoElement);
+  }
+
+  private captureMediaElementCanvasStream(videoElement: HTMLVideoElement): MediaStream | null {
+    if (
+      typeof document === 'undefined' ||
+      typeof requestAnimationFrame === 'undefined' ||
+      typeof cancelAnimationFrame === 'undefined'
+    ) {
+      return null;
+    }
+    this.releaseMediaElementVideoCanvasCapture();
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(2, Math.round(videoElement.videoWidth || 1280));
+    canvas.height = Math.max(2, Math.round(videoElement.videoHeight || 720));
+    const context = canvas.getContext('2d');
+    if (!context || !canvas.captureStream) return null;
+    const draw = (): void => {
+      if (this.mediaElementVideoCanvas !== canvas) return;
+      const width = Math.max(2, Math.round(videoElement.videoWidth || canvas.width));
+      const height = Math.max(2, Math.round(videoElement.videoHeight || canvas.height));
+      if (canvas.width !== width) canvas.width = width;
+      if (canvas.height !== height) canvas.height = height;
+      if (videoElement.readyState >= 2) {
+        context.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+      }
+      this.mediaElementVideoAnimationFrame = requestAnimationFrame(draw);
+    };
+    const stream = canvas.captureStream(30);
+    this.mediaElementVideoCanvas = canvas;
+    this.mediaElementVideoCanvasStream = stream;
+    draw();
+    return stream;
+  }
+
   private async combineWithMediaElementAudioTrack(
     videoElement: HTMLVideoElement,
-    capturedStream: MediaStream,
+    previousStream: MediaStream,
   ): Promise<MediaStream | null> {
     const AudioContextConstructor =
       globalThis.AudioContext ??
@@ -1208,14 +1262,68 @@ export class ProgrammeSourceManager {
         void audioContext.close?.().catch(() => undefined);
         return null;
       }
+      const capturedStream =
+        this.captureMediaElementCanvasStream(videoElement) ??
+        this.captureMediaElementStream(videoElement) ??
+        previousStream;
+      const videoTracks = capturedStream.getVideoTracks().filter((track) => track.readyState !== 'ended');
+      if (videoTracks.length === 0) {
+        source.disconnect();
+        void audioContext.close?.().catch(() => undefined);
+        return null;
+      }
       this.mediaElementAudioContext = audioContext;
       this.mediaElementAudioSource = source;
       this.mediaElementAudioDestination = destination;
-      return new MediaStream([...capturedStream.getVideoTracks(), ...audioTracks]);
+      for (const capturedAudioTrack of capturedStream.getAudioTracks()) {
+        if (capturedAudioTrack.readyState !== 'ended') capturedAudioTrack.stop();
+      }
+      return new MediaStream([...videoTracks, ...audioTracks]);
     } catch {
       this.releaseMediaElementAudioCapture();
       return null;
     }
+  }
+
+  private async replaceMediaElementAudioForTransport(): Promise<void> {
+    if (!this.videoElement || !this.stream) return;
+    if (this.mediaElementAudioDestination) return;
+    const previousStream = this.stream;
+    const replacement = await this.combineWithMediaElementAudioTrack(this.videoElement, this.stream);
+    if (!replacement) return;
+
+    for (const track of this.ownedTracks) {
+      track.removeEventListener?.('ended', this.handleTrackEnded);
+    }
+    this.ownedTracks.clear();
+    this.stream = replacement;
+    const replacementTracks = new Set(replacement.getTracks());
+    for (const track of previousStream.getTracks()) {
+      if (!replacementTracks.has(track) && track.readyState !== 'ended') track.stop();
+    }
+    for (const track of replacement.getTracks()) {
+      track.addEventListener?.('ended', this.handleTrackEnded);
+      this.ownedTracks.add(track);
+    }
+
+    const audioTrack = replacement.getAudioTracks()[0] ?? null;
+    const videoTrack = replacement.getVideoTracks()[0] ?? null;
+    const videoSettings = readVideoSettings(videoTrack);
+    this.update({
+      audioDetected: Boolean(audioTrack),
+      videoDetected: Boolean(videoTrack),
+      audioTrackId: audioTrack?.id ?? null,
+      videoTrackId: videoTrack?.id ?? null,
+      audioSourceLabel: audioTrack?.label || this.snapshot.audioSourceLabel,
+      videoSourceLabel: videoTrack?.label || this.snapshot.videoSourceLabel,
+      audioTrackState: audioTrack?.readyState ?? 'none',
+      videoTrackState: videoTrack?.readyState ?? 'none',
+      videoWidth: videoSettings.width,
+      videoHeight: videoSettings.height,
+      frameRate: videoSettings.frameRate,
+      audioMissingReason: audioTrack ? null : this.snapshot.audioMissingReason,
+      error: null,
+    });
   }
 
   private releaseMediaElementAudioCapture(): void {
@@ -1225,6 +1333,20 @@ export class ProgrammeSourceManager {
     this.mediaElementAudioSource = null;
     this.mediaElementAudioDestination = null;
     this.mediaElementAudioContext = null;
+  }
+
+  private releaseMediaElementVideoCanvasCapture(): void {
+    if (this.mediaElementVideoAnimationFrame !== null) {
+      if (typeof cancelAnimationFrame !== 'undefined') {
+        cancelAnimationFrame(this.mediaElementVideoAnimationFrame);
+      }
+      this.mediaElementVideoAnimationFrame = null;
+    }
+    if (this.mediaElementVideoCanvasStream) {
+      this.stopStream(this.mediaElementVideoCanvasStream);
+      this.mediaElementVideoCanvasStream = null;
+    }
+    this.mediaElementVideoCanvas = null;
   }
 
   private async resolveHlsPlaybackMode(videoElement: HTMLVideoElement): Promise<'native' | 'hls-js' | 'unsupported' | 'not-hls'> {

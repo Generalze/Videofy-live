@@ -162,6 +162,7 @@ declare module '@videofy-live/shared-types' {
     eventId: string;
     streamId?: string;
     processingSessionId?: string;
+    shareableWebRtcSessionId?: string;
     streamStatus: StreamStatus;
     videoSource: VideoSource;
     media?: {

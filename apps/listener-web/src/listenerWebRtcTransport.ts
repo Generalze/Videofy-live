@@ -172,6 +172,10 @@ export class ListenerWebRtcTransportController {
     return this.snapshot;
   }
 
+  getRemoteStream(): MediaStream | null {
+    return this.stream;
+  }
+
   startWaiting(): ListenerWebRtcTransportSnapshot {
     if (this.snapshot.state !== 'idle' && this.snapshot.state !== 'closed' && this.snapshot.state !== 'failed') {
       throw this.fail(error('duplicate-peer', 'Listener WebRTC audio transport is already active.'));
@@ -210,7 +214,7 @@ export class ListenerWebRtcTransportController {
     }
     if (event.type === 'ice-complete') return;
     if (event.type === 'peer-disconnect') {
-      this.close('remote peer disconnected');
+      this.closeRemoteProgrammeSource('remote peer disconnected');
     }
   }
 
@@ -274,6 +278,25 @@ export class ListenerWebRtcTransportController {
       });
     }
     return this.snapshot;
+  }
+
+  private closeRemoteProgrammeSource(reason: string): void {
+    const hadAudio = this.snapshot.remoteAudioTrackReceived;
+    const hadVideo = this.snapshot.remoteVideoTrackReceived;
+    if (!hadAudio && !hadVideo) {
+      this.close(reason);
+      return;
+    }
+    this.close(reason, false);
+    this.update({
+      state: 'source-ended',
+      remoteAudioTrackReceived: hadAudio,
+      remoteVideoTrackReceived: hadVideo,
+      remoteAudioTrackActive: false,
+      remoteVideoTrackActive: false,
+      playbackBlocked: false,
+      lastError: null,
+    });
   }
 
   dispose(): void {
@@ -395,7 +418,6 @@ export class ListenerWebRtcTransportController {
     }
     this.audioTrack = track;
     track.addEventListener?.('ended', this.handleTrackEnded);
-    const shouldPublishStream = this.stream === null;
     const stream = this.mergeRemoteTrack(track, event);
     this.clearNegotiationTimer();
     this.update({
@@ -403,9 +425,7 @@ export class ListenerWebRtcTransportController {
       remoteAudioTrackReceived: true,
       remoteAudioTrackActive: track.readyState !== 'ended',
     });
-    if (shouldPublishStream) {
-      this.onRemoteStream?.(stream);
-    }
+    this.onRemoteStream?.(stream);
   };
 
   private handleVideoTrack(track: MediaStreamTrack, event: RTCTrackEvent): void {
@@ -415,7 +435,6 @@ export class ListenerWebRtcTransportController {
     }
     this.videoTrack = track;
     track.addEventListener?.('ended', this.handleVideoTrackEnded);
-    const shouldPublishStream = this.stream === null;
     const stream = this.mergeRemoteTrack(track, event);
     this.clearNegotiationTimer();
     this.update({
@@ -423,9 +442,7 @@ export class ListenerWebRtcTransportController {
       remoteVideoTrackReceived: true,
       remoteVideoTrackActive: track.readyState !== 'ended',
     });
-    if (shouldPublishStream) {
-      this.onRemoteStream?.(stream);
-    }
+    this.onRemoteStream?.(stream);
   }
 
   private mergeRemoteTrack(track: MediaStreamTrack, event: RTCTrackEvent): MediaStream {

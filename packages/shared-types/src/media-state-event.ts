@@ -94,6 +94,8 @@ export interface MediaStateEvent {
   streamId?: string;
   /** Unique processing-session identifier for the accepted media. */
   processingSessionId?: string;
+  /** Authoritative broadcaster/session identifier for listener WebRTC programme media. */
+  shareableWebRtcSessionId?: string;
   /** Current lifecycle state of the video stream. */
   streamStatus: StreamStatus;
   /** Where the video feed originates from. */

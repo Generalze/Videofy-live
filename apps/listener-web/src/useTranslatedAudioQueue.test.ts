@@ -84,7 +84,6 @@ function makeGenerated(
 
 function createHarness(
   rejectUrls = new Set<string>(),
-  options: { staleToleranceMs?: number } = {},
 ) {
   const audios: TestAudio[] = [];
   const revoked: string[] = [];
@@ -106,7 +105,6 @@ function createHarness(
       revokeObjectURL: (url) => revoked.push(url),
     },
     onGeneratedStateChange: (state) => generatedStates.push({ ...state }),
-    ...(options.staleToleranceMs === undefined ? {} : { staleToleranceMs: options.staleToleranceMs }),
   });
   return {
     audios,
@@ -232,21 +230,16 @@ describe('TranslatedAudioQueueController', () => {
     );
   });
 
-  it('skips generated audio whose timestamp is beyond the stale recovery window', () => {
-    const { audios, controller, generatedStates, setClock } = createHarness(new Set(), {
-      staleToleranceMs: 250,
-    });
+  it('plays generated audio whose timestamp is delayed by provider latency', () => {
+    const { audios, controller, generatedStates, setClock } = createHarness();
     setClock(2000);
 
     controller.enqueueGenerated(makeGenerated(0, 0));
     controller.start();
 
-    expect(audios).toHaveLength(0);
-    expect(generatedStates.at(-1)).toMatchObject({
-      skippedCount: 1,
-      status: 'waiting',
-    });
-    expect(generatedStates.some((state) => state.error?.includes('Skipped late segment'))).toBe(
+    expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-0.wav']);
+    expect(audios[0]!.currentTime).toBe(0);
+    expect(generatedStates.some((state) => state.error?.includes('Recovered late segment'))).toBe(
       true,
     );
   });
@@ -259,6 +252,68 @@ describe('TranslatedAudioQueueController', () => {
     controller.start();
 
     expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-2.wav']);
+  });
+
+  it('drains delayed generated audio sequentially after the source ends', () => {
+    const { audios, controller, setClock } = createHarness();
+    setClock(0);
+
+    controller.enqueueGenerated(makeGenerated(0, 0));
+    controller.enqueueGenerated(makeGenerated(1, 15_000));
+    controller.setSourceEnded(true);
+    controller.start();
+
+    expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-0.wav']);
+    audios[0]!.onended?.();
+    expect(audios.map((audio) => audio.url)).toEqual([
+      'http://localhost/audio-0.wav',
+      'http://localhost/audio-1.wav',
+    ]);
+  });
+
+  it('ignores duplicate source-ended signals while draining generated audio', () => {
+    const { audios, controller, generatedStates, setClock } = createHarness();
+    setClock(0);
+
+    controller.enqueueGenerated(makeGenerated(1, 15_000));
+    controller.start();
+    controller.setSourceEnded(true);
+    const stateCountAfterFirstEnded = generatedStates.length;
+
+    controller.setSourceEnded(true);
+
+    expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-1.wav']);
+    expect(generatedStates).toHaveLength(stateCountAfterFirstEnded);
+  });
+
+  it('finishes zero-duration generated segments without blocking the queue', () => {
+    const { audios, controller, generatedStates, setClock } = createHarness();
+    setClock(0);
+    const empty = makeGenerated(0, 0, 0);
+
+    controller.enqueueGenerated(empty);
+    controller.enqueueGenerated(makeGenerated(1, 0));
+    controller.start();
+
+    expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-1.wav']);
+    expect(generatedStates.some((state) => state.playedCount === 1)).toBe(true);
+  });
+
+  it('drains consecutive zero-duration generated segments immediately', () => {
+    const { audios, controller, generatedStates, setClock } = createHarness();
+    setClock(0);
+
+    controller.enqueueGenerated(makeGenerated(0, 0, 0));
+    controller.enqueueGenerated(makeGenerated(1, 15_000, 0));
+    controller.enqueueGenerated(makeGenerated(2, 30_000, 0));
+    controller.start();
+
+    expect(audios).toHaveLength(0);
+    expect(generatedStates.at(-1)).toMatchObject({
+      status: 'completed',
+      playedCount: 3,
+      pendingCount: 0,
+    });
   });
 
   it('suppresses duplicate generated audio across listener reconnection replays', () => {

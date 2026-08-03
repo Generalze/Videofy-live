@@ -12,6 +12,7 @@ import type {
 } from '@videofy-live/shared-types';
 import {
   INGEST_ROOM,
+  createShareableWebRtcSessionId,
   languageRoom,
   OPERATOR_ROOM,
   SOCKET_EVENTS,
@@ -91,6 +92,7 @@ export class Gateway {
   private readonly programmeSessionConfigs = new Map<string, OperatorProgrammeSessionConfig>();
   private readonly activeWorkers = new Set<string>();
   private readonly activeIngestClients = new Set<string>();
+  private latestProgrammeMediaState: MediaStateEvent | null = null;
   private audioModePreferences: AudioMixPreferences = {
     mode: 'interpretation',
     originalVolume: 0.2,
@@ -106,6 +108,7 @@ export class Gateway {
       mediaIngestUrl?: string;
       internalWebRtcToken?: string | null;
       webRtcTranscriptionChunkMs?: number;
+      webRtcTranscriptionRequestTimeoutMs?: number;
       webRtcTranscriptionStagingDir?: string;
       vad?: ConstructorParameters<typeof WebRtcTranscriptionBridge>[0]['vad'];
     } = {},
@@ -113,6 +116,9 @@ export class Gateway {
     this.webRtcTranscriptionBridge = new WebRtcTranscriptionBridge({
       ...(options.mediaIngestUrl ? { mediaIngestUrl: options.mediaIngestUrl } : {}),
       ...(options.internalWebRtcToken ? { internalAuthToken: options.internalWebRtcToken } : {}),
+      ...(options.webRtcTranscriptionRequestTimeoutMs
+        ? { requestTimeoutMs: options.webRtcTranscriptionRequestTimeoutMs }
+        : {}),
       stagingDir: options.webRtcTranscriptionStagingDir ?? '../../uploads/webrtc-staging',
       ...(options.webRtcTranscriptionChunkMs
         ? { chunkDurationMs: options.webRtcTranscriptionChunkMs }
@@ -246,6 +252,12 @@ export class Gateway {
   private handleListenerSocket(socket: Socket, state: ClientState): void {
     this.handleWebRtcSocket(socket, 'listener');
     socket.emit(SOCKET_EVENTS.AUDIO_MODE_PREFERENCES, this.audioModePreferences);
+    if (this.latestProgrammeMediaState && !isTerminalMediaState(this.latestProgrammeMediaState.streamStatus)) {
+      socket.emit(SOCKET_EVENTS.MEDIA_STATE, {
+        ...this.latestProgrammeMediaState,
+        connectedListeners: this.listenerCount,
+      });
+    }
 
     socket.on(SOCKET_EVENTS.JOIN_LANGUAGE, (targetLanguage: unknown) => {
       if (typeof targetLanguage !== 'string' || targetLanguage.length < 2) {
@@ -443,6 +455,7 @@ export class Gateway {
         sourceLanguage: config.sourceLanguage,
         sourceLanguageMode: config.sourceLanguageMode,
       });
+      this.broadcastProgrammeSessionConfig(config);
     });
 
     socket.on(SOCKET_EVENTS.OPERATOR_CONTROL, (raw: unknown) => {
@@ -524,10 +537,27 @@ export class Gateway {
       }
 
       const stateEvent = result.data as MediaStateEvent;
+      const programmeConfig = stateEvent.processingSessionId
+        ? this.programmeSessionConfigs.get(stateEvent.processingSessionId)
+        : undefined;
       const enriched: MediaStateEvent = {
         ...stateEvent,
+        ...(programmeConfig
+          ? {
+              shareableWebRtcSessionId: createShareableWebRtcSessionId(
+                programmeConfig.broadcastId,
+                programmeConfig.sessionId,
+              ),
+            }
+          : {}),
         connectedListeners: this.listenerCount,
       };
+      if (programmeConfig && !isTerminalMediaState(enriched.streamStatus)) {
+        this.latestProgrammeMediaState = enriched;
+      }
+      if (programmeConfig && isTerminalMediaState(enriched.streamStatus)) {
+        this.latestProgrammeMediaState = null;
+      }
 
       this.io.emit(SOCKET_EVENTS.MEDIA_STATE, enriched);
       this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
@@ -1059,6 +1089,28 @@ export class Gateway {
     };
   }
 
+  private broadcastProgrammeSessionConfig(config: OperatorProgrammeSessionConfig): void {
+    const shareableWebRtcSessionId = createShareableWebRtcSessionId(
+      config.broadcastId,
+      config.sessionId,
+    );
+    const state: MediaStateEvent = {
+      eventId: 'Videofy Live Demo Event',
+      streamId: config.broadcastId,
+      processingSessionId: config.sessionId,
+      shareableWebRtcSessionId,
+      streamStatus: 'processing',
+      videoSource: 'webrtc',
+      videoTimestampMs: 0,
+      sourceAudioActive: false,
+      translatedLanguages: config.targetLanguages,
+      connectedListeners: this.listenerCount,
+      createdAt: new Date().toISOString(),
+    };
+    this.latestProgrammeMediaState = state;
+    this.io.emit(SOCKET_EVENTS.MEDIA_STATE, state);
+  }
+
   private parseProgrammeSessionConfig(raw: unknown): OperatorProgrammeSessionConfig | null {
     if (!raw || typeof raw !== 'object') return null;
     const candidate = raw as Partial<OperatorProgrammeSessionConfig>;
@@ -1175,6 +1227,10 @@ function estimateJsonBytes(raw: unknown): number {
 
 function isAudioLevel(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function isTerminalMediaState(status: string): boolean {
+  return status === 'completed' || status === 'cancelled' || status === 'failed';
 }
 
 function isSafeIdentifier(value: unknown): value is string {

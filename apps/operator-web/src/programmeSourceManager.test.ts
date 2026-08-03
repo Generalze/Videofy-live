@@ -322,6 +322,7 @@ describe('ProgrammeSourceManager', () => {
 
     await manager.prepareForInterpretationStart();
     expect(preview.currentTime).toBe(0);
+    expect(source.getTracks().every((item) => item.enabled)).toBe(true);
     expect(manager.getSnapshot()).toMatchObject({
       status: 'preview-ready',
       broadcasting: false,
@@ -329,6 +330,8 @@ describe('ProgrammeSourceManager', () => {
     });
 
     await manager.start();
+    expect(preview.muted).toBe(false);
+    expect(preview.volume).toBe(1);
     await manager.seek(5_000);
     await manager.restart();
     await manager.clear();
@@ -336,6 +339,99 @@ describe('ProgrammeSourceManager', () => {
     expect(preview.play).toHaveBeenCalled();
     expect(manager.getSnapshot()).toMatchObject({ sourceType: 'none' });
     expect(revoke).toHaveBeenCalledWith('blob:uploaded-video');
+  });
+
+  it('prepares uploaded-video Web Audio before playback so WebRTC binds the final stream', async () => {
+    const capturedAudio = track('audio', 'captured_audio');
+    const capturedVideo = track('video', 'uploaded_preview_video');
+    const transportVideo = track('video', 'uploaded_transport_video');
+    const webAudio = track('audio', 'uploaded_web_audio');
+    const captured = stream([capturedAudio, capturedVideo]);
+    const transportCapture = stream([track('audio', 'transport_captured_audio'), transportVideo]);
+    const destination = {
+      stream: stream([webAudio]),
+      disconnect: vi.fn(),
+    };
+    const sourceNode = {
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    const close = vi.fn(async () => undefined);
+    const mediaStreamDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'MediaStream');
+    const audioContextDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'AudioContext');
+    Object.defineProperty(globalThis, 'MediaStream', {
+      configurable: true,
+      value: vi.fn((tracks: MediaStreamTrack[]) => stream(tracks)),
+    });
+    Object.defineProperty(globalThis, 'AudioContext', {
+      configurable: true,
+      value: vi.fn(() => ({
+        createMediaElementSource: vi.fn(() => sourceNode),
+        createMediaStreamDestination: vi.fn(() => destination),
+        resume: vi.fn(async () => undefined),
+        close,
+      })),
+    });
+
+    try {
+      const manager = new ProgrammeSourceManager({
+        createObjectUrl: () => 'blob:uploaded-video',
+        revokeObjectUrl: vi.fn(),
+      });
+      const preview = videoElement(captured) as unknown as HTMLVideoElement & {
+        captureStream: ReturnType<typeof vi.fn>;
+      };
+      preview.captureStream = vi.fn()
+        .mockReturnValueOnce(captured)
+        .mockReturnValueOnce(transportCapture);
+
+      await manager.selectUploadedVideo(file('clip.mp4', 'video/mp4'), preview);
+
+      expect(sourceNode.connect).not.toHaveBeenCalled();
+      expect(capturedAudio.readyState).toBe('live');
+      expect(capturedVideo.readyState).toBe('live');
+      expect(manager.getSnapshot()).toMatchObject({
+        sourceType: 'uploaded-video',
+        status: 'preview-ready',
+        audioSourceLabel: 'captured_audio',
+        videoSourceLabel: 'uploaded_preview_video',
+      });
+
+      await manager.prepareForInterpretationStart();
+
+      expect(sourceNode.connect).toHaveBeenCalledWith(destination);
+      expect(capturedAudio.readyState).toBe('ended');
+      expect(capturedVideo.readyState).toBe('ended');
+      expect(manager.getStream()?.getAudioTracks()[0]).toBe(webAudio);
+      expect(manager.getStream()?.getVideoTracks()[0]).toBe(transportVideo);
+      expect(manager.getStream()?.getTracks().every((item) => item.enabled)).toBe(true);
+      expect(manager.getSnapshot()).toMatchObject({
+        audioDetected: true,
+        videoDetected: true,
+        audioSourceLabel: 'uploaded_web_audio',
+        videoSourceLabel: 'uploaded_transport_video',
+      });
+
+      await manager.start();
+
+      await manager.clear();
+
+      expect(sourceNode.disconnect).toHaveBeenCalledTimes(1);
+      expect(destination.disconnect).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(webAudio.readyState).toBe('ended');
+    } finally {
+      if (mediaStreamDescriptor) {
+        Object.defineProperty(globalThis, 'MediaStream', mediaStreamDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, 'MediaStream');
+      }
+      if (audioContextDescriptor) {
+        Object.defineProperty(globalThis, 'AudioContext', audioContextDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, 'AudioContext');
+      }
+    }
   });
 
   it('validates direct MP4, WebM, and HLS URLs without accepting platform pages', () => {
@@ -408,6 +504,14 @@ describe('ProgrammeSourceManager', () => {
     const manager = new ProgrammeSourceManager({ loadHlsRuntime });
 
     await manager.selectDirectStreamUrl('https://cdn.example.com/show.mp4', preview);
+    expect(preview.play).not.toHaveBeenCalled();
+    expect(preview.pause).toHaveBeenCalled();
+    expect(preview.currentTime).toBe(0);
+
+    await manager.seek(5_000);
+    await manager.prepareForInterpretationStart();
+    expect(preview.currentTime).toBe(0);
+
     await manager.start();
     await manager.pause();
     await manager.resume();
@@ -428,18 +532,21 @@ describe('ProgrammeSourceManager', () => {
 
   it('does not load hls.js for direct WebM URLs', async () => {
     const source = stream([track('audio', 'stream_audio'), track('video', 'stream_video')]);
+    const preview = videoElement(source);
     const loadHlsRuntime = vi.fn(async () => {
       throw new Error('hls.js should not load for WebM.');
     });
     const manager = new ProgrammeSourceManager({ loadHlsRuntime });
 
-    await manager.selectDirectStreamUrl('https://cdn.example.com/show.webm', videoElement(source));
+    await manager.selectDirectStreamUrl('https://cdn.example.com/show.webm', preview);
 
     expect(manager.getSnapshot()).toMatchObject({
       sourceType: 'direct-url',
       audioDetected: true,
       videoDetected: true,
     });
+    expect(preview.play).not.toHaveBeenCalled();
+    expect(preview.currentTime).toBe(0);
     expect(loadHlsRuntime).not.toHaveBeenCalled();
   });
 

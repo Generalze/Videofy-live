@@ -69,6 +69,7 @@ export const MediaStateEventSchema = z.object({
   eventId: z.string().min(1),
   streamId: z.string().min(1).optional(),
   processingSessionId: z.string().min(1).optional(),
+  shareableWebRtcSessionId: z.string().min(3).optional(),
   streamStatus: StreamStatusSchema,
   videoSource: VideoSourceSchema,
   media: z

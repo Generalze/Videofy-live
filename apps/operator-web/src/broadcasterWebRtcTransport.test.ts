@@ -149,6 +149,9 @@ describe('BroadcasterWebRtcTransportController', () => {
     await expect(controller.start(mediaStream([]))).rejects.toMatchObject({
       code: 'missing-audio-track',
     });
+    await expect(controller.start(mediaStream([]))).rejects.not.toMatchObject({
+      message: expect.stringContaining('local broadcaster capture'),
+    });
   });
 
   it('creates one audio-only peer offer through the signalling client', async () => {
@@ -194,6 +197,43 @@ describe('BroadcasterWebRtcTransportController', () => {
       backendAudioTrackReceived: true,
       backendVideoTrackReceived: true,
     });
+  });
+
+  it('waits until backend confirms programme audio and video are available', async () => {
+    const peer = new FakePeer();
+    const controller = new BroadcasterWebRtcTransportController({
+      signallingClient: signallingClient(),
+      createPeerConnection: () => peer as never,
+    });
+
+    await controller.start(mediaStream([audioTrack(), videoTrack()]));
+    const wait = controller.waitForBackendMedia({ requireVideo: true, timeoutMs: 100 });
+    await controller.handleSignallingEvent(ready());
+
+    await expect(wait).resolves.toMatchObject({
+      backendAudioTrackReceived: true,
+      backendVideoTrackReceived: true,
+    });
+  });
+
+  it('times out when programme media never reaches the backend', async () => {
+    vi.useFakeTimers();
+    const controller = new BroadcasterWebRtcTransportController({
+      signallingClient: signallingClient(),
+      createPeerConnection: () => new FakePeer() as never,
+    });
+    await controller.start(mediaStream([audioTrack(), videoTrack()]));
+
+    const wait = expect(
+      controller.waitForBackendMedia({ requireVideo: true, timeoutMs: 25 }),
+    ).rejects.toMatchObject({
+      code: 'negotiation-timeout',
+      message: 'Timed out waiting for backend programme audio and video.',
+    });
+    await vi.advanceTimersByTimeAsync(25);
+
+    await wait;
+    vi.useRealTimers();
   });
 
   it('rejects duplicate programme video tracks', async () => {

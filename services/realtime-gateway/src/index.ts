@@ -13,6 +13,7 @@ const gateway = new Gateway(server, config.corsOrigins, {
   mediaIngestUrl: config.mediaIngestUrl,
   internalWebRtcToken: config.internalWebRtcToken,
   webRtcTranscriptionChunkMs: config.webRtcTranscriptionChunkMs,
+  webRtcTranscriptionRequestTimeoutMs: config.webRtcTranscriptionRequestTimeoutMs,
   vad: config.webRtcVadEnabled
     ? {
         enabled: true,

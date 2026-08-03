@@ -198,6 +198,7 @@ interface BackendMediaPeerRecord {
   videoSink: VideoSinkLike | null;
   audioTrack: TrackLike | null;
   videoTrack: TrackLike | null;
+  videoExpected: boolean;
   videoFrameCount: number;
   queuedRemoteCandidates: CandidateInitLike[];
   seenRemoteCandidates: Set<string>;
@@ -327,6 +328,7 @@ export class BackendWebRtcMediaPeerRegistry {
       videoSink: null,
       audioTrack: null,
       videoTrack: null,
+      videoExpected: offerHasVideo(offer),
       videoFrameCount: 0,
       queuedRemoteCandidates: [],
       seenRemoteCandidates: new Set(),
@@ -559,8 +561,20 @@ export class BackendWebRtcMediaPeerRegistry {
         record.videoFrameCount++;
         record.videoTrackState = 'active';
         record.lastActivityAt = this.now();
+        if (record.videoFrameCount === 1) {
+          logger.info('Backend WebRTC video frame activity detected', {
+            sessionId: record.sessionId,
+            broadcastId: record.broadcastId,
+            backendPeerId: record.backendPeerId,
+            revision: record.revision,
+            width: frame.width ?? null,
+            height: frame.height ?? null,
+            dataBytes: readableByteLength(frame.data),
+          });
+        }
         this.onVideoFrame?.(audioContext(record), frame);
         this.touch(record);
+        this.emitReadyOnce(record);
       };
     } catch (error) {
       this.fail(record, normalizeBackendError(error, 'dependency-initialization-failure', 'Backend video sink failed.'));
@@ -587,6 +601,8 @@ export class BackendWebRtcMediaPeerRegistry {
 
   private emitReadyOnce(record: BackendMediaPeerRecord): void {
     if (record.readyEmitted) return;
+    if (record.bridge.snapshot().frameCount === 0) return;
+    if (record.videoExpected && record.videoFrameCount === 0) return;
     record.readyEmitted = true;
     logger.info('Backend WebRTC audio activity detected', {
       sessionId: record.sessionId,
@@ -595,6 +611,8 @@ export class BackendWebRtcMediaPeerRegistry {
       revision: record.revision,
       frameCount: record.bridge.snapshot().frameCount,
       audioTrackState: record.audioTrackState,
+      videoExpected: record.videoExpected,
+      videoFrameCount: record.videoFrameCount,
     });
     this.onPeerReady?.({
       type: 'peer-ready',
@@ -711,6 +729,8 @@ export class BackendWebRtcMediaPeerRegistry {
       code: error.code,
       retryable: error.retryable,
       audioTrackState: record.audioTrackState,
+      videoTrackState: record.videoTrackState,
+      videoFrameCount: record.videoFrameCount,
       ingestBridgeState: record.bridge.snapshot().state,
     });
     return error;
@@ -770,6 +790,17 @@ function normalizeBackendError(
 ): BackendMediaPeerError {
   if (error instanceof BackendMediaPeerError) return error;
   return new BackendMediaPeerError(fallbackCode, fallbackMessage);
+}
+
+function offerHasVideo(offer: WebRtcSdpOfferEnvelope): boolean {
+  return /(?:^|\r?\n)m=video\s/i.test(offer.payload.sdp);
+}
+
+function readableByteLength(data: unknown): number | null {
+  if (!data || typeof data !== 'object') return null;
+  if ('byteLength' in data && typeof data.byteLength === 'number') return data.byteLength;
+  if ('length' in data && typeof data.length === 'number') return data.length;
+  return null;
 }
 
 function audioContext(record: BackendMediaPeerRecord): BackendMediaPeerAudioContext {

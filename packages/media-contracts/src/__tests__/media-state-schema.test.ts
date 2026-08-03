@@ -19,6 +19,16 @@ describe('MediaStateEventSchema validation', () => {
     expect(result.videoSource).toBe('mock');
   });
 
+  it('accepts an authoritative listener WebRTC session binding', () => {
+    const result = parseMediaStateEvent({
+      ...validState,
+      processingSessionId: 'wrs_uploaded',
+      shareableWebRtcSessionId: 'broadcast_uploaded/wrs_uploaded',
+    });
+
+    expect(result.shareableWebRtcSessionId).toBe('broadcast_uploaded/wrs_uploaded');
+  });
+
   it('rejects invalid streamStatus', () => {
     const result = safeParseMediaStateEvent({ ...validState, streamStatus: 'unknown' });
     expect(result.success).toBe(false);

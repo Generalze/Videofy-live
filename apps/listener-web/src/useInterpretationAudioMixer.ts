@@ -37,11 +37,23 @@ export interface MixerDynamicsCompressor {
 
 export interface MixerAudioContext {
   readonly state: 'running' | 'suspended' | 'interrupted' | 'closed';
+  readonly currentTime?: number;
   readonly destination: unknown;
   createGain(): MixerGain;
   createMediaElementSource(element: HTMLMediaElement): MixerMediaSource;
   createDynamicsCompressor(): MixerDynamicsCompressor;
+  createBufferSource?(): MixerAudioBufferSource;
+  decodeAudioData?(audioData: ArrayBuffer): Promise<AudioBuffer>;
   resume(): Promise<void>;
+}
+
+export interface MixerAudioBufferSource {
+  buffer: AudioBuffer | null;
+  onended: ((event?: Event) => void) | null;
+  connect(destination: unknown): unknown;
+  disconnect?(): void;
+  start(when?: number, offset?: number): void;
+  stop(): void;
 }
 
 export interface InterpretationAudioMixerOptions {
@@ -183,9 +195,25 @@ export class InterpretationAudioMixerController {
     if (context) {
       try {
         this.ensureTranslatedPath(context);
+        if (canUseBufferPlayback(context)) {
+          const queueAudio = new MixedBufferQueueAudio(
+            url,
+            context,
+            this.translatedGain!,
+            () => {
+              this.translatedElements.delete(element);
+              this.setState({
+                activeTranslatedCount: Math.max(0, this.mixState.activeTranslatedCount - 1),
+              });
+            },
+          );
+          this.translatedElements.add(element);
+          this.setState({ activeTranslatedCount: this.mixState.activeTranslatedCount + 1 });
+          return queueAudio;
+        }
         source = context.createMediaElementSource(element);
         source.connect(this.translatedGain!);
-        element.volume = this.currentTranslatedDirectVolume();
+        element.volume = 1;
       } catch (error) {
         this.setFailure(error, 'Generated audio could not be connected to the mixer.');
       }
@@ -267,16 +295,18 @@ export class InterpretationAudioMixerController {
 
   private applyGains(): void {
     if (this.originalSource && this.originalGain) {
-      this.originalGain.gain.value = 1;
-    }
-    if (this.originalElement) {
+      this.originalGain.gain.value = this.effectiveOriginalLevel();
+      if (this.originalElement) {
+        this.originalElement.volume = 1;
+      }
+    } else if (this.originalElement) {
       this.originalElement.volume = this.effectiveOriginalLevel();
     }
     if (this.translatedGain) {
-      this.translatedGain.gain.value = 1;
+      this.translatedGain.gain.value = this.currentTranslatedDirectVolume();
     }
     for (const element of this.translatedElements) {
-      element.volume = this.currentTranslatedDirectVolume();
+      element.volume = this.translatedGain ? 1 : this.currentTranslatedDirectVolume();
     }
   }
 
@@ -425,12 +455,131 @@ class MixedQueueAudio implements QueueAudio {
   }
 }
 
+class MixedBufferQueueAudio implements QueueAudio {
+  onended: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  onplaying: (() => void) | null = null;
+  volume = 1;
+  private buffer: AudioBuffer | null = null;
+  private loadPromise: Promise<AudioBuffer> | null = null;
+  private source: MixerAudioBufferSource | null = null;
+  private offsetSeconds = 0;
+  private startedAtSeconds = 0;
+  private playing = false;
+  private stopping = false;
+  private cleaned = false;
+
+  constructor(
+    private readonly url: string,
+    private readonly context: MixerAudioContext & Required<Pick<MixerAudioContext, 'createBufferSource' | 'decodeAudioData'>>,
+    private readonly output: MixerGain,
+    private readonly cleanup: () => void,
+  ) {}
+
+  get currentTime(): number {
+    if (!this.playing) return this.offsetSeconds;
+    return this.offsetSeconds + Math.max(0, this.contextSeconds() - this.startedAtSeconds);
+  }
+
+  set currentTime(value: number) {
+    this.offsetSeconds = Math.max(0, value);
+    if (this.playing) {
+      this.stopSource(false);
+      void this.play();
+    }
+  }
+
+  pause(): void {
+    if (!this.playing) return;
+    this.offsetSeconds = this.currentTime;
+    this.stopSource(false);
+  }
+
+  async play(): Promise<void> {
+    const buffer = await this.load();
+    if (this.playing) return;
+    if (this.offsetSeconds >= buffer.duration) {
+      this.finish();
+      this.onended?.();
+      return;
+    }
+    const source = this.context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(this.output);
+    source.onended = () => {
+      const stopped = this.stopping;
+      this.source = null;
+      this.playing = false;
+      this.stopping = false;
+      if (!stopped) {
+        this.finish();
+        this.onended?.();
+      }
+    };
+    this.source = source;
+    this.startedAtSeconds = this.contextSeconds();
+    this.playing = true;
+    source.start(0, Math.max(0, this.offsetSeconds));
+    this.onplaying?.();
+  }
+
+  private async load(): Promise<AudioBuffer> {
+    if (this.buffer) return this.buffer;
+    this.loadPromise ??= fetch(this.url)
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`Generated audio request failed with HTTP ${response.status}.`);
+        }
+        return response.arrayBuffer();
+      })
+      .then((data) => this.context.decodeAudioData(data));
+    this.buffer = await this.loadPromise;
+    return this.buffer;
+  }
+
+  private stopSource(final: boolean): void {
+    const source = this.source;
+    if (!source) return;
+    this.stopping = !final;
+    source.onended = null;
+    try {
+      source.stop();
+    } catch {
+      // The source may already have ended.
+    }
+    source.disconnect?.();
+    this.source = null;
+    this.playing = false;
+    if (final) this.finish();
+  }
+
+  private finish(): void {
+    if (this.cleaned) return;
+    this.cleaned = true;
+    this.cleanup();
+  }
+
+  private contextSeconds(): number {
+    return typeof this.context.currentTime === 'number' ? this.context.currentTime : 0;
+  }
+}
+
+function canUseBufferPlayback(
+  context: MixerAudioContext,
+): context is MixerAudioContext & Required<Pick<MixerAudioContext, 'createBufferSource' | 'decodeAudioData'>> {
+  return (
+    typeof context.createBufferSource === 'function' &&
+    typeof context.decodeAudioData === 'function' &&
+    typeof fetch === 'function'
+  );
+}
+
 function createBrowserAudioContext(): MixerAudioContext {
   const AudioContextCtor = window.AudioContext ?? window.webkitAudioContext;
   if (!AudioContextCtor) {
     throw new Error('Browser audio context is unavailable.');
   }
-  return new AudioContextCtor();
+  return new AudioContextCtor() as unknown as MixerAudioContext;
 }
 
 function configureLimiter(limiter: MixerDynamicsCompressor): void {

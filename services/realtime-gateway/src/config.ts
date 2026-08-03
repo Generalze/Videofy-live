@@ -9,6 +9,7 @@ export interface GatewayConfig {
   mediaIngestUrl: string;
   internalWebRtcToken: string | null;
   webRtcTranscriptionChunkMs: number;
+  webRtcTranscriptionRequestTimeoutMs: number;
   webRtcVadEnabled: boolean;
   webRtcVadMode: 'silero' | 'fallback';
   webRtcVadSpeechThreshold: number;
@@ -29,6 +30,10 @@ export function loadConfig(): GatewayConfig {
     mediaIngestUrl: process.env['MEDIA_INGEST_URL'] ?? 'http://localhost:3002',
     internalWebRtcToken: process.env['INTERNAL_WEBRTC_TOKEN']?.trim() || null,
     webRtcTranscriptionChunkMs: readPositiveGatewayInt('WEBRTC_TRANSCRIPTION_CHUNK_MS', 15_000),
+    webRtcTranscriptionRequestTimeoutMs: readPositiveGatewayInt(
+      'WEBRTC_TRANSCRIPTION_REQUEST_TIMEOUT_MS',
+      180_000,
+    ),
     webRtcVadEnabled: (process.env['WEBRTC_VAD_ENABLED'] ?? 'false').toLowerCase() === 'true',
     webRtcVadMode: process.env['WEBRTC_VAD_MODE'] === 'silero' ? 'silero' : 'fallback',
     webRtcVadSpeechThreshold: readPositiveGatewayFloat('WEBRTC_VAD_SPEECH_THRESHOLD', 0.012),

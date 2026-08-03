@@ -7,6 +7,8 @@ export interface OperatorWorkflowInput {
   connected: boolean;
   ingestHealthy: boolean;
   programmeSource: ProgrammeSourceSnapshot;
+  programmeMediaReady: boolean;
+  programmeMediaError: string | null;
   mediaState: MediaStateEvent | null;
   streamStatus: string;
   starting: boolean;
@@ -29,7 +31,7 @@ export function buildOperatorWorkflowSummary(
   const source = input.programmeSource;
   const sourceSelected = source.sourceType !== 'none';
   const sourceReady = source.previewReady && source.audioDetected && source.videoDetected;
-  const activeError = input.mediaError ?? source.error?.message ?? null;
+  const activeError = input.mediaError ?? input.programmeMediaError ?? source.error?.message ?? null;
   const serviceWarning = !input.connected
     ? 'Realtime gateway is unavailable. Start the gateway before interpretation.'
     : !input.ingestHealthy
@@ -52,6 +54,17 @@ export function buildOperatorWorkflowSummary(
     (source.sourceType === 'uploaded-video' || source.sourceType === 'direct-url' || source.sourceType === 'rtmp') &&
     source.status === 'ended'
   ) {
+    if (input.streamStatus !== 'completed' && input.streamStatus !== 'cancelled') {
+      return {
+        status: 'Live',
+        actionableWarning: null,
+        canStartInterpretation: false,
+        canPause: false,
+        canResume: false,
+        canEnd: true,
+        progressLabel: 'Finishing interpretation',
+      };
+    }
     return {
       status: 'Completed',
       actionableWarning: null,
@@ -76,6 +89,17 @@ export function buildOperatorWorkflowSummary(
   }
 
   if (source.status === 'broadcasting' || input.streamStatus === 'processing') {
+    if (!input.programmeMediaReady) {
+      return {
+        status: 'Starting',
+        actionableWarning: null,
+        canStartInterpretation: false,
+        canPause: false,
+        canResume: false,
+        canEnd: true,
+        progressLabel: 'Starting programme media',
+      };
+    }
     return {
       status: 'Live',
       actionableWarning: null,

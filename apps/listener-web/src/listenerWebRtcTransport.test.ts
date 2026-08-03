@@ -245,7 +245,9 @@ describe('ListenerWebRtcTransportController', () => {
 
     expect(peer.addTransceiver).toHaveBeenCalledWith('audio', { direction: 'recvonly' });
     expect(peer.addTransceiver).toHaveBeenCalledWith('video', { direction: 'recvonly' });
-    expect(onRemoteStream).toHaveBeenCalledWith(programmeStream);
+    expect(onRemoteStream).toHaveBeenCalledTimes(2);
+    expect(onRemoteStream).toHaveBeenLastCalledWith(programmeStream);
+    expect(controller.getRemoteStream()).toBe(programmeStream);
     expect(controller.getSnapshot()).toMatchObject({
       remoteAudioTrackReceived: true,
       remoteVideoTrackReceived: true,
@@ -295,8 +297,9 @@ describe('ListenerWebRtcTransportController', () => {
 
     expect(videoStream.addTrack).toHaveBeenCalledWith(audio);
     expect(audioStream.addTrack).not.toHaveBeenCalled();
-    expect(onRemoteStream).toHaveBeenCalledTimes(1);
+    expect(onRemoteStream).toHaveBeenCalledTimes(2);
     expect(onRemoteStream).toHaveBeenLastCalledWith(videoStream);
+    expect(controller.getRemoteStream()).toBe(videoStream);
     expect(videoTracks).toEqual([video, audio]);
     expect(controller.getSnapshot()).toMatchObject({
       remoteAudioTrackReceived: true,
@@ -396,6 +399,56 @@ describe('ListenerWebRtcTransportController', () => {
     expect(peer.close).toHaveBeenCalledOnce();
     expect(controller.getSnapshot()).toMatchObject({
       state: 'closed',
+      lastError: null,
+    });
+    expect(
+      transport.emitted.some(
+        (event) => (event.payload as { type?: string }).type === 'peer-disconnect',
+      ),
+    ).toBe(false);
+  });
+
+  it('preserves source-ended state when the remote programme peer disconnects after media arrives', async () => {
+    const { client, transport } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+    });
+    const audio = new FakeTrack('audio');
+    const video = new FakeTrack('video');
+    const programmeStream = {
+      addTrack: vi.fn(),
+      getTracks: vi.fn(() => [audio, video]),
+    } as unknown as MediaStream;
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track: audio, streams: [programmeStream] } as unknown as RTCTrackEvent);
+    peer.ontrack?.({ track: video, streams: [programmeStream] } as unknown as RTCTrackEvent);
+
+    await controller.handleSignallingEvent({
+      type: 'peer-disconnect',
+      protocolVersion: WEBRTC_SIGNALLING_PROTOCOL_VERSION,
+      messageId: 'msg_disconnect',
+      broadcastId: 'broadcast_demo',
+      sessionId: 'wrs_demo',
+      peerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+      senderRole: 'server',
+      revision: 1,
+      createdAt: '2026-07-27T00:00:01.000Z',
+      payload: {
+        targetPeerId: 'peer_listener',
+        reason: 'programme source ended',
+      },
+    });
+
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'source-ended',
+      remoteAudioTrackReceived: true,
+      remoteAudioTrackActive: false,
+      remoteVideoTrackReceived: true,
+      remoteVideoTrackActive: false,
       lastError: null,
     });
     expect(

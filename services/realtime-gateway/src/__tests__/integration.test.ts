@@ -373,11 +373,14 @@ describe('gateway Socket.IO integration', () => {
 
   it('stores operator programme-session language config for WebRTC processing', async () => {
     const operator = client('operator');
-    await waitForConnect(operator);
+    const ingest = client('ingest');
+    const listener = client('listener');
+    await Promise.all([waitForConnect(operator), waitForConnect(ingest), waitForConnect(listener)]);
     const ack = waitForEvent<{ action: string; accepted: boolean }>(
       operator,
       SOCKET_EVENTS.CONTROL_ACK,
     );
+    const immediateMedia = waitForEvent<MediaStateEvent>(listener, SOCKET_EVENTS.MEDIA_STATE);
 
     operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
       sessionId: 'wrs_uploaded',
@@ -389,6 +392,14 @@ describe('gateway Socket.IO integration', () => {
       sourceLanguageMode: 'auto-detect',
     });
 
+    await expect(immediateMedia).resolves.toMatchObject({
+      processingSessionId: 'wrs_uploaded',
+      shareableWebRtcSessionId: 'broadcast_uploaded/wrs_uploaded',
+      streamStatus: 'processing',
+      videoSource: 'webrtc',
+      videoTimestampMs: 0,
+      connectedListeners: 1,
+    });
     await expect(ack).resolves.toMatchObject({
       action: 'programme-session-config',
       accepted: true,
@@ -401,6 +412,76 @@ describe('gateway Socket.IO integration', () => {
       sourceLanguage: 'en',
       sourceLanguageMode: 'auto-detect',
     });
+
+    const media = waitForEvent<MediaStateEvent>(listener, SOCKET_EVENTS.MEDIA_STATE);
+    ingest.emit(SOCKET_EVENTS.INGEST_STATE, {
+      ...makeMediaState(),
+      processingSessionId: 'wrs_uploaded',
+    });
+
+    await expect(media).resolves.toMatchObject({
+      processingSessionId: 'wrs_uploaded',
+      shareableWebRtcSessionId: 'broadcast_uploaded/wrs_uploaded',
+    });
+  });
+
+  it('replays the active programme media state to listeners that connect late', async () => {
+    const operator = client('operator');
+    await waitForConnect(operator);
+
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+      sessionId: 'wrs_uploaded_late',
+      broadcastId: 'broadcast_uploaded_late',
+      sourceRevision: 3,
+      targetLanguage: 'es',
+      targetLanguages: ['es'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+
+    const lateListener = client('listener');
+    const replayed = waitForEvent<MediaStateEvent>(lateListener, SOCKET_EVENTS.MEDIA_STATE);
+    await waitForConnect(lateListener);
+
+    await expect(replayed).resolves.toMatchObject({
+      processingSessionId: 'wrs_uploaded_late',
+      shareableWebRtcSessionId: 'broadcast_uploaded_late/wrs_uploaded_late',
+      streamStatus: 'processing',
+      videoSource: 'webrtc',
+      connectedListeners: 1,
+    });
+  });
+
+  it('does not replay a completed programme media state to late listeners', async () => {
+    const operator = client('operator');
+    const ingest = client('ingest');
+    await Promise.all([waitForConnect(operator), waitForConnect(ingest)]);
+
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+      sessionId: 'wrs_completed_upload',
+      broadcastId: 'broadcast_completed_upload',
+      sourceRevision: 4,
+      targetLanguage: 'es',
+      targetLanguages: ['es'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+    ingest.emit(SOCKET_EVENTS.INGEST_STATE, {
+      ...makeMediaState(),
+      processingSessionId: 'wrs_completed_upload',
+      streamStatus: 'completed',
+    });
+    await delay(25);
+
+    const lateListener = client('listener');
+    const replayed: MediaStateEvent[] = [];
+    lateListener.on(SOCKET_EVENTS.MEDIA_STATE, (event: MediaStateEvent) => {
+      replayed.push(event);
+    });
+    await waitForConnect(lateListener);
+    await delay(75);
+
+    expect(replayed).toEqual([]);
   });
 
   it('rejects invalid programme-session language config visibly', async () => {

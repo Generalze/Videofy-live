@@ -82,6 +82,7 @@ import { buildOperatorWorkflowSummary } from './operatorWorkflow';
 
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
 const INGEST_URL = import.meta.env['VITE_INGEST_URL'] ?? 'http://localhost:3002';
+const PROGRAMME_MEDIA_READY_TIMEOUT_MS = 20_000;
 
 const SOURCE_LANGUAGE_OPTIONS = [
   { code: 'en', label: 'English' },
@@ -687,13 +688,16 @@ export default function App(): React.ReactElement {
     [prepareProgrammeSourceSwitch, setProgrammeSessionBinding],
   );
 
-  const ensureBroadcasterSignallingSession = useCallback(async () => {
+  const ensureBroadcasterSignallingSession = useCallback(async (options: { forceNew?: boolean } = {}) => {
     const client = broadcasterSignallingClientRef.current;
     if (!client) {
       throw new Error('Broadcaster signalling client is not ready.');
     }
     const snapshot = client.getSnapshot();
-    if (snapshot.sessionId && snapshot.connected) return snapshot;
+    if (snapshot.sessionId && snapshot.connected && !options.forceNew) return snapshot;
+    if (snapshot.sessionId && snapshot.connected && options.forceNew) {
+      await client.closeSession('operator started a new programme interpretation session');
+    }
     return await client.createSession();
   }, []);
 
@@ -713,26 +717,53 @@ export default function App(): React.ReactElement {
 
   const handleStartProgrammeSource = useCallback(async (): Promise<void> => {
     setMediaError(null);
+    let sourceStarted = false;
     try {
       const manager = programmeSourceManagerRef.current;
+      const transport = broadcasterTransportControllerRef.current;
       if (!manager) return;
+      if (!transport) throw new Error('Broadcaster media transport is not ready.');
       const preparedSource = await manager.prepareForInterpretationStart();
-      const signalling = await ensureBroadcasterSignallingSession();
+      const forceNewSignallingSession = programmeSessionBindingRef.current?.pending ?? false;
+      const signalling = await ensureBroadcasterSignallingSession({
+        forceNew: forceNewSignallingSession,
+      });
       const binding = createActiveProgrammeSessionBinding(signalling, preparedSource);
       setProgrammeSessionBinding(binding);
       publishProgrammeSessionConfig(binding);
-      await broadcasterTransportControllerRef.current?.start(
-        manager.getStream() ?? null,
-      );
-      const source = await manager.start();
-      if (!source.broadcasting) {
-        await broadcasterTransportControllerRef.current
-          ?.close('programme source did not start playback')
-          .catch(() => undefined);
+      const existingTransportState = transport.getSnapshot().state;
+      if (
+        existingTransportState !== 'idle' &&
+        existingTransportState !== 'closed' &&
+        existingTransportState !== 'failed'
+      ) {
+        await transport.close('operator restarted programme media transport');
       }
+      const sourceStream = manager.getStream();
+      if (!sourceStream) {
+        throw new Error('Selected programme source did not expose a WebRTC capture stream.');
+      }
+      await transport.start(sourceStream);
+      const source = await manager.start();
+      sourceStarted = source.broadcasting;
+      if (!source.broadcasting) {
+        throw new Error('Programme source did not start playback.');
+      }
+      await transport.waitForBackendMedia({
+        requireVideo: preparedSource.videoDetected,
+        timeoutMs: PROGRAMME_MEDIA_READY_TIMEOUT_MS,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Programme source start failed.';
       setMediaError(message);
+      await broadcasterTransportControllerRef.current
+        ?.close('programme media startup failed')
+        .catch(() => undefined);
+      if (sourceStarted) {
+        await programmeSourceManagerRef.current
+          ?.stop('programme media startup failed')
+          .catch(() => undefined);
+      }
     }
   }, [ensureBroadcasterSignallingSession, publishProgrammeSessionConfig, setProgrammeSessionBinding]);
 
@@ -1391,6 +1422,13 @@ export default function App(): React.ReactElement {
     connected,
     ingestHealthy: ingestOk,
     programmeSource,
+    programmeMediaReady:
+      broadcasterTransport.backendAudioTrackReceived &&
+      (!programmeSource.videoDetected || broadcasterTransport.backendVideoTrackReceived),
+    programmeMediaError:
+      broadcasterTransport.state === 'failed'
+        ? broadcasterTransport.lastError?.message ?? 'Programme media transport failed.'
+        : null,
     mediaState,
     streamStatus,
     starting: interpretationStarting,
