@@ -5,6 +5,7 @@ import type {
   GeneratedAudioReadyEvent,
   MediaStateEvent,
   OperatorProgrammeSessionConfig,
+  StreamStatus,
   TimestampedTranslationEvent,
   TranscriptionEvent,
   TranslationEvent,
@@ -88,6 +89,7 @@ export class Gateway {
   private readonly webRtcTranscriptionBridge: WebRtcTranscriptionBridge;
   private readonly backendMediaPeers: BackendWebRtcMediaPeerRegistry;
   private readonly listenerMediaPeers: BackendWebRtcListenerPeerRegistry;
+  private readonly mediaIngestUrl: string;
   private readonly clients = new Map<string, ClientState>();
   private readonly programmeSessionConfigs = new Map<string, OperatorProgrammeSessionConfig>();
   private readonly activeWorkers = new Set<string>();
@@ -113,6 +115,7 @@ export class Gateway {
       vad?: ConstructorParameters<typeof WebRtcTranscriptionBridge>[0]['vad'];
     } = {},
   ) {
+    this.mediaIngestUrl = options.mediaIngestUrl ?? 'http://localhost:3002';
     this.webRtcTranscriptionBridge = new WebRtcTranscriptionBridge({
       ...(options.mediaIngestUrl ? { mediaIngestUrl: options.mediaIngestUrl } : {}),
       ...(options.internalWebRtcToken ? { internalAuthToken: options.internalWebRtcToken } : {}),
@@ -138,18 +141,21 @@ export class Gateway {
         void this.startListenerDeliveryForSession(context.sessionId);
       },
       onAudioFrame: (context, data) => {
-        try {
-          this.webRtcTranscriptionBridge.handleFrame(
-            this.applyProgrammeSessionConfig(context),
-            data,
-          );
-        } catch (error) {
-          logger.warn('WebRTC transcription bridge frame handling failed', {
-            sessionId: context.sessionId,
-            broadcastId: context.broadcastId,
-            revision: context.revision,
-            message: error instanceof Error ? error.message : 'unknown transcription bridge failure',
-          });
+        const programmeConfig = this.programmeSessionConfigs.get(context.sessionId);
+        if (shouldUseWebRtcTranscriptionForProgrammeSource(programmeConfig?.programmeSourceType)) {
+          try {
+            this.webRtcTranscriptionBridge.handleFrame(
+              this.applyProgrammeSessionConfig(context),
+              data,
+            );
+          } catch (error) {
+            logger.warn('WebRTC transcription bridge frame handling failed', {
+              sessionId: context.sessionId,
+              broadcastId: context.broadcastId,
+              revision: context.revision,
+              message: error instanceof Error ? error.message : 'unknown transcription bridge failure',
+            });
+          }
         }
         try {
           this.listenerMediaPeers.fanOutAudioFrame(context.sessionId, data);
@@ -175,7 +181,10 @@ export class Gateway {
         }
       },
       onAudioPeerClosed: (context, reason) => {
-        this.webRtcTranscriptionBridge.endSession(this.applyProgrammeSessionConfig(context), reason);
+        const programmeConfig = this.programmeSessionConfigs.get(context.sessionId);
+        if (shouldUseWebRtcTranscriptionForProgrammeSource(programmeConfig?.programmeSourceType)) {
+          this.webRtcTranscriptionBridge.endSession(this.applyProgrammeSessionConfig(context), reason);
+        }
         this.listenerMediaPeers.closeSession(context.sessionId, reason);
       },
     });
@@ -255,7 +264,11 @@ export class Gateway {
   private handleListenerSocket(socket: Socket, state: ClientState): void {
     this.handleWebRtcSocket(socket, 'listener');
     socket.emit(SOCKET_EVENTS.AUDIO_MODE_PREFERENCES, this.audioModePreferences);
-    if (this.latestProgrammeMediaState && !isTerminalMediaState(this.latestProgrammeMediaState.streamStatus)) {
+    if (
+      this.latestProgrammeMediaState &&
+      (!isTerminalMediaState(this.latestProgrammeMediaState.streamStatus) ||
+        Boolean(this.latestProgrammeMediaState.programmeMediaUrl))
+    ) {
       socket.emit(SOCKET_EVENTS.MEDIA_STATE, {
         ...this.latestProgrammeMediaState,
         connectedListeners: this.listenerCount,
@@ -272,6 +285,12 @@ export class Gateway {
       }
       state.targetLanguage = targetLanguage;
       void socket.join(languageRoom(targetLanguage));
+      const activeSessionId = this.latestProgrammeMediaState?.processingSessionId;
+      if (activeSessionId) {
+        for (const event of this.generatedAudioStore.getSnapshot(activeSessionId, targetLanguage)) {
+          socket.emit(SOCKET_EVENTS.GENERATED_AUDIO_READY, event);
+        }
+      }
       logger.debug('Listener joined language room', { socketId: socket.id, targetLanguage });
     });
 
@@ -543,10 +562,24 @@ export class Gateway {
       const programmeConfig = stateEvent.processingSessionId
         ? this.programmeSessionConfigs.get(stateEvent.processingSessionId)
         : undefined;
+      const programmeStreamStatus = resolveProgrammeIngestStreamStatus(
+        programmeConfig?.programmeSourceType,
+        stateEvent.streamStatus,
+      );
       const enriched: MediaStateEvent = {
         ...stateEvent,
         ...(programmeConfig
           ? {
+              streamId: programmeConfig.broadcastId,
+              streamStatus: programmeStreamStatus,
+              videoSource: 'webrtc' as const,
+              ...(programmeConfig.programmeSourceType === 'uploaded-video' &&
+              canDeliverUploadedStems(stateEvent)
+                ? {
+                    programmeMediaUrl: this.sourceMediaUrl(programmeConfig.sessionId),
+                    programmeMediaMode: 'uploaded-stems' as const,
+                  }
+                : {}),
               shareableWebRtcSessionId: createShareableWebRtcSessionId(
                 programmeConfig.broadcastId,
                 programmeConfig.sessionId,
@@ -1118,6 +1151,10 @@ export class Gateway {
     this.io.emit(SOCKET_EVENTS.MEDIA_STATE, state);
   }
 
+  private sourceMediaUrl(sessionId: string): string {
+    return `${this.mediaIngestUrl.replace(/\/$/, '')}/sessions/${encodeURIComponent(sessionId)}/source-media`;
+  }
+
   private parseProgrammeSessionConfig(raw: unknown): OperatorProgrammeSessionConfig | null {
     if (!raw || typeof raw !== 'object') return null;
     const candidate = raw as Partial<OperatorProgrammeSessionConfig>;
@@ -1238,6 +1275,31 @@ function isAudioLevel(value: unknown): value is number {
 
 function isTerminalMediaState(status: string): boolean {
   return status === 'completed' || status === 'cancelled' || status === 'failed';
+}
+
+export function shouldUseWebRtcTranscriptionForProgrammeSource(
+  programmeSourceType: string | undefined,
+): boolean {
+  return programmeSourceType !== 'uploaded-video';
+}
+
+export function resolveProgrammeIngestStreamStatus(
+  programmeSourceType: string | undefined,
+  streamStatus: StreamStatus,
+): StreamStatus {
+  return programmeSourceType === 'uploaded-video' && streamStatus === 'completed'
+    ? 'processing'
+    : streamStatus;
+}
+
+function canDeliverUploadedStems(state: MediaStateEvent): boolean {
+  if (state.streamStatus === 'completed') return true;
+  return (
+    state.streamStatus === 'failed' &&
+    (state.targetLanguageOutputs?.some(
+      (output) => output.captionsAvailable || output.audioAvailable,
+    ) ?? false)
+  );
 }
 
 function isSafeIdentifier(value: unknown): value is string {

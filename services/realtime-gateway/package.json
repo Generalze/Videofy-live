@@ -9,7 +9,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "npm run build -w @videofy-live/shared-types && npm run build -w @videofy-live/media-contracts && tsc --noEmit",
-    "test": "npm run build -w @videofy-live/shared-types && npm run build -w @videofy-live/media-contracts && vitest run src/__tests__/app.test.ts src/__tests__/config.test.ts src/__tests__/event-store.test.ts src/__tests__/integration.test.ts src/__tests__/webrtc-session-registry.test.ts src/__tests__/webrtc-signalling.integration.test.ts src/__tests__/webrtc-audio-ingest-bridge.test.ts src/__tests__/webrtc-transcription-chunker.test.ts src/__tests__/webrtc-transcription-bridge.test.ts src/__tests__/webrtc-media-peer-registry.test.ts src/__tests__/webrtc-listener-peer-registry.test.ts",
+    "test": "npm run build -w @videofy-live/shared-types && npm run build -w @videofy-live/media-contracts && vitest run src/__tests__/app.test.ts src/__tests__/config.test.ts src/__tests__/event-store.test.ts src/__tests__/generated-audio-store.test.ts src/__tests__/integration.test.ts src/__tests__/webrtc-session-registry.test.ts src/__tests__/webrtc-signalling.integration.test.ts src/__tests__/webrtc-audio-ingest-bridge.test.ts src/__tests__/webrtc-transcription-chunker.test.ts src/__tests__/webrtc-transcription-bridge.test.ts src/__tests__/webrtc-media-peer-registry.test.ts src/__tests__/webrtc-listener-peer-registry.test.ts",
     "test:integration": "npm run build -w @videofy-live/shared-types && npm run build -w @videofy-live/media-contracts && npm run build && vitest run src/__tests__/integration.test.ts src/__tests__/python-worker-smoke.test.ts",
     "test:watch": "vitest"
   },

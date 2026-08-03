@@ -145,6 +145,33 @@ describe('timestamped translation sessions', () => {
     expect(session.translation.events.every((event) => event.status === 'translated')).toBe(true);
   });
 
+  it('translates every selected language independently in timestamp order', async () => {
+    const calls: Array<{ sequence: number; targetLanguage: string }> = [];
+    const session = await store(
+      translationProvider(async (input) => {
+        calls.push({ sequence: input.sequence, targetLanguage: input.targetLanguage });
+        return { translatedText: `${input.targetLanguage}:${input.sourceText}` };
+      }),
+      { targetLanguage: 'es', supportedTargetLanguages: ['es', 'fr'] },
+    ).createFromUpload(
+      upload({ targetLanguage: 'es', targetLanguages: ['es', 'fr'] }),
+      async () => validProbe,
+    );
+
+    expect(session.state).toBe('completed');
+    expect(session.targetLanguages).toEqual(['es', 'fr']);
+    expect(session.translation.totalSegments).toBe(6);
+    expect(calls).toEqual([
+      { sequence: 0, targetLanguage: 'es' },
+      { sequence: 0, targetLanguage: 'fr' },
+      { sequence: 1, targetLanguage: 'es' },
+      { sequence: 1, targetLanguage: 'fr' },
+      { sequence: 2, targetLanguage: 'es' },
+      { sequence: 2, targetLanguage: 'fr' },
+    ]);
+    expect(session.translation.events.every((event) => event.status === 'translated')).toBe(true);
+  });
+
   it('stores the selected target language on the session', async () => {
     const session = await store(
       new MockTimestampedTranslationProvider(['fr', 'es']),

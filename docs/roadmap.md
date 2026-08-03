@@ -56,11 +56,12 @@
 - [x] P5.2 real open-source AI providers and operator language controls
 - [x] Direct MP4, WebM, and browser HLS programme URL sources
 - [x] RTMP ingest foundation through local MediaMTX-to-HLS bridge
+- [x] Uploaded-programme multi-language caption/audio channels with safe viewer switching
 - [ ] P5.3 partner-preview validation and closure (local technical validation and P5 recovery harness passed; physical-device, network/TURN, additional-browser, one-hour stability, and human language-quality acceptance pending)
 
 ## Phase 6 - Scale and production
 
-- [ ] Multiple concurrent language channels
+- [ ] Multiple concurrent live-language workers and scaled channel delivery
 - [ ] Redis for distributed event state
 - [ ] Authentication and access control
 - [ ] Managed event lifecycle

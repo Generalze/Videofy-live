@@ -78,7 +78,10 @@ import {
   selectSessionTargetLanguage,
   toggleTargetLanguage,
 } from './targetLanguageSelection';
-import { buildOperatorWorkflowSummary } from './operatorWorkflow';
+import {
+  buildOperatorWorkflowSummary,
+  requiresProgrammeWebRtcTransport,
+} from './operatorWorkflow';
 
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
 const INGEST_URL = import.meta.env['VITE_INGEST_URL'] ?? 'http://localhost:3002';
@@ -90,7 +93,19 @@ const SOURCE_LANGUAGE_OPTIONS = [
   { code: 'es', label: 'Spanish' },
   { code: 'pt', label: 'Portuguese' },
 ];
-const LANGUAGE_OPTIONS = ['yo', 'pt', 'es', 'fr'];
+const LANGUAGE_OPTIONS = [
+  { code: 'es', label: 'Spanish' },
+  { code: 'fr', label: 'French' },
+  { code: 'pt', label: 'Portuguese' },
+  { code: 'yo', label: 'Yoruba' },
+  { code: 'zh', label: 'Chinese (Simplified)' },
+  { code: 'la', label: 'Latin' },
+] as const;
+
+function createRequestedProgrammeSessionId(): string {
+  return `wrs_${crypto.randomUUID()}`;
+}
+
 interface LatencyRow {
   label: string;
   valueMs: number | null;
@@ -238,6 +253,7 @@ export default function App(): React.ReactElement {
   const microphonePausedMsRef = useRef(0);
   const microphoneUploadChainRef = useRef<Promise<void>>(Promise.resolve());
   const programmeSourceManagerRef = useRef<ProgrammeSourceManager | null>(null);
+  const selectedProgrammeUploadRef = useRef<File | null>(null);
   const broadcasterCaptureControllerRef = useRef<BroadcasterCaptureController | null>(null);
   const broadcasterSignallingClientRef = useRef<WebRtcSignallingClient | null>(null);
   const broadcasterTransportControllerRef =
@@ -622,8 +638,10 @@ export default function App(): React.ReactElement {
   );
 
   const prepareProgrammeSourceSwitch = useCallback(async (reason: string): Promise<void> => {
+    setMediaError(null);
     await broadcasterTransportControllerRef.current?.close(reason).catch(() => undefined);
     await programmeSourceManagerRef.current?.clear().catch(() => undefined);
+    selectedProgrammeUploadRef.current = null;
     setProgrammeSessionBinding(null);
     clearDisplayedProcessingSession();
   }, [clearDisplayedProcessingSession, setProgrammeSessionBinding]);
@@ -641,6 +659,7 @@ export default function App(): React.ReactElement {
       const source = await programmeSourceManagerRef.current
         ?.selectCamera(input, preview)
         .catch(() => undefined);
+      selectedProgrammeUploadRef.current = null;
       if (source) setProgrammeSessionBinding(createPendingProgrammeSessionBinding(source));
     },
     [prepareProgrammeSourceSwitch, setProgrammeSessionBinding],
@@ -650,6 +669,7 @@ export default function App(): React.ReactElement {
     async (preview: HTMLVideoElement): Promise<void> => {
       await prepareProgrammeSourceSwitch('programme source switched to screen');
       const source = await programmeSourceManagerRef.current?.selectScreen(preview).catch(() => undefined);
+      selectedProgrammeUploadRef.current = null;
       if (source) setProgrammeSessionBinding(createPendingProgrammeSessionBinding(source));
     },
     [prepareProgrammeSourceSwitch, setProgrammeSessionBinding],
@@ -661,7 +681,10 @@ export default function App(): React.ReactElement {
       const source = await programmeSourceManagerRef.current
         ?.selectUploadedVideo(file, preview)
         .catch(() => undefined);
-      if (source) setProgrammeSessionBinding(createPendingProgrammeSessionBinding(source));
+      if (source) {
+        selectedProgrammeUploadRef.current = file;
+        setProgrammeSessionBinding(createPendingProgrammeSessionBinding(source));
+      }
     },
     [prepareProgrammeSourceSwitch, setProgrammeSessionBinding],
   );
@@ -672,6 +695,7 @@ export default function App(): React.ReactElement {
       const source = await programmeSourceManagerRef.current
         ?.selectDirectStreamUrl(url, preview)
         .catch(() => undefined);
+      selectedProgrammeUploadRef.current = null;
       if (source) setProgrammeSessionBinding(createPendingProgrammeSessionBinding(source));
     },
     [prepareProgrammeSourceSwitch, setProgrammeSessionBinding],
@@ -683,34 +707,56 @@ export default function App(): React.ReactElement {
       const source = await programmeSourceManagerRef.current
         ?.selectRtmpProgrammeSource(input, preview)
         .catch(() => undefined);
+      selectedProgrammeUploadRef.current = null;
       if (source) setProgrammeSessionBinding(createPendingProgrammeSessionBinding(source));
     },
     [prepareProgrammeSourceSwitch, setProgrammeSessionBinding],
   );
 
-  const ensureBroadcasterSignallingSession = useCallback(async (options: { forceNew?: boolean } = {}) => {
-    const client = broadcasterSignallingClientRef.current;
-    if (!client) {
-      throw new Error('Broadcaster signalling client is not ready.');
-    }
-    const snapshot = client.getSnapshot();
-    if (snapshot.sessionId && snapshot.connected && !options.forceNew) return snapshot;
-    if (snapshot.sessionId && snapshot.connected && options.forceNew) {
-      await client.closeSession('operator started a new programme interpretation session');
-    }
-    return await client.createSession();
-  }, []);
+  const ensureBroadcasterSignallingSession = useCallback(
+    async (options: { forceNew?: boolean; requestedSessionId?: string } = {}) => {
+      const client = broadcasterSignallingClientRef.current;
+      if (!client) {
+        throw new Error('Broadcaster signalling client is not ready.');
+      }
+      const snapshot = client.getSnapshot();
+      if (snapshot.sessionId && snapshot.connected && !options.forceNew) return snapshot;
+      if (snapshot.sessionId && snapshot.connected && options.forceNew) {
+        await client.closeSession('operator started a new programme interpretation session');
+      }
+      return await client.createSession(options.requestedSessionId);
+    },
+    [],
+  );
 
   const publishProgrammeSessionConfig = useCallback(
-    (binding: ProgrammeSessionBinding): void => {
+    async (binding: ProgrammeSessionBinding): Promise<void> => {
       const config = buildOperatorProgrammeSessionConfig(binding, {
         targetLanguage: sessionTargetLanguage,
         targetLanguages,
         sourceLanguage,
         sourceLanguageMode,
       });
-      socketRef.current?.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, config);
+      const socket = socketRef.current;
+      if (!socket) {
+        return;
+      }
+      const ack = new Promise<void>((resolve) => {
+        const timeout = window.setTimeout(() => {
+          socket.off(SOCKET_EVENTS.CONTROL_ACK, handleAck);
+          resolve();
+        }, 1500);
+        const handleAck = (event: { action: string; accepted: boolean }): void => {
+          if (event.action !== 'programme-session-config') return;
+          window.clearTimeout(timeout);
+          socket.off(SOCKET_EVENTS.CONTROL_ACK, handleAck);
+          resolve();
+        };
+        socket.on(SOCKET_EVENTS.CONTROL_ACK, handleAck);
+      });
+      socket.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, config);
       setLastControlAck('programme-session-config: sent');
+      await ack;
     },
     [sessionTargetLanguage, sourceLanguage, sourceLanguageMode, targetLanguages],
   );
@@ -723,14 +769,56 @@ export default function App(): React.ReactElement {
       const transport = broadcasterTransportControllerRef.current;
       if (!manager) return;
       if (!transport) throw new Error('Broadcaster media transport is not ready.');
-      const preparedSource = await manager.prepareForInterpretationStart();
-      const forceNewSignallingSession = programmeSessionBindingRef.current?.pending ?? false;
+      const selectedSource = manager.getSnapshot();
+      const captureForTransport = requiresProgrammeWebRtcTransport(
+        selectedSource.sourceType,
+      );
+      const preparedSource = await manager.prepareForInterpretationStart({
+        captureForTransport,
+      });
+      const forceNewSignallingSession =
+        preparedSource.sourceType === 'uploaded-video' ||
+        (programmeSessionBindingRef.current?.pending ?? false);
+      const requestedSessionId =
+        preparedSource.sourceType === 'uploaded-video'
+          ? createRequestedProgrammeSessionId()
+          : undefined;
       const signalling = await ensureBroadcasterSignallingSession({
         forceNew: forceNewSignallingSession,
+        ...(requestedSessionId ? { requestedSessionId } : {}),
       });
       const binding = createActiveProgrammeSessionBinding(signalling, preparedSource);
       setProgrammeSessionBinding(binding);
-      publishProgrammeSessionConfig(binding);
+      await publishProgrammeSessionConfig(binding);
+
+      if (preparedSource.sourceType === 'uploaded-video') {
+        const uploadedFile = selectedProgrammeUploadRef.current;
+        if (!uploadedFile) {
+          throw new Error('Uploaded programme source file is no longer available. Select the video again.');
+        }
+        const processingSessionId = signalling.sessionId ?? binding.sessionId;
+        setUploadingMedia(true);
+        try {
+          const session = await createProcessingSession(INGEST_URL, uploadedFile, sessionTargetLanguage, {
+            targetLanguages,
+            sourceLanguage,
+            sourceLanguageMode,
+            ...(processingSessionId ? { requestedSessionId: processingSessionId } : {}),
+          });
+          applyProcessingSession(session);
+        } finally {
+          setUploadingMedia(false);
+        }
+        await publishProgrammeSessionConfig(binding);
+
+        const source = await manager.start({ captureForTransport: false });
+        sourceStarted = source.broadcasting;
+        if (!source.broadcasting) {
+          throw new Error('Programme source did not start playback.');
+        }
+        return;
+      }
+
       const existingTransportState = transport.getSnapshot().state;
       if (
         existingTransportState !== 'idle' &&
@@ -765,7 +853,16 @@ export default function App(): React.ReactElement {
           .catch(() => undefined);
       }
     }
-  }, [ensureBroadcasterSignallingSession, publishProgrammeSessionConfig, setProgrammeSessionBinding]);
+  }, [
+    applyProcessingSession,
+    ensureBroadcasterSignallingSession,
+    publishProgrammeSessionConfig,
+    sessionTargetLanguage,
+    setProgrammeSessionBinding,
+    sourceLanguage,
+    sourceLanguageMode,
+    targetLanguages,
+  ]);
 
   const handleStartInterpretation = useCallback(async (): Promise<void> => {
     const source = programmeSourceManagerRef.current?.getSnapshot() ?? programmeSource;
@@ -826,12 +923,17 @@ export default function App(): React.ReactElement {
   }, [clearDisplayedProcessingSession, setProgrammeSessionBinding]);
 
   const handleStopProgrammeSource = useCallback(async (): Promise<void> => {
+    setMediaError(null);
     await broadcasterTransportControllerRef.current
       ?.close('operator stopped programme source')
       .catch(() => undefined);
-    await programmeSourceManagerRef.current?.stop().catch(() => undefined);
+    await broadcasterSignallingClientRef.current
+      ?.closeSession('operator ended programme session')
+      .catch(() => undefined);
+    await programmeSourceManagerRef.current?.clear().catch(() => undefined);
+    setProgrammeSessionBinding(null);
     blockProgrammeProcessingEvents();
-  }, [blockProgrammeProcessingEvents]);
+  }, [blockProgrammeProcessingEvents, setProgrammeSessionBinding]);
 
   const handleClearProgrammeSource = useCallback(async (): Promise<void> => {
     await broadcasterTransportControllerRef.current
@@ -1226,14 +1328,19 @@ export default function App(): React.ReactElement {
   }, [mediaState?.processingSessionId, processingSession?.id]);
 
   const handleRetryTranslation = useCallback(
-    async (segmentId: string): Promise<void> => {
+    async (segmentId: string, targetLanguage?: string): Promise<void> => {
       const sessionId = mediaState?.processingSessionId ?? processingSession?.id;
       if (!sessionId) return;
 
       setSessionCommandRunning(true);
       setMediaError(null);
       try {
-        const session = await retryTranslationSegment(INGEST_URL, sessionId, segmentId);
+        const session = await retryTranslationSegment(
+          INGEST_URL,
+          sessionId,
+          segmentId,
+          targetLanguage,
+        );
         applyProcessingSession(session);
       } catch (error) {
         const message =
@@ -1251,14 +1358,19 @@ export default function App(): React.ReactElement {
   );
 
   const handleRetryGeneratedAudio = useCallback(
-    async (segmentId: string): Promise<void> => {
+    async (segmentId: string, targetLanguage?: string): Promise<void> => {
       const sessionId = mediaState?.processingSessionId ?? processingSession?.id;
       if (!sessionId) return;
 
       setSessionCommandRunning(true);
       setMediaError(null);
       try {
-        const session = await retryGeneratedAudioSegment(INGEST_URL, sessionId, segmentId);
+        const session = await retryGeneratedAudioSegment(
+          INGEST_URL,
+          sessionId,
+          segmentId,
+          targetLanguage,
+        );
         applyProcessingSession(session);
       } catch (error) {
         const message =
@@ -1406,14 +1518,21 @@ export default function App(): React.ReactElement {
   const canResume = streamStatus === 'paused';
   const canCancel =
     streamStatus !== 'completed' && streamStatus !== 'cancelled' && streamStatus !== 'created';
+  const targetLanguageCatalogue =
+    processingSession?.targetLanguageCatalogue ?? mediaState?.targetLanguageCatalogue;
+  const selectableTargetLanguages = LANGUAGE_OPTIONS.filter((language) => {
+    const capability = targetLanguageCatalogue?.find(
+      (candidate) => candidate.language === language.code,
+    );
+    return capability?.translationAvailable ?? true;
+  });
   const readinessItems = buildPartnerPreviewReadiness({
     gatewayConnected: connected,
     mediaIngestHealthy: ingestOk,
     programmeSource,
     mediaState,
     sourceLanguageControl: processingSession?.sourceLanguageControl ?? mediaState?.sourceLanguageControl,
-    targetLanguageCatalogue:
-      processingSession?.targetLanguageCatalogue ?? mediaState?.targetLanguageCatalogue,
+    targetLanguageCatalogue,
     translation: timestampedTranslation,
     generatedAudio,
     selectedTargetLanguages: targetLanguages,
@@ -1422,10 +1541,12 @@ export default function App(): React.ReactElement {
     connected,
     ingestHealthy: ingestOk,
     programmeSource,
-    programmeMediaReady:
-      broadcasterTransport.backendAudioTrackReceived &&
-      (!programmeSource.videoDetected || broadcasterTransport.backendVideoTrackReceived),
+    programmeMediaReady: requiresProgrammeWebRtcTransport(programmeSource.sourceType)
+      ? broadcasterTransport.backendAudioTrackReceived &&
+        (!programmeSource.videoDetected || broadcasterTransport.backendVideoTrackReceived)
+      : processingSession?.state === 'completed',
     programmeMediaError:
+      requiresProgrammeWebRtcTransport(programmeSource.sourceType) &&
       broadcasterTransport.state === 'failed'
         ? broadcasterTransport.lastError?.message ?? 'Programme media transport failed.'
         : null,
@@ -1592,20 +1713,35 @@ export default function App(): React.ReactElement {
           <div className={styles.langConfig}>
             <label className={styles.configLabel}>Target channels</label>
             <div className={styles.targetLangs}>
-              {LANGUAGE_OPTIONS.map((lang) => (
-                <label key={lang} className={styles.langCheckbox}>
+              {LANGUAGE_OPTIONS.map((language) => {
+                const capability = targetLanguageCatalogue?.find(
+                  (candidate) => candidate.language === language.code,
+                );
+                const unavailable = Boolean(capability && !capability.translationAvailable);
+                return (
+                <label
+                  key={language.code}
+                  className={styles.langCheckbox}
+                  title={capability?.availability ?? 'Capability is loading'}
+                >
                   <input
                     type="checkbox"
-                    checked={targetLanguages.includes(lang)}
-                    onChange={(e) => handleTargetLanguageToggle(lang, e.target.checked)}
+                    checked={targetLanguages.includes(language.code)}
+                    disabled={unavailable || Boolean(processingSession)}
+                    onChange={(e) =>
+                      handleTargetLanguageToggle(language.code, e.target.checked)
+                    }
                   />
-                  {lang.toUpperCase()}
+                  {language.label}
+                  {capability?.textOnly ? ' - captions only' : ''}
+                  {unavailable ? ' - unavailable' : ''}
                 </label>
-              ))}
+                );
+              })}
             </div>
-            {processingSession?.targetLanguageCatalogue && (
+            {targetLanguageCatalogue && (
               <div className={styles.extractionMeta}>
-                {processingSession.targetLanguageCatalogue.map((target) => (
+                {targetLanguageCatalogue.map((target) => (
                   <span key={target.language}>
                     {target.label}: {target.availability}
                   </span>
@@ -1840,18 +1976,38 @@ export default function App(): React.ReactElement {
                 Auto-detect source
               </label>
               <div className={styles.langConfig}>
-                <label className={styles.configLabel}>Target language</label>
-                <select
-                  className={styles.configSelect}
-                  value={sessionTargetLanguage}
-                  onChange={(event) => handleSessionTargetLanguageChange(event.target.value)}
-                >
-                  {LANGUAGE_OPTIONS.map((lang) => (
-                    <option key={`standard-target-${lang}`} value={lang}>
-                      {lang.toUpperCase()}
-                    </option>
-                  ))}
-                </select>
+                <span className={styles.configLabel}>Viewer languages</span>
+                <div className={styles.targetLangs} aria-label="Viewer language channels">
+                  {LANGUAGE_OPTIONS.map((language) => {
+                    const capability = targetLanguageCatalogue?.find(
+                      (candidate) => candidate.language === language.code,
+                    );
+                    const unavailable = Boolean(
+                      capability && !capability.translationAvailable,
+                    );
+                    return (
+                      <label
+                        key={`standard-target-${language.code}`}
+                        className={styles.langCheckbox}
+                        title={capability?.availability ?? 'Capability is loading'}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={targetLanguages.includes(language.code)}
+                          disabled={unavailable || Boolean(processingSession)}
+                          onChange={(event) =>
+                            handleTargetLanguageToggle(language.code, event.target.checked)
+                          }
+                        />
+                        <span>
+                          {language.label}
+                          {capability?.textOnly ? ' - captions only' : ''}
+                          {unavailable ? ' - unavailable' : ''}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
               </div>
               {(mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0) > 0 && (
                 <div className={styles.modeToggle} role="group" aria-label="Operator audio mode">
@@ -2284,14 +2440,16 @@ export default function App(): React.ReactElement {
                     </div>
                   ))}
                   {failedTranslationEvents.map((event) => (
-                    <div key={event.segmentId} className={styles.failedSegmentRow}>
+                    <div key={`${event.segmentId}-${event.targetLanguage}`} className={styles.failedSegmentRow}>
                       <span>
                         Translation #{event.sequence + 1}: {event.error ?? 'failed'}
                       </span>
                       <button
                         type="button"
                         className={`${styles.mockBtn} ${styles.actionBtn}`}
-                        onClick={() => void handleRetryTranslation(event.segmentId)}
+                        onClick={() =>
+                          void handleRetryTranslation(event.segmentId, event.targetLanguage)
+                        }
                         disabled={sessionCommandRunning || streamStatus === 'paused'}
                       >
                         Retry
@@ -2299,14 +2457,16 @@ export default function App(): React.ReactElement {
                     </div>
                   ))}
                   {failedGeneratedAudioEvents.map((event) => (
-                    <div key={event.segmentId} className={styles.failedSegmentRow}>
+                    <div key={`${event.segmentId}-${event.targetLanguage}`} className={styles.failedSegmentRow}>
                       <span>
                         TTS #{event.sequence + 1}: {event.error ?? 'failed'}
                       </span>
                       <button
                         type="button"
                         className={`${styles.mockBtn} ${styles.actionBtn}`}
-                        onClick={() => void handleRetryGeneratedAudio(event.segmentId)}
+                        onClick={() =>
+                          void handleRetryGeneratedAudio(event.segmentId, event.targetLanguage)
+                        }
                         disabled={sessionCommandRunning}
                       >
                         Retry audio
@@ -2402,9 +2562,9 @@ export default function App(): React.ReactElement {
                 onChange={(event) => handleSessionTargetLanguageChange(event.target.value)}
                 disabled={uploadingMedia}
               >
-                {LANGUAGE_OPTIONS.map((lang) => (
-                  <option key={lang} value={lang}>
-                    {lang.toUpperCase()}
+                {selectableTargetLanguages.map((language) => (
+                  <option key={language.code} value={language.code}>
+                    {language.label}
                   </option>
                 ))}
               </select>
@@ -2780,7 +2940,10 @@ export default function App(): React.ReactElement {
               {timestampedTranslationEvents.length > 0 ? (
                 <div className={styles.transcriptList}>
                   {timestampedTranslationEvents.map((event) => (
-                    <div key={event.segmentId} className={styles.transcriptEntry}>
+                    <div
+                      key={`${event.segmentId}-${event.targetLanguage}`}
+                      className={styles.transcriptEntry}
+                    >
                       <div className={styles.phraseMeta}>
                         <span>#{event.sequence + 1}</span>
                         <span>
@@ -2805,7 +2968,9 @@ export default function App(): React.ReactElement {
                         <button
                           type="button"
                           className={`${styles.mockBtn} ${styles.actionBtn}`}
-                          onClick={() => void handleRetryTranslation(event.segmentId)}
+                          onClick={() =>
+                            void handleRetryTranslation(event.segmentId, event.targetLanguage)
+                          }
                           disabled={sessionCommandRunning}
                         >
                           Retry segment
@@ -2863,7 +3028,10 @@ export default function App(): React.ReactElement {
               {generatedAudioEvents.length > 0 ? (
                 <div className={styles.transcriptList}>
                   {generatedAudioEvents.map((event) => (
-                    <div key={event.segmentId} className={styles.transcriptEntry}>
+                    <div
+                      key={`${event.segmentId}-${event.targetLanguage}`}
+                      className={styles.transcriptEntry}
+                    >
                       <div className={styles.phraseMeta}>
                         <span>#{event.sequence + 1}</span>
                         <span>
@@ -2882,7 +3050,9 @@ export default function App(): React.ReactElement {
                         <button
                           type="button"
                           className={`${styles.mockBtn} ${styles.actionBtn}`}
-                          onClick={() => void handleRetryGeneratedAudio(event.segmentId)}
+                          onClick={() =>
+                            void handleRetryGeneratedAudio(event.segmentId, event.targetLanguage)
+                          }
                           disabled={sessionCommandRunning}
                         >
                           Retry audio

@@ -49,7 +49,12 @@ export async function createProcessingSession(
   ingestUrl: string,
   file: File,
   targetLanguage?: string,
-  input: { targetLanguages?: string[]; sourceLanguage?: string; sourceLanguageMode?: string } = {},
+  input: {
+    targetLanguages?: string[];
+    sourceLanguage?: string;
+    sourceLanguageMode?: string;
+    requestedSessionId?: string;
+  } = {},
 ): Promise<ProcessingSessionDto> {
   const body = new FormData();
   body.append('media', file);
@@ -61,6 +66,7 @@ export async function createProcessingSession(
   }
   if (input.sourceLanguage) body.append('sourceLanguage', input.sourceLanguage);
   if (input.sourceLanguageMode) body.append('sourceLanguageMode', input.sourceLanguageMode);
+  if (input.requestedSessionId) body.append('requestedSessionId', input.requestedSessionId);
 
   const response = await fetch(`${ingestUrl.replace(/\/$/, '')}/sessions`, {
     method: 'POST',
@@ -267,10 +273,14 @@ export async function retryTranslationSegment(
   ingestUrl: string,
   sessionId: string,
   segmentId: string,
+  targetLanguage?: string,
 ): Promise<ProcessingSessionDto> {
+  const languageQuery = targetLanguage
+    ? `?language=${encodeURIComponent(targetLanguage)}`
+    : '';
   return await sendSessionCommand(
     ingestUrl,
-    `/sessions/${encodeURIComponent(sessionId)}/translation/segments/${encodeURIComponent(segmentId)}/retry`,
+    `/sessions/${encodeURIComponent(sessionId)}/translation/segments/${encodeURIComponent(segmentId)}/retry${languageQuery}`,
     'POST',
   );
 }
@@ -302,10 +312,14 @@ export async function retryGeneratedAudioSegment(
   ingestUrl: string,
   sessionId: string,
   segmentId: string,
+  targetLanguage?: string,
 ): Promise<ProcessingSessionDto> {
+  const languageQuery = targetLanguage
+    ? `?language=${encodeURIComponent(targetLanguage)}`
+    : '';
   return await sendSessionCommand(
     ingestUrl,
-    `/sessions/${encodeURIComponent(sessionId)}/generated-audio/segments/${encodeURIComponent(segmentId)}/retry`,
+    `/sessions/${encodeURIComponent(sessionId)}/generated-audio/segments/${encodeURIComponent(segmentId)}/retry${languageQuery}`,
     'POST',
   );
 }

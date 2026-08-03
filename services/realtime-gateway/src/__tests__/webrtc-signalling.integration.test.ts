@@ -704,16 +704,20 @@ describe('gateway WebRTC signalling integration', () => {
         }),
       );
     };
-    broadcaster.on(SOCKET_EVENTS.WEBRTC_SESSION_EVENT, async (event: WebRtcOutgoingSignallingEnvelope) => {
+    broadcaster.on(SOCKET_EVENTS.WEBRTC_SESSION_EVENT, (event: WebRtcOutgoingSignallingEnvelope) => {
       if (event.type === 'sdp-answer') {
-        await broadcasterPeer.setRemoteDescription({ type: 'answer', sdp: event.payload.sdp });
+        void broadcasterPeer
+          .setRemoteDescription({ type: 'answer', sdp: event.payload.sdp })
+          .catch(() => undefined);
       }
       if (event.type === 'ice-candidate') {
-        await broadcasterPeer.addIceCandidate({
-          candidate: event.payload.candidate,
-          sdpMid: event.payload.sdpMid ?? null,
-          sdpMLineIndex: event.payload.sdpMLineIndex ?? null,
-        });
+        void broadcasterPeer
+          .addIceCandidate({
+            candidate: event.payload.candidate,
+            sdpMid: event.payload.sdpMid ?? null,
+            sdpMLineIndex: event.payload.sdpMLineIndex ?? null,
+          })
+          .catch(() => undefined);
       }
     });
 

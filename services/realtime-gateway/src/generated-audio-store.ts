@@ -14,6 +14,7 @@ interface GeneratedAudioChannelState {
 
 export class GeneratedAudioStore {
   private readonly channels = new Map<string, GeneratedAudioChannelState>();
+  private readonly history = new Map<string, GeneratedAudioReadyEvent[]>();
 
   constructor(private readonly maxGap = 20) {}
 
@@ -51,15 +52,26 @@ export class GeneratedAudioStore {
     }
 
     state.buffered.set(event.sequence, event);
-    return { accepted: true, ready: this.releaseReady(state) };
+    const ready = this.releaseReady(state);
+    if (ready.length > 0) {
+      const history = this.history.get(channelKey) ?? [];
+      this.history.set(channelKey, [...history, ...ready]);
+    }
+    return { accepted: true, ready };
+  }
+
+  getSnapshot(sessionId: string, targetLanguage: string): GeneratedAudioReadyEvent[] {
+    return [...(this.history.get(this.channelKey(sessionId, targetLanguage)) ?? [])];
   }
 
   reset(sessionId?: string, targetLanguage?: string): void {
     if (sessionId && targetLanguage) {
       this.channels.delete(this.channelKey(sessionId, targetLanguage));
+      this.history.delete(this.channelKey(sessionId, targetLanguage));
       return;
     }
     this.channels.clear();
+    this.history.clear();
   }
 
   private getOrCreateChannel(channelKey: string): GeneratedAudioChannelState {

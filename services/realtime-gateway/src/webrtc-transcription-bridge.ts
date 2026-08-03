@@ -79,7 +79,7 @@ export class WebRtcTranscriptionBridge {
 
   constructor(options: WebRtcTranscriptionBridgeOptions) {
     this.stagingDir = options.stagingDir;
-    this.chunkDurationMs = options.chunkDurationMs ?? 15_000;
+    this.chunkDurationMs = options.chunkDurationMs ?? 5_000;
     this.maxQueuedChunks = options.maxQueuedChunks;
     this.maxQueuedBytes = options.maxQueuedBytes;
     this.vad = options.vad;

@@ -5,7 +5,11 @@ import { MediaIngestError } from './ingest-error.js';
 import { logger } from './logger.js';
 
 export interface GeneratedAudioDeliveryService {
-  getGeneratedAudioFile(sessionId: string, segmentId: string): Promise<GeneratedAudioFile>;
+  getGeneratedAudioFile(
+    sessionId: string,
+    segmentId: string,
+    targetLanguage?: string,
+  ): Promise<GeneratedAudioFile>;
 }
 
 export function registerGeneratedAudioDeliveryRoute(
@@ -14,7 +18,13 @@ export function registerGeneratedAudioDeliveryRoute(
 ): void {
   app.get('/sessions/:sessionId/generated-audio/segments/:segmentId/audio', async (req, res) => {
     try {
-      const file = await ingest.getGeneratedAudioFile(req.params.sessionId, req.params.segmentId);
+      const targetLanguage =
+        typeof req.query['language'] === 'string' ? req.query['language'] : undefined;
+      const file = await ingest.getGeneratedAudioFile(
+        req.params.sessionId,
+        req.params.segmentId,
+        targetLanguage,
+      );
       sendGeneratedAudioFile(req.headers.range, file, res);
     } catch (error) {
       sendIngestError(res, error);

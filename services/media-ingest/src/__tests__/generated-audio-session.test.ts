@@ -200,7 +200,13 @@ describe('generated-audio sessions', () => {
       progressPct: 100,
     });
     for (const event of session.generatedAudio.events) {
-      const audioPath = join(outputBaseDir, session.id, 'tts', event.audioFilename);
+      const audioPath = join(
+        outputBaseDir,
+        session.id,
+        'tts',
+        event.targetLanguage,
+        event.audioFilename,
+      );
       expect((await readFile(audioPath)).toString('ascii', 0, 4)).toBe('RIFF');
       expect(event.durationMs).not.toBeNull();
     }
@@ -224,6 +230,42 @@ describe('generated-audio sessions', () => {
     ]);
     expect(session.generatedAudio.events.every((event) => event.targetLanguage === 'es')).toBe(true);
     expect(session.generatedAudio.events.every((event) => event.providerLatencyMs === 3)).toBe(true);
+  });
+
+  it('keeps voice output separate by language and preserves caption-only channels', async () => {
+    const generatedLanguages: string[] = [];
+    const { store, outputBaseDir } = await sessionStore(
+      ttsProvider(async (input) => {
+        generatedLanguages.push(input.targetLanguage);
+        await writeTestWav(input.outputPath);
+        return { audioPath: input.outputPath, providerLatencyMs: 4 };
+      }),
+      { supportedLanguages: ['es'] },
+    );
+
+    const session = await store.createFromUpload(
+      upload({ targetLanguages: ['es', 'fr'] }),
+      async () => validProbe,
+    );
+
+    expect(session.state).toBe('completed');
+    expect(session.translation.events).toHaveLength(6);
+    expect(generatedLanguages).toEqual(['es', 'es', 'es']);
+    expect(session.generatedAudio.textOnlyLanguages).toEqual(['fr']);
+    expect(session.generatedAudio.events).toHaveLength(3);
+    expect(session.generatedAudio.events.every((event) => event.targetLanguage === 'es')).toBe(true);
+    expect(
+      existsSync(
+        join(
+          outputBaseDir,
+          session.id,
+          'tts',
+          'es',
+          session.generatedAudio.events[0]?.audioFilename ?? '',
+        ),
+      ),
+    ).toBe(true);
+    expect(existsSync(join(outputBaseDir, session.id, 'tts', 'fr'))).toBe(false);
   });
 
   it('publishes generated-audio ready events and resolves safe WAV delivery metadata', async () => {

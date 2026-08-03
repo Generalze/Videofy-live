@@ -163,6 +163,8 @@ declare module '@videofy-live/shared-types' {
     streamId?: string;
     processingSessionId?: string;
     shareableWebRtcSessionId?: string;
+    programmeMediaUrl?: string;
+    programmeMediaMode?: 'live-webrtc' | 'uploaded-stems' | 'viewer-ready';
     streamStatus: StreamStatus;
     videoSource: VideoSource;
     media?: {
@@ -225,6 +227,15 @@ declare module '@videofy-live/shared-types' {
       events: TimestampedTranslationEvent[];
       error?: string;
     };
+    targetLanguageOutputs?: Array<{
+      language: string;
+      status: 'unavailable' | 'queued' | 'translating' | 'captions-ready' | 'generating-audio' | 'ready' | 'failed';
+      translationProgressPct: number;
+      audioProgressPct: number;
+      captionsAvailable: boolean;
+      audioAvailable: boolean;
+      error: string | null;
+    }>;
     monitoring?: SessionMonitoringMetadata;
     videoTimestampMs: number;
     sourceAudioActive: boolean;

@@ -4,7 +4,10 @@ import {
   createInitialProgrammeSourceSnapshot,
   type ProgrammeSourceSnapshot,
 } from './programmeSourceManager';
-import { buildOperatorWorkflowSummary } from './operatorWorkflow';
+import {
+  buildOperatorWorkflowSummary,
+  requiresProgrammeWebRtcTransport,
+} from './operatorWorkflow';
 
 function source(overrides: Partial<ProgrammeSourceSnapshot> = {}): ProgrammeSourceSnapshot {
   return {
@@ -50,6 +53,13 @@ function mediaState(overrides: Partial<MediaStateEvent> = {}): MediaStateEvent {
 }
 
 describe('operator workflow summary', () => {
+  it('uses stem delivery instead of WebRTC transport for uploaded programmes', () => {
+    expect(requiresProgrammeWebRtcTransport('uploaded-video')).toBe(false);
+    expect(requiresProgrammeWebRtcTransport('direct-url')).toBe(true);
+    expect(requiresProgrammeWebRtcTransport('rtmp')).toBe(true);
+    expect(requiresProgrammeWebRtcTransport('camera')).toBe(true);
+  });
+
   it('makes uploaded video ready after source selection only', () => {
     const summary = buildOperatorWorkflowSummary({
       connected: true,

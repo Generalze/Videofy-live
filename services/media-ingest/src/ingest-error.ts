@@ -7,6 +7,7 @@ export type MediaIngestErrorCode =
   | 'invalid-media'
   | 'invalid-transition'
   | 'microphone-device-disconnected'
+  | 'source-media-unavailable'
   | 'unsafe-filename'
   | 'unsafe-path'
   | 'transcription-failed'
@@ -32,6 +33,7 @@ export type MediaIngestErrorCode =
   | 'unsupported-tts-voice'
   | 'unsupported-transcription-provider'
   | 'unsupported-translation-provider'
+  | 'viewer-ready-media-unavailable'
   | 'unsupported-extension'
   | 'unsupported-mime';
 

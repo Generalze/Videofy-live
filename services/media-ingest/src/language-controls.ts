@@ -258,4 +258,18 @@ const TARGET_LANGUAGE_CANDIDATES = [
     license: 'OPUS-MT / Piper model-dependent',
     commercialUse: 'unknown' as const,
   },
+  {
+    language: 'zh',
+    label: 'Chinese (Simplified)',
+    experimental: true,
+    license: 'Translation and voice model-dependent',
+    commercialUse: 'unknown' as const,
+  },
+  {
+    language: 'la',
+    label: 'Latin',
+    experimental: true,
+    license: 'Translation and voice model-dependent',
+    commercialUse: 'unknown' as const,
+  },
 ] as const;

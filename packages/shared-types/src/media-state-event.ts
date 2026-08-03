@@ -8,6 +8,7 @@ import type {
   AiProviderStatusMetadata,
   SourceLanguageControlMetadata,
   TargetLanguageCapability,
+  TargetLanguageOutput,
 } from './language-controls.js';
 
 export interface MediaCodecInfo {
@@ -96,6 +97,10 @@ export interface MediaStateEvent {
   processingSessionId?: string;
   /** Authoritative broadcaster/session identifier for listener WebRTC programme media. */
   shareableWebRtcSessionId?: string;
+  /** Safe browser-playable URL for an uploaded programme source, when available. */
+  programmeMediaUrl?: string;
+  /** How the listener should combine programme video, original audio, captions, and generated audio. */
+  programmeMediaMode?: 'live-webrtc' | 'uploaded-stems' | 'viewer-ready';
   /** Current lifecycle state of the video stream. */
   streamStatus: StreamStatus;
   /** Where the video feed originates from. */
@@ -118,6 +123,8 @@ export interface MediaStateEvent {
   sourceLanguageControl?: SourceLanguageControlMetadata;
   /** Configured target-language catalogue and voice/translation availability. */
   targetLanguageCatalogue?: TargetLanguageCapability[];
+  /** Per-session readiness for every selected target-language output. */
+  targetLanguageOutputs?: TargetLanguageOutput[];
   /** Local AI provider readiness and processing status. */
   aiProviderStatus?: AiProviderStatusMetadata;
   /** Unified monitoring and recovery metadata for the file-backed processing session. */

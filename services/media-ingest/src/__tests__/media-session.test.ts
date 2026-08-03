@@ -1,6 +1,6 @@
 import type { AudioExtractionMetadata, AudioChunkMetadata } from '@videofy-live/shared-types';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 import { emptyAudioExtraction } from '../audio-extraction.js';
@@ -222,6 +222,122 @@ describe('ProcessingSessionStore', () => {
     expect(changes).toContain('ready');
     expect(changes).toContain('processing');
     expect(changes.at(-1)).toBe('completed');
+  });
+
+  it('can create an upload processing session with a requested safe session ID', async () => {
+    const session = await store().createFromUpload(
+      upload({ requestedSessionId: 'wrs_uploaded_video' }),
+      async () => validVideoProbe,
+    );
+
+    expect(session.id).toBe('wrs_uploaded_video');
+    expect(session.sourceKind).toBe('upload');
+    expect(session.state).toBe('completed');
+  });
+
+  it('resolves uploaded source media for session-bound playback', async () => {
+    const temp = await createTempDir();
+    const sourcePath = join(temp, 'clip.mp4');
+    const source = Buffer.from('uploaded source media');
+    await writeFile(sourcePath, source);
+    const sessionStore = store();
+    const session = await sessionStore.createFromUpload(
+      upload({
+        path: sourcePath,
+        requestedSessionId: 'wrs_uploaded_video',
+      }),
+      async () => validVideoProbe,
+    );
+
+    const file = await sessionStore.getSourceMediaFile(session.id);
+
+    expect(file).toEqual({
+      mediaPath: sourcePath,
+      mimeType: 'video/mp4',
+      sizeBytes: source.length,
+    });
+  });
+
+  it('renders and resolves viewer-ready uploaded video media after generated audio completes', async () => {
+    const outputDir = await createTempDir();
+    const temp = await createTempDir();
+    const sourcePath = join(temp, 'clip.mp4');
+    await writeFile(sourcePath, Buffer.from('uploaded source media'));
+    const renderCalls: Array<{ segmentCount: number; originalVolume: number; translatedVolume: number }> = [];
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      extractAudio: successfulExtractor,
+      renderViewerReadyMediaOnCompletion: true,
+      renderViewerReadyMedia: async (input) => {
+        renderCalls.push({
+          segmentCount: input.segments.length,
+          originalVolume: input.originalVolume,
+          translatedVolume: input.translatedVolume,
+        });
+        await mkdir(dirname(input.outputPath), { recursive: true });
+        await writeFile(input.outputPath, Buffer.from('viewer-ready mp4'));
+      },
+    });
+    const session = await sessionStore.createFromUpload(
+      upload({
+        path: sourcePath,
+        requestedSessionId: 'wrs_viewer_ready',
+      }),
+      async () => validVideoProbe,
+    );
+
+    const file = await sessionStore.getViewerReadyMediaFile(session.id);
+
+    expect(session.state).toBe('completed');
+    expect(renderCalls).toEqual([{ segmentCount: 3, originalVolume: 0.2, translatedVolume: 1 }]);
+    expect(file).toEqual({
+      mediaPath: join(outputDir, session.id, 'viewer-ready', 'programme.mp4'),
+      mimeType: 'video/mp4',
+      sizeBytes: 'viewer-ready mp4'.length,
+    });
+  });
+
+  it('rejects source-media delivery for unavailable or unsafe sessions', async () => {
+    const sessionStore = store();
+
+    await expect(sessionStore.getSourceMediaFile('../bad-session')).rejects.toMatchObject({
+      code: 'unsafe-path',
+    });
+    await expect(sessionStore.getSourceMediaFile('wrs_missing')).rejects.toMatchObject({
+      code: 'invalid-transition',
+    });
+  });
+
+  it('rejects unsafe or duplicate requested upload session IDs', async () => {
+    const sessionStore = store();
+    await expect(
+      sessionStore.createFromUpload(
+        upload({ requestedSessionId: '../bad-session' }),
+        async () => validVideoProbe,
+      ),
+    ).rejects.toMatchObject({
+      code: 'unsafe-filename',
+      message: 'Unsafe requested session ID rejected.',
+    });
+
+    await sessionStore.createFromUpload(
+      upload({ requestedSessionId: 'wrs_uploaded_video' }),
+      async () => validVideoProbe,
+    );
+
+    await expect(
+      sessionStore.createFromUpload(
+        upload({
+          originalName: 'second.mp4',
+          sizeBytes: 4096,
+          requestedSessionId: 'wrs_uploaded_video',
+        }),
+        async () => validVideoProbe,
+      ),
+    ).rejects.toMatchObject({
+      code: 'duplicate-processing',
+      message: 'Processing session wrs_uploaded_video already exists.',
+    });
   });
 
   it('records session failure state when FFmpeg extraction fails', async () => {

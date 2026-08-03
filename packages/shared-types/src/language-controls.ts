@@ -44,6 +44,25 @@ export interface TargetLanguageCapability {
   commercialUse: 'allowed' | 'unknown' | 'restricted';
 }
 
+export type TargetLanguageOutputStatus =
+  | 'unavailable'
+  | 'queued'
+  | 'translating'
+  | 'captions-ready'
+  | 'generating-audio'
+  | 'ready'
+  | 'failed';
+
+export interface TargetLanguageOutput {
+  language: string;
+  status: TargetLanguageOutputStatus;
+  translationProgressPct: number;
+  audioProgressPct: number;
+  captionsAvailable: boolean;
+  audioAvailable: boolean;
+  error: string | null;
+}
+
 export interface AiProviderStatusMetadata {
   worker: 'offline' | 'ready' | 'processing' | 'delayed' | 'failed';
   vad: 'inactive' | 'active' | 'fallback' | 'failed';

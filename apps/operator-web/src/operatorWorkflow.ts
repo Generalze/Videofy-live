@@ -25,6 +25,12 @@ export interface OperatorWorkflowSummary {
   progressLabel: string;
 }
 
+export function requiresProgrammeWebRtcTransport(
+  sourceType: ProgrammeSourceSnapshot['sourceType'],
+): boolean {
+  return sourceType !== 'uploaded-video';
+}
+
 export function buildOperatorWorkflowSummary(
   input: OperatorWorkflowInput,
 ): OperatorWorkflowSummary {

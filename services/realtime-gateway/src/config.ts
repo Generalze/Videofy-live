@@ -29,7 +29,7 @@ export function loadConfig(): GatewayConfig {
     corsOrigins: readCsv('CORS_ORIGINS', 'http://localhost:5173,http://localhost:5174'),
     mediaIngestUrl: process.env['MEDIA_INGEST_URL'] ?? 'http://localhost:3002',
     internalWebRtcToken: process.env['INTERNAL_WEBRTC_TOKEN']?.trim() || null,
-    webRtcTranscriptionChunkMs: readPositiveGatewayInt('WEBRTC_TRANSCRIPTION_CHUNK_MS', 15_000),
+    webRtcTranscriptionChunkMs: readPositiveGatewayInt('WEBRTC_TRANSCRIPTION_CHUNK_MS', 5_000),
     webRtcTranscriptionRequestTimeoutMs: readPositiveGatewayInt(
       'WEBRTC_TRANSCRIPTION_REQUEST_TIMEOUT_MS',
       180_000,

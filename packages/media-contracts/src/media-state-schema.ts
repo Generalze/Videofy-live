@@ -70,6 +70,8 @@ export const MediaStateEventSchema = z.object({
   streamId: z.string().min(1).optional(),
   processingSessionId: z.string().min(1).optional(),
   shareableWebRtcSessionId: z.string().min(3).optional(),
+    programmeMediaUrl: z.string().url().optional(),
+    programmeMediaMode: z.enum(['live-webrtc', 'uploaded-stems', 'viewer-ready']).optional(),
   streamStatus: StreamStatusSchema,
   videoSource: VideoSourceSchema,
   media: z
@@ -324,6 +326,27 @@ export const MediaStateEventSchema = z.object({
         voiceId: z.string().min(1).nullable(),
         license: z.string().min(1),
         commercialUse: z.enum(['allowed', 'unknown', 'restricted']),
+      }),
+    )
+    .optional(),
+  targetLanguageOutputs: z
+    .array(
+      z.object({
+        language: z.string().min(2).max(16),
+        status: z.enum([
+          'unavailable',
+          'queued',
+          'translating',
+          'captions-ready',
+          'generating-audio',
+          'ready',
+          'failed',
+        ]),
+        translationProgressPct: z.number().min(0).max(100),
+        audioProgressPct: z.number().min(0).max(100),
+        captionsAvailable: z.boolean(),
+        audioAvailable: z.boolean(),
+        error: z.string().min(1).nullable(),
       }),
     )
     .optional(),

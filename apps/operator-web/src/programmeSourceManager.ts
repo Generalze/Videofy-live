@@ -795,16 +795,20 @@ export class ProgrammeSourceManager {
     }
   }
 
-  async start(): Promise<ProgrammeSourceSnapshot> {
+  async start(options: { captureForTransport?: boolean } = {}): Promise<ProgrammeSourceSnapshot> {
     if (!this.stream || this.snapshot.status !== 'preview-ready') {
       throw this.fail(new ProgrammeSourceError('missing-media-track', 'Select a programme source before starting.'));
     }
     if (this.isMediaElementSource() && this.videoElement) {
-      this.videoElement.muted = false;
+      this.videoElement.muted = options.captureForTransport === false;
       this.videoElement.volume = 1;
-      await this.mediaElementAudioContext?.resume?.().catch(() => undefined);
+      if (options.captureForTransport !== false) {
+        await this.mediaElementAudioContext?.resume?.().catch(() => undefined);
+      }
       await requestMediaElementPlayback(this.videoElement, (error) => this.fail(error));
-      await this.replaceMediaElementAudioForTransport();
+      if (options.captureForTransport !== false) {
+        await this.replaceMediaElementAudioForTransport();
+      }
     } else {
       this.liveStartedAtMs = this.now();
       this.livePausedAtMs = null;
@@ -821,7 +825,9 @@ export class ProgrammeSourceManager {
     return this.snapshot;
   }
 
-  async prepareForInterpretationStart(): Promise<ProgrammeSourceSnapshot> {
+  async prepareForInterpretationStart(
+    options: { captureForTransport?: boolean } = {},
+  ): Promise<ProgrammeSourceSnapshot> {
     if (!this.stream || this.snapshot.status !== 'preview-ready') {
       throw this.fail(new ProgrammeSourceError('missing-media-track', 'Select a programme source before starting.'));
     }
@@ -840,7 +846,7 @@ export class ProgrammeSourceManager {
         error: null,
       });
     }
-    if (this.isMediaElementSource()) {
+    if (this.isMediaElementSource() && options.captureForTransport !== false) {
       await this.replaceMediaElementAudioForTransport();
     }
     return this.snapshot;

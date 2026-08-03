@@ -22,6 +22,7 @@ import {
 import { createTranscriptionProvider } from './transcription-provider.js';
 import { createTimestampedTranslationProvider } from './translation-provider.js';
 import { createTextToSpeechProvider } from './text-to-speech-provider.js';
+import { buildTargetLanguageOutputs } from './target-language-outputs.js';
 
 export class IngestService {
   private socket: Socket | null = null;
@@ -33,6 +34,15 @@ export class IngestService {
 
   constructor(private readonly config: IngestConfig) {
     this.provider = new MockProvider();
+    const translationLanguages =
+      config.translationProvider === 'opus-mt'
+        ? config.translationSupportedTargetLanguages.filter((language) =>
+            config.opusMtLanguageModels.some((model) => model.targetLanguage === language),
+          )
+        : config.translationSupportedTargetLanguages;
+    const translationModelIds = new Map(
+      config.opusMtLanguageModels.map((model) => [model.targetLanguage, model.modelId]),
+    );
     this.sessions = new ProcessingSessionStore({
       outputBaseDir: config.audioChunkDir,
       webRtcStagingDir: config.webrtcAudioChunkStagingDir,
@@ -54,17 +64,17 @@ export class IngestService {
       transcriptionTimeoutMs: config.transcriptionTimeoutMs,
       translationProvider: createTimestampedTranslationProvider({
         providerName: config.translationProvider,
-        supportedTargetLanguages: config.translationSupportedTargetLanguages,
+        supportedTargetLanguages: translationLanguages,
         argos: {
           pythonExecutable: config.argosPythonExecutable,
           packageDir: config.argosPackageDir,
-          supportedTargetLanguages: config.translationSupportedTargetLanguages,
+          supportedTargetLanguages: translationLanguages,
           timeoutMs: config.translationTimeoutMs,
         },
         opusMt: {
           pythonExecutable: config.opusMtPythonExecutable,
           modelCacheDir: config.opusMtModelCacheDir,
-          supportedTargetLanguages: config.translationSupportedTargetLanguages,
+          supportedTargetLanguages: translationLanguages,
           languageModels: config.opusMtLanguageModels,
           timeoutMs: config.translationTimeoutMs,
           maxConcurrency: config.opusMtMaxConcurrency,
@@ -73,7 +83,8 @@ export class IngestService {
       }),
       translationTimeoutMs: config.translationTimeoutMs,
       translationTargetLanguage: config.translationTargetLanguage,
-      translationSupportedTargetLanguages: config.translationSupportedTargetLanguages,
+      translationSupportedTargetLanguages: translationLanguages,
+      translationModelIds,
       textToSpeechProvider: createTextToSpeechProvider({
         providerName: config.textToSpeechProvider,
         timeoutMs: config.textToSpeechTimeoutMs,
@@ -95,7 +106,14 @@ export class IngestService {
       }),
       textToSpeechTimeoutMs: config.textToSpeechTimeoutMs,
       textToSpeechVoiceId: config.textToSpeechDefaultVoiceId,
-      textToSpeechSupportedLanguages: config.textToSpeechSupportedLanguages,
+      textToSpeechVoiceIds: new Map([
+        [config.piperVoiceLanguage, config.piperVoiceId],
+      ]),
+      textToSpeechSupportedLanguages:
+        config.textToSpeechProvider === 'piper'
+          ? [config.piperVoiceLanguage]
+          : config.textToSpeechSupportedLanguages,
+      renderViewerReadyMediaOnCompletion: false,
       onSessionChange: (session) => {
         this.currentSession = session;
         this.streamStatus = session.state;
@@ -285,8 +303,16 @@ export class IngestService {
     return this.sessions.exportTranscript(sessionId);
   }
 
-  async retryTranslationSegment(sessionId: string, segmentId: string): Promise<ProcessingSession> {
-    const session = await this.sessions.retryTranslationSegment(sessionId, segmentId);
+  async retryTranslationSegment(
+    sessionId: string,
+    segmentId: string,
+    targetLanguage?: string,
+  ): Promise<ProcessingSession> {
+    const session = await this.sessions.retryTranslationSegment(
+      sessionId,
+      segmentId,
+      targetLanguage,
+    );
     logger.info('Translation segment retry finished', {
       sessionId: session.id,
       segmentId,
@@ -302,8 +328,13 @@ export class IngestService {
   async retryGeneratedAudioSegment(
     sessionId: string,
     segmentId: string,
+    targetLanguage?: string,
   ): Promise<ProcessingSession> {
-    const session = await this.sessions.retryGeneratedAudioSegment(sessionId, segmentId);
+    const session = await this.sessions.retryGeneratedAudioSegment(
+      sessionId,
+      segmentId,
+      targetLanguage,
+    );
     logger.info('Generated audio segment retry finished', {
       sessionId: session.id,
       segmentId,
@@ -329,8 +360,21 @@ export class IngestService {
   async getGeneratedAudioFile(
     sessionId: string,
     segmentId: string,
+    targetLanguage?: string,
   ): ReturnType<ProcessingSessionStore['getGeneratedAudioFile']> {
-    return await this.sessions.getGeneratedAudioFile(sessionId, segmentId);
+    return await this.sessions.getGeneratedAudioFile(sessionId, segmentId, targetLanguage);
+  }
+
+  async getSourceMediaFile(
+    sessionId: string,
+  ): ReturnType<ProcessingSessionStore['getSourceMediaFile']> {
+    return await this.sessions.getSourceMediaFile(sessionId);
+  }
+
+  async getViewerReadyMediaFile(
+    sessionId: string,
+  ): ReturnType<ProcessingSessionStore['getViewerReadyMediaFile']> {
+    return await this.sessions.getViewerReadyMediaFile(sessionId);
   }
 
   private async startMockStream(): Promise<void> {
@@ -375,6 +419,12 @@ export class IngestService {
           generatedAudio: this.currentSession.generatedAudio,
           sourceLanguageControl: this.currentSession.sourceLanguageControl,
           targetLanguageCatalogue: this.currentSession.targetLanguageCatalogue,
+          targetLanguageOutputs: buildTargetLanguageOutputs({
+            selectedLanguages: this.currentSession.targetLanguages,
+            catalogue: this.currentSession.targetLanguageCatalogue,
+            translation: this.currentSession.translation,
+            generatedAudio: this.currentSession.generatedAudio,
+          }),
           aiProviderStatus: this.currentSession.aiProviderStatus,
           monitoring: this.currentSession.monitoring,
           videoTimestampMs: 0,
@@ -396,6 +446,7 @@ export class IngestService {
           videoTimestampMs: this.provider.getVideoTimestampMs(),
           sourceAudioActive: this.provider.isAudioActive(),
           translatedLanguages: this.config.translatedLanguages,
+          targetLanguageCatalogue: this.sessions.getTargetLanguageCatalogue(),
           connectedListeners: 0,
           createdAt: new Date().toISOString(),
         };
@@ -434,7 +485,7 @@ export class IngestService {
       sessionId: session.id,
       streamId: session.streamId,
       durationMs: event.durationMs,
-      audioUrl: this.generatedAudioUrl(session.id, event.segmentId),
+      audioUrl: this.generatedAudioUrl(session.id, event.segmentId, event.targetLanguage),
     };
     this.socket.emit(SOCKET_EVENTS.INGEST_GENERATED_AUDIO, readyEvent);
     logger.info('Generated audio ready event emitted', {
@@ -454,9 +505,13 @@ export class IngestService {
     }
   }
 
-  private generatedAudioUrl(sessionId: string, segmentId: string): string {
+  private generatedAudioUrl(
+    sessionId: string,
+    segmentId: string,
+    targetLanguage: string,
+  ): string {
     const baseUrl = this.config.ingestPublicUrl.replace(/\/+$/, '');
-    return `${baseUrl}/sessions/${encodeURIComponent(sessionId)}/generated-audio/segments/${encodeURIComponent(segmentId)}/audio`;
+    return `${baseUrl}/sessions/${encodeURIComponent(sessionId)}/generated-audio/segments/${encodeURIComponent(segmentId)}/audio?language=${encodeURIComponent(targetLanguage)}`;
   }
 
   async stop(): Promise<void> {

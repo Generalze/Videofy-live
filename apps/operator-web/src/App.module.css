@@ -102,6 +102,11 @@
   cursor: pointer;
 }
 
+.langCheckbox:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
 .mixControl {
   display: flex;
   flex-direction: column;

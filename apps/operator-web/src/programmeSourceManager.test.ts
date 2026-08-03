@@ -320,7 +320,7 @@ describe('ProgrammeSourceManager', () => {
       programmeTimestampMs: 2_000,
     });
 
-    await manager.prepareForInterpretationStart();
+    await manager.prepareForInterpretationStart({ captureForTransport: false });
     expect(preview.currentTime).toBe(0);
     expect(source.getTracks().every((item) => item.enabled)).toBe(true);
     expect(manager.getSnapshot()).toMatchObject({
@@ -329,9 +329,10 @@ describe('ProgrammeSourceManager', () => {
       programmeTimestampMs: 0,
     });
 
-    await manager.start();
-    expect(preview.muted).toBe(false);
+    await manager.start({ captureForTransport: false });
+    expect(preview.muted).toBe(true);
     expect(preview.volume).toBe(1);
+    expect(source.getTracks().every((item) => item.readyState === 'live')).toBe(true);
     await manager.seek(5_000);
     await manager.restart();
     await manager.clear();

@@ -114,7 +114,7 @@ export class WebRtcTranscriptionChunker {
     };
     this.chunkSamples = Math.max(
       1,
-      Math.round(((options.chunkDurationMs ?? 15_000) / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE),
+      Math.round(((options.chunkDurationMs ?? 5_000) / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE),
     );
     this.maxBufferedSamples = Math.round(
       ((options.maxBufferedDurationMs ?? 30_000) / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE,

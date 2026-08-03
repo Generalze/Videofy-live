@@ -29,6 +29,30 @@ describe('MediaStateEventSchema validation', () => {
     expect(result.shareableWebRtcSessionId).toBe('broadcast_uploaded/wrs_uploaded');
   });
 
+  it('accepts a session-bound uploaded programme media URL', () => {
+    const result = parseMediaStateEvent({
+      ...validState,
+      processingSessionId: 'wrs_uploaded',
+      programmeMediaUrl: 'http://localhost:3002/sessions/wrs_uploaded/source-media',
+      programmeMediaMode: 'uploaded-stems',
+      targetLanguageOutputs: [
+        {
+          language: 'es',
+          status: 'ready',
+          translationProgressPct: 100,
+          audioProgressPct: 100,
+          captionsAvailable: true,
+          audioAvailable: true,
+          error: null,
+        },
+      ],
+    });
+
+    expect(result.programmeMediaUrl).toBe('http://localhost:3002/sessions/wrs_uploaded/source-media');
+    expect(result.programmeMediaMode).toBe('uploaded-stems');
+    expect(result.targetLanguageOutputs?.[0]?.status).toBe('ready');
+  });
+
   it('rejects invalid streamStatus', () => {
     const result = safeParseMediaStateEvent({ ...validState, streamStatus: 'unknown' });
     expect(result.success).toBe(false);

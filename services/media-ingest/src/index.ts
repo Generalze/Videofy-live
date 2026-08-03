@@ -5,6 +5,8 @@ import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { loadConfig } from './config.js';
 import { registerGeneratedAudioDeliveryRoute } from './generated-audio-delivery-route.js';
+import { registerSourceMediaDeliveryRoute } from './source-media-delivery-route.js';
+import { registerViewerReadyMediaDeliveryRoute } from './viewer-ready-media-delivery-route.js';
 import { IngestService } from './ingest-service.js';
 import { logger, setLogLevel } from './logger.js';
 import { MediaIngestError } from './ingest-error.js';
@@ -198,11 +200,14 @@ app.post('/sessions', upload.single('media'), async (req, res) => {
       req.body?.sourceLanguageMode === 'manual' || req.body?.sourceLanguageMode === 'auto-detect'
         ? req.body.sourceLanguageMode
         : undefined;
+    const requestedSessionId =
+      typeof req.body?.requestedSessionId === 'string' ? req.body.requestedSessionId : undefined;
     const upload = {
       path: req.file.path,
       originalName: req.file.originalname,
       sizeBytes: req.file.size,
       mimeType: req.file.mimetype,
+      ...(requestedSessionId ? { requestedSessionId } : {}),
       ...(targetLanguage ? { targetLanguage } : {}),
       ...(targetLanguages ? { targetLanguages } : {}),
       ...(sourceLanguage ? { sourceLanguage } : {}),
@@ -299,6 +304,7 @@ app.post('/sessions/:sessionId/translation/segments/:segmentId/retry', async (re
     const session = await ingest.retryTranslationSegment(
       req.params.sessionId,
       req.params.segmentId,
+      typeof req.query['language'] === 'string' ? req.query['language'] : undefined,
     );
     res.json({ session });
   } catch (error) {
@@ -325,6 +331,7 @@ app.post('/sessions/:sessionId/generated-audio/segments/:segmentId/retry', async
     const session = await ingest.retryGeneratedAudioSegment(
       req.params.sessionId,
       req.params.segmentId,
+      typeof req.query['language'] === 'string' ? req.query['language'] : undefined,
     );
     res.json({ session });
   } catch (error) {
@@ -349,6 +356,8 @@ app.post('/sessions/:sessionId/source-language', (req, res) => {
 });
 
 registerGeneratedAudioDeliveryRoute(app, ingest);
+registerSourceMediaDeliveryRoute(app, ingest);
+registerViewerReadyMediaDeliveryRoute(app, ingest);
 
 server.listen(config.port, () => {
   logger.info('Media ingest endpoint started', { port: config.port, uploadDir });
