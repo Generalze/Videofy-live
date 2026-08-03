@@ -42,7 +42,7 @@ describe('BroadcasterWebRtcTransportPanel', () => {
     expect(html).toContain('Backend programme transport');
     expect(html).toContain('aria-label="Start backend audio transport"');
     expect(html).toContain('Audio activity detected');
-    expect(html).toContain('Listener programme playback enabled');
+    expect(html).toContain('Viewer programme playback enabled');
     expect(html).not.toContain('Listener playback active');
   });
 

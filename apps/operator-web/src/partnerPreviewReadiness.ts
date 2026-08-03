@@ -114,7 +114,7 @@ export function buildPartnerPreviewReadiness(
     },
     {
       id: 'listeners',
-      label: 'Listeners',
+      label: 'Viewers',
       state: (input.mediaState?.connectedListeners ?? 0) > 0 ? 'ready' : 'warning',
       detail: `${input.mediaState?.connectedListeners ?? 0} connected`,
     },

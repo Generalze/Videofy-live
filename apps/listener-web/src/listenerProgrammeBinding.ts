@@ -83,6 +83,45 @@ export function shouldInitializeGeneratedAudioClock(clockStatus: string): boolea
   return clockStatus === 'created';
 }
 
+export function shouldRecoverStaleViewerPlayback(input: {
+  hasStarted: boolean;
+  hasRemoteStream: boolean;
+  remoteVideoTrackReceived: boolean;
+  remoteVideoTrackActive: boolean;
+  streamStatus: string;
+  videoPaused: boolean;
+  videoReadyState: number;
+  currentTimeSeconds: number;
+  previousTimeSeconds: number | null;
+  stagnantChecks: number;
+  minStagnantChecks: number;
+  minReadyState: number;
+}): boolean {
+  if (!input.hasStarted || !input.hasRemoteStream) return false;
+  if (!input.remoteVideoTrackReceived || !input.remoteVideoTrackActive) return false;
+  if (input.streamStatus !== 'processing') return false;
+  if (input.videoPaused) return false;
+  if (input.videoReadyState < input.minReadyState) return false;
+  if (input.previousTimeSeconds === null) return false;
+  if (input.currentTimeSeconds > input.previousTimeSeconds + 0.05) return false;
+  return input.stagnantChecks >= input.minStagnantChecks;
+}
+
+export function shouldShowHeldViewerFrame(input: {
+  hasLastFrame: boolean;
+  hasReceivedProgrammeVideo: boolean;
+  streamStatus: string;
+  remoteVideoTrackActive: boolean;
+  viewerVideoStalled: boolean;
+}): boolean {
+  if (!input.hasLastFrame || !input.hasReceivedProgrammeVideo) return false;
+  return (
+    input.viewerVideoStalled ||
+    input.streamStatus !== 'processing' ||
+    !input.remoteVideoTrackActive
+  );
+}
+
 export function describeProgrammeVideoLabel(input: {
   remoteVideoTrackReceived: boolean;
   remoteAudioTrackReceived: boolean;

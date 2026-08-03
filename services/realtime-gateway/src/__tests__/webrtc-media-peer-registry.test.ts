@@ -180,11 +180,13 @@ describe('BackendWebRtcMediaPeerRegistry', () => {
     const sink = new FakeSink();
     const videoSink = new FakeVideoSink();
     const ready = vi.fn();
+    const trackReady = vi.fn();
     const registry = new BackendWebRtcMediaPeerRegistry({
       createPeerConnection: () => peer as never,
       createAudioSink: () => sink,
       createVideoSink: () => videoSink,
       onPeerReady: ready,
+      onTrackReady: trackReady,
     });
 
     await registry.acceptOffer(
@@ -204,9 +206,11 @@ describe('BackendWebRtcMediaPeerRegistry', () => {
     expect(registry.getSnapshot('wrs_demo')).toMatchObject({
       audioTrackState: 'active',
       videoTrackState: 'received',
+      videoExpected: true,
       audioActivityDetected: true,
       videoActivityDetected: false,
     });
+    expect(trackReady).toHaveBeenCalledTimes(2);
     expect(ready).not.toHaveBeenCalled();
 
     videoSink.emitFrame({ width: 1280, height: 720 });

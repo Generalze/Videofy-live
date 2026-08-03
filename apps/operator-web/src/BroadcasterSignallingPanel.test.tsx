@@ -59,7 +59,7 @@ describe('BroadcasterSignallingPanel', () => {
     );
 
     expect(html).toContain('broadcast_demo/wrs_demo');
-    expect(html).toContain('Listener joined');
+    expect(html).toContain('Viewer joined');
     expect(html).toContain('Audio transport not started');
     expect(html).not.toContain('Live');
   });
@@ -68,7 +68,7 @@ describe('BroadcasterSignallingPanel', () => {
     const html = renderPanel(snapshot({ state: 'joined', sessionId: 'wrs_demo' }), 'Microphone ready');
 
     expect(html).toContain('Microphone ready');
-    expect(html).toContain('Session waiting for listener');
+    expect(html).toContain('Session waiting for viewer');
   });
 
   it('renders safe gateway errors with an alert', () => {

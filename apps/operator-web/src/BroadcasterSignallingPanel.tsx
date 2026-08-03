@@ -51,8 +51,8 @@ export function BroadcasterSignallingPanel({
           ? 'Session closed'
           : signalling.sessionId
             ? signalling.listenerCount > 0
-              ? 'Listener joined'
-              : 'Session waiting for listener'
+              ? 'Viewer joined'
+              : 'Session waiting for viewer'
             : 'No signalling session';
 
   return (
@@ -112,7 +112,7 @@ export function BroadcasterSignallingPanel({
             <dd>{signalling.shareableSessionId ?? '-'}</dd>
           </div>
           <div>
-            <dt>Listeners</dt>
+            <dt>Viewers</dt>
             <dd>{signalling.listenerCount}</dd>
           </div>
           <div>

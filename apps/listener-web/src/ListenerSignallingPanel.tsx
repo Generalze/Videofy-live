@@ -79,7 +79,7 @@ export function ListenerSignallingPanel({
           className={styles.queueBtn}
           onClick={onJoin}
           disabled={!canJoin}
-          aria-label="Join listener signalling session"
+          aria-label="Join viewer signalling session"
         >
           Join
         </button>
@@ -88,7 +88,7 @@ export function ListenerSignallingPanel({
           className={styles.queueBtn}
           onClick={onLeave}
           disabled={!canLeave}
-          aria-label="Leave listener signalling session"
+          aria-label="Leave viewer signalling session"
         >
           Leave
         </button>
@@ -97,13 +97,13 @@ export function ListenerSignallingPanel({
           className={styles.queueBtn}
           onClick={onRecover}
           disabled={!canRecover}
-          aria-label="Recover listener signalling session"
+          aria-label="Recover viewer signalling session"
         >
           Recover
         </button>
       </div>
 
-      <dl className={styles.signallingGrid} aria-label="Listener signalling status">
+      <dl className={styles.signallingGrid} aria-label="Viewer signalling status">
         <div>
           <dt>Gateway signalling</dt>
           <dd>{gatewayStatus}</dd>

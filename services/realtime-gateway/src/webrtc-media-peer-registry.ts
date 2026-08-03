@@ -72,6 +72,7 @@ export interface BackendMediaPeerSnapshot {
   audioTrackState: BackendMediaTrackState;
   videoTrackState: BackendMediaTrackState;
   ingestBridgeState: WebRtcAudioIngestBridgeSnapshot['state'];
+  videoExpected: boolean;
   audioFrameCount: number;
   videoFrameCount: number;
   audioActivityDetected: boolean;
@@ -100,6 +101,7 @@ export interface BackendMediaPeerRegistryOptions {
     >,
   ) => void;
   onPeerReady?: (envelope: WebRtcPeerReadyEnvelope) => void;
+  onTrackReady?: (context: BackendMediaPeerAudioContext) => void;
   onAudioFrame?: (
     context: BackendMediaPeerAudioContext,
     data: WebRtcAudioDataLike,
@@ -241,6 +243,7 @@ export class BackendWebRtcMediaPeerRegistry {
       ) => void)
     | undefined;
   private readonly onPeerReady: ((envelope: WebRtcPeerReadyEnvelope) => void) | undefined;
+  private readonly onTrackReady: ((context: BackendMediaPeerAudioContext) => void) | undefined;
   private readonly onAudioFrame:
     | ((
         context: BackendMediaPeerAudioContext,
@@ -278,6 +281,7 @@ export class BackendWebRtcMediaPeerRegistry {
     this.clearTimer = options.clearTimer ?? ((timer) => clearTimeout(timer));
     this.onLocalSignal = options.onLocalSignal;
     this.onPeerReady = options.onPeerReady;
+    this.onTrackReady = options.onTrackReady;
     this.onAudioFrame = options.onAudioFrame;
     this.onVideoFrame = options.onVideoFrame;
     this.onAudioPeerClosed = options.onAudioPeerClosed;
@@ -517,6 +521,7 @@ export class BackendWebRtcMediaPeerRegistry {
     try {
       const sink = this.createAudioSink(track);
       record.audioSink = sink;
+      this.onTrackReady?.(audioContext(record));
       sink.ondata = (data: WebRtcAudioDataLike) => {
         try {
           const frame = record.bridge.recordFrame(data);
@@ -556,6 +561,7 @@ export class BackendWebRtcMediaPeerRegistry {
     try {
       const sink = this.createVideoSink(track);
       record.videoSink = sink;
+      this.onTrackReady?.(audioContext(record));
       sink.onframe = (event: { frame?: WebRtcVideoFrameLike } | WebRtcVideoFrameLike) => {
         const frame = 'frame' in event && event.frame ? event.frame : event as WebRtcVideoFrameLike;
         record.videoFrameCount++;
@@ -759,6 +765,7 @@ export class BackendWebRtcMediaPeerRegistry {
       audioTrackState: record.audioTrackState,
       videoTrackState: record.videoTrackState,
       ingestBridgeState: bridge.state,
+      videoExpected: record.videoExpected,
       audioFrameCount: bridge.frameCount,
       videoFrameCount: record.videoFrameCount,
       audioActivityDetected: bridge.frameCount > 0,

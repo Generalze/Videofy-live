@@ -134,6 +134,9 @@ export class Gateway {
         this.routeBackendWebRtcSignal(backendSignalEnvelope(envelope));
         void this.startListenerDeliveryForSession(envelope.sessionId);
       },
+      onTrackReady: (context) => {
+        void this.startListenerDeliveryForSession(context.sessionId);
+      },
       onAudioFrame: (context, data) => {
         try {
           this.webRtcTranscriptionBridge.handleFrame(
@@ -897,10 +900,14 @@ export class Gateway {
   private async startListenerDeliveryForSession(sessionId: string | undefined): Promise<void> {
     if (!sessionId) return;
     const broadcaster = this.backendMediaPeers.getSnapshot(sessionId);
-    if (!broadcaster || !broadcaster.audioActivityDetected || broadcaster.audioTrackState !== 'active') {
+    if (
+      !broadcaster ||
+      (broadcaster.audioTrackState !== 'received' && broadcaster.audioTrackState !== 'active')
+    ) {
       return;
     }
     const includeVideo =
+      broadcaster.videoExpected ||
       broadcaster.videoTrackState === 'received' ||
       broadcaster.videoTrackState === 'active';
     const summary = this.webrtcSessions.getSessionSummary(sessionId);

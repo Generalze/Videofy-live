@@ -48,8 +48,8 @@ describe('ListenerSignallingPanel', () => {
 
     expect(html).toContain('WebRTC signalling');
     expect(html).toContain('aria-label="Broadcast or session identifier"');
-    expect(html).toContain('aria-label="Join listener signalling session"');
-    expect(html).toContain('aria-label="Leave listener signalling session"');
+    expect(html).toContain('aria-label="Join viewer signalling session"');
+    expect(html).toContain('aria-label="Leave viewer signalling session"');
   });
 
   it('shows joined broadcaster signalling without claiming playback', () => {

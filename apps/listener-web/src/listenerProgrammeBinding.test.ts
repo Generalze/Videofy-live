@@ -6,8 +6,10 @@ import {
   shouldAcceptMediaStateForListener,
   shouldAcceptGeneratedAudioForSession,
   shouldExposeMediaStateProgrammeSession,
+  shouldShowHeldViewerFrame,
   shouldInitializeGeneratedAudioClock,
   shouldJoinProgrammeSession,
+  shouldRecoverStaleViewerPlayback,
   shouldReplaceProgrammeSession,
   shouldTreatTransportAsSourceEnded,
 } from './listenerProgrammeBinding';
@@ -162,5 +164,79 @@ describe('listener programme binding', () => {
     expect(shouldInitializeGeneratedAudioClock('created')).toBe(true);
     expect(shouldInitializeGeneratedAudioClock('processing')).toBe(false);
     expect(shouldInitializeGeneratedAudioClock('completed')).toBe(false);
+  });
+
+  it('recovers only genuinely stale active viewer video playback', () => {
+    const activeViewer = {
+      hasStarted: true,
+      hasRemoteStream: true,
+      remoteVideoTrackReceived: true,
+      remoteVideoTrackActive: true,
+      streamStatus: 'processing',
+      videoPaused: false,
+      videoReadyState: 2,
+      currentTimeSeconds: 12,
+      previousTimeSeconds: 12,
+      stagnantChecks: 4,
+      minStagnantChecks: 4,
+      minReadyState: 2,
+    };
+
+    expect(shouldRecoverStaleViewerPlayback(activeViewer)).toBe(true);
+    expect(
+      shouldRecoverStaleViewerPlayback({
+        ...activeViewer,
+        currentTimeSeconds: 12.25,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRecoverStaleViewerPlayback({
+        ...activeViewer,
+        streamStatus: 'completed',
+      }),
+    ).toBe(false);
+    expect(
+      shouldRecoverStaleViewerPlayback({
+        ...activeViewer,
+        videoPaused: true,
+      }),
+    ).toBe(false);
+  });
+
+  it('holds the last good viewer frame only when live video has gone stale or ended', () => {
+    const visibleFrame = {
+      hasLastFrame: true,
+      hasReceivedProgrammeVideo: true,
+      streamStatus: 'processing',
+      remoteVideoTrackActive: true,
+      viewerVideoStalled: false,
+    };
+
+    expect(shouldShowHeldViewerFrame(visibleFrame)).toBe(false);
+    expect(
+      shouldShowHeldViewerFrame({
+        ...visibleFrame,
+        viewerVideoStalled: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowHeldViewerFrame({
+        ...visibleFrame,
+        streamStatus: 'completed',
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowHeldViewerFrame({
+        ...visibleFrame,
+        remoteVideoTrackActive: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowHeldViewerFrame({
+        ...visibleFrame,
+        hasLastFrame: false,
+        viewerVideoStalled: true,
+      }),
+    ).toBe(false);
   });
 });

@@ -654,7 +654,7 @@ describe('gateway WebRTC signalling integration', () => {
     peer.close();
   }, 10_000);
 
-  it('offers live backend programme audio to joined listeners after broadcaster audio activity', async () => {
+  it('offers backend programme media to joined listeners as soon as broadcaster tracks arrive', async () => {
     const { broadcaster } = await createSession();
     const listener = client('listener');
     await waitForConnect(listener);
@@ -731,24 +731,7 @@ describe('gateway WebRTC signalling integration', () => {
       }),
     );
 
-    const startedAt = Date.now();
-    let delivered = false;
-    const observedOffer = listenerOffer.then((event) => {
-      delivered = true;
-      return event;
-    });
-    while (!delivered && Date.now() - startedAt < 8_000) {
-      source.onData({
-        samples: new Int16Array(480).fill(1000),
-        sampleRate: 48000,
-        channelCount: 1,
-        bitsPerSample: 16,
-        numberOfFrames: 480,
-      });
-      await Promise.race([delay(20), observedOffer.then(() => undefined)]);
-    }
-
-    await expect(observedOffer).resolves.toMatchObject({
+    await expect(listenerOffer).resolves.toMatchObject({
       type: 'sdp-offer',
       peerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
       payload: { targetPeerId: 'peer_listener' },

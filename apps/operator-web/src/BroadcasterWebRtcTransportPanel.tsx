@@ -169,7 +169,7 @@ export function BroadcasterWebRtcTransportPanel({
           <span>Revision {transport.revision}</span>
           <span>{transport.recoveryAttempts} transport retries</span>
           <span>{transport.queuedRemoteCandidates} queued backend candidates</span>
-          <span>Listener programme playback enabled</span>
+          <span>Viewer programme playback enabled</span>
         </div>
 
         {transport.lastError && (

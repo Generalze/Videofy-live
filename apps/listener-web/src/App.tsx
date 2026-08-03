@@ -25,7 +25,9 @@ import {
   describeProgrammeVideoLabel,
   shouldInitializeGeneratedAudioClock,
   shouldJoinProgrammeSession,
+  shouldRecoverStaleViewerPlayback,
   shouldReplaceProgrammeSession,
+  shouldShowHeldViewerFrame,
   shouldTreatTransportAsSourceEnded,
 } from './listenerProgrammeBinding';
 import {
@@ -46,6 +48,11 @@ import { useTranslatedAudioQueue } from './useTranslatedAudioQueue';
 
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
 export const DEFAULT_LISTENER_TARGET_LANGUAGE = 'es';
+const VIEWER_PLAYBACK_WATCHDOG_MS = 1_000;
+const VIEWER_PLAYBACK_STAGNANT_CHECKS = 4;
+const VIEWER_PLAYBACK_MIN_READY_STATE = 2;
+const VIEWER_FRAME_CAPTURE_INTERVAL_MS = 1_500;
+const VIEWER_FRAME_CAPTURE_WIDTH = 640;
 
 const LANGUAGES = [
   { code: 'fr', label: 'Français' },
@@ -133,6 +140,8 @@ export default function App(): React.ReactElement {
   const [recentPhrases, setRecentPhrases] = useState<PhraseEntry[]>([]);
   const [deliveredAudio, setDeliveredAudio] = useState<GeneratedAudioReadyEvent[]>([]);
   const [hasReceivedProgrammeVideo, setHasReceivedProgrammeVideo] = useState(false);
+  const [lastProgrammeFrameUrl, setLastProgrammeFrameUrl] = useState<string | null>(null);
+  const [viewerVideoStalled, setViewerVideoStalled] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [videoPlaybackError, setVideoPlaybackError] = useState<string | null>(null);
   const [socketDiagnostics, setSocketDiagnostics] =
@@ -154,6 +163,11 @@ export default function App(): React.ReactElement {
   const lastJoinedShareableSessionRef = useRef<string | null>(null);
   const activeProcessingSessionIdRef = useRef<string | null>(null);
   const generatedPlaybackClockStartedRef = useRef(false);
+  const lastProgrammeFrameCapturedAtRef = useRef(0);
+  const viewerPlaybackSampleRef = useRef<{
+    currentTimeSeconds: number | null;
+    stagnantChecks: number;
+  }>({ currentTimeSeconds: null, stagnantChecks: 0 });
   const programmeClockRef = useRef<ProgrammeClockAnchor>({
     timestampMs: 0,
     observedAtMs: Date.now(),
@@ -208,6 +222,35 @@ export default function App(): React.ReactElement {
     },
     [],
   );
+
+  const captureLastProgrammeFrame = useCallback((video: HTMLVideoElement): void => {
+    if (
+      video.readyState < VIEWER_PLAYBACK_MIN_READY_STATE ||
+      video.videoWidth <= 2 ||
+      video.videoHeight <= 2
+    ) {
+      return;
+    }
+    const now = Date.now();
+    if (now - lastProgrammeFrameCapturedAtRef.current < VIEWER_FRAME_CAPTURE_INTERVAL_MS) {
+      return;
+    }
+    lastProgrammeFrameCapturedAtRef.current = now;
+    try {
+      const width = Math.min(VIEWER_FRAME_CAPTURE_WIDTH, video.videoWidth);
+      const height = Math.max(1, Math.round(width * (video.videoHeight / video.videoWidth)));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext('2d');
+      if (!context) return;
+      context.drawImage(video, 0, 0, width, height);
+      setLastProgrammeFrameUrl(canvas.toDataURL('image/jpeg', 0.82));
+      setViewerVideoStalled(false);
+    } catch {
+      // Browser media frames are best-effort evidence for the viewer end-state poster.
+    }
+  }, []);
 
   const bindRemoteProgrammeStream = useCallback(
     (
@@ -333,6 +376,9 @@ export default function App(): React.ReactElement {
     audioQueueRef.current.reset();
     audioQueueRef.current.resetGenerated();
     audioQueueRef.current.setSourceEnded(false);
+    setLastProgrammeFrameUrl(null);
+    setViewerVideoStalled(false);
+    lastProgrammeFrameCapturedAtRef.current = 0;
   }, [activeProcessingSessionId]);
 
   useEffect(() => {
@@ -706,6 +752,7 @@ export default function App(): React.ReactElement {
       }
       if (shouldReplaceProgrammeSession(previousShareableSessionId, activeShareableSessionId)) {
         setRemoteProgrammeStream(null);
+        viewerPlaybackSampleRef.current = { currentTimeSeconds: null, stagnantChecks: 0 };
         if (videoRef.current?.srcObject) {
           videoRef.current.pause();
           videoRef.current.srcObject = null;
@@ -736,6 +783,78 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     connect();
   }, [connect]);
+
+  useEffect(() => {
+    if (!hasStarted || !remoteProgrammeStream || streamStatus !== 'processing') {
+      viewerPlaybackSampleRef.current = { currentTimeSeconds: null, stagnantChecks: 0 };
+      setViewerVideoStalled(false);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      const video = videoRef.current;
+      const stream = remoteProgrammeStream;
+      if (!video || video.srcObject !== stream) {
+        viewerPlaybackSampleRef.current = { currentTimeSeconds: null, stagnantChecks: 0 };
+        setViewerVideoStalled(false);
+        return;
+      }
+      const previous = viewerPlaybackSampleRef.current.currentTimeSeconds;
+      const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+      captureLastProgrammeFrame(video);
+      const missingRenderableFrame =
+        hasReceivedProgrammeVideo &&
+        listenerTransportRef.current?.getSnapshot().remoteVideoTrackReceived === true &&
+        (video.readyState < VIEWER_PLAYBACK_MIN_READY_STATE ||
+          video.videoWidth <= 2 ||
+          video.videoHeight <= 2);
+      setViewerVideoStalled((currentStalled) =>
+        currentStalled === missingRenderableFrame ? currentStalled : missingRenderableFrame,
+      );
+      const advanced = previous === null || current > previous + 0.05;
+      const stagnantChecks = advanced ? 0 : viewerPlaybackSampleRef.current.stagnantChecks + 1;
+      viewerPlaybackSampleRef.current = { currentTimeSeconds: current, stagnantChecks };
+      if (
+        !shouldRecoverStaleViewerPlayback({
+          hasStarted,
+          hasRemoteStream: true,
+          remoteVideoTrackReceived: listenerTransportRef.current?.getSnapshot().remoteVideoTrackReceived ?? false,
+          remoteVideoTrackActive: listenerTransportRef.current?.getSnapshot().remoteVideoTrackActive ?? false,
+          streamStatus,
+          videoPaused: video.paused,
+          videoReadyState: video.readyState,
+          currentTimeSeconds: current,
+          previousTimeSeconds: previous,
+          stagnantChecks,
+          minStagnantChecks: VIEWER_PLAYBACK_STAGNANT_CHECKS,
+          minReadyState: VIEWER_PLAYBACK_MIN_READY_STATE,
+        })
+      ) {
+        return;
+      }
+      video.pause();
+      video.srcObject = null;
+      video.srcObject = stream;
+      attachOriginalElement(video);
+      viewerPlaybackSampleRef.current = { currentTimeSeconds: null, stagnantChecks: 0 };
+      video.play().then(
+        () => listenerTransportRef.current?.markPlaybackStarted(),
+        (error: unknown) => {
+          const message =
+            error instanceof Error ? error.message : 'The browser blocked viewer programme playback.';
+          listenerTransportRef.current?.markPlaybackBlocked(message);
+          setVideoPlaybackError(`Viewer programme playback stalled: ${message}`);
+        },
+      );
+    }, VIEWER_PLAYBACK_WATCHDOG_MS);
+    return () => window.clearInterval(timer);
+  }, [
+    attachOriginalElement,
+    captureLastProgrammeFrame,
+    hasReceivedProgrammeVideo,
+    hasStarted,
+    remoteProgrammeStream,
+    streamStatus,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -842,6 +961,21 @@ export default function App(): React.ReactElement {
                   : undefined
               }
             />
+            {shouldShowHeldViewerFrame({
+              hasLastFrame: Boolean(lastProgrammeFrameUrl),
+              hasReceivedProgrammeVideo,
+              streamStatus,
+              remoteVideoTrackActive: listenerTransport.remoteVideoTrackActive,
+              viewerVideoStalled,
+            }) &&
+              lastProgrammeFrameUrl && (
+                <img
+                  className={styles.lastFramePoster}
+                  src={lastProgrammeFrameUrl}
+                  alt=""
+                  aria-hidden="true"
+                />
+              )}
             <div className={styles.videoOverlay} aria-hidden>
               <span className={styles.mockLabel}>{programmeVideoLabel}</span>
             </div>
@@ -873,7 +1007,7 @@ export default function App(): React.ReactElement {
 
           <div className={styles.controlGroup}>
             <label htmlFor="target-lang" className={styles.label}>
-              Listen in
+              View in
             </label>
             <select
               id="target-lang"
@@ -893,7 +1027,7 @@ export default function App(): React.ReactElement {
           {hasStarted && (
             <div className={styles.controlGroup}>
               <label className={styles.label}>Mode</label>
-              <div className={styles.modeToggle} role="group" aria-label="Listener audio mode">
+              <div className={styles.modeToggle} role="group" aria-label="Viewer audio mode">
                 <button
                   type="button"
                   className={`${styles.modeBtn} ${

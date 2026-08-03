@@ -1445,7 +1445,7 @@ export default function App(): React.ReactElement {
     timestampedTranslation?.status
       ? `${targetLanguageLabel} ${timestampedTranslation.status}`
       : `${targetLanguageLabel} waiting`,
-    `${mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0} listener${
+    `${mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0} viewer${
       (mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0) === 1 ? '' : 's'
     }`,
   ];
@@ -1689,7 +1689,7 @@ export default function App(): React.ReactElement {
         <section className={styles.heroConsole} aria-labelledby="operator-session-title">
           <div className={styles.heroTopline}>
             <span className={styles.statusPill}>{workflowSummary.status}</span>
-            <span>{mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0} listeners</span>
+            <span>{mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0} viewers</span>
             <span>{sourceLanguageLabel}</span>
             <span>{targetLanguageLabel}</span>
           </div>
@@ -1701,7 +1701,7 @@ export default function App(): React.ReactElement {
               </h1>
               <p className={styles.heroCopy}>
                 Select video, choose languages, then start. Videofy handles signalling,
-                transport, transcription, translation, speech generation, and listener delivery.
+                transport, transcription, translation, speech generation, and viewer delivery.
               </p>
             </div>
             <div className={styles.heroActions}>
@@ -1972,7 +1972,7 @@ export default function App(): React.ReactElement {
             <p className={styles.liveText}>
               {generatedAudioEvents[generatedAudioEvents.length - 1]?.translatedText ||
                 generatedAudio?.providerStatus ||
-                'Piper audio will be delivered to listeners after translation.'}
+                'Piper audio will be delivered to viewers after translation.'}
             </p>
           </section>
         </section>
@@ -2081,7 +2081,7 @@ export default function App(): React.ReactElement {
             {streamStatus.toUpperCase()}
           </div>
           <div className={styles.statusItem}>
-            <span>{mediaState?.connectedListeners ?? 0} listeners</span>
+            <span>{mediaState?.connectedListeners ?? 0} viewers</span>
           </div>
           <div className={styles.statusItem}>
             <span>{targetLanguages.length} language channels</span>
@@ -2146,7 +2146,7 @@ export default function App(): React.ReactElement {
             label="Source audio"
             value={mediaState?.sourceAudioActive ? 'Active' : 'Inactive'}
           />
-          <MetricCard label="Connected listeners" value={mediaState?.connectedListeners ?? 0} />
+          <MetricCard label="Connected viewers" value={mediaState?.connectedListeners ?? 0} />
           <MetricCard label="Active channels" value={targetLanguages.length} />
           <MetricCard label="Phrases received" value={phraseLog.length} />
         </section>
