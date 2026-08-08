@@ -36,4 +36,13 @@ describe('createListenerSocketOptions', () => {
 
     expect(joins).toEqual(['fr', 'es']);
   });
+
+  it('joins the original-language room for original playback', () => {
+    const joins: string[] = [];
+    joinCurrentListenerLanguage(
+      { emit: (_event, language) => joins.push(language) },
+      () => 'original',
+    );
+    expect(joins).toEqual(['original']);
+  });
 });

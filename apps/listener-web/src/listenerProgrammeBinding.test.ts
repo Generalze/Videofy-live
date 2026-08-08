@@ -9,6 +9,7 @@ import {
   shouldShowHeldViewerFrame,
   shouldInitializeGeneratedAudioClock,
   shouldJoinProgrammeSession,
+  shouldRecoverProgrammeSessionAfterReconnect,
   shouldRecoverStaleViewerPlayback,
   shouldReplaceProgrammeSession,
   shouldTreatTransportAsSourceEnded,
@@ -66,6 +67,57 @@ describe('listener programme binding', () => {
       shouldExposeMediaStateProgrammeSession({
         shareableWebRtcSessionId: 'broadcast_old/wrs_old',
         streamStatus: 'completed',
+      }),
+    ).toBe(false);
+  });
+
+  it('restores terminal uploaded media with a safe programme URL after refresh', () => {
+    expect(
+      shouldAcceptMediaStateForListener(
+        {
+          processingSessionId: 'wrs_upload',
+          streamStatus: 'completed',
+          programmeMediaUrl: 'http://localhost:3002/sessions/wrs_upload/source-media',
+        },
+        null,
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps a listener bound to a live session away from finished uploads elsewhere', () => {
+    expect(
+      shouldAcceptMediaStateForListener(
+        {
+          processingSessionId: 'wrs_upload',
+          streamStatus: 'completed',
+          programmeMediaUrl: 'http://localhost:3002/sessions/wrs_upload/source-media',
+        },
+        'wrs_live',
+      ),
+    ).toBe(false);
+    expect(
+      shouldAcceptMediaStateForListener(
+        {
+          processingSessionId: 'wrs_upload',
+          streamStatus: 'completed',
+          programmeMediaUrl: 'http://localhost:3002/sessions/wrs_upload/source-media',
+        },
+        null,
+      ),
+    ).toBe(true);
+  });
+
+  it('automatically recovers an interrupted joined signalling session', () => {
+    expect(
+      shouldRecoverProgrammeSessionAfterReconnect({
+        shareableSessionId: 'broadcast_live/wrs_live',
+        signallingState: 'reconnecting',
+      }),
+    ).toBe(true);
+    expect(
+      shouldRecoverProgrammeSessionAfterReconnect({
+        shareableSessionId: null,
+        signallingState: 'reconnecting',
       }),
     ).toBe(false);
   });

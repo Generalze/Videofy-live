@@ -5,6 +5,7 @@ import type {
   TargetLanguageOutput,
   TargetLanguageOutputStatus,
 } from '@videofy-live/shared-types';
+import { phraseFromTimestampedEvent } from './listenerCaptions';
 
 export const VIEWER_LANGUAGE_CATALOGUE = [
   { code: 'es', label: 'Spanish' },
@@ -15,10 +16,90 @@ export const VIEWER_LANGUAGE_CATALOGUE = [
   { code: 'la', label: 'Latin' },
 ] as const;
 
-export function availableViewerLanguages(targetLanguages: readonly string[]) {
-  return VIEWER_LANGUAGE_CATALOGUE.filter((language) =>
-    targetLanguages.includes(language.code),
+export const ORIGINAL_LANGUAGE_SELECTION = 'original';
+
+export const ORIGINAL_VIEWER_LANGUAGE = {
+  code: ORIGINAL_LANGUAGE_SELECTION,
+  label: 'Original',
+} as const;
+
+export interface ListenerCaptionPhrase {
+  id: string;
+  translatedText: string;
+  sourceText: string;
+  sequence: number;
+  startMs: number;
+  endMs: number;
+  receivedAt: number;
+}
+
+export function phrasesForLanguage(
+  mediaState: MediaStateEvent | null,
+  targetLanguage: string,
+): ListenerCaptionPhrase[] {
+  const events = mediaState?.translation?.events ?? [];
+  if (isOriginalLanguageSelection(targetLanguage)) {
+    const uniqueSegments = new Map<string, (typeof events)[number]>();
+    for (const event of events) {
+      if (event.status === 'translated' && !uniqueSegments.has(event.segmentId)) {
+        uniqueSegments.set(event.segmentId, event);
+      }
+    }
+    return [...uniqueSegments.values()]
+      .map((event) => phraseFromTimestampedEvent(event, targetLanguage))
+      .sort((a, b) => b.sequence - a.sequence)
+      .slice(0, 100);
+  }
+  return events
+    .filter(
+      (event) =>
+        event.targetLanguage === targetLanguage && event.status === 'translated',
+    )
+    .map((event) => phraseFromTimestampedEvent(event, targetLanguage))
+    .sort((a, b) => b.sequence - a.sequence)
+    .slice(0, 100);
+}
+
+export interface ViewerLanguageOption {
+  code: string;
+  label: string;
+}
+
+export function availableViewerLanguages(
+  targetLanguages: readonly string[],
+  catalogue?: readonly ViewerLanguageOption[],
+): ViewerLanguageOption[] {
+  const uniqueCodes = [...new Set(targetLanguages)].filter(
+    (code) => !isOriginalLanguageSelection(code),
   );
+  return [
+    ORIGINAL_VIEWER_LANGUAGE,
+    ...uniqueCodes.map((code) => ({
+      code,
+      label: viewerLanguageLabel(code, catalogue),
+    })),
+  ];
+}
+
+function viewerLanguageLabel(
+  code: string,
+  catalogue: readonly ViewerLanguageOption[] | undefined,
+): string {
+  const catalogueLabel = catalogue?.find((entry) => entry.code === code)?.label;
+  if (catalogueLabel) return catalogueLabel;
+  const staticLabel = VIEWER_LANGUAGE_CATALOGUE.find(
+    (entry) => entry.code === code,
+  )?.label;
+  if (staticLabel) return staticLabel;
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'language' }).of(code) ?? code;
+  } catch {
+    return code;
+  }
+}
+
+export function isOriginalLanguageSelection(language: string): boolean {
+  return language === ORIGINAL_LANGUAGE_SELECTION;
 }
 
 export function requiresOriginalAudio(

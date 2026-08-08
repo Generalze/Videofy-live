@@ -106,6 +106,7 @@ class FakeContext implements MixerAudioContext {
 
 class FakeBufferSource {
   buffer: AudioBuffer | null = null;
+  playbackRate = { value: 1 };
   connected: unknown[] = [];
   disconnected = false;
   started: { when?: number | undefined; offset?: number | undefined } | null = null;
@@ -133,6 +134,7 @@ class FakeBufferSource {
 class FakeAudioElement {
   currentTime = 0;
   volume = 1;
+  playbackRate = 1;
   onended: (() => void) | null = null;
   onerror: (() => void) | null = null;
   onplaying: (() => void) | null = null;
@@ -222,19 +224,27 @@ describe('InterpretationAudioMixerController', () => {
     expect(context.sources).toHaveLength(2);
   });
 
-  it('uses default mix levels and reduces original programme volume', () => {
-    const { context, controller } = createHarness();
+  it('keeps original at full volume when idle and ducks only while translated speech plays', async () => {
+    const { audios, context, controller } = createHarness();
     const original = mediaElement();
 
     controller.attachOriginalElement(original);
 
     expect(original.volume).toBe(1);
-    expect(context.gains[0]!.gain.value).toBe(0.2);
+    expect(context.gains[0]!.gain.value).toBe(1);
     expect(context.gains[1]!.gain.value).toBe(1);
 
+    const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
+    await mixed.play();
+    expect(controller.state.speechActive).toBe(true);
+    expect(context.gains[0]!.gain.value).toBe(0.2);
+
     controller.setOriginalLevel(0.35);
-    expect(original.volume).toBe(1);
     expect(context.gains[0]!.gain.value).toBe(0.35);
+
+    audios[0]!.onended?.();
+    expect(controller.state.speechActive).toBe(false);
+    expect(context.gains[0]!.gain.value).toBe(1);
   });
 
   it('updates the context state after a suspended mixer resumes', async () => {
@@ -291,7 +301,7 @@ describe('InterpretationAudioMixerController', () => {
     expect(context.gains[1]!.gain.value).toBe(0);
   });
 
-  it('restores the previous interpretation original volume after replacement mode', () => {
+  it('restores the previous interpretation original volume after replacement mode', async () => {
     const { context, controller } = createHarness();
     const original = mediaElement();
     controller.attachOriginalElement(original);
@@ -306,6 +316,10 @@ describe('InterpretationAudioMixerController', () => {
     expect(controller.state.mode).toBe('interpretation');
     expect(controller.state.originalLevel).toBe(0.35);
     expect(original.volume).toBe(1);
+    expect(context.gains[0]!.gain.value).toBe(1);
+
+    const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
+    await mixed.play();
     expect(context.gains[0]!.gain.value).toBe(0.35);
   });
 
@@ -329,7 +343,7 @@ describe('InterpretationAudioMixerController', () => {
       translatedLevel: 1,
       translatedMuted: false,
     });
-    expect(context.gains[0]!.gain.value).toBe(0.2);
+    expect(context.gains[0]!.gain.value).toBe(1);
     expect(context.gains[1]!.gain.value).toBe(1);
     expect(mixed.volume).toBe(1);
   });
@@ -570,16 +584,280 @@ describe('InterpretationAudioMixerController', () => {
     }
   });
 
-  it('controls original playback directly when Web Audio is unavailable', () => {
-    const { controller } = createHarness({ failContext: true });
+  it('fires onended and cleanup exactly once after pause, resume and natural end of buffered audio', async () => {
+    const { context, controller } = createHarness({ bufferPlayback: true });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      arrayBuffer: async () => new ArrayBuffer(8),
+    })) as unknown as typeof fetch;
+
+    try {
+      const first = controller.createTranslatedAudio('http://localhost/generated-1.wav');
+      controller.createTranslatedAudio('http://localhost/generated-2.wav');
+      let endedCount = 0;
+      first.onended = () => {
+        endedCount += 1;
+      };
+
+      await first.play();
+      first.pause();
+      expect(context.bufferSources[0]!.onended).toBeNull();
+      expect(context.bufferSources[0]!.stopCalls).toBe(1);
+
+      await first.play();
+      context.bufferSources[1]!.onended?.();
+
+      expect(endedCount).toBe(1);
+      expect(controller.state.activeTranslatedCount).toBe(1);
+      expect(controller.state.speechActive).toBe(false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('advances to the next generated segment after pause and resume of buffered playback', async () => {
+    const { context, controller } = createHarness({ bufferPlayback: true });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      arrayBuffer: async () => new ArrayBuffer(8),
+    })) as unknown as typeof fetch;
+    const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    try {
+      let clockMs = 0;
+      const statuses: string[] = [];
+      const queue = new TranslatedAudioQueueController({
+        createAudio: (url) => controller.createTranslatedAudio(url),
+        getClockMs: () => clockMs,
+        urls: {
+          createObjectURL: () => 'blob:mock',
+          revokeObjectURL: () => undefined,
+        },
+        onGeneratedStateChange: (state) => statuses.push(state.status),
+      });
+
+      queue.enqueueGenerated(generated(0));
+      queue.enqueueGenerated(generated(1));
+      queue.start();
+      await flush();
+      expect(context.bufferSources).toHaveLength(1);
+
+      queue.pause();
+      expect(statuses.at(-1)).toBe('paused');
+
+      queue.resume();
+      expect(statuses.at(-1)).not.toBe('paused');
+      await flush();
+      expect(context.bufferSources).toHaveLength(2);
+      expect(statuses.at(-1)).toBe('playing');
+
+      context.bufferSources[1]!.onended?.();
+      clockMs = 1000;
+      queue.setClock(() => clockMs);
+      await flush();
+
+      expect(context.bufferSources).toHaveLength(3);
+      expect(statuses.at(-1)).toBe('playing');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('keeps a cross-origin tainted original element out of the graph and ducks its volume directly', async () => {
+    const globals = globalThis as { window?: unknown };
+    const originalWindow = globals.window;
+    globals.window = {
+      location: { origin: 'http://localhost:5173', href: 'http://localhost:5173/' },
+    };
+
+    try {
+      const { audios, context, controller } = createHarness();
+      const original = mediaElement() as HTMLMediaElement & {
+        src: string;
+        crossOrigin: string | null;
+      };
+      original.src = 'http://localhost:3002/sessions/ps_demo/source-media';
+      original.crossOrigin = null;
+
+      controller.attachOriginalElement(original);
+
+      expect(context.sources).toHaveLength(0);
+      expect(controller.state.error).toContain('cross-origin');
+
+      const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
+      await mixed.play();
+      expect(original.volume).toBe(0.2);
+
+      audios[0]!.onended?.();
+      expect(original.volume).toBe(1);
+    } finally {
+      if (originalWindow === undefined) {
+        delete globals.window;
+      } else {
+        globals.window = originalWindow;
+      }
+    }
+  });
+
+  it('taps a cross-origin original element that declares CORS access', () => {
+    const globals = globalThis as { window?: unknown };
+    const originalWindow = globals.window;
+    globals.window = {
+      location: { origin: 'http://localhost:5173', href: 'http://localhost:5173/' },
+    };
+
+    try {
+      const { context, controller } = createHarness();
+      const original = mediaElement() as HTMLMediaElement & {
+        src: string;
+        crossOrigin: string | null;
+      };
+      original.src = 'http://localhost:3002/sessions/ps_demo/source-media';
+      original.crossOrigin = 'anonymous';
+
+      controller.attachOriginalElement(original);
+
+      expect(context.sources).toHaveLength(1);
+      expect(controller.state.error).toBeNull();
+    } finally {
+      if (originalWindow === undefined) {
+        delete globals.window;
+      } else {
+        globals.window = originalWindow;
+      }
+    }
+  });
+
+  it('falls back to element volume when the original tap cannot join the graph', async () => {
+    const { audios, context, controller } = createHarness();
+    const original = mediaElement();
+    let failTap = true;
+    const realCreate = FakeContext.prototype.createMediaElementSource.bind(context);
+    context.createMediaElementSource = () => {
+      if (failTap) throw new Error('tap refused');
+      return realCreate();
+    };
+
+    controller.attachOriginalElement(original);
+
+    expect(controller.state.error).toBe('tap refused');
+    expect(controller.state.contextState).toBe('running');
+    expect(context.sources).toHaveLength(0);
+
+    failTap = false;
+    const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
+    await mixed.play();
+    expect(original.volume).toBe(0.2);
+
+    audios[0]!.onended?.();
+    expect(original.volume).toBe(1);
+  });
+
+  it('applies queue catch-up playback rate to mixed translated audio elements', () => {
+    const { audios, controller } = createHarness();
+
+    const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
+    mixed.playbackRate = 1.1;
+
+    expect(audios[0]!.playbackRate).toBeCloseTo(1.1);
+    expect(mixed.playbackRate).toBeCloseTo(1.1);
+  });
+
+  it('applies queue catch-up playback rate to buffered translated audio sources', async () => {
+    const { context, controller } = createHarness({ bufferPlayback: true });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      arrayBuffer: async () => new ArrayBuffer(8),
+    })) as unknown as typeof fetch;
+
+    try {
+      const mixed = controller.createTranslatedAudio('http://localhost/generated.wav');
+      mixed.playbackRate = 1.1;
+      await mixed.play();
+
+      expect(context.bufferSources[0]!.playbackRate.value).toBeCloseTo(1.1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('ignores queue volume writes so the mixer stays the translated volume authority', () => {
+    const { audios, context, controller } = createHarness();
+    controller.setTranslatedLevel(0.4);
+
+    const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
+    mixed.volume = 0.9;
+
+    expect(audios[0]!.volume).toBe(1);
+    expect(context.gains[1]!.gain.value).toBe(0.4);
+  });
+
+  it('controls original playback directly when Web Audio is unavailable', async () => {
+    const { audios, controller } = createHarness({ failContext: true });
     const original = mediaElement();
     controller.attachOriginalElement(original);
 
     controller.setOriginalLevel(0.35);
+    expect(original.volume).toBe(1);
+
+    const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
+    await mixed.play();
     expect(original.volume).toBe(0.35);
+
+    audios[0]!.onended?.();
+    expect(original.volume).toBe(1);
 
     controller.setEnabled(false);
     expect(original.volume).toBe(1);
+  });
+
+  it('keeps original at full volume in passthrough regardless of mode or speech', async () => {
+    const { context, controller } = createHarness();
+    const original = mediaElement();
+    controller.attachOriginalElement(original);
+    controller.setOriginalPassthrough(true);
+
+    const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
+    await mixed.play();
+    expect(context.gains[0]!.gain.value).toBe(1);
+
+    controller.setMode('replacement');
+    expect(context.gains[0]!.gain.value).toBe(1);
+
+    controller.setOriginalPassthrough(false);
+    expect(context.gains[0]!.gain.value).toBe(0);
+  });
+
+  it('holds the duck while any of several overlapping translated clips is playing', async () => {
+    const { audios, context, controller } = createHarness();
+    controller.attachOriginalElement(mediaElement());
+
+    const first = controller.createTranslatedAudio('http://localhost/a.wav');
+    const second = controller.createTranslatedAudio('http://localhost/b.wav');
+    await first.play();
+    await second.play();
+    expect(context.gains[0]!.gain.value).toBe(0.2);
+
+    audios[0]!.onended?.();
+    expect(context.gains[0]!.gain.value).toBe(0.2);
+
+    audios[1]!.onended?.();
+    expect(context.gains[0]!.gain.value).toBe(1);
+  });
+
+  it('releases the duck when a translated clip pauses', async () => {
+    const { context, controller } = createHarness();
+    controller.attachOriginalElement(mediaElement());
+
+    const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
+    await mixed.play();
+    expect(context.gains[0]!.gain.value).toBe(0.2);
+
+    mixed.pause();
+    expect(context.gains[0]!.gain.value).toBe(1);
   });
 
   it('updates direct translated playback when Web Audio is unavailable', () => {
@@ -594,6 +872,17 @@ describe('InterpretationAudioMixerController', () => {
 
     controller.resetDefaults();
     expect(mixed.volume).toBe(1);
+  });
+
+  it('keeps direct translated volume when the queue writes wrapper volume without Web Audio', () => {
+    const { audios, controller } = createHarness({ failContext: true });
+    controller.setTranslatedLevel(0.4);
+
+    const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
+    mixed.volume = 1;
+
+    expect(audios[0]!.volume).toBe(0.4);
+    expect(mixed.volume).toBe(0.4);
   });
 
   it('does not claim replacement mode when browser audio-context creation fails', () => {

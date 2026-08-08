@@ -7,16 +7,42 @@ import { describe, expect, it } from 'vitest';
 import {
   availableViewerLanguages,
   generatedAudioForLanguage,
+  isOriginalLanguageSelection,
   requiresOriginalAudio,
 } from './listenerLanguageSelection';
 
 describe('listener language selection', () => {
   it('shows only languages selected by the operator', () => {
     expect(availableViewerLanguages(['es', 'yo', 'la']).map((item) => item.code)).toEqual([
+      'original',
       'es',
       'yo',
       'la',
     ]);
+  });
+
+  it('prefers server catalogue labels over the static catalogue', () => {
+    const options = availableViewerLanguages(
+      ['es', 'fr'],
+      [{ code: 'es', label: 'Español (Latinoamérica)' }],
+    );
+
+    expect(options.map((item) => item.code)).toEqual(['original', 'es', 'fr']);
+    expect(options.find((item) => item.code === 'es')?.label).toBe('Español (Latinoamérica)');
+    expect(options.find((item) => item.code === 'fr')?.label).toBe('French');
+  });
+
+  it('makes any configured backend language selectable with a display-name fallback', () => {
+    const options = availableViewerLanguages(['ig', 'xx']);
+
+    expect(options.map((item) => item.code)).toEqual(['original', 'ig', 'xx']);
+    expect(options.find((item) => item.code === 'ig')?.label).toBe('Igbo');
+    expect(options.find((item) => item.code === 'xx')?.label).toBe('xx');
+  });
+
+  it('treats original playback as a separate non-translation channel', () => {
+    expect(isOriginalLanguageSelection('original')).toBe(true);
+    expect(isOriginalLanguageSelection('es')).toBe(false);
   });
 
   it('keeps original audio for caption-only and preparing channels', () => {

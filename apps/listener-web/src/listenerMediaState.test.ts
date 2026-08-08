@@ -1,6 +1,11 @@
 import type { MediaStateEvent } from '@videofy-live/shared-types';
 import { describe, expect, it } from 'vitest';
-import { preserveActiveProgrammeMedia } from './listenerMediaState';
+import {
+  preserveActiveProgrammeMedia,
+  uploadedProgrammeStartGate,
+  UPLOADED_PROGRAMME_AUDIO_WAIT_MS,
+  type UploadedProgrammeStartGateInput,
+} from './listenerMediaState';
 
 describe('listener media-state continuity', () => {
   it('preserves uploaded programme media across partial updates for the same stream', () => {
@@ -29,6 +34,70 @@ describe('listener media-state continuity', () => {
     expect(preserveActiveProgrammeMedia(failed, previous).programmeMediaUrl).toBeUndefined();
   });
 });
+
+describe('uploaded programme start gate', () => {
+  it('holds initial playback while translated audio is expected but not yet delivered', () => {
+    expect(uploadedProgrammeStartGate(gateInput())).toEqual({
+      start: false,
+      buffering: true,
+    });
+  });
+
+  it('starts once the first generated-audio event for the language is enqueued', () => {
+    expect(
+      uploadedProgrammeStartGate(gateInput({ hasGeneratedAudioForLanguage: true })),
+    ).toEqual({ start: true, buffering: false });
+  });
+
+  it('starts after the maximum wait even without generated audio', () => {
+    expect(
+      uploadedProgrammeStartGate(gateInput({ waitedMs: UPLOADED_PROGRAMME_AUDIO_WAIT_MS })),
+    ).toEqual({ start: true, buffering: false });
+    expect(
+      uploadedProgrammeStartGate(
+        gateInput({ waitedMs: UPLOADED_PROGRAMME_AUDIO_WAIT_MS - 1 }),
+      ),
+    ).toEqual({ start: false, buffering: true });
+  });
+
+  it('honours a custom maximum wait', () => {
+    expect(
+      uploadedProgrammeStartGate(gateInput({ waitedMs: 500, maxWaitMs: 500 })),
+    ).toEqual({ start: true, buffering: false });
+  });
+
+  it('starts immediately for original and captions-only selections', () => {
+    expect(
+      uploadedProgrammeStartGate(gateInput({ expectsGeneratedAudio: false })),
+    ).toEqual({ start: true, buffering: false });
+  });
+
+  it('never gates live programmes without uploaded media', () => {
+    expect(
+      uploadedProgrammeStartGate(gateInput({ hasProgrammeMedia: false })),
+    ).toEqual({ start: true, buffering: false });
+  });
+
+  it('does not surface buffering before the viewer presses play', () => {
+    expect(uploadedProgrammeStartGate(gateInput({ hasStarted: false }))).toEqual({
+      start: false,
+      buffering: false,
+    });
+  });
+});
+
+function gateInput(
+  overrides: Partial<UploadedProgrammeStartGateInput> = {},
+): UploadedProgrammeStartGateInput {
+  return {
+    hasStarted: true,
+    hasProgrammeMedia: true,
+    expectsGeneratedAudio: true,
+    hasGeneratedAudioForLanguage: false,
+    waitedMs: 0,
+    ...overrides,
+  };
+}
 
 function state(overrides: Partial<MediaStateEvent> = {}): MediaStateEvent {
   const base: MediaStateEvent = {

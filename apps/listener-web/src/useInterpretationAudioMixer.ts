@@ -9,6 +9,8 @@ export interface InterpretationMixState {
   originalLevel: number;
   translatedLevel: number;
   translatedMuted: boolean;
+  originalPassthrough: boolean;
+  speechActive: boolean;
   contextState: 'idle' | 'running' | 'suspended' | 'interrupted' | 'closed' | 'failed';
   limiterActive: boolean;
   activeTranslatedCount: number;
@@ -49,6 +51,7 @@ export interface MixerAudioContext {
 
 export interface MixerAudioBufferSource {
   buffer: AudioBuffer | null;
+  playbackRate?: { value: number };
   onended: ((event?: Event) => void) | null;
   connect(destination: unknown): unknown;
   disconnect?(): void;
@@ -71,11 +74,16 @@ const initialMixState: InterpretationMixState = {
   originalLevel: DEFAULT_ORIGINAL_LEVEL,
   translatedLevel: DEFAULT_TRANSLATED_LEVEL,
   translatedMuted: false,
+  originalPassthrough: false,
+  speechActive: false,
   contextState: 'idle',
   limiterActive: true,
   activeTranslatedCount: 0,
   error: null,
 };
+
+const DUCK_ATTACK_SECONDS = 0.05;
+const DUCK_RELEASE_SECONDS = 0.25;
 
 export class InterpretationAudioMixerController {
   private readonly createAudioElement: (url: string) => HTMLAudioElement;
@@ -89,6 +97,7 @@ export class InterpretationAudioMixerController {
   private originalElement: HTMLMediaElement | null = null;
   private readonly translatedElements = new Set<HTMLAudioElement>();
   private mixState: InterpretationMixState = initialMixState;
+  private speechActiveCount = 0;
 
   constructor(options: InterpretationAudioMixerOptions = {}) {
     this.createAudioElement = options.createAudioElement ?? ((url) => new Audio(url));
@@ -162,6 +171,12 @@ export class InterpretationAudioMixerController {
     this.applyGains();
   }
 
+  setOriginalPassthrough(passthrough: boolean): void {
+    if (this.mixState.originalPassthrough === passthrough) return;
+    this.setState({ originalPassthrough: passthrough });
+    this.applyGains();
+  }
+
   resetDefaults(): void {
     this.setState({
       enabled: true,
@@ -206,6 +221,7 @@ export class InterpretationAudioMixerController {
                 activeTranslatedCount: Math.max(0, this.mixState.activeTranslatedCount - 1),
               });
             },
+            (active) => this.notifyTranslatedSpeech(active),
           );
           this.translatedElements.add(element);
           this.setState({ activeTranslatedCount: this.mixState.activeTranslatedCount + 1 });
@@ -225,13 +241,17 @@ export class InterpretationAudioMixerController {
     this.translatedElements.add(element);
 
     this.setState({ activeTranslatedCount: this.mixState.activeTranslatedCount + 1 });
-    return new MixedQueueAudio(element, () => {
-      source?.disconnect?.();
-      this.translatedElements.delete(element);
-      this.setState({
-        activeTranslatedCount: Math.max(0, this.mixState.activeTranslatedCount - 1),
-      });
-    });
+    return new MixedQueueAudio(
+      element,
+      () => {
+        source?.disconnect?.();
+        this.translatedElements.delete(element);
+        this.setState({
+          activeTranslatedCount: Math.max(0, this.mixState.activeTranslatedCount - 1),
+        });
+      },
+      (active) => this.notifyTranslatedSpeech(active),
+    );
   }
 
   private ensureContext(): MixerAudioContext | null {
@@ -274,6 +294,17 @@ export class InterpretationAudioMixerController {
       return false;
     }
     if (this.originalSource) return true;
+    if (isCrossOriginTainted(this.originalElement)) {
+      // A CORS-tainted media-element tap outputs pure silence per the Web
+      // Audio spec, so keep the element out of the graph and fall back to
+      // direct element-volume control, which keeps the original audible.
+      this.setState({
+        error:
+          'Original programme audio is served cross-origin without CORS access; playing it directly instead of through the mixer.',
+      });
+      this.applyGains();
+      return false;
+    }
     const context = this.ensureContext();
     if (!context || !this.originalGain) return false;
     try {
@@ -282,7 +313,16 @@ export class InterpretationAudioMixerController {
       this.applyGains();
       return true;
     } catch (error) {
-      this.setFailure(error, 'Original programme audio could not be connected to the mixer.');
+      // Keep the element out of the graph so element-volume control still
+      // works; the context itself stays healthy for translated playback.
+      this.originalSource?.disconnect?.();
+      this.originalSource = null;
+      this.setState({
+        error:
+          error instanceof Error
+            ? error.message
+            : 'Original programme audio could not be connected to the mixer.',
+      });
       this.applyGains();
       return false;
     }
@@ -293,9 +333,20 @@ export class InterpretationAudioMixerController {
     this.originalSource = null;
   }
 
+  private notifyTranslatedSpeech(active: boolean): void {
+    this.speechActiveCount = Math.max(0, this.speechActiveCount + (active ? 1 : -1));
+    const speechActive = this.speechActiveCount > 0;
+    if (speechActive !== this.mixState.speechActive) {
+      this.setState({ speechActive });
+    }
+    this.applyGains();
+  }
+
   private applyGains(): void {
     if (this.originalSource && this.originalGain) {
-      this.originalGain.gain.value = this.effectiveOriginalLevel();
+      // The gain node is the authoritative original-volume control while the
+      // element feeds the Web Audio graph; iOS Safari ignores element volume.
+      this.rampGain(this.originalGain, this.effectiveOriginalLevel());
       if (this.originalElement) {
         this.originalElement.volume = 1;
       }
@@ -310,9 +361,30 @@ export class InterpretationAudioMixerController {
     }
   }
 
+  private rampGain(node: MixerGain, target: number): void {
+    const gain = node.gain as MixerGain['gain'] & {
+      setTargetAtTime?: (value: number, startTime: number, timeConstant: number) => void;
+      cancelScheduledValues?: (startTime: number) => void;
+    };
+    const now = this.context?.currentTime;
+    if (typeof gain.setTargetAtTime === 'function' && typeof now === 'number') {
+      const timeConstant = target < gain.value ? DUCK_ATTACK_SECONDS : DUCK_RELEASE_SECONDS;
+      gain.cancelScheduledValues?.(now);
+      gain.setTargetAtTime(target, now, timeConstant);
+      return;
+    }
+    gain.value = target;
+  }
+
   private effectiveOriginalLevel(): number {
     if (!this.mixState.enabled) return 1;
-    return this.mixState.mode === 'replacement' ? 0 : this.mixState.originalLevel;
+    // Passthrough: this viewer listens to the original programme (original
+    // channel or captions-only language) â€” never duck or mute it.
+    if (this.mixState.originalPassthrough) return 1;
+    if (this.mixState.mode === 'replacement') return 0;
+    // Sidechain ducking: duck the original to the configured level only while
+    // translated speech is audible so music and effects stay at full volume.
+    return this.speechActiveCount > 0 ? this.mixState.originalLevel : 1;
   }
 
   private currentTranslatedDirectVolume(): number {
@@ -371,6 +443,10 @@ export function useInterpretationAudioMixer() {
     controllerRef.current?.setTranslatedMuted(muted);
   }, []);
 
+  const setOriginalPassthrough = useCallback((passthrough: boolean): void => {
+    controllerRef.current?.setOriginalPassthrough(passthrough);
+  }, []);
+
   const resetDefaults = useCallback((): void => {
     controllerRef.current?.resetDefaults();
   }, []);
@@ -387,6 +463,7 @@ export function useInterpretationAudioMixer() {
     setEnabled,
     setMode,
     setOriginalLevel,
+    setOriginalPassthrough,
     setTranslatedLevel,
     setTranslatedMuted,
     state,
@@ -398,6 +475,7 @@ export function useInterpretationAudioMixer() {
     setEnabled,
     setMode,
     setOriginalLevel,
+    setOriginalPassthrough,
     setTranslatedLevel,
     setTranslatedMuted,
     state,
@@ -409,10 +487,12 @@ class MixedQueueAudio implements QueueAudio {
   onerror: (() => void) | null = null;
   onplaying: (() => void) | null = null;
   private cleaned = false;
+  private speaking = false;
 
   constructor(
     private readonly element: HTMLAudioElement,
     private readonly cleanup: () => void,
+    private readonly notifySpeech: (active: boolean) => void = () => undefined,
   ) {}
 
   get currentTime(): number {
@@ -427,30 +507,49 @@ class MixedQueueAudio implements QueueAudio {
     return this.element.volume;
   }
 
-  set volume(value: number) {
-    this.element.volume = clampLevel(value);
+  set volume(_value: number) {
+    // The mixer is the single translated-volume authority; queue writes are ignored.
+  }
+
+  get playbackRate(): number {
+    return this.element.playbackRate;
+  }
+
+  set playbackRate(value: number) {
+    this.element.playbackRate = value;
   }
 
   pause(): void {
     this.element.pause();
+    this.setSpeaking(false);
   }
 
   async play(): Promise<void> {
     this.element.onended = () => {
+      this.setSpeaking(false);
       this.finish();
       this.onended?.();
     };
     this.element.onerror = () => {
+      this.setSpeaking(false);
       this.finish();
       this.onerror?.();
     };
     this.element.onplaying = () => this.onplaying?.();
     await this.element.play();
+    this.setSpeaking(true);
+  }
+
+  private setSpeaking(active: boolean): void {
+    if (this.speaking === active) return;
+    this.speaking = active;
+    this.notifySpeech(active);
   }
 
   private finish(): void {
     if (this.cleaned) return;
     this.cleaned = true;
+    this.setSpeaking(false);
     this.cleanup();
   }
 }
@@ -460,6 +559,7 @@ class MixedBufferQueueAudio implements QueueAudio {
   onerror: (() => void) | null = null;
   onplaying: (() => void) | null = null;
   volume = 1;
+  playbackRate = 1;
   private buffer: AudioBuffer | null = null;
   private loadPromise: Promise<AudioBuffer> | null = null;
   private source: MixerAudioBufferSource | null = null;
@@ -468,17 +568,22 @@ class MixedBufferQueueAudio implements QueueAudio {
   private playing = false;
   private stopping = false;
   private cleaned = false;
+  private speaking = false;
 
   constructor(
     private readonly url: string,
     private readonly context: MixerAudioContext & Required<Pick<MixerAudioContext, 'createBufferSource' | 'decodeAudioData'>>,
     private readonly output: MixerGain,
     private readonly cleanup: () => void,
+    private readonly notifySpeech: (active: boolean) => void = () => undefined,
   ) {}
 
   get currentTime(): number {
     if (!this.playing) return this.offsetSeconds;
-    return this.offsetSeconds + Math.max(0, this.contextSeconds() - this.startedAtSeconds);
+    return (
+      this.offsetSeconds +
+      Math.max(0, this.contextSeconds() - this.startedAtSeconds) * this.playbackRate
+    );
   }
 
   set currentTime(value: number) {
@@ -493,6 +598,7 @@ class MixedBufferQueueAudio implements QueueAudio {
     if (!this.playing) return;
     this.offsetSeconds = this.currentTime;
     this.stopSource(false);
+    this.setSpeaking(false);
   }
 
   async play(): Promise<void> {
@@ -504,7 +610,14 @@ class MixedBufferQueueAudio implements QueueAudio {
       return;
     }
     const source = this.context.createBufferSource();
+    // A fresh source supersedes any pending stop from pause()/seek; without
+    // this reset a natural end after resume would be swallowed as "stopped"
+    // and finish()/onended would never fire, wedging the queue.
+    this.stopping = false;
     source.buffer = buffer;
+    if (source.playbackRate) {
+      source.playbackRate.value = this.playbackRate;
+    }
     source.connect(this.output);
     source.onended = () => {
       const stopped = this.stopping;
@@ -512,6 +625,7 @@ class MixedBufferQueueAudio implements QueueAudio {
       this.playing = false;
       this.stopping = false;
       if (!stopped) {
+        this.setSpeaking(false);
         this.finish();
         this.onended?.();
       }
@@ -520,6 +634,7 @@ class MixedBufferQueueAudio implements QueueAudio {
     this.startedAtSeconds = this.contextSeconds();
     this.playing = true;
     source.start(0, Math.max(0, this.offsetSeconds));
+    this.setSpeaking(true);
     this.onplaying?.();
   }
 
@@ -553,9 +668,16 @@ class MixedBufferQueueAudio implements QueueAudio {
     if (final) this.finish();
   }
 
+  private setSpeaking(active: boolean): void {
+    if (this.speaking === active) return;
+    this.speaking = active;
+    this.notifySpeech(active);
+  }
+
   private finish(): void {
     if (this.cleaned) return;
     this.cleaned = true;
+    this.setSpeaking(false);
     this.cleanup();
   }
 
@@ -572,6 +694,23 @@ function canUseBufferPlayback(
     typeof context.decodeAudioData === 'function' &&
     typeof fetch === 'function'
   );
+}
+
+function isCrossOriginTainted(element: HTMLMediaElement): boolean {
+  const withSrcObject = element as HTMLMediaElement & { srcObject?: unknown };
+  // MediaStream playback is never CORS-tainted.
+  if (withSrcObject.srcObject) return false;
+  // A CORS-enabled element delivers audio to the graph (or fails to load
+  // loudly); only a cross-origin element without CORS access taps silence.
+  if (element.crossOrigin) return false;
+  const src = element.currentSrc || element.src;
+  if (!src) return false;
+  if (typeof window === 'undefined' || !window.location) return false;
+  try {
+    return new URL(src, window.location.href).origin !== window.location.origin;
+  } catch {
+    return false;
+  }
 }
 
 function createBrowserAudioContext(): MixerAudioContext {

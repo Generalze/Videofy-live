@@ -61,10 +61,16 @@ export interface ListenerWebRtcTransportSnapshot {
   remoteVideoTrackReceived: boolean;
   remoteVideoTrackActive: boolean;
   playbackBlocked: boolean;
+  appliedJitterBufferTargetMs: number | null;
   queuedRemoteCandidates: number;
   recoveryAttempts: number;
   lastError: ListenerWebRtcTransportErrorDetails | null;
   updatedAt: string;
+}
+
+interface DelayTunableReceiver {
+  jitterBufferTarget?: number | null;
+  playoutDelayHint?: number | null;
 }
 
 interface PeerConnectionLike {
@@ -87,6 +93,7 @@ interface PeerConnectionLike {
 export interface ListenerWebRtcTransportControllerOptions {
   signallingClient: WebRtcSignallingClient;
   createPeerConnection?: () => PeerConnectionLike;
+  syncDelayMs?: number;
   negotiationTimeoutMs?: number;
   maxQueuedRemoteCandidates?: number;
   maxRecoveryAttempts?: number;
@@ -97,6 +104,7 @@ export interface ListenerWebRtcTransportControllerOptions {
   onStateChange?: (snapshot: ListenerWebRtcTransportSnapshot) => void;
 }
 
+const DEFAULT_SYNC_DELAY_MS = 0;
 const DEFAULT_NEGOTIATION_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_QUEUED_REMOTE_CANDIDATES = 32;
 const DEFAULT_MAX_RECOVERY_ATTEMPTS = 2;
@@ -113,6 +121,7 @@ export function createInitialListenerWebRtcTransportSnapshot(): ListenerWebRtcTr
   remoteVideoTrackReceived: false,
   remoteVideoTrackActive: false,
   playbackBlocked: false,
+  appliedJitterBufferTargetMs: null,
     queuedRemoteCandidates: 0,
     recoveryAttempts: 0,
     lastError: null,
@@ -123,6 +132,7 @@ export function createInitialListenerWebRtcTransportSnapshot(): ListenerWebRtcTr
 export class ListenerWebRtcTransportController {
   private readonly signallingClient: WebRtcSignallingClient;
   private readonly createPeerConnection: () => PeerConnectionLike;
+  private readonly syncDelayMs: number;
   private readonly negotiationTimeoutMs: number;
   private readonly maxQueuedRemoteCandidates: number;
   private readonly maxRecoveryAttempts: number;
@@ -153,6 +163,7 @@ export class ListenerWebRtcTransportController {
         }
         return new RTCPeerConnection({ iceServers: readIceServers() }) as unknown as PeerConnectionLike;
       });
+    this.syncDelayMs = options.syncDelayMs ?? DEFAULT_SYNC_DELAY_MS;
     this.negotiationTimeoutMs = options.negotiationTimeoutMs ?? DEFAULT_NEGOTIATION_TIMEOUT_MS;
     this.maxQueuedRemoteCandidates =
       options.maxQueuedRemoteCandidates ?? DEFAULT_MAX_QUEUED_REMOTE_CANDIDATES;
@@ -190,6 +201,7 @@ export class ListenerWebRtcTransportController {
       remoteVideoTrackReceived: false,
       remoteVideoTrackActive: false,
       playbackBlocked: false,
+      appliedJitterBufferTargetMs: null,
       queuedRemoteCandidates: 0,
       recoveryAttempts: this.snapshot.recoveryAttempts,
     });
@@ -269,6 +281,7 @@ export class ListenerWebRtcTransportController {
         remoteVideoTrackReceived: false,
         remoteVideoTrackActive: false,
         playbackBlocked: false,
+        appliedJitterBufferTargetMs: null,
         queuedRemoteCandidates: 0,
       });
     } catch {
@@ -424,6 +437,7 @@ export class ListenerWebRtcTransportController {
       state: this.snapshot.remoteVideoTrackReceived ? 'video-connected' : 'audio-connected',
       remoteAudioTrackReceived: true,
       remoteAudioTrackActive: track.readyState !== 'ended',
+      appliedJitterBufferTargetMs: this.applySyncDelay(event.receiver),
     });
     this.onRemoteStream?.(stream);
   };
@@ -441,8 +455,32 @@ export class ListenerWebRtcTransportController {
       state: this.snapshot.remoteAudioTrackReceived ? 'video-connected' : 'track-received',
       remoteVideoTrackReceived: true,
       remoteVideoTrackActive: track.readyState !== 'ended',
+      appliedJitterBufferTargetMs: this.applySyncDelay(event.receiver),
     });
     this.onRemoteStream?.(stream);
+  }
+
+  private applySyncDelay(receiver: RTCRtpReceiver | undefined): number | null {
+    if (!receiver || this.syncDelayMs <= 0) return this.snapshot.appliedJitterBufferTargetMs;
+    const tunable = receiver as RTCRtpReceiver & DelayTunableReceiver;
+    let applied = false;
+    if ('jitterBufferTarget' in tunable) {
+      try {
+        tunable.jitterBufferTarget = this.syncDelayMs;
+        applied = true;
+      } catch {
+        // Engine rejected the target (e.g. above its allowed range); fall through to the legacy hint.
+      }
+    }
+    if ('playoutDelayHint' in tunable) {
+      try {
+        tunable.playoutDelayHint = this.syncDelayMs / 1000;
+        applied = true;
+      } catch {
+        // Legacy hint rejected; leave playout timing at the engine default.
+      }
+    }
+    return applied ? this.syncDelayMs : this.snapshot.appliedJitterBufferTargetMs;
   }
 
   private mergeRemoteTrack(track: MediaStreamTrack, event: RTCTrackEvent): MediaStream {

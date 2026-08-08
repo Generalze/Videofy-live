@@ -10,6 +10,7 @@ import {
 class TestAudio implements QueueAudio {
   currentTime = 0;
   volume = 1;
+  playbackRate = 1;
   onended: (() => void) | null = null;
   onerror: (() => void) | null = null;
   onplaying: (() => void) | null = null;
@@ -190,10 +191,11 @@ describe('TranslatedAudioQueueController', () => {
     vi.advanceTimersByTime(1500);
 
     expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-0.wav']);
+    expect(audios[0]!.playbackRate).toBe(1);
     expect(generatedStates.at(-1)?.status).toBe('playing');
   });
 
-  it('recovers late generated audio by seeking when the segment is still active', () => {
+  it('recovers moderately late generated audio from the start at a gentle catch-up rate', () => {
     const { audios, controller, generatedStates, setClock } = createHarness();
     setClock(1600);
 
@@ -201,16 +203,32 @@ describe('TranslatedAudioQueueController', () => {
     controller.start();
 
     expect(audios).toHaveLength(1);
-    expect(audios[0]!.currentTime).toBeCloseTo(1.6);
+    expect(audios[0]!.currentTime).toBe(0);
+    expect(audios[0]!.playbackRate).toBeCloseTo(1.1);
     expect(generatedStates.at(-1)?.syncOffsetMs).toBe(1600);
     expect(generatedStates.some((state) => state.error?.includes('Recovered late segment'))).toBe(
       true,
     );
   });
 
-  it('skips a late generated segment when the seek offset consumes the generated WAV', () => {
+  it('does not seek-trim moderately late segments even when the clip is short', () => {
     const { audios, controller, generatedStates, setClock } = createHarness();
     setClock(1600);
+    const generated = makeGenerated(0, 0, 3000);
+    generated.durationMs = 1200;
+
+    controller.enqueueGenerated(generated);
+    controller.start();
+
+    expect(audios).toHaveLength(1);
+    expect(audios[0]!.currentTime).toBe(0);
+    expect(audios[0]!.playbackRate).toBeCloseTo(1.1);
+    expect(generatedStates.at(-1)?.skippedCount).toBe(0);
+  });
+
+  it('skips a very late generated segment when the seek offset consumes the generated WAV', () => {
+    const { audios, controller, generatedStates, setClock } = createHarness();
+    setClock(2600);
     const generated = makeGenerated(0, 0, 3000);
     generated.durationMs = 1200;
 
@@ -257,6 +275,7 @@ describe('TranslatedAudioQueueController', () => {
 
     expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-0.wav']);
     expect(audios[0]!.currentTime).toBeCloseTo(4);
+    expect(audios[0]!.playbackRate).toBe(1);
     expect(generatedStates.at(-1)).toMatchObject({
       status: 'playing',
       syncDelayMs: 8000,
@@ -272,6 +291,7 @@ describe('TranslatedAudioQueueController', () => {
 
     expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-0.wav']);
     expect(audios[0]!.currentTime).toBe(0);
+    expect(audios[0]!.playbackRate).toBe(1);
     expect(generatedStates.some((state) => state.error?.includes('Recovered late segment'))).toBe(
       true,
     );
@@ -396,6 +416,67 @@ describe('TranslatedAudioQueueController', () => {
 
     audios[0]!.onended?.();
     expect(audios).toHaveLength(2);
+  });
+
+  it('leaves the paused generated status on resume and advances after the clip ends', () => {
+    class DeferredAudio implements QueueAudio {
+      currentTime = 0;
+      volume = 1;
+      playbackRate = 1;
+      onended: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onplaying: (() => void) | null = null;
+      playCalls = 0;
+
+      constructor(readonly url: string) {}
+
+      play(): Promise<void> {
+        // Real buffered playback reports onplaying only after an async buffer
+        // reload; never fire it synchronously here.
+        this.playCalls += 1;
+        return Promise.resolve();
+      }
+
+      pause(): void {}
+    }
+
+    const audios: DeferredAudio[] = [];
+    const generatedStates: GeneratedAudioQueueState[] = [];
+    const controller = new TranslatedAudioQueueController({
+      createAudio: (url) => {
+        const audio = new DeferredAudio(url);
+        audios.push(audio);
+        return audio;
+      },
+      getClockMs: () => 0,
+      urls: {
+        createObjectURL: () => 'blob:mock',
+        revokeObjectURL: () => undefined,
+      },
+      onGeneratedStateChange: (state) => generatedStates.push({ ...state }),
+    });
+
+    controller.enqueueGenerated(makeGenerated(0, 0));
+    controller.enqueueGenerated(makeGenerated(1, 0));
+    controller.start();
+    controller.pause();
+    expect(generatedStates.at(-1)?.status).toBe('paused');
+
+    controller.resume();
+    expect(generatedStates.at(-1)?.status).toBe('buffering');
+    expect(audios[0]!.playCalls).toBe(2);
+
+    audios[0]!.onplaying?.();
+    expect(generatedStates.at(-1)?.status).toBe('playing');
+
+    audios[0]!.onended?.();
+    expect(audios.map((audio) => audio.url)).toEqual([
+      'http://localhost/audio-0.wav',
+      'http://localhost/audio-1.wav',
+    ]);
+    expect(audios[1]!.playCalls).toBe(1);
+    expect(generatedStates.at(-1)?.status).toBe('buffering');
+    expect(generatedStates.some((state) => state.playedCount === 1)).toBe(true);
   });
 
   it('resumes the final translated segment when Chrome pauses before source end', () => {

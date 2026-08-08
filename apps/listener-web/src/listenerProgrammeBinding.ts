@@ -29,7 +29,7 @@ export function shouldReplaceProgrammeSession(
 }
 
 export function shouldAcceptGeneratedAudioForSession(
-  event: GeneratedAudioReadyEvent,
+  event: Pick<GeneratedAudioReadyEvent, 'sessionId'>,
   activeSessionId: string | null,
 ): boolean {
   return !activeSessionId || event.sessionId === activeSessionId;
@@ -44,14 +44,28 @@ export function isTerminalMediaState(state: Pick<MediaStateEvent, 'streamStatus'
 }
 
 export function shouldAcceptMediaStateForListener(
-  state: Pick<MediaStateEvent, 'processingSessionId' | 'streamStatus'>,
+  state: Pick<MediaStateEvent, 'processingSessionId' | 'streamStatus' | 'programmeMediaUrl'>,
   activeSessionId: string | null,
 ): boolean {
   const incomingSessionId = state.processingSessionId ?? null;
   if (!incomingSessionId) return true;
-  if (!activeSessionId) return !isTerminalMediaState(state);
+  if (!activeSessionId) {
+    return !isTerminalMediaState(state) || Boolean(state.programmeMediaUrl);
+  }
   if (incomingSessionId === activeSessionId) return true;
   return !isTerminalMediaState(state);
+}
+
+export function shouldRecoverProgrammeSessionAfterReconnect(input: {
+  shareableSessionId: string | null;
+  signallingState: string;
+}): boolean {
+  return Boolean(
+    input.shareableSessionId &&
+      !isPlaceholderShareableSessionId(input.shareableSessionId) &&
+      input.signallingState !== 'idle' &&
+      input.signallingState !== 'closed',
+  );
 }
 
 export function shouldExposeMediaStateProgrammeSession(

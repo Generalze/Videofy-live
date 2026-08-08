@@ -44,6 +44,7 @@ interface GeneratedQueueItem {
 export interface QueueAudio {
   currentTime: number;
   volume: number;
+  playbackRate?: number;
   onended: (() => void) | null;
   onerror: (() => void) | null;
   onplaying: (() => void) | null;
@@ -70,6 +71,7 @@ export interface TranslatedAudioQueueControllerOptions {
 
 const DEFAULT_LATE_TOLERANCE_MS = 750;
 const DEFAULT_LATE_DROP_TOLERANCE_MS = 2500;
+const LATE_CATCH_UP_PLAYBACK_RATE = 1.1;
 
 const initialGeneratedState: GeneratedAudioQueueState = {
   status: 'waiting',
@@ -183,6 +185,12 @@ export class TranslatedAudioQueueController {
       });
     }
     if (this.generatedAudio && this.generatedPlaying) {
+      // Leave the paused status immediately; onplaying may fire only after an
+      // async buffer reload, and downstream logic must never observe a stuck
+      // "paused" state while playback is already restarting.
+      if (this.generatedState.status === 'paused') {
+        this.setGeneratedState({ status: 'buffering' });
+      }
       this.generatedAudio.play().catch(() => {
         this.finishGeneratedCurrent('error', 'Generated audio playback failed after resume.');
       });
@@ -392,8 +400,10 @@ export class TranslatedAudioQueueController {
 
     const lateByMs = Math.max(0, clockMs - item.event.startMs);
     const sourceWindowStillActive = !this.sourceEnded && clockMs < item.event.endMs;
-    const seekOffsetMs =
-      lateByMs > this.lateToleranceMs && sourceWindowStillActive ? lateByMs : 0;
+    const catchUpNeeded = lateByMs > this.lateToleranceMs && sourceWindowStillActive;
+    const seekOffsetMs = catchUpNeeded && lateByMs > this.lateDropToleranceMs ? lateByMs : 0;
+    const playbackRate =
+      catchUpNeeded && seekOffsetMs === 0 ? LATE_CATCH_UP_PLAYBACK_RATE : 1;
     if (seekOffsetMs > 0 && seekOffsetMs >= Math.max(0, item.event.durationMs - this.lateToleranceMs)) {
       this.setGeneratedState({
         status: this.generatedQueue.length > 0 ? 'buffering' : 'completed',
@@ -410,6 +420,7 @@ export class TranslatedAudioQueueController {
 
     const audio = this.createAudio(item.event.audioUrl);
     audio.volume = this.currentVolume();
+    audio.playbackRate = playbackRate;
     if (seekOffsetMs > 0) {
       audio.currentTime = Math.max(0, seekOffsetMs / 1000);
     }
