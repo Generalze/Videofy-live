@@ -43,6 +43,28 @@ describe('gateway config', () => {
     expect(loadConfig().webRtcTranscriptionChunkMs).toBe(3_000);
   });
 
+  it('defaults live WebRTC VAD to pause-aligned segmenting and accepts overrides', () => {
+    delete process.env['WEBRTC_VAD_ENABLED'];
+    delete process.env['WEBRTC_VAD_MODE'];
+    delete process.env['WEBRTC_VAD_END_SILENCE_MS'];
+    delete process.env['WEBRTC_VAD_MAX_SEGMENT_MS'];
+    const defaults = loadConfig();
+    expect(defaults.webRtcVadEnabled).toBe(true);
+    expect(defaults.webRtcVadMode).toBe('fallback');
+    expect(defaults.webRtcVadEndSilenceMs).toBe(600);
+    expect(defaults.webRtcVadMaxSegmentMs).toBe(7_000);
+
+    process.env['WEBRTC_VAD_ENABLED'] = 'false';
+    process.env['WEBRTC_VAD_MODE'] = 'silero';
+    process.env['WEBRTC_VAD_END_SILENCE_MS'] = '900';
+    process.env['WEBRTC_VAD_MAX_SEGMENT_MS'] = '10000';
+    const overridden = loadConfig();
+    expect(overridden.webRtcVadEnabled).toBe(false);
+    expect(overridden.webRtcVadMode).toBe('silero');
+    expect(overridden.webRtcVadEndSilenceMs).toBe(900);
+    expect(overridden.webRtcVadMaxSegmentMs).toBe(10_000);
+  });
+
   it('uses file-ingest transcription for uploaded programme media only', () => {
     expect(shouldUseWebRtcTranscriptionForProgrammeSource('uploaded-video')).toBe(false);
     expect(shouldUseWebRtcTranscriptionForProgrammeSource('hls')).toBe(true);

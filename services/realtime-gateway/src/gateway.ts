@@ -49,6 +49,9 @@ import {
 import { BackendWebRtcListenerPeerRegistry } from './webrtc-listener-peer-registry.js';
 import { WebRtcTranscriptionBridge, type WebRtcTranscriptionBridgeContext } from './webrtc-transcription-bridge.js';
 
+/** Pseudo-language channel for listeners following the untranslated programme captions. */
+const ORIGINAL_LANGUAGE_CHANNEL = 'original';
+
 /** Client role determined by query parameter on connect. */
 type ClientRole = 'listener' | 'operator' | 'worker' | 'ingest' | 'broadcaster' | 'server';
 
@@ -276,7 +279,10 @@ export class Gateway {
     }
 
     socket.on(SOCKET_EVENTS.JOIN_LANGUAGE, (targetLanguage: unknown) => {
-      if (typeof targetLanguage !== 'string' || targetLanguage.length < 2) {
+      if (
+        targetLanguage !== ORIGINAL_LANGUAGE_CHANNEL &&
+        (typeof targetLanguage !== 'string' || targetLanguage.length < 2)
+      ) {
         socket.emit(SOCKET_EVENTS.ERROR, { message: 'Invalid targetLanguage' });
         return;
       }
@@ -592,7 +598,7 @@ export class Gateway {
         this.latestProgrammeMediaState = enriched;
       }
       if (programmeConfig && isTerminalMediaState(enriched.streamStatus)) {
-        this.latestProgrammeMediaState = null;
+        this.latestProgrammeMediaState = enriched.programmeMediaUrl ? enriched : null;
       }
 
       this.io.emit(SOCKET_EVENTS.MEDIA_STATE, enriched);
@@ -633,6 +639,14 @@ export class Gateway {
 
       const event = result.data as TimestampedTranslationEvent;
       this.io.to(OPERATOR_ROOM).emit(SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT, event);
+      if (event.status === 'translated') {
+        this.io
+          .to(languageRoom(event.targetLanguage))
+          .emit(SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT, event);
+        this.io
+          .to(languageRoom(ORIGINAL_LANGUAGE_CHANNEL))
+          .emit(SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT, event);
+      }
       logger.info('Timestamped translation event broadcast', {
         sessionId: event.sessionId,
         segmentId: event.segmentId,
@@ -663,8 +677,8 @@ export class Gateway {
     this.listenerMediaPeers.closeByListenerSocket(socket.id);
     for (const result of this.webrtcSessions.cleanupSocket(socket.id)) {
       if (result.outgoing.sessionId) {
-        this.backendMediaPeers.closeSession(result.outgoing.sessionId, 'socket disconnected');
         if (result.outgoing.senderRole === 'broadcaster') {
+          this.backendMediaPeers.closeSession(result.outgoing.sessionId, 'broadcaster socket disconnected');
           this.listenerMediaPeers.closeSession(result.outgoing.sessionId, 'broadcaster socket disconnected');
           this.programmeSessionConfigs.delete(result.outgoing.sessionId);
         } else if (result.outgoing.senderRole === 'listener') {
@@ -689,6 +703,9 @@ export class Gateway {
       this.activeIngestClients.delete(socket.id);
       if (this.activeIngestClients.size === 0) {
         this.broadcastServiceStatus('media-ingest', 'unhealthy', socket.id);
+        // Session state lives in ingest memory; once ingest is gone the retained
+        // programme media URL would 404 for every newly joining listener.
+        this.latestProgrammeMediaState = null;
       }
     }
     this.clients.delete(socket.id);
@@ -1134,6 +1151,11 @@ export class Gateway {
       config.broadcastId,
       config.sessionId,
     );
+    const retained = this.latestProgrammeMediaState;
+    const videoTimestampMs =
+      retained && retained.processingSessionId === config.sessionId
+        ? retained.videoTimestampMs
+        : 0;
     const state: MediaStateEvent = {
       eventId: 'Videofy Live Demo Event',
       streamId: config.broadcastId,
@@ -1141,7 +1163,7 @@ export class Gateway {
       shareableWebRtcSessionId,
       streamStatus: 'processing',
       videoSource: 'webrtc',
-      videoTimestampMs: 0,
+      videoTimestampMs,
       sourceAudioActive: false,
       translatedLanguages: config.targetLanguages,
       connectedListeners: this.listenerCount,

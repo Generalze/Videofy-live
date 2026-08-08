@@ -34,12 +34,12 @@ export function loadConfig(): GatewayConfig {
       'WEBRTC_TRANSCRIPTION_REQUEST_TIMEOUT_MS',
       180_000,
     ),
-    webRtcVadEnabled: (process.env['WEBRTC_VAD_ENABLED'] ?? 'false').toLowerCase() === 'true',
+    webRtcVadEnabled: (process.env['WEBRTC_VAD_ENABLED'] ?? 'true').toLowerCase() === 'true',
     webRtcVadMode: process.env['WEBRTC_VAD_MODE'] === 'silero' ? 'silero' : 'fallback',
     webRtcVadSpeechThreshold: readPositiveGatewayFloat('WEBRTC_VAD_SPEECH_THRESHOLD', 0.012),
-    webRtcVadEndSilenceMs: readPositiveGatewayInt('WEBRTC_VAD_END_SILENCE_MS', 650),
+    webRtcVadEndSilenceMs: readPositiveGatewayInt('WEBRTC_VAD_END_SILENCE_MS', 600),
     webRtcVadMinSpeechMs: readPositiveGatewayInt('WEBRTC_VAD_MIN_SPEECH_MS', 180),
-    webRtcVadMaxSegmentMs: readPositiveGatewayInt('WEBRTC_VAD_MAX_SEGMENT_MS', 8_000),
+    webRtcVadMaxSegmentMs: readPositiveGatewayInt('WEBRTC_VAD_MAX_SEGMENT_MS', 7_000),
     webRtcTranscriptionStagingDir:
       process.env['WEBRTC_AUDIO_CHUNK_STAGING_DIR'] ??
       resolve(process.cwd(), '../../uploads/webrtc-staging'),

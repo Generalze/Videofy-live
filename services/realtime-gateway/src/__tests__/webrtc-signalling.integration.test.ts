@@ -740,6 +740,10 @@ describe('gateway WebRTC signalling integration', () => {
       peerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
       payload: { targetPeerId: 'peer_listener' },
     });
+    await waitUntil(() => gateway.getWebRtcDiagnostics().broadcasterPeerCount === 1);
+    listener.disconnect();
+    await waitUntil(() => gateway.getWebRtcDiagnostics().listenerPeerCount === 0);
+    expect(gateway.getWebRtcDiagnostics().broadcasterPeerCount).toBe(1);
     broadcasterPeer.onicecandidate = null;
     track.stop();
     broadcasterPeer.close();
