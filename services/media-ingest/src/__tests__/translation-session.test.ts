@@ -107,7 +107,13 @@ function store(
     transcriptionProvider:
       options.transcriber ??
       transcriptionProvider(async (input) => ({
-        sourceText: `source ${input.chunk.index}`,
+        segments: [
+          {
+            text: `source ${input.chunk.index}`,
+            startMs: 0,
+            endMs: input.chunk.endMs - input.chunk.startMs,
+          },
+        ],
         detectedLanguage: 'en',
         confidence: 0.9,
       })),
@@ -229,18 +235,65 @@ describe('timestamped translation sessions', () => {
     ]);
   });
 
-  it('keeps empty source text as an empty translation', async () => {
+  it('skips empty source segments instead of translating them', async () => {
     const session = await store(new MockTimestampedTranslationProvider(['fr']), {
       transcriber: transcriptionProvider(async () => ({
-        sourceText: '',
+        segments: [{ text: '', startMs: 0, endMs: 1_000 }],
         detectedLanguage: 'en',
         confidence: null,
       })),
     }).createFromUpload(upload(), async () => validProbe);
 
-    expect(session.translation.events.every((event) => event.status === 'translated')).toBe(true);
-    expect(session.translation.events.every((event) => event.sourceText === '')).toBe(true);
-    expect(session.translation.events.every((event) => event.translatedText === '')).toBe(true);
+    expect(session.state).toBe('completed');
+    expect(session.transcription.events).toEqual([]);
+    expect(session.translation.events).toEqual([]);
+  });
+
+  it('creates one translation event per language for every fan-out segment', async () => {
+    const session = await store(
+      translationProvider(async (input) => ({
+        translatedText: `${input.targetLanguage}:${input.sourceText}`,
+      })),
+      {
+        transcriber: transcriptionProvider(async (input) =>
+          input.chunk.index === 0
+            ? {
+                segments: [
+                  { text: 'one.', startMs: 0, endMs: 5_000 },
+                  { text: 'two.', startMs: 5_000, endMs: 10_000 },
+                  { text: 'three.', startMs: 10_000, endMs: 15_000 },
+                ],
+                detectedLanguage: 'en',
+                confidence: 0.9,
+              }
+            : { segments: [], detectedLanguage: 'en', confidence: 0.9 },
+        ),
+        targetLanguage: 'es',
+        supportedTargetLanguages: ['es', 'fr'],
+      },
+    ).createFromUpload(
+      upload({ targetLanguage: 'es', targetLanguages: ['es', 'fr'] }),
+      async () => validProbe,
+    );
+
+    expect(session.state).toBe('completed');
+    expect(session.translation.events).toHaveLength(6);
+    for (const language of ['es', 'fr']) {
+      const events = session.translation.events.filter(
+        (event) => event.targetLanguage === language,
+      );
+      expect(events.map((event) => event.sequence)).toEqual([0, 1, 2]);
+      expect(events.map((event) => event.translatedText)).toEqual([
+        `${language}:one.`,
+        `${language}:two.`,
+        `${language}:three.`,
+      ]);
+      expect(events.map((event) => [event.startMs, event.endMs])).toEqual([
+        [0, 5_000],
+        [5_000, 10_000],
+        [10_000, 15_000],
+      ]);
+    }
   });
 
   it('rejects an unsupported target language clearly', async () => {

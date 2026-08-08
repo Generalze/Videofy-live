@@ -22,6 +22,17 @@ describe('audio extraction and chunk validation', () => {
     expect(args).toContain('segment');
     expect(args).toContain('15');
     expect(args.at(-1)).toBe('chunk-%06d.wav');
+    expect(args).not.toContain('apad');
+  });
+
+  it('pads audio with silence to the container duration when expected duration is known', () => {
+    const args = buildFfmpegChunkArgs('input.mp4', 'chunk-%06d.wav', 27_680);
+
+    expect(args).toContain('-af');
+    expect(args).toContain('apad');
+    expect(args).toContain('-t');
+    expect(args[args.indexOf('-t') + 1]).toBe('27.680');
+    expect(args.indexOf('apad')).toBeLessThan(args.indexOf('segment'));
   });
 
   it('extracts ordered chunks and preserves correct timing including a short final chunk', async () => {

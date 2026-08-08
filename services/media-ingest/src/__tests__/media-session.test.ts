@@ -372,15 +372,32 @@ describe('ProcessingSessionStore', () => {
     });
   });
 
-  it('protects against duplicate submissions', async () => {
+  it('allows a completed upload to be submitted again as a new playback session', async () => {
     const sessionStore = store();
-    await sessionStore.createFromUpload(upload(), async () => validVideoProbe);
+    const first = await sessionStore.createFromUpload(upload(), async () => validVideoProbe);
+    const replay = await sessionStore.createFromUpload(upload(), async () => validVideoProbe);
+
+    expect(first.state).toBe('completed');
+    expect(replay.state).toBe('completed');
+    expect(replay.id).not.toBe(first.id);
+  });
+
+  it('protects against concurrent duplicate submissions', async () => {
+    const sessionStore = store();
+    let releaseProbe!: (probe: ProbeResult) => void;
+    const pendingProbe = new Promise<ProbeResult>((resolve) => {
+      releaseProbe = resolve;
+    });
+    const first = sessionStore.createFromUpload(upload(), async () => pendingProbe);
 
     await expect(
       sessionStore.createFromUpload(upload(), async () => validVideoProbe),
     ).rejects.toMatchObject({
       code: 'duplicate-submission',
     });
+
+    releaseProbe(validVideoProbe);
+    await expect(first).resolves.toMatchObject({ state: 'completed' });
   });
 
   it('cleans failed processing artifacts and leaves the source session retryable', async () => {
@@ -482,7 +499,7 @@ describe('ProcessingSessionStore', () => {
     });
     expect(updated.generatedAudio.events[0]).toMatchObject({
       sessionId: 'wrs_demo',
-      segmentId: 'wrs_demo:webrtc:1:0',
+      segmentId: 'wrs_demo:webrtc:1:0-s0',
       sequence: 0,
       targetLanguage: 'es',
       startMs: 0,
@@ -555,11 +572,11 @@ describe('ProcessingSessionStore', () => {
       '4:translated:es',
     ]);
     expect(generatedAudioReady).toEqual([
-      '0:es:wrs_demo:webrtc:1:0',
-      '1:es:wrs_demo:webrtc:1:1',
-      '2:es:wrs_demo:webrtc:1:2',
-      '3:es:wrs_demo:webrtc:1:3',
-      '4:es:wrs_demo:webrtc:1:4',
+      '0:es:wrs_demo:webrtc:1:0-s0',
+      '1:es:wrs_demo:webrtc:1:1-s0',
+      '2:es:wrs_demo:webrtc:1:2-s0',
+      '3:es:wrs_demo:webrtc:1:3-s0',
+      '4:es:wrs_demo:webrtc:1:4-s0',
     ]);
   });
 

@@ -72,7 +72,12 @@ describe('viewer-ready media renderer', () => {
     expect(args).toContain('mov_text');
     expect(args).toContain('-shortest');
     expect(args.join(' ')).toContain('[0:a:0]volume=0.2[orig]');
-    expect(args.join(' ')).toContain('[2:a:0]adelay=15000|15000,volume=1[tts1]');
+    expect(args.join(' ')).toContain(
+      '[1:a:0]afade=t=in:st=0:d=0.015,afade=t=out:st=14.985:d=0.015,adelay=0|0,volume=1[tts0]',
+    );
+    expect(args.join(' ')).toContain(
+      '[2:a:0]afade=t=in:st=0:d=0.015,afade=t=out:st=14.985:d=0.015,adelay=15000|15000,volume=1[tts1]',
+    );
     expect(args.join(' ')).toContain('[orig][tts0][tts1]amix=inputs=3:duration=first');
   });
 });

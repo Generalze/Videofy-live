@@ -85,11 +85,15 @@ function provider(
   };
 }
 
+function wholeChunkSegments(input: TranscriptionProviderInput, text: string) {
+  return [{ text, startMs: 0, endMs: input.chunk.endMs - input.chunk.startMs }];
+}
+
 describe('timestamped transcription sessions', () => {
   it('transcribes ready chunks successfully', async () => {
     const session = await store(
       provider(async (input) => ({
-        sourceText: `text ${input.chunk.index}`,
+        segments: wholeChunkSegments(input, `text ${input.chunk.index}`),
         detectedLanguage: 'en',
         confidence: 0.9,
       })),
@@ -109,7 +113,7 @@ describe('timestamped transcription sessions', () => {
   it('preserves correct chunk ordering', async () => {
     const session = await store(
       provider(async (input) => ({
-        sourceText: `ordered ${input.chunk.index}`,
+        segments: wholeChunkSegments(input, `ordered ${input.chunk.index}`),
         detectedLanguage: 'en',
         confidence: null,
       })),
@@ -125,8 +129,8 @@ describe('timestamped transcription sessions', () => {
 
   it('preserves chunk timestamps', async () => {
     const session = await store(
-      provider(async () => ({
-        sourceText: 'timestamped',
+      provider(async (input) => ({
+        segments: wholeChunkSegments(input, 'timestamped'),
         detectedLanguage: 'en',
         confidence: 0.8,
       })),
@@ -139,19 +143,58 @@ describe('timestamped transcription sessions', () => {
     ]);
   });
 
-  it('accepts empty speech as a transcribed chunk', async () => {
+  it('fans out one transcription event per whisper segment with absolute timestamps', async () => {
+    const session = await store(
+      provider(async (input) => ({
+        segments:
+          input.chunk.index === 0
+            ? [
+                { text: 'first sentence.', startMs: 0, endMs: 4_000 },
+                { text: 'second sentence.', startMs: 4_500, endMs: 9_000 },
+                { text: 'third sentence.', startMs: 9_500, endMs: 16_000 },
+              ]
+            : wholeChunkSegments(input, `chunk ${input.chunk.index}`),
+        detectedLanguage: 'en',
+        confidence: 0.9,
+      })),
+    ).createFromUpload(upload(), async () => validProbe);
+
+    expect(session.state).toBe('completed');
+    expect(session.transcription.events).toHaveLength(5);
+    expect(session.transcription.events.map((event) => event.sequence)).toEqual([0, 1, 2, 3, 4]);
+    expect(new Set(session.transcription.events.map((event) => event.chunkId)).size).toBe(5);
+    expect(
+      session.transcription.events.map((event) => event.chunkId.slice(event.chunkId.indexOf(':chunk:'))),
+    ).toEqual([':chunk:0-s0', ':chunk:0-s1', ':chunk:0-s2', ':chunk:1-s0', ':chunk:2-s0']);
+    expect(session.transcription.events.map((event) => [event.startMs, event.endMs])).toEqual([
+      [0, 4_000],
+      [4_500, 9_000],
+      [9_500, 15_000],
+      [15_000, 30_000],
+      [30_000, 31_000],
+    ]);
+    expect(session.transcription.events.map((event) => event.sourceText)).toEqual([
+      'first sentence.',
+      'second sentence.',
+      'third sentence.',
+      'chunk 1',
+      'chunk 2',
+    ]);
+  });
+
+  it('skips empty or whitespace-only speech segments and completes cleanly', async () => {
     const session = await store(
       provider(async () => ({
-        sourceText: '',
+        segments: [{ text: '   ', startMs: 0, endMs: 1_000 }],
         detectedLanguage: 'en',
         confidence: null,
       })),
     ).createFromUpload(upload(), async () => validProbe);
 
-    expect(session.transcription.events.every((event) => event.status === 'transcribed')).toBe(
-      true,
-    );
-    expect(session.transcription.events.every((event) => event.sourceText === '')).toBe(true);
+    expect(session.state).toBe('completed');
+    expect(session.transcription).toMatchObject({ status: 'transcribed', progressPct: 100 });
+    expect(session.transcription.events).toEqual([]);
+    expect(session.translation.events).toEqual([]);
   });
 
   it('marks chunks failed on provider timeout', async () => {
@@ -187,7 +230,7 @@ describe('timestamped transcription sessions', () => {
           throw new Error('first attempt failed');
         }
         return {
-          sourceText: `retry ${input.chunk.index}`,
+          segments: wholeChunkSegments(input, `retry ${input.chunk.index}`),
           detectedLanguage: 'en',
           confidence: 0.95,
         };
@@ -211,7 +254,11 @@ describe('timestamped transcription sessions', () => {
       extractAudio: extractor,
       transcriptionProvider: provider(async (input) => {
         if (input.chunk.index > 0) {
-          return { sourceText: 'done', detectedLanguage: 'en', confidence: 0.9 };
+          return {
+            segments: wholeChunkSegments(input, 'done'),
+            detectedLanguage: 'en',
+            confidence: 0.9,
+          };
         }
         return await new Promise<TranscriptionProviderResult>((resolve) => {
           release = resolve;
@@ -231,7 +278,11 @@ describe('timestamped transcription sessions', () => {
       code: 'duplicate-processing',
     });
 
-    release?.({ sourceText: 'done', detectedLanguage: 'en', confidence: 0.9 });
+    release?.({
+      segments: [{ text: 'done', startMs: 0, endMs: 15_000 }],
+      detectedLanguage: 'en',
+      confidence: 0.9,
+    });
     await created;
   });
 
@@ -240,7 +291,7 @@ describe('timestamped transcription sessions', () => {
       provider(async (input) => {
         if (input.chunk.index === 1) throw new Error('middle failed');
         return {
-          sourceText: `ok ${input.chunk.index}`,
+          segments: wholeChunkSegments(input, `ok ${input.chunk.index}`),
           detectedLanguage: 'en',
           confidence: 0.9,
         };
@@ -260,7 +311,7 @@ describe('timestamped transcription sessions', () => {
   it('exports a completed transcript in timestamp order', async () => {
     const sessionStore = store(
       provider(async (input) => ({
-        sourceText: `line ${input.chunk.index}`,
+        segments: wholeChunkSegments(input, `line ${input.chunk.index}`),
         detectedLanguage: 'en',
         confidence: 0.9,
       })),
@@ -281,7 +332,7 @@ describe('timestamped transcription sessions', () => {
           ...(input.sourceLanguageMode ? { mode: input.sourceLanguageMode } : {}),
         });
         return {
-          sourceText: 'manual language',
+          segments: wholeChunkSegments(input, 'manual language'),
           detectedLanguage: 'en',
           confidence: 0.98,
         };
@@ -308,8 +359,8 @@ describe('timestamped transcription sessions', () => {
 
   it('marks low-confidence auto-detect results for confirmation without switching silently', async () => {
     const session = await store(
-      provider(async () => ({
-        sourceText: 'low confidence language',
+      provider(async (input) => ({
+        segments: wholeChunkSegments(input, 'low confidence language'),
         detectedLanguage: 'pt',
         confidence: 0.5,
       })),
@@ -333,8 +384,8 @@ describe('timestamped transcription sessions', () => {
 
   it('creates a language revision boundary on operator override', async () => {
     const sessionStore = store(
-      provider(async () => ({
-        sourceText: 'source',
+      provider(async (input) => ({
+        segments: wholeChunkSegments(input, 'source'),
         detectedLanguage: 'en',
         confidence: 0.99,
       })),
@@ -357,8 +408,8 @@ describe('timestamped transcription sessions', () => {
 
   it('locks and unlocks the confirmed source language without changing revision', async () => {
     const sessionStore = store(
-      provider(async () => ({
-        sourceText: 'source',
+      provider(async (input) => ({
+        segments: wholeChunkSegments(input, 'source'),
         detectedLanguage: 'en',
         confidence: 0.99,
       })),
@@ -393,8 +444,8 @@ describe('timestamped transcription sessions', () => {
     const sessionStore = new ProcessingSessionStore({
       outputBaseDir: 'C:/tmp/chunks',
       extractAudio: async (input) => completedExtraction([chunk(input.sessionId, 0, 0, 1000)]),
-      transcriptionProvider: provider(async () => ({
-        sourceText: 'hello',
+      transcriptionProvider: provider(async (input) => ({
+        segments: wholeChunkSegments(input, 'hello'),
         detectedLanguage: 'en',
         confidence: 0.99,
       })),

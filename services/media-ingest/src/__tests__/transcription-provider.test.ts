@@ -2,7 +2,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { MediaIngestError } from '../ingest-error.js';
+import {
+  PythonWorkerError,
+  type PythonWorkerConfig,
+  type PythonWorkerFactory,
+} from '../persistent-python-worker.js';
 import {
   FasterWhisperTranscriptionProvider,
   MockTranscriptionProvider,
@@ -34,11 +38,36 @@ function chunk(filename: string) {
   };
 }
 
-function provider(
-  runCommand: CommandRunner,
-  overrides: Partial<FasterWhisperProviderOptions> = {},
-): FasterWhisperTranscriptionProvider {
-  return new FasterWhisperTranscriptionProvider({
+type WorkerHandler = (
+  payload: Record<string, unknown>,
+  config: PythonWorkerConfig,
+) => Promise<unknown> | unknown;
+
+function fakeWorkerFactory(handler: WorkerHandler) {
+  const configs: PythonWorkerConfig[] = [];
+  const requests: Array<{ payload: Record<string, unknown>; config: PythonWorkerConfig }> = [];
+  const factory: PythonWorkerFactory = (config) => {
+    configs.push(config);
+    return {
+      async request(payload) {
+        const record = payload as Record<string, unknown>;
+        requests.push({ payload: record, config });
+        return await handler(record, config);
+      },
+      dispose() {},
+    };
+  };
+  return { factory, configs, requests };
+}
+
+function provider(handler: WorkerHandler, overrides: Partial<FasterWhisperProviderOptions> = {}) {
+  const { factory, configs, requests } = fakeWorkerFactory(handler);
+  const ffmpegCalls: Array<{ command: string; args: readonly string[] }> = [];
+  const runCommand: CommandRunner = async (command, args) => {
+    ffmpegCalls.push({ command, args });
+    return { stdout: '', stderr: '' };
+  };
+  const local = new FasterWhisperTranscriptionProvider({
     pythonExecutable: 'python',
     ffmpegExecutable: 'ffmpeg',
     modelSize: 'small',
@@ -48,18 +77,24 @@ function provider(
     allowGpuFallback: false,
     timeoutMs: 30_000,
     runCommand,
+    createWorker: factory,
     ...overrides,
   });
+  return { local, configs, requests, ffmpegCalls };
 }
 
-function whisperOutput(overrides: Record<string, unknown> = {}): string {
-  return JSON.stringify({
-    text: 'hello world',
+function whisperResult(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    segments: [{ text: 'hello world', startMs: 250, endMs: 2_250 }],
     detectedLanguage: 'en',
     confidence: 0.91,
     device: 'cpu',
     ...overrides,
-  });
+  };
+}
+
+function workerDevice(config: PythonWorkerConfig): string {
+  return String(config.args[3]);
 }
 
 describe('transcription providers', () => {
@@ -82,67 +117,124 @@ describe('transcription providers', () => {
 
     expect(mock).toBeInstanceOf(MockTranscriptionProvider);
     await expect(mock.transcribe(chunk('chunk-000000.wav'))).resolves.toMatchObject({
-      sourceText: 'Mock transcript chunk 1',
+      segments: [{ text: 'Mock transcript chunk 1', startMs: 0, endMs: 15_000 }],
       detectedLanguage: 'en',
       confidence: 0.99,
     });
   });
 
   it('runs faster-whisper successfully and reports provider latency', async () => {
-    const commands: string[] = [];
-    const local = provider(async (command) => {
-      commands.push(command);
-      return { stdout: whisperOutput(), stderr: '' };
-    });
+    const { local, configs, requests } = provider(() => whisperResult());
 
     const result = await local.transcribe(chunk('chunk-000000.wav'));
 
-    expect(commands).toEqual(['python']);
+    expect(configs).toHaveLength(1);
+    expect(configs[0]).toMatchObject({ command: 'python', maxConcurrency: 1 });
+    expect(configs[0]?.args).toContain('small');
+    expect(requests[0]?.payload['audioPath']).toBe(join('C:/tmp/chunks/ps_test', 'chunk-000000.wav'));
     expect(result).toMatchObject({
-      sourceText: 'hello world',
+      segments: [{ text: 'hello world', startMs: 250, endMs: 2_250 }],
       detectedLanguage: 'en',
       confidence: 0.91,
     });
     expect(result.providerLatencyMs).toBeGreaterThanOrEqual(0);
   });
 
-  it('normalises microphone WebM/Ogg chunks before transcription', async () => {
-    const calls: Array<{ command: string; args: readonly string[] }> = [];
-    const local = provider(async (command, args) => {
-      calls.push({ command, args });
-      return command === 'ffmpeg'
-        ? { stdout: '', stderr: '' }
-        : { stdout: whisperOutput(), stderr: '' };
+  it('reuses one persistent worker for many chunks instead of spawning per call', async () => {
+    const { local, configs, requests } = provider(() => whisperResult());
+
+    await local.transcribe(chunk('chunk-000000.wav'));
+    await local.transcribe(chunk('chunk-000001.wav'));
+    await local.transcribe(chunk('chunk-000002.wav'));
+
+    expect(configs).toHaveLength(1);
+    expect(requests).toHaveLength(3);
+    expect(requests.map((request) => String(request.payload['audioPath']))).toEqual([
+      join('C:/tmp/chunks/ps_test', 'chunk-000000.wav'),
+      join('C:/tmp/chunks/ps_test', 'chunk-000001.wav'),
+      join('C:/tmp/chunks/ps_test', 'chunk-000002.wav'),
+    ]);
+  });
+
+  it('passes the manual language hint through the worker payload', async () => {
+    const { local, requests } = provider(() => whisperResult());
+
+    await local.transcribe({
+      ...chunk('chunk-000000.wav'),
+      sourceLanguage: 'de',
+      sourceLanguageMode: 'manual',
     });
+    await local.transcribe({
+      ...chunk('chunk-000000.wav'),
+      sourceLanguage: 'de',
+      sourceLanguageMode: 'auto-detect',
+    });
+
+    expect(requests[0]?.payload['languageHint']).toBe('de');
+    expect(requests[1]?.payload['languageHint']).toBeNull();
+  });
+
+  it('preserves per-segment timestamps from multi-segment whisper output', async () => {
+    const { local } = provider(() =>
+      whisperResult({
+        segments: [
+          { text: 'first sentence.', startMs: 0, endMs: 3_100 },
+          { text: 'second sentence.', startMs: 3_400, endMs: 7_900 },
+          { text: 'third sentence.', startMs: 8_200, endMs: 14_600 },
+        ],
+      }),
+    );
+
+    await expect(local.transcribe(chunk('chunk-000000.wav'))).resolves.toMatchObject({
+      segments: [
+        { text: 'first sentence.', startMs: 0, endMs: 3_100 },
+        { text: 'second sentence.', startMs: 3_400, endMs: 7_900 },
+        { text: 'third sentence.', startMs: 8_200, endMs: 14_600 },
+      ],
+    });
+  });
+
+  it('drops malformed segment entries and repairs inverted timestamps', async () => {
+    const { local } = provider(() =>
+      whisperResult({
+        segments: [
+          { text: 'kept', startMs: 2_000, endMs: 1_000 },
+          { startMs: 0, endMs: 500 },
+          'not-a-segment',
+        ],
+      }),
+    );
+
+    await expect(local.transcribe(chunk('chunk-000000.wav'))).resolves.toMatchObject({
+      segments: [{ text: 'kept', startMs: 2_000, endMs: 2_000 }],
+    });
+  });
+
+  it('normalises microphone WebM/Ogg chunks before transcription', async () => {
+    const { local, ffmpegCalls, requests } = provider(() => whisperResult());
 
     await local.transcribe(chunk('mic-chunk-000000.webm'));
 
-    expect(calls.map((call) => call.command)).toEqual(['ffmpeg', 'python']);
-    expect(calls[0]?.args).toContain('16000');
-    expect(calls[0]?.args).toContain('pcm_s16le');
-    expect(calls[1]?.args.join(' ')).toContain('mic-chunk-000000.normalized.wav');
+    expect(ffmpegCalls.map((call) => call.command)).toEqual(['ffmpeg']);
+    expect(ffmpegCalls[0]?.args).toContain('16000');
+    expect(ffmpegCalls[0]?.args).toContain('pcm_s16le');
+    expect(String(requests[0]?.payload['audioPath'])).toContain('mic-chunk-000000.normalized.wav');
   });
 
   it('reuses upload WAV chunks without unnecessary conversion', async () => {
-    const calls: string[] = [];
-    const local = provider(async (command) => {
-      calls.push(command);
-      return { stdout: whisperOutput(), stderr: '' };
-    });
+    const { local, ffmpegCalls, requests } = provider(() => whisperResult());
 
     await local.transcribe(chunk('chunk-000000.wav'));
 
-    expect(calls).toEqual(['python']);
+    expect(ffmpegCalls).toEqual([]);
+    expect(requests).toHaveLength(1);
   });
 
   it('accepts empty speech', async () => {
-    const local = provider(async () => ({
-      stdout: whisperOutput({ text: '', confidence: null }),
-      stderr: '',
-    }));
+    const { local } = provider(() => whisperResult({ segments: [], confidence: null }));
 
     await expect(local.transcribe(chunk('chunk-000000.wav'))).resolves.toMatchObject({
-      sourceText: '',
+      segments: [],
       detectedLanguage: 'en',
       confidence: null,
     });
@@ -160,16 +252,18 @@ describe('transcription providers', () => {
           modelCacheDir: join(tmpdir(), 'missing-videofy-model-cache'),
           allowGpuFallback: false,
           timeoutMs: 30_000,
-          runCommand: async () => ({ stdout: whisperOutput(), stderr: '' }),
+          createWorker: fakeWorkerFactory(() => whisperResult()).factory,
         }),
     ).toThrow(/model cache directory does not exist/);
   });
 
   it('fails clearly when Python is unavailable', async () => {
-    const local = provider(async () => {
-      const error = new Error('spawn python ENOENT') as Error & { code: string };
-      error.code = 'ENOENT';
-      throw error;
+    const { local } = provider(() => {
+      throw new PythonWorkerError(
+        'Failed to start faster-whisper worker: spawn python ENOENT',
+        'spawn-failed',
+        { code: 'ENOENT' },
+      );
     });
 
     await expect(local.transcribe(chunk('chunk-000000.wav'))).rejects.toMatchObject({
@@ -179,13 +273,12 @@ describe('transcription providers', () => {
   });
 
   it('fails clearly when FFmpeg is unavailable for microphone normalisation', async () => {
-    const local = provider(async (command) => {
-      if (command === 'ffmpeg') {
+    const { local } = provider(() => whisperResult(), {
+      runCommand: async () => {
         const error = new Error('spawn ffmpeg ENOENT') as Error & { code: string };
         error.code = 'ENOENT';
         throw error;
-      }
-      return { stdout: whisperOutput(), stderr: '' };
+      },
     });
 
     await expect(local.transcribe(chunk('mic-chunk-000000.ogg'))).rejects.toMatchObject({
@@ -195,10 +288,11 @@ describe('transcription providers', () => {
   });
 
   it('fails clearly on timeout', async () => {
-    const local = provider(async () => {
-      const error = new Error('Command timed out') as Error & { signal: string };
-      error.signal = 'SIGTERM';
-      throw error;
+    const { local } = provider(() => {
+      throw new PythonWorkerError(
+        'faster-whisper worker request timed out after 30000 ms.',
+        'timeout',
+      );
     });
 
     await expect(local.transcribe(chunk('chunk-000000.wav'))).rejects.toMatchObject({
@@ -206,11 +300,13 @@ describe('transcription providers', () => {
     });
   });
 
-  it('fails clearly when Python reports a missing faster-whisper model', async () => {
-    const local = provider(async () => {
-      const error = new Error('model not found') as Error & { stderr: string };
-      error.stderr = 'Model tiny.en not found in cache';
-      throw error;
+  it('fails clearly when the worker dies with a missing faster-whisper model', async () => {
+    const { local } = provider(() => {
+      throw new PythonWorkerError(
+        'faster-whisper worker exited unexpectedly (code 1, signal null).',
+        'worker-exited',
+        { stderr: 'Model tiny.en not found in cache', exitCode: 1 },
+      );
     });
 
     await expect(local.transcribe(chunk('chunk-000000.wav'))).rejects.toMatchObject({
@@ -219,7 +315,7 @@ describe('transcription providers', () => {
   });
 
   it('fails clearly on provider failure', async () => {
-    const local = provider(async () => {
+    const { local } = provider(() => {
       throw new Error('unexpected decoder failure');
     });
 
@@ -230,39 +326,43 @@ describe('transcription providers', () => {
   });
 
   it('does not silently fall back from GPU to CPU', async () => {
-    const local = provider(
-      async () => ({ stdout: whisperOutput({ device: 'cpu' }), stderr: '' }),
-      {
-        device: 'cuda',
-        allowGpuFallback: false,
-      },
-    );
+    const { local } = provider(() => whisperResult({ device: 'cpu' }), {
+      device: 'cuda',
+      allowGpuFallback: false,
+    });
 
     await expect(local.transcribe(chunk('chunk-000000.wav'))).rejects.toMatchObject({
       code: 'transcription-gpu-unavailable',
     });
   });
 
-  it('falls back from GPU to CPU only when configured', async () => {
-    const devices: string[] = [];
-    const local = provider(
-      async (_command, args) => {
-        const requestedDevice = String(args[4]);
-        devices.push(requestedDevice);
-        if (requestedDevice === 'cuda') {
-          throw new MediaIngestError('CUDA unavailable', 'transcription-gpu-unavailable', 500);
+  it('falls back from GPU to CPU only when configured, then sticks to the CPU worker', async () => {
+    const { local, configs, requests } = provider(
+      (_payload, config) => {
+        if (workerDevice(config) === 'cuda') {
+          throw new PythonWorkerError(
+            'faster-whisper worker exited unexpectedly (code 1, signal null).',
+            'worker-exited',
+            { stderr: 'CUDA driver version is insufficient', exitCode: 1 },
+          );
         }
-        return { stdout: whisperOutput({ device: 'cpu' }), stderr: '' };
+        return whisperResult({ device: 'cpu' });
       },
-      {
-        device: 'cuda',
-        allowGpuFallback: true,
-      },
+      { device: 'cuda', allowGpuFallback: true },
     );
 
     await expect(local.transcribe(chunk('chunk-000000.wav'))).resolves.toMatchObject({
-      sourceText: 'hello world',
+      segments: [{ text: 'hello world', startMs: 250, endMs: 2_250 }],
     });
-    expect(devices).toEqual(['cuda', 'cpu']);
+    expect(configs.map(workerDevice)).toEqual(['cuda', 'cpu']);
+
+    // Subsequent chunks skip the failed GPU worker entirely.
+    await local.transcribe(chunk('chunk-000001.wav'));
+    expect(configs.map(workerDevice)).toEqual(['cuda', 'cpu']);
+    expect(requests.map((request) => workerDevice(request.config))).toEqual([
+      'cuda',
+      'cpu',
+      'cpu',
+    ]);
   });
 });

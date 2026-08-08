@@ -20,6 +20,9 @@ describe('target language outputs', () => {
       'es',
       'fr',
       'zh',
+      'ar',
+      'ru',
+      'el',
       'la',
     ]);
     expect(catalogue.find((item) => item.language === 'es')).toMatchObject({
@@ -34,10 +37,58 @@ describe('target language outputs', () => {
       availability: 'experimental',
       translationAvailable: false,
     });
+    expect(catalogue.find((item) => item.language === 'ar')).toMatchObject({
+      availability: 'experimental',
+      translationAvailable: false,
+    });
     expect(catalogue.find((item) => item.language === 'la')).toMatchObject({
       availability: 'experimental',
       translationAvailable: false,
     });
+    expect(catalogue.find((item) => item.language === 'ru')).toMatchObject({
+      label: 'Russian',
+      availability: 'experimental',
+      translationAvailable: false,
+    });
+    expect(catalogue.find((item) => item.language === 'el')).toMatchObject({
+      label: 'Greek',
+      availability: 'experimental',
+      translationAvailable: false,
+    });
+  });
+
+  it('marks Arabic and Yoruba selectable once translation support exists', () => {
+    const catalogue = buildTargetLanguageCatalogue({
+      supportedTranslationLanguages: ['ar', 'yo'],
+      supportedVoiceLanguages: [],
+    });
+
+    // Experimental metadata must not block selection when translation works.
+    expect(catalogue.find((item) => item.language === 'ar')).toMatchObject({
+      availability: 'text-only',
+      translationAvailable: true,
+      textOnly: true,
+    });
+    expect(catalogue.find((item) => item.language === 'yo')).toMatchObject({
+      availability: 'text-only',
+      translationAvailable: true,
+      textOnly: true,
+    });
+  });
+
+  it('marks Russian, Greek, Chinese, and Latin selectable once translation support exists', () => {
+    const catalogue = buildTargetLanguageCatalogue({
+      supportedTranslationLanguages: ['ru', 'el', 'zh', 'la'],
+      supportedVoiceLanguages: [],
+    });
+
+    for (const language of ['ru', 'el', 'zh', 'la']) {
+      expect(catalogue.find((item) => item.language === language)).toMatchObject({
+        availability: 'text-only',
+        translationAvailable: true,
+        textOnly: true,
+      });
+    }
   });
 
   it('reports audio-ready and caption-only channels independently', () => {

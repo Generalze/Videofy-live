@@ -20,9 +20,219 @@ import {
   type WebRtcSessionInput,
 } from './media-session.js';
 import { createTranscriptionProvider } from './transcription-provider.js';
-import { createTimestampedTranslationProvider } from './translation-provider.js';
+import {
+  CompositeTimestampedTranslationProvider,
+  M2m100TimestampedTranslationProvider,
+  Nllb200TimestampedTranslationProvider,
+  createTimestampedTranslationProvider,
+  type M2m100Config,
+  type Nllb200Config,
+  type TimestampedTranslationProvider,
+} from './translation-provider.js';
 import { createTextToSpeechProvider } from './text-to-speech-provider.js';
 import { buildTargetLanguageOutputs } from './target-language-outputs.js';
+
+export function buildPiperVoiceIdsByLanguage(
+  voices: IngestConfig['piperVoices'],
+): Map<string, string> {
+  const voiceIds = new Map<string, string>();
+  for (const voice of voices) {
+    if (!voiceIds.has(voice.language)) {
+      voiceIds.set(voice.language, voice.voiceId);
+    }
+  }
+  return voiceIds;
+}
+
+export function resolvePiperSupportedLanguages(voices: IngestConfig['piperVoices']): string[] {
+  return [...new Set(voices.map((voice) => voice.language))];
+}
+
+export type TextToSpeechWiringConfig = Pick<
+  IngestConfig,
+  'textToSpeechProvider' | 'textToSpeechSupportedLanguages' | 'piperVoices' | 'mmsTtsVoices'
+>;
+
+export function resolveTextToSpeechLanguages(config: TextToSpeechWiringConfig): string[] {
+  if (config.textToSpeechProvider === 'piper') {
+    return resolvePiperSupportedLanguages(config.piperVoices);
+  }
+  if (config.textToSpeechProvider === 'piper+mms') {
+    return [
+      ...new Set([
+        ...resolvePiperSupportedLanguages(config.piperVoices),
+        ...config.mmsTtsVoices.map((voice) => voice.language),
+      ]),
+    ];
+  }
+  return config.textToSpeechSupportedLanguages;
+}
+
+export function buildTextToSpeechVoiceIdsByLanguage(
+  config: Pick<IngestConfig, 'textToSpeechProvider' | 'piperVoices' | 'mmsTtsVoices'>,
+): Map<string, string> {
+  const voiceIds = buildPiperVoiceIdsByLanguage(config.piperVoices);
+  if (config.textToSpeechProvider !== 'piper+mms') {
+    return voiceIds;
+  }
+  // Piper voices win when both engines cover a language; MMS fills the rest,
+  // using the model id as the voice id.
+  for (const voice of config.mmsTtsVoices) {
+    if (!voiceIds.has(voice.language)) {
+      voiceIds.set(voice.language, voice.modelId);
+    }
+  }
+  return voiceIds;
+}
+
+export type TranslationWiringConfig = Pick<
+  IngestConfig,
+  | 'translationProvider'
+  | 'translationFallbackProvider'
+  | 'translationTimeoutMs'
+  | 'translationSupportedTargetLanguages'
+  | 'argosPythonExecutable'
+  | 'argosPackageDir'
+  | 'opusMtPythonExecutable'
+  | 'opusMtModelCacheDir'
+  | 'opusMtMaxConcurrency'
+  | 'opusMtAllowModelDownload'
+  | 'opusMtLanguageModels'
+  | 'm2m100PythonExecutable'
+  | 'm2m100ModelId'
+  | 'm2m100LocalPath'
+  | 'm2m100ModelCacheDir'
+  | 'm2m100MaxConcurrency'
+  | 'm2m100AllowModelDownload'
+  | 'nllb200PythonExecutable'
+  | 'nllb200ModelId'
+  | 'nllb200LocalPath'
+  | 'nllb200ModelCacheDir'
+  | 'nllb200MaxConcurrency'
+  | 'nllb200AllowModelDownload'
+>;
+
+export function translationFallbackActive(config: TranslationWiringConfig): boolean {
+  return (
+    config.translationProvider === 'opus-mt' && config.translationFallbackProvider !== 'none'
+  );
+}
+
+function translationFallbackModelId(config: TranslationWiringConfig): string {
+  return config.translationFallbackProvider === 'nllb200'
+    ? config.nllb200ModelId
+    : config.m2m100ModelId;
+}
+
+function opusMtCoveredLanguages(config: TranslationWiringConfig): string[] {
+  return config.translationSupportedTargetLanguages.filter((language) =>
+    config.opusMtLanguageModels.some((model) => model.targetLanguage === language),
+  );
+}
+
+export function resolveTranslationLanguages(config: TranslationWiringConfig): string[] {
+  // The multilingual fallback restores the full configured bound: coverage is
+  // the union of OPUS-MT pairs and the massively multilingual fallback set
+  // (M2M100 or NLLB-200).
+  if (config.translationProvider !== 'opus-mt' || translationFallbackActive(config)) {
+    return config.translationSupportedTargetLanguages;
+  }
+  return opusMtCoveredLanguages(config);
+}
+
+export function buildTranslationModelIds(config: TranslationWiringConfig): Map<string, string> {
+  const modelIds = new Map(
+    config.translationProvider === 'm2m100'
+      ? resolveTranslationLanguages(config).map(
+          (language) => [language, config.m2m100ModelId] as const,
+        )
+      : config.opusMtLanguageModels.map((model) => [model.targetLanguage, model.modelId] as const),
+  );
+  if (translationFallbackActive(config)) {
+    for (const language of resolveTranslationLanguages(config)) {
+      if (!modelIds.has(language)) modelIds.set(language, translationFallbackModelId(config));
+    }
+  }
+  return modelIds;
+}
+
+export function buildTranslationProvider(
+  config: TranslationWiringConfig,
+): TimestampedTranslationProvider {
+  const translationLanguages = resolveTranslationLanguages(config);
+  const m2m100Config: M2m100Config = {
+    pythonExecutable: config.m2m100PythonExecutable,
+    modelId: config.m2m100ModelId,
+    localPath: config.m2m100LocalPath,
+    modelCacheDir: config.m2m100ModelCacheDir,
+    supportedTargetLanguages: translationLanguages,
+    timeoutMs: config.translationTimeoutMs,
+    maxConcurrency: config.m2m100MaxConcurrency,
+    allowModelDownload: config.m2m100AllowModelDownload,
+  };
+  const primary = createTimestampedTranslationProvider({
+    providerName: config.translationProvider,
+    supportedTargetLanguages: translationLanguages,
+    argos: {
+      pythonExecutable: config.argosPythonExecutable,
+      packageDir: config.argosPackageDir,
+      supportedTargetLanguages: translationLanguages,
+      timeoutMs: config.translationTimeoutMs,
+    },
+    opusMt: {
+      pythonExecutable: config.opusMtPythonExecutable,
+      modelCacheDir: config.opusMtModelCacheDir,
+      // The primary keeps its own coverage so uncovered pairs fail fast with
+      // `unsupported-language` and the composite reroutes them.
+      supportedTargetLanguages: translationFallbackActive(config)
+        ? opusMtCoveredLanguages(config)
+        : translationLanguages,
+      languageModels: config.opusMtLanguageModels,
+      timeoutMs: config.translationTimeoutMs,
+      maxConcurrency: config.opusMtMaxConcurrency,
+      allowModelDownload: config.opusMtAllowModelDownload,
+    },
+    m2m100: m2m100Config,
+  });
+  if (!translationFallbackActive(config)) {
+    return primary;
+  }
+  if (config.translationFallbackProvider === 'nllb200') {
+    // NLLB-200 (CC-BY-NC-4.0, non-commercial use only) replaces M2M100 where
+    // its output degenerates (empirically: Yoruba repetition loops).
+    const nllb200Config: Nllb200Config = {
+      pythonExecutable: config.nllb200PythonExecutable,
+      modelId: config.nllb200ModelId,
+      localPath: config.nllb200LocalPath,
+      modelCacheDir: config.nllb200ModelCacheDir,
+      supportedTargetLanguages: translationLanguages,
+      timeoutMs: config.translationTimeoutMs,
+      maxConcurrency: config.nllb200MaxConcurrency,
+      allowModelDownload: config.nllb200AllowModelDownload,
+    };
+    return new CompositeTimestampedTranslationProvider({
+      primary,
+      fallback: new Nllb200TimestampedTranslationProvider(nllb200Config),
+    });
+  }
+  return new CompositeTimestampedTranslationProvider({
+    primary,
+    fallback: new M2m100TimestampedTranslationProvider(m2m100Config),
+  });
+}
+
+export function programmeTimestampMs(
+  events: readonly TranscriptionEvent[],
+  previousMs = 0,
+): number {
+  let positionMs = previousMs;
+  for (const event of events) {
+    if (event.status === 'transcribed' || event.status === 'failed') {
+      positionMs = Math.max(positionMs, event.endMs);
+    }
+  }
+  return positionMs;
+}
 
 export class IngestService {
   private socket: Socket | null = null;
@@ -34,15 +244,8 @@ export class IngestService {
 
   constructor(private readonly config: IngestConfig) {
     this.provider = new MockProvider();
-    const translationLanguages =
-      config.translationProvider === 'opus-mt'
-        ? config.translationSupportedTargetLanguages.filter((language) =>
-            config.opusMtLanguageModels.some((model) => model.targetLanguage === language),
-          )
-        : config.translationSupportedTargetLanguages;
-    const translationModelIds = new Map(
-      config.opusMtLanguageModels.map((model) => [model.targetLanguage, model.modelId]),
-    );
+    const translationLanguages = resolveTranslationLanguages(config);
+    const translationModelIds = buildTranslationModelIds(config);
     this.sessions = new ProcessingSessionStore({
       outputBaseDir: config.audioChunkDir,
       webRtcStagingDir: config.webrtcAudioChunkStagingDir,
@@ -62,25 +265,7 @@ export class IngestService {
         },
       }),
       transcriptionTimeoutMs: config.transcriptionTimeoutMs,
-      translationProvider: createTimestampedTranslationProvider({
-        providerName: config.translationProvider,
-        supportedTargetLanguages: translationLanguages,
-        argos: {
-          pythonExecutable: config.argosPythonExecutable,
-          packageDir: config.argosPackageDir,
-          supportedTargetLanguages: translationLanguages,
-          timeoutMs: config.translationTimeoutMs,
-        },
-        opusMt: {
-          pythonExecutable: config.opusMtPythonExecutable,
-          modelCacheDir: config.opusMtModelCacheDir,
-          supportedTargetLanguages: translationLanguages,
-          languageModels: config.opusMtLanguageModels,
-          timeoutMs: config.translationTimeoutMs,
-          maxConcurrency: config.opusMtMaxConcurrency,
-          allowModelDownload: config.opusMtAllowModelDownload,
-        },
-      }),
+      translationProvider: buildTranslationProvider(config),
       translationTimeoutMs: config.translationTimeoutMs,
       translationTargetLanguage: config.translationTargetLanguage,
       translationSupportedTargetLanguages: translationLanguages,
@@ -94,25 +279,21 @@ export class IngestService {
           executable: config.piperExecutable,
           ffmpegExecutable: config.piperFfmpegExecutable,
           timeoutMs: config.textToSpeechTimeoutMs,
-          voices: [
-            {
-              voiceId: config.piperVoiceId,
-              language: config.piperVoiceLanguage,
-              modelPath: config.piperModelPath,
-              configPath: config.piperConfigPath,
-            },
-          ],
+          voices: config.piperVoices,
+        },
+        mms: {
+          pythonExecutable: config.mmsTtsPythonExecutable,
+          ffmpegExecutable: config.piperFfmpegExecutable,
+          voices: config.mmsTtsVoices,
+          modelCacheDir: config.mmsTtsModelCacheDir,
+          allowModelDownload: config.mmsTtsAllowModelDownload,
+          timeoutMs: config.textToSpeechTimeoutMs,
         },
       }),
       textToSpeechTimeoutMs: config.textToSpeechTimeoutMs,
       textToSpeechVoiceId: config.textToSpeechDefaultVoiceId,
-      textToSpeechVoiceIds: new Map([
-        [config.piperVoiceLanguage, config.piperVoiceId],
-      ]),
-      textToSpeechSupportedLanguages:
-        config.textToSpeechProvider === 'piper'
-          ? [config.piperVoiceLanguage]
-          : config.textToSpeechSupportedLanguages,
+      textToSpeechVoiceIds: buildTextToSpeechVoiceIdsByLanguage(config),
+      textToSpeechSupportedLanguages: resolveTextToSpeechLanguages(config),
       renderViewerReadyMediaOnCompletion: false,
       onSessionChange: (session) => {
         this.currentSession = session;
@@ -393,6 +574,21 @@ export class IngestService {
     logger.info('Mock video source stopped');
   }
 
+  private programmeClockSessionId: string | null = null;
+  private programmeClockMs = 0;
+
+  private currentProgrammeTimestampMs(session: ProcessingSession): number {
+    if (this.programmeClockSessionId !== session.id) {
+      this.programmeClockSessionId = session.id;
+      this.programmeClockMs = 0;
+    }
+    this.programmeClockMs = programmeTimestampMs(
+      session.transcription.events,
+      this.programmeClockMs,
+    );
+    return this.programmeClockMs;
+  }
+
   private emitState(): void {
     if (!this.socket?.connected) return;
 
@@ -427,7 +623,7 @@ export class IngestService {
           }),
           aiProviderStatus: this.currentSession.aiProviderStatus,
           monitoring: this.currentSession.monitoring,
-          videoTimestampMs: 0,
+          videoTimestampMs: this.currentProgrammeTimestampMs(this.currentSession),
           sourceAudioActive:
             this.currentSession.sourceKind === 'microphone'
               ? this.currentSession.microphoneCapture.status === 'capturing'

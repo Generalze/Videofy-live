@@ -57,10 +57,16 @@ export function buildViewerReadyFfmpegArgs(input: ViewerReadyMediaRenderInput): 
     const inputIndex = index + 1;
     const label = `tts${index}`;
     const delayMs = Math.max(0, Math.round(segment.startMs));
+    const fadeOutStartSec = Math.max(
+      0,
+      (Math.max(0, segment.endMs - segment.startMs) - CLIP_FADE_MS) / 1000,
+    );
     audioFilters.push(
-      `[${inputIndex}:a:0]adelay=${delayMs}|${delayMs},volume=${formatVolume(
-        input.translatedVolume,
-      )}[${label}]`,
+      `[${inputIndex}:a:0]afade=t=in:st=0:d=${formatSeconds(
+        CLIP_FADE_MS / 1000,
+      )},afade=t=out:st=${formatSeconds(fadeOutStartSec)}:d=${formatSeconds(
+        CLIP_FADE_MS / 1000,
+      )},adelay=${delayMs}|${delayMs},volume=${formatVolume(input.translatedVolume)}[${label}]`,
     );
     mixInputs.push(`[${label}]`);
   });
@@ -109,8 +115,14 @@ export function buildSrt(segments: ViewerReadyMediaRenderSegment[]): string {
     .join('\n');
 }
 
+const CLIP_FADE_MS = 15;
+
 function formatVolume(value: number): string {
   return String(Math.max(0, Math.min(1, value)));
+}
+
+function formatSeconds(value: number): string {
+  return String(Math.round(value * 1000) / 1000);
 }
 
 function formatSrtTimestamp(ms: number): string {

@@ -266,6 +266,27 @@ const TARGET_LANGUAGE_CANDIDATES = [
     commercialUse: 'unknown' as const,
   },
   {
+    language: 'ar',
+    label: 'Arabic',
+    experimental: true,
+    license: 'OPUS-MT (Apache-2.0/CC) model-dependent; validate before partner use',
+    commercialUse: 'unknown' as const,
+  },
+  {
+    language: 'ru',
+    label: 'Russian',
+    experimental: true,
+    license: 'OPUS-MT / NLLB-200 (CC-BY-NC-4.0) model-dependent; validate before partner use',
+    commercialUse: 'unknown' as const,
+  },
+  {
+    language: 'el',
+    label: 'Greek',
+    experimental: true,
+    license: 'OPUS-MT / NLLB-200 (CC-BY-NC-4.0) model-dependent; validate before partner use',
+    commercialUse: 'unknown' as const,
+  },
+  {
     language: 'la',
     label: 'Latin',
     experimental: true,

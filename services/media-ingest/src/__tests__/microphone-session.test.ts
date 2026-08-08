@@ -45,7 +45,13 @@ async function store(
     transcriptionProvider: transcriber(
       options.transcribe ??
         (async (input) => ({
-          sourceText: `mic text ${input.chunk.index}`,
+          segments: [
+            {
+              text: `mic text ${input.chunk.index}`,
+              startMs: 0,
+              endMs: input.chunk.endMs - input.chunk.startMs,
+            },
+          ],
           detectedLanguage: 'en',
           confidence: 0.92,
         })),
@@ -123,6 +129,58 @@ describe('microphone capture sessions', () => {
     expect(afterSecond.monitoring.currentStage).toBe('microphone-capture');
   });
 
+  it('fans out multi-segment live chunks into per-segment captions, translations and audio', async () => {
+    const sessions = await store({
+      transcribe: async (input) => ({
+        segments:
+          input.chunk.index === 0
+            ? [
+                { text: 'first.', startMs: 0, endMs: 5_000 },
+                { text: 'second.', startMs: 5_500, endMs: 10_000 },
+                { text: 'third.', startMs: 10_500, endMs: 16_000 },
+              ]
+            : [{ text: 'fourth.', startMs: 0, endMs: 7_500 }],
+        detectedLanguage: 'en',
+        confidence: 0.92,
+      }),
+    });
+    const session = await sessions.createMicrophoneSession({ targetLanguage: 'es' });
+
+    await sessions.ingestMicrophoneChunk(session.id, {
+      sequence: 0,
+      startMs: 0,
+      endMs: 15_000,
+      mimeType: 'audio/webm;codecs=opus',
+      sizeBytes: 1200,
+    });
+    const updated = await sessions.ingestMicrophoneChunk(session.id, {
+      sequence: 1,
+      startMs: 15_000,
+      endMs: 22_500,
+      mimeType: 'audio/webm;codecs=opus',
+      sizeBytes: 900,
+    });
+
+    expect(updated.transcription.events).toHaveLength(4);
+    expect(updated.transcription.events.map((event) => event.sequence)).toEqual([0, 1, 2, 3]);
+    expect(new Set(updated.transcription.events.map((event) => event.chunkId)).size).toBe(4);
+    expect(updated.transcription.events.map((event) => [event.startMs, event.endMs])).toEqual([
+      [0, 5_000],
+      [5_500, 10_000],
+      [10_500, 15_000],
+      [15_000, 22_500],
+    ]);
+    expect(updated.translation.events.map((event) => event.sequence)).toEqual([0, 1, 2, 3]);
+    expect(updated.translation.events.map((event) => event.translatedText)).toEqual([
+      'es:first.',
+      'es:second.',
+      'es:third.',
+      'es:fourth.',
+    ]);
+    expect(updated.generatedAudio.events.map((event) => event.sequence)).toEqual([0, 1, 2, 3]);
+    expect(updated.generatedAudio.events.every((event) => event.status === 'generated')).toBe(true);
+  });
+
   it('rejects timestamp gaps or overlaps with a visible failed session', async () => {
     const sessions = await store();
     const session = await sessions.createMicrophoneSession();
@@ -188,7 +246,11 @@ describe('microphone capture sessions', () => {
       }),
     ).rejects.toMatchObject({ code: 'duplicate-processing' });
 
-    release({ sourceText: 'done', detectedLanguage: 'en', confidence: 0.8 });
+    release({
+      segments: [{ text: 'done', startMs: 0, endMs: 15_000 }],
+      detectedLanguage: 'en',
+      confidence: 0.8,
+    });
     await first;
   });
 

@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type {
   AiProviderStatusMetadata,
+  AudioChunkMetadata,
   AudioExtractionMetadata,
   GeneratedAudioEvent,
   MediaCodecInfo,
@@ -42,6 +43,7 @@ import {
   MockTranscriptionProvider,
   transcribeWithTimeout,
   type TranscriptionProvider,
+  type TranscriptionProviderResult,
 } from './transcription-provider.js';
 import {
   MockTimestampedTranslationProvider,
@@ -241,8 +243,6 @@ const DUPLICATE_PROTECTED_STATES = new Set<StreamStatus>([
   'ready',
   'processing',
   'paused',
-  'completed',
-  'failed',
 ]);
 
 const ALLOWED_TRANSITIONS: Record<StreamStatus, readonly StreamStatus[]> = {
@@ -401,6 +401,7 @@ export class ProcessingSessionStore {
   private readonly targetLanguageCatalogue: TargetLanguageCapability[];
   private readonly onGeneratedAudioReady: (event: GeneratedAudioEvent, session: ProcessingSession) => void;
   private readonly generatedAudioReadyKeys = new Set<string>();
+  private readonly transcriptionSequences = new Map<string, number>();
 
   constructor(options: ProcessingSessionStoreOptions) {
     this.outputBaseDir = options.outputBaseDir;
@@ -645,6 +646,7 @@ export class ProcessingSessionStore {
         force: true,
       });
       this.sessions.delete(existing.id);
+      this.transcriptionSequences.delete(existing.id);
     }
 
     const targetLanguage = this.resolveSessionTargetLanguage(input.targetLanguage);
@@ -1016,6 +1018,7 @@ export class ProcessingSessionStore {
       );
     }
 
+    this.transcriptionSequences.delete(session.id);
     session.transcription = {
       ...emptyTranscription('queued'),
       totalChunks: readyChunks.length,
@@ -1089,12 +1092,13 @@ export class ProcessingSessionStore {
 
       const next = await this.processTranscriptionEvents(session, [retrying]);
       const retried = next.transcription.events.find((item) => item.chunkId === chunkId);
+      const retrySucceeded = retried ? retried.status === 'transcribed' : true;
       this.recordSessionEvent(
         session,
         'recovery-event',
         'retry-transcription',
-        retried?.status === 'transcribed' ? 'succeeded' : 'failed',
-        retried?.status === 'transcribed'
+        retrySucceeded ? 'succeeded' : 'failed',
+        retrySucceeded
           ? `Transcription retry succeeded for ${chunkId}.`
           : (retried?.error ?? `Transcription retry failed for ${chunkId}.`),
         chunkId,
@@ -2073,7 +2077,7 @@ export class ProcessingSessionStore {
     this.onTranscriptionEvent(transcribing);
     this.emitSession(session);
 
-    let transcribed: TranscriptionEvent;
+    let transcribedSegments: TranscriptionEvent[];
     try {
       const result = await transcribeWithTimeout(
         this.transcriptionProvider,
@@ -2091,19 +2095,11 @@ export class ProcessingSessionStore {
         language: result.detectedLanguage,
         confidence: result.confidence,
       });
-      transcribed = {
-        ...transcribing,
-        sourceText: result.sourceText,
-        detectedLanguage: result.detectedLanguage,
-        confidence: result.confidence,
-        sourceLanguageRevision: session.sourceLanguageControl.revision,
-        providerLatencyMs: result.providerLatencyMs ?? null,
-        status: 'transcribed' as const,
-        createdAt: new Date().toISOString(),
-      };
-      this.replaceTranscriptionEvent(session, transcribed);
+      transcribedSegments = this.fanOutTranscribedSegments(session, transcribing, chunk, result);
       this.updateTranscriptionProgress(session);
-      this.onTranscriptionEvent(transcribed);
+      for (const transcribed of transcribedSegments) {
+        this.onTranscriptionEvent(transcribed);
+      }
       this.emitSession(session);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Transcription failed.';
@@ -2119,7 +2115,11 @@ export class ProcessingSessionStore {
       this.emitSession(session);
       return this.failMicrophoneSession(session, error, 'Microphone transcription failed.');
     }
-    return await this.processMicrophoneTranslationEvent(session, transcribed);
+    let updated: ProcessingSession = { ...session };
+    for (const transcribed of transcribedSegments) {
+      updated = await this.processMicrophoneTranslationEvent(session, transcribed);
+    }
+    return updated;
   }
 
   private async processWebRtcTranscriptionEvent(
@@ -2165,22 +2165,23 @@ export class ProcessingSessionStore {
         language: result.detectedLanguage,
         confidence: result.confidence,
       });
-      const transcribed = {
-        ...transcribing,
-        sourceText: result.sourceText,
-        detectedLanguage: result.detectedLanguage,
-        confidence: result.confidence,
-        sourceLanguageRevision: session.sourceLanguageControl.revision,
-        providerLatencyMs: result.providerLatencyMs ?? null,
-        status: 'transcribed' as const,
-        createdAt: new Date().toISOString(),
-      };
-      this.replaceTranscriptionEvent(session, transcribed);
+      const transcribedSegments = this.fanOutTranscribedSegments(
+        session,
+        transcribing,
+        chunk,
+        result,
+      );
       this.updateTranscriptionProgress(session);
       this.updateWebRtcBridgeMetadata(session);
-      this.onTranscriptionEvent(transcribed);
+      for (const transcribed of transcribedSegments) {
+        this.onTranscriptionEvent(transcribed);
+      }
       this.emitSession(session);
-      return await this.processMicrophoneTranslationEvent(session, transcribed);
+      let updated: ProcessingSession = { ...session };
+      for (const transcribed of transcribedSegments) {
+        updated = await this.processMicrophoneTranslationEvent(session, transcribed);
+      }
+      return updated;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Transcription failed.';
       const failed = {
@@ -2429,18 +2430,14 @@ export class ProcessingSessionStore {
           language: result.detectedLanguage,
           confidence: result.confidence,
         });
-        const transcribed = {
-          ...transcribing,
-          sourceText: result.sourceText,
-          detectedLanguage: result.detectedLanguage,
-          confidence: result.confidence,
-          sourceLanguageRevision: session.sourceLanguageControl.revision,
-          providerLatencyMs: result.providerLatencyMs ?? null,
-          status: 'transcribed' as const,
-          createdAt: new Date().toISOString(),
-        };
-        this.replaceTranscriptionEvent(session, transcribed);
-        this.onTranscriptionEvent(transcribed);
+        for (const transcribed of this.fanOutTranscribedSegments(
+          session,
+          transcribing,
+          chunk,
+          result,
+        )) {
+          this.onTranscriptionEvent(transcribed);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Transcription failed.';
         const failed = {
@@ -2475,6 +2472,18 @@ export class ProcessingSessionStore {
       };
       this.transition(session.id, 'failed');
       return { ...session };
+    }
+
+    if (session.transcription.events.length === 0) {
+      session.error = null;
+      const { error: _transcriptionError, ...transcriptionWithoutError } = session.transcription;
+      session.transcription = {
+        ...transcriptionWithoutError,
+        status: 'transcribed',
+        progressPct: 100,
+      };
+      this.emitSession(session);
+      return this.transition(session.id, 'completed');
     }
 
     if (session.transcription.events.every((event) => event.status === 'transcribed')) {
@@ -2531,6 +2540,48 @@ export class ProcessingSessionStore {
     session.transcription.events = session.transcription.events
       .map((event) => (event.chunkId === next.chunkId ? next : event))
       .sort((a, b) => a.sequence - b.sequence);
+  }
+
+  private nextTranscriptionSequence(sessionId: string): number {
+    const sequence = this.transcriptionSequences.get(sessionId) ?? 0;
+    this.transcriptionSequences.set(sessionId, sequence + 1);
+    return sequence;
+  }
+
+  private fanOutTranscribedSegments(
+    session: ProcessingSession,
+    transcribing: TranscriptionEvent,
+    chunk: AudioChunkMetadata,
+    result: TranscriptionProviderResult,
+  ): TranscriptionEvent[] {
+    const transcribed = result.segments
+      .filter((segment) => segment.text.trim() !== '')
+      .map((segment, index): TranscriptionEvent => {
+        const startMs = Math.min(
+          Math.max(chunk.startMs + segment.startMs, chunk.startMs),
+          chunk.endMs,
+        );
+        const endMs = Math.min(Math.max(chunk.startMs + segment.endMs, startMs), chunk.endMs);
+        return {
+          ...transcribing,
+          chunkId: `${transcribing.chunkId}-s${index}`,
+          sequence: this.nextTranscriptionSequence(session.id),
+          sourceText: segment.text.trim(),
+          detectedLanguage: result.detectedLanguage,
+          confidence: result.confidence,
+          startMs,
+          endMs,
+          sourceLanguageRevision: session.sourceLanguageControl.revision,
+          providerLatencyMs: result.providerLatencyMs ?? null,
+          status: 'transcribed',
+          createdAt: new Date().toISOString(),
+        };
+      });
+    session.transcription.events = session.transcription.events
+      .filter((event) => event.chunkId !== transcribing.chunkId)
+      .concat(transcribed)
+      .sort((a, b) => a.sequence - b.sequence);
+    return transcribed;
   }
 
   private updateTranscriptionProgress(session: ProcessingSession): void {
@@ -3943,8 +3994,13 @@ async function readWavDurationMs(audioPath: string): Promise<number> {
       const sampleRate = buffer.readUInt32LE(dataOffset + 4);
       byteRate = buffer.readUInt32LE(dataOffset + 8);
       const bitsPerSample = buffer.readUInt16LE(dataOffset + 14);
-      if (audioFormat !== 1 || channels !== 1 || sampleRate !== 16_000 || bitsPerSample !== 16) {
-        throw new Error('Generated WAV must be mono 16 kHz PCM 16-bit.');
+      if (
+        audioFormat !== 1 ||
+        channels !== 1 ||
+        ![16_000, 22_050, 24_000, 44_100, 48_000].includes(sampleRate) ||
+        bitsPerSample !== 16
+      ) {
+        throw new Error('Generated WAV must be mono PCM 16-bit at a supported sample rate.');
       }
     } else if (chunkId === 'data') {
       dataSize = chunkSize;
