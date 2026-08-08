@@ -285,6 +285,17 @@ export class WebRtcSignallingClient {
       throw this.clientError('duplicate-broadcaster', 'Broadcaster signalling session is already active.');
     }
     this.requireConnected();
+    if (this.snapshot.state === 'closed' || this.snapshot.state === 'failed') {
+      this.update({
+        sessionId: null,
+        shareableSessionId: null,
+        revision: 0,
+        peers: [],
+        listenerCount: 0,
+        lastEventType: null,
+        lastError: null,
+      });
+    }
     this.transition('creating-session');
     const envelope = this.incomingEnvelope('session-create', {
       payload: requestedSessionId ? { requestedSessionId } : {},

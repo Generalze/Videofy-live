@@ -168,6 +168,52 @@ describe('WebRtcSignallingClient', () => {
     });
   });
 
+  it('creates a new broadcaster session after the previous session closes', async () => {
+    const transport = new MockTransport();
+    const client = new WebRtcSignallingClient({
+      role: 'broadcaster',
+      broadcastId: 'broadcast_demo',
+      peerId: 'peer_broadcaster',
+      createId: ids(),
+    });
+    client.attach(transport);
+    transport.serverEmit(SOCKET_EVENTS.CONNECTED);
+
+    const firstCreated = client.createSession();
+    const firstRequest = transport.emitted[0]!.payload as Record<string, unknown>;
+    transport.serverEmit(
+      SOCKET_EVENTS.WEBRTC_SESSION_EVENT,
+      createAck(firstRequest, { revision: 4 }),
+    );
+    await firstCreated;
+
+    const closed = client.closeSession('programme completed');
+    const closeRequest = transport.emitted[1]!.payload as Record<string, unknown>;
+    transport.serverEmit(SOCKET_EVENTS.WEBRTC_SESSION_EVENT, {
+      ...closeRequest,
+      messageId: 'msg_closed',
+      senderRole: 'server',
+    });
+    await expect(closed).resolves.toMatchObject({ state: 'closed', sessionId: 'wrs_demo' });
+
+    const secondCreated = client.createSession();
+    const secondRequest = transport.emitted[2]!.payload as Record<string, unknown>;
+    transport.serverEmit(
+      SOCKET_EVENTS.WEBRTC_SESSION_EVENT,
+      createAck(secondRequest, {
+        messageId: 'msg_created_again',
+        sessionId: 'wrs_next',
+        revision: 0,
+      }),
+    );
+
+    await expect(secondCreated).resolves.toMatchObject({
+      state: 'joined',
+      sessionId: 'wrs_next',
+      revision: 0,
+    });
+  });
+
   it('joins a listener session and rejects duplicate joins', async () => {
     const transport = new MockTransport();
     const client = new WebRtcSignallingClient({
