@@ -55,20 +55,38 @@ interface AudioSyncDescriptor {
 
 ## Current state (this release)
 
-- `videoTimestampMs` is carried in every event.
-- `AudioSyncDescriptor` interface is defined.
-- No video buffering is implemented.
-- A basic browser translated-audio queue is implemented for ordered mock clips.
-- Real translated speech audio is not generated.
+- `videoTimestampMs` in `media:state` now reports the real programme position
+  (max `endMs` across processed transcription chunks, monotonic per session)
+  instead of a hardcoded 0.
+- The listener clock anchor is forward-only: `media:state` snapshots can no
+  longer reset the programme clock backwards mid-session.
+- Speech is segmented per Whisper segment (sentence-sized, accurate
+  `startMs`/`endMs`), not per fixed 15 s / 5 s chunk, so audio and captions are
+  scheduled at utterance granularity.
+- Generated clips are duration-fitted at synthesis time: when a translated clip
+  overruns its segment window by more than 5 %, an `atempo` filter (clamped to
+  1.25×) compresses it to approximately fit.
+- Late playback catch-up is gentle: clips late by less than the drop tolerance
+  play from the start at 1.1× rather than being seek-trimmed mid-word; only
+  clips past the drop tolerance are trimmed or skipped.
+- Uploaded programmes gate the initial video start until the first translated
+  clip for the selected language is buffered (or 15 s elapse), instead of
+  starting the video ahead of generation.
+- Live VAD is enabled by default, ending live segments at natural pauses
+  (600 ms end-silence, 7 s max segment).
+- Tuning knobs: `VITE_VIEWER_SYNC_DELAY_MS` (audio schedule delay, default
+  8000 ms) and `VITE_VIEWER_LATE_DROP_TOLERANCE_MS` (default 2500 ms).
 
-## Planned synchronisation flow (next phase)
+## Remaining gaps (next phase)
 
-1. The browser maintains a running estimate of `synchronizationOffsetMs` based on received events.
-2. When a translation event arrives with `audioUrl` set, the browser:
-   a. Reads `videoTimestampMs` from the event.
-   b. Reads the current video playhead position.
-   c. Waits until `Math.abs(videoPlayhead - videoTimestampMs) < threshold` before playing.
-3. If the offset is consistently large, the browser increases the video buffer.
+1. Live WebRTC video is not yet delayed to match the audio-side sync delay —
+   set `receiver.jitterBufferTarget`/`playoutDelayHint` on the listener's
+   RTCRtpReceivers so live video renders ~`VIEWER_SYNC_DELAY_MS` late and lips
+   align with interpretation.
+2. Derive the sync delay from measured pipeline latency instead of a fixed
+   constant, updating the receiver delay and audio clock offset together.
+3. `AudioSyncDescriptor` is still defined but not yet constructed/attached to
+   delivery events.
 
 ## Audio mode trade-offs
 

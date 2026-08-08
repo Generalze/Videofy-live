@@ -37,13 +37,45 @@ Human review remains pending for:
 
 Final P5.3 acceptance did not complete those human-review items because no human reviewer or approved physical audio samples were available in the Codex environment.
 
+## Multi-Voice Configuration
+
+Multiple Piper voices can now be configured simultaneously via `PIPER_VOICES`
+(comma-separated entries of `language|voiceId|modelPath[|configPath]`; fields
+are pipe-separated because Windows paths contain colons). Per-voice prosody and
+sample-rate overrides go in `PIPER_VOICE_SETTINGS` (JSON keyed by voiceId:
+`lengthScale`, `noiseScale`, `noiseW`, `sentenceSilence`, `sampleRateHz`).
+When `PIPER_VOICES` is set, the supported TTS language list is derived from the
+configured voices; the legacy `PIPER_VOICE_ID`/`PIPER_MODEL_PATH` vars remain a
+single-voice fallback. Use forward slashes in Windows paths inside `.env`.
+
+As of 2026-08-08 the local machine has Piper voices for es
+(`es_ES-sharvard-medium`), fr (`fr_FR-siwis-medium`), pt (`pt_BR-faber-medium`),
+ar (`ar_JO-kareem-medium`), zh (`zh_CN-huayan-medium`), ru
+(`ru_RU-irina-medium`), and el (`el_GR-rapunzelina-low` — the only open Greek
+voice, low-quality tier), with OPUS-MT models for en->es/fr/ar/zh/ru/el plus
+`opus-mt-en-ROMANCE` serving pt and la (multi-target models get the `>>lang<<`
+control token automatically). The fallback chain
+`TRANSLATION_FALLBACK_PROVIDER=nllb200` routes pairs OPUS-MT cannot serve
+(en->yo) through `facebook/nllb-200-distilled-600M`, which replaced M2M100 after
+side-by-side testing showed M2M100's Yoruba degenerating into repetition while
+NLLB produced fluent tonal Yoruba. `TEXT_TO_SPEECH_PROVIDER=piper+mms` covers yo
+(`facebook/mms-tts-yor`) and la (`facebook/mms-tts-lat`). **Licence caution:
+NLLB-200 and all MMS voices are CC-BY-NC-4.0 (non-commercial) — review before
+any commercial deployment.** All generation is repetition-hardened
+(`no_repeat_ngram_size=3`; beams on the multilingual models). Generated audio is kept at the voice's native sample rate
+(default 22 050 Hz), loudness-normalised (`loudnorm I=-19`), and time-compressed
+(max 1.25×) only when a clip overruns its segment window. Adding a spoken
+language now requires only downloading a voice model and adding one
+`PIPER_VOICES` entry.
+
 ## Proposed Or Blocked Targets
 
 | Provider | Model or voice | Language | Licence evidence | Commercial review | Local path or cache | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | OPUS-MT | `Helsinki-NLP/opus-mt-en-fr` | English to French | model-dependent | pending | not validated in P5.2 | proposed |
 | OPUS-MT | `Helsinki-NLP/opus-mt-en-ROMANCE` | English to Portuguese | model-dependent | pending | not validated in P5.2 | proposed |
-| OPUS-MT | Yoruba candidate | English to Yoruba | model-dependent | pending | not selected | blocked |
+| M2M100 | `facebook/m2m100_418M` | English to Spanish, French, Portuguese, Yoruba and Chinese | MIT model card | reviewable | runtime support implemented; local model and quality validation pending | proposed |
+| Local model | Latin candidate | English to Latin | no approved model selected | pending | unsupported and hidden from selectable outputs | blocked |
 | Piper | French voice candidate | French | voice-dependent | pending | not selected | blocked |
 | Piper | Portuguese voice candidate | Portuguese | voice-dependent | pending | not selected | blocked |
 | Piper | Yoruba voice candidate | Yoruba | voice-dependent | pending | not selected | blocked |
