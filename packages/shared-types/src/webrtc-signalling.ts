@@ -144,6 +144,10 @@ export interface WebRtcTargetPeerPayload {
 
 export interface WebRtcPeerReadyPayload {
   state: WebRtcPeerState;
+  /** Optional (backward compatible): whether the backend actually received an audio track. */
+  audioTrackReceived?: boolean;
+  /** Optional (backward compatible): whether the backend actually received a video track. */
+  videoTrackReceived?: boolean;
 }
 
 export interface WebRtcDisconnectPayload {

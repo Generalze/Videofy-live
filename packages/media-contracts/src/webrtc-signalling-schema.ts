@@ -148,6 +148,9 @@ const PeerReadySchema = RequiredSessionEnvelopeBaseSchema.extend({
   type: z.literal('peer-ready'),
   payload: z.object({
     state: WebRtcPeerStateSchema,
+    // Truthful backend media receipt so clients cannot fabricate video state.
+    audioTrackReceived: z.boolean().optional(),
+    videoTrackReceived: z.boolean().optional(),
   }),
 });
 

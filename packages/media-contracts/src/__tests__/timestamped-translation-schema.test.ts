@@ -31,6 +31,24 @@ describe('TimestampedTranslationEventSchema validation', () => {
     expect(result.translatedText).toBe('[fr] hello');
   });
 
+  it('preserves the optional sourceLanguageRevision instead of stripping it', () => {
+    const result = parseTimestampedTranslationEvent({
+      ...validEvent,
+      sourceLanguageRevision: 2,
+    });
+
+    expect(result.sourceLanguageRevision).toBe(2);
+  });
+
+  it('rejects a negative sourceLanguageRevision', () => {
+    const result = safeParseTimestampedTranslationEvent({
+      ...validEvent,
+      sourceLanguageRevision: -1,
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it('accepts empty source and translated text', () => {
     const result = safeParseTimestampedTranslationEvent({
       ...validEvent,
