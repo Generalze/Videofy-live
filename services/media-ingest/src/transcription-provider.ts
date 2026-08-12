@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { basename, extname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { AudioChunkMetadata } from '@videofy-live/shared-types';
@@ -13,6 +15,30 @@ import {
 
 const execFileAsync = promisify(execFile);
 const COMMAND_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
+const WARMUP_SILENCE_MS = 200;
+const WARMUP_TIMEOUT_MS = 300_000;
+
+/** Minimal 16 kHz mono PCM16 WAV of silence for provider warm-up. */
+function silentWav(durationMs: number): Buffer {
+  const sampleRate = 16_000;
+  const sampleCount = Math.max(1, Math.round((durationMs / 1000) * sampleRate));
+  const dataBytes = sampleCount * 2;
+  const buffer = Buffer.alloc(44 + dataBytes);
+  buffer.write('RIFF', 0, 'ascii');
+  buffer.writeUInt32LE(36 + dataBytes, 4);
+  buffer.write('WAVE', 8, 'ascii');
+  buffer.write('fmt ', 12, 'ascii');
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * 2, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write('data', 36, 'ascii');
+  buffer.writeUInt32LE(dataBytes, 40);
+  return buffer;
+}
 
 export interface TranscriptionProviderInput {
   sessionId: string;
@@ -39,6 +65,8 @@ export interface TranscriptionProviderResult {
 export interface TranscriptionProvider {
   readonly name: string;
   transcribe(input: TranscriptionProviderInput): Promise<TranscriptionProviderResult>;
+  /** Optional: pre-load the model so the first real chunk pays no cold start. */
+  warmUp?(): Promise<void>;
 }
 
 export interface TranscriptionProviderConfig {
@@ -151,6 +179,29 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
     validateFasterWhisperConfig(options);
     this.runCommand = options.runCommand ?? defaultCommandRunner;
     this.createWorker = options.createWorker ?? createPersistentPythonWorker;
+  }
+
+  /**
+   * Loads the model ahead of the first real chunk by transcribing a tiny
+   * silent clip. Without this, the first upload after service start pays the
+   * whole model load inside the pipeline's per-chunk timeout and fails on
+   * slow or memory-pressured machines while a later retry succeeds.
+   */
+  async warmUp(): Promise<void> {
+    const warmupPath = resolve(
+      tmpdir(),
+      `videofy-whisper-warmup-${process.pid}.wav`,
+    );
+    await writeFile(warmupPath, silentWav(WARMUP_SILENCE_MS));
+    try {
+      const device = this.preferCpuFallback ? 'cpu' : this.options.device;
+      await this.workerFor(device).request(
+        { audioPath: warmupPath, languageHint: null },
+        { timeoutMs: WARMUP_TIMEOUT_MS },
+      );
+    } finally {
+      await rm(warmupPath, { force: true }).catch(() => undefined);
+    }
   }
 
   async transcribe(input: TranscriptionProviderInput): Promise<TranscriptionProviderResult> {

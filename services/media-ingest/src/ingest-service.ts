@@ -112,6 +112,37 @@ export type TranslationWiringConfig = Pick<
   | 'nllb200AllowModelDownload'
 >;
 
+export interface WarmableProviders {
+  transcription?: { warmUp?: () => Promise<void> };
+  translation?: { healthCheck?: () => Promise<unknown> };
+}
+
+/**
+ * Loads AI models ahead of the first real request. Without warm-up, the first
+ * upload after service start pays the model loads inside the per-stage
+ * pipeline timeouts and can fail where an identical retry later succeeds.
+ * Failures are logged, never fatal: warm-up is an optimisation.
+ */
+export async function warmUpAiProviders(providers: WarmableProviders): Promise<void> {
+  const startedAt = Date.now();
+  const warmups: Array<[string, Promise<unknown> | undefined]> = [
+    ['transcription', providers.transcription?.warmUp?.()],
+    ['translation', providers.translation?.healthCheck?.()],
+  ];
+  for (const [stage, pending] of warmups) {
+    if (!pending) continue;
+    try {
+      await pending;
+      logger.info('AI provider warmed', { stage, elapsedMs: Date.now() - startedAt });
+    } catch (error) {
+      logger.warn('AI provider warm-up failed (will load on first use)', {
+        stage,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
 export function translationFallbackActive(config: TranslationWiringConfig): boolean {
   return (
     config.translationProvider === 'opus-mt' && config.translationFallbackProvider !== 'none'
@@ -246,10 +277,7 @@ export class IngestService {
     this.provider = new MockProvider();
     const translationLanguages = resolveTranslationLanguages(config);
     const translationModelIds = buildTranslationModelIds(config);
-    this.sessions = new ProcessingSessionStore({
-      outputBaseDir: config.audioChunkDir,
-      webRtcStagingDir: config.webrtcAudioChunkStagingDir,
-      transcriptionProvider: createTranscriptionProvider({
+    const transcriptionProvider = createTranscriptionProvider({
         providerName: config.transcriptionProvider,
         sourceLanguage: config.transcriptionSourceLanguage,
         timeoutMs: config.transcriptionTimeoutMs,
@@ -263,9 +291,14 @@ export class IngestService {
           allowGpuFallback: config.fasterWhisperAllowGpuFallback,
           timeoutMs: config.transcriptionTimeoutMs,
         },
-      }),
+      });
+    const translationProvider = buildTranslationProvider(config);
+    this.sessions = new ProcessingSessionStore({
+      outputBaseDir: config.audioChunkDir,
+      webRtcStagingDir: config.webrtcAudioChunkStagingDir,
+      transcriptionProvider,
       transcriptionTimeoutMs: config.transcriptionTimeoutMs,
-      translationProvider: buildTranslationProvider(config),
+      translationProvider,
       translationTimeoutMs: config.translationTimeoutMs,
       translationTargetLanguage: config.translationTargetLanguage,
       translationSupportedTargetLanguages: translationLanguages,
@@ -303,6 +336,10 @@ export class IngestService {
       onTranscriptionEvent: (event) => this.emitTranscriptionEvent(event),
       onTranslationEvent: (event) => this.emitTranslationEvent(event),
       onGeneratedAudioReady: (event, session) => this.emitGeneratedAudioReady(event, session),
+    });
+    void warmUpAiProviders({
+      transcription: transcriptionProvider,
+      translation: translationProvider,
     });
   }
 

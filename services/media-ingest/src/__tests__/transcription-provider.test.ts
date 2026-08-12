@@ -366,3 +366,40 @@ describe('transcription providers', () => {
     ]);
   });
 });
+
+describe('faster-whisper warm-up', () => {
+  it('sends a silent clip through the worker with a generous cold-start budget', async () => {
+    const seenOptions: Array<{ timeoutMs: number }> = [];
+    const seenPayloads: Array<Record<string, unknown>> = [];
+    const factory: PythonWorkerFactory = () => ({
+      async request(payload, options) {
+        seenPayloads.push(payload as Record<string, unknown>);
+        seenOptions.push(options);
+        return {
+          segments: [],
+          detectedLanguage: null,
+          confidence: null,
+          device: 'cpu',
+        };
+      },
+      dispose() {},
+    });
+    const warmable = new FasterWhisperTranscriptionProvider({
+      pythonExecutable: 'python',
+      ffmpegExecutable: 'ffmpeg',
+      modelSize: 'small',
+      device: 'cpu',
+      computeType: 'int8',
+      modelCacheDir: null,
+      allowGpuFallback: false,
+      timeoutMs: 30_000,
+      createWorker: factory,
+    });
+
+    await warmable.warmUp();
+
+    expect(seenPayloads).toHaveLength(1);
+    expect(String(seenPayloads[0]!['audioPath'])).toMatch(/videofy-whisper-warmup-.*\.wav$/);
+    expect(seenOptions[0]!.timeoutMs).toBeGreaterThanOrEqual(300_000);
+  });
+});

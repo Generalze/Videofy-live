@@ -9,6 +9,7 @@ import {
   resolvePiperSupportedLanguages,
   resolveTextToSpeechLanguages,
   resolveTranslationLanguages,
+  warmUpAiProviders,
   type TextToSpeechWiringConfig,
   type TranslationWiringConfig,
 } from '../ingest-service.js';
@@ -249,5 +250,29 @@ describe('programme timestamp clock', () => {
     expect(programmeTimestampMs([transcriptionEvent(0, 15_000, 'transcribed')], 45_000)).toBe(
       45_000,
     );
+  });
+});
+
+describe('AI provider warm-up', () => {
+  it('invokes optional warm-up hooks and tolerates failures', async () => {
+    const calls: string[] = [];
+    await warmUpAiProviders({
+      transcription: {
+        warmUp: async () => {
+          calls.push('transcription');
+        },
+      },
+      translation: {
+        healthCheck: async () => {
+          calls.push('translation');
+          throw new Error('model still downloading');
+        },
+      },
+    });
+    expect(calls).toEqual(['transcription', 'translation']);
+  });
+
+  it('is a no-op for providers without warm-up hooks', async () => {
+    await expect(warmUpAiProviders({ transcription: {}, translation: {} })).resolves.toBeUndefined();
   });
 });
