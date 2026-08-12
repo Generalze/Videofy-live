@@ -161,6 +161,18 @@ const HLS_ERROR_TYPES = {
   network: 'networkError',
 } as const;
 
+interface CachedMediaElementAudioSource {
+  context: AudioContext;
+  source: MediaElementAudioSourceNode;
+}
+
+/**
+ * A media element can only ever be bound to one MediaElementAudioSourceNode.
+ * Cache the node (and its owning context) per element so re-selecting the same
+ * element reuses the original audio graph instead of throwing InvalidStateError.
+ */
+const mediaElementAudioSourceCache = new WeakMap<HTMLMediaElement, CachedMediaElementAudioSource>();
+
 export class ProgrammeSourceError extends Error {
   constructor(
     readonly code: ProgrammeSourceErrorCode,
@@ -797,7 +809,9 @@ export class ProgrammeSourceManager {
 
   async start(options: { captureForTransport?: boolean } = {}): Promise<ProgrammeSourceSnapshot> {
     if (!this.stream || this.snapshot.status !== 'preview-ready') {
-      throw this.fail(new ProgrammeSourceError('missing-media-track', 'Select a programme source before starting.'));
+      throw this.rejectPrecondition(
+        new ProgrammeSourceError('missing-media-track', 'Select a programme source before starting.'),
+      );
     }
     if (this.isMediaElementSource() && this.videoElement) {
       this.videoElement.muted = options.captureForTransport === false;
@@ -829,7 +843,9 @@ export class ProgrammeSourceManager {
     options: { captureForTransport?: boolean } = {},
   ): Promise<ProgrammeSourceSnapshot> {
     if (!this.stream || this.snapshot.status !== 'preview-ready') {
-      throw this.fail(new ProgrammeSourceError('missing-media-track', 'Select a programme source before starting.'));
+      throw this.rejectPrecondition(
+        new ProgrammeSourceError('missing-media-track', 'Select a programme source before starting.'),
+      );
     }
     if (this.isMediaElementSource() && this.videoElement && this.snapshot.canRestart) {
       this.videoElement.pause();
@@ -892,7 +908,9 @@ export class ProgrammeSourceManager {
 
   async seek(ms: number): Promise<ProgrammeSourceSnapshot> {
     if (!this.snapshot.canSeek || !this.videoElement) {
-      throw this.fail(new ProgrammeSourceError('unsupported-format', 'The selected source cannot seek.', false));
+      throw this.rejectPrecondition(
+        new ProgrammeSourceError('unsupported-format', 'The selected source cannot seek.', false),
+      );
     }
     this.update({ status: 'seeking', broadcasting: false, paused: true });
     await seekMediaElement(this.videoElement, Math.max(0, ms / 1000));
@@ -908,7 +926,9 @@ export class ProgrammeSourceManager {
 
   async restart(): Promise<ProgrammeSourceSnapshot> {
     if (!this.snapshot.canRestart) {
-      throw this.fail(new ProgrammeSourceError('unsupported-format', 'The selected source cannot restart.', false));
+      throw this.rejectPrecondition(
+        new ProgrammeSourceError('unsupported-format', 'The selected source cannot restart.', false),
+      );
     }
     await this.seek(0);
     this.incrementRevision('programme restart');
@@ -1085,7 +1105,9 @@ export class ProgrammeSourceManager {
 
   private assertNoActiveSource(): void {
     if (this.stream && this.snapshot.status !== 'stopped' && this.snapshot.status !== 'failed') {
-      throw this.fail(new ProgrammeSourceError('duplicate-source', 'Clear the current programme source before selecting another.'));
+      throw this.rejectPrecondition(
+        new ProgrammeSourceError('duplicate-source', 'Clear the current programme source before selecting another.'),
+      );
     }
   }
 
@@ -1253,19 +1275,27 @@ export class ProgrammeSourceManager {
       globalThis.AudioContext ??
       (globalThis as typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextConstructor) return null;
+    const previousMuted = videoElement.muted;
+    const previousVolume = videoElement.volume;
+    const restorePlaybackAudio = (): void => {
+      videoElement.muted = previousMuted;
+      videoElement.volume = previousVolume;
+    };
     try {
       this.releaseMediaElementAudioCapture();
-      videoElement.muted = false;
-      videoElement.volume = 1;
-      const audioContext = new AudioContextConstructor();
-      const source = audioContext.createMediaElementSource(videoElement);
+      const { context: audioContext, source } = this.acquireMediaElementAudioSource(
+        videoElement,
+        AudioContextConstructor,
+      );
       const destination = audioContext.createMediaStreamDestination();
       source.connect(destination);
+      videoElement.muted = false;
+      videoElement.volume = 1;
       await audioContext.resume?.().catch(() => undefined);
       const audioTracks = destination.stream.getAudioTracks().filter((track) => track.readyState !== 'ended');
       if (audioTracks.length === 0) {
         source.disconnect();
-        void audioContext.close?.().catch(() => undefined);
+        restorePlaybackAudio();
         return null;
       }
       const capturedStream =
@@ -1275,7 +1305,7 @@ export class ProgrammeSourceManager {
       const videoTracks = capturedStream.getVideoTracks().filter((track) => track.readyState !== 'ended');
       if (videoTracks.length === 0) {
         source.disconnect();
-        void audioContext.close?.().catch(() => undefined);
+        restorePlaybackAudio();
         return null;
       }
       this.mediaElementAudioContext = audioContext;
@@ -1286,9 +1316,29 @@ export class ProgrammeSourceManager {
       }
       return new MediaStream([...videoTracks, ...audioTracks]);
     } catch {
+      restorePlaybackAudio();
       this.releaseMediaElementAudioCapture();
       return null;
     }
+  }
+
+  private acquireMediaElementAudioSource(
+    videoElement: HTMLVideoElement,
+    AudioContextConstructor: typeof AudioContext,
+  ): CachedMediaElementAudioSource {
+    const cached = mediaElementAudioSourceCache.get(videoElement);
+    if (cached) return cached;
+    const context = new AudioContextConstructor();
+    let source: MediaElementAudioSourceNode;
+    try {
+      source = context.createMediaElementSource(videoElement);
+    } catch (error) {
+      void context.close?.().catch(() => undefined);
+      throw error;
+    }
+    const entry: CachedMediaElementAudioSource = { context, source };
+    mediaElementAudioSourceCache.set(videoElement, entry);
+    return entry;
   }
 
   private async replaceMediaElementAudioForTransport(): Promise<void> {
@@ -1335,7 +1385,10 @@ export class ProgrammeSourceManager {
   private releaseMediaElementAudioCapture(): void {
     this.mediaElementAudioSource?.disconnect();
     this.mediaElementAudioDestination?.disconnect();
-    void this.mediaElementAudioContext?.close?.().catch(() => undefined);
+    // Suspend instead of close: the context stays cached with its element so a
+    // later re-selection can reuse the one MediaElementAudioSourceNode the
+    // element will ever be allowed to create.
+    void this.mediaElementAudioContext?.suspend?.()?.catch(() => undefined);
     this.mediaElementAudioSource = null;
     this.mediaElementAudioDestination = null;
     this.mediaElementAudioContext = null;
@@ -1395,8 +1448,14 @@ export class ProgrammeSourceManager {
   }
 
   private async getHlsRuntime(): Promise<HlsRuntime> {
-    this.hlsRuntimePromise ??= this.loadHlsRuntime();
-    return this.hlsRuntimePromise;
+    const pending = this.hlsRuntimePromise ?? this.loadHlsRuntime();
+    this.hlsRuntimePromise = pending;
+    try {
+      return await pending;
+    } catch (error) {
+      if (this.hlsRuntimePromise === pending) this.hlsRuntimePromise = null;
+      throw error;
+    }
   }
 
   private async createFallbackHlsController(): Promise<HlsController> {
@@ -1421,6 +1480,15 @@ export class ProgrammeSourceManager {
       this.enableTracks(false);
       this.fail(error);
     }
+  }
+
+  /**
+   * Rejects a precondition violation without mutating source state. Guard
+   * failures (for example a duplicate start() on a broadcasting source) must
+   * never tear a healthy source down through fail().
+   */
+  private rejectPrecondition(error: ProgrammeSourceError): ProgrammeSourceError {
+    return error;
   }
 
   private fail(error: ProgrammeSourceError): ProgrammeSourceError {

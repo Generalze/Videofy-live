@@ -59,12 +59,15 @@ import {
   retryAudioExtraction,
   retryTranslationSegment,
   retryTranscriptionChunk,
+  refreshProcessingSessionFromMediaState,
   resumeProcessingSession,
   sendMicrophoneChunk,
   stopMicrophoneSession,
   updateSourceLanguageControl,
   type ProcessingSessionDto,
 } from './ingestClient';
+import { buildAudioMixBroadcast } from './audioMixBroadcast';
+import { deliverProgrammeSessionConfig } from './programmeSessionConfigDelivery';
 import {
   chooseRecorderMimeType,
   isDuplicateCaptureStatus,
@@ -283,6 +286,9 @@ export default function App(): React.ReactElement {
   const [translatedMix, setTranslatedMix] = useState(1.0);
   const [operatorAudioMode, setOperatorAudioMode] = useState<AudioModePreferences['mode']>('interpretation');
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
+  // Broadcast mix preferences only after an explicit operator interaction so a
+  // console reload or socket reconnect can never reset the listeners' mix.
+  const audioMixAdjustedRef = useRef(false);
   const [interpretationStarting, setInterpretationStarting] = useState(false);
 
   const [gatewayOk, setGatewayOk] = useState(false);
@@ -401,6 +407,7 @@ export default function App(): React.ReactElement {
       }
       setMediaState(state);
       setStreamStatus(state.streamStatus);
+      setProcessingSession((current) => refreshProcessingSessionFromMediaState(current, state));
       if (state.microphoneCapture) {
         setCaptureDurationMs(state.microphoneCapture.durationMs);
         setMicrophoneStatus(mapMicrophoneStatus(state.microphoneCapture));
@@ -742,24 +749,12 @@ export default function App(): React.ReactElement {
       });
       const socket = socketRef.current;
       if (!socket) {
-        return;
+        throw new Error(
+          'Realtime gateway is unavailable. Programme session configuration was not delivered.',
+        );
       }
-      const ack = new Promise<void>((resolve) => {
-        const timeout = window.setTimeout(() => {
-          socket.off(SOCKET_EVENTS.CONTROL_ACK, handleAck);
-          resolve();
-        }, 1500);
-        const handleAck = (event: { action: string; accepted: boolean }): void => {
-          if (event.action !== 'programme-session-config') return;
-          window.clearTimeout(timeout);
-          socket.off(SOCKET_EVENTS.CONTROL_ACK, handleAck);
-          resolve();
-        };
-        socket.on(SOCKET_EVENTS.CONTROL_ACK, handleAck);
-      });
-      socket.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, config);
       setLastControlAck('programme-session-config: sent');
-      await ack;
+      await deliverProgrammeSessionConfig(socket, config);
     },
     [sessionTargetLanguage, sourceLanguage, sourceLanguageMode, targetLanguages],
   );
@@ -1458,14 +1453,36 @@ export default function App(): React.ReactElement {
     };
   }, [connect]);
 
+  const handleOriginalMixChange = useCallback((value: number): void => {
+    audioMixAdjustedRef.current = true;
+    setOriginalMix(value);
+  }, []);
+
+  const handleTranslatedMixChange = useCallback((value: number): void => {
+    audioMixAdjustedRef.current = true;
+    setTranslatedMix(value);
+  }, []);
+
+  const handleSubtitlesEnabledChange = useCallback((enabled: boolean): void => {
+    audioMixAdjustedRef.current = true;
+    setSubtitlesEnabled(enabled);
+  }, []);
+
+  const handleOperatorAudioModeChange = useCallback((mode: AudioModePreferences['mode']): void => {
+    audioMixAdjustedRef.current = true;
+    setOperatorAudioMode(mode);
+  }, []);
+
   useEffect(() => {
-    if (!connected) return;
-    const preferences: AudioMixPreferences = {
+    const preferences: AudioMixPreferences | null = buildAudioMixBroadcast({
+      connected,
+      operatorHasAdjustedMix: audioMixAdjustedRef.current,
       mode: operatorAudioMode,
       originalVolume: originalMix,
       translatedVolume: translatedMix,
       subtitlesEnabled,
-    };
+    });
+    if (!preferences) return;
     socketRef.current?.emit(SOCKET_EVENTS.OPERATOR_AUDIO_MODE_PREFERENCES, preferences);
   }, [connected, operatorAudioMode, originalMix, subtitlesEnabled, translatedMix]);
 
@@ -1578,6 +1595,7 @@ export default function App(): React.ReactElement {
     setSourceLanguageMode('auto-detect');
     setSessionTargetLanguage(DEFAULT_TARGET_LANGUAGE);
     setTargetLanguages([DEFAULT_TARGET_LANGUAGE]);
+    audioMixAdjustedRef.current = true;
     setOperatorAudioMode('interpretation');
     setOriginalMix(0.2);
     setTranslatedMix(1);
@@ -1795,7 +1813,7 @@ export default function App(): React.ReactElement {
               max={1}
               step={0.05}
               value={originalMix}
-              onChange={(e) => setOriginalMix(Number(e.target.value))}
+              onChange={(e) => handleOriginalMixChange(Number(e.target.value))}
               className={styles.slider}
             />
           </div>
@@ -1809,7 +1827,7 @@ export default function App(): React.ReactElement {
               max={1}
               step={0.05}
               value={translatedMix}
-              onChange={(e) => setTranslatedMix(Number(e.target.value))}
+              onChange={(e) => handleTranslatedMixChange(Number(e.target.value))}
               className={styles.slider}
             />
           </div>
@@ -1817,7 +1835,7 @@ export default function App(): React.ReactElement {
             <input
               type="checkbox"
               checked={subtitlesEnabled}
-              onChange={(e) => setSubtitlesEnabled(e.target.checked)}
+              onChange={(e) => handleSubtitlesEnabledChange(e.target.checked)}
             />
             Subtitles enabled
           </label>
@@ -2017,7 +2035,7 @@ export default function App(): React.ReactElement {
                   <button
                     type="button"
                     className={operatorAudioMode === 'interpretation' ? styles.modeToggleActive : ''}
-                    onClick={() => setOperatorAudioMode('interpretation')}
+                    onClick={() => handleOperatorAudioModeChange('interpretation')}
                     aria-pressed={operatorAudioMode === 'interpretation'}
                   >
                     Interpretation
@@ -2025,7 +2043,7 @@ export default function App(): React.ReactElement {
                   <button
                     type="button"
                     className={operatorAudioMode === 'replacement' ? styles.modeToggleActive : ''}
-                    onClick={() => setOperatorAudioMode('replacement')}
+                    onClick={() => handleOperatorAudioModeChange('replacement')}
                     aria-pressed={operatorAudioMode === 'replacement'}
                   >
                     Replacement
@@ -2040,7 +2058,7 @@ export default function App(): React.ReactElement {
                   max={1}
                   step={0.05}
                   value={originalMix}
-                  onChange={(e) => setOriginalMix(Number(e.target.value))}
+                  onChange={(e) => handleOriginalMixChange(Number(e.target.value))}
                   className={styles.slider}
                 />
               </div>
@@ -2054,7 +2072,7 @@ export default function App(): React.ReactElement {
                   max={1}
                   step={0.05}
                   value={translatedMix}
-                  onChange={(e) => setTranslatedMix(Number(e.target.value))}
+                  onChange={(e) => handleTranslatedMixChange(Number(e.target.value))}
                   className={styles.slider}
                 />
               </div>

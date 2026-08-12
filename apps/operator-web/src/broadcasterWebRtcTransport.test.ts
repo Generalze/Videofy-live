@@ -116,7 +116,10 @@ function answer(revision = 1): WebRtcSdpAnswerEnvelope {
   };
 }
 
-function ready(revision = 1): WebRtcPeerReadyEnvelope {
+function ready(
+  revision = 1,
+  payloadOverrides: { audioTrackReceived?: boolean; videoTrackReceived?: boolean } = {},
+): WebRtcPeerReadyEnvelope {
   return {
     type: 'peer-ready',
     protocolVersion: 1,
@@ -127,7 +130,7 @@ function ready(revision = 1): WebRtcPeerReadyEnvelope {
     senderRole: 'server',
     revision,
     createdAt: '2026-07-27T00:00:00.000Z',
-    payload: { state: 'ready' },
+    payload: { state: 'ready', ...payloadOverrides } as WebRtcPeerReadyEnvelope['payload'],
   };
 }
 
@@ -196,6 +199,40 @@ describe('BroadcasterWebRtcTransportController', () => {
       localVideoTrackAttached: true,
       backendAudioTrackReceived: true,
       backendVideoTrackReceived: true,
+    });
+  });
+
+  it('consumes backend-reported track receipt from the peer-ready payload', async () => {
+    const controller = new BroadcasterWebRtcTransportController({
+      signallingClient: signallingClient(),
+      createPeerConnection: () => new FakePeer() as never,
+    });
+
+    // Audio-only local stream: the local-flag fallback alone would report
+    // backendVideoTrackReceived=false, but the gateway says video arrived.
+    await controller.start(mediaStream([audioTrack()]));
+    await controller.handleSignallingEvent(
+      ready(1, { audioTrackReceived: true, videoTrackReceived: true }),
+    );
+
+    expect(controller.getSnapshot()).toMatchObject({
+      backendAudioTrackReceived: true,
+      backendVideoTrackReceived: true,
+    });
+  });
+
+  it('trusts the peer-ready payload over the local flag when backend video is missing', async () => {
+    const controller = new BroadcasterWebRtcTransportController({
+      signallingClient: signallingClient(),
+      createPeerConnection: () => new FakePeer() as never,
+    });
+
+    await controller.start(mediaStream([audioTrack(), videoTrack()]));
+    await controller.handleSignallingEvent(ready(1, { videoTrackReceived: false }));
+
+    expect(controller.getSnapshot()).toMatchObject({
+      backendAudioTrackReceived: true,
+      backendVideoTrackReceived: false,
     });
   });
 

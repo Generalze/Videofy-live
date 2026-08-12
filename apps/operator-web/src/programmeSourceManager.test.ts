@@ -358,6 +358,7 @@ describe('ProgrammeSourceManager', () => {
       disconnect: vi.fn(),
     };
     const close = vi.fn(async () => undefined);
+    const suspend = vi.fn(async () => undefined);
     const mediaStreamDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'MediaStream');
     const audioContextDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'AudioContext');
     Object.defineProperty(globalThis, 'MediaStream', {
@@ -370,6 +371,7 @@ describe('ProgrammeSourceManager', () => {
         createMediaElementSource: vi.fn(() => sourceNode),
         createMediaStreamDestination: vi.fn(() => destination),
         resume: vi.fn(async () => undefined),
+        suspend,
         close,
       })),
     });
@@ -419,7 +421,8 @@ describe('ProgrammeSourceManager', () => {
 
       expect(sourceNode.disconnect).toHaveBeenCalledTimes(1);
       expect(destination.disconnect).toHaveBeenCalledTimes(1);
-      expect(close).toHaveBeenCalledTimes(1);
+      expect(suspend).toHaveBeenCalledTimes(1);
+      expect(close).not.toHaveBeenCalled();
       expect(webAudio.readyState).toBe('ended');
     } finally {
       if (mediaStreamDescriptor) {
@@ -894,6 +897,7 @@ describe('ProgrammeSourceManager', () => {
       disconnect: vi.fn(),
     };
     const close = vi.fn(async () => undefined);
+    const suspend = vi.fn(async () => undefined);
     const mediaStreamDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'MediaStream');
     const audioContextDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'AudioContext');
     Object.defineProperty(globalThis, 'MediaStream', {
@@ -906,6 +910,7 @@ describe('ProgrammeSourceManager', () => {
         createMediaElementSource: vi.fn(() => sourceNode),
         createMediaStreamDestination: vi.fn(() => destination),
         resume: vi.fn(async () => undefined),
+        suspend,
         close,
       })),
     });
@@ -938,7 +943,8 @@ describe('ProgrammeSourceManager', () => {
 
       expect(sourceNode.disconnect).toHaveBeenCalledTimes(1);
       expect(destination.disconnect).toHaveBeenCalledTimes(1);
-      expect(close).toHaveBeenCalledTimes(1);
+      expect(suspend).toHaveBeenCalledTimes(1);
+      expect(close).not.toHaveBeenCalled();
       expect(webAudio.readyState).toBe('ended');
     } finally {
       if (mediaStreamDescriptor) {
@@ -1073,5 +1079,174 @@ describe('ProgrammeSourceManager', () => {
       revision: 1,
     });
     expect(revisions).toEqual([1]);
+  });
+
+  it('rejects a duplicate start() without tearing down the broadcasting source', async () => {
+    const source = stream([track('audio'), track('video')]);
+    const onFailure = vi.fn();
+    const manager = new ProgrammeSourceManager({
+      mediaDevices: mediaDevices({ user: source }),
+      onFailure,
+    });
+
+    await manager.selectCamera({}, videoElement(source));
+    await manager.start();
+
+    await expect(manager.start()).rejects.toMatchObject({ code: 'missing-media-track' });
+    await expect(manager.prepareForInterpretationStart()).rejects.toMatchObject({
+      code: 'missing-media-track',
+    });
+    await expect(manager.seek(1_000)).rejects.toMatchObject({ code: 'unsupported-format' });
+
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(manager.getSnapshot()).toMatchObject({
+      status: 'broadcasting',
+      broadcasting: true,
+      previewReady: true,
+      captureInterrupted: false,
+      error: null,
+    });
+  });
+
+  it('retries the hls.js dynamic import after a failed load', async () => {
+    const controller = hlsController();
+    const loadHlsRuntime = vi.fn()
+      .mockRejectedValueOnce(new Error('dynamic import failed'))
+      .mockResolvedValue({
+        isSupported: () => true,
+        createController: () => controller,
+      });
+    const manager = new ProgrammeSourceManager({ loadHlsRuntime });
+
+    await expect(
+      manager.selectDirectStreamUrl(
+        'https://cdn.example.com/live.m3u8',
+        videoElement(stream([track('audio', 'hls_audio'), track('video', 'hls_video')])),
+      ),
+    ).rejects.toThrow('dynamic import failed');
+
+    await manager.selectDirectStreamUrl(
+      'https://cdn.example.com/live.m3u8',
+      videoElement(stream([track('audio', 'hls_audio'), track('video', 'hls_video')])),
+    );
+
+    expect(loadHlsRuntime).toHaveBeenCalledTimes(2);
+    expect(manager.getSnapshot()).toMatchObject({
+      sourceType: 'direct-url',
+      status: 'preview-ready',
+    });
+  });
+
+  it('restores the media element mute state when Web Audio transport capture fails', async () => {
+    const close = vi.fn(async () => undefined);
+    const audioContextDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'AudioContext');
+    Object.defineProperty(globalThis, 'AudioContext', {
+      configurable: true,
+      value: vi.fn(() => ({
+        createMediaElementSource: vi.fn(() => {
+          throw new DOMException('already connected', 'InvalidStateError');
+        }),
+        createMediaStreamDestination: vi.fn(),
+        resume: vi.fn(async () => undefined),
+        close,
+      })),
+    });
+
+    try {
+      const captured = stream([track('audio', 'uploaded_audio'), track('video', 'uploaded_video')]);
+      const preview = videoElement(captured);
+      const manager = new ProgrammeSourceManager({
+        createObjectUrl: () => 'blob:uploaded-video',
+        revokeObjectUrl: vi.fn(),
+      });
+
+      await manager.selectUploadedVideo(file('clip.mp4', 'video/mp4'), preview);
+      expect(preview.muted).toBe(true);
+
+      await manager.prepareForInterpretationStart();
+
+      expect(preview.muted).toBe(true);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(manager.getStream()).toBe(captured);
+    } finally {
+      if (audioContextDescriptor) {
+        Object.defineProperty(globalThis, 'AudioContext', audioContextDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, 'AudioContext');
+      }
+    }
+  });
+
+  it('reuses the cached media element audio source when the same element is selected again', async () => {
+    const sourceNode = { connect: vi.fn(), disconnect: vi.fn() };
+    let destinationCount = 0;
+    const createMediaElementSource = vi.fn(() => sourceNode);
+    const createMediaStreamDestination = vi.fn(() => ({
+      stream: stream([track('audio', `web_audio_${++destinationCount}`)]),
+      disconnect: vi.fn(),
+    }));
+    const suspend = vi.fn(async () => undefined);
+    const audioContextConstructor = vi.fn(() => ({
+      createMediaElementSource,
+      createMediaStreamDestination,
+      resume: vi.fn(async () => undefined),
+      suspend,
+      close: vi.fn(async () => undefined),
+    }));
+    const mediaStreamDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'MediaStream');
+    const audioContextDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'AudioContext');
+    Object.defineProperty(globalThis, 'MediaStream', {
+      configurable: true,
+      value: vi.fn((tracks: MediaStreamTrack[]) => stream(tracks)),
+    });
+    Object.defineProperty(globalThis, 'AudioContext', {
+      configurable: true,
+      value: audioContextConstructor,
+    });
+
+    try {
+      const manager = new ProgrammeSourceManager({
+        createObjectUrl: () => 'blob:uploaded-video',
+        revokeObjectUrl: vi.fn(),
+      });
+      const firstCapture = stream([track('audio', 'audio_first'), track('video', 'video_first')]);
+      const preview = videoElement(firstCapture) as unknown as HTMLVideoElement & {
+        captureStream: ReturnType<typeof vi.fn>;
+      };
+      preview.captureStream = vi.fn()
+        .mockReturnValueOnce(firstCapture)
+        .mockReturnValueOnce(stream([track('video', 'video_first_transport')]))
+        .mockReturnValueOnce(stream([track('audio', 'audio_second'), track('video', 'video_second')]))
+        .mockReturnValueOnce(stream([track('video', 'video_second_transport')]));
+
+      await manager.selectUploadedVideo(file('clip.mp4', 'video/mp4'), preview);
+      await manager.prepareForInterpretationStart();
+      await manager.clear();
+
+      await manager.selectUploadedVideo(file('clip.mp4', 'video/mp4'), preview);
+      await manager.prepareForInterpretationStart();
+
+      expect(audioContextConstructor).toHaveBeenCalledTimes(1);
+      expect(createMediaElementSource).toHaveBeenCalledTimes(1);
+      expect(manager.getStream()?.getAudioTracks()[0]?.label).toBe('web_audio_2');
+      expect(manager.getStream()?.getVideoTracks()[0]?.label).toBe('video_second_transport');
+      expect(manager.getSnapshot()).toMatchObject({
+        sourceType: 'uploaded-video',
+        audioDetected: true,
+        videoDetected: true,
+        audioSourceLabel: 'web_audio_2',
+      });
+    } finally {
+      if (mediaStreamDescriptor) {
+        Object.defineProperty(globalThis, 'MediaStream', mediaStreamDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, 'MediaStream');
+      }
+      if (audioContextDescriptor) {
+        Object.defineProperty(globalThis, 'AudioContext', audioContextDescriptor);
+      } else {
+        Reflect.deleteProperty(globalThis, 'AudioContext');
+      }
+    }
   });
 });

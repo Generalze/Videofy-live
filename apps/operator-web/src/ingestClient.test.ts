@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createProcessingSession } from './ingestClient';
+import type { MediaStateEvent } from '@videofy-live/shared-types';
+import {
+  createProcessingSession,
+  refreshProcessingSessionFromMediaState,
+  type ProcessingSessionDto,
+} from './ingestClient';
 
 describe('createProcessingSession', () => {
   afterEach(() => {
@@ -45,5 +50,55 @@ describe('createProcessingSession', () => {
       method: 'POST',
       body: expect.any(FormData),
     });
+  });
+});
+
+describe('refreshProcessingSessionFromMediaState', () => {
+  function sessionDto(overrides: Partial<ProcessingSessionDto> = {}): ProcessingSessionDto {
+    return {
+      id: 'wrs_uploaded_video',
+      streamId: 'stream_uploaded_video',
+      state: 'processing',
+      ...overrides,
+    } as ProcessingSessionDto;
+  }
+
+  function mediaState(overrides: Partial<MediaStateEvent> = {}): MediaStateEvent {
+    return {
+      processingSessionId: 'wrs_uploaded_video',
+      streamStatus: 'completed',
+      ...overrides,
+    } as MediaStateEvent;
+  }
+
+  it('adopts the fresher stream status for the matching processing session', () => {
+    const session = sessionDto({ state: 'created' });
+
+    const refreshed = refreshProcessingSessionFromMediaState(session, mediaState());
+
+    expect(refreshed).not.toBe(session);
+    expect(refreshed).toMatchObject({ id: 'wrs_uploaded_video', state: 'completed' });
+    expect(session.state).toBe('created');
+  });
+
+  it('ignores media state for other sessions or without a session id', () => {
+    const session = sessionDto();
+
+    expect(
+      refreshProcessingSessionFromMediaState(
+        session,
+        mediaState({ processingSessionId: 'wrs_other' }),
+      ),
+    ).toBe(session);
+    const detached = mediaState();
+    delete (detached as { processingSessionId?: string }).processingSessionId;
+    expect(refreshProcessingSessionFromMediaState(session, detached)).toBe(session);
+  });
+
+  it('returns the same session when the status is unchanged and passes null through', () => {
+    const session = sessionDto({ state: 'completed' });
+
+    expect(refreshProcessingSessionFromMediaState(session, mediaState())).toBe(session);
+    expect(refreshProcessingSessionFromMediaState(null, mediaState())).toBeNull();
   });
 });

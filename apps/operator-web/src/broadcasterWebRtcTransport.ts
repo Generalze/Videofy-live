@@ -352,13 +352,21 @@ export class BroadcasterWebRtcTransportController {
       return;
     }
     if (event.type === 'peer-ready') {
+      // The gateway optionally reports which programme tracks it actually
+      // received; fall back to the local-attachment heuristic when absent.
+      const payload = event.payload as typeof event.payload & {
+        audioTrackReceived?: boolean;
+        videoTrackReceived?: boolean;
+      };
+      const audioTrackReceived = payload.audioTrackReceived ?? true;
       this.update({
         backendPeerConnected: true,
-        backendAudioTrackReceived: true,
-        backendAudioActivityDetected: true,
+        backendAudioTrackReceived: audioTrackReceived,
+        backendAudioActivityDetected: audioTrackReceived,
+        backendVideoTrackReceived:
+          payload.videoTrackReceived ?? this.snapshot.localVideoTrackAttached,
         state: this.snapshot.state === 'connected' ? 'connected' : this.snapshot.state,
       });
-      this.update({ backendVideoTrackReceived: this.snapshot.localVideoTrackAttached });
     }
   }
 

@@ -1,6 +1,7 @@
 import type {
   AudioExtractionMetadata,
   MediaFileMetadata,
+  MediaStateEvent,
   MicrophoneCaptureMetadata,
   SessionMonitoringMetadata,
   StreamStatus,
@@ -32,6 +33,24 @@ export interface ProcessingSessionDto {
   createdAt: string;
   updatedAt: string;
   error: string | null;
+}
+
+/**
+ * Applies the live stream status carried by a MEDIA_STATE event to the locally
+ * cached processing-session DTO so operator workflow decisions (pause
+ * availability, leaving the Starting state) reflect reality instead of the
+ * DTO captured at upload time. Events for other sessions leave the DTO
+ * untouched.
+ */
+export function refreshProcessingSessionFromMediaState(
+  session: ProcessingSessionDto | null,
+  state: MediaStateEvent,
+): ProcessingSessionDto | null {
+  if (!session || !state.processingSessionId || state.processingSessionId !== session.id) {
+    return session;
+  }
+  if (session.state === state.streamStatus) return session;
+  return { ...session, state: state.streamStatus };
 }
 
 export class IngestClientError extends Error {
