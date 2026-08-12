@@ -2,25 +2,43 @@
 
 Real-time multilingual video streaming and spoken-audio interpretation platform.
 
-This repository is a Phase 1 mock proof of concept. It does not include real AI
-speech recognition, translation, text-to-speech, production streaming,
+This repository is a local-first working prototype. It runs a real open-source
+AI interpretation pipeline (Silero VAD, faster-whisper speech recognition,
+OPUS-MT translation with M2M100/NLLB-200 fallback, Piper and MMS
+text-to-speech) over live WebRTC capture, uploaded media, and RTMP/HLS
+programme sources. It does not include production streaming infrastructure,
 authentication, billing, databases, or cloud integrations.
 
-## Phase 1 Status
+## Phase Status
 
-Phase 1 is complete and released at `v0.1.0-phase1`.
+Phases 1 through 5 are complete. The current branch packages the Phase 5
+partner preview.
 
-This release is a mock-only foundation. It includes the listener app, operator
-app, Socket.IO gateway, mock media ingest, mock speech worker, shared event
-contracts, local development launchers, and automated validation.
+The platform includes the listener app with a nine-language viewer menu
+(Spanish, French, Portuguese, Arabic, Russian, Greek, Yoruba, Chinese, Latin),
+the operator dashboard with source- and target-language controls, the
+Socket.IO gateway with WebRTC signalling and listener delivery, the
+media-ingest service that orchestrates the local AI pipeline, shared event
+contracts, local development launchers, and automated validation. Programme
+sources cover browser camera/screen capture, uploaded video and audio files,
+OBS Virtual Camera, and RTMP ingest via MediaMTX with HLS playback. The
+validated end-to-end speech path is English to Spanish; other catalogue
+languages are enabled per configured model and voice. The Python speech-worker
+remains a mock contract worker used for tests; real AI providers run inside
+media-ingest through the `.venv-ai` runtime (see
+[docs/AI_RUNTIME_SETUP.md](docs/AI_RUNTIME_SETUP.md)).
 
-Current limitations remain intentional: no real AI providers, no production
-streaming, no authentication or authorization, no database, no billing, no
-persistence, and local polling transport is used for Windows compatibility.
-Phase 2 has not yet been implemented.
+Current limitations remain intentional: no production deployment, no
+authentication or authorization, no database, no billing, no persistence, and
+local polling transport is used for Windows compatibility.
 
-See [docs/PHASE_1_CLOSURE.md](docs/PHASE_1_CLOSURE.md) for the formal Phase 1
-closure record.
+See
+[docs/PHASE_5_PARTNER_PREVIEW_CLOSURE_REPORT.md](docs/PHASE_5_PARTNER_PREVIEW_CLOSURE_REPORT.md)
+for the Phase 5 closure record,
+[docs/PHASE_5_MULTI_LANGUAGE_VIEWER_DELIVERY.md](docs/PHASE_5_MULTI_LANGUAGE_VIEWER_DELIVERY.md)
+for the multi-language viewer design, and
+[docs/PHASE_1_CLOSURE.md](docs/PHASE_1_CLOSURE.md) through the Phase 4 closure
+report for earlier phase records.
 
 ## Architecture
 
@@ -30,9 +48,11 @@ apps/
   operator-web/      React + Vite operator dashboard
 
 services/
-  realtime-gateway/  Node.js + Express + Socket.IO event routing hub
-  media-ingest/      Node.js mock media-state broadcaster
-  speech-worker/     Python Socket.IO mock translation worker
+  realtime-gateway/  Node.js + Express + Socket.IO event routing and WebRTC signalling hub
+  media-ingest/      Node.js media processing service: uploads, audio extraction,
+                     faster-whisper transcription, OPUS-MT/M2M100/NLLB-200 translation,
+                     Piper/MMS text-to-speech orchestration
+  speech-worker/     Python Socket.IO mock translation worker (contract tests)
 
 packages/
   shared-types/      TypeScript event interfaces and Socket.IO names
@@ -84,20 +104,23 @@ cp .env.example .env
 ./scripts/dev.sh
 ```
 
-## What Works In Phase 1
+## What Works Today
 
-- Browser listener shows a deterministic animated mock video using
-  `canvas.captureStream()`.
-- Python mock worker connects to the gateway with the official
-  `python-socketio` client and emits `worker:translation`.
-- Gateway validates translation and media-state events before broadcast.
-- Translation ordering is scoped by `eventId + targetLanguage`.
-- Listener queues translated audio clips and generates short local mock tones
-  when real audio URLs are absent.
-- Operator dashboard shows gateway, media ingest, and speech worker connection
-  status from gateway status events.
-- Operator mock controls can start/stop the mock stream, trigger a phrase, and
-  reset the mock sequence. Production use requires operator authorization.
+- Live programme capture in the browser (camera, screen/tab, OBS Virtual
+  Camera) delivered to listeners over WebRTC, plus uploaded video/audio files
+  and RTMP ingest via MediaMTX with HLS playback.
+- Real local AI pipeline in media-ingest: Silero VAD chunking, faster-whisper
+  transcription, OPUS-MT translation with M2M100/NLLB-200 fallback, and Piper
+  or MMS text-to-speech (validated end-to-end for English to Spanish).
+- Listener viewer with a per-session language menu, incremental captions, and
+  a translated-audio queue with sidechain ducking of programme audio.
+- Operator dashboard with source-language detection/confirmation controls,
+  target-language readiness, AI provider status, and session monitoring with
+  pause/resume/retry recovery actions.
+- Gateway validates translation and media-state events before broadcast, and
+  translation ordering is scoped by `eventId + targetLanguage`.
+- Python mock speech worker still connects with the official `python-socketio`
+  client and emits `worker:translation` for contract and integration tests.
 
 ## Validation
 
@@ -117,11 +140,16 @@ npm run test:integration
 
 ## Known Limitations
 
-- No OpenAI API integration or cloud AI provider integration.
-- No Whisper, translation model, Piper, voice cloning, or lip-sync.
-- No Zoom, Teams, Google Meet, WebRTC, HLS, or RTMP production infrastructure.
+- No cloud AI provider integration; all AI models run locally and require the
+  separate `.venv-ai` runtime described in
+  [docs/AI_RUNTIME_SETUP.md](docs/AI_RUNTIME_SETUP.md).
+- No voice cloning or lip-sync.
+- No native Zoom, Teams, or Google Meet meeting capture; RTMP/HLS ingest is a
+  local MediaMTX bridge, not production streaming infrastructure.
 - No authentication, billing, databases, Redis, or production deployment.
-- Mock audio is a generated browser tone, not translated speech.
-- Mock video is browser-generated canvas animation, not a live event feed.
+- TURN relay and separate-network WebRTC delivery are not yet validated.
+- Only English to Spanish is validated end-to-end with human-reviewable
+  output; other languages depend on configured models and voices, and
+  NLLB-200 fallback is licensed for non-commercial use only.
 
 See `docs/roadmap.md` for planned phases.

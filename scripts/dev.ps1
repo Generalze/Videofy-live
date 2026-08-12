@@ -1,4 +1,4 @@
-# Videofy Live - start all Phase 1 development services (Windows PowerShell)
+# Videofy Live - start all development services (Windows PowerShell)
 $ErrorActionPreference = "Stop"
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
