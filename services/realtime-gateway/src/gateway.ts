@@ -93,6 +93,7 @@ export class Gateway {
   private readonly backendMediaPeers: BackendWebRtcMediaPeerRegistry;
   private readonly listenerMediaPeers: BackendWebRtcListenerPeerRegistry;
   private readonly mediaIngestUrl: string;
+  private readonly mediaIngestPublicUrl: string;
   private readonly clients = new Map<string, ClientState>();
   private readonly programmeSessionConfigs = new Map<string, OperatorProgrammeSessionConfig>();
   private readonly activeWorkers = new Set<string>();
@@ -111,6 +112,7 @@ export class Gateway {
     corsOrigins: string[],
     options: {
       mediaIngestUrl?: string;
+      mediaIngestPublicUrl?: string;
       internalWebRtcToken?: string | null;
       webRtcTranscriptionChunkMs?: number;
       webRtcTranscriptionRequestTimeoutMs?: number;
@@ -119,6 +121,7 @@ export class Gateway {
     } = {},
   ) {
     this.mediaIngestUrl = options.mediaIngestUrl ?? 'http://localhost:3002';
+    this.mediaIngestPublicUrl = options.mediaIngestPublicUrl ?? this.mediaIngestUrl;
     this.webRtcTranscriptionBridge = new WebRtcTranscriptionBridge({
       ...(options.mediaIngestUrl ? { mediaIngestUrl: options.mediaIngestUrl } : {}),
       ...(options.internalWebRtcToken ? { internalAuthToken: options.internalWebRtcToken } : {}),
@@ -182,6 +185,9 @@ export class Gateway {
             message: error instanceof Error ? error.message : 'unknown listener video fanout failure',
           });
         }
+      },
+      onVideoEnded: (context, reason) => {
+        this.listenerMediaPeers.endSessionVideo(context.sessionId, reason);
       },
       onAudioPeerClosed: (context, reason) => {
         const programmeConfig = this.programmeSessionConfigs.get(context.sessionId);
@@ -435,12 +441,45 @@ export class Gateway {
         this.webrtcSessions.signal(socket.id, parsed),
       );
       if (result?.outgoing.sessionId) {
-        this.backendMediaPeers.closeSession(result.outgoing.sessionId, 'broadcaster closed signalling session');
-        this.listenerMediaPeers.closeSession(result.outgoing.sessionId, 'broadcaster closed signalling session');
-        this.programmeSessionConfigs.delete(result.outgoing.sessionId);
+        this.teardownProgrammeSession(result.outgoing.sessionId, 'broadcaster closed signalling session');
       }
       this.applyWebRtcRoute(socket, result);
     });
+  }
+
+  /**
+   * Tear down every programme resource attached to a broadcaster session:
+   * media peers, listener delivery, transcription bridging, generated-audio
+   * history, operator config and any live media state advertising the session.
+   */
+  private teardownProgrammeSession(sessionId: string | undefined, reason: string): void {
+    if (!sessionId) return;
+    this.backendMediaPeers.closeSession(sessionId, reason);
+    this.listenerMediaPeers.closeSession(sessionId, reason);
+    this.webRtcTranscriptionBridge.endSessionsForSessionId(sessionId, reason);
+    this.programmeSessionConfigs.delete(sessionId);
+    this.generatedAudioStore.resetSession(sessionId);
+    this.invalidateProgrammeMediaState(sessionId);
+  }
+
+  /**
+   * Stop advertising a torn-down live session to future listeners while keeping
+   * uploaded programmes (which retain a playable programmeMediaUrl) replayable.
+   */
+  private invalidateProgrammeMediaState(sessionId: string): void {
+    const state = this.latestProgrammeMediaState;
+    if (!state) return;
+    const referencesSession =
+      state.processingSessionId === sessionId ||
+      state.shareableWebRtcSessionId?.endsWith(`/${sessionId}`) === true;
+    if (!referencesSession) return;
+    if (state.programmeMediaUrl) {
+      if (!isTerminalMediaState(state.streamStatus)) {
+        this.latestProgrammeMediaState = { ...state, streamStatus: 'completed' };
+      }
+      return;
+    }
+    this.latestProgrammeMediaState = null;
   }
 
   private handleOperatorSocket(socket: Socket): void {
@@ -678,9 +717,7 @@ export class Gateway {
     for (const result of this.webrtcSessions.cleanupSocket(socket.id)) {
       if (result.outgoing.sessionId) {
         if (result.outgoing.senderRole === 'broadcaster') {
-          this.backendMediaPeers.closeSession(result.outgoing.sessionId, 'broadcaster socket disconnected');
-          this.listenerMediaPeers.closeSession(result.outgoing.sessionId, 'broadcaster socket disconnected');
-          this.programmeSessionConfigs.delete(result.outgoing.sessionId);
+          this.teardownProgrammeSession(result.outgoing.sessionId, 'broadcaster socket disconnected');
         } else if (result.outgoing.senderRole === 'listener') {
           this.listenerMediaPeers.closeListenerPeer(
             result.outgoing.sessionId,
@@ -917,7 +954,7 @@ export class Gateway {
   ): void {
     const result = this.tryWebRtc(socket, parsed, () => {
       this.webrtcSessions.disconnectBackendMediaPeer(socket.id, parsed);
-      this.backendMediaPeers.closeSession(parsed.sessionId, parsed.payload.reason ?? 'backend media peer disconnected');
+      this.teardownProgrammeSession(parsed.sessionId, parsed.payload.reason ?? 'backend media peer disconnected');
       return {
         outgoing: {
           ...parsed,
@@ -1174,7 +1211,7 @@ export class Gateway {
   }
 
   private sourceMediaUrl(sessionId: string): string {
-    return `${this.mediaIngestUrl.replace(/\/$/, '')}/sessions/${encodeURIComponent(sessionId)}/source-media`;
+    return `${this.mediaIngestPublicUrl.replace(/\/$/, '')}/sessions/${encodeURIComponent(sessionId)}/source-media`;
   }
 
   private parseProgrammeSessionConfig(raw: unknown): OperatorProgrammeSessionConfig | null {

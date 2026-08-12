@@ -244,7 +244,7 @@ describe('WebRtcTranscriptionBridge', () => {
     });
   });
 
-  it('normalizes metadata-mismatched Int16 frames instead of dropping valid speech', async () => {
+  it('rejects bit-depth-mismatched Int16 frames without interrupting later transcription', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
     const bridge = new WebRtcTranscriptionBridge({
@@ -259,11 +259,18 @@ describe('WebRtcTranscriptionBridge', () => {
       channelCount: 1,
       bitsPerSample: 24,
     });
+    bridge.handleFrame(context, {
+      samples: new Int16Array(1600).fill(4000),
+      sampleRate: 16000,
+      channelCount: 1,
+      bitsPerSample: 16,
+    });
 
     await vi.waitFor(() => expect(client.submitted).toHaveLength(1));
     expect(bridge.getSnapshot(context)).toMatchObject({
-      skippedFrameCount: 0,
-      lastSkippedFrameReason: null,
+      skippedFrameCount: 1,
+      lastSkippedFrameReason:
+        'WebRTC audio frame bit depth 24 is unsupported; expected 16-bit int16 PCM.',
       failure: null,
     });
     expect(client.submitted[0]?.chunk).toMatchObject({
@@ -271,7 +278,45 @@ describe('WebRtcTranscriptionBridge', () => {
       sampleRate: 16000,
       channelCount: 1,
       pcmFormat: 'pcm_s16le',
-      discontinuity: false,
+      discontinuity: true,
+    });
+  });
+
+  it('releases queue accounting for failed submissions so later chunks still emit', async () => {
+    const stagingDir = await tempDir();
+    const client = fakeClient({ failSubmitAttempts: 8 });
+    const bridge = new WebRtcTranscriptionBridge({
+      stagingDir,
+      chunkDurationMs: 100,
+      maxRetries: 0,
+      client,
+    });
+
+    // Default chunker queue limit is 8 chunks; every submission fails, so
+    // without failure-path release the ninth chunk could never be created.
+    for (let index = 0; index < 8; index++) {
+      bridge.handleFrame(context, {
+        samples: new Int16Array(1600),
+        sampleRate: 16000,
+        channelCount: 1,
+        bitsPerSample: 16,
+      });
+    }
+    await vi.waitFor(() => expect(client.submitAttempts).toBe(8));
+    expect(client.submitted).toHaveLength(0);
+
+    bridge.handleFrame(context, {
+      samples: new Int16Array(1600),
+      sampleRate: 16000,
+      channelCount: 1,
+      bitsPerSample: 16,
+    });
+
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(1));
+    expect(bridge.getSnapshot(context)).toMatchObject({
+      skippedFrameCount: 0,
+      queuedChunks: 0,
+      queuedBytes: 0,
     });
   });
 

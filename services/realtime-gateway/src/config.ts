@@ -7,6 +7,7 @@ export interface GatewayConfig {
   logLevel: string;
   corsOrigins: string[];
   mediaIngestUrl: string;
+  mediaIngestPublicUrl: string;
   internalWebRtcToken: string | null;
   webRtcTranscriptionChunkMs: number;
   webRtcTranscriptionRequestTimeoutMs: number;
@@ -28,6 +29,12 @@ export function loadConfig(): GatewayConfig {
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
     corsOrigins: readCsv('CORS_ORIGINS', 'http://localhost:5173,http://localhost:5174'),
     mediaIngestUrl: process.env['MEDIA_INGEST_URL'] ?? 'http://localhost:3002',
+    // Blank counts as unset so a templated MEDIA_INGEST_PUBLIC_URL= line
+    // still falls back to the internal URL.
+    mediaIngestPublicUrl:
+      process.env['MEDIA_INGEST_PUBLIC_URL']?.trim() ||
+      process.env['MEDIA_INGEST_URL']?.trim() ||
+      'http://localhost:3002',
     internalWebRtcToken: process.env['INTERNAL_WEBRTC_TOKEN']?.trim() || null,
     webRtcTranscriptionChunkMs: readPositiveGatewayInt('WEBRTC_TRANSCRIPTION_CHUNK_MS', 5_000),
     webRtcTranscriptionRequestTimeoutMs: readPositiveGatewayInt(

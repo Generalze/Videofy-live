@@ -731,6 +731,70 @@ describe('gateway Socket.IO integration', () => {
   });
 });
 
+describe('gateway public media ingest URL', () => {
+  it('builds listener-facing programme media URLs from the public ingest URL', async () => {
+    const server = createServer(createApp());
+    new Gateway(server, ['http://localhost:5173'], {
+      mediaIngestUrl: 'http://internal-ingest:3002',
+      mediaIngestPublicUrl: 'https://media.example.com',
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address() as AddressInfo;
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const sockets: Socket[] = [];
+    const connect = (role: string): Socket => {
+      const socket = connectClient(baseUrl, {
+        query: { role },
+        transports: ['websocket', 'polling'],
+        forceNew: true,
+        reconnection: false,
+      });
+      sockets.push(socket);
+      return socket;
+    };
+
+    try {
+      const operator = connect('operator');
+      const ingest = connect('ingest');
+      const listener = connect('listener');
+      await Promise.all([
+        waitForConnect(operator),
+        waitForConnect(ingest),
+        waitForConnect(listener),
+      ]);
+      const mediaEvents: MediaStateEvent[] = [];
+      listener.on(SOCKET_EVENTS.MEDIA_STATE, (event: MediaStateEvent) => mediaEvents.push(event));
+
+      operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+        sessionId: 'wrs_public',
+        broadcastId: 'broadcast_public',
+        sourceRevision: 1,
+        programmeSourceType: 'uploaded-video',
+        targetLanguage: 'es',
+        targetLanguages: ['es'],
+        sourceLanguage: 'en',
+        sourceLanguageMode: 'manual',
+      });
+      await waitUntil(() => mediaEvents.length >= 1);
+
+      ingest.emit(SOCKET_EVENTS.INGEST_STATE, {
+        ...makeMediaState(),
+        processingSessionId: 'wrs_public',
+        streamStatus: 'completed',
+      });
+      await waitUntil(() => mediaEvents.some((event) => Boolean(event.programmeMediaUrl)));
+
+      expect(mediaEvents.find((event) => event.programmeMediaUrl)).toMatchObject({
+        processingSessionId: 'wrs_public',
+        programmeMediaUrl: 'https://media.example.com/sessions/wrs_public/source-media',
+      });
+    } finally {
+      for (const socket of sockets) socket.disconnect();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
 function collectServiceStatuses(socket: Socket): ServiceStatusEvent[] {
   const statuses: ServiceStatusEvent[] = [];
   socket.on(SOCKET_EVENTS.SERVICE_STATUS, (event: ServiceStatusEvent) => {

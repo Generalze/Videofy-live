@@ -482,6 +482,120 @@ describe('gateway WebRTC signalling integration', () => {
     await expect(error).resolves.toMatchObject({ payload: { code: 'session-closed' } });
   });
 
+  it('stops replaying a torn-down live programme session to late listeners', async () => {
+    const { broadcaster } = await createSession();
+    const operator = client('operator');
+    await waitForConnect(operator);
+    const ack = waitForEvent<{ action: string; accepted: boolean }>(
+      operator,
+      SOCKET_EVENTS.CONTROL_ACK,
+    );
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+      sessionId: 'wrs_demo',
+      broadcastId: 'broadcast_demo',
+      sourceRevision: 1,
+      targetLanguage: 'es',
+      targetLanguages: ['es'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+    await expect(ack).resolves.toMatchObject({ accepted: true });
+
+    // Sanity: while the session is live, late listeners are told about it.
+    const liveListener = client('listener');
+    const liveReplay = waitForEvent<MediaStateEvent>(liveListener, SOCKET_EVENTS.MEDIA_STATE);
+    await waitForConnect(liveListener);
+    await expect(liveReplay).resolves.toMatchObject({ processingSessionId: 'wrs_demo' });
+
+    broadcaster.emit(
+      SOCKET_EVENTS.WEBRTC_SESSION_CLOSE,
+      message('session-close', {
+        messageId: 'msg_close_teardown',
+        payload: { reason: 'broadcast finished' },
+      }),
+    );
+    await delay(50);
+
+    const lateListener = client('listener');
+    const replayed: MediaStateEvent[] = [];
+    lateListener.on(SOCKET_EVENTS.MEDIA_STATE, (event: MediaStateEvent) => replayed.push(event));
+    await waitForConnect(lateListener);
+    await delay(75);
+
+    expect(replayed).toEqual([]);
+  });
+
+  it('stops replaying a phantom session after the broadcaster socket disconnects', async () => {
+    const { broadcaster } = await createSession();
+    const operator = client('operator');
+    await waitForConnect(operator);
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+      sessionId: 'wrs_demo',
+      broadcastId: 'broadcast_demo',
+      sourceRevision: 1,
+      targetLanguage: 'es',
+      targetLanguages: ['es'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+    await waitForMatchingEvent<{ action: string }>(
+      operator,
+      SOCKET_EVENTS.CONTROL_ACK,
+      (event) => event.action === 'programme-session-config',
+    );
+
+    broadcaster.disconnect();
+    await delay(75);
+
+    const lateListener = client('listener');
+    const replayed: MediaStateEvent[] = [];
+    lateListener.on(SOCKET_EVENTS.MEDIA_STATE, (event: MediaStateEvent) => replayed.push(event));
+    await waitForConnect(lateListener);
+    await delay(75);
+
+    expect(replayed).toEqual([]);
+  });
+
+  it('keeps replaying an uploaded programme with retained media after broadcaster teardown', async () => {
+    const { broadcaster } = await createSession();
+    const operator = client('operator');
+    const ingest = client('ingest');
+    await Promise.all([waitForConnect(operator), waitForConnect(ingest)]);
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+      sessionId: 'wrs_demo',
+      broadcastId: 'broadcast_demo',
+      sourceRevision: 1,
+      programmeSourceType: 'uploaded-video',
+      targetLanguage: 'es',
+      targetLanguages: ['es'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+    await waitForMatchingEvent<{ action: string }>(
+      operator,
+      SOCKET_EVENTS.CONTROL_ACK,
+      (event) => event.action === 'programme-session-config',
+    );
+    ingest.emit(SOCKET_EVENTS.INGEST_STATE, {
+      ...mediaState(),
+      processingSessionId: 'wrs_demo',
+      streamStatus: 'completed',
+    });
+    await delay(50);
+
+    broadcaster.disconnect();
+    await delay(75);
+
+    const lateListener = client('listener');
+    const replayed = waitForEvent<MediaStateEvent>(lateListener, SOCKET_EVENTS.MEDIA_STATE);
+    await waitForConnect(lateListener);
+
+    await expect(replayed).resolves.toMatchObject({
+      processingSessionId: 'wrs_demo',
+      programmeMediaUrl: expect.stringContaining('/sessions/wrs_demo/source-media'),
+    });
+  });
+
   it('preserves existing media-state traffic while WebRTC routes are present', async () => {
     const ingest = client('ingest');
     const listener = client('listener');

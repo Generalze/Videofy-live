@@ -15,6 +15,31 @@ describe('GeneratedAudioStore', () => {
     expect(store.getSnapshot('ps_multi', 'yo')).toEqual([]);
   });
 
+  it('caps retained history to the configured maximum of most recent events', () => {
+    const store = new GeneratedAudioStore(20, 3);
+
+    for (let sequence = 0; sequence < 6; sequence++) {
+      expect(store.offer(event(sequence, 'es')).ready).toHaveLength(1);
+    }
+
+    expect(store.getSnapshot('ps_multi', 'es').map((item) => item.sequence)).toEqual([3, 4, 5]);
+  });
+
+  it('clears every language channel of a session on resetSession without touching other sessions', () => {
+    const store = new GeneratedAudioStore();
+    store.offer(event(0, 'es'));
+    store.offer(event(0, 'fr'));
+    store.offer({ ...event(0, 'es'), sessionId: 'ps_other' });
+
+    store.resetSession('ps_multi');
+
+    expect(store.getSnapshot('ps_multi', 'es')).toEqual([]);
+    expect(store.getSnapshot('ps_multi', 'fr')).toEqual([]);
+    expect(store.getSnapshot('ps_other', 'es')).toHaveLength(1);
+    // Channel sequencing restarts cleanly after the session reset.
+    expect(store.offer(event(0, 'es'))).toMatchObject({ accepted: true });
+  });
+
   it('does not duplicate retained output and clears only the requested channel', () => {
     const store = new GeneratedAudioStore();
     store.offer(event(0, 'es'));

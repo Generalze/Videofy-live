@@ -27,6 +27,22 @@ describe('gateway config', () => {
     expect(() => loadConfig()).toThrow(/GATEWAY_PORT/);
   });
 
+  it('falls back listener-facing media URLs to MEDIA_INGEST_URL and accepts a public override', () => {
+    // Empty string (not delete): the root .env loader only fills unset keys, so
+    // this shields the test from a real MEDIA_INGEST_PUBLIC_URL in .env.
+    process.env['MEDIA_INGEST_PUBLIC_URL'] = '';
+    process.env['MEDIA_INGEST_URL'] = '';
+    expect(loadConfig().mediaIngestPublicUrl).toBe('http://localhost:3002');
+
+    process.env['MEDIA_INGEST_URL'] = 'http://internal-ingest:3002';
+    expect(loadConfig().mediaIngestPublicUrl).toBe('http://internal-ingest:3002');
+
+    process.env['MEDIA_INGEST_PUBLIC_URL'] = 'https://media.example.com';
+    const config = loadConfig();
+    expect(config.mediaIngestPublicUrl).toBe('https://media.example.com');
+    expect(config.mediaIngestUrl).toBe('http://internal-ingest:3002');
+  });
+
   it('defaults WebRTC transcription submit timeout for local AI providers and accepts overrides', () => {
     delete process.env['WEBRTC_TRANSCRIPTION_REQUEST_TIMEOUT_MS'];
     expect(loadConfig().webRtcTranscriptionRequestTimeoutMs).toBe(180_000);

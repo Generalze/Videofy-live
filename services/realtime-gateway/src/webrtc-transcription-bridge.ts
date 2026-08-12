@@ -139,6 +139,14 @@ export class WebRtcTranscriptionBridge {
     this.processQueue(session);
   }
 
+  /** End every bridge session (any revision) that belongs to the given processing session. */
+  endSessionsForSessionId(sessionId: string, reason: string): void {
+    for (const session of [...this.sessions.values()]) {
+      if (session.context.sessionId !== sessionId || session.closed) continue;
+      this.endSession(session.context, reason);
+    }
+  }
+
   endSession(context: WebRtcTranscriptionBridgeContext, reason: string): void {
     const session = this.sessions.get(sessionKey(context));
     if (!session || session.closed) return;
@@ -369,6 +377,9 @@ export class WebRtcTranscriptionBridge {
         silent: audio.silent,
       });
     } catch (error) {
+      // The chunk will never be acked; release its queue accounting so the
+      // chunker's queuedChunks/queuedBytes limits cannot leak permanently.
+      session.chunker.releaseChunk(chunk);
       session.chunker.markDiscontinuity();
       session.failure = error instanceof Error ? error.message : 'WebRTC transcription submission failed.';
       if (sourcePath) await rm(sourcePath, { force: true });

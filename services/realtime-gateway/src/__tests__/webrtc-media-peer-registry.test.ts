@@ -223,6 +223,122 @@ describe('BackendWebRtcMediaPeerRegistry', () => {
     expect(ready).toHaveBeenCalledTimes(1);
   });
 
+  it('emits an audio-only peer-ready after the video grace window when video frames never arrive', async () => {
+    const peer = new FakePeer();
+    const sink = new FakeSink();
+    const ready = vi.fn();
+    const timers: { callback: () => void; delayMs: number }[] = [];
+    const registry = new BackendWebRtcMediaPeerRegistry({
+      createPeerConnection: () => peer as never,
+      createAudioSink: () => sink,
+      createVideoSink: () => new FakeVideoSink(),
+      videoReadyGraceMs: 3_000,
+      setTimer: (callback, delayMs) => {
+        timers.push({ callback, delayMs });
+        return timers.length as unknown as ReturnType<typeof setTimeout>;
+      },
+      clearTimer: () => undefined,
+      onPeerReady: ready,
+    });
+
+    await registry.acceptOffer(
+      'socket_broadcaster',
+      offer({
+        payload: {
+          targetPeerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+          sdp: 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n',
+        },
+      }),
+      sessionSummary(),
+    );
+    peer.emitTrack('audio');
+    sink.emitFrame();
+    expect(ready).not.toHaveBeenCalled();
+
+    const graceTimer = timers.find((timer) => timer.delayMs === 3_000);
+    expect(graceTimer).toBeDefined();
+    graceTimer!.callback();
+
+    expect(ready).toHaveBeenCalledTimes(1);
+    expect(ready).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'peer-ready',
+        payload: { state: 'ready', audioTrackReceived: true, videoTrackReceived: false },
+      }),
+    );
+
+    // Further audio activity must not emit a second peer-ready.
+    sink.emitFrame();
+    expect(ready).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports truthful track receipt in the peer-ready payload', async () => {
+    const peer = new FakePeer();
+    const sink = new FakeSink();
+    const videoSink = new FakeVideoSink();
+    const ready = vi.fn();
+    const registry = new BackendWebRtcMediaPeerRegistry({
+      createPeerConnection: () => peer as never,
+      createAudioSink: () => sink,
+      createVideoSink: () => videoSink,
+      onPeerReady: ready,
+    });
+
+    await registry.acceptOffer('socket_broadcaster', offer(), sessionSummary());
+    peer.emitTrack('audio');
+    peer.emitTrack('video');
+    sink.emitFrame();
+    videoSink.emitFrame();
+
+    expect(ready).toHaveBeenCalledTimes(1);
+    expect(ready).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: { state: 'ready', audioTrackReceived: true, videoTrackReceived: true },
+      }),
+    );
+  });
+
+  it('signals video end through onVideoEnded instead of fanning out a sentinel frame', async () => {
+    const peer = new FakePeer();
+    const sink = new FakeSink();
+    const videoSink = new FakeVideoSink();
+    const videoFrames: WebRtcVideoFrameLike[] = [];
+    const videoEnded = vi.fn();
+    const audioPeerClosed = vi.fn();
+    const registry = new BackendWebRtcMediaPeerRegistry({
+      createPeerConnection: () => peer as never,
+      createAudioSink: () => sink,
+      createVideoSink: () => videoSink,
+      onVideoFrame: (_context, frame) => videoFrames.push(frame),
+      onVideoEnded: videoEnded,
+      onAudioPeerClosed: audioPeerClosed,
+    });
+
+    await registry.acceptOffer('socket_broadcaster', offer(), sessionSummary());
+    peer.emitTrack('audio');
+    const videoTrack = peer.emitTrack('video');
+    videoSink.emitFrame({ width: 640, height: 360 });
+    sink.emitFrame();
+
+    videoTrack.onended?.();
+
+    expect(videoFrames).toEqual([{ width: 640, height: 360 }]);
+    expect(videoEnded).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'wrs_demo' }),
+      'broadcaster video track ended',
+    );
+    expect(audioPeerClosed).not.toHaveBeenCalled();
+    expect(registry.getSnapshot('wrs_demo')).toMatchObject({
+      videoTrackState: 'ended',
+      audioTrackState: 'active',
+    });
+    expect(registry.getSnapshot('wrs_demo')?.state).not.toBe('failed');
+
+    // Audio keeps flowing after video ends.
+    sink.emitFrame();
+    expect(registry.getSnapshot('wrs_demo')).toMatchObject({ audioFrameCount: 2 });
+  });
+
   it('rejects duplicate audio tracks and accepts one video track by policy', async () => {
     const peer = new FakePeer();
     const videoSink = new FakeVideoSink();

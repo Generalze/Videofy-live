@@ -304,7 +304,7 @@ export class BackendWebRtcListenerPeerRegistry {
         record.lastVideoFrameAt = this.now();
         this.touch(record);
       } catch (error) {
-        logger.warn('Backend listener WebRTC video frame fan-out failed', {
+        logger.warn('Backend listener WebRTC video frame fan-out failed; degrading to audio-only', {
           sessionId: record.sessionId,
           listenerPeerId: record.listenerPeerId,
           revision: record.revision,
@@ -312,9 +312,36 @@ export class BackendWebRtcListenerPeerRegistry {
           height: frame.height ?? null,
           message: error instanceof Error ? error.message : String(error),
         });
-        this.fail(record);
+        // A failing video frame must never tear down the listener's audio path.
+        this.degradeVideo(record);
       }
     }
+  }
+
+  /** Stop delivering video to every listener peer of a session, keeping audio intact. */
+  endSessionVideo(sessionId: string | undefined, reason = 'broadcaster video ended'): void {
+    if (!sessionId) return;
+    for (const record of this.peers.values()) {
+      if (record.sessionId !== sessionId || !record.videoSource) continue;
+      logger.info('Backend listener WebRTC video delivery ended', {
+        sessionId: record.sessionId,
+        listenerPeerId: record.listenerPeerId,
+        revision: record.revision,
+        reason,
+      });
+      this.degradeVideo(record);
+    }
+  }
+
+  private degradeVideo(record: BackendListenerPeerRecord): void {
+    try {
+      record.videoTrack?.stop?.();
+    } catch {
+      // Best effort; audio delivery continues regardless.
+    }
+    record.videoTrack = null;
+    record.videoSource = null;
+    this.touch(record);
   }
 
   closeSession(sessionId: string | undefined, reason = 'signalling session closed'): void {

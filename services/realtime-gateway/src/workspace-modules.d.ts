@@ -449,7 +449,7 @@ declare module '@videofy-live/shared-types' {
   >;
   export type WebRtcPeerReadyEnvelope = WebRtcSignallingEnvelopeBase<
     'peer-ready',
-    { state: WebRtcPeerState }
+    { state: WebRtcPeerState; audioTrackReceived?: boolean; videoTrackReceived?: boolean }
   >;
   export type WebRtcPeerDisconnectEnvelope = WebRtcSignallingEnvelopeBase<
     'peer-disconnect',
