@@ -14,6 +14,7 @@ class FakeChildProcess implements WorkerChildProcessLike {
   private readonly stderrListeners: Array<(chunk: unknown) => void> = [];
   private readonly errorListeners: Array<(error: Error) => void> = [];
   private readonly exitListeners: Array<(code: number | null, signal: string | null) => void> = [];
+  private readonly stdinErrorListeners: Array<(error: Error) => void> = [];
 
   readonly stdin = {
     write: (chunk: string): boolean => {
@@ -23,7 +24,14 @@ class FakeChildProcess implements WorkerChildProcessLike {
     end: (): void => {
       this.stdinEnded = true;
     },
+    on: (event: 'error', listener: (error: Error) => void): void => {
+      if (event === 'error') this.stdinErrorListeners.push(listener);
+    },
   };
+
+  emitStdinError(error: Error & { code?: string }): void {
+    for (const listener of this.stdinErrorListeners) listener(error);
+  }
 
   readonly stdout = {
     on: (event: 'data', listener: (chunk: unknown) => void): void => {
@@ -221,6 +229,37 @@ describe('PersistentPythonWorker', () => {
     const request = replacement.parsedRequests()[0]!;
     replacement.respond({ id: request.id, ok: true, result: 'ok-again' });
     await expect(retried).resolves.toBe('ok-again');
+  });
+
+  it('routes an async stdin EPIPE into worker failure instead of crashing the process', async () => {
+    const { worker, children, spawnCalls } = harness();
+
+    const doomed = worker.request({ n: 1 }, { timeoutMs: 1_000 });
+    const queued = worker.request({ n: 2 }, { timeoutMs: 1_000 });
+    await flushMicrotasks();
+    expect(children).toHaveLength(1);
+
+    // The write itself succeeded; the EPIPE arrives asynchronously afterwards.
+    const epipe = new Error('write EPIPE') as Error & { code: string };
+    epipe.code = 'EPIPE';
+    children[0]!.emitStdinError(epipe);
+
+    await expect(doomed).rejects.toMatchObject({
+      name: 'PythonWorkerError',
+      kind: 'worker-exited',
+      code: 'EPIPE',
+      message: expect.stringContaining('stdin stream failed: write EPIPE'),
+    });
+
+    // Queued work is redispatched to a fresh worker; the old one is discarded.
+    await flushMicrotasks();
+    expect(children[0]!.killed).toBe(true);
+    expect(spawnCalls).toHaveLength(2);
+    const replacement = children[1]!;
+    const request = replacement.parsedRequests()[0]!;
+    expect(request.payload).toEqual({ n: 2 });
+    replacement.respond({ id: request.id, ok: true, result: 'recovered' });
+    await expect(queued).resolves.toBe('recovered');
   });
 
   it('rejects pending and queued requests with the spawn error code when spawn fails', async () => {

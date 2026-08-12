@@ -395,6 +395,48 @@ describe('timestamped translation sessions', () => {
     await created;
   });
 
+  it('bails out of an in-flight translation pass when a language revision replaces it', async () => {
+    let release: ((value: TranslationProviderResult) => void) | undefined;
+    let activeSessionId: string | undefined;
+    const sessionStore = store(
+      translationProvider(async (input) => {
+        if (input.sequence > 0) {
+          return { translatedText: `late ${input.sequence}` };
+        }
+        return await new Promise<TranslationProviderResult>((resolve) => {
+          release = resolve;
+        });
+      }),
+      {
+        onSessionChange: (session) => {
+          if (session.translation.events.some((event) => event.status === 'translating')) {
+            activeSessionId = session.id;
+          }
+        },
+      },
+    );
+
+    const created = sessionStore.createFromUpload(upload(), async () => validProbe);
+    await waitUntil(() => activeSessionId !== undefined && release !== undefined);
+
+    // The operator overrides the source language while segment 0 translates:
+    // the revision boundary replaces the translation pass.
+    const overridden = sessionStore.updateSourceLanguageControl(activeSessionId!, {
+      action: 'override',
+      language: 'pt',
+    });
+    expect(overridden.sourceLanguageControl.revision).toBe(1);
+    release?.({ translatedText: 'stale result' });
+
+    const session = await created;
+    // The superseded pass bails out cleanly instead of failing the session
+    // with a bogus zero-output translation failure; the new revision owns it.
+    expect(session.state).toBe('processing');
+    expect(session.error).toBeNull();
+    expect(session.translation).toMatchObject({ status: 'queued', totalSegments: 0 });
+    expect(session.translation.events).toEqual([]);
+  });
+
   it('preserves partial failure while successful segments remain translated', async () => {
     const session = await store(
       translationProvider(async (input) => {

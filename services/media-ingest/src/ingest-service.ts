@@ -30,7 +30,11 @@ import {
   type TimestampedTranslationProvider,
 } from './translation-provider.js';
 import { createTextToSpeechProvider } from './text-to-speech-provider.js';
-import { buildTargetLanguageOutputs } from './target-language-outputs.js';
+import {
+  buildTargetLanguageOutputs,
+  capRecentEvents,
+  capRecentEventsPerLanguage,
+} from './target-language-outputs.js';
 
 export function buildPiperVoiceIdsByLanguage(
   voices: IngestConfig['piperVoices'],
@@ -629,6 +633,13 @@ export class IngestService {
   private emitState(): void {
     if (!this.socket?.connected) return;
 
+    // Incrementally maintained per-language counters avoid rescanning the full
+    // event history on every broadcast; the emitted event arrays are capped to
+    // the most recent slice per type/language (listeners merge incrementally
+    // and rely on the aggregate counts for totals).
+    const tallies = this.currentSession
+      ? this.sessions.getTargetLanguageOutputTallies(this.currentSession.id)
+      : null;
     const state: MediaStateEvent = this.currentSession
       ? {
           eventId: this.currentSession.streamId,
@@ -647,9 +658,18 @@ export class IngestService {
           ...(this.currentSession.webrtcTranscriptionBridge
             ? { webrtcTranscriptionBridge: this.currentSession.webrtcTranscriptionBridge }
             : {}),
-          transcription: this.currentSession.transcription,
-          translation: this.currentSession.translation,
-          generatedAudio: this.currentSession.generatedAudio,
+          transcription: {
+            ...this.currentSession.transcription,
+            events: capRecentEvents(this.currentSession.transcription.events),
+          },
+          translation: {
+            ...this.currentSession.translation,
+            events: capRecentEventsPerLanguage(this.currentSession.translation.events),
+          },
+          generatedAudio: {
+            ...this.currentSession.generatedAudio,
+            events: capRecentEventsPerLanguage(this.currentSession.generatedAudio.events),
+          },
           sourceLanguageControl: this.currentSession.sourceLanguageControl,
           targetLanguageCatalogue: this.currentSession.targetLanguageCatalogue,
           targetLanguageOutputs: buildTargetLanguageOutputs({
@@ -657,6 +677,7 @@ export class IngestService {
             catalogue: this.currentSession.targetLanguageCatalogue,
             translation: this.currentSession.translation,
             generatedAudio: this.currentSession.generatedAudio,
+            ...(tallies ? { tallies } : {}),
           }),
           aiProviderStatus: this.currentSession.aiProviderStatus,
           monitoring: this.currentSession.monitoring,

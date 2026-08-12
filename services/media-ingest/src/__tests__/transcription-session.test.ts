@@ -246,6 +246,67 @@ describe('timestamped transcription sessions', () => {
     expect(retried.transcription.transcribedChunks).toBe(3);
   });
 
+  it('renumbers fan-out sequences into timeline order after a chunk retry', async () => {
+    const attempts = new Map<number, number>();
+    const sessionStore = store(
+      provider(async (input) => {
+        const current = attempts.get(input.chunk.index) ?? 0;
+        attempts.set(input.chunk.index, current + 1);
+        if (input.chunk.index === 1 && current === 0) {
+          throw new Error('first attempt failed');
+        }
+        return {
+          segments:
+            input.chunk.index === 0
+              ? [
+                  { text: 'chunk0 first.', startMs: 0, endMs: 7_000 },
+                  { text: 'chunk0 second.', startMs: 7_000, endMs: 15_000 },
+                ]
+              : wholeChunkSegments(input, `chunk${input.chunk.index} text`),
+          detectedLanguage: 'en',
+          confidence: 0.95,
+        };
+      }),
+    );
+    const failed = await sessionStore.createFromUpload(upload(), async () => validProbe);
+    const failedChunk = failed.transcription.events.find((event) => event.status === 'failed')!;
+
+    const retried = await sessionStore.retryTranscriptionChunk(failed.id, failedChunk.chunkId);
+
+    expect(retried.state).toBe('completed');
+    // The retried chunk's fan-out lands back in its timeline position with
+    // contiguous 0-based sequences instead of trailing the counter.
+    expect(retried.transcription.events.map((event) => event.sequence)).toEqual([0, 1, 2, 3]);
+    expect(retried.transcription.events.map((event) => event.sourceText)).toEqual([
+      'chunk0 first.',
+      'chunk0 second.',
+      'chunk1 text',
+      'chunk2 text',
+    ]);
+    expect(sessionStore.exportTranscript(failed.id)).toBe(
+      '[00:00.000 - 00:07.000] chunk0 first.\n' +
+        '[00:07.000 - 00:15.000] chunk0 second.\n' +
+        '[00:15.000 - 00:30.000] chunk1 text\n' +
+        '[00:30.000 - 00:31.000] chunk2 text',
+    );
+    // Downstream passes inherit the timeline order, and the generated-audio
+    // channel keeps its contiguous 0-based per-language sequence contract.
+    expect(retried.translation.events.map((event) => event.sequence)).toEqual([0, 1, 2, 3]);
+    expect(retried.translation.events.map((event) => event.sourceText)).toEqual([
+      'chunk0 first.',
+      'chunk0 second.',
+      'chunk1 text',
+      'chunk2 text',
+    ]);
+    expect(retried.generatedAudio.events.map((event) => event.sequence)).toEqual([0, 1, 2, 3]);
+    expect(retried.generatedAudio.events.map((event) => event.audioFilename)).toEqual([
+      'tts-000000.wav',
+      'tts-000001.wav',
+      'tts-000002.wav',
+      'tts-000003.wav',
+    ]);
+  });
+
   it('rejects duplicate processing while a chunk is active', async () => {
     let release: ((value: TranscriptionProviderResult) => void) | undefined;
     let activeSessionId: string | undefined;

@@ -43,6 +43,12 @@ export class PythonWorkerError extends Error {
 export interface WorkerStdinLike {
   write(chunk: string): unknown;
   end(): void;
+  /**
+   * Optional: real Node streams emit asynchronous errors (e.g. EPIPE after the
+   * python process died mid-write). Without a listener those errors crash the
+   * whole process, so the worker attaches one when the stream supports it.
+   */
+  on?(event: 'error', listener: (error: Error) => void): unknown;
 }
 
 export interface WorkerStreamLike {
@@ -250,8 +256,48 @@ export class PersistentPythonWorker implements PythonWorkerLike {
       if (generation !== this.generation) return;
       this.handleChildExit(code, signal);
     });
+    // Async stream errors (EPIPE on stdin after the python process died, or a
+    // destroyed stdout/stderr pipe) are 'error' events on the streams, not on
+    // the child. Unhandled they crash the node process; route them into the
+    // normal worker-failure path instead so in-flight requests reject and the
+    // worker respawns for queued work.
+    this.attachStreamErrorHandler(child.stdin, generation, 'stdin');
+    this.attachStreamErrorHandler(child.stdout, generation, 'stdout');
+    this.attachStreamErrorHandler(child.stderr, generation, 'stderr');
     this.child = child;
     return child;
+  }
+
+  private attachStreamErrorHandler(
+    stream: WorkerStdinLike | WorkerStreamLike | null,
+    generation: number,
+    streamName: string,
+  ): void {
+    const on = (stream as { on?: unknown } | null)?.on;
+    if (typeof on !== 'function') return;
+    (on as (event: 'error', listener: (error: unknown) => void) => unknown).call(
+      stream,
+      'error',
+      (error) => {
+        if (generation !== this.generation) return;
+        // Custom stream fakes may route every event through one listener
+        // list; only genuine Error objects are treated as stream failures.
+        if (!(error instanceof Error)) return;
+        this.handleWorkerFailure(
+          new PythonWorkerError(
+            `${this.label} worker ${streamName} stream failed: ${error.message}`,
+            'worker-exited',
+            {
+              code:
+                typeof (error as { code?: unknown }).code === 'string'
+                  ? ((error as { code?: unknown }).code as string)
+                  : null,
+              stderr: this.stderrTail,
+            },
+          ),
+        );
+      },
+    );
   }
 
   private handleStdout(chunk: string): void {

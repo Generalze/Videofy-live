@@ -5,7 +5,12 @@ import type {
 } from '@videofy-live/shared-types';
 import { describe, expect, it } from 'vitest';
 import { buildTargetLanguageCatalogue } from '../language-controls.js';
-import { buildTargetLanguageOutputs } from '../target-language-outputs.js';
+import {
+  buildTargetLanguageOutputs,
+  capRecentEvents,
+  capRecentEventsPerLanguage,
+  type TargetLanguageOutputTally,
+} from '../target-language-outputs.js';
 
 describe('target language outputs', () => {
   it('catalogues the requested partner languages without overstating availability', () => {
@@ -143,7 +148,146 @@ describe('target language outputs', () => {
       }),
     ]);
   });
+
+  it('derives identical outputs from incremental tallies without scanning events', () => {
+    const catalogue = [capability('es', true, true), capability('fr', true, false)];
+    const translation = {
+      status: 'translated',
+      progressPct: 100,
+      totalSegments: 2,
+      translatedSegments: 2,
+      failedSegments: 0,
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      targetLanguages: ['es', 'fr'],
+      // Deliberately empty: the tallies must be the source of truth.
+      events: [],
+    } satisfies TranslationSessionMetadata;
+    const generatedAudio = {
+      status: 'generated',
+      progressPct: 100,
+      totalSegments: 1,
+      generatedSegments: 1,
+      failedSegments: 0,
+      targetLanguage: 'es',
+      targetLanguages: ['es', 'fr'],
+      voiceId: 'es-test',
+      textOnlyLanguages: ['fr'],
+      outputFormat: { container: 'wav', codec: 'pcm_s16le' },
+      events: [],
+    } satisfies TextToSpeechSessionMetadata;
+
+    expect(
+      buildTargetLanguageOutputs({
+        selectedLanguages: ['es', 'fr'],
+        catalogue,
+        translation,
+        generatedAudio,
+        tallies: {
+          translation: new Map<string, TargetLanguageOutputTally>([
+            ['es', tally({ totalSegments: 1, completedSegments: 1 })],
+            ['fr', tally({ totalSegments: 1, completedSegments: 1 })],
+          ]),
+          generatedAudio: new Map<string, TargetLanguageOutputTally>([
+            ['es', tally({ totalSegments: 1, completedSegments: 1 })],
+          ]),
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        language: 'es',
+        status: 'ready',
+        translationProgressPct: 100,
+        audioProgressPct: 100,
+        captionsAvailable: true,
+        audioAvailable: true,
+        error: null,
+      }),
+      expect.objectContaining({
+        language: 'fr',
+        status: 'captions-ready',
+        captionsAvailable: true,
+        audioAvailable: false,
+      }),
+    ]);
+
+    expect(
+      buildTargetLanguageOutputs({
+        selectedLanguages: ['es'],
+        catalogue,
+        translation,
+        generatedAudio,
+        tallies: {
+          translation: new Map<string, TargetLanguageOutputTally>([
+            [
+              'es',
+              tally({ totalSegments: 2, completedSegments: 1, failedSegments: 1, lastError: 'es went wrong' }),
+            ],
+          ]),
+          generatedAudio: new Map<string, TargetLanguageOutputTally>(),
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        language: 'es',
+        status: 'failed',
+        translationProgressPct: 50,
+        error: 'es went wrong',
+      }),
+    ]);
+  });
 });
+
+describe('broadcast media-state event capping', () => {
+  it('keeps the most recent events per language while preserving order', () => {
+    const events: Array<{ targetLanguage: string; sequence: number }> = [];
+    for (let sequence = 0; sequence < 10; sequence += 1) {
+      events.push({ targetLanguage: 'es', sequence });
+      events.push({ targetLanguage: 'fr', sequence });
+    }
+
+    const capped = capRecentEventsPerLanguage(events, 3);
+
+    expect(
+      capped.filter((event) => event.targetLanguage === 'es').map((event) => event.sequence),
+    ).toEqual([7, 8, 9]);
+    expect(
+      capped.filter((event) => event.targetLanguage === 'fr').map((event) => event.sequence),
+    ).toEqual([7, 8, 9]);
+    expect(capped.map((event) => `${event.targetLanguage}${event.sequence}`)).toEqual([
+      'es7',
+      'fr7',
+      'es8',
+      'fr8',
+      'es9',
+      'fr9',
+    ]);
+  });
+
+  it('returns arrays under the limit unchanged', () => {
+    const events = [
+      { targetLanguage: 'es', sequence: 0 },
+      { targetLanguage: 'fr', sequence: 0 },
+    ];
+    expect(capRecentEventsPerLanguage(events, 200)).toEqual(events);
+    expect(capRecentEvents(events, 200)).toEqual(events);
+  });
+
+  it('caps plain event arrays to the most recent entries', () => {
+    expect(capRecentEvents([1, 2, 3, 4, 5], 2)).toEqual([4, 5]);
+  });
+});
+
+function tally(overrides: Partial<TargetLanguageOutputTally>): TargetLanguageOutputTally {
+  return {
+    totalSegments: 0,
+    completedSegments: 0,
+    failedSegments: 0,
+    activeSegments: 0,
+    lastError: null,
+    ...overrides,
+  };
+}
 
 function capability(
   language: string,
