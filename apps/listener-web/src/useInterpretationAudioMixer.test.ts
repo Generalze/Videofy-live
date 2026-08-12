@@ -616,6 +616,42 @@ describe('InterpretationAudioMixerController', () => {
     }
   });
 
+  it('does not start buffered playback when pause() arrives while the clip is still loading', async () => {
+    const { context, controller } = createHarness({ bufferPlayback: true });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      arrayBuffer: async () => new ArrayBuffer(8),
+    })) as unknown as typeof fetch;
+    const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+    let resolveDecode: (buffer: AudioBuffer) => void = () => undefined;
+    context.decodeAudioData = () =>
+      new Promise<AudioBuffer>((resolve) => {
+        resolveDecode = resolve;
+      });
+
+    try {
+      const mixed = controller.createTranslatedAudio('http://localhost/generated.wav');
+      const playPromise = mixed.play();
+      mixed.pause();
+      await flush();
+      resolveDecode({ duration: 1.2 } as AudioBuffer);
+      await playPromise;
+
+      expect(context.bufferSources).toHaveLength(0);
+      expect(controller.state.speechActive).toBe(false);
+      expect(mixed.currentTime).toBe(0);
+
+      await mixed.play();
+
+      expect(context.bufferSources).toHaveLength(1);
+      expect(context.bufferSources[0]!.started).toEqual({ when: 0, offset: 0 });
+      expect(controller.state.speechActive).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('advances to the next generated segment after pause and resume of buffered playback', async () => {
     const { context, controller } = createHarness({ bufferPlayback: true });
     const originalFetch = globalThis.fetch;

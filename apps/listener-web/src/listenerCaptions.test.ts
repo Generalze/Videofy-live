@@ -1,6 +1,7 @@
 import type { MediaStateEvent, TimestampedTranslationEvent } from '@videofy-live/shared-types';
 import { describe, expect, it } from 'vitest';
 import {
+  filterCaptionPhrasesForLanguage,
   mergeCaptionPhrases,
   phraseFromTimestampedEvent,
   selectActiveCaption,
@@ -84,6 +85,35 @@ describe('mergeCaptionPhrases', () => {
     expect(merged).toHaveLength(500);
     expect(merged[0]?.sequence).toBe(1);
     expect(merged[merged.length - 1]?.sequence).toBe(500);
+  });
+});
+
+describe('filterCaptionPhrasesForLanguage', () => {
+  it('drops phrases of other languages when the listener switches channel', () => {
+    const phrases = [
+      phraseFromTimestampedEvent(translation('es', 'Hola mundo'), 'es'),
+      phraseFromTimestampedEvent(translation('fr', 'Bonjour le monde'), 'fr'),
+      phraseFromTimestampedEvent(translation('es', 'Hola mundo'), 'original'),
+    ];
+
+    const filtered = filterCaptionPhrasesForLanguage(phrases, 'fr');
+
+    expect(filtered.map((item) => item.id)).toEqual(['ps_caption-chunk-0-fr']);
+    expect(filtered[0]?.translatedText).toBe('Bonjour le monde');
+  });
+
+  it('keeps original-channel entries only for the original selection', () => {
+    const phrases = [
+      phraseFromTimestampedEvent(translation('es', 'Hola mundo'), 'es'),
+      phraseFromTimestampedEvent(translation('es', 'Hola mundo'), 'original'),
+    ];
+
+    const filtered = filterCaptionPhrasesForLanguage(phrases, 'original');
+
+    expect(filtered.map((item) => item.id)).toEqual(['ps_caption-chunk-0-original']);
+    expect(filterCaptionPhrasesForLanguage(phrases, 'es').map((item) => item.id)).toEqual([
+      'ps_caption-chunk-0-es',
+    ]);
   });
 });
 

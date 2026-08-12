@@ -50,6 +50,17 @@ export function mergeCaptionPhrases(
     .slice(-MAX_MERGED_CAPTION_PHRASES);
 }
 
+export function filterCaptionPhrasesForLanguage(
+  phrases: readonly ListenerCaptionPhrase[],
+  selectedLanguage: string,
+): ListenerCaptionPhrase[] {
+  // captionPhraseId embeds the language as the trailing "-<language>" segment,
+  // so a language switch can drop every phrase that belongs to another
+  // channel (original-channel entries survive only the original selection).
+  const languageSuffix = `-${selectedLanguage}`;
+  return phrases.filter((phrase) => phrase.id.endsWith(languageSuffix));
+}
+
 export function captionDisplayEndMs(
   phrase: Pick<ListenerCaptionPhrase, 'startMs' | 'endMs'>,
 ): number {

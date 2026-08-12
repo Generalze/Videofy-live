@@ -569,6 +569,7 @@ class MixedBufferQueueAudio implements QueueAudio {
   private stopping = false;
   private cleaned = false;
   private speaking = false;
+  private playGeneration = 0;
 
   constructor(
     private readonly url: string,
@@ -595,6 +596,10 @@ class MixedBufferQueueAudio implements QueueAudio {
   }
 
   pause(): void {
+    // Invalidate any play() still awaiting fetch/decode so a pause issued
+    // during load cannot be overtaken by the source starting once the load
+    // resolves.
+    this.playGeneration += 1;
     if (!this.playing) return;
     this.offsetSeconds = this.currentTime;
     this.stopSource(false);
@@ -602,7 +607,9 @@ class MixedBufferQueueAudio implements QueueAudio {
   }
 
   async play(): Promise<void> {
+    const generation = this.playGeneration;
     const buffer = await this.load();
+    if (generation !== this.playGeneration) return;
     if (this.playing) return;
     if (this.offsetSeconds >= buffer.duration) {
       this.finish();

@@ -29,6 +29,7 @@ import {
   shouldRecoverProgrammeSessionAfterReconnect,
   shouldRecoverStaleViewerPlayback,
   shouldReplaceProgrammeSession,
+  shouldRestartListenerTransport,
   shouldShowHeldViewerFrame,
   shouldTreatTransportAsSourceEnded,
 } from './listenerProgrammeBinding';
@@ -53,11 +54,13 @@ import {
   isOriginalLanguageSelection,
   phrasesForLanguage,
   requiresOriginalAudio,
+  shouldMergeGeneratedCaption,
   targetLanguagesForSession,
   type ListenerCaptionPhrase,
 } from './listenerLanguageSelection';
 import {
   captionPhraseId,
+  filterCaptionPhrasesForLanguage,
   mergeCaptionPhrases,
   phraseFromTimestampedEvent,
   selectActiveCaption,
@@ -65,6 +68,7 @@ import {
 import { changedMixPreferences } from './listenerMixPreferences';
 import {
   preserveActiveProgrammeMedia,
+  sourceEndedFromBroadcast,
   uploadedProgrammeStartGate,
   UPLOADED_PROGRAMME_AUDIO_WAIT_MS,
 } from './listenerMediaState';
@@ -699,6 +703,13 @@ export default function App(): React.ReactElement {
     listenerTransport.state,
   ]);
 
+  const restartListenerTransportAfterRejoin = useCallback((): void => {
+    const transport = listenerTransportRef.current;
+    if (transport && shouldRestartListenerTransport(transport.getSnapshot().state)) {
+      transport.startWaiting();
+    }
+  }, []);
+
   const connect = useCallback((): Socket | null => {
     if (socketRef.current) {
       return socketRef.current;
@@ -733,7 +744,7 @@ export default function App(): React.ReactElement {
           .recoverSessionWithBackoff({ maxAttempts: 3, initialDelayMs: 250 })
           .then((snapshot) => {
             if (snapshot.state === 'joined') {
-              listenerTransportRef.current?.startWaiting();
+              restartListenerTransportAfterRejoin();
             }
           })
           .catch((error: unknown) => {
@@ -841,7 +852,10 @@ export default function App(): React.ReactElement {
         endMs: event.endMs,
         receivedAt: Date.now(),
       };
-      if (entry.translatedText) {
+      if (
+        entry.translatedText &&
+        shouldMergeGeneratedCaption(targetLanguageRef.current, event.targetLanguage)
+      ) {
         setRecentPhrases((prev) => mergeCaptionPhrases(prev, [entry]));
       }
       setDeliveredAudio((current) => {
@@ -906,8 +920,11 @@ export default function App(): React.ReactElement {
         setActiveShareableSessionId(null);
       }
       audioQueue.setSourceEnded(
-        nextState.streamStatus === 'completed' &&
-          nextState.programmeMediaMode !== 'uploaded-stems',
+        sourceEndedFromBroadcast({
+          streamStatus: nextState.streamStatus,
+          programmeMediaMode: nextState.programmeMediaMode,
+          videoEnded: videoRef.current?.ended === true,
+        }),
       );
       setBuffering(nextState.streamStatus === 'validating');
       if (
@@ -927,8 +944,11 @@ export default function App(): React.ReactElement {
         status: data.status,
       };
       audioQueue.setSourceEnded(
-        data.status === 'completed' &&
-          mediaStateRef.current?.programmeMediaMode !== 'uploaded-stems',
+        sourceEndedFromBroadcast({
+          streamStatus: data.status,
+          programmeMediaMode: mediaStateRef.current?.programmeMediaMode,
+          videoEnded: videoRef.current?.ended === true,
+        }),
       );
       setStreamStatus(data.status);
       setBuffering(data.status === 'validating');
@@ -937,7 +957,14 @@ export default function App(): React.ReactElement {
       }
     });
     return socket;
-  }, [audioQueue, getListenerClockMs, resumeMixer, setMixMode, updateSocketDiagnostics]);
+  }, [
+    audioQueue,
+    getListenerClockMs,
+    restartListenerTransportAfterRejoin,
+    resumeMixer,
+    setMixMode,
+    updateSocketDiagnostics,
+  ]);
 
   const handleProgrammePlay = useCallback((): void => {
     setHasStarted(true);
@@ -1006,7 +1033,10 @@ export default function App(): React.ReactElement {
       setTargetLanguage(newLanguage);
       setCurrentPhrase(null);
       setRecentPhrases((prev) =>
-        mergeCaptionPhrases(prev, phrasesForLanguage(mediaStateRef.current, newLanguage)),
+        filterCaptionPhrasesForLanguage(
+          mergeCaptionPhrases(prev, phrasesForLanguage(mediaStateRef.current, newLanguage)),
+          newLanguage,
+        ),
       );
       audioQueue.reset();
       audioQueue.resetGenerated();
@@ -1028,9 +1058,9 @@ export default function App(): React.ReactElement {
       ?.recoverSessionWithBackoff({ maxAttempts: 3, initialDelayMs: 250 })
       .catch(() => undefined);
     if (snapshot?.state === 'joined') {
-      listenerTransportRef.current?.startWaiting();
+      restartListenerTransportAfterRejoin();
     }
-  }, []);
+  }, [restartListenerTransportAfterRejoin]);
 
   useEffect(() => {
     if (!activeShareableSessionId) return;
@@ -1072,7 +1102,7 @@ export default function App(): React.ReactElement {
     })()
       .then((snapshot) => {
         if (snapshot.state === 'joined') {
-          listenerTransportRef.current?.startWaiting();
+          restartListenerTransportAfterRejoin();
         }
       })
       .catch((error: unknown) => {
@@ -1080,7 +1110,7 @@ export default function App(): React.ReactElement {
         const message = error instanceof Error ? error.message : 'Unable to join programme media.';
         setVideoPlaybackError(`Programme media connection failed: ${message}`);
       });
-  }, [activeShareableSessionId, createListenerProgrammeControllers]);
+  }, [activeShareableSessionId, createListenerProgrammeControllers, restartListenerTransportAfterRejoin]);
 
   useEffect(() => {
     connect();
@@ -1243,7 +1273,10 @@ export default function App(): React.ReactElement {
     setTargetLanguage(nextLanguage);
     setCurrentPhrase(null);
     setRecentPhrases((prev) =>
-      mergeCaptionPhrases(prev, phrasesForLanguage(mediaStateRef.current, nextLanguage)),
+      filterCaptionPhrasesForLanguage(
+        mergeCaptionPhrases(prev, phrasesForLanguage(mediaStateRef.current, nextLanguage)),
+        nextLanguage,
+      ),
     );
     audioQueue.resetGenerated();
     audioQueue.replayGenerated(
@@ -1728,6 +1761,14 @@ export default function App(): React.ReactElement {
                 <dd>
                   audio {listenerTransport.remoteAudioTrackReceived ? 'yes' : 'no'} / video{' '}
                   {listenerTransport.remoteVideoTrackReceived ? 'yes' : 'no'}
+                </dd>
+              </div>
+              <div>
+                <dt>Applied sync delay</dt>
+                <dd>
+                  {listenerTransport.appliedJitterBufferTargetMs === null
+                    ? '-'
+                    : `${listenerTransport.appliedJitterBufferTargetMs} ms`}
                 </dd>
               </div>
             </dl>

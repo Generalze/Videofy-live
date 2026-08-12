@@ -109,6 +109,20 @@ export function requiresOriginalAudio(
   return capability?.textOnly === true || output?.audioAvailable !== true;
 }
 
+export function shouldMergeGeneratedCaption(
+  selectedLanguage: string,
+  eventTargetLanguage: string,
+): boolean {
+  // Same language gate the generated-audio enqueue uses: a caption for
+  // another listener's language must never enter this viewer's phrase list.
+  // The original channel accepts every language because it captions the
+  // shared source text, deduplicated by segment id.
+  return (
+    isOriginalLanguageSelection(selectedLanguage) ||
+    eventTargetLanguage === selectedLanguage
+  );
+}
+
 export function generatedAudioForLanguage(
   events: readonly GeneratedAudioReadyEvent[],
   targetLanguage: string,

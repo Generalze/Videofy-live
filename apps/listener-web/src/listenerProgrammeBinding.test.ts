@@ -12,6 +12,7 @@ import {
   shouldRecoverProgrammeSessionAfterReconnect,
   shouldRecoverStaleViewerPlayback,
   shouldReplaceProgrammeSession,
+  shouldRestartListenerTransport,
   shouldTreatTransportAsSourceEnded,
 } from './listenerProgrammeBinding';
 
@@ -120,6 +121,24 @@ describe('listener programme binding', () => {
         signallingState: 'reconnecting',
       }),
     ).toBe(false);
+  });
+
+  it('restarts the media transport after a reconnect only from a resting state', () => {
+    expect(shouldRestartListenerTransport('idle')).toBe(true);
+    expect(shouldRestartListenerTransport('closed')).toBe(true);
+    expect(shouldRestartListenerTransport('failed')).toBe(true);
+  });
+
+  it('leaves a healthy media transport alone when the socket recovers', () => {
+    expect(shouldRestartListenerTransport('awaiting-broadcaster')).toBe(false);
+    expect(shouldRestartListenerTransport('negotiating-programme-media')).toBe(false);
+    expect(shouldRestartListenerTransport('connecting')).toBe(false);
+    expect(shouldRestartListenerTransport('audio-connected')).toBe(false);
+    expect(shouldRestartListenerTransport('video-connected')).toBe(false);
+    expect(shouldRestartListenerTransport('playing')).toBe(false);
+    expect(shouldRestartListenerTransport('playback-blocked')).toBe(false);
+    expect(shouldRestartListenerTransport('recovering')).toBe(false);
+    expect(shouldRestartListenerTransport('source-ended')).toBe(false);
   });
 
   it('rejects terminal media state from a different session after a live session is active', () => {

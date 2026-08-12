@@ -31,6 +31,25 @@ export function uploadedProgrammeStartGate(
   return { start: false, buffering: input.hasStarted };
 }
 
+export interface SourceEndedFromBroadcastInput {
+  streamStatus: string;
+  programmeMediaMode: MediaStateEvent['programmeMediaMode'];
+  videoEnded: boolean;
+}
+
+export function sourceEndedFromBroadcast(
+  input: SourceEndedFromBroadcastInput,
+): boolean {
+  if (input.programmeMediaMode === 'uploaded-stems') {
+    // The local <video> element is the completion authority for uploaded
+    // programmes: "completed" from the server only means processing finished,
+    // and a media-state broadcast must never cancel the end-of-video flush
+    // once the element has genuinely ended.
+    return input.videoEnded;
+  }
+  return input.streamStatus === 'completed';
+}
+
 export function preserveActiveProgrammeMedia(
   next: MediaStateEvent,
   previous: MediaStateEvent | null,

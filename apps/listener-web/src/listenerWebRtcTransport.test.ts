@@ -432,13 +432,110 @@ describe('ListenerWebRtcTransportController', () => {
     peer.ontrack?.({ track: audio, streams: [programmeStream], receiver: audioReceiver } as unknown as RTCTrackEvent);
     peer.ontrack?.({ track: video, streams: [programmeStream], receiver: videoReceiver } as unknown as RTCTrackEvent);
 
-    expect(audioReceiver.jitterBufferTarget).toBe(8000);
+    // jitterBufferTarget is clamped to its 4000 ms spec maximum while the
+    // legacy hint still carries the full sync delay in seconds.
+    expect(audioReceiver.jitterBufferTarget).toBe(4000);
     expect(audioReceiver.playoutDelayHint).toBe(8);
-    expect(videoReceiver.jitterBufferTarget).toBe(8000);
+    expect(videoReceiver.jitterBufferTarget).toBe(4000);
     expect(videoReceiver.playoutDelayHint).toBe(8);
     expect(controller.getSnapshot()).toMatchObject({
       state: 'video-connected',
       appliedJitterBufferTargetMs: 8000,
+    });
+  });
+
+  it('clamps the jitter buffer target on spec-enforcing receivers instead of losing the delay', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+      syncDelayMs: 8000,
+    });
+    const audio = new FakeTrack('audio');
+    const programmeStream = {
+      addTrack: vi.fn(),
+      getTracks: vi.fn(() => [audio]),
+    } as unknown as MediaStream;
+    let storedTargetMs: number | null = null;
+    const receiver = { playoutDelayHint: null as number | null };
+    Object.defineProperty(receiver, 'jitterBufferTarget', {
+      get: () => storedTargetMs,
+      set(value: number) {
+        if (value > 4000) throw new RangeError('jitterBufferTarget above supported range');
+        storedTargetMs = value;
+      },
+    });
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track: audio, streams: [programmeStream], receiver } as unknown as RTCTrackEvent);
+
+    expect(storedTargetMs).toBe(4000);
+    expect(receiver.playoutDelayHint).toBe(8);
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'audio-connected',
+      appliedJitterBufferTargetMs: 8000,
+    });
+  });
+
+  it('reports partial sync truthfully when only the clamped jitter buffer target sticks', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+      syncDelayMs: 8000,
+    });
+    const audio = new FakeTrack('audio');
+    const programmeStream = {
+      addTrack: vi.fn(),
+      getTracks: vi.fn(() => [audio]),
+    } as unknown as MediaStream;
+    let storedTargetMs: number | null = null;
+    const receiver = {};
+    Object.defineProperty(receiver, 'jitterBufferTarget', {
+      get: () => storedTargetMs,
+      set(value: number) {
+        if (value > 4000) throw new RangeError('jitterBufferTarget above supported range');
+        storedTargetMs = value;
+      },
+    });
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track: audio, streams: [programmeStream], receiver } as unknown as RTCTrackEvent);
+
+    expect(storedTargetMs).toBe(4000);
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'audio-connected',
+      appliedJitterBufferTargetMs: 4000,
+    });
+  });
+
+  it('force-fails startWaiting on an active transport so callers must guard restarts', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+    });
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+
+    expect(() => controller.startWaiting()).toThrowError(
+      'Listener WebRTC audio transport is already active.',
+    );
+    expect(peer.close).toHaveBeenCalled();
+    expect(controller.getSnapshot()).toMatchObject({
+      lastError: { code: 'duplicate-peer' },
     });
   });
 

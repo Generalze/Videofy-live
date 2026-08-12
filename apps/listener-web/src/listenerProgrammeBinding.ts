@@ -68,6 +68,13 @@ export function shouldRecoverProgrammeSessionAfterReconnect(input: {
   );
 }
 
+export function shouldRestartListenerTransport(state: string): boolean {
+  // Mirrors the transport's own startWaiting() guard: restarting an active
+  // transport throws and force-fails it, so only restart from a resting state.
+  // A healthy transport survives socket blips independently.
+  return state === 'idle' || state === 'closed' || state === 'failed';
+}
+
 export function shouldExposeMediaStateProgrammeSession(
   state: Pick<MediaStateEvent, 'shareableWebRtcSessionId' | 'streamStatus'>,
 ): boolean {

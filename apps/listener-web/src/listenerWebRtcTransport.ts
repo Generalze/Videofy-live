@@ -105,6 +105,9 @@ export interface ListenerWebRtcTransportControllerOptions {
 }
 
 const DEFAULT_SYNC_DELAY_MS = 0;
+// The WebRTC spec caps jitterBufferTarget at 4000 ms; larger assignments
+// throw a RangeError and would silently drop the whole sync delay.
+const JITTER_BUFFER_TARGET_MAX_MS = 4_000;
 const DEFAULT_NEGOTIATION_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_QUEUED_REMOTE_CANDIDATES = 32;
 const DEFAULT_MAX_RECOVERY_ATTEMPTS = 2;
@@ -463,24 +466,29 @@ export class ListenerWebRtcTransportController {
   private applySyncDelay(receiver: RTCRtpReceiver | undefined): number | null {
     if (!receiver || this.syncDelayMs <= 0) return this.snapshot.appliedJitterBufferTargetMs;
     const tunable = receiver as RTCRtpReceiver & DelayTunableReceiver;
-    let applied = false;
+    let appliedMs: number | null = null;
     if ('jitterBufferTarget' in tunable) {
+      const targetMs = Math.min(this.syncDelayMs, JITTER_BUFFER_TARGET_MAX_MS);
       try {
-        tunable.jitterBufferTarget = this.syncDelayMs;
-        applied = true;
+        tunable.jitterBufferTarget = targetMs;
+        appliedMs = targetMs;
       } catch {
         // Engine rejected the target (e.g. above its allowed range); fall through to the legacy hint.
       }
     }
     if ('playoutDelayHint' in tunable) {
       try {
+        // The legacy hint takes seconds and has no spec cap, so it carries the
+        // full sync delay even where the jitter buffer target is clamped.
         tunable.playoutDelayHint = this.syncDelayMs / 1000;
-        applied = true;
+        appliedMs = Math.max(appliedMs ?? 0, this.syncDelayMs);
       } catch {
         // Legacy hint rejected; leave playout timing at the engine default.
       }
     }
-    return applied ? this.syncDelayMs : this.snapshot.appliedJitterBufferTargetMs;
+    // Truthful about what stuck: the clamped 4000 ms surfaces as partial sync
+    // in the snapshot when only the jitter buffer target could be applied.
+    return appliedMs ?? this.snapshot.appliedJitterBufferTargetMs;
   }
 
   private mergeRemoteTrack(track: MediaStreamTrack, event: RTCTrackEvent): MediaStream {

@@ -2,6 +2,7 @@ import type { MediaStateEvent } from '@videofy-live/shared-types';
 import { describe, expect, it } from 'vitest';
 import {
   preserveActiveProgrammeMedia,
+  sourceEndedFromBroadcast,
   uploadedProgrammeStartGate,
   UPLOADED_PROGRAMME_AUDIO_WAIT_MS,
   type UploadedProgrammeStartGateInput,
@@ -32,6 +33,59 @@ describe('listener media-state continuity', () => {
 
     expect(preserveActiveProgrammeMedia(switched, previous).programmeMediaUrl).toBeUndefined();
     expect(preserveActiveProgrammeMedia(failed, previous).programmeMediaUrl).toBeUndefined();
+  });
+});
+
+describe('source ended from broadcast', () => {
+  it('completes non-uploaded programmes when the stream reports completed', () => {
+    expect(
+      sourceEndedFromBroadcast({
+        streamStatus: 'completed',
+        programmeMediaMode: 'live-webrtc',
+        videoEnded: false,
+      }),
+    ).toBe(true);
+    expect(
+      sourceEndedFromBroadcast({
+        streamStatus: 'processing',
+        programmeMediaMode: undefined,
+        videoEnded: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('keeps the uploaded-programme end-of-video flush once the local video has ended', () => {
+    expect(
+      sourceEndedFromBroadcast({
+        streamStatus: 'processing',
+        programmeMediaMode: 'uploaded-stems',
+        videoEnded: true,
+      }),
+    ).toBe(true);
+    expect(
+      sourceEndedFromBroadcast({
+        streamStatus: 'completed',
+        programmeMediaMode: 'uploaded-stems',
+        videoEnded: true,
+      }),
+    ).toBe(true);
+  });
+
+  it('resets uploaded-programme source end while the local video is still playing', () => {
+    expect(
+      sourceEndedFromBroadcast({
+        streamStatus: 'completed',
+        programmeMediaMode: 'uploaded-stems',
+        videoEnded: false,
+      }),
+    ).toBe(false);
+    expect(
+      sourceEndedFromBroadcast({
+        streamStatus: 'processing',
+        programmeMediaMode: 'uploaded-stems',
+        videoEnded: false,
+      }),
+    ).toBe(false);
   });
 });
 

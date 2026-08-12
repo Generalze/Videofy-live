@@ -9,6 +9,7 @@ import {
   generatedAudioForLanguage,
   isOriginalLanguageSelection,
   requiresOriginalAudio,
+  shouldMergeGeneratedCaption,
 } from './listenerLanguageSelection';
 
 describe('listener language selection', () => {
@@ -50,6 +51,17 @@ describe('listener language selection', () => {
     expect(requiresOriginalAudio(capability(true), output('captions-ready', false))).toBe(true);
     expect(requiresOriginalAudio(capability(false), output('generating-audio', false))).toBe(true);
     expect(requiresOriginalAudio(capability(false), output('ready', true))).toBe(false);
+  });
+
+  it('merges generated captions only for the selected language channel', () => {
+    expect(shouldMergeGeneratedCaption('es', 'es')).toBe(true);
+    expect(shouldMergeGeneratedCaption('es', 'fr')).toBe(false);
+    expect(shouldMergeGeneratedCaption('fr', 'es')).toBe(false);
+  });
+
+  it('merges every language into the original channel for source-text captions', () => {
+    expect(shouldMergeGeneratedCaption('original', 'es')).toBe(true);
+    expect(shouldMergeGeneratedCaption('original', 'fr')).toBe(true);
   });
 
   it('switches translated audio without mixing language channels', () => {
