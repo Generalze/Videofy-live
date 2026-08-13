@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createListenerSocketOptions, resolveSocketTransportOptions } from './socketConfig';
+import {
+  createListenerSocketOptions,
+  joinCurrentListenerLanguage,
+  resolveSocketTransportOptions,
+} from './socketConfig';
 
 describe('createListenerSocketOptions', () => {
   it('allows Socket.IO to start with polling and upgrade automatically', () => {
@@ -15,5 +19,30 @@ describe('createListenerSocketOptions', () => {
       transports: ['polling'],
       upgrade: false,
     });
+  });
+
+  it('rejoins the currently selected language after reconnecting', () => {
+    let targetLanguage = 'fr';
+    const joins: string[] = [];
+    const socket = {
+      emit(_event: 'join:language', language: string) {
+        joins.push(language);
+      },
+    };
+
+    joinCurrentListenerLanguage(socket, () => targetLanguage);
+    targetLanguage = 'es';
+    joinCurrentListenerLanguage(socket, () => targetLanguage);
+
+    expect(joins).toEqual(['fr', 'es']);
+  });
+
+  it('joins the original-language room for original playback', () => {
+    const joins: string[] = [];
+    joinCurrentListenerLanguage(
+      { emit: (_event, language) => joins.push(language) },
+      () => 'original',
+    );
+    expect(joins).toEqual(['original']);
   });
 });

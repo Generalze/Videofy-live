@@ -41,6 +41,12 @@ class FakeAudioSource {
   createTrack = vi.fn(() => this.track);
 }
 
+class FakeVideoSource {
+  readonly track = { stop: vi.fn() };
+  readonly onFrame = vi.fn();
+  createTrack = vi.fn(() => this.track);
+}
+
 function listener(): WebRtcPeerRecord {
   return {
     peerId: 'peer_listener',
@@ -137,6 +143,30 @@ describe('BackendWebRtcListenerPeerRegistry', () => {
     expect(signals).toHaveLength(1);
   });
 
+  it('includes one outbound video track when broadcaster video is available', async () => {
+    const peer = new FakePeer();
+    const audioSource = new FakeAudioSource();
+    const videoSource = new FakeVideoSource();
+    const registry = new BackendWebRtcListenerPeerRegistry({
+      createPeerConnection: () => peer as never,
+      createAudioSource: () => audioSource,
+      createVideoSource: () => videoSource,
+    });
+
+    await registry.createOffer(listener(), summary(), 2, { includeVideo: true });
+    registry.fanOutAudioFrame('wrs_demo', frame());
+    registry.fanOutVideoFrame('wrs_demo', { width: 640, height: 360 });
+
+    expect(audioSource.createTrack).toHaveBeenCalledOnce();
+    expect(videoSource.createTrack).toHaveBeenCalledOnce();
+    expect(peer.addTrack).toHaveBeenCalledTimes(2);
+    expect(audioSource.onData).toHaveBeenCalledOnce();
+    expect(videoSource.onFrame).toHaveBeenCalledWith({ width: 640, height: 360 });
+    expect(registry.getSnapshots()[0]).toMatchObject({
+      videoTrackIncluded: true,
+    });
+  });
+
   it('accepts listener answers, applies ICE once and fans out broadcaster frames', async () => {
     const peer = new FakePeer();
     const source = new FakeAudioSource();
@@ -159,6 +189,60 @@ describe('BackendWebRtcListenerPeerRegistry', () => {
       listenerPeerId: 'peer_listener',
       revision: 2,
     });
+  });
+
+  it('degrades to audio-only when video fan-out fails instead of tearing down the peer', async () => {
+    const peer = new FakePeer();
+    const audioSource = new FakeAudioSource();
+    const videoSource = new FakeVideoSource();
+    videoSource.onFrame.mockImplementation(() => {
+      throw new Error('video source rejected frame');
+    });
+    const registry = new BackendWebRtcListenerPeerRegistry({
+      createPeerConnection: () => peer as never,
+      createAudioSource: () => audioSource,
+      createVideoSource: () => videoSource,
+    });
+
+    await registry.createOffer(listener(), summary(), 2, { includeVideo: true });
+    registry.fanOutVideoFrame('wrs_demo', { width: 640, height: 360 });
+
+    expect(peer.close).not.toHaveBeenCalled();
+    expect(videoSource.track.stop).toHaveBeenCalledOnce();
+    expect(registry.getSnapshots()[0]).toMatchObject({
+      videoTrackIncluded: false,
+    });
+    expect(registry.getSnapshots()[0]?.state).not.toBe('failed');
+
+    // The audio path keeps delivering after the video degradation.
+    registry.fanOutAudioFrame('wrs_demo', frame());
+    expect(audioSource.onData).toHaveBeenCalledOnce();
+
+    // Further video frames are ignored without error.
+    registry.fanOutVideoFrame('wrs_demo', { width: 640, height: 360 });
+    expect(videoSource.onFrame).toHaveBeenCalledOnce();
+  });
+
+  it('ends session video delivery without touching listener audio', async () => {
+    const peer = new FakePeer();
+    const audioSource = new FakeAudioSource();
+    const videoSource = new FakeVideoSource();
+    const registry = new BackendWebRtcListenerPeerRegistry({
+      createPeerConnection: () => peer as never,
+      createAudioSource: () => audioSource,
+      createVideoSource: () => videoSource,
+    });
+
+    await registry.createOffer(listener(), summary(), 2, { includeVideo: true });
+    registry.endSessionVideo('wrs_demo', 'broadcaster video track ended');
+
+    expect(videoSource.track.stop).toHaveBeenCalledOnce();
+    expect(audioSource.track.stop).not.toHaveBeenCalled();
+    expect(peer.close).not.toHaveBeenCalled();
+    expect(registry.getSnapshots()[0]).toMatchObject({ videoTrackIncluded: false });
+
+    registry.fanOutAudioFrame('wrs_demo', frame());
+    expect(audioSource.onData).toHaveBeenCalledOnce();
   });
 
   it('prevents duplicate listener peers and closes by listener socket', async () => {

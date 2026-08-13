@@ -72,6 +72,8 @@ export type WebRtcSignallingErrorCode =
   | 'peer-already-exists'
   | 'missing-audio-track'
   | 'duplicate-audio-track'
+  | 'missing-video-track'
+  | 'duplicate-video-track'
   | 'unexpected-video-track'
   | 'invalid-offer'
   | 'answer-creation-failure'
@@ -83,6 +85,7 @@ export type WebRtcSignallingErrorCode =
   | 'negotiation-timeout'
   | 'connection-closed'
   | 'audio-track-ended'
+  | 'video-track-ended'
   | 'ingest-bridge-failure'
   | 'cleanup-failure'
   | 'unsupported-runtime'
@@ -141,6 +144,10 @@ export interface WebRtcTargetPeerPayload {
 
 export interface WebRtcPeerReadyPayload {
   state: WebRtcPeerState;
+  /** Optional (backward compatible): whether the backend actually received an audio track. */
+  audioTrackReceived?: boolean;
+  /** Optional (backward compatible): whether the backend actually received a video track. */
+  videoTrackReceived?: boolean;
 }
 
 export interface WebRtcDisconnectPayload {

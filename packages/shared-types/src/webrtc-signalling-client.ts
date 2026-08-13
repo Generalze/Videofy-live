@@ -59,6 +59,8 @@ export type WebRtcClientErrorCode =
   | 'peer-not-found'
   | 'missing-audio-track'
   | 'duplicate-audio-track'
+  | 'missing-video-track'
+  | 'duplicate-video-track'
   | 'unexpected-video-track'
   | 'invalid-offer'
   | 'answer-creation-failure'
@@ -70,6 +72,7 @@ export type WebRtcClientErrorCode =
   | 'negotiation-timeout'
   | 'connection-closed'
   | 'audio-track-ended'
+  | 'video-track-ended'
   | 'ingest-bridge-failure'
   | 'unsupported-runtime';
 
@@ -282,6 +285,17 @@ export class WebRtcSignallingClient {
       throw this.clientError('duplicate-broadcaster', 'Broadcaster signalling session is already active.');
     }
     this.requireConnected();
+    if (this.snapshot.state === 'closed' || this.snapshot.state === 'failed') {
+      this.update({
+        sessionId: null,
+        shareableSessionId: null,
+        revision: 0,
+        peers: [],
+        listenerCount: 0,
+        lastEventType: null,
+        lastError: null,
+      });
+    }
     this.transition('creating-session');
     const envelope = this.incomingEnvelope('session-create', {
       payload: requestedSessionId ? { requestedSessionId } : {},
@@ -862,6 +876,8 @@ function mapGatewayErrorCode(code: WebRtcSignallingErrorCode): WebRtcClientError
   if (code === 'peer-already-exists') return 'peer-already-exists';
   if (code === 'missing-audio-track') return 'missing-audio-track';
   if (code === 'duplicate-audio-track') return 'duplicate-audio-track';
+  if (code === 'missing-video-track') return 'missing-video-track';
+  if (code === 'duplicate-video-track') return 'duplicate-video-track';
   if (code === 'unexpected-video-track') return 'unexpected-video-track';
   if (code === 'invalid-offer') return 'invalid-offer';
   if (code === 'answer-creation-failure') return 'answer-creation-failure';
@@ -873,6 +889,7 @@ function mapGatewayErrorCode(code: WebRtcSignallingErrorCode): WebRtcClientError
   if (code === 'negotiation-timeout') return 'negotiation-timeout';
   if (code === 'connection-closed') return 'connection-closed';
   if (code === 'audio-track-ended') return 'audio-track-ended';
+  if (code === 'video-track-ended') return 'video-track-ended';
   if (code === 'ingest-bridge-failure') return 'ingest-bridge-failure';
   if (code === 'unsupported-runtime') return 'unsupported-runtime';
   return 'internal-client-signalling-failure';

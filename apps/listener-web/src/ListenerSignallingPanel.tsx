@@ -45,7 +45,7 @@ export function ListenerSignallingPanel({
     signalling.state === 'reconnecting' || listenerTransport.state === 'disconnected'
       ? 'Broadcaster unavailable'
       : listenerTransport.state === 'failed'
-        ? 'Programme audio interrupted'
+        ? 'Programme media interrupted'
         : signalling.state === 'joined'
           ? 'Available to signalling'
           : 'Unavailable';
@@ -79,7 +79,7 @@ export function ListenerSignallingPanel({
           className={styles.queueBtn}
           onClick={onJoin}
           disabled={!canJoin}
-          aria-label="Join listener signalling session"
+          aria-label="Join viewer signalling session"
         >
           Join
         </button>
@@ -88,7 +88,7 @@ export function ListenerSignallingPanel({
           className={styles.queueBtn}
           onClick={onLeave}
           disabled={!canLeave}
-          aria-label="Leave listener signalling session"
+          aria-label="Leave viewer signalling session"
         >
           Leave
         </button>
@@ -97,13 +97,13 @@ export function ListenerSignallingPanel({
           className={styles.queueBtn}
           onClick={onRecover}
           disabled={!canRecover}
-          aria-label="Recover listener signalling session"
+          aria-label="Recover viewer signalling session"
         >
           Recover
         </button>
       </div>
 
-      <dl className={styles.signallingGrid} aria-label="Listener signalling status">
+      <dl className={styles.signallingGrid} aria-label="Viewer signalling status">
         <div>
           <dt>Gateway signalling</dt>
           <dd>{gatewayStatus}</dd>
@@ -116,10 +116,10 @@ export function ListenerSignallingPanel({
           <dt>Session</dt>
           <dd>{signalling.state === 'joined' ? 'Joined' : 'Not joined'}</dd>
         </div>
-        <div>
-          <dt>Media transport</dt>
-          <dd>{formatTransportStatus(listenerTransport)}</dd>
-        </div>
+          <div>
+            <dt>Media transport</dt>
+            <dd>{formatTransportStatus(listenerTransport)}</dd>
+          </div>
         <div>
           <dt>Audio track</dt>
           <dd>
@@ -129,7 +129,17 @@ export function ListenerSignallingPanel({
                 : 'Programme audio track ended'
               : 'Waiting for programme audio'}
           </dd>
-        </div>
+          </div>
+          <div>
+            <dt>Video track</dt>
+            <dd>
+              {listenerTransport.remoteVideoTrackReceived
+                ? listenerTransport.remoteVideoTrackActive
+                  ? 'Live programme video active'
+                  : 'Programme video track ended'
+                : 'Video unavailable'}
+            </dd>
+          </div>
         <div>
           <dt>Recovery</dt>
           <dd>{listenerTransport.recoveryAttempts} transport retries</dd>
@@ -148,23 +158,37 @@ export function ListenerSignallingPanel({
 function formatTransportStatus(transport: ListenerWebRtcTransportSnapshot): string {
   switch (transport.state) {
     case 'awaiting-broadcaster':
-      return 'Waiting for broadcaster programme audio';
+    case 'waiting-for-programme':
+      return 'Waiting for broadcaster programme';
+    case 'negotiating-programme-media':
     case 'negotiating':
     case 'connecting':
-      return 'Negotiating WebRTC programme audio';
+      return 'Negotiating WebRTC programme media';
+    case 'audio-connected':
+      return 'Original programme audio connected';
+    case 'video-connected':
+      return 'Programme video connected';
+    case 'video-unavailable':
+      return 'Programme video unavailable';
+    case 'source-paused':
+      return 'Programme source paused';
+    case 'source-ended':
+      return 'Programme source ended';
+    case 'broadcaster-unavailable':
+      return 'Broadcaster unavailable';
     case 'track-received':
-      return 'Programme audio track received';
+      return 'Programme media track received';
     case 'playing':
-      return 'WebRTC programme audio playing';
+      return 'WebRTC programme playing';
     case 'playback-blocked':
       return 'Playback blocked until browser audio is allowed';
     case 'failed':
-      return 'WebRTC programme audio failed';
+      return 'WebRTC programme media failed';
     case 'recovering':
       return 'Recovering WebRTC programme audio';
     case 'closed':
-      return 'WebRTC programme audio closed';
+      return 'WebRTC programme media closed';
     default:
-      return 'WebRTC programme audio not active';
+      return 'WebRTC programme media not active';
   }
 }

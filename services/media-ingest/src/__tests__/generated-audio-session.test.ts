@@ -87,7 +87,13 @@ function transcriptionProvider(): TranscriptionProvider {
   return {
     name: 'test-transcription',
     transcribe: async (input: TranscriptionProviderInput): Promise<TranscriptionProviderResult> => ({
-      sourceText: `source ${input.chunk.index}`,
+      segments: [
+        {
+          text: `source ${input.chunk.index}`,
+          startMs: 0,
+          endMs: input.chunk.endMs - input.chunk.startMs,
+        },
+      ],
       detectedLanguage: 'en',
       confidence: 0.9,
     }),
@@ -118,8 +124,7 @@ async function tempDir(): Promise<string> {
   return dir;
 }
 
-async function writeTestWav(filePath: string, durationMs = 100): Promise<void> {
-  const sampleRate = 16_000;
+async function writeTestWav(filePath: string, durationMs = 100, sampleRate = 16_000): Promise<void> {
   const channels = 1;
   const bitsPerSample = 16;
   const bytesPerSample = bitsPerSample / 8;
@@ -152,6 +157,7 @@ async function sessionStore(
     supportedLanguages?: readonly string[];
     voiceId?: string;
     timeoutMs?: number;
+    transcriber?: TranscriptionProvider;
     onSessionChange?: ConstructorParameters<typeof ProcessingSessionStore>[0]['onSessionChange'];
     onGeneratedAudioReady?: ConstructorParameters<
       typeof ProcessingSessionStore
@@ -162,7 +168,7 @@ async function sessionStore(
   const storeOptions: ConstructorParameters<typeof ProcessingSessionStore>[0] = {
     outputBaseDir,
     extractAudio: extractor,
-    transcriptionProvider: transcriptionProvider(),
+    transcriptionProvider: options.transcriber ?? transcriptionProvider(),
     translationProvider: translationProvider(),
     translationTargetLanguage: options.targetLanguage ?? 'es',
     translationSupportedTargetLanguages: ['es', 'fr'],
@@ -200,10 +206,31 @@ describe('generated-audio sessions', () => {
       progressPct: 100,
     });
     for (const event of session.generatedAudio.events) {
-      const audioPath = join(outputBaseDir, session.id, 'tts', event.audioFilename);
+      const audioPath = join(
+        outputBaseDir,
+        session.id,
+        'tts',
+        event.targetLanguage,
+        event.audioFilename,
+      );
       expect((await readFile(audioPath)).toString('ascii', 0, 4)).toBe('RIFF');
       expect(event.durationMs).not.toBeNull();
     }
+  });
+
+  it('accepts generated WAVs at the Piper native 22.05 kHz sample rate', async () => {
+    const { store } = await sessionStore(
+      ttsProvider(async (input) => {
+        await writeTestWav(input.outputPath, 100, 22_050);
+        return { audioPath: input.outputPath, providerLatencyMs: 2 };
+      }),
+    );
+
+    const session = await store.createFromUpload(upload(), async () => validProbe);
+
+    expect(session.state).toBe('completed');
+    expect(session.generatedAudio.failedSegments).toBe(0);
+    expect(session.generatedAudio.events.every((event) => event.durationMs === 100)).toBe(true);
   });
 
   it('preserves timestamps and sequence metadata', async () => {
@@ -224,6 +251,95 @@ describe('generated-audio sessions', () => {
     ]);
     expect(session.generatedAudio.events.every((event) => event.targetLanguage === 'es')).toBe(true);
     expect(session.generatedAudio.events.every((event) => event.providerLatencyMs === 3)).toBe(true);
+  });
+
+  it('generates one TTS clip per fan-out segment in every voiced language', async () => {
+    const { store, outputBaseDir } = await sessionStore(
+      ttsProvider(async (input) => {
+        await writeTestWav(input.outputPath);
+        return { audioPath: input.outputPath, providerLatencyMs: 6 };
+      }),
+      {
+        transcriber: {
+          name: 'multi-segment-transcription',
+          transcribe: async (input: TranscriptionProviderInput): Promise<TranscriptionProviderResult> =>
+            input.chunk.index === 0
+              ? {
+                  segments: [
+                    { text: 'one.', startMs: 0, endMs: 5_000 },
+                    { text: 'two.', startMs: 5_000, endMs: 10_000 },
+                    { text: 'three.', startMs: 10_000, endMs: 15_000 },
+                  ],
+                  detectedLanguage: 'en',
+                  confidence: 0.9,
+                }
+              : { segments: [], detectedLanguage: 'en', confidence: 0.9 },
+        },
+      },
+    );
+
+    const session = await store.createFromUpload(
+      upload({ targetLanguages: ['es', 'fr'] }),
+      async () => validProbe,
+    );
+
+    expect(session.state).toBe('completed');
+    expect(session.transcription.events).toHaveLength(3);
+    expect(session.translation.events).toHaveLength(6);
+    expect(session.generatedAudio.events).toHaveLength(6);
+    for (const language of ['es', 'fr']) {
+      const events = session.generatedAudio.events.filter(
+        (event) => event.targetLanguage === language,
+      );
+      expect(events.map((event) => event.sequence)).toEqual([0, 1, 2]);
+      expect(events.map((event) => event.audioFilename)).toEqual([
+        'tts-000000.wav',
+        'tts-000001.wav',
+        'tts-000002.wav',
+      ]);
+      expect(new Set(events.map((event) => event.segmentId)).size).toBe(3);
+      for (const event of events) {
+        expect(
+          existsSync(join(outputBaseDir, session.id, 'tts', language, event.audioFilename)),
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('keeps voice output separate by language and preserves caption-only channels', async () => {
+    const generatedLanguages: string[] = [];
+    const { store, outputBaseDir } = await sessionStore(
+      ttsProvider(async (input) => {
+        generatedLanguages.push(input.targetLanguage);
+        await writeTestWav(input.outputPath);
+        return { audioPath: input.outputPath, providerLatencyMs: 4 };
+      }),
+      { supportedLanguages: ['es'] },
+    );
+
+    const session = await store.createFromUpload(
+      upload({ targetLanguages: ['es', 'fr'] }),
+      async () => validProbe,
+    );
+
+    expect(session.state).toBe('completed');
+    expect(session.translation.events).toHaveLength(6);
+    expect(generatedLanguages).toEqual(['es', 'es', 'es']);
+    expect(session.generatedAudio.textOnlyLanguages).toEqual(['fr']);
+    expect(session.generatedAudio.events).toHaveLength(3);
+    expect(session.generatedAudio.events.every((event) => event.targetLanguage === 'es')).toBe(true);
+    expect(
+      existsSync(
+        join(
+          outputBaseDir,
+          session.id,
+          'tts',
+          'es',
+          session.generatedAudio.events[0]?.audioFilename ?? '',
+        ),
+      ),
+    ).toBe(true);
+    expect(existsSync(join(outputBaseDir, session.id, 'tts', 'fr'))).toBe(false);
   });
 
   it('publishes generated-audio ready events and resolves safe WAV delivery metadata', async () => {
@@ -290,7 +406,7 @@ describe('generated-audio sessions', () => {
     });
   });
 
-  it('rejects unsupported TTS language or voice clearly', async () => {
+  it('keeps translated text-only output when no approved voice exists and rejects unsupported voice clearly', async () => {
     const unsupportedLanguage = await sessionStore(
       ttsProvider(async (input) => {
         await writeTestWav(input.outputPath);
@@ -299,10 +415,15 @@ describe('generated-audio sessions', () => {
       { supportedLanguages: ['es'], targetLanguage: 'fr' },
     );
 
-    await expect(
-      unsupportedLanguage.store.createFromUpload(upload({ targetLanguage: 'fr' }), async () => validProbe),
-    ).rejects.toMatchObject({
-      code: 'unsupported-tts-language',
+    const textOnlySession = await unsupportedLanguage.store.createFromUpload(
+      upload({ targetLanguage: 'fr' }),
+      async () => validProbe,
+    );
+    expect(textOnlySession.translation.status).toBe('translated');
+    expect(textOnlySession.generatedAudio).toMatchObject({
+      status: 'generated',
+      providerStatus: 'text-only',
+      textOnlyLanguages: ['fr'],
     });
 
     const unsupportedVoice = await sessionStore(
@@ -383,6 +504,7 @@ describe('generated-audio sessions', () => {
       }),
       {
         onSessionChange: (session) => {
+          if (activeSessionId !== '' && activeSegmentId !== '') return;
           const active = session.generatedAudio.events.find((event) => event.status === 'generating');
           if (active) {
             activeSessionId = session.id;

@@ -4,11 +4,13 @@ import {
   TranslatedAudioQueueController,
   type GeneratedAudioQueueState,
   type QueueAudio,
+  type TranslatedAudioQueueControllerOptions,
 } from './useTranslatedAudioQueue';
 
 class TestAudio implements QueueAudio {
   currentTime = 0;
   volume = 1;
+  playbackRate = 1;
   onended: (() => void) | null = null;
   onerror: (() => void) | null = null;
   onplaying: (() => void) | null = null;
@@ -82,14 +84,17 @@ function makeGenerated(
   };
 }
 
-function createHarness(rejectUrls = new Set<string>()) {
+function createHarness(
+  rejectUrls = new Set<string>(),
+  options: { lateDropToleranceMs?: number; syncDelayMs?: number } = {},
+) {
   const audios: TestAudio[] = [];
   const revoked: string[] = [];
   const generatedStates: GeneratedAudioQueueState[] = [];
   let urlCount = 0;
   let clockMs = 0;
-  const controller = new TranslatedAudioQueueController({
-    createAudio: (url) => {
+  const controllerOptions: TranslatedAudioQueueControllerOptions = {
+    createAudio: (url: string) => {
       const audio = new TestAudio(url, rejectUrls.has(url));
       audios.push(audio);
       return audio;
@@ -100,9 +105,16 @@ function createHarness(rejectUrls = new Set<string>()) {
         urlCount += 1;
         return `blob:test-${urlCount}`;
       },
-      revokeObjectURL: (url) => revoked.push(url),
+      revokeObjectURL: (url: string) => revoked.push(url),
     },
-    onGeneratedStateChange: (state) => generatedStates.push({ ...state }),
+    onGeneratedStateChange: (state: GeneratedAudioQueueState) => generatedStates.push({ ...state }),
+  };
+  const controller = new TranslatedAudioQueueController({
+    ...controllerOptions,
+    ...(options.lateDropToleranceMs !== undefined
+      ? { lateDropToleranceMs: options.lateDropToleranceMs }
+      : {}),
+    ...(options.syncDelayMs !== undefined ? { syncDelayMs: options.syncDelayMs } : {}),
   });
   return {
     audios,
@@ -179,10 +191,11 @@ describe('TranslatedAudioQueueController', () => {
     vi.advanceTimersByTime(1500);
 
     expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-0.wav']);
+    expect(audios[0]!.playbackRate).toBe(1);
     expect(generatedStates.at(-1)?.status).toBe('playing');
   });
 
-  it('recovers late generated audio by seeking when the segment is still active', () => {
+  it('recovers moderately late generated audio from the start at a gentle catch-up rate', () => {
     const { audios, controller, generatedStates, setClock } = createHarness();
     setClock(1600);
 
@@ -190,26 +203,110 @@ describe('TranslatedAudioQueueController', () => {
     controller.start();
 
     expect(audios).toHaveLength(1);
-    expect(audios[0]!.currentTime).toBeCloseTo(1.6);
+    expect(audios[0]!.currentTime).toBe(0);
+    expect(audios[0]!.playbackRate).toBeCloseTo(1.1);
     expect(generatedStates.at(-1)?.syncOffsetMs).toBe(1600);
     expect(generatedStates.some((state) => state.error?.includes('Recovered late segment'))).toBe(
       true,
     );
   });
 
-  it('skips generated audio whose timestamp window has ended', () => {
+  it('does not seek-trim moderately late segments even when the clip is short', () => {
+    const { audios, controller, generatedStates, setClock } = createHarness();
+    setClock(1600);
+    const generated = makeGenerated(0, 0, 3000);
+    generated.durationMs = 1200;
+
+    controller.enqueueGenerated(generated);
+    controller.start();
+
+    expect(audios).toHaveLength(1);
+    expect(audios[0]!.currentTime).toBe(0);
+    expect(audios[0]!.playbackRate).toBeCloseTo(1.1);
+    expect(generatedStates.at(-1)?.skippedCount).toBe(0);
+  });
+
+  it('skips a very late generated segment when the seek offset consumes the generated WAV', () => {
+    const { audios, controller, generatedStates, setClock } = createHarness();
+    setClock(2600);
+    const generated = makeGenerated(0, 0, 3000);
+    generated.durationMs = 1200;
+
+    controller.enqueueGenerated(generated);
+    controller.start();
+
+    expect(audios).toHaveLength(0);
+    expect(generatedStates.at(-1)).toMatchObject({
+      status: 'completed',
+      skippedCount: 1,
+      error: null,
+    });
+  });
+
+  it('skips live generated audio that misses the synchronized viewer window', () => {
+    const { audios, controller, generatedStates, setClock } = createHarness(
+      new Set(),
+      { lateDropToleranceMs: 2500, syncDelayMs: 8000 },
+    );
+    setClock(11_000);
+
+    controller.enqueueGenerated(makeGenerated(0, 0, 5000));
+    controller.start();
+
+    expect(audios).toHaveLength(0);
+    expect(generatedStates.at(-1)).toMatchObject({
+      status: 'completed',
+      skippedCount: 1,
+      pendingCount: 0,
+      syncDelayMs: 8000,
+    });
+    expect(generatedStates.at(-1)?.error).toContain('Skipped late segment #0');
+  });
+
+  it('uses delayed viewer clock input to play segments inside the sync window', () => {
+    const { audios, controller, generatedStates, setClock } = createHarness(
+      new Set(),
+      { lateDropToleranceMs: 2500, syncDelayMs: 8000 },
+    );
+    setClock(4000);
+
+    controller.enqueueGenerated(makeGenerated(0, 0, 5000));
+    controller.start();
+
+    expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-0.wav']);
+    expect(audios[0]!.currentTime).toBeCloseTo(4);
+    expect(audios[0]!.playbackRate).toBe(1);
+    expect(generatedStates.at(-1)).toMatchObject({
+      status: 'playing',
+      syncDelayMs: 8000,
+    });
+  });
+
+  it('recovers delayed generated audio after the source timestamp window has ended', () => {
     const { audios, controller, generatedStates, setClock } = createHarness();
     setClock(2000);
 
     controller.enqueueGenerated(makeGenerated(0, 0));
     controller.start();
 
-    expect(audios).toHaveLength(0);
-    expect(generatedStates.at(-1)).toMatchObject({
-      skippedCount: 1,
-      status: 'waiting',
-    });
-    expect(generatedStates.some((state) => state.error?.includes('Skipped late segment'))).toBe(
+    expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-0.wav']);
+    expect(audios[0]!.currentTime).toBe(0);
+    expect(audios[0]!.playbackRate).toBe(1);
+    expect(generatedStates.some((state) => state.error?.includes('Recovered late segment'))).toBe(
+      true,
+    );
+  });
+
+  it('plays generated audio whose timestamp is delayed by provider latency', () => {
+    const { audios, controller, generatedStates, setClock } = createHarness();
+    setClock(2000);
+
+    controller.enqueueGenerated(makeGenerated(0, 0));
+    controller.start();
+
+    expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-0.wav']);
+    expect(audios[0]!.currentTime).toBe(0);
+    expect(generatedStates.some((state) => state.error?.includes('Recovered late segment'))).toBe(
       true,
     );
   });
@@ -222,6 +319,71 @@ describe('TranslatedAudioQueueController', () => {
     controller.start();
 
     expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-2.wav']);
+  });
+
+  it('drains delayed generated audio sequentially after the source ends', () => {
+    const { audios, controller, setClock } = createHarness(
+      new Set(),
+      { lateDropToleranceMs: 2500 },
+    );
+    setClock(60_000);
+
+    controller.enqueueGenerated(makeGenerated(0, 0));
+    controller.enqueueGenerated(makeGenerated(1, 15_000));
+    controller.setSourceEnded(true);
+    controller.start();
+
+    expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-0.wav']);
+    audios[0]!.onended?.();
+    expect(audios.map((audio) => audio.url)).toEqual([
+      'http://localhost/audio-0.wav',
+      'http://localhost/audio-1.wav',
+    ]);
+  });
+
+  it('ignores duplicate source-ended signals while draining generated audio', () => {
+    const { audios, controller, generatedStates, setClock } = createHarness();
+    setClock(0);
+
+    controller.enqueueGenerated(makeGenerated(1, 15_000));
+    controller.start();
+    controller.setSourceEnded(true);
+    const stateCountAfterFirstEnded = generatedStates.length;
+
+    controller.setSourceEnded(true);
+
+    expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-1.wav']);
+    expect(generatedStates).toHaveLength(stateCountAfterFirstEnded);
+  });
+
+  it('finishes zero-duration generated segments without blocking the queue', () => {
+    const { audios, controller, generatedStates, setClock } = createHarness();
+    setClock(0);
+    const empty = makeGenerated(0, 0, 0);
+
+    controller.enqueueGenerated(empty);
+    controller.enqueueGenerated(makeGenerated(1, 0));
+    controller.start();
+
+    expect(audios.map((audio) => audio.url)).toEqual(['http://localhost/audio-1.wav']);
+    expect(generatedStates.some((state) => state.playedCount === 1)).toBe(true);
+  });
+
+  it('drains consecutive zero-duration generated segments immediately', () => {
+    const { audios, controller, generatedStates, setClock } = createHarness();
+    setClock(0);
+
+    controller.enqueueGenerated(makeGenerated(0, 0, 0));
+    controller.enqueueGenerated(makeGenerated(1, 15_000, 0));
+    controller.enqueueGenerated(makeGenerated(2, 30_000, 0));
+    controller.start();
+
+    expect(audios).toHaveLength(0);
+    expect(generatedStates.at(-1)).toMatchObject({
+      status: 'completed',
+      playedCount: 3,
+      pendingCount: 0,
+    });
   });
 
   it('suppresses duplicate generated audio across listener reconnection replays', () => {
@@ -254,6 +416,80 @@ describe('TranslatedAudioQueueController', () => {
 
     audios[0]!.onended?.();
     expect(audios).toHaveLength(2);
+  });
+
+  it('leaves the paused generated status on resume and advances after the clip ends', () => {
+    class DeferredAudio implements QueueAudio {
+      currentTime = 0;
+      volume = 1;
+      playbackRate = 1;
+      onended: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      onplaying: (() => void) | null = null;
+      playCalls = 0;
+
+      constructor(readonly url: string) {}
+
+      play(): Promise<void> {
+        // Real buffered playback reports onplaying only after an async buffer
+        // reload; never fire it synchronously here.
+        this.playCalls += 1;
+        return Promise.resolve();
+      }
+
+      pause(): void {}
+    }
+
+    const audios: DeferredAudio[] = [];
+    const generatedStates: GeneratedAudioQueueState[] = [];
+    const controller = new TranslatedAudioQueueController({
+      createAudio: (url) => {
+        const audio = new DeferredAudio(url);
+        audios.push(audio);
+        return audio;
+      },
+      getClockMs: () => 0,
+      urls: {
+        createObjectURL: () => 'blob:mock',
+        revokeObjectURL: () => undefined,
+      },
+      onGeneratedStateChange: (state) => generatedStates.push({ ...state }),
+    });
+
+    controller.enqueueGenerated(makeGenerated(0, 0));
+    controller.enqueueGenerated(makeGenerated(1, 0));
+    controller.start();
+    controller.pause();
+    expect(generatedStates.at(-1)?.status).toBe('paused');
+
+    controller.resume();
+    expect(generatedStates.at(-1)?.status).toBe('buffering');
+    expect(audios[0]!.playCalls).toBe(2);
+
+    audios[0]!.onplaying?.();
+    expect(generatedStates.at(-1)?.status).toBe('playing');
+
+    audios[0]!.onended?.();
+    expect(audios.map((audio) => audio.url)).toEqual([
+      'http://localhost/audio-0.wav',
+      'http://localhost/audio-1.wav',
+    ]);
+    expect(audios[1]!.playCalls).toBe(1);
+    expect(generatedStates.at(-1)?.status).toBe('buffering');
+    expect(generatedStates.some((state) => state.playedCount === 1)).toBe(true);
+  });
+
+  it('resumes the final translated segment when Chrome pauses before source end', () => {
+    const { audios, controller, setClock } = createHarness();
+    setClock(0);
+
+    controller.enqueueGenerated(makeGenerated(0, 0));
+    controller.start();
+    controller.pause();
+    controller.completeSource();
+
+    expect(audios[0]!.playCalls).toBe(2);
+    expect(audios[0]!.paused).toBe(false);
   });
 
   it('resets and replays generated audio for testing', () => {
@@ -291,6 +527,23 @@ describe('TranslatedAudioQueueController', () => {
 
     controller.setOutput(0.6, false);
     expect(audios[0]!.volume).toBe(0.6);
+  });
+
+  it('applies current output volume when generated audio playback starts', () => {
+    const { audios, controller, setClock } = createHarness();
+    setClock(0);
+
+    controller.setOutput(0.25, false);
+    controller.enqueueGenerated(makeGenerated(0, 0));
+    controller.start();
+
+    expect(audios[0]!.volume).toBe(0.25);
+
+    controller.setOutput(0.75, true);
+    expect(audios[0]!.volume).toBe(0);
+
+    controller.setOutput(0.5, false);
+    expect(audios[0]!.volume).toBe(0.5);
   });
 
   it('resets during mock playback and revokes the current generated URL', () => {

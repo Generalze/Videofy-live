@@ -4,12 +4,16 @@ import { extname, isAbsolute, relative, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type {
+  AiProviderStatusMetadata,
+  AudioChunkMetadata,
   AudioExtractionMetadata,
   GeneratedAudioEvent,
   MediaCodecInfo,
   MediaFileMetadata,
   MicrophoneCaptureMetadata,
   MicrophoneCaptureChunkMetadata,
+  SourceLanguageControlMetadata,
+  SourceLanguageMode,
   SessionMonitoringMetadata,
   SessionRecoveryAction,
   SessionRecoveryEventKind,
@@ -25,6 +29,7 @@ import type {
   TranscriptionSessionMetadata,
   TranscriptionStatus,
   WebRtcTranscriptionBridgeMetadata,
+  TargetLanguageCapability,
 } from '@videofy-live/shared-types';
 import {
   cleanupAudioChunks,
@@ -38,6 +43,7 @@ import {
   MockTranscriptionProvider,
   transcribeWithTimeout,
   type TranscriptionProvider,
+  type TranscriptionProviderResult,
 } from './transcription-provider.js';
 import {
   MockTimestampedTranslationProvider,
@@ -49,6 +55,24 @@ import {
   generateSpeechWithTimeout,
   type TextToSpeechProvider,
 } from './text-to-speech-provider.js';
+import {
+  defaultViewerReadyMediaRenderer,
+  type ViewerReadyMediaRenderer,
+  type ViewerReadyMediaRenderSegment,
+} from './viewer-ready-media-renderer.js';
+import {
+  applySourceLanguageAction,
+  applySourceLanguageDetection,
+  buildTargetLanguageCatalogue,
+  createInitialSourceLanguageControl,
+  defaultAiProviderStatus,
+  type SourceLanguageActionInput,
+} from './language-controls.js';
+import {
+  emptyTargetLanguageOutputTally,
+  type SessionTargetLanguageTallies,
+  type TargetLanguageOutputTally,
+} from './target-language-outputs.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -73,13 +97,20 @@ export interface UploadedMediaFile {
   originalName: string;
   sizeBytes: number;
   mimeType: string;
+  requestedSessionId?: string;
   targetLanguage?: string;
+  targetLanguages?: string[];
+  sourceLanguage?: string;
+  sourceLanguageMode?: SourceLanguageMode;
 }
 
 export interface MicrophoneSessionInput {
   deviceId?: string;
   deviceLabel?: string;
   targetLanguage?: string;
+  targetLanguages?: string[];
+  sourceLanguage?: string;
+  sourceLanguageMode?: SourceLanguageMode;
 }
 
 export interface MicrophoneChunkInput {
@@ -97,6 +128,9 @@ export interface WebRtcSessionInput {
   broadcasterPeerId: string;
   revision: number;
   targetLanguage?: string;
+  targetLanguages?: string[];
+  sourceLanguage?: string;
+  sourceLanguageMode?: SourceLanguageMode;
 }
 
 export interface WebRtcChunkInput {
@@ -127,6 +161,10 @@ export interface ProcessingSession {
   generatedAudio: TextToSpeechSessionMetadata;
   monitoring: SessionMonitoringMetadata;
   targetLanguage: string;
+  targetLanguages: string[];
+  sourceLanguageControl: SourceLanguageControlMetadata;
+  targetLanguageCatalogue: TargetLanguageCapability[];
+  aiProviderStatus: AiProviderStatusMetadata;
   sourcePath: string;
   createdAt: string;
   updatedAt: string;
@@ -138,6 +176,18 @@ export interface ProbeResult {
   hasAudio: boolean;
   hasVideo: boolean;
   codecs: MediaCodecInfo[];
+}
+
+export interface SourceMediaFile {
+  mediaPath: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
+export interface ViewerReadyMediaFile {
+  mediaPath: string;
+  mimeType: 'video/mp4';
+  sizeBytes: number;
 }
 
 export type MediaProbe = (filePath: string) => Promise<ProbeResult>;
@@ -159,10 +209,15 @@ export interface ProcessingSessionStoreOptions {
   translationTimeoutMs?: number;
   translationTargetLanguage?: string;
   translationSupportedTargetLanguages?: readonly string[];
+  translationModelIds?: ReadonlyMap<string, string>;
   textToSpeechProvider?: TextToSpeechProvider;
   textToSpeechTimeoutMs?: number;
   textToSpeechVoiceId?: string;
+  textToSpeechVoiceIds?: ReadonlyMap<string, string>;
   textToSpeechSupportedLanguages?: readonly string[];
+  renderViewerReadyMedia?: ViewerReadyMediaRenderer;
+  renderViewerReadyMediaOnCompletion?: boolean;
+  sourceLanguageConfidenceThreshold?: number;
 }
 
 export interface GeneratedAudioFile {
@@ -193,8 +248,6 @@ const DUPLICATE_PROTECTED_STATES = new Set<StreamStatus>([
   'ready',
   'processing',
   'paused',
-  'completed',
-  'failed',
 ]);
 
 const ALLOWED_TRANSITIONS: Record<StreamStatus, readonly StreamStatus[]> = {
@@ -345,9 +398,17 @@ export class ProcessingSessionStore {
   private readonly textToSpeechProvider: TextToSpeechProvider;
   private readonly textToSpeechTimeoutMs: number;
   private readonly textToSpeechVoiceId: string;
+  private readonly textToSpeechVoiceIds: ReadonlyMap<string, string>;
   private readonly textToSpeechSupportedLanguages: readonly string[];
+  private readonly renderViewerReadyMedia: ViewerReadyMediaRenderer;
+  private readonly renderViewerReadyMediaOnCompletion: boolean;
+  private readonly sourceLanguageConfidenceThreshold: number;
+  private readonly targetLanguageCatalogue: TargetLanguageCapability[];
   private readonly onGeneratedAudioReady: (event: GeneratedAudioEvent, session: ProcessingSession) => void;
-  private readonly generatedAudioReadyKeys = new Set<string>();
+  private readonly generatedAudioReadyKeysBySession = new Map<string, Set<string>>();
+  private readonly transcriptionSequences = new Map<string, number>();
+  private readonly viewerReadyRenders = new Map<string, Promise<void>>();
+  private readonly targetLanguageTallies = new Map<string, MutableSessionLanguageTallies>();
 
   constructor(options: ProcessingSessionStoreOptions) {
     this.outputBaseDir = options.outputBaseDir;
@@ -388,6 +449,29 @@ export class ProcessingSessionStore {
       new MockTextToSpeechProvider(this.textToSpeechSupportedLanguages);
     this.textToSpeechTimeoutMs = options.textToSpeechTimeoutMs ?? 30_000;
     this.textToSpeechVoiceId = normalizeVoiceId(options.textToSpeechVoiceId ?? 'mock-voice');
+    this.textToSpeechVoiceIds = new Map(
+      this.textToSpeechSupportedLanguages.map((language) => [
+        language,
+        normalizeVoiceId(options.textToSpeechVoiceIds?.get(language) ?? this.textToSpeechVoiceId),
+      ]),
+    );
+    this.renderViewerReadyMedia =
+      options.renderViewerReadyMedia ?? defaultViewerReadyMediaRenderer;
+    this.renderViewerReadyMediaOnCompletion = options.renderViewerReadyMediaOnCompletion ?? false;
+    this.sourceLanguageConfidenceThreshold = options.sourceLanguageConfidenceThreshold ?? 0.82;
+    this.targetLanguageCatalogue = buildTargetLanguageCatalogue({
+      supportedTranslationLanguages: this.translationSupportedTargetLanguages,
+      supportedVoiceLanguages: this.textToSpeechSupportedLanguages,
+      ...(options.translationModelIds
+        ? { opusMtModelIds: options.translationModelIds }
+        : {}),
+      voiceIds: new Map(
+        this.textToSpeechSupportedLanguages.map((language) => [
+          language,
+          this.textToSpeechVoiceIds.get(language) ?? this.textToSpeechVoiceId,
+        ]),
+      ),
+    });
   }
 
   async createFromUpload(
@@ -396,6 +480,24 @@ export class ProcessingSessionStore {
   ): Promise<ProcessingSession> {
     const supported = resolveSupportedMedia(upload.originalName, upload.mimeType);
     const targetLanguage = this.resolveSessionTargetLanguage(upload.targetLanguage);
+    const targetLanguages = this.resolveSessionTargetLanguages(upload.targetLanguages, targetLanguage);
+    if (upload.requestedSessionId) {
+      assertSafeRequestedSessionId(upload.requestedSessionId);
+      const existing = this.sessions.get(upload.requestedSessionId);
+      if (existing) {
+        throw new MediaIngestError(
+          `Processing session ${upload.requestedSessionId} already exists.`,
+          'duplicate-processing',
+          409,
+          { ...existing },
+        );
+      }
+    }
+    const sourceLanguageControl = createInitialSourceLanguageControl({
+      ...(upload.sourceLanguage ? { sourceLanguage: upload.sourceLanguage } : {}),
+      ...(upload.sourceLanguageMode ? { sourceLanguageMode: upload.sourceLanguageMode } : {}),
+      confidenceThreshold: this.sourceLanguageConfidenceThreshold,
+    });
     const duplicate = this.findDuplicate(upload);
     if (duplicate) {
       throw new MediaIngestError(
@@ -405,10 +507,23 @@ export class ProcessingSessionStore {
         duplicate,
       );
     }
+    if (!upload.requestedSessionId) {
+      // Idempotent reattach: a byte-identical re-upload of media that already
+      // completed processing returns the existing session instead of creating
+      // a new one and re-running the whole pipeline. A failed prior session
+      // still gets a fresh session below.
+      const completedDuplicate = this.findCompletedDuplicate(upload);
+      if (completedDuplicate) {
+        if (upload.path && upload.path !== completedDuplicate.sourcePath) {
+          await rm(upload.path, { force: true });
+        }
+        return completedDuplicate;
+      }
+    }
 
     const now = new Date().toISOString();
     const session: ProcessingSession = {
-      id: `ps_${randomUUID()}`,
+      id: upload.requestedSessionId ?? `ps_${randomUUID()}`,
       streamId: `stream_${randomUUID()}`,
       state: 'created',
       sourceKind: 'upload',
@@ -425,6 +540,10 @@ export class ProcessingSessionStore {
       ),
       monitoring: emptyMonitoring(),
       targetLanguage,
+      targetLanguages,
+      sourceLanguageControl,
+      targetLanguageCatalogue: this.targetLanguageCatalogue,
+      aiProviderStatus: defaultAiProviderStatus(),
       sourcePath: upload.path,
       createdAt: now,
       updatedAt: now,
@@ -468,6 +587,12 @@ export class ProcessingSessionStore {
     }
 
     const targetLanguage = this.resolveSessionTargetLanguage(input.targetLanguage);
+    const targetLanguages = this.resolveSessionTargetLanguages(input.targetLanguages, targetLanguage);
+    const sourceLanguageControl = createInitialSourceLanguageControl({
+      ...(input.sourceLanguage ? { sourceLanguage: input.sourceLanguage } : {}),
+      ...(input.sourceLanguageMode ? { sourceLanguageMode: input.sourceLanguageMode } : {}),
+      confidenceThreshold: this.sourceLanguageConfidenceThreshold,
+    });
     const now = new Date().toISOString();
     const session: ProcessingSession = {
       id: `ps_${randomUUID()}`,
@@ -495,6 +620,10 @@ export class ProcessingSessionStore {
       ),
       monitoring: emptyMonitoring(),
       targetLanguage,
+      targetLanguages,
+      sourceLanguageControl,
+      targetLanguageCatalogue: this.targetLanguageCatalogue,
+      aiProviderStatus: defaultAiProviderStatus(),
       sourcePath: '',
       createdAt: now,
       updatedAt: now,
@@ -537,9 +666,19 @@ export class ProcessingSessionStore {
         force: true,
       });
       this.sessions.delete(existing.id);
+      this.transcriptionSequences.delete(existing.id);
+      this.generatedAudioReadyKeysBySession.delete(existing.id);
+      this.viewerReadyRenders.delete(existing.id);
+      this.targetLanguageTallies.delete(existing.id);
     }
 
     const targetLanguage = this.resolveSessionTargetLanguage(input.targetLanguage);
+    const targetLanguages = this.resolveSessionTargetLanguages(input.targetLanguages, targetLanguage);
+    const sourceLanguageControl = createInitialSourceLanguageControl({
+      ...(input.sourceLanguage ? { sourceLanguage: input.sourceLanguage } : {}),
+      ...(input.sourceLanguageMode ? { sourceLanguageMode: input.sourceLanguageMode } : {}),
+      confidenceThreshold: this.sourceLanguageConfidenceThreshold,
+    });
     const now = new Date().toISOString();
     const session: ProcessingSession = {
       id: input.sessionId,
@@ -576,6 +715,10 @@ export class ProcessingSessionStore {
       ),
       monitoring: emptyMonitoring(),
       targetLanguage,
+      targetLanguages,
+      sourceLanguageControl,
+      targetLanguageCatalogue: this.targetLanguageCatalogue,
+      aiProviderStatus: defaultAiProviderStatus(),
       sourcePath: '',
       createdAt: now,
       updatedAt: now,
@@ -898,6 +1041,7 @@ export class ProcessingSessionStore {
       );
     }
 
+    this.transcriptionSequences.delete(session.id);
     session.transcription = {
       ...emptyTranscription('queued'),
       totalChunks: readyChunks.length,
@@ -971,12 +1115,13 @@ export class ProcessingSessionStore {
 
       const next = await this.processTranscriptionEvents(session, [retrying]);
       const retried = next.transcription.events.find((item) => item.chunkId === chunkId);
+      const retrySucceeded = retried ? retried.status === 'transcribed' : true;
       this.recordSessionEvent(
         session,
         'recovery-event',
         'retry-transcription',
-        retried?.status === 'transcribed' ? 'succeeded' : 'failed',
-        retried?.status === 'transcribed'
+        retrySucceeded ? 'succeeded' : 'failed',
+        retrySucceeded
           ? `Transcription retry succeeded for ${chunkId}.`
           : (retried?.error ?? `Transcription retry failed for ${chunkId}.`),
         chunkId,
@@ -1009,12 +1154,21 @@ export class ProcessingSessionStore {
       .join('\n');
   }
 
-  async retryTranslationSegment(sessionId: string, segmentId: string): Promise<ProcessingSession> {
+  async retryTranslationSegment(
+    sessionId: string,
+    segmentId: string,
+    targetLanguage?: string,
+  ): Promise<ProcessingSession> {
     const session = this.requireSession(sessionId);
     try {
       this.assertRetryAllowed(session, 'retry-translation', segmentId);
       this.assertNoActiveTranslation(session);
-      const event = session.translation.events.find((item) => item.segmentId === segmentId);
+      const language = targetLanguage
+        ? normalizeTargetLanguage(targetLanguage)
+        : session.targetLanguage;
+      const event = session.translation.events.find(
+        (item) => item.segmentId === segmentId && item.targetLanguage === language,
+      );
       if (!event) {
         throw new MediaIngestError(
           `Unknown translation segment: ${segmentId}.`,
@@ -1058,7 +1212,9 @@ export class ProcessingSessionStore {
       this.emitSession(session);
 
       const next = await this.processTranslationEvents(session, [retrying]);
-      const retried = next.translation.events.find((item) => item.segmentId === segmentId);
+      const retried = next.translation.events.find(
+        (item) => item.segmentId === segmentId && item.targetLanguage === language,
+      );
       this.recordSessionEvent(
         session,
         'recovery-event',
@@ -1190,12 +1346,18 @@ export class ProcessingSessionStore {
   async retryGeneratedAudioSegment(
     sessionId: string,
     segmentId: string,
+    targetLanguage?: string,
   ): Promise<ProcessingSession> {
     const session = this.requireSession(sessionId);
     try {
       this.assertRetryAllowed(session, 'retry-tts', segmentId);
       this.assertNoActiveGeneratedAudio(session);
-      const event = session.generatedAudio.events.find((item) => item.segmentId === segmentId);
+      const language = targetLanguage
+        ? normalizeTargetLanguage(targetLanguage)
+        : session.targetLanguage;
+      const event = session.generatedAudio.events.find(
+        (item) => item.segmentId === segmentId && item.targetLanguage === language,
+      );
       if (!event) {
         throw new MediaIngestError(
           `Unknown generated-audio segment: ${segmentId}.`,
@@ -1237,7 +1399,9 @@ export class ProcessingSessionStore {
       this.emitSession(session);
 
       const next = await this.processGeneratedAudioEvents(session, [retrying]);
-      const retried = next.generatedAudio.events.find((item) => item.segmentId === segmentId);
+      const retried = next.generatedAudio.events.find(
+        (item) => item.segmentId === segmentId && item.targetLanguage === language,
+      );
       this.recordSessionEvent(
         session,
         'recovery-event',
@@ -1254,6 +1418,21 @@ export class ProcessingSessionStore {
       this.recordRejectedAction(session, 'retry-tts', error, segmentId);
       throw error;
     }
+  }
+
+  updateSourceLanguageControl(
+    sessionId: string,
+    input: SourceLanguageActionInput,
+  ): ProcessingSession {
+    const session = this.requireSession(sessionId);
+    const previousRevision = session.sourceLanguageControl.revision;
+    session.sourceLanguageControl = applySourceLanguageAction(session.sourceLanguageControl, input);
+    if (session.sourceLanguageControl.revision !== previousRevision) {
+      this.createLanguageRevisionBoundary(session);
+    }
+    session.error = null;
+    this.emitSession(session);
+    return { ...session };
   }
 
   transition(sessionId: string, nextState: StreamStatus): ProcessingSession {
@@ -1279,11 +1458,93 @@ export class ProcessingSessionStore {
     return session ? { ...session } : null;
   }
 
-  async getGeneratedAudioFile(sessionId: string, segmentId: string): Promise<GeneratedAudioFile> {
+  getTargetLanguageCatalogue(): TargetLanguageCapability[] {
+    return this.targetLanguageCatalogue.map((capability) => ({ ...capability }));
+  }
+
+  /**
+   * Incrementally maintained per-language output counters for a session, kept
+   * in sync where translation/generated-audio events transition so broadcast
+   * emitters do not rescan the full event history on every state change.
+   */
+  getTargetLanguageOutputTallies(sessionId: string): SessionTargetLanguageTallies | null {
+    if (!this.sessions.has(sessionId)) return null;
+    const tallies = this.targetLanguageTallies.get(sessionId);
+    return {
+      translation: cloneTallyMap(tallies?.translation),
+      generatedAudio: cloneTallyMap(tallies?.generatedAudio),
+    };
+  }
+
+  private sessionLanguageTallies(sessionId: string): MutableSessionLanguageTallies {
+    let tallies = this.targetLanguageTallies.get(sessionId);
+    if (!tallies) {
+      tallies = { translation: new Map(), generatedAudio: new Map() };
+      this.targetLanguageTallies.set(sessionId, tallies);
+    }
+    return tallies;
+  }
+
+  private recordTranslationTally(
+    sessionId: string,
+    previous: TimestampedTranslationEvent | null,
+    next: TimestampedTranslationEvent,
+  ): void {
+    applyTallyTransition(
+      this.sessionLanguageTallies(sessionId).translation,
+      previous ? { targetLanguage: previous.targetLanguage, tallyClass: translationTallyClass(previous.status) } : null,
+      { targetLanguage: next.targetLanguage, tallyClass: translationTallyClass(next.status) },
+      next.status === 'failed' ? (next.error ?? null) : undefined,
+    );
+  }
+
+  private recordGeneratedAudioTally(
+    sessionId: string,
+    previous: GeneratedAudioEvent | null,
+    next: GeneratedAudioEvent,
+  ): void {
+    applyTallyTransition(
+      this.sessionLanguageTallies(sessionId).generatedAudio,
+      previous ? { targetLanguage: previous.targetLanguage, tallyClass: generatedAudioTallyClass(previous.status) } : null,
+      { targetLanguage: next.targetLanguage, tallyClass: generatedAudioTallyClass(next.status) },
+      next.status === 'failed' ? (next.error ?? null) : undefined,
+    );
+  }
+
+  /** Rebuilds both tally maps from the session's current event arrays. */
+  private rebuildLanguageTallies(session: ProcessingSession): void {
+    const tallies = this.sessionLanguageTallies(session.id);
+    tallies.translation = buildTallyMap(
+      session.translation.events.map((event) => ({
+        targetLanguage: event.targetLanguage,
+        tallyClass: translationTallyClass(event.status),
+        error: event.error ?? null,
+      })),
+    );
+    tallies.generatedAudio = buildTallyMap(
+      session.generatedAudio.events.map((event) => ({
+        targetLanguage: event.targetLanguage,
+        tallyClass: generatedAudioTallyClass(event.status),
+        error: event.error ?? null,
+      })),
+    );
+  }
+
+  async getGeneratedAudioFile(
+    sessionId: string,
+    segmentId: string,
+    targetLanguage?: string,
+  ): Promise<GeneratedAudioFile> {
     assertSafeRouteId(sessionId, 'session ID');
     assertSafeRouteId(segmentId, 'segment ID');
     const session = this.requireSession(sessionId);
-    const event = session.generatedAudio.events.find((item) => item.segmentId === segmentId);
+    const normalizedLanguage = targetLanguage
+      ? normalizeTargetLanguage(targetLanguage)
+      : session.targetLanguage;
+    const event = session.generatedAudio.events.find(
+      (item) =>
+        item.segmentId === segmentId && item.targetLanguage === normalizedLanguage,
+    );
     if (!event || event.status !== 'generated') {
       throw new MediaIngestError(
         `Generated audio is not available for segment ${segmentId}.`,
@@ -1293,7 +1554,11 @@ export class ProcessingSessionStore {
       );
     }
 
-    const audioPath = this.generatedAudioOutputPath(session.id, event.sequence);
+    const audioPath = this.generatedAudioOutputPath(
+      session.id,
+      event.targetLanguage,
+      event.sequence,
+    );
     assertPathInsideSession(this.outputBaseDir, session.id, audioPath);
 
     let fileSize = 0;
@@ -1413,6 +1678,22 @@ export class ProcessingSessionStore {
         error: message,
       };
     }
+    if (session.translation.events.some((event) => event.status === 'failed')) {
+      session.translation = {
+        ...session.translation,
+        status: 'failed',
+        providerStatus: 'failed',
+        error: message,
+      };
+    }
+    if (session.generatedAudio.events.some((event) => event.status === 'failed')) {
+      session.generatedAudio = {
+        ...session.generatedAudio,
+        status: 'failed',
+        providerStatus: 'failed',
+        error: message,
+      };
+    }
     if (session.state !== 'failed') {
       this.transition(session.id, 'failed');
     } else {
@@ -1473,6 +1754,79 @@ export class ProcessingSessionStore {
     return { ...session };
   }
 
+  async getSourceMediaFile(sessionId: string): Promise<SourceMediaFile> {
+    assertSafeRouteId(sessionId, 'session ID');
+    const session = this.requireSession(sessionId);
+    if (session.sourceKind !== 'upload' || !session.media) {
+      throw new MediaIngestError(
+        `Source media is unavailable for session ${sessionId}.`,
+        'source-media-unavailable',
+        404,
+        { ...session },
+      );
+    }
+    const source = await stat(session.sourcePath).catch(() => null);
+    if (!source?.isFile()) {
+      throw new MediaIngestError(
+        `Source media file is missing for session ${sessionId}.`,
+        'source-media-unavailable',
+        404,
+        { ...session },
+      );
+    }
+    return {
+      mediaPath: session.sourcePath,
+      mimeType: session.media.mimeType,
+      sizeBytes: source.size,
+    };
+  }
+
+  async getViewerReadyMediaFile(sessionId: string): Promise<ViewerReadyMediaFile> {
+    assertSafeRouteId(sessionId, 'session ID');
+    const session = this.requireSession(sessionId);
+    if (session.sourceKind !== 'upload' || !session.media?.hasVideo) {
+      throw new MediaIngestError(
+        `Viewer-ready media is unavailable for session ${sessionId}.`,
+        'viewer-ready-media-unavailable',
+        404,
+        { ...session },
+      );
+    }
+
+    const outputPath = this.viewerReadyMediaOutputPath(session.id);
+    assertPathInsideSession(this.outputBaseDir, session.id, outputPath);
+    let rendered = await stat(outputPath).catch(() => null);
+    if (!rendered?.isFile()) {
+      await this.ensureViewerReadyMedia(session);
+      rendered = await stat(outputPath).catch(() => null);
+    }
+
+    if (!rendered?.isFile()) {
+      throw new MediaIngestError(
+        `Viewer-ready media file is missing for session ${sessionId}.`,
+        'viewer-ready-media-unavailable',
+        404,
+        { ...session },
+      );
+    }
+
+    return {
+      mediaPath: outputPath,
+      mimeType: 'video/mp4',
+      sizeBytes: rendered.size,
+    };
+  }
+
+  private failRealtimeAudioSession(
+    session: ProcessingSession,
+    error: unknown,
+    fallbackMessage: string,
+  ): ProcessingSession {
+    return session.sourceKind === 'webrtc'
+      ? this.failWebRtcSession(session, error, fallbackMessage)
+      : this.failMicrophoneSession(session, error, fallbackMessage);
+  }
+
   private validateProbeResult(kind: MediaKind, probeResult: ProbeResult): void {
     if (kind === 'audio') {
       if (!probeResult.hasAudio || probeResult.hasVideo) {
@@ -1509,6 +1863,16 @@ export class ProcessingSessionStore {
         DUPLICATE_PROTECTED_STATES.has(session.state) &&
         this.fingerprints.get(session.id) === fingerprint
       ) {
+        return { ...session };
+      }
+    }
+    return null;
+  }
+
+  private findCompletedDuplicate(upload: UploadedMediaFile): ProcessingSession | null {
+    const fingerprint = fileFingerprint(upload);
+    for (const session of this.sessions.values()) {
+      if (session.state === 'completed' && this.fingerprints.get(session.id) === fingerprint) {
         return { ...session };
       }
     }
@@ -1814,7 +2178,7 @@ export class ProcessingSessionStore {
     this.onTranscriptionEvent(transcribing);
     this.emitSession(session);
 
-    let transcribed: TranscriptionEvent;
+    let transcribedSegments: TranscriptionEvent[];
     try {
       const result = await transcribeWithTimeout(
         this.transcriptionProvider,
@@ -1823,21 +2187,20 @@ export class ProcessingSessionStore {
           streamId: session.streamId,
           chunk,
           audioPath: resolve(safeSessionOutputDir(this.outputBaseDir, session.id), chunk.filename),
+          sourceLanguage: session.sourceLanguageControl.activeLanguage,
+          sourceLanguageMode: session.sourceLanguageControl.mode,
         },
         this.transcriptionTimeoutMs,
       );
-      transcribed = {
-        ...transcribing,
-        sourceText: result.sourceText,
-        detectedLanguage: result.detectedLanguage,
+      this.reconcileDetectedLanguage(session, {
+        language: result.detectedLanguage,
         confidence: result.confidence,
-        providerLatencyMs: result.providerLatencyMs ?? null,
-        status: 'transcribed' as const,
-        createdAt: new Date().toISOString(),
-      };
-      this.replaceTranscriptionEvent(session, transcribed);
+      });
+      transcribedSegments = this.fanOutTranscribedSegments(session, transcribing, chunk, result);
       this.updateTranscriptionProgress(session);
-      this.onTranscriptionEvent(transcribed);
+      for (const transcribed of transcribedSegments) {
+        this.onTranscriptionEvent(transcribed);
+      }
       this.emitSession(session);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Transcription failed.';
@@ -1853,7 +2216,16 @@ export class ProcessingSessionStore {
       this.emitSession(session);
       return this.failMicrophoneSession(session, error, 'Microphone transcription failed.');
     }
-    return await this.processMicrophoneTranslationEvent(session, transcribed);
+    let updated: ProcessingSession = { ...session };
+    for (const transcribed of transcribedSegments) {
+      // The session can fail concurrently (e.g. device disconnect) while a
+      // segment is in flight; stop fanning out further segments once it has.
+      if (session.state === 'failed' || session.state === 'cancelled') {
+        return { ...session };
+      }
+      updated = await this.processMicrophoneTranslationEvent(session, transcribed);
+    }
+    return updated;
   }
 
   private async processWebRtcTranscriptionEvent(
@@ -1890,24 +2262,37 @@ export class ProcessingSessionStore {
           streamId: session.streamId,
           chunk,
           audioPath: resolve(safeSessionOutputDir(this.outputBaseDir, session.id), chunk.filename),
+          sourceLanguage: session.sourceLanguageControl.activeLanguage,
+          sourceLanguageMode: session.sourceLanguageControl.mode,
         },
         this.transcriptionTimeoutMs,
       );
-      const transcribed = {
-        ...transcribing,
-        sourceText: result.sourceText,
-        detectedLanguage: result.detectedLanguage,
+      this.reconcileDetectedLanguage(session, {
+        language: result.detectedLanguage,
         confidence: result.confidence,
-        providerLatencyMs: result.providerLatencyMs ?? null,
-        status: 'transcribed' as const,
-        createdAt: new Date().toISOString(),
-      };
-      this.replaceTranscriptionEvent(session, transcribed);
+      });
+      const transcribedSegments = this.fanOutTranscribedSegments(
+        session,
+        transcribing,
+        chunk,
+        result,
+      );
       this.updateTranscriptionProgress(session);
       this.updateWebRtcBridgeMetadata(session);
-      this.onTranscriptionEvent(transcribed);
+      for (const transcribed of transcribedSegments) {
+        this.onTranscriptionEvent(transcribed);
+      }
       this.emitSession(session);
-      return { ...session };
+      let updated: ProcessingSession = { ...session };
+      for (const transcribed of transcribedSegments) {
+        // The session can fail concurrently while a segment is in flight;
+        // stop fanning out further segments once it has.
+        if (session.state === 'failed' || session.state === 'cancelled') {
+          return { ...session };
+        }
+        updated = await this.processMicrophoneTranslationEvent(session, transcribed);
+      }
+      return updated;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Transcription failed.';
       const failed = {
@@ -1929,6 +2314,28 @@ export class ProcessingSessionStore {
     session: ProcessingSession,
     segment: TranscriptionEvent,
   ): Promise<ProcessingSession> {
+    if (this.isStaleSourceLanguageRevision(session, segment)) {
+      const failed = this.createTranslationEvent(
+        session,
+        segment,
+        '',
+        'failed',
+        zeroTranslationLatency(),
+        'Stale transcription rejected after source-language revision changed.',
+      );
+      session.translation.events = [...session.translation.events, failed].sort(
+        (a, b) => a.sequence - b.sequence,
+      );
+      this.recordTranslationTally(session.id, null, failed);
+      this.updateTranslationProgress(session);
+      this.onTranslationEvent(failed);
+      this.emitSession(session);
+      return this.failRealtimeAudioSession(
+        session,
+        new MediaIngestError(failed.error ?? 'Stale transcription rejected.', 'stale-source-language', 409),
+        `${session.sourceKind === 'webrtc' ? 'WebRTC' : 'Microphone'} translation failed.`,
+      );
+    }
     const queued = this.createTranslationEvent(
       session,
       segment,
@@ -1939,6 +2346,7 @@ export class ProcessingSessionStore {
     session.translation.events = [...session.translation.events, queued].sort(
       (a, b) => a.sequence - b.sequence,
     );
+    this.recordTranslationTally(session.id, null, queued);
     this.updateTranslationProgress(session);
     this.onTranslationEvent(queued);
     this.emitSession(session);
@@ -2004,7 +2412,11 @@ export class ProcessingSessionStore {
       this.updateTranslationProgress(session);
       this.onTranslationEvent(failed);
       this.emitSession(session);
-      return this.failMicrophoneSession(session, error, 'Microphone translation failed.');
+      return this.failRealtimeAudioSession(
+        session,
+        error,
+        `${session.sourceKind === 'webrtc' ? 'WebRTC' : 'Microphone'} translation failed.`,
+      );
     }
   }
 
@@ -2012,12 +2424,18 @@ export class ProcessingSessionStore {
     session: ProcessingSession,
     segment: TimestampedTranslationEvent,
   ): Promise<ProcessingSession> {
+    if (!this.textToSpeechSupportedLanguages.includes(segment.targetLanguage)) {
+      // Mirror the batch pipeline: a target language without an approved voice
+      // stays captions-only instead of failing the whole live session.
+      this.markRealtimeCaptionsOnlyLanguage(session, segment.targetLanguage);
+      return { ...session };
+    }
     try {
-      this.assertTextToSpeechLanguageSupported(session.targetLanguage);
       const queued = this.createGeneratedAudioEvent(session, segment, 'queued');
       session.generatedAudio.events = [...session.generatedAudio.events, queued].sort(
         (a, b) => a.sequence - b.sequence,
       );
+      this.recordGeneratedAudioTally(session.id, null, queued);
       this.updateGeneratedAudioProgress(session);
       this.emitSession(session);
 
@@ -2030,7 +2448,12 @@ export class ProcessingSessionStore {
       this.updateGeneratedAudioProgress(session);
       this.emitSession(session);
 
-      await this.ensureGeneratedAudioOutputDir(session.id);
+      await this.ensureGeneratedAudioOutputDir(session.id, segment.targetLanguage);
+      const audioPath = this.generatedAudioOutputPath(
+        session.id,
+        segment.targetLanguage,
+        segment.sequence,
+      );
       const result = await generateSpeechWithTimeout(
         this.textToSpeechProvider,
         {
@@ -2038,19 +2461,19 @@ export class ProcessingSessionStore {
           streamId: session.streamId,
           segmentId: segment.segmentId,
           sequence: segment.sequence,
-          targetLanguage: session.targetLanguage,
+          targetLanguage: segment.targetLanguage,
           translatedText: segment.translatedText,
           startMs: segment.startMs,
           endMs: segment.endMs,
-          voiceId: this.textToSpeechVoiceId,
-          outputPath: this.generatedAudioOutputPath(session.id, segment.sequence),
+          voiceId: this.voiceIdForLanguage(segment.targetLanguage),
+          outputPath: audioPath,
         },
         this.textToSpeechTimeoutMs,
       );
       const generated = {
         ...generating,
         status: 'generated' as const,
-        durationMs: await readWavDurationMs(this.generatedAudioOutputPath(session.id, segment.sequence)),
+        durationMs: await readWavDurationMs(audioPath),
         providerLatencyMs: result.providerLatencyMs ?? null,
         createdAt: new Date().toISOString(),
       };
@@ -2060,13 +2483,20 @@ export class ProcessingSessionStore {
       this.emitGeneratedAudioReady(session, generated);
       return { ...session };
     } catch (error) {
-      await rm(this.generatedAudioOutputPath(session.id, segment.sequence), { force: true });
+      await rm(
+        this.generatedAudioOutputPath(session.id, segment.targetLanguage, segment.sequence),
+        { force: true },
+      );
       const message = error instanceof Error ? error.message : 'Text-to-speech generation failed.';
       const failed = this.createGeneratedAudioEvent(session, segment, 'failed', message);
       this.replaceGeneratedAudioEvent(session, failed);
       this.updateGeneratedAudioProgress(session);
       this.emitSession(session);
-      return this.failMicrophoneSession(session, error, 'Microphone text-to-speech failed.');
+      return this.failRealtimeAudioSession(
+        session,
+        error,
+        `${session.sourceKind === 'webrtc' ? 'WebRTC' : 'Microphone'} text-to-speech failed.`,
+      );
     }
   }
 
@@ -2110,20 +2540,23 @@ export class ProcessingSessionStore {
               safeSessionOutputDir(this.outputBaseDir, session.id),
               chunk.filename,
             ),
+            sourceLanguage: session.sourceLanguageControl.activeLanguage,
+            sourceLanguageMode: session.sourceLanguageControl.mode,
           },
           this.transcriptionTimeoutMs,
         );
-        const transcribed = {
-          ...transcribing,
-          sourceText: result.sourceText,
-          detectedLanguage: result.detectedLanguage,
-        confidence: result.confidence,
-        providerLatencyMs: result.providerLatencyMs ?? null,
-        status: 'transcribed' as const,
-          createdAt: new Date().toISOString(),
-        };
-        this.replaceTranscriptionEvent(session, transcribed);
-        this.onTranscriptionEvent(transcribed);
+        this.reconcileDetectedLanguage(session, {
+          language: result.detectedLanguage,
+          confidence: result.confidence,
+        });
+        for (const transcribed of this.fanOutTranscribedSegments(
+          session,
+          transcribing,
+          chunk,
+          result,
+        )) {
+          this.onTranscriptionEvent(transcribed);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Transcription failed.';
         const failed = {
@@ -2142,6 +2575,8 @@ export class ProcessingSessionStore {
       }
     }
 
+    this.renumberTranscriptionSequences(session);
+
     if (!(await this.waitUntilRunnable(session))) {
       return { ...session };
     }
@@ -2158,6 +2593,18 @@ export class ProcessingSessionStore {
       };
       this.transition(session.id, 'failed');
       return { ...session };
+    }
+
+    if (session.transcription.events.length === 0) {
+      session.error = null;
+      const { error: _transcriptionError, ...transcriptionWithoutError } = session.transcription;
+      session.transcription = {
+        ...transcriptionWithoutError,
+        status: 'transcribed',
+        progressPct: 100,
+      };
+      this.emitSession(session);
+      return this.transition(session.id, 'completed');
     }
 
     if (session.transcription.events.every((event) => event.status === 'transcribed')) {
@@ -2202,6 +2649,7 @@ export class ProcessingSessionStore {
       startMs: chunk.startMs,
       endMs: chunk.endMs,
       confidence,
+      sourceLanguageRevision: session.sourceLanguageControl.revision,
       status,
       createdAt: new Date().toISOString(),
     };
@@ -2213,6 +2661,81 @@ export class ProcessingSessionStore {
     session.transcription.events = session.transcription.events
       .map((event) => (event.chunkId === next.chunkId ? next : event))
       .sort((a, b) => a.sequence - b.sequence);
+  }
+
+  private nextTranscriptionSequence(sessionId: string): number {
+    const sequence = this.transcriptionSequences.get(sessionId) ?? 0;
+    this.transcriptionSequences.set(sessionId, sequence + 1);
+    return sequence;
+  }
+
+  /**
+   * Restores contiguous 0-based, timeline-ordered sequences after a batch
+   * pass. A retried chunk fans out with counter values past the ones already
+   * assigned to later chunks; renumbering before translation/TTS start keeps
+   * exports ordered and preserves the gateway GeneratedAudioStore contract of
+   * contiguous 0-based sequences per session and language.
+   */
+  private renumberTranscriptionSequences(session: ProcessingSession): void {
+    const ordered = session.transcription.events
+      .slice()
+      // Chunks cover disjoint time ranges and fan-out segments are clamped
+      // inside their chunk, so (startMs, endMs) yields timeline order; the
+      // stable sort keeps same-timestamp events in their existing order.
+      .sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+    const renumbered: TranscriptionEvent[] = [];
+    const changed: TranscriptionEvent[] = [];
+    ordered.forEach((event, index) => {
+      if (event.sequence === index) {
+        renumbered.push(event);
+        return;
+      }
+      const next = { ...event, sequence: index };
+      renumbered.push(next);
+      changed.push(next);
+    });
+    this.transcriptionSequences.set(session.id, renumbered.length);
+    if (changed.length === 0) return;
+    session.transcription.events = renumbered;
+    for (const event of changed) {
+      this.onTranscriptionEvent(event);
+    }
+  }
+
+  private fanOutTranscribedSegments(
+    session: ProcessingSession,
+    transcribing: TranscriptionEvent,
+    chunk: AudioChunkMetadata,
+    result: TranscriptionProviderResult,
+  ): TranscriptionEvent[] {
+    const transcribed = result.segments
+      .filter((segment) => segment.text.trim() !== '')
+      .map((segment, index): TranscriptionEvent => {
+        const startMs = Math.min(
+          Math.max(chunk.startMs + segment.startMs, chunk.startMs),
+          chunk.endMs,
+        );
+        const endMs = Math.min(Math.max(chunk.startMs + segment.endMs, startMs), chunk.endMs);
+        return {
+          ...transcribing,
+          chunkId: `${transcribing.chunkId}-s${index}`,
+          sequence: this.nextTranscriptionSequence(session.id),
+          sourceText: segment.text.trim(),
+          detectedLanguage: result.detectedLanguage,
+          confidence: result.confidence,
+          startMs,
+          endMs,
+          sourceLanguageRevision: session.sourceLanguageControl.revision,
+          providerLatencyMs: result.providerLatencyMs ?? null,
+          status: 'transcribed',
+          createdAt: new Date().toISOString(),
+        };
+      });
+    session.transcription.events = session.transcription.events
+      .filter((event) => event.chunkId !== transcribing.chunkId)
+      .concat(transcribed)
+      .sort((a, b) => a.sequence - b.sequence);
+    return transcribed;
   }
 
   private updateTranscriptionProgress(session: ProcessingSession): void {
@@ -2294,12 +2817,24 @@ export class ProcessingSessionStore {
 
     session.translation = {
       ...emptyTranslation('queued', session.targetLanguage, this.translationProvider.name),
-      totalSegments: transcribedSegments.length,
+      totalSegments: transcribedSegments.length * session.targetLanguages.length,
       sourceLanguage: transcribedSegments[0]?.detectedLanguage ?? null,
-      events: transcribedSegments.map((segment) =>
-        this.createTranslationEvent(session, segment, '', 'queued', zeroTranslationLatency()),
+      targetLanguages: session.targetLanguages,
+      events: transcribedSegments.flatMap((segment) =>
+        session.targetLanguages.map((targetLanguage) =>
+          this.createTranslationEvent(
+            session,
+            segment,
+            '',
+            'queued',
+            zeroTranslationLatency(),
+            undefined,
+            targetLanguage,
+          ),
+        ),
       ),
     };
+    this.rebuildLanguageTallies(session);
     this.emitSession(session);
     for (const event of session.translation.events) {
       this.onTranslationEvent(event);
@@ -2311,10 +2846,14 @@ export class ProcessingSessionStore {
   private async startGeneratedAudio(sessionId: string): Promise<ProcessingSession> {
     const session = this.requireSession(sessionId);
     this.assertNoActiveGeneratedAudio(session);
-    this.assertTextToSpeechLanguageSupported(session.targetLanguage);
     const translatedSegments = session.translation.events
       .filter((event) => event.status === 'translated')
-      .sort((a, b) => a.sequence - b.sequence);
+      .sort((a, b) =>
+        a.sequence === b.sequence
+          ? session.targetLanguages.indexOf(a.targetLanguage) -
+            session.targetLanguages.indexOf(b.targetLanguage)
+          : a.sequence - b.sequence,
+      );
     if (translatedSegments.length === 0) {
       throw new MediaIngestError(
         `Session ${sessionId} has no translated segments to generate.`,
@@ -2324,6 +2863,42 @@ export class ProcessingSessionStore {
       );
     }
 
+    const voiceSegments = translatedSegments.filter((event) =>
+      this.textToSpeechSupportedLanguages.includes(event.targetLanguage),
+    );
+    const textOnlyLanguages = session.targetLanguages.filter(
+      (language) =>
+        !this.textToSpeechSupportedLanguages.includes(language) &&
+        translatedSegments.some((event) => event.targetLanguage === language),
+    );
+
+    if (voiceSegments.length === 0) {
+      session.generatedAudio = {
+        ...emptyGeneratedAudio(
+          'generated',
+          session.targetLanguage,
+          this.textToSpeechVoiceId,
+          this.textToSpeechProvider.name,
+        ),
+        providerStatus: 'text-only',
+        progressPct: 100,
+        totalSegments: 0,
+        generatedSegments: 0,
+        targetLanguages: session.targetLanguages,
+        textOnlyLanguages,
+        events: [],
+      };
+      this.rebuildLanguageTallies(session);
+      this.emitSession(session);
+      if (session.state === 'processing') {
+        return this.transition(
+          session.id,
+          session.translation.failedSegments > 0 ? 'failed' : 'completed',
+        );
+      }
+      return { ...session };
+    }
+
     session.generatedAudio = {
       ...emptyGeneratedAudio(
         'queued',
@@ -2331,9 +2906,14 @@ export class ProcessingSessionStore {
         this.textToSpeechVoiceId,
         this.textToSpeechProvider.name,
       ),
-      totalSegments: translatedSegments.length,
-      events: translatedSegments.map((segment) => this.createGeneratedAudioEvent(session, segment, 'queued')),
+      targetLanguages: session.targetLanguages,
+      textOnlyLanguages,
+      totalSegments: voiceSegments.length,
+      events: voiceSegments.map((segment) =>
+        this.createGeneratedAudioEvent(session, segment, 'queued'),
+      ),
     };
+    this.rebuildLanguageTallies(session);
     this.emitSession(session);
 
     return await this.processGeneratedAudioEvents(session, session.generatedAudio.events);
@@ -2347,13 +2927,30 @@ export class ProcessingSessionStore {
       this.transition(session.id, 'processing');
     }
 
-    const orderedEvents = requestedEvents.slice().sort((a, b) => a.sequence - b.sequence);
+    // See processTranslationEvents: a revision boundary replaces this pass'
+    // generated-audio state mid-flight; the new revision's pass owns the work.
+    const revisionAtStart = session.sourceLanguageControl.revision;
+    const revisionReplaced = () =>
+      session.sourceLanguageControl.revision !== revisionAtStart;
+
+    const orderedEvents = requestedEvents.slice().sort((a, b) =>
+      a.sequence === b.sequence
+        ? session.targetLanguages.indexOf(a.targetLanguage) -
+          session.targetLanguages.indexOf(b.targetLanguage)
+        : a.sequence - b.sequence,
+    );
     for (const event of orderedEvents) {
       if (!(await this.waitUntilRunnable(session))) {
         return { ...session };
       }
+      if (revisionReplaced()) {
+        return { ...session };
+      }
       const translatedSegment = session.translation.events.find(
-        (item) => item.segmentId === event.segmentId && item.status === 'translated',
+        (item) =>
+          item.segmentId === event.segmentId &&
+          item.targetLanguage === event.targetLanguage &&
+          item.status === 'translated',
       );
       if (!translatedSegment) continue;
 
@@ -2368,7 +2965,12 @@ export class ProcessingSessionStore {
       this.emitSession(session);
 
       try {
-        await this.ensureGeneratedAudioOutputDir(session.id);
+        await this.ensureGeneratedAudioOutputDir(session.id, event.targetLanguage);
+        const audioPath = this.generatedAudioOutputPath(
+          session.id,
+          event.targetLanguage,
+          translatedSegment.sequence,
+        );
         const result = await generateSpeechWithTimeout(
           this.textToSpeechProvider,
           {
@@ -2376,31 +2978,39 @@ export class ProcessingSessionStore {
             streamId: session.streamId,
             segmentId: translatedSegment.segmentId,
             sequence: translatedSegment.sequence,
-            targetLanguage: session.targetLanguage,
+            targetLanguage: event.targetLanguage,
             translatedText: translatedSegment.translatedText,
             startMs: translatedSegment.startMs,
             endMs: translatedSegment.endMs,
-            voiceId: this.textToSpeechVoiceId,
-            outputPath: this.generatedAudioOutputPath(session.id, translatedSegment.sequence),
+            voiceId: this.voiceIdForLanguage(event.targetLanguage),
+            outputPath: audioPath,
           },
           this.textToSpeechTimeoutMs,
         );
         const generated = {
           ...generating,
           audioFilename: generatedAudioFilename(translatedSegment.sequence),
-          durationMs: await readWavDurationMs(
-            this.generatedAudioOutputPath(session.id, translatedSegment.sequence),
-          ),
+          durationMs: await readWavDurationMs(audioPath),
           providerLatencyMs: result.providerLatencyMs ?? null,
           status: 'generated' as const,
           createdAt: new Date().toISOString(),
         };
+        if (revisionReplaced()) {
+          return { ...session };
+        }
         this.replaceGeneratedAudioEvent(session, generated);
         this.emitGeneratedAudioReady(session, generated);
       } catch (error) {
-        await rm(this.generatedAudioOutputPath(session.id, translatedSegment.sequence), {
+        await rm(this.generatedAudioOutputPath(
+          session.id,
+          event.targetLanguage,
+          translatedSegment.sequence,
+        ), {
           force: true,
         });
+        if (revisionReplaced()) {
+          return { ...session };
+        }
         const message = error instanceof Error ? error.message : 'Text-to-speech generation failed.';
         const failed = {
           ...generating,
@@ -2421,32 +3031,86 @@ export class ProcessingSessionStore {
     if (!(await this.waitUntilRunnable(session))) {
       return { ...session };
     }
+    if (revisionReplaced()) {
+      return { ...session };
+    }
 
     const failedCount = session.generatedAudio.events.filter((event) => event.status === 'failed').length;
-    if (failedCount > 0) {
-      session.error = `${failedCount} generated-audio segment${failedCount === 1 ? '' : 's'} failed.`;
+    const settled = session.generatedAudio.events.every(
+      (event) => event.status === 'generated' || event.status === 'failed',
+    );
+    const generatedCount = session.generatedAudio.events.filter(
+      (event) => event.status === 'generated',
+    ).length;
+    if (settled && generatedCount > 0) {
+      session.error =
+        failedCount > 0
+          ? `${failedCount} generated-audio output${failedCount === 1 ? '' : 's'} failed; captions and other language channels remain available.`
+          : session.error;
+      const { error: _generatedAudioError, ...generatedAudioWithoutError } = session.generatedAudio;
+      session.generatedAudio = {
+        ...generatedAudioWithoutError,
+        status: failedCount > 0 ? 'failed' : 'generated',
+        progressPct: Math.round((generatedCount / session.generatedAudio.events.length) * 100),
+        ...(session.error ? { error: session.error } : {}),
+      };
+      if (
+        session.sourceKind === 'microphone' ||
+        (session.sourceKind === 'webrtc' && session.webrtcTranscriptionBridge?.status !== 'stopped')
+      ) {
+        this.emitSession(session);
+        return { ...session };
+      }
+      if (
+        this.renderViewerReadyMediaOnCompletion &&
+        session.sourceKind === 'upload' &&
+        session.media?.hasVideo
+      ) {
+        try {
+          await this.ensureViewerReadyMedia(session);
+        } catch (error) {
+          return this.failSession(session, error, 'Viewer-ready media render failed.');
+        }
+      }
+      if (failedCount > 0 || session.translation.failedSegments > 0) {
+        this.transition(session.id, 'failed');
+        return { ...session };
+      }
+      this.transition(session.id, 'completed');
+      return { ...session };
+    }
+
+    if (
+      settled &&
+      generatedCount === 0 &&
+      (session.generatedAudio.textOnlyLanguages?.length ?? 0) > 0
+    ) {
+      session.error = `${failedCount} generated-audio output${failedCount === 1 ? '' : 's'} failed; caption-only language channels remain available.`;
+      session.generatedAudio = {
+        ...session.generatedAudio,
+        status: 'failed',
+        providerStatus: 'failed',
+        error: session.error,
+      };
+      if (session.sourceKind === 'microphone' || session.sourceKind === 'webrtc') {
+        this.emitSession(session);
+        return { ...session };
+      }
+      this.transition(
+        session.id,
+        failedCount > 0 || session.translation.failedSegments > 0 ? 'failed' : 'completed',
+      );
+      return { ...session };
+    }
+
+    if (settled && generatedCount === 0) {
+      session.error = `${failedCount} generated-audio output${failedCount === 1 ? '' : 's'} failed.`;
       session.generatedAudio = {
         ...session.generatedAudio,
         status: 'failed',
         error: session.error,
       };
       this.transition(session.id, 'failed');
-      return { ...session };
-    }
-
-    if (session.generatedAudio.events.every((event) => event.status === 'generated')) {
-      session.error = null;
-      const { error: _generatedAudioError, ...generatedAudioWithoutError } = session.generatedAudio;
-      session.generatedAudio = {
-        ...generatedAudioWithoutError,
-        status: 'generated',
-        progressPct: 100,
-      };
-      if (session.sourceKind === 'microphone') {
-        this.emitSession(session);
-        return { ...session };
-      }
-      this.transition(session.id, 'completed');
       return { ...session };
     }
 
@@ -2462,15 +3126,44 @@ export class ProcessingSessionStore {
       this.transition(session.id, 'processing');
     }
 
-    const orderedEvents = requestedEvents.slice().sort((a, b) => a.sequence - b.sequence);
+    // A source-language revision boundary replaces session.translation with a
+    // fresh pass mid-flight. This pass then owns nothing anymore: bail out
+    // cleanly instead of misreading the new empty pass as a zero-output
+    // failure. The new revision's pass owns the work from here.
+    const revisionAtStart = session.sourceLanguageControl.revision;
+    const revisionReplaced = () =>
+      session.sourceLanguageControl.revision !== revisionAtStart;
+
+    const orderedEvents = requestedEvents.slice().sort((a, b) =>
+      a.sequence === b.sequence
+        ? session.targetLanguages.indexOf(a.targetLanguage) -
+          session.targetLanguages.indexOf(b.targetLanguage)
+        : a.sequence - b.sequence,
+    );
     for (const event of orderedEvents) {
       if (!(await this.waitUntilRunnable(session))) {
+        return { ...session };
+      }
+      if (revisionReplaced()) {
         return { ...session };
       }
       const segment = session.transcription.events.find(
         (item) => item.chunkId === event.segmentId && item.status === 'transcribed',
       );
       if (!segment) {
+        continue;
+      }
+      if (this.isStaleSourceLanguageRevision(session, segment)) {
+        const failed = {
+          ...event,
+          status: 'failed' as const,
+          error: 'Stale transcription rejected after source-language revision changed.',
+          createdAt: new Date().toISOString(),
+        };
+        this.replaceTranslationEvent(session, failed);
+        this.onTranslationEvent(failed);
+        this.updateTranslationProgress(session);
+        this.emitSession(session);
         continue;
       }
 
@@ -2498,13 +3191,16 @@ export class ProcessingSessionStore {
             segmentId: segment.chunkId,
             sequence: segment.sequence,
             sourceLanguage: segment.detectedLanguage,
-            targetLanguage: session.targetLanguage,
+            targetLanguage: event.targetLanguage,
             sourceText: segment.sourceText,
             startMs: segment.startMs,
             endMs: segment.endMs,
           },
           this.translationTimeoutMs,
         );
+        if (revisionReplaced()) {
+          return { ...session };
+        }
         const providerMs = Date.now() - providerStartedAt;
         const translated = {
           ...translating,
@@ -2520,6 +3216,9 @@ export class ProcessingSessionStore {
         this.replaceTranslationEvent(session, translated);
         this.onTranslationEvent(translated);
       } catch (error) {
+        if (revisionReplaced()) {
+          return { ...session };
+        }
         const message = error instanceof Error ? error.message : 'Translation failed.';
         const failed = {
           ...translating,
@@ -2545,12 +3244,36 @@ export class ProcessingSessionStore {
     if (!(await this.waitUntilRunnable(session))) {
       return { ...session };
     }
+    if (revisionReplaced()) {
+      return { ...session };
+    }
 
     const failedCount = session.translation.events.filter(
       (event) => event.status === 'failed',
     ).length;
-    if (failedCount > 0) {
-      session.error = `${failedCount} translation segment${failedCount === 1 ? '' : 's'} failed.`;
+    const settled = session.translation.events.every(
+      (event) => event.status === 'translated' || event.status === 'failed',
+    );
+    const translatedCount = session.translation.events.filter(
+      (event) => event.status === 'translated',
+    ).length;
+    if (settled && translatedCount > 0) {
+      session.error =
+        failedCount > 0
+          ? `${failedCount} translation segment output${failedCount === 1 ? '' : 's'} failed; other language channels remain available.`
+          : null;
+      const { error: _translationError, ...translationWithoutError } = session.translation;
+      session.translation = {
+        ...translationWithoutError,
+        status: failedCount > 0 ? 'failed' : 'translated',
+        progressPct: Math.round((translatedCount / session.translation.events.length) * 100),
+        ...(session.error ? { error: session.error } : {}),
+      };
+      return await this.startGeneratedAudio(session.id);
+    }
+
+    if (settled && translatedCount === 0) {
+      session.error = `${failedCount} translation segment output${failedCount === 1 ? '' : 's'} failed.`;
       session.translation = {
         ...session.translation,
         status: 'failed',
@@ -2558,17 +3281,6 @@ export class ProcessingSessionStore {
       };
       this.transition(session.id, 'failed');
       return { ...session };
-    }
-
-    if (session.translation.events.every((event) => event.status === 'translated')) {
-      session.error = null;
-      const { error: _translationError, ...translationWithoutError } = session.translation;
-      session.translation = {
-        ...translationWithoutError,
-        status: 'translated',
-        progressPct: 100,
-      };
-      return await this.startGeneratedAudio(session.id);
     }
 
     this.emitSession(session);
@@ -2582,14 +3294,16 @@ export class ProcessingSessionStore {
     status: TimestampedTranslationStatus,
     latency: TimestampedTranslationLatency,
     error?: string,
+    targetLanguage = session.targetLanguage,
   ): TimestampedTranslationEvent {
     const event: TimestampedTranslationEvent = {
       sessionId: session.id,
       streamId: session.streamId,
       segmentId: segment.chunkId,
       sequence: segment.sequence,
-      sourceLanguage: segment.detectedLanguage,
-      targetLanguage: session.targetLanguage,
+      sourceLanguage: session.sourceLanguageControl.activeLanguage,
+      sourceLanguageRevision: segment.sourceLanguageRevision ?? session.sourceLanguageControl.revision,
+      targetLanguage,
       sourceText: segment.sourceText,
       translatedText,
       startMs: segment.startMs,
@@ -2602,13 +3316,38 @@ export class ProcessingSessionStore {
     return event;
   }
 
+  private isStaleSourceLanguageRevision(
+    session: ProcessingSession,
+    segment: TranscriptionEvent,
+  ): boolean {
+    return (
+      segment.sourceLanguageRevision !== undefined &&
+      segment.sourceLanguageRevision !== session.sourceLanguageControl.revision
+    );
+  }
+
   private replaceTranslationEvent(
     session: ProcessingSession,
     next: TimestampedTranslationEvent,
   ): void {
+    let previous: TimestampedTranslationEvent | null = null;
     session.translation.events = session.translation.events
-      .map((event) => (event.segmentId === next.segmentId ? next : event))
-      .sort((a, b) => a.sequence - b.sequence);
+      .map((event) => {
+        if (event.segmentId === next.segmentId && event.targetLanguage === next.targetLanguage) {
+          previous = event;
+          return next;
+        }
+        return event;
+      })
+      .sort((a, b) =>
+        a.sequence === b.sequence
+          ? session.targetLanguages.indexOf(a.targetLanguage) -
+            session.targetLanguages.indexOf(b.targetLanguage)
+          : a.sequence - b.sequence,
+      );
+    if (previous) {
+      this.recordTranslationTally(session.id, previous, next);
+    }
   }
 
   private createGeneratedAudioEvent(
@@ -2622,11 +3361,11 @@ export class ProcessingSessionStore {
       streamId: session.streamId,
       segmentId: segment.segmentId,
       sequence: segment.sequence,
-      targetLanguage: session.targetLanguage,
+      targetLanguage: segment.targetLanguage,
       translatedText: segment.translatedText,
       startMs: segment.startMs,
       endMs: segment.endMs,
-      voiceId: this.textToSpeechVoiceId,
+      voiceId: this.voiceIdForLanguage(segment.targetLanguage),
       audioFilename: generatedAudioFilename(segment.sequence),
       durationMs: null,
       providerLatencyMs: null,
@@ -2638,9 +3377,24 @@ export class ProcessingSessionStore {
   }
 
   private replaceGeneratedAudioEvent(session: ProcessingSession, next: GeneratedAudioEvent): void {
+    let previous: GeneratedAudioEvent | null = null;
     session.generatedAudio.events = session.generatedAudio.events
-      .map((event) => (event.segmentId === next.segmentId ? next : event))
-      .sort((a, b) => a.sequence - b.sequence);
+      .map((event) => {
+        if (event.segmentId === next.segmentId && event.targetLanguage === next.targetLanguage) {
+          previous = event;
+          return next;
+        }
+        return event;
+      })
+      .sort((a, b) =>
+        a.sequence === b.sequence
+          ? session.targetLanguages.indexOf(a.targetLanguage) -
+            session.targetLanguages.indexOf(b.targetLanguage)
+          : a.sequence - b.sequence,
+      );
+    if (previous) {
+      this.recordGeneratedAudioTally(session.id, previous, next);
+    }
   }
 
   private updateGeneratedAudioProgress(session: ProcessingSession): void {
@@ -2658,31 +3412,174 @@ export class ProcessingSessionStore {
             ? 'generated'
             : 'queued',
       providerName: this.textToSpeechProvider.name,
-      providerStatus: active ? 'generating' : failedSegments > 0 ? 'failed' : 'ready',
+      providerStatus: active
+        ? 'generating'
+        : failedSegments > 0
+          ? 'failed'
+          : session.generatedAudio.textOnlyLanguages?.includes(session.targetLanguage)
+            ? 'text-only'
+            : 'ready',
       totalSegments: events.length,
       generatedSegments,
       failedSegments,
       targetLanguage: session.targetLanguage,
-      voiceId: this.textToSpeechVoiceId,
+      voiceId: this.voiceIdForLanguage(session.targetLanguage),
       progressPct: events.length === 0 ? 0 : Math.round((generatedSegments / events.length) * 100),
     };
   }
 
-  private generatedAudioOutputPath(sessionId: string, sequence: number): string {
-    return resolve(safeSessionOutputDir(this.outputBaseDir, sessionId), 'tts', generatedAudioFilename(sequence));
+  private voiceIdForLanguage(targetLanguage: string): string {
+    return this.textToSpeechVoiceIds.get(targetLanguage) ?? this.textToSpeechVoiceId;
   }
 
-  private async ensureGeneratedAudioOutputDir(sessionId: string): Promise<void> {
-    await mkdir(resolve(safeSessionOutputDir(this.outputBaseDir, sessionId), 'tts'), {
+  private generatedAudioOutputPath(
+    sessionId: string,
+    targetLanguage: string,
+    sequence: number,
+  ): string {
+    return resolve(
+      safeSessionOutputDir(this.outputBaseDir, sessionId),
+      'tts',
+      safeLanguageDirectory(targetLanguage),
+      generatedAudioFilename(sequence),
+    );
+  }
+
+  private ensureViewerReadyMedia(session: ProcessingSession): Promise<void> {
+    // Concurrent viewer-media requests share one render instead of spawning
+    // one ffmpeg process each and racing writes to the same output file.
+    const inFlight = this.viewerReadyRenders.get(session.id);
+    if (inFlight) return inFlight;
+    const render = this.renderViewerReadyMediaFile(session).finally(() => {
+      this.viewerReadyRenders.delete(session.id);
+    });
+    this.viewerReadyRenders.set(session.id, render);
+    return render;
+  }
+
+  private async renderViewerReadyMediaFile(session: ProcessingSession): Promise<void> {
+    if (session.sourceKind !== 'upload' || !session.media?.hasVideo) {
+      throw new MediaIngestError(
+        `Viewer-ready media is unavailable for session ${session.id}.`,
+        'viewer-ready-media-unavailable',
+        404,
+        { ...session },
+      );
+    }
+
+    const source = await stat(session.sourcePath).catch(() => null);
+    if (!source?.isFile()) {
+      throw new MediaIngestError(
+        `Source media file is missing for session ${session.id}.`,
+        'source-media-unavailable',
+        404,
+        { ...session },
+      );
+    }
+
+    const generatedSegments = session.generatedAudio.events
+      .filter(
+        (event) =>
+          event.status === 'generated' && event.targetLanguage === session.targetLanguage,
+      )
+      .sort((a, b) => a.sequence - b.sequence);
+    const primaryLanguageTotal = session.generatedAudio.events.filter(
+      (event) => event.targetLanguage === session.targetLanguage,
+    ).length;
+    if (
+      generatedSegments.length === 0 ||
+      generatedSegments.length !== primaryLanguageTotal
+    ) {
+      throw new MediaIngestError(
+        `Viewer-ready media requires all generated audio segments for session ${session.id}.`,
+        'viewer-ready-media-unavailable',
+        409,
+        { ...session },
+      );
+    }
+
+    const outputPath = this.viewerReadyMediaOutputPath(session.id);
+    // Render into a session-scoped temp file and promote it atomically so a
+    // reader can never observe (or stream) a partially written programme file.
+    const tempOutputPath = resolve(
+      safeSessionOutputDir(this.outputBaseDir, session.id),
+      'viewer-ready',
+      `programme.tmp-${randomUUID()}.mp4`,
+    );
+    const subtitlesPath = this.viewerReadySubtitlesPath(session.id, session.targetLanguage);
+    assertPathInsideSession(this.outputBaseDir, session.id, outputPath);
+    assertPathInsideSession(this.outputBaseDir, session.id, tempOutputPath);
+    assertPathInsideSession(this.outputBaseDir, session.id, subtitlesPath);
+    const segments: ViewerReadyMediaRenderSegment[] = generatedSegments.map((event) => {
+      const audioPath = this.generatedAudioOutputPath(
+        session.id,
+        event.targetLanguage,
+        event.sequence,
+      );
+      assertPathInsideSession(this.outputBaseDir, session.id, audioPath);
+      return {
+        audioPath,
+        translatedText: event.translatedText,
+        startMs: event.startMs,
+        endMs: event.endMs,
+        sequence: event.sequence,
+      };
+    });
+
+    try {
+      await this.renderViewerReadyMedia({
+        sourcePath: session.sourcePath,
+        outputPath: tempOutputPath,
+        subtitlesPath,
+        segments,
+        originalVolume: 0.2,
+        translatedVolume: 1,
+        subtitleLanguage: session.targetLanguage,
+      });
+      await rename(tempOutputPath, outputPath);
+    } catch (error) {
+      await rm(tempOutputPath, { force: true });
+      throw error;
+    }
+  }
+
+  private viewerReadyMediaOutputPath(sessionId: string): string {
+    return resolve(safeSessionOutputDir(this.outputBaseDir, sessionId), 'viewer-ready', 'programme.mp4');
+  }
+
+  private viewerReadySubtitlesPath(sessionId: string, targetLanguage: string): string {
+    return resolve(
+      safeSessionOutputDir(this.outputBaseDir, sessionId),
+      'viewer-ready',
+      `captions.${safeLanguageDirectory(targetLanguage)}.srt`,
+    );
+  }
+
+  private async ensureGeneratedAudioOutputDir(
+    sessionId: string,
+    targetLanguage: string,
+  ): Promise<void> {
+    await mkdir(resolve(
+      safeSessionOutputDir(this.outputBaseDir, sessionId),
+      'tts',
+      safeLanguageDirectory(targetLanguage),
+    ), {
       recursive: true,
     });
   }
 
   private emitGeneratedAudioReady(session: ProcessingSession, event: GeneratedAudioEvent): void {
     if (event.status !== 'generated' || event.durationMs === null) return;
-    const key = generatedAudioReadyKey(session.id, event.segmentId);
-    if (this.generatedAudioReadyKeys.has(key)) return;
-    this.generatedAudioReadyKeys.add(key);
+    // Dedupe keys live in a per-session set so they are released together with
+    // the session instead of accumulating for the lifetime of the store.
+    let keys = this.generatedAudioReadyKeysBySession.get(session.id);
+    if (!keys) {
+      keys = new Set<string>();
+      this.generatedAudioReadyKeysBySession.set(session.id, keys);
+    }
+    const key = `${event.segmentId}:${event.targetLanguage}`;
+    if (keys.has(key)) return;
+    keys.add(key);
     this.onGeneratedAudioReady({
       ...event,
     }, {
@@ -2690,14 +3587,21 @@ export class ProcessingSessionStore {
     });
   }
 
-  private assertTextToSpeechLanguageSupported(targetLanguage: string): void {
-    if (!this.textToSpeechSupportedLanguages.includes(targetLanguage)) {
-      throw new MediaIngestError(
-        `Unsupported TTS language: ${targetLanguage}. Supported languages: ${this.textToSpeechSupportedLanguages.join(', ')}.`,
-        'unsupported-tts-language',
-        400,
-      );
-    }
+  private markRealtimeCaptionsOnlyLanguage(session: ProcessingSession, language: string): void {
+    const textOnlyLanguages = session.generatedAudio.textOnlyLanguages ?? [];
+    session.generatedAudio = {
+      ...session.generatedAudio,
+      // No voice output will be produced for this language; captions carry the
+      // channel, matching the batch pipeline's text-only handling.
+      status: 'generated',
+      providerStatus: 'text-only',
+      progressPct: 100,
+      targetLanguages: session.targetLanguages,
+      textOnlyLanguages: textOnlyLanguages.includes(language)
+        ? textOnlyLanguages
+        : [...textOnlyLanguages, language],
+    };
+    this.emitSession(session);
   }
 
   private updateTranslationProgress(session: ProcessingSession): void {
@@ -2720,8 +3624,12 @@ export class ProcessingSessionStore {
       translatedSegments,
       failedSegments,
       sourceLanguage:
-        events.find((event) => event.sourceLanguage !== 'und')?.sourceLanguage ?? null,
+        session.sourceLanguageControl.activeLanguage ??
+        events.find((event) => event.sourceLanguage !== 'und')?.sourceLanguage ??
+        null,
+      sourceLanguageRevision: session.sourceLanguageControl.revision,
       targetLanguage: session.targetLanguage,
+      targetLanguages: session.targetLanguages,
       providerName: this.translationProvider.name,
       providerStatus: active ? 'translating' : failedSegments > 0 ? 'failed' : 'ready',
       progressPct: events.length === 0 ? 0 : Math.round((translatedSegments / events.length) * 100),
@@ -2741,6 +3649,70 @@ export class ProcessingSessionStore {
       );
     }
     return normalized;
+  }
+
+  private resolveSessionTargetLanguages(
+    targetLanguages: readonly string[] | undefined,
+    fallback: string,
+  ): string[] {
+    const normalized = normalizeSupportedTargetLanguages(targetLanguages ?? [fallback]);
+    const selected = normalized.length === 0 ? [fallback] : normalized;
+    for (const targetLanguage of selected) {
+      if (!this.translationSupportedTargetLanguages.includes(targetLanguage)) {
+        throw new MediaIngestError(
+          `Unsupported target language: ${targetLanguage}. Supported languages: ${this.translationSupportedTargetLanguages.join(', ')}.`,
+          'unsupported-language',
+          400,
+        );
+      }
+    }
+    return selected;
+  }
+
+  private reconcileDetectedLanguage(
+    session: ProcessingSession,
+    detection: { language: string; confidence: number | null },
+  ): void {
+    const previousRevision = session.sourceLanguageControl.revision;
+    session.sourceLanguageControl = applySourceLanguageDetection(session.sourceLanguageControl, detection);
+    session.transcription = {
+      ...session.transcription,
+      sourceLanguage: session.sourceLanguageControl.activeLanguage,
+      sourceLanguageRevision: session.sourceLanguageControl.revision,
+      languageDetectionConfidence: session.sourceLanguageControl.detectionConfidence,
+    };
+    if (session.sourceLanguageControl.revision !== previousRevision) {
+      this.createLanguageRevisionBoundary(session);
+    }
+  }
+
+  private createLanguageRevisionBoundary(session: ProcessingSession): void {
+    session.translation = {
+      ...emptyTranslation('queued', session.targetLanguage, this.translationProvider.name),
+      sourceLanguage: session.sourceLanguageControl.activeLanguage,
+      sourceLanguageRevision: session.sourceLanguageControl.revision,
+      targetLanguages: session.targetLanguages,
+    };
+    session.generatedAudio = {
+      ...emptyGeneratedAudio(
+        'queued',
+        session.targetLanguage,
+        this.textToSpeechVoiceId,
+        this.textToSpeechProvider.name,
+      ),
+      targetLanguages: session.targetLanguages,
+      textOnlyLanguages: session.targetLanguages.filter(
+        (language) => !this.textToSpeechSupportedLanguages.includes(language),
+      ),
+    };
+    this.rebuildLanguageTallies(session);
+    this.recordSessionEvent(
+      session,
+      'operator-action',
+      'set-source-language',
+      'accepted',
+      `Source language revision ${session.sourceLanguageControl.revision} active: ${session.sourceLanguageControl.activeLanguage}.`,
+    );
   }
 
   private resolveConfiguredTargetLanguage(targetLanguage: string): string {
@@ -2914,6 +3886,12 @@ function assertSafeWebRtcSessionInput(input: WebRtcSessionInput): void {
   }
 }
 
+function assertSafeRequestedSessionId(sessionId: string): void {
+  if (!/^[A-Za-z0-9_-]{1,120}$/.test(sessionId)) {
+    throw new MediaIngestError('Unsafe requested session ID rejected.', 'unsafe-filename', 400);
+  }
+}
+
 function isPathInside(parentDir: string, childPath: string): boolean {
   const parent = resolve(parentDir);
   const child = resolve(childPath);
@@ -2933,6 +3911,18 @@ function normalizeTargetLanguage(targetLanguage: string): string {
   return targetLanguage.trim().toLowerCase();
 }
 
+function safeLanguageDirectory(targetLanguage: string): string {
+  const normalized = normalizeTargetLanguage(targetLanguage);
+  if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/.test(normalized)) {
+    throw new MediaIngestError(
+      `Unsafe target language rejected: ${targetLanguage}.`,
+      'unsafe-filename',
+      400,
+    );
+  }
+  return normalized;
+}
+
 function normalizeSupportedTargetLanguages(targetLanguages: readonly string[]): string[] {
   return [...new Set(targetLanguages.map(normalizeTargetLanguage).filter(Boolean))];
 }
@@ -2949,6 +3939,9 @@ function emptyTranscription(status: TranscriptionStatus): TranscriptionSessionMe
     transcribedChunks: 0,
     failedChunks: 0,
     detectedLanguage: null,
+    sourceLanguage: 'en',
+    sourceLanguageRevision: 0,
+    languageDetectionConfidence: null,
     events: [],
   };
 }
@@ -2967,7 +3960,9 @@ function emptyTranslation(
     translatedSegments: 0,
     failedSegments: 0,
     sourceLanguage: null,
+    sourceLanguageRevision: 0,
     targetLanguage,
+    targetLanguages: [targetLanguage],
     events: [],
   };
 }
@@ -2987,7 +3982,9 @@ function emptyGeneratedAudio(
     generatedSegments: 0,
     failedSegments: 0,
     targetLanguage,
+    targetLanguages: [targetLanguage],
     voiceId,
+    textOnlyLanguages: [],
     outputFormat: {
       container: 'wav',
       codec: 'pcm_s16le',
@@ -3245,8 +4242,13 @@ async function readWavDurationMs(audioPath: string): Promise<number> {
       const sampleRate = buffer.readUInt32LE(dataOffset + 4);
       byteRate = buffer.readUInt32LE(dataOffset + 8);
       const bitsPerSample = buffer.readUInt16LE(dataOffset + 14);
-      if (audioFormat !== 1 || channels !== 1 || sampleRate !== 16_000 || bitsPerSample !== 16) {
-        throw new Error('Generated WAV must be mono 16 kHz PCM 16-bit.');
+      if (
+        audioFormat !== 1 ||
+        channels !== 1 ||
+        ![16_000, 22_050, 24_000, 44_100, 48_000].includes(sampleRate) ||
+        bitsPerSample !== 16
+      ) {
+        throw new Error('Generated WAV must be mono PCM 16-bit at a supported sample rate.');
       }
     } else if (chunkId === 'data') {
       dataSize = chunkSize;
@@ -3261,8 +4263,80 @@ async function readWavDurationMs(audioPath: string): Promise<number> {
   return Math.round((dataSize / byteRate) * 1000);
 }
 
-function generatedAudioReadyKey(sessionId: string, segmentId: string): string {
-  return `${sessionId}:${segmentId}`;
+interface MutableSessionLanguageTallies {
+  translation: Map<string, TargetLanguageOutputTally>;
+  generatedAudio: Map<string, TargetLanguageOutputTally>;
+}
+
+type TallyClass = 'completed' | 'failed' | 'active' | 'other';
+
+function translationTallyClass(status: TimestampedTranslationStatus): TallyClass {
+  if (status === 'translated') return 'completed';
+  if (status === 'failed') return 'failed';
+  if (status === 'translating' || status === 'retrying') return 'active';
+  return 'other';
+}
+
+function generatedAudioTallyClass(status: TextToSpeechStatus): TallyClass {
+  if (status === 'generated') return 'completed';
+  if (status === 'failed') return 'failed';
+  if (status === 'generating' || status === 'retrying') return 'active';
+  return 'other';
+}
+
+function applyTallyTransition(
+  tallies: Map<string, TargetLanguageOutputTally>,
+  previous: { targetLanguage: string; tallyClass: TallyClass } | null,
+  next: { targetLanguage: string; tallyClass: TallyClass },
+  failureError?: string | null,
+): void {
+  let tally = tallies.get(next.targetLanguage);
+  if (!tally) {
+    tally = emptyTargetLanguageOutputTally();
+    tallies.set(next.targetLanguage, tally);
+  }
+  if (previous) {
+    adjustTally(tally, previous.tallyClass, -1);
+  } else {
+    tally.totalSegments += 1;
+  }
+  adjustTally(tally, next.tallyClass, 1);
+  if (failureError !== undefined) {
+    tally.lastError = failureError;
+  }
+}
+
+function adjustTally(tally: TargetLanguageOutputTally, tallyClass: TallyClass, delta: number): void {
+  if (tallyClass === 'completed') tally.completedSegments += delta;
+  else if (tallyClass === 'failed') tally.failedSegments += delta;
+  else if (tallyClass === 'active') tally.activeSegments += delta;
+}
+
+function buildTallyMap(
+  events: ReadonlyArray<{ targetLanguage: string; tallyClass: TallyClass; error: string | null }>,
+): Map<string, TargetLanguageOutputTally> {
+  const tallies = new Map<string, TargetLanguageOutputTally>();
+  for (const event of events) {
+    let tally = tallies.get(event.targetLanguage);
+    if (!tally) {
+      tally = emptyTargetLanguageOutputTally();
+      tallies.set(event.targetLanguage, tally);
+    }
+    tally.totalSegments += 1;
+    adjustTally(tally, event.tallyClass, 1);
+    if (event.tallyClass === 'failed' && event.error !== null) {
+      tally.lastError = event.error;
+    }
+  }
+  return tallies;
+}
+
+function cloneTallyMap(
+  tallies: Map<string, TargetLanguageOutputTally> | undefined,
+): Map<string, TargetLanguageOutputTally> {
+  return new Map([...(tallies ?? new Map<string, TargetLanguageOutputTally>())].map(
+    ([language, tally]) => [language, { ...tally }],
+  ));
 }
 
 function formatTranscriptTimestamp(ms: number): string {

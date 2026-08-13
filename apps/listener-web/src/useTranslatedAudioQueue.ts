@@ -26,6 +26,7 @@ export interface GeneratedAudioQueueState {
   skippedCount: number;
   currentSegment: GeneratedAudioQueueSegment | null;
   syncOffsetMs: number | null;
+  syncDelayMs: number;
   error: string | null;
 }
 
@@ -43,6 +44,7 @@ interface GeneratedQueueItem {
 export interface QueueAudio {
   currentTime: number;
   volume: number;
+  playbackRate?: number;
   onended: (() => void) | null;
   onerror: (() => void) | null;
   onplaying: (() => void) | null;
@@ -63,9 +65,13 @@ export interface TranslatedAudioQueueControllerOptions {
   onPendingCountChange?: (count: number) => void;
   onGeneratedStateChange?: (state: GeneratedAudioQueueState) => void;
   lateToleranceMs?: number;
+  lateDropToleranceMs?: number;
+  syncDelayMs?: number;
 }
 
 const DEFAULT_LATE_TOLERANCE_MS = 750;
+const DEFAULT_LATE_DROP_TOLERANCE_MS = 2500;
+const LATE_CATCH_UP_PLAYBACK_RATE = 1.1;
 
 const initialGeneratedState: GeneratedAudioQueueState = {
   status: 'waiting',
@@ -75,6 +81,7 @@ const initialGeneratedState: GeneratedAudioQueueState = {
   skippedCount: 0,
   currentSegment: null,
   syncOffsetMs: null,
+  syncDelayMs: 0,
   error: null,
 };
 
@@ -88,6 +95,8 @@ export class TranslatedAudioQueueController {
     | ((state: GeneratedAudioQueueState) => void)
     | undefined;
   private readonly lateToleranceMs: number;
+  private readonly lateDropToleranceMs: number;
+  private readonly syncDelayMs: number;
   private readonly queue: QueueItem[] = [];
   private readonly seen = new Set<string>();
   private readonly generatedQueue: GeneratedQueueItem[] = [];
@@ -104,6 +113,7 @@ export class TranslatedAudioQueueController {
   private generatedState: GeneratedAudioQueueState = initialGeneratedState;
   private volume = 1;
   private muted = false;
+  private sourceEnded = false;
   status: AudioQueueStatus = 'waiting';
   pendingCount = 0;
 
@@ -115,6 +125,12 @@ export class TranslatedAudioQueueController {
     this.onPendingCountChange = options.onPendingCountChange;
     this.onGeneratedStateChange = options.onGeneratedStateChange;
     this.lateToleranceMs = options.lateToleranceMs ?? DEFAULT_LATE_TOLERANCE_MS;
+    this.lateDropToleranceMs = options.lateDropToleranceMs ?? DEFAULT_LATE_DROP_TOLERANCE_MS;
+    this.syncDelayMs = Math.max(0, options.syncDelayMs ?? 0);
+    this.generatedState = {
+      ...this.generatedState,
+      syncDelayMs: this.syncDelayMs,
+    };
   }
 
   setClock(getClockMs: () => number): void {
@@ -127,6 +143,17 @@ export class TranslatedAudioQueueController {
     this.muted = muted;
     if (this.audio) this.audio.volume = this.currentVolume();
     if (this.generatedAudio) this.generatedAudio.volume = this.currentVolume();
+  }
+
+  setSourceEnded(ended: boolean): void {
+    if (this.sourceEnded === ended) return;
+    this.sourceEnded = ended;
+    this.scheduleGeneratedPlayback();
+  }
+
+  completeSource(): void {
+    this.resume();
+    this.setSourceEnded(true);
   }
 
   start(): void {
@@ -158,6 +185,12 @@ export class TranslatedAudioQueueController {
       });
     }
     if (this.generatedAudio && this.generatedPlaying) {
+      // Leave the paused status immediately; onplaying may fire only after an
+      // async buffer reload, and downstream logic must never observe a stuck
+      // "paused" state while playback is already restarting.
+      if (this.generatedState.status === 'paused') {
+        this.setGeneratedState({ status: 'buffering' });
+      }
       this.generatedAudio.play().catch(() => {
         this.finishGeneratedCurrent('error', 'Generated audio playback failed after resume.');
       });
@@ -227,7 +260,8 @@ export class TranslatedAudioQueueController {
     this.generatedPlaying = false;
     this.generatedQueue.splice(0);
     this.generatedSeen.clear();
-    this.setGeneratedState({ ...initialGeneratedState });
+    this.sourceEnded = false;
+    this.setGeneratedState({ ...initialGeneratedState, syncDelayMs: this.syncDelayMs });
   }
 
   replayGenerated(events: GeneratedAudioReadyEvent[]): void {
@@ -290,7 +324,10 @@ export class TranslatedAudioQueueController {
     const next = this.nextPlayableGeneratedItem();
     if (!next) {
       this.setGeneratedState({
-        status: this.generatedState.playedCount > 0 ? 'completed' : 'waiting',
+        status:
+          this.generatedState.playedCount > 0 || this.generatedState.skippedCount > 0
+            ? 'completed'
+            : 'waiting',
         pendingCount: 0,
         bufferedCount: 0,
         currentSegment: null,
@@ -299,7 +336,7 @@ export class TranslatedAudioQueueController {
     }
 
     const clockMs = this.currentClockMs();
-    const delayMs = Math.max(0, next.event.startMs - clockMs);
+    const delayMs = this.sourceEnded ? 0 : Math.max(0, next.event.startMs - clockMs);
     if (delayMs > 0) {
       this.setGeneratedState({
         status: 'scheduled',
@@ -317,25 +354,7 @@ export class TranslatedAudioQueueController {
   }
 
   private nextPlayableGeneratedItem(): GeneratedQueueItem | null {
-    while (this.generatedQueue.length > 0) {
-      const candidate = this.generatedQueue[0]!;
-      const clockMs = this.currentClockMs();
-      if (clockMs >= candidate.event.endMs) {
-        this.generatedQueue.shift();
-        this.setGeneratedState({
-          status: 'buffering',
-          pendingCount: this.generatedQueue.length,
-          bufferedCount: this.generatedQueue.length,
-          skippedCount: this.generatedState.skippedCount + 1,
-          currentSegment: null,
-          syncOffsetMs: clockMs - candidate.event.startMs,
-          error: `Skipped late segment #${candidate.event.sequence}.`,
-        });
-        continue;
-      }
-      return candidate;
-    }
-    return null;
+    return this.generatedQueue[0] ?? null;
   }
 
   private startGeneratedItem(item: GeneratedQueueItem): void {
@@ -344,12 +363,66 @@ export class TranslatedAudioQueueController {
       this.generatedQueue.splice(index, 1);
     }
 
+    if (item.event.durationMs <= 0) {
+      this.setGeneratedState({
+        status: this.generatedQueue.length > 0 ? 'buffering' : 'completed',
+        pendingCount: this.generatedQueue.length,
+        bufferedCount: this.generatedQueue.length,
+        playedCount: this.generatedState.playedCount + 1,
+        currentSegment: null,
+        syncOffsetMs: this.currentClockMs() - item.event.startMs,
+        error: null,
+      });
+      const following = this.generatedQueue[0] ?? null;
+      if (following?.event.durationMs !== undefined && following.event.durationMs <= 0) {
+        this.startGeneratedItem(following);
+        return;
+      }
+      this.scheduleGeneratedPlayback();
+      return;
+    }
+
     const clockMs = this.currentClockMs();
+    const latePastEndMs = Math.max(0, clockMs - item.event.endMs);
+    if (!this.sourceEnded && latePastEndMs > this.lateDropToleranceMs) {
+      this.setGeneratedState({
+        status: this.generatedQueue.length > 0 ? 'buffering' : 'completed',
+        pendingCount: this.generatedQueue.length,
+        bufferedCount: this.generatedQueue.length,
+        skippedCount: this.generatedState.skippedCount + 1,
+        currentSegment: null,
+        syncOffsetMs: clockMs - item.event.startMs,
+        error: `Skipped late segment #${item.event.sequence}; it missed the synchronized viewer window.`,
+      });
+      this.scheduleGeneratedPlayback();
+      return;
+    }
+
     const lateByMs = Math.max(0, clockMs - item.event.startMs);
+    const sourceWindowStillActive = !this.sourceEnded && clockMs < item.event.endMs;
+    const catchUpNeeded = lateByMs > this.lateToleranceMs && sourceWindowStillActive;
+    const seekOffsetMs = catchUpNeeded && lateByMs > this.lateDropToleranceMs ? lateByMs : 0;
+    const playbackRate =
+      catchUpNeeded && seekOffsetMs === 0 ? LATE_CATCH_UP_PLAYBACK_RATE : 1;
+    if (seekOffsetMs > 0 && seekOffsetMs >= Math.max(0, item.event.durationMs - this.lateToleranceMs)) {
+      this.setGeneratedState({
+        status: this.generatedQueue.length > 0 ? 'buffering' : 'completed',
+        pendingCount: this.generatedQueue.length,
+        bufferedCount: this.generatedQueue.length,
+        skippedCount: this.generatedState.skippedCount + 1,
+        currentSegment: null,
+        syncOffsetMs: clockMs - item.event.startMs,
+        error: null,
+      });
+      this.scheduleGeneratedPlayback();
+      return;
+    }
+
     const audio = this.createAudio(item.event.audioUrl);
     audio.volume = this.currentVolume();
-    if (lateByMs > this.lateToleranceMs) {
-      audio.currentTime = Math.max(0, lateByMs / 1000);
+    audio.playbackRate = playbackRate;
+    if (seekOffsetMs > 0) {
+      audio.currentTime = Math.max(0, seekOffsetMs / 1000);
     }
 
     this.generatedAudio = audio;
@@ -362,7 +435,9 @@ export class TranslatedAudioQueueController {
       currentSegment: queueSegment(item.event),
       syncOffsetMs: clockMs - item.event.startMs,
       error:
-        lateByMs > this.lateToleranceMs ? `Recovered late segment #${item.event.sequence}.` : null,
+        lateByMs > this.lateToleranceMs
+          ? `Recovered late segment #${item.event.sequence}.`
+          : null,
     });
 
     audio.onended = () => {
@@ -490,6 +565,7 @@ export function useTranslatedAudioQueue(
   muted: boolean,
   getClockMs: () => number = () => 0,
   createAudio: (url: string) => QueueAudio = (url) => new Audio(url) as unknown as QueueAudio,
+  options: { syncDelayMs?: number; lateDropToleranceMs?: number } = {},
 ) {
   const [status, setStatus] = useState<AudioQueueStatus>('waiting');
   const [pendingCount, setPendingCount] = useState(0);
@@ -502,14 +578,21 @@ export function useTranslatedAudioQueue(
   createAudioRef.current = createAudio;
 
   if (!controllerRef.current) {
-    controllerRef.current = new TranslatedAudioQueueController({
+    const controllerOptions: TranslatedAudioQueueControllerOptions = {
       createAudio: (url) => createAudioRef.current(url),
       getClockMs: () => clockRef.current(),
       urls: URL,
       onStatusChange: setStatus,
       onPendingCountChange: setPendingCount,
       onGeneratedStateChange: setGeneratedState,
-    });
+    };
+    if (options.lateDropToleranceMs !== undefined) {
+      controllerOptions.lateDropToleranceMs = options.lateDropToleranceMs;
+    }
+    if (options.syncDelayMs !== undefined) {
+      controllerOptions.syncDelayMs = options.syncDelayMs;
+    }
+    controllerRef.current = new TranslatedAudioQueueController(controllerOptions);
   }
 
   useEffect(() => {
@@ -558,7 +641,16 @@ export function useTranslatedAudioQueue(
     controllerRef.current?.replayGenerated(events);
   }, []);
 
+  const setSourceEnded = useCallback((ended: boolean): void => {
+    controllerRef.current?.setSourceEnded(ended);
+  }, []);
+
+  const completeSource = useCallback((): void => {
+    controllerRef.current?.completeSource();
+  }, []);
+
   return {
+    completeSource,
     enqueue,
     enqueueGenerated,
     generatedState,
@@ -568,6 +660,7 @@ export function useTranslatedAudioQueue(
     reset,
     resetGenerated,
     resume,
+    setSourceEnded,
     start,
     status,
   };

@@ -286,6 +286,173 @@ describe('WebRtcSessionRegistry', () => {
     });
   });
 
+  it('allows a broadcaster source switch after backend listener delivery negotiation', () => {
+    const { registry } = create();
+    joinListener(registry);
+    registry.ensureBackendMediaPeer('wrs_demo', 'socket_backend_media');
+
+    registry.signal(
+      'socket_broadcaster',
+      envelope('sdp-offer', {
+        messageId: 'msg_broadcaster_offer_uploaded',
+        revision: 1,
+        payload: { targetPeerId: WEBRTC_BACKEND_MEDIA_PEER_ID, sdp: 'uploaded-source-offer' },
+      }),
+    );
+    registry.signal(
+      'socket_backend_media',
+      envelope('sdp-answer', {
+        messageId: 'msg_backend_answer_uploaded',
+        peerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+        senderRole: 'server',
+        revision: 1,
+        payload: { targetPeerId: 'peer_broadcaster', sdp: 'uploaded-source-answer' },
+      }),
+    );
+
+    registry.signal(
+      'socket_backend_media',
+      envelope('sdp-offer', {
+        messageId: 'msg_listener_delivery_offer',
+        peerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+        senderRole: 'server',
+        revision: 2,
+        payload: { targetPeerId: 'peer_listener', sdp: 'listener-delivery-offer' },
+      }),
+    );
+    registry.signal(
+      'socket_peer_listener',
+      envelope('sdp-answer', {
+        messageId: 'msg_listener_delivery_answer',
+        peerId: 'peer_listener',
+        senderRole: 'listener',
+        revision: 2,
+        payload: { targetPeerId: WEBRTC_BACKEND_MEDIA_PEER_ID, sdp: 'listener-delivery-answer' },
+      }),
+    );
+    expect(registry.getSessionSummary('wrs_demo')).toMatchObject({ revision: 1 });
+
+    registry.disconnectBackendMediaPeer(
+      'socket_broadcaster',
+      envelope('peer-disconnect', {
+        messageId: 'msg_disconnect_backend_after_uploaded',
+        revision: 1,
+        payload: {
+          targetPeerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+          reason: 'programme source switched to camera',
+        },
+      }),
+    );
+    registry.ensureBackendMediaPeer('wrs_demo', 'socket_backend_media');
+
+    expect(() =>
+      registry.signal(
+        'socket_broadcaster',
+        envelope('sdp-offer', {
+          messageId: 'msg_broadcaster_offer_camera',
+          revision: 2,
+          payload: { targetPeerId: WEBRTC_BACKEND_MEDIA_PEER_ID, sdp: 'camera-source-offer' },
+        }),
+      ),
+    ).not.toThrow();
+    expect(registry.getSessionSummary('wrs_demo')).toMatchObject({ revision: 2 });
+  });
+
+  it('routes concurrent backend listener delivery answers without stale offer collisions', () => {
+    const { registry } = create();
+    joinListener(registry, 'peer_listener_1');
+    joinListener(registry, 'peer_listener_2');
+    registry.ensureBackendMediaPeer('wrs_demo', 'socket_backend_media');
+
+    registry.signal(
+      'socket_broadcaster',
+      envelope('sdp-offer', {
+        messageId: 'msg_broadcaster_offer_multi_listener',
+        revision: 1,
+        payload: {
+          targetPeerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+          sdp: 'broadcaster-source-offer',
+        },
+      }),
+    );
+    registry.signal(
+      'socket_backend_media',
+      envelope('sdp-answer', {
+        messageId: 'msg_backend_answer_multi_listener',
+        peerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+        senderRole: 'server',
+        revision: 1,
+        payload: {
+          targetPeerId: 'peer_broadcaster',
+          sdp: 'broadcaster-source-answer',
+        },
+      }),
+    );
+
+    const listenerOneOffer = registry.signal(
+      'socket_backend_media',
+      envelope('sdp-offer', {
+        messageId: 'msg_listener_one_delivery_offer',
+        peerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+        senderRole: 'server',
+        revision: 2,
+        payload: { targetPeerId: 'peer_listener_1', sdp: 'listener-one-delivery-offer' },
+      }),
+    );
+    const listenerTwoOffer = registry.signal(
+      'socket_backend_media',
+      envelope('sdp-offer', {
+        messageId: 'msg_listener_two_delivery_offer',
+        peerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+        senderRole: 'server',
+        revision: 2,
+        payload: { targetPeerId: 'peer_listener_2', sdp: 'listener-two-delivery-offer' },
+      }),
+    );
+
+    expect(listenerOneOffer.targetSocketId).toBe('socket_peer_listener_1');
+    expect(listenerTwoOffer.targetSocketId).toBe('socket_peer_listener_2');
+
+    expect(
+      registry.signal(
+        'socket_peer_listener_1',
+        envelope('sdp-answer', {
+          messageId: 'msg_listener_one_delivery_answer',
+          peerId: 'peer_listener_1',
+          senderRole: 'listener',
+          revision: 2,
+          payload: {
+            targetPeerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+            sdp: 'listener-one-delivery-answer',
+          },
+        }),
+      ).targetSocketId,
+    ).toBe('socket_backend_media');
+    expect(
+      registry.signal(
+        'socket_peer_listener_2',
+        envelope('sdp-answer', {
+          messageId: 'msg_listener_two_delivery_answer',
+          peerId: 'peer_listener_2',
+          senderRole: 'listener',
+          revision: 2,
+          payload: {
+            targetPeerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+            sdp: 'listener-two-delivery-answer',
+          },
+        }),
+      ).targetSocketId,
+    ).toBe('socket_backend_media');
+    expect(registry.getSessionSummary('wrs_demo')).toMatchObject({
+      revision: 1,
+      peers: expect.arrayContaining([
+        expect.objectContaining({ peerId: 'peer_listener_1', state: 'ready' }),
+        expect.objectContaining({ peerId: 'peer_listener_2', state: 'ready' }),
+        expect.objectContaining({ peerId: WEBRTC_BACKEND_MEDIA_PEER_ID, state: 'ready' }),
+      ]),
+    });
+  });
+
   it('closes sessions idempotently on broadcaster disconnect or explicit close', () => {
     const { registry } = create();
     joinListener(registry);

@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type {
+  AudioMixPreferences,
   GeneratedAudioReadyEvent,
   MediaStateEvent,
+  TimestampedTranslationEvent,
   TranslationEvent,
   WebRtcSignallingClientSnapshot,
 } from '@videofy-live/shared-types';
@@ -12,43 +14,84 @@ import {
   WebRtcSignallingClient,
 } from '@videofy-live/shared-types';
 import styles from './App.module.css';
-import { ListenerSignallingPanel } from './ListenerSignallingPanel';
 import {
   createInitialListenerWebRtcTransportSnapshot,
   ListenerWebRtcTransportController,
   type ListenerWebRtcTransportSnapshot,
 } from './listenerWebRtcTransport';
-import { startMockVideoFeed, type MockVideoFeed } from './mockVideoFeed';
-import { createListenerSocketOptions } from './socketConfig';
+import {
+  shouldAcceptGeneratedAudioForSession,
+  shouldAcceptMediaStateForListener,
+  shouldExposeMediaStateProgrammeSession,
+  describeProgrammeVideoLabel,
+  shouldInitializeGeneratedAudioClock,
+  shouldJoinProgrammeSession,
+  shouldRecoverProgrammeSessionAfterReconnect,
+  shouldRecoverStaleViewerPlayback,
+  shouldReplaceProgrammeSession,
+  shouldRestartListenerTransport,
+  shouldShowHeldViewerFrame,
+  shouldTreatTransportAsSourceEnded,
+} from './listenerProgrammeBinding';
+import {
+  shouldUseMockVideoFeed,
+  startMockVideoFeed,
+  type MockVideoFeed,
+} from './mockVideoFeed';
+import {
+  createListenerSocketOptions,
+  joinCurrentListenerLanguage,
+} from './socketConfig';
 import {
   useInterpretationAudioMixer,
   type AudioMixMode,
 } from './useInterpretationAudioMixer';
 import { useTranslatedAudioQueue } from './useTranslatedAudioQueue';
+import {
+  availableViewerLanguages,
+  describeLanguageOutput,
+  generatedAudioForLanguage,
+  isOriginalLanguageSelection,
+  phrasesForLanguage,
+  requiresOriginalAudio,
+  shouldMergeGeneratedCaption,
+  targetLanguagesForSession,
+  type ListenerCaptionPhrase,
+} from './listenerLanguageSelection';
+import {
+  captionPhraseId,
+  filterCaptionPhrasesForLanguage,
+  mergeCaptionPhrases,
+  phraseFromTimestampedEvent,
+  selectActiveCaption,
+} from './listenerCaptions';
+import { changedMixPreferences } from './listenerMixPreferences';
+import {
+  preserveActiveProgrammeMedia,
+  sourceEndedFromBroadcast,
+  uploadedProgrammeStartGate,
+  UPLOADED_PROGRAMME_AUDIO_WAIT_MS,
+} from './listenerMediaState';
 
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
-
-const LANGUAGES = [
-  { code: 'fr', label: 'Français' },
-  { code: 'es', label: 'Español' },
-  { code: 'de', label: 'Deutsch' },
-  { code: 'pt', label: 'Português' },
-  { code: 'it', label: 'Italiano' },
-  { code: 'ja', label: '日本語' },
-  { code: 'zh', label: '中文' },
-  { code: 'ar', label: 'العربية' },
-] as const;
+export const DEFAULT_LISTENER_TARGET_LANGUAGE = 'es';
+const VIEWER_PLAYBACK_WATCHDOG_MS = 1_000;
+const VIEWER_PLAYBACK_STAGNANT_CHECKS = 4;
+const VIEWER_PLAYBACK_MIN_READY_STATE = 2;
+const VIEWER_FRAME_CAPTURE_INTERVAL_MS = 1_500;
+const VIEWER_FRAME_CAPTURE_WIDTH = 640;
+const VIEWER_SYNC_DELAY_MS = readPositiveIntegerEnv(
+  import.meta.env['VITE_VIEWER_SYNC_DELAY_MS'],
+  8_000,
+);
+const VIEWER_LATE_DROP_TOLERANCE_MS = readPositiveIntegerEnv(
+  import.meta.env['VITE_VIEWER_LATE_DROP_TOLERANCE_MS'],
+  2_500,
+);
+const CAPTION_SYNC_INTERVAL_MS = 250;
+const RECENT_PHRASES_DISPLAY_COUNT = 5;
 
 type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'error' | 'disconnected';
-
-interface PhraseEntry {
-  id: string;
-  translatedText: string;
-  sourceText: string;
-  sequence: number;
-  videoTimestampMs: number;
-  receivedAt: number;
-}
 
 interface SocketDiagnostics {
   connected: boolean;
@@ -66,6 +109,13 @@ const initialSocketDiagnostics: SocketDiagnostics = {
   disconnectReason: 'none',
 };
 
+interface ProgrammeClockAnchor {
+  timestampMs: number;
+  observedAtMs: number;
+  status: string;
+  durationMs: number | null;
+}
+
 function logSocketDiagnostics(event: string, details: SocketDiagnostics): void {
   if (import.meta.env.DEV) {
     console.info('[Videofy Live listener socket]', event, details);
@@ -82,8 +132,15 @@ function formatTimestamp(ms: number): string {
     : `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
 }
 
+function readPositiveIntegerEnv(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export default function App(): React.ReactElement {
   const socketRef = useRef<Socket | null>(null);
+  const lastOperatorMixPreferencesRef = useRef<AudioMixPreferences | null>(null);
   const listenerSignallingClientRef = useRef<WebRtcSignallingClient | null>(null);
   const listenerTransportRef = useRef<ListenerWebRtcTransportController | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -93,16 +150,30 @@ export default function App(): React.ReactElement {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle');
   const [hasStarted, setHasStarted] = useState(false);
   const [mediaState, setMediaState] = useState<MediaStateEvent | null>(null);
+  const mediaStateRef = useRef<MediaStateEvent | null>(null);
+  mediaStateRef.current = mediaState;
+  const programmeMediaUrlRef = useRef<string | null>(null);
+  programmeMediaUrlRef.current = mediaState?.programmeMediaUrl ?? null;
   const [streamStatus, setStreamStatus] = useState<string>('created');
   const [sourceLanguage] = useState('en');
-  const [targetLanguage, setTargetLanguage] = useState('fr');
+  const [targetLanguage, setTargetLanguage] = useState(DEFAULT_LISTENER_TARGET_LANGUAGE);
+  const targetLanguageRef = useRef(targetLanguage);
+  targetLanguageRef.current = targetLanguage;
   const [originalVolume, setOriginalVolume] = useState(0.2);
   const [translatedVolume, setTranslatedVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
-  const [currentPhrase, setCurrentPhrase] = useState<PhraseEntry | null>(null);
-  const [recentPhrases, setRecentPhrases] = useState<PhraseEntry[]>([]);
+  const [currentPhrase, setCurrentPhrase] = useState<ListenerCaptionPhrase | null>(null);
+  const [recentPhrases, setRecentPhrases] = useState<ListenerCaptionPhrase[]>([]);
   const [deliveredAudio, setDeliveredAudio] = useState<GeneratedAudioReadyEvent[]>([]);
+  const deliveredAudioRef = useRef<GeneratedAudioReadyEvent[]>([]);
+  deliveredAudioRef.current = deliveredAudio;
+  const [hasReceivedProgrammeVideo, setHasReceivedProgrammeVideo] = useState(false);
+  const [uploadedProgrammeWaitExpired, setUploadedProgrammeWaitExpired] = useState(false);
+  const uploadedStartAllowedRef = useRef(true);
+  const pendingUploadedPlayRef = useRef<(() => void) | null>(null);
+  const [lastProgrammeFrameUrl, setLastProgrammeFrameUrl] = useState<string | null>(null);
+  const [viewerVideoStalled, setViewerVideoStalled] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [videoPlaybackError, setVideoPlaybackError] = useState<string | null>(null);
   const [socketDiagnostics, setSocketDiagnostics] =
@@ -116,13 +187,55 @@ export default function App(): React.ReactElement {
   const [listenerTransport, setListenerTransport] = useState<ListenerWebRtcTransportSnapshot>(
     createInitialListenerWebRtcTransportSnapshot,
   );
+  const [remoteProgrammeStream, setRemoteProgrammeStream] = useState<MediaStream | null>(null);
+  const [activeShareableSessionId, setActiveShareableSessionId] = useState<string | null>(null);
+  const [activeProcessingSessionId, setActiveProcessingSessionId] = useState<string | null>(null);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const phraseSourceBySequenceRef = useRef(new Map<string, string>());
+  const lastJoinedShareableSessionRef = useRef<string | null>(null);
+  const activeProcessingSessionIdRef = useRef<string | null>(null);
+  const generatedPlaybackClockStartedRef = useRef(false);
+  const lastProgrammeFrameCapturedAtRef = useRef(0);
+  const viewerPlaybackSampleRef = useRef<{
+    currentTimeSeconds: number | null;
+    stagnantChecks: number;
+  }>({ currentTimeSeconds: null, stagnantChecks: 0 });
+  const programmeClockRef = useRef<ProgrammeClockAnchor>({
+    timestampMs: 0,
+    observedAtMs: Date.now(),
+    status: 'created',
+    durationMs: null,
+  });
+  activeProcessingSessionIdRef.current = activeProcessingSessionId;
   const getListenerClockMs = useCallback((): number => {
     const video = videoRef.current;
-    if (video && Number.isFinite(video.currentTime) && video.currentTime > 0) {
-      return Math.round(video.currentTime * 1000);
+    if (programmeMediaUrlRef.current && video && Number.isFinite(video.currentTime)) {
+      return Math.max(0, video.currentTime * 1000);
     }
-    return mediaState?.videoTimestampMs ?? 0;
-  }, [mediaState?.videoTimestampMs]);
+    const anchor = programmeClockRef.current;
+    if (anchor.status === 'processing') {
+      const elapsedMs = Date.now() - anchor.observedAtMs;
+      const progressed = anchor.timestampMs + Math.max(0, elapsedMs);
+      return anchor.durationMs === null ? progressed : Math.min(progressed, anchor.durationMs);
+    }
+    if (anchor.status === 'completed' && anchor.durationMs !== null) {
+      return anchor.durationMs;
+    }
+    if (anchor.status === 'completed') {
+      const elapsedMs = Date.now() - anchor.observedAtMs;
+      return anchor.timestampMs + Math.max(0, elapsedMs);
+    }
+    return anchor.timestampMs;
+  }, []);
+  const getSynchronizedListenerClockMs = useCallback((): number => {
+    const rawClockMs = getListenerClockMs();
+    if (mediaStateRef.current?.programmeMediaMode === 'uploaded-stems') {
+      return rawClockMs;
+    }
+    return programmeClockRef.current.status === 'processing'
+      ? Math.max(0, rawClockMs - VIEWER_SYNC_DELAY_MS)
+      : rawClockMs;
+  }, [getListenerClockMs]);
   const {
     attachOriginalElement,
     createTranslatedAudio,
@@ -130,6 +243,7 @@ export default function App(): React.ReactElement {
     resume: resumeMixer,
     setMode: setMixMode,
     setOriginalLevel: setMixOriginalLevel,
+    setOriginalPassthrough: setMixOriginalPassthrough,
     setTranslatedLevel: setMixTranslatedLevel,
     setTranslatedMuted: setMixTranslatedMuted,
     state: mixState,
@@ -137,9 +251,16 @@ export default function App(): React.ReactElement {
   const audioQueue = useTranslatedAudioQueue(
     1,
     false,
-    getListenerClockMs,
+    getSynchronizedListenerClockMs,
     createTranslatedAudio,
+    {
+      lateDropToleranceMs: VIEWER_LATE_DROP_TOLERANCE_MS,
+      syncDelayMs: VIEWER_SYNC_DELAY_MS,
+    },
   );
+  const audioQueueRef = useRef(audioQueue);
+  const previousProcessingSessionIdRef = useRef<string | null>(null);
+  audioQueueRef.current = audioQueue;
 
   const updateSocketDiagnostics = useCallback(
     (event: string, next: Partial<SocketDiagnostics>): void => {
@@ -152,7 +273,77 @@ export default function App(): React.ReactElement {
     [],
   );
 
-  useEffect(() => {
+  const captureLastProgrammeFrame = useCallback((video: HTMLVideoElement): void => {
+    if (
+      video.readyState < VIEWER_PLAYBACK_MIN_READY_STATE ||
+      video.videoWidth <= 2 ||
+      video.videoHeight <= 2
+    ) {
+      return;
+    }
+    const now = Date.now();
+    if (now - lastProgrammeFrameCapturedAtRef.current < VIEWER_FRAME_CAPTURE_INTERVAL_MS) {
+      return;
+    }
+    lastProgrammeFrameCapturedAtRef.current = now;
+    try {
+      const width = Math.min(VIEWER_FRAME_CAPTURE_WIDTH, video.videoWidth);
+      const height = Math.max(1, Math.round(width * (video.videoHeight / video.videoWidth)));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext('2d');
+      if (!context) return;
+      context.drawImage(video, 0, 0, width, height);
+      setLastProgrammeFrameUrl(canvas.toDataURL('image/jpeg', 0.82));
+      setViewerVideoStalled(false);
+    } catch {
+      // Browser media frames are best-effort evidence for the viewer end-state poster.
+    }
+  }, []);
+
+  const bindRemoteProgrammeStream = useCallback(
+    (
+      stream: MediaStream,
+      transport: ListenerWebRtcTransportController | null = listenerTransportRef.current,
+    ): boolean => {
+      if (programmeMediaUrlRef.current) return false;
+      const video = videoRef.current;
+      if (!video) return false;
+      mockFeedRef.current?.stop();
+      mockFeedRef.current = null;
+      const isNewStream = video.srcObject !== stream;
+      if (isNewStream) {
+        video.srcObject = stream;
+      }
+      attachOriginalElement(video);
+      setVideoPlaybackError(null);
+      if (!hasStartedRef.current) return true;
+      if (!isNewStream && !video.paused) {
+        transport?.markPlaybackStarted();
+        return true;
+      }
+      video.play().then(
+        () => transport?.markPlaybackStarted(),
+        (playError: unknown) => {
+          if (programmeMediaUrlRef.current) return;
+          const message =
+            playError instanceof Error
+              ? playError.message
+              : 'The browser blocked programme audio playback.';
+          transport?.markPlaybackBlocked(message);
+          setVideoPlaybackError(`Programme audio playback blocked: ${message}`);
+        },
+      );
+      return true;
+    },
+    [attachOriginalElement],
+  );
+
+  const createListenerProgrammeControllers = useCallback((): {
+    client: WebRtcSignallingClient;
+    transport: ListenerWebRtcTransportController;
+  } => {
     const client = new WebRtcSignallingClient({
       role: 'listener',
       onStateChange: setListenerSignalling,
@@ -168,39 +359,169 @@ export default function App(): React.ReactElement {
     });
     const transport = new ListenerWebRtcTransportController({
       signallingClient: client,
+      syncDelayMs: VIEWER_SYNC_DELAY_MS,
       onStateChange: setListenerTransport,
       onRemoteStream: (stream) => {
-        const video = videoRef.current;
-        if (!video) return;
-        mockFeedRef.current?.stop();
-        mockFeedRef.current = null;
-        video.srcObject = stream;
-        setVideoPlaybackError(null);
-        if (!hasStartedRef.current) return;
-        video.play().then(
-          () => transport.markPlaybackStarted(),
-          (playError: unknown) => {
-            const message =
-              playError instanceof Error
-                ? playError.message
-                : 'The browser blocked programme audio playback.';
-            transport.markPlaybackBlocked(message);
-            setVideoPlaybackError(`Programme audio playback blocked: ${message}`);
-          },
-        );
+        setRemoteProgrammeStream(stream);
+        if (!programmeMediaUrlRef.current) {
+          bindRemoteProgrammeStream(stream, transport);
+        }
       },
     });
     listenerSignallingClientRef.current = client;
     listenerTransportRef.current = transport;
     setListenerSignalling(client.getSnapshot());
     setListenerTransport(transport.getSnapshot());
+    return { client, transport };
+  }, [bindRemoteProgrammeStream]);
+
+  useEffect(() => {
+    const { client, transport } = createListenerProgrammeControllers();
     return () => {
       listenerTransportRef.current = null;
       transport.dispose();
       listenerSignallingClientRef.current = null;
       client.dispose();
     };
-  }, []);
+  }, [createListenerProgrammeControllers]);
+
+  useEffect(() => {
+    if (!remoteProgrammeStream || mediaState?.programmeMediaUrl) return;
+    bindRemoteProgrammeStream(remoteProgrammeStream);
+  }, [bindRemoteProgrammeStream, mediaState?.programmeMediaUrl, remoteProgrammeStream]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    const programmeMediaUrl = mediaState?.programmeMediaUrl ?? null;
+    if (!video || !programmeMediaUrl) {
+      return undefined;
+    }
+
+    audioQueueRef.current.setSourceEnded(false);
+    mockFeedRef.current?.stop();
+    mockFeedRef.current = null;
+    if (video.srcObject) {
+      video.pause();
+      video.srcObject = null;
+    }
+    if (video.currentSrc !== programmeMediaUrl && video.src !== programmeMediaUrl) {
+      video.src = programmeMediaUrl;
+      video.load();
+    }
+    attachOriginalElement(video);
+    setHasReceivedProgrammeVideo(true);
+    setVideoPlaybackError(null);
+    let cancelled = false;
+    let blobUrl: string | null = null;
+    let fallbackTimer: number | null = null;
+    const playUploadedMedia = (): void => {
+      if (cancelled || !hasStartedRef.current) return;
+      if (!uploadedStartAllowedRef.current) {
+        pendingUploadedPlayRef.current = playUploadedMedia;
+        return;
+      }
+      video.play().then(
+        () => setVideoPlaybackError(null),
+        (error: unknown) => {
+          if (cancelled) return;
+          const message =
+            error instanceof Error
+              ? error.message
+              : 'The browser blocked uploaded programme playback.';
+          setVideoPlaybackError(`Uploaded programme playback blocked: ${message}`);
+        },
+      );
+    };
+    const handleMediaLoadError = (): void => {
+      if (cancelled) return;
+      const message = video.error?.message || 'Uploaded programme media failed to load.';
+      setVideoPlaybackError(message);
+    };
+    const scheduleBlobFallback = (): void => {
+      fallbackTimer = window.setTimeout(() => {
+        if (cancelled || video.readyState > 0) return;
+        fetch(programmeMediaUrl)
+          .then((response) => {
+            if (!response.ok) {
+              throw new Error(`Uploaded programme media returned HTTP ${response.status}.`);
+            }
+            return response.blob();
+          })
+          .then((blob) => {
+            if (cancelled || video.readyState > 0) return;
+            blobUrl = URL.createObjectURL(blob);
+            video.src = blobUrl;
+            video.load();
+            if (hasStartedRef.current) {
+              if (video.readyState >= 2) {
+                playUploadedMedia();
+              } else {
+                video.addEventListener('loadedmetadata', playUploadedMedia, { once: true });
+                video.addEventListener('canplay', playUploadedMedia, { once: true });
+              }
+            }
+          })
+          .catch((error: unknown) => {
+            if (cancelled) return;
+            const message =
+              error instanceof Error ? error.message : 'Uploaded programme media fallback failed.';
+            setVideoPlaybackError(message);
+          });
+      }, 2500);
+    };
+    if (hasStartedRef.current) {
+      if (video.readyState >= 2) {
+        playUploadedMedia();
+      } else {
+        video.addEventListener('loadedmetadata', playUploadedMedia, { once: true });
+        video.addEventListener('canplay', playUploadedMedia, { once: true });
+        video.addEventListener('error', handleMediaLoadError, { once: true });
+        video.load();
+        scheduleBlobFallback();
+      }
+    }
+
+    return () => {
+      cancelled = true;
+      pendingUploadedPlayRef.current = null;
+      if (fallbackTimer !== null) {
+        window.clearTimeout(fallbackTimer);
+      }
+      video.removeEventListener('loadedmetadata', playUploadedMedia);
+      video.removeEventListener('canplay', playUploadedMedia);
+      video.removeEventListener('error', handleMediaLoadError);
+      if (video.src === programmeMediaUrl || video.currentSrc === programmeMediaUrl) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+      }
+      if (blobUrl) {
+        if (video.src === blobUrl || video.currentSrc === blobUrl) {
+          video.pause();
+          video.removeAttribute('src');
+          video.load();
+        }
+        URL.revokeObjectURL(blobUrl);
+      }
+    };
+  }, [attachOriginalElement, mediaState?.programmeMediaUrl]);
+
+  useEffect(() => {
+    if (!listenerTransport.remoteAudioTrackReceived && !listenerTransport.remoteVideoTrackReceived) {
+      return;
+    }
+    if (mediaState?.programmeMediaUrl) return;
+    const stream = listenerTransportRef.current?.getRemoteStream() ?? null;
+    if (!stream) return;
+    setRemoteProgrammeStream(stream);
+    bindRemoteProgrammeStream(stream);
+  }, [
+    bindRemoteProgrammeStream,
+    listenerTransport.remoteAudioTrackReceived,
+    listenerTransport.remoteVideoTrackReceived,
+    listenerTransport.updatedAt,
+    mediaState?.programmeMediaUrl,
+  ]);
 
   useEffect(() => {
     if (!videoRef.current) {
@@ -211,23 +532,72 @@ export default function App(): React.ReactElement {
   }, []);
 
   useEffect(() => {
+    if (previousProcessingSessionIdRef.current === activeProcessingSessionId) {
+      return;
+    }
+    previousProcessingSessionIdRef.current = activeProcessingSessionId;
+    phraseSourceBySequenceRef.current.clear();
+    generatedPlaybackClockStartedRef.current = false;
+    setCurrentPhrase(null);
+    setRecentPhrases([]);
+    setDeliveredAudio([]);
+    setHasReceivedProgrammeVideo(false);
+    audioQueueRef.current.reset();
+    audioQueueRef.current.resetGenerated();
+    audioQueueRef.current.setSourceEnded(false);
+    if (hasStartedRef.current) {
+      audioQueueRef.current.start();
+    }
+    setLastProgrammeFrameUrl(null);
+    setViewerVideoStalled(false);
+    lastProgrammeFrameCapturedAtRef.current = 0;
+  }, [activeProcessingSessionId]);
+
+  useEffect(() => {
+    if (listenerTransport.remoteVideoTrackReceived || mediaState?.media?.hasVideo === true) {
+      setHasReceivedProgrammeVideo(true);
+    }
+  }, [listenerTransport.remoteVideoTrackReceived, mediaState?.media?.hasVideo]);
+
+  useEffect(() => {
     const video = videoRef.current;
-    if (!video || mockFeedRef.current) {
+    if (!video) {
       return;
     }
 
     attachOriginalElement(video);
+    if (!shouldUseMockVideoFeed(mediaState?.videoSource)) {
+      const activeFeed = mockFeedRef.current;
+      if (activeFeed) {
+        if (video.srcObject === activeFeed.stream) {
+          video.pause();
+          video.srcObject = null;
+        }
+        activeFeed.stop();
+        mockFeedRef.current = null;
+      }
+      return;
+    }
+
+    if (mockFeedRef.current) {
+      return;
+    }
+
     const feed = startMockVideoFeed();
     mockFeedRef.current = feed;
     video.srcObject = feed.stream;
 
     return () => {
-      video.pause();
-      video.srcObject = null;
+      if (video.srcObject === feed.stream) {
+        video.pause();
+        video.srcObject = null;
+      }
       feed.stop();
-      mockFeedRef.current = null;
+      if (mockFeedRef.current === feed) {
+        mockFeedRef.current = null;
+      }
     };
-  }, [attachOriginalElement]);
+  }, [attachOriginalElement, mediaState?.videoSource]);
 
   useEffect(() => {
     setMixOriginalLevel(originalVolume);
@@ -241,27 +611,108 @@ export default function App(): React.ReactElement {
     setMixTranslatedMuted(muted);
   }, [muted, setMixTranslatedMuted]);
 
-  useEffect(() => {
+  // Playback wiring lives on React's stable media-event props (onPlay/onPause/
+  // onSeeked/onEnded on the <video> JSX). Effect-attached listeners were
+  // re-attached on every render; a listener removed while a media event is
+  // dispatching is skipped per the DOM spec, which silently dropped resume().
+  const handleProgrammePause = useCallback((): void => {
     const video = videoRef.current;
-    if (!video) return;
-
-    const handlePause = (): void => audioQueue.pause();
-    const handlePlay = (): void => {
-      if (hasStarted) audioQueue.resume();
-    };
-
-    video.addEventListener('pause', handlePause);
-    video.addEventListener('play', handlePlay);
-
-    return () => {
-      video.removeEventListener('pause', handlePause);
-      video.removeEventListener('play', handlePlay);
-    };
-  }, [audioQueue, hasStarted]);
-
-  const connect = useCallback((): void => {
-    if (socketRef.current) {
+    if (video?.ended) {
+      audioQueue.setSourceEnded(true);
       return;
+    }
+    audioQueue.pause();
+  }, [audioQueue]);
+
+  const handleProgrammeSeeked = useCallback((): void => {
+    audioQueue.resetGenerated();
+    audioQueue.replayGenerated(
+      generatedAudioForLanguage(deliveredAudioRef.current, targetLanguageRef.current),
+    );
+    if (!videoRef.current?.paused) audioQueue.start();
+  }, [audioQueue]);
+
+  const handleProgrammeEnded = useCallback((): void => {
+    audioQueue.completeSource();
+    setStreamStatus('completed');
+  }, [audioQueue]);
+
+  useEffect(() => {
+    if (!subtitlesEnabled) {
+      setCurrentPhrase(null);
+      return undefined;
+    }
+    const playingSegment =
+      audioQueue.generatedState.status === 'playing'
+        ? audioQueue.generatedState.currentSegment
+        : null;
+    const syncCaption = (): void => {
+      const segmentPhrase = playingSegment
+        ? recentPhrases.find(
+            (item) =>
+              item.id ===
+              captionPhraseId(
+                playingSegment.sessionId,
+                playingSegment.segmentId,
+                targetLanguageRef.current,
+              ),
+          ) ?? null
+        : null;
+      const phrase =
+        segmentPhrase ?? selectActiveCaption(recentPhrases, getSynchronizedListenerClockMs());
+      setCurrentPhrase((current) => (current?.id === phrase?.id ? current : phrase));
+    };
+    syncCaption();
+    const timer = window.setInterval(syncCaption, CAPTION_SYNC_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [
+    audioQueue.generatedState.currentSegment,
+    audioQueue.generatedState.status,
+    getSynchronizedListenerClockMs,
+    recentPhrases,
+    subtitlesEnabled,
+  ]);
+
+  useEffect(() => {
+    if (
+      shouldTreatTransportAsSourceEnded({
+        state: listenerTransport.state,
+        remoteAudioTrackReceived: listenerTransport.remoteAudioTrackReceived,
+        remoteAudioTrackActive: listenerTransport.remoteAudioTrackActive,
+        remoteVideoTrackReceived: listenerTransport.remoteVideoTrackReceived,
+        remoteVideoTrackActive: listenerTransport.remoteVideoTrackActive,
+      })
+    ) {
+      audioQueue.setSourceEnded(true);
+      const completedClockMs = getListenerClockMs();
+      programmeClockRef.current = {
+        ...programmeClockRef.current,
+        timestampMs: completedClockMs,
+        observedAtMs: Date.now(),
+        status: 'completed',
+      };
+      setStreamStatus('completed');
+    }
+  }, [
+    audioQueue,
+    getListenerClockMs,
+    listenerTransport.remoteAudioTrackActive,
+    listenerTransport.remoteAudioTrackReceived,
+    listenerTransport.remoteVideoTrackActive,
+    listenerTransport.remoteVideoTrackReceived,
+    listenerTransport.state,
+  ]);
+
+  const restartListenerTransportAfterRejoin = useCallback((): void => {
+    const transport = listenerTransportRef.current;
+    if (transport && shouldRestartListenerTransport(transport.getSnapshot().state)) {
+      transport.startWaiting();
+    }
+  }, []);
+
+  const connect = useCallback((): Socket | null => {
+    if (socketRef.current) {
+      return socketRef.current;
     }
 
     setConnectionStatus('connecting');
@@ -279,7 +730,29 @@ export default function App(): React.ReactElement {
         lastConnectError: 'none',
         disconnectReason: 'none',
       });
-      socket.emit(SOCKET_EVENTS.JOIN_LANGUAGE, targetLanguage);
+      joinCurrentListenerLanguage(socket, () => targetLanguageRef.current);
+      const signallingClient = listenerSignallingClientRef.current;
+      const signallingSnapshot = signallingClient?.getSnapshot();
+      if (
+        signallingClient &&
+        shouldRecoverProgrammeSessionAfterReconnect({
+          shareableSessionId: lastJoinedShareableSessionRef.current,
+          signallingState: signallingSnapshot?.state ?? 'idle',
+        })
+      ) {
+        void signallingClient
+          .recoverSessionWithBackoff({ maxAttempts: 3, initialDelayMs: 250 })
+          .then((snapshot) => {
+            if (snapshot.state === 'joined') {
+              restartListenerTransportAfterRejoin();
+            }
+          })
+          .catch((error: unknown) => {
+            const message =
+              error instanceof Error ? error.message : 'Programme media reconnection failed.';
+            setVideoPlaybackError(message);
+          });
+      }
     });
 
     socket.on(SOCKET_EVENTS.DISCONNECTED, (reason: string) => {
@@ -315,26 +788,84 @@ export default function App(): React.ReactElement {
       if (!event.final) {
         return;
       }
-
-      const entry: PhraseEntry = {
-        id: `${event.sequence}-${event.targetLanguage}-${Date.now()}`,
-        translatedText: event.translatedText,
-        sourceText: event.sourceText,
-        sequence: event.sequence,
-        videoTimestampMs: event.videoTimestampMs,
-        receivedAt: Date.now(),
-      };
-
-      setCurrentPhrase(entry);
-      audioQueue.enqueue(event);
-      setRecentPhrases((prev) => [entry, ...prev].slice(0, 8));
+      phraseSourceBySequenceRef.current.set(
+        `${event.targetLanguage}:${event.sequence}`,
+        event.sourceText,
+      );
     });
 
+    socket.on(
+      SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT,
+      (event: TimestampedTranslationEvent) => {
+        if (event.status !== 'translated') {
+          return;
+        }
+        if (!shouldAcceptGeneratedAudioForSession(event, activeProcessingSessionIdRef.current)) {
+          return;
+        }
+        const selectedLanguage = targetLanguageRef.current;
+        if (
+          !isOriginalLanguageSelection(selectedLanguage) &&
+          event.targetLanguage !== selectedLanguage
+        ) {
+          return;
+        }
+        setRecentPhrases((prev) =>
+          mergeCaptionPhrases(prev, [phraseFromTimestampedEvent(event, selectedLanguage)]),
+        );
+      },
+    );
+
     socket.on(SOCKET_EVENTS.GENERATED_AUDIO_READY, (event: GeneratedAudioReadyEvent) => {
-      audioQueue.enqueueGenerated(event);
+      const activeSession = activeProcessingSessionIdRef.current;
+      if (!shouldAcceptGeneratedAudioForSession(event, activeSession)) {
+        return;
+      }
+      if (
+        !generatedPlaybackClockStartedRef.current &&
+        shouldInitializeGeneratedAudioClock(programmeClockRef.current.status)
+      ) {
+        generatedPlaybackClockStartedRef.current = true;
+        programmeClockRef.current = {
+          timestampMs: event.startMs,
+          observedAtMs: Date.now(),
+          status: 'processing',
+          durationMs: null,
+        };
+      }
+      if (event.targetLanguage === targetLanguageRef.current) {
+        audioQueue.enqueueGenerated(event);
+      }
+      const sourceText =
+        phraseSourceBySequenceRef.current.get(`${event.targetLanguage}:${event.sequence}`) ?? '';
+      const viewingOriginal = isOriginalLanguageSelection(targetLanguageRef.current);
+      const entry: ListenerCaptionPhrase = {
+        id: captionPhraseId(
+          event.sessionId,
+          event.segmentId,
+          viewingOriginal ? targetLanguageRef.current : event.targetLanguage,
+        ),
+        translatedText: viewingOriginal ? sourceText : event.translatedText,
+        sourceText: '',
+        sequence: event.sequence,
+        startMs: event.startMs,
+        endMs: event.endMs,
+        receivedAt: Date.now(),
+      };
+      if (
+        entry.translatedText &&
+        shouldMergeGeneratedCaption(targetLanguageRef.current, event.targetLanguage)
+      ) {
+        setRecentPhrases((prev) => mergeCaptionPhrases(prev, [entry]));
+      }
       setDeliveredAudio((current) => {
         const withoutDuplicate = current.filter(
-          (item) => !(item.sessionId === event.sessionId && item.segmentId === event.segmentId),
+          (item) =>
+            !(
+              item.sessionId === event.sessionId &&
+              item.segmentId === event.segmentId &&
+              item.targetLanguage === event.targetLanguage
+            ),
         );
         return [...withoutDuplicate, event]
           .sort((a, b) => a.sequence - b.sequence)
@@ -342,91 +873,184 @@ export default function App(): React.ReactElement {
       });
     });
 
+    socket.on(SOCKET_EVENTS.AUDIO_MODE_PREFERENCES, (preferences: AudioMixPreferences) => {
+      const changed = changedMixPreferences(lastOperatorMixPreferencesRef.current, preferences);
+      lastOperatorMixPreferencesRef.current = preferences;
+      if (changed.mode) setMixMode(preferences.mode);
+      if (changed.originalVolume) setOriginalVolume(preferences.originalVolume);
+      if (changed.translatedVolume) setTranslatedVolume(preferences.translatedVolume);
+      if (changed.subtitlesEnabled) setSubtitlesEnabled(preferences.subtitlesEnabled);
+      if (Object.values(changed).some(Boolean)) resumeMixer();
+    });
+
     socket.on(SOCKET_EVENTS.MEDIA_STATE, (state: MediaStateEvent) => {
-      setMediaState(state);
-      setStreamStatus(state.streamStatus);
-      setBuffering(state.streamStatus === 'validating');
+      if (!shouldAcceptMediaStateForListener(state, activeProcessingSessionIdRef.current)) {
+        return;
+      }
+      const previousMediaState = mediaStateRef.current;
+      const nextState = preserveActiveProgrammeMedia(state, previousMediaState);
+      mediaStateRef.current = nextState;
+      programmeMediaUrlRef.current = nextState.programmeMediaUrl ?? null;
+      const currentClockMs = getListenerClockMs();
+      const statusChanged = nextState.streamStatus !== programmeClockRef.current.status;
+      if (statusChanged || nextState.videoTimestampMs > currentClockMs) {
+        programmeClockRef.current = {
+          timestampMs: nextState.videoTimestampMs,
+          observedAtMs: Date.now(),
+          status: nextState.streamStatus,
+          durationMs: nextState.media?.durationMs ?? programmeClockRef.current.durationMs,
+        };
+      } else {
+        programmeClockRef.current = {
+          ...programmeClockRef.current,
+          status: nextState.streamStatus,
+          durationMs: nextState.media?.durationMs ?? programmeClockRef.current.durationMs,
+        };
+      }
+      setMediaState(nextState);
+      setRecentPhrases((prev) =>
+        mergeCaptionPhrases(prev, phrasesForLanguage(nextState, targetLanguageRef.current)),
+      );
+      setStreamStatus(nextState.streamStatus);
+      if (shouldExposeMediaStateProgrammeSession(nextState)) {
+        setActiveProcessingSessionId(nextState.processingSessionId ?? null);
+        setActiveShareableSessionId(nextState.shareableWebRtcSessionId ?? null);
+      } else if (nextState.programmeMediaUrl && nextState.processingSessionId) {
+        setActiveProcessingSessionId(nextState.processingSessionId);
+        setActiveShareableSessionId(null);
+      }
+      audioQueue.setSourceEnded(
+        sourceEndedFromBroadcast({
+          streamStatus: nextState.streamStatus,
+          programmeMediaMode: nextState.programmeMediaMode,
+          videoEnded: videoRef.current?.ended === true,
+        }),
+      );
+      setBuffering(nextState.streamStatus === 'validating');
+      if (
+        nextState.streamStatus === 'cancelled' ||
+        nextState.streamStatus === 'failed'
+      ) {
+        listenerTransportRef.current?.close(`programme source ${nextState.streamStatus}`, false);
+      }
     });
 
     socket.on(SOCKET_EVENTS.STREAM_STATUS, (data: { status: string }) => {
+      const currentClock = getListenerClockMs();
+      programmeClockRef.current = {
+        ...programmeClockRef.current,
+        timestampMs: currentClock,
+        observedAtMs: Date.now(),
+        status: data.status,
+      };
+      audioQueue.setSourceEnded(
+        sourceEndedFromBroadcast({
+          streamStatus: data.status,
+          programmeMediaMode: mediaStateRef.current?.programmeMediaMode,
+          videoEnded: videoRef.current?.ended === true,
+        }),
+      );
       setStreamStatus(data.status);
       setBuffering(data.status === 'validating');
+      if (data.status === 'cancelled' || data.status === 'failed') {
+        listenerTransportRef.current?.close(`programme source ${data.status}`, false);
+      }
     });
-  }, [audioQueue, targetLanguage, updateSocketDiagnostics]);
+    return socket;
+  }, [
+    audioQueue,
+    getListenerClockMs,
+    restartListenerTransportAfterRejoin,
+    resumeMixer,
+    setMixMode,
+    updateSocketDiagnostics,
+  ]);
 
-  const handleStart = useCallback((): void => {
+  const handleProgrammePlay = useCallback((): void => {
     setHasStarted(true);
     hasStartedRef.current = true;
     resumeMixer();
     setVideoPlaybackError(null);
-    videoRef.current?.play().catch((error: unknown) => {
-      const message =
-        error instanceof Error ? error.message : 'The browser rejected video playback.';
-      setVideoPlaybackError(`Video playback failed: ${message}`);
-    });
-    audioQueue.start();
-    connect();
-  }, [audioQueue, connect, resumeMixer]);
+    // resume() starts the queue on first play and resumes a paused generated
+    // clip on subsequent plays.
+    audioQueue.resume();
+  }, [audioQueue, resumeMixer]);
 
   const handleResetMixDefaults = useCallback((): void => {
+    resumeMixer();
     setOriginalVolume(0.2);
     setTranslatedVolume(1);
     setMuted(false);
     resetMixDefaults();
-  }, [resetMixDefaults]);
+  }, [resetMixDefaults, resumeMixer]);
 
   const handleAudioModeChange = useCallback(
     (mode: AudioMixMode): void => {
+      resumeMixer();
       setMixMode(mode);
     },
-    [setMixMode],
+    [resumeMixer, setMixMode],
   );
+
+  const handleOriginalVolumeChange = useCallback(
+    (value: number): void => {
+      resumeMixer();
+      setOriginalVolume(value);
+    },
+    [resumeMixer],
+  );
+
+  const handleTranslatedVolumeChange = useCallback(
+    (value: number): void => {
+      resumeMixer();
+      setTranslatedVolume(value);
+    },
+    [resumeMixer],
+  );
+
+  const handleTranslatedMute = useCallback((): void => {
+    resumeMixer();
+    setMuted((current) => !current);
+  }, [resumeMixer]);
 
   const handleResetGeneratedQueue = useCallback((): void => {
     audioQueue.resetGenerated();
   }, [audioQueue]);
 
   const handleReplayGeneratedQueue = useCallback((): void => {
-    audioQueue.replayGenerated(deliveredAudio);
-  }, [audioQueue, deliveredAudio]);
+    audioQueue.replayGenerated(
+      generatedAudioForLanguage(deliveredAudio, targetLanguage),
+    );
+  }, [audioQueue, deliveredAudio, targetLanguage]);
 
   const handleLanguageChange = useCallback(
     (event: React.ChangeEvent<HTMLSelectElement>): void => {
       const newLanguage = event.target.value;
-      if (socketRef.current) {
-        socketRef.current.emit(SOCKET_EVENTS.LEAVE_LANGUAGE, targetLanguage);
-        socketRef.current.emit(SOCKET_EVENTS.JOIN_LANGUAGE, newLanguage);
-      }
+      const previousLanguage = targetLanguageRef.current;
+      targetLanguageRef.current = newLanguage;
+      socketRef.current?.emit(SOCKET_EVENTS.LEAVE_LANGUAGE, previousLanguage);
+      socketRef.current?.emit(SOCKET_EVENTS.JOIN_LANGUAGE, newLanguage);
       setTargetLanguage(newLanguage);
       setCurrentPhrase(null);
-      setRecentPhrases([]);
-      setDeliveredAudio([]);
+      setRecentPhrases((prev) =>
+        filterCaptionPhrasesForLanguage(
+          mergeCaptionPhrases(prev, phrasesForLanguage(mediaStateRef.current, newLanguage)),
+          newLanguage,
+        ),
+      );
       audioQueue.reset();
       audioQueue.resetGenerated();
+      if (!isOriginalLanguageSelection(newLanguage)) {
+        audioQueue.replayGenerated(
+          generatedAudioForLanguage(deliveredAudio, newLanguage),
+        );
+      }
+      if (hasStartedRef.current) {
+        audioQueue.start();
+      }
     },
-    [audioQueue, targetLanguage],
+    [audioQueue, deliveredAudio],
   );
-
-  const handleJoinSignallingSession = useCallback(async (): Promise<void> => {
-    const parsed = parseShareableWebRtcSessionId(signallingSessionInput);
-    if (!parsed) {
-      setSignallingInputError('Enter a broadcaster share identifier like broadcast_demo/wrs_demo.');
-      return;
-    }
-    setSignallingInputError(null);
-    const snapshot = await listenerSignallingClientRef.current?.joinSession(parsed).catch(() => undefined);
-    if (snapshot?.state === 'joined') {
-      listenerTransportRef.current?.startWaiting();
-    }
-  }, [signallingSessionInput]);
-
-  const handleLeaveSignallingSession = useCallback(async (): Promise<void> => {
-    setSignallingInputError(null);
-    listenerTransportRef.current?.close('listener left signalling session');
-    await listenerSignallingClientRef.current
-      ?.leaveSession('listener left signalling session')
-      .catch(() => undefined);
-  }, []);
 
   const handleRecoverSignallingSession = useCallback(async (): Promise<void> => {
     setSignallingInputError(null);
@@ -434,9 +1058,135 @@ export default function App(): React.ReactElement {
       ?.recoverSessionWithBackoff({ maxAttempts: 3, initialDelayMs: 250 })
       .catch(() => undefined);
     if (snapshot?.state === 'joined') {
-      listenerTransportRef.current?.startWaiting();
+      restartListenerTransportAfterRejoin();
     }
-  }, []);
+  }, [restartListenerTransportAfterRejoin]);
+
+  useEffect(() => {
+    if (!activeShareableSessionId) return;
+    const previousShareableSessionId = lastJoinedShareableSessionRef.current;
+    if (!shouldJoinProgrammeSession(previousShareableSessionId, activeShareableSessionId)) {
+      return;
+    }
+    const parsed = parseShareableWebRtcSessionId(activeShareableSessionId);
+    if (!parsed) {
+      setVideoPlaybackError('Programme session identity is invalid. Reconnect from the operator.');
+      return;
+    }
+
+    setSignallingSessionInput(activeShareableSessionId);
+    setSignallingInputError(null);
+    void (async () => {
+      let client = listenerSignallingClientRef.current;
+      if (!client) {
+        client = createListenerProgrammeControllers().client;
+        if (socketRef.current) client.attach(socketRef.current);
+      }
+      if (shouldReplaceProgrammeSession(previousShareableSessionId, activeShareableSessionId)) {
+        setRemoteProgrammeStream(null);
+        viewerPlaybackSampleRef.current = { currentTimeSeconds: null, stagnantChecks: 0 };
+        if (videoRef.current?.srcObject) {
+          videoRef.current.pause();
+          videoRef.current.srcObject = null;
+        }
+        listenerTransportRef.current?.close('programme session changed', false);
+        await client.leaveSession('programme session changed').catch(() => undefined);
+        listenerTransportRef.current?.dispose();
+        listenerSignallingClientRef.current?.dispose();
+        client = createListenerProgrammeControllers().client;
+        if (socketRef.current) client.attach(socketRef.current);
+      }
+
+      lastJoinedShareableSessionRef.current = activeShareableSessionId;
+      return client.joinSession(parsed);
+    })()
+      .then((snapshot) => {
+        if (snapshot.state === 'joined') {
+          restartListenerTransportAfterRejoin();
+        }
+      })
+      .catch((error: unknown) => {
+        lastJoinedShareableSessionRef.current = previousShareableSessionId ?? null;
+        const message = error instanceof Error ? error.message : 'Unable to join programme media.';
+        setVideoPlaybackError(`Programme media connection failed: ${message}`);
+      });
+  }, [activeShareableSessionId, createListenerProgrammeControllers, restartListenerTransportAfterRejoin]);
+
+  useEffect(() => {
+    connect();
+  }, [connect]);
+
+  useEffect(() => {
+    if (!hasStarted || !remoteProgrammeStream || streamStatus !== 'processing') {
+      viewerPlaybackSampleRef.current = { currentTimeSeconds: null, stagnantChecks: 0 };
+      setViewerVideoStalled(false);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      const video = videoRef.current;
+      const stream = remoteProgrammeStream;
+      if (!video || video.srcObject !== stream) {
+        viewerPlaybackSampleRef.current = { currentTimeSeconds: null, stagnantChecks: 0 };
+        setViewerVideoStalled(false);
+        return;
+      }
+      const previous = viewerPlaybackSampleRef.current.currentTimeSeconds;
+      const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+      captureLastProgrammeFrame(video);
+      const missingRenderableFrame =
+        hasReceivedProgrammeVideo &&
+        listenerTransportRef.current?.getSnapshot().remoteVideoTrackReceived === true &&
+        (video.readyState < VIEWER_PLAYBACK_MIN_READY_STATE ||
+          video.videoWidth <= 2 ||
+          video.videoHeight <= 2);
+      setViewerVideoStalled((currentStalled) =>
+        currentStalled === missingRenderableFrame ? currentStalled : missingRenderableFrame,
+      );
+      const advanced = previous === null || current > previous + 0.05;
+      const stagnantChecks = advanced ? 0 : viewerPlaybackSampleRef.current.stagnantChecks + 1;
+      viewerPlaybackSampleRef.current = { currentTimeSeconds: current, stagnantChecks };
+      if (
+        !shouldRecoverStaleViewerPlayback({
+          hasStarted,
+          hasRemoteStream: true,
+          remoteVideoTrackReceived: listenerTransportRef.current?.getSnapshot().remoteVideoTrackReceived ?? false,
+          remoteVideoTrackActive: listenerTransportRef.current?.getSnapshot().remoteVideoTrackActive ?? false,
+          streamStatus,
+          videoPaused: video.paused,
+          videoReadyState: video.readyState,
+          currentTimeSeconds: current,
+          previousTimeSeconds: previous,
+          stagnantChecks,
+          minStagnantChecks: VIEWER_PLAYBACK_STAGNANT_CHECKS,
+          minReadyState: VIEWER_PLAYBACK_MIN_READY_STATE,
+        })
+      ) {
+        return;
+      }
+      video.pause();
+      video.srcObject = null;
+      video.srcObject = stream;
+      attachOriginalElement(video);
+      viewerPlaybackSampleRef.current = { currentTimeSeconds: null, stagnantChecks: 0 };
+      video.play().then(
+        () => listenerTransportRef.current?.markPlaybackStarted(),
+        (error: unknown) => {
+          const message =
+            error instanceof Error ? error.message : 'The browser blocked viewer programme playback.';
+          listenerTransportRef.current?.markPlaybackBlocked(message);
+          setVideoPlaybackError(`Viewer programme playback stalled: ${message}`);
+        },
+      );
+    }, VIEWER_PLAYBACK_WATCHDOG_MS);
+    return () => window.clearInterval(timer);
+  }, [
+    attachOriginalElement,
+    captureLastProgrammeFrame,
+    hasReceivedProgrammeVideo,
+    hasStarted,
+    remoteProgrammeStream,
+    streamStatus,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -446,6 +1196,94 @@ export default function App(): React.ReactElement {
     };
   }, []);
 
+  const sessionTargetLanguages = useMemo(
+    () => targetLanguagesForSession(mediaState, DEFAULT_LISTENER_TARGET_LANGUAGE),
+    [mediaState],
+  );
+  const viewerLanguageCatalogue = useMemo(
+    () =>
+      mediaState?.targetLanguageCatalogue?.map((capability) => ({
+        code: capability.language,
+        label: capability.label,
+      })),
+    [mediaState?.targetLanguageCatalogue],
+  );
+  const listenerLanguageOptions = availableViewerLanguages(
+    sessionTargetLanguages,
+    viewerLanguageCatalogue,
+  );
+  const selectedDeliveredAudio = generatedAudioForLanguage(deliveredAudio, targetLanguage);
+  const viewingOriginalProgramme = isOriginalLanguageSelection(targetLanguage);
+  const selectedLanguageCapability = mediaState?.targetLanguageCatalogue?.find(
+    (capability) => capability.language === targetLanguage,
+  );
+  const selectedLanguageOutput = mediaState?.targetLanguageOutputs?.find(
+    (output) => output.language === targetLanguage,
+  );
+  const originalAudioRequired =
+    viewingOriginalProgramme ||
+    requiresOriginalAudio(selectedLanguageCapability, selectedLanguageOutput);
+  const uploadedStartGate = uploadedProgrammeStartGate({
+    hasStarted,
+    hasProgrammeMedia: Boolean(mediaState?.programmeMediaUrl),
+    expectsGeneratedAudio: !originalAudioRequired,
+    hasGeneratedAudioForLanguage: selectedDeliveredAudio.length > 0,
+    waitedMs: uploadedProgrammeWaitExpired ? UPLOADED_PROGRAMME_AUDIO_WAIT_MS : 0,
+  });
+  uploadedStartAllowedRef.current = uploadedStartGate.start;
+
+  useEffect(() => {
+    setMixOriginalPassthrough(originalAudioRequired);
+  }, [originalAudioRequired, setMixOriginalPassthrough]);
+
+  useEffect(() => {
+    setUploadedProgrammeWaitExpired(false);
+    if (!mediaState?.programmeMediaUrl || !hasStarted) return undefined;
+    const timer = window.setTimeout(
+      () => setUploadedProgrammeWaitExpired(true),
+      UPLOADED_PROGRAMME_AUDIO_WAIT_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [activeProcessingSessionId, hasStarted, mediaState?.programmeMediaUrl]);
+
+  useEffect(() => {
+    if (!uploadedStartGate.start) return;
+    const pending = pendingUploadedPlayRef.current;
+    pendingUploadedPlayRef.current = null;
+    pending?.();
+  }, [uploadedStartGate.start]);
+
+  useEffect(() => {
+    if (originalAudioRequired && mixState.mode === 'replacement') {
+      setMixMode('interpretation');
+    }
+  }, [mixState.mode, originalAudioRequired, setMixMode]);
+
+  useEffect(() => {
+    if (
+      isOriginalLanguageSelection(targetLanguageRef.current) ||
+      sessionTargetLanguages.includes(targetLanguageRef.current)
+    ) return;
+    const nextLanguage = sessionTargetLanguages[0];
+    if (!nextLanguage) return;
+    const previousLanguage = targetLanguageRef.current;
+    targetLanguageRef.current = nextLanguage;
+    socketRef.current?.emit(SOCKET_EVENTS.LEAVE_LANGUAGE, previousLanguage);
+    socketRef.current?.emit(SOCKET_EVENTS.JOIN_LANGUAGE, nextLanguage);
+    setTargetLanguage(nextLanguage);
+    setCurrentPhrase(null);
+    setRecentPhrases((prev) =>
+      filterCaptionPhrasesForLanguage(
+        mergeCaptionPhrases(prev, phrasesForLanguage(mediaStateRef.current, nextLanguage)),
+        nextLanguage,
+      ),
+    );
+    audioQueue.resetGenerated();
+    audioQueue.replayGenerated(
+      generatedAudioForLanguage(deliveredAudioRef.current, nextLanguage),
+    );
+  }, [audioQueue, sessionTargetLanguages]);
+
   const statusColor = {
     idle: 'var(--color-text-muted)',
     connecting: 'var(--color-warn)',
@@ -453,6 +1291,37 @@ export default function App(): React.ReactElement {
     error: 'var(--color-error)',
     disconnected: 'var(--color-error)',
   }[connectionStatus];
+  const generatedQueueActive =
+    audioQueue.generatedState.pendingCount > 0 ||
+    audioQueue.generatedState.status === 'playing' ||
+    audioQueue.generatedState.status === 'buffering' ||
+    audioQueue.generatedState.status === 'scheduled';
+  const programmeCompleted = streamStatus === 'completed' && !generatedQueueActive;
+  const displayStreamStatus =
+    streamStatus === 'completed' && generatedQueueActive ? 'finishing interpretation' : streamStatus;
+  const reconnectVisible =
+    hasStarted &&
+    connectionStatus !== 'connected' &&
+    (connectionStatus === 'error' ||
+      connectionStatus === 'disconnected' ||
+      listenerTransport.state === 'failed' ||
+      listenerSignalling.state === 'failed' ||
+      listenerSignalling.state === 'reconnecting');
+  const activeCaption =
+    subtitlesEnabled && currentPhrase
+      ? currentPhrase
+      : null;
+  const displayedRecentPhrases = recentPhrases
+    .slice(-RECENT_PHRASES_DISPLAY_COUNT)
+    .reverse();
+  const programmeVideoLabel = describeProgrammeVideoLabel({
+    remoteVideoTrackReceived: listenerTransport.remoteVideoTrackReceived,
+    remoteAudioTrackReceived: listenerTransport.remoteAudioTrackReceived,
+    mediaHasVideo: hasReceivedProgrammeVideo,
+    streamStatus,
+    transportState: listenerTransport.state,
+    usesMockVideoFeed: shouldUseMockVideoFeed(mediaState?.videoSource),
+  });
 
   return (
     <div className={styles.root}>
@@ -490,9 +1359,11 @@ export default function App(): React.ReactElement {
                 ? 'LIVE'
                 : connectionStatus === 'disconnected' || connectionStatus === 'error'
                   ? 'INTERRUPTED'
-                  : streamStatus.toUpperCase()}
+                  : programmeCompleted
+                    ? 'COMPLETED'
+                    : displayStreamStatus.toUpperCase()}
             </span>
-            {buffering && (
+            {(buffering || uploadedStartGate.buffering) && (
               <span className={styles.bufferingBadge} aria-live="polite">
                 Buffering…
               </span>
@@ -502,16 +1373,52 @@ export default function App(): React.ReactElement {
 
         <section className={styles.videoSection} aria-label="Video playback">
           <div className={styles.videoWrapper}>
+            {/* crossOrigin lets the Web Audio mixer tap uploaded programme audio
+                served from the media-ingest origin without CORS-tainting the
+                element (a tainted tap outputs silence); srcObject streams
+                ignore the attribute, so it is safe to keep it always set. */}
             <video
               ref={videoRef}
               className={styles.videoPlayer}
+              crossOrigin="anonymous"
+              preload={mediaState?.programmeMediaUrl ? 'auto' : 'metadata'}
+              autoPlay={Boolean(mediaState?.programmeMediaUrl && hasStarted && uploadedStartGate.start)}
+              playsInline
               controls
+              onPlay={handleProgrammePlay}
+              onPause={handleProgrammePause}
+              onSeeked={handleProgrammeSeeked}
+              onEnded={handleProgrammeEnded}
               aria-label="Live event video"
-              poster="/mock-video-poster.svg"
+              poster={
+                shouldUseMockVideoFeed(mediaState?.videoSource)
+                  ? '/mock-video-poster.svg'
+                  : undefined
+              }
             />
+            {shouldShowHeldViewerFrame({
+              hasLastFrame: Boolean(lastProgrammeFrameUrl),
+              hasReceivedProgrammeVideo,
+              streamStatus,
+              remoteVideoTrackActive: listenerTransport.remoteVideoTrackActive,
+              viewerVideoStalled,
+            }) &&
+              lastProgrammeFrameUrl && (
+                <img
+                  className={styles.lastFramePoster}
+                  src={lastProgrammeFrameUrl}
+                  alt=""
+                  aria-hidden="true"
+                />
+              )}
             <div className={styles.videoOverlay} aria-hidden>
-              <span className={styles.mockLabel}>Mock video source</span>
+              <span className={styles.mockLabel}>{programmeVideoLabel}</span>
             </div>
+            {activeCaption && (
+              <div className={styles.captionOverlay} aria-live="polite" aria-atomic="true">
+                <p className={styles.captionText}>{activeCaption.translatedText}</p>
+              </div>
+            )}
           </div>
           {videoPlaybackError && (
             <div className={styles.videoPlaybackError} role="alert">
@@ -526,13 +1433,13 @@ export default function App(): React.ReactElement {
               Source language
             </label>
             <div id="source-lang" className={styles.sourceLanguage}>
-              {sourceLanguage.toUpperCase()} · {mediaState?.videoSource ?? 'mock'}
+              {sourceLanguage.toUpperCase()} · {mediaState?.videoSource ?? 'no source'}
             </div>
           </div>
 
           <div className={styles.controlGroup}>
             <label htmlFor="target-lang" className={styles.label}>
-              Listen in
+              View in
             </label>
             <select
               id="target-lang"
@@ -541,54 +1448,56 @@ export default function App(): React.ReactElement {
               onChange={handleLanguageChange}
               aria-label="Target language selector"
             >
-              {LANGUAGES.map((language) => (
+              {listenerLanguageOptions.map((language) => {
+                const output = mediaState?.targetLanguageOutputs?.find(
+                  (candidate) => candidate.language === language.code,
+                );
+                return (
                 <option key={language.code} value={language.code}>
                   {language.label}
+                  {output ? ` - ${describeLanguageOutput(output.status)}` : ''}
                 </option>
-              ))}
+                );
+              })}
             </select>
+            <span className={styles.volValue} aria-live="polite">
+              {viewingOriginalProgramme
+                ? 'Original audio and captions'
+                : selectedLanguageOutput
+                  ? describeLanguageOutput(selectedLanguageOutput.status)
+                  : 'Waiting for programme'}
+            </span>
           </div>
 
-          <div className={styles.controlGroup}>
-            <label className={styles.label}>Audio mode</label>
-            <div className={styles.modeToggle} role="group" aria-label="Listener audio mode">
-              <button
-                type="button"
-                className={`${styles.modeBtn} ${
-                  mixState.mode === 'interpretation' ? styles.modeBtnActive : ''
-                }`}
-                onClick={() => handleAudioModeChange('interpretation')}
-                aria-pressed={mixState.mode === 'interpretation'}
-              >
-                Interpretation
-              </button>
-              <button
-                type="button"
-                className={`${styles.modeBtn} ${
-                  mixState.mode === 'replacement' ? styles.modeBtnActive : ''
-                }`}
-                onClick={() => handleAudioModeChange('replacement')}
-                aria-pressed={mixState.mode === 'replacement'}
-              >
-                Replacement
-              </button>
+          {hasStarted && (
+            <div className={styles.controlGroup}>
+              <label className={styles.label}>Mode</label>
+              <div className={styles.modeToggle} role="group" aria-label="Viewer audio mode">
+                <button
+                  type="button"
+                  className={`${styles.modeBtn} ${
+                    mixState.mode === 'interpretation' ? styles.modeBtnActive : ''
+                  }`}
+                  onClick={() => handleAudioModeChange('interpretation')}
+                  aria-pressed={mixState.mode === 'interpretation'}
+                >
+                  Interpretation
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.modeBtn} ${
+                    mixState.mode === 'replacement' ? styles.modeBtnActive : ''
+                  }`}
+                  onClick={() => handleAudioModeChange('replacement')}
+                  disabled={originalAudioRequired}
+                  aria-pressed={mixState.mode === 'replacement'}
+                >
+                  Replacement
+                </button>
+              </div>
             </div>
-          </div>
+          )}
         </section>
-
-        <ListenerSignallingPanel
-          signalling={listenerSignalling}
-          listenerTransport={listenerTransport}
-          sessionInput={signallingSessionInput}
-          onSessionInputChange={(value) => {
-            setSignallingSessionInput(value);
-            setSignallingInputError(null);
-          }}
-          onJoin={() => void handleJoinSignallingSession()}
-          onLeave={() => void handleLeaveSignallingSession()}
-          onRecover={() => void handleRecoverSignallingSession()}
-          inputError={signallingInputError}
-        />
 
         <section className={styles.audioSection} aria-label="Volume controls">
           <div className={styles.volumeRow}>
@@ -603,7 +1512,7 @@ export default function App(): React.ReactElement {
                 max={1}
                 step={0.05}
                 value={originalVolume}
-                onChange={(event) => setOriginalVolume(Number(event.target.value))}
+                onChange={(event) => handleOriginalVolumeChange(Number(event.target.value))}
                 aria-label="Original audio volume"
                 className={styles.slider}
                 disabled={mixState.mode === 'replacement'}
@@ -626,7 +1535,7 @@ export default function App(): React.ReactElement {
                 max={1}
                 step={0.05}
                 value={translatedVolume}
-                onChange={(event) => setTranslatedVolume(Number(event.target.value))}
+                onChange={(event) => handleTranslatedVolumeChange(Number(event.target.value))}
                 aria-label="Translated audio volume"
                 className={styles.slider}
               />
@@ -636,7 +1545,7 @@ export default function App(): React.ReactElement {
             <button
               type="button"
               className={`${styles.muteBtn} ${muted ? styles.muteBtnActive : ''}`}
-              onClick={() => setMuted((current) => !current)}
+              onClick={handleTranslatedMute}
               aria-pressed={muted}
               aria-label="Mute translated audio"
             >
@@ -645,15 +1554,26 @@ export default function App(): React.ReactElement {
             <button type="button" className={styles.resetMixBtn} onClick={handleResetMixDefaults}>
               Reset mix
             </button>
+            <label className={styles.toggleLabel}>
+              <input
+                type="checkbox"
+                checked={subtitlesEnabled}
+                onChange={(event) => setSubtitlesEnabled(event.target.checked)}
+                aria-label="Toggle captions"
+              />
+              Captions
+            </label>
           </div>
 
           <div className={styles.audioStatus} aria-live="polite">
-            <span className={styles.label}>Translated audio status: </span>
-            <span>{audioQueue.status}</span>
-            <span className={styles.audioPending}>
-              {' '}
-              · {audioQueue.pendingCount} queued mock clip{audioQueue.pendingCount === 1 ? '' : 's'}
-            </span>
+            <span className={styles.label}>Status: </span>
+            <span>{audioQueue.generatedState.status}</span>
+            {selectedDeliveredAudio.length > 0 && (
+              <span className={styles.audioPending}>
+                {' '}
+                - {selectedDeliveredAudio.length} delivered
+              </span>
+            )}
           </div>
 
           <div className={styles.mixStatePanel} aria-live="polite">
@@ -675,7 +1595,7 @@ export default function App(): React.ReactElement {
             {mixState.error && <p className={styles.generatedQueueError}>{mixState.error}</p>}
           </div>
 
-          <div className={styles.generatedQueuePanel} aria-live="polite">
+          <div className={styles.generatedQueuePanel} aria-live="polite" hidden={!showDiagnostics}>
             <div className={styles.generatedQueueHeader}>
               <span className={styles.label}>Generated audio queue</span>
               <div className={styles.queueActions}>
@@ -690,7 +1610,7 @@ export default function App(): React.ReactElement {
                   type="button"
                   className={styles.queueBtn}
                   onClick={handleReplayGeneratedQueue}
-                  disabled={deliveredAudio.length === 0}
+                  disabled={selectedDeliveredAudio.length === 0}
                 >
                   Replay
                 </button>
@@ -712,6 +1632,10 @@ export default function App(): React.ReactElement {
               <div>
                 <dt>Skipped</dt>
                 <dd>{audioQueue.generatedState.skippedCount}</dd>
+              </div>
+              <div>
+                <dt>Sync delay</dt>
+                <dd>{audioQueue.generatedState.syncDelayMs} ms</dd>
               </div>
               <div>
                 <dt>Current</dt>
@@ -753,31 +1677,28 @@ export default function App(): React.ReactElement {
           {subtitlesEnabled && (
             <div className={styles.subtitleBox} aria-live="polite" aria-atomic="true">
               {currentPhrase ? (
-                <>
-                  <p className={styles.translatedText}>{currentPhrase.translatedText}</p>
-                  <p className={styles.sourceText}>{currentPhrase.sourceText}</p>
-                </>
+                <p className={styles.translatedText}>{currentPhrase.translatedText}</p>
               ) : (
                 <p className={styles.subtitlePlaceholder}>
-                  {hasStarted ? 'Waiting for translated text…' : 'Press Start Listening to begin'}
+                  {hasStarted ? 'Waiting for translated text...' : 'Press play to begin'}
                 </p>
               )}
             </div>
           )}
         </section>
 
-        {recentPhrases.length > 0 && (
+        {displayedRecentPhrases.length > 0 && (
           <section className={styles.phrasesSection} aria-label="Recent translated phrases">
             <h2 className={styles.sectionTitle}>Recent phrases</h2>
             <ol className={styles.phrasesList} reversed>
-              {recentPhrases.map((phrase) => (
+              {displayedRecentPhrases.map((phrase) => (
                 <li
                   key={phrase.id}
                   className={styles.phraseItem}
                   title={`Received at ${new Date(phrase.receivedAt).toLocaleTimeString()}`}
                 >
                   <span className={styles.phraseTime}>
-                    {formatTimestamp(phrase.videoTimestampMs)}
+                    {formatTimestamp(phrase.startMs)}
                   </span>
                   <span className={styles.phraseText}>{phrase.translatedText}</span>
                   <span className={styles.phraseSeq}>#{phrase.sequence}</span>
@@ -787,67 +1708,21 @@ export default function App(): React.ReactElement {
           </section>
         )}
 
-        {deliveredAudio.length > 0 && (
-          <section className={styles.deliveredAudioSection} aria-label="Delivered generated audio">
-            <div className={styles.deliveredAudioHeader}>
-              <h2 className={styles.sectionTitle}>Generated audio</h2>
-              <span className={styles.deliveredAudioCount}>
-                {deliveredAudio.length} delivered
-              </span>
-            </div>
-            <ol className={styles.deliveredAudioList}>
-              {deliveredAudio.map((segment) => (
-                <li
-                  key={`${segment.sessionId}-${segment.segmentId}`}
-                  className={styles.deliveredAudioItem}
-                >
-                  <div className={styles.deliveredAudioMeta}>
-                    <span className={styles.phraseTime}>{formatTimestamp(segment.startMs)}</span>
-                    <span className={styles.deliveredAudioText}>{segment.translatedText}</span>
-                    <span className={styles.phraseSeq}>#{segment.sequence}</span>
-                  </div>
-                  <div className={styles.deliveredAudioDetails}>
-                    <span>{segment.targetLanguage.toUpperCase()}</span>
-                    <span>Voice {segment.voiceId}</span>
-                    <span>{formatTimestamp(segment.durationMs)}</span>
-                    <span>
-                      {segment.providerLatencyMs === null
-                        ? 'Latency unavailable'
-                        : `${segment.providerLatencyMs} ms`}
-                    </span>
-                  </div>
-                  <audio
-                    className={styles.deliveredAudioPlayer}
-                    controls
-                    preload="metadata"
-                    src={segment.audioUrl}
-                  />
-                </li>
-              ))}
-            </ol>
-          </section>
+        {reconnectVisible && (
+          <button
+            type="button"
+            className={styles.reconnectBtn}
+            onClick={() => void handleRecoverSignallingSession()}
+          >
+            Reconnect
+          </button>
         )}
-
-        {!hasStarted && (
-          <div className={styles.startSection}>
-            <p className={styles.startHint}>
-              Click below to connect and enable translated audio.
-              <br />
-              <small>Browser autoplay policy requires a user gesture before audio can play.</small>
-            </p>
-            <button
-              type="button"
-              className={styles.startBtn}
-              onClick={handleStart}
-              aria-label="Start listening"
-            >
-              Start Listening
-            </button>
-          </div>
-        )}
-        {import.meta.env.DEV && (
-          <section className={styles.devDiagnostics} aria-label="Development socket diagnostics">
-            <h2 className={styles.devDiagnosticsTitle}>Development socket diagnostics</h2>
+        <details
+          className={styles.devDiagnostics}
+          open={showDiagnostics}
+          onToggle={(event) => setShowDiagnostics(event.currentTarget.open)}
+        >
+            <summary className={styles.devDiagnosticsTitle}>Technical diagnostics</summary>
             <dl className={styles.devDiagnosticsGrid}>
               <div>
                 <dt>Gateway URL</dt>
@@ -873,9 +1748,38 @@ export default function App(): React.ReactElement {
                 <dt>Disconnect reason</dt>
                 <dd>{socketDiagnostics.disconnectReason}</dd>
               </div>
+              <div>
+                <dt>Programme session</dt>
+                <dd>{signallingSessionInput || activeShareableSessionId || '-'}</dd>
+              </div>
+              <div>
+                <dt>Media transport</dt>
+                <dd>{listenerTransport.state}</dd>
+              </div>
+              <div>
+                <dt>Original tracks</dt>
+                <dd>
+                  audio {listenerTransport.remoteAudioTrackReceived ? 'yes' : 'no'} / video{' '}
+                  {listenerTransport.remoteVideoTrackReceived ? 'yes' : 'no'}
+                </dd>
+              </div>
+              <div>
+                <dt>Applied sync delay</dt>
+                <dd>
+                  {listenerTransport.appliedJitterBufferTargetMs === null
+                    ? '-'
+                    : `${listenerTransport.appliedJitterBufferTargetMs} ms`}
+                </dd>
+              </div>
             </dl>
-          </section>
-        )}
+          {(signallingInputError || listenerSignalling.lastError || listenerTransport.lastError) && (
+            <p className={styles.videoPlaybackError} role="alert">
+              {signallingInputError ??
+                listenerSignalling.lastError?.message ??
+                listenerTransport.lastError?.message}
+            </p>
+          )}
+        </details>
       </main>
     </div>
   );

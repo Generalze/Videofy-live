@@ -102,6 +102,7 @@ async function phase2Store(options: {
 } = {}): Promise<ProcessingSessionStore> {
   const outputBaseDir = await mkdtemp(join(tmpdir(), 'videofy-phase2-'));
   tempDirs.push(outputBaseDir);
+  const transcribeRunner = options.transcribe ?? successfulWhisper;
   const storeOptions: ConstructorParameters<typeof ProcessingSessionStore>[0] = {
     outputBaseDir,
     extractAudio: options.extractAudio ?? threeChunkExtractor,
@@ -114,7 +115,22 @@ async function phase2Store(options: {
       modelCacheDir: null,
       allowGpuFallback: false,
       timeoutMs: 30_000,
-      runCommand: options.transcribe ?? successfulWhisper,
+      // FFmpeg normalisation still runs through the command seam.
+      runCommand: transcribeRunner,
+      // Transcription itself now flows through the persistent worker; adapt it
+      // back onto the same runner so the scenarios keep one injection point.
+      createWorker: () => ({
+        request: async (payload, requestOptions) => {
+          const audioPath = String((payload as { audioPath?: unknown }).audioPath ?? '');
+          const result = await transcribeRunner(
+            'python',
+            ['-c', 'faster-whisper-worker', audioPath],
+            { timeoutMs: requestOptions.timeoutMs },
+          );
+          return JSON.parse(result.stdout) as unknown;
+        },
+        dispose: () => undefined,
+      }),
     }),
     translationProvider: new ArgosTimestampedTranslationProvider({
       pythonExecutable: 'python',
@@ -136,7 +152,13 @@ const successfulWhisper: TranscriptionCommandRunner = async (command, args) => {
   const audioPath = String(args[2]);
   return {
     stdout: JSON.stringify({
-      text: `transcript ${basename(audioPath).replace(/\.normalized\.wav$|\.wav$|\.webm$|\.ogg$/, '')}`,
+      segments: [
+        {
+          text: `transcript ${basename(audioPath).replace(/\.normalized\.wav$|\.wav$|\.webm$|\.ogg$/, '')}`,
+          startMs: 0,
+          endMs: 15_000,
+        },
+      ],
       detectedLanguage: 'en',
       confidence: 0.93,
       device: 'cpu',
@@ -286,7 +308,7 @@ describe('Phase 2 closure validation', () => {
     expect(store.resumeSession(activeSessionId!).state).toBe('processing');
     release?.({
       stdout: JSON.stringify({
-        text: 'resumed transcript',
+        segments: [{ text: 'resumed transcript', startMs: 0, endMs: 15_000 }],
         detectedLanguage: 'en',
         confidence: 0.9,
         device: 'cpu',
@@ -335,7 +357,12 @@ describe('Phase 2 closure validation', () => {
     await waitUntil(() => cancelSessionId !== undefined);
     expect(cancelStore.cancelSession(cancelSessionId!).state).toBe('cancelled');
     cancelRelease?.({
-      stdout: JSON.stringify({ text: 'late result', detectedLanguage: 'en', confidence: 0.9, device: 'cpu' }),
+      stdout: JSON.stringify({
+        segments: [{ text: 'late result', startMs: 0, endMs: 15_000 }],
+        detectedLanguage: 'en',
+        confidence: 0.9,
+        device: 'cpu',
+      }),
       stderr: '',
     });
     await expect(cancelledRun).resolves.toMatchObject({ state: 'cancelled' });

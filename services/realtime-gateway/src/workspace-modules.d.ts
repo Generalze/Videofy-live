@@ -10,6 +10,27 @@ declare module '@videofy-live/shared-types' {
 
   export type AudioFormat = 'mp3' | 'ogg' | 'wav' | 'webm' | null;
 
+  export interface AudioMixPreferences {
+    mode: 'interpretation' | 'replacement';
+    originalVolume: number;
+    translatedVolume: number;
+    subtitlesEnabled: boolean;
+  }
+
+  export type SourceLanguageMode = 'manual' | 'auto-detect';
+
+  export interface OperatorProgrammeSessionConfig {
+    sessionId: string;
+    broadcastId: string;
+    sourceRevision: number;
+    programmeSourceType?: string;
+    rtmpPlaybackUrl?: string;
+    targetLanguage: string;
+    targetLanguages: string[];
+    sourceLanguage: string;
+    sourceLanguageMode: SourceLanguageMode;
+  }
+
   export type StreamStatus =
     | 'created'
     | 'validating'
@@ -141,6 +162,9 @@ declare module '@videofy-live/shared-types' {
     eventId: string;
     streamId?: string;
     processingSessionId?: string;
+    shareableWebRtcSessionId?: string;
+    programmeMediaUrl?: string;
+    programmeMediaMode?: 'live-webrtc' | 'uploaded-stems' | 'viewer-ready';
     streamStatus: StreamStatus;
     videoSource: VideoSource;
     media?: {
@@ -203,6 +227,15 @@ declare module '@videofy-live/shared-types' {
       events: TimestampedTranslationEvent[];
       error?: string;
     };
+    targetLanguageOutputs?: Array<{
+      language: string;
+      status: 'unavailable' | 'queued' | 'translating' | 'captions-ready' | 'generating-audio' | 'ready' | 'failed';
+      translationProgressPct: number;
+      audioProgressPct: number;
+      captionsAvailable: boolean;
+      audioAvailable: boolean;
+      error: string | null;
+    }>;
     monitoring?: SessionMonitoringMetadata;
     videoTimestampMs: number;
     sourceAudioActive: boolean;
@@ -220,6 +253,7 @@ declare module '@videofy-live/shared-types' {
     readonly STREAM_STATUS: 'stream:status';
     readonly TRANSLATED_AUDIO: 'audio:translated';
     readonly SERVICE_STATUS: 'service:status';
+    readonly AUDIO_MODE_PREFERENCES: 'audio:mode-preferences';
     readonly CONTROL_ACK: 'operator:control_ack';
     readonly ERROR: 'error';
     readonly JOIN_LANGUAGE: 'join:language';
@@ -236,6 +270,8 @@ declare module '@videofy-live/shared-types' {
     readonly INGEST_START_STREAM: 'ingest:start_stream';
     readonly INGEST_STOP_STREAM: 'ingest:stop_stream';
     readonly OPERATOR_CONTROL: 'operator:control';
+    readonly OPERATOR_AUDIO_MODE_PREFERENCES: 'operator:audio-mode-preferences';
+    readonly OPERATOR_PROGRAMME_SESSION_CONFIG: 'operator:programme-session-config';
     readonly WEBRTC_SESSION_CREATE: 'webrtc:session:create';
     readonly WEBRTC_SESSION_JOIN: 'webrtc:session:join';
     readonly WEBRTC_SIGNAL: 'webrtc:signal';
@@ -321,6 +357,8 @@ declare module '@videofy-live/shared-types' {
     | 'peer-already-exists'
     | 'missing-audio-track'
     | 'duplicate-audio-track'
+    | 'missing-video-track'
+    | 'duplicate-video-track'
     | 'unexpected-video-track'
     | 'invalid-offer'
     | 'answer-creation-failure'
@@ -332,6 +370,7 @@ declare module '@videofy-live/shared-types' {
     | 'negotiation-timeout'
     | 'connection-closed'
     | 'audio-track-ended'
+    | 'video-track-ended'
     | 'ingest-bridge-failure'
     | 'cleanup-failure'
     | 'unsupported-runtime'
@@ -410,7 +449,7 @@ declare module '@videofy-live/shared-types' {
   >;
   export type WebRtcPeerReadyEnvelope = WebRtcSignallingEnvelopeBase<
     'peer-ready',
-    { state: WebRtcPeerState }
+    { state: WebRtcPeerState; audioTrackReceived?: boolean; videoTrackReceived?: boolean }
   >;
   export type WebRtcPeerDisconnectEnvelope = WebRtcSignallingEnvelopeBase<
     'peer-disconnect',

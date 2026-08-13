@@ -1,0 +1,20 @@
+logLevel: info
+
+rtsp: no
+rtmp: yes
+rtmpAddress: :1935
+webrtc: no
+srt: no
+moq: no
+
+hls: yes
+hlsAddress: :8888
+hlsAllowOrigins: ['*']
+hlsAlwaysRemux: yes
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+
+paths:
+  all:
+    source: publisher

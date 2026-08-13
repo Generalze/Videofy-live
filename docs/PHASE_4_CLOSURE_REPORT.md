@@ -49,7 +49,7 @@ No listener microphone publishing, video delivery, translated-audio WebRTC deliv
 - The bridge writes normalized WAV chunks into the configured staging directory.
 - Media ingest accepts only safe internal WebRTC chunk paths under the staging directory.
 - Chunk metadata preserves WebRTC session ID, broadcast ID, sequence, `startMs`, `endMs`, status, detected language, confidence, and provider latency.
-- In the P4.7 browser run, the gateway was configured with `WEBRTC_TRANSCRIPTION_CHUNK_MS=1000` only to prove live browser flow quickly. The production default remains 15 seconds.
+- In the P4.7 browser run, the gateway was configured with `WEBRTC_TRANSCRIPTION_CHUNK_MS=1000` only to prove live browser flow quickly. Phase 5 viewer-sync hardening later changed the live WebRTC default to 5 seconds while preserving 15-second file-ingest chunks.
 
 ## Listener Delivery And Mixer
 
@@ -240,7 +240,7 @@ Approved documentation files:
 - Same-machine Chrome fake-audio validation passed; NAT/TURN/mobile browser validation remains future work.
 - Listener receives original programme audio only; translated generated audio remains the existing HTTP WAV queue.
 - Browser autoplay policy can still require user gesture, which is surfaced in the UI.
-- P4.7 used a short test chunk duration for browser proof; production default remains 15 seconds.
+- P4.7 used a short test chunk duration for browser proof; Phase 5 viewer-sync hardening later changed the live WebRTC default to 5 seconds.
 
 ## Known Risks
 

@@ -1,8 +1,11 @@
 import type { Server as HttpServer } from 'node:http';
 import { Server as SocketServer, type Socket } from 'socket.io';
 import type {
+  AudioMixPreferences,
   GeneratedAudioReadyEvent,
   MediaStateEvent,
+  OperatorProgrammeSessionConfig,
+  StreamStatus,
   TimestampedTranslationEvent,
   TranscriptionEvent,
   TranslationEvent,
@@ -10,6 +13,7 @@ import type {
 } from '@videofy-live/shared-types';
 import {
   INGEST_ROOM,
+  createShareableWebRtcSessionId,
   languageRoom,
   OPERATOR_ROOM,
   SOCKET_EVENTS,
@@ -40,9 +44,13 @@ import {
   BackendWebRtcMediaPeerRegistry,
   BACKEND_WEBRTC_MEDIA_SOCKET_ID,
   backendSignalEnvelope,
+  type BackendMediaPeerAudioContext,
 } from './webrtc-media-peer-registry.js';
 import { BackendWebRtcListenerPeerRegistry } from './webrtc-listener-peer-registry.js';
-import { WebRtcTranscriptionBridge } from './webrtc-transcription-bridge.js';
+import { WebRtcTranscriptionBridge, type WebRtcTranscriptionBridgeContext } from './webrtc-transcription-bridge.js';
+
+/** Pseudo-language channel for listeners following the untranslated programme captions. */
+const ORIGINAL_LANGUAGE_CHANNEL = 'original';
 
 /** Client role determined by query parameter on connect. */
 type ClientRole = 'listener' | 'operator' | 'worker' | 'ingest' | 'broadcaster' | 'server';
@@ -84,9 +92,19 @@ export class Gateway {
   private readonly webRtcTranscriptionBridge: WebRtcTranscriptionBridge;
   private readonly backendMediaPeers: BackendWebRtcMediaPeerRegistry;
   private readonly listenerMediaPeers: BackendWebRtcListenerPeerRegistry;
+  private readonly mediaIngestUrl: string;
+  private readonly mediaIngestPublicUrl: string;
   private readonly clients = new Map<string, ClientState>();
+  private readonly programmeSessionConfigs = new Map<string, OperatorProgrammeSessionConfig>();
   private readonly activeWorkers = new Set<string>();
   private readonly activeIngestClients = new Set<string>();
+  private latestProgrammeMediaState: MediaStateEvent | null = null;
+  private audioModePreferences: AudioMixPreferences = {
+    mode: 'interpretation',
+    originalVolume: 0.2,
+    translatedVolume: 1,
+    subtitlesEnabled: true,
+  };
   private listenerCount = 0;
 
   constructor(
@@ -94,18 +112,27 @@ export class Gateway {
     corsOrigins: string[],
     options: {
       mediaIngestUrl?: string;
+      mediaIngestPublicUrl?: string;
       internalWebRtcToken?: string | null;
       webRtcTranscriptionChunkMs?: number;
+      webRtcTranscriptionRequestTimeoutMs?: number;
       webRtcTranscriptionStagingDir?: string;
+      vad?: ConstructorParameters<typeof WebRtcTranscriptionBridge>[0]['vad'];
     } = {},
   ) {
+    this.mediaIngestUrl = options.mediaIngestUrl ?? 'http://localhost:3002';
+    this.mediaIngestPublicUrl = options.mediaIngestPublicUrl ?? this.mediaIngestUrl;
     this.webRtcTranscriptionBridge = new WebRtcTranscriptionBridge({
       ...(options.mediaIngestUrl ? { mediaIngestUrl: options.mediaIngestUrl } : {}),
       ...(options.internalWebRtcToken ? { internalAuthToken: options.internalWebRtcToken } : {}),
+      ...(options.webRtcTranscriptionRequestTimeoutMs
+        ? { requestTimeoutMs: options.webRtcTranscriptionRequestTimeoutMs }
+        : {}),
       stagingDir: options.webRtcTranscriptionStagingDir ?? '../../uploads/webrtc-staging',
       ...(options.webRtcTranscriptionChunkMs
         ? { chunkDurationMs: options.webRtcTranscriptionChunkMs }
         : {}),
+      ...(options.vad ? { vad: options.vad } : {}),
     });
     this.listenerMediaPeers = new BackendWebRtcListenerPeerRegistry({
       onLocalSignal: (envelope) => this.routeBackendWebRtcSignal(envelope),
@@ -116,16 +143,25 @@ export class Gateway {
         this.routeBackendWebRtcSignal(backendSignalEnvelope(envelope));
         void this.startListenerDeliveryForSession(envelope.sessionId);
       },
+      onTrackReady: (context) => {
+        void this.startListenerDeliveryForSession(context.sessionId);
+      },
       onAudioFrame: (context, data) => {
-        try {
-          this.webRtcTranscriptionBridge.handleFrame(context, data);
-        } catch (error) {
-          logger.warn('WebRTC transcription bridge frame handling failed', {
-            sessionId: context.sessionId,
-            broadcastId: context.broadcastId,
-            revision: context.revision,
-            message: error instanceof Error ? error.message : 'unknown transcription bridge failure',
-          });
+        const programmeConfig = this.programmeSessionConfigs.get(context.sessionId);
+        if (shouldUseWebRtcTranscriptionForProgrammeSource(programmeConfig?.programmeSourceType)) {
+          try {
+            this.webRtcTranscriptionBridge.handleFrame(
+              this.applyProgrammeSessionConfig(context),
+              data,
+            );
+          } catch (error) {
+            logger.warn('WebRTC transcription bridge frame handling failed', {
+              sessionId: context.sessionId,
+              broadcastId: context.broadcastId,
+              revision: context.revision,
+              message: error instanceof Error ? error.message : 'unknown transcription bridge failure',
+            });
+          }
         }
         try {
           this.listenerMediaPeers.fanOutAudioFrame(context.sessionId, data);
@@ -138,8 +174,26 @@ export class Gateway {
           });
         }
       },
+      onVideoFrame: (context, frame) => {
+        try {
+          this.listenerMediaPeers.fanOutVideoFrame(context.sessionId, frame);
+        } catch (error) {
+          logger.warn('WebRTC listener programme-video fanout failed', {
+            sessionId: context.sessionId,
+            broadcastId: context.broadcastId,
+            revision: context.revision,
+            message: error instanceof Error ? error.message : 'unknown listener video fanout failure',
+          });
+        }
+      },
+      onVideoEnded: (context, reason) => {
+        this.listenerMediaPeers.endSessionVideo(context.sessionId, reason);
+      },
       onAudioPeerClosed: (context, reason) => {
-        this.webRtcTranscriptionBridge.endSession(context, reason);
+        const programmeConfig = this.programmeSessionConfigs.get(context.sessionId);
+        if (shouldUseWebRtcTranscriptionForProgrammeSource(programmeConfig?.programmeSourceType)) {
+          this.webRtcTranscriptionBridge.endSession(this.applyProgrammeSessionConfig(context), reason);
+        }
         this.listenerMediaPeers.closeSession(context.sessionId, reason);
       },
     });
@@ -218,9 +272,23 @@ export class Gateway {
 
   private handleListenerSocket(socket: Socket, state: ClientState): void {
     this.handleWebRtcSocket(socket, 'listener');
+    socket.emit(SOCKET_EVENTS.AUDIO_MODE_PREFERENCES, this.audioModePreferences);
+    if (
+      this.latestProgrammeMediaState &&
+      (!isTerminalMediaState(this.latestProgrammeMediaState.streamStatus) ||
+        Boolean(this.latestProgrammeMediaState.programmeMediaUrl))
+    ) {
+      socket.emit(SOCKET_EVENTS.MEDIA_STATE, {
+        ...this.latestProgrammeMediaState,
+        connectedListeners: this.listenerCount,
+      });
+    }
 
     socket.on(SOCKET_EVENTS.JOIN_LANGUAGE, (targetLanguage: unknown) => {
-      if (typeof targetLanguage !== 'string' || targetLanguage.length < 2) {
+      if (
+        targetLanguage !== ORIGINAL_LANGUAGE_CHANNEL &&
+        (typeof targetLanguage !== 'string' || targetLanguage.length < 2)
+      ) {
         socket.emit(SOCKET_EVENTS.ERROR, { message: 'Invalid targetLanguage' });
         return;
       }
@@ -229,6 +297,12 @@ export class Gateway {
       }
       state.targetLanguage = targetLanguage;
       void socket.join(languageRoom(targetLanguage));
+      const activeSessionId = this.latestProgrammeMediaState?.processingSessionId;
+      if (activeSessionId) {
+        for (const event of this.generatedAudioStore.getSnapshot(activeSessionId, targetLanguage)) {
+          socket.emit(SOCKET_EVENTS.GENERATED_AUDIO_READY, event);
+        }
+      }
       logger.debug('Listener joined language room', { socketId: socket.id, targetLanguage });
     });
 
@@ -367,15 +441,89 @@ export class Gateway {
         this.webrtcSessions.signal(socket.id, parsed),
       );
       if (result?.outgoing.sessionId) {
-        this.backendMediaPeers.closeSession(result.outgoing.sessionId, 'broadcaster closed signalling session');
-        this.listenerMediaPeers.closeSession(result.outgoing.sessionId, 'broadcaster closed signalling session');
+        this.teardownProgrammeSession(result.outgoing.sessionId, 'broadcaster closed signalling session');
       }
       this.applyWebRtcRoute(socket, result);
     });
   }
 
+  /**
+   * Tear down every programme resource attached to a broadcaster session:
+   * media peers, listener delivery, transcription bridging, generated-audio
+   * history, operator config and any live media state advertising the session.
+   */
+  private teardownProgrammeSession(sessionId: string | undefined, reason: string): void {
+    if (!sessionId) return;
+    this.backendMediaPeers.closeSession(sessionId, reason);
+    this.listenerMediaPeers.closeSession(sessionId, reason);
+    this.webRtcTranscriptionBridge.endSessionsForSessionId(sessionId, reason);
+    this.programmeSessionConfigs.delete(sessionId);
+    this.generatedAudioStore.resetSession(sessionId);
+    this.invalidateProgrammeMediaState(sessionId);
+  }
+
+  /**
+   * Stop advertising a torn-down live session to future listeners while keeping
+   * uploaded programmes (which retain a playable programmeMediaUrl) replayable.
+   */
+  private invalidateProgrammeMediaState(sessionId: string): void {
+    const state = this.latestProgrammeMediaState;
+    if (!state) return;
+    const referencesSession =
+      state.processingSessionId === sessionId ||
+      state.shareableWebRtcSessionId?.endsWith(`/${sessionId}`) === true;
+    if (!referencesSession) return;
+    if (state.programmeMediaUrl) {
+      if (!isTerminalMediaState(state.streamStatus)) {
+        this.latestProgrammeMediaState = { ...state, streamStatus: 'completed' };
+      }
+      return;
+    }
+    this.latestProgrammeMediaState = null;
+  }
+
   private handleOperatorSocket(socket: Socket): void {
     this.emitServiceSnapshot(socket);
+
+    socket.on(SOCKET_EVENTS.OPERATOR_AUDIO_MODE_PREFERENCES, (raw: unknown) => {
+      const preferences = this.parseAudioModePreferences(raw);
+      if (!preferences) {
+        socket.emit(SOCKET_EVENTS.ERROR, { message: 'Invalid audio mode preferences' });
+        return;
+      }
+
+      this.audioModePreferences = preferences;
+      this.io.to('listeners').emit(SOCKET_EVENTS.AUDIO_MODE_PREFERENCES, preferences);
+      logger.info('Operator audio mode preferences updated', {
+        originalVolume: preferences.originalVolume,
+        translatedVolume: preferences.translatedVolume,
+        subtitlesEnabled: preferences.subtitlesEnabled,
+      });
+    });
+
+    socket.on(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, (raw: unknown) => {
+      const config = this.parseProgrammeSessionConfig(raw);
+      if (!config) {
+        socket.emit(SOCKET_EVENTS.ERROR, { message: 'Invalid programme session configuration' });
+        return;
+      }
+      this.programmeSessionConfigs.set(config.sessionId, config);
+      socket.emit(SOCKET_EVENTS.CONTROL_ACK, {
+        action: 'programme-session-config',
+        accepted: true,
+        timestamp: new Date().toISOString(),
+      });
+      logger.info('Operator programme session configuration accepted', {
+        sessionId: config.sessionId,
+        broadcastId: config.broadcastId,
+        sourceRevision: config.sourceRevision,
+        targetLanguage: config.targetLanguage,
+        targetLanguageCount: config.targetLanguages.length,
+        sourceLanguage: config.sourceLanguage,
+        sourceLanguageMode: config.sourceLanguageMode,
+      });
+      this.broadcastProgrammeSessionConfig(config);
+    });
 
     socket.on(SOCKET_EVENTS.OPERATOR_CONTROL, (raw: unknown) => {
       const control = this.parseOperatorControl(raw);
@@ -456,10 +604,41 @@ export class Gateway {
       }
 
       const stateEvent = result.data as MediaStateEvent;
+      const programmeConfig = stateEvent.processingSessionId
+        ? this.programmeSessionConfigs.get(stateEvent.processingSessionId)
+        : undefined;
+      const programmeStreamStatus = resolveProgrammeIngestStreamStatus(
+        programmeConfig?.programmeSourceType,
+        stateEvent.streamStatus,
+      );
       const enriched: MediaStateEvent = {
         ...stateEvent,
+        ...(programmeConfig
+          ? {
+              streamId: programmeConfig.broadcastId,
+              streamStatus: programmeStreamStatus,
+              videoSource: 'webrtc' as const,
+              ...(programmeConfig.programmeSourceType === 'uploaded-video' &&
+              canDeliverUploadedStems(stateEvent)
+                ? {
+                    programmeMediaUrl: this.sourceMediaUrl(programmeConfig.sessionId),
+                    programmeMediaMode: 'uploaded-stems' as const,
+                  }
+                : {}),
+              shareableWebRtcSessionId: createShareableWebRtcSessionId(
+                programmeConfig.broadcastId,
+                programmeConfig.sessionId,
+              ),
+            }
+          : {}),
         connectedListeners: this.listenerCount,
       };
+      if (programmeConfig && !isTerminalMediaState(enriched.streamStatus)) {
+        this.latestProgrammeMediaState = enriched;
+      }
+      if (programmeConfig && isTerminalMediaState(enriched.streamStatus)) {
+        this.latestProgrammeMediaState = enriched.programmeMediaUrl ? enriched : null;
+      }
 
       this.io.emit(SOCKET_EVENTS.MEDIA_STATE, enriched);
       this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
@@ -499,6 +678,14 @@ export class Gateway {
 
       const event = result.data as TimestampedTranslationEvent;
       this.io.to(OPERATOR_ROOM).emit(SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT, event);
+      if (event.status === 'translated') {
+        this.io
+          .to(languageRoom(event.targetLanguage))
+          .emit(SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT, event);
+        this.io
+          .to(languageRoom(ORIGINAL_LANGUAGE_CHANNEL))
+          .emit(SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT, event);
+      }
       logger.info('Timestamped translation event broadcast', {
         sessionId: event.sessionId,
         segmentId: event.segmentId,
@@ -529,9 +716,8 @@ export class Gateway {
     this.listenerMediaPeers.closeByListenerSocket(socket.id);
     for (const result of this.webrtcSessions.cleanupSocket(socket.id)) {
       if (result.outgoing.sessionId) {
-        this.backendMediaPeers.closeSession(result.outgoing.sessionId, 'socket disconnected');
         if (result.outgoing.senderRole === 'broadcaster') {
-          this.listenerMediaPeers.closeSession(result.outgoing.sessionId, 'broadcaster socket disconnected');
+          this.teardownProgrammeSession(result.outgoing.sessionId, 'broadcaster socket disconnected');
         } else if (result.outgoing.senderRole === 'listener') {
           this.listenerMediaPeers.closeListenerPeer(
             result.outgoing.sessionId,
@@ -554,6 +740,9 @@ export class Gateway {
       this.activeIngestClients.delete(socket.id);
       if (this.activeIngestClients.size === 0) {
         this.broadcastServiceStatus('media-ingest', 'unhealthy', socket.id);
+        // Session state lives in ingest memory; once ingest is gone the retained
+        // programme media URL would 404 for every newly joining listener.
+        this.latestProgrammeMediaState = null;
       }
     }
     this.clients.delete(socket.id);
@@ -714,7 +903,30 @@ export class Gateway {
     socket: Socket,
     parsed: Extract<WebRtcIncomingSignallingEnvelope, { type: 'ice-candidate' | 'ice-complete' }>,
   ): void {
-    const route = this.tryWebRtc(socket, parsed, () => this.webrtcSessions.signal(socket.id, parsed));
+    let route: WebRtcRouteResult;
+    try {
+      route = this.webrtcSessions.signal(socket.id, parsed);
+      logger.info('WebRTC signalling accepted', {
+        type: parsed.type,
+        sessionId: parsed.sessionId,
+        peerId: parsed.peerId,
+        role: parsed.senderRole,
+        revision: parsed.revision,
+      });
+    } catch (error) {
+      if (isIgnorableLateIce(error)) {
+        logger.info('Late WebRTC ICE ignored', {
+          type: parsed.type,
+          sessionId: parsed.sessionId,
+          peerId: parsed.peerId,
+          role: parsed.senderRole,
+          revision: parsed.revision,
+        });
+        return;
+      }
+      this.emitWebRtcError(socket, parsed, error);
+      return;
+    }
     if (!route) return;
     if (parsed.type === 'ice-candidate') {
       const registry =
@@ -742,7 +954,7 @@ export class Gateway {
   ): void {
     const result = this.tryWebRtc(socket, parsed, () => {
       this.webrtcSessions.disconnectBackendMediaPeer(socket.id, parsed);
-      this.backendMediaPeers.closeSession(parsed.sessionId, parsed.payload.reason ?? 'backend media peer disconnected');
+      this.teardownProgrammeSession(parsed.sessionId, parsed.payload.reason ?? 'backend media peer disconnected');
       return {
         outgoing: {
           ...parsed,
@@ -775,9 +987,16 @@ export class Gateway {
   private async startListenerDeliveryForSession(sessionId: string | undefined): Promise<void> {
     if (!sessionId) return;
     const broadcaster = this.backendMediaPeers.getSnapshot(sessionId);
-    if (!broadcaster || !broadcaster.audioActivityDetected || broadcaster.audioTrackState !== 'active') {
+    if (
+      !broadcaster ||
+      (broadcaster.audioTrackState !== 'received' && broadcaster.audioTrackState !== 'active')
+    ) {
       return;
     }
+    const includeVideo =
+      broadcaster.videoExpected ||
+      broadcaster.videoTrackState === 'received' ||
+      broadcaster.videoTrackState === 'active';
     const summary = this.webrtcSessions.getSessionSummary(sessionId);
     if (!summary) return;
     const listeners = this.webrtcSessions.getListenerPeers(sessionId);
@@ -791,7 +1010,9 @@ export class Gateway {
         );
         const current = this.webrtcSessions.getSessionSummary(sessionId);
         if (!current) return;
-        const offer = await this.listenerMediaPeers.createOffer(listener, current, current.revision + 1);
+        const offer = await this.listenerMediaPeers.createOffer(listener, current, current.revision + 1, {
+          includeVideo,
+        });
         if (offer) this.routeBackendWebRtcSignal(offer);
       } catch (error) {
         logger.warn('Backend listener WebRTC offer failed', {
@@ -945,6 +1166,100 @@ export class Gateway {
     }
   }
 
+  private applyProgrammeSessionConfig(
+    context: BackendMediaPeerAudioContext,
+  ): WebRtcTranscriptionBridgeContext {
+    const config = this.programmeSessionConfigs.get(context.sessionId);
+    if (!config) return context;
+    return {
+      ...context,
+      ...(config.programmeSourceType === 'rtmp' && config.rtmpPlaybackUrl
+        ? { externalAudioSource: 'rtmp-hls' as const, externalAudioUrl: config.rtmpPlaybackUrl }
+        : {}),
+      targetLanguage: config.targetLanguage,
+      targetLanguages: config.targetLanguages,
+      sourceLanguage: config.sourceLanguage,
+      sourceLanguageMode: config.sourceLanguageMode,
+    };
+  }
+
+  private broadcastProgrammeSessionConfig(config: OperatorProgrammeSessionConfig): void {
+    const shareableWebRtcSessionId = createShareableWebRtcSessionId(
+      config.broadcastId,
+      config.sessionId,
+    );
+    const retained = this.latestProgrammeMediaState;
+    const videoTimestampMs =
+      retained && retained.processingSessionId === config.sessionId
+        ? retained.videoTimestampMs
+        : 0;
+    const state: MediaStateEvent = {
+      eventId: 'Videofy Live Demo Event',
+      streamId: config.broadcastId,
+      processingSessionId: config.sessionId,
+      shareableWebRtcSessionId,
+      streamStatus: 'processing',
+      videoSource: 'webrtc',
+      videoTimestampMs,
+      sourceAudioActive: false,
+      translatedLanguages: config.targetLanguages,
+      connectedListeners: this.listenerCount,
+      createdAt: new Date().toISOString(),
+    };
+    this.latestProgrammeMediaState = state;
+    this.io.emit(SOCKET_EVENTS.MEDIA_STATE, state);
+  }
+
+  private sourceMediaUrl(sessionId: string): string {
+    return `${this.mediaIngestPublicUrl.replace(/\/$/, '')}/sessions/${encodeURIComponent(sessionId)}/source-media`;
+  }
+
+  private parseProgrammeSessionConfig(raw: unknown): OperatorProgrammeSessionConfig | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const candidate = raw as Partial<OperatorProgrammeSessionConfig>;
+    if (!isSafeIdentifier(candidate.sessionId)) return null;
+    if (!isSafeIdentifier(candidate.broadcastId)) return null;
+    const sourceRevision = candidate.sourceRevision;
+    if (
+      typeof sourceRevision !== 'number' ||
+      !Number.isInteger(sourceRevision) ||
+      sourceRevision < 0
+    ) {
+      return null;
+    }
+    if (!isLanguageTag(candidate.targetLanguage)) return null;
+    if (!Array.isArray(candidate.targetLanguages)) return null;
+    const targetLanguages = [...new Set(candidate.targetLanguages.filter(isLanguageTag))];
+    if (targetLanguages.length === 0 || !targetLanguages.includes(candidate.targetLanguage)) return null;
+    if (!isLanguageTag(candidate.sourceLanguage)) return null;
+    if (
+      candidate.sourceLanguageMode !== 'manual' &&
+      candidate.sourceLanguageMode !== 'auto-detect'
+    ) {
+      return null;
+    }
+    const programmeSourceType =
+      typeof candidate.programmeSourceType === 'string'
+        ? candidate.programmeSourceType
+        : undefined;
+    const rtmpPlaybackUrl =
+      programmeSourceType === 'rtmp' && isSafeLocalHttpUrl(candidate.rtmpPlaybackUrl)
+        ? candidate.rtmpPlaybackUrl
+        : undefined;
+    if (programmeSourceType === 'rtmp' && !rtmpPlaybackUrl) return null;
+    return {
+      sessionId: candidate.sessionId,
+      broadcastId: candidate.broadcastId,
+      sourceRevision,
+      ...(programmeSourceType ? { programmeSourceType } : {}),
+      ...(rtmpPlaybackUrl ? { rtmpPlaybackUrl } : {}),
+      targetLanguage: candidate.targetLanguage,
+      targetLanguages,
+      sourceLanguage: candidate.sourceLanguage,
+      sourceLanguageMode: candidate.sourceLanguageMode,
+    };
+  }
+
   private parseOperatorControl(raw: unknown): OperatorControlEvent | null {
     if (!raw || typeof raw !== 'object') return null;
     const action = (raw as { action?: unknown }).action;
@@ -968,6 +1283,22 @@ export class Gateway {
     if (targetLanguage !== undefined) control.targetLanguage = targetLanguage;
     return control;
   }
+
+  private parseAudioModePreferences(raw: unknown): AudioMixPreferences | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const candidate = raw as Partial<AudioMixPreferences>;
+    if (candidate.mode !== 'interpretation' && candidate.mode !== 'replacement') return null;
+    if (!isAudioLevel(candidate.originalVolume) || !isAudioLevel(candidate.translatedVolume)) {
+      return null;
+    }
+    if (typeof candidate.subtitlesEnabled !== 'boolean') return null;
+    return {
+      mode: candidate.mode,
+      originalVolume: candidate.originalVolume,
+      translatedVolume: candidate.translatedVolume,
+      subtitlesEnabled: candidate.subtitlesEnabled,
+    };
+  }
 }
 
 function normalizeBackendGatewayError(error: unknown): WebRtcSignallingError {
@@ -982,10 +1313,71 @@ function normalizeBackendGatewayError(error: unknown): WebRtcSignallingError {
   );
 }
 
+function isIgnorableLateIce(error: unknown): boolean {
+  return (
+    error instanceof WebRtcSignallingError &&
+    (error.code === 'stale-negotiation' || error.code === 'offer-required')
+  );
+}
+
 function estimateJsonBytes(raw: unknown): number {
   try {
     return Buffer.byteLength(JSON.stringify(raw), 'utf8');
   } catch {
     return WEBRTC_SIGNALLING_LIMITS.rawPayloadMaxBytes + 1;
   }
+}
+
+function isAudioLevel(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function isTerminalMediaState(status: string): boolean {
+  return status === 'completed' || status === 'cancelled' || status === 'failed';
+}
+
+export function shouldUseWebRtcTranscriptionForProgrammeSource(
+  programmeSourceType: string | undefined,
+): boolean {
+  return programmeSourceType !== 'uploaded-video';
+}
+
+export function resolveProgrammeIngestStreamStatus(
+  programmeSourceType: string | undefined,
+  streamStatus: StreamStatus,
+): StreamStatus {
+  return programmeSourceType === 'uploaded-video' && streamStatus === 'completed'
+    ? 'processing'
+    : streamStatus;
+}
+
+function canDeliverUploadedStems(state: MediaStateEvent): boolean {
+  if (state.streamStatus === 'completed') return true;
+  return (
+    state.streamStatus === 'failed' &&
+    (state.targetLanguageOutputs?.some(
+      (output) => output.captionsAvailable || output.audioAvailable,
+    ) ?? false)
+  );
+}
+
+function isSafeIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-zA-Z0-9:_/-]{1,128}$/.test(value);
+}
+
+function isSafeLocalHttpUrl(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) return false;
+    if (!url.pathname.endsWith('/index.m3u8')) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isLanguageTag(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z]{2,3}(?:-[A-Z]{2})?$/.test(value);
 }

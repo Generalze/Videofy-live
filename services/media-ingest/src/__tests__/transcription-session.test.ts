@@ -7,6 +7,7 @@ import {
   type ProbeResult,
   type UploadedMediaFile,
 } from '../media-session.js';
+import { MockTimestampedTranslationProvider } from '../translation-provider.js';
 import type {
   TranscriptionProvider,
   TranscriptionProviderInput,
@@ -84,11 +85,15 @@ function provider(
   };
 }
 
+function wholeChunkSegments(input: TranscriptionProviderInput, text: string) {
+  return [{ text, startMs: 0, endMs: input.chunk.endMs - input.chunk.startMs }];
+}
+
 describe('timestamped transcription sessions', () => {
   it('transcribes ready chunks successfully', async () => {
     const session = await store(
       provider(async (input) => ({
-        sourceText: `text ${input.chunk.index}`,
+        segments: wholeChunkSegments(input, `text ${input.chunk.index}`),
         detectedLanguage: 'en',
         confidence: 0.9,
       })),
@@ -108,7 +113,7 @@ describe('timestamped transcription sessions', () => {
   it('preserves correct chunk ordering', async () => {
     const session = await store(
       provider(async (input) => ({
-        sourceText: `ordered ${input.chunk.index}`,
+        segments: wholeChunkSegments(input, `ordered ${input.chunk.index}`),
         detectedLanguage: 'en',
         confidence: null,
       })),
@@ -124,8 +129,8 @@ describe('timestamped transcription sessions', () => {
 
   it('preserves chunk timestamps', async () => {
     const session = await store(
-      provider(async () => ({
-        sourceText: 'timestamped',
+      provider(async (input) => ({
+        segments: wholeChunkSegments(input, 'timestamped'),
         detectedLanguage: 'en',
         confidence: 0.8,
       })),
@@ -138,19 +143,58 @@ describe('timestamped transcription sessions', () => {
     ]);
   });
 
-  it('accepts empty speech as a transcribed chunk', async () => {
+  it('fans out one transcription event per whisper segment with absolute timestamps', async () => {
+    const session = await store(
+      provider(async (input) => ({
+        segments:
+          input.chunk.index === 0
+            ? [
+                { text: 'first sentence.', startMs: 0, endMs: 4_000 },
+                { text: 'second sentence.', startMs: 4_500, endMs: 9_000 },
+                { text: 'third sentence.', startMs: 9_500, endMs: 16_000 },
+              ]
+            : wholeChunkSegments(input, `chunk ${input.chunk.index}`),
+        detectedLanguage: 'en',
+        confidence: 0.9,
+      })),
+    ).createFromUpload(upload(), async () => validProbe);
+
+    expect(session.state).toBe('completed');
+    expect(session.transcription.events).toHaveLength(5);
+    expect(session.transcription.events.map((event) => event.sequence)).toEqual([0, 1, 2, 3, 4]);
+    expect(new Set(session.transcription.events.map((event) => event.chunkId)).size).toBe(5);
+    expect(
+      session.transcription.events.map((event) => event.chunkId.slice(event.chunkId.indexOf(':chunk:'))),
+    ).toEqual([':chunk:0-s0', ':chunk:0-s1', ':chunk:0-s2', ':chunk:1-s0', ':chunk:2-s0']);
+    expect(session.transcription.events.map((event) => [event.startMs, event.endMs])).toEqual([
+      [0, 4_000],
+      [4_500, 9_000],
+      [9_500, 15_000],
+      [15_000, 30_000],
+      [30_000, 31_000],
+    ]);
+    expect(session.transcription.events.map((event) => event.sourceText)).toEqual([
+      'first sentence.',
+      'second sentence.',
+      'third sentence.',
+      'chunk 1',
+      'chunk 2',
+    ]);
+  });
+
+  it('skips empty or whitespace-only speech segments and completes cleanly', async () => {
     const session = await store(
       provider(async () => ({
-        sourceText: '',
+        segments: [{ text: '   ', startMs: 0, endMs: 1_000 }],
         detectedLanguage: 'en',
         confidence: null,
       })),
     ).createFromUpload(upload(), async () => validProbe);
 
-    expect(session.transcription.events.every((event) => event.status === 'transcribed')).toBe(
-      true,
-    );
-    expect(session.transcription.events.every((event) => event.sourceText === '')).toBe(true);
+    expect(session.state).toBe('completed');
+    expect(session.transcription).toMatchObject({ status: 'transcribed', progressPct: 100 });
+    expect(session.transcription.events).toEqual([]);
+    expect(session.translation.events).toEqual([]);
   });
 
   it('marks chunks failed on provider timeout', async () => {
@@ -186,7 +230,7 @@ describe('timestamped transcription sessions', () => {
           throw new Error('first attempt failed');
         }
         return {
-          sourceText: `retry ${input.chunk.index}`,
+          segments: wholeChunkSegments(input, `retry ${input.chunk.index}`),
           detectedLanguage: 'en',
           confidence: 0.95,
         };
@@ -202,6 +246,67 @@ describe('timestamped transcription sessions', () => {
     expect(retried.transcription.transcribedChunks).toBe(3);
   });
 
+  it('renumbers fan-out sequences into timeline order after a chunk retry', async () => {
+    const attempts = new Map<number, number>();
+    const sessionStore = store(
+      provider(async (input) => {
+        const current = attempts.get(input.chunk.index) ?? 0;
+        attempts.set(input.chunk.index, current + 1);
+        if (input.chunk.index === 1 && current === 0) {
+          throw new Error('first attempt failed');
+        }
+        return {
+          segments:
+            input.chunk.index === 0
+              ? [
+                  { text: 'chunk0 first.', startMs: 0, endMs: 7_000 },
+                  { text: 'chunk0 second.', startMs: 7_000, endMs: 15_000 },
+                ]
+              : wholeChunkSegments(input, `chunk${input.chunk.index} text`),
+          detectedLanguage: 'en',
+          confidence: 0.95,
+        };
+      }),
+    );
+    const failed = await sessionStore.createFromUpload(upload(), async () => validProbe);
+    const failedChunk = failed.transcription.events.find((event) => event.status === 'failed')!;
+
+    const retried = await sessionStore.retryTranscriptionChunk(failed.id, failedChunk.chunkId);
+
+    expect(retried.state).toBe('completed');
+    // The retried chunk's fan-out lands back in its timeline position with
+    // contiguous 0-based sequences instead of trailing the counter.
+    expect(retried.transcription.events.map((event) => event.sequence)).toEqual([0, 1, 2, 3]);
+    expect(retried.transcription.events.map((event) => event.sourceText)).toEqual([
+      'chunk0 first.',
+      'chunk0 second.',
+      'chunk1 text',
+      'chunk2 text',
+    ]);
+    expect(sessionStore.exportTranscript(failed.id)).toBe(
+      '[00:00.000 - 00:07.000] chunk0 first.\n' +
+        '[00:07.000 - 00:15.000] chunk0 second.\n' +
+        '[00:15.000 - 00:30.000] chunk1 text\n' +
+        '[00:30.000 - 00:31.000] chunk2 text',
+    );
+    // Downstream passes inherit the timeline order, and the generated-audio
+    // channel keeps its contiguous 0-based per-language sequence contract.
+    expect(retried.translation.events.map((event) => event.sequence)).toEqual([0, 1, 2, 3]);
+    expect(retried.translation.events.map((event) => event.sourceText)).toEqual([
+      'chunk0 first.',
+      'chunk0 second.',
+      'chunk1 text',
+      'chunk2 text',
+    ]);
+    expect(retried.generatedAudio.events.map((event) => event.sequence)).toEqual([0, 1, 2, 3]);
+    expect(retried.generatedAudio.events.map((event) => event.audioFilename)).toEqual([
+      'tts-000000.wav',
+      'tts-000001.wav',
+      'tts-000002.wav',
+      'tts-000003.wav',
+    ]);
+  });
+
   it('rejects duplicate processing while a chunk is active', async () => {
     let release: ((value: TranscriptionProviderResult) => void) | undefined;
     let activeSessionId: string | undefined;
@@ -210,7 +315,11 @@ describe('timestamped transcription sessions', () => {
       extractAudio: extractor,
       transcriptionProvider: provider(async (input) => {
         if (input.chunk.index > 0) {
-          return { sourceText: 'done', detectedLanguage: 'en', confidence: 0.9 };
+          return {
+            segments: wholeChunkSegments(input, 'done'),
+            detectedLanguage: 'en',
+            confidence: 0.9,
+          };
         }
         return await new Promise<TranscriptionProviderResult>((resolve) => {
           release = resolve;
@@ -230,7 +339,11 @@ describe('timestamped transcription sessions', () => {
       code: 'duplicate-processing',
     });
 
-    release?.({ sourceText: 'done', detectedLanguage: 'en', confidence: 0.9 });
+    release?.({
+      segments: [{ text: 'done', startMs: 0, endMs: 15_000 }],
+      detectedLanguage: 'en',
+      confidence: 0.9,
+    });
     await created;
   });
 
@@ -239,7 +352,7 @@ describe('timestamped transcription sessions', () => {
       provider(async (input) => {
         if (input.chunk.index === 1) throw new Error('middle failed');
         return {
-          sourceText: `ok ${input.chunk.index}`,
+          segments: wholeChunkSegments(input, `ok ${input.chunk.index}`),
           detectedLanguage: 'en',
           confidence: 0.9,
         };
@@ -259,7 +372,7 @@ describe('timestamped transcription sessions', () => {
   it('exports a completed transcript in timestamp order', async () => {
     const sessionStore = store(
       provider(async (input) => ({
-        sourceText: `line ${input.chunk.index}`,
+        segments: wholeChunkSegments(input, `line ${input.chunk.index}`),
         detectedLanguage: 'en',
         confidence: 0.9,
       })),
@@ -269,6 +382,158 @@ describe('timestamped transcription sessions', () => {
     expect(sessionStore.exportTranscript(session.id)).toBe(
       '[00:00.000 - 00:15.000] line 0\n[00:15.000 - 00:30.000] line 1\n[00:30.000 - 00:31.000] line 2',
     );
+  });
+
+  it('stores manual source language and passes it to the transcription provider', async () => {
+    const seen: Array<{ language?: string; mode?: string }> = [];
+    const session = await store(
+      provider(async (input) => {
+        seen.push({
+          ...(input.sourceLanguage ? { language: input.sourceLanguage } : {}),
+          ...(input.sourceLanguageMode ? { mode: input.sourceLanguageMode } : {}),
+        });
+        return {
+          segments: wholeChunkSegments(input, 'manual language'),
+          detectedLanguage: 'en',
+          confidence: 0.98,
+        };
+      }),
+    ).createFromUpload(
+      {
+        ...upload(),
+        sourceLanguage: 'en',
+        sourceLanguageMode: 'manual',
+        targetLanguage: 'fr',
+      },
+      async () => validProbe,
+    );
+
+    expect(seen.every((item) => item.language === 'en' && item.mode === 'manual')).toBe(true);
+    expect(session.sourceLanguageControl).toMatchObject({
+      activeLanguage: 'en',
+      mode: 'manual',
+      status: 'manual',
+      revision: 0,
+    });
+    expect(session.transcription.sourceLanguageRevision).toBe(0);
+  });
+
+  it('marks low-confidence auto-detect results for confirmation without switching silently', async () => {
+    const session = await store(
+      provider(async (input) => ({
+        segments: wholeChunkSegments(input, 'low confidence language'),
+        detectedLanguage: 'pt',
+        confidence: 0.5,
+      })),
+    ).createFromUpload(
+      {
+        ...upload(),
+        sourceLanguageMode: 'auto-detect',
+        targetLanguage: 'fr',
+      },
+      async () => validProbe,
+    );
+
+    expect(session.sourceLanguageControl).toMatchObject({
+      activeLanguage: 'en',
+      detectedLanguage: 'pt',
+      detectionConfidence: 0.5,
+      status: 'needs-confirmation',
+      revision: 0,
+    });
+  });
+
+  it('creates a language revision boundary on operator override', async () => {
+    const sessionStore = store(
+      provider(async (input) => ({
+        segments: wholeChunkSegments(input, 'source'),
+        detectedLanguage: 'en',
+        confidence: 0.99,
+      })),
+    );
+    const session = await sessionStore.createFromUpload(upload(), async () => validProbe);
+
+    const updated = sessionStore.updateSourceLanguageControl(session.id, {
+      action: 'override',
+      language: 'pt',
+    });
+
+    expect(updated.sourceLanguageControl).toMatchObject({
+      activeLanguage: 'pt',
+      revision: 1,
+      status: 'manual',
+    });
+    expect(updated.translation.events).toEqual([]);
+    expect(updated.generatedAudio.events).toEqual([]);
+  });
+
+  it('locks and unlocks the confirmed source language without changing revision', async () => {
+    const sessionStore = store(
+      provider(async (input) => ({
+        segments: wholeChunkSegments(input, 'source'),
+        detectedLanguage: 'en',
+        confidence: 0.99,
+      })),
+    );
+    const session = await sessionStore.createFromUpload(
+      {
+        ...upload(),
+        sourceLanguageMode: 'auto-detect',
+      },
+      async () => validProbe,
+    );
+
+    const locked = sessionStore.updateSourceLanguageControl(session.id, { action: 'lock' });
+    expect(locked.sourceLanguageControl).toMatchObject({
+      activeLanguage: 'en',
+      locked: true,
+      status: 'locked',
+      revision: 0,
+    });
+
+    const unlocked = sessionStore.updateSourceLanguageControl(session.id, { action: 'unlock' });
+    expect(unlocked.sourceLanguageControl).toMatchObject({
+      activeLanguage: 'en',
+      locked: false,
+      mode: 'auto-detect',
+      status: 'detecting',
+      revision: 0,
+    });
+  });
+
+  it('supports configured text-only target languages without failing translated text', async () => {
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: 'C:/tmp/chunks',
+      extractAudio: async (input) => completedExtraction([chunk(input.sessionId, 0, 0, 1000)]),
+      transcriptionProvider: provider(async (input) => ({
+        segments: wholeChunkSegments(input, 'hello'),
+        detectedLanguage: 'en',
+        confidence: 0.99,
+      })),
+      translationProvider: new MockTimestampedTranslationProvider(['yo', 'fr']),
+      translationSupportedTargetLanguages: ['yo', 'fr'],
+      textToSpeechSupportedLanguages: ['fr'],
+    });
+
+    const session = await sessionStore.createFromUpload(
+      {
+        ...upload(),
+        targetLanguage: 'yo',
+        targetLanguages: ['yo', 'fr'],
+      },
+      async () => validProbe,
+    );
+
+    expect(session.translation.status).toBe('translated');
+    expect(session.generatedAudio).toMatchObject({
+      status: 'generated',
+      providerStatus: 'text-only',
+      textOnlyLanguages: ['yo'],
+      totalSegments: 1,
+    });
+    expect(session.targetLanguageCatalogue.find((item) => item.language === 'yo')).toMatchObject({
+      textOnly: true,
+    });
   });
 });
 

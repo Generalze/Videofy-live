@@ -13,6 +13,7 @@ export interface TimestampedTranslationEvent {
   segmentId: string;
   sequence: number;
   sourceLanguage: string;
+  sourceLanguageRevision?: number;
   targetLanguage: string;
   sourceText: string;
   translatedText: string;
@@ -33,7 +34,9 @@ export interface TranslationSessionMetadata {
   translatedSegments: number;
   failedSegments: number;
   sourceLanguage: string | null;
+  sourceLanguageRevision?: number;
   targetLanguage: string;
+  targetLanguages?: string[];
   events: TimestampedTranslationEvent[];
   error?: string;
 }

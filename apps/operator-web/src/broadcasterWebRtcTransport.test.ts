@@ -25,10 +25,25 @@ function audioTrack() {
   } as unknown as MediaStreamTrack & { emitEnded: () => void };
 }
 
+function videoTrack() {
+  const listeners = new Set<() => void>();
+  return {
+    kind: 'video',
+    readyState: 'live',
+    addEventListener: vi.fn((event: string, listener: () => void) => {
+      if (event === 'ended') listeners.add(listener);
+    }),
+    removeEventListener: vi.fn((event: string, listener: () => void) => {
+      if (event === 'ended') listeners.delete(listener);
+    }),
+    emitEnded: () => listeners.forEach((listener) => listener()),
+  } as unknown as MediaStreamTrack & { emitEnded: () => void };
+}
+
 function mediaStream(tracks: MediaStreamTrack[]) {
   return {
-    getAudioTracks: vi.fn(() => tracks),
-    getVideoTracks: vi.fn(() => []),
+    getAudioTracks: vi.fn(() => tracks.filter((track) => track.kind === 'audio')),
+    getVideoTracks: vi.fn(() => tracks.filter((track) => track.kind === 'video')),
     getTracks: vi.fn(() => tracks),
   } as unknown as MediaStream;
 }
@@ -101,7 +116,10 @@ function answer(revision = 1): WebRtcSdpAnswerEnvelope {
   };
 }
 
-function ready(revision = 1): WebRtcPeerReadyEnvelope {
+function ready(
+  revision = 1,
+  payloadOverrides: { audioTrackReceived?: boolean; videoTrackReceived?: boolean } = {},
+): WebRtcPeerReadyEnvelope {
   return {
     type: 'peer-ready',
     protocolVersion: 1,
@@ -112,7 +130,7 @@ function ready(revision = 1): WebRtcPeerReadyEnvelope {
     senderRole: 'server',
     revision,
     createdAt: '2026-07-27T00:00:00.000Z',
-    payload: { state: 'ready' },
+    payload: { state: 'ready', ...payloadOverrides } as WebRtcPeerReadyEnvelope['payload'],
   };
 }
 
@@ -133,6 +151,9 @@ describe('BroadcasterWebRtcTransportController', () => {
 
     await expect(controller.start(mediaStream([]))).rejects.toMatchObject({
       code: 'missing-audio-track',
+    });
+    await expect(controller.start(mediaStream([]))).rejects.not.toMatchObject({
+      message: expect.stringContaining('local broadcaster capture'),
     });
   });
 
@@ -159,6 +180,108 @@ describe('BroadcasterWebRtcTransportController', () => {
       state: 'awaiting-answer',
       localAudioTrackAttached: true,
     });
+  });
+
+  it('creates one programme peer offer with optional video in the same transport', async () => {
+    const peer = new FakePeer();
+    const client = signallingClient();
+    const controller = new BroadcasterWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+    });
+
+    await controller.start(mediaStream([audioTrack(), videoTrack()]));
+    await controller.handleSignallingEvent(ready());
+
+    expect(peer.addTrack).toHaveBeenCalledTimes(2);
+    expect(controller.getSnapshot()).toMatchObject({
+      localAudioTrackAttached: true,
+      localVideoTrackAttached: true,
+      backendAudioTrackReceived: true,
+      backendVideoTrackReceived: true,
+    });
+  });
+
+  it('consumes backend-reported track receipt from the peer-ready payload', async () => {
+    const controller = new BroadcasterWebRtcTransportController({
+      signallingClient: signallingClient(),
+      createPeerConnection: () => new FakePeer() as never,
+    });
+
+    // Audio-only local stream: the local-flag fallback alone would report
+    // backendVideoTrackReceived=false, but the gateway says video arrived.
+    await controller.start(mediaStream([audioTrack()]));
+    await controller.handleSignallingEvent(
+      ready(1, { audioTrackReceived: true, videoTrackReceived: true }),
+    );
+
+    expect(controller.getSnapshot()).toMatchObject({
+      backendAudioTrackReceived: true,
+      backendVideoTrackReceived: true,
+    });
+  });
+
+  it('trusts the peer-ready payload over the local flag when backend video is missing', async () => {
+    const controller = new BroadcasterWebRtcTransportController({
+      signallingClient: signallingClient(),
+      createPeerConnection: () => new FakePeer() as never,
+    });
+
+    await controller.start(mediaStream([audioTrack(), videoTrack()]));
+    await controller.handleSignallingEvent(ready(1, { videoTrackReceived: false }));
+
+    expect(controller.getSnapshot()).toMatchObject({
+      backendAudioTrackReceived: true,
+      backendVideoTrackReceived: false,
+    });
+  });
+
+  it('waits until backend confirms programme audio and video are available', async () => {
+    const peer = new FakePeer();
+    const controller = new BroadcasterWebRtcTransportController({
+      signallingClient: signallingClient(),
+      createPeerConnection: () => peer as never,
+    });
+
+    await controller.start(mediaStream([audioTrack(), videoTrack()]));
+    const wait = controller.waitForBackendMedia({ requireVideo: true, timeoutMs: 100 });
+    await controller.handleSignallingEvent(ready());
+
+    await expect(wait).resolves.toMatchObject({
+      backendAudioTrackReceived: true,
+      backendVideoTrackReceived: true,
+    });
+  });
+
+  it('times out when programme media never reaches the backend', async () => {
+    vi.useFakeTimers();
+    const controller = new BroadcasterWebRtcTransportController({
+      signallingClient: signallingClient(),
+      createPeerConnection: () => new FakePeer() as never,
+    });
+    await controller.start(mediaStream([audioTrack(), videoTrack()]));
+
+    const wait = expect(
+      controller.waitForBackendMedia({ requireVideo: true, timeoutMs: 25 }),
+    ).rejects.toMatchObject({
+      code: 'negotiation-timeout',
+      message: 'Timed out waiting for backend programme audio and video.',
+    });
+    await vi.advanceTimersByTimeAsync(25);
+
+    await wait;
+    vi.useRealTimers();
+  });
+
+  it('rejects duplicate programme video tracks', async () => {
+    const controller = new BroadcasterWebRtcTransportController({
+      signallingClient: signallingClient(),
+      createPeerConnection: () => new FakePeer() as never,
+    });
+
+    await expect(
+      controller.start(mediaStream([audioTrack(), videoTrack(), videoTrack()])),
+    ).rejects.toMatchObject({ code: 'duplicate-video-track' });
   });
 
   it('applies backend answer, local ICE and backend ready events', async () => {

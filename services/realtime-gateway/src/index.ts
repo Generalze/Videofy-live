@@ -11,8 +11,20 @@ const app = createApp();
 const server = createServer(app);
 const gateway = new Gateway(server, config.corsOrigins, {
   mediaIngestUrl: config.mediaIngestUrl,
+  mediaIngestPublicUrl: config.mediaIngestPublicUrl,
   internalWebRtcToken: config.internalWebRtcToken,
   webRtcTranscriptionChunkMs: config.webRtcTranscriptionChunkMs,
+  webRtcTranscriptionRequestTimeoutMs: config.webRtcTranscriptionRequestTimeoutMs,
+  vad: config.webRtcVadEnabled
+    ? {
+        enabled: true,
+        mode: config.webRtcVadMode,
+        speechThreshold: config.webRtcVadSpeechThreshold,
+        endSilenceMs: config.webRtcVadEndSilenceMs,
+        minSpeechMs: config.webRtcVadMinSpeechMs,
+        maxSegmentMs: config.webRtcVadMaxSegmentMs,
+      }
+    : undefined,
   webRtcTranscriptionStagingDir: config.webRtcTranscriptionStagingDir,
 });
 

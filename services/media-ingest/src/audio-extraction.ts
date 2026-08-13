@@ -44,7 +44,11 @@ export function emptyAudioExtraction(
   };
 }
 
-export function buildFfmpegChunkArgs(sourcePath: string, outputPattern: string): string[] {
+export function buildFfmpegChunkArgs(
+  sourcePath: string,
+  outputPattern: string,
+  expectedDurationMs?: number,
+): string[] {
   return [
     '-y',
     '-i',
@@ -58,6 +62,11 @@ export function buildFfmpegChunkArgs(sourcePath: string, outputPattern: string):
     '16000',
     '-acodec',
     'pcm_s16le',
+    // Pad audio with silence to the container duration so the interpretation
+    // timeline covers the full video even when the audio stream ends early.
+    ...(expectedDurationMs !== undefined && expectedDurationMs > 0
+      ? ['-af', 'apad', '-t', (expectedDurationMs / 1000).toFixed(3)]
+      : []),
     '-f',
     'segment',
     '-segment_time',
@@ -119,7 +128,7 @@ export async function extractAudioChunks(
   await rm(outputDir, { recursive: true, force: true });
   await mkdir(outputDir, { recursive: true });
 
-  await runFfmpeg(buildFfmpegChunkArgs(input.sourcePath, outputPattern));
+  await runFfmpeg(buildFfmpegChunkArgs(input.sourcePath, outputPattern, input.expectedDurationMs));
 
   const files = (await readdir(outputDir))
     .filter((filename) => /^chunk-\d{6}\.wav$/.test(filename))

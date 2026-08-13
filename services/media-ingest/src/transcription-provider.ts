@@ -1,22 +1,62 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { basename, extname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { AudioChunkMetadata } from '@videofy-live/shared-types';
 import { MediaIngestError } from './ingest-error.js';
+import {
+  PYTHON_WORKER_LOOP,
+  createPersistentPythonWorker,
+  type PythonWorkerFactory,
+  type PythonWorkerLike,
+} from './persistent-python-worker.js';
 
 const execFileAsync = promisify(execFile);
 const COMMAND_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
+const WARMUP_SILENCE_MS = 200;
+const WARMUP_TIMEOUT_MS = 300_000;
+
+/** Minimal 16 kHz mono PCM16 WAV of silence for provider warm-up. */
+function silentWav(durationMs: number): Buffer {
+  const sampleRate = 16_000;
+  const sampleCount = Math.max(1, Math.round((durationMs / 1000) * sampleRate));
+  const dataBytes = sampleCount * 2;
+  const buffer = Buffer.alloc(44 + dataBytes);
+  buffer.write('RIFF', 0, 'ascii');
+  buffer.writeUInt32LE(36 + dataBytes, 4);
+  buffer.write('WAVE', 8, 'ascii');
+  buffer.write('fmt ', 12, 'ascii');
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * 2, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write('data', 36, 'ascii');
+  buffer.writeUInt32LE(dataBytes, 40);
+  return buffer;
+}
 
 export interface TranscriptionProviderInput {
   sessionId: string;
   streamId: string;
   chunk: AudioChunkMetadata;
   audioPath: string;
+  sourceLanguage?: string;
+  sourceLanguageMode?: 'manual' | 'auto-detect';
+}
+
+export interface TranscriptionSegment {
+  text: string;
+  startMs: number;
+  endMs: number;
 }
 
 export interface TranscriptionProviderResult {
-  sourceText: string;
+  segments: TranscriptionSegment[];
   detectedLanguage: string;
   confidence: number | null;
   providerLatencyMs?: number | null;
@@ -25,6 +65,8 @@ export interface TranscriptionProviderResult {
 export interface TranscriptionProvider {
   readonly name: string;
   transcribe(input: TranscriptionProviderInput): Promise<TranscriptionProviderResult>;
+  /** Optional: pre-load the model so the first real chunk pays no cold start. */
+  warmUp?(): Promise<void>;
 }
 
 export interface TranscriptionProviderConfig {
@@ -57,7 +99,10 @@ export type CommandRunner = (
 ) => Promise<CommandResult>;
 
 export interface FasterWhisperProviderOptions extends FasterWhisperConfig {
+  /** Seam for FFmpeg microphone-audio normalisation commands. */
   runCommand?: CommandRunner;
+  /** Seam for the persistent faster-whisper python worker. */
+  createWorker?: PythonWorkerFactory;
 }
 
 export function createTranscriptionProvider(
@@ -109,7 +154,13 @@ export class MockTranscriptionProvider implements TranscriptionProvider {
 
   async transcribe(input: TranscriptionProviderInput): Promise<TranscriptionProviderResult> {
     return {
-      sourceText: `Mock transcript chunk ${input.chunk.index + 1}`,
+      segments: [
+        {
+          text: `Mock transcript chunk ${input.chunk.index + 1}`,
+          startMs: 0,
+          endMs: Math.max(0, input.chunk.endMs - input.chunk.startMs),
+        },
+      ],
       detectedLanguage: this.sourceLanguage,
       confidence: 0.99,
       providerLatencyMs: 0,
@@ -120,16 +171,46 @@ export class MockTranscriptionProvider implements TranscriptionProvider {
 export class FasterWhisperTranscriptionProvider implements TranscriptionProvider {
   readonly name = 'faster-whisper';
   private readonly runCommand: CommandRunner;
+  private readonly createWorker: PythonWorkerFactory;
+  private readonly workers = new Map<FasterWhisperConfig['device'], PythonWorkerLike>();
+  private preferCpuFallback = false;
 
   constructor(private readonly options: FasterWhisperProviderOptions) {
     validateFasterWhisperConfig(options);
     this.runCommand = options.runCommand ?? defaultCommandRunner;
+    this.createWorker = options.createWorker ?? createPersistentPythonWorker;
+  }
+
+  /**
+   * Loads the model ahead of the first real chunk by transcribing a tiny
+   * silent clip. Without this, the first upload after service start pays the
+   * whole model load inside the pipeline's per-chunk timeout and fails on
+   * slow or memory-pressured machines while a later retry succeeds.
+   */
+  async warmUp(): Promise<void> {
+    const warmupPath = resolve(
+      tmpdir(),
+      `videofy-whisper-warmup-${process.pid}.wav`,
+    );
+    await writeFile(warmupPath, silentWav(WARMUP_SILENCE_MS));
+    try {
+      const device = this.preferCpuFallback ? 'cpu' : this.options.device;
+      await this.workerFor(device).request(
+        { audioPath: warmupPath, languageHint: null },
+        { timeoutMs: WARMUP_TIMEOUT_MS },
+      );
+    } finally {
+      await rm(warmupPath, { force: true }).catch(() => undefined);
+    }
   }
 
   async transcribe(input: TranscriptionProviderInput): Promise<TranscriptionProviderResult> {
     const startedAt = Date.now();
     const audioPath = await this.prepareAudioPath(input);
-    const result = await this.runFasterWhisper(audioPath);
+    const result = await this.runFasterWhisper(
+      audioPath,
+      input.sourceLanguageMode === 'manual' ? input.sourceLanguage : undefined,
+    );
     const providerLatencyMs = Math.max(0, Date.now() - startedAt);
     if (
       this.options.device === 'cuda' &&
@@ -144,7 +225,7 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
     }
 
     return {
-      sourceText: result.text,
+      segments: result.segments,
       detectedLanguage: result.detectedLanguage,
       confidence: result.confidence,
       providerLatencyMs,
@@ -177,17 +258,24 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
     }
   }
 
-  private async runFasterWhisper(audioPath: string): Promise<FasterWhisperJsonResult> {
+  private async runFasterWhisper(
+    audioPath: string,
+    languageHint: string | undefined,
+  ): Promise<FasterWhisperJsonResult> {
+    const initialDevice = this.preferCpuFallback ? 'cpu' : this.options.device;
     try {
-      return await this.runFasterWhisperOnDevice(audioPath, this.options.device);
+      return await this.runFasterWhisperOnDevice(audioPath, initialDevice, languageHint);
     } catch (error) {
       if (
-        this.options.device === 'cuda' &&
+        initialDevice === 'cuda' &&
         this.options.allowGpuFallback &&
         error instanceof MediaIngestError &&
         error.code === 'transcription-gpu-unavailable'
       ) {
-        return await this.runFasterWhisperOnDevice(audioPath, 'cpu');
+        // Remember the fallback so subsequent chunks do not pay a failed GPU
+        // worker start-up (and model reload attempt) each time.
+        this.preferCpuFallback = true;
+        return await this.runFasterWhisperOnDevice(audioPath, 'cpu', languageHint);
       }
       throw error;
     }
@@ -196,27 +284,44 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
   private async runFasterWhisperOnDevice(
     audioPath: string,
     device: FasterWhisperConfig['device'],
+    languageHint: string | undefined,
   ): Promise<FasterWhisperJsonResult> {
-    const args = [
-      '-c',
-      FASTER_WHISPER_SCRIPT,
-      audioPath,
-      this.options.modelSize,
-      device,
-      this.options.computeType,
-      this.options.modelCacheDir ?? '',
-    ];
-
     try {
-      const result = await this.runCommand(this.options.pythonExecutable, args, {
-        timeoutMs: this.options.timeoutMs,
-      });
-      const parsed = parseFasterWhisperResult(result.stdout);
+      const raw = await this.workerFor(device).request(
+        { audioPath, languageHint: languageHint ?? null },
+        { timeoutMs: this.options.timeoutMs },
+      );
+      const parsed = parseFasterWhisperResult(raw);
       if (!parsed.device) parsed.device = device;
       return parsed;
     } catch (error) {
       throw classifyCommandError(error, 'python', `faster-whisper transcription failed.`);
     }
+  }
+
+  private workerFor(device: FasterWhisperConfig['device']): PythonWorkerLike {
+    const existing = this.workers.get(device);
+    if (existing) return existing;
+    const worker = this.createWorker({
+      command: this.options.pythonExecutable,
+      args: [
+        '-c',
+        FASTER_WHISPER_WORKER_SCRIPT,
+        this.options.modelSize,
+        device,
+        this.options.computeType,
+        this.options.modelCacheDir ?? '',
+      ],
+      maxConcurrency: 1,
+      label: 'faster-whisper',
+    });
+    this.workers.set(device, worker);
+    return worker;
+  }
+
+  dispose(): void {
+    for (const worker of this.workers.values()) worker.dispose();
+    this.workers.clear();
   }
 }
 
@@ -260,24 +365,13 @@ async function defaultCommandRunner(
 }
 
 interface FasterWhisperJsonResult {
-  text: string;
+  segments: TranscriptionSegment[];
   detectedLanguage: string;
   confidence: number | null;
   device: string;
 }
 
-function parseFasterWhisperResult(stdout: string): FasterWhisperJsonResult {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(stdout.trim());
-  } catch {
-    throw new MediaIngestError(
-      'faster-whisper returned invalid JSON output.',
-      'transcription-failed',
-      500,
-    );
-  }
-
+function parseFasterWhisperResult(raw: unknown): FasterWhisperJsonResult {
   if (!isRecord(raw)) {
     throw new MediaIngestError(
       'faster-whisper returned an invalid response shape.',
@@ -286,7 +380,7 @@ function parseFasterWhisperResult(stdout: string): FasterWhisperJsonResult {
     );
   }
   return {
-    text: typeof raw['text'] === 'string' ? raw['text'] : '',
+    segments: parseFasterWhisperSegments(raw['segments']),
     detectedLanguage:
       typeof raw['detectedLanguage'] === 'string' && raw['detectedLanguage']
         ? raw['detectedLanguage']
@@ -297,6 +391,24 @@ function parseFasterWhisperResult(stdout: string): FasterWhisperJsonResult {
         : null,
     device: typeof raw['device'] === 'string' && raw['device'] ? raw['device'] : '',
   };
+}
+
+function parseFasterWhisperSegments(value: unknown): TranscriptionSegment[] {
+  if (!Array.isArray(value)) return [];
+  const segments: TranscriptionSegment[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry) || typeof entry['text'] !== 'string') continue;
+    const startMs =
+      typeof entry['startMs'] === 'number' && Number.isFinite(entry['startMs'])
+        ? Math.max(0, Math.round(entry['startMs']))
+        : 0;
+    const endMs =
+      typeof entry['endMs'] === 'number' && Number.isFinite(entry['endMs'])
+        ? Math.max(startMs, Math.round(entry['endMs']))
+        : startMs;
+    segments.push({ text: entry['text'], startMs, endMs });
+  }
+  return segments;
 }
 
 function classifyCommandError(
@@ -378,16 +490,18 @@ export function validateFasterWhisperConfig(config: FasterWhisperConfig): void {
   }
 }
 
-const FASTER_WHISPER_SCRIPT = String.raw`
-import json
+/**
+ * Persistent faster-whisper worker: imports faster_whisper and loads the
+ * WhisperModel once per process, then serves {"audioPath", "languageHint"}
+ * requests over the shared stdin/stdout JSON-lines loop.
+ */
+const FASTER_WHISPER_WORKER_SCRIPT = `${PYTHON_WORKER_LOOP}\n${String.raw`
 import math
-import sys
 
-audio_path = sys.argv[1]
-model_size = sys.argv[2]
-device = sys.argv[3]
-compute_type = sys.argv[4]
-model_cache_dir = sys.argv[5] or None
+model_size = sys.argv[1]
+device = sys.argv[2]
+compute_type = sys.argv[3]
+model_cache_dir = sys.argv[4] or None
 
 from faster_whisper import WhisperModel
 
@@ -396,21 +510,32 @@ if model_cache_dir:
     kwargs["download_root"] = model_cache_dir
 
 model = WhisperModel(model_size, **kwargs)
-segments, info = model.transcribe(audio_path, vad_filter=True)
-texts = []
-for segment in segments:
-    text = (segment.text or "").strip()
-    if text:
-        texts.append(text)
 
-confidence = getattr(info, "language_probability", None)
-if confidence is not None and not math.isfinite(confidence):
-    confidence = None
+def handle(payload):
+    audio_path = payload["audioPath"]
+    language_hint = payload.get("languageHint") or None
+    transcribe_kwargs = {"vad_filter": True}
+    if language_hint:
+        transcribe_kwargs["language"] = language_hint
+    segments, info = model.transcribe(audio_path, **transcribe_kwargs)
+    segment_payloads = []
+    for segment in segments:
+        text = (segment.text or "").strip()
+        if text:
+            segment_payloads.append({
+                "text": text,
+                "startMs": int(round((segment.start or 0.0) * 1000)),
+                "endMs": int(round((segment.end or 0.0) * 1000)),
+            })
+    confidence = getattr(info, "language_probability", None)
+    if confidence is not None and not math.isfinite(confidence):
+        confidence = None
+    return {
+        "segments": segment_payloads,
+        "detectedLanguage": getattr(info, "language", None) or "und",
+        "confidence": confidence,
+        "device": device,
+    }
 
-print(json.dumps({
-    "text": " ".join(texts).strip(),
-    "detectedLanguage": getattr(info, "language", None) or "und",
-    "confidence": confidence,
-    "device": device,
-}))
-`;
+run_worker_loop(handle)
+`}`;

@@ -3,6 +3,10 @@ export interface MockVideoFeed {
   stop(): void;
 }
 
+export function shouldUseMockVideoFeed(videoSource: string | undefined): boolean {
+  return videoSource === 'mock';
+}
+
 export function startMockVideoFeed(): MockVideoFeed {
   const canvas = document.createElement('canvas');
   canvas.width = 1280;

@@ -860,8 +860,8 @@ P4.4 made the following planning decisions concrete:
 - Internal WebRTC media ingest endpoints are under `/internal/webrtc/...`.
 - The internal handoff uses normalized WAV chunks in `WEBRTC_AUDIO_CHUNK_STAGING_DIR`; media-ingest verifies the resolved path is inside that directory before moving the file.
 - WebRTC chunks are normalized to WAV mono 16 kHz PCM 16-bit before transcription.
-- Default WebRTC transcription chunk duration is 15 seconds through `WEBRTC_TRANSCRIPTION_CHUNK_MS`.
-- Real-browser validation can lower chunk duration to 1 second to prove live event flow without changing production defaults.
+- Default WebRTC transcription chunk duration is 5 seconds through `WEBRTC_TRANSCRIPTION_CHUNK_MS`.
+- Real-browser validation can lower chunk duration to 1 second to prove live event flow without changing committed defaults.
 - Final partial chunks are flushed on stop, track end and teardown.
 - WebRTC transcript events preserve WebRTC session ID, broadcast ID, sequence, timestamps, detected language, confidence when available, status and provider latency.
 - WebRTC processing sessions stop at transcription for P4.4; translation, TTS, generated-audio delivery, listener playback, queue synchronization and mixing are unchanged.

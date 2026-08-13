@@ -20,8 +20,254 @@ import {
   type WebRtcSessionInput,
 } from './media-session.js';
 import { createTranscriptionProvider } from './transcription-provider.js';
-import { createTimestampedTranslationProvider } from './translation-provider.js';
+import {
+  CompositeTimestampedTranslationProvider,
+  M2m100TimestampedTranslationProvider,
+  Nllb200TimestampedTranslationProvider,
+  createTimestampedTranslationProvider,
+  type M2m100Config,
+  type Nllb200Config,
+  type TimestampedTranslationProvider,
+} from './translation-provider.js';
 import { createTextToSpeechProvider } from './text-to-speech-provider.js';
+import {
+  buildTargetLanguageOutputs,
+  capRecentEvents,
+  capRecentEventsPerLanguage,
+} from './target-language-outputs.js';
+
+export function buildPiperVoiceIdsByLanguage(
+  voices: IngestConfig['piperVoices'],
+): Map<string, string> {
+  const voiceIds = new Map<string, string>();
+  for (const voice of voices) {
+    if (!voiceIds.has(voice.language)) {
+      voiceIds.set(voice.language, voice.voiceId);
+    }
+  }
+  return voiceIds;
+}
+
+export function resolvePiperSupportedLanguages(voices: IngestConfig['piperVoices']): string[] {
+  return [...new Set(voices.map((voice) => voice.language))];
+}
+
+export type TextToSpeechWiringConfig = Pick<
+  IngestConfig,
+  'textToSpeechProvider' | 'textToSpeechSupportedLanguages' | 'piperVoices' | 'mmsTtsVoices'
+>;
+
+export function resolveTextToSpeechLanguages(config: TextToSpeechWiringConfig): string[] {
+  if (config.textToSpeechProvider === 'piper') {
+    return resolvePiperSupportedLanguages(config.piperVoices);
+  }
+  if (config.textToSpeechProvider === 'piper+mms') {
+    return [
+      ...new Set([
+        ...resolvePiperSupportedLanguages(config.piperVoices),
+        ...config.mmsTtsVoices.map((voice) => voice.language),
+      ]),
+    ];
+  }
+  return config.textToSpeechSupportedLanguages;
+}
+
+export function buildTextToSpeechVoiceIdsByLanguage(
+  config: Pick<IngestConfig, 'textToSpeechProvider' | 'piperVoices' | 'mmsTtsVoices'>,
+): Map<string, string> {
+  const voiceIds = buildPiperVoiceIdsByLanguage(config.piperVoices);
+  if (config.textToSpeechProvider !== 'piper+mms') {
+    return voiceIds;
+  }
+  // Piper voices win when both engines cover a language; MMS fills the rest,
+  // using the model id as the voice id.
+  for (const voice of config.mmsTtsVoices) {
+    if (!voiceIds.has(voice.language)) {
+      voiceIds.set(voice.language, voice.modelId);
+    }
+  }
+  return voiceIds;
+}
+
+export type TranslationWiringConfig = Pick<
+  IngestConfig,
+  | 'translationProvider'
+  | 'translationFallbackProvider'
+  | 'translationTimeoutMs'
+  | 'translationSupportedTargetLanguages'
+  | 'argosPythonExecutable'
+  | 'argosPackageDir'
+  | 'opusMtPythonExecutable'
+  | 'opusMtModelCacheDir'
+  | 'opusMtMaxConcurrency'
+  | 'opusMtAllowModelDownload'
+  | 'opusMtLanguageModels'
+  | 'm2m100PythonExecutable'
+  | 'm2m100ModelId'
+  | 'm2m100LocalPath'
+  | 'm2m100ModelCacheDir'
+  | 'm2m100MaxConcurrency'
+  | 'm2m100AllowModelDownload'
+  | 'nllb200PythonExecutable'
+  | 'nllb200ModelId'
+  | 'nllb200LocalPath'
+  | 'nllb200ModelCacheDir'
+  | 'nllb200MaxConcurrency'
+  | 'nllb200AllowModelDownload'
+>;
+
+export interface WarmableProviders {
+  transcription?: { warmUp?: () => Promise<void> };
+  translation?: { healthCheck?: () => Promise<unknown> };
+}
+
+/**
+ * Loads AI models ahead of the first real request. Without warm-up, the first
+ * upload after service start pays the model loads inside the per-stage
+ * pipeline timeouts and can fail where an identical retry later succeeds.
+ * Failures are logged, never fatal: warm-up is an optimisation.
+ */
+export async function warmUpAiProviders(providers: WarmableProviders): Promise<void> {
+  const startedAt = Date.now();
+  const warmups: Array<[string, Promise<unknown> | undefined]> = [
+    ['transcription', providers.transcription?.warmUp?.()],
+    ['translation', providers.translation?.healthCheck?.()],
+  ];
+  for (const [stage, pending] of warmups) {
+    if (!pending) continue;
+    try {
+      await pending;
+      logger.info('AI provider warmed', { stage, elapsedMs: Date.now() - startedAt });
+    } catch (error) {
+      logger.warn('AI provider warm-up failed (will load on first use)', {
+        stage,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
+export function translationFallbackActive(config: TranslationWiringConfig): boolean {
+  return (
+    config.translationProvider === 'opus-mt' && config.translationFallbackProvider !== 'none'
+  );
+}
+
+function translationFallbackModelId(config: TranslationWiringConfig): string {
+  return config.translationFallbackProvider === 'nllb200'
+    ? config.nllb200ModelId
+    : config.m2m100ModelId;
+}
+
+function opusMtCoveredLanguages(config: TranslationWiringConfig): string[] {
+  return config.translationSupportedTargetLanguages.filter((language) =>
+    config.opusMtLanguageModels.some((model) => model.targetLanguage === language),
+  );
+}
+
+export function resolveTranslationLanguages(config: TranslationWiringConfig): string[] {
+  // The multilingual fallback restores the full configured bound: coverage is
+  // the union of OPUS-MT pairs and the massively multilingual fallback set
+  // (M2M100 or NLLB-200).
+  if (config.translationProvider !== 'opus-mt' || translationFallbackActive(config)) {
+    return config.translationSupportedTargetLanguages;
+  }
+  return opusMtCoveredLanguages(config);
+}
+
+export function buildTranslationModelIds(config: TranslationWiringConfig): Map<string, string> {
+  const modelIds = new Map(
+    config.translationProvider === 'm2m100'
+      ? resolveTranslationLanguages(config).map(
+          (language) => [language, config.m2m100ModelId] as const,
+        )
+      : config.opusMtLanguageModels.map((model) => [model.targetLanguage, model.modelId] as const),
+  );
+  if (translationFallbackActive(config)) {
+    for (const language of resolveTranslationLanguages(config)) {
+      if (!modelIds.has(language)) modelIds.set(language, translationFallbackModelId(config));
+    }
+  }
+  return modelIds;
+}
+
+export function buildTranslationProvider(
+  config: TranslationWiringConfig,
+): TimestampedTranslationProvider {
+  const translationLanguages = resolveTranslationLanguages(config);
+  const m2m100Config: M2m100Config = {
+    pythonExecutable: config.m2m100PythonExecutable,
+    modelId: config.m2m100ModelId,
+    localPath: config.m2m100LocalPath,
+    modelCacheDir: config.m2m100ModelCacheDir,
+    supportedTargetLanguages: translationLanguages,
+    timeoutMs: config.translationTimeoutMs,
+    maxConcurrency: config.m2m100MaxConcurrency,
+    allowModelDownload: config.m2m100AllowModelDownload,
+  };
+  const primary = createTimestampedTranslationProvider({
+    providerName: config.translationProvider,
+    supportedTargetLanguages: translationLanguages,
+    argos: {
+      pythonExecutable: config.argosPythonExecutable,
+      packageDir: config.argosPackageDir,
+      supportedTargetLanguages: translationLanguages,
+      timeoutMs: config.translationTimeoutMs,
+    },
+    opusMt: {
+      pythonExecutable: config.opusMtPythonExecutable,
+      modelCacheDir: config.opusMtModelCacheDir,
+      // The primary keeps its own coverage so uncovered pairs fail fast with
+      // `unsupported-language` and the composite reroutes them.
+      supportedTargetLanguages: translationFallbackActive(config)
+        ? opusMtCoveredLanguages(config)
+        : translationLanguages,
+      languageModels: config.opusMtLanguageModels,
+      timeoutMs: config.translationTimeoutMs,
+      maxConcurrency: config.opusMtMaxConcurrency,
+      allowModelDownload: config.opusMtAllowModelDownload,
+    },
+    m2m100: m2m100Config,
+  });
+  if (!translationFallbackActive(config)) {
+    return primary;
+  }
+  if (config.translationFallbackProvider === 'nllb200') {
+    // NLLB-200 (CC-BY-NC-4.0, non-commercial use only) replaces M2M100 where
+    // its output degenerates (empirically: Yoruba repetition loops).
+    const nllb200Config: Nllb200Config = {
+      pythonExecutable: config.nllb200PythonExecutable,
+      modelId: config.nllb200ModelId,
+      localPath: config.nllb200LocalPath,
+      modelCacheDir: config.nllb200ModelCacheDir,
+      supportedTargetLanguages: translationLanguages,
+      timeoutMs: config.translationTimeoutMs,
+      maxConcurrency: config.nllb200MaxConcurrency,
+      allowModelDownload: config.nllb200AllowModelDownload,
+    };
+    return new CompositeTimestampedTranslationProvider({
+      primary,
+      fallback: new Nllb200TimestampedTranslationProvider(nllb200Config),
+    });
+  }
+  return new CompositeTimestampedTranslationProvider({
+    primary,
+    fallback: new M2m100TimestampedTranslationProvider(m2m100Config),
+  });
+}
+
+export function programmeTimestampMs(
+  events: readonly TranscriptionEvent[],
+  previousMs = 0,
+): number {
+  let positionMs = previousMs;
+  for (const event of events) {
+    if (event.status === 'transcribed' || event.status === 'failed') {
+      positionMs = Math.max(positionMs, event.endMs);
+    }
+  }
+  return positionMs;
+}
 
 export class IngestService {
   private socket: Socket | null = null;
@@ -33,10 +279,9 @@ export class IngestService {
 
   constructor(private readonly config: IngestConfig) {
     this.provider = new MockProvider();
-    this.sessions = new ProcessingSessionStore({
-      outputBaseDir: config.audioChunkDir,
-      webRtcStagingDir: config.webrtcAudioChunkStagingDir,
-      transcriptionProvider: createTranscriptionProvider({
+    const translationLanguages = resolveTranslationLanguages(config);
+    const translationModelIds = buildTranslationModelIds(config);
+    const transcriptionProvider = createTranscriptionProvider({
         providerName: config.transcriptionProvider,
         sourceLanguage: config.transcriptionSourceLanguage,
         timeoutMs: config.transcriptionTimeoutMs,
@@ -50,21 +295,18 @@ export class IngestService {
           allowGpuFallback: config.fasterWhisperAllowGpuFallback,
           timeoutMs: config.transcriptionTimeoutMs,
         },
-      }),
+      });
+    const translationProvider = buildTranslationProvider(config);
+    this.sessions = new ProcessingSessionStore({
+      outputBaseDir: config.audioChunkDir,
+      webRtcStagingDir: config.webrtcAudioChunkStagingDir,
+      transcriptionProvider,
       transcriptionTimeoutMs: config.transcriptionTimeoutMs,
-      translationProvider: createTimestampedTranslationProvider({
-        providerName: config.translationProvider,
-        supportedTargetLanguages: config.translationSupportedTargetLanguages,
-        argos: {
-          pythonExecutable: config.argosPythonExecutable,
-          packageDir: config.argosPackageDir,
-          supportedTargetLanguages: config.translationSupportedTargetLanguages,
-          timeoutMs: config.translationTimeoutMs,
-        },
-      }),
+      translationProvider,
       translationTimeoutMs: config.translationTimeoutMs,
       translationTargetLanguage: config.translationTargetLanguage,
-      translationSupportedTargetLanguages: config.translationSupportedTargetLanguages,
+      translationSupportedTargetLanguages: translationLanguages,
+      translationModelIds,
       textToSpeechProvider: createTextToSpeechProvider({
         providerName: config.textToSpeechProvider,
         timeoutMs: config.textToSpeechTimeoutMs,
@@ -72,20 +314,24 @@ export class IngestService {
         defaultVoiceId: config.textToSpeechDefaultVoiceId,
         piper: {
           executable: config.piperExecutable,
+          ffmpegExecutable: config.piperFfmpegExecutable,
           timeoutMs: config.textToSpeechTimeoutMs,
-          voices: [
-            {
-              voiceId: config.piperVoiceId,
-              language: config.piperVoiceLanguage,
-              modelPath: config.piperModelPath,
-              configPath: config.piperConfigPath,
-            },
-          ],
+          voices: config.piperVoices,
+        },
+        mms: {
+          pythonExecutable: config.mmsTtsPythonExecutable,
+          ffmpegExecutable: config.piperFfmpegExecutable,
+          voices: config.mmsTtsVoices,
+          modelCacheDir: config.mmsTtsModelCacheDir,
+          allowModelDownload: config.mmsTtsAllowModelDownload,
+          timeoutMs: config.textToSpeechTimeoutMs,
         },
       }),
       textToSpeechTimeoutMs: config.textToSpeechTimeoutMs,
       textToSpeechVoiceId: config.textToSpeechDefaultVoiceId,
-      textToSpeechSupportedLanguages: config.textToSpeechSupportedLanguages,
+      textToSpeechVoiceIds: buildTextToSpeechVoiceIdsByLanguage(config),
+      textToSpeechSupportedLanguages: resolveTextToSpeechLanguages(config),
+      renderViewerReadyMediaOnCompletion: false,
       onSessionChange: (session) => {
         this.currentSession = session;
         this.streamStatus = session.state;
@@ -94,6 +340,10 @@ export class IngestService {
       onTranscriptionEvent: (event) => this.emitTranscriptionEvent(event),
       onTranslationEvent: (event) => this.emitTranslationEvent(event),
       onGeneratedAudioReady: (event, session) => this.emitGeneratedAudioReady(event, session),
+    });
+    void warmUpAiProviders({
+      transcription: transcriptionProvider,
+      translation: translationProvider,
     });
   }
 
@@ -275,8 +525,16 @@ export class IngestService {
     return this.sessions.exportTranscript(sessionId);
   }
 
-  async retryTranslationSegment(sessionId: string, segmentId: string): Promise<ProcessingSession> {
-    const session = await this.sessions.retryTranslationSegment(sessionId, segmentId);
+  async retryTranslationSegment(
+    sessionId: string,
+    segmentId: string,
+    targetLanguage?: string,
+  ): Promise<ProcessingSession> {
+    const session = await this.sessions.retryTranslationSegment(
+      sessionId,
+      segmentId,
+      targetLanguage,
+    );
     logger.info('Translation segment retry finished', {
       sessionId: session.id,
       segmentId,
@@ -292,8 +550,13 @@ export class IngestService {
   async retryGeneratedAudioSegment(
     sessionId: string,
     segmentId: string,
+    targetLanguage?: string,
   ): Promise<ProcessingSession> {
-    const session = await this.sessions.retryGeneratedAudioSegment(sessionId, segmentId);
+    const session = await this.sessions.retryGeneratedAudioSegment(
+      sessionId,
+      segmentId,
+      targetLanguage,
+    );
     logger.info('Generated audio segment retry finished', {
       sessionId: session.id,
       segmentId,
@@ -302,11 +565,38 @@ export class IngestService {
     return session;
   }
 
+  updateSourceLanguageControl(
+    sessionId: string,
+    input: Parameters<ProcessingSessionStore['updateSourceLanguageControl']>[1],
+  ): ProcessingSession {
+    const session = this.sessions.updateSourceLanguageControl(sessionId, input);
+    logger.info('Source language control updated', {
+      sessionId: session.id,
+      activeLanguage: session.sourceLanguageControl.activeLanguage,
+      revision: session.sourceLanguageControl.revision,
+      status: session.sourceLanguageControl.status,
+    });
+    return session;
+  }
+
   async getGeneratedAudioFile(
     sessionId: string,
     segmentId: string,
+    targetLanguage?: string,
   ): ReturnType<ProcessingSessionStore['getGeneratedAudioFile']> {
-    return await this.sessions.getGeneratedAudioFile(sessionId, segmentId);
+    return await this.sessions.getGeneratedAudioFile(sessionId, segmentId, targetLanguage);
+  }
+
+  async getSourceMediaFile(
+    sessionId: string,
+  ): ReturnType<ProcessingSessionStore['getSourceMediaFile']> {
+    return await this.sessions.getSourceMediaFile(sessionId);
+  }
+
+  async getViewerReadyMediaFile(
+    sessionId: string,
+  ): ReturnType<ProcessingSessionStore['getViewerReadyMediaFile']> {
+    return await this.sessions.getViewerReadyMediaFile(sessionId);
   }
 
   private async startMockStream(): Promise<void> {
@@ -325,9 +615,31 @@ export class IngestService {
     logger.info('Mock video source stopped');
   }
 
+  private programmeClockSessionId: string | null = null;
+  private programmeClockMs = 0;
+
+  private currentProgrammeTimestampMs(session: ProcessingSession): number {
+    if (this.programmeClockSessionId !== session.id) {
+      this.programmeClockSessionId = session.id;
+      this.programmeClockMs = 0;
+    }
+    this.programmeClockMs = programmeTimestampMs(
+      session.transcription.events,
+      this.programmeClockMs,
+    );
+    return this.programmeClockMs;
+  }
+
   private emitState(): void {
     if (!this.socket?.connected) return;
 
+    // Incrementally maintained per-language counters avoid rescanning the full
+    // event history on every broadcast; the emitted event arrays are capped to
+    // the most recent slice per type/language (listeners merge incrementally
+    // and rely on the aggregate counts for totals).
+    const tallies = this.currentSession
+      ? this.sessions.getTargetLanguageOutputTallies(this.currentSession.id)
+      : null;
     const state: MediaStateEvent = this.currentSession
       ? {
           eventId: this.currentSession.streamId,
@@ -346,11 +658,30 @@ export class IngestService {
           ...(this.currentSession.webrtcTranscriptionBridge
             ? { webrtcTranscriptionBridge: this.currentSession.webrtcTranscriptionBridge }
             : {}),
-          transcription: this.currentSession.transcription,
-          translation: this.currentSession.translation,
-          generatedAudio: this.currentSession.generatedAudio,
+          transcription: {
+            ...this.currentSession.transcription,
+            events: capRecentEvents(this.currentSession.transcription.events),
+          },
+          translation: {
+            ...this.currentSession.translation,
+            events: capRecentEventsPerLanguage(this.currentSession.translation.events),
+          },
+          generatedAudio: {
+            ...this.currentSession.generatedAudio,
+            events: capRecentEventsPerLanguage(this.currentSession.generatedAudio.events),
+          },
+          sourceLanguageControl: this.currentSession.sourceLanguageControl,
+          targetLanguageCatalogue: this.currentSession.targetLanguageCatalogue,
+          targetLanguageOutputs: buildTargetLanguageOutputs({
+            selectedLanguages: this.currentSession.targetLanguages,
+            catalogue: this.currentSession.targetLanguageCatalogue,
+            translation: this.currentSession.translation,
+            generatedAudio: this.currentSession.generatedAudio,
+            ...(tallies ? { tallies } : {}),
+          }),
+          aiProviderStatus: this.currentSession.aiProviderStatus,
           monitoring: this.currentSession.monitoring,
-          videoTimestampMs: 0,
+          videoTimestampMs: this.currentProgrammeTimestampMs(this.currentSession),
           sourceAudioActive:
             this.currentSession.sourceKind === 'microphone'
               ? this.currentSession.microphoneCapture.status === 'capturing'
@@ -358,7 +689,7 @@ export class IngestService {
                 ? this.currentSession.webrtcTranscriptionBridge?.status === 'processing' ||
                   this.currentSession.webrtcTranscriptionBridge?.status === 'chunking'
               : (this.currentSession.media?.hasAudio ?? false),
-          translatedLanguages: [this.currentSession.targetLanguage],
+          translatedLanguages: this.currentSession.targetLanguages,
           connectedListeners: 0,
           createdAt: new Date().toISOString(),
         }
@@ -369,6 +700,7 @@ export class IngestService {
           videoTimestampMs: this.provider.getVideoTimestampMs(),
           sourceAudioActive: this.provider.isAudioActive(),
           translatedLanguages: this.config.translatedLanguages,
+          targetLanguageCatalogue: this.sessions.getTargetLanguageCatalogue(),
           connectedListeners: 0,
           createdAt: new Date().toISOString(),
         };
@@ -407,7 +739,7 @@ export class IngestService {
       sessionId: session.id,
       streamId: session.streamId,
       durationMs: event.durationMs,
-      audioUrl: this.generatedAudioUrl(session.id, event.segmentId),
+      audioUrl: this.generatedAudioUrl(session.id, event.segmentId, event.targetLanguage),
     };
     this.socket.emit(SOCKET_EVENTS.INGEST_GENERATED_AUDIO, readyEvent);
     logger.info('Generated audio ready event emitted', {
@@ -427,9 +759,13 @@ export class IngestService {
     }
   }
 
-  private generatedAudioUrl(sessionId: string, segmentId: string): string {
+  private generatedAudioUrl(
+    sessionId: string,
+    segmentId: string,
+    targetLanguage: string,
+  ): string {
     const baseUrl = this.config.ingestPublicUrl.replace(/\/+$/, '');
-    return `${baseUrl}/sessions/${encodeURIComponent(sessionId)}/generated-audio/segments/${encodeURIComponent(segmentId)}/audio`;
+    return `${baseUrl}/sessions/${encodeURIComponent(sessionId)}/generated-audio/segments/${encodeURIComponent(segmentId)}/audio?language=${encodeURIComponent(targetLanguage)}`;
   }
 
   async stop(): Promise<void> {

@@ -17,7 +17,8 @@ export type SessionRecoveryAction =
   | 'cancel'
   | 'retry-transcription'
   | 'retry-translation'
-  | 'retry-tts';
+  | 'retry-tts'
+  | 'set-source-language';
 
 export type SessionRecoveryEventKind = 'operator-action' | 'recovery-event';
 export type SessionRecoveryEventStatus = 'accepted' | 'rejected' | 'succeeded' | 'failed';

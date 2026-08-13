@@ -57,6 +57,8 @@ export const WebRtcSignallingErrorCodeSchema = z.enum([
   'peer-already-exists',
   'missing-audio-track',
   'duplicate-audio-track',
+  'missing-video-track',
+  'duplicate-video-track',
   'unexpected-video-track',
   'invalid-offer',
   'answer-creation-failure',
@@ -68,6 +70,7 @@ export const WebRtcSignallingErrorCodeSchema = z.enum([
   'negotiation-timeout',
   'connection-closed',
   'audio-track-ended',
+  'video-track-ended',
   'ingest-bridge-failure',
   'cleanup-failure',
   'unsupported-runtime',
@@ -145,6 +148,9 @@ const PeerReadySchema = RequiredSessionEnvelopeBaseSchema.extend({
   type: z.literal('peer-ready'),
   payload: z.object({
     state: WebRtcPeerStateSchema,
+    // Truthful backend media receipt so clients cannot fabricate video state.
+    audioTrackReceived: z.boolean().optional(),
+    videoTrackReceived: z.boolean().optional(),
   }),
 });
 

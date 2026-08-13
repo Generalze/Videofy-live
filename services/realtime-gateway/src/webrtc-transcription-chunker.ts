@@ -1,4 +1,5 @@
 import type { WebRtcAudioDataLike } from './webrtc-audio-ingest-bridge.js';
+import { logger } from './logger.js';
 
 export const WEBRTC_TRANSCRIPTION_SAMPLE_RATE = 16000;
 export const WEBRTC_TRANSCRIPTION_CHANNEL_COUNT = 1;
@@ -29,11 +30,45 @@ export interface WebRtcTranscriptionChunk {
   endOfStream: boolean;
 }
 
+export interface WebRtcAudioPcmDiagnostics {
+  inputSampleRate: number;
+  inputChannelCount: number;
+  inputBitsPerSample: number | null;
+  inputSampleType: 'int16' | 'float32';
+  inputSampleCount: number;
+  inputDurationMs: number;
+  normalizedSampleRate: 16000;
+  normalizedChannelCount: 1;
+  normalizedBitsPerSample: 16;
+  normalizedSampleCount: number;
+  normalizedDurationMs: number;
+  rms: number;
+  peak: number;
+  clippedSampleCount: number;
+  silent: boolean;
+  metadataWarnings: string[];
+}
+
+export interface NormalizedWebRtcPcmFrame {
+  samples: Int16Array;
+  diagnostics: WebRtcAudioPcmDiagnostics;
+}
+
 export interface WebRtcTranscriptionChunkerOptions extends WebRtcTranscriptionChunkerContext {
   chunkDurationMs?: number;
   maxBufferedDurationMs?: number;
   maxQueuedChunks?: number;
   maxQueuedBytes?: number;
+  vad?: WebRtcVadOptions;
+}
+
+export interface WebRtcVadOptions {
+  enabled: boolean;
+  mode: 'silero' | 'fallback';
+  speechThreshold?: number;
+  endSilenceMs?: number;
+  minSpeechMs?: number;
+  maxSegmentMs?: number;
 }
 
 export class WebRtcTranscriptionChunkerError extends Error {
@@ -64,6 +99,17 @@ export class WebRtcTranscriptionChunker {
   private queuedBytes = 0;
   private nextDiscontinuity = false;
   private closed = false;
+  private readonly vad: Required<WebRtcVadOptions> | null;
+  private readonly vadRequestedMode: WebRtcVadOptions['mode'] | null;
+  private vadSpeechFrames: Int16Array[] = [];
+  private vadSpeechSampleCount = 0;
+  private vadSpeechStartSample: number | null = null;
+  private vadSilenceFrames: Int16Array[] = [];
+  private vadSilenceSampleCount = 0;
+  private vadDroppedSegmentCount = 0;
+  private vadDroppedSampleCount = 0;
+  private inputSampleCount = 0;
+  private skippedSilenceSamples = 0;
 
   constructor(options: WebRtcTranscriptionChunkerOptions) {
     this.context = {
@@ -74,25 +120,40 @@ export class WebRtcTranscriptionChunker {
     };
     this.chunkSamples = Math.max(
       1,
-      Math.round(((options.chunkDurationMs ?? 15_000) / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE),
+      Math.round(((options.chunkDurationMs ?? 5_000) / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE),
     );
     this.maxBufferedSamples = Math.round(
       ((options.maxBufferedDurationMs ?? 30_000) / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE,
     );
     this.maxQueuedChunks = options.maxQueuedChunks ?? 8;
     this.maxQueuedBytes = options.maxQueuedBytes ?? 8 * 1024 * 1024;
+    this.vadRequestedMode = options.vad?.enabled ? options.vad.mode : null;
+    if (this.vadRequestedMode === 'silero') warnSileroUnavailableOnce();
+    this.vad = options.vad?.enabled
+      ? {
+          enabled: true,
+          // Silero is not implemented yet; be honest and use the energy gate.
+          mode: 'fallback',
+          speechThreshold: options.vad.speechThreshold ?? 0.012,
+          endSilenceMs: options.vad.endSilenceMs ?? 650,
+          minSpeechMs: options.vad.minSpeechMs ?? 180,
+          maxSegmentMs: options.vad.maxSegmentMs ?? 8_000,
+        }
+      : null;
   }
 
   pushFrame(data: WebRtcAudioDataLike): WebRtcTranscriptionChunk[] {
     if (this.closed) {
       throw new WebRtcTranscriptionChunkerError('closed', 'WebRTC transcription chunker is closed.');
     }
-    const normalized = normalizePcmFrame(data);
+    const { samples: normalized } = normalizePcmFrameWithDiagnostics(data);
+    if (this.vad) return this.pushVadFrame(normalized);
     this.appendSamples(normalized);
     return this.drain(false);
   }
 
   flush(endOfStream = true): WebRtcTranscriptionChunk[] {
+    if (this.vad) return this.flushVad(endOfStream);
     if (this.closed && this.buffer.length === 0) return [];
     const chunks = this.buffer.length > 0 ? [this.createChunk(this.buffer, endOfStream)] : [];
     this.buffer = new Int16Array(0);
@@ -109,17 +170,119 @@ export class WebRtcTranscriptionChunker {
     this.queuedBytes = Math.max(0, this.queuedBytes - chunk.byteLength);
   }
 
+  /** Release queue accounting for a chunk whose submission failed and will not be retried. */
+  releaseChunk(chunk: WebRtcTranscriptionChunk): void {
+    this.ackChunk(chunk);
+  }
+
   snapshot() {
+    const vadBufferedSamples = this.vadSpeechSampleCount + this.vadSilenceSampleCount;
     return {
       sessionId: this.context.sessionId,
       broadcastId: this.context.broadcastId,
       revision: this.context.revision,
-      bufferedDurationMs: Math.round((this.buffer.length / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
+      bufferedDurationMs: Math.round(
+        ((this.buffer.length + vadBufferedSamples) / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000,
+      ),
       queuedChunks: this.queuedChunks,
       queuedBytes: this.queuedBytes,
       emittedChunkCount: this.emittedChunkCount,
+      vadMode: this.vad?.mode ?? 'disabled',
+      vadRequestedMode: this.vadRequestedMode ?? 'disabled',
+      vadModeFellBack: this.vadRequestedMode === 'silero',
+      vadDroppedSegmentCount: this.vadDroppedSegmentCount,
+      vadDroppedMs: Math.round((this.vadDroppedSampleCount / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
+      skippedSilenceMs: Math.round((this.skippedSilenceSamples / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
       closed: this.closed,
     };
+  }
+
+  private pushVadFrame(samples: Int16Array): WebRtcTranscriptionChunk[] {
+    const startSample = this.inputSampleCount;
+    this.inputSampleCount += samples.length;
+    const vad = this.vad;
+    if (!vad) return [];
+    if (
+      this.vadSpeechSampleCount + this.vadSilenceSampleCount + samples.length >
+      this.maxBufferedSamples
+    ) {
+      this.dropVadSegment();
+    }
+    const isSpeech = frameEnergy(samples) >= vad.speechThreshold;
+    if (isSpeech) {
+      if (this.vadSpeechStartSample === null) {
+        this.vadSpeechStartSample = startSample;
+      }
+      if (this.vadSilenceSampleCount > 0) {
+        this.vadSpeechFrames.push(...this.vadSilenceFrames);
+        this.vadSpeechSampleCount += this.vadSilenceSampleCount;
+        this.vadSilenceFrames = [];
+        this.vadSilenceSampleCount = 0;
+      }
+      this.vadSpeechFrames.push(samples);
+      this.vadSpeechSampleCount += samples.length;
+    } else if (this.vadSpeechStartSample === null) {
+      this.skippedSilenceSamples += samples.length;
+      return [];
+    } else {
+      this.vadSilenceFrames.push(samples);
+      this.vadSilenceSampleCount += samples.length;
+    }
+
+    const segmentLength = this.vadSpeechSampleCount + this.vadSilenceSampleCount;
+    const endSilenceSamples = Math.round((vad.endSilenceMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+    const maxSegmentSamples = Math.round((vad.maxSegmentMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+    const minSpeechSamples = Math.round((vad.minSpeechMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+    if (
+      this.vadSpeechStartSample !== null &&
+      this.vadSpeechSampleCount >= minSpeechSamples &&
+      (this.vadSilenceSampleCount >= endSilenceSamples || segmentLength >= maxSegmentSamples)
+    ) {
+      const segment = joinFrames([...this.vadSpeechFrames, ...this.vadSilenceFrames], segmentLength);
+      const segmentStartSample = this.vadSpeechStartSample;
+      // Reset before createChunk so a queue-limit throw leaves the next frame clean.
+      this.resetVadBuffers();
+      return [this.createChunk(segment, false, segmentStartSample)];
+    }
+    return [];
+  }
+
+  private flushVad(endOfStream: boolean): WebRtcTranscriptionChunk[] {
+    if (this.closed && this.vadSpeechSampleCount === 0 && this.vadSilenceSampleCount === 0) return [];
+    const segmentStartSample = this.vadSpeechStartSample;
+    const speechSampleCount = this.vadSpeechSampleCount;
+    const segmentLength = speechSampleCount + this.vadSilenceSampleCount;
+    const frames = [...this.vadSpeechFrames, ...this.vadSilenceFrames];
+    // Reset before createChunk so a queue-limit throw leaves the chunker cleanly closed.
+    this.resetVadBuffers();
+    this.closed = true;
+    if (segmentStartSample === null || speechSampleCount === 0) return [];
+    return [this.createChunk(joinFrames(frames, segmentLength), endOfStream, segmentStartSample)];
+  }
+
+  private dropVadSegment(): void {
+    const droppedSamples = this.vadSpeechSampleCount + this.vadSilenceSampleCount;
+    if (droppedSamples > 0) {
+      this.vadDroppedSegmentCount += 1;
+      this.vadDroppedSampleCount += droppedSamples;
+      logger.warn('WebRTC transcription VAD segment dropped after exceeding buffer limit', {
+        sessionId: this.context.sessionId,
+        broadcastId: this.context.broadcastId,
+        revision: this.context.revision,
+        droppedMs: Math.round((droppedSamples / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
+        droppedSegmentCount: this.vadDroppedSegmentCount,
+      });
+    }
+    this.resetVadBuffers();
+    this.nextDiscontinuity = true;
+  }
+
+  private resetVadBuffers(): void {
+    this.vadSpeechStartSample = null;
+    this.vadSpeechFrames = [];
+    this.vadSpeechSampleCount = 0;
+    this.vadSilenceFrames = [];
+    this.vadSilenceSampleCount = 0;
   }
 
   private appendSamples(samples: Int16Array): void {
@@ -146,7 +309,11 @@ export class WebRtcTranscriptionChunker {
     return chunks;
   }
 
-  private createChunk(samples: Int16Array, endOfStream: boolean): WebRtcTranscriptionChunk {
+  private createChunk(
+    samples: Int16Array,
+    endOfStream: boolean,
+    explicitStartSample?: number,
+  ): WebRtcTranscriptionChunk {
     const byteLength = samples.byteLength;
     if (this.queuedChunks + 1 > this.maxQueuedChunks || this.queuedBytes + byteLength > this.maxQueuedBytes) {
       this.nextDiscontinuity = true;
@@ -155,7 +322,7 @@ export class WebRtcTranscriptionChunker {
         'WebRTC transcription chunk queue limit exceeded.',
       );
     }
-    const startSample = this.emittedSampleCount;
+    const startSample = explicitStartSample ?? this.emittedSampleCount;
     const endSample = startSample + samples.length;
     const startMs = Math.round((startSample / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000);
     const endMs = Math.round((endSample / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000);
@@ -175,7 +342,7 @@ export class WebRtcTranscriptionChunker {
     };
     this.nextDiscontinuity = false;
     this.emittedChunkCount += 1;
-    this.emittedSampleCount = endSample;
+    this.emittedSampleCount = Math.max(this.emittedSampleCount, endSample);
     this.queuedChunks += 1;
     this.queuedBytes += byteLength;
     return chunk;
@@ -183,7 +350,14 @@ export class WebRtcTranscriptionChunker {
 }
 
 export function normalizePcmFrame(data: WebRtcAudioDataLike): Int16Array {
-  if (!(data.samples instanceof Int16Array) || data.samples.length === 0) {
+  return normalizePcmFrameWithDiagnostics(data).samples;
+}
+
+export function normalizePcmFrameWithDiagnostics(data: WebRtcAudioDataLike): NormalizedWebRtcPcmFrame {
+  if (!(data.samples instanceof Int16Array) && !(data.samples instanceof Float32Array)) {
+    throw new WebRtcTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame has no PCM samples.');
+  }
+  if (data.samples.length === 0) {
     throw new WebRtcTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame has no PCM samples.');
   }
   const sourceRate = data.sampleRate;
@@ -194,16 +368,52 @@ export function normalizePcmFrame(data: WebRtcAudioDataLike): Int16Array {
   if (typeof channelCount !== 'number' || !Number.isInteger(channelCount) || channelCount <= 0 || channelCount > 8) {
     throw new WebRtcTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame channel count is invalid.');
   }
-  if (data.bitsPerSample !== undefined && data.bitsPerSample !== 16) {
-    throw new WebRtcTranscriptionChunkerError('unsupported-format', 'WebRTC audio frame must be 16-bit PCM.');
-  }
   if (data.samples.length % channelCount !== 0) {
     throw new WebRtcTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame sample layout is invalid.');
   }
 
-  const mono = downmixToMono(data.samples, channelCount);
-  if (sourceRate === WEBRTC_TRANSCRIPTION_SAMPLE_RATE) return mono;
-  return resampleLinear(mono, sourceRate, WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+  const inputSampleType: 'int16' | 'float32' =
+    data.samples instanceof Int16Array ? 'int16' : 'float32';
+  const expectedBitsPerSample = inputSampleType === 'int16' ? 16 : 32;
+  if (
+    typeof data.bitsPerSample === 'number' &&
+    Number.isFinite(data.bitsPerSample) &&
+    data.bitsPerSample !== expectedBitsPerSample
+  ) {
+    throw new WebRtcTranscriptionChunkerError(
+      'unsupported-format',
+      `WebRTC audio frame bit depth ${data.bitsPerSample} is unsupported; expected ${expectedBitsPerSample}-bit ${inputSampleType} PCM.`,
+    );
+  }
+  const pcm16 =
+    data.samples instanceof Int16Array ? data.samples : float32ToInt16(data.samples);
+  const mono = downmixToMono(pcm16, channelCount);
+  const normalized =
+    sourceRate === WEBRTC_TRANSCRIPTION_SAMPLE_RATE
+      ? mono
+      : resampleLinear(mono, sourceRate, WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+
+  return {
+    samples: normalized,
+    diagnostics: {
+      inputSampleRate: sourceRate,
+      inputChannelCount: channelCount,
+      inputBitsPerSample:
+        typeof data.bitsPerSample === 'number' && Number.isFinite(data.bitsPerSample)
+          ? data.bitsPerSample
+          : null,
+      inputSampleType,
+      inputSampleCount: data.samples.length,
+      inputDurationMs: Math.round(((data.samples.length / channelCount) / sourceRate) * 1000),
+      normalizedSampleRate: WEBRTC_TRANSCRIPTION_SAMPLE_RATE,
+      normalizedChannelCount: WEBRTC_TRANSCRIPTION_CHANNEL_COUNT,
+      normalizedBitsPerSample: 16,
+      normalizedSampleCount: normalized.length,
+      normalizedDurationMs: Math.round((normalized.length / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
+      ...inspectPcm16Samples(normalized),
+      metadataWarnings: [],
+    },
+  };
 }
 
 function downmixToMono(samples: Int16Array, channelCount: number): Int16Array {
@@ -237,4 +447,74 @@ function resampleLinear(samples: Int16Array, sourceRate: number, targetRate: num
 
 function clampInt16(value: number): number {
   return Math.max(-32768, Math.min(32767, value));
+}
+
+function float32ToInt16(samples: Float32Array): Int16Array {
+  const output = new Int16Array(samples.length);
+  for (let index = 0; index < samples.length; index++) {
+    const sample = Math.max(-1, Math.min(1, samples[index] ?? 0));
+    output[index] = sample < 0 ? Math.round(sample * 32768) : Math.round(sample * 32767);
+  }
+  return output;
+}
+
+export function inspectPcm16Samples(samples: Int16Array): Pick<
+  WebRtcAudioPcmDiagnostics,
+  'rms' | 'peak' | 'clippedSampleCount' | 'silent'
+> {
+  if (samples.length === 0) {
+    return {
+      rms: 0,
+      peak: 0,
+      clippedSampleCount: 0,
+      silent: true,
+    };
+  }
+  let sumSquares = 0;
+  let peak = 0;
+  let clippedSampleCount = 0;
+  for (const sample of samples) {
+    const absolute = Math.abs(sample);
+    peak = Math.max(peak, absolute / 32768);
+    if (absolute >= 32767) clippedSampleCount++;
+    const normalized = sample / 32768;
+    sumSquares += normalized * normalized;
+  }
+  const rms = Math.sqrt(sumSquares / samples.length);
+  return {
+    rms,
+    peak,
+    clippedSampleCount,
+    silent: rms < 0.0001 && peak < 0.0005,
+  };
+}
+
+let sileroFallbackWarned = false;
+
+function warnSileroUnavailableOnce(): void {
+  if (sileroFallbackWarned) return;
+  sileroFallbackWarned = true;
+  logger.warn(
+    'WEBRTC_VAD_MODE=silero is configured but Silero VAD is not implemented yet; falling back to the energy-gate VAD',
+  );
+}
+
+function joinFrames(frames: Int16Array[], totalSampleCount: number): Int16Array {
+  const output = new Int16Array(totalSampleCount);
+  let offset = 0;
+  for (const frame of frames) {
+    output.set(frame, offset);
+    offset += frame.length;
+  }
+  return output;
+}
+
+function frameEnergy(samples: Int16Array): number {
+  if (samples.length === 0) return 0;
+  let total = 0;
+  for (const sample of samples) {
+    const normalized = sample / 32768;
+    total += normalized * normalized;
+  }
+  return Math.sqrt(total / samples.length);
 }

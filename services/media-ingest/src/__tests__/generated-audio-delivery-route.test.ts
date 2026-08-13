@@ -50,6 +50,27 @@ describe('generated-audio delivery route', () => {
     expect(Buffer.from(await partial.arrayBuffer()).toString('ascii')).toBe('RIFF');
   });
 
+  it('selects the requested language channel for shared segment IDs', async () => {
+    const requested: Array<[string, string, string | undefined]> = [];
+    const temp = await tempDir();
+    const audioPath = join(temp, 'tts-000000.wav');
+    const wav = testWavBuffer();
+    await writeFile(audioPath, wav);
+    const baseUrl = await startDeliveryApp({
+      getGeneratedAudioFile: async (sessionId, segmentId, targetLanguage) => {
+        requested.push([sessionId, segmentId, targetLanguage]);
+        return generatedAudioFile(audioPath, wav.length);
+      },
+    });
+
+    const response = await fetch(
+      `${baseUrl}/sessions/ps_ok/generated-audio/segments/segment-0/audio?language=es`,
+    );
+
+    expect(response.status).toBe(200);
+    expect(requested).toEqual([['ps_ok', 'segment-0', 'es']]);
+  });
+
   it('returns clear errors for missing, wrong-session and unsafe audio requests', async () => {
     const baseUrl = await startDeliveryApp({
       getGeneratedAudioFile: async (sessionId, segmentId) => {

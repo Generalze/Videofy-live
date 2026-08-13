@@ -4,6 +4,12 @@ import type { TranslationSessionMetadata } from './timestamped-translation-event
 import type { TextToSpeechSessionMetadata } from './generated-audio-event.js';
 import type { TranscriptionSessionMetadata } from './transcription-event.js';
 import type { MicrophoneCaptureMetadata } from './microphone-capture.js';
+import type {
+  AiProviderStatusMetadata,
+  SourceLanguageControlMetadata,
+  TargetLanguageCapability,
+  TargetLanguageOutput,
+} from './language-controls.js';
 
 export interface MediaCodecInfo {
   type: 'audio' | 'video';
@@ -89,6 +95,12 @@ export interface MediaStateEvent {
   streamId?: string;
   /** Unique processing-session identifier for the accepted media. */
   processingSessionId?: string;
+  /** Authoritative broadcaster/session identifier for listener WebRTC programme media. */
+  shareableWebRtcSessionId?: string;
+  /** Safe browser-playable URL for an uploaded programme source, when available. */
+  programmeMediaUrl?: string;
+  /** How the listener should combine programme video, original audio, captions, and generated audio. */
+  programmeMediaMode?: 'live-webrtc' | 'uploaded-stems' | 'viewer-ready';
   /** Current lifecycle state of the video stream. */
   streamStatus: StreamStatus;
   /** Where the video feed originates from. */
@@ -107,6 +119,14 @@ export interface MediaStateEvent {
   translation?: TranslationSessionMetadata;
   /** Generated translated-audio status. Audio is not delivered to listeners in P3.1. */
   generatedAudio?: TextToSpeechSessionMetadata;
+  /** Operator source-language state and language-revision boundary. */
+  sourceLanguageControl?: SourceLanguageControlMetadata;
+  /** Configured target-language catalogue and voice/translation availability. */
+  targetLanguageCatalogue?: TargetLanguageCapability[];
+  /** Per-session readiness for every selected target-language output. */
+  targetLanguageOutputs?: TargetLanguageOutput[];
+  /** Local AI provider readiness and processing status. */
+  aiProviderStatus?: AiProviderStatusMetadata;
   /** Unified monitoring and recovery metadata for the file-backed processing session. */
   monitoring?: SessionMonitoringMetadata;
   /** Current playback position in the mock or live video (ms from start). */

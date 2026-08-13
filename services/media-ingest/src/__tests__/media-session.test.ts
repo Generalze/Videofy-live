@@ -1,6 +1,6 @@
 import type { AudioExtractionMetadata, AudioChunkMetadata } from '@videofy-live/shared-types';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 import { emptyAudioExtraction } from '../audio-extraction.js';
@@ -224,6 +224,122 @@ describe('ProcessingSessionStore', () => {
     expect(changes.at(-1)).toBe('completed');
   });
 
+  it('can create an upload processing session with a requested safe session ID', async () => {
+    const session = await store().createFromUpload(
+      upload({ requestedSessionId: 'wrs_uploaded_video' }),
+      async () => validVideoProbe,
+    );
+
+    expect(session.id).toBe('wrs_uploaded_video');
+    expect(session.sourceKind).toBe('upload');
+    expect(session.state).toBe('completed');
+  });
+
+  it('resolves uploaded source media for session-bound playback', async () => {
+    const temp = await createTempDir();
+    const sourcePath = join(temp, 'clip.mp4');
+    const source = Buffer.from('uploaded source media');
+    await writeFile(sourcePath, source);
+    const sessionStore = store();
+    const session = await sessionStore.createFromUpload(
+      upload({
+        path: sourcePath,
+        requestedSessionId: 'wrs_uploaded_video',
+      }),
+      async () => validVideoProbe,
+    );
+
+    const file = await sessionStore.getSourceMediaFile(session.id);
+
+    expect(file).toEqual({
+      mediaPath: sourcePath,
+      mimeType: 'video/mp4',
+      sizeBytes: source.length,
+    });
+  });
+
+  it('renders and resolves viewer-ready uploaded video media after generated audio completes', async () => {
+    const outputDir = await createTempDir();
+    const temp = await createTempDir();
+    const sourcePath = join(temp, 'clip.mp4');
+    await writeFile(sourcePath, Buffer.from('uploaded source media'));
+    const renderCalls: Array<{ segmentCount: number; originalVolume: number; translatedVolume: number }> = [];
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      extractAudio: successfulExtractor,
+      renderViewerReadyMediaOnCompletion: true,
+      renderViewerReadyMedia: async (input) => {
+        renderCalls.push({
+          segmentCount: input.segments.length,
+          originalVolume: input.originalVolume,
+          translatedVolume: input.translatedVolume,
+        });
+        await mkdir(dirname(input.outputPath), { recursive: true });
+        await writeFile(input.outputPath, Buffer.from('viewer-ready mp4'));
+      },
+    });
+    const session = await sessionStore.createFromUpload(
+      upload({
+        path: sourcePath,
+        requestedSessionId: 'wrs_viewer_ready',
+      }),
+      async () => validVideoProbe,
+    );
+
+    const file = await sessionStore.getViewerReadyMediaFile(session.id);
+
+    expect(session.state).toBe('completed');
+    expect(renderCalls).toEqual([{ segmentCount: 3, originalVolume: 0.2, translatedVolume: 1 }]);
+    expect(file).toEqual({
+      mediaPath: join(outputDir, session.id, 'viewer-ready', 'programme.mp4'),
+      mimeType: 'video/mp4',
+      sizeBytes: 'viewer-ready mp4'.length,
+    });
+  });
+
+  it('rejects source-media delivery for unavailable or unsafe sessions', async () => {
+    const sessionStore = store();
+
+    await expect(sessionStore.getSourceMediaFile('../bad-session')).rejects.toMatchObject({
+      code: 'unsafe-path',
+    });
+    await expect(sessionStore.getSourceMediaFile('wrs_missing')).rejects.toMatchObject({
+      code: 'invalid-transition',
+    });
+  });
+
+  it('rejects unsafe or duplicate requested upload session IDs', async () => {
+    const sessionStore = store();
+    await expect(
+      sessionStore.createFromUpload(
+        upload({ requestedSessionId: '../bad-session' }),
+        async () => validVideoProbe,
+      ),
+    ).rejects.toMatchObject({
+      code: 'unsafe-filename',
+      message: 'Unsafe requested session ID rejected.',
+    });
+
+    await sessionStore.createFromUpload(
+      upload({ requestedSessionId: 'wrs_uploaded_video' }),
+      async () => validVideoProbe,
+    );
+
+    await expect(
+      sessionStore.createFromUpload(
+        upload({
+          originalName: 'second.mp4',
+          sizeBytes: 4096,
+          requestedSessionId: 'wrs_uploaded_video',
+        }),
+        async () => validVideoProbe,
+      ),
+    ).rejects.toMatchObject({
+      code: 'duplicate-processing',
+      message: 'Processing session wrs_uploaded_video already exists.',
+    });
+  });
+
   it('records session failure state when FFmpeg extraction fails', async () => {
     const failingExtractor: AudioExtractor = async () => {
       throw new MediaIngestError(
@@ -256,15 +372,144 @@ describe('ProcessingSessionStore', () => {
     });
   });
 
-  it('protects against duplicate submissions', async () => {
+  it('reattaches a byte-identical re-upload to the existing completed session', async () => {
+    const extractions: string[] = [];
+    const sessionStore = store(async (input) => {
+      extractions.push(input.sessionId);
+      return await successfulExtractor(input);
+    });
+    const first = await sessionStore.createFromUpload(upload(), async () => validVideoProbe);
+    const replay = await sessionStore.createFromUpload(upload(), async () => validVideoProbe);
+
+    expect(first.state).toBe('completed');
+    expect(replay.state).toBe('completed');
+    // Idempotent reattach: the pipeline is not re-run for identical bytes.
+    expect(replay.id).toBe(first.id);
+    expect(replay.streamId).toBe(first.streamId);
+    expect(extractions).toEqual([first.id]);
+  });
+
+  it('creates a fresh session when the prior identical upload failed', async () => {
+    let attempts = 0;
+    const sessionStore = store(async (input) => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new MediaIngestError('extraction failed once', 'audio-extraction-failed', 500);
+      }
+      return await successfulExtractor(input);
+    });
+
+    let failedSessionId = '';
+    await sessionStore.createFromUpload(upload(), async () => validVideoProbe).catch((error: unknown) => {
+      if (error instanceof MediaIngestError) {
+        failedSessionId = (error.session as ProcessingSession).id;
+      }
+    });
+    expect(failedSessionId).not.toBe('');
+
+    const retried = await sessionStore.createFromUpload(upload(), async () => validVideoProbe);
+    expect(retried.state).toBe('completed');
+    expect(retried.id).not.toBe(failedSessionId);
+  });
+
+  it('shares a single render between concurrent viewer-ready media requests', async () => {
+    const outputDir = await createTempDir();
+    const temp = await createTempDir();
+    const sourcePath = join(temp, 'clip.mp4');
+    await writeFile(sourcePath, Buffer.from('uploaded source media'));
+    const renderedPaths: string[] = [];
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      extractAudio: successfulExtractor,
+      renderViewerReadyMedia: async (input) => {
+        renderedPaths.push(input.outputPath);
+        // Keep the render in flight long enough for the second request to join.
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        await mkdir(dirname(input.outputPath), { recursive: true });
+        await writeFile(input.outputPath, Buffer.from('viewer-ready mp4'));
+      },
+    });
+    const session = await sessionStore.createFromUpload(
+      upload({ path: sourcePath, requestedSessionId: 'wrs_concurrent_render' }),
+      async () => validVideoProbe,
+    );
+
+    const [first, second] = await Promise.all([
+      sessionStore.getViewerReadyMediaFile(session.id),
+      sessionStore.getViewerReadyMediaFile(session.id),
+    ]);
+
+    // One ffmpeg render serves both concurrent requests.
+    expect(renderedPaths).toHaveLength(1);
+    // The renderer writes to a temp path that is atomically promoted afterwards.
+    expect(renderedPaths[0]).toContain('programme.tmp-');
+    const finalPath = join(outputDir, session.id, 'viewer-ready', 'programme.mp4');
+    expect(first).toEqual({
+      mediaPath: finalPath,
+      mimeType: 'video/mp4',
+      sizeBytes: 'viewer-ready mp4'.length,
+    });
+    expect(second).toEqual(first);
+  });
+
+  it('maintains incremental per-language output tallies as events transition', async () => {
+    const outputDir = await createTempDir();
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      extractAudio: successfulExtractor,
+      translationTargetLanguage: 'es',
+      translationSupportedTargetLanguages: ['es', 'fr'],
+      textToSpeechSupportedLanguages: ['es'],
+    });
+    const session = await sessionStore.createFromUpload(
+      upload({ targetLanguage: 'es', targetLanguages: ['es', 'fr'] }),
+      async () => validVideoProbe,
+    );
+
+    expect(session.state).toBe('completed');
+    const tallies = sessionStore.getTargetLanguageOutputTallies(session.id);
+    expect(tallies).not.toBeNull();
+    const completedTally = {
+      totalSegments: 3,
+      completedSegments: 3,
+      failedSegments: 0,
+      activeSegments: 0,
+      lastError: null,
+    };
+    expect(tallies!.translation.get('es')).toEqual(completedTally);
+    expect(tallies!.translation.get('fr')).toEqual(completedTally);
+    expect(tallies!.generatedAudio.get('es')).toEqual(completedTally);
+    // Caption-only language: no generated-audio events, no tally.
+    expect(tallies!.generatedAudio.has('fr')).toBe(false);
+
+    // A language revision boundary resets the tallies together with the events.
+    sessionStore.updateSourceLanguageControl(session.id, {
+      action: 'override',
+      language: 'pt',
+    });
+    const reset = sessionStore.getTargetLanguageOutputTallies(session.id);
+    expect(reset!.translation.size).toBe(0);
+    expect(reset!.generatedAudio.size).toBe(0);
+
+    expect(sessionStore.getTargetLanguageOutputTallies('ps_unknown')).toBeNull();
+  });
+
+  it('protects against concurrent duplicate submissions', async () => {
     const sessionStore = store();
-    await sessionStore.createFromUpload(upload(), async () => validVideoProbe);
+    let releaseProbe!: (probe: ProbeResult) => void;
+    const pendingProbe = new Promise<ProbeResult>((resolve) => {
+      releaseProbe = resolve;
+    });
+    const first = sessionStore.createFromUpload(upload(), async () => pendingProbe);
 
     await expect(
       sessionStore.createFromUpload(upload(), async () => validVideoProbe),
     ).rejects.toMatchObject({
       code: 'duplicate-submission',
     });
+
+    releaseProbe(validVideoProbe);
+    await expect(first).resolves.toMatchObject({ state: 'completed' });
   });
 
   it('cleans failed processing artifacts and leaves the source session retryable', async () => {
@@ -301,34 +546,48 @@ describe('ProcessingSessionStore', () => {
     });
   });
 
-  it('creates a WebRTC transcription session and transcribes an ordered chunk without translation', async () => {
+  it('creates a WebRTC programme session and runs transcription, translation and generated audio', async () => {
     const outputDir = await createTempDir();
     const stagingDir = await createTempDir();
     const events: string[] = [];
+    const translations: string[] = [];
+    const generatedAudioReady: string[] = [];
     const sessionStore = new ProcessingSessionStore({
       outputBaseDir: outputDir,
       webRtcStagingDir: stagingDir,
+      translationTargetLanguage: 'es',
+      translationSupportedTargetLanguages: ['es', 'fr'],
+      textToSpeechSupportedLanguages: ['es', 'fr'],
       onTranscriptionEvent: (event) => events.push(`${event.sequence}:${event.status}`),
+      onTranslationEvent: (event) => translations.push(`${event.sequence}:${event.status}:${event.targetLanguage}`),
+      onGeneratedAudioReady: (event) =>
+        generatedAudioReady.push(`${event.sequence}:${event.targetLanguage}:${event.segmentId}`),
     });
     const session = await sessionStore.createWebRtcSession({
       sessionId: 'wrs_demo',
       broadcastId: 'broadcast_demo',
       broadcasterPeerId: 'peer_broadcaster',
       revision: 1,
+      targetLanguage: 'es',
+      targetLanguages: ['es'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
     });
-    const sourcePath = await createStagedWav(stagingDir, 'chunk.wav');
-
-    const updated = await sessionStore.ingestWebRtcChunk(session.id, {
-      sequence: 0,
-      startMs: 0,
-      endMs: 10,
-      sampleRate: 16000,
-      channelCount: 1,
-      pcmFormat: 'pcm_s16le',
-      mimeType: 'audio/wav',
-      sizeBytes: wavFixture().length,
-      sourcePath,
-    });
+    let updated = session;
+    for (let sequence = 0; sequence < 5; sequence += 1) {
+      updated = await sessionStore.ingestWebRtcChunk(session.id, {
+        sequence,
+        startMs: sequence * 15_000,
+        endMs: (sequence + 1) * 15_000,
+        sampleRate: 16000,
+        channelCount: 1,
+        pcmFormat: 'pcm_s16le',
+        mimeType: 'audio/wav',
+        sizeBytes: wavFixture().length,
+        sourcePath: await createStagedWav(stagingDir, `chunk-${sequence}.wav`),
+      });
+      expect(updated.state).toBe('processing');
+    }
 
     expect(updated.sourceKind).toBe('webrtc');
     expect(updated.transcription.events[0]).toMatchObject({
@@ -336,18 +595,161 @@ describe('ProcessingSessionStore', () => {
       streamId: 'broadcast_demo',
       sequence: 0,
       startMs: 0,
-      endMs: 10,
+      endMs: 15_000,
       status: 'transcribed',
     });
-    expect(updated.translation.events).toHaveLength(0);
-    expect(updated.generatedAudio.events).toHaveLength(0);
+    expect(updated.translation.events[0]).toMatchObject({
+      sessionId: 'wrs_demo',
+      streamId: 'broadcast_demo',
+      sequence: 0,
+      sourceText: 'Mock transcript chunk 1',
+      translatedText: '[es] Mock transcript chunk 1',
+      targetLanguage: 'es',
+      startMs: 0,
+      endMs: 15_000,
+      status: 'translated',
+    });
+    expect(updated.generatedAudio.events[0]).toMatchObject({
+      sessionId: 'wrs_demo',
+      segmentId: 'wrs_demo:webrtc:1:0-s0',
+      sequence: 0,
+      targetLanguage: 'es',
+      startMs: 0,
+      endMs: 15_000,
+      status: 'generated',
+    });
     expect(updated.webrtcTranscriptionBridge).toMatchObject({
       status: 'chunking',
-      chunkCount: 1,
-      transcribedChunks: 1,
-      latestTranscript: 'Mock transcript chunk 1',
+      chunkCount: 5,
+      transcribedChunks: 5,
+      latestTranscript: 'Mock transcript chunk 5',
     });
-    expect(events).toEqual(['0:queued', '0:transcribing', '0:transcribed']);
+
+    expect(updated.transcription.events[4]).toMatchObject({
+      sequence: 4,
+      startMs: 60_000,
+      endMs: 75_000,
+      sourceText: 'Mock transcript chunk 5',
+      status: 'transcribed',
+    });
+    expect(updated.translation.events[4]).toMatchObject({
+      sequence: 4,
+      startMs: 60_000,
+      endMs: 75_000,
+      translatedText: '[es] Mock transcript chunk 5',
+      status: 'translated',
+    });
+    expect(updated.generatedAudio.events[4]).toMatchObject({
+      sequence: 4,
+      startMs: 60_000,
+      endMs: 75_000,
+      status: 'generated',
+    });
+
+    const stopped = sessionStore.stopWebRtcSession(session.id);
+    expect(stopped.state).toBe('completed');
+    expect(stopped.webrtcTranscriptionBridge?.status).toBe('stopped');
+    expect(events).toEqual([
+      '0:queued',
+      '0:transcribing',
+      '0:transcribed',
+      '1:queued',
+      '1:transcribing',
+      '1:transcribed',
+      '2:queued',
+      '2:transcribing',
+      '2:transcribed',
+      '3:queued',
+      '3:transcribing',
+      '3:transcribed',
+      '4:queued',
+      '4:transcribing',
+      '4:transcribed',
+    ]);
+    expect(translations).toEqual([
+      '0:queued:es',
+      '0:translating:es',
+      '0:translated:es',
+      '1:queued:es',
+      '1:translating:es',
+      '1:translated:es',
+      '2:queued:es',
+      '2:translating:es',
+      '2:translated:es',
+      '3:queued:es',
+      '3:translating:es',
+      '3:translated:es',
+      '4:queued:es',
+      '4:translating:es',
+      '4:translated:es',
+    ]);
+    expect(generatedAudioReady).toEqual([
+      '0:es:wrs_demo:webrtc:1:0-s0',
+      '1:es:wrs_demo:webrtc:1:1-s0',
+      '2:es:wrs_demo:webrtc:1:2-s0',
+      '3:es:wrs_demo:webrtc:1:3-s0',
+      '4:es:wrs_demo:webrtc:1:4-s0',
+    ]);
+  });
+
+  it('releases generated-audio dedupe keys when a WebRTC session is replaced', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    const generatedAudioReady: string[] = [];
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+      translationTargetLanguage: 'es',
+      translationSupportedTargetLanguages: ['es'],
+      textToSpeechSupportedLanguages: ['es'],
+      onGeneratedAudioReady: (event) => generatedAudioReady.push(event.segmentId),
+    });
+    const webRtcInput = {
+      sessionId: 'wrs_dedupe',
+      broadcastId: 'broadcast_dedupe',
+      broadcasterPeerId: 'peer_broadcaster',
+      targetLanguage: 'es',
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual' as const,
+    };
+    const session = await sessionStore.createWebRtcSession({ ...webRtcInput, revision: 1 });
+    await sessionStore.ingestWebRtcChunk(session.id, {
+      sequence: 0,
+      startMs: 0,
+      endMs: 15_000,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: wavFixture().length,
+      sourcePath: await createStagedWav(stagingDir, 'dedupe-0.wav'),
+    });
+    expect(generatedAudioReady).toHaveLength(1);
+    sessionStore.stopWebRtcSession(session.id);
+
+    const readyKeys = (
+      sessionStore as unknown as {
+        generatedAudioReadyKeysBySession: Map<string, Set<string>>;
+      }
+    ).generatedAudioReadyKeysBySession;
+    expect(readyKeys.has(session.id)).toBe(true);
+
+    // Replacing the session for a new revision must release the old keys with it.
+    await sessionStore.createWebRtcSession({ ...webRtcInput, revision: 2 });
+    expect(readyKeys.has(session.id)).toBe(false);
+
+    await sessionStore.ingestWebRtcChunk(session.id, {
+      sequence: 0,
+      startMs: 0,
+      endMs: 15_000,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: wavFixture().length,
+      sourcePath: await createStagedWav(stagingDir, 'dedupe-1.wav'),
+    });
+    expect(generatedAudioReady).toHaveLength(2);
   });
 
   it('rejects duplicate and out-of-order WebRTC chunks clearly', async () => {

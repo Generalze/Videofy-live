@@ -1,6 +1,6 @@
 # Roadmap
 
-## Phase 1 – Foundation (this release)
+## Phase 1 - Foundation
 
 - [x] Monorepo structure (npm workspaces)
 - [x] Shared TypeScript interfaces (`TranslationEvent`, `MediaStateEvent`, `AudioSyncDescriptor`)
@@ -15,7 +15,7 @@
 - [x] Mock end-to-end demonstration
 - [x] Documentation
 
-## Phase 2 – Local speech pipeline
+## Phase 2 - Local speech pipeline
 
 - [x] P2.1 media ingest and processing-session creation
 - [x] P2.2 audio extraction and chunking
@@ -27,45 +27,45 @@
 - [x] P2.8 local Argos translation provider
 - [x] P2.9 Phase 2 validation and closure
 
-## Phase 3A - Local generated audio foundation
+## Phase 3 - Local generated audio and browser playback
 
 - [x] P3.0 real local-provider smoke test
 - [x] P3.1 local Piper text-to-speech foundation
 - [x] P3.1A real Piper smoke test
-- [ ] Generated audio file delivery to listener
-- [ ] Browser audio queue with video timestamp alignment
-- [ ] Interpretation-mode audio mixing (Web Audio API)
-- [ ] Replacement-mode audio (mute original)
+- [x] P3.2 generated audio delivery to listener
+- [x] P3.3 browser audio queue synchronization and timestamp-aligned playback
+- [x] P3.4 interpretation-mode audio mixing
+- [x] P3.5 replacement-mode audio
+- [x] P3.6 Phase 3 browser playback validation and closure
 
-## Phase 3B - Local video and HLS
+## Phase 4 - WebRTC
 
-- [ ] Local camera/microphone input
-- [ ] FFmpeg audio extraction from video
-- [ ] HLS packaging (ffmpeg + nginx-rtmp)
-- [ ] HLS playback in listener (`<video>` with hls.js)
-- [ ] Video buffering for sync offset
+- [x] P4.0 architecture and WebRTC signalling contracts
+- [x] P4.1 browser broadcaster media capture
+- [x] P4.2 client signalling and peer-session lifecycle orchestration
+- [x] P4.3 backend WebRTC termination and broadcaster-to-server audio ingest
+- [x] P4.4 WebRTC audio chunking and transcription-pipeline bridge
+- [x] P4.5 listener WebRTC programme-audio delivery
+- [x] P4.6 reconnect, failure recovery, security hardening, and observability
+- [x] P4.7 full end-to-end browser validation and Phase 4 closure
 
-## Phase 4 – WebRTC
+## Phase 5 - Partner preview programme sources
 
-- [ ] mediasoup or Janus WebRTC ingest
-- [ ] WebRTC playback in listener
-- [ ] Low-latency audio delivery
+- [x] P5.0 unified live and uploaded-video programme sources
+- [x] P5.1 OBS/capture-device partner-preview hardening
+- [x] P5.2 real open-source AI providers and operator language controls
+- [x] Direct MP4, WebM, and browser HLS programme URL sources
+- [x] RTMP ingest foundation through local MediaMTX-to-HLS bridge
+- [x] Uploaded-programme multi-language caption/audio channels with safe viewer switching
+- [ ] P5.3 partner-preview validation and closure (local technical validation and P5 recovery harness passed; physical-device, network/TURN, additional-browser, one-hour stability, and human language-quality acceptance pending)
 
-## Phase 5 – External integrations
+## Phase 6 - Scale and production
 
-- [ ] Zoom audio/video capture
-- [ ] Microsoft Teams capture
-- [ ] Google Meet capture
-- [ ] OBS WebSocket integration
-- [ ] RTMP ingest
-
-## Phase 6 – Scale and production
-
-- [ ] Multiple concurrent language channels
+- [ ] Multiple concurrent live-language workers and scaled channel delivery
 - [ ] Redis for distributed event state
 - [ ] Authentication and access control
 - [ ] Managed event lifecycle
 - [ ] Transcripts and recordings
 - [ ] Cloud deployment (Docker / Kubernetes)
-- [ ] CDN distribution for HLS
+- [ ] CDN distribution for HLS where a future HLS milestone explicitly requires it
 - [ ] High listener concurrency

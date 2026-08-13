@@ -41,7 +41,7 @@ export interface WebRtcAudioIngestBridgeOptions {
 }
 
 export interface WebRtcAudioDataLike {
-  samples?: Int16Array;
+  samples?: Int16Array | Float32Array;
   sampleRate?: number;
   bitsPerSample?: number;
   channelCount?: number;

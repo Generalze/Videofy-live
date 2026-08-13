@@ -14,6 +14,7 @@ import {
 import type { WebRtcPeerRecord } from './webrtc-session-registry.js';
 import type { WebRtcAudioDataLike } from './webrtc-audio-ingest-bridge.js';
 import { BackendMediaPeerError } from './webrtc-media-peer-registry.js';
+import type { WebRtcVideoFrameLike } from './webrtc-media-peer-registry.js';
 import { logger } from './logger.js';
 
 type ListenerPeerState = 'creating' | 'negotiating' | 'connected' | 'failed' | 'closing' | 'closed';
@@ -39,6 +40,11 @@ interface TrackLike {
 interface AudioSourceLike {
   createTrack(): TrackLike;
   onData(data: WebRtcAudioDataLike): void;
+}
+
+interface VideoSourceLike {
+  createTrack(): TrackLike;
+  onFrame(frame: WebRtcVideoFrameLike): void;
 }
 
 interface PeerConnectionLike {
@@ -67,13 +73,16 @@ interface BackendListenerPeerRecord {
   revision: number;
   peer: PeerConnectionLike;
   audioSource: AudioSourceLike;
+  videoSource: VideoSourceLike | null;
   audioTrack: TrackLike;
+  videoTrack: TrackLike | null;
   queuedRemoteCandidates: CandidateInitLike[];
   seenRemoteCandidates: Set<string>;
   state: ListenerPeerState;
   createdAt: Date;
   updatedAt: Date;
   lastFrameAt: Date | null;
+  lastVideoFrameAt: Date | null;
   offerTimer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -87,6 +96,8 @@ export interface BackendListenerPeerSnapshot {
   connectionState: string;
   iceConnectionState: string;
   lastFrameAt: string | null;
+  lastVideoFrameAt: string | null;
+  videoTrackIncluded: boolean;
 }
 
 export interface BackendWebRtcListenerPeerRegistryOptions {
@@ -95,6 +106,7 @@ export interface BackendWebRtcListenerPeerRegistryOptions {
   maxQueuedCandidates?: number;
   createPeerConnection?: () => PeerConnectionLike;
   createAudioSource?: () => AudioSourceLike;
+  createVideoSource?: () => VideoSourceLike;
   now?: () => Date;
   setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
@@ -117,6 +129,7 @@ export class BackendWebRtcListenerPeerRegistry {
   private readonly maxQueuedCandidates: number;
   private readonly createPeerConnection: () => PeerConnectionLike;
   private readonly createAudioSource: () => AudioSourceLike;
+  private readonly createVideoSource: () => VideoSourceLike;
   private readonly now: () => Date;
   private readonly setTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   private readonly clearTimer: (timer: ReturnType<typeof setTimeout>) => void;
@@ -136,6 +149,9 @@ export class BackendWebRtcListenerPeerRegistry {
     this.createAudioSource =
       options.createAudioSource ??
       (() => new wrtc.nonstandard.RTCAudioSource() as unknown as AudioSourceLike);
+    this.createVideoSource =
+      options.createVideoSource ??
+      (() => new wrtc.nonstandard.RTCVideoSource() as unknown as VideoSourceLike);
     this.now = options.now ?? (() => new Date());
     this.setTimer = options.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearTimer = options.clearTimer ?? ((timer) => clearTimeout(timer));
@@ -151,6 +167,7 @@ export class BackendWebRtcListenerPeerRegistry {
     listener: WebRtcPeerRecord,
     session: WebRtcSessionSummary,
     revision: number,
+    options: { includeVideo?: boolean } = {},
   ): Promise<WebRtcSdpOfferEnvelope | null> {
     if (this.hasActivePeer(session.sessionId, listener.peerId)) return null;
     if (this.activePeerCount() >= this.maxActivePeers) {
@@ -160,6 +177,9 @@ export class BackendWebRtcListenerPeerRegistry {
     const source = this.createAudioSource();
     const track = source.createTrack();
     peer.addTrack(track);
+    const videoSource = options.includeVideo ? this.createVideoSource() : null;
+    const videoTrack = videoSource?.createTrack() ?? null;
+    if (videoTrack) peer.addTrack(videoTrack);
     const now = this.now();
     const record: BackendListenerPeerRecord = {
       key: keyFor(session.sessionId, listener.peerId),
@@ -171,13 +191,16 @@ export class BackendWebRtcListenerPeerRegistry {
       revision,
       peer,
       audioSource: source,
+      videoSource,
       audioTrack: track,
+      videoTrack,
       queuedRemoteCandidates: [],
       seenRemoteCandidates: new Set(),
       state: 'creating',
       createdAt: now,
       updatedAt: now,
       lastFrameAt: null,
+      lastVideoFrameAt: null,
       offerTimer: null,
     };
     this.peers.set(record.key, record);
@@ -272,6 +295,55 @@ export class BackendWebRtcListenerPeerRegistry {
     }
   }
 
+  fanOutVideoFrame(sessionId: string, frame: WebRtcVideoFrameLike): void {
+    for (const record of this.peers.values()) {
+      if (record.sessionId !== sessionId || record.state === 'closed' || record.state === 'failed') continue;
+      if (!record.videoSource) continue;
+      try {
+        record.videoSource.onFrame(frame);
+        record.lastVideoFrameAt = this.now();
+        this.touch(record);
+      } catch (error) {
+        logger.warn('Backend listener WebRTC video frame fan-out failed; degrading to audio-only', {
+          sessionId: record.sessionId,
+          listenerPeerId: record.listenerPeerId,
+          revision: record.revision,
+          width: frame.width ?? null,
+          height: frame.height ?? null,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        // A failing video frame must never tear down the listener's audio path.
+        this.degradeVideo(record);
+      }
+    }
+  }
+
+  /** Stop delivering video to every listener peer of a session, keeping audio intact. */
+  endSessionVideo(sessionId: string | undefined, reason = 'broadcaster video ended'): void {
+    if (!sessionId) return;
+    for (const record of this.peers.values()) {
+      if (record.sessionId !== sessionId || !record.videoSource) continue;
+      logger.info('Backend listener WebRTC video delivery ended', {
+        sessionId: record.sessionId,
+        listenerPeerId: record.listenerPeerId,
+        revision: record.revision,
+        reason,
+      });
+      this.degradeVideo(record);
+    }
+  }
+
+  private degradeVideo(record: BackendListenerPeerRecord): void {
+    try {
+      record.videoTrack?.stop?.();
+    } catch {
+      // Best effort; audio delivery continues regardless.
+    }
+    record.videoTrack = null;
+    record.videoSource = null;
+    this.touch(record);
+  }
+
   closeSession(sessionId: string | undefined, reason = 'signalling session closed'): void {
     if (!sessionId) return;
     for (const record of [...this.peers.values()]) {
@@ -346,6 +418,7 @@ export class BackendWebRtcListenerPeerRegistry {
     this.clearOfferTimer(record);
     try {
       record.audioTrack.stop?.();
+      record.videoTrack?.stop?.();
       record.peer.close();
       record.queuedRemoteCandidates = [];
       record.seenRemoteCandidates.clear();
@@ -367,6 +440,7 @@ export class BackendWebRtcListenerPeerRegistry {
     this.clearOfferTimer(record);
     try {
       record.audioTrack.stop?.();
+      record.videoTrack?.stop?.();
       record.peer.close();
       record.queuedRemoteCandidates = [];
       record.seenRemoteCandidates.clear();
@@ -411,6 +485,8 @@ export class BackendWebRtcListenerPeerRegistry {
       connectionState: record.peer.connectionState,
       iceConnectionState: record.peer.iceConnectionState,
       lastFrameAt: record.lastFrameAt?.toISOString() ?? null,
+      lastVideoFrameAt: record.lastVideoFrameAt?.toISOString() ?? null,
+      videoTrackIncluded: Boolean(record.videoTrack),
     };
   }
 }

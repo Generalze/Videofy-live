@@ -9,12 +9,20 @@ import {
 
 export type ListenerWebRtcTransportState =
   | 'idle'
+  | 'waiting-for-programme'
   | 'awaiting-broadcaster'
+  | 'negotiating-programme-media'
   | 'negotiating'
   | 'connecting'
   | 'track-received'
   | 'playing'
   | 'playback-blocked'
+  | 'video-connected'
+  | 'audio-connected'
+  | 'video-unavailable'
+  | 'source-paused'
+  | 'source-ended'
+  | 'broadcaster-unavailable'
   | 'disconnected'
   | 'recovering'
   | 'failed'
@@ -33,6 +41,7 @@ export type ListenerWebRtcTransportErrorCode =
   | 'negotiation-timeout'
   | 'connection-closed'
   | 'audio-track-ended'
+  | 'video-track-ended'
   | 'playback-blocked'
   | 'cleanup-failure';
 
@@ -49,10 +58,19 @@ export interface ListenerWebRtcTransportSnapshot {
   iceConnectionState: RTCIceConnectionState | 'none';
   remoteAudioTrackReceived: boolean;
   remoteAudioTrackActive: boolean;
+  remoteVideoTrackReceived: boolean;
+  remoteVideoTrackActive: boolean;
+  playbackBlocked: boolean;
+  appliedJitterBufferTargetMs: number | null;
   queuedRemoteCandidates: number;
   recoveryAttempts: number;
   lastError: ListenerWebRtcTransportErrorDetails | null;
   updatedAt: string;
+}
+
+interface DelayTunableReceiver {
+  jitterBufferTarget?: number | null;
+  playoutDelayHint?: number | null;
 }
 
 interface PeerConnectionLike {
@@ -64,7 +82,7 @@ interface PeerConnectionLike {
   ontrack: ((event: RTCTrackEvent) => void) | null;
   onconnectionstatechange: ((event?: Event) => void) | null;
   oniceconnectionstatechange: ((event?: Event) => void) | null;
-  addTransceiver(kind: 'audio', init: RTCRtpTransceiverInit): RTCRtpTransceiver;
+  addTransceiver(kind: 'audio' | 'video', init: RTCRtpTransceiverInit): RTCRtpTransceiver;
   setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void>;
   createAnswer(): Promise<RTCSessionDescriptionInit>;
   setLocalDescription(description: RTCSessionDescriptionInit): Promise<void>;
@@ -75,6 +93,7 @@ interface PeerConnectionLike {
 export interface ListenerWebRtcTransportControllerOptions {
   signallingClient: WebRtcSignallingClient;
   createPeerConnection?: () => PeerConnectionLike;
+  syncDelayMs?: number;
   negotiationTimeoutMs?: number;
   maxQueuedRemoteCandidates?: number;
   maxRecoveryAttempts?: number;
@@ -85,6 +104,10 @@ export interface ListenerWebRtcTransportControllerOptions {
   onStateChange?: (snapshot: ListenerWebRtcTransportSnapshot) => void;
 }
 
+const DEFAULT_SYNC_DELAY_MS = 0;
+// The WebRTC spec caps jitterBufferTarget at 4000 ms; larger assignments
+// throw a RangeError and would silently drop the whole sync delay.
+const JITTER_BUFFER_TARGET_MAX_MS = 4_000;
 const DEFAULT_NEGOTIATION_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_QUEUED_REMOTE_CANDIDATES = 32;
 const DEFAULT_MAX_RECOVERY_ATTEMPTS = 2;
@@ -96,8 +119,12 @@ export function createInitialListenerWebRtcTransportSnapshot(): ListenerWebRtcTr
     revision: 0,
     connectionState: 'none',
     iceConnectionState: 'none',
-    remoteAudioTrackReceived: false,
-    remoteAudioTrackActive: false,
+  remoteAudioTrackReceived: false,
+  remoteAudioTrackActive: false,
+  remoteVideoTrackReceived: false,
+  remoteVideoTrackActive: false,
+  playbackBlocked: false,
+  appliedJitterBufferTargetMs: null,
     queuedRemoteCandidates: 0,
     recoveryAttempts: 0,
     lastError: null,
@@ -108,6 +135,7 @@ export function createInitialListenerWebRtcTransportSnapshot(): ListenerWebRtcTr
 export class ListenerWebRtcTransportController {
   private readonly signallingClient: WebRtcSignallingClient;
   private readonly createPeerConnection: () => PeerConnectionLike;
+  private readonly syncDelayMs: number;
   private readonly negotiationTimeoutMs: number;
   private readonly maxQueuedRemoteCandidates: number;
   private readonly maxRecoveryAttempts: number;
@@ -121,6 +149,7 @@ export class ListenerWebRtcTransportController {
   private peer: PeerConnectionLike | null = null;
   private stream: MediaStream | null = null;
   private audioTrack: MediaStreamTrack | null = null;
+  private videoTrack: MediaStreamTrack | null = null;
   private pendingRemoteCandidates: RTCIceCandidateInit[] = [];
   private seenRemoteCandidates = new Set<string>();
   private negotiationTimer: number | null = null;
@@ -137,6 +166,7 @@ export class ListenerWebRtcTransportController {
         }
         return new RTCPeerConnection({ iceServers: readIceServers() }) as unknown as PeerConnectionLike;
       });
+    this.syncDelayMs = options.syncDelayMs ?? DEFAULT_SYNC_DELAY_MS;
     this.negotiationTimeoutMs = options.negotiationTimeoutMs ?? DEFAULT_NEGOTIATION_TIMEOUT_MS;
     this.maxQueuedRemoteCandidates =
       options.maxQueuedRemoteCandidates ?? DEFAULT_MAX_QUEUED_REMOTE_CANDIDATES;
@@ -156,6 +186,10 @@ export class ListenerWebRtcTransportController {
     return this.snapshot;
   }
 
+  getRemoteStream(): MediaStream | null {
+    return this.stream;
+  }
+
   startWaiting(): ListenerWebRtcTransportSnapshot {
     if (this.snapshot.state !== 'idle' && this.snapshot.state !== 'closed' && this.snapshot.state !== 'failed') {
       throw this.fail(error('duplicate-peer', 'Listener WebRTC audio transport is already active.'));
@@ -167,6 +201,10 @@ export class ListenerWebRtcTransportController {
       lastError: null,
       remoteAudioTrackReceived: false,
       remoteAudioTrackActive: false,
+      remoteVideoTrackReceived: false,
+      remoteVideoTrackActive: false,
+      playbackBlocked: false,
+      appliedJitterBufferTargetMs: null,
       queuedRemoteCandidates: 0,
       recoveryAttempts: this.snapshot.recoveryAttempts,
     });
@@ -191,24 +229,30 @@ export class ListenerWebRtcTransportController {
     }
     if (event.type === 'ice-complete') return;
     if (event.type === 'peer-disconnect') {
-      this.close('remote peer disconnected');
+      this.closeRemoteProgrammeSource('remote peer disconnected');
     }
   }
 
   markPlaybackStarted(): void {
-    if (this.snapshot.state === 'track-received' || this.snapshot.state === 'playback-blocked') {
-      this.update({ state: 'playing', lastError: null });
+    if (
+      this.snapshot.state === 'track-received' ||
+      this.snapshot.state === 'audio-connected' ||
+      this.snapshot.state === 'video-connected' ||
+      this.snapshot.state === 'playback-blocked'
+    ) {
+      this.update({ state: 'playing', playbackBlocked: false, lastError: null });
     }
   }
 
   markPlaybackBlocked(message: string): void {
     this.update({
       state: 'playback-blocked',
+      playbackBlocked: true,
       lastError: details(error('playback-blocked', message, true)),
     });
   }
 
-  close(reason = 'listener transport closed'): ListenerWebRtcTransportSnapshot {
+  close(reason = 'listener transport closed', notifySignalling = true): ListenerWebRtcTransportSnapshot {
     if (this.snapshot.state === 'closed' || this.snapshot.state === 'closing') return this.snapshot;
     this.update({ state: 'closing' });
     this.clearNegotiationTimer();
@@ -216,23 +260,31 @@ export class ListenerWebRtcTransportController {
     try {
       this.audioTrack?.removeEventListener?.('ended', this.handleTrackEnded);
       this.audioTrack = null;
+      this.videoTrack?.removeEventListener?.('ended', this.handleVideoTrackEnded);
+      this.videoTrack = null;
       this.stream?.getTracks().forEach((track) => track.stop());
       this.stream = null;
       this.pendingRemoteCandidates = [];
       this.seenRemoteCandidates.clear();
       this.peer?.close();
       this.peer = null;
-      this.signallingClient.sendPeerDisconnect({
-        targetPeerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
-        revision: this.snapshot.revision,
-        reason,
-      });
+      if (notifySignalling) {
+        this.signallingClient.sendPeerDisconnect({
+          targetPeerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+          revision: this.snapshot.revision,
+          reason,
+        });
+      }
       this.update({
         state: 'closed',
         connectionState: 'none',
         iceConnectionState: 'none',
         remoteAudioTrackReceived: false,
         remoteAudioTrackActive: false,
+        remoteVideoTrackReceived: false,
+        remoteVideoTrackActive: false,
+        playbackBlocked: false,
+        appliedJitterBufferTargetMs: null,
         queuedRemoteCandidates: 0,
       });
     } catch {
@@ -242,6 +294,25 @@ export class ListenerWebRtcTransportController {
       });
     }
     return this.snapshot;
+  }
+
+  private closeRemoteProgrammeSource(reason: string): void {
+    const hadAudio = this.snapshot.remoteAudioTrackReceived;
+    const hadVideo = this.snapshot.remoteVideoTrackReceived;
+    if (!hadAudio && !hadVideo) {
+      this.close(reason);
+      return;
+    }
+    this.close(reason, false);
+    this.update({
+      state: 'source-ended',
+      remoteAudioTrackReceived: hadAudio,
+      remoteVideoTrackReceived: hadVideo,
+      remoteAudioTrackActive: false,
+      remoteVideoTrackActive: false,
+      playbackBlocked: false,
+      lastError: null,
+    });
   }
 
   dispose(): void {
@@ -276,7 +347,8 @@ export class ListenerWebRtcTransportController {
       peer.onconnectionstatechange = this.handleConnectionStateChange;
       peer.oniceconnectionstatechange = this.handleIceConnectionStateChange;
       peer.addTransceiver('audio', { direction: 'recvonly' });
-      this.update({ state: 'negotiating', revision: offer.revision, lastError: null });
+      peer.addTransceiver('video', { direction: 'recvonly' });
+      this.update({ state: 'negotiating-programme-media', revision: offer.revision, lastError: null });
       this.startNegotiationTimer();
       await peer.setRemoteDescription({ type: 'offer', sdp: offer.payload.sdp }).catch((err: unknown) => {
         throw normalize(err, 'remote-description-failure', 'Unable to apply listener WebRTC offer.');
@@ -292,7 +364,7 @@ export class ListenerWebRtcTransportController {
         sdp: peer.localDescription?.sdp ?? answer.sdp ?? '',
         revision: offer.revision,
       });
-      if (!this.snapshot.remoteAudioTrackReceived) {
+      if (!this.snapshot.remoteAudioTrackReceived && !this.snapshot.remoteVideoTrackReceived) {
         this.update({ state: 'connecting' });
       }
       await this.flushCandidates();
@@ -350,23 +422,83 @@ export class ListenerWebRtcTransportController {
 
   private handleTrack = (event: RTCTrackEvent): void => {
     const track = event.track;
-    if (!track || track.kind !== 'audio') return;
+    if (!track) return;
+    if (track.kind === 'video') {
+      this.handleVideoTrack(track, event);
+      return;
+    }
+    if (track.kind !== 'audio') return;
     if (this.audioTrack) {
       this.fail(error('duplicate-peer', 'Listener received duplicate WebRTC audio tracks.', false));
       return;
     }
     this.audioTrack = track;
     track.addEventListener?.('ended', this.handleTrackEnded);
-    const stream = event.streams[0] ?? new MediaStream([track]);
-    this.stream = stream;
+    const stream = this.mergeRemoteTrack(track, event);
     this.clearNegotiationTimer();
     this.update({
-      state: 'track-received',
+      state: this.snapshot.remoteVideoTrackReceived ? 'video-connected' : 'audio-connected',
       remoteAudioTrackReceived: true,
       remoteAudioTrackActive: track.readyState !== 'ended',
+      appliedJitterBufferTargetMs: this.applySyncDelay(event.receiver),
     });
     this.onRemoteStream?.(stream);
   };
+
+  private handleVideoTrack(track: MediaStreamTrack, event: RTCTrackEvent): void {
+    if (this.videoTrack) {
+      this.fail(error('duplicate-peer', 'Listener received duplicate WebRTC video tracks.', false));
+      return;
+    }
+    this.videoTrack = track;
+    track.addEventListener?.('ended', this.handleVideoTrackEnded);
+    const stream = this.mergeRemoteTrack(track, event);
+    this.clearNegotiationTimer();
+    this.update({
+      state: this.snapshot.remoteAudioTrackReceived ? 'video-connected' : 'track-received',
+      remoteVideoTrackReceived: true,
+      remoteVideoTrackActive: track.readyState !== 'ended',
+      appliedJitterBufferTargetMs: this.applySyncDelay(event.receiver),
+    });
+    this.onRemoteStream?.(stream);
+  }
+
+  private applySyncDelay(receiver: RTCRtpReceiver | undefined): number | null {
+    if (!receiver || this.syncDelayMs <= 0) return this.snapshot.appliedJitterBufferTargetMs;
+    const tunable = receiver as RTCRtpReceiver & DelayTunableReceiver;
+    let appliedMs: number | null = null;
+    if ('jitterBufferTarget' in tunable) {
+      const targetMs = Math.min(this.syncDelayMs, JITTER_BUFFER_TARGET_MAX_MS);
+      try {
+        tunable.jitterBufferTarget = targetMs;
+        appliedMs = targetMs;
+      } catch {
+        // Engine rejected the target (e.g. above its allowed range); fall through to the legacy hint.
+      }
+    }
+    if ('playoutDelayHint' in tunable) {
+      try {
+        // The legacy hint takes seconds and has no spec cap, so it carries the
+        // full sync delay even where the jitter buffer target is clamped.
+        tunable.playoutDelayHint = this.syncDelayMs / 1000;
+        appliedMs = Math.max(appliedMs ?? 0, this.syncDelayMs);
+      } catch {
+        // Legacy hint rejected; leave playout timing at the engine default.
+      }
+    }
+    // Truthful about what stuck: the clamped 4000 ms surfaces as partial sync
+    // in the snapshot when only the jitter buffer target could be applied.
+    return appliedMs ?? this.snapshot.appliedJitterBufferTargetMs;
+  }
+
+  private mergeRemoteTrack(track: MediaStreamTrack, event: RTCTrackEvent): MediaStream {
+    const stream = this.stream ?? event.streams[0] ?? new MediaStream();
+    if (!stream.getTracks().includes(track)) {
+      stream.addTrack(track);
+    }
+    this.stream = stream;
+    return stream;
+  }
 
   private handleTrackEnded = (): void => {
     this.update({
@@ -376,19 +508,70 @@ export class ListenerWebRtcTransportController {
     });
   };
 
+  private handleVideoTrackEnded = (): void => {
+    this.update({
+      state: 'video-unavailable',
+      remoteVideoTrackActive: false,
+      lastError: details(error('video-track-ended', 'WebRTC programme video track ended.')),
+    });
+  };
+
   private handleConnectionStateChange = (): void => {
     const state = this.peer?.connectionState ?? 'none';
-    if (state === 'connected' && this.snapshot.state === 'track-received') this.markPlaybackStarted();
-    if (state === 'failed') this.fail(error('connection-closed', 'Listener WebRTC connection failed.'));
+    if (
+      state === 'connected' &&
+      (this.snapshot.state === 'track-received' ||
+        this.snapshot.state === 'audio-connected' ||
+        this.snapshot.state === 'video-connected')
+    ) {
+      this.markPlaybackStarted();
+    }
+    if (state === 'failed') {
+      if (this.hasEndedRemoteMedia()) {
+        this.clearNegotiationTimer();
+        this.clearRecoveryTimer();
+        this.update({
+          state: 'source-ended',
+          remoteAudioTrackActive: false,
+          remoteVideoTrackActive: false,
+          lastError: null,
+        });
+      } else {
+        this.fail(error('connection-closed', 'Listener WebRTC connection failed.'));
+      }
+    }
     if (state === 'closed') this.update({ state: 'closed' });
     this.update({ connectionState: state });
   };
 
   private handleIceConnectionStateChange = (): void => {
     const state = this.peer?.iceConnectionState ?? 'none';
-    if (state === 'failed') this.fail(error('ice-candidate-failure', 'Listener ICE connection failed.'));
+    if (state === 'failed') {
+      if (this.hasEndedRemoteMedia()) {
+        this.clearNegotiationTimer();
+        this.clearRecoveryTimer();
+        this.update({
+          state: 'source-ended',
+          remoteAudioTrackActive: false,
+          remoteVideoTrackActive: false,
+          lastError: null,
+        });
+      } else {
+        this.fail(error('ice-candidate-failure', 'Listener ICE connection failed.'));
+      }
+    }
     this.update({ iceConnectionState: state });
   };
+
+  private hasEndedRemoteMedia(): boolean {
+    const receivedMedia = this.snapshot.remoteAudioTrackReceived || this.snapshot.remoteVideoTrackReceived;
+    if (!receivedMedia) return false;
+    const audioEnded =
+      !this.snapshot.remoteAudioTrackReceived || this.audioTrack?.readyState === 'ended';
+    const videoEnded =
+      !this.snapshot.remoteVideoTrackReceived || this.videoTrack?.readyState === 'ended';
+    return audioEnded && videoEnded;
+  }
 
   private startNegotiationTimer(): void {
     this.clearNegotiationTimer();

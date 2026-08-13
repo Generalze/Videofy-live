@@ -37,13 +37,15 @@ export interface GeneratedAudioReadyEvent {
 export interface TextToSpeechSessionMetadata {
   status: TextToSpeechStatus;
   providerName?: string;
-  providerStatus?: 'idle' | 'ready' | 'generating' | 'failed';
+  providerStatus?: 'idle' | 'ready' | 'generating' | 'failed' | 'text-only';
   progressPct: number;
   totalSegments: number;
   generatedSegments: number;
   failedSegments: number;
   targetLanguage: string;
+  targetLanguages?: string[];
   voiceId: string;
+  textOnlyLanguages?: string[];
   outputFormat: {
     container: 'wav';
     codec: 'pcm_s16le';

@@ -101,7 +101,13 @@ function store(
     transcriptionProvider:
       options.transcriptionProvider ??
       transcriber(async (input) => ({
-        sourceText: `source ${input.chunk.index}`,
+        segments: [
+          {
+            text: `source ${input.chunk.index}`,
+            startMs: 0,
+            endMs: input.chunk.endMs - input.chunk.startMs,
+          },
+        ],
         detectedLanguage: 'en',
         confidence: 0.9,
       })),
@@ -124,7 +130,11 @@ describe('operator session monitoring and recovery', () => {
     const sessionStore = store({
       transcriptionProvider: transcriber(async (input) => {
         if (input.chunk.index > 0) {
-          return { sourceText: 'done', detectedLanguage: 'en', confidence: 0.9 };
+          return {
+            segments: [{ text: 'done', startMs: 0, endMs: 15_000 }],
+            detectedLanguage: 'en',
+            confidence: 0.9,
+          };
         }
         return await new Promise<TranscriptionProviderResult>((resolve) => {
           release = resolve;
@@ -146,7 +156,11 @@ describe('operator session monitoring and recovery', () => {
 
     const resumed = sessionStore.resumeSession(activeSessionId!);
     expect(resumed.state).toBe('processing');
-    release?.({ sourceText: 'done', detectedLanguage: 'en', confidence: 0.9 });
+    release?.({
+      segments: [{ text: 'done', startMs: 0, endMs: 15_000 }],
+      detectedLanguage: 'en',
+      confidence: 0.9,
+    });
     const completed = await created;
     expect(completed.state).toBe('completed');
   });
@@ -170,7 +184,11 @@ describe('operator session monitoring and recovery', () => {
 
     const cancelled = sessionStore.cancelSession(activeSessionId!);
     expect(cancelled.state).toBe('cancelled');
-    release?.({ sourceText: 'cancelled', detectedLanguage: 'en', confidence: 0.9 });
+    release?.({
+      segments: [{ text: 'cancelled', startMs: 0, endMs: 15_000 }],
+      detectedLanguage: 'en',
+      confidence: 0.9,
+    });
     await expect(created).resolves.toMatchObject({ state: 'cancelled' });
   });
 
@@ -189,7 +207,11 @@ describe('operator session monitoring and recovery', () => {
     const session = await store({
       transcriptionProvider: transcriber(async (input) => {
         if (input.chunk.index === 1) throw new Error('transcription worker failed');
-        return { sourceText: 'ok', detectedLanguage: 'en', confidence: 0.9 };
+        return {
+          segments: [{ text: 'ok', startMs: 0, endMs: 15_000 }],
+          detectedLanguage: 'en',
+          confidence: 0.9,
+        };
       }),
     }).createFromUpload(upload(), async () => validProbe);
 
@@ -298,7 +320,11 @@ describe('operator session monitoring and recovery', () => {
     const session = await store({
       transcriptionProvider: transcriber(async (input) => {
         if (input.chunk.index === 1) throw new Error('middle transcription failed');
-        return { sourceText: 'ok', detectedLanguage: 'en', confidence: 0.9 };
+        return {
+          segments: [{ text: 'ok', startMs: 0, endMs: 15_000 }],
+          detectedLanguage: 'en',
+          confidence: 0.9,
+        };
       }),
     }).createFromUpload(upload(), async () => validProbe);
 

@@ -29,7 +29,8 @@ export interface AudioSyncDescriptor {
 }
 
 /**
- * AudioMode preferences sent from the listener client to configure mixing.
+ * AudioMode preferences used by listener-local controls and operator-directed
+ * preview mixing.
  *
  * interpretation – translated voice is primary; original speaker is audible at
  *                 reduced volume alongside music and ambience.
@@ -46,3 +47,6 @@ export interface AudioModePreferences {
   /** Whether to display translated subtitles. */
   subtitlesEnabled: boolean;
 }
+
+/** Operator-directed mix defaults applied to connected listener clients. */
+export type AudioMixPreferences = AudioModePreferences;

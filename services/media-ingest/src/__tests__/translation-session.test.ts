@@ -107,7 +107,13 @@ function store(
     transcriptionProvider:
       options.transcriber ??
       transcriptionProvider(async (input) => ({
-        sourceText: `source ${input.chunk.index}`,
+        segments: [
+          {
+            text: `source ${input.chunk.index}`,
+            startMs: 0,
+            endMs: input.chunk.endMs - input.chunk.startMs,
+          },
+        ],
         detectedLanguage: 'en',
         confidence: 0.9,
       })),
@@ -142,6 +148,33 @@ describe('timestamped translation sessions', () => {
       targetLanguage: 'fr',
       progressPct: 100,
     });
+    expect(session.translation.events.every((event) => event.status === 'translated')).toBe(true);
+  });
+
+  it('translates every selected language independently in timestamp order', async () => {
+    const calls: Array<{ sequence: number; targetLanguage: string }> = [];
+    const session = await store(
+      translationProvider(async (input) => {
+        calls.push({ sequence: input.sequence, targetLanguage: input.targetLanguage });
+        return { translatedText: `${input.targetLanguage}:${input.sourceText}` };
+      }),
+      { targetLanguage: 'es', supportedTargetLanguages: ['es', 'fr'] },
+    ).createFromUpload(
+      upload({ targetLanguage: 'es', targetLanguages: ['es', 'fr'] }),
+      async () => validProbe,
+    );
+
+    expect(session.state).toBe('completed');
+    expect(session.targetLanguages).toEqual(['es', 'fr']);
+    expect(session.translation.totalSegments).toBe(6);
+    expect(calls).toEqual([
+      { sequence: 0, targetLanguage: 'es' },
+      { sequence: 0, targetLanguage: 'fr' },
+      { sequence: 1, targetLanguage: 'es' },
+      { sequence: 1, targetLanguage: 'fr' },
+      { sequence: 2, targetLanguage: 'es' },
+      { sequence: 2, targetLanguage: 'fr' },
+    ]);
     expect(session.translation.events.every((event) => event.status === 'translated')).toBe(true);
   });
 
@@ -202,18 +235,65 @@ describe('timestamped translation sessions', () => {
     ]);
   });
 
-  it('keeps empty source text as an empty translation', async () => {
+  it('skips empty source segments instead of translating them', async () => {
     const session = await store(new MockTimestampedTranslationProvider(['fr']), {
       transcriber: transcriptionProvider(async () => ({
-        sourceText: '',
+        segments: [{ text: '', startMs: 0, endMs: 1_000 }],
         detectedLanguage: 'en',
         confidence: null,
       })),
     }).createFromUpload(upload(), async () => validProbe);
 
-    expect(session.translation.events.every((event) => event.status === 'translated')).toBe(true);
-    expect(session.translation.events.every((event) => event.sourceText === '')).toBe(true);
-    expect(session.translation.events.every((event) => event.translatedText === '')).toBe(true);
+    expect(session.state).toBe('completed');
+    expect(session.transcription.events).toEqual([]);
+    expect(session.translation.events).toEqual([]);
+  });
+
+  it('creates one translation event per language for every fan-out segment', async () => {
+    const session = await store(
+      translationProvider(async (input) => ({
+        translatedText: `${input.targetLanguage}:${input.sourceText}`,
+      })),
+      {
+        transcriber: transcriptionProvider(async (input) =>
+          input.chunk.index === 0
+            ? {
+                segments: [
+                  { text: 'one.', startMs: 0, endMs: 5_000 },
+                  { text: 'two.', startMs: 5_000, endMs: 10_000 },
+                  { text: 'three.', startMs: 10_000, endMs: 15_000 },
+                ],
+                detectedLanguage: 'en',
+                confidence: 0.9,
+              }
+            : { segments: [], detectedLanguage: 'en', confidence: 0.9 },
+        ),
+        targetLanguage: 'es',
+        supportedTargetLanguages: ['es', 'fr'],
+      },
+    ).createFromUpload(
+      upload({ targetLanguage: 'es', targetLanguages: ['es', 'fr'] }),
+      async () => validProbe,
+    );
+
+    expect(session.state).toBe('completed');
+    expect(session.translation.events).toHaveLength(6);
+    for (const language of ['es', 'fr']) {
+      const events = session.translation.events.filter(
+        (event) => event.targetLanguage === language,
+      );
+      expect(events.map((event) => event.sequence)).toEqual([0, 1, 2]);
+      expect(events.map((event) => event.translatedText)).toEqual([
+        `${language}:one.`,
+        `${language}:two.`,
+        `${language}:three.`,
+      ]);
+      expect(events.map((event) => [event.startMs, event.endMs])).toEqual([
+        [0, 5_000],
+        [5_000, 10_000],
+        [10_000, 15_000],
+      ]);
+    }
   });
 
   it('rejects an unsupported target language clearly', async () => {
@@ -313,6 +393,48 @@ describe('timestamped translation sessions', () => {
 
     release?.({ translatedText: 'done' });
     await created;
+  });
+
+  it('bails out of an in-flight translation pass when a language revision replaces it', async () => {
+    let release: ((value: TranslationProviderResult) => void) | undefined;
+    let activeSessionId: string | undefined;
+    const sessionStore = store(
+      translationProvider(async (input) => {
+        if (input.sequence > 0) {
+          return { translatedText: `late ${input.sequence}` };
+        }
+        return await new Promise<TranslationProviderResult>((resolve) => {
+          release = resolve;
+        });
+      }),
+      {
+        onSessionChange: (session) => {
+          if (session.translation.events.some((event) => event.status === 'translating')) {
+            activeSessionId = session.id;
+          }
+        },
+      },
+    );
+
+    const created = sessionStore.createFromUpload(upload(), async () => validProbe);
+    await waitUntil(() => activeSessionId !== undefined && release !== undefined);
+
+    // The operator overrides the source language while segment 0 translates:
+    // the revision boundary replaces the translation pass.
+    const overridden = sessionStore.updateSourceLanguageControl(activeSessionId!, {
+      action: 'override',
+      language: 'pt',
+    });
+    expect(overridden.sourceLanguageControl.revision).toBe(1);
+    release?.({ translatedText: 'stale result' });
+
+    const session = await created;
+    // The superseded pass bails out cleanly instead of failing the session
+    // with a bogus zero-output translation failure; the new revision owns it.
+    expect(session.state).toBe('processing');
+    expect(session.error).toBeNull();
+    expect(session.translation).toMatchObject({ status: 'queued', totalSegments: 0 });
+    expect(session.translation.events).toEqual([]);
   });
 
   it('preserves partial failure while successful segments remain translated', async () => {

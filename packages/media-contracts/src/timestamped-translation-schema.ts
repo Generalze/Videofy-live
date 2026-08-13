@@ -21,6 +21,7 @@ export const TimestampedTranslationEventSchema = z
     segmentId: z.string().min(1),
     sequence: z.number().int().nonnegative(),
     sourceLanguage: z.string().min(2).max(16),
+    sourceLanguageRevision: z.number().int().nonnegative().optional(),
     targetLanguage: z.string().min(2).max(16),
     sourceText: z.string(),
     translatedText: z.string(),

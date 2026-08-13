@@ -51,6 +51,67 @@ class FakePeer {
   });
 }
 
+class FakeTrack implements MediaStreamTrack {
+  readonly contentHint = '';
+  enabled = true;
+  readonly id: string;
+  readonly isolated = false;
+  readonly kind: string;
+  label = 'test track';
+  muted = false;
+  onended: ((this: MediaStreamTrack, ev: Event) => unknown) | null = null;
+  onmute: ((this: MediaStreamTrack, ev: Event) => unknown) | null = null;
+  onunmute: ((this: MediaStreamTrack, ev: Event) => unknown) | null = null;
+  readyState: MediaStreamTrackState = 'live';
+  private readonly listeners = new Map<string, EventListener[]>();
+
+  constructor(kind: 'audio' | 'video') {
+    this.kind = kind;
+    this.id = `track-${kind}`;
+  }
+
+  addEventListener(type: string, listener: EventListener): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+  }
+
+  removeEventListener(type: string, listener: EventListener): void {
+    this.listeners.set(
+      type,
+      (this.listeners.get(type) ?? []).filter((candidate) => candidate !== listener),
+    );
+  }
+
+  dispatchEvent(event: Event): boolean {
+    for (const listener of this.listeners.get(event.type) ?? []) listener.call(this, event);
+    if (event.type === 'ended') this.onended?.call(this, event);
+    return true;
+  }
+
+  applyConstraints(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  clone(): MediaStreamTrack {
+    return new FakeTrack(this.kind as 'audio' | 'video') as unknown as MediaStreamTrack;
+  }
+
+  getCapabilities(): MediaTrackCapabilities {
+    return {};
+  }
+
+  getConstraints(): MediaTrackConstraints {
+    return {};
+  }
+
+  getSettings(): MediaTrackSettings {
+    return {};
+  }
+
+  stop(): void {
+    this.readyState = 'ended';
+  }
+}
+
 function createClient(): { client: WebRtcSignallingClient; transport: FakeSignallingTransport } {
   const transport = new FakeSignallingTransport();
   const client = new WebRtcSignallingClient({
@@ -144,6 +205,110 @@ describe('ListenerWebRtcTransportController', () => {
     });
   });
 
+  it('receives one remote video track on the same programme stream', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const onRemoteStream = vi.fn();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+      onRemoteStream,
+    });
+    const audio = {
+      kind: 'audio',
+      readyState: 'live',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const video = {
+      kind: 'video',
+      readyState: 'live',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const tracks: MediaStreamTrack[] = [audio, video];
+    const programmeStream = {
+      addTrack: vi.fn((track: MediaStreamTrack) => tracks.push(track)),
+      getTracks: vi.fn(() => tracks),
+      getAudioTracks: vi.fn(() => tracks.filter((track) => track.kind === 'audio')),
+      getVideoTracks: vi.fn(() => tracks.filter((track) => track.kind === 'video')),
+    } as unknown as MediaStream;
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track: audio, streams: [programmeStream] } as unknown as RTCTrackEvent);
+    peer.ontrack?.({ track: video, streams: [programmeStream] } as unknown as RTCTrackEvent);
+
+    expect(peer.addTransceiver).toHaveBeenCalledWith('audio', { direction: 'recvonly' });
+    expect(peer.addTransceiver).toHaveBeenCalledWith('video', { direction: 'recvonly' });
+    expect(onRemoteStream).toHaveBeenCalledTimes(2);
+    expect(onRemoteStream).toHaveBeenLastCalledWith(programmeStream);
+    expect(controller.getRemoteStream()).toBe(programmeStream);
+    expect(controller.getSnapshot()).toMatchObject({
+      remoteAudioTrackReceived: true,
+      remoteVideoTrackReceived: true,
+      remoteVideoTrackActive: true,
+    });
+  });
+
+  it('keeps both programme tracks when video arrives before audio on separate streams', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const onRemoteStream = vi.fn();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+      onRemoteStream,
+    });
+    const audio = {
+      kind: 'audio',
+      readyState: 'live',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const video = {
+      kind: 'video',
+      readyState: 'live',
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const videoTracks: MediaStreamTrack[] = [video];
+    const videoStream = {
+      addTrack: vi.fn((track: MediaStreamTrack) => videoTracks.push(track)),
+      getTracks: vi.fn(() => videoTracks),
+    } as unknown as MediaStream;
+    const audioStream = {
+      addTrack: vi.fn(),
+      getTracks: vi.fn(() => [audio]),
+    } as unknown as MediaStream;
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track: video, streams: [videoStream] } as unknown as RTCTrackEvent);
+    peer.ontrack?.({ track: audio, streams: [audioStream] } as unknown as RTCTrackEvent);
+
+    expect(videoStream.addTrack).toHaveBeenCalledWith(audio);
+    expect(audioStream.addTrack).not.toHaveBeenCalled();
+    expect(onRemoteStream).toHaveBeenCalledTimes(2);
+    expect(onRemoteStream).toHaveBeenLastCalledWith(videoStream);
+    expect(controller.getRemoteStream()).toBe(videoStream);
+    expect(videoTracks).toEqual([video, audio]);
+    expect(controller.getSnapshot()).toMatchObject({
+      remoteAudioTrackReceived: true,
+      remoteVideoTrackReceived: true,
+      remoteAudioTrackActive: true,
+      remoteVideoTrackActive: true,
+    });
+  });
+
   it('ignores stale offers and reports blocked playback truthfully', async () => {
     const { client } = createClient();
     const controller = new ListenerWebRtcTransportController({
@@ -181,5 +346,335 @@ describe('ListenerWebRtcTransportController', () => {
       recoveryAttempts: 0,
       lastError: { code: 'negotiation-timeout', retryable: false },
     });
+  });
+
+  it('treats peer failure after both remote tracks end as normal source completion', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      maxRecoveryAttempts: 2,
+    });
+    const audio = new FakeTrack('audio');
+    const video = new FakeTrack('video');
+    const programmeStream = {
+      addTrack: vi.fn(),
+      getTracks: vi.fn(() => [audio, video]),
+    } as unknown as MediaStream;
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track: audio, streams: [programmeStream] } as unknown as RTCTrackEvent);
+    peer.ontrack?.({ track: video, streams: [programmeStream] } as unknown as RTCTrackEvent);
+
+    audio.stop();
+    video.stop();
+    peer.connectionState = 'failed';
+    peer.onconnectionstatechange?.();
+    peer.iceConnectionState = 'failed';
+    peer.oniceconnectionstatechange?.();
+
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'source-ended',
+      recoveryAttempts: 0,
+      remoteAudioTrackActive: false,
+      remoteVideoTrackActive: false,
+      lastError: null,
+    });
+  });
+
+  it('can close terminal source media without sending a redundant peer disconnect', async () => {
+    const { client, transport } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+    });
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    controller.close('programme source completed', false);
+
+    expect(peer.close).toHaveBeenCalledOnce();
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'closed',
+      lastError: null,
+    });
+    expect(
+      transport.emitted.some(
+        (event) => (event.payload as { type?: string }).type === 'peer-disconnect',
+      ),
+    ).toBe(false);
+  });
+
+  it('applies the live sync delay to every remote receiver as tracks arrive', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+      syncDelayMs: 8000,
+    });
+    const audio = new FakeTrack('audio');
+    const video = new FakeTrack('video');
+    const programmeStream = {
+      addTrack: vi.fn(),
+      getTracks: vi.fn(() => [audio, video]),
+    } as unknown as MediaStream;
+    const audioReceiver = { jitterBufferTarget: null as number | null, playoutDelayHint: null as number | null };
+    const videoReceiver = { jitterBufferTarget: null as number | null, playoutDelayHint: null as number | null };
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track: audio, streams: [programmeStream], receiver: audioReceiver } as unknown as RTCTrackEvent);
+    peer.ontrack?.({ track: video, streams: [programmeStream], receiver: videoReceiver } as unknown as RTCTrackEvent);
+
+    // jitterBufferTarget is clamped to its 4000 ms spec maximum while the
+    // legacy hint still carries the full sync delay in seconds.
+    expect(audioReceiver.jitterBufferTarget).toBe(4000);
+    expect(audioReceiver.playoutDelayHint).toBe(8);
+    expect(videoReceiver.jitterBufferTarget).toBe(4000);
+    expect(videoReceiver.playoutDelayHint).toBe(8);
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'video-connected',
+      appliedJitterBufferTargetMs: 8000,
+    });
+  });
+
+  it('clamps the jitter buffer target on spec-enforcing receivers instead of losing the delay', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+      syncDelayMs: 8000,
+    });
+    const audio = new FakeTrack('audio');
+    const programmeStream = {
+      addTrack: vi.fn(),
+      getTracks: vi.fn(() => [audio]),
+    } as unknown as MediaStream;
+    let storedTargetMs: number | null = null;
+    const receiver = { playoutDelayHint: null as number | null };
+    Object.defineProperty(receiver, 'jitterBufferTarget', {
+      get: () => storedTargetMs,
+      set(value: number) {
+        if (value > 4000) throw new RangeError('jitterBufferTarget above supported range');
+        storedTargetMs = value;
+      },
+    });
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track: audio, streams: [programmeStream], receiver } as unknown as RTCTrackEvent);
+
+    expect(storedTargetMs).toBe(4000);
+    expect(receiver.playoutDelayHint).toBe(8);
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'audio-connected',
+      appliedJitterBufferTargetMs: 8000,
+    });
+  });
+
+  it('reports partial sync truthfully when only the clamped jitter buffer target sticks', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+      syncDelayMs: 8000,
+    });
+    const audio = new FakeTrack('audio');
+    const programmeStream = {
+      addTrack: vi.fn(),
+      getTracks: vi.fn(() => [audio]),
+    } as unknown as MediaStream;
+    let storedTargetMs: number | null = null;
+    const receiver = {};
+    Object.defineProperty(receiver, 'jitterBufferTarget', {
+      get: () => storedTargetMs,
+      set(value: number) {
+        if (value > 4000) throw new RangeError('jitterBufferTarget above supported range');
+        storedTargetMs = value;
+      },
+    });
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track: audio, streams: [programmeStream], receiver } as unknown as RTCTrackEvent);
+
+    expect(storedTargetMs).toBe(4000);
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'audio-connected',
+      appliedJitterBufferTargetMs: 4000,
+    });
+  });
+
+  it('force-fails startWaiting on an active transport so callers must guard restarts', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+    });
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+
+    expect(() => controller.startWaiting()).toThrowError(
+      'Listener WebRTC audio transport is already active.',
+    );
+    expect(peer.close).toHaveBeenCalled();
+    expect(controller.getSnapshot()).toMatchObject({
+      lastError: { code: 'duplicate-peer' },
+    });
+  });
+
+  it('falls back to the legacy playout delay hint when the jitter buffer target is rejected', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+      syncDelayMs: 8000,
+    });
+    const audio = new FakeTrack('audio');
+    const programmeStream = {
+      addTrack: vi.fn(),
+      getTracks: vi.fn(() => [audio]),
+    } as unknown as MediaStream;
+    const receiver = { playoutDelayHint: null as number | null };
+    Object.defineProperty(receiver, 'jitterBufferTarget', {
+      set() {
+        throw new RangeError('jitterBufferTarget above supported range');
+      },
+    });
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track: audio, streams: [programmeStream], receiver } as unknown as RTCTrackEvent);
+
+    expect(receiver.playoutDelayHint).toBe(8);
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'audio-connected',
+      appliedJitterBufferTargetMs: 8000,
+    });
+  });
+
+  it('no-ops safely on receivers without delay tuning support', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+      syncDelayMs: 8000,
+    });
+    const audio = new FakeTrack('audio');
+    const programmeStream = {
+      addTrack: vi.fn(),
+      getTracks: vi.fn(() => [audio]),
+    } as unknown as MediaStream;
+    const receiver = {};
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track: audio, streams: [programmeStream], receiver } as unknown as RTCTrackEvent);
+
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'audio-connected',
+      remoteAudioTrackReceived: true,
+      appliedJitterBufferTargetMs: null,
+    });
+  });
+
+  it('leaves receiver playout timing untouched when no sync delay is configured', async () => {
+    const { client } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+      setTimer: () => 1,
+      clearTimer: vi.fn(),
+    });
+    const audio = new FakeTrack('audio');
+    const programmeStream = {
+      addTrack: vi.fn(),
+      getTracks: vi.fn(() => [audio]),
+    } as unknown as MediaStream;
+    const receiver = { jitterBufferTarget: null as number | null, playoutDelayHint: null as number | null };
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track: audio, streams: [programmeStream], receiver } as unknown as RTCTrackEvent);
+
+    expect(receiver.jitterBufferTarget).toBeNull();
+    expect(receiver.playoutDelayHint).toBeNull();
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'audio-connected',
+      appliedJitterBufferTargetMs: null,
+    });
+  });
+
+  it('preserves source-ended state when the remote programme peer disconnects after media arrives', async () => {
+    const { client, transport } = createClient();
+    const peer = new FakePeer();
+    const controller = new ListenerWebRtcTransportController({
+      signallingClient: client,
+      createPeerConnection: () => peer as never,
+    });
+    const audio = new FakeTrack('audio');
+    const video = new FakeTrack('video');
+    const programmeStream = {
+      addTrack: vi.fn(),
+      getTracks: vi.fn(() => [audio, video]),
+    } as unknown as MediaStream;
+
+    controller.startWaiting();
+    await controller.handleSignallingEvent(offer());
+    peer.ontrack?.({ track: audio, streams: [programmeStream] } as unknown as RTCTrackEvent);
+    peer.ontrack?.({ track: video, streams: [programmeStream] } as unknown as RTCTrackEvent);
+
+    await controller.handleSignallingEvent({
+      type: 'peer-disconnect',
+      protocolVersion: WEBRTC_SIGNALLING_PROTOCOL_VERSION,
+      messageId: 'msg_disconnect',
+      broadcastId: 'broadcast_demo',
+      sessionId: 'wrs_demo',
+      peerId: WEBRTC_BACKEND_MEDIA_PEER_ID,
+      senderRole: 'server',
+      revision: 1,
+      createdAt: '2026-07-27T00:00:01.000Z',
+      payload: {
+        targetPeerId: 'peer_listener',
+        reason: 'programme source ended',
+      },
+    });
+
+    expect(controller.getSnapshot()).toMatchObject({
+      state: 'source-ended',
+      remoteAudioTrackReceived: true,
+      remoteAudioTrackActive: false,
+      remoteVideoTrackReceived: true,
+      remoteVideoTrackActive: false,
+      lastError: null,
+    });
+    expect(
+      transport.emitted.some(
+        (event) => (event.payload as { type?: string }).type === 'peer-disconnect',
+      ),
+    ).toBe(false);
   });
 });

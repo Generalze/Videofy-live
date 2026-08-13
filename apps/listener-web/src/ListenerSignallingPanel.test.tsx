@@ -48,15 +48,15 @@ describe('ListenerSignallingPanel', () => {
 
     expect(html).toContain('WebRTC signalling');
     expect(html).toContain('aria-label="Broadcast or session identifier"');
-    expect(html).toContain('aria-label="Join listener signalling session"');
-    expect(html).toContain('aria-label="Leave listener signalling session"');
+    expect(html).toContain('aria-label="Join viewer signalling session"');
+    expect(html).toContain('aria-label="Leave viewer signalling session"');
   });
 
   it('shows joined broadcaster signalling without claiming playback', () => {
     const html = renderPanel(snapshot({ state: 'joined', sessionId: 'wrs_demo' }));
 
     expect(html).toContain('Available to signalling');
-    expect(html).toContain('WebRTC programme audio not active');
+    expect(html).toContain('WebRTC programme media not active');
     expect(html).not.toContain('WebRTC audio playing');
   });
 
@@ -79,7 +79,7 @@ describe('ListenerSignallingPanel', () => {
       />,
     );
 
-    expect(html).toContain('WebRTC programme audio playing');
+    expect(html).toContain('WebRTC programme playing');
     expect(html).toContain('Live original programme audio active');
   });
 

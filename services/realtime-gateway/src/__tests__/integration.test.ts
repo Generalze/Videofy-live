@@ -2,6 +2,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { io as connectClient, type Socket } from 'socket.io-client';
 import type {
+  AudioMixPreferences,
   GeneratedAudioReadyEvent,
   MediaStateEvent,
   TimestampedTranslationEvent,
@@ -138,12 +139,13 @@ function delay(ms: number): Promise<void> {
 
 describe('gateway Socket.IO integration', () => {
   let server: Server;
+  let gateway: Gateway;
   let baseUrl: string;
   let clients: Socket[];
 
   beforeEach(async () => {
     server = createServer(createApp());
-    new Gateway(server, ['http://localhost:5173', 'http://localhost:5174']);
+    gateway = new Gateway(server, ['http://localhost:5173', 'http://localhost:5174']);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${address.port}`;
@@ -270,6 +272,107 @@ describe('gateway Socket.IO integration', () => {
     });
   });
 
+  it('delivers translated caption segments to language-room and original-channel listeners', async () => {
+    const ingest = client('ingest');
+    const operator = client('operator');
+    const frenchListener = client('listener');
+    const originalListener = client('listener');
+    const spanishListener = client('listener');
+    await Promise.all([
+      waitForConnect(ingest),
+      waitForConnect(operator),
+      waitForConnect(frenchListener),
+      waitForConnect(originalListener),
+      waitForConnect(spanishListener),
+    ]);
+
+    frenchListener.emit(SOCKET_EVENTS.JOIN_LANGUAGE, 'fr');
+    originalListener.emit(SOCKET_EVENTS.JOIN_LANGUAGE, 'original');
+    spanishListener.emit(SOCKET_EVENTS.JOIN_LANGUAGE, 'es');
+    await delay(50);
+
+    const frenchEvents: TimestampedTranslationEvent[] = [];
+    const originalEvents: TimestampedTranslationEvent[] = [];
+    const spanishEvents: TimestampedTranslationEvent[] = [];
+    const operatorEvents: TimestampedTranslationEvent[] = [];
+    frenchListener.on(
+      SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT,
+      (event: TimestampedTranslationEvent) => frenchEvents.push(event),
+    );
+    originalListener.on(
+      SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT,
+      (event: TimestampedTranslationEvent) => originalEvents.push(event),
+    );
+    spanishListener.on(
+      SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT,
+      (event: TimestampedTranslationEvent) => spanishEvents.push(event),
+    );
+    operator.on(
+      SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT,
+      (event: TimestampedTranslationEvent) => operatorEvents.push(event),
+    );
+
+    ingest.emit(SOCKET_EVENTS.INGEST_TRANSLATION, makeTimestampedTranslationEvent());
+    await waitUntil(
+      () =>
+        frenchEvents.length === 1 && originalEvents.length === 1 && operatorEvents.length === 1,
+    );
+    expect(frenchEvents[0]).toMatchObject({
+      segmentId: 'ps_integration:chunk:0',
+      translatedText: '[fr] hello from source audio',
+      status: 'translated',
+    });
+    expect(originalEvents[0]).toMatchObject({
+      segmentId: 'ps_integration:chunk:0',
+      sourceText: 'hello from source audio',
+      status: 'translated',
+    });
+    expect(spanishEvents).toHaveLength(0);
+
+    ingest.emit(SOCKET_EVENTS.INGEST_TRANSLATION, {
+      ...makeTimestampedTranslationEvent(),
+      segmentId: 'ps_integration:chunk:1',
+      sequence: 1,
+      status: 'failed',
+      error: 'provider failed',
+    });
+    await waitUntil(() => operatorEvents.length === 2);
+    await delay(50);
+    expect(frenchEvents).toHaveLength(1);
+    expect(originalEvents).toHaveLength(1);
+  });
+
+  it('lets a listener join and leave the original caption channel without errors', async () => {
+    const ingest = client('ingest');
+    const listener = client('listener');
+    await Promise.all([waitForConnect(ingest), waitForConnect(listener)]);
+
+    const errors: Array<{ message: string }> = [];
+    listener.on(SOCKET_EVENTS.ERROR, (event: { message: string }) => errors.push(event));
+    const captions: TimestampedTranslationEvent[] = [];
+    listener.on(
+      SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT,
+      (event: TimestampedTranslationEvent) => captions.push(event),
+    );
+
+    listener.emit(SOCKET_EVENTS.JOIN_LANGUAGE, 'original');
+    await delay(50);
+    ingest.emit(SOCKET_EVENTS.INGEST_TRANSLATION, makeTimestampedTranslationEvent());
+    await waitUntil(() => captions.length === 1);
+    expect(errors).toEqual([]);
+
+    listener.emit(SOCKET_EVENTS.LEAVE_LANGUAGE, 'original');
+    await delay(50);
+    ingest.emit(SOCKET_EVENTS.INGEST_TRANSLATION, {
+      ...makeTimestampedTranslationEvent(),
+      segmentId: 'ps_integration:chunk:1',
+      sequence: 1,
+    });
+    await delay(75);
+    expect(captions).toHaveLength(1);
+    expect(errors).toEqual([]);
+  });
+
   it('delivers generated audio to listeners in order and rejects duplicates', async () => {
     const ingest = client('ingest');
     const operator = client('operator');
@@ -326,6 +429,244 @@ describe('gateway Socket.IO integration', () => {
       gateway: 'healthy',
       'media-ingest': 'unhealthy',
       'speech-worker': 'unhealthy',
+    });
+  });
+
+  it('validates, broadcasts and retains operator audio mix preferences', async () => {
+    const operator = client('operator');
+    const listener = client('listener');
+    const listenerEvents: AudioMixPreferences[] = [];
+    listener.on(
+      SOCKET_EVENTS.AUDIO_MODE_PREFERENCES,
+      (preferences: AudioMixPreferences) => listenerEvents.push(preferences),
+    );
+    await Promise.all([waitForConnect(operator), waitForConnect(listener)]);
+    await waitUntil(() => listenerEvents.length === 1);
+
+    const preferences: AudioMixPreferences = {
+      mode: 'replacement',
+      originalVolume: 0.45,
+      translatedVolume: 0.7,
+      subtitlesEnabled: false,
+    };
+    operator.emit(SOCKET_EVENTS.OPERATOR_AUDIO_MODE_PREFERENCES, preferences);
+    await waitUntil(() => listenerEvents.length === 2);
+    expect(listenerEvents.at(-1)).toEqual(preferences);
+
+    const operatorError = waitForEvent<{ message: string }>(operator, SOCKET_EVENTS.ERROR);
+    operator.emit(SOCKET_EVENTS.OPERATOR_AUDIO_MODE_PREFERENCES, {
+      ...preferences,
+      originalVolume: 2,
+    });
+    await expect(operatorError).resolves.toEqual({
+      message: 'Invalid audio mode preferences',
+    });
+    expect(listenerEvents).toHaveLength(2);
+
+    const laterListener = client('listener');
+    const retained = waitForEvent<AudioMixPreferences>(
+      laterListener,
+      SOCKET_EVENTS.AUDIO_MODE_PREFERENCES,
+    );
+    await waitForConnect(laterListener);
+    await expect(retained).resolves.toEqual(preferences);
+  });
+
+  it('stores operator programme-session language config for WebRTC processing', async () => {
+    const operator = client('operator');
+    const ingest = client('ingest');
+    const listener = client('listener');
+    await Promise.all([waitForConnect(operator), waitForConnect(ingest), waitForConnect(listener)]);
+    const ack = waitForEvent<{ action: string; accepted: boolean }>(
+      operator,
+      SOCKET_EVENTS.CONTROL_ACK,
+    );
+    const immediateMedia = waitForEvent<MediaStateEvent>(listener, SOCKET_EVENTS.MEDIA_STATE);
+
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+      sessionId: 'wrs_uploaded',
+      broadcastId: 'broadcast_uploaded',
+      sourceRevision: 2,
+      targetLanguage: 'es',
+      targetLanguages: ['es'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'auto-detect',
+    });
+
+    await expect(immediateMedia).resolves.toMatchObject({
+      processingSessionId: 'wrs_uploaded',
+      shareableWebRtcSessionId: 'broadcast_uploaded/wrs_uploaded',
+      streamStatus: 'processing',
+      videoSource: 'webrtc',
+      videoTimestampMs: 0,
+      connectedListeners: 1,
+    });
+    await expect(ack).resolves.toMatchObject({
+      action: 'programme-session-config',
+      accepted: true,
+    });
+    const inspected = gateway as unknown as {
+      programmeSessionConfigs: Map<string, unknown>;
+    };
+    expect(inspected.programmeSessionConfigs.get('wrs_uploaded')).toMatchObject({
+      targetLanguage: 'es',
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'auto-detect',
+    });
+
+    const media = waitForEvent<MediaStateEvent>(listener, SOCKET_EVENTS.MEDIA_STATE);
+    ingest.emit(SOCKET_EVENTS.INGEST_STATE, {
+      ...makeMediaState(),
+      processingSessionId: 'wrs_uploaded',
+    });
+
+    await expect(media).resolves.toMatchObject({
+      processingSessionId: 'wrs_uploaded',
+      shareableWebRtcSessionId: 'broadcast_uploaded/wrs_uploaded',
+    });
+  });
+
+  it('carries the retained programme video timestamp into synthetic media state', async () => {
+    const operator = client('operator');
+    const ingest = client('ingest');
+    const listener = client('listener');
+    await Promise.all([waitForConnect(operator), waitForConnect(ingest), waitForConnect(listener)]);
+
+    const mediaEvents: MediaStateEvent[] = [];
+    listener.on(SOCKET_EVENTS.MEDIA_STATE, (event: MediaStateEvent) => mediaEvents.push(event));
+
+    const configPayload = {
+      sessionId: 'wrs_resumed',
+      broadcastId: 'broadcast_resumed',
+      sourceRevision: 1,
+      targetLanguage: 'es',
+      targetLanguages: ['es'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    };
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, configPayload);
+    await waitUntil(() => mediaEvents.length === 1);
+    expect(mediaEvents[0]).toMatchObject({
+      processingSessionId: 'wrs_resumed',
+      videoTimestampMs: 0,
+    });
+
+    ingest.emit(SOCKET_EVENTS.INGEST_STATE, {
+      ...makeMediaState(),
+      processingSessionId: 'wrs_resumed',
+    });
+    await waitUntil(() => mediaEvents.length === 2);
+
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, configPayload);
+    await waitUntil(() => mediaEvents.length === 3);
+    expect(mediaEvents[2]).toMatchObject({
+      processingSessionId: 'wrs_resumed',
+      videoTimestampMs: 12_000,
+    });
+  });
+
+  it('replays the active programme media state to listeners that connect late', async () => {
+    const operator = client('operator');
+    await waitForConnect(operator);
+
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+      sessionId: 'wrs_uploaded_late',
+      broadcastId: 'broadcast_uploaded_late',
+      sourceRevision: 3,
+      targetLanguage: 'es',
+      targetLanguages: ['es'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+
+    const lateListener = client('listener');
+    const replayed = waitForEvent<MediaStateEvent>(lateListener, SOCKET_EVENTS.MEDIA_STATE);
+    await waitForConnect(lateListener);
+
+    await expect(replayed).resolves.toMatchObject({
+      processingSessionId: 'wrs_uploaded_late',
+      shareableWebRtcSessionId: 'broadcast_uploaded_late/wrs_uploaded_late',
+      streamStatus: 'processing',
+      videoSource: 'webrtc',
+      connectedListeners: 1,
+    });
+  });
+
+  it('does not replay a completed programme media state to late listeners', async () => {
+    const operator = client('operator');
+    const ingest = client('ingest');
+    await Promise.all([waitForConnect(operator), waitForConnect(ingest)]);
+
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+      sessionId: 'wrs_completed_upload',
+      broadcastId: 'broadcast_completed_upload',
+      sourceRevision: 4,
+      targetLanguage: 'es',
+      targetLanguages: ['es'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+    ingest.emit(SOCKET_EVENTS.INGEST_STATE, {
+      ...makeMediaState(),
+      processingSessionId: 'wrs_completed_upload',
+      streamStatus: 'completed',
+    });
+    await delay(25);
+
+    const lateListener = client('listener');
+    const replayed: MediaStateEvent[] = [];
+    lateListener.on(SOCKET_EVENTS.MEDIA_STATE, (event: MediaStateEvent) => {
+      replayed.push(event);
+    });
+    await waitForConnect(lateListener);
+    await delay(75);
+
+    expect(replayed).toEqual([]);
+  });
+
+  it('stops advertising retained programme media state after ingest disconnects', async () => {
+    const ingest = client('ingest');
+    await waitForConnect(ingest);
+
+    ingest.emit(SOCKET_EVENTS.INGEST_STATE, {
+      ...makeMediaState(),
+      processingSessionId: 'wrs_stale_upload',
+      streamStatus: 'processing',
+      programmeMediaUrl: 'http://localhost:3002/sessions/wrs_stale_upload/source-media',
+    });
+    await delay(25);
+
+    ingest.disconnect();
+    await delay(50);
+
+    const lateListener = client('listener');
+    const replayed: MediaStateEvent[] = [];
+    lateListener.on(SOCKET_EVENTS.MEDIA_STATE, (event: MediaStateEvent) => {
+      replayed.push(event);
+    });
+    await waitForConnect(lateListener);
+    await delay(75);
+
+    expect(replayed).toEqual([]);
+  });
+
+  it('rejects invalid programme-session language config visibly', async () => {
+    const operator = client('operator');
+    await waitForConnect(operator);
+    const error = waitForEvent<{ message: string }>(operator, SOCKET_EVENTS.ERROR);
+
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+      sessionId: 'wrs_uploaded',
+      broadcastId: 'broadcast_uploaded',
+      sourceRevision: 2,
+      targetLanguage: 'zz',
+      targetLanguages: [],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'auto-detect',
+    });
+
+    await expect(error).resolves.toEqual({
+      message: 'Invalid programme session configuration',
     });
   });
 
@@ -387,6 +728,70 @@ describe('gateway Socket.IO integration', () => {
     await waitUntil(() => latestStatuses(statuses)['speech-worker'] === 'unhealthy');
 
     expect(latestStatuses(statuses)['speech-worker']).toBe('unhealthy');
+  });
+});
+
+describe('gateway public media ingest URL', () => {
+  it('builds listener-facing programme media URLs from the public ingest URL', async () => {
+    const server = createServer(createApp());
+    new Gateway(server, ['http://localhost:5173'], {
+      mediaIngestUrl: 'http://internal-ingest:3002',
+      mediaIngestPublicUrl: 'https://media.example.com',
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address() as AddressInfo;
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const sockets: Socket[] = [];
+    const connect = (role: string): Socket => {
+      const socket = connectClient(baseUrl, {
+        query: { role },
+        transports: ['websocket', 'polling'],
+        forceNew: true,
+        reconnection: false,
+      });
+      sockets.push(socket);
+      return socket;
+    };
+
+    try {
+      const operator = connect('operator');
+      const ingest = connect('ingest');
+      const listener = connect('listener');
+      await Promise.all([
+        waitForConnect(operator),
+        waitForConnect(ingest),
+        waitForConnect(listener),
+      ]);
+      const mediaEvents: MediaStateEvent[] = [];
+      listener.on(SOCKET_EVENTS.MEDIA_STATE, (event: MediaStateEvent) => mediaEvents.push(event));
+
+      operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+        sessionId: 'wrs_public',
+        broadcastId: 'broadcast_public',
+        sourceRevision: 1,
+        programmeSourceType: 'uploaded-video',
+        targetLanguage: 'es',
+        targetLanguages: ['es'],
+        sourceLanguage: 'en',
+        sourceLanguageMode: 'manual',
+      });
+      await waitUntil(() => mediaEvents.length >= 1);
+
+      ingest.emit(SOCKET_EVENTS.INGEST_STATE, {
+        ...makeMediaState(),
+        processingSessionId: 'wrs_public',
+        streamStatus: 'completed',
+      });
+      await waitUntil(() => mediaEvents.some((event) => Boolean(event.programmeMediaUrl)));
+
+      expect(mediaEvents.find((event) => event.programmeMediaUrl)).toMatchObject({
+        processingSessionId: 'wrs_public',
+        programmeMediaUrl: 'https://media.example.com/sessions/wrs_public/source-media',
+      });
+    } finally {
+      for (const socket of sockets) socket.disconnect();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 

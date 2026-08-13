@@ -58,6 +58,7 @@ export interface WebRtcSessionRecord {
   socketToPeerId: Map<string, string>;
   seenMessageIds: string[];
   currentOffer: CurrentOffer | null;
+  currentOffers: CurrentOffer[];
   createdAt: string;
   updatedAt: string;
 }
@@ -128,6 +129,7 @@ export class WebRtcSessionRegistry {
       socketToPeerId: new Map([[socketId, envelope.peerId]]),
       seenMessageIds: [envelope.messageId],
       currentOffer: null,
+      currentOffers: [],
       createdAt: now,
       updatedAt: now,
     };
@@ -247,12 +249,14 @@ export class WebRtcSessionRegistry {
       case 'ice-candidate':
       case 'ice-complete':
         return this.acceptIce(session, peer, envelope);
-      case 'peer-ready':
-        if (
-          !session.currentOffer ||
-          envelope.revision !== session.currentOffer.revision ||
-          peer.peerId !== session.currentOffer.targetPeerId
-        ) {
+      case 'peer-ready': {
+        const offer = this.findOfferForPeerSignal(
+          session,
+          peer.peerId,
+          undefined,
+          envelope.revision,
+        );
+        if (!offer || peer.peerId !== offer.targetPeerId) {
           throw new WebRtcSignallingError(
             'stale-negotiation',
             'Peer-ready event does not match the current negotiation.',
@@ -260,14 +264,13 @@ export class WebRtcSessionRegistry {
             session.state,
           );
         }
-        {
-          const targetPeer = this.requireTargetPeer(session, session.currentOffer.senderPeerId);
-          peer.state = 'ready';
-          peer.revision = envelope.revision;
-          peer.updatedAt = new Date().toISOString();
-          this.touch(session);
-          return { outgoing: envelope, targetSocketId: targetPeer.socketId };
-        }
+        const targetPeer = this.requireTargetPeer(session, offer.senderPeerId);
+        peer.state = 'ready';
+        peer.revision = envelope.revision;
+        peer.updatedAt = new Date().toISOString();
+        this.touch(session);
+        return { outgoing: envelope, targetSocketId: targetPeer.socketId };
+      }
       default:
         throw new WebRtcSignallingError(
           'invalid-payload',
@@ -434,6 +437,9 @@ export class WebRtcSessionRegistry {
     session.socketToPeerId.delete(peer.socketId);
     this.removeSocketSession(peer.socketId, session.sessionId);
     session.currentOffer = null;
+    session.currentOffers = session.currentOffers.filter(
+      (offer) => offer.senderPeerId !== peerId && offer.targetPeerId !== peerId,
+    );
     this.rememberMessage(session, envelope.messageId);
     this.touch(session);
   }
@@ -461,13 +467,17 @@ export class WebRtcSessionRegistry {
         peer.state,
       );
     }
-    session.revision = envelope.revision;
-    session.currentOffer = {
+    if (!serverListenerOffer) {
+      session.revision = envelope.revision;
+    }
+    const offer: CurrentOffer = {
       revision: envelope.revision,
       senderPeerId: peer.peerId,
       targetPeerId: targetPeer.peerId,
       answered: false,
     };
+    session.currentOffer = offer;
+    this.rememberOffer(session, offer);
     session.state = 'negotiating';
     peer.state = 'negotiating';
     targetPeer.state = 'negotiating';
@@ -482,7 +492,12 @@ export class WebRtcSessionRegistry {
     peer: WebRtcPeerRecord,
     envelope: Extract<WebRtcIncomingSignallingEnvelope, { type: 'sdp-answer' }>,
   ): WebRtcRouteResult {
-    const offer = session.currentOffer;
+    const offer = this.findOfferForAnswer(
+      session,
+      peer.peerId,
+      envelope.payload.targetPeerId,
+      envelope.revision,
+    );
     if (!offer || offer.answered) {
       throw new WebRtcSignallingError(
         'offer-required',
@@ -491,11 +506,7 @@ export class WebRtcSessionRegistry {
         session.state,
       );
     }
-    if (
-      envelope.revision !== offer.revision ||
-      peer.peerId !== offer.targetPeerId ||
-      envelope.payload.targetPeerId !== offer.senderPeerId
-    ) {
+    if (peer.peerId !== offer.targetPeerId || envelope.payload.targetPeerId !== offer.senderPeerId) {
       throw new WebRtcSignallingError(
         'stale-negotiation',
         'SDP answer does not match the current offer revision or target.',
@@ -505,6 +516,7 @@ export class WebRtcSessionRegistry {
     }
     const targetPeer = this.requireTargetPeer(session, envelope.payload.targetPeerId);
     offer.answered = true;
+    session.currentOffer = offer;
     session.state = 'ready';
     peer.state = 'ready';
     targetPeer.state = 'ready';
@@ -522,7 +534,22 @@ export class WebRtcSessionRegistry {
       { type: 'ice-candidate' | 'ice-complete' }
     >,
   ): WebRtcRouteResult {
-    if (!session.currentOffer) {
+    const offer = this.findOfferForPeerSignal(
+      session,
+      peer.peerId,
+      envelope.payload.targetPeerId,
+      envelope.revision,
+    );
+    const targetPeer = this.requireTargetPeer(session, envelope.payload.targetPeerId);
+    if (!offer) {
+      if (envelope.revision < session.revision) {
+        throw new WebRtcSignallingError(
+          'stale-negotiation',
+          'ICE candidate revision is stale for this WebRTC session.',
+          false,
+          session.state,
+        );
+      }
       throw new WebRtcSignallingError(
         'offer-required',
         'ICE signalling requires an active negotiation offer.',
@@ -530,15 +557,6 @@ export class WebRtcSessionRegistry {
         session.state,
       );
     }
-    if (envelope.revision !== session.revision) {
-      throw new WebRtcSignallingError(
-        'stale-negotiation',
-        'ICE candidate revision is stale.',
-        false,
-        session.state,
-      );
-    }
-    const targetPeer = this.requireTargetPeer(session, envelope.payload.targetPeerId);
     if (targetPeer.peerId === peer.peerId) {
       throw new WebRtcSignallingError(
         'invalid-state-transition',
@@ -587,6 +605,7 @@ export class WebRtcSessionRegistry {
     }
     session.state = 'closed';
     session.currentOffer = null;
+    session.currentOffers = [];
     for (const sessionPeer of session.peers.values()) {
       sessionPeer.state = 'closed';
       sessionPeer.updatedAt = new Date().toISOString();
@@ -615,6 +634,59 @@ export class WebRtcSessionRegistry {
       );
     }
     return session;
+  }
+
+  private rememberOffer(session: WebRtcSessionRecord, offer: CurrentOffer): void {
+    session.currentOffers = session.currentOffers.filter(
+      (current) =>
+        !(
+          current.revision === offer.revision &&
+          current.senderPeerId === offer.senderPeerId &&
+          current.targetPeerId === offer.targetPeerId
+        ),
+    );
+    session.currentOffers.push(offer);
+    if (session.currentOffers.length > WEBRTC_SIGNALLING_LIMITS.maxPeersPerSession) {
+      session.currentOffers.splice(
+        0,
+        session.currentOffers.length - WEBRTC_SIGNALLING_LIMITS.maxPeersPerSession,
+      );
+    }
+  }
+
+  private findOfferForAnswer(
+    session: WebRtcSessionRecord,
+    answerPeerId: string,
+    targetPeerId: string,
+    revision: number,
+  ): CurrentOffer | null {
+    return (
+      session.currentOffers.find(
+        (offer) =>
+          offer.revision === revision &&
+          offer.targetPeerId === answerPeerId &&
+          offer.senderPeerId === targetPeerId &&
+          !offer.answered,
+      ) ?? null
+    );
+  }
+
+  private findOfferForPeerSignal(
+    session: WebRtcSessionRecord,
+    peerId: string,
+    targetPeerId: string | undefined,
+    revision: number,
+  ): CurrentOffer | null {
+    return (
+      session.currentOffers.find(
+        (offer) =>
+          offer.revision === revision &&
+          (targetPeerId
+            ? (offer.senderPeerId === peerId && offer.targetPeerId === targetPeerId) ||
+              (offer.targetPeerId === peerId && offer.senderPeerId === targetPeerId)
+            : offer.senderPeerId === peerId || offer.targetPeerId === peerId),
+      ) ?? null
+    );
   }
 
   private requireOwnedPeer(
