@@ -27,7 +27,12 @@ export function loadConfig(): GatewayConfig {
     port: readPort('GATEWAY_PORT', 3001),
     host: process.env['GATEWAY_HOST'] ?? 'localhost',
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
-    corsOrigins: readCsv('CORS_ORIGINS', 'http://localhost:5173,http://localhost:5174'),
+    // 5175 is the P6.1B call-web app; keep it in the default so native calls
+    // work out of the box alongside the listener (5173) and operator (5174).
+    corsOrigins: readCsv(
+      'CORS_ORIGINS',
+      'http://localhost:5173,http://localhost:5174,http://localhost:5175',
+    ),
     mediaIngestUrl: process.env['MEDIA_INGEST_URL'] ?? 'http://localhost:3002',
     // Blank counts as unset so a templated MEDIA_INGEST_PUBLIC_URL= line
     // still falls back to the internal URL.
