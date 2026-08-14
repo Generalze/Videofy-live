@@ -3,6 +3,7 @@ import { io, type Socket } from 'socket.io-client';
 import {
   DEFAULT_TRANSLATED_LEVEL,
   defaultOriginalVolumeForMode,
+  primaryLanguageSubtag,
   resolveCallAudioMix,
 } from './callAudioMix';
 import { CallGeneratedAudioQueueController, type CallQueueAudio } from './callAudioQueue';
@@ -106,11 +107,23 @@ export default function App() {
     });
   }
 
+  // Same-language direction: the remote speaker's language matches what this
+  // participant hears, so no translation will arrive and the original voice is
+  // the delivery (otherwise "Translated" mode would sit in silence).
+  const remoteParticipant = callState?.participants?.find(
+    (participant) => participant.participantId !== session?.participantId,
+  );
+  const remoteTranslationExpected =
+    !remoteParticipant?.speakLanguage ||
+    primaryLanguageSubtag(remoteParticipant.speakLanguage) !==
+      primaryLanguageSubtag(form.hearLanguage);
+
   const mix = resolveCallAudioMix({
     audioMode,
     originalVolume,
     translatedVolume,
     translatedSpeechActive: speechActive,
+    remoteTranslationExpected,
   });
   const mixRef = useRef(mix);
   mixRef.current = mix;

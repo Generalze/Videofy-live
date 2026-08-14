@@ -8,6 +8,13 @@ export interface CallAudioMixInputs {
   translatedVolume: number;
   /** True while a generated (translated) audio segment is audibly playing. */
   translatedSpeechActive: boolean;
+  /**
+   * False when the remote speaker's language equals this listener's hear
+   * language: no translation will ever arrive for that direction, so the
+   * original voice IS the delivery and must not be suppressed by
+   * translated/interpretation semantics. Defaults to true (translation pair).
+   */
+  remoteTranslationExpected?: boolean;
 }
 
 export interface CallAudioMixDecision {
@@ -35,6 +42,13 @@ export function resolveCallAudioMix(inputs: CallAudioMixInputs): CallAudioMixDec
   const original = clampLevel(inputs.originalVolume);
   const translated = clampLevel(inputs.translatedVolume);
 
+  if (inputs.remoteTranslationExpected === false) {
+    // Same-language direction (found in the owner's first live call): captions
+    // flow but no generated audio ever will, so replacement semantics would
+    // deliver silence. The original voice is the delivery.
+    return { originalVolume: original, translatedVolume: 0, playGenerated: false };
+  }
+
   if (inputs.audioMode === 'original') {
     return { originalVolume: original, translatedVolume: 0, playGenerated: false };
   }
@@ -61,4 +75,9 @@ export function defaultOriginalVolumeForMode(audioMode: CallAudioMode): number {
 export function clampLevel(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(1, value));
+}
+
+/** Primary BCP-47 subtag, matching the gateway's same-language comparison. */
+export function primaryLanguageSubtag(language: string): string {
+  return language.trim().toLowerCase().split('-')[0] ?? '';
 }

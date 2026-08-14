@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_ORIGINAL_DUCK_LEVEL,
+  primaryLanguageSubtag,
   defaultOriginalVolumeForMode,
   resolveCallAudioMix,
 } from './callAudioMix';
@@ -87,5 +88,35 @@ describe('defaultOriginalVolumeForMode', () => {
     expect(defaultOriginalVolumeForMode('interpretation')).toBe(DEFAULT_ORIGINAL_DUCK_LEVEL);
     expect(defaultOriginalVolumeForMode('translated')).toBe(1);
     expect(defaultOriginalVolumeForMode('original')).toBe(1);
+  });
+});
+
+describe('same-language direction (no translation will arrive)', () => {
+  it('plays the original voice instead of replacement silence in translated mode', () => {
+    expect(
+      resolveCallAudioMix({
+        audioMode: 'translated',
+        originalVolume: 0.9,
+        translatedVolume: 1,
+        translatedSpeechActive: false,
+        remoteTranslationExpected: false,
+      }),
+    ).toEqual({ originalVolume: 0.9, translatedVolume: 0, playGenerated: false });
+  });
+
+  it('keeps translation-pair replacement behavior when the flag is omitted', () => {
+    expect(
+      resolveCallAudioMix({
+        audioMode: 'translated',
+        originalVolume: 0.9,
+        translatedVolume: 1,
+        translatedSpeechActive: false,
+      }),
+    ).toEqual({ originalVolume: 0, translatedVolume: 1, playGenerated: true });
+  });
+
+  it('compares languages by primary subtag', () => {
+    expect(primaryLanguageSubtag(' EN-us ')).toBe('en');
+    expect(primaryLanguageSubtag('fr')).toBe('fr');
   });
 });
