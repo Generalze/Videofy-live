@@ -3,7 +3,7 @@
 Real-time multilingual video streaming and spoken-audio interpretation platform.
 
 This repository is a local-first working prototype. It runs a real open-source
-AI interpretation pipeline (Silero VAD, faster-whisper speech recognition,
+AI interpretation pipeline (energy-gate VAD, faster-whisper speech recognition,
 OPUS-MT translation with M2M100/NLLB-200 fallback, Piper and MMS
 text-to-speech) over live WebRTC capture, uploaded media, and RTMP/HLS
 programme sources. It does not include production streaming infrastructure,
@@ -11,8 +11,10 @@ authentication, billing, databases, or cloud integrations.
 
 ## Phase Status
 
-Phases 1 through 5 are complete. The current branch packages the Phase 5
-partner preview.
+Phases 1 through 5 are complete. P6-G0 governance and the additive P6.0
+participant/call/recipient-routing contracts are implemented. The working Live
+runtime remains the Phase 5 partner preview: P6.0 does not claim a native call
+runtime, call UI, external-platform adapter, or commercial launch.
 
 The platform includes the listener app with a nine-language viewer menu
 (Spanish, French, Portuguese, Arabic, Russian, Greek, Yoruba, Chinese, Latin),
@@ -33,6 +35,10 @@ authentication or authorization, no database, no billing, no persistence, and
 local polling transport is used for Windows compatibility.
 
 See
+[docs/P6_0_IMPLEMENTATION_REPORT.md](docs/P6_0_IMPLEMENTATION_REPORT.md) for the
+P6.0 contract-extraction evidence,
+[docs/P6_G0_CLOSURE_REPORT.md](docs/P6_G0_CLOSURE_REPORT.md) for the governance
+and provider-boundary evidence,
 [docs/PHASE_5_PARTNER_PREVIEW_CLOSURE_REPORT.md](docs/PHASE_5_PARTNER_PREVIEW_CLOSURE_REPORT.md)
 for the Phase 5 closure record,
 [docs/PHASE_5_MULTI_LANGUAGE_VIEWER_DELIVERY.md](docs/PHASE_5_MULTI_LANGUAGE_VIEWER_DELIVERY.md)
@@ -48,6 +54,8 @@ apps/
   operator-web/      React + Vite operator dashboard
 
 services/
+  ai-registry/       Runtime-profile and provider/model/voice policy registry
+  language-router/   Pure recipient-output and legacy programme audience policy
   realtime-gateway/  Node.js + Express + Socket.IO event routing and WebRTC signalling hub
   media-ingest/      Node.js media processing service: uploads, audio extraction,
                      faster-whisper transcription, OPUS-MT/M2M100/NLLB-200 translation,
@@ -55,6 +63,8 @@ services/
   speech-worker/     Python Socket.IO mock translation worker (contract tests)
 
 packages/
+  participant-contracts/  Canonical participant, media, capability and preference contracts
+  call-contracts/         Call/session, routed-event, programme projection and compatibility contracts
   shared-types/      TypeScript event interfaces and Socket.IO names
   media-contracts/   Zod validation schemas
 ```
@@ -109,7 +119,7 @@ cp .env.example .env
 - Live programme capture in the browser (camera, screen/tab, OBS Virtual
   Camera) delivered to listeners over WebRTC, plus uploaded video/audio files
   and RTMP ingest via MediaMTX with HLS playback.
-- Real local AI pipeline in media-ingest: Silero VAD chunking, faster-whisper
+- Real local AI pipeline in media-ingest: energy-gate VAD chunking, faster-whisper
   transcription, OPUS-MT translation with M2M100/NLLB-200 fallback, and Piper
   or MMS text-to-speech (validated end-to-end for English to Spanish).
 - Listener viewer with a per-session language menu, incremental captions, and

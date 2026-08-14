@@ -1,19 +1,20 @@
 # Phase 6 Execution Plan
 
-**Repository owner:** masterzee001  
-**Authoritative architecture:** [VIDEOFY_MASTER_ARCHITECTURE.md](VIDEOFY_MASTER_ARCHITECTURE.md), Version 3.0  
-**Lead supervisor and integration owner:** Codex Sol6  
-**Current milestone:** P6-G0 — Truth, Governance, and Provider Boundary  
-**Status:** P6-G0 implementation complete; owner and independent Claude review pending  
-**Baseline:** `main@b4ac24e6ef8220847efd2795e0dbf94cce7d5ad6`
+- **Repository owner:** masterzee001
+- **Authoritative architecture:** [VIDEOFY_MASTER_ARCHITECTURE.md](VIDEOFY_MASTER_ARCHITECTURE.md), Version 3.0
+- **Lead supervisor and integration owner:** Codex Sol6
+- **Current milestone:** P6.0 — Contract Extraction
+- **Status:** P6.0 implementation and integrated verification complete; owner and independent Claude review pending
+- **P6.0 baseline:** `main@2a06e1dfd833532125c06986843e645a2dcff34b`
 
 ## Scope decision
 
-Architecture Version 3.0 explicitly says not to implement the entire roadmap in one pass. This
-execution starts with P6-G0 and does not move media, session, language, or provider runtime
-authority. P6-UX0, P6.0, and later milestones remain separate approval and regression gates.
+Architecture Version 3.0 explicitly says not to implement the entire roadmap in one pass. P6-G0
+is present on the P6.0 baseline. This wave implements only P6.0's additive contracts and
+compatibility seam; it does not move media, session, language, provider, or Socket.IO delivery
+authority. P6-UX0, P6.1A, and later milestones remain separate approval and regression gates.
 
-## Pre-change report
+## P6-G0 pre-change record
 
 | Required fact                         | Verified state                                                                                                                                                   |
 | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -34,7 +35,19 @@ Current truths that must not be reimplemented or misstated:
   blocked from commercial profiles.
 - The current development/demo provider stack remains intact.
 
-## P6-G0 work packages
+## P6.0 pre-change report
+
+| Required fact                   | Verified state                                                                                                                    |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Branch and HEAD                 | `main` matched `origin/main` at `2a06e1df...` when this wave began.                                                               |
+| Worktree                        | Clean at wave start; only bounded P6.0 files are changed or added by this wave.                                                   |
+| Current runtime authority       | Media-ingest `ProcessingSession` plus gateway programme/WebRTC state remain authoritative.                                        |
+| Existing delivery behavior      | Legacy translations and generated audio use established language/operator Socket.IO rooms; listener mixing remains browser-local. |
+| P6.0 gap                        | No common participant/call contracts, programme projection, or platform-neutral recipient-output policy existed.                  |
+| Regression risk                 | Changing event payloads, rooms, delivery order, language authority, revisions, or media flow would regress Live.                  |
+| Unsupported external capability | No native call runtime/UI, participant registry, Zoom, KingsConference, SIP, or commercial provider is claimed.                   |
+
+## P6-G0 delivery record
 
 | ID   | Owner                          | Deliverable                                                                                                                                                                            | Gate                                                                                                   |
 | ---- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
@@ -50,6 +63,16 @@ Workers may inspect broadly but edit only their assigned scope. Codex reviews ev
 worker summaries alone are not acceptance evidence. No worker commits, pushes, merges, changes
 credentials, or weakens architecture to make tests pass.
 
+## P6.0 work packages
+
+| ID     | Owner                                    | Deliverable                                                                           | Gate                                                                              |
+| ------ | ---------------------------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| P6.0-1 | Participant-contract agent, Codex review | Canonical identities, revisions, media, capabilities, and preferences.                | Raw-only STT ingress, generated-audio egress separation, and language-lock tests. |
+| P6.0-2 | Call-contract agent, Codex review        | Call/session, collision-safe routed events, legacy mappers, and programme projection. | Schema, identity/revision, compatibility, and immutability tests.                 |
+| P6.0-3 | Language-router agent, Codex review      | Pure recipient-output policy and legacy programme audience selection.                 | No platform dependency; truthful fallback and audience tests.                     |
+| P6.0-4 | Codex lead                               | Register packages and wire abstract audiences back to unchanged gateway rooms/events. | Existing gateway and integration regressions pass.                                |
+| P6.0-5 | Codex lead and independent reviewer      | Synchronize ADRs/evidence and audit the integrated wave.                              | Architecture §30.2 and §32.2 acceptance review.                                   |
+
 ## P6-G0 acceptance checklist
 
 - [x] Current remote `main` and Phase 5 merge baseline recorded.
@@ -63,6 +86,18 @@ credentials, or weakens architecture to make tests pass.
 - [x] Focused tests and the complete repository regression gate pass.
 - [x] Codex diff/architecture/security/commercial review is complete.
 
+## P6.0 acceptance checklist
+
+- [x] Canonical participant, call-session, media, and language revision contracts are additive.
+- [x] Participant and call schemas compose one authority instead of duplicating it.
+- [x] Programme maps into `ParticipantMedia` without changing its active media path.
+- [x] Raw source audio and generated recipient audio are structurally separated.
+- [x] Adapter ingress, egress, and lifecycle capabilities are independently declared.
+- [x] Legacy `TranslationEvent` remains intact; new output uses `RoutedTranslationEvent`.
+- [x] Recipient routing is pure and has no Socket.IO, Express, or external-platform dependency.
+- [x] Gateway compatibility wiring preserves event names, payloads, rooms, and ordering.
+- [x] Final complete repository regression gate and independent integrated review pass.
+
 ## Required verification
 
 ```text
@@ -74,27 +109,30 @@ npm run test:integration
 services/speech-worker/.venv/Scripts/python.exe -m pytest -q
 ```
 
-The first local baseline run observed one timeout in
+During P6-G0, the first local baseline run observed one timeout in
 `generated-audio-session.test.ts`; its focused rerun passed all 12 tests. An independent audit run
 reported the complete JavaScript and Python baseline green. The final integrated run then passed
 all required commands. Detailed results and deferred items are recorded in the
 [P6-G0 implementation closure report](P6_G0_CLOSURE_REPORT.md).
 
+P6.0 focused checks, the complete repository regression gate, desktop/mobile browser QA, and an
+independent lower-model acceptance review are green. Exact evidence is recorded in the
+[P6.0 implementation report](P6_0_IMPLEMENTATION_REPORT.md).
+
 ## Sequenced follow-on milestones
 
-After P6-G0 owner review:
+After P6.0 owner review:
 
-1. P6-UX0 establishes the shared premium, role-separated experience foundation.
-2. P6.0 extracts participant/call/recipient-routing contracts without changing Live behavior.
-3. P6.1A proves Spanish-capable STT, ES→EN, English TTS, and approved EN/ES Male/Female voice pairs.
-4. P6.1B/P6.1C implements and validates the native two-person call.
-5. P6.2–P6.8 proceed in architecture order; external adapters begin only after native Call is stable.
+1. P6-UX0 may establish the shared premium, role-separated experience foundation as its own wave.
+2. P6.1A proves Spanish-capable STT, ES→EN, English TTS, and approved EN/ES Male/Female voice pairs.
+3. P6.1B/P6.1C implements and validates the native two-person call.
+4. P6.2–P6.8 proceed in architecture order; external adapters begin only after native Call is stable.
 
 No partial voice-readiness waiver is permitted. Commercial launch remains a separate fail-closed
 certification gate.
 
 ## Closure and handoff
 
-The Codex implementation and evidence wave is complete. Independent Claude reconciliation and
-repository-owner approval are subsequent gates required for formal P6-G0 closure; they are not
-silently claimed by this plan. GitHub branch protection also remains an external owner action.
+P6-G0 and P6.0 Codex implementation are present. Independent Claude reconciliation and
+repository-owner approval are subsequent gates required for formal milestone closure; they are
+not silently claimed by this plan. GitHub branch protection also remains an external owner action.

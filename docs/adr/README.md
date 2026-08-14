@@ -2,7 +2,10 @@
 
 Repository owner: masterzee001
 
-These P6-G0 records ratify governance before runtime extraction. They are documentation only: the current local stack remains `development-demo`; they do not change runtime authority or provider routing.
+These records ratified P6-G0 governance before runtime extraction. P6.0 now implements the
+additive contract boundaries recorded in ADR-002 and ADR-003 while the current local stack remains
+`development-demo`. Runtime session, media, language, provider, and Socket.IO delivery authority
+has not moved.
 
 | Record                                                 | Covers                                       |
 | ------------------------------------------------------ | -------------------------------------------- |
