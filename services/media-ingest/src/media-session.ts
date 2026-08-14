@@ -131,6 +131,12 @@ export interface WebRtcSessionInput {
   targetLanguages?: string[];
   sourceLanguage?: string;
   sourceLanguageMode?: SourceLanguageMode;
+  /**
+   * P6.1B per-session standard-voice selection (language -> registered voiceId).
+   * Overrides the configured per-language voice for this session only; unknown
+   * voice IDs fail at generation time exactly like a misconfigured registry.
+   */
+  voiceIdsByLanguage?: Record<string, string>;
 }
 
 export interface WebRtcChunkInput {
@@ -165,6 +171,8 @@ export interface ProcessingSession {
   sourceLanguageControl: SourceLanguageControlMetadata;
   targetLanguageCatalogue: TargetLanguageCapability[];
   aiProviderStatus: AiProviderStatusMetadata;
+  /** P6.1B per-session standard-voice overrides (language -> registered voiceId). */
+  voiceIdsByLanguage?: Record<string, string>;
   sourcePath: string;
   createdAt: string;
   updatedAt: string;
@@ -731,6 +739,9 @@ export class ProcessingSessionStore {
       sourceLanguageControl,
       targetLanguageCatalogue: this.targetLanguageCatalogue,
       aiProviderStatus: defaultAiProviderStatus(),
+      ...(input.voiceIdsByLanguage && Object.keys(input.voiceIdsByLanguage).length > 0
+        ? { voiceIdsByLanguage: { ...input.voiceIdsByLanguage } }
+        : {}),
       sourcePath: '',
       createdAt: now,
       updatedAt: now,
@@ -880,6 +891,33 @@ export class ProcessingSessionStore {
     }
     this.transition(session.id, 'completed');
     return { ...session };
+  }
+
+  /**
+   * P6.1B: remove a retired or ended native-call ingest session together with
+   * its output directory, so call membership churn cannot accumulate stopped
+   * sessions. Restricted to `call_` WebRTC sessions; programme sessions keep
+   * their existing lifecycle.
+   */
+  async removeCallSession(sessionId: string): Promise<boolean> {
+    if (!/^call_/i.test(sessionId)) {
+      throw new MediaIngestError('Only native-call sessions can be removed.', 'invalid-media', 400);
+    }
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    if (session.sourceKind !== 'webrtc') {
+      throw new MediaIngestError('Only WebRTC call sessions can be removed.', 'invalid-media', 400);
+    }
+    if (session.state === 'processing' || session.state === 'paused' || session.state === 'failed') {
+      this.stopWebRtcSession(sessionId);
+    }
+    await rm(safeSessionOutputDir(this.outputBaseDir, sessionId), { recursive: true, force: true });
+    this.sessions.delete(sessionId);
+    this.transcriptionSequences.delete(sessionId);
+    this.generatedAudioReadyKeysBySession.delete(sessionId);
+    this.viewerReadyRenders.delete(sessionId);
+    this.targetLanguageTallies.delete(sessionId);
+    return true;
   }
 
   stopWebRtcSession(sessionId: string): ProcessingSession {
@@ -2477,7 +2515,7 @@ export class ProcessingSessionStore {
           translatedText: segment.translatedText,
           startMs: segment.startMs,
           endMs: segment.endMs,
-          voiceId: this.voiceIdForLanguage(segment.targetLanguage),
+          voiceId: this.voiceIdForLanguage(session, segment.targetLanguage),
           outputPath: audioPath,
         },
         this.textToSpeechTimeoutMs,
@@ -2994,7 +3032,7 @@ export class ProcessingSessionStore {
             translatedText: translatedSegment.translatedText,
             startMs: translatedSegment.startMs,
             endMs: translatedSegment.endMs,
-            voiceId: this.voiceIdForLanguage(event.targetLanguage),
+            voiceId: this.voiceIdForLanguage(session, event.targetLanguage),
             outputPath: audioPath,
           },
           this.textToSpeechTimeoutMs,
@@ -3377,7 +3415,7 @@ export class ProcessingSessionStore {
       translatedText: segment.translatedText,
       startMs: segment.startMs,
       endMs: segment.endMs,
-      voiceId: this.voiceIdForLanguage(segment.targetLanguage),
+      voiceId: this.voiceIdForLanguage(session, segment.targetLanguage),
       audioFilename: generatedAudioFilename(segment.sequence),
       durationMs: null,
       providerLatencyMs: null,
@@ -3435,13 +3473,17 @@ export class ProcessingSessionStore {
       generatedSegments,
       failedSegments,
       targetLanguage: session.targetLanguage,
-      voiceId: this.voiceIdForLanguage(session.targetLanguage),
+      voiceId: this.voiceIdForLanguage(session, session.targetLanguage),
       progressPct: events.length === 0 ? 0 : Math.round((generatedSegments / events.length) * 100),
     };
   }
 
-  private voiceIdForLanguage(targetLanguage: string): string {
-    return this.textToSpeechVoiceIds.get(targetLanguage) ?? this.textToSpeechVoiceId;
+  private voiceIdForLanguage(session: ProcessingSession, targetLanguage: string): string {
+    return (
+      session.voiceIdsByLanguage?.[targetLanguage] ??
+      this.textToSpeechVoiceIds.get(targetLanguage) ??
+      this.textToSpeechVoiceId
+    );
   }
 
   private generatedAudioOutputPath(
@@ -3904,11 +3946,21 @@ function assertSafeWebRtcSessionInput(input: WebRtcSessionInput): void {
   if (!Number.isInteger(input.revision) || input.revision < 0) {
     throw new MediaIngestError('WebRTC revision must be a non-negative integer.', 'invalid-media', 400);
   }
+  for (const [language, voiceId] of Object.entries(input.voiceIdsByLanguage ?? {})) {
+    if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/.test(language) || !/^[A-Za-z0-9_.-]{1,120}$/.test(voiceId)) {
+      throw new MediaIngestError('Unsafe WebRTC voice selection rejected.', 'unsafe-filename', 400);
+    }
+  }
 }
 
 function assertSafeRequestedSessionId(sessionId: string): void {
   if (!/^[A-Za-z0-9_-]{1,120}$/.test(sessionId)) {
     throw new MediaIngestError('Unsafe requested session ID rejected.', 'unsafe-filename', 400);
+  }
+  // `call_` ids are reserved for the P6.1B native-call runtime; a programme
+  // upload claiming one would have its events swallowed by call interception.
+  if (/^call_/i.test(sessionId)) {
+    throw new MediaIngestError('Requested session ID prefix is reserved.', 'unsafe-filename', 400);
   }
 }
 

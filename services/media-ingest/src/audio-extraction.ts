@@ -241,7 +241,9 @@ export async function cleanupAudioChunks(outputBaseDir: string, sessionId: strin
 }
 
 export function safeSessionOutputDir(outputBaseDir: string, sessionId: string): string {
-  if (!/^(ps|wrs)_[a-z0-9_-]+$/i.test(sessionId)) {
+  // `call_` is the P6.1B native-call ingest-session prefix; the same fixed-prefix
+  // plus safe-charset property holds for all three.
+  if (!/^(ps|wrs|call)_[a-z0-9_-]+$/i.test(sessionId)) {
     throw new MediaIngestError('Unsafe processing session ID.', 'unsafe-path', 400);
   }
 

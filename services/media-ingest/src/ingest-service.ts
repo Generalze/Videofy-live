@@ -471,6 +471,14 @@ export class IngestService {
     return session;
   }
 
+  async removeCallSession(sessionId: string): Promise<boolean> {
+    const removed = await this.sessions.removeCallSession(sessionId);
+    if (removed) {
+      logger.info('Native-call ingest session removed', { sessionId });
+    }
+    return removed;
+  }
+
   failMicrophoneDeviceDisconnected(sessionId: string): ProcessingSession {
     const session = this.sessions.failMicrophoneDeviceDisconnected(sessionId);
     logger.warn('Microphone device disconnected', { sessionId });

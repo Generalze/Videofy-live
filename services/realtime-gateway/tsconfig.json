@@ -5,7 +5,10 @@
     "rootDir": "./src",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["ES2022"]
+    "lib": ["ES2022"],
+    "paths": {
+      "@videofy-live/call-session": ["../call-session/dist/index.d.ts"]
+    }
   },
   "include": ["src"]
 }

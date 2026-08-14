@@ -10,16 +10,17 @@
     "packages/*",
     "services/ai-registry",
     "services/language-router",
+    "services/call-session",
     "services/realtime-gateway",
     "services/media-ingest"
   ],
   "scripts": {
-    "dev": "concurrently -n gateway,ingest,listener,operator -c cyan,yellow,green,magenta \"npm run dev -w services/realtime-gateway\" \"npm run dev -w services/media-ingest\" \"npm run dev -w apps/listener-web\" \"npm run dev -w apps/operator-web\"",
-    "build": "npm run build -w packages/shared-types && npm run build -w packages/media-contracts && npm run build -w packages/participant-contracts && npm run build -w packages/call-contracts && npm run build -w services/ai-registry && npm run build -w services/language-router && npm run build -w services/realtime-gateway && npm run build -w services/media-ingest && npm run build -w apps/listener-web && npm run build -w apps/operator-web",
-    "test": "npm run test -w packages/shared-types && npm run test -w packages/media-contracts && npm run test -w packages/participant-contracts && npm run test -w packages/call-contracts && npm run test -w services/ai-registry && npm run test -w services/language-router && npm run test -w services/realtime-gateway && npm run test -w services/media-ingest && npm run test -w apps/listener-web && npm run test -w apps/operator-web",
+    "dev": "concurrently -n gateway,ingest,listener,operator,call -c cyan,yellow,green,magenta,blue \"npm run dev -w services/realtime-gateway\" \"npm run dev -w services/media-ingest\" \"npm run dev -w apps/listener-web\" \"npm run dev -w apps/operator-web\" \"npm run dev -w apps/call-web\"",
+    "build": "npm run build -w packages/shared-types && npm run build -w packages/media-contracts && npm run build -w packages/participant-contracts && npm run build -w packages/call-contracts && npm run build -w services/ai-registry && npm run build -w services/language-router && npm run build -w services/call-session && npm run build -w services/realtime-gateway && npm run build -w services/media-ingest && npm run build -w apps/listener-web && npm run build -w apps/operator-web && npm run build -w apps/call-web",
+    "test": "npm run test -w packages/shared-types && npm run test -w packages/media-contracts && npm run test -w packages/participant-contracts && npm run test -w packages/call-contracts && npm run test -w services/ai-registry && npm run test -w services/language-router && npm run test -w services/call-session && npm run test -w services/realtime-gateway && npm run test -w services/media-ingest && npm run test -w apps/listener-web && npm run test -w apps/operator-web && npm run test -w apps/call-web",
     "test:integration": "npm run test:integration -w services/realtime-gateway",
-    "lint": "npm run lint -w apps/listener-web && npm run lint -w apps/operator-web",
-    "typecheck": "npm run typecheck -w packages/shared-types && npm run typecheck -w packages/media-contracts && npm run typecheck -w packages/participant-contracts && npm run typecheck -w packages/call-contracts && npm run typecheck -w services/ai-registry && npm run typecheck -w services/language-router && npm run typecheck -w services/realtime-gateway && npm run typecheck -w services/media-ingest && npm run typecheck -w apps/listener-web && npm run typecheck -w apps/operator-web",
+    "lint": "npm run lint -w apps/listener-web && npm run lint -w apps/operator-web && npm run lint -w apps/call-web",
+    "typecheck": "npm run typecheck -w packages/shared-types && npm run typecheck -w packages/media-contracts && npm run typecheck -w packages/participant-contracts && npm run typecheck -w packages/call-contracts && npm run typecheck -w services/ai-registry && npm run typecheck -w services/language-router && npm run typecheck -w services/call-session && npm run typecheck -w services/realtime-gateway && npm run typecheck -w services/media-ingest && npm run typecheck -w apps/listener-web && npm run typecheck -w apps/operator-web && npm run typecheck -w apps/call-web",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\" --ignore-path .gitignore"
   },
   "devDependencies": {

@@ -752,6 +752,66 @@ describe('ProcessingSessionStore', () => {
     expect(generatedAudioReady).toHaveLength(2);
   });
 
+  it('honors a per-session standard-voice override for WebRTC call sessions', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    const generatedVoiceIds: string[] = [];
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+      translationTargetLanguage: 'es',
+      translationSupportedTargetLanguages: ['es', 'fr'],
+      textToSpeechSupportedLanguages: ['es', 'fr'],
+      onGeneratedAudioReady: (event) => generatedVoiceIds.push(event.voiceId),
+    });
+    const session = await sessionStore.createWebRtcSession({
+      sessionId: 'call_demo_participant_a',
+      broadcastId: 'callcast_demo_participant_a',
+      broadcasterPeerId: 'peer_call_a',
+      revision: 1,
+      targetLanguage: 'es',
+      targetLanguages: ['es'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+      voiceIdsByLanguage: { es: 'es_ES-sharvard-female' },
+    });
+    await sessionStore.ingestWebRtcChunk(session.id, {
+      sequence: 0,
+      startMs: 0,
+      endMs: 15_000,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: wavFixture().length,
+      sourcePath: await createStagedWav(stagingDir, 'voice-override-0.wav'),
+    });
+
+    expect(generatedVoiceIds).toEqual(['es_ES-sharvard-female']);
+    sessionStore.stopWebRtcSession(session.id);
+
+    await expect(sessionStore.removeCallSession('wrs_not_a_call')).rejects.toMatchObject({
+      code: 'invalid-media',
+    });
+    await expect(sessionStore.removeCallSession(session.id)).resolves.toBe(true);
+    expect(sessionStore.get(session.id)).toBeNull();
+    await expect(sessionStore.removeCallSession(session.id)).resolves.toBe(false);
+
+    await expect(
+      sessionStore.createWebRtcSession({
+        sessionId: 'call_demo_participant_b',
+        broadcastId: 'callcast_demo_participant_b',
+        broadcasterPeerId: 'peer_call_b',
+        revision: 1,
+        targetLanguage: 'es',
+        targetLanguages: ['es'],
+        sourceLanguage: 'en',
+        sourceLanguageMode: 'manual',
+        voiceIdsByLanguage: { es: '../escape' },
+      }),
+    ).rejects.toMatchObject({ code: 'unsafe-filename' });
+  });
+
   it('rejects duplicate and out-of-order WebRTC chunks clearly', async () => {
     const outputDir = await createTempDir();
     const stagingDir = await createTempDir();

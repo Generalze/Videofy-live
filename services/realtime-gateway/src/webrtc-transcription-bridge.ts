@@ -25,6 +25,8 @@ export interface WebRtcTranscriptionBridgeContext {
   targetLanguages?: string[];
   sourceLanguage?: string;
   sourceLanguageMode?: SourceLanguageMode;
+  /** Per-target standard voice overrides (P6.1B calls); media-ingest validates values. */
+  voiceIdsByLanguage?: Record<string, string>;
 }
 
 export interface WebRtcTranscriptionSubmissionClient {
@@ -455,6 +457,9 @@ export class HttpWebRtcTranscriptionSubmissionClient
       ...(input.targetLanguages ? { targetLanguages: input.targetLanguages } : {}),
       ...(input.sourceLanguage ? { sourceLanguage: input.sourceLanguage } : {}),
       ...(input.sourceLanguageMode ? { sourceLanguageMode: input.sourceLanguageMode } : {}),
+      ...(input.voiceIdsByLanguage && Object.keys(input.voiceIdsByLanguage).length > 0
+        ? { voiceIdsByLanguage: input.voiceIdsByLanguage }
+        : {}),
     });
   }
 
@@ -482,17 +487,41 @@ export class HttpWebRtcTranscriptionSubmissionClient
     await this.postJson(`/internal/webrtc/sessions/${encodeURIComponent(sessionId)}/stop`, {});
   }
 
+  /**
+   * Remove a retired `call_` session from media-ingest entirely. A 404 means
+   * the session is already gone ({removed:false}) — a defined, benign outcome
+   * for this idempotent cleanup, so it resolves rather than rejecting.
+   */
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.send(
+      'DELETE',
+      `/internal/webrtc/sessions/${encodeURIComponent(sessionId)}`,
+      null,
+      [404],
+    );
+  }
+
   private postJson(pathname: string, body: Record<string, unknown>): Promise<void> {
+    return this.send('POST', pathname, body);
+  }
+
+  private send(
+    method: 'POST' | 'DELETE',
+    pathname: string,
+    body: Record<string, unknown> | null,
+    acceptedStatusCodes: number[] = [],
+  ): Promise<void> {
     return new Promise((resolvePromise, reject) => {
-      const payload = Buffer.from(JSON.stringify(body));
+      const payload = body === null ? null : Buffer.from(JSON.stringify(body));
       const url = new URL(pathname, this.baseUrl);
       const request = (url.protocol === 'https:' ? https : http).request(
         url,
         {
-          method: 'POST',
+          method,
           headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': String(payload.length),
+            ...(payload
+              ? { 'Content-Type': 'application/json', 'Content-Length': String(payload.length) }
+              : {}),
             ...(this.internalAuthToken ? { 'X-Videofy-Internal-Token': this.internalAuthToken } : {}),
           },
           timeout: this.timeoutMs,
@@ -501,11 +530,15 @@ export class HttpWebRtcTranscriptionSubmissionClient
           const chunks: Buffer[] = [];
           response.on('data', (chunk: Buffer) => chunks.push(chunk));
           response.on('end', () => {
-            if (response.statusCode && response.statusCode >= 200 && response.statusCode < 300) {
+            const statusCode = response.statusCode ?? 0;
+            if (
+              (statusCode >= 200 && statusCode < 300) ||
+              acceptedStatusCodes.includes(statusCode)
+            ) {
               resolvePromise();
               return;
             }
-            const message = Buffer.concat(chunks).toString('utf8') || `HTTP ${response.statusCode}`;
+            const message = Buffer.concat(chunks).toString('utf8') || `HTTP ${statusCode}`;
             reject(new Error(`Media ingest WebRTC request failed: ${message}`));
           });
         },
@@ -514,7 +547,11 @@ export class HttpWebRtcTranscriptionSubmissionClient
         request.destroy(new Error('Media ingest WebRTC request timed out.'));
       });
       request.on('error', reject);
-      request.end(payload);
+      if (payload) {
+        request.end(payload);
+      } else {
+        request.end();
+      }
     });
   }
 }

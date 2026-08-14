@@ -52,13 +52,20 @@ import {
   type BackendMediaPeerAudioContext,
 } from './webrtc-media-peer-registry.js';
 import { BackendWebRtcListenerPeerRegistry } from './webrtc-listener-peer-registry.js';
-import { WebRtcTranscriptionBridge, type WebRtcTranscriptionBridgeContext } from './webrtc-transcription-bridge.js';
+import {
+  HttpWebRtcTranscriptionSubmissionClient,
+  WebRtcTranscriptionBridge,
+  type WebRtcTranscriptionBridgeContext,
+} from './webrtc-transcription-bridge.js';
+import { CallSessionStore } from '@videofy-live/call-session';
+import { CallRuntime, CALL_PARTICIPANT_ROLE } from './call-runtime.js';
+import { CallReceivePeerManager } from './call-receive-peers.js';
 
 /** Pseudo-language channel for listeners following the untranslated programme captions. */
 const ORIGINAL_LANGUAGE_CHANNEL = 'original';
 
 /** Client role determined by query parameter on connect. */
-type ClientRole = 'listener' | 'operator' | 'worker' | 'ingest' | 'broadcaster' | 'server';
+type ClientRole = 'listener' | 'operator' | 'worker' | 'ingest' | 'broadcaster' | 'server' | 'call';
 
 interface ClientState {
   role: ClientRole;
@@ -97,6 +104,7 @@ export class Gateway {
   private readonly webRtcTranscriptionBridge: WebRtcTranscriptionBridge;
   private readonly backendMediaPeers: BackendWebRtcMediaPeerRegistry;
   private readonly listenerMediaPeers: BackendWebRtcListenerPeerRegistry;
+  private readonly callRuntime: CallRuntime;
   private readonly mediaIngestUrl: string;
   private readonly mediaIngestPublicUrl: string;
   private readonly clients = new Map<string, ClientState>();
@@ -202,6 +210,23 @@ export class Gateway {
         this.listenerMediaPeers.closeSession(context.sessionId, reason);
       },
     });
+    // P6.1B call runtime: reuses the backend media peer machinery and the
+    // transcription bridge with call-scoped contexts; owns its own peer
+    // registry so call publish peers never mix with programme callbacks.
+    this.callRuntime = new CallRuntime({
+      store: new CallSessionStore(),
+      emitToRoom: (room, event, payload) => {
+        this.io.to(room).emit(event, payload);
+      },
+      ingestControl: new HttpWebRtcTranscriptionSubmissionClient({
+        baseUrl: this.mediaIngestUrl,
+        timeoutMs: options.webRtcTranscriptionRequestTimeoutMs ?? 30_000,
+        ...(options.internalWebRtcToken ? { internalAuthToken: options.internalWebRtcToken } : {}),
+      }),
+      transcriptionBridge: this.webRtcTranscriptionBridge,
+      createMediaPeers: (handlers) => new BackendWebRtcMediaPeerRegistry(handlers),
+      createReceivePeers: (handlers) => new CallReceivePeerManager(handlers),
+    });
     this.io = new SocketServer(httpServer, {
       cors: { origin: corsOrigins, methods: ['GET', 'POST'] },
       transports: ['websocket', 'polling'],
@@ -260,6 +285,10 @@ export class Gateway {
         this.handleWebRtcSocket(socket, role);
         logger.info('WebRTC server signalling socket connected', { socketId: socket.id });
         break;
+      case 'call':
+        this.callRuntime.registerSocket(socket);
+        logger.info('Call participant socket connected', { socketId: socket.id });
+        break;
     }
 
     socket.on('disconnect', () => this.handleDisconnect(socket));
@@ -272,6 +301,7 @@ export class Gateway {
     if (role === 'ingest') return 'ingest';
     if (role === 'broadcaster') return 'broadcaster';
     if (role === 'server') return 'server';
+    if (role === CALL_PARTICIPANT_ROLE) return 'call';
     return 'listener';
   }
 
@@ -334,6 +364,17 @@ export class Gateway {
         return;
       }
       if (!this.assertWebRtcSocketRole(socket, role, parsed)) return;
+      // `call_` ids are reserved for native call ingest sessions; programme
+      // signalling must never be able to squat on (or collide with) them.
+      const requestedSessionId = parsed.payload.requestedSessionId;
+      if (requestedSessionId !== undefined && /^call_/i.test(requestedSessionId)) {
+        this.emitWebRtcError(socket, parsed, new WebRtcSignallingError(
+          'invalid-payload',
+          'WebRTC session ids beginning with "call_" are reserved for native call sessions.',
+          false,
+        ));
+        return;
+      }
       const result = this.tryWebRtc(socket, parsed, () =>
         this.webrtcSessions.createSession(socket.id, parsed),
       );
@@ -609,6 +650,11 @@ export class Gateway {
       }
 
       const stateEvent = result.data as MediaStateEvent;
+      // Call sessions never surface on programme media-state broadcasts.
+      if (this.callRuntime.interceptMediaStateEvent(stateEvent)) {
+        this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
+        return;
+      }
       const programmeConfig = stateEvent.processingSessionId
         ? this.programmeSessionConfigs.get(stateEvent.processingSessionId)
         : undefined;
@@ -662,6 +708,9 @@ export class Gateway {
       }
 
       const event = result.data as TranscriptionEvent;
+      // Call transcription events are routed as recipient-scoped `call:caption`
+      // deliveries and must never reach programme/operator rooms.
+      if (this.callRuntime.interceptTranscriptionEvent(event)) return;
       this.io.to(OPERATOR_ROOM).emit(SOCKET_EVENTS.TRANSCRIPTION_EVENT, event);
       logger.info('Transcription event broadcast', {
         sessionId: event.sessionId,
@@ -682,6 +731,8 @@ export class Gateway {
       }
 
       const event = result.data as TimestampedTranslationEvent;
+      // Call translation events become recipient-scoped `call:caption` deliveries.
+      if (this.callRuntime.interceptTimestampedTranslationEvent(event)) return;
       this.emitToLegacyProgrammeAudiences(
         selectLegacyProgrammeAudiences({ kind: 'timestamped-translation', event }),
         SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT,
@@ -706,6 +757,9 @@ export class Gateway {
       }
 
       const event = result.data as GeneratedAudioReadyEvent;
+      // Call generated audio is recipient-scoped and never enters the
+      // programme generated-audio store or language rooms.
+      if (this.callRuntime.interceptGeneratedAudioEvent(event)) return;
       const accepted = this.generatedAudioStore.offer(event);
       if (!accepted.accepted) return;
       this.broadcastGeneratedAudioReadyEvents(accepted.ready);
@@ -713,6 +767,7 @@ export class Gateway {
   }
 
   private handleDisconnect(socket: Socket): void {
+    this.callRuntime.handleSocketDisconnect(socket.id);
     this.backendMediaPeers.closeByBroadcasterSocket(socket.id);
     this.listenerMediaPeers.closeByListenerSocket(socket.id);
     for (const result of this.webrtcSessions.cleanupSocket(socket.id)) {
@@ -1091,6 +1146,7 @@ export class Gateway {
     broadcasterPeerCount: number;
     listenerPeerCount: number;
     transcriptionBridgeSessionCount: number;
+    callRuntime: ReturnType<CallRuntime['getDiagnostics']>;
   } {
     const signalling = this.webrtcSessions.getDiagnostics();
     const transcriptionBridge = this.webRtcTranscriptionBridge.getDiagnostics();
@@ -1101,6 +1157,7 @@ export class Gateway {
       broadcasterPeerCount: this.backendMediaPeers.getSnapshots().length,
       listenerPeerCount: this.listenerMediaPeers.getSnapshots().length,
       transcriptionBridgeSessionCount: transcriptionBridge.sessionCount,
+      callRuntime: this.callRuntime.getDiagnostics(),
     };
   }
 

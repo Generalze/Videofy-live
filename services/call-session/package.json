@@ -1,0 +1,32 @@
+{
+  "name": "@videofy-live/call-session",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "author": "masterzee001",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "description": "Pure native-call session core: participant registry, preference authority, revisions, and recipient routing decisions.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "npm --prefix ../.. run build -w @videofy-live/shared-types && npm --prefix ../.. run build -w @videofy-live/participant-contracts && npm --prefix ../.. run build -w @videofy-live/call-contracts && npm --prefix ../.. run build -w @videofy-live/language-router && tsc --noEmit",
+    "test": "npm --prefix ../.. run build -w @videofy-live/shared-types && npm --prefix ../.. run build -w @videofy-live/participant-contracts && npm --prefix ../.. run build -w @videofy-live/call-contracts && npm --prefix ../.. run build -w @videofy-live/language-router && npm run build && vitest run"
+  },
+  "dependencies": {
+    "@videofy-live/call-contracts": "*",
+    "@videofy-live/language-router": "*",
+    "@videofy-live/participant-contracts": "*",
+    "@videofy-live/shared-types": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
+  }
+}

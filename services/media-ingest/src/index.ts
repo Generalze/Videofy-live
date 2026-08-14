@@ -116,6 +116,7 @@ app.post('/internal/webrtc/sessions', async (req, res) => {
       targetLanguages?: unknown;
       sourceLanguage?: unknown;
       sourceLanguageMode?: unknown;
+      voiceIdsByLanguage?: unknown;
     };
     const session = await ingest.createWebRtcSession({
       sessionId: requireStringField(body.sessionId, 'sessionId'),
@@ -130,8 +131,22 @@ app.post('/internal/webrtc/sessions', async (req, res) => {
       ...(body.sourceLanguageMode === 'manual' || body.sourceLanguageMode === 'auto-detect'
         ? { sourceLanguageMode: body.sourceLanguageMode }
         : {}),
+      ...(voiceIdRecordOrNull(body.voiceIdsByLanguage)
+        ? { voiceIdsByLanguage: voiceIdRecordOrNull(body.voiceIdsByLanguage)! }
+        : {}),
     });
     res.status(201).json({ session });
+  } catch (error) {
+    sendIngestError(res, error);
+  }
+});
+
+app.delete('/internal/webrtc/sessions/:sessionId', async (req, res) => {
+  if (!assertInternalWebRtcRequest(req, res)) return;
+  try {
+    const sessionId = requireRouteParam(req.params.sessionId, 'sessionId');
+    const removed = await ingest.removeCallSession(sessionId);
+    res.status(removed ? 200 : 404).json({ removed });
   } catch (error) {
     sendIngestError(res, error);
   }
@@ -407,6 +422,16 @@ function requireStringField(value: unknown, fieldName: string): string {
     throw new MediaIngestError(`${fieldName} is required.`, 'invalid-media', 400);
   }
   return value;
+}
+
+/** Shapes an optional language->voiceId record; deep safety checks stay in the session store. */
+function voiceIdRecordOrNull(value: unknown): Record<string, string> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const entries = Object.entries(value as Record<string, unknown>).filter(
+    (entry): entry is [string, string] => typeof entry[1] === 'string',
+  );
+  if (entries.length === 0) return null;
+  return Object.fromEntries(entries);
 }
 
 function parseLiteralInteger<T extends number>(value: unknown, expected: T, fieldName: string): T {
