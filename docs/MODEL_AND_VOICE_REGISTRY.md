@@ -83,6 +83,42 @@ any commercial deployment.** All generation is repetition-hardened
 language now requires only downloading a voice model and adding one
 `PIPER_VOICES` entry.
 
+## P6.1A Development Provider Validation
+
+Validated 2026-08-14 on the demonstration machine (Windows 11, CPU int8 inference,
+FFmpeg 8.1.2, Python 3.11 in `.venv-ai`, Piper 1.2.0). This section is the evidence target of
+`services/ai-registry/src/registry.ts` entries marked
+`docs/MODEL_AND_VOICE_REGISTRY.md#p61a-development-provider-validation`. All results are
+development/demo evidence under `AI_RUNTIME_PROFILE=development-demo`; nothing here claims
+commercial approval, production readiness, or full voice-ready status.
+
+| Provider | Model or voice | Capability | Version / revision | Licence | Commercial state | Result |
+| --- | --- | --- | --- | --- | --- | --- |
+| faster-whisper | `Systran/faster-whisper-small` (multilingual) | STT en+es | `536b0662742c02347bc0e980a01041f333bce120` | MIT | review-required | EN and ES synthetic phrases transcribed exactly; correct language detected for both |
+| OPUS-MT | `Helsinki-NLP/opus-mt-es-en` | Translation es→en | `c96e2c5399ebfae4fc43d9669556b9afa74bb69d` | Apache-2.0 | review-required | "Hola, buenos días." → "Hello, good morning." |
+| OPUS-MT | `Helsinki-NLP/opus-mt-en-es` | Translation en→es | `5bc4493d463cf000c1f0b50f8d56886a392ed4ab` | Apache-2.0 | review-required | "Hello, good morning." → "Hola, buenos días." |
+| Piper | `en_US-hfc_male-medium` | English TTS, Male | `sha256:d11e403a02bdf5a670c877b3dc56e0e1c8cece6fb30289586314dffdc0a78cb0` | CC-BY-NC-SA-4.0 | **blocked-noncommercial** | Real WAV generated and normalized |
+| Piper | `en_US-hfc_female-medium` | English TTS, Female | `sha256:914c473788fc1fa8b63ace1cdcdb44588f4ae523d3ab37df1536616835a140b7` | CC-BY-NC-SA-4.0 | **blocked-noncommercial** | Real WAV generated and normalized |
+| Piper | `es_ES-sharvard-medium` speaker 0 (`M`) | Spanish TTS, Male | `sha256:40febfb1679c69a4505ff311dc136e121e3419a13a290ef264fdf43ddedd0fb1` | CC-BY-3.0 | review-required | Real WAV generated; `--speaker 0` proven at the CLI |
+| Piper | `es_ES-sharvard-medium` speaker 1 (`F`) | Spanish TTS, Female | same model hash | CC-BY-3.0 | review-required | Real WAV generated; `--speaker 1` proven at the CLI |
+
+Measured provider latencies on this run (CPU, including persistent-worker cold start; measurements,
+not guarantees): Piper 509–568 ms per clip; OPUS-MT 4 867 ms (en→es) and 5 735 ms (es→en);
+faster-whisper 5 459 ms (en) and 6 720 ms (es).
+
+Reproduce with `RUN_P6_1A_REAL_PROVIDER_TESTS=true` via
+`services/media-ingest/src/__tests__/p6-1a-real-providers.test.ts`; generated audio and the
+evidence JSON stay in ignored local paths (`P6_1A_EVIDENCE_DIR` or the OS temp directory).
+
+Explicitly still open for P6.1A closure:
+
+- Human voice-quality review: all four voices remain `qualityStatus=development`, so English and
+  Spanish are **not** declared fully voice-ready and
+  `evaluateStandardVoiceReadiness` truthfully reports them not ready.
+- The English HFC voice pair is CC-BY-NC-SA-4.0 and therefore development/demo only; a
+  commercially licensed English Male/Female pair is a separate C-AI1 work item.
+- Nigerian-accented English and the wider §31.1 human test corpus remain pending.
+
 ## Proposed Or Blocked Targets
 
 The rows below are the 2026-07-28 P5.2 planning snapshot. Where they conflict with the

@@ -2,10 +2,11 @@
 
 - **Repository owner:** masterzee001
 - **Authoritative architecture:** [VIDEOFY_MASTER_ARCHITECTURE.md](VIDEOFY_MASTER_ARCHITECTURE.md), Version 3.0
-- **Lead supervisor and integration owner:** Codex Sol6
-- **Current milestone:** P6.0 — Contract Extraction
-- **Status:** P6.0 implementation and integrated verification complete; owner and independent Claude review pending
+- **Lead supervisor and integration owner:** Codex Sol6 (P6.1A completed under acting-lead Claude supervision while Codex was unavailable)
+- **Current milestone:** P6.1A — Duplex Language Prerequisites (development profile)
+- **Status:** P6.1A implementation and machine validation complete; human voice-quality acceptance and owner review remain open
 - **P6.0 baseline:** `main@2a06e1dfd833532125c06986843e645a2dcff34b`
+- **P6.1A baseline:** `main@daad195` (P6-G0 and P6.0 merged and CI-verified)
 
 ## Scope decision
 
@@ -73,6 +74,29 @@ credentials, or weakens architecture to make tests pass.
 | P6.0-4 | Codex lead                               | Register packages and wire abstract audiences back to unchanged gateway rooms/events. | Existing gateway and integration regressions pass.                                |
 | P6.0-5 | Codex lead and independent reviewer      | Synchronize ADRs/evidence and audit the integrated wave.                              | Architecture §30.2 and §32.2 acceptance review.                                   |
 
+## P6.1A pre-change report
+
+| Required fact                   | Verified state                                                                                                                   |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Branch and HEAD                 | `main` matched `origin/main` at `daad195` when this wave began.                                                                  |
+| Worktree                        | Clean apart from bounded P6.1A files; model assets were pre-staged into ignored local paths before validation.                   |
+| Current runtime authority       | Unchanged; this wave only adds provider capability, registry truth, and configuration under `development-demo`.                  |
+| P6.1A gap                       | No Spanish-capable STT path, no ES→EN route, no English TTS target, and no gendered EN/ES standard-voice selections existed.     |
+| Regression risk                 | Config default changes, registry schema tightening, and Piper argument changes could regress existing language delivery.        |
+| Unsupported external capability | No native call runtime, call UI, external adapter, cloud provider, or commercial certification is claimed.                       |
+
+## P6.1A work packages
+
+| ID      | Owner                                     | Deliverable                                                                                          | Gate                                                                       |
+| ------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| P61A-1  | Registry agent, lead review               | Multilingual STT, es→en OPUS-MT, EN/ES Piper voice assets with real revisions, hashes, and licences. | Registry schema and truthfulness tests.                                    |
+| P61A-2  | Registry agent, lead review               | Ordered `translationLanguagePairs` so a model direction can never imply its reverse.                 | Direction-mismatch and route-validation tests.                             |
+| P61A-3  | Provider agent, lead review               | Piper multi-speaker `speakerId` support (including speaker 0) through config and CLI.                | Provider argument tests covering all four voice selections.                |
+| P61A-4  | Provider agent, lead review               | English as translation/TTS target; es:en OPUS-MT route; viewer catalogue English entry.              | Config and catalogue tests; existing defaults preserved.                   |
+| P61A-5  | QA agent, lead run                        | Opt-in real local provider acceptance proving both STT/translation directions and four voices.       | `RUN_P6_1A_REAL_PROVIDER_TESTS=true` run with recorded evidence.           |
+| P61A-6  | Docs agent, lead review                   | Registry evidence section, plan update, and implementation report reconciled to actual results.      | Evidence values match the recorded acceptance run.                         |
+| P61A-7  | Independent reviewer                      | Adversarial review of the integrated diff before landing.                                            | No blocker/high finding outstanding.                                       |
+
 ## P6-G0 acceptance checklist
 
 - [x] Current remote `main` and Phase 5 merge baseline recorded.
@@ -98,6 +122,24 @@ credentials, or weakens architecture to make tests pass.
 - [x] Gateway compatibility wiring preserves event names, payloads, rooms, and ordering.
 - [x] Final complete repository regression gate and independent integrated review pass.
 
+## P6.1A acceptance checklist (§30.3)
+
+- [x] Spanish speech is transcribed by the validated multilingual `Systran/faster-whisper-small` path.
+- [x] English speech remains validated (existing `small.en` baseline preserved; multilingual run re-proved English).
+- [x] EN→ES translation works (`Helsinki-NLP/opus-mt-en-es`).
+- [x] ES→EN translation works (`Helsinki-NLP/opus-mt-es-en`).
+- [x] English is a valid recipient target (translation targets, TTS languages, viewer catalogue).
+- [x] English standard TTS works (both HFC voices generated real audio).
+- [x] Spanish standard TTS works (both sharvard speakers generated real audio).
+- [x] Voice metadata is machine-readable with per-voice gender evidence, asset binding, and revision hashes — not inferred from filenames.
+- [ ] English Male/Female standard voices **approved**: registered and runtime-validated, but `qualityStatus=development` until the repository owner completes human voice-quality review. Readiness APIs truthfully report not-ready.
+- [ ] Spanish Male/Female standard voices **approved**: same human quality-review gate.
+
+No voice-partial waiver is claimed: English and Spanish are deliberately **not** labeled fully
+voice-ready, and P6.1A remains open until the owner's human quality acceptance. The English HFC
+pair is additionally CC-BY-NC-SA-4.0 (development/demo only); a commercially licensed English
+voice pair is tracked under C-AI1.
+
 ## Required verification
 
 ```text
@@ -119,20 +161,28 @@ P6.0 focused checks, the complete repository regression gate, desktop/mobile bro
 independent lower-model acceptance review are green. Exact evidence is recorded in the
 [P6.0 implementation report](P6_0_IMPLEMENTATION_REPORT.md).
 
+P6.1A machine evidence (real EN/ES STT, both OPUS-MT directions, four Piper voice selections) is
+recorded in
+[docs/MODEL_AND_VOICE_REGISTRY.md — P6.1A Development Provider Validation](MODEL_AND_VOICE_REGISTRY.md#p61a-development-provider-validation)
+and the [P6.1A implementation report](P6_1A_IMPLEMENTATION_REPORT.md).
+
 ## Sequenced follow-on milestones
 
-After P6.0 owner review:
+After P6.1A owner review and human voice-quality acceptance:
 
 1. P6-UX0 may establish the shared premium, role-separated experience foundation as its own wave.
-2. P6.1A proves Spanish-capable STT, ES→EN, English TTS, and approved EN/ES Male/Female voice pairs.
-3. P6.1B/P6.1C implements and validates the native two-person call.
-4. P6.2–P6.8 proceed in architecture order; external adapters begin only after native Call is stable.
+2. P6.1B/P6.1C implements and validates the native two-person call using the validated duplex providers.
+3. P6.2–P6.8 proceed in architecture order; external adapters begin only after native Call is stable.
+4. C-AI1 sources a commercially licensed English Male/Female voice pair (the HFC pair is dev-only).
 
 No partial voice-readiness waiver is permitted. Commercial launch remains a separate fail-closed
 certification gate.
 
 ## Closure and handoff
 
-P6-G0 and P6.0 Codex implementation are present. Independent Claude reconciliation and
-repository-owner approval are subsequent gates required for formal milestone closure; they are
-not silently claimed by this plan. GitHub branch protection also remains an external owner action.
+P6-G0 and P6.0 are merged to `main` and CI-verified. The P6.1A wave was started by Codex and
+completed, validated, and integrated under acting-lead Claude supervision with an independent
+review agent, per the owner's explicit instruction while Codex was unavailable. Repository-owner
+approval — including human voice-quality acceptance for the four registered voices — remains the
+formal P6.1A closure gate and is not claimed by this plan. GitHub branch protection also remains
+an external owner action.

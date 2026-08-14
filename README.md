@@ -12,9 +12,13 @@ authentication, billing, databases, or cloud integrations.
 ## Phase Status
 
 Phases 1 through 5 are complete. P6-G0 governance and the additive P6.0
-participant/call/recipient-routing contracts are implemented. The working Live
-runtime remains the Phase 5 partner preview: P6.0 does not claim a native call
-runtime, call UI, external-platform adapter, or commercial launch.
+participant/call/recipient-routing contracts are implemented. P6.1A duplex
+language prerequisites (multilingual EN/ES speech recognition, ES→EN
+translation, English TTS, and machine-registered EN/ES Male/Female development
+voices) are implemented and machine-validated; human voice-quality acceptance
+is still pending, so no language is declared fully voice-ready. The working
+Live runtime remains the Phase 5 partner preview: no native call runtime, call
+UI, external-platform adapter, or commercial launch is claimed.
 
 The platform includes the listener app with a nine-language viewer menu
 (Spanish, French, Portuguese, Arabic, Russian, Greek, Yoruba, Chinese, Latin),
