@@ -308,6 +308,21 @@ describe('timestamped translation sessions', () => {
     });
   });
 
+  it('rejects a target language that matches the session source language up front', async () => {
+    await expect(
+      store(new MockTimestampedTranslationProvider(['es', 'en']), {
+        targetLanguage: 'es',
+        supportedTargetLanguages: ['es', 'en'],
+      }).createFromUpload(
+        upload({ targetLanguage: 'es', targetLanguages: ['es', 'en'], sourceLanguage: 'en' }),
+        async () => validProbe,
+      ),
+    ).rejects.toMatchObject({
+      code: 'unsupported-language',
+      message: 'Target language en matches the session source language; the original channel already delivers it.',
+    });
+  });
+
   it('marks segments failed on provider timeout', async () => {
     const session = await store(
       translationProvider(

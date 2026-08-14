@@ -1,3 +1,4 @@
+// Repository owner: masterzee001.
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -161,17 +162,32 @@ describe('transcription providers', () => {
 
     await local.transcribe({
       ...chunk('chunk-000000.wav'),
-      sourceLanguage: 'de',
+      sourceLanguage: 'es',
       sourceLanguageMode: 'manual',
     });
     await local.transcribe({
       ...chunk('chunk-000000.wav'),
-      sourceLanguage: 'de',
+      sourceLanguage: 'es',
       sourceLanguageMode: 'auto-detect',
     });
 
-    expect(requests[0]?.payload['languageHint']).toBe('de');
+    expect(requests[0]?.payload['languageHint']).toBe('es');
     expect(requests[1]?.payload['languageHint']).toBeNull();
+  });
+
+  it('passes the multilingual small model to the worker for manual Spanish input', async () => {
+    const { local, configs, requests } = provider(() => whisperResult({ detectedLanguage: 'es' }), {
+      modelSize: 'small',
+    });
+
+    await local.transcribe({
+      ...chunk('spanish.wav'),
+      sourceLanguage: 'es',
+      sourceLanguageMode: 'manual',
+    });
+
+    expect(configs[0]?.args).toContain('small');
+    expect(requests[0]?.payload['languageHint']).toBe('es');
   });
 
   it('preserves per-segment timestamps from multi-segment whisper output', async () => {

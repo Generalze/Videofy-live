@@ -1,3 +1,4 @@
+// Repository owner: masterzee001.
 import { execFile, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -51,6 +52,8 @@ export interface PiperVoiceConfig {
   noiseScale?: number;
   noiseW?: number;
   sentenceSilence?: number;
+  /** Piper multi-speaker model speaker; zero is a valid selection. */
+  speakerId?: number;
 }
 
 export const DEFAULT_PIPER_SAMPLE_RATE_HZ = 22_050;
@@ -444,6 +447,9 @@ function buildPiperArgs(
   }
   if (voice.sentenceSilence !== undefined) {
     args.push('--sentence_silence', String(voice.sentenceSilence));
+  }
+  if (voice.speakerId !== undefined) {
+    args.push('--speaker', String(voice.speakerId));
   }
   return args;
 }

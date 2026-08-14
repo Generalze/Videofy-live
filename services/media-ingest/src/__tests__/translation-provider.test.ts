@@ -1,3 +1,4 @@
+// Repository owner: masterzee001.
 import { describe, expect, it } from 'vitest';
 import {
   PersistentPythonWorker,
@@ -232,6 +233,40 @@ describe('translation providers', () => {
       sourceText: 'hello',
       modelId: 'Helsinki-NLP/opus-mt-en-fr',
       localPath: 'C:/models/opus/en-fr',
+    });
+  });
+
+  it('selects the explicit ES-to-EN OPUS-MT route for English recipients', async () => {
+    const { factory, requests } = fakeWorkerFactory(() => ({ translatedText: 'good morning' }));
+    const opus = new OpusMtTimestampedTranslationProvider({
+      pythonExecutable: 'python',
+      modelCacheDir: 'C:/models/opus',
+      supportedTargetLanguages: ['en'],
+      languageModels: [
+        {
+          sourceLanguage: 'es',
+          targetLanguage: 'en',
+          modelId: 'Helsinki-NLP/opus-mt-es-en',
+          localPath: 'C:/models/opus/es-en',
+        },
+      ],
+      timeoutMs: 30_000,
+      maxConcurrency: 1,
+      allowModelDownload: false,
+      createWorker: factory,
+    });
+
+    await expect(
+      opus.translate(input({ sourceLanguage: 'es', targetLanguage: 'en', sourceText: 'buenos días' })),
+    ).resolves.toMatchObject({
+      translatedText: 'good morning',
+      modelId: 'Helsinki-NLP/opus-mt-es-en',
+    });
+    expect(requests[0]).toMatchObject({
+      sourceLanguage: 'es',
+      targetLanguage: 'en',
+      modelId: 'Helsinki-NLP/opus-mt-es-en',
+      localPath: 'C:/models/opus/es-en',
     });
   });
 

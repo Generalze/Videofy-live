@@ -1,3 +1,4 @@
+// Repository owner: masterzee001.
 import type {
   AiProviderStatusMetadata,
   SourceLanguageControlMetadata,
@@ -230,6 +231,14 @@ function clampConfidence(value: number): number {
 }
 
 const TARGET_LANGUAGE_CANDIDATES = [
+  {
+    language: 'en',
+    label: 'English',
+    experimental: false,
+    license:
+      'OPUS-MT (Apache-2.0); current English Piper voices CC-BY-NC-SA-4.0 — development/demo only',
+    commercialUse: 'unknown' as const,
+  },
   {
     language: 'yo',
     label: 'Yoruba',

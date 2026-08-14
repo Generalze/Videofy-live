@@ -3,6 +3,14 @@ import { parseRuntimeProfile, type RuntimeProfile } from '@videofy-live/ai-regis
 import { loadRootEnv, readCsv, readPort, readPositiveInt } from './env.js';
 import { resolve } from 'node:path';
 
+/**
+ * P6.1A defaults, exported so tests pin them: English is a supported
+ * translation/TTS target and es→en has an explicit ordered OPUS-MT route.
+ */
+export const DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES = 'fr,es,de,pt,it,ja,zh,ar,yo,en';
+export const DEFAULT_OPUS_MT_LANGUAGE_MODELS =
+  'en:fr:Helsinki-NLP/opus-mt-en-fr,en:es:Helsinki-NLP/opus-mt-en-es,en:pt:Helsinki-NLP/opus-mt-en-ROMANCE,es:en:Helsinki-NLP/opus-mt-es-en';
+
 export interface IngestConfig {
   aiRuntimeProfile: RuntimeProfile;
   port: number;
@@ -81,6 +89,8 @@ export interface IngestConfig {
     noiseScale?: number;
     noiseW?: number;
     sentenceSilence?: number;
+    /** Optional Piper multi-speaker model speaker, including zero. */
+    speakerId?: number;
   }[];
   mockDurationMs: number;
   mockTickMs: number;
@@ -191,7 +201,7 @@ export function loadConfig(): IngestConfig {
       process.env['TRANSLATION_TARGET_LANGUAGE'] ?? process.env['TARGET_LANGUAGE'] ?? 'fr',
     translationSupportedTargetLanguages: readCsv(
       'TRANSLATION_SUPPORTED_TARGET_LANGUAGES',
-      'fr,es,de,pt,it,ja,zh,ar,yo',
+      DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES,
     ),
     argosPythonExecutable: process.env['ARGOS_TRANSLATE_PYTHON'] ?? 'python',
     argosPackageDir: process.env['ARGOS_TRANSLATE_PACKAGE_DIR']?.trim() || null,
@@ -232,7 +242,8 @@ export function loadConfig(): IngestConfig {
     textToSpeechTimeoutMs: readPositiveInt('TEXT_TO_SPEECH_TIMEOUT_MS', 30_000),
     textToSpeechSupportedLanguages: readCsv(
       'TEXT_TO_SPEECH_SUPPORTED_LANGUAGES',
-      process.env['TRANSLATION_SUPPORTED_TARGET_LANGUAGES'] ?? 'fr,es,de,pt,it,ja,zh,ar,yo',
+      process.env['TRANSLATION_SUPPORTED_TARGET_LANGUAGES'] ??
+        DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES,
     ),
     textToSpeechDefaultVoiceId:
       process.env['TEXT_TO_SPEECH_DEFAULT_VOICE_ID'] ?? piperVoices[0]?.voiceId ?? piperVoiceId,
@@ -301,6 +312,7 @@ function readPiperVoices(legacyVoice: {
     if (settings.noiseW !== undefined) voice.noiseW = settings.noiseW;
     if (settings.sentenceSilence !== undefined) voice.sentenceSilence = settings.sentenceSilence;
     if (settings.sampleRateHz !== undefined) voice.sampleRateHz = settings.sampleRateHz;
+    if (settings.speakerId !== undefined) voice.speakerId = settings.speakerId;
   }
   return voices;
 }
@@ -311,6 +323,7 @@ interface PiperVoiceSettings {
   noiseW?: number;
   sentenceSilence?: number;
   sampleRateHz?: number;
+  speakerId?: number;
 }
 
 function readPiperVoiceSettings(): Map<string, PiperVoiceSettings> {
@@ -340,6 +353,8 @@ function readPiperVoiceSettings(): Map<string, PiperVoiceSettings> {
     if (sentenceSilence !== null) entry.sentenceSilence = sentenceSilence;
     const sampleRateHz = readVoiceSetting(candidate['sampleRateHz']);
     if (sampleRateHz !== null && sampleRateHz > 0) entry.sampleRateHz = sampleRateHz;
+    const speakerId = readPiperSpeakerId(candidate['speakerId']);
+    if (speakerId !== null) entry.speakerId = speakerId;
     settings.set(voiceId, entry);
   }
   return settings;
@@ -347,6 +362,10 @@ function readPiperVoiceSettings(): Map<string, PiperVoiceSettings> {
 
 function readVoiceSetting(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function readPiperSpeakerId(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
 // MMS-TTS voice registry for languages without a Piper voice. Entries use
@@ -380,9 +399,7 @@ function readMmsTtsVoices(): IngestConfig['mmsTtsVoices'] {
 }
 
 function readOpusMtLanguageModels(): IngestConfig['opusMtLanguageModels'] {
-  const raw =
-    process.env['OPUS_MT_LANGUAGE_MODELS'] ??
-    'en:fr:Helsinki-NLP/opus-mt-en-fr,en:es:Helsinki-NLP/opus-mt-en-es,en:pt:Helsinki-NLP/opus-mt-en-ROMANCE';
+  const raw = process.env['OPUS_MT_LANGUAGE_MODELS'] ?? DEFAULT_OPUS_MT_LANGUAGE_MODELS;
   return raw
     .split(',')
     .map((entry) => entry.trim())

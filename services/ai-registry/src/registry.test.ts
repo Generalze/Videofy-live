@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CURRENT_AI_REGISTRY,
   AiRegistrySchema,
+  CapabilityRouteSchema,
   ProviderAssetSchema,
   StandardVoiceProfileSchema,
   evaluateStandardVoiceReadiness,
@@ -57,9 +58,13 @@ describe('P6-G0 AI registry policy', () => {
     ]);
     const voice = StandardVoiceProfileSchema.parse({
       voiceId: 'test-male',
+      assetId: 'approved-local-en-tts',
       language: 'en',
       locale: 'en-US',
       gender: 'male',
+      genderEvidence: 'test assertion',
+      speakerId: 0,
+      speakerKey: 'test-speaker-key',
       providerId: 'test-tts',
       modelId: 'test-en',
       modelRevision: '1',
@@ -72,11 +77,14 @@ describe('P6-G0 AI registry policy', () => {
       productionApproved: true,
       fallbackPriority: 1,
     });
+    expect(voice.speakerId).toBe(0);
     expect(Object.keys(voice).sort()).toEqual(
       [
         'commercialUseState',
+        'assetId',
         'fallbackPriority',
         'gender',
+        'genderEvidence',
         'language',
         'licenseEvidence',
         'licenseId',
@@ -88,6 +96,8 @@ describe('P6-G0 AI registry policy', () => {
         'qualityStatus',
         'rightsVerified',
         'runtimeStatus',
+        'speakerId',
+        'speakerKey',
         'voiceId',
       ].sort(),
     );
@@ -100,6 +110,73 @@ describe('P6-G0 AI registry policy', () => {
         assets: [approvedLocalTts, approvedLocalTts],
       }),
     ).toThrow('Duplicate registry identifier');
+  });
+
+  it('requires ordered pairs for translation assets and forbids them elsewhere', () => {
+    expect(() =>
+      ProviderAssetSchema.parse({
+        ...approvedLocalTts,
+        capability: 'translation',
+        languages: ['en', 'es'],
+      }),
+    ).toThrow('translationLanguagePairs');
+    expect(() =>
+      ProviderAssetSchema.parse({
+        ...approvedLocalTts,
+        translationLanguagePairs: [{ sourceLanguage: 'en', targetLanguage: 'es' }],
+      }),
+    ).toThrow('Only translation assets');
+    expect(() =>
+      CapabilityRouteSchema.parse({
+        capability: 'translation',
+        selection: { assetId: 'translation' },
+      }),
+    ).toThrow('translationLanguagePairs');
+    expect(() =>
+      CapabilityRouteSchema.parse({
+        capability: 'tts',
+        translationLanguagePairs: [{ sourceLanguage: 'en', targetLanguage: 'es' }],
+        selection: { assetId: 'tts' },
+      }),
+    ).toThrow('Only translation routes');
+  });
+
+  it('rejects reverse translation direction even when both language codes are listed', () => {
+    const translation: ProviderAsset = {
+      ...approvedLocalTts,
+      assetId: 'en-to-es-only',
+      capability: 'translation',
+      modelId: 'test-en-es',
+      languages: ['en', 'es'],
+      translationLanguagePairs: [{ sourceLanguage: 'en', targetLanguage: 'es' }],
+    };
+    const registry: AiRegistry = { ...approvedRegistry, assets: [translation] };
+    expect(
+      validateProviderSelection({
+        selection: { assetId: translation.assetId },
+        requiredCapabilities: [
+          {
+            capability: 'translation',
+            languages: ['en', 'es'],
+            translationLanguagePairs: [{ sourceLanguage: 'en', targetLanguage: 'es' }],
+          },
+        ],
+        registry,
+      }).valid,
+    ).toBe(true);
+    expect(
+      validateProviderSelection({
+        selection: { assetId: translation.assetId },
+        requiredCapabilities: [
+          {
+            capability: 'translation',
+            languages: ['en', 'es'],
+            translationLanguagePairs: [{ sourceLanguage: 'es', targetLanguage: 'en' }],
+          },
+        ],
+        registry,
+      }).issues,
+    ).toContainEqual(expect.objectContaining({ code: 'translation-language-pair-mismatch' }));
   });
 
   it.each(['development-demo', 'commercial-local', 'commercial-cloud', 'videofy-native'] as const)(
@@ -132,6 +209,112 @@ describe('P6-G0 AI registry policy', () => {
       providerId: 'videofy-realtime-gateway',
       modelId: 'energy-gate-vad',
     });
+  });
+
+  it('records the P6.1A provider-validated inventory without promoting EN or ES voices', () => {
+    expect(AiRegistrySchema.safeParse(CURRENT_AI_REGISTRY).success).toBe(true);
+
+    const multilingualStt = CURRENT_AI_REGISTRY.assets.find(
+      (asset) => asset.assetId === 'systran-faster-whisper-small-multilingual',
+    )!;
+    const esToEn = CURRENT_AI_REGISTRY.assets.find((asset) => asset.assetId === 'opus-mt-es-en')!;
+    const enMaleAsset = CURRENT_AI_REGISTRY.assets.find(
+      (asset) => asset.assetId === 'piper-en-us-hfc-male-medium',
+    )!;
+    expect(multilingualStt).toMatchObject({
+      providerId: 'faster-whisper',
+      modelId: 'Systran/faster-whisper-small',
+      versionOrRevision: '536b0662742c02347bc0e980a01041f333bce120',
+      languages: ['en', 'es'],
+      licenseId: 'MIT',
+    });
+    expect(esToEn).toMatchObject({
+      modelId: 'Helsinki-NLP/opus-mt-es-en',
+      versionOrRevision: 'c96e2c5399ebfae4fc43d9669556b9afa74bb69d',
+      translationLanguagePairs: [{ sourceLanguage: 'es', targetLanguage: 'en' }],
+      licenseId: 'Apache-2.0',
+    });
+    expect(enMaleAsset).toMatchObject({
+      modelId: 'en_US-hfc_male-medium',
+      licenseId: 'CC-BY-NC-SA-4.0',
+      commercialUseState: 'blocked-noncommercial',
+    });
+    expect(
+      validateProviderSelection({
+        selection: { assetId: esToEn.assetId },
+        requiredCapabilities: [
+          {
+            capability: 'translation',
+            languages: ['es', 'en'],
+            translationLanguagePairs: [{ sourceLanguage: 'es', targetLanguage: 'en' }],
+          },
+        ],
+      }).valid,
+    ).toBe(true);
+    expect(
+      validateProviderSelection({
+        selection: { assetId: 'opus-mt-en-es' },
+        requiredCapabilities: [
+          {
+            capability: 'translation',
+            languages: ['es', 'en'],
+            translationLanguagePairs: [{ sourceLanguage: 'es', targetLanguage: 'en' }],
+          },
+        ],
+      }).issues,
+    ).toContainEqual(expect.objectContaining({ code: 'translation-language-pair-mismatch' }));
+
+    expect(CURRENT_AI_REGISTRY.standardVoices).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          voiceId: 'en_US-hfc_male-medium',
+          assetId: 'piper-en-us-hfc-male-medium',
+          genderEvidence: 'Official Piper voice identifier en_US-hfc_male-medium.',
+          modelRevision: 'sha256:d11e403a02bdf5a670c877b3dc56e0e1c8cece6fb30289586314dffdc0a78cb0',
+          runtimeStatus: 'validated',
+          qualityStatus: 'development',
+        }),
+        expect.objectContaining({
+          voiceId: 'en_US-hfc_female-medium',
+          assetId: 'piper-en-us-hfc-female-medium',
+          genderEvidence: 'Official Piper voice identifier en_US-hfc_female-medium.',
+          modelRevision: 'sha256:914c473788fc1fa8b63ace1cdcdb44588f4ae523d3ab37df1536616835a140b7',
+          runtimeStatus: 'validated',
+          qualityStatus: 'development',
+        }),
+        expect.objectContaining({
+          voiceId: 'es_ES-sharvard-male',
+          assetId: 'piper-es-sharvard-validated',
+          speakerId: 0,
+          speakerKey: 'M',
+          modelRevision: 'sha256:40febfb1679c69a4505ff311dc136e121e3419a13a290ef264fdf43ddedd0fb1',
+        }),
+        expect.objectContaining({
+          voiceId: 'es_ES-sharvard-female',
+          assetId: 'piper-es-sharvard-validated',
+          speakerId: 1,
+          speakerKey: 'F',
+          modelRevision: 'sha256:40febfb1679c69a4505ff311dc136e121e3419a13a290ef264fdf43ddedd0fb1',
+        }),
+      ]),
+    );
+
+    for (const language of ['en', 'es'] as const) {
+      const readiness = evaluateStandardVoiceReadiness({ language });
+      expect(readiness).toMatchObject({ valid: false, maleReady: false, femaleReady: false });
+      expect(readiness.issues).toContainEqual(
+        expect.objectContaining({ code: 'voice-quality-not-accepted' }),
+      );
+      const readinessCodes = readiness.issues.map((issue) => issue.code);
+      expect(readinessCodes).not.toContain('voice-asset-mismatch');
+      expect(readinessCodes).not.toContain('voice-asset-revision-mismatch');
+    }
+    expect(
+      evaluateStandardVoiceReadiness({ language: 'en', profile: 'commercial-local' }).issues,
+    ).toContainEqual(expect.objectContaining({ code: 'commercial-use-not-approved' }));
+    expect(
+      evaluateStandardVoiceReadiness({ language: 'en', profile: 'commercial-local' }).issues,
+    ).toContainEqual(expect.objectContaining({ code: 'voice-commercial-use-not-approved' }));
   });
 
   it('rejects cloud/native assets for commercial-local', () => {
@@ -187,7 +370,8 @@ describe('P6-G0 AI registry policy', () => {
       ...approvedLocalTts,
       assetId: 'approved-fallback',
       capability: 'translation' as const,
-      languages: ['en'],
+      languages: ['en', 'fr'],
+      translationLanguagePairs: [{ sourceLanguage: 'en', targetLanguage: 'fr' }],
     };
     const registry: AiRegistry = { ...approvedRegistry, assets: [approvedLocalTts, fallback] };
     const report = validateProviderSelection({
@@ -272,6 +456,7 @@ describe('P6-G0 AI registry policy', () => {
         {
           capability: 'translation',
           languages: ['en', 'yo'],
+          translationLanguagePairs: [{ sourceLanguage: 'en', targetLanguage: 'yo' }],
           selection: { assetId: 'nllb-200-distilled-600m' },
         },
       ],
@@ -307,8 +492,10 @@ describe('P6-G0 AI registry policy', () => {
       standardVoices: [
         {
           voiceId: 'en-male',
+          assetId: approvedLocalTts.assetId,
           language: 'en',
           gender: 'male',
+          genderEvidence: 'test assertion',
           providerId: 'test-tts',
           modelId: 'test-en',
           modelRevision: '1',
@@ -374,5 +561,65 @@ describe('P6-G0 AI registry policy', () => {
         registry,
       }),
     ).toMatchObject({ valid: true, maleReady: true, femaleReady: true });
+  });
+
+  it('requires a standard voice to bind its exact TTS asset, provider/model, and revision', () => {
+    const baseVoice = {
+      voiceId: 'en-male',
+      assetId: approvedLocalTts.assetId,
+      language: 'en',
+      gender: 'male' as const,
+      genderEvidence: 'rights-cleared test speaker metadata',
+      speakerId: 0,
+      speakerKey: 'speaker-1-key',
+      providerId: approvedLocalTts.providerId,
+      modelId: approvedLocalTts.modelId,
+      modelRevision: approvedLocalTts.versionOrRevision,
+      licenseId: 'test-license',
+      licenseEvidence: 'test/license',
+      commercialUseState: 'approved' as const,
+      rightsVerified: true,
+      qualityStatus: 'accepted' as const,
+      runtimeStatus: 'validated' as const,
+      productionApproved: true,
+      fallbackPriority: 1,
+    };
+    const pairedVoice = { ...baseVoice, voiceId: 'en-female', gender: 'female' as const };
+    const validRegistry: AiRegistry = {
+      ...approvedRegistry,
+      standardVoices: [baseVoice, pairedVoice],
+    };
+    expect(evaluateStandardVoiceReadiness({ language: 'en', registry: validRegistry }).valid).toBe(true);
+
+    const missingAsset = evaluateStandardVoiceReadiness({
+      language: 'en',
+      registry: {
+        ...validRegistry,
+        standardVoices: [{ ...baseVoice, assetId: 'not-registered' }, pairedVoice],
+      },
+    });
+    expect(missingAsset.issues).toContainEqual(expect.objectContaining({ code: 'missing-asset' }));
+
+    const providerMismatch = evaluateStandardVoiceReadiness({
+      language: 'en',
+      registry: {
+        ...validRegistry,
+        standardVoices: [{ ...baseVoice, providerId: 'other-provider' }, pairedVoice],
+      },
+    });
+    expect(providerMismatch.issues).toContainEqual(
+      expect.objectContaining({ code: 'voice-asset-mismatch' }),
+    );
+
+    const revisionMismatch = evaluateStandardVoiceReadiness({
+      language: 'en',
+      registry: {
+        ...validRegistry,
+        standardVoices: [{ ...baseVoice, modelRevision: 'other-revision' }, pairedVoice],
+      },
+    });
+    expect(revisionMismatch.issues).toContainEqual(
+      expect.objectContaining({ code: 'voice-asset-revision-mismatch' }),
+    );
   });
 });

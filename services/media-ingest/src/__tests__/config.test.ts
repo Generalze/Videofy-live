@@ -1,6 +1,10 @@
 // Repository owner: masterzee001.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadConfig } from '../config.js';
+import {
+  DEFAULT_OPUS_MT_LANGUAGE_MODELS,
+  DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES,
+  loadConfig,
+} from '../config.js';
 
 const SHARED_ENV_KEYS = [
   'AI_RUNTIME_PROFILE',
@@ -10,6 +14,12 @@ const SHARED_ENV_KEYS = [
   'PIPER_VOICE_LANGUAGE',
   'PIPER_MODEL_PATH',
   'PIPER_CONFIG_PATH',
+  'TRANSCRIPTION_SOURCE_LANGUAGE',
+  'FASTER_WHISPER_MODEL_SIZE',
+  'TRANSLATION_TARGET_LANGUAGE',
+  'TRANSLATION_SUPPORTED_TARGET_LANGUAGES',
+  'TEXT_TO_SPEECH_SUPPORTED_LANGUAGES',
+  'OPUS_MT_LANGUAGE_MODELS',
 ] as const;
 
 let savedEnv: Record<string, string | undefined>;
@@ -19,6 +29,9 @@ beforeEach(() => {
   for (const key of SHARED_ENV_KEYS) {
     delete process.env[key];
   }
+  // Deleted CSV keys cannot be shielded with '' (readCsv throws on empty), so
+  // loadRootEnv may refill them from a developer's root .env; tests that need a
+  // deterministic value must set it explicitly.
   // Prevent a developer's root .env from changing the deterministic P6-G0 default.
   process.env['AI_RUNTIME_PROFILE'] = '';
 });
@@ -92,6 +105,7 @@ describe('Piper voice registry config', () => {
         noiseW: 0.9,
         sentenceSilence: 0.4,
         sampleRateHz: 22_050,
+        speakerId: 0,
       },
     });
 
@@ -114,6 +128,7 @@ describe('Piper voice registry config', () => {
       noiseW: 0.9,
       sentenceSilence: 0.4,
       sampleRateHz: 22_050,
+      speakerId: 0,
     });
   });
 
@@ -123,7 +138,7 @@ describe('Piper voice registry config', () => {
     expect(loadConfig().piperVoices[0]).toMatchObject({ sentenceSilence: 0.25 });
 
     process.env['PIPER_VOICE_SETTINGS'] = JSON.stringify({
-      'es-test': { lengthScale: 'fast', noiseW: 0.9, sampleRateHz: -1 },
+      'es-test': { lengthScale: 'fast', noiseW: 0.9, sampleRateHz: -1, speakerId: -1 },
       broken: 'nope',
     });
     expect(loadConfig().piperVoices[0]).toEqual({
@@ -163,6 +178,36 @@ describe('Piper voice registry config', () => {
     expect(() => loadConfig()).toThrow(
       /PIPER_VOICES entries must use language\|voiceId\|modelPath/,
     );
+  });
+});
+
+describe('English and Spanish runtime prerequisites', () => {
+  it('pins the P6.1A defaults so a revert cannot silently drop them', () => {
+    expect(DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES.split(',')).toContain('en');
+    expect(DEFAULT_OPUS_MT_LANGUAGE_MODELS).toContain('es:en:Helsinki-NLP/opus-mt-es-en');
+  });
+
+  it('supports the multilingual small opt-in, English target, and explicit ES-to-EN OPUS-MT', () => {
+    process.env['TRANSCRIPTION_SOURCE_LANGUAGE'] = 'en';
+    process.env['FASTER_WHISPER_MODEL_SIZE'] = 'small';
+    process.env['TRANSLATION_TARGET_LANGUAGE'] = 'fr';
+    process.env['TRANSLATION_SUPPORTED_TARGET_LANGUAGES'] = 'fr,es,de,pt,it,ja,zh,ar,yo,en';
+    process.env['TEXT_TO_SPEECH_SUPPORTED_LANGUAGES'] = 'fr,es,de,pt,it,ja,zh,ar,yo,en';
+    process.env['OPUS_MT_LANGUAGE_MODELS'] =
+      'en:fr:Helsinki-NLP/opus-mt-en-fr,en:es:Helsinki-NLP/opus-mt-en-es,en:pt:Helsinki-NLP/opus-mt-en-ROMANCE,es:en:Helsinki-NLP/opus-mt-es-en';
+    const config = loadConfig();
+
+    expect(config.transcriptionSourceLanguage).toBe('en');
+    expect(config.fasterWhisperModelSize).toBe('small');
+    expect(config.translationTargetLanguage).toBe('fr');
+    expect(config.translationSupportedTargetLanguages).toContain('en');
+    expect(config.textToSpeechSupportedLanguages).toContain('en');
+    expect(config.opusMtLanguageModels).toContainEqual({
+      sourceLanguage: 'es',
+      targetLanguage: 'en',
+      modelId: 'Helsinki-NLP/opus-mt-es-en',
+      localPath: null,
+    });
   });
 });
 

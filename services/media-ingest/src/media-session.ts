@@ -479,8 +479,17 @@ export class ProcessingSessionStore {
     probe: MediaProbe = ffprobeMedia,
   ): Promise<ProcessingSession> {
     const supported = resolveSupportedMedia(upload.originalName, upload.mimeType);
+    const sourceLanguageControl = createInitialSourceLanguageControl({
+      ...(upload.sourceLanguage ? { sourceLanguage: upload.sourceLanguage } : {}),
+      ...(upload.sourceLanguageMode ? { sourceLanguageMode: upload.sourceLanguageMode } : {}),
+      confidenceThreshold: this.sourceLanguageConfidenceThreshold,
+    });
     const targetLanguage = this.resolveSessionTargetLanguage(upload.targetLanguage);
-    const targetLanguages = this.resolveSessionTargetLanguages(upload.targetLanguages, targetLanguage);
+    const targetLanguages = this.resolveSessionTargetLanguages(
+      upload.targetLanguages,
+      targetLanguage,
+      sourceLanguageControl.activeLanguage,
+    );
     if (upload.requestedSessionId) {
       assertSafeRequestedSessionId(upload.requestedSessionId);
       const existing = this.sessions.get(upload.requestedSessionId);
@@ -493,11 +502,6 @@ export class ProcessingSessionStore {
         );
       }
     }
-    const sourceLanguageControl = createInitialSourceLanguageControl({
-      ...(upload.sourceLanguage ? { sourceLanguage: upload.sourceLanguage } : {}),
-      ...(upload.sourceLanguageMode ? { sourceLanguageMode: upload.sourceLanguageMode } : {}),
-      confidenceThreshold: this.sourceLanguageConfidenceThreshold,
-    });
     const duplicate = this.findDuplicate(upload);
     if (duplicate) {
       throw new MediaIngestError(
@@ -586,13 +590,17 @@ export class ProcessingSessionStore {
       );
     }
 
-    const targetLanguage = this.resolveSessionTargetLanguage(input.targetLanguage);
-    const targetLanguages = this.resolveSessionTargetLanguages(input.targetLanguages, targetLanguage);
     const sourceLanguageControl = createInitialSourceLanguageControl({
       ...(input.sourceLanguage ? { sourceLanguage: input.sourceLanguage } : {}),
       ...(input.sourceLanguageMode ? { sourceLanguageMode: input.sourceLanguageMode } : {}),
       confidenceThreshold: this.sourceLanguageConfidenceThreshold,
     });
+    const targetLanguage = this.resolveSessionTargetLanguage(input.targetLanguage);
+    const targetLanguages = this.resolveSessionTargetLanguages(
+      input.targetLanguages,
+      targetLanguage,
+      sourceLanguageControl.activeLanguage,
+    );
     const now = new Date().toISOString();
     const session: ProcessingSession = {
       id: `ps_${randomUUID()}`,
@@ -672,13 +680,17 @@ export class ProcessingSessionStore {
       this.targetLanguageTallies.delete(existing.id);
     }
 
-    const targetLanguage = this.resolveSessionTargetLanguage(input.targetLanguage);
-    const targetLanguages = this.resolveSessionTargetLanguages(input.targetLanguages, targetLanguage);
     const sourceLanguageControl = createInitialSourceLanguageControl({
       ...(input.sourceLanguage ? { sourceLanguage: input.sourceLanguage } : {}),
       ...(input.sourceLanguageMode ? { sourceLanguageMode: input.sourceLanguageMode } : {}),
       confidenceThreshold: this.sourceLanguageConfidenceThreshold,
     });
+    const targetLanguage = this.resolveSessionTargetLanguage(input.targetLanguage);
+    const targetLanguages = this.resolveSessionTargetLanguages(
+      input.targetLanguages,
+      targetLanguage,
+      sourceLanguageControl.activeLanguage,
+    );
     const now = new Date().toISOString();
     const session: ProcessingSession = {
       id: input.sessionId,
@@ -3654,6 +3666,7 @@ export class ProcessingSessionStore {
   private resolveSessionTargetLanguages(
     targetLanguages: readonly string[] | undefined,
     fallback: string,
+    sourceLanguage: string,
   ): string[] {
     const normalized = normalizeSupportedTargetLanguages(targetLanguages ?? [fallback]);
     const selected = normalized.length === 0 ? [fallback] : normalized;
@@ -3661,6 +3674,13 @@ export class ProcessingSessionStore {
       if (!this.translationSupportedTargetLanguages.includes(targetLanguage)) {
         throw new MediaIngestError(
           `Unsupported target language: ${targetLanguage}. Supported languages: ${this.translationSupportedTargetLanguages.join(', ')}.`,
+          'unsupported-language',
+          400,
+        );
+      }
+      if (primaryLanguageSubtag(targetLanguage) === primaryLanguageSubtag(sourceLanguage)) {
+        throw new MediaIngestError(
+          `Target language ${targetLanguage} matches the session source language; the original channel already delivers it.`,
           'unsupported-language',
           400,
         );
@@ -3925,6 +3945,10 @@ function safeLanguageDirectory(targetLanguage: string): string {
 
 function normalizeSupportedTargetLanguages(targetLanguages: readonly string[]): string[] {
   return [...new Set(targetLanguages.map(normalizeTargetLanguage).filter(Boolean))];
+}
+
+function primaryLanguageSubtag(language: string): string {
+  return normalizeTargetLanguage(language).split('-')[0] ?? '';
 }
 
 function fileFingerprint(upload: UploadedMediaFile): string {

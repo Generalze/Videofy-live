@@ -1,3 +1,4 @@
+// Repository owner: masterzee001.
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -198,6 +199,89 @@ describe('text-to-speech providers', () => {
     const result = await provider.generate(input(outputPath));
 
     expect(result.audioPath).toBe(outputPath);
+  });
+
+  it('routes four explicit English and Spanish voice selections, including multi-speaker zero', async () => {
+    const dir = await tempDir();
+    const englishMaleModelPath = join(dir, 'en_US-hfc_male-medium.onnx');
+    const englishFemaleModelPath = join(dir, 'en_US-hfc_female-medium.onnx');
+    const spanishModelPath = join(dir, 'es_ES-sharvard-medium.onnx');
+    await Promise.all([
+      writeFile(englishMaleModelPath, 'model'),
+      writeFile(englishFemaleModelPath, 'model'),
+      writeFile(spanishModelPath, 'model'),
+    ]);
+    const commands: string[][] = [];
+    const provider = new PiperTextToSpeechProvider({
+      executable: 'piper',
+      timeoutMs: 30_000,
+      voices: [
+        {
+          voiceId: 'en_US-hfc_male-medium',
+          language: 'en',
+          modelPath: englishMaleModelPath,
+          configPath: null,
+        },
+        {
+          voiceId: 'en_US-hfc_female-medium',
+          language: 'en',
+          modelPath: englishFemaleModelPath,
+          configPath: null,
+        },
+        {
+          voiceId: 'es_ES-sharvard-male',
+          language: 'es',
+          modelPath: spanishModelPath,
+          configPath: null,
+          speakerId: 0,
+        },
+        {
+          voiceId: 'es_ES-sharvard-female',
+          language: 'es',
+          modelPath: spanishModelPath,
+          configPath: null,
+          speakerId: 1,
+        },
+      ],
+      runCommand: async (_command, args) => {
+        commands.push([...args]);
+        const rawOutputPath = args[args.indexOf('--output_file') + 1];
+        if (typeof rawOutputPath !== 'string') throw new Error('missing raw output path');
+        await writeFile(rawOutputPath, 'native wav');
+        return { stdout: '', stderr: '' };
+      },
+      runNormalizeCommand: async (_command, args) => {
+        const outputPath = args[args.length - 1];
+        if (typeof outputPath !== 'string') throw new Error('missing output path');
+        await writeFile(outputPath, 'normalized wav');
+        return { stdout: '', stderr: '' };
+      },
+    });
+
+    await provider.generate(
+      input(join(dir, 'en-male.wav'), { targetLanguage: 'en', voiceId: 'en_US-hfc_male-medium' }),
+    );
+    await provider.generate(
+      input(join(dir, 'en-female.wav'), { targetLanguage: 'en', voiceId: 'en_US-hfc_female-medium' }),
+    );
+    await provider.generate(
+      input(join(dir, 'es-male.wav'), { targetLanguage: 'es', voiceId: 'es_ES-sharvard-male' }),
+    );
+    await provider.generate(
+      input(join(dir, 'es-female.wav'), { targetLanguage: 'es', voiceId: 'es_ES-sharvard-female' }),
+    );
+
+    expect(commands.map((args) => args[args.indexOf('--model') + 1])).toEqual([
+      englishMaleModelPath,
+      englishFemaleModelPath,
+      spanishModelPath,
+      spanishModelPath,
+    ]);
+    expect(
+      commands.map((args) =>
+        args.includes('--speaker') ? args[args.indexOf('--speaker') + 1] : null,
+      ),
+    ).toEqual([null, null, '0', '1']);
   });
 
   it('prepends a clamped atempo filter when the clip overruns its segment window', async () => {

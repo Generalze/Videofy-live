@@ -38,23 +38,62 @@ export type VoiceGender = z.infer<typeof VoiceGenderSchema>;
 export const VoiceRuntimeStatusSchema = z.enum(['unavailable', 'installed', 'validated']);
 export type VoiceRuntimeStatus = z.infer<typeof VoiceRuntimeStatusSchema>;
 
+/** Ordered source/target coverage; a translation model must never imply its reverse route. */
+export const TranslationLanguagePairSchema = z
+  .object({
+    sourceLanguage: z.string().min(2),
+    targetLanguage: z.string().min(2),
+  })
+  .refine((pair) => pair.sourceLanguage !== pair.targetLanguage, {
+    message: 'Translation language-pair source and target must differ.',
+    path: ['targetLanguage'],
+  });
+export type TranslationLanguagePair = z.infer<typeof TranslationLanguagePairSchema>;
+
 /** Exact V3 §21.3 fields; media-ingest imports this pure registry only for startup policy. */
-export const ProviderAssetSchema = z.object({
-  assetId: z.string().min(1),
-  providerId: z.string().min(1),
-  capability: ProviderCapabilitySchema,
-  modelId: z.string().min(1),
-  versionOrRevision: z.string().min(1),
-  languages: z.array(z.string().min(2)).min(1),
-  deploymentMode: AssetDeploymentModeSchema,
-  licenseId: z.string().min(1),
-  licenseEvidence: z.string().min(1),
-  commercialUseState: CommercialUseStateSchema,
-  qualityStatus: QualityStatusSchema,
-  latencyStatus: LatencyStatusSchema,
-  securityStatus: SecurityStatusSchema,
-  productionApproved: z.boolean(),
-});
+export const ProviderAssetSchema = z
+  .object({
+    assetId: z.string().min(1),
+    providerId: z.string().min(1),
+    capability: ProviderCapabilitySchema,
+    modelId: z.string().min(1),
+    versionOrRevision: z.string().min(1),
+    languages: z.array(z.string().min(2)).min(1),
+    translationLanguagePairs: z.array(TranslationLanguagePairSchema).min(1).optional(),
+    deploymentMode: AssetDeploymentModeSchema,
+    licenseId: z.string().min(1),
+    licenseEvidence: z.string().min(1),
+    commercialUseState: CommercialUseStateSchema,
+    qualityStatus: QualityStatusSchema,
+    latencyStatus: LatencyStatusSchema,
+    securityStatus: SecurityStatusSchema,
+    productionApproved: z.boolean(),
+  })
+  .superRefine((asset, context) => {
+    if (asset.capability === 'translation' && !asset.translationLanguagePairs?.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['translationLanguagePairs'],
+        message: 'Translation assets require ordered translationLanguagePairs.',
+      });
+    }
+    if (asset.capability !== 'translation' && asset.translationLanguagePairs?.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['translationLanguagePairs'],
+        message: 'Only translation assets may declare translationLanguagePairs.',
+      });
+    }
+    for (const pair of asset.translationLanguagePairs ?? []) {
+      if (!asset.languages.includes(pair.sourceLanguage) || !asset.languages.includes(pair.targetLanguage)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['translationLanguagePairs'],
+          message: 'Translation language pairs must use languages declared by the asset.',
+        });
+      }
+    }
+  });
 export type ProviderAsset = z.infer<typeof ProviderAssetSchema>;
 
 /**
@@ -65,9 +104,15 @@ export type ProviderAsset = z.infer<typeof ProviderAssetSchema>;
  */
 export const StandardVoiceProfileSchema = z.object({
   voiceId: z.string().min(1),
+  /** Immutable TTS ProviderAsset identity; matching by provider/model alone is unsafe. */
+  assetId: z.string().min(1),
   language: z.string().min(2),
   locale: z.string().min(2).optional(),
   gender: VoiceGenderSchema,
+  genderEvidence: z.string().min(1),
+  /** Optional source-speaker identifiers for multi-speaker voice assets. */
+  speakerId: z.number().int().nonnegative().optional(),
+  speakerKey: z.string().min(1).optional(),
   providerId: z.string().min(1),
   modelId: z.string().min(1),
   modelRevision: z.string().min(1),
@@ -103,6 +148,8 @@ export const AiRegistrySchema = z
 export type AiRegistry = z.infer<typeof AiRegistrySchema>;
 
 const REGISTRY_EVIDENCE = 'docs/MODEL_AND_VOICE_REGISTRY.md';
+const P61A_DEVELOPMENT_EVIDENCE =
+  'docs/MODEL_AND_VOICE_REGISTRY.md#p61a-development-provider-validation';
 
 /**
  * Current development/demo inventory. Licence approval and production readiness
@@ -116,7 +163,7 @@ const REGISTRY_EVIDENCE = 'docs/MODEL_AND_VOICE_REGISTRY.md';
  * yields `missing-asset`, so commercial profiles still fail closed.
  */
 export const CURRENT_AI_REGISTRY: AiRegistry = AiRegistrySchema.parse({
-  version: 'p6-g0-2026-08-14',
+  version: 'p6-1a-development-2026-08-14',
   assets: [
     {
       assetId: 'gateway-energy-vad',
@@ -167,15 +214,49 @@ export const CURRENT_AI_REGISTRY: AiRegistry = AiRegistrySchema.parse({
       productionApproved: false,
     },
     {
+      assetId: 'systran-faster-whisper-small-multilingual',
+      providerId: 'faster-whisper',
+      capability: 'stt',
+      modelId: 'Systran/faster-whisper-small',
+      versionOrRevision: '536b0662742c02347bc0e980a01041f333bce120',
+      languages: ['en', 'es'],
+      deploymentMode: 'local',
+      licenseId: 'MIT',
+      licenseEvidence: P61A_DEVELOPMENT_EVIDENCE,
+      commercialUseState: 'review-required',
+      qualityStatus: 'development',
+      latencyStatus: 'measured',
+      securityStatus: 'unreviewed',
+      productionApproved: false,
+    },
+    {
       assetId: 'opus-mt-en-es',
       providerId: 'opus-mt',
       capability: 'translation',
       modelId: 'Helsinki-NLP/opus-mt-en-es',
       versionOrRevision: '5bc4493d463cf000c1f0b50f8d56886a392ed4ab',
       languages: ['en', 'es'],
+      translationLanguagePairs: [{ sourceLanguage: 'en', targetLanguage: 'es' }],
       deploymentMode: 'local',
       licenseId: 'Apache-2.0',
       licenseEvidence: REGISTRY_EVIDENCE,
+      commercialUseState: 'review-required',
+      qualityStatus: 'development',
+      latencyStatus: 'measured',
+      securityStatus: 'unreviewed',
+      productionApproved: false,
+    },
+    {
+      assetId: 'opus-mt-es-en',
+      providerId: 'opus-mt',
+      capability: 'translation',
+      modelId: 'Helsinki-NLP/opus-mt-es-en',
+      versionOrRevision: 'c96e2c5399ebfae4fc43d9669556b9afa74bb69d',
+      languages: ['es', 'en'],
+      translationLanguagePairs: [{ sourceLanguage: 'es', targetLanguage: 'en' }],
+      deploymentMode: 'local',
+      licenseId: 'Apache-2.0',
+      licenseEvidence: P61A_DEVELOPMENT_EVIDENCE,
       commercialUseState: 'review-required',
       qualityStatus: 'development',
       latencyStatus: 'measured',
@@ -189,6 +270,15 @@ export const CURRENT_AI_REGISTRY: AiRegistry = AiRegistrySchema.parse({
       modelId: 'facebook/m2m100_418M',
       versionOrRevision: 'current-configured-model',
       languages: ['en', 'es', 'fr', 'pt', 'yo', 'zh'],
+      // Deliberately under-declared: only evidence-backed en→X routes are listed.
+      // Do not add pairs (including reverse directions) without per-pair evidence.
+      translationLanguagePairs: [
+        { sourceLanguage: 'en', targetLanguage: 'es' },
+        { sourceLanguage: 'en', targetLanguage: 'fr' },
+        { sourceLanguage: 'en', targetLanguage: 'pt' },
+        { sourceLanguage: 'en', targetLanguage: 'yo' },
+        { sourceLanguage: 'en', targetLanguage: 'zh' },
+      ],
       deploymentMode: 'local',
       licenseId: 'MIT',
       licenseEvidence: REGISTRY_EVIDENCE,
@@ -205,6 +295,7 @@ export const CURRENT_AI_REGISTRY: AiRegistry = AiRegistrySchema.parse({
       modelId: 'facebook/nllb-200-distilled-600M',
       versionOrRevision: 'current-configured-model',
       languages: ['en', 'yo'],
+      translationLanguagePairs: [{ sourceLanguage: 'en', targetLanguage: 'yo' }],
       deploymentMode: 'local',
       licenseId: 'CC-BY-NC-4.0',
       licenseEvidence: REGISTRY_EVIDENCE,
@@ -219,12 +310,44 @@ export const CURRENT_AI_REGISTRY: AiRegistry = AiRegistrySchema.parse({
       providerId: 'piper',
       capability: 'tts',
       modelId: 'es_ES-sharvard-medium',
-      versionOrRevision: 'voice-1.0.0-runtime-1.2.0',
+      versionOrRevision: 'sha256:40febfb1679c69a4505ff311dc136e121e3419a13a290ef264fdf43ddedd0fb1',
       languages: ['es'],
       deploymentMode: 'local',
-      licenseId: 'voice-specific-review-required',
-      licenseEvidence: REGISTRY_EVIDENCE,
+      licenseId: 'CC-BY-3.0',
+      licenseEvidence: P61A_DEVELOPMENT_EVIDENCE,
       commercialUseState: 'review-required',
+      qualityStatus: 'development',
+      latencyStatus: 'measured',
+      securityStatus: 'unreviewed',
+      productionApproved: false,
+    },
+    {
+      assetId: 'piper-en-us-hfc-male-medium',
+      providerId: 'piper',
+      capability: 'tts',
+      modelId: 'en_US-hfc_male-medium',
+      versionOrRevision: 'sha256:d11e403a02bdf5a670c877b3dc56e0e1c8cece6fb30289586314dffdc0a78cb0',
+      languages: ['en'],
+      deploymentMode: 'local',
+      licenseId: 'CC-BY-NC-SA-4.0',
+      licenseEvidence: P61A_DEVELOPMENT_EVIDENCE,
+      commercialUseState: 'blocked-noncommercial',
+      qualityStatus: 'development',
+      latencyStatus: 'measured',
+      securityStatus: 'unreviewed',
+      productionApproved: false,
+    },
+    {
+      assetId: 'piper-en-us-hfc-female-medium',
+      providerId: 'piper',
+      capability: 'tts',
+      modelId: 'en_US-hfc_female-medium',
+      versionOrRevision: 'sha256:914c473788fc1fa8b63ace1cdcdb44588f4ae523d3ab37df1536616835a140b7',
+      languages: ['en'],
+      deploymentMode: 'local',
+      licenseId: 'CC-BY-NC-SA-4.0',
+      licenseEvidence: P61A_DEVELOPMENT_EVIDENCE,
+      commercialUseState: 'blocked-noncommercial',
       qualityStatus: 'development',
       latencyStatus: 'measured',
       securityStatus: 'unreviewed',
@@ -269,6 +392,7 @@ export const CURRENT_AI_REGISTRY: AiRegistry = AiRegistrySchema.parse({
       modelId: 'deterministic-mock-translator',
       versionOrRevision: 'repository-main',
       languages: ['en', 'fr'],
+      translationLanguagePairs: [{ sourceLanguage: 'en', targetLanguage: 'fr' }],
       deploymentMode: 'local',
       licenseId: 'LicenseRef-Videofy-by-TAC-Proprietary',
       licenseEvidence: 'LICENSE.md',
@@ -295,8 +419,88 @@ export const CURRENT_AI_REGISTRY: AiRegistry = AiRegistrySchema.parse({
       productionApproved: false,
     },
   ],
-  // Do not infer gender or rights from current Piper filenames/configuration.
-  standardVoices: [],
+  standardVoices: [
+    {
+      voiceId: 'en_US-hfc_male-medium',
+      assetId: 'piper-en-us-hfc-male-medium',
+      language: 'en',
+      locale: 'en-US',
+      gender: 'male',
+      genderEvidence: 'Official Piper voice identifier en_US-hfc_male-medium.',
+      providerId: 'piper',
+      modelId: 'en_US-hfc_male-medium',
+      modelRevision: 'sha256:d11e403a02bdf5a670c877b3dc56e0e1c8cece6fb30289586314dffdc0a78cb0',
+      licenseId: 'CC-BY-NC-SA-4.0',
+      licenseEvidence: P61A_DEVELOPMENT_EVIDENCE,
+      commercialUseState: 'blocked-noncommercial',
+      rightsVerified: true,
+      qualityStatus: 'development',
+      runtimeStatus: 'validated',
+      productionApproved: false,
+      fallbackPriority: 1,
+    },
+    {
+      voiceId: 'en_US-hfc_female-medium',
+      assetId: 'piper-en-us-hfc-female-medium',
+      language: 'en',
+      locale: 'en-US',
+      gender: 'female',
+      genderEvidence: 'Official Piper voice identifier en_US-hfc_female-medium.',
+      providerId: 'piper',
+      modelId: 'en_US-hfc_female-medium',
+      modelRevision: 'sha256:914c473788fc1fa8b63ace1cdcdb44588f4ae523d3ab37df1536616835a140b7',
+      licenseId: 'CC-BY-NC-SA-4.0',
+      licenseEvidence: P61A_DEVELOPMENT_EVIDENCE,
+      commercialUseState: 'blocked-noncommercial',
+      rightsVerified: true,
+      qualityStatus: 'development',
+      runtimeStatus: 'validated',
+      productionApproved: false,
+      fallbackPriority: 1,
+    },
+    {
+      voiceId: 'es_ES-sharvard-male',
+      assetId: 'piper-es-sharvard-validated',
+      language: 'es',
+      locale: 'es-ES',
+      gender: 'male',
+      genderEvidence: 'Piper multi-speaker configuration speaker key M.',
+      speakerId: 0,
+      speakerKey: 'M',
+      providerId: 'piper',
+      modelId: 'es_ES-sharvard-medium',
+      modelRevision: 'sha256:40febfb1679c69a4505ff311dc136e121e3419a13a290ef264fdf43ddedd0fb1',
+      licenseId: 'CC-BY-3.0',
+      licenseEvidence: P61A_DEVELOPMENT_EVIDENCE,
+      commercialUseState: 'review-required',
+      rightsVerified: true,
+      qualityStatus: 'development',
+      runtimeStatus: 'validated',
+      productionApproved: false,
+      fallbackPriority: 1,
+    },
+    {
+      voiceId: 'es_ES-sharvard-female',
+      assetId: 'piper-es-sharvard-validated',
+      language: 'es',
+      locale: 'es-ES',
+      gender: 'female',
+      genderEvidence: 'Piper multi-speaker configuration speaker key F.',
+      speakerId: 1,
+      speakerKey: 'F',
+      providerId: 'piper',
+      modelId: 'es_ES-sharvard-medium',
+      modelRevision: 'sha256:40febfb1679c69a4505ff311dc136e121e3419a13a290ef264fdf43ddedd0fb1',
+      licenseId: 'CC-BY-3.0',
+      licenseEvidence: P61A_DEVELOPMENT_EVIDENCE,
+      commercialUseState: 'review-required',
+      rightsVerified: true,
+      qualityStatus: 'development',
+      runtimeStatus: 'validated',
+      productionApproved: false,
+      fallbackPriority: 1,
+    },
+  ],
 });
 
 export const DEFAULT_RUNTIME_PROFILE: RuntimeProfile = 'development-demo';
@@ -317,6 +521,8 @@ export const ProviderSelectionSchema: z.ZodType<ProviderSelection> = z.lazy(() =
 export interface RequiredCapability {
   capability: ProviderCapability;
   languages?: readonly string[] | undefined;
+  /** Required only for translation; source and target order is significant. */
+  translationLanguagePairs?: readonly TranslationLanguagePair[] | undefined;
 }
 
 export interface CapabilityRoute extends RequiredCapability {
@@ -326,7 +532,23 @@ export interface CapabilityRoute extends RequiredCapability {
 export const CapabilityRouteSchema = z.object({
   capability: ProviderCapabilitySchema,
   languages: z.array(z.string().min(2)).optional(),
+  translationLanguagePairs: z.array(TranslationLanguagePairSchema).min(1).optional(),
   selection: ProviderSelectionSchema,
+}).superRefine((route, context) => {
+  if (route.capability === 'translation' && !route.translationLanguagePairs?.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['translationLanguagePairs'],
+      message: 'Translation routes require ordered translationLanguagePairs.',
+    });
+  }
+  if (route.capability !== 'translation' && route.translationLanguagePairs?.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['translationLanguagePairs'],
+      message: 'Only translation routes may declare translationLanguagePairs.',
+    });
+  }
 });
 
 /**
@@ -350,6 +572,8 @@ export type ReadinessIssueCode =
   | 'fallback-cycle'
   | 'capability-mismatch'
   | 'language-mismatch'
+  | 'missing-translation-language-pair'
+  | 'translation-language-pair-mismatch'
   | 'commercial-use-not-approved'
   | 'quality-not-accepted'
   | 'latency-not-accepted'
@@ -360,6 +584,8 @@ export type ReadinessIssueCode =
   | 'voice-quality-not-accepted'
   | 'voice-runtime-not-validated'
   | 'voice-production-not-approved'
+  | 'voice-asset-mismatch'
+  | 'voice-asset-revision-mismatch'
   | 'missing-male-voice'
   | 'missing-female-voice';
 
@@ -468,7 +694,13 @@ export function validateRuntimeProfileSelection(
     const report = validateProviderSelection({
       selection: route.selection,
       profile,
-      requiredCapabilities: [{ capability: route.capability, languages: route.languages }],
+      requiredCapabilities: [
+        {
+          capability: route.capability,
+          languages: route.languages,
+          translationLanguagePairs: route.translationLanguagePairs,
+        },
+      ],
       registry,
     });
     issues.push(
@@ -515,18 +747,22 @@ export function evaluateStandardVoiceReadiness(
   for (const voice of registry.standardVoices.filter(
     (candidate) => candidate.language === input.language,
   )) {
-    const asset = registry.assets.find(
-      (candidate) =>
-        candidate.providerId === voice.providerId && candidate.modelId === voice.modelId,
-    );
+    const asset = registry.assets.find((candidate) => candidate.assetId === voice.assetId);
     if (!asset) {
       issues.push({
         code: 'missing-asset',
         path: `standardVoices.${voice.voiceId}`,
         message: `No provider asset matches voice ${voice.voiceId}.`,
       });
+      validateVoice(voice, profile, `standardVoices.${voice.voiceId}`, issues);
       continue;
     }
+    const bindingValid = validateVoiceAssetBinding(
+      voice,
+      asset,
+      `standardVoices.${voice.voiceId}`,
+      issues,
+    );
     const assetReport = validateProviderSelection({
       selection: { assetId: asset.assetId },
       profile,
@@ -535,7 +771,9 @@ export function evaluateStandardVoiceReadiness(
     });
     issues.push(...assetReport.issues);
     validateVoice(voice, profile, `standardVoices.${voice.voiceId}`, issues);
-    if (assetReport.valid && isVoiceReadyForProfile(voice, profile)) readyGenders.add(voice.gender);
+    if (bindingValid && assetReport.valid && isVoiceReadyForProfile(voice, profile)) {
+      readyGenders.add(voice.gender);
+    }
   }
 
   const maleReady = readyGenders.has('male');
@@ -595,6 +833,32 @@ function validateAsset(
         });
       }
     }
+    if (required.capability === 'translation') {
+      if (!required.translationLanguagePairs?.length) {
+        issues.push({
+          code: 'missing-translation-language-pair',
+          path,
+          message: `Translation route for ${asset.assetId} must declare ordered language pairs.`,
+        });
+      } else {
+        for (const pair of required.translationLanguagePairs) {
+          if (
+            !asset.translationLanguagePairs?.some(
+              (available) =>
+                available.sourceLanguage === pair.sourceLanguage &&
+                available.targetLanguage === pair.targetLanguage,
+            )
+          ) {
+            issues.push({
+              code: 'translation-language-pair-mismatch',
+              path,
+              message:
+                `Asset ${asset.assetId} does not cover ${pair.sourceLanguage}->${pair.targetLanguage}.`,
+            });
+          }
+        }
+      }
+    }
   }
   if (profile !== 'development-demo') {
     if (asset.commercialUseState !== 'approved') {
@@ -633,6 +897,40 @@ function validateAsset(
       });
     }
   }
+}
+
+function validateVoiceAssetBinding(
+  voice: StandardVoiceProfile,
+  asset: ProviderAsset,
+  path: string,
+  issues: ReadinessIssue[],
+): boolean {
+  let valid = true;
+  if (asset.capability !== 'tts') {
+    issues.push({
+      code: 'voice-asset-mismatch',
+      path,
+      message: `Voice ${voice.voiceId} asset ${asset.assetId} is not a TTS asset.`,
+    });
+    valid = false;
+  }
+  if (asset.providerId !== voice.providerId || asset.modelId !== voice.modelId) {
+    issues.push({
+      code: 'voice-asset-mismatch',
+      path,
+      message: `Voice ${voice.voiceId} provider/model does not match asset ${asset.assetId}.`,
+    });
+    valid = false;
+  }
+  if (asset.versionOrRevision !== voice.modelRevision) {
+    issues.push({
+      code: 'voice-asset-revision-mismatch',
+      path,
+      message: `Voice ${voice.voiceId} revision does not match asset ${asset.assetId}.`,
+    });
+    valid = false;
+  }
+  return valid;
 }
 
 function validateVoice(

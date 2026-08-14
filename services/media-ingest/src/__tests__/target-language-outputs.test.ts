@@ -1,3 +1,4 @@
+// Repository owner: masterzee001.
 import type {
   TargetLanguageCapability,
   TextToSpeechSessionMetadata,
@@ -15,11 +16,12 @@ import {
 describe('target language outputs', () => {
   it('catalogues the requested partner languages without overstating availability', () => {
     const catalogue = buildTargetLanguageCatalogue({
-      supportedTranslationLanguages: ['es', 'fr', 'pt'],
-      supportedVoiceLanguages: ['es'],
+      supportedTranslationLanguages: ['en', 'es', 'fr', 'pt'],
+      supportedVoiceLanguages: ['en', 'es'],
     });
 
     expect(catalogue.map((item) => item.language)).toEqual([
+      'en',
       'yo',
       'pt',
       'es',
@@ -31,6 +33,11 @@ describe('target language outputs', () => {
       'la',
     ]);
     expect(catalogue.find((item) => item.language === 'es')).toMatchObject({
+      availability: 'voice-available',
+      voiceAvailable: true,
+    });
+    expect(catalogue.find((item) => item.language === 'en')).toMatchObject({
+      label: 'English',
       availability: 'voice-available',
       voiceAvailable: true,
     });
