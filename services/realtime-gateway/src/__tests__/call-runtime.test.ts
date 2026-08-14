@@ -363,6 +363,7 @@ describe('CallRuntime join and ingest plan handling', () => {
       targetLanguages: ['es'],
       targetLanguage: 'es',
       voiceIdsByLanguage: { es: 'es_ES-sharvard-female' },
+      generatedAudioPacing: 'natural',
     });
     // Beto speaks es; Ana hears en with a male voice choice.
     expect(harness.ingestControl.createSession).toHaveBeenNthCalledWith(2, {
@@ -375,6 +376,7 @@ describe('CallRuntime join and ingest plan handling', () => {
       targetLanguages: ['en'],
       targetLanguage: 'en',
       voiceIdsByLanguage: { en: 'en_US-hfc_male-medium' },
+      generatedAudioPacing: 'natural',
     });
     // The first joiner's deferred r1 registry entry was retired (never created,
     // so nothing to stop OR delete), and exactly the two current entries remain.
@@ -755,6 +757,7 @@ describe('CallRuntime WebRTC transport', () => {
       targetLanguages: ['es'],
       targetLanguage: 'es',
       voiceIdsByLanguage: { es: 'es_ES-sharvard-female' },
+      generatedAudioPacing: 'natural',
     });
     expect(harness.receivePeers.fanOut).toHaveBeenCalledWith('demo', 'participant_1', data);
   });

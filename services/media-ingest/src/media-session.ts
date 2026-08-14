@@ -137,6 +137,12 @@ export interface WebRtcSessionInput {
    * voice IDs fail at generation time exactly like a misconfigured registry.
    */
   voiceIdsByLanguage?: Record<string, string>;
+  /**
+   * 'natural' keeps translated speech at the voice's own pace and full length
+   * (native calls); default fits clips into the source segment window
+   * (programme lip-fit).
+   */
+  generatedAudioPacing?: 'natural' | 'fit-window';
 }
 
 export interface WebRtcChunkInput {
@@ -173,6 +179,8 @@ export interface ProcessingSession {
   aiProviderStatus: AiProviderStatusMetadata;
   /** P6.1B per-session standard-voice overrides (language -> registered voiceId). */
   voiceIdsByLanguage?: Record<string, string>;
+  /** P6.1B: 'natural' disables the programme window-fit for generated call audio. */
+  generatedAudioPacing?: 'natural' | 'fit-window';
   sourcePath: string;
   createdAt: string;
   updatedAt: string;
@@ -742,6 +750,7 @@ export class ProcessingSessionStore {
       ...(input.voiceIdsByLanguage && Object.keys(input.voiceIdsByLanguage).length > 0
         ? { voiceIdsByLanguage: { ...input.voiceIdsByLanguage } }
         : {}),
+      ...(input.generatedAudioPacing ? { generatedAudioPacing: input.generatedAudioPacing } : {}),
       sourcePath: '',
       createdAt: now,
       updatedAt: now,
@@ -2517,6 +2526,7 @@ export class ProcessingSessionStore {
           endMs: segment.endMs,
           voiceId: this.voiceIdForLanguage(session, segment.targetLanguage),
           outputPath: audioPath,
+          ...(session.generatedAudioPacing ? { pacing: session.generatedAudioPacing } : {}),
         },
         this.textToSpeechTimeoutMs,
       );
@@ -3034,6 +3044,7 @@ export class ProcessingSessionStore {
             endMs: translatedSegment.endMs,
             voiceId: this.voiceIdForLanguage(session, event.targetLanguage),
             outputPath: audioPath,
+            ...(session.generatedAudioPacing ? { pacing: session.generatedAudioPacing } : {}),
           },
           this.textToSpeechTimeoutMs,
         );

@@ -1051,6 +1051,9 @@ function bridgeContextFor(entry: CallIngestRegistryEntry): WebRtcTranscriptionBr
     ...(Object.keys(entry.plan.voiceIdsByLanguage).length > 0
       ? { voiceIdsByLanguage: { ...entry.plan.voiceIdsByLanguage } }
       : {}),
+    // Calls play translations at the voice's own pace; the programme
+    // window-fit compressed them into the source segment and clipped speech.
+    generatedAudioPacing: 'natural',
   };
 }
 

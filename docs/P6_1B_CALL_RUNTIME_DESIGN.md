@@ -103,6 +103,12 @@ are skipped for that direction and captions deliver the original transcript.
 - **Accepted boundary loss:** retiring an old revision drops up to one in-flight chunk (~5 s)
   of the other speaker's speech at each join/resume boundary (captions/translated audio only;
   raw audio fan-out is unaffected). Recorded as a deliberate trade for revision safety.
+- **Natural pacing (owner live-test finding):** the programme pipeline's window-fit
+  (`length_scale` pre-fit + `atempo`) compressed call translations into the source segment and
+  made them fast and clipped. Call ingest sessions now send `generatedAudioPacing: 'natural'`;
+  translated speech keeps the voice's own pace and full length (loudnorm retained). Verified by
+  unit tests at provider/session/bridge/runtime layers and a driven two-browser EN→FR run
+  producing seven natural-length clips (0.9–3.6 s, tracking phrase length).
 
 ## Language update (owner decision, 2026-08-14)
 

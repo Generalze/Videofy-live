@@ -117,6 +117,7 @@ app.post('/internal/webrtc/sessions', async (req, res) => {
       sourceLanguage?: unknown;
       sourceLanguageMode?: unknown;
       voiceIdsByLanguage?: unknown;
+      generatedAudioPacing?: unknown;
     };
     const session = await ingest.createWebRtcSession({
       sessionId: requireStringField(body.sessionId, 'sessionId'),
@@ -133,6 +134,9 @@ app.post('/internal/webrtc/sessions', async (req, res) => {
         : {}),
       ...(voiceIdRecordOrNull(body.voiceIdsByLanguage)
         ? { voiceIdsByLanguage: voiceIdRecordOrNull(body.voiceIdsByLanguage)! }
+        : {}),
+      ...(body.generatedAudioPacing === 'natural' || body.generatedAudioPacing === 'fit-window'
+        ? { generatedAudioPacing: body.generatedAudioPacing }
         : {}),
     });
     res.status(201).json({ session });

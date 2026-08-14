@@ -27,6 +27,7 @@ export interface WebRtcTranscriptionBridgeContext {
   sourceLanguageMode?: SourceLanguageMode;
   /** Per-target standard voice overrides (P6.1B calls); media-ingest validates values. */
   voiceIdsByLanguage?: Record<string, string>;
+  generatedAudioPacing?: 'natural' | 'fit-window';
 }
 
 export interface WebRtcTranscriptionSubmissionClient {
@@ -457,6 +458,7 @@ export class HttpWebRtcTranscriptionSubmissionClient
       ...(input.targetLanguages ? { targetLanguages: input.targetLanguages } : {}),
       ...(input.sourceLanguage ? { sourceLanguage: input.sourceLanguage } : {}),
       ...(input.sourceLanguageMode ? { sourceLanguageMode: input.sourceLanguageMode } : {}),
+      ...(input.generatedAudioPacing ? { generatedAudioPacing: input.generatedAudioPacing } : {}),
       ...(input.voiceIdsByLanguage && Object.keys(input.voiceIdsByLanguage).length > 0
         ? { voiceIdsByLanguage: input.voiceIdsByLanguage }
         : {}),

@@ -325,6 +325,46 @@ describe('text-to-speech providers', () => {
     ]);
   });
 
+  it('natural pacing skips both the length_scale pre-fit and the atempo window fit', async () => {
+    const { modelPath } = await modelFiles();
+    const audioFilters: string[] = [];
+    const piperArgs: string[][] = [];
+    const provider = new PiperTextToSpeechProvider({
+      executable: 'piper',
+      timeoutMs: 30_000,
+      voices: [{ voiceId: 'es-test', language: 'es', modelPath, configPath: null }],
+      runCommand: async (_command, args) => {
+        piperArgs.push([...args]);
+        const rawOutputPath = args[args.indexOf('--output_file') + 1];
+        if (typeof rawOutputPath !== 'string') throw new Error('missing raw output path');
+        // Well beyond the segment window: fit-window would clamp atempo to max.
+        await writeRawWav(rawOutputPath, 2000);
+        return { stdout: '', stderr: '' };
+      },
+      runNormalizeCommand: async (_command, args) => {
+        const audioFilter = args[args.indexOf('-af') + 1];
+        if (typeof audioFilter !== 'string') throw new Error('missing audio filter');
+        audioFilters.push(audioFilter);
+        const outputPath = args[args.length - 1];
+        if (typeof outputPath !== 'string') throw new Error('missing output path');
+        await writeFile(outputPath, 'normalized wav');
+        return { stdout: '', stderr: '' };
+      },
+    });
+
+    const dir = await tempDir();
+    await provider.generate({
+      ...input(join(dir, 'natural.wav')),
+      translatedText:
+        'Una frase larga que naturalmente dura mucho mas que la ventana original del segmento.',
+      pacing: 'natural',
+    });
+
+    // No compression anywhere: speech keeps the voice's own pace and length.
+    expect(audioFilters).toEqual(['loudnorm=I=-19:TP=-1.5:LRA=7']);
+    expect(piperArgs[0]).not.toContain('--length_scale');
+  });
+
   function lengthScaleArg(args: readonly string[] | undefined): string | null {
     if (!args) return null;
     const index = args.indexOf('--length_scale');

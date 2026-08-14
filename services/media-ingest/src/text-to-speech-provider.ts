@@ -29,6 +29,13 @@ export interface TextToSpeechProviderInput {
   endMs: number;
   voiceId: string;
   outputPath: string;
+  /**
+   * 'fit-window' (default) compresses speech into the source segment window
+   * for programme lip-fit. 'natural' keeps the voice's own pace and full
+   * length — required for native calls, where translations are often longer
+   * than the source and compression made them fast and clipped.
+   */
+  pacing?: 'natural' | 'fit-window';
 }
 
 export interface TextToSpeechProviderResult {
@@ -368,7 +375,8 @@ export class PiperTextToSpeechProvider implements TextToSpeechProvider {
     const rawOutputPath = `${input.outputPath}.piper.wav`;
     try {
       await mkdir(dirname(input.outputPath), { recursive: true });
-      const lengthScale = computePreFitLengthScale(voice, input);
+      const lengthScale =
+        input.pacing === 'natural' ? undefined : computePreFitLengthScale(voice, input);
       await this.runCommand(
         this.options.executable,
         buildPiperArgs(voice, rawOutputPath, lengthScale),
@@ -403,6 +411,7 @@ export class PiperTextToSpeechProvider implements TextToSpeechProvider {
       sampleRateHz: voice.sampleRateHz ?? DEFAULT_PIPER_SAMPLE_RATE_HZ,
       startMs: input.startMs,
       endMs: input.endMs,
+      fitToWindow: input.pacing !== 'natural',
     });
   }
 
@@ -629,6 +638,8 @@ interface NormalizeSynthesizedWavOptions {
   sampleRateHz: number;
   startMs: number;
   endMs: number;
+  /** False disables the atempo window fit (natural call pacing); loudnorm always applies. */
+  fitToWindow?: boolean;
 }
 
 /**
@@ -638,11 +649,10 @@ interface NormalizeSynthesizedWavOptions {
  */
 async function normalizeSynthesizedWav(options: NormalizeSynthesizedWavOptions): Promise<void> {
   try {
-    const audioFilter = await buildNormalizeAudioFilter(
-      options.rawOutputPath,
-      options.startMs,
-      options.endMs,
-    );
+    const audioFilter =
+      options.fitToWindow === false
+        ? PIPER_LOUDNORM_FILTER
+        : await buildNormalizeAudioFilter(options.rawOutputPath, options.startMs, options.endMs);
     await options.runNormalizeCommand(
       options.ffmpegExecutable,
       [
