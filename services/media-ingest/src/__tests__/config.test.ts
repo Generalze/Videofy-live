@@ -1,7 +1,9 @@
+// Repository owner: masterzee001.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../config.js';
 
-const PIPER_ENV_KEYS = [
+const SHARED_ENV_KEYS = [
+  'AI_RUNTIME_PROFILE',
   'PIPER_VOICES',
   'PIPER_VOICE_SETTINGS',
   'PIPER_VOICE_ID',
@@ -13,14 +15,16 @@ const PIPER_ENV_KEYS = [
 let savedEnv: Record<string, string | undefined>;
 
 beforeEach(() => {
-  savedEnv = Object.fromEntries(PIPER_ENV_KEYS.map((key) => [key, process.env[key]]));
-  for (const key of PIPER_ENV_KEYS) {
+  savedEnv = Object.fromEntries(SHARED_ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of SHARED_ENV_KEYS) {
     delete process.env[key];
   }
+  // Prevent a developer's root .env from changing the deterministic P6-G0 default.
+  process.env['AI_RUNTIME_PROFILE'] = '';
 });
 
 afterEach(() => {
-  for (const key of PIPER_ENV_KEYS) {
+  for (const key of SHARED_ENV_KEYS) {
     const value = savedEnv[key];
     if (value === undefined) {
       delete process.env[key];
@@ -28,6 +32,29 @@ afterEach(() => {
       process.env[key] = value;
     }
   }
+});
+
+describe('AI runtime profile config', () => {
+  it('defaults to the locked development-demo profile', () => {
+    expect(loadConfig().aiRuntimeProfile).toBe('development-demo');
+  });
+
+  it.each(['commercial-local', 'commercial-cloud', 'videofy-native'] as const)(
+    'fails closed before starting the unconfigured %s profile',
+    (profile) => {
+      process.env['AI_RUNTIME_PROFILE'] = profile;
+
+      expect(() => loadConfig()).toThrow(
+        new RegExp(`AI_RUNTIME_PROFILE=${profile} cannot start in P6-G0`),
+      );
+    },
+  );
+
+  it('rejects an unknown profile name', () => {
+    process.env['AI_RUNTIME_PROFILE'] = 'commercial-mixed';
+
+    expect(() => loadConfig()).toThrow(/Unsupported AI runtime profile/);
+  });
 });
 
 describe('Piper voice registry config', () => {

@@ -1,3 +1,4 @@
+// Repository owner: masterzee001
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
@@ -7,6 +8,7 @@
     "moduleResolution": "bundler",
     "lib": ["ES2022"],
     "paths": {
+      "@videofy-live/ai-registry": ["../ai-registry/src/index.ts"],
       "@videofy-live/shared-types": ["../../packages/shared-types/src/index.ts"]
     }
   },

@@ -1,7 +1,10 @@
+// Repository owner: masterzee001.
+import { parseRuntimeProfile, type RuntimeProfile } from '@videofy-live/ai-registry';
 import { loadRootEnv, readCsv, readPort, readPositiveInt } from './env.js';
 import { resolve } from 'node:path';
 
 export interface IngestConfig {
+  aiRuntimeProfile: RuntimeProfile;
   port: number;
   ingestPublicUrl: string;
   gatewayUrl: string;
@@ -87,6 +90,13 @@ export interface IngestConfig {
 
 export function loadConfig(): IngestConfig {
   loadRootEnv();
+  const aiRuntimeProfile = parseRuntimeProfile(process.env['AI_RUNTIME_PROFILE']);
+  if (aiRuntimeProfile !== 'development-demo') {
+    throw new Error(
+      `AI_RUNTIME_PROFILE=${aiRuntimeProfile} cannot start in P6-G0: ` +
+        'no complete commercially certified provider selection is configured.',
+    );
+  }
   const videoSource = process.env['VIDEO_SOURCE'] ?? 'mock';
   if (videoSource !== 'mock' && videoSource !== 'local-file') {
     throw new Error(`VIDEO_SOURCE must be "mock" or "local-file"; received "${videoSource}"`);
@@ -114,7 +124,8 @@ export function loadConfig(): IngestConfig {
       `TRANSLATION_PROVIDER must be "mock", "argos", "opus-mt", or "m2m100"; received "${translationProvider}"`,
     );
   }
-  const translationFallbackProvider = process.env['TRANSLATION_FALLBACK_PROVIDER']?.trim() || 'none';
+  const translationFallbackProvider =
+    process.env['TRANSLATION_FALLBACK_PROVIDER']?.trim() || 'none';
   if (
     translationFallbackProvider !== 'none' &&
     translationFallbackProvider !== 'm2m100' &&
@@ -149,6 +160,7 @@ export function loadConfig(): IngestConfig {
   const port = readPort('INGEST_PORT', 3002);
 
   return {
+    aiRuntimeProfile,
     port,
     ingestPublicUrl: process.env['INGEST_PUBLIC_URL'] ?? `http://localhost:${port}`,
     gatewayUrl: process.env['GATEWAY_URL'] ?? 'http://localhost:3001',
@@ -190,7 +202,8 @@ export function loadConfig(): IngestConfig {
       'python',
     opusMtModelCacheDir: process.env['OPUS_MT_MODEL_CACHE_DIR']?.trim() || null,
     opusMtMaxConcurrency: readPositiveInt('OPUS_MT_MAX_CONCURRENCY', 1),
-    opusMtAllowModelDownload: (process.env['OPUS_MT_ALLOW_MODEL_DOWNLOAD'] ?? 'false').toLowerCase() === 'true',
+    opusMtAllowModelDownload:
+      (process.env['OPUS_MT_ALLOW_MODEL_DOWNLOAD'] ?? 'false').toLowerCase() === 'true',
     opusMtLanguageModels: readOpusMtLanguageModels(),
     m2m100PythonExecutable:
       process.env['M2M100_PYTHON'] ?? process.env['AI_PYTHON_EXECUTABLE'] ?? 'python',
