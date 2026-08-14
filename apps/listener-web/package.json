@@ -3,15 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "author": "masterzee001",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "npm --prefix ../.. run build -w @videofy-live/shared-types && npm --prefix ../.. run build -w @videofy-live/language-router && tsc && vite build",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "npm --prefix ../.. run build -w @videofy-live/shared-types && npm --prefix ../.. run build -w @videofy-live/language-router && vitest run",
     "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "npm --prefix ../.. run build -w @videofy-live/shared-types && npm --prefix ../.. run build -w @videofy-live/language-router && tsc --noEmit"
   },
   "dependencies": {
+    "@videofy-live/language-router": "*",
     "@videofy-live/shared-types": "*",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

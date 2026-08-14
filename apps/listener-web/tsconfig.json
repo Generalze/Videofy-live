@@ -1,4 +1,5 @@
 {
+  // owner: masterzee001
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "target": "ES2020",
@@ -9,7 +10,8 @@
     "rootDir": "../..",
     "outDir": "./dist",
     "paths": {
-      "@videofy-live/shared-types": ["../../packages/shared-types/src/index.ts"]
+      "@videofy-live/shared-types": ["../../packages/shared-types/src/index.ts"],
+      "@videofy-live/language-router": ["../../services/language-router/src/index.ts"]
     }
   },
   "include": ["src"],

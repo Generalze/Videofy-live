@@ -1,5 +1,10 @@
+/** @owner masterzee001 */
 import type { Server as HttpServer } from 'node:http';
 import { Server as SocketServer, type Socket } from 'socket.io';
+import {
+  selectLegacyProgrammeAudiences,
+  type LegacyProgrammeAudience,
+} from '@videofy-live/language-router';
 import type {
   AudioMixPreferences,
   GeneratedAudioReadyEvent,
@@ -677,15 +682,11 @@ export class Gateway {
       }
 
       const event = result.data as TimestampedTranslationEvent;
-      this.io.to(OPERATOR_ROOM).emit(SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT, event);
-      if (event.status === 'translated') {
-        this.io
-          .to(languageRoom(event.targetLanguage))
-          .emit(SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT, event);
-        this.io
-          .to(languageRoom(ORIGINAL_LANGUAGE_CHANNEL))
-          .emit(SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT, event);
-      }
+      this.emitToLegacyProgrammeAudiences(
+        selectLegacyProgrammeAudiences({ kind: 'timestamped-translation', event }),
+        SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT,
+        event,
+      );
       logger.info('Timestamped translation event broadcast', {
         sessionId: event.sessionId,
         segmentId: event.segmentId,
@@ -1139,10 +1140,11 @@ export class Gateway {
 
   private broadcastTranslationEvents(events: TranslationEvent[]): void {
     for (const readyEvent of events) {
-      this.io
-        .to(languageRoom(readyEvent.targetLanguage))
-        .emit(SOCKET_EVENTS.TRANSLATION_EVENT, readyEvent);
-      this.io.to(OPERATOR_ROOM).emit(SOCKET_EVENTS.TRANSLATION_EVENT, readyEvent);
+      this.emitToLegacyProgrammeAudiences(
+        selectLegacyProgrammeAudiences({ kind: 'translation', event: readyEvent }),
+        SOCKET_EVENTS.TRANSLATION_EVENT,
+        readyEvent,
+      );
 
       logger.info('Translation event broadcast', {
         eventId: readyEvent.eventId,
@@ -1155,14 +1157,28 @@ export class Gateway {
 
   private broadcastGeneratedAudioReadyEvents(events: GeneratedAudioReadyEvent[]): void {
     for (const event of events) {
-      this.io.to(languageRoom(event.targetLanguage)).emit(SOCKET_EVENTS.GENERATED_AUDIO_READY, event);
-      this.io.to(OPERATOR_ROOM).emit(SOCKET_EVENTS.GENERATED_AUDIO_READY, event);
+      this.emitToLegacyProgrammeAudiences(
+        selectLegacyProgrammeAudiences({ kind: 'generated-audio-ready', event }),
+        SOCKET_EVENTS.GENERATED_AUDIO_READY,
+        event,
+      );
       logger.info('Generated audio ready event broadcast', {
         sessionId: event.sessionId,
         segmentId: event.segmentId,
         sequence: event.sequence,
         targetLanguage: event.targetLanguage,
       });
+    }
+  }
+
+  private emitToLegacyProgrammeAudiences(
+    audiences: readonly LegacyProgrammeAudience[],
+    eventName: string,
+    payload: unknown,
+  ): void {
+    for (const audience of audiences) {
+      const room = audience.kind === 'operator' ? OPERATOR_ROOM : languageRoom(audience.language);
+      this.io.to(room).emit(eventName, payload);
     }
   }
 

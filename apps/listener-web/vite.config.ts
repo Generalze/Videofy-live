@@ -1,3 +1,4 @@
+// owner: masterzee001
 import { fileURLToPath, URL } from 'node:url';
 import { resolve } from 'node:path';
 import { defineConfig, loadEnv } from 'vite';
@@ -24,6 +25,9 @@ export default defineConfig(({ mode }) => {
       alias: {
         '@videofy-live/shared-types': fileURLToPath(
           new URL('../../packages/shared-types/src/index.ts', import.meta.url),
+        ),
+        '@videofy-live/language-router': fileURLToPath(
+          new URL('../../services/language-router/src/index.ts', import.meta.url),
         ),
       },
     },

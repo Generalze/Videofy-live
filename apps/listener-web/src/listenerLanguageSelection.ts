@@ -1,3 +1,8 @@
+/** @owner masterzee001 */
+import {
+  resolveLegacyProgrammeListenerOutputPolicy,
+  type LegacyProgrammeListenerOutputDecision,
+} from '@videofy-live/language-router';
 import type {
   GeneratedAudioReadyEvent,
   MediaStateEvent,
@@ -107,6 +112,33 @@ export function requiresOriginalAudio(
   output: TargetLanguageOutput | undefined,
 ): boolean {
   return capability?.textOnly === true || output?.audioAvailable !== true;
+}
+
+/** Bridges real legacy listener state into the shared recipient policy engine. */
+export function resolveLegacyListenerOutputDecision(input: {
+  sourceLanguage: string;
+  selectedLanguage: string;
+  subtitlesEnabled: boolean;
+  mix: { mode: 'interpretation' | 'replacement'; originalVolume: number; translatedVolume: number };
+  originalMediaAvailable: boolean;
+  originalCaptionsAvailable: boolean;
+  capability: TargetLanguageCapability | undefined;
+  output: TargetLanguageOutput | undefined;
+  deliveredAudio: GeneratedAudioReadyEvent | undefined;
+}): LegacyProgrammeListenerOutputDecision {
+  return resolveLegacyProgrammeListenerOutputPolicy({
+    sourceLanguage: input.sourceLanguage,
+    selectedLanguage: input.selectedLanguage,
+    subtitlesEnabled: input.subtitlesEnabled,
+    mix: input.mix,
+    originalMediaAvailable: input.originalMediaAvailable,
+    originalCaptionsAvailable: input.originalCaptionsAvailable,
+    capability: input.capability,
+    output: input.output,
+    ...(input.deliveredAudio === undefined
+      ? {}
+      : { deliveredGeneratedAudio: { voiceId: input.deliveredAudio.voiceId } }),
+  });
 }
 
 export function shouldMergeGeneratedCaption(

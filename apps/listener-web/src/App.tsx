@@ -1,3 +1,4 @@
+/** @owner masterzee001 */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type {
@@ -53,7 +54,7 @@ import {
   generatedAudioForLanguage,
   isOriginalLanguageSelection,
   phrasesForLanguage,
-  requiresOriginalAudio,
+  resolveLegacyListenerOutputDecision,
   shouldMergeGeneratedCaption,
   targetLanguagesForSession,
   type ListenerCaptionPhrase,
@@ -1220,9 +1221,24 @@ export default function App(): React.ReactElement {
   const selectedLanguageOutput = mediaState?.targetLanguageOutputs?.find(
     (output) => output.language === targetLanguage,
   );
-  const originalAudioRequired =
-    viewingOriginalProgramme ||
-    requiresOriginalAudio(selectedLanguageCapability, selectedLanguageOutput);
+  const listenerOutputDecision = resolveLegacyListenerOutputDecision({
+    sourceLanguage: mediaState?.sourceLanguageControl?.activeLanguage ?? sourceLanguage,
+    selectedLanguage: targetLanguage,
+    subtitlesEnabled,
+    mix: {
+      mode: mixState.mode,
+      originalVolume,
+      translatedVolume,
+    },
+    originalMediaAvailable: Boolean(
+      mediaState?.programmeMediaUrl || remoteProgrammeStream || mediaState?.videoSource,
+    ),
+    originalCaptionsAvailable: viewingOriginalProgramme && recentPhrases.length > 0,
+    capability: selectedLanguageCapability,
+    output: selectedLanguageOutput,
+    deliveredAudio: selectedDeliveredAudio.at(-1),
+  });
+  const originalAudioRequired = listenerOutputDecision.originalAudioRequired;
   const uploadedStartGate = uploadedProgrammeStartGate({
     hasStarted,
     hasProgrammeMedia: Boolean(mediaState?.programmeMediaUrl),

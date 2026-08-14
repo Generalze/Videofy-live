@@ -1,3 +1,4 @@
+/** @owner masterzee001 */
 import type {
   GeneratedAudioReadyEvent,
   TargetLanguageCapability,
@@ -9,6 +10,7 @@ import {
   generatedAudioForLanguage,
   isOriginalLanguageSelection,
   requiresOriginalAudio,
+  resolveLegacyListenerOutputDecision,
   shouldMergeGeneratedCaption,
 } from './listenerLanguageSelection';
 
@@ -72,7 +74,47 @@ describe('listener language selection', () => {
     ]);
     expect(generatedAudioForLanguage(events, 'es').map((event) => event.sequence)).toEqual([0, 1]);
   });
+
+  it('adopts the shared legacy listener policy with current original/captions/voice behavior', () => {
+    const original = resolveLegacyListenerOutputDecision(listenerPolicyInput({
+      selectedLanguage: 'original',
+    }));
+    const captionsOnly = resolveLegacyListenerOutputDecision(listenerPolicyInput({
+      capability: capability(true),
+      output: output('captions-ready', false),
+    }));
+    const voiceReady = resolveLegacyListenerOutputDecision(listenerPolicyInput({
+      capability: capability(false),
+      output: output('ready', true),
+      deliveredAudio: audio('fr', 0),
+    }));
+    const inconsistent = resolveLegacyListenerOutputDecision(listenerPolicyInput({
+      subtitlesEnabled: false,
+      capability: { ...capability(false), voiceAvailable: false, voiceId: null },
+      output: { ...output('ready', true), captionsAvailable: false },
+    }));
+
+    expect(original.originalAudioRequired).toBe(true);
+    expect(captionsOnly).toMatchObject({ originalAudioRequired: true, expectsGeneratedAudio: false });
+    expect(voiceReady).toMatchObject({ originalAudioRequired: false, expectsGeneratedAudio: true });
+    expect(inconsistent).toMatchObject({ originalAudioRequired: true, expectsGeneratedAudio: false });
+  });
 });
+
+function listenerPolicyInput(overrides: Partial<Parameters<typeof resolveLegacyListenerOutputDecision>[0]> = {}) {
+  return {
+    sourceLanguage: 'en',
+    selectedLanguage: 'fr',
+    subtitlesEnabled: true,
+    mix: { mode: 'interpretation' as const, originalVolume: 0.2, translatedVolume: 1 },
+    originalMediaAvailable: true,
+    originalCaptionsAvailable: false,
+    capability: capability(false),
+    output: output('ready', true),
+    deliveredAudio: undefined,
+    ...overrides,
+  };
+}
 
 function capability(textOnly: boolean): TargetLanguageCapability {
   return {

@@ -1,0 +1,31 @@
+{
+  "name": "@videofy-live/language-router",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "author": "masterzee001",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "description": "Pure recipient language and legacy programme audience routing policy for Videofy.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "npm --prefix ../.. run build -w @videofy-live/shared-types && npm --prefix ../.. run build -w @videofy-live/participant-contracts && npm --prefix ../.. run build -w @videofy-live/call-contracts && tsc --noEmit",
+    "test": "npm --prefix ../.. run build -w @videofy-live/shared-types && npm --prefix ../.. run build -w @videofy-live/participant-contracts && npm --prefix ../.. run build -w @videofy-live/call-contracts && npm run build && vitest run"
+  },
+  "dependencies": {
+    "@videofy-live/call-contracts": "*",
+    "@videofy-live/participant-contracts": "*",
+    "@videofy-live/shared-types": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
+  }
+}
