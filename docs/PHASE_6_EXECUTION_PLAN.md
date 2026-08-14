@@ -3,8 +3,8 @@
 - **Repository owner:** masterzee001
 - **Authoritative architecture:** [VIDEOFY_MASTER_ARCHITECTURE.md](VIDEOFY_MASTER_ARCHITECTURE.md), Version 3.0
 - **Lead supervisor and integration owner:** Codex Sol6 (P6.1A completed under acting-lead Claude supervision while Codex was unavailable)
-- **Current milestone:** P6.1A — Duplex Language Prerequisites (development profile)
-- **Status:** P6.1A implementation and machine validation complete; human voice-quality acceptance and owner review remain open
+- **Current milestone:** P6.1B — Native two-person call runtime (development profile)
+- **Status:** P6.1B implementation and machine verification complete; P6.1C acceptance evidence, human voice-quality review, and owner approval remain open
 - **P6.0 baseline:** `main@2a06e1dfd833532125c06986843e645a2dcff34b`
 - **P6.1A baseline:** `main@daad195` (P6-G0 and P6.0 merged and CI-verified)
 
@@ -166,12 +166,23 @@ recorded in
 [docs/MODEL_AND_VOICE_REGISTRY.md — P6.1A Development Provider Validation](MODEL_AND_VOICE_REGISTRY.md#p61a-development-provider-validation)
 and the [P6.1A implementation report](P6_1A_IMPLEMENTATION_REPORT.md).
 
+## P6.1B delivery record
+
+The native two-person call runtime is implemented per the locked
+[P6.1B design note](P6_1B_CALL_RUNTIME_DESIGN.md) with a bounded agent team (session, frontend,
+runtime, independent-review agents) under acting-lead supervision: `services/call-session` (pure
+core, 48 tests), the gateway `call:*` runtime (23 new tests; programme paths untouched and
+green), media-ingest per-session voice overrides, and `apps/call-web` (53 tests). The complete
+repository gate (test/typecheck/lint/build/integration/pytest) passed on the integrated wave.
+Evidence and open items: [P6.1B implementation report](P6_1B_IMPLEMENTATION_REPORT.md).
+
 ## Sequenced follow-on milestones
 
-After P6.1A owner review and human voice-quality acceptance:
+After P6.1B owner review:
 
-1. P6-UX0 may establish the shared premium, role-separated experience foundation as its own wave.
-2. P6.1B/P6.1C implements and validates the native two-person call using the validated duplex providers.
+1. P6.1C: real two-browser/device acceptance, honest latency evidence, camera video, and the
+   §30.4 sign-off table — plus the still-open P6.1A human voice-quality review.
+2. P6-UX0 may establish the shared premium, role-separated experience foundation as its own wave.
 3. P6.2–P6.8 proceed in architecture order; external adapters begin only after native Call is stable.
 4. C-AI1 sources a commercially licensed English Male/Female voice pair (the HFC pair is dev-only).
 

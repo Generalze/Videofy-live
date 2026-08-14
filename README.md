@@ -16,9 +16,13 @@ participant/call/recipient-routing contracts are implemented. P6.1A duplex
 language prerequisites (multilingual EN/ES speech recognition, ES→EN
 translation, English TTS, and machine-registered EN/ES Male/Female development
 voices) are implemented and machine-validated; human voice-quality acceptance
-is still pending, so no language is declared fully voice-ready. The working
-Live runtime remains the Phase 5 partner preview: no native call runtime, call
-UI, external-platform adapter, or commercial launch is claimed.
+is still pending, so no language is declared fully voice-ready. P6.1B adds the
+native two-person call runtime and `apps/call-web` (port 5175): duplex EN/ES
+calls with recipient-scoped captions, translated voice, and original-audio mix
+modes, reusing the same AI pipeline. P6.1C acceptance evidence (two-device
+runs, latency, video) is still open. The Live programme runtime remains the
+Phase 5 partner preview; no external-platform adapter or commercial launch is
+claimed.
 
 The platform includes the listener app with a nine-language viewer menu
 (Spanish, French, Portuguese, Arabic, Russian, Greek, Yoruba, Chinese, Latin),
