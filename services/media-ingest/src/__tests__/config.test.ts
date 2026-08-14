@@ -185,6 +185,9 @@ describe('English and Spanish runtime prerequisites', () => {
   it('pins the P6.1A defaults so a revert cannot silently drop them', () => {
     expect(DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES.split(',')).toContain('en');
     expect(DEFAULT_OPUS_MT_LANGUAGE_MODELS).toContain('es:en:Helsinki-NLP/opus-mt-es-en');
+    // English–French is the constant development pair; both directions stay pinned.
+    expect(DEFAULT_OPUS_MT_LANGUAGE_MODELS).toContain('en:fr:Helsinki-NLP/opus-mt-en-fr');
+    expect(DEFAULT_OPUS_MT_LANGUAGE_MODELS).toContain('fr:en:Helsinki-NLP/opus-mt-fr-en');
   });
 
   it('supports the multilingual small opt-in, English target, and explicit ES-to-EN OPUS-MT', () => {

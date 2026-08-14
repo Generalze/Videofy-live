@@ -20,8 +20,13 @@ import {
  * clock except through the injectable `now` factory.
  */
 
-/** P6.1B supports the registered Piper pair only; both values are primary subtags. */
-export type CallLanguage = 'en' | 'es';
+/**
+ * Call languages with registered development voices; primary subtags only.
+ * English–French is the constant development pair (owner decision, 2026-08-14:
+ * French verifiers are easier to source); Spanish stays supported with its
+ * P6.1A validation evidence.
+ */
+export type CallLanguage = 'en' | 'es' | 'fr';
 
 export interface CallJoinInput {
   callId: string;
@@ -159,6 +164,7 @@ export const STANDARD_CALL_VOICES: Readonly<
 > = {
   en: { male: 'en_US-hfc_male-medium', female: 'en_US-hfc_female-medium' },
   es: { male: 'es_ES-sharvard-male', female: 'es_ES-sharvard-female' },
+  fr: { male: 'fr_FR-upmc-pierre', female: 'fr_FR-siwis-medium' },
 };
 
 /** Two-person cap for this wave; disconnected identities keep their seat for resume. */
@@ -488,10 +494,10 @@ function validateJoinInput(input: CallJoinInput): string | null {
     return `Display names are limited to ${MAX_DISPLAY_NAME_LENGTH} characters.`;
   }
   if (!isCallLanguage(input.speakLanguage)) {
-    return 'The language you speak must be English (en) or Spanish (es).';
+    return 'The language you speak must be English (en), Spanish (es), or French (fr).';
   }
   if (!isCallLanguage(input.hearLanguage)) {
-    return 'The language you hear must be English (en) or Spanish (es).';
+    return 'The language you hear must be English (en), Spanish (es), or French (fr).';
   }
   if (typeof input.captionsEnabled !== 'boolean') {
     return 'The caption preference must be on or off.';
@@ -612,10 +618,10 @@ function connectedOtherParticipants(
 }
 
 function isCallLanguage(value: unknown): value is CallLanguage {
-  return value === 'en' || value === 'es';
+  return value === 'en' || value === 'es' || value === 'fr';
 }
 
-/** All stored languages are admitted as 'en' | 'es' at join; anything else is a bug. */
+/** All stored languages are admitted as supported CallLanguages at join; anything else is a bug. */
 function toCallLanguage(languageTag: string | null): CallLanguage {
   const subtag = primaryLanguageSubtag(languageTag ?? '');
   if (!isCallLanguage(subtag)) {

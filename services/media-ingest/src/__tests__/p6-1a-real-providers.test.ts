@@ -22,8 +22,10 @@ const REAL_PROVIDER_TIMEOUT_MS = 240_000;
 const temporaryDirectories: string[] = [];
 const ENGLISH_SYNTHETIC_PHRASE = 'Hello, this is an English test.';
 const SPANISH_SYNTHETIC_PHRASE = 'Hola, esta es una prueba en español.';
+const FRENCH_SYNTHETIC_PHRASE = 'Bonjour, ceci est un test en français.';
 const ENGLISH_TRANSLATION_PHRASE = 'Hello, good morning.';
 const SPANISH_TRANSLATION_PHRASE = 'Hola, buenos días.';
+const FRENCH_TRANSLATION_PHRASE = 'Bonjour, bonne journée.';
 
 afterEach(async () => {
   await Promise.all(
@@ -61,7 +63,16 @@ function pythonExecutable(): string {
 }
 
 async function snapshotPath(cacheDirectory: string, repositoryDirectory: string): Promise<string> {
-  const snapshotsDirectory = join(cacheDirectory, repositoryDirectory, 'snapshots');
+  const repositoryPath = join(cacheDirectory, repositoryDirectory);
+  // Prefer the revision pinned by refs/main so an older cached snapshot of the
+  // same model cannot make this evidence run ambiguous.
+  const mainRef = join(repositoryPath, 'refs', 'main');
+  if (existsSync(mainRef)) {
+    const revision = (await readFile(mainRef, 'utf8')).trim();
+    const pinned = join(repositoryPath, 'snapshots', revision);
+    if (existsSync(pinned)) return pinned;
+  }
+  const snapshotsDirectory = join(repositoryPath, 'snapshots');
   const entries = await readdir(snapshotsDirectory, { withFileTypes: true });
   const snapshots = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   expect(snapshots).toHaveLength(1);
@@ -130,7 +141,7 @@ function recordingPiperRunner(calls: string[][]): PiperCommandRunner {
 
 function speechInput(
   audioPath: string,
-  language: 'en' | 'es',
+  language: 'en' | 'es' | 'fr',
 ): TranscriptionProviderInput {
   return {
     sessionId: 'p6-1a-real-provider',
@@ -154,7 +165,7 @@ const describeRealProviders = RUN_REAL_PROVIDER_TESTS ? describe : describe.skip
 
 describeRealProviders('P6.1A real local provider acceptance', () => {
   it(
-    'proves EN/ES STT, both OPUS-MT directions, and four normalized Piper selections',
+    'proves EN/ES/FR STT, all four OPUS-MT directions, and six normalized Piper selections',
     async () => {
       const fasterWhisperCache = configuredPath(
         'P6_1A_FASTER_WHISPER_CACHE_DIR',
@@ -190,10 +201,12 @@ describeRealProviders('P6.1A real local provider acceptance', () => {
         assertPrepared(path);
       }
 
-      const [fasterWhisperSmallPath, enEsPath, esEnPath] = await Promise.all([
+      const [fasterWhisperSmallPath, enEsPath, esEnPath, enFrPath, frEnPath] = await Promise.all([
         snapshotPath(fasterWhisperCache, 'models--Systran--faster-whisper-small'),
         snapshotPath(opusMtCache, 'models--Helsinki-NLP--opus-mt-en-es'),
         snapshotPath(opusMtCache, 'models--Helsinki-NLP--opus-mt-es-en'),
+        snapshotPath(opusMtCache, 'models--Helsinki-NLP--opus-mt-en-fr'),
+        snapshotPath(opusMtCache, 'models--Helsinki-NLP--opus-mt-fr-en'),
       ]);
       assertPrepared(fasterWhisperSmallPath);
       const generatedAudioDirectory = await outputDirectory();
@@ -225,6 +238,19 @@ describeRealProviders('P6.1A real local provider acceptance', () => {
           configPath: join(piperRoot, 'es_ES-sharvard-medium', 'es_ES-sharvard-medium.onnx.json'),
           speakerId: 1,
         },
+        {
+          voiceId: 'fr_FR-upmc-pierre',
+          language: 'fr',
+          modelPath: join(piperRoot, 'fr_FR-upmc-medium', 'fr_FR-upmc-medium.onnx'),
+          configPath: join(piperRoot, 'fr_FR-upmc-medium', 'fr_FR-upmc-medium.onnx.json'),
+          speakerId: 1,
+        },
+        {
+          voiceId: 'fr_FR-siwis-medium',
+          language: 'fr',
+          modelPath: join(piperRoot, 'fr_FR-siwis-medium', 'fr_FR-siwis-medium.onnx'),
+          configPath: join(piperRoot, 'fr_FR-siwis-medium', 'fr_FR-siwis-medium.onnx.json'),
+        },
       ];
       for (const voice of voices) {
         assertPrepared(voice.modelPath);
@@ -241,7 +267,7 @@ describeRealProviders('P6.1A real local provider acceptance', () => {
       const opus = new OpusMtTimestampedTranslationProvider({
         pythonExecutable: python,
         modelCacheDir: opusMtCache,
-        supportedTargetLanguages: ['en', 'es'],
+        supportedTargetLanguages: ['en', 'es', 'fr'],
         languageModels: [
           {
             sourceLanguage: 'en',
@@ -254,6 +280,18 @@ describeRealProviders('P6.1A real local provider acceptance', () => {
             targetLanguage: 'en',
             modelId: 'Helsinki-NLP/opus-mt-es-en',
             localPath: esEnPath,
+          },
+          {
+            sourceLanguage: 'en',
+            targetLanguage: 'fr',
+            modelId: 'Helsinki-NLP/opus-mt-en-fr',
+            localPath: enFrPath,
+          },
+          {
+            sourceLanguage: 'fr',
+            targetLanguage: 'en',
+            modelId: 'Helsinki-NLP/opus-mt-fr-en',
+            localPath: frEnPath,
           },
         ],
         timeoutMs: REAL_PROVIDER_TIMEOUT_MS,
@@ -293,10 +331,22 @@ describeRealProviders('P6.1A real local provider acceptance', () => {
           targetLanguage: 'es', translatedText: SPANISH_SYNTHETIC_PHRASE, startMs: 0, endMs: 8_000,
           voiceId: 'es_ES-sharvard-female', outputPath: join(generatedAudioDirectory, 'es_ES-sharvard-female.wav'),
         }));
+        generated.push(await piper.generate({
+          sessionId: 'p6-1a-real-provider', streamId: 'p6-1a-fr', segmentId: 'fr-male', sequence: 4,
+          targetLanguage: 'fr', translatedText: FRENCH_SYNTHETIC_PHRASE, startMs: 0, endMs: 8_000,
+          voiceId: 'fr_FR-upmc-pierre', outputPath: join(generatedAudioDirectory, 'fr_FR-upmc-pierre.wav'),
+        }));
+        generated.push(await piper.generate({
+          sessionId: 'p6-1a-real-provider', streamId: 'p6-1a-fr', segmentId: 'fr-female', sequence: 5,
+          targetLanguage: 'fr', translatedText: FRENCH_SYNTHETIC_PHRASE, startMs: 0, endMs: 8_000,
+          voiceId: 'fr_FR-siwis-medium', outputPath: join(generatedAudioDirectory, 'fr_FR-siwis-medium.wav'),
+        }));
         for (const result of generated) await expectNontrivialWav(result.audioPath);
-        expect(piperCalls).toHaveLength(4);
+        expect(piperCalls).toHaveLength(6);
         expect(piperCalls[2]![piperCalls[2]!.indexOf('--speaker') + 1]).toBe('0');
         expect(piperCalls[3]![piperCalls[3]!.indexOf('--speaker') + 1]).toBe('1');
+        expect(piperCalls[4]![piperCalls[4]!.indexOf('--speaker') + 1]).toBe('1');
+        expect(piperCalls[5]).not.toContain('--speaker');
 
         const [enToEs, esToEn] = await Promise.all([
           opus.translate({
@@ -311,14 +361,30 @@ describeRealProviders('P6.1A real local provider acceptance', () => {
         expect(normalisedText(enToEs.translatedText)).toMatch(/hola|buen/);
         expect(normalisedText(esToEn.translatedText)).toMatch(/hello|good|morning/);
 
-        const [englishStt, spanishStt] = await Promise.all([
+        const [enToFr, frToEn] = await Promise.all([
+          opus.translate({
+            sessionId: 'p6-1a-real-provider', streamId: 'p6-1a-en', segmentId: 'en-fr', sequence: 2,
+            sourceLanguage: 'en', targetLanguage: 'fr', sourceText: ENGLISH_TRANSLATION_PHRASE, startMs: 0, endMs: 1_000,
+          }),
+          opus.translate({
+            sessionId: 'p6-1a-real-provider', streamId: 'p6-1a-fr', segmentId: 'fr-en', sequence: 3,
+            sourceLanguage: 'fr', targetLanguage: 'en', sourceText: FRENCH_TRANSLATION_PHRASE, startMs: 0, endMs: 1_000,
+          }),
+        ]);
+        expect(normalisedText(enToFr.translatedText)).toMatch(/bonjour|bonne|salut/);
+        expect(normalisedText(frToEn.translatedText)).toMatch(/hello|good|day|morning/);
+
+        const [englishStt, spanishStt, frenchStt] = await Promise.all([
           stt.transcribe(speechInput(generated[0]!.audioPath, 'en')),
           stt.transcribe(speechInput(generated[2]!.audioPath, 'es')),
+          stt.transcribe(speechInput(generated[5]!.audioPath, 'fr')),
         ]);
         expect(englishStt.detectedLanguage).toBe('en');
         expect(normalisedText(englishStt.segments.map((segment) => segment.text).join(' '))).toMatch(/hello|english/);
         expect(spanishStt.detectedLanguage).toBe('es');
         expect(normalisedText(spanishStt.segments.map((segment) => segment.text).join(' '))).toMatch(/hola|prueba|espanol/);
+        expect(frenchStt.detectedLanguage).toBe('fr');
+        expect(normalisedText(frenchStt.segments.map((segment) => segment.text).join(' '))).toMatch(/bonjour|test|francais/);
 
         if (process.env['P6_1A_EVIDENCE_DIR']?.trim()) {
           await writeFile(
@@ -333,6 +399,8 @@ describeRealProviders('P6.1A real local provider acceptance', () => {
                 opusMt: [
                   { id: 'Helsinki-NLP/opus-mt-en-es', revision: basename(enEsPath) },
                   { id: 'Helsinki-NLP/opus-mt-es-en', revision: basename(esEnPath) },
+                  { id: 'Helsinki-NLP/opus-mt-en-fr', revision: basename(enFrPath) },
+                  { id: 'Helsinki-NLP/opus-mt-fr-en', revision: basename(frEnPath) },
                 ],
               },
               voices: voices.map((voice) => ({
@@ -340,22 +408,39 @@ describeRealProviders('P6.1A real local provider acceptance', () => {
                 speakerId: voice.speakerId ?? null,
               })),
               syntheticSourcePhrases: {
-                piper: { en: ENGLISH_SYNTHETIC_PHRASE, es: SPANISH_SYNTHETIC_PHRASE },
-                translation: { enToEs: ENGLISH_TRANSLATION_PHRASE, esToEn: SPANISH_TRANSLATION_PHRASE },
+                piper: { en: ENGLISH_SYNTHETIC_PHRASE, es: SPANISH_SYNTHETIC_PHRASE, fr: FRENCH_SYNTHETIC_PHRASE },
+                translation: {
+                  enToEs: ENGLISH_TRANSLATION_PHRASE,
+                  esToEn: SPANISH_TRANSLATION_PHRASE,
+                  enToFr: ENGLISH_TRANSLATION_PHRASE,
+                  frToEn: FRENCH_TRANSLATION_PHRASE,
+                },
               },
               translations: {
                 enToEs: enToEs.translatedText,
                 esToEn: esToEn.translatedText,
+                enToFr: enToFr.translatedText,
+                frToEn: frToEn.translatedText,
               },
               transcriptions: {
                 en: { detectedLanguage: englishStt.detectedLanguage, text: englishStt.segments.map((segment) => segment.text).join(' ') },
                 es: { detectedLanguage: spanishStt.detectedLanguage, text: spanishStt.segments.map((segment) => segment.text).join(' ') },
+                fr: { detectedLanguage: frenchStt.detectedLanguage, text: frenchStt.segments.map((segment) => segment.text).join(' ') },
               },
               files: generated.map((result, index) => ({ voiceId: voices[index]!.voiceId, fileName: basename(result.audioPath) })),
               providerLatenciesMs: {
                 piper: generated.map((result, index) => ({ voiceId: voices[index]!.voiceId, latencyMs: result.providerLatencyMs ?? null })),
-                opusMt: { enToEs: enToEs.providerLatencyMs ?? null, esToEn: esToEn.providerLatencyMs ?? null },
-                fasterWhisper: { en: englishStt.providerLatencyMs ?? null, es: spanishStt.providerLatencyMs ?? null },
+                opusMt: {
+                  enToEs: enToEs.providerLatencyMs ?? null,
+                  esToEn: esToEn.providerLatencyMs ?? null,
+                  enToFr: enToFr.providerLatencyMs ?? null,
+                  frToEn: frToEn.providerLatencyMs ?? null,
+                },
+                fasterWhisper: {
+                  en: englishStt.providerLatencyMs ?? null,
+                  es: spanishStt.providerLatencyMs ?? null,
+                  fr: frenchStt.providerLatencyMs ?? null,
+                },
               },
             })}\n`,
             'utf8',

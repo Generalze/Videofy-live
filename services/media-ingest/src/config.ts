@@ -9,7 +9,7 @@ import { resolve } from 'node:path';
  */
 export const DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES = 'fr,es,de,pt,it,ja,zh,ar,yo,en';
 export const DEFAULT_OPUS_MT_LANGUAGE_MODELS =
-  'en:fr:Helsinki-NLP/opus-mt-en-fr,en:es:Helsinki-NLP/opus-mt-en-es,en:pt:Helsinki-NLP/opus-mt-en-ROMANCE,es:en:Helsinki-NLP/opus-mt-es-en';
+  'en:fr:Helsinki-NLP/opus-mt-en-fr,fr:en:Helsinki-NLP/opus-mt-fr-en,en:es:Helsinki-NLP/opus-mt-en-es,en:pt:Helsinki-NLP/opus-mt-en-ROMANCE,es:en:Helsinki-NLP/opus-mt-es-en';
 
 export interface IngestConfig {
   aiRuntimeProfile: RuntimeProfile;

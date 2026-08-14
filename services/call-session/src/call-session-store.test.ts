@@ -174,8 +174,8 @@ describe('CallSessionStore.createOrJoin', () => {
       { callId: 'x'.repeat(65) },
       { displayName: '' },
       { displayName: '   ' },
-      { speakLanguage: 'fr' as CallJoinInput['speakLanguage'] },
-      { hearLanguage: 'de' as CallJoinInput['hearLanguage'] },
+      { speakLanguage: 'de' as CallJoinInput['speakLanguage'] },
+      { hearLanguage: 'yo' as CallJoinInput['hearLanguage'] },
       { voiceGender: 'robot' as CallJoinInput['voiceGender'] },
       { audioMode: 'dubbed' as CallJoinInput['audioMode'] },
       { captionsEnabled: 'yes' as unknown as boolean },
@@ -531,10 +531,42 @@ describe('CallSessionStore.ingestPlan', () => {
 });
 
 describe('STANDARD_CALL_VOICES', () => {
-  it('maps all four language/gender selections to the registered Piper voices', () => {
+  it('maps every language/gender selection to the registered Piper voices', () => {
     expect(STANDARD_CALL_VOICES).toEqual({
       en: { male: 'en_US-hfc_male-medium', female: 'en_US-hfc_female-medium' },
       es: { male: 'es_ES-sharvard-male', female: 'es_ES-sharvard-female' },
+      fr: { male: 'fr_FR-upmc-pierre', female: 'fr_FR-siwis-medium' },
+    });
+  });
+
+  it('routes an EN-FR pair with each recipient gender selecting the French/English voice', () => {
+    const store = new CallSessionStore({ createResumeToken: () => 'token-en-fr' });
+    const first = store.createOrJoin(
+      joinInput({ callId: 'call-en-fr', displayName: 'Zoe', speakLanguage: 'en', hearLanguage: 'en' }),
+    );
+    if (!first.ok) throw new Error(first.message);
+    const second = store.createOrJoin(
+      joinInput({
+        callId: 'call-en-fr',
+        displayName: 'Amelie',
+        speakLanguage: 'fr',
+        hearLanguage: 'fr',
+        voiceGender: 'male',
+      }),
+    );
+    if (!second.ok) throw new Error(second.message);
+    const zoePlan = second.ingestPlans.find((plan) => plan.ingestSessionId.includes(first.participantId));
+    const ameliePlan = second.ingestPlans.find((plan) =>
+      plan.ingestSessionId.includes(second.participantId),
+    );
+    expect(zoePlan).toMatchObject({
+      sourceLanguage: 'en',
+      targetLanguages: ['fr'],
+      voiceIdsByLanguage: { fr: 'fr_FR-upmc-pierre' },
+    });
+    expect(ameliePlan).toMatchObject({
+      sourceLanguage: 'fr',
+      targetLanguages: ['en'],
     });
   });
 });

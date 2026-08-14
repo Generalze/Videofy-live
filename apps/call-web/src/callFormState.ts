@@ -17,8 +17,11 @@ export interface CallJoinFormErrors {
   callCode: string | null;
 }
 
+// English–French is the constant development pair (owner decision: French
+// verifiers are easier to source), so French sits directly under English.
 export const CALL_LANGUAGES: readonly { value: CallLanguage; label: string }[] = [
   { value: 'en', label: 'English' },
+  { value: 'fr', label: 'French' },
   { value: 'es', label: 'Spanish' },
 ];
 

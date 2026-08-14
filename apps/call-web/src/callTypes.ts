@@ -17,7 +17,7 @@ export const CALL_EVENTS = {
 
 export type CallEventName = (typeof CALL_EVENTS)[keyof typeof CALL_EVENTS];
 
-export type CallLanguage = 'en' | 'es';
+export type CallLanguage = 'en' | 'es' | 'fr';
 export type CallVoiceGender = 'male' | 'female';
 export type CallAudioMode = 'translated' | 'interpretation' | 'original';
 

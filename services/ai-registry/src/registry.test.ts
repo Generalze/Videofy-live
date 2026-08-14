@@ -225,8 +225,15 @@ describe('P6-G0 AI registry policy', () => {
       providerId: 'faster-whisper',
       modelId: 'Systran/faster-whisper-small',
       versionOrRevision: '536b0662742c02347bc0e980a01041f333bce120',
-      languages: ['en', 'es'],
+      languages: ['en', 'es', 'fr'],
       licenseId: 'MIT',
+    });
+    const frToEn = CURRENT_AI_REGISTRY.assets.find((asset) => asset.assetId === 'opus-mt-fr-en')!;
+    expect(frToEn).toMatchObject({
+      modelId: 'Helsinki-NLP/opus-mt-fr-en',
+      versionOrRevision: 'c4aed37b318c763fd177aa449b44e3b783cc6c02',
+      translationLanguagePairs: [{ sourceLanguage: 'fr', targetLanguage: 'en' }],
+      licenseId: 'Apache-2.0',
     });
     expect(esToEn).toMatchObject({
       modelId: 'Helsinki-NLP/opus-mt-es-en',
@@ -299,7 +306,30 @@ describe('P6-G0 AI registry policy', () => {
       ]),
     );
 
-    for (const language of ['en', 'es'] as const) {
+    expect(CURRENT_AI_REGISTRY.standardVoices).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          voiceId: 'fr_FR-upmc-pierre',
+          assetId: 'piper-fr-upmc-medium',
+          gender: 'male',
+          speakerId: 1,
+          speakerKey: 'pierre',
+          licenseId: 'CC-BY-SA-4.0',
+          runtimeStatus: 'validated',
+          qualityStatus: 'development',
+        }),
+        expect.objectContaining({
+          voiceId: 'fr_FR-siwis-medium',
+          assetId: 'piper-fr-siwis-medium',
+          gender: 'female',
+          licenseId: 'CC-BY-4.0',
+          runtimeStatus: 'validated',
+          qualityStatus: 'development',
+        }),
+      ]),
+    );
+
+    for (const language of ['en', 'es', 'fr'] as const) {
       const readiness = evaluateStandardVoiceReadiness({ language });
       expect(readiness).toMatchObject({ valid: false, maleReady: false, femaleReady: false });
       expect(readiness.issues).toContainEqual(
