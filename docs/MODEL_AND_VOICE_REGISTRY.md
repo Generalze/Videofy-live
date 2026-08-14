@@ -110,6 +110,24 @@ Reproduce with `RUN_P6_1A_REAL_PROVIDER_TESTS=true` via
 `services/media-ingest/src/__tests__/p6-1a-real-providers.test.ts`; generated audio and the
 evidence JSON stay in ignored local paths (`P6_1A_EVIDENCE_DIR` or the OS temp directory).
 
+### French validation (EN–FR constant development pair)
+
+By owner decision on 2026-08-14, **English–French is the constant development pair** (French
+verifiers are easier to source than Spanish); Spanish remains supported with its evidence above.
+The same gated acceptance run now also proves, on the same machine and profile:
+
+| Provider | Model or voice | Capability | Version / revision | Licence | Commercial state | Result |
+| --- | --- | --- | --- | --- | --- | --- |
+| faster-whisper | `Systran/faster-whisper-small` | STT fr | `536b0662742c02347bc0e980a01041f333bce120` | MIT | review-required | "Bonjour, ceci est un test en français." transcribed exactly; `fr` detected |
+| OPUS-MT | `Helsinki-NLP/opus-mt-en-fr` | Translation en→fr | `dd7f6540a7a48a7f4db59e5c0b9c42c8eea67f18` | Apache-2.0 | review-required | "Hello, good morning." → "Bonjour." |
+| OPUS-MT | `Helsinki-NLP/opus-mt-fr-en` | Translation fr→en | `c4aed37b318c763fd177aa449b44e3b783cc6c02` | Apache-2.0 | review-required | "Bonjour, bonne journée." → "Good morning, good day." |
+| Piper | `fr_FR-upmc-medium` speaker 1 (`pierre`) | French TTS, Male | `sha256:9abb3800c199148897a9ed64e100d224f3de83579f100044174ad19418f1786f` | CC-BY-SA-4.0 | review-required | Real WAV generated; `--speaker 1` proven at the CLI |
+| Piper | `fr_FR-siwis-medium` | French TTS, Female | `sha256:641d1ab097da2b81128c076810edb052b385decc8be3381814802a64a73baf99` | CC-BY-4.0 | review-required | Real WAV generated (single speaker, no `--speaker` flag) |
+
+Rejected candidate: `fr_FR-tom-medium` was downloaded, its MODEL_CARD declares **AGPLv3**, and it
+was removed rather than registered — copyleft obligations are unsuitable for the proprietary
+product direction, and `upmc`/`siwis` cover both genders under CC-BY-SA/CC-BY.
+
 Explicitly still open for P6.1A closure:
 
 - Human voice-quality review: all four voices remain `qualityStatus=development`, so English and

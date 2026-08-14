@@ -104,6 +104,14 @@ are skipped for that direction and captions deliver the original transcript.
   of the other speaker's speech at each join/resume boundary (captions/translated audio only;
   raw audio fan-out is unaffected). Recorded as a deliberate trade for revision safety.
 
+## Language update (owner decision, 2026-08-14)
+
+**English–French is the constant development pair** — French verifiers are easier to source.
+Call languages are now `en`/`fr`/`es`: French joins with validated duplex routes
+(`opus-mt-en-fr`/`opus-mt-fr-en`), multilingual STT coverage, and registered Male/Female
+development voices (`fr_FR-upmc-pierre`, `fr_FR-siwis-medium`); Spanish stays fully supported
+with its P6.1A evidence.
+
 ## Explicitly deferred to P6.1C
 
 Camera video tiles, real two-device/browser acceptance evidence, measured end-to-end latency
