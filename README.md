@@ -152,4 +152,13 @@ npm run test:integration
   output; other languages depend on configured models and voices, and
   NLLB-200 fallback is licensed for non-commercial use only.
 
-See `docs/roadmap.md` for planned phases.
+See [Architecture V3](docs/VIDEOFY_MASTER_ARCHITECTURE.md) and the
+[Phase 6 execution plan](docs/PHASE_6_EXECUTION_PLAN.md) for the authoritative sequence;
+`docs/roadmap.md` is historical context.
+
+## Ownership and License
+
+Repository owner: **masterzee001**.
+
+Videofy is distributed under the **Videofy by TAC Proprietary Software
+License**. All Rights Reserved. See [LICENSE.md](LICENSE.md).

@@ -1,6 +1,21 @@
 # Model And Voice Registry
 
+Repository owner: masterzee001
+
 Date: 2026-07-28
+
+## P6-G0 Authority and Readiness Meaning
+
+This document is the human-readable evidence catalogue. The machine-readable policy contract and
+current classifications live in `services/ai-registry/src/registry.ts`. A row marked `validated`
+below records development/demo evidence only; it does **not** imply
+`commercialUseState=approved` or `productionApproved=true`.
+
+NLLB-200 and MMS-TTS remain `blocked-noncommercial`. Existing Piper voice records do not yet carry
+verified Male/Female and per-voice rights metadata, so no language is currently declared fully
+voice-ready. The active runtime remains `development-demo` until an explicit later integration
+milestone enforces a commercially approved complete provider chain. Media-ingest rejects every
+other profile at startup during P6-G0, so an environment label cannot imply commercial readiness.
 
 This registry documents local open-source AI assets approved or proposed for partner-preview validation. A target is not production-ready until the model, voice, licence, runtime, quality, and partner constraints have been validated on the demonstration machine.
 
@@ -8,12 +23,12 @@ Local validation on 2026-07-28 used FFmpeg 8.1.2, Python 3.11.9 in `.venv-ai`, P
 
 ## Validated P5.2-P5.3 Path
 
-| Provider | Model or voice | Language | Version or revision | Licence evidence | Commercial review | Local path or cache | Hardware | Quality status | Status |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Silero VAD | `silero-vad` | speech activity | package `6.2.1` | package metadata and upstream review required before production | reviewable | `.venv-ai` package cache | CPU | detected 2 speech regions in deterministic P5.2 WAV | validated |
-| faster-whisper | `Systran/faster-whisper-small.en` | English ASR | revision `d1d751a5f8271d482d14ca55d9e2deeebbae577f` | local model card: MIT | reviewable | `services/media-ingest/model_cache/faster-whisper/.../d1d751a5f8271d482d14ca55d9e2deeebbae577f` | CPU int8, CUDA float16 | CPU and GPU transcription validated | validated |
-| OPUS-MT | `Helsinki-NLP/opus-mt-en-es` | English to Spanish | revision `5bc4493d463cf000c1f0b50f8d56886a392ed4ab` | local model card: Apache-2.0 | reviewable | `services/media-ingest/model_cache/opus-mt/.../5bc4493d463cf000c1f0b50f8d56886a392ed4ab` | CPU | real translation validated | validated |
-| Piper | `es_ES-sharvard-medium` | Spanish TTS | voice config `piper_version` 1.0.0; runtime 1.2.0 | upstream `rhasspy/piper-voices`: MIT; local config has no embedded licence file | reviewable | `services/media-ingest/model_cache/piper/es_ES-sharvard-medium` | CPU | real speech generation and listener playback validated | validated |
+| Provider       | Model or voice                    | Language           | Version or revision                                 | Licence evidence                                                                | Commercial review | Local path or cache                                                                             | Hardware               | Quality status                                         | Status    |
+| -------------- | --------------------------------- | ------------------ | --------------------------------------------------- | ------------------------------------------------------------------------------- | ----------------- | ----------------------------------------------------------------------------------------------- | ---------------------- | ------------------------------------------------------ | --------- |
+| Silero VAD     | `silero-vad`                      | speech activity    | package `6.2.1`                                     | package metadata and upstream review required before production                 | reviewable        | `.venv-ai` package cache                                                                        | CPU                    | detected 2 speech regions in deterministic P5.2 WAV    | validated |
+| faster-whisper | `Systran/faster-whisper-small.en` | English ASR        | revision `d1d751a5f8271d482d14ca55d9e2deeebbae577f` | local model card: MIT                                                           | reviewable        | `services/media-ingest/model_cache/faster-whisper/.../d1d751a5f8271d482d14ca55d9e2deeebbae577f` | CPU int8, CUDA float16 | CPU and GPU transcription validated                    | validated |
+| OPUS-MT        | `Helsinki-NLP/opus-mt-en-es`      | English to Spanish | revision `5bc4493d463cf000c1f0b50f8d56886a392ed4ab` | local model card: Apache-2.0                                                    | reviewable        | `services/media-ingest/model_cache/opus-mt/.../5bc4493d463cf000c1f0b50f8d56886a392ed4ab`        | CPU                    | real translation validated                             | validated |
+| Piper          | `es_ES-sharvard-medium`           | Spanish TTS        | voice config `piper_version` 1.0.0; runtime 1.2.0   | upstream `rhasspy/piper-voices`: MIT; local config has no embedded licence file | reviewable        | `services/media-ingest/model_cache/piper/es_ES-sharvard-medium`                                 | CPU                    | real speech generation and listener playback validated | validated |
 
 ## P5.3 Quality Review Status
 
@@ -70,15 +85,21 @@ language now requires only downloading a voice model and adding one
 
 ## Proposed Or Blocked Targets
 
-| Provider | Model or voice | Language | Licence evidence | Commercial review | Local path or cache | Status |
-| --- | --- | --- | --- | --- | --- | --- |
-| OPUS-MT | `Helsinki-NLP/opus-mt-en-fr` | English to French | model-dependent | pending | not validated in P5.2 | proposed |
-| OPUS-MT | `Helsinki-NLP/opus-mt-en-ROMANCE` | English to Portuguese | model-dependent | pending | not validated in P5.2 | proposed |
-| M2M100 | `facebook/m2m100_418M` | English to Spanish, French, Portuguese, Yoruba and Chinese | MIT model card | reviewable | runtime support implemented; local model and quality validation pending | proposed |
-| Local model | Latin candidate | English to Latin | no approved model selected | pending | unsupported and hidden from selectable outputs | blocked |
-| Piper | French voice candidate | French | voice-dependent | pending | not selected | blocked |
-| Piper | Portuguese voice candidate | Portuguese | voice-dependent | pending | not selected | blocked |
-| Piper | Yoruba voice candidate | Yoruba | voice-dependent | pending | not selected | blocked |
+The rows below are the 2026-07-28 P5.2 planning snapshot. Where they conflict with the
+2026-08-08 Multi-Voice Configuration section above (French/Portuguese Piper voices, the
+Yoruba NLLB+MMS route, and Latin via `opus-mt-en-ROMANCE` + `mms-tts-lat` are now installed
+in the development/demo profile), the later section records the current state. Commercial
+review remains pending for all of them.
+
+| Provider    | Model or voice                    | Language                                                   | Licence evidence           | Commercial review | Local path or cache                                                     | Status   |
+| ----------- | --------------------------------- | ---------------------------------------------------------- | -------------------------- | ----------------- | ----------------------------------------------------------------------- | -------- |
+| OPUS-MT     | `Helsinki-NLP/opus-mt-en-fr`      | English to French                                          | model-dependent            | pending           | not validated in P5.2                                                   | proposed |
+| OPUS-MT     | `Helsinki-NLP/opus-mt-en-ROMANCE` | English to Portuguese                                      | model-dependent            | pending           | not validated in P5.2                                                   | proposed |
+| M2M100      | `facebook/m2m100_418M`            | English to Spanish, French, Portuguese, Yoruba and Chinese | MIT model card             | reviewable        | runtime support implemented; local model and quality validation pending | proposed |
+| Local model | Latin candidate                   | English to Latin                                           | no approved model selected | pending           | unsupported and hidden from selectable outputs                          | blocked  |
+| Piper       | French voice candidate            | French                                                     | voice-dependent            | pending           | not selected                                                            | blocked  |
+| Piper       | Portuguese voice candidate        | Portuguese                                                 | voice-dependent            | pending           | not selected                                                            | blocked  |
+| Piper       | Yoruba voice candidate            | Yoruba                                                     | voice-dependent            | pending           | not selected                                                            | blocked  |
 
 ## Local Asset Sizes
 

@@ -1,6 +1,13 @@
 # AI Runtime Setup
 
+Repository owner: masterzee001
+
 Date: 2026-07-28
+
+> **P6-G0 profile:** Set `AI_RUNTIME_PROFILE=development-demo` for this local stack. This guide
+> does not certify a commercial runtime. Commercial profiles must pass the machine-readable
+> registry's complete fail-closed licence, rights, deployment, quality, security, and production
+> gates before use; media-ingest currently rejects those profile values at startup.
 
 This guide prepares the local P5.2 open-source provider runtime without changing the global Python installation. Use it for partner-preview machines that need the real local path:
 
