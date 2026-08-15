@@ -305,6 +305,7 @@ export class IngestService {
           computeType: config.fasterWhisperComputeType,
           modelCacheDir: config.fasterWhisperModelCacheDir,
           allowGpuFallback: config.fasterWhisperAllowGpuFallback,
+          detectForeignSpeech: config.fasterWhisperDetectForeignSpeech,
           timeoutMs: config.transcriptionTimeoutMs,
         },
       });

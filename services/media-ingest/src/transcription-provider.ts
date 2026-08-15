@@ -97,6 +97,8 @@ export interface FasterWhisperConfig {
   computeType: string;
   modelCacheDir: string | null;
   allowGpuFallback: boolean;
+  /** See FasterWhisperProviderOptions.detectForeignSpeech. */
+  detectForeignSpeech?: boolean;
   timeoutMs: number;
 }
 
@@ -116,6 +118,19 @@ export interface FasterWhisperProviderOptions extends FasterWhisperConfig {
   runCommand?: CommandRunner;
   /** Seam for the persistent faster-whisper python worker. */
   createWorker?: PythonWorkerFactory;
+  /**
+   * Ask the recogniser, separately from transcription, what language was
+   * actually spoken, and discard the utterance when it confidently disagrees
+   * with what the participant declared.
+   *
+   * This exists for the case where one microphone feeds two sessions with
+   * different declared languages — a shared device, or a second voice in the
+   * room. The session whose language is not being spoken otherwise publishes
+   * fluent nonsense under that participant's name.
+   *
+   * Costs an extra detection pass per chunk, so it is opt-in.
+   */
+  detectForeignSpeech?: boolean;
 }
 
 export function createTranscriptionProvider(
@@ -243,6 +258,25 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
     // something a person said.
     const { kept } = filterHallucinatedSegments(result.segments);
 
+    // The declared language still drives transcription; this only refuses to
+    // publish when the recogniser separately says, with high confidence, that
+    // a different language was spoken. Silence is better than a fluent
+    // invention attributed to someone who did not say it.
+    const declared = input.sourceLanguageMode === 'manual' ? input.sourceLanguage : null;
+    if (
+      declared &&
+      result.spokenLanguage &&
+      primarySubtag(result.spokenLanguage) !== primarySubtag(declared) &&
+      (result.spokenLanguageProbability ?? 0) >= FOREIGN_SPEECH_CONFIDENCE
+    ) {
+      return {
+        segments: [],
+        detectedLanguage: result.detectedLanguage,
+        confidence: result.confidence,
+        providerLatencyMs,
+      };
+    }
+
     return {
       segments: kept.map((segment) => ({
         text: segment.text,
@@ -336,6 +370,7 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
         device,
         this.options.computeType,
         this.options.modelCacheDir ?? '',
+        this.options.detectForeignSpeech ? '1' : '',
       ],
       maxConcurrency: 1,
       label: 'faster-whisper',
@@ -394,7 +429,26 @@ interface FasterWhisperJsonResult {
   segments: RecognisedSegment[];
   detectedLanguage: string;
   confidence: number | null;
+  /**
+   * What the recogniser believes was actually spoken, asked separately so a
+   * forced decoder cannot simply echo the language it was told to use. Null
+   * when detection is off or failed.
+   */
+  spokenLanguage: string | null;
+  spokenLanguageProbability: number | null;
   device: string;
+}
+
+/**
+ * How sure the recogniser must be that a DIFFERENT language was spoken before
+ * an utterance is refused. Deliberately high: losing real speech is the worse
+ * failure, and the participant's declaration wins every close call.
+ */
+const FOREIGN_SPEECH_CONFIDENCE = 0.85;
+
+/** Compares languages by primary subtag, matching the rest of the pipeline. */
+function primarySubtag(language: string): string {
+  return language.trim().toLowerCase().split('-')[0] ?? '';
 }
 
 function parseFasterWhisperResult(raw: unknown): FasterWhisperJsonResult {
@@ -415,6 +469,11 @@ function parseFasterWhisperResult(raw: unknown): FasterWhisperJsonResult {
       typeof raw['confidence'] === 'number' && Number.isFinite(raw['confidence'])
         ? Math.max(0, Math.min(1, raw['confidence']))
         : null,
+    spokenLanguage:
+      typeof raw['spokenLanguage'] === 'string' && raw['spokenLanguage']
+        ? raw['spokenLanguage']
+        : null,
+    spokenLanguageProbability: finiteOrNull(raw['spokenLanguageProbability']),
     device: typeof raw['device'] === 'string' && raw['device'] ? raw['device'] : '',
   };
 }
@@ -542,7 +601,10 @@ device = sys.argv[2]
 compute_type = sys.argv[3]
 model_cache_dir = sys.argv[4] or None
 
+detect_foreign = (sys.argv[5] if len(sys.argv) > 5 else "") == "1"
+
 from faster_whisper import WhisperModel
+from faster_whisper.audio import decode_audio
 
 kwargs = {"device": device, "compute_type": compute_type}
 if model_cache_dir:
@@ -569,6 +631,26 @@ def handle(payload):
     # because the speaker knows better than the detector.
     if language_hint:
         transcribe_kwargs["language"] = language_hint
+
+    # What was ACTUALLY spoken, asked separately so it cannot influence the
+    # transcription above. A forced decoder reports back the language it was
+    # told to use, so it can never reveal that the microphone is carrying
+    # something else — which is what a shared device or a second voice in the
+    # room produces. Best effort only: if detection fails the utterance is
+    # published as normal.
+    spoken_language = None
+    spoken_probability = None
+    if language_hint and detect_foreign:
+        try:
+            waveform = decode_audio(audio_path, sampling_rate=16000)
+            spoken_language, spoken_probability, _ = model.detect_language(
+                audio=waveform, vad_filter=True
+            )
+            spoken_probability = float(spoken_probability)
+        except Exception:
+            spoken_language = None
+            spoken_probability = None
+
     segments, info = model.transcribe(audio_path, **transcribe_kwargs)
     segment_payloads = []
     for segment in segments:
@@ -593,6 +675,8 @@ def handle(payload):
         "segments": segment_payloads,
         "detectedLanguage": getattr(info, "language", None) or "und",
         "confidence": confidence,
+        "spokenLanguage": spoken_language,
+        "spokenLanguageProbability": spoken_probability,
         "device": device,
     }
 
