@@ -154,6 +154,53 @@ Developer telemetry used to find this lives at `GET /internal/diagnostics` on th
 (`WEBRTC_DIAGNOSTICS_ENABLED=true`, internal-token gated), reporting per-bridge-session chunker
 emission, queue depth, skipped frames, dropped VAD segments and failures.
 
+## Streaming partial captions (§22.1, wave after P6.1C acceptance)
+
+Captions used to appear only after the speaker paused, because a VAD segment is only closed by
+silence. A speaker who talks for six seconds saw nothing for six seconds. Interim chunks close
+that gap: while a segment is still open, the chunker re-emits the audio so far every
+`WEBRTC_PARTIAL_CAPTION_INTERVAL_MS` (default 1500 ms, `0` disables) so a caption can be shown
+mid-sentence.
+
+The contract in one line: **a partial is a preview, never a record.**
+
+- A partial carries the *same* `sequence` and `startMs` as the final chunk that will close its
+  segment, and an `endMs` at the current speech position. It is a strict prefix of the final,
+  so `(sequence, partialSequence ?? 'final')` is the identity a caption surface upserts on, and
+  the final supersedes every partial before it.
+- Emitting a partial changes nothing the final depends on: the sequence counter, the emitted
+  timeline, pending discontinuity flags and queue accounting are all left alone. With partials
+  off, emission is byte-identical to before.
+- Programme sessions never emit partials — their recorded timeline is the product. Partials are
+  call-only, and media-ingest rejects a partial on a programme session outright.
+- Partials never join `audioExtraction.chunks`, never persist into the transcription/translation
+  event arrays, and never generate speech. Their staged audio is deleted as soon as it is
+  transcribed. Only finals form the durable record and produce voice.
+- Under load a partial is *dropped*, never queued: anything already waiting would delay it past
+  the point where a newer partial (or the final) supersedes it, and queueing it behind a final
+  would push that final's caption later — the one thing a preview must never do.
+
+Two correctness details that took a second pass to get right:
+
+1. **The zod schemas strip undeclared keys.** `isFinal` and `partialSequence` had to be declared
+   in `@videofy-live/media-contracts` as well as the shared-types interfaces, or the flag was
+   silently removed in transit and every partial arrived looking final. Absence of `isFinal`
+   means final, so every existing producer stays valid.
+2. **A failed preview is not lost speech.** Partials are frequent and transcribing half an
+   utterance is the likeliest thing to time out, so folding their failures into
+   `failedChunks`/`lastError` would bury real speech loss in expected noise — on the exact
+   surface used to diagnose it. Failed partials are counted separately
+   (`failedPartialChunks`/`lastPartialError` on the bridge metadata, `partialSubmissionFailureCount`
+   on the gateway) and never mark the call as faulted.
+
+Delivery-latency statistics deliberately sample finals only, so the summary keeps meaning "time
+to deliver a completed utterance"; partials are faster by construction and would flatter it.
+
+Measured on a real two-browser EN↔FR call (`partial-9888`): 80 partial captions delivered
+alongside 58 finals, **median 1700 ms earlier** than the final for the same utterance, no audio
+generated for previews, zero ingest faults, and §30.4 still 7/7 with final-caption delivery at
+median 529 ms / p90 1796 ms.
+
 ## Explicitly deferred to P6.1C
 
 Camera video tiles, real two-device/browser acceptance evidence, measured end-to-end latency

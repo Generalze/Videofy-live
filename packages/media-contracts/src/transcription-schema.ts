@@ -20,6 +20,11 @@ export const TranscriptionEventSchema = z.object({
   confidence: z.number().min(0).max(1).nullable(),
   providerLatencyMs: z.number().int().nonnegative().nullable().optional(),
   status: TranscriptionStatusSchema,
+  // Streaming captions (§22.1). Optional and literal-false: absence means
+  // final, so every existing producer stays valid. These MUST be declared or
+  // zod strips them and the partial flag never reaches the call runtime.
+  isFinal: z.literal(false).optional(),
+  partialSequence: z.number().int().nonnegative().optional(),
   error: z.string().min(1).optional(),
   createdAt: z.string().datetime(),
 });

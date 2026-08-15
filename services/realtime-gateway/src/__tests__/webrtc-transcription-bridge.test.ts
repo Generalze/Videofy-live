@@ -2,10 +2,13 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { PassThrough } from 'node:stream';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  HttpWebRtcTranscriptionSubmissionClient,
   WebRtcTranscriptionBridge,
   wavBufferFromPcm,
   type WebRtcTranscriptionBridgeContext,
@@ -426,6 +429,325 @@ describe('WebRtcTranscriptionBridge', () => {
     expect(bridge.getSessionCounters('wrs_missing', 1)).toBeNull();
   });
 
+  it('streams interim partials for a call while the sentence is still being spoken', async () => {
+    const stagingDir = await tempDir();
+    const client = fakeClient();
+    const bridge = new WebRtcTranscriptionBridge({
+      stagingDir,
+      client,
+      vad: partialVad,
+      partialIntervalMs: 300,
+    });
+
+    talk(bridge, callContext, 3);
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(1));
+    expect(client.submitted[0]?.chunk).toMatchObject({
+      sequence: 0,
+      partial: true,
+      partialSequence: 0,
+      startMs: 0,
+      endMs: 300,
+      endOfStream: false,
+    });
+
+    talk(bridge, callContext, 3);
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(2));
+    expect(client.submitted[1]?.chunk).toMatchObject({
+      sequence: 0,
+      partial: true,
+      partialSequence: 1,
+      startMs: 0,
+      endMs: 600,
+    });
+
+    pause(bridge, callContext);
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(3));
+    const final = client.submitted[2]!.chunk;
+    // Same sequence as its partials, and the WHOLE utterance: 600 ms of speech
+    // plus the 100 ms pause that closed the segment.
+    expect(final).toMatchObject({ sequence: 0, startMs: 0, endMs: 700, durationMs: 700 });
+    expect(final.partial).toBeUndefined();
+    expect(final.partialSequence).toBeUndefined();
+    expect(final.samples.length).toBe(11_200);
+    expect(bridge.getSnapshot(callContext)).toMatchObject({
+      partialIntervalMs: 300,
+      partialChunkCount: 2,
+      droppedPartialChunkCount: 0,
+      queuedChunks: 0,
+      queuedBytes: 0,
+    });
+  });
+
+  it('never streams partials for programme sessions, whatever the interval', async () => {
+    const stagingDir = await tempDir();
+    const client = fakeClient();
+    const bridge = new WebRtcTranscriptionBridge({
+      stagingDir,
+      client,
+      vad: partialVad,
+      partialIntervalMs: 300,
+    });
+
+    talk(bridge, context, 6);
+    pause(bridge, context);
+
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(1));
+    expect(client.submitted[0]?.chunk).toMatchObject({ sequence: 0, startMs: 0, endMs: 700 });
+    expect(client.submitted[0]?.chunk.partial).toBeUndefined();
+    expect(bridge.getSnapshot(context)).toMatchObject({
+      partialIntervalMs: 0,
+      partialChunkCount: 0,
+      droppedPartialChunkCount: 0,
+    });
+  });
+
+  it('drops a partial instead of queueing it behind work that would delay it', async () => {
+    const stagingDir = await tempDir();
+    const gate = manualSubmitGate();
+    const client = fakeClient({ gate });
+    const bridge = new WebRtcTranscriptionBridge({
+      stagingDir,
+      client,
+      vad: partialVad,
+      partialIntervalMs: 300,
+    });
+
+    // Partial 0 goes in flight and is held there; partial 1 takes the empty
+    // queue; partial 2 finds the queue busy and is dropped rather than stacked.
+    talk(bridge, callContext, 9);
+    await vi.waitFor(() => expect(client.submitAttempts).toBe(1));
+    expect(bridge.getSnapshot(callContext)).toMatchObject({
+      queueLength: 1,
+      partialChunkCount: 3,
+      droppedPartialChunkCount: 1,
+      lastDroppedPartialReason: 'queue-busy',
+      // Partials hold no queue capacity at all, so the accounting a final
+      // depends on is untouched.
+      queuedChunks: 0,
+      queuedBytes: 0,
+      skippedFrameCount: 0,
+    });
+
+    // The final supersedes the partial still waiting for its segment.
+    pause(bridge, callContext);
+    expect(bridge.getSnapshot(callContext)).toMatchObject({
+      queueLength: 1,
+      droppedPartialChunkCount: 2,
+      lastDroppedPartialReason: 'superseded',
+      queuedChunks: 1,
+    });
+
+    gate.release();
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(2));
+    expect(
+      client.submitted.map((entry) => ({
+        sequence: entry.chunk.sequence,
+        partialSequence: entry.chunk.partial ? entry.chunk.partialSequence : 'final',
+        endMs: entry.chunk.endMs,
+      })),
+    ).toEqual([
+      { sequence: 0, partialSequence: 0, endMs: 300 },
+      { sequence: 0, partialSequence: 'final', endMs: 1000 },
+    ]);
+    expect(bridge.getSnapshot(callContext)).toMatchObject({ queuedChunks: 0, queuedBytes: 0 });
+  });
+
+  it('drops a queued partial the moment its own final chunk is ready', async () => {
+    const stagingDir = await tempDir();
+    const gate = manualSubmitGate();
+    const client = fakeClient({ gate });
+    const bridge = new WebRtcTranscriptionBridge({
+      stagingDir,
+      client,
+      vad: partialVad,
+      partialIntervalMs: 300,
+    });
+
+    // Sentence one is in flight and held; sentence two previews into the queue.
+    talk(bridge, callContext, 2);
+    pause(bridge, callContext);
+    await vi.waitFor(() => expect(client.submitAttempts).toBe(1));
+    talk(bridge, callContext, 3);
+    expect(bridge.getSnapshot(callContext)).toMatchObject({
+      queueLength: 1,
+      partialChunkCount: 1,
+      droppedPartialChunkCount: 0,
+    });
+
+    pause(bridge, callContext);
+    expect(bridge.getSnapshot(callContext)).toMatchObject({
+      queueLength: 1,
+      droppedPartialChunkCount: 1,
+      lastDroppedPartialReason: 'superseded',
+    });
+
+    gate.release();
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(2));
+    expect(
+      client.submitted.map((entry) => `${entry.chunk.sequence}:${entry.chunk.partial ?? false}`),
+    ).toEqual(['0:false', '1:false']);
+    expect(client.submitted[1]?.chunk).toMatchObject({ startMs: 300, endMs: 700 });
+  });
+
+  it('never lets a partial delay or evict a final chunk', async () => {
+    const stagingDir = await tempDir();
+    const gate = manualSubmitGate();
+    const client = fakeClient({ gate });
+    const bridge = new WebRtcTranscriptionBridge({
+      stagingDir,
+      client,
+      maxQueuedChunks: 2,
+      vad: partialVad,
+      partialIntervalMs: 300,
+    });
+
+    // Final 0 in flight (held), final 1 queued: the queue budget is full.
+    talk(bridge, callContext, 2);
+    pause(bridge, callContext);
+    await vi.waitFor(() => expect(client.submitAttempts).toBe(1));
+    talk(bridge, callContext, 2);
+    pause(bridge, callContext);
+    expect(bridge.getSnapshot(callContext)).toMatchObject({ queuedChunks: 2, queueLength: 1 });
+
+    // A partial arriving now takes nothing from the finals: it is not queued
+    // ahead of final 1, and it does not evict anything to make room.
+    talk(bridge, callContext, 3);
+    expect(bridge.getSnapshot(callContext)).toMatchObject({
+      queuedChunks: 2,
+      queueLength: 1,
+      partialChunkCount: 1,
+      droppedPartialChunkCount: 1,
+      lastDroppedPartialReason: 'queue-busy',
+      evictedChunkCount: 0,
+    });
+
+    // Only the next FINAL evicts, and it evicts the oldest FINAL, as before.
+    pause(bridge, callContext);
+    expect(bridge.getSnapshot(callContext)).toMatchObject({
+      queuedChunks: 2,
+      evictedChunkCount: 1,
+      lastEvictedSequence: 1,
+    });
+
+    gate.release();
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(2));
+    expect(client.submitted.map((entry) => entry.chunk.sequence)).toEqual([0, 2]);
+    expect(client.submitted.every((entry) => entry.chunk.partial === undefined)).toBe(true);
+    expect(bridge.getSnapshot(callContext)).toMatchObject({ queuedChunks: 0, queuedBytes: 0 });
+  });
+
+  it('gives up a queued partial before a real chunk when the queue must make room', async () => {
+    const stagingDir = await tempDir();
+    const gate = manualSubmitGate();
+    const client = fakeClient({ gate });
+    const bridge = new WebRtcTranscriptionBridge({
+      stagingDir,
+      client,
+      maxQueuedChunks: 1,
+      vad: partialVad,
+      partialIntervalMs: 300,
+    });
+
+    // The single queue slot is held by final 0, in flight; the queue itself is
+    // empty, so the next sentence's preview is admitted into it.
+    talk(bridge, callContext, 2);
+    pause(bridge, callContext);
+    await vi.waitFor(() => expect(client.submitAttempts).toBe(1));
+    talk(bridge, callContext, 3);
+    expect(bridge.getSnapshot(callContext)).toMatchObject({ queueLength: 1, queuedChunks: 1 });
+
+    // Final 1 needs room. The partial is surrendered first and is NOT reported
+    // as evicted speech: nothing that was going to be transcribed was lost.
+    pause(bridge, callContext);
+    expect(bridge.getSnapshot(callContext)).toMatchObject({
+      queueLength: 0,
+      queuedChunks: 1,
+      evictedChunkCount: 0,
+      lastEvictedSequence: null,
+      droppedPartialChunkCount: 1,
+      lastDroppedPartialReason: 'queue-busy',
+      skippedFrameCount: 1,
+    });
+
+    gate.release();
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(1));
+    expect(client.submitted[0]?.chunk).toMatchObject({ sequence: 0, endMs: 300 });
+    expect(bridge.getSnapshot(callContext)).toMatchObject({ queuedChunks: 0, queuedBytes: 0 });
+  });
+
+  it('treats a failed preview as a missed caption, not as lost speech', async () => {
+    const stagingDir = await tempDir();
+    const client = fakeClient({ failSubmitAttempts: 1 });
+    const bridge = new WebRtcTranscriptionBridge({
+      stagingDir,
+      client,
+      maxRetries: 0,
+      vad: partialVad,
+      partialIntervalMs: 300,
+    });
+
+    talk(bridge, callContext, 3);
+    await vi.waitFor(() => expect(client.submitAttempts).toBe(1));
+    expect(client.submitted).toHaveLength(0);
+
+    // Two more frames: not enough new speech for a second preview, so the next
+    // thing submitted is the final chunk itself.
+    talk(bridge, callContext, 2);
+    pause(bridge, callContext);
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(1));
+
+    // The utterance still arrives whole, and NOT flagged as following a hole:
+    // the audio the lost preview carried is inside this very chunk.
+    expect(client.submitted[0]?.chunk).toMatchObject({
+      sequence: 0,
+      startMs: 0,
+      endMs: 600,
+      discontinuity: false,
+    });
+    expect(client.submitted[0]?.chunk.samples.length).toBe(9600);
+    expect(bridge.getSnapshot(callContext)).toMatchObject({
+      failure: null,
+      submissionFailureCount: 0,
+      partialSubmissionFailureCount: 1,
+      lastPartialFailureReason: 'planned submit failure',
+    });
+    expect(bridge.getDiagnostics()).toMatchObject({ failedSessionCount: 0 });
+  });
+
+  it('times a partial on its own clock without corrupting the final chunk entry', async () => {
+    const stagingDir = await tempDir();
+    const client = fakeClient();
+    const bridge = new WebRtcTranscriptionBridge({
+      stagingDir,
+      client,
+      vad: partialVad,
+      partialIntervalMs: 300,
+    });
+
+    talk(bridge, callContext, 3);
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(1));
+    const partialTiming = bridge.lookupChunkTiming(callContext.sessionId, 1, 100);
+    expect(partialTiming).toMatchObject({
+      sequence: 0,
+      partialSequence: 0,
+      startMs: 0,
+      endMs: 300,
+    });
+    expect(partialTiming?.submittedAtMs).not.toBeNull();
+
+    talk(bridge, callContext, 3);
+    pause(bridge, callContext);
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(3));
+
+    // The final owns its own entry: sharing `sequence` with its partials must
+    // not leave it looking unsubmitted or borrow their capture clock.
+    const finalTiming = bridge.lookupChunkTiming(callContext.sessionId, 1, 100);
+    expect(finalTiming).toMatchObject({ sequence: 0, partialSequence: null, endMs: 700 });
+    expect(finalTiming?.submittedAtMs).not.toBeNull();
+    expect(finalTiming?.capturedAtMs).toBeGreaterThanOrEqual(partialTiming!.capturedAtMs);
+    expect(finalTiming?.submittedAtMs!).toBeGreaterThanOrEqual(partialTiming!.submittedAtMs!);
+  });
+
   it('reports diagnostics and cleans closed sessions after queues drain', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
@@ -457,6 +779,52 @@ describe('WebRtcTranscriptionBridge', () => {
 /** One 100 ms speech frame, i.e. exactly one chunk at chunkDurationMs: 100. */
 function speak(bridge: WebRtcTranscriptionBridge, context: WebRtcTranscriptionBridgeContext): void {
   bridge.handleFrame(context, {
+    samples: new Int16Array(1600),
+    sampleRate: 16000,
+    channelCount: 1,
+    bitsPerSample: 16,
+  });
+}
+
+/** `call_` ids are what switch the bridge into call behavior. */
+const callContext: WebRtcTranscriptionBridgeContext = {
+  ...context,
+  sessionId: 'call_demo_participant_1_r2',
+  broadcastId: 'callcast_demo_participant_1_r2',
+};
+
+/** VAD tuned for 100 ms frames: one silent frame ends the sentence. */
+const partialVad = {
+  enabled: true,
+  mode: 'fallback',
+  speechThreshold: 0.01,
+  minSpeechMs: 100,
+  endSilenceMs: 100,
+  maxSegmentMs: 60_000,
+} as const;
+
+/** `frames` × 100 ms of speech: audible, so the VAD keeps the segment open. */
+function talk(
+  bridge: WebRtcTranscriptionBridge,
+  target: WebRtcTranscriptionBridgeContext,
+  frames: number,
+): void {
+  for (let index = 0; index < frames; index++) {
+    bridge.handleFrame(target, {
+      samples: new Int16Array(1600).fill(10_000),
+      sampleRate: 16000,
+      channelCount: 1,
+      bitsPerSample: 16,
+    });
+  }
+}
+
+/** 100 ms of silence, i.e. the pause that closes a VAD segment. */
+function pause(
+  bridge: WebRtcTranscriptionBridge,
+  target: WebRtcTranscriptionBridgeContext,
+): void {
+  bridge.handleFrame(target, {
     samples: new Int16Array(1600),
     sampleRate: 16000,
     channelCount: 1,
@@ -533,6 +901,70 @@ async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'videofy-webrtc-'));
   tempDirs.push(dir);
   return dir;
+}
+
+describe('HttpWebRtcTranscriptionSubmissionClient', () => {
+  it('sends partial identity on a partial chunk and leaves a final body unchanged', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const server = createServer((request, response) => {
+      const received: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => received.push(chunk));
+      request.on('end', () => {
+        bodies.push(JSON.parse(Buffer.concat(received).toString('utf8')) as Record<string, unknown>);
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end('{}');
+      });
+    });
+    await new Promise<void>((ready) => server.listen(0, '127.0.0.1', ready));
+    const { port } = server.address() as AddressInfo;
+    const client = new HttpWebRtcTranscriptionSubmissionClient({
+      baseUrl: `http://127.0.0.1:${port}`,
+      timeoutMs: 5_000,
+    });
+
+    try {
+      await client.submitChunk(
+        'call_demo',
+        { ...chunkFixture(), partial: true, partialSequence: 2, endMs: 900 },
+        '/staging/partial.wav',
+      );
+      await client.submitChunk('call_demo', chunkFixture(), '/staging/final.wav');
+    } finally {
+      await new Promise<void>((closed) => server.close(() => closed()));
+    }
+
+    expect(bodies[0]).toMatchObject({
+      sequence: 7,
+      startMs: 0,
+      endMs: 900,
+      partial: true,
+      partialSequence: 2,
+      sourcePath: '/staging/partial.wav',
+    });
+    // A final chunk's body is exactly what it has always been.
+    expect(bodies[1]).not.toHaveProperty('partial');
+    expect(bodies[1]).not.toHaveProperty('partialSequence');
+    expect(bodies[1]).toMatchObject({ sequence: 7, startMs: 0, endMs: 1_000 });
+  });
+});
+
+/** A submitted-shaped chunk; the client only reads these fields. */
+function chunkFixture(): WebRtcTranscriptionChunk {
+  const samples = new Int16Array(16_000);
+  return {
+    ...context,
+    sequence: 7,
+    startMs: 0,
+    endMs: 1_000,
+    durationMs: 1_000,
+    sampleRate: 16000,
+    channelCount: 1,
+    pcmFormat: 'pcm_s16le',
+    samples,
+    byteLength: samples.byteLength,
+    discontinuity: false,
+    endOfStream: false,
+  };
 }
 
 describe('wavBufferFromPcm', () => {

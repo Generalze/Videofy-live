@@ -131,6 +131,12 @@ export class Gateway {
       webRtcTranscriptionChunkMs?: number;
       webRtcTranscriptionRequestTimeoutMs?: number;
       webRtcTranscriptionStagingDir?: string;
+      /**
+       * Interim partial-chunk interval for call sessions; 0 turns streaming
+       * partial captions off. Omitted here means off, so a Gateway built
+       * without config (tests, embedders) keeps today's emission exactly.
+       */
+      webRtcPartialCaptionIntervalMs?: number;
       callTranscriptLogDir?: string | null;
       vad?: ConstructorParameters<typeof WebRtcTranscriptionBridge>[0]['vad'];
     } = {},
@@ -148,6 +154,9 @@ export class Gateway {
         ? { chunkDurationMs: options.webRtcTranscriptionChunkMs }
         : {}),
       ...(options.vad ? { vad: options.vad } : {}),
+      // Explicit, not defaulted: the bridge's own default would enable partials
+      // for every embedder, and the gateway is where real call traffic opts in.
+      partialIntervalMs: options.webRtcPartialCaptionIntervalMs ?? 0,
     });
     this.listenerMediaPeers = new BackendWebRtcListenerPeerRegistry({
       onLocalSignal: (envelope) => this.routeBackendWebRtcSignal(envelope),

@@ -77,9 +77,20 @@ export interface WebRtcTranscriptionBridgeMetadata {
   chunkCount: number;
   processingChunks: number;
   transcribedChunks: number;
+  /** Speech that was lost. Interim streaming-caption chunks never count here. */
   failedChunks: number;
   latestTranscript: string | null;
+  /** Why speech was lost. Never set by a failed interim chunk. */
   lastError: string | null;
+  /**
+   * Streaming captions (§22.1): interim chunks that failed to produce a preview
+   * caption. Kept apart from `failedChunks` because no speech was lost — the
+   * final chunk still carries that audio — so this must never read as a fault
+   * in the call.
+   */
+  failedPartialChunks?: number;
+  /** Why the last interim chunk failed; diagnostics only, not a call fault. */
+  lastPartialError?: string | null;
   startedAt?: string;
   stoppedAt?: string;
 }

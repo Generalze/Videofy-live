@@ -157,7 +157,43 @@ export interface WebRtcChunkInput {
   mimeType: 'audio/wav';
   sizeBytes: number;
   sourcePath: string;
+  /**
+   * P6 streaming captions (Architecture V3 §22.1): this chunk is an INTERIM
+   * slice of an utterance that is still being spoken. It carries the same
+   * `sequence` and `startMs` as the FINAL chunk that will arrive when the
+   * speaker pauses, and `endMs` is the current speech position. Interim chunks
+   * are call-only, never join the durable audio timeline, and never produce
+   * generated audio.
+   */
+  partial?: boolean;
+  /** 0-based index of this interim chunk inside the current utterance. */
+  partialSequence?: number;
 }
+
+/**
+ * Streaming-caption marker carried by transcription/translation events that
+ * describe an utterance still in progress.
+ *
+ * The programme contracts (`TranscriptionEvent`, `TimestampedTranslationEvent`
+ * in `@videofy-live/shared-types`) have no partial flag, so media-ingest adds
+ * these two OPTIONAL fields structurally rather than changing the shared
+ * interfaces. Consumers that ignore them see exactly today's shape.
+ *
+ * Contract: **absence of `isFinal` means the event is final.** Every event
+ * produced by the final-chunk pipeline is emitted unchanged; only interim
+ * events carry `isFinal: false`. A partial reuses the sequence and the
+ * `<chunkId>-s<index>` identity that the eventual final event will use, so a
+ * caption renderer replaces the partial in place when the final arrives.
+ */
+export interface PartialEventMarker {
+  /** Always `false` on interim events; absent on final events. */
+  isFinal?: false;
+  /** 0-based index of the interim chunk inside the current utterance. */
+  partialSequence?: number;
+}
+
+export type PartialTranscriptionEvent = TranscriptionEvent & PartialEventMarker;
+export type PartialTimestampedTranslationEvent = TimestampedTranslationEvent & PartialEventMarker;
 
 export interface ProcessingSession {
   id: string;
@@ -828,6 +864,9 @@ export class ProcessingSessionStore {
 
   async ingestWebRtcChunk(sessionId: string, input: WebRtcChunkInput): Promise<ProcessingSession> {
     const session = this.requireWebRtcSession(sessionId);
+    if (input.partial) {
+      return await this.ingestWebRtcPartialChunk(session, input);
+    }
     if (this.activeWebRtcChunkSessions.has(session.id)) {
       throw new MediaIngestError(
         `A WebRTC transcription chunk is already being processed for ${session.id}.`,
@@ -881,6 +920,347 @@ export class ProcessingSessionStore {
     } finally {
       this.activeWebRtcChunkSessions.delete(session.id);
     }
+  }
+
+  /**
+   * P6 streaming captions: ingest an INTERIM chunk of an utterance that is
+   * still being spoken, so a caption can appear before the speaker pauses.
+   *
+   * A partial is a preview, never a record:
+   * - it is not appended to `session.audioExtraction.chunks` (that array is the
+   *   final timeline that sequence/gap validation is built on),
+   * - its audio lives under a distinct `webrtc-partial-*.wav` name and is
+   *   deleted as soon as transcription is done,
+   * - its events are delivered through the `onTranscriptionEvent` /
+   *   `onTranslationEvent` callbacks only, never persisted into
+   *   `session.transcription.events` / `session.translation.events`, so
+   *   progress counters and the durable record stay owned by the finals,
+   *   and no text-to-speech is generated,
+   * - it can never fail the call: a bad partial is dropped and recorded the
+   *   same way a dropped chunk is.
+   */
+  private async ingestWebRtcPartialChunk(
+    session: ProcessingSession,
+    input: WebRtcChunkInput,
+  ): Promise<ProcessingSession> {
+    if (!isRealtimeCallSession(session)) {
+      // Programme sessions keep the contiguous, strictly-ordered timeline they
+      // have today; accepting an interim chunk there would consume the final
+      // chunk's sequence and reject the real audio that follows.
+      await rm(input.sourcePath, { force: true });
+      throw new MediaIngestError(
+        'Partial WebRTC chunks are only accepted for native call sessions.',
+        'invalid-transition',
+        409,
+        { ...session },
+      );
+    }
+    if (this.isWebRtcChunkInFlight(session)) {
+      // Superseded before it started: newer audio for this same utterance is
+      // already on its way, so dropping the partial loses nothing and keeps the
+      // final chunk's turn free.
+      await rm(input.sourcePath, { force: true });
+      return { ...session };
+    }
+
+    this.activeWebRtcChunkSessions.add(session.id);
+    const partialSequence = input.partialSequence ?? 0;
+    let audioPath: string | null = null;
+    try {
+      this.assertWebRtcPartialChunkAccepted(session, input);
+      const stored = await this.storeWebRtcPartialChunk(session, input, partialSequence);
+      audioPath = stored.audioPath;
+      await this.processWebRtcPartialChunk(session, stored.chunk, audioPath, partialSequence);
+      return { ...session };
+    } catch (error) {
+      // NOT recordWebRtcChunkFailure: that counter means speech was lost, and
+      // a failed preview loses nothing — the final chunk still carries this
+      // audio. Previews are frequent and transcribing half an utterance is the
+      // likeliest thing to time out, so folding them into failedChunks would
+      // bury real speech loss in expected noise on the one surface used to
+      // diagnose it.
+      return this.recordWebRtcPartialChunkFailure(session, error);
+    } finally {
+      // Partial audio never outlives its own transcription, on every path.
+      await rm(input.sourcePath, { force: true });
+      if (audioPath) await rm(audioPath, { force: true });
+      this.activeWebRtcChunkSessions.delete(session.id);
+    }
+  }
+
+  /**
+   * True while a chunk of this session is being processed. Partial chunks are
+   * dropped rather than queued when this holds, so streaming captions never
+   * delay or displace the final utterance.
+   */
+  private isWebRtcChunkInFlight(session: ProcessingSession): boolean {
+    return (
+      this.activeWebRtcChunkSessions.has(session.id) ||
+      session.transcription.events.some(
+        (event) => event.status === 'transcribing' || event.status === 'retrying',
+      )
+    );
+  }
+
+  /**
+   * Validation for an interim chunk: every format, size and path rule that a
+   * final chunk must satisfy, minus the two ordering rules that compare against
+   * stored final chunks. A partial deliberately repeats the pending final's
+   * `sequence` and `startMs`, so "sequence must increase" and "no gap/overlap"
+   * would reject every partial by construction. Those rules are untouched for
+   * finals.
+   */
+  private assertWebRtcPartialChunkAccepted(
+    session: ProcessingSession,
+    input: WebRtcChunkInput,
+  ): void {
+    if (session.state !== 'processing') {
+      throw new MediaIngestError(
+        `WebRTC transcription chunks can only be accepted while the session is processing.`,
+        'invalid-transition',
+        409,
+        { ...session },
+      );
+    }
+    if (!Number.isInteger(input.sequence) || input.sequence < 0) {
+      throw new MediaIngestError(
+        'WebRTC chunk sequence must be a non-negative integer.',
+        'audio-timeline-invalid',
+        400,
+        { ...session },
+      );
+    }
+    if (
+      input.partialSequence !== undefined &&
+      (!Number.isInteger(input.partialSequence) || input.partialSequence < 0)
+    ) {
+      throw new MediaIngestError(
+        'WebRTC partial chunk sequence must be a non-negative integer.',
+        'audio-timeline-invalid',
+        400,
+        { ...session },
+      );
+    }
+    if (
+      !Number.isInteger(input.startMs) ||
+      !Number.isInteger(input.endMs) ||
+      input.startMs < 0 ||
+      input.endMs <= input.startMs ||
+      input.endMs - input.startMs > 30_000
+    ) {
+      throw new MediaIngestError(
+        'WebRTC chunk timestamps are invalid.',
+        'audio-timeline-invalid',
+        400,
+        { ...session },
+      );
+    }
+    if (
+      input.sampleRate !== 16000 ||
+      input.channelCount !== 1 ||
+      input.pcmFormat !== 'pcm_s16le' ||
+      input.mimeType !== 'audio/wav'
+    ) {
+      throw new MediaIngestError(
+        'WebRTC chunk format must be WAV mono 16 kHz PCM 16-bit.',
+        'invalid-media',
+        400,
+        { ...session },
+      );
+    }
+    if (input.sizeBytes <= 44 || !Number.isInteger(input.sizeBytes)) {
+      throw new MediaIngestError('WebRTC chunk is empty or invalid.', 'invalid-media', 400, {
+        ...session,
+      });
+    }
+    if (!isPathInside(this.webRtcStagingDir, input.sourcePath)) {
+      throw new MediaIngestError('Unsafe WebRTC chunk path rejected.', 'unsafe-filename', 400, {
+        ...session,
+      });
+    }
+  }
+
+  /**
+   * Stages interim audio under a name that can never collide with the final
+   * chunk that reuses the same sequence. The metadata is returned to the
+   * caller instead of being appended to `session.audioExtraction.chunks`.
+   */
+  private async storeWebRtcPartialChunk(
+    session: ProcessingSession,
+    input: WebRtcChunkInput,
+    partialSequence: number,
+  ): Promise<{ chunk: MicrophoneCaptureChunkMetadata; audioPath: string }> {
+    const outputDir = safeSessionOutputDir(this.outputBaseDir, session.id);
+    await mkdir(outputDir, { recursive: true });
+    const filename = `webrtc-partial-${String(input.sequence).padStart(6, '0')}-${String(
+      partialSequence,
+    ).padStart(4, '0')}.wav`;
+    const audioPath = resolve(outputDir, filename);
+    await rename(input.sourcePath, audioPath);
+
+    return {
+      chunk: {
+        chunkId: `${this.webRtcChunkId(session, input.sequence)}:p${partialSequence}`,
+        index: input.sequence,
+        filename,
+        startMs: input.startMs,
+        endMs: input.endMs,
+        durationMs: input.endMs - input.startMs,
+        status: 'ready',
+        receivedAt: new Date().toISOString(),
+        mimeType: 'audio/wav',
+        sizeBytes: input.sizeBytes,
+      },
+      audioPath,
+    };
+  }
+
+  /**
+   * Transcribes interim audio and, when it carries text, translates it into the
+   * session's target languages. Everything is emitted through the event
+   * callbacks marked `isFinal: false`; nothing is written to the session, and
+   * no speech is generated — the final chunk owns the durable record and the
+   * audio clip.
+   */
+  private async processWebRtcPartialChunk(
+    session: ProcessingSession,
+    chunk: MicrophoneCaptureChunkMetadata,
+    audioPath: string,
+    partialSequence: number,
+  ): Promise<void> {
+    const result = await transcribeWithTimeout(
+      this.transcriptionProvider,
+      {
+        sessionId: session.id,
+        streamId: session.streamId,
+        chunk,
+        audioPath,
+        sourceLanguage: session.sourceLanguageControl.activeLanguage,
+        sourceLanguageMode: session.sourceLanguageControl.mode,
+      },
+      this.transcriptionTimeoutMs,
+    );
+    // Language detection is deliberately NOT reconciled from interim audio: a
+    // detection on half an utterance could bump the source-language revision
+    // and make the utterance's own final transcription look stale.
+
+    // A partial predicts the identity of the final it will be replaced by:
+    // same sequence (the counter is only advanced by finals) and the same
+    // `<chunkId>-s<index>` segment id, so a caption surface upserts in place.
+    const baseSequence = this.peekTranscriptionSequence(session.id);
+    const finalChunkId = this.webRtcChunkId(session, chunk.index);
+    const transcribed = result.segments
+      .filter((segment) => segment.text.trim() !== '')
+      .map((segment, index): PartialTranscriptionEvent => {
+        const startMs = Math.min(
+          Math.max(chunk.startMs + segment.startMs, chunk.startMs),
+          chunk.endMs,
+        );
+        const endMs = Math.min(Math.max(chunk.startMs + segment.endMs, startMs), chunk.endMs);
+        return {
+          sessionId: session.id,
+          streamId: session.streamId,
+          chunkId: `${finalChunkId}-s${index}`,
+          sequence: baseSequence + index,
+          sourceText: segment.text.trim(),
+          detectedLanguage: result.detectedLanguage,
+          startMs,
+          endMs,
+          confidence: result.confidence,
+          sourceLanguageRevision: session.sourceLanguageControl.revision,
+          providerLatencyMs: result.providerLatencyMs ?? null,
+          status: 'transcribed',
+          createdAt: new Date().toISOString(),
+          isFinal: false,
+          partialSequence,
+        };
+      });
+    if (transcribed.length === 0) return;
+
+    for (const event of transcribed) {
+      this.onTranscriptionEvent(event);
+    }
+
+    const targetLanguages =
+      session.targetLanguages.length > 0 ? session.targetLanguages : [session.targetLanguage];
+    for (const segment of transcribed) {
+      for (const targetLanguage of targetLanguages) {
+        await this.emitPartialTranslation(session, segment, targetLanguage, partialSequence);
+      }
+    }
+  }
+
+  private async emitPartialTranslation(
+    session: ProcessingSession,
+    segment: PartialTranscriptionEvent,
+    targetLanguage: string,
+    partialSequence: number,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    const result = await translateWithTimeout(
+      this.translationProvider,
+      {
+        sessionId: session.id,
+        streamId: session.streamId,
+        segmentId: segment.chunkId,
+        sequence: segment.sequence,
+        sourceLanguage: segment.detectedLanguage,
+        targetLanguage,
+        sourceText: segment.sourceText,
+        startMs: segment.startMs,
+        endMs: segment.endMs,
+      },
+      this.translationTimeoutMs,
+    );
+    const translated: PartialTimestampedTranslationEvent = {
+      ...this.createTranslationEvent(
+        session,
+        segment,
+        result.translatedText,
+        'translated',
+        {
+          queuedMs: 0,
+          providerMs: Date.now() - startedAt,
+          totalMs: Math.max(0, Date.now() - startedAt),
+        },
+        undefined,
+        targetLanguage,
+      ),
+      isFinal: false,
+      partialSequence,
+    };
+    // Only the terminal state is emitted for a partial: intermediate
+    // queued/translating events would flash empty captions on the way to text
+    // that is itself provisional.
+    this.onTranslationEvent(translated);
+  }
+
+  /** Stable id of the FINAL chunk for a sequence, shared by partials and finals. */
+  private webRtcChunkId(session: ProcessingSession, sequence: number): string {
+    return `${session.id}:webrtc:${session.webrtcTranscriptionBridge?.revision ?? 0}:${sequence}`;
+  }
+
+  /**
+   * Records a failed INTERIM chunk. Deliberately touches neither `failedChunks`
+   * nor `lastError`: those two mean "speech was lost on this call", and a
+   * preview that never arrived costs only an earlier caption. The final chunk
+   * for the same utterance is unaffected and still on its way.
+   */
+  private recordWebRtcPartialChunkFailure(
+    session: ProcessingSession,
+    error: unknown,
+  ): ProcessingSession {
+    const message = error instanceof Error ? error.message : 'WebRTC partial chunk failed.';
+    if (session.webrtcTranscriptionBridge) {
+      session.webrtcTranscriptionBridge = {
+        ...session.webrtcTranscriptionBridge,
+        failedPartialChunks: (session.webrtcTranscriptionBridge.failedPartialChunks ?? 0) + 1,
+        lastPartialError: message,
+      };
+    }
+    session.updatedAt = new Date().toISOString();
+    this.emitSession(session);
+    return { ...session };
   }
 
   /**
@@ -2248,7 +2628,7 @@ export class ProcessingSessionStore {
     await rename(input.sourcePath, resolve(outputDir, filename));
 
     const chunk: MicrophoneCaptureChunkMetadata = {
-      chunkId: `${session.id}:webrtc:${session.webrtcTranscriptionBridge?.revision ?? 0}:${input.sequence}`,
+      chunkId: this.webRtcChunkId(session, input.sequence),
       index: input.sequence,
       filename,
       startMs: input.startMs,
@@ -2783,6 +3163,16 @@ export class ProcessingSessionStore {
     const sequence = this.transcriptionSequences.get(sessionId) ?? 0;
     this.transcriptionSequences.set(sessionId, sequence + 1);
     return sequence;
+  }
+
+  /**
+   * The sequence the next transcribed segment will be given, without consuming
+   * it. Interim (partial) events borrow it so they carry the same sequence as
+   * the final segment that replaces them, while the counter stays owned by the
+   * finals that form the durable record.
+   */
+  private peekTranscriptionSequence(sessionId: string): number {
+    return this.transcriptionSequences.get(sessionId) ?? 0;
   }
 
   /**

@@ -21,6 +21,13 @@ export interface TimestampedTranslationEvent {
   endMs: number;
   status: TimestampedTranslationStatus;
   latency: TimestampedTranslationLatency;
+  /**
+   * Streaming captions (§22.1): `false` marks an interim translation for an
+   * utterance still being spoken. ABSENT means final.
+   */
+  isFinal?: false;
+  /** Index of the interim slice within its utterance; absent on finals. */
+  partialSequence?: number;
   error?: string;
   createdAt: string;
 }

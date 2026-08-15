@@ -1,5 +1,10 @@
-﻿import type { AudioExtractionMetadata, AudioChunkMetadata } from '@videofy-live/shared-types';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+﻿import type {
+  AudioExtractionMetadata,
+  AudioChunkMetadata,
+  TimestampedTranslationEvent,
+  TranscriptionEvent,
+} from '@videofy-live/shared-types';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -8,6 +13,7 @@ import {
   MediaIngestError,
   ProcessingSessionStore,
   type AudioExtractor,
+  type PartialEventMarker,
   type ProbeResult,
   type ProcessingSession,
   type UploadedMediaFile,
@@ -93,6 +99,14 @@ async function createStagedWav(stagingDir: string, filename: string): Promise<st
   const path = join(stagingDir, filename);
   await writeFile(path, wavFixture());
   return path;
+}
+
+/**
+ * Streaming captions mark interim events with `isFinal: false`; a final event
+ * carries no flag at all, which is the contract the gateway reads.
+ */
+function finality(event: (TranscriptionEvent | TimestampedTranslationEvent) & PartialEventMarker): string {
+  return event.isFinal === false ? `partial#${event.partialSequence}` : 'final';
 }
 
 function wavFixture(): Buffer {
@@ -957,6 +971,318 @@ describe('ProcessingSessionStore', () => {
         sourcePath: await createStagedWav(stagingDir, 'out-of-order.wav'),
       }),
     ).rejects.toMatchObject({ code: 'audio-timeline-invalid' });
+  });
+
+  it('streams partial call captions without audio, stored chunks or leftover files', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    const transcripts: string[] = [];
+    const captions: string[] = [];
+    const generated: string[] = [];
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+      translationTargetLanguage: 'fr',
+      translationSupportedTargetLanguages: ['fr'],
+      textToSpeechSupportedLanguages: ['fr'],
+      onTranscriptionEvent: (event) =>
+        transcripts.push(`${event.sequence}:${event.status}:${finality(event)}`),
+      onTranslationEvent: (event) =>
+        captions.push(`${event.sequence}:${event.status}:${finality(event)}:${event.translatedText}`),
+      onGeneratedAudioReady: (event) => generated.push(`${event.sequence}:${event.status}`),
+    });
+    const session = await sessionStore.createWebRtcSession({
+      sessionId: 'call_partial_participant_1_r1',
+      broadcastId: 'callcast_partial_participant_1_r1',
+      broadcasterPeerId: 'peer_call_participant_1',
+      revision: 1,
+      targetLanguage: 'fr',
+      targetLanguages: ['fr'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+
+    // Two interim chunks while the speaker is still talking: same sequence and
+    // startMs as the final that will follow, growing endMs.
+    const afterFirstPartial = await sessionStore.ingestWebRtcChunk(session.id, {
+      sequence: 0,
+      startMs: 0,
+      endMs: 4_000,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: wavFixture().length,
+      sourcePath: await createStagedWav(stagingDir, 'partial-0-0.wav'),
+      partial: true,
+      partialSequence: 0,
+    });
+    await sessionStore.ingestWebRtcChunk(session.id, {
+      sequence: 0,
+      startMs: 0,
+      endMs: 7_000,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: wavFixture().length,
+      sourcePath: await createStagedWav(stagingDir, 'partial-0-1.wav'),
+      partial: true,
+      partialSequence: 1,
+    });
+
+    // Captions were delivered, but nothing durable was touched.
+    expect(transcripts).toEqual(['0:transcribed:partial#0', '0:transcribed:partial#1']);
+    expect(captions).toEqual([
+      '0:translated:partial#0:[fr] Mock transcript chunk 1',
+      '0:translated:partial#1:[fr] Mock transcript chunk 1',
+    ]);
+    expect(generated).toEqual([]);
+    expect(afterFirstPartial.state).toBe('processing');
+    expect(afterFirstPartial.audioExtraction.chunks).toHaveLength(0);
+    expect(afterFirstPartial.transcription.events).toHaveLength(0);
+    expect(afterFirstPartial.translation.events).toHaveLength(0);
+    expect(afterFirstPartial.generatedAudio.events).toHaveLength(0);
+    expect(afterFirstPartial.webrtcTranscriptionBridge?.failedChunks).toBe(0);
+
+    // No partial audio survives, in the staging area or the session output.
+    expect(await readdir(stagingDir)).toEqual([]);
+    expect(await readdir(join(outputDir, session.id))).toEqual([]);
+
+    // The final chunk reuses the same sequence and startMs and is processed in full.
+    const final = await sessionStore.ingestWebRtcChunk(session.id, {
+      sequence: 0,
+      startMs: 0,
+      endMs: 9_000,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: wavFixture().length,
+      sourcePath: await createStagedWav(stagingDir, 'final-0.wav'),
+    });
+
+    expect(final.state).toBe('processing');
+    expect(final.audioExtraction.chunks).toHaveLength(1);
+    expect(final.transcription.events).toHaveLength(1);
+    expect(final.transcription.events[0]).toMatchObject({
+      // The partials borrowed this sequence without consuming it.
+      sequence: 0,
+      chunkId: 'call_partial_participant_1_r1:webrtc:1:0-s0',
+      status: 'transcribed',
+    });
+    expect((final.transcription.events[0] as PartialEventMarker).isFinal).toBeUndefined();
+    expect(final.translation.events).toHaveLength(1);
+    expect(final.generatedAudio.events).toHaveLength(1);
+    expect(generated).toEqual(['0:generated']);
+    expect(transcripts.slice(2)).toEqual(['0:queued:final', '0:transcribing:final', '0:transcribed:final']);
+    expect(captions.slice(2)).toEqual([
+      '0:queued:final:',
+      '0:translating:final:',
+      '0:translated:final:[fr] Mock transcript chunk 1',
+    ]);
+    expect(await readdir(join(outputDir, session.id))).toContain('webrtc-chunk-000000.wav');
+    expect(await readdir(join(outputDir, session.id))).not.toContain(
+      'webrtc-partial-000000-0000.wav',
+    );
+  });
+
+  it('rejects partial chunks for programme WebRTC sessions and keeps them running', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+      translationTargetLanguage: 'fr',
+      translationSupportedTargetLanguages: ['fr'],
+      textToSpeechSupportedLanguages: ['fr'],
+    });
+    const session = await sessionStore.createWebRtcSession({
+      sessionId: 'wrs_partial_programme',
+      broadcastId: 'broadcast_partial_programme',
+      broadcasterPeerId: 'peer_broadcaster',
+      revision: 1,
+      targetLanguage: 'fr',
+      targetLanguages: ['fr'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+
+    await expect(
+      sessionStore.ingestWebRtcChunk(session.id, {
+        sequence: 0,
+        startMs: 0,
+        endMs: 4_000,
+        sampleRate: 16000,
+        channelCount: 1,
+        pcmFormat: 'pcm_s16le',
+        mimeType: 'audio/wav',
+        sizeBytes: wavFixture().length,
+        sourcePath: await createStagedWav(stagingDir, 'programme-partial.wav'),
+        partial: true,
+        partialSequence: 0,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-transition' });
+
+    // The programme session is untouched: not failed, no chunk consumed, and
+    // the ordinary chunk for that sequence is still accepted.
+    const rejected = sessionStore.get(session.id)!;
+    expect(rejected.state).toBe('processing');
+    expect(rejected.audioExtraction.chunks).toHaveLength(0);
+    expect(rejected.error).toBeNull();
+    expect(await readdir(stagingDir)).toEqual([]);
+
+    const accepted = await sessionStore.ingestWebRtcChunk(session.id, {
+      sequence: 0,
+      startMs: 0,
+      endMs: 15_000,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: wavFixture().length,
+      sourcePath: await createStagedWav(stagingDir, 'programme-final.wav'),
+    });
+    expect(accepted.state).toBe('processing');
+    expect(accepted.audioExtraction.chunks).toHaveLength(1);
+    expect(accepted.transcription.events).toHaveLength(1);
+  });
+
+  it('drops a partial that arrives while another chunk is being processed', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    const transcripts: string[] = [];
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+      translationTargetLanguage: 'fr',
+      translationSupportedTargetLanguages: ['fr'],
+      textToSpeechSupportedLanguages: ['fr'],
+      onTranscriptionEvent: (event) =>
+        transcripts.push(`${event.sequence}:${event.status}:${finality(event)}`),
+    });
+    const session = await sessionStore.createWebRtcSession({
+      sessionId: 'call_partial_race_participant_1_r1',
+      broadcastId: 'callcast_partial_race_participant_1_r1',
+      broadcasterPeerId: 'peer_call_participant_1',
+      revision: 1,
+      targetLanguage: 'fr',
+      targetLanguages: ['fr'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+
+    // Start a final chunk without awaiting it, then push a partial into the
+    // same session while that work is still in flight.
+    const inFlight = sessionStore.ingestWebRtcChunk(session.id, {
+      sequence: 0,
+      startMs: 0,
+      endMs: 9_000,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: wavFixture().length,
+      sourcePath: await createStagedWav(stagingDir, 'race-final.wav'),
+    });
+    const dropped = await sessionStore.ingestWebRtcChunk(session.id, {
+      sequence: 1,
+      startMs: 9_000,
+      endMs: 11_000,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: wavFixture().length,
+      sourcePath: await createStagedWav(stagingDir, 'race-partial.wav'),
+      partial: true,
+      partialSequence: 0,
+    });
+
+    // Dropped, not failed: no error, no failure counter, no leftover audio.
+    expect(dropped.state).toBe('processing');
+    expect(dropped.webrtcTranscriptionBridge?.failedChunks).toBe(0);
+    expect(dropped.error).toBeNull();
+
+    const final = await inFlight;
+    expect(final.state).toBe('processing');
+    expect(final.transcription.events).toHaveLength(1);
+    expect(transcripts.every((entry) => entry.endsWith(':final'))).toBe(true);
+    expect(await readdir(stagingDir)).toEqual([]);
+    const outputFiles = await readdir(join(outputDir, session.id));
+    expect(outputFiles).toContain('webrtc-chunk-000000.wav');
+    expect(outputFiles.some((name) => name.startsWith('webrtc-partial-'))).toBe(false);
+  });
+
+  it('keeps a failed partial off the speech-loss counters', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+      translationTargetLanguage: 'fr',
+      translationSupportedTargetLanguages: ['fr'],
+      textToSpeechSupportedLanguages: ['fr'],
+      transcriptionProvider: {
+        name: 'failing-transcriber',
+        transcribe: async () => {
+          throw new Error('transcription exploded');
+        },
+      },
+    });
+    const session = await sessionStore.createWebRtcSession({
+      sessionId: 'call_partial_fail_participant_1_r1',
+      broadcastId: 'callcast_partial_fail_participant_1_r1',
+      broadcasterPeerId: 'peer_call_participant_1',
+      revision: 1,
+      targetLanguage: 'fr',
+      targetLanguages: ['fr'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+
+    const afterFailure = await sessionStore.ingestWebRtcChunk(session.id, {
+      sequence: 0,
+      startMs: 0,
+      endMs: 1_500,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: wavFixture().length,
+      sourcePath: await createStagedWav(stagingDir, 'failing-partial.wav'),
+      partial: true,
+      partialSequence: 0,
+    });
+
+    // A preview that failed is not speech that was lost: the final chunk still
+    // carries this audio, so the call's fault counters must stay clean.
+    expect(afterFailure.state).toBe('processing');
+    expect(afterFailure.webrtcTranscriptionBridge?.failedChunks).toBe(0);
+    expect(afterFailure.webrtcTranscriptionBridge?.lastError).toBeNull();
+    expect(afterFailure.monitoring.lastError).toBeNull();
+    // ...but it is still visible, on its own counter.
+    expect(afterFailure.webrtcTranscriptionBridge?.failedPartialChunks).toBe(1);
+    expect(afterFailure.webrtcTranscriptionBridge?.lastPartialError).toBe('transcription exploded');
+
+    // The failure path still cleans up after itself.
+    expect(await readdir(stagingDir)).toEqual([]);
+    const outputFiles = await readdir(join(outputDir, session.id));
+    expect(outputFiles.some((name) => name.startsWith('webrtc-partial-'))).toBe(false);
+
+    // The final chunk for the same utterance is unaffected and still accepted.
+    const final = await sessionStore.ingestWebRtcChunk(session.id, {
+      sequence: 0,
+      startMs: 0,
+      endMs: 2_000,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: wavFixture().length,
+      sourcePath: await createStagedWav(stagingDir, 'recovering-final.wav'),
+    });
+    expect(final.audioExtraction.chunks).toHaveLength(1);
   });
 
   it('rejects unsafe WebRTC staged paths', async () => {

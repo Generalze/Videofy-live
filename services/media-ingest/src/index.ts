@@ -161,6 +161,7 @@ app.post('/internal/webrtc/sessions/:sessionId/chunks', async (req, res) => {
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const sessionId = requireRouteParam(req.params.sessionId, 'sessionId');
+    const partial = parseOptionalBooleanField(body.partial, 'partial');
     const session = await ingest.ingestWebRtcChunk(sessionId, {
       sequence: parseIntegerField(body.sequence, 'sequence'),
       startMs: parseIntegerField(body.startMs, 'startMs'),
@@ -173,6 +174,14 @@ app.post('/internal/webrtc/sessions/:sessionId/chunks', async (req, res) => {
       mimeType: parseLiteralString(body.mimeType, 'audio/wav', 'mimeType'),
       sizeBytes: parseIntegerField(body.sizeBytes, 'sizeBytes'),
       sourcePath: requireStringField(body.sourcePath, 'sourcePath'),
+      // P6 streaming captions: an interim slice of an utterance still being
+      // spoken. Optional, so an older gateway keeps sending finals only.
+      ...(partial === undefined ? {} : { partial }),
+      ...(body.partialSequence === undefined || body.partialSequence === null
+        ? {}
+        : {
+            partialSequence: parseNonNegativeIntegerField(body.partialSequence, 'partialSequence'),
+          }),
     });
     res.json({ session });
   } catch (error) {
@@ -419,6 +428,27 @@ function parseIntegerField(value: unknown, fieldName: string): number {
     throw new MediaIngestError(`${fieldName} must be an integer.`, 'invalid-media', 400);
   }
   return parsed;
+}
+
+function parseNonNegativeIntegerField(value: unknown, fieldName: string): number {
+  const parsed = parseIntegerField(value, fieldName);
+  if (parsed < 0) {
+    throw new MediaIngestError(
+      `${fieldName} must be a non-negative integer.`,
+      'invalid-media',
+      400,
+    );
+  }
+  return parsed;
+}
+
+/** Undefined when the field is absent; a hard 400 when it is present but not a boolean. */
+function parseOptionalBooleanField(value: unknown, fieldName: string): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'boolean') return value;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new MediaIngestError(`${fieldName} must be a boolean.`, 'invalid-media', 400);
 }
 
 function requireStringField(value: unknown, fieldName: string): string {

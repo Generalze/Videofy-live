@@ -596,7 +596,9 @@ export class CallRuntime {
       languageRevision: entry.languageRevision,
       startMs: event.startMs,
       endMs: event.endMs,
-      isFinal: true,
+      // Streaming captions: media-ingest marks interim results `isFinal: false`
+      // and omits the flag entirely on finals.
+      isFinal: !isInterimEvent(event),
     };
     this.deliverCaptions(entry, source);
     return true;
@@ -617,7 +619,7 @@ export class CallRuntime {
       languageRevision: entry.languageRevision,
       startMs: event.startMs,
       endMs: event.endMs,
-      isFinal: true,
+      isFinal: !isInterimEvent(event),
     };
     this.deliverCaptions(entry, source);
     return true;
@@ -822,8 +824,12 @@ export class CallRuntime {
       bump(stats.captionsDeliveredByRecipient, delivery.recipientParticipantId);
     }
     // Only a delivered payload can have a delivery latency: an event routed to
-    // nobody is counted, never timed.
-    if (deliveries.length > 0) this.recordLatencySample(stats, latency.deliveryLatencyMs);
+    // nobody is counted, never timed. Interim (partial) captions are excluded
+    // so the summary keeps meaning "time to deliver a COMPLETED utterance";
+    // partials are faster by construction and would flatter the median.
+    if (deliveries.length > 0 && source.isFinal) {
+      this.recordLatencySample(stats, latency.deliveryLatencyMs);
+    }
     this.transcriptLog.append({
       kind: 'caption',
       callId: entry.callId,
@@ -1275,6 +1281,17 @@ export class CallRuntime {
     }
     socket.emit(CALL_EVENTS.ERROR, { ...INTERNAL_ERROR });
   }
+}
+
+/**
+ * Streaming captions (§22.1): media-ingest marks an interim result for an
+ * utterance still being spoken with `isFinal: false`, and omits the flag on
+ * finals. Read structurally so the gateway does not couple to the producer's
+ * exact event type; the media-contracts schemas are what guarantee the flag
+ * survives validation instead of being stripped in transit.
+ */
+function isInterimEvent(event: unknown): boolean {
+  return (event as { isFinal?: unknown }).isFinal === false;
 }
 
 export function isCallIngestSessionId(sessionId: string): boolean {

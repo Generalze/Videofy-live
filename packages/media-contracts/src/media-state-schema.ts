@@ -167,6 +167,11 @@ export const MediaStateEventSchema = z.object({
       failedChunks: z.number().int().nonnegative(),
       latestTranscript: z.string().nullable(),
       lastError: z.string().nullable(),
+      // Streaming captions (§22.1): failed previews, tracked apart from
+      // failedChunks so they never read as lost speech. Declared here because
+      // this schema strips undeclared keys before the operator ever sees them.
+      failedPartialChunks: z.number().int().nonnegative().optional(),
+      lastPartialError: z.string().nullable().optional(),
       startedAt: z.string().datetime().optional(),
       stoppedAt: z.string().datetime().optional(),
     })

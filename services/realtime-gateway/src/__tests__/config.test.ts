@@ -81,6 +81,21 @@ describe('gateway config', () => {
     expect(overridden.webRtcVadMaxSegmentMs).toBe(10_000);
   });
 
+  it('defaults streaming partial captions to 1.5 s and can switch them off', () => {
+    delete process.env['WEBRTC_PARTIAL_CAPTION_INTERVAL_MS'];
+    expect(loadConfig().webRtcPartialCaptionIntervalMs).toBe(1_500);
+
+    process.env['WEBRTC_PARTIAL_CAPTION_INTERVAL_MS'] = '900';
+    expect(loadConfig().webRtcPartialCaptionIntervalMs).toBe(900);
+
+    // 0 is a meaningful value here (feature off), unlike the positive-only keys.
+    process.env['WEBRTC_PARTIAL_CAPTION_INTERVAL_MS'] = '0';
+    expect(loadConfig().webRtcPartialCaptionIntervalMs).toBe(0);
+
+    process.env['WEBRTC_PARTIAL_CAPTION_INTERVAL_MS'] = '-1';
+    expect(() => loadConfig()).toThrow(/WEBRTC_PARTIAL_CAPTION_INTERVAL_MS/);
+  });
+
   it('uses file-ingest transcription for uploaded programme media only', () => {
     expect(shouldUseWebRtcTranscriptionForProgrammeSource('uploaded-video')).toBe(false);
     expect(shouldUseWebRtcTranscriptionForProgrammeSource('hls')).toBe(true);

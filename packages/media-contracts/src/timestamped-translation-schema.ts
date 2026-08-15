@@ -29,6 +29,10 @@ export const TimestampedTranslationEventSchema = z
     endMs: z.number().int().positive(),
     status: TimestampedTranslationStatusSchema,
     latency: TimestampedTranslationLatencySchema,
+    // Streaming captions (§22.1). Optional and literal-false: absence means
+    // final. Declared so zod carries the flag instead of stripping it.
+    isFinal: z.literal(false).optional(),
+    partialSequence: z.number().int().nonnegative().optional(),
     error: z.string().min(1).optional(),
     createdAt: z.string().datetime(),
   })

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { safeParseTranscriptionEvent } from '../transcription-schema.js';
+﻿import { describe, expect, it } from 'vitest';
+import { parseTranscriptionEvent, safeParseTranscriptionEvent } from '../transcription-schema.js';
 
 const validEvent = {
   sessionId: 'ps_123',
@@ -33,5 +33,26 @@ describe('TranscriptionEventSchema validation', () => {
 
   it('rejects invalid confidence', () => {
     expect(safeParseTranscriptionEvent({ ...validEvent, confidence: 2 }).success).toBe(false);
+  });
+});
+
+describe('streaming caption flags', () => {
+  it('preserves isFinal=false and partialSequence instead of stripping them', () => {
+    const result = parseTranscriptionEvent({
+      ...validEvent,
+      isFinal: false,
+      partialSequence: 2,
+    });
+
+    expect(result.isFinal).toBe(false);
+    expect(result.partialSequence).toBe(2);
+  });
+
+  it('treats an event without the flag as final', () => {
+    expect(parseTranscriptionEvent(validEvent).isFinal).toBeUndefined();
+  });
+
+  it('rejects isFinal=true, since absence is the only way to say final', () => {
+    expect(safeParseTranscriptionEvent({ ...validEvent, isFinal: true }).success).toBe(false);
   });
 });

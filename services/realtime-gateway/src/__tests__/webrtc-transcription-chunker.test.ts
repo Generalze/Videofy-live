@@ -14,6 +14,26 @@ const context = {
   revision: 2,
 };
 
+/**
+ * VAD tuned for 100 ms test frames: one speech frame arms a segment and one
+ * silence frame closes it, so a sentence is exactly as long as it is written.
+ */
+const partialVad = {
+  enabled: true,
+  mode: 'fallback',
+  speechThreshold: 0.01,
+  minSpeechMs: 100,
+  endSilenceMs: 100,
+  maxSegmentMs: 60_000,
+} as const;
+
+const speech100Ms = (): Int16Array => new Int16Array(1600).fill(10_000);
+const silence100Ms = (): Int16Array => new Int16Array(1600);
+
+function push(chunker: WebRtcTranscriptionChunker, samples: Int16Array): WebRtcTranscriptionChunk[] {
+  return chunker.pushFrame({ samples, sampleRate: 16000, channelCount: 1, bitsPerSample: 16 });
+}
+
 /** Stands in for the bridge: owns the queue the chunker only accounts for. */
 function fakeQueueOwner() {
   const owner = {
@@ -493,6 +513,206 @@ describe('WebRtcTranscriptionChunker', () => {
       }),
     ).toThrow(WebRtcTranscriptionChunkerError);
     expect(chunker.snapshot()).toMatchObject({ queuedChunks: 0, queuedBytes: 0 });
+  });
+
+  it('streams interim partials during a sentence and still ends it with the whole utterance', () => {
+    const chunker = new WebRtcTranscriptionChunker({
+      ...context,
+      vad: partialVad,
+      partialIntervalMs: 300,
+    });
+
+    const partials: WebRtcTranscriptionChunk[] = [];
+    for (let index = 0; index < 6; index++) partials.push(...push(chunker, speech100Ms()));
+
+    // Two 300 ms partials arrive DURING the sentence, both carrying the
+    // sequence the final chunk will use and their own position inside it.
+    expect(
+      partials.map((chunk) => ({
+        sequence: chunk.sequence,
+        partial: chunk.partial,
+        partialSequence: chunk.partialSequence,
+        startMs: chunk.startMs,
+        endMs: chunk.endMs,
+        endOfStream: chunk.endOfStream,
+      })),
+    ).toEqual([
+      { sequence: 0, partial: true, partialSequence: 0, startMs: 0, endMs: 300, endOfStream: false },
+      { sequence: 0, partial: true, partialSequence: 1, startMs: 0, endMs: 600, endOfStream: false },
+    ]);
+    // Each partial is a strict prefix of the segment, from the segment start.
+    expect(partials[0]!.samples).toEqual(new Int16Array(4800).fill(10_000));
+    expect(partials[1]!.samples.subarray(0, 4800)).toEqual(partials[0]!.samples);
+
+    const finals = push(chunker, silence100Ms());
+    expect(finals).toHaveLength(1);
+    expect(finals[0]).toMatchObject({ sequence: 0, startMs: 0, endMs: 700, durationMs: 700 });
+    expect(finals[0]!.partial).toBeUndefined();
+    expect(finals[0]!.partialSequence).toBeUndefined();
+    // The final still holds the WHOLE utterance: 600 ms speech + 100 ms silence.
+    expect(finals[0]!.samples.length).toBe(11_200);
+    expect(finals[0]!.samples.subarray(0, 9600)).toEqual(new Int16Array(9600).fill(10_000));
+    expect(chunker.snapshot()).toMatchObject({
+      partialIntervalMs: 300,
+      partialChunkCount: 2,
+      droppedPartialChunkCount: 0,
+      lastDroppedPartialReason: null,
+    });
+  });
+
+  it('emits a final chunk identical to the one it would emit with partials disabled', () => {
+    const streaming = new WebRtcTranscriptionChunker({
+      ...context,
+      vad: partialVad,
+      partialIntervalMs: 300,
+    });
+    const today = new WebRtcTranscriptionChunker({ ...context, vad: partialVad });
+    // Two sentences and a mid-sentence cut-off, so the flush path is compared
+    // as well as the VAD boundary path.
+    const frames = [
+      ...Array.from({ length: 6 }, speech100Ms),
+      silence100Ms(),
+      ...Array.from({ length: 4 }, speech100Ms),
+      silence100Ms(),
+      ...Array.from({ length: 5 }, speech100Ms),
+    ];
+
+    const streamingFinals: WebRtcTranscriptionChunk[] = [];
+    const todayFinals: WebRtcTranscriptionChunk[] = [];
+    for (const frame of frames) {
+      streamingFinals.push(...push(streaming, frame.slice()).filter((chunk) => !chunk.partial));
+      todayFinals.push(...push(today, frame.slice()));
+    }
+    streamingFinals.push(...streaming.flush());
+    todayFinals.push(...today.flush());
+
+    expect(todayFinals.map((chunk) => chunk.sequence)).toEqual([0, 1, 2]);
+    expect(streamingFinals).toEqual(todayFinals);
+    expect(streaming.snapshot().partialChunkCount).toBeGreaterThan(0);
+    expect(today.snapshot()).toMatchObject({ partialIntervalMs: 0, partialChunkCount: 0 });
+  });
+
+  it('emits no partials by default, so programme chunking is unchanged', () => {
+    const chunker = new WebRtcTranscriptionChunker({ ...context, vad: partialVad });
+
+    for (let index = 0; index < 20; index++) {
+      expect(push(chunker, speech100Ms())).toHaveLength(0);
+    }
+
+    expect(chunker.snapshot()).toMatchObject({ partialIntervalMs: 0, partialChunkCount: 0 });
+  });
+
+  it('ignores a partial interval without VAD, where there is no segment to be partway through', () => {
+    const chunker = new WebRtcTranscriptionChunker({
+      ...context,
+      chunkDurationMs: 100,
+      partialIntervalMs: 300,
+    });
+
+    const chunks = push(chunker, speech100Ms());
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]!.partial).toBeUndefined();
+    expect(chunker.snapshot()).toMatchObject({ partialIntervalMs: 0, partialChunkCount: 0 });
+  });
+
+  it('restarts partial numbering per segment without consuming a final sequence', () => {
+    const chunker = new WebRtcTranscriptionChunker({
+      ...context,
+      vad: partialVad,
+      partialIntervalMs: 300,
+    });
+    const emitted: WebRtcTranscriptionChunk[] = [];
+    const speak = (frames: number) => {
+      for (let index = 0; index < frames; index++) emitted.push(...push(chunker, speech100Ms()));
+      emitted.push(...push(chunker, silence100Ms()));
+    };
+
+    speak(6);
+    speak(3);
+
+    expect(
+      emitted.map((chunk) => `${chunk.sequence}:${chunk.partial ? chunk.partialSequence : 'final'}`),
+    ).toEqual(['0:0', '0:1', '0:final', '1:0', '1:final']);
+  });
+
+  it('keeps partials out of the queue accounting so they can never crowd out a final', () => {
+    const chunker = new WebRtcTranscriptionChunker({
+      ...context,
+      maxQueuedChunks: 1,
+      vad: partialVad,
+      partialIntervalMs: 300,
+    });
+    const partials: WebRtcTranscriptionChunk[] = [];
+
+    for (let index = 0; index < 6; index++) partials.push(...push(chunker, speech100Ms()));
+    expect(partials).toHaveLength(2);
+    // Two partials outstanding, and the single queue slot is still free.
+    expect(chunker.snapshot()).toMatchObject({ queuedChunks: 0, queuedBytes: 0 });
+
+    const [final] = push(chunker, silence100Ms());
+    expect(final).toBeDefined();
+    const finalBytes = final!.byteLength;
+    expect(chunker.snapshot()).toMatchObject({ queuedChunks: 1, queuedBytes: finalBytes });
+
+    // Acking a partial must not hand back the final's slot.
+    chunker.ackChunk(partials[0]!);
+    chunker.releaseChunk(partials[1]!);
+    expect(chunker.snapshot()).toMatchObject({ queuedChunks: 1, queuedBytes: finalBytes });
+
+    // The queue is full, yet the next sentence still previews: partials never
+    // throw queue-limit-exceeded, only the final chunk does.
+    const nextPartials: WebRtcTranscriptionChunk[] = [];
+    for (let index = 0; index < 6; index++) nextPartials.push(...push(chunker, speech100Ms()));
+    expect(nextPartials.map((chunk) => chunk.sequence)).toEqual([1, 1]);
+    expect(() => push(chunker, silence100Ms())).toThrow(WebRtcTranscriptionChunkerError);
+    expect(chunker.snapshot()).toMatchObject({ queuedChunks: 1, queuedBytes: finalBytes });
+
+    chunker.ackChunk(final!);
+    expect(chunker.snapshot()).toMatchObject({ queuedChunks: 0, queuedBytes: 0 });
+  });
+
+  it('reports a pending discontinuity on a partial without consuming it', () => {
+    const chunker = new WebRtcTranscriptionChunker({
+      ...context,
+      vad: partialVad,
+      partialIntervalMs: 300,
+    });
+    chunker.markDiscontinuity();
+
+    const partials: WebRtcTranscriptionChunk[] = [];
+    for (let index = 0; index < 6; index++) partials.push(...push(chunker, speech100Ms()));
+    expect(partials.map((chunk) => chunk.discontinuity)).toEqual([true, true]);
+
+    // The flag survives the partials and still reaches the final chunk, which
+    // is the one media-ingest reads it from.
+    const [final] = push(chunker, silence100Ms());
+    expect(final).toMatchObject({ discontinuity: true });
+
+    const nextPartials: WebRtcTranscriptionChunk[] = [];
+    for (let index = 0; index < 3; index++) nextPartials.push(...push(chunker, speech100Ms()));
+    expect(nextPartials.map((chunk) => chunk.discontinuity)).toEqual([false]);
+  });
+
+  it('counts partials the owner threw away, and never counts a final as one', () => {
+    const chunker = new WebRtcTranscriptionChunker({
+      ...context,
+      vad: partialVad,
+      partialIntervalMs: 300,
+    });
+    const partials: WebRtcTranscriptionChunk[] = [];
+    for (let index = 0; index < 6; index++) partials.push(...push(chunker, speech100Ms()));
+    const [final] = push(chunker, silence100Ms());
+
+    chunker.dropPartialChunk(partials[0]!, 'queue-busy');
+    chunker.dropPartialChunk(partials[1]!, 'superseded');
+    chunker.dropPartialChunk(final!, 'superseded');
+
+    expect(chunker.snapshot()).toMatchObject({
+      partialChunkCount: 2,
+      droppedPartialChunkCount: 2,
+      lastDroppedPartialReason: 'superseded',
+      queuedChunks: 1,
+    });
   });
 
   it('rejects malformed or unsupported PCM frames', () => {

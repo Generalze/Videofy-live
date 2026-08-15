@@ -37,6 +37,13 @@ const CHUNK_TIMING_HISTORY = 128;
  */
 export interface WebRtcChunkTiming {
   sequence: number;
+  /**
+   * Which chunk of `sequence` this entry belongs to: the partial's own
+   * `partialSequence`, or null for the final chunk. Partials share their
+   * final's `sequence`, so `(sequence, partialSequence)` is the identity that
+   * keeps a partial's submission from being written onto the final's entry.
+   */
+  partialSequence: number | null;
   /** Chunk media-timeline window, exactly as submitted to media-ingest. */
   startMs: number;
   endMs: number;
@@ -81,6 +88,13 @@ export interface WebRtcTranscriptionBridgeOptions {
   maxRetries?: number;
   maxQueuedChunks?: number;
   maxQueuedBytes?: number;
+  /**
+   * Interim partial-chunk interval for CALL sessions only (default 1500 ms).
+   * Programme sessions never emit partials: their recorded timeline is the
+   * product, and a partial is a preview of audio the final chunk repeats.
+   * Set to 0 to turn partials off for calls too.
+   */
+  partialIntervalMs?: number;
   vad?: ConstructorParameters<typeof WebRtcTranscriptionChunker>[0]['vad'];
   client?: WebRtcTranscriptionSubmissionClient;
   ffmpegPath?: string;
@@ -106,6 +120,9 @@ interface WebRtcTranscriptionSessionState {
   stopped: boolean;
   failure: string | null;
   submissionFailureCount: number;
+  /** Previews that never reached media-ingest; kept apart from real speech loss. */
+  partialSubmissionFailureCount: number;
+  lastPartialFailureReason: string | null;
   skippedFrameCount: number;
   lastSkippedFrameReason: string | null;
   externalAudioStarted: boolean;
@@ -119,6 +136,7 @@ export class WebRtcTranscriptionBridge {
   private readonly chunkDurationMs: number;
   private readonly maxQueuedChunks: number | undefined;
   private readonly maxQueuedBytes: number | undefined;
+  private readonly partialIntervalMs: number;
   private readonly vad: WebRtcTranscriptionBridgeOptions['vad'];
   private readonly maxRetries: number;
   private readonly client: WebRtcTranscriptionSubmissionClient;
@@ -131,6 +149,7 @@ export class WebRtcTranscriptionBridge {
     this.chunkDurationMs = options.chunkDurationMs ?? 5_000;
     this.maxQueuedChunks = options.maxQueuedChunks;
     this.maxQueuedBytes = options.maxQueuedBytes;
+    this.partialIntervalMs = Math.max(0, options.partialIntervalMs ?? 1_500);
     this.vad = options.vad;
     this.maxRetries = options.maxRetries ?? 1;
     this.ffmpegPath = options.ffmpegPath ?? process.env['FFMPEG_PATH'] ?? 'ffmpeg';
@@ -227,6 +246,8 @@ export class WebRtcTranscriptionBridge {
       closed: session.closed,
       failure: session.failure,
       submissionFailureCount: session.submissionFailureCount,
+      partialSubmissionFailureCount: session.partialSubmissionFailureCount,
+      lastPartialFailureReason: session.lastPartialFailureReason,
       skippedFrameCount: session.skippedFrameCount,
       lastSkippedFrameReason: session.lastSkippedFrameReason,
       lastEvictedSequence: session.backpressure.lastEvictedSequence,
@@ -243,6 +264,13 @@ export class WebRtcTranscriptionBridge {
    * starts at or before `mediaMs` is therefore the one that produced the
    * event. Returns null when the chunk is no longer in the bounded history or
    * the session is unknown.
+   *
+   * Partials break the disjointness on purpose: every partial of an utterance
+   * shares its final's `startMs`. Newest-wins then resolves to the newest
+   * entry emitted for that utterance so far — the final once it exists, and
+   * the latest partial before that. Both are honest anchors for a caption that
+   * can only have come from that utterance; which of an utterance's partials
+   * produced a given caption is not knowable here, so it is not guessed.
    */
   lookupChunkTiming(sessionId: string, revision: number, mediaMs: number): WebRtcChunkTiming | null {
     const session = this.sessions.get(`${sessionId}:${revision}`);
@@ -292,24 +320,34 @@ export class WebRtcTranscriptionBridge {
 
   /** Per-session developer diagnostics: where audio stops flowing, if it does. */
   getSessionDiagnostics(): unknown[] {
-    return [...this.sessions.values()].map((session) => ({
-      sessionId: session.context.sessionId,
-      revision: session.context.revision,
-      created: session.created,
-      active: session.active,
-      closed: session.closed,
-      stopped: session.stopped,
-      failure: session.failure,
-      queueLength: session.queue.length,
-      skippedFrameCount: session.skippedFrameCount,
-      lastSkippedFrameReason: session.lastSkippedFrameReason,
-      submissionFailureCount: session.submissionFailureCount,
-      // Recency-preserving backpressure: how much stale queued speech was
-      // dropped so the newest speech could still be transcribed.
-      evictedChunkCount: session.backpressure.evictedChunkCount,
-      lastEvictedSequence: session.backpressure.lastEvictedSequence,
-      chunker: session.chunker.snapshot(),
-    }));
+    return [...this.sessions.values()].map((session) => {
+      const chunker = session.chunker.snapshot();
+      return {
+        sessionId: session.context.sessionId,
+        revision: session.context.revision,
+        created: session.created,
+        active: session.active,
+        closed: session.closed,
+        stopped: session.stopped,
+        failure: session.failure,
+        queueLength: session.queue.length,
+        skippedFrameCount: session.skippedFrameCount,
+        lastSkippedFrameReason: session.lastSkippedFrameReason,
+        submissionFailureCount: session.submissionFailureCount,
+        // Recency-preserving backpressure: how much stale queued speech was
+        // dropped so the newest speech could still be transcribed.
+        evictedChunkCount: session.backpressure.evictedChunkCount,
+        lastEvictedSequence: session.backpressure.lastEvictedSequence,
+        // Streaming partial captions: how many previews went out, and how many
+        // were superseded before they could (normal under load, not loss).
+        partialChunkCount: chunker.partialChunkCount,
+        droppedPartialChunkCount: chunker.droppedPartialChunkCount,
+        lastDroppedPartialReason: chunker.lastDroppedPartialReason,
+        partialSubmissionFailureCount: session.partialSubmissionFailureCount,
+        lastPartialFailureReason: session.lastPartialFailureReason,
+        chunker,
+      };
+    });
   }
 
   cleanupClosedSessions(): number {
@@ -349,6 +387,12 @@ export class WebRtcTranscriptionBridge {
               queueOverflowPolicy: 'evict-oldest' as const,
               onQueueOverflow: () =>
                 this.evictOldestQueuedChunk(context, queue, backpressure),
+              // Streaming partial captions: a call needs words on screen while
+              // the sentence is still being spoken. Programme sessions get no
+              // partials at all, so their emission stays byte-identical.
+              ...(this.partialIntervalMs > 0
+                ? { partialIntervalMs: this.partialIntervalMs }
+                : {}),
             }
           : {}),
       }),
@@ -361,6 +405,8 @@ export class WebRtcTranscriptionBridge {
       stopped: false,
       failure: null,
       submissionFailureCount: 0,
+      partialSubmissionFailureCount: 0,
+      lastPartialFailureReason: null,
       skippedFrameCount: 0,
       lastSkippedFrameReason: null,
       externalAudioStarted: false,
@@ -383,6 +429,14 @@ export class WebRtcTranscriptionBridge {
     queue: WebRtcTranscriptionChunk[],
     backpressure: WebRtcTranscriptionBackpressureState,
   ): WebRtcTranscriptionChunk | null {
+    // Partials hold no queue accounting, so handing one back would free
+    // nothing. Throw them away first — they are the cheapest thing in the
+    // queue to lose — and only then give up a real chunk.
+    const chunker = this.sessions.get(sessionKey(context))?.chunker;
+    while (queue[0]?.partial) {
+      const partial = queue.shift()!;
+      chunker?.dropPartialChunk(partial, 'queue-busy');
+    }
     const oldest = queue.shift();
     if (!oldest) return null;
     backpressure.evictedChunkCount += 1;
@@ -410,9 +464,25 @@ export class WebRtcTranscriptionBridge {
   ): void {
     const capturedAtMs = Date.now();
     for (const chunk of chunks) {
+      if (chunk.partial) {
+        // A partial is worth submitting only if it can go out NOW. Anything
+        // already waiting would delay it past the point where a newer partial
+        // (or the final itself) supersedes it, and queueing it behind a final
+        // would push that final's caption later — which is the one thing a
+        // preview must never do. So: drop it, don't queue it.
+        if (session.queue.length > 0) {
+          session.chunker.dropPartialChunk(chunk, 'queue-busy');
+          continue;
+        }
+      } else {
+        // The final chunk carries this segment's whole utterance, so every
+        // partial of that segment still waiting is now obsolete.
+        this.dropSupersededPartials(session, chunk.sequence);
+      }
       session.queue.push(chunk);
       session.chunkTimings.push({
         sequence: chunk.sequence,
+        partialSequence: chunk.partial ? (chunk.partialSequence ?? 0) : null,
         startMs: chunk.startMs,
         endMs: chunk.endMs,
         capturedAtMs,
@@ -422,6 +492,28 @@ export class WebRtcTranscriptionBridge {
     if (session.chunkTimings.length > CHUNK_TIMING_HISTORY) {
       session.chunkTimings.splice(0, session.chunkTimings.length - CHUNK_TIMING_HISTORY);
     }
+  }
+
+  /**
+   * Discard queued partials that the final chunk for `sequence` has made
+   * obsolete. Their timing entries are left in place: a partial that was
+   * already submitted can still produce a caption, and history is bounded
+   * anyway.
+   */
+  private dropSupersededPartials(
+    session: WebRtcTranscriptionSessionState,
+    sequence: number,
+  ): void {
+    if (session.queue.length === 0) return;
+    const kept = session.queue.filter((queued) => {
+      if (!queued.partial || queued.sequence > sequence) return true;
+      session.chunker.dropPartialChunk(queued, 'superseded');
+      return false;
+    });
+    if (kept.length === session.queue.length) return;
+    // The queue array identity is closed over by the eviction callback, so it
+    // is rewritten in place rather than replaced.
+    session.queue.splice(0, session.queue.length, ...kept);
   }
 
   private processQueue(session: WebRtcTranscriptionSessionState): void {
@@ -543,7 +635,14 @@ export class WebRtcTranscriptionBridge {
       sourcePath = await this.writeStagedChunk(chunk);
       await this.submitWithRetry(session.context.sessionId, chunk, sourcePath);
       session.chunker.ackChunk(chunk);
-      const timing = session.chunkTimings.find((entry) => entry.sequence === chunk.sequence);
+      // Partials share their final's sequence, so the entry has to be matched
+      // on both halves of the identity or a partial's submission would be
+      // written onto the final's timing entry (and vice versa).
+      const chunkPartialSequence = chunk.partial ? (chunk.partialSequence ?? 0) : null;
+      const timing = session.chunkTimings.find(
+        (entry) =>
+          entry.sequence === chunk.sequence && entry.partialSequence === chunkPartialSequence,
+      );
       if (timing) timing.submittedAtMs = Date.now();
       const audio = inspectPcm16Samples(chunk.samples);
       logger.debug('WebRTC transcription chunk submitted', {
@@ -557,25 +656,40 @@ export class WebRtcTranscriptionBridge {
         channelCount: chunk.channelCount,
         pcmFormat: chunk.pcmFormat,
         durationMs: chunk.durationMs,
+        ...(chunk.partial ? { partial: true, partialSequence: chunk.partialSequence ?? 0 } : {}),
         rms: Number(audio.rms.toFixed(6)),
         peak: Number(audio.peak.toFixed(6)),
         clippedSampleCount: audio.clippedSampleCount,
         silent: audio.silent,
       });
     } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'WebRTC transcription submission failed.';
       // The chunk will never be acked; release its queue accounting so the
       // chunker's queuedChunks/queuedBytes limits cannot leak permanently.
+      // (A partial holds no accounting, so this is a no-op for one.)
       session.chunker.releaseChunk(chunk);
-      session.chunker.markDiscontinuity();
-      session.submissionFailureCount += 1;
-      session.failure = error instanceof Error ? error.message : 'WebRTC transcription submission failed.';
+      if (chunk.partial) {
+        // A lost preview costs nothing: the final chunk still carries this
+        // audio and will still be submitted. So it is not a hole in the
+        // timeline, not speech the pipeline dropped, and not a failed session
+        // — only a caption that waits for the pause it would have waited for
+        // anyway. Recorded on its own counter to keep those numbers honest.
+        session.partialSubmissionFailureCount += 1;
+        session.lastPartialFailureReason = message;
+      } else {
+        session.chunker.markDiscontinuity();
+        session.submissionFailureCount += 1;
+        session.failure = message;
+      }
       if (sourcePath) await rm(sourcePath, { force: true });
       logger.warn('WebRTC transcription chunk submission failed', {
         sessionId: chunk.sessionId,
         broadcastId: chunk.broadcastId,
         revision: chunk.revision,
         sequence: chunk.sequence,
-        message: session.failure,
+        ...(chunk.partial ? { partial: true, partialSequence: chunk.partialSequence ?? 0 } : {}),
+        message,
       });
     }
   }
@@ -612,7 +726,12 @@ export class WebRtcTranscriptionBridge {
 
   private async writeStagedChunk(chunk: WebRtcTranscriptionChunk): Promise<string> {
     await mkdir(this.stagingDir, { recursive: true });
-    const filename = `${chunk.sessionId}-rev-${chunk.revision}-chunk-${String(chunk.sequence).padStart(6, '0')}-${randomUUID()}.wav`;
+    // Partials share their final's sequence, so the staged name says which one
+    // it is; the uuid keeps them unique either way.
+    const partialSuffix = chunk.partial
+      ? `-partial-${String(chunk.partialSequence ?? 0).padStart(3, '0')}`
+      : '';
+    const filename = `${chunk.sessionId}-rev-${chunk.revision}-chunk-${String(chunk.sequence).padStart(6, '0')}${partialSuffix}-${randomUUID()}.wav`;
     const sourcePath = resolve(this.stagingDir, filename);
     await writeFile(sourcePath, wavBufferFromPcm(chunk.samples, chunk.sampleRate, chunk.channelCount));
     return sourcePath;
@@ -663,6 +782,9 @@ export class HttpWebRtcTranscriptionSubmissionClient
       pcmFormat: chunk.pcmFormat,
       discontinuity: chunk.discontinuity,
       endOfStream: chunk.endOfStream,
+      // Only partials carry these: a final chunk's body stays exactly what it
+      // has always been, so nothing about the programme path changes.
+      ...(chunk.partial ? { partial: true, partialSequence: chunk.partialSequence ?? 0 } : {}),
       mimeType: 'audio/wav',
       sizeBytes: chunk.byteLength + 44,
       sourcePath,

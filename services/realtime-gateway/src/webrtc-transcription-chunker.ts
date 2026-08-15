@@ -17,6 +17,15 @@ export interface WebRtcTranscriptionChunk {
   broadcastId: string;
   broadcasterPeerId: string;
   revision: number;
+  /**
+   * Position in the FINAL-chunk numbering, 0-based and gapless.
+   *
+   * A partial carries the sequence its segment's final chunk will carry: it
+   * never consumes a number of its own. Downstream therefore sees the same
+   * `sequence` for every partial of an utterance and for the final that closes
+   * it, which is exactly what lets it replace the partial captions with the
+   * final one.
+   */
   sequence: number;
   startMs: number;
   endMs: number;
@@ -28,6 +37,27 @@ export interface WebRtcTranscriptionChunk {
   byteLength: number;
   discontinuity: boolean;
   endOfStream: boolean;
+  /**
+   * True for an INTERIM chunk emitted while its VAD segment is still being
+   * spoken. Absent (never `true`) on the final chunk that closes a segment.
+   *
+   * A partial holds the segment's audio SO FAR — the same `startMs` as the
+   * eventual final chunk and an `endMs` at the current speech position — so it
+   * is a strict prefix of the final chunk, not a replacement for part of it.
+   * Partials are purely additive: emitting them changes nothing about the
+   * final chunk, which still carries the whole utterance.
+   */
+  partial?: boolean;
+  /**
+   * 0, 1, 2, … within the current segment; present only on partial chunks.
+   *
+   * `sequence` alone does not identify a partial (all partials of an utterance
+   * share it), so the unique key downstream should use is
+   * `(sequence, partialSequence ?? 'final')`. A higher `partialSequence` for
+   * the same `sequence` supersedes a lower one, and the final chunk (no
+   * `partialSequence`) supersedes them all.
+   */
+  partialSequence?: number;
 }
 
 export interface WebRtcAudioPcmDiagnostics {
@@ -67,6 +97,16 @@ export interface NormalizedWebRtcPcmFrame {
  */
 export type WebRtcTranscriptionQueueOverflowPolicy = 'reject-new' | 'evict-oldest';
 
+/**
+ * Why the queue owner threw a partial away instead of submitting it.
+ *
+ * - `queue-busy`: something was already waiting, so this partial would have
+ *   been delivered late and a newer one will supersede it anyway.
+ * - `superseded`: the segment's final chunk was emitted, which makes every
+ *   still-queued partial for that segment obsolete.
+ */
+export type WebRtcPartialDropReason = 'queue-busy' | 'superseded';
+
 export interface WebRtcTranscriptionChunkerOptions extends WebRtcTranscriptionChunkerContext {
   chunkDurationMs?: number;
   maxBufferedDurationMs?: number;
@@ -84,6 +124,17 @@ export interface WebRtcTranscriptionChunkerOptions extends WebRtcTranscriptionCh
    * already in flight), in which case the new chunk is rejected as before.
    */
   onQueueOverflow?: () => WebRtcTranscriptionChunk | null;
+  /**
+   * Emit an INTERIM chunk every `partialIntervalMs` of accumulated speech while
+   * a VAD segment is still open, so downstream can show a partial caption
+   * before the speaker pauses.
+   *
+   * `0` (the default) disables partials entirely, which makes emission
+   * byte-identical to the pre-streaming-captions behavior; programme sessions
+   * are expected to stay at 0. Requires VAD: without it there are no segments
+   * to be partway through, and fixed chunking already emits on a fixed cadence.
+   */
+  partialIntervalMs?: number;
 }
 
 export interface WebRtcVadOptions {
@@ -139,6 +190,14 @@ export class WebRtcTranscriptionChunker {
   private vadDroppedSampleCount = 0;
   private inputSampleCount = 0;
   private skippedSilenceSamples = 0;
+  private readonly partialIntervalSamples: number;
+  /** Next `partialSequence` inside the segment currently being spoken. */
+  private vadPartialSequence = 0;
+  /** Speech-sample count at which this segment's last partial was emitted. */
+  private vadPartialSpeechSampleMark = 0;
+  private partialChunkCount = 0;
+  private droppedPartialChunkCount = 0;
+  private lastDroppedPartialReason: WebRtcPartialDropReason | null = null;
 
   constructor(options: WebRtcTranscriptionChunkerOptions) {
     this.context = {
@@ -164,6 +223,15 @@ export class WebRtcTranscriptionChunker {
         : 'reject-new';
     this.onQueueOverflow =
       this.queueOverflowPolicy === 'evict-oldest' ? (options.onQueueOverflow ?? null) : null;
+    // Partials only exist inside a VAD segment, so an interval without VAD is
+    // silently inert rather than a second, undocumented chunking mode.
+    this.partialIntervalSamples =
+      options.vad?.enabled && (options.partialIntervalMs ?? 0) > 0
+        ? Math.max(
+            1,
+            Math.round(((options.partialIntervalMs ?? 0) / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE),
+          )
+        : 0;
     this.vadRequestedMode = options.vad?.enabled ? options.vad.mode : null;
     if (this.vadRequestedMode === 'silero') warnSileroUnavailableOnce();
     this.vad = options.vad?.enabled
@@ -203,6 +271,10 @@ export class WebRtcTranscriptionChunker {
   }
 
   ackChunk(chunk: WebRtcTranscriptionChunk): void {
+    // A partial never reserved queue capacity (see createPartialChunk), so it
+    // must not release any either — otherwise every partial would silently
+    // hand a final chunk's slot back and the accounting would drift down.
+    if (chunk.partial) return;
     this.queuedChunks = Math.max(0, this.queuedChunks - 1);
     this.queuedBytes = Math.max(0, this.queuedBytes - chunk.byteLength);
   }
@@ -210,6 +282,19 @@ export class WebRtcTranscriptionChunker {
   /** Release queue accounting for a chunk whose submission failed and will not be retried. */
   releaseChunk(chunk: WebRtcTranscriptionChunk): void {
     this.ackChunk(chunk);
+  }
+
+  /**
+   * The owner discarded a partial instead of submitting it. Partials are a
+   * courtesy — a newer one supersedes an older one — so this is normal
+   * behavior under load, recorded for diagnostics rather than treated as loss.
+   */
+  dropPartialChunk(chunk: WebRtcTranscriptionChunk, reason: WebRtcPartialDropReason): void {
+    // Finals are never discarded silently; ignore a mistaken call rather than
+    // reporting speech loss that did not happen.
+    if (!chunk.partial) return;
+    this.droppedPartialChunkCount += 1;
+    this.lastDroppedPartialReason = reason;
   }
 
   snapshot() {
@@ -234,6 +319,12 @@ export class WebRtcTranscriptionChunker {
       vadDroppedSegmentCount: this.vadDroppedSegmentCount,
       vadDroppedMs: Math.round((this.vadDroppedSampleCount / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
       skippedSilenceMs: Math.round((this.skippedSilenceSamples / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
+      partialIntervalMs: Math.round(
+        (this.partialIntervalSamples / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000,
+      ),
+      partialChunkCount: this.partialChunkCount,
+      droppedPartialChunkCount: this.droppedPartialChunkCount,
+      lastDroppedPartialReason: this.lastDroppedPartialReason,
       closed: this.closed,
     };
   }
@@ -285,7 +376,35 @@ export class WebRtcTranscriptionChunker {
       this.resetVadBuffers();
       return [this.createChunk(segment, false, segmentStartSample)];
     }
-    return [];
+    const partial = this.maybeCreatePartialChunk();
+    return partial ? [partial] : [];
+  }
+
+  /**
+   * Emit an INTERIM copy of the segment being spoken so downstream can show a
+   * caption before the speaker pauses.
+   *
+   * This deliberately leaves everything the final chunk depends on untouched:
+   * the VAD buffers keep accumulating, the sequence counter does not advance,
+   * a pending discontinuity is reported but not consumed, and no queue
+   * capacity is reserved. The final chunk is therefore exactly what it would
+   * have been with partials disabled.
+   */
+  private maybeCreatePartialChunk(): WebRtcTranscriptionChunk | null {
+    if (this.partialIntervalSamples <= 0) return null;
+    const segmentStartSample = this.vadSpeechStartSample;
+    if (segmentStartSample === null) return null;
+    // Measured in SPEECH, not wall time: a long pause inside a segment must not
+    // keep re-emitting the same audio under a new partialSequence.
+    if (this.vadSpeechSampleCount - this.vadPartialSpeechSampleMark < this.partialIntervalSamples) {
+      return null;
+    }
+    const segmentLength = this.vadSpeechSampleCount + this.vadSilenceSampleCount;
+    const segment = joinFrames([...this.vadSpeechFrames, ...this.vadSilenceFrames], segmentLength);
+    const chunk = this.createPartialChunk(segment, segmentStartSample);
+    this.vadPartialSpeechSampleMark = this.vadSpeechSampleCount;
+    this.vadPartialSequence += 1;
+    return chunk;
   }
 
   private flushVad(endOfStream: boolean): WebRtcTranscriptionChunk[] {
@@ -324,6 +443,9 @@ export class WebRtcTranscriptionChunker {
     this.vadSpeechSampleCount = 0;
     this.vadSilenceFrames = [];
     this.vadSilenceSampleCount = 0;
+    // partialSequence is per segment, so the next utterance starts at 0 again.
+    this.vadPartialSequence = 0;
+    this.vadPartialSpeechSampleMark = 0;
   }
 
   private appendSamples(samples: Int16Array): void {
@@ -426,6 +548,48 @@ export class WebRtcTranscriptionChunker {
     this.queuedChunks += 1;
     this.queuedBytes += byteLength;
     return chunk;
+  }
+
+  /**
+   * Build an INTERIM chunk for the segment in progress.
+   *
+   * Every counter `createChunk` advances is deliberately left alone here:
+   *
+   * - `emittedChunkCount` (the sequence source) is READ, not incremented, so
+   *   the partial carries the sequence its final chunk will carry.
+   * - `emittedSampleCount` stays put: only submitted final audio moves the
+   *   emitted timeline forward.
+   * - `nextDiscontinuity` is reported but NOT cleared, so a hole in the
+   *   timeline is still flagged on the final chunk where it matters.
+   * - `queuedChunks`/`queuedBytes` are untouched, so a partial can never make
+   *   a final chunk hit the queue limit, be evicted, or be delayed. That also
+   *   means partials must never be acked or released (see `ackChunk`).
+   */
+  private createPartialChunk(
+    samples: Int16Array,
+    segmentStartSample: number,
+  ): WebRtcTranscriptionChunk {
+    const endSample = segmentStartSample + samples.length;
+    const startMs = Math.round((segmentStartSample / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000);
+    const endMs = Math.round((endSample / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000);
+    this.partialChunkCount += 1;
+    return {
+      ...this.context,
+      sequence: this.emittedChunkCount,
+      startMs,
+      endMs,
+      durationMs: endMs - startMs,
+      sampleRate: WEBRTC_TRANSCRIPTION_SAMPLE_RATE,
+      channelCount: WEBRTC_TRANSCRIPTION_CHANNEL_COUNT,
+      pcmFormat: WEBRTC_TRANSCRIPTION_PCM_FORMAT,
+      samples,
+      byteLength: samples.byteLength,
+      discontinuity: this.nextDiscontinuity,
+      // A partial is mid-utterance by definition; only a flush ends the stream.
+      endOfStream: false,
+      partial: true,
+      partialSequence: this.vadPartialSequence,
+    };
   }
 }
 

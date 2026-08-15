@@ -18,6 +18,16 @@ export interface GatewayConfig {
   webRtcVadMinSpeechMs: number;
   webRtcVadMaxSegmentMs: number;
   webRtcTranscriptionStagingDir: string;
+  /**
+   * Interval, in ms, at which a native call emits INTERIM partial chunks while
+   * a speaker is still talking, so captions can appear mid-sentence rather than
+   * only after the pause that ends it. Programme sessions never emit partials.
+   *
+   * Set to 0 to switch streaming partial captions off without a code change —
+   * useful if media-ingest is rolled back to a build that does not accept
+   * partial chunks, since one would then take the final chunk's place.
+   */
+  webRtcPartialCaptionIntervalMs: number;
   /** Development call-session transcript log directory; disabled when null. */
   callTranscriptLogDir: string | null;
 }
@@ -57,8 +67,23 @@ export function loadConfig(): GatewayConfig {
     webRtcTranscriptionStagingDir:
       process.env['WEBRTC_AUDIO_CHUNK_STAGING_DIR'] ??
       resolve(process.cwd(), '../../uploads/webrtc-staging'),
+    webRtcPartialCaptionIntervalMs: readNonNegativeGatewayInt(
+      'WEBRTC_PARTIAL_CAPTION_INTERVAL_MS',
+      1_500,
+    ),
     callTranscriptLogDir: process.env['CALL_TRANSCRIPT_LOG_DIR']?.trim() || null,
   };
+}
+
+/** Like `readPositiveGatewayInt`, but 0 is a meaningful value (feature off). */
+function readNonNegativeGatewayInt(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${name} must be a non-negative integer.`);
+  }
+  return parsed;
 }
 
 function readPositiveGatewayFloat(name: string, fallback: number): number {
