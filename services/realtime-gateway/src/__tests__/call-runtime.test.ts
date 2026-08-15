@@ -532,10 +532,14 @@ describe('CallRuntime event interception and recipient routing', () => {
     );
     expect(intercepted).toBe(true);
 
+    // The speaker sees their own transcript, and the same-language recipient
+    // gets it as their caption.
     const captions = roomEmissions(sameLanguageHarness, CALL_EVENTS.CAPTION);
-    expect(captions).toHaveLength(1);
-    expect(captions[0]?.room).toBe('call:demo:participant:participant_2');
-    expect(captions[0]?.payload).toMatchObject({
+    expect(captions.map((caption) => caption.room)).toEqual([
+      'call:demo:participant:participant_1',
+      'call:demo:participant:participant_2',
+    ]);
+    expect(captions[1]?.payload).toMatchObject({
       speakerParticipantId: 'participant_1',
       sourceLanguage: 'en',
       targetLanguage: null,
@@ -547,9 +551,13 @@ describe('CallRuntime event interception and recipient routing', () => {
 
   it('does not deliver a mismatched-language transcription caption to a translated-language recipient', () => {
     // Beto hears es; the original en transcript is not his caption channel.
+    // Only the speaker's own transcript is emitted.
     const intercepted = harness.runtime.interceptTranscriptionEvent(transcriptionEvent({}));
     expect(intercepted).toBe(true);
-    expect(roomEmissions(harness, CALL_EVENTS.CAPTION)).toHaveLength(0);
+    const captions = roomEmissions(harness, CALL_EVENTS.CAPTION);
+    expect(captions.map((caption) => caption.room)).toEqual([
+      'call:demo:participant:participant_1',
+    ]);
   });
 
   it('routes generated audio to the recipient room only and never the speaker', () => {

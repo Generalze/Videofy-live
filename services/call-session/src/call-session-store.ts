@@ -316,6 +316,15 @@ export class CallSessionStore {
     }
     const { call, speaker } = routable;
     const deliveries: CallRouteDelivery[] = [];
+    // Speakers see their own words (§12: captions let users verify names,
+    // numbers and terms). Only the original transcript, never a translation of
+    // themselves — and generated audio is still never echoed to the speaker.
+    if (event.targetLanguage === null && speaker.connected && event.originalText.trim() !== '') {
+      deliveries.push({
+        recipientParticipantId: speaker.participant.participantId,
+        payload: buildCaptionPayload(call, speaker, event, null, null),
+      });
+    }
     for (const recipient of connectedOtherParticipants(call, speaker)) {
       const hearLanguage = recipient.participant.preferredLanguage;
       if (isSameLanguage(hearLanguage, event.sourceLanguage)) {

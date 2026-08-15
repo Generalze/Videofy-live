@@ -675,6 +675,8 @@ export class CallRuntime {
       deliveryLatencyMs: latency.deliveryLatencyMs,
       /** Delivery minus the moment media-ingest accepted the chunk (no gateway queue wait). */
       sinceChunkSubmittedMs: latency.sinceChunkSubmittedMs,
+      /** Provider-reported synthesis time for this clip, for stage breakdown. */
+      ttsProviderMs: event.providerLatencyMs ?? null,
     });
     return true;
   }

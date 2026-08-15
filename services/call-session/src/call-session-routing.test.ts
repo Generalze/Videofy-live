@@ -115,9 +115,12 @@ describe('CallSessionStore.routeCaption', () => {
       zoe.participantId,
       captionEvent({ targetLanguage: null, translatedText: null }),
     );
-    expect(deliveries).toHaveLength(1);
-    expect(deliveries[0]?.recipientParticipantId).toBe(sam.participantId);
-    expect(deliveries[0]?.payload).toMatchObject({
+    // The speaker also sees their own words, then the same-language recipient.
+    expect(deliveries.map((delivery) => delivery.recipientParticipantId)).toEqual([
+      zoe.participantId,
+      sam.participantId,
+    ]);
+    expect(deliveries[1]?.payload).toMatchObject({
       sourceLanguage: 'en',
       targetLanguage: null,
       originalText: 'hello there',
@@ -136,9 +139,11 @@ describe('CallSessionStore.routeCaption', () => {
       zoe.participantId,
       captionEvent({ sourceLanguage: 'en-US', targetLanguage: null, translatedText: null }),
     );
-    expect(deliveries).toHaveLength(1);
-    expect(deliveries[0]?.recipientParticipantId).toBe(sam.participantId);
-    expect(deliveries[0]?.payload).toMatchObject({ targetLanguage: null });
+    expect(deliveries.map((delivery) => delivery.recipientParticipantId)).toEqual([
+      zoe.participantId,
+      sam.participantId,
+    ]);
+    expect(deliveries[1]?.payload).toMatchObject({ targetLanguage: null });
   });
 
   it('never echoes a caption back to the speaker', () => {
@@ -212,7 +217,37 @@ describe('CallSessionStore.routeCaption', () => {
       zoe.participantId,
       captionEvent({ targetLanguage: null, translatedText: null }),
     );
-    expect(deliveries).toEqual([]);
+    // Only the speaker's own transcript; Carlos hears es and waits for the
+    // translated caption.
+    expect(deliveries.map((delivery) => delivery.recipientParticipantId)).toEqual([
+      zoe.participantId,
+    ]);
+  });
+
+  it('gives the speaker their own transcript but never a translation of themselves', () => {
+    const store = new CallSessionStore();
+    const { zoe, carlos } = translatedPair(store);
+
+    const original = store.routeCaption(
+      'call-1',
+      zoe.participantId,
+      captionEvent({ targetLanguage: null, translatedText: null }),
+    );
+    expect(original).toHaveLength(1);
+    expect(original[0]?.recipientParticipantId).toBe(zoe.participantId);
+    expect(original[0]?.payload).toMatchObject({ targetLanguage: null, translatedText: null });
+
+    // The translated caption goes only to the listener.
+    const translated = store.routeCaption('call-1', zoe.participantId, captionEvent());
+    expect(translated.map((delivery) => delivery.recipientParticipantId)).toEqual([
+      carlos.participantId,
+    ]);
+
+    // Generated audio is still never echoed to the speaker.
+    const audio = store.routeGeneratedAudio('call-1', zoe.participantId, audioEvent());
+    expect(audio.every((delivery) => delivery.recipientParticipantId !== zoe.participantId)).toBe(
+      true,
+    );
   });
 
   it('does not deliver to disconnected recipients', () => {
