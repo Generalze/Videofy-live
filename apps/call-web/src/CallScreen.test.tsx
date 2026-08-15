@@ -186,4 +186,38 @@ describe('CallScreen', () => {
   it('always offers a way out of the call', () => {
     expect(render()).toContain('Leave');
   });
+
+  it('marks who is talking right now from the interim caption', () => {
+    // An interim caption exists only while its utterance is still being spoken,
+    // so the newest one identifies the live speaker with no extra signalling.
+    const speaking = render({
+      captions: [
+        caption({ id: 'c1', speakerParticipantId: 'p2', isFinal: true }),
+        caption({ id: 'c2', speakerParticipantId: 'p2', isFinal: false }),
+      ],
+    });
+    expect(speaking).toContain('is-speaking');
+    // Not colour-only: the state is also written out (§5.1.13).
+    expect(speaking).toContain('Speaking');
+  });
+
+  it('goes quiet when nobody is mid-sentence', () => {
+    const html = render({
+      captions: [caption({ id: 'c1', speakerParticipantId: 'p2', isFinal: true })],
+    });
+
+    expect(html).not.toContain('is-speaking');
+  });
+
+  it('keeps the audio mix collapsed behind a compact control', () => {
+    const html = render();
+
+    // Progressive disclosure (§5.1.3): the mix is secondary, so it expands from
+    // a control rather than holding permanent space beside the stage.
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('aria-controls=');
+    // Collapsed means genuinely hidden — out of the tab order and the
+    // accessibility tree, not merely visually dimmed.
+    expect(html).toMatch(/class="audio-drawer"[^>]*hidden/);
+  });
 });
