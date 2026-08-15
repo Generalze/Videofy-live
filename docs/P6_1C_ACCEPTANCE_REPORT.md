@@ -3,8 +3,8 @@
 - **Repository owner:** masterzee001
 - **Date:** 2026-08-15
 - **Milestone:** P6.1C — acceptance of the native two-person call (P6.1A + P6.1B combined)
-- **Status:** Automated §30.4 criteria pass on a real bilingual call; latency evidence and the
-  owner's human quality review remain
+- **Status:** ACCEPTED by the repository owner, 2026-08-15. All §30.4 criteria pass, latency is
+  measured and recorded, and the human voice-quality review is closed.
 - **Runtime profile:** `development-demo` (no commercial claim)
 
 ## Headline
@@ -194,6 +194,13 @@ readiness: the English HFC pair is CC-BY-NC-SA-4.0 (non-commercial), so English 
 commercially on these voices regardless of how they sound. Sourcing a commercially licensed
 English pair remains C-AI1, and the commercial profile stays fail-closed until then.
 
-## Remaining for P6.1 closure
+## Milestone acceptance (owner, 2026-08-15)
 
-1. Owner milestone approval.
+The repository owner accepted P6.1C, closing P6.1 (A, B and C) in full. Nothing remains
+outstanding on this milestone.
+
+Scope of the acceptance, stated so it cannot be over-read later: it covers the native two-person
+call under the `development-demo` runtime profile — both translation directions, captions,
+translated voice, recipient routing, reconnect and fault behaviour, with the measured latency
+recorded above. It is not commercial certification. The commercial profile remains fail-closed
+until C-AI1 supplies licensed providers and a commercially usable English voice pair.

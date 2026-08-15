@@ -4,7 +4,7 @@
 - **Authoritative architecture:** [VIDEOFY_MASTER_ARCHITECTURE.md](VIDEOFY_MASTER_ARCHITECTURE.md), Version 3.0
 - **Lead supervisor and integration owner:** Codex Sol6 (P6.1A completed under acting-lead Claude supervision while Codex was unavailable)
 - **Current milestone:** P6.1B — Native two-person call runtime (development profile)
-- **Status:** P6.1B implementation and machine verification complete; P6.1C acceptance evidence, human voice-quality review, and owner approval remain open
+- **Status:** P6.1 CLOSED (A, B, C) — owner voice review and milestone acceptance both given 2026-08-15, under `development-demo` only. Active work: P6.2; commercial readiness remains gated on C-AI1.
 - **P6.0 baseline:** `main@2a06e1dfd833532125c06986843e645a2dcff34b`
 - **P6.1A baseline:** `main@daad195` (P6-G0 and P6.0 merged and CI-verified)
 
