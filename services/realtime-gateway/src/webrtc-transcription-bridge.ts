@@ -208,6 +208,23 @@ export class WebRtcTranscriptionBridge {
     };
   }
 
+  /** Per-session developer diagnostics: where audio stops flowing, if it does. */
+  getSessionDiagnostics(): unknown[] {
+    return [...this.sessions.values()].map((session) => ({
+      sessionId: session.context.sessionId,
+      revision: session.context.revision,
+      created: session.created,
+      active: session.active,
+      closed: session.closed,
+      stopped: session.stopped,
+      failure: session.failure,
+      queueLength: session.queue.length,
+      skippedFrameCount: session.skippedFrameCount,
+      lastSkippedFrameReason: session.lastSkippedFrameReason,
+      chunker: session.chunker.snapshot(),
+    }));
+  }
+
   cleanupClosedSessions(): number {
     let cleaned = 0;
     for (const [key, session] of [...this.sessions]) {

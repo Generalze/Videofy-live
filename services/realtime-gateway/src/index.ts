@@ -7,7 +7,10 @@ import { logger, setLogLevel } from './logger.js';
 const config = loadConfig();
 setLogLevel(config.logLevel);
 
-const app = createApp();
+const app = createApp({
+  diagnostics: () => gateway.getWebRtcDiagnostics(),
+  internalToken: config.internalWebRtcToken,
+});
 const server = createServer(app);
 const gateway = new Gateway(server, config.corsOrigins, {
   mediaIngestUrl: config.mediaIngestUrl,

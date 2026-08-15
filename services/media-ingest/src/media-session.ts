@@ -871,10 +871,38 @@ export class ProcessingSessionStore {
       return await this.processWebRtcTranscriptionEvent(session, transcriptionEvent);
     } catch (error) {
       await rm(input.sourcePath, { force: true });
+      if (isRealtimeCallSession(session)) {
+        // A native call must survive a bad chunk: failing the session would
+        // reject every later utterance for the rest of the call while the raw
+        // voice kept flowing (owner-reported "translation is not persistent").
+        return this.recordWebRtcChunkFailure(session, error);
+      }
       return this.failWebRtcSession(session, error, 'WebRTC transcription chunk ingest failed.');
     } finally {
       this.activeWebRtcChunkSessions.delete(session.id);
     }
+  }
+
+  /**
+   * Records a per-chunk failure on a live call without ending the session.
+   * The chunk is lost and reported; subsequent audio keeps being accepted.
+   */
+  private recordWebRtcChunkFailure(session: ProcessingSession, error: unknown): ProcessingSession {
+    const message = error instanceof Error ? error.message : 'WebRTC transcription chunk failed.';
+    if (session.webrtcTranscriptionBridge) {
+      session.webrtcTranscriptionBridge = {
+        ...session.webrtcTranscriptionBridge,
+        failedChunks: session.webrtcTranscriptionBridge.failedChunks + 1,
+        lastError: message,
+      };
+    }
+    // Recorded in session metadata (bridge lastError/failedChunks + monitoring)
+    // rather than logged: this module stays I/O-free, and the operator surface
+    // already renders these fields.
+    session.monitoring = { ...session.monitoring, lastError: message };
+    session.updatedAt = new Date().toISOString();
+    this.emitSession(session);
+    return { ...session };
   }
 
   stopMicrophoneSession(sessionId: string): ProcessingSession {
@@ -1881,6 +1909,10 @@ export class ProcessingSessionStore {
     error: unknown,
     fallbackMessage: string,
   ): ProcessingSession {
+    // Native calls degrade per utterance; only programme sessions end here.
+    if (isRealtimeCallSession(session)) {
+      return this.recordWebRtcChunkFailure(session, error);
+    }
     return session.sourceKind === 'webrtc'
       ? this.failWebRtcSession(session, error, fallbackMessage)
       : this.failMicrophoneSession(session, error, fallbackMessage);
@@ -2130,7 +2162,20 @@ export class ProcessingSessionStore {
         { ...session },
       );
     }
-    if (input.sequence !== session.audioExtraction.chunks.length) {
+    if (isRealtimeCallSession(session)) {
+      // A native call tolerates gaps: a dropped utterance must not stall every
+      // later one. Ordering is still enforced (strictly increasing), so stale
+      // or duplicate chunks are rejected exactly as before.
+      const lastAcceptedSequence = session.audioExtraction.chunks.at(-1)?.index ?? -1;
+      if (input.sequence <= lastAcceptedSequence) {
+        throw new MediaIngestError(
+          'WebRTC chunk ordering failed: sequence is not newer than the last accepted chunk.',
+          'audio-timeline-invalid',
+          409,
+          { ...session },
+        );
+      }
+    } else if (input.sequence !== session.audioExtraction.chunks.length) {
       throw new MediaIngestError(
         'WebRTC chunk ordering failed: unexpected sequence number.',
         'audio-timeline-invalid',
@@ -2365,6 +2410,10 @@ export class ProcessingSessionStore {
       this.updateWebRtcBridgeMetadata(session);
       this.onTranscriptionEvent(failed);
       this.emitSession(session);
+      if (isRealtimeCallSession(session)) {
+        // One failed utterance must not end a live call.
+        return this.recordWebRtcChunkFailure(session, error);
+      }
       return this.failWebRtcSession(session, error, 'WebRTC transcription failed.');
     }
   }
@@ -4012,6 +4061,11 @@ function normalizeSupportedTargetLanguages(targetLanguages: readonly string[]): 
 
 function primaryLanguageSubtag(language: string): string {
   return normalizeTargetLanguage(language).split('-')[0] ?? '';
+}
+
+/** P6.1B native-call ingest sessions use the reserved `call_` id prefix. */
+function isRealtimeCallSession(session: ProcessingSession): boolean {
+  return session.sourceKind === 'webrtc' && /^call_/i.test(session.id);
 }
 
 function fileFingerprint(upload: UploadedMediaFile): string {

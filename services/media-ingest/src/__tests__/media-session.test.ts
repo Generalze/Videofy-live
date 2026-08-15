@@ -1,4 +1,4 @@
-import type { AudioExtractionMetadata, AudioChunkMetadata } from '@videofy-live/shared-types';
+﻿import type { AudioExtractionMetadata, AudioChunkMetadata } from '@videofy-live/shared-types';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -810,6 +810,61 @@ describe('ProcessingSessionStore', () => {
         voiceIdsByLanguage: { es: '../escape' },
       }),
     ).rejects.toMatchObject({ code: 'unsafe-filename' });
+  });
+
+  it('keeps a native call alive after a failed chunk and still processes later audio', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    const generated: string[] = [];
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+      translationTargetLanguage: 'fr',
+      translationSupportedTargetLanguages: ['fr'],
+      textToSpeechSupportedLanguages: ['fr'],
+      onGeneratedAudioReady: (event) => generated.push(`${event.sequence}:${event.status}`),
+    });
+    const session = await sessionStore.createWebRtcSession({
+      sessionId: 'call_resilience_participant_1_r1',
+      broadcastId: 'callcast_resilience_participant_1_r1',
+      broadcasterPeerId: 'peer_call_participant_1',
+      revision: 1,
+      targetLanguage: 'fr',
+      targetLanguages: ['fr'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+
+    // A chunk whose staged file vanished (the exact production failure: a
+    // retried submission after the file was already consumed).
+    const afterFailure = await sessionStore.ingestWebRtcChunk(session.id, {
+      sequence: 0,
+      startMs: 0,
+      endMs: 15_000,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: wavFixture().length,
+      sourcePath: join(stagingDir, 'missing-chunk.wav'),
+    });
+    expect(afterFailure.state).toBe('processing');
+    expect(afterFailure.webrtcTranscriptionBridge?.failedChunks).toBe(1);
+
+    // The next utterance must still be accepted and fully processed.
+    const afterRecovery = await sessionStore.ingestWebRtcChunk(session.id, {
+      sequence: 1,
+      startMs: 15_000,
+      endMs: 30_000,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: wavFixture().length,
+      sourcePath: await createStagedWav(stagingDir, 'recovered.wav'),
+    });
+    expect(afterRecovery.state).toBe('processing');
+    expect(generated.length).toBeGreaterThan(0);
   });
 
   it('rejects duplicate and out-of-order WebRTC chunks clearly', async () => {

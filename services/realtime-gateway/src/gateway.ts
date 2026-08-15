@@ -1147,6 +1147,7 @@ export class Gateway {
     listenerPeerCount: number;
     transcriptionBridgeSessionCount: number;
     callRuntime: ReturnType<CallRuntime['getDiagnostics']>;
+    transcriptionBridgeSessions: unknown[];
   } {
     const signalling = this.webrtcSessions.getDiagnostics();
     const transcriptionBridge = this.webRtcTranscriptionBridge.getDiagnostics();
@@ -1158,6 +1159,7 @@ export class Gateway {
       listenerPeerCount: this.listenerMediaPeers.getSnapshots().length,
       transcriptionBridgeSessionCount: transcriptionBridge.sessionCount,
       callRuntime: this.callRuntime.getDiagnostics(),
+      transcriptionBridgeSessions: this.webRtcTranscriptionBridge.getSessionDiagnostics(),
     };
   }
 

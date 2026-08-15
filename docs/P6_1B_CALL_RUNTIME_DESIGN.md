@@ -118,6 +118,34 @@ Call languages are now `en`/`fr`/`es`: French joins with validated duplex routes
 development voices (`fr_FR-upmc-pierre`, `fr_FR-siwis-medium`); Spanish stays fully supported
 with its P6.1A evidence.
 
+## Call resilience (owner live-test finding: "translation is not persistent")
+
+Live calls used to lose translation permanently after a single bad chunk, while the
+untranslated voice kept flowing. Two compounding causes, both fixed for `call_` sessions only
+(programme/Live keeps its existing strict behavior):
+
+1. **Fatal per-chunk failure.** Any chunk error called `failWebRtcSession`, so the session left
+   `processing` and media-ingest rejected every later utterance with *"chunks can only be
+   accepted while the session is processing"* — with no recovery path. Call sessions now record
+   the failure (`webrtcTranscriptionBridge.failedChunks`, `lastError`, monitoring) and stay
+   `processing`.
+2. **Strict sequence contiguity.** The expected chunk sequence was the count of *stored* chunks,
+   so one dropped chunk made every later chunk "out of order" forever. Call sessions now require
+   a strictly increasing sequence and tolerate gaps; duplicates and stale chunks are still
+   rejected.
+
+Measured after the fix (development machine, warm workers): 2.5–3.4 s per utterance end to end,
+and 5/5 chunks accepted at a 3.5 s speech cadence.
+
+**Known remaining limitation.** When utterances arrive faster than the pipeline processes them,
+a chunk that arrives while another is in flight is rejected (`duplicate-processing`) and lost
+rather than queued. It is now non-fatal — the call continues — but sustained rapid speech will
+drop some utterances. Queuing with bounded depth is the next improvement.
+
+Developer telemetry used to find this lives at `GET /internal/diagnostics` on the gateway
+(`WEBRTC_DIAGNOSTICS_ENABLED=true`, internal-token gated), reporting per-bridge-session chunker
+emission, queue depth, skipped frames, dropped VAD segments and failures.
+
 ## Explicitly deferred to P6.1C
 
 Camera video tiles, real two-device/browser acceptance evidence, measured end-to-end latency
