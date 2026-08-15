@@ -36,6 +36,15 @@ export interface CallJoinInput {
   captionsEnabled: boolean;
   voiceGender: 'male' | 'female';
   audioMode: 'translated' | 'interpretation' | 'original';
+  /**
+   * `manual` (default) takes `speakLanguage` as the speaker's own statement and
+   * never revisits it. `auto` treats it as a starting guess that the first
+   * recognised utterance may correct — see `applyDetectedLanguage`.
+   *
+   * Manual remains the authority (ADR-004): a speaker who states their language
+   * is believed, and detection never overrides them.
+   */
+  sourceLanguageMode?: 'manual' | 'auto';
   resumeParticipantId?: string;
   /** Required alongside resumeParticipantId; issued privately by the join ack. */
   resumeToken?: string;
@@ -46,11 +55,32 @@ export interface CallIngestPlan {
   ingestSessionId: string;
   broadcastId: string;
   sourceLanguage: CallLanguage;
-  sourceLanguageMode: 'manual';
+  /**
+   * `auto` tells media-ingest the language is a starting guess it may correct.
+   * The speaker's own statement still wins where they made one (ADR-004).
+   */
+  sourceLanguageMode: 'manual' | 'auto';
   targetLanguages: CallLanguage[];
   voiceIdsByLanguage: Record<string, string>;
   mediaRevision: number;
 }
+
+/**
+ * Outcome of applying a detected language. `changed: false` means the guess was
+ * already right and nothing was re-routed — only the mode settled.
+ */
+export type CallLanguageChangeResult =
+  | {
+      ok: true;
+      changed: boolean;
+      /** The speaker's revision after the change; the gateway stamps events with it. */
+      languageRevision: number;
+      snapshot: CallSnapshot;
+    }
+  | {
+      ok: false;
+      reason: 'unknown-participant' | 'language-stated-by-speaker';
+    };
 
 export interface CallJoinResult {
   ok: true;
@@ -236,10 +266,12 @@ export class CallSessionStore {
       sessionId: call.callId,
       displayName,
       role: 'caller',
-      // Manual language authority for this wave: locked at join, never redetected.
+      // Manual language authority (ADR-004): a stated language is locked and
+      // never redetected. Under `auto` the stated language is only a starting
+      // guess, so the record stays unlocked until detection confirms one.
       sourceLanguage: input.speakLanguage,
-      sourceLanguageMode: 'manual',
-      sourceLanguageLocked: true,
+      sourceLanguageMode: input.sourceLanguageMode === 'auto' ? 'auto' : 'manual',
+      sourceLanguageLocked: input.sourceLanguageMode !== 'auto',
       preferredLanguage: input.hearLanguage,
       captionLanguage: input.hearLanguage,
       audioMode: input.audioMode,
@@ -381,6 +413,72 @@ export class CallSessionStore {
   }
 
   /** Cleanup evidence for tests and gateway diagnostics. */
+  /**
+   * Applies a language the recogniser detected for a participant who joined
+   * under `auto`.
+   *
+   * Changing what someone speaks re-routes the whole call: every other
+   * participant's translation target for this speaker changes with it. So the
+   * change bumps `languageRevision`, which is what lets results produced under
+   * the previous language be rejected rather than delivered as if they were
+   * still correct.
+   *
+   * Refused, deliberately, when the participant stated their language: manual
+   * authority means a person's own statement outranks the detector (ADR-004).
+   * Also refused once a detection has already been confirmed, so a later noisy
+   * utterance cannot flip a settled call back and forth.
+   */
+  applyDetectedLanguage(
+    callId: string,
+    participantId: string,
+    detected: CallLanguage,
+  ): CallLanguageChangeResult {
+    const call = this.calls.get(callId);
+    const state = call?.participants.get(participantId);
+    if (!call || !state) return { ok: false, reason: 'unknown-participant' };
+    if (state.participant.sourceLanguageMode !== 'auto') {
+      return { ok: false, reason: 'language-stated-by-speaker' };
+    }
+    if (state.participant.sourceLanguage === detected) {
+      // The guess was right. Settle it so later utterances cannot reopen it,
+      // but nothing has moved, so no revision bump and no re-routing.
+      state.participant = parseParticipant({
+        ...state.participant,
+        sourceLanguageMode: 'confirmed-auto',
+        sourceLanguageLocked: true,
+      });
+      return {
+        ok: true,
+        changed: false,
+        languageRevision: state.participant.languageRevision,
+        snapshot: buildSnapshot(call),
+      };
+    }
+
+    state.participant = parseParticipant({
+      ...state.participant,
+      sourceLanguage: detected,
+      sourceLanguageMode: 'confirmed-auto',
+      sourceLanguageLocked: true,
+      languageRevision: state.participant.languageRevision + 1,
+    });
+    // Everyone else's captions for this speaker were planned against the old
+    // language, so their revision moves too and stale results are dropped.
+    for (const other of call.participants.values()) {
+      if (other.participant.participantId === participantId) continue;
+      other.participant = parseParticipant({
+        ...other.participant,
+        languageRevision: other.participant.languageRevision + 1,
+      });
+    }
+    return {
+      ok: true,
+      changed: true,
+      languageRevision: state.participant.languageRevision,
+      snapshot: buildSnapshot(call),
+    };
+  }
+
   activeCallCount(): number {
     return this.calls.size;
   }
@@ -588,7 +686,7 @@ function buildIngestPlan(call: CallState, speaker: CallParticipantState): CallIn
     ingestSessionId: `call_${scopedIdentity}`,
     broadcastId: `callcast_${scopedIdentity}`,
     sourceLanguage,
-    sourceLanguageMode: 'manual',
+    sourceLanguageMode: speaker.participant.sourceLanguageMode === 'auto' ? 'auto' : 'manual',
     targetLanguages,
     voiceIdsByLanguage,
     mediaRevision: speaker.participant.mediaRevision,

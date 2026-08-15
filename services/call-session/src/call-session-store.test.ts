@@ -596,3 +596,79 @@ describe('CallSessionStore injection', () => {
     expect(issued).toBe(2);
   });
 });
+
+describe('auto-detected source language (P6.2)', () => {
+  it('keeps a stated language locked and refuses to redetect it', () => {
+    const store = new CallSessionStore();
+    const zoe = mustJoin(store, { displayName: 'Zoe', speakLanguage: 'en' });
+
+    // Manual authority (ADR-004): the speaker said English, so the detector
+    // does not get to overrule them however confident it is.
+    const result = store.applyDetectedLanguage('call-1', zoe.participantId, 'fr');
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('language-stated-by-speaker');
+    expect(store.ingestPlan('call-1', zoe.participantId)?.sourceLanguage).toBe('en');
+  });
+
+  it('carries auto mode into the ingest plan so media-ingest may correct the guess', () => {
+    const store = new CallSessionStore();
+    const zoe = mustJoin(store, { speakLanguage: 'en', sourceLanguageMode: 'auto' });
+
+    expect(store.ingestPlan('call-1', zoe.participantId)?.sourceLanguageMode).toBe('auto');
+    expect(mustJoin(store, { displayName: 'Bruno', hearLanguage: 'fr' }) && true).toBe(true);
+  });
+
+  it('re-routes the call and bumps the language revision when detection corrects the guess', () => {
+    const store = new CallSessionStore();
+    const zoe = mustJoin(store, { displayName: 'Zoe', speakLanguage: 'en', sourceLanguageMode: 'auto' });
+    mustJoin(store, { displayName: 'Bruno', speakLanguage: 'fr', hearLanguage: 'fr' });
+
+    const result = store.applyDetectedLanguage('call-1', zoe.participantId, 'es');
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.changed).toBe(true);
+      // Results planned against the old language must be rejectable, so the
+      // revision has to move past what the join issued.
+      expect(result.languageRevision).toBe(zoe.languageRevision + 1);
+    }
+    // The speaker now speaks what was heard, and the work order follows.
+    expect(store.ingestPlan('call-1', zoe.participantId)?.sourceLanguage).toBe('es');
+    // The recipient's caption for this speaker is re-routed to the new pair.
+    expect(store.snapshot('call-1')!.participants.find((p) => p.participantId === zoe.participantId)!.speakLanguage).toBe('es');
+  });
+
+  it('settles a correct guess without re-routing anything', () => {
+    const store = new CallSessionStore();
+    const zoe = mustJoin(store, { speakLanguage: 'fr', hearLanguage: 'fr', sourceLanguageMode: 'auto' });
+
+    const result = store.applyDetectedLanguage('call-1', zoe.participantId, 'fr');
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.changed).toBe(false);
+      // Nothing moved, so nothing downstream should be invalidated.
+      expect(result.languageRevision).toBe(zoe.languageRevision);
+    }
+  });
+
+  it('will not let a later utterance flip a settled call back and forth', () => {
+    const store = new CallSessionStore();
+    const zoe = mustJoin(store, { speakLanguage: 'en', sourceLanguageMode: 'auto' });
+    expect(store.applyDetectedLanguage('call-1', zoe.participantId, 'fr').ok).toBe(true);
+
+    // One noisy utterance later must not re-route the whole call again.
+    const second = store.applyDetectedLanguage('call-1', zoe.participantId, 'es');
+    expect(second.ok).toBe(false);
+    expect(store.ingestPlan('call-1', zoe.participantId)?.sourceLanguage).toBe('fr');
+  });
+
+  it('reports an unknown participant rather than throwing', () => {
+    const store = new CallSessionStore();
+    mustJoin(store);
+    const result = store.applyDetectedLanguage('call-1', 'participant_999', 'fr');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe('unknown-participant');
+  });
+});

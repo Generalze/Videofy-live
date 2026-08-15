@@ -29,7 +29,7 @@ every prior call stopped after one utterance because of the defects listed below
 | Original audio remains per mix mode | PASS — owner-verified in-call |
 | Generated audio never enters STT | PASS — structural (publish peer carries only the raw microphone track) |
 | Latency measured and reported honestly | PASS — see "Measured latency" below |
-| Human voice-quality review of EN/FR voices | **Open — owner-only** |
+| Human voice-quality review of EN/FR voices | PASS — owner review, 2026-08-15 (see note below) |
 
 Sample of the recorded conversation (from the call transcript log):
 
@@ -180,9 +180,20 @@ one language pair can be completely dead while the call looks healthy.
   and the English HFC voices remain `blocked-noncommercial`.
 - **Conference, SDK, external adapters, personal voice.** Later milestones.
 
+## Voice-quality review (owner, 2026-08-15)
+
+The repository owner reviewed the six registered development voices and accepted them:
+EN male/female (`en_US-hfc_male-medium`, `en_US-hfc_female-medium`), ES male/female
+(`es_ES-sharvard` speakers 0 and 1) and FR male/female (`fr_FR-upmc-pierre`,
+`fr_FR-siwis-medium`), each speaking the same sentence in its own language for a fair
+comparison. Samples: `.videofy-dev-logs/voice-review/`.
+
+This satisfies the §30.3 human-acceptance gate **for the `development-demo` runtime profile**,
+which is the only profile these assets are licensed for. It is explicitly NOT commercial voice
+readiness: the English HFC pair is CC-BY-NC-SA-4.0 (non-commercial), so English cannot ship
+commercially on these voices regardless of how they sound. Sourcing a commercially licensed
+English pair remains C-AI1, and the commercial profile stays fail-closed until then.
+
 ## Remaining for P6.1 closure
 
-Both remaining items are owner actions; nothing automated is outstanding.
-
-1. Owner human voice-quality review of the registered EN/FR voices (the §30.3 approval gate).
-2. Owner milestone approval.
+1. Owner milestone approval.

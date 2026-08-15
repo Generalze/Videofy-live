@@ -67,8 +67,8 @@ describe('gateway config', () => {
     const defaults = loadConfig();
     expect(defaults.webRtcVadEnabled).toBe(true);
     expect(defaults.webRtcVadMode).toBe('fallback');
-    expect(defaults.webRtcVadEndSilenceMs).toBe(600);
-    expect(defaults.webRtcVadMaxSegmentMs).toBe(7_000);
+    expect(defaults.webRtcVadEndSilenceMs).toBe(700);
+    expect(defaults.webRtcVadMaxSegmentMs).toBe(8_000);
 
     process.env['WEBRTC_VAD_ENABLED'] = 'false';
     process.env['WEBRTC_VAD_MODE'] = 'silero';

@@ -197,3 +197,47 @@ review agent, per the owner's explicit instruction while Codex was unavailable. 
 approval — including human voice-quality acceptance for the four registered voices — remains the
 formal P6.1A closure gate and is not claimed by this plan. GitHub branch protection also remains
 an external owner action.
+
+## Owner direction, 2026-08-15
+
+### P6.1A closed
+The owner reviewed the six registered development voices (EN, ES, FR male and female) and
+accepted them. That satisfies the §30.3 human-acceptance gate for `development-demo`, the only
+profile these assets are licensed for. It is not commercial voice readiness: the English HFC pair
+is CC-BY-NC-SA-4.0, so English still cannot ship commercially on it. See the
+[P6.1C acceptance report](P6_1C_ACCEPTANCE_REPORT.md).
+
+### Accounts change the call surface
+Once users register, the call page must adapt to their stored profile rather than asking every
+time. Speaking language, hearing language and voice gender become profile data with sensible
+per-call overrides, not fields to re-enter on each join.
+
+This moves work between milestones: the pre-join screen built in P6-UX0 assumes an anonymous
+guest, and DEP-1 owns accounts and persistence. The participant contract already carries these
+preferences, so the change is where the values come FROM, not what they are. Sequencing: DEP-1
+lands identity and persistence first, then the participant surface reads from it.
+
+### Personal voice becomes the default, not an option
+Owner decision: when a user has a cloned voice, that voice is what the other side should hear.
+On any other call they would be heard in their own voice, and translation should not cost them
+their identity. Standard voice becomes the FALLBACK — used before enrollment, on failure, or by
+explicit choice.
+
+This inverts ADR-006 ("Personal voice optional; never blocks joining/translation"). The half that
+must survive the inversion is the second clause: a missing, failed or still-training personal
+voice must still never block a call. Default-on changes which voice is preferred, not whether the
+call can proceed without one.
+
+**Consent cannot ride on the terms of service, and this needs design work before P6.3.** A voice
+model trained on a person's recordings is biometric data. Where GDPR applies, biometric data used
+to identify a person needs explicit, specific, separable consent — acceptance of general terms is
+not sufficient, and Illinois BIPA imposes similar requirements with statutory damages. The product
+goal survives intact; the mechanism has to differ:
+
+- enrollment is its own affirmative step with its own consent, not a checkbox inside the T&Cs;
+- consent is revocable, and revocation deletes the model and its training audio;
+- the other participant can see that a synthetic clone of a real voice is being used;
+- refusing or revoking falls back to a standard voice and never blocks the call.
+
+This is exactly the surface an institutional customer's legal review would examine first, which is
+why it is recorded here rather than left to implementation.

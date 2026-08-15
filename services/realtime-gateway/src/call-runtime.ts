@@ -1364,7 +1364,10 @@ function bridgeContextFor(entry: CallIngestRegistryEntry): WebRtcTranscriptionBr
     broadcasterPeerId: callPublisherPeerId(entry.participantId),
     revision: entry.plan.mediaRevision,
     sourceLanguage: entry.plan.sourceLanguage,
-    sourceLanguageMode: entry.plan.sourceLanguageMode,
+    // The call core and media-ingest name this the same thing differently:
+    // a plan's `auto` is ingest's `auto-detect`. Translated here rather than
+    // widening either contract to carry the other's spelling.
+    sourceLanguageMode: entry.plan.sourceLanguageMode === 'auto' ? 'auto-detect' : 'manual',
     targetLanguages: [...entry.effectiveTargetLanguages],
     ...(targetLanguage ? { targetLanguage } : {}),
     ...(Object.keys(entry.plan.voiceIdsByLanguage).length > 0
