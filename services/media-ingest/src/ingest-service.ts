@@ -21,6 +21,10 @@ import {
 } from './media-session.js';
 import { createTranscriptionProvider } from './transcription-provider.js';
 import {
+  checkOpusMtAvailability,
+  type LanguagePairAvailability,
+} from './model-availability.js';
+import {
   CompositeTimestampedTranslationProvider,
   M2m100TimestampedTranslationProvider,
   Nllb200TimestampedTranslationProvider,
@@ -278,6 +282,7 @@ export class IngestService {
    * and "ok" would be a lie told to whoever is trying to diagnose silence.
    */
   private gatewayConnected = false;
+  private languagePairAvailability: LanguagePairAvailability[] = [];
   private provider: MediaProvider;
   private ticker: ReturnType<typeof setInterval> | null = null;
   private streamStatus: MediaStateEvent['streamStatus'] = 'created';
@@ -367,8 +372,32 @@ export class IngestService {
     return this.gatewayConnected;
   }
 
+  /**
+   * Per-pair translation readiness, resolved once at startup. A dead pair is
+   * invisible at call level — speech is still recognised and the speaker still
+   * sees their own captions — so it has to be reported somewhere an operator
+   * looks before a call rather than discovered by a listener hearing nothing.
+   */
+  get translationPairAvailability(): LanguagePairAvailability[] {
+    return this.languagePairAvailability;
+  }
+
   async start(): Promise<void> {
     logger.info('Media ingest starting', { videoSource: this.config.videoSource });
+
+    this.languagePairAvailability = checkOpusMtAvailability({
+      languageModels: this.config.opusMtLanguageModels,
+      modelCacheDir: this.config.opusMtModelCacheDir,
+      allowModelDownload: this.config.opusMtAllowModelDownload,
+    });
+    for (const pair of this.languagePairAvailability) {
+      if (pair.available) continue;
+      logger.error('Translation language pair is unavailable', {
+        pair: pair.pair,
+        modelId: pair.modelId,
+        reason: pair.reason,
+      });
+    }
 
     this.socket = io(this.config.gatewayUrl, {
       query: { role: 'ingest' },

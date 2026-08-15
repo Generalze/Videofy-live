@@ -45,10 +45,17 @@ app.get('/health', (_req, res) => {
   // the one signal an operator checks first, and the symptom — captions simply
   // stop — gives no hint of the cause.
   const connected = ingest.connectedToGateway;
+  // Unavailable pairs do not make the service unhealthy — every other pair
+  // still works — but they are listed, because the alternative is a listener
+  // discovering it by hearing nothing.
+  const unavailablePairs = ingest.translationPairAvailability
+    .filter((pair) => !pair.available)
+    .map((pair) => ({ pair: pair.pair, reason: pair.reason }));
   res.status(connected ? 200 : 503).json({
     status: connected ? 'ok' : 'degraded',
     service: 'media-ingest',
     gatewayConnected: connected,
+    ...(unavailablePairs.length > 0 ? { unavailableTranslationPairs: unavailablePairs } : {}),
     timestamp: new Date().toISOString(),
   });
 });
