@@ -271,6 +271,13 @@ export function programmeTimestampMs(
 
 export class IngestService {
   private socket: Socket | null = null;
+  /**
+   * Whether the gateway socket is currently usable. Reported by /health because
+   * everything this service produces leaves through that socket: without it the
+   * process is running and accepting work whose output can never be delivered,
+   * and "ok" would be a lie told to whoever is trying to diagnose silence.
+   */
+  private gatewayConnected = false;
   private provider: MediaProvider;
   private ticker: ReturnType<typeof setInterval> | null = null;
   private streamStatus: MediaStateEvent['streamStatus'] = 'created';
@@ -351,6 +358,15 @@ export class IngestService {
     });
   }
 
+  /**
+   * True when transcriptions, translations and generated audio can actually
+   * reach participants. False means the service is working and delivering
+   * nothing.
+   */
+  get connectedToGateway(): boolean {
+    return this.gatewayConnected;
+  }
+
   async start(): Promise<void> {
     logger.info('Media ingest starting', { videoSource: this.config.videoSource });
 
@@ -359,11 +375,23 @@ export class IngestService {
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionDelay: 2000,
-      reconnectionAttempts: 10,
+      // Deliberately unbounded. This socket is the ONLY route by which
+      // transcriptions, translations and generated audio reach participants:
+      // without it the service still accepts chunks, still transcribes them,
+      // and still answers /health with 200 while nothing it produces can reach
+      // anyone. A bounded count (it was 10, so ~20 seconds) meant a gateway
+      // restart that outlasted the window left ingest permanently deaf with no
+      // outward sign — the failure looks like "captions stopped", which is the
+      // most expensive kind of bug this project has had.
+      reconnectionAttempts: Number.POSITIVE_INFINITY,
+      // Backs off to a minute so an extended gateway outage does not turn into
+      // a reconnect flood, while still recovering on its own.
+      reconnectionDelayMax: 60_000,
     });
 
     this.socket.on(SOCKET_EVENTS.CONNECTED, () => {
       logger.info('Connected to gateway');
+      this.gatewayConnected = true;
       this.socket?.emit(SOCKET_EVENTS.INGEST_HEALTH, { status: 'healthy' });
       this.emitState();
       this.emitGeneratedAudioReadySnapshot();
@@ -371,10 +399,12 @@ export class IngestService {
 
     this.socket.on(SOCKET_EVENTS.DISCONNECTED, () => {
       logger.warn('Disconnected from gateway');
+      this.gatewayConnected = false;
     });
 
     this.socket.on('connect_error', (err: Error) => {
       logger.error('Gateway connection error', { message: err.message });
+      this.gatewayConnected = false;
     });
 
     this.socket.on(SOCKET_EVENTS.INGEST_START_STREAM, () => {

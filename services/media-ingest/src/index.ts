@@ -39,7 +39,18 @@ app.use((req, res, next) => {
 });
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'media-ingest', timestamp: new Date().toISOString() });
+  // "degraded", not "ok", when the gateway socket is down: the process is alive
+  // and will happily accept and transcribe chunks, but nothing it produces can
+  // reach a participant. Reporting ok in that state hides the failure behind
+  // the one signal an operator checks first, and the symptom — captions simply
+  // stop — gives no hint of the cause.
+  const connected = ingest.connectedToGateway;
+  res.status(connected ? 200 : 503).json({
+    status: connected ? 'ok' : 'degraded',
+    service: 'media-ingest',
+    gatewayConnected: connected,
+    timestamp: new Date().toISOString(),
+  });
 });
 
 app.post('/microphone/sessions', async (req, res) => {

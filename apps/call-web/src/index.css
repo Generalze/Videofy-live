@@ -1,3 +1,5 @@
+@import '@videofy-live/design-system/tokens.css';
+
 *,
 *::before,
 *::after {
@@ -6,23 +8,37 @@
   padding: 0;
 }
 
+/*
+ * Adoption layer for the shared design system (§5.1.11).
+ *
+ * The app's own names are kept and re-pointed at the shared semantic tokens
+ * rather than being renamed across every rule: the design system was built so
+ * that adopting it is a re-point, and doing it this way means one reviewable
+ * diff instead of hundreds of unrelated edits. These aliases are a migration
+ * step — new rules should use `--vf-*` directly, and this block shrinks as
+ * existing rules are touched.
+ *
+ * Adopting the shared palette also fixes a real contrast defect: the previous
+ * muted text (#8d8daa) measured 4.38:1 against the border surface it sat on,
+ * under the 4.5:1 the architecture requires. The shared token measures 5.14:1.
+ */
 :root {
-  --color-brand: #7c3aed;
-  --color-brand-light: #a78bfa;
-  --color-bg: #0b0b10;
-  --color-surface: #15151d;
-  --color-surface-raised: #1d1d28;
-  --color-border: #2a2a3a;
-  --color-text: #eceaf6;
-  --color-text-muted: #8d8daa;
-  --color-success: #22c55e;
-  --color-warn: #eab308;
-  --color-error: #ef4444;
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 16px;
-  --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.55);
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --color-brand: var(--vf-border-accent);
+  --color-brand-light: var(--vf-text-accent);
+  --color-bg: var(--vf-surface-canvas);
+  --color-surface: var(--vf-surface-1);
+  --color-surface-raised: var(--vf-surface-2);
+  --color-border: var(--vf-border-default);
+  --color-text: var(--vf-text-primary);
+  --color-text-muted: var(--vf-text-muted);
+  --color-success: var(--vf-status-success-solid);
+  --color-warn: var(--vf-status-warn-solid);
+  --color-error: var(--vf-status-danger-solid);
+  --radius-sm: var(--vf-radius-sm);
+  --radius-md: var(--vf-radius-md);
+  --radius-lg: var(--vf-radius-lg);
+  --shadow-lg: var(--vf-elevation-4);
+  font-family: var(--vf-font-family-sans);
 }
 
 body {

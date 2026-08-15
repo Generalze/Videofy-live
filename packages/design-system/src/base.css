@@ -1,0 +1,370 @@
+/* =============================================================================
+ * Videofy Design System — base
+ * @owner masterzee001
+ *
+ * Reset + base element treatment + focus + motion/contrast preferences.
+ * Everything here is either a browser-default correction or a global
+ * accessibility guarantee. There are no components: this package ships a
+ * language, not a widget set, because three separate Vite React apps and the
+ * future admin/public surfaces must be free to build their own components on
+ * top of it (§5.1.11).
+ *
+ * The only class in this file is `.vf-sr-only`, and it is here because it is
+ * the mechanism behind a hard accessibility rule (§5.1.13: status must never
+ * be communicated by colour alone). A shared visually-hidden helper is a
+ * primitive, not a component.
+ *
+ * Importing this file is enough — it pulls in tokens.css itself. Import
+ * `@videofy-live/design-system/tokens.css` alone if an app wants the language
+ * without the reset (e.g. a surface embedded in someone else's page).
+ * ========================================================================== */
+
+@import './tokens.css';
+
+/* -----------------------------------------------------------------------------
+ * Reset
+ * -------------------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  /* Never set a px root font-size. Doing so overrides the browser's own font
+   * size setting, which is the primary accessibility control for a large
+   * number of users, and silently breaks every rem in this system. */
+  font-size: 100%;
+  /* Stops mobile Safari inflating text in landscape, which reflows caption
+   * blocks mid-call. */
+  -webkit-text-size-adjust: 100%;
+  /* Anchors and skip links should not slam to their target. `smooth` is
+   * neutralised in the reduced-motion block below. */
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100dvh;
+  background-color: var(--vf-surface-canvas);
+  background-image: var(--vf-canvas-wash);
+  background-attachment: fixed;
+  color: var(--vf-text-primary);
+  font-family: var(--vf-font-family-sans);
+  font-size: var(--vf-font-size-md);
+  font-weight: var(--vf-font-weight-regular);
+  line-height: var(--vf-line-height-normal);
+  letter-spacing: var(--vf-letter-spacing-normal);
+  /* Light text on a near-black background blooms — the glyph stems appear
+   * heavier than the same face on white. Antialiasing counteracts it. This is
+   * the one place a dark-first product should override the platform default;
+   * on a light theme it would thin the text instead, which is why it is scoped
+   * away below. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+[data-vf-theme='light'] body,
+body[data-vf-theme='light'] {
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}
+
+/* -----------------------------------------------------------------------------
+ * Base element treatment
+ * -------------------------------------------------------------------------- */
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--vf-font-family-display);
+  font-weight: var(--vf-font-weight-semibold);
+  line-height: var(--vf-line-height-snug);
+  letter-spacing: var(--vf-letter-spacing-snug);
+  /* Videofy renders the same heading in every language we support, and string
+   * length varies enormously between them — a German or Finnish rendering of
+   * an English heading routinely leaves a one-word last line. `balance` fixes
+   * that without a per-locale override. */
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: var(--vf-font-size-4xl);
+  letter-spacing: var(--vf-letter-spacing-tight);
+  line-height: var(--vf-line-height-tight);
+}
+
+h2 {
+  font-size: var(--vf-font-size-3xl);
+  letter-spacing: var(--vf-letter-spacing-tight);
+  line-height: var(--vf-line-height-tight);
+}
+
+h3 {
+  font-size: var(--vf-font-size-2xl);
+}
+
+h4 {
+  font-size: var(--vf-font-size-xl);
+}
+
+h5 {
+  font-size: var(--vf-font-size-lg);
+}
+
+h6 {
+  font-size: var(--vf-font-size-md);
+}
+
+p {
+  /* Same reasoning as `balance` on headings, applied to running text: avoids
+   * orphaned last words in translated copy. */
+  text-wrap: pretty;
+}
+
+a {
+  color: var(--vf-text-accent);
+  text-decoration-color: color-mix(in srgb, currentcolor 45%, transparent);
+  text-underline-offset: 0.18em;
+  transition: var(--vf-transition-colors);
+}
+
+a:hover {
+  text-decoration-color: currentcolor;
+}
+
+strong,
+b {
+  font-weight: var(--vf-font-weight-semibold);
+}
+
+small {
+  font-size: var(--vf-font-size-sm);
+}
+
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--vf-font-family-mono);
+  font-size: 0.9em;
+}
+
+hr {
+  border: none;
+  border-top: var(--vf-border-width-hairline) solid var(--vf-border-subtle);
+}
+
+/* Replaced elements are inline by default, which leaves a phantom descender
+ * gap under every video tile and avatar. */
+img,
+video,
+canvas,
+svg,
+picture {
+  display: block;
+  max-width: 100%;
+}
+
+img,
+video {
+  height: auto;
+}
+
+video {
+  /* Before the first frame arrives, and inside the letterbox bars after it
+   * does, a <video> shows its background. Default white would flash on join. */
+  background-color: var(--vf-media-background);
+}
+
+svg {
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: var(--vf-icon-stroke-width);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Form controls do not inherit typography from their ancestors in any browser. */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+}
+
+button {
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: default;
+  color: var(--vf-text-disabled);
+}
+
+textarea {
+  resize: vertical;
+}
+
+/* Accent colour for native checkbox/radio/range so a slider or a toggle looks
+ * like part of the product without each app restyling it. */
+input[type='checkbox'],
+input[type='radio'],
+input[type='range'],
+progress {
+  accent-color: var(--vf-violet-600);
+}
+
+::placeholder {
+  color: var(--vf-text-muted);
+  opacity: 1; /* Firefox dims placeholders further; we already chose the value. */
+}
+
+::selection {
+  background-color: var(--vf-surface-accent-strong);
+  color: var(--vf-text-primary);
+}
+
+/* Standard-property scrollbars. A default light scrollbar on a near-black
+ * surface is the single loudest piece of unstyled chrome in a dark app. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--vf-border-strong) transparent;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* -----------------------------------------------------------------------------
+ * Focus (§5.1.13: visible focus)
+ * -------------------------------------------------------------------------- */
+
+/* `:focus-visible` rather than `:focus` so a pointer user does not get a ring
+ * on every click, while a keyboard user always does. */
+:focus-visible {
+  outline: var(--vf-focus-width) solid var(--vf-focus-color);
+  outline-offset: var(--vf-focus-offset);
+  border-radius: var(--vf-focus-radius);
+}
+
+/* Some browsers still paint a default ring on :focus for form controls. */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Controls overlaid on video need the dual ring: a violet outline alone
+ * measures 2.7:1 against a bright frame and fails WCAG 2.4.11. Apply this
+ * attribute to any control that can sit on top of media — mute, camera,
+ * leave, caption toggle, fullscreen. */
+[data-vf-on-media]:focus-visible {
+  outline-color: var(--vf-focus-contrast-color);
+  box-shadow: var(--vf-focus-ring-over-media);
+}
+
+/* -----------------------------------------------------------------------------
+ * Screen-reader-only text
+ *
+ * The supporting half of the "status is never colour alone" rule: a coloured
+ * dot plus `<span class="vf-sr-only">Reconnecting</span>` is accessible; a
+ * coloured dot is not. Prefer a visible label — this is for the cases where
+ * the layout genuinely cannot carry one.
+ * -------------------------------------------------------------------------- */
+
+.vf-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  /* 0 0 0 0 collapses the box in some engines and drops the text from the
+   * accessibility tree entirely; the 1px inset rect is the safe form. */
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* -----------------------------------------------------------------------------
+ * Reduced motion (§5.1.12)
+ *
+ * Re-pointing the duration tokens themselves is what makes this work: every
+ * transition in every app is expressed in terms of `--vf-duration-*`, so this
+ * one block neutralises the whole product rather than each app remembering to
+ * write its own media query. The blanket rule below is the safety net for
+ * third-party CSS and anything that slipped past the tokens.
+ *
+ * 1ms rather than 0s on purpose. At 0s browsers may skip `transitionend` /
+ * `animationend` entirely, and any app logic sequenced on those events — a
+ * drawer that moves focus when it finishes closing — hangs forever. 1ms is
+ * imperceptible and still fires.
+ * -------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --vf-duration-instant: 1ms;
+    --vf-duration-fast: 1ms;
+    --vf-duration-normal: 1ms;
+    --vf-duration-slow: 1ms;
+    --vf-duration-slower: 1ms;
+    --vf-duration-caption: 1ms;
+    --vf-skeleton-duration: 1ms;
+  }
+
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* -----------------------------------------------------------------------------
+ * Increased contrast
+ *
+ * A user asking for more contrast is asking for boundaries, not brighter
+ * decoration. Decorative borders are promoted to the contrast-verified
+ * interactive value and the focus ring thickens; colours are untouched
+ * because they already clear AA.
+ * -------------------------------------------------------------------------- */
+
+@media (prefers-contrast: more) {
+  :root {
+    /* Each role steps up one rung. Note these must reference rungs that are
+     * NOT themselves being redefined here — custom properties resolve against
+     * the cascaded value, so `subtle: var(--vf-border-default)` would collapse
+     * onto the new `default` and flatten the ladder. */
+    --vf-border-subtle: var(--vf-border-strong);
+    --vf-border-default: var(--vf-border-interactive);
+    --vf-focus-width: 3px;
+    --vf-caption-background: rgb(0 0 0 / 0.82);
+  }
+}
+
+/* Forced-colors (Windows high contrast) strips our palette entirely. The one
+ * thing that must survive is the focus indicator, which the UA will not draw
+ * for a custom `box-shadow` ring. */
+@media (forced-colors: active) {
+  :focus-visible {
+    outline: 3px solid CanvasText;
+  }
+}

@@ -1,0 +1,950 @@
+/* =============================================================================
+ * Videofy Design System — tokens
+ * @owner masterzee001
+ * Master architecture §5.1.11 ("Design system").
+ *
+ * This file is the ONE source of truth for Videofy's visual language. Apps
+ * consume these tokens; apps never redefine them and never re-declare a
+ * `--vf-*` name locally. If a surface needs a value that does not exist here,
+ * the value belongs here — not in the app — or the surface is wrong.
+ *
+ * Layering (read top to bottom):
+ *   1. PRIMITIVES   raw colour ramps. Theme-invariant. The only place a hex
+ *                   literal is allowed to appear.
+ *   2. SEMANTICS    role names (`--vf-surface-1`, `--vf-text-primary`, …) that
+ *                   point at primitives. A theme swap re-points ONLY this
+ *                   layer, which is why light mode below is ~50 lines and not
+ *                   a second palette.
+ *   3. SYSTEMS      typography, space, radius, motion, media, captions,
+ *                   status, focus, loading. Theme-invariant structure.
+ *
+ * Never reach past a semantic into a primitive from app code. `--vf-ink-850`
+ * in an app is a bug: it hard-codes "dark" into a component and the light
+ * theme silently stops working there.
+ *
+ * Browser baseline: `color-mix()` (Chrome 111 / Safari 16.2 / Firefox 113,
+ * all shipped 2023). We use it instead of storing parallel `r g b` triples for
+ * every accent, because a duplicated channel list is a drift bug waiting to
+ * happen — one ramp value changes, the triple does not, and the tint quietly
+ * points at the old brand colour.
+ * ========================================================================== */
+
+/* -----------------------------------------------------------------------------
+ * 1. PRIMITIVES
+ * -------------------------------------------------------------------------- */
+
+:root {
+  /* --- Ink ramp -------------------------------------------------------------
+   * A single cool neutral ramp, hue ≈ 250 at very low saturation. It is not
+   * grey: pure grey next to the brand violet reads as dirty, while a faint
+   * violet bias in the neutrals makes the accent look like it belongs to the
+   * same family. The existing call-web palette (#0b0b10 / #15151d / #1d1d28 /
+   * #2a2a3a / #8d8daa / #eceaf6) is preserved at its exact stops so adoption
+   * is a rename, not a redesign.
+   *
+   * The ramp is deliberately uneven. Eight of its sixteen stops sit between
+   * 650 and 1000 because every dark-theme surface, border, well and scrim is
+   * carved out of that range and needs separations of a few percent lightness
+   * to read at all. The light half of the ramp is coarse because dark-first
+   * products only use it for text.
+   *
+   * Higher number = darker (Tailwind convention), so the scale reads the same
+   * way engineers already expect.
+   */
+  --vf-ink-0: #ffffff;
+  --vf-ink-50: #f4f3fa;
+  --vf-ink-100: #eceaf6;
+  --vf-ink-200: #d9d7e8;
+  --vf-ink-300: #b9b8cf;
+  --vf-ink-400: #9a9ab5;
+  --vf-ink-500: #7d7d9c;
+  --vf-ink-600: #5c5c78;
+  --vf-ink-650: #43435a;
+  --vf-ink-700: #2a2a3a;
+  --vf-ink-750: #24242f;
+  --vf-ink-800: #1d1d28;
+  --vf-ink-850: #15151d;
+  --vf-ink-900: #101017;
+  --vf-ink-950: #0b0b10;
+  --vf-ink-1000: #050508;
+
+  /* --- Brand violet ramp ----------------------------------------------------
+   * #7c3aed (violet-600) is the established Videofy accent and stays the brand
+   * anchor. 300 is the established "brand light". The ramp exists so accents
+   * can be used at the right weight for the surface they sit on rather than
+   * being faked with opacity, which desaturates and looks muddy on near-black.
+   *
+   * 700–900 exist for the light theme, where 600 is too bright to carry text.
+   */
+  --vf-violet-50: #f5f0ff;
+  --vf-violet-100: #e9ddff;
+  --vf-violet-200: #d4bbfe;
+  --vf-violet-300: #a78bfa;
+  --vf-violet-400: #916bf8;
+  --vf-violet-500: #8b5cf6;
+  --vf-violet-600: #7c3aed;
+  --vf-violet-700: #6d28d9;
+  --vf-violet-800: #5b21b6;
+  --vf-violet-900: #4c1d95;
+
+  /* --- Status ramps ---------------------------------------------------------
+   * Four semantic hues. Each carries a light stop (400) for text on dark
+   * surfaces, a mid stop (500) for solid fills and dots, and two dark stops
+   * (700/800) for text on light surfaces. Text and fill are separate stops
+   * because a single "status colour" cannot do both jobs: danger-500 is a good
+   * dot and a failing 4.4:1 as text on surface-2.
+   *
+   * Hues are chosen to stay distinguishable from the violet brand and from
+   * each other under the common dichromacies: green ~145°, amber ~45°,
+   * red ~0°, cyan-blue ~199°. Amber and red are the pair most at risk under
+   * protanopia, which is exactly why status is never communicated by colour
+   * alone (see §STATUS SEMANTICS below).
+   */
+  --vf-success-400: #4ade80;
+  --vf-success-500: #22c55e;
+  --vf-success-700: #15803d;
+  --vf-success-800: #166534;
+
+  --vf-warn-400: #facc15;
+  --vf-warn-500: #eab308;
+  --vf-warn-700: #a16207;
+  --vf-warn-800: #854d0e;
+
+  --vf-danger-400: #f87171;
+  --vf-danger-500: #ef4444;
+  --vf-danger-700: #b91c1c;
+  --vf-danger-800: #991b1b;
+
+  --vf-info-400: #38bdf8;
+  --vf-info-500: #0ea5e9;
+  --vf-info-700: #0369a1;
+  --vf-info-800: #075985;
+}
+
+/* -----------------------------------------------------------------------------
+ * 2a. SEMANTICS — dark (product default)
+ *
+ * Dark is not a "mode" here, it is the product. A call stage and a programme
+ * stage are dark by design: video is the brightest object on screen and any
+ * light chrome around it both dims the media perceptually and destroys the
+ * caption scrim contrast we rely on. See README "Theme story" for why we do
+ * not honour `prefers-color-scheme` at the CSS level.
+ *
+ * `:root` and `[data-vf-theme='dark']` share one selector list so a subtree can
+ * force dark back on inside a light region without duplicating the palette.
+ * -------------------------------------------------------------------------- */
+
+:root,
+[data-vf-theme='dark'] {
+  color-scheme: dark;
+
+  /* --- Surfaces -------------------------------------------------------------
+   * Six levels, not three. A call surface stacks stage → panel → control →
+   * drawer → menu and a three-level system forces two of those to share a
+   * fill, at which point depth stops reading and everything looks flat.
+   *
+   * `void` and `sunken` are named rather than numbered because they are not
+   * "less raised cards": void is the black behind video (letterbox, media
+   * background) and sunken is a recess (inputs, scroll wells). The numbered
+   * ramp means strictly "above the page", 1 → 4, increasing.
+   */
+  --vf-surface-void: var(--vf-ink-1000);
+  --vf-surface-canvas: var(--vf-ink-950);
+  --vf-surface-sunken: var(--vf-ink-900);
+  --vf-surface-1: var(--vf-ink-850);
+  --vf-surface-2: var(--vf-ink-800);
+  --vf-surface-3: var(--vf-ink-750);
+  --vf-surface-4: var(--vf-ink-700);
+
+  /* Accent-tinted surfaces for selected/active states. Alpha rather than a
+   * solid stop, so the tint composites correctly over whichever surface level
+   * the control happens to sit on. */
+  --vf-surface-accent-weak: color-mix(in srgb, var(--vf-violet-600) 10%, transparent);
+  --vf-surface-accent: color-mix(in srgb, var(--vf-violet-600) 16%, transparent);
+  --vf-surface-accent-strong: color-mix(in srgb, var(--vf-violet-600) 24%, transparent);
+
+  /* Modal backdrop. 0.68 rather than the usual 0.5 because our canvas is
+   * already near-black: a light scrim would not visibly separate the dialog
+   * from the page behind it. */
+  --vf-surface-scrim: rgb(0 0 0 / 0.68);
+
+  /* Ambient brand wash on the page background. Two very low-alpha radial
+   * fields, carried over from call-web. It is the whole of our "gradient
+   * budget" (§5.1.1 forbids excessive gradients): nothing else in the system
+   * gradients. The call stage should set this to `none` so nothing competes
+   * with video. */
+  --vf-canvas-wash:
+    radial-gradient(
+      1100px 520px at 85% -10%,
+      color-mix(in srgb, var(--vf-violet-600) 14%, transparent),
+      transparent 60%
+    ),
+    radial-gradient(
+      900px 480px at -10% 110%,
+      color-mix(in srgb, var(--vf-violet-300) 7%, transparent),
+      transparent 55%
+    );
+
+  /* --- Text ----------------------------------------------------------------
+   * Measured WCAG 2.x contrast against every surface this token is allowed on,
+   * worst case first. Ranges are canvas (darkest) → surface-4 (lightest).
+   *
+   *   primary    15.3 : 1  →  11.9 : 1   AAA everywhere
+   *   secondary   9.4 : 1  →   7.3 : 1   AAA everywhere
+   *   muted       7.2 : 1  →   5.1 : 1   AA everywhere, AAA to surface-2
+   *   accent      7.2 : 1  →   5.2 : 1   AA everywhere
+   *
+   * `muted` is #9a9ab5, one step lighter than call-web's #8d8daa. The old value
+   * measured 4.38:1 on surface-4 and therefore failed AA on our own top
+   * surface. Lifting it clears 4.5:1 on every level, which means "muted" is a
+   * hierarchy decision and never an accessibility one.
+   *
+   * `disabled` measures ≈2.8:1 and is deliberately below AA. WCAG 1.4.3
+   * exempts inactive controls, and a disabled control that still meets 4.5:1
+   * does not read as disabled. The cost is that a disabled state must NEVER be
+   * the only carrier of meaning: pair it with `aria-disabled` and an
+   * explanation elsewhere on the surface.
+   */
+  --vf-text-primary: var(--vf-ink-100);
+  --vf-text-secondary: var(--vf-ink-300);
+  --vf-text-muted: var(--vf-ink-400);
+  --vf-text-disabled: var(--vf-ink-600);
+  --vf-text-accent: var(--vf-violet-300);
+  --vf-text-inverse: var(--vf-ink-950);
+  /* On a violet-600 fill: 5.70:1 (AA). On violet-700: 7.10:1. Never place
+   * `--vf-text-primary` on an accent fill — it drops to 3.4:1. */
+  --vf-text-on-accent: var(--vf-ink-0);
+
+  /* --- Borders --------------------------------------------------------------
+   * Four roles, and the distinction is an accessibility one, not a taste one.
+   *
+   *   subtle/default/strong  decorative grouping. WCAG 1.4.11 does not apply:
+   *                          the thing being bounded is legible without them.
+   *   interactive            the boundary of a control whose extent is not
+   *                          otherwise visible (inputs, ghost buttons). This
+   *                          one is contrast-verified: #7d7d9c measures
+   *                          3.55:1 on surface-4 (worst case) and 4.57:1 on
+   *                          surface-1, clearing the 3:1 requirement.
+   *
+   * Use `interactive` on anything a keyboard user can land on. Using `default`
+   * there is the single easiest way to fail an audit.
+   */
+  --vf-border-subtle: var(--vf-ink-800);
+  --vf-border-default: var(--vf-ink-700);
+  --vf-border-strong: var(--vf-ink-650);
+  --vf-border-interactive: var(--vf-ink-500);
+  --vf-border-accent: var(--vf-violet-600);
+
+  /* --- Focus ---------------------------------------------------------------
+   * A single violet ring is not sufficient for Videofy. Controls sit ON TOP OF
+   * VIDEO (mute, camera, leave, caption toggle) and violet-300 measures only
+   * 2.72:1 against a white video frame — below the 3:1 that WCAG 2.4.11 asks
+   * of the focus indicator itself.
+   *
+   * So the ring is dual: a near-black inner ring that survives bright content
+   * (20.4:1 on white) and a violet outer ring that survives dark content
+   * (7.7:1 on black, 7.2:1 on canvas). One of the two always wins, whatever is
+   * behind the control. `--vf-focus-ring` is the flat form for chrome that is
+   * never over media; `--vf-focus-ring-over-media` is the dual form.
+   */
+  --vf-focus-color: var(--vf-violet-300);
+  --vf-focus-contrast-color: var(--vf-ink-1000);
+  --vf-focus-ring: 0 0 0 var(--vf-focus-width) var(--vf-focus-color);
+  --vf-focus-ring-over-media:
+    0 0 0 var(--vf-focus-width) var(--vf-focus-contrast-color),
+    0 0 0 calc(var(--vf-focus-width) * 2) var(--vf-focus-color);
+
+  /* --- Status ---------------------------------------------------------------
+   * Per family: `-text` (on dark surfaces), `-solid` (dots, bars, fills),
+   * `-surface` (tinted background), `-border`.
+   *
+   * `-text` uses the 400 stop and measures 6.6 : 1 (danger, worst) to 11.9 : 1
+   * (warn) on surface-1/2 — comfortably AA, and AAA for everything but danger.
+   * The 500 stops are too dark for text on our surfaces (danger-500 is 4.4:1
+   * on surface-2) which is why fills and text are separate tokens rather than
+   * one "status colour".
+   *
+   * `--vf-status-on-solid` is near-black for ALL four families: white measures
+   * 1.9–3.8:1 on these fills and fails, near-black measures 5.4–10.6:1 and
+   * passes. A status badge with white text on green is a very common and very
+   * inaccessible pattern; there is deliberately no token for it.
+   */
+  --vf-status-success-text: var(--vf-success-400);
+  --vf-status-success-solid: var(--vf-success-500);
+  --vf-status-success-surface: color-mix(in srgb, var(--vf-success-500) 14%, transparent);
+  --vf-status-success-border: color-mix(in srgb, var(--vf-success-500) 45%, transparent);
+
+  --vf-status-warn-text: var(--vf-warn-400);
+  --vf-status-warn-solid: var(--vf-warn-500);
+  --vf-status-warn-surface: color-mix(in srgb, var(--vf-warn-500) 14%, transparent);
+  --vf-status-warn-border: color-mix(in srgb, var(--vf-warn-500) 45%, transparent);
+
+  --vf-status-danger-text: var(--vf-danger-400);
+  --vf-status-danger-solid: var(--vf-danger-500);
+  --vf-status-danger-surface: color-mix(in srgb, var(--vf-danger-500) 14%, transparent);
+  --vf-status-danger-border: color-mix(in srgb, var(--vf-danger-500) 45%, transparent);
+
+  --vf-status-info-text: var(--vf-info-400);
+  --vf-status-info-solid: var(--vf-info-500);
+  --vf-status-info-surface: color-mix(in srgb, var(--vf-info-500) 14%, transparent);
+  --vf-status-info-border: color-mix(in srgb, var(--vf-info-500) 45%, transparent);
+
+  --vf-status-neutral-text: var(--vf-text-muted);
+  --vf-status-neutral-solid: var(--vf-ink-500);
+  --vf-status-neutral-surface: color-mix(in srgb, var(--vf-ink-400) 12%, transparent);
+  --vf-status-neutral-border: var(--vf-border-default);
+
+  --vf-status-on-solid: var(--vf-ink-1000);
+
+  /* --- Elevation ------------------------------------------------------------
+   * On near-black, a drop shadow alone barely reads — there is nothing for the
+   * shadow to darken. Depth in a dark UI comes from three cues together:
+   * a lighter fill (the surface ramp above), a 1px inner top highlight that
+   * simulates a light source, and an ambient shadow that seats the object.
+   * Every level here carries all three; using a bare `box-shadow` instead is
+   * why dark dashboards usually look flat.
+   *
+   * Shadows use a negative spread so the blur reads as ambient occlusion
+   * rather than a halo, and the y-offset grows faster than the blur so higher
+   * surfaces read as further from the page rather than merely blurrier.
+   *
+   * Redeclared per theme because the light values are not a transform of these
+   * — light mode drops the inner highlight entirely (white on white is
+   * invisible) and uses a much weaker umbra.
+   */
+  --vf-elevation-0: none;
+  --vf-elevation-1: 0 1px 2px rgb(0 0 0 / 0.4), inset 0 1px 0 rgb(255 255 255 / 0.04);
+  --vf-elevation-2: 0 4px 12px -2px rgb(0 0 0 / 0.45), inset 0 1px 0 rgb(255 255 255 / 0.05);
+  --vf-elevation-3: 0 12px 28px -6px rgb(0 0 0 / 0.5), inset 0 1px 0 rgb(255 255 255 / 0.06);
+  --vf-elevation-4: 0 24px 64px -12px rgb(0 0 0 / 0.55), inset 0 1px 0 rgb(255 255 255 / 0.07);
+  --vf-elevation-5: 0 40px 96px -20px rgb(0 0 0 / 0.65), inset 0 1px 0 rgb(255 255 255 / 0.08);
+  /* Media gets no inner highlight: a 1px white line across the top of a video
+   * frame is a visible artefact, not depth. */
+  --vf-elevation-media: 0 24px 60px -24px rgb(0 0 0 / 0.8);
+}
+
+/* -----------------------------------------------------------------------------
+ * 2b. SEMANTICS — light (opt-in, `data-vf-theme="light"`)
+ *
+ * Ships complete rather than as a stub, because the point of the semantic layer
+ * is that a theme is a re-point and nothing else. If light mode needed new
+ * primitives or new component CSS, the layering would be wrong.
+ *
+ * Intended for surfaces that are documents rather than stages: marketing,
+ * admin, docs. Never for the call/programme stage.
+ *
+ * Note that surfaces 2–4 converge on white. That is correct, not lazy: in a
+ * light theme depth is carried by shadow, in a dark theme it is carried by
+ * fill. The ramp does not simply invert.
+ * -------------------------------------------------------------------------- */
+
+[data-vf-theme='light'] {
+  color-scheme: light;
+
+  --vf-surface-void: var(--vf-ink-1000);
+  --vf-surface-canvas: var(--vf-ink-100);
+  --vf-surface-sunken: var(--vf-ink-200);
+  --vf-surface-1: var(--vf-ink-50);
+  --vf-surface-2: var(--vf-ink-0);
+  --vf-surface-3: var(--vf-ink-0);
+  --vf-surface-4: var(--vf-ink-0);
+
+  --vf-surface-accent-weak: color-mix(in srgb, var(--vf-violet-600) 6%, transparent);
+  --vf-surface-accent: color-mix(in srgb, var(--vf-violet-600) 11%, transparent);
+  --vf-surface-accent-strong: color-mix(in srgb, var(--vf-violet-600) 18%, transparent);
+  --vf-surface-scrim: rgb(0 0 0 / 0.45);
+  --vf-canvas-wash: none;
+
+  /* Measured best (surface-2, white) → worst (surface-sunken, #d9d7e8):
+   *   primary   19.6 : 1 → 13.9 : 1
+   *   secondary  9.6 : 1 →  6.8 : 1
+   *   muted      6.5 : 1 →  4.6 : 1
+   *   accent     7.1 : 1 →  5.0 : 1   (violet-700; violet-600 measures 5.7:1
+   *                                    on white and 4.0:1 on sunken, which
+   *                                    fails — the brand stop cannot carry
+   *                                    body text on light)
+   */
+  --vf-text-primary: var(--vf-ink-950);
+  --vf-text-secondary: var(--vf-ink-650);
+  --vf-text-muted: var(--vf-ink-600);
+  --vf-text-disabled: var(--vf-ink-400);
+  --vf-text-accent: var(--vf-violet-700);
+  --vf-text-inverse: var(--vf-ink-100);
+  --vf-text-on-accent: var(--vf-ink-0);
+
+  /* `interactive` is ink-600 rather than the ink-500 dark mode uses. In light
+   * mode an input's own fill IS `--vf-surface-sunken` (#d9d7e8), and ink-500
+   * measures only 2.81:1 against it — the border of a filled input has to
+   * out-contrast the fill it encloses, not just the page. ink-600 measures
+   * 4.55:1 there and 6.45:1 on white. */
+  --vf-border-subtle: var(--vf-ink-200);
+  --vf-border-default: var(--vf-ink-300);
+  --vf-border-strong: var(--vf-ink-400);
+  --vf-border-interactive: var(--vf-ink-600);
+  --vf-border-accent: var(--vf-violet-600);
+
+  /* Violet-700 measures 7.1:1 on white. The dual ring keeps the same shape as
+   * dark mode; only the contrast partner flips to white. */
+  --vf-focus-color: var(--vf-violet-700);
+  --vf-focus-contrast-color: var(--vf-ink-0);
+
+  /* Status text is rated against the DARKEST light surface — `sunken`
+   * (#d9d7e8) — because a status chip inside a well is a real layout, and it
+   * is where every one of these hues is closest to failing.
+   *
+   *   success-800  5.04:1   (700 measures 3.54:1 there and fails)
+   *   warn-800     4.84:1   (700 measures 4.19:1 and fails)
+   *   danger-700   4.57:1   (red carries on light without going to 800, and
+   *                          800 starts to read maroon rather than alarming)
+   *   info-800     5.34:1   (700 measures 4.19:1 and fails)
+   *
+   * Green, amber and blue all have to go one stop darker than red on light
+   * backgrounds. That is a property of the hues, not an inconsistency.
+   */
+  --vf-status-success-text: var(--vf-success-800);
+  --vf-status-success-surface: color-mix(in srgb, var(--vf-success-500) 16%, transparent);
+  --vf-status-warn-text: var(--vf-warn-800);
+  --vf-status-warn-surface: color-mix(in srgb, var(--vf-warn-500) 22%, transparent);
+  --vf-status-danger-text: var(--vf-danger-700);
+  --vf-status-danger-surface: color-mix(in srgb, var(--vf-danger-500) 14%, transparent);
+  --vf-status-info-text: var(--vf-info-800);
+  --vf-status-info-surface: color-mix(in srgb, var(--vf-info-500) 16%, transparent);
+  --vf-status-neutral-solid: var(--vf-ink-500);
+  --vf-status-neutral-surface: color-mix(in srgb, var(--vf-ink-600) 12%, transparent);
+
+  /* Interim captions step DOWN from primary on dark and UP from it on light,
+   * so the one caption colour that is a step rather than a role has to be
+   * re-pointed here. ink-650 sits a nudge off the light primary and stays well
+   * clear of AA on every light surface (6.8:1 at worst). The over-video
+   * caption tokens are deliberately NOT re-pointed: a caption on the media
+   * scrim is on black in both themes. */
+  --vf-caption-interim-color: var(--vf-ink-650);
+
+  /* Skeletons invert with the theme rather than following the surface ramp:
+   * on dark a placeholder is LIGHTER than the card it sits in, on light it is
+   * darker. Inheriting the dark values here would put a white placeholder on a
+   * white card and a white sheen on top of it — a loading state that renders
+   * as nothing at all. */
+  --vf-skeleton-background: var(--vf-surface-sunken);
+  --vf-skeleton-highlight: rgb(16 16 23 / 0.06);
+
+  --vf-elevation-0: none;
+  --vf-elevation-1: 0 1px 2px rgb(16 16 23 / 0.06);
+  --vf-elevation-2: 0 4px 12px -2px rgb(16 16 23 / 0.1);
+  --vf-elevation-3: 0 12px 28px -6px rgb(16 16 23 / 0.12);
+  --vf-elevation-4: 0 24px 64px -12px rgb(16 16 23 / 0.16);
+  --vf-elevation-5: 0 40px 96px -20px rgb(16 16 23 / 0.2);
+  --vf-elevation-media: 0 24px 60px -24px rgb(16 16 23 / 0.28);
+}
+
+/* -----------------------------------------------------------------------------
+ * 3. SYSTEMS — theme-invariant structure
+ * -------------------------------------------------------------------------- */
+
+:root {
+  /* === TYPOGRAPHY =========================================================
+   * Token names mirror the CSS properties they feed (`--vf-font-size-*` →
+   * `font-size`) so an author never has to guess which group a value is in.
+   * Note this is why colour is `--vf-text-*` and size is `--vf-font-size-*`:
+   * one namespace per property, no collisions.
+   *
+   * No webfont is shipped. A shared package that pulls a font file forces
+   * every consuming app into a loading strategy (FOUT/FOIT, preload,
+   * self-host vs CDN, CSP) that the design system cannot see and must not
+   * decide. Apps that want Inter load it and the stack picks it up
+   * automatically; everything else falls back to the platform UI font, which
+   * on Windows (`Segoe UI Variable`) and macOS is already a good one.
+   */
+  --vf-font-family-sans:
+    'Inter var', 'Inter', 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system,
+    'Helvetica Neue', Arial, sans-serif;
+  --vf-font-family-display:
+    'Inter Display', 'Inter var', 'Inter', 'Segoe UI Variable Display', 'Segoe UI', system-ui,
+    -apple-system, sans-serif;
+  /* Diagnostics, session/join codes, latency figures. */
+  --vf-font-family-mono:
+    'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, 'Liberation Mono',
+    monospace;
+
+  /* Type scale, 16px root. The steps are hand-tuned rather than a pure
+   * geometric progression: a strict 1.2 ratio produces 16 → 19.2 → 23.04,
+   * which is both too coarse in the UI range (operator consoles need 12/14/16
+   * to differ by a readable-but-quiet amount) and too timid at display sizes
+   * (§5.1.1 asks for strong hierarchy). So the ratio widens as the scale
+   * climbs: ≈1.13 between UI steps, ≈1.28 between display steps.
+   *
+   * Sizes land on whole pixels at a 16px root because fractional type sizes
+   * hint inconsistently across engines and the rhythm survives the rounding.
+   *
+   * Display steps are fluid. UI steps deliberately are not: a viewport-linked
+   * label size breaks alignment against fixed-height controls and makes every
+   * layout a moving target.
+   */
+  --vf-font-size-2xs: 0.6875rem; /* 11px — uppercase micro-labels only */
+  --vf-font-size-xs: 0.75rem; /* 12px */
+  --vf-font-size-sm: 0.875rem; /* 14px */
+  --vf-font-size-md: 1rem; /* 16px — base */
+  --vf-font-size-lg: 1.125rem; /* 18px */
+  --vf-font-size-xl: 1.375rem; /* 22px */
+  --vf-font-size-2xl: 1.75rem; /* 28px */
+  --vf-font-size-3xl: clamp(1.875rem, 1.55rem + 1.4vw, 2.25rem); /* 30 → 36px */
+  --vf-font-size-4xl: clamp(2.25rem, 1.7rem + 2.4vw, 3rem); /* 36 → 48px */
+  --vf-font-size-5xl: clamp(2.75rem, 1.9rem + 3.6vw, 3.75rem); /* 44 → 60px */
+
+  --vf-line-height-none: 1;
+  --vf-line-height-tight: 1.15; /* display */
+  --vf-line-height-snug: 1.3; /* headings, dense UI */
+  --vf-line-height-normal: 1.5; /* body */
+  --vf-line-height-relaxed: 1.65; /* long-form prose */
+
+  /* No 650. call-web used it, but only variable fonts honour it; with a static
+   * face the browser snaps to 700, so it was an illusion of control that made
+   * the same UI render differently on two machines. */
+  --vf-font-weight-regular: 400;
+  --vf-font-weight-medium: 500;
+  --vf-font-weight-semibold: 600;
+  --vf-font-weight-bold: 700;
+
+  /* Tracking tightens as size grows: at display sizes the default spacing that
+   * suits 16px text looks loose and cheap. `caps` is for the uppercase
+   * micro-labels used on operator/diagnostic surfaces, which are unreadable
+   * without extra tracking. */
+  --vf-letter-spacing-tight: -0.02em;
+  --vf-letter-spacing-snug: -0.01em;
+  --vf-letter-spacing-normal: 0;
+  --vf-letter-spacing-wide: 0.04em;
+  --vf-letter-spacing-caps: 0.09em;
+
+  /* Timers, latency traces, participant counts: without tabular figures the
+   * numbers jitter horizontally as they tick, which reads as instability on a
+   * live call surface. */
+  --vf-font-numeric-tabular: tabular-nums;
+
+  /* === SPACING ============================================================
+   * 4px base. Steps 1–4 are linear (4/8/12/16) because that range is intra-
+   * component spacing where a 4px difference is a real decision. Above that
+   * the ramp opens up (24/32/40/48/64/80/96/128) because no layout ever needs
+   * the difference between 52px and 56px, and offering it guarantees two
+   * engineers pick differently.
+   */
+  --vf-space-0: 0;
+  --vf-space-half: 0.125rem; /* 2px — optical nudges only */
+  --vf-space-1: 0.25rem; /* 4px */
+  --vf-space-2: 0.5rem; /* 8px */
+  --vf-space-3: 0.75rem; /* 12px */
+  --vf-space-4: 1rem; /* 16px */
+  --vf-space-5: 1.5rem; /* 24px */
+  --vf-space-6: 2rem; /* 32px */
+  --vf-space-7: 2.5rem; /* 40px */
+  --vf-space-8: 3rem; /* 48px */
+  --vf-space-9: 4rem; /* 64px */
+  --vf-space-10: 5rem; /* 80px */
+  --vf-space-11: 6rem; /* 96px */
+  --vf-space-12: 8rem; /* 128px */
+
+  /* === LAYOUT GRID ========================================================
+   * 12 columns: divisible by 2, 3, 4 and 6, which covers every participant
+   * tile arrangement a conference layout needs without a second grid.
+   *
+   * `--vf-page-gutter` is fluid so the page breathes on large screens without
+   * a breakpoint per container. §5.1.1 asks for spacious and deliberate; a
+   * fixed 20px gutter at 1920px is neither.
+   */
+  --vf-grid-columns: 12;
+  --vf-grid-gutter: var(--vf-space-5);
+  --vf-grid-gutter-compact: var(--vf-space-3);
+  --vf-page-gutter: clamp(var(--vf-space-4), 4vw, var(--vf-space-8));
+
+  --vf-container-sm: 30rem; /* 480px — single-column forms, pre-join */
+  --vf-container-md: 55rem; /* 880px — call screen (matches call-web today) */
+  --vf-container-lg: 72rem; /* 1152px — listener/programme */
+  --vf-container-xl: 90rem; /* 1440px — operator console */
+  --vf-container-full: 100%;
+  /* Reading measure for prose. Captions use a much shorter one; see §CAPTIONS. */
+  --vf-container-prose: 68ch;
+
+  /* === BREAKPOINTS ========================================================
+   * Mobile-first min-widths, non-overlapping by construction.
+   *
+   *   sm  480  large phone; two-up controls become possible
+   *   md  768  tablet portrait; the stacked call layout ends
+   *   lg  1024 laptop; captions can move into a side panel
+   *   xl  1280 desktop; stage + roster + captions coexist
+   *   2xl 1536 large desktop; operator multi-zone
+   *
+   * There is deliberately no 640 stop: Videofy has no layout that changes
+   * between 480 and 768, and an unused breakpoint is an invitation to invent
+   * one inconsistently.
+   *
+   * IMPORTANT: custom properties are NOT valid inside a media-query prelude —
+   * `@media (min-width: var(--vf-breakpoint-md))` silently never matches. These
+   * exist for container queries' sibling use cases, for `getComputedStyle`
+   * reads, and as documentation. Author media queries against the literal
+   * pixel values, or import `BREAKPOINTS` / `mediaQueryUp()` from
+   * `@videofy-live/design-system` so the number lives in exactly one place.
+   */
+  --vf-breakpoint-sm: 480px;
+  --vf-breakpoint-md: 768px;
+  --vf-breakpoint-lg: 1024px;
+  --vf-breakpoint-xl: 1280px;
+  --vf-breakpoint-2xl: 1536px;
+
+  /* === RADIUS =============================================================
+   * Nesting rule: an inner radius should be the outer radius minus the gap
+   * between them, otherwise the two curves are not concentric and the corner
+   * looks pinched. A 16px card with 12px padding wants 4px inner corners.
+   */
+  --vf-radius-xs: 4px;
+  --vf-radius-sm: 6px;
+  --vf-radius-md: 10px;
+  --vf-radius-lg: 16px;
+  --vf-radius-xl: 22px;
+  --vf-radius-2xl: 28px;
+  --vf-radius-pill: 999px;
+  --vf-radius-circle: 50%;
+
+  --vf-border-width-hairline: 1px;
+  --vf-border-width-strong: 2px;
+
+  /* === Z-INDEX ============================================================
+   * Sparse and 100-apart so a new layer can be slotted between two existing
+   * ones without renumbering the product. Media overlays sit at 10 because
+   * they are inside the stage, not above the app.
+   */
+  --vf-z-base: 0;
+  --vf-z-media: 1;
+  --vf-z-media-overlay: 10;
+  --vf-z-sticky: 100;
+  --vf-z-drawer: 200;
+  --vf-z-modal: 300;
+  --vf-z-toast: 400;
+  --vf-z-tooltip: 500;
+
+  /* === MOTION =============================================================
+   * §5.1.12: motion is functional. Durations are chosen against what the
+   * motion is reporting, not against a taste for "snappy".
+   *
+   * These MUST stay in sync with `DURATIONS_MS` in src/motion.ts — JS-driven
+   * sequencing (waiting for a drawer to close before focusing something) needs
+   * the same numbers. A test asserts the two agree.
+   *
+   * Nothing overshoots or bounces. A spring on a call surface reads as
+   * instability, and next to live video it competes with the thing the user is
+   * actually watching.
+   */
+  --vf-duration-instant: 80ms; /* press feedback; below ~60ms reads as no motion at all */
+  --vf-duration-fast: 120ms; /* hover/focus colour changes */
+  --vf-duration-normal: 200ms; /* control state, small reveals */
+  --vf-duration-slow: 320ms; /* drawers, sheets, expanding panels */
+  --vf-duration-slower: 480ms; /* stage transitions, participant entry/exit */
+  /* Caption arrival is capped well below `normal`: a caption that fades in
+   * slowly is a caption that lags the speech it transcribes, and captions are
+   * a safety fallback (§12), not decoration. */
+  --vf-duration-caption: 160ms;
+
+  /* `standard` is asymmetric — leaves fast, arrives slow — which is what makes
+   * an element look like it has mass. `decelerate` for things entering (they
+   * arrive and settle), `accelerate` for things leaving (they commit and go).
+   * `linear` exists for exactly one reason: audio level meters and progress.
+   * An eased level meter misreports the signal it is supposed to show. */
+  --vf-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --vf-ease-decelerate: cubic-bezier(0, 0, 0, 1);
+  --vf-ease-accelerate: cubic-bezier(0.3, 0, 1, 1);
+  --vf-ease-emphasized: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --vf-ease-linear: linear;
+
+  /* Composite shorthands, so the common cases are one token rather than three
+   * hand-written property lists that drift apart. */
+  --vf-transition-colors:
+    color var(--vf-duration-fast) var(--vf-ease-standard),
+    background-color var(--vf-duration-fast) var(--vf-ease-standard),
+    border-color var(--vf-duration-fast) var(--vf-ease-standard);
+  --vf-transition-transform: transform var(--vf-duration-normal) var(--vf-ease-standard);
+  --vf-transition-opacity: opacity var(--vf-duration-normal) var(--vf-ease-standard);
+
+  /* === MEDIA FRAMING ======================================================
+   * §5.1.6: local and remote video remain visually dominant.
+   */
+  --vf-aspect-video: 16 / 9;
+  --vf-aspect-portrait: 9 / 16; /* mobile self-view */
+  --vf-aspect-square: 1 / 1; /* roster tiles, avatars */
+  --vf-aspect-cinema: 21 / 9; /* programme stage */
+
+  --vf-media-radius: var(--vf-radius-lg);
+  /* Letterbox bars must be the deepest ink in the system. Anything lighter
+   * frames the frame and makes a 16:9 source inside a 21:9 stage look like a
+   * mistake rather than the source's own shape. */
+  --vf-media-background: var(--vf-surface-void);
+  /* A hairline of light, not a border colour: dark video against a dark canvas
+   * has no edge otherwise, and the tile appears to bleed into the page. */
+  --vf-media-frame-border: var(--vf-border-width-hairline) solid rgb(255 255 255 / 0.06);
+  --vf-media-gap: var(--vf-space-3);
+  --vf-media-pip-width: 10.5rem; /* 168px desktop self-view */
+  --vf-media-pip-width-compact: 6.75rem; /* 108px mobile self-view */
+
+  /* Active speaker. A ring, not a glow: §5.1.1 rules out glowing gimmicks, and
+   * a blurred halo over video reads as a compression artefact. The ring is
+   * drawn outside the frame so it never crops the speaker's face. */
+  --vf-media-speaking-ring-width: 2px;
+  --vf-media-speaking-ring: 0 0 0 var(--vf-media-speaking-ring-width) var(--vf-violet-500);
+  --vf-media-speaking-ring-offset: 2px;
+
+  /* Bottom scrim for anything overlaid on video. Video content is unknown and
+   * uncontrollable, so a guaranteed contrast floor is the only way to keep
+   * white text legible over it. Three stops rather than two so the top of the
+   * gradient does not band on flat-coloured footage. */
+  --vf-media-scrim-bottom: linear-gradient(
+    to top,
+    rgb(0 0 0 / 0.72) 0%,
+    rgb(0 0 0 / 0.36) 38%,
+    transparent 100%
+  );
+  --vf-media-scrim-top: linear-gradient(to bottom, rgb(0 0 0 / 0.55) 0%, transparent 100%);
+
+  /* === ICONOGRAPHY ========================================================
+   * No glyphs are shipped. An icon set is an asset pipeline decision (sprite
+   * vs inline vs font) that belongs to each app, and shipping SVG from a
+   * framework-agnostic CSS package would force one on all of them.
+   *
+   * What IS standardised is the geometry, because that is what makes icons
+   * from different sources look like one family: 24px design grid, outline
+   * style, 1.75px stroke, round caps and joins, `currentColor` fill so an icon
+   * inherits its status colour from the text beside it.
+   */
+  --vf-icon-size-sm: 1rem; /* 16px — inline with sm text */
+  --vf-icon-size-md: 1.25rem; /* 20px — default control icon */
+  --vf-icon-size-lg: 1.5rem; /* 24px — primary call controls */
+  --vf-icon-size-xl: 2rem; /* 32px — empty/error states */
+  --vf-icon-stroke-width: 1.75px;
+
+  /* === CONTROLS ===========================================================
+   * `--vf-tap-target-min` is 44px: WCAG 2.5.5 (AAA) and the Apple/Material
+   * guidance agree here, and 2.5.8 (AA, 24px) is a floor rather than a target.
+   * Call controls are used one-handed, in motion, sometimes in a hurry to
+   * mute — this is not the place to economise. A control may LOOK smaller
+   * than 44px as long as its hit area is padded out to it.
+   */
+  --vf-control-height-sm: 2rem; /* 32px */
+  --vf-control-height-md: 2.5rem; /* 40px */
+  --vf-control-height-lg: 3rem; /* 48px */
+  --vf-control-padding-inline-sm: var(--vf-space-3);
+  --vf-control-padding-inline-md: var(--vf-space-4);
+  --vf-control-padding-inline-lg: var(--vf-space-5);
+  --vf-control-radius: var(--vf-radius-md);
+  --vf-control-gap: var(--vf-space-2);
+  --vf-tap-target-min: 2.75rem; /* 44px */
+
+  --vf-focus-width: 2px;
+  /* The gap between control and ring. Rendered as `outline-offset`, so it shows
+   * the surface behind and keeps the ring legible against the control's own
+   * fill. */
+  --vf-focus-offset: 2px;
+  --vf-focus-radius: var(--vf-radius-sm);
+
+  /* === CAPTIONS ===========================================================
+   * §12 and §5.1.6. Captions are a first-class product output and the safety
+   * fallback when translated audio is late or unavailable — so they are a
+   * token group in their own right, not "text with a background".
+   *
+   * Size is a user preference, not a layout constant: caption size is a real
+   * accessibility control (§5.1.13 "scalable typography"). An app renders a
+   * small/medium/large/x-large picker and re-points `--vf-caption-font-size`
+   * at one of the four stops on its caption container. The scale starts at
+   * 16px because captions are read at speed and often at viewing distance;
+   * below 16px they fail for a large fraction of users regardless of contrast.
+   */
+  --vf-caption-size-sm: 1rem; /* 16px */
+  --vf-caption-size-md: 1.125rem; /* 18px — default */
+  --vf-caption-size-lg: 1.375rem; /* 22px */
+  --vf-caption-size-xl: 1.75rem; /* 28px */
+  --vf-caption-font-size: var(--vf-caption-size-md);
+
+  /* Tighter than prose (1.65) because vertical space over video is expensive
+   * and caption blocks are two or three lines; looser than UI (1.3) because
+   * they are read at speed and the eye needs a clear line to return to. */
+  --vf-caption-line-height: 1.45;
+  /* 400 disappears against bright footage even through a scrim; 600 reads as
+   * shouting and thickens badly at the larger caption sizes. */
+  --vf-caption-font-weight: var(--vf-font-weight-medium);
+  /* A hair of positive tracking: characters over moving imagery need slightly
+   * more separation than characters on a flat surface. */
+  --vf-caption-letter-spacing: 0.005em;
+  /* Broadcast subtitle practice is roughly 32–42 characters per line. 46ch
+   * across a two-line block lands in that band. Much wider and the eye loses
+   * the line return while also trying to watch the speaker. Panelled captions
+   * (a side rail rather than an overlay) can afford the longer measure. */
+  --vf-caption-max-width: 46ch;
+  --vf-caption-max-width-panel: 60ch;
+  --vf-caption-padding-block: var(--vf-space-2);
+  --vf-caption-padding-inline: var(--vf-space-3);
+  --vf-caption-gap: var(--vf-space-3);
+  --vf-caption-radius: var(--vf-radius-sm);
+
+  /* 0.65 rather than the more common 0.5. Measured against the worst case — a
+   * pure white video frame — 0.5 leaves final caption text at 3.3:1 (fail) and
+   * 0.65 lifts it to 5.9:1. The cost is that the scrim occludes more of the
+   * picture; §5.1.14 requires captions to remain readable over varied video,
+   * so legibility wins. Apps may render captions on a surface instead, in
+   * which case set this to `transparent` — the text tokens below already clear
+   * AA on every surface level. */
+  --vf-caption-background: rgb(0 0 0 / 0.65);
+  --vf-caption-background-panel: transparent;
+
+  /* --- INTERIM vs FINAL ----------------------------------------------------
+   * The call runtime marks partial captions (`isFinal: false` on the
+   * transcription contract) and the UI must be able to render that difference
+   * without inventing its own styling.
+   *
+   * The colour step is deliberately SMALL — 15.3:1 → 12.8:1 on surface-1,
+   * 5.9:1 → 5.0:1 through the scrim over white video. Both clear AA. Dimming
+   * an interim caption hard is a tempting design and an accessibility
+   * mistake: a partial caption is the user's only access to what is being
+   * said RIGHT NOW, and it is the caption most likely to be read under time
+   * pressure.
+   *
+   * The semantic weight is therefore carried by a non-colour channel: a dotted
+   * underline (the same "provisional" convention as spellcheck, instantly
+   * legible and unambiguous in greyscale) plus a trailing block caret. The
+   * caret does not blink — a blinking element beside live video is a
+   * distraction, and it would have to be disabled under reduced-motion
+   * anyway, taking the signal with it.
+   *
+   * Italic was the previous call-web treatment and is deliberately dropped:
+   * italicised body text is measurably harder for dyslexic readers, and
+   * captions are exactly the wrong place to spend legibility.
+   */
+  --vf-caption-final-color: var(--vf-text-primary);
+  --vf-caption-final-decoration: none;
+  --vf-caption-final-font-style: normal;
+
+  /* One of the very few colour tokens outside the theme blocks that a theme
+   * still has to re-point: it is a step off `--vf-text-primary` rather than a
+   * role of its own, and the direction of that step inverts with the theme. */
+  --vf-caption-interim-color: var(--vf-ink-200);
+  --vf-caption-interim-decoration: underline dotted;
+  --vf-caption-interim-decoration-color: color-mix(
+    in srgb,
+    var(--vf-text-accent) 70%,
+    transparent
+  );
+  --vf-caption-interim-decoration-thickness: 1px;
+  --vf-caption-interim-underline-offset: 0.22em;
+  --vf-caption-interim-font-style: normal;
+  --vf-caption-interim-caret: '\258C'; /* ▌ left half block */
+  --vf-caption-interim-caret-color: var(--vf-text-accent);
+  /* Interim → final is a colour/decoration swap, not a re-render. Keeping it
+   * on `--vf-duration-caption` means the swap never draws attention to itself. */
+  --vf-caption-transition:
+    color var(--vf-duration-caption) var(--vf-ease-standard),
+    text-decoration-color var(--vf-duration-caption) var(--vf-ease-standard);
+
+  /* Speaker attribution (§12: "speaker identity is always attached"). */
+  --vf-caption-speaker-color: var(--vf-text-accent);
+  --vf-caption-speaker-font-size: var(--vf-font-size-xs);
+  --vf-caption-speaker-font-weight: var(--vf-font-weight-semibold);
+  --vf-caption-speaker-letter-spacing: var(--vf-letter-spacing-wide);
+  /* violet-300 measures only 2.6:1 through the scrim over white video. Over
+   * media, use this instead — violet-100 measures 5.4:1 in the same test. */
+  --vf-caption-overlay-speaker-color: var(--vf-violet-100);
+
+  /* "View Original" (§12) — the source-language transcript, secondary to the
+   * translated primary caption. A left rail rather than a box, so it reads as
+   * an aside without adding another card to the stage. */
+  --vf-caption-original-color: var(--vf-text-muted);
+  --vf-caption-original-font-size: var(--vf-font-size-sm);
+  --vf-caption-original-rail: var(--vf-border-width-strong) solid var(--vf-border-default);
+  --vf-caption-original-indent: var(--vf-space-3);
+
+  /* === STATUS SEMANTICS ===================================================
+   * Product states mapped onto the four status families, so a surface never
+   * decides for itself that "recovering" is orange.
+   */
+  --vf-state-idle: var(--vf-status-neutral-text);
+  --vf-state-connecting: var(--vf-status-info-text);
+  --vf-state-ready: var(--vf-status-success-text);
+  --vf-state-live: var(--vf-status-danger-solid);
+  --vf-state-recovering: var(--vf-status-warn-text);
+  --vf-state-degraded: var(--vf-status-warn-text);
+  --vf-state-failed: var(--vf-status-danger-text);
+
+  /* Non-colour status channel. §5.1.13 requires that status is never carried
+   * by colour alone, and the two mechanisms below are how a surface complies
+   * without inventing its own.
+   *
+   * PRIMARY: a glyph, set via `content: var(--vf-status-glyph-*)` on a
+   * pseudo-element, plus a real text label (visible, or `.vf-sr-only` from
+   * base.css when space genuinely does not allow it). This survives greyscale,
+   * every dichromacy, and a screen reader.
+   *
+   * SECONDARY: for compact dots where no glyph fits, the shape differs too —
+   * circle / diamond / square / pill. A dot alone is still not sufficient
+   * status communication; it must accompany a label.
+   *
+   * `live` shares the danger hue on purpose: red-for-live is broadcast
+   * convention and fighting it confuses more people than it helps. It is also
+   * exactly why the accompanying "LIVE" label is mandatory rather than
+   * optional — the colour alone cannot distinguish "on air" from "failed".
+   */
+  --vf-status-glyph-success: '\2713'; /* ✓ */
+  --vf-status-glyph-warn: '\0021'; /* ! */
+  --vf-status-glyph-danger: '\00D7'; /* × */
+  --vf-status-glyph-info: '\0069'; /* i */
+  --vf-status-glyph-live: '\25CF'; /* ● */
+  --vf-status-glyph-pending: '\2026'; /* … */
+
+  --vf-status-dot-size: 0.5rem; /* 8px */
+  --vf-status-dot-radius-success: var(--vf-radius-circle);
+  --vf-status-dot-radius-warn: 2px; /* + rotate → diamond */
+  --vf-status-dot-rotate-warn: 45deg;
+  --vf-status-dot-radius-danger: 2px; /* square */
+  --vf-status-dot-radius-info: var(--vf-radius-pill);
+  --vf-status-dot-radius-neutral: var(--vf-radius-circle);
+
+  /* === SKELETON / LOADING / RECOVERY ======================================
+   * §5.1.14: empty, loading and error states are designed, not emergent.
+   *
+   * A skeleton is a shape promise: it must match the size and radius of the
+   * content that replaces it, or the layout jumps and the skeleton has made
+   * things worse. Use the same radius token the real element uses.
+   */
+  --vf-skeleton-background: var(--vf-surface-3);
+  --vf-skeleton-highlight: rgb(255 255 255 / 0.06);
+  --vf-skeleton-sheen: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--vf-skeleton-highlight) 50%,
+    transparent 100%
+  );
+  --vf-skeleton-radius: var(--vf-radius-sm);
+  --vf-skeleton-duration: 1400ms;
+  /* Linear, always. An eased sheen accelerates and decelerates across the
+   * placeholder, which reads as a stutter — the opposite of "we are working
+   * on it". */
+  --vf-skeleton-ease: var(--vf-ease-linear);
+
+  --vf-spinner-size: var(--vf-icon-size-md);
+  --vf-spinner-track: var(--vf-border-default);
+  --vf-spinner-indicator: var(--vf-text-accent);
+  --vf-spinner-width: 2px;
+  --vf-spinner-duration: 900ms;
+
+  --vf-progress-track: var(--vf-surface-sunken);
+  --vf-progress-indicator: var(--vf-violet-500);
+  --vf-progress-height: 4px;
+  --vf-progress-radius: var(--vf-radius-pill);
+
+  /* Recovery banner: §5.1.6 requires calm, actionable recovery UI rather than
+   * raw transport errors. Warn-toned rather than danger-toned because a
+   * reconnect in progress is not a failure, and colouring it red teaches users
+   * to panic at something the system routinely fixes by itself. */
+  --vf-recovery-surface: var(--vf-status-warn-surface);
+  --vf-recovery-border: var(--vf-status-warn-border);
+  --vf-recovery-text: var(--vf-status-warn-text);
+
+  /* Empty states. Dashed rather than solid so the container reads as a slot
+   * waiting to be filled rather than a card that failed to load. */
+  --vf-empty-border: var(--vf-border-width-hairline) dashed var(--vf-border-default);
+  --vf-empty-text: var(--vf-text-muted);
+  --vf-empty-radius: var(--vf-radius-md);
+  --vf-empty-padding: var(--vf-space-5);
+}
