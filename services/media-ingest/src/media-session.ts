@@ -765,6 +765,7 @@ export class ProcessingSessionStore {
       input.targetLanguages,
       targetLanguage,
       sourceLanguageControl.activeLanguage,
+      isSourceLanguageKnown(sourceLanguageControl),
     );
     const now = new Date().toISOString();
     const session: ProcessingSession = {
@@ -4362,6 +4363,16 @@ export class ProcessingSessionStore {
     targetLanguages: readonly string[] | undefined,
     fallback: string,
     sourceLanguage: string,
+    /**
+     * Whether `sourceLanguage` is a real answer or just the standing default.
+     *
+     * Under auto-detect nobody has said what is being spoken yet — the control
+     * holds `defaultLanguage` until the first chunk reconciles it — so treating
+     * it as the source and rejecting a matching target locks out the ordinary
+     * case of a Spanish speaker requesting English listeners. The rule itself
+     * is right and stays enforced wherever the source is actually known.
+     */
+    sourceLanguageKnown = true,
   ): string[] {
     const normalized = normalizeSupportedTargetLanguages(targetLanguages ?? [fallback]);
     const selected = normalized.length === 0 ? [fallback] : normalized;
@@ -4373,7 +4384,10 @@ export class ProcessingSessionStore {
           400,
         );
       }
-      if (primaryLanguageSubtag(targetLanguage) === primaryLanguageSubtag(sourceLanguage)) {
+      if (
+        sourceLanguageKnown &&
+        primaryLanguageSubtag(targetLanguage) === primaryLanguageSubtag(sourceLanguage)
+      ) {
         throw new MediaIngestError(
           `Target language ${targetLanguage} matches the session source language; the original channel already delivers it.`,
           'unsupported-language',
@@ -4665,6 +4679,16 @@ function primaryLanguageSubtag(language: string): string {
  */
 function isPermanentWarmUpFailure(error: unknown): boolean {
   return error instanceof MediaIngestError && error.statusCode >= 400 && error.statusCode < 500;
+}
+
+/**
+ * Whether the source language is a real answer rather than the standing
+ * default. Manual mode is an explicit statement, and a locked or confirmed
+ * control has been settled by detection or a person; plain `auto-detect` before
+ * the first chunk has decided nothing.
+ */
+function isSourceLanguageKnown(control: SourceLanguageControlMetadata): boolean {
+  return control.mode === 'manual' || control.locked || control.confirmedLanguage !== null;
 }
 
 /** P6.1B native-call ingest sessions use the reserved `call_` id prefix. */

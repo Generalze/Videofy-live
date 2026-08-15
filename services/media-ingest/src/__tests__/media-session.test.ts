@@ -1278,6 +1278,63 @@ describe('ProcessingSessionStore', () => {
     expect(windows).toContain('1999-2000');
   });
 
+  it('lets an auto-detect call target the language the default happens to be', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+      translationTargetLanguage: 'en',
+      translationSupportedTargetLanguages: ['en', 'es'],
+      textToSpeechSupportedLanguages: ['en', 'es'],
+    });
+
+    // Nobody has said what is being spoken yet, so 'en' is only the standing
+    // default. Rejecting an English target here would lock out the ordinary
+    // case of a Spanish speaker requesting English listeners.
+    const session = await sessionStore.createWebRtcSession({
+      sessionId: 'call_autotarget_participant_1_r1',
+      broadcastId: 'callcast_autotarget_participant_1_r1',
+      broadcasterPeerId: 'peer_call_participant_1',
+      revision: 1,
+      targetLanguage: 'en',
+      targetLanguages: ['en'],
+      sourceLanguageMode: 'auto-detect',
+    });
+
+    expect(session.state).toBe('processing');
+    expect(session.targetLanguages).toEqual(['en']);
+    expect(session.sourceLanguageControl.mode).toBe('auto-detect');
+    expect(session.sourceLanguageControl.confirmedLanguage).toBeNull();
+  });
+
+  it('still refuses a target matching a source the caller actually stated', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+      translationTargetLanguage: 'en',
+      translationSupportedTargetLanguages: ['en', 'es'],
+      textToSpeechSupportedLanguages: ['en', 'es'],
+    });
+
+    // Manual mode is an explicit statement, so translating English to English
+    // remains a configuration error rather than a request to honour.
+    await expect(
+      sessionStore.createWebRtcSession({
+        sessionId: 'call_sametarget_participant_1_r1',
+        broadcastId: 'callcast_sametarget_participant_1_r1',
+        broadcasterPeerId: 'peer_call_participant_1',
+        revision: 1,
+        targetLanguage: 'en',
+        targetLanguages: ['en'],
+        sourceLanguage: 'en',
+        sourceLanguageMode: 'manual',
+      }),
+    ).rejects.toMatchObject({ code: 'unsupported-language' });
+  });
+
   it('keeps a failed partial off the speech-loss counters', async () => {
     const outputDir = await createTempDir();
     const stagingDir = await createTempDir();
