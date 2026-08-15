@@ -523,7 +523,13 @@ describe('generated-audio sessions', () => {
 
     release?.({ audioPath: 'released', providerLatencyMs: 1 });
     await created;
-  });
+    // Longer than the 5s default: this drives a whole upload through extraction,
+    // transcription, translation and speech synthesis, and it is the only test
+    // here that must also wait for a segment to reach 'generating' before it can
+    // assert. It passes consistently on its own and only times out when the full
+    // suite runs the machine hot — a red gate nobody trusts is worse than the
+    // flake, and the work being timed is real rather than a hang.
+  }, 20_000);
 
   it('cleans failed partial output before exposing failed state', async () => {
     let partialPath = '';
