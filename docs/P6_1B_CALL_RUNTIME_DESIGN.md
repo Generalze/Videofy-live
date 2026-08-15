@@ -201,6 +201,63 @@ alongside 58 finals, **median 1700 ms earlier** than the final for the same utte
 generated for previews, zero ingest faults, and §30.4 still 7/7 with final-caption delivery at
 median 529 ms / p90 1796 ms.
 
+## Per-call model warm-up (§22)
+
+`faster-whisper` is warmed when media-ingest starts, but each OPUS-MT language pair and each
+Piper voice loads lazily on first use. The opening utterance of every call therefore paid for
+loading them — the worst possible moment, since it is the part a demo audience watches.
+
+When a native call ingest session is created its language pair and primary voice are now warmed
+in the background, via the ordinary `translate`/`generate` calls so no provider interface has to
+widen. It is fire-and-forget and failure-proof: a failed warm-up must leave the call exactly as
+it would have been with none.
+
+Controlled A/B, identical chunks through a freshly restarted service (so speech density cannot
+confound it), measuring the first utterance's penalty over the same session's steady state:
+
+| | run 1 | run 2 | steady state |
+|---|---|---|---|
+| warm-up off | 1001 ms | 941 ms | 1206 / 1308 ms |
+| warm-up on | 540 ms | 680 ms | 1202 / 1204 ms |
+
+So it removes roughly 360 ms from the first utterance and leaves steady state untouched. Real
+and reproducible, but modest — worth knowing before anyone budgets a larger effort against it.
+
+Guards, each of which exists because an adversarial review found the failure first:
+
+- The background promise carries a `.catch`, and path construction (which validates the session
+  id and language, and can throw) sits inside the guarded region. An unhandled rejection here
+  would be fatal to the process and would take every live call with it.
+- Auto-detect calls are skipped: the source language is still the default until the first chunk
+  reconciles it, so warming would load the wrong pair *and* occupy the single translation slot
+  exactly when the first real utterance needs it.
+- Speech is warmed only for the primary target (the only language the final path synthesizes)
+  and only when that language actually has a voice. Otherwise a captions-only language falls
+  through to the default voice id and produces a guaranteed-failing probe on every call.
+- Probes go through the same timeout wrappers as real work, so a hung probe cannot hold the
+  single-concurrency translation slot against live speech.
+- A 4xx failure is remembered rather than retried, so a misconfiguration costs one attempt per
+  process instead of one per call. Transient failures still retry.
+- Both the requested output and the engines' raw staging files are removed; if the call was
+  retired mid-warm-up, the recreated session directory is removed with them.
+
+## Open: pipeline saturation under dense speech
+
+Two-browser runs show the pipeline holding roughly 500 ms caption delivery at ~1.2 caption
+events per second, but falling behind at ~2.4 events per second — one run drained a backlog at an
+8.5 s median with a 13.7 s p90. Speech-to-text, translation (single concurrency) and speech
+synthesis are shared across all participants, so the ceiling is global rather than per-session,
+and streaming partials roughly double the event rate.
+
+A global shed (dropping previews whenever any call is mid-transcription) was implemented and then
+**reverted**: it cut delivered partials by about 60% while the browser harness was too noisy —
+utterance density varied between runs by more than the effect being measured — to demonstrate any
+latency benefit. Trading a verified feature for an unverified one is not a good trade. The
+per-session guard (a preview never queues behind its own session's work) remains.
+
+Resolving this properly needs a load harness that holds speech density constant across runs;
+until then the ceiling is documented rather than guessed at.
+
 ## Explicitly deferred to P6.1C
 
 Camera video tiles, real two-device/browser acceptance evidence, measured end-to-end latency

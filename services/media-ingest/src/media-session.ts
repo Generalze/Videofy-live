@@ -270,6 +270,16 @@ export interface ProcessingSessionStoreOptions {
   renderViewerReadyMedia?: ViewerReadyMediaRenderer;
   renderViewerReadyMediaOnCompletion?: boolean;
   sourceLanguageConfidenceThreshold?: number;
+  /**
+   * Pre-load the translation and voice models a native call will actually use,
+   * as soon as its session is created, so the first utterance is not the one
+   * that pays for loading them (see `warmUpCallModels`).
+   *
+   * Off by default: it costs a real translate and a real synthesis per call, so
+   * it is opted into by the production wiring rather than imposed on every
+   * embedder and test.
+   */
+  warmUpCallModels?: boolean;
 }
 
 export interface GeneratedAudioFile {
@@ -293,6 +303,14 @@ const SUPPORTED_MEDIA: Record<
   mp3: { kind: 'audio', mimeTypes: ['audio/mpeg', 'audio/mp3'] },
   wav: { kind: 'audio', mimeTypes: ['audio/wav', 'audio/x-wav', 'audio/vnd.wave'] },
 };
+
+/**
+ * Text used only to make a translation pair or a voice model load (see
+ * `warmUpCallModels`). Short, so warming costs little, and a real word rather
+ * than punctuation because some engines short-circuit on empty input and would
+ * then never load the model at all.
+ */
+const WARM_UP_PROBE_TEXT = 'Hello.';
 
 const DUPLICATE_PROTECTED_STATES = new Set<StreamStatus>([
   'created',
@@ -455,6 +473,10 @@ export class ProcessingSessionStore {
   private readonly renderViewerReadyMedia: ViewerReadyMediaRenderer;
   private readonly renderViewerReadyMediaOnCompletion: boolean;
   private readonly sourceLanguageConfidenceThreshold: number;
+  private readonly warmUpCallModelsEnabled: boolean;
+  /** Language pairs and voices already warmed, so a call only pays once. */
+  private readonly warmedTranslationPairs = new Set<string>();
+  private readonly warmedVoices = new Set<string>();
   private readonly targetLanguageCatalogue: TargetLanguageCapability[];
   private readonly onGeneratedAudioReady: (event: GeneratedAudioEvent, session: ProcessingSession) => void;
   private readonly generatedAudioReadyKeysBySession = new Map<string, Set<string>>();
@@ -511,6 +533,7 @@ export class ProcessingSessionStore {
       options.renderViewerReadyMedia ?? defaultViewerReadyMediaRenderer;
     this.renderViewerReadyMediaOnCompletion = options.renderViewerReadyMediaOnCompletion ?? false;
     this.sourceLanguageConfidenceThreshold = options.sourceLanguageConfidenceThreshold ?? 0.82;
+    this.warmUpCallModelsEnabled = options.warmUpCallModels ?? false;
     this.targetLanguageCatalogue = buildTargetLanguageCatalogue({
       supportedTranslationLanguages: this.translationSupportedTargetLanguages,
       supportedVoiceLanguages: this.textToSpeechSupportedLanguages,
@@ -798,6 +821,9 @@ export class ProcessingSessionStore {
     this.transition(session.id, 'validating');
     this.transition(session.id, 'ready');
     this.transition(session.id, 'processing');
+    // Deliberately not awaited: the call must start the instant it is created,
+    // and warming is an optimisation the first utterance can safely race with.
+    this.warmUpCallModels(session);
     return { ...session };
   }
 
@@ -1238,6 +1264,160 @@ export class ProcessingSessionStore {
   /** Stable id of the FINAL chunk for a sequence, shared by partials and finals. */
   private webRtcChunkId(session: ProcessingSession, sequence: number): string {
     return `${session.id}:webrtc:${session.webrtcTranscriptionBridge?.revision ?? 0}:${sequence}`;
+  }
+
+  /**
+   * Pre-loads the models a native call is about to need.
+   *
+   * Measured on a real EN<->FR call: the first six delivered captions had a
+   * median latency of 1651 ms (worst 4195 ms) while the remaining 52 sat at
+   * 530 ms. The difference is model loading — faster-whisper is warmed at
+   * service start, but each OPUS-MT pair and each Piper voice loads lazily on
+   * first use, so the opening exchange of every call paid for it. That is the
+   * worst possible moment: it is the part a demo audience actually watches.
+   *
+   * The probe deliberately goes through the ordinary `translate` / `generate`
+   * calls rather than a bespoke warm-up hook, so it warms whatever provider is
+   * wired in without widening the provider interface.
+   *
+   * Fire-and-forget and failure-proof by construction: warming is an
+   * optimisation, so anything that goes wrong here must leave the call exactly
+   * as it would have been with no warm-up at all.
+   */
+  private warmUpCallModels(session: ProcessingSession): void {
+    if (!this.warmUpCallModelsEnabled || !isRealtimeCallSession(session)) return;
+    // Auto-detect calls do not yet know what language is being spoken: the
+    // control still holds the default until the first chunk reconciles it, so
+    // warming here would load the wrong pair AND occupy the single translation
+    // slot at the exact moment the first real utterance needs it.
+    if (session.sourceLanguageControl.mode !== 'manual') return;
+    // `.catch` rather than bare `void`: an unhandled rejection is fatal to the
+    // process, and warming must never be able to take a call down with it.
+    void this.runCallWarmUp(session).catch(() => undefined);
+  }
+
+  private async runCallWarmUp(session: ProcessingSession): Promise<void> {
+    const sourceLanguage = session.sourceLanguageControl.activeLanguage;
+    // Translation is warmed for every target: partials translate into all of
+    // them. Speech is warmed only for the primary target, because that is the
+    // only language the final path ever synthesizes.
+    const targetLanguages =
+      session.targetLanguages.length > 0 ? session.targetLanguages : [session.targetLanguage];
+    for (const targetLanguage of targetLanguages) {
+      await this.warmUpTranslationPair(session, sourceLanguage, targetLanguage);
+    }
+    await this.warmUpVoice(session, session.targetLanguage);
+  }
+
+  private async warmUpTranslationPair(
+    session: ProcessingSession,
+    sourceLanguage: string,
+    targetLanguage: string,
+  ): Promise<void> {
+    if (sourceLanguage === targetLanguage) return;
+    const pair = `${sourceLanguage}->${targetLanguage}`;
+    if (this.warmedTranslationPairs.has(pair)) return;
+    this.warmedTranslationPairs.add(pair);
+    try {
+      // Through the same timeout wrapper the real path uses: a probe that hung
+      // would hold the single translation slot against live speech.
+      await translateWithTimeout(
+        this.translationProvider,
+        {
+          sessionId: session.id,
+          streamId: session.streamId,
+          segmentId: `${session.id}:warmup:${pair}`,
+          sequence: 0,
+          sourceLanguage,
+          targetLanguage,
+          sourceText: WARM_UP_PROBE_TEXT,
+          startMs: 0,
+          endMs: 1_000,
+        },
+        this.translationTimeoutMs,
+      );
+    } catch (error) {
+      // Transient failure (model still downloading, worker restarting): forget
+      // it so a later call retries. A rejection the configuration guarantees
+      // will repeat is remembered instead, so it is attempted once per process
+      // rather than on every single call forever.
+      if (!isPermanentWarmUpFailure(error)) this.warmedTranslationPairs.delete(pair);
+    }
+  }
+
+  private async warmUpVoice(session: ProcessingSession, targetLanguage: string): Promise<void> {
+    // Mirror the real path's gate: a captions-only language falls through to
+    // the default voice id, which would ask the engine for a voice in the wrong
+    // language and fail every time.
+    if (!this.textToSpeechSupportedLanguages.includes(targetLanguage)) return;
+    const voiceId = this.voiceIdForLanguage(session, targetLanguage);
+    const key = `${targetLanguage}:${voiceId}`;
+    if (this.warmedVoices.has(key)) return;
+    this.warmedVoices.add(key);
+    let outputDir: string;
+    let outputPath: string;
+    try {
+      // Path building validates the session id and language and can throw, so
+      // it belongs inside the guarded region like everything else here.
+      outputDir = resolve(safeSessionOutputDir(this.outputBaseDir, session.id), 'tts');
+      outputPath = resolve(outputDir, `warmup-${safeLanguageDirectory(targetLanguage)}.wav`);
+    } catch {
+      return;
+    }
+    try {
+      // Own the directory rather than assuming the provider creates it: a
+      // provider that does not would fail the probe, roll the memo back, and
+      // make every call warm again forever.
+      await mkdir(outputDir, { recursive: true });
+      await generateSpeechWithTimeout(
+        this.textToSpeechProvider,
+        {
+          sessionId: session.id,
+          streamId: session.streamId,
+          segmentId: `${session.id}:warmup:${targetLanguage}`,
+          sequence: 0,
+          targetLanguage,
+          translatedText: WARM_UP_PROBE_TEXT,
+          startMs: 0,
+          endMs: 1_000,
+          voiceId,
+          outputPath,
+          pacing: 'natural',
+        },
+        this.textToSpeechTimeoutMs,
+      );
+    } catch (error) {
+      if (!isPermanentWarmUpFailure(error)) this.warmedVoices.delete(key);
+    } finally {
+      await this.discardWarmUpArtifacts(session, outputPath);
+    }
+  }
+
+  /**
+   * Removes everything the probe wrote. The engines stage a raw clip beside the
+   * requested output (`.piper.wav` / `.mms.wav`) and only clean it up once they
+   * reach normalisation, so a probe that failed earlier would leave it behind
+   * with nothing else in the service to ever sweep it.
+   *
+   * A call can also be retired while its warm-up is still running — membership
+   * churn deletes the ingest session and its output directory — in which case
+   * `mkdir` above has just recreated that directory. If the session is gone,
+   * take the directory with us rather than leaving an orphan per raced call.
+   */
+  private async discardWarmUpArtifacts(
+    session: ProcessingSession,
+    outputPath: string,
+  ): Promise<void> {
+    await Promise.all(
+      [outputPath, `${outputPath}.piper.wav`, `${outputPath}.mms.wav`].map((path) =>
+        rm(path, { force: true }).catch(() => undefined),
+      ),
+    );
+    if (this.sessions.has(session.id)) return;
+    await rm(safeSessionOutputDir(this.outputBaseDir, session.id), {
+      recursive: true,
+      force: true,
+    }).catch(() => undefined);
   }
 
   /**
@@ -4458,6 +4638,17 @@ function normalizeSupportedTargetLanguages(targetLanguages: readonly string[]): 
 
 function primaryLanguageSubtag(language: string): string {
   return normalizeTargetLanguage(language).split('-')[0] ?? '';
+}
+
+/**
+ * Whether a failed warm-up probe (see `warmUpCallModels`) is one that repeating
+ * cannot fix — an unsupported voice or language, an unsafe path, a rejected
+ * request. Those are decided by configuration, so the attempt is remembered and
+ * not retried on every subsequent call; anything else (a model still
+ * downloading, a worker restarting, a timeout) is treated as transient.
+ */
+function isPermanentWarmUpFailure(error: unknown): boolean {
+  return error instanceof MediaIngestError && error.statusCode >= 400 && error.statusCode < 500;
 }
 
 /** P6.1B native-call ingest sessions use the reserved `call_` id prefix. */

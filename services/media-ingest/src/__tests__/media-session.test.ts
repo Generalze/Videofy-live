@@ -1285,6 +1285,217 @@ describe('ProcessingSessionStore', () => {
     expect(final.audioExtraction.chunks).toHaveLength(1);
   });
 
+  it('warms the call language pair and voice when a call session is created', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    const translated: string[] = [];
+    const synthesized: string[] = [];
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+      translationTargetLanguage: 'fr',
+      translationSupportedTargetLanguages: ['fr'],
+      textToSpeechSupportedLanguages: ['fr'],
+      warmUpCallModels: true,
+      translationProvider: {
+        name: 'warm-translator',
+        translate: async (input) => {
+          translated.push(`${input.sourceLanguage}->${input.targetLanguage}`);
+          return { translatedText: `[${input.targetLanguage}] ${input.sourceText}` };
+        },
+      },
+      textToSpeechProvider: {
+        name: 'warm-tts',
+        generate: async (input) => {
+          synthesized.push(`${input.targetLanguage}:${input.voiceId}`);
+          await writeFile(input.outputPath, wavFixture());
+          return { audioPath: input.outputPath, providerLatencyMs: 1 };
+        },
+      },
+    });
+
+    await sessionStore.createWebRtcSession({
+      sessionId: 'call_warm_participant_1_r1',
+      broadcastId: 'callcast_warm_participant_1_r1',
+      broadcasterPeerId: 'peer_call_participant_1',
+      revision: 1,
+      targetLanguage: 'fr',
+      targetLanguages: ['fr'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+      voiceIdsByLanguage: { fr: 'fr_FR-siwis-medium' },
+    });
+
+    // Warming is fire-and-forget, so give the microtask queue a turn.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(translated).toEqual(['en->fr']);
+    expect(synthesized).toEqual(['fr:fr_FR-siwis-medium']);
+
+    // The probe clip is never kept: it exists only to make the model load.
+    const ttsDir = join(outputDir, 'call_warm_participant_1_r1', 'tts');
+    const leftovers = await readdir(ttsDir).catch(() => []);
+    expect(leftovers.filter((name) => name.startsWith('warmup-'))).toEqual([]);
+
+    // A second call on the same pair must not pay for warming again.
+    await sessionStore.createWebRtcSession({
+      sessionId: 'call_warm_participant_2_r1',
+      broadcastId: 'callcast_warm_participant_2_r1',
+      broadcasterPeerId: 'peer_call_participant_2',
+      revision: 1,
+      targetLanguage: 'fr',
+      targetLanguages: ['fr'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+      voiceIdsByLanguage: { fr: 'fr_FR-siwis-medium' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(translated).toEqual(['en->fr']);
+    expect(synthesized).toEqual(['fr:fr_FR-siwis-medium']);
+  });
+
+  it('does not warm an auto-detect call, whose source language is not yet known', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    let attempts = 0;
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+      translationTargetLanguage: 'fr',
+      translationSupportedTargetLanguages: ['fr'],
+      textToSpeechSupportedLanguages: ['fr'],
+      warmUpCallModels: true,
+      translationProvider: {
+        name: 'counting-translator',
+        translate: async (input) => {
+          attempts += 1;
+          return { translatedText: `[${input.targetLanguage}] ${input.sourceText}` };
+        },
+      },
+    });
+
+    await sessionStore.createWebRtcSession({
+      sessionId: 'call_autodetect_participant_1_r1',
+      broadcastId: 'callcast_autodetect_participant_1_r1',
+      broadcasterPeerId: 'peer_call_participant_1',
+      revision: 1,
+      targetLanguage: 'fr',
+      targetLanguages: ['fr'],
+      sourceLanguageMode: 'auto-detect',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Warming 'en->fr' here would load the wrong pair and occupy the single
+    // translation slot exactly when the first real utterance needs it.
+    expect(attempts).toBe(0);
+  });
+
+  it('does not probe a voice for a captions-only language, and retries only transient failures', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    const synthesized: string[] = [];
+    let translateAttempts = 0;
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+      translationTargetLanguage: 'yo',
+      translationSupportedTargetLanguages: ['yo'],
+      // 'yo' translates but has no voice here: captions-only.
+      textToSpeechSupportedLanguages: [],
+      warmUpCallModels: true,
+      translationProvider: {
+        name: 'permanently-failing-translator',
+        translate: async () => {
+          translateAttempts += 1;
+          throw new MediaIngestError('Unsupported pair.', 'unsupported-language', 400);
+        },
+      },
+      textToSpeechProvider: {
+        name: 'recording-tts',
+        generate: async (input) => {
+          synthesized.push(input.targetLanguage);
+          await writeFile(input.outputPath, wavFixture());
+          return { audioPath: input.outputPath, providerLatencyMs: 1 };
+        },
+      },
+    });
+
+    const create = async (participant: number) =>
+      await sessionStore.createWebRtcSession({
+        sessionId: `call_captions_participant_${participant}_r1`,
+        broadcastId: `callcast_captions_participant_${participant}_r1`,
+        broadcasterPeerId: `peer_call_participant_${participant}`,
+        revision: 1,
+        targetLanguage: 'yo',
+        targetLanguages: ['yo'],
+        sourceLanguage: 'en',
+        sourceLanguageMode: 'manual',
+      });
+
+    await create(1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await create(2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // No voice exists for the language, so no doomed synthesis is attempted.
+    expect(synthesized).toEqual([]);
+    // A 4xx is decided by configuration: attempted once, not once per call.
+    expect(translateAttempts).toBe(1);
+  });
+
+  it('never fails a call when warm-up throws, and does not warm programme sessions', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    let warmAttempts = 0;
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+      translationTargetLanguage: 'fr',
+      translationSupportedTargetLanguages: ['fr'],
+      textToSpeechSupportedLanguages: ['fr'],
+      warmUpCallModels: true,
+      translationProvider: {
+        name: 'exploding-translator',
+        translate: async () => {
+          warmAttempts += 1;
+          throw new Error('model still downloading');
+        },
+      },
+    });
+
+    // A programme session is not a call: it must not warm at all.
+    const programme = await sessionStore.createWebRtcSession({
+      sessionId: 'wrs_warm_programme',
+      broadcastId: 'broadcast_warm_programme',
+      broadcasterPeerId: 'peer_broadcaster',
+      revision: 1,
+      targetLanguage: 'fr',
+      targetLanguages: ['fr'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(warmAttempts).toBe(0);
+    expect(programme.state).toBe('processing');
+
+    // A call whose warm-up throws still starts, clean.
+    const call = await sessionStore.createWebRtcSession({
+      sessionId: 'call_warm_fail_participant_1_r1',
+      broadcastId: 'callcast_warm_fail_participant_1_r1',
+      broadcasterPeerId: 'peer_call_participant_1',
+      revision: 1,
+      targetLanguage: 'fr',
+      targetLanguages: ['fr'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(warmAttempts).toBe(1);
+    expect(call.state).toBe('processing');
+    expect(call.error).toBeNull();
+    expect(call.webrtcTranscriptionBridge?.failedChunks).toBe(0);
+    expect(call.monitoring.lastError).toBeNull();
+  });
+
   it('rejects unsafe WebRTC staged paths', async () => {
     const outputDir = await createTempDir();
     const stagingDir = await createTempDir();

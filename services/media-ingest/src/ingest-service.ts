@@ -332,6 +332,10 @@ export class IngestService {
       textToSpeechVoiceIds: buildTextToSpeechVoiceIdsByLanguage(config),
       textToSpeechSupportedLanguages: resolveTextToSpeechLanguages(config),
       renderViewerReadyMediaOnCompletion: false,
+      // Service start warms transcription only. Each OPUS-MT pair and Piper
+      // voice still loads lazily, which made the opening exchange of every call
+      // the slowest part of it; warming per call moves that cost off the wire.
+      warmUpCallModels: true,
       onSessionChange: (session) => {
         this.currentSession = session;
         this.streamStatus = session.state;
