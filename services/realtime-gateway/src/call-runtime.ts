@@ -30,6 +30,7 @@ import type { WebRtcAudioDataLike } from './webrtc-audio-ingest-bridge.js';
 import type { BackendMediaPeerAudioContext } from './webrtc-media-peer-registry.js';
 import type { WebRtcTranscriptionBridgeContext } from './webrtc-transcription-bridge.js';
 import type { CallReceivePeersLike, CallReceivePeerHandlers } from './call-receive-peers.js';
+import { CallTranscriptLog } from './call-transcript-log.js';
 import { logger } from './logger.js';
 
 /**
@@ -141,6 +142,8 @@ export interface CallRuntimeDependencies {
   /** Injectable scheduler so tests can drive the disconnect reaper. */
   setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
+  /** Development call-session transcript log; disabled when omitted. */
+  transcriptLog?: CallTranscriptLog;
 }
 
 /** Wire shape of `call:state` per the design note: sanitized, `joined` flag, no internals. */
@@ -211,6 +214,8 @@ interface CallIngestRegistryEntry {
   everCreated: boolean;
   /** In-flight stop request, so the retire-time delete can sequence after it. */
   pendingStop: Promise<void> | null;
+  /** De-duplicates repeated ingest-fault log lines for the same condition. */
+  lastLoggedFault?: string;
 }
 
 const USER_FACING_ERRORS = {
@@ -237,6 +242,7 @@ export class CallRuntime {
   private readonly disconnectGraceMs: number;
   private readonly setTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   private readonly clearTimer: (timer: ReturnType<typeof setTimeout>) => void;
+  private readonly transcriptLog: CallTranscriptLog;
 
   private readonly socketBindings = new Map<string, CallSocketBinding>();
   private readonly participants = new Map<string, CallParticipantRuntimeState>();
@@ -253,6 +259,7 @@ export class CallRuntime {
     this.disconnectGraceMs = dependencies.disconnectGraceMs ?? DEFAULT_CALL_DISCONNECT_GRACE_MS;
     this.setTimer = dependencies.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearTimer = dependencies.clearTimer ?? ((timer) => clearTimeout(timer));
+    this.transcriptLog = dependencies.transcriptLog ?? new CallTranscriptLog(null);
     this.mediaPeers = dependencies.createMediaPeers({
       onLocalSignal: (envelope) => this.handleMediaLocalSignal(envelope),
       onAudioFrame: (context, data) => this.handleMediaAudioFrame(context, data),
@@ -344,6 +351,17 @@ export class CallRuntime {
 
     const wireSnapshot = toWireCallState(result.snapshot);
     this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, wireSnapshot);
+    const joined = result.snapshot.participants.find(
+      (participant) => participant.participantId === participantId,
+    );
+    this.transcriptLog.append({
+      kind: 'join',
+      callId,
+      participantId,
+      displayName: joined?.displayName ?? '',
+      speakLanguage: joined?.speakLanguage ?? '',
+      hearLanguage: joined?.hearLanguage ?? '',
+    });
 
     await this.applyIngestPlans(callId, result.snapshot, result.ingestPlans);
 
@@ -555,13 +573,25 @@ export class CallRuntime {
       mediaRevision: entry.plan.mediaRevision,
       languageRevision: entry.languageRevision,
     };
-    for (const delivery of this.store.routeGeneratedAudio(entry.callId, entry.participantId, source)) {
+    const deliveries = this.store.routeGeneratedAudio(entry.callId, entry.participantId, source);
+    for (const delivery of deliveries) {
       this.emitToRoom(
         callParticipantRoom(entry.callId, delivery.recipientParticipantId),
         CALL_EVENTS.GENERATED_AUDIO,
         delivery.payload,
       );
     }
+    this.transcriptLog.append({
+      kind: 'generated-audio',
+      callId: entry.callId,
+      speakerParticipantId: entry.participantId,
+      targetLanguage: source.targetLanguage,
+      voiceId: source.voiceId,
+      durationMs: source.durationMs,
+      sequence: source.sequence,
+      audioUrl: source.audioUrl,
+      deliveredTo: deliveries.length,
+    });
     return true;
   }
 
@@ -574,6 +604,24 @@ export class CallRuntime {
       processingSessionId: event.processingSessionId,
       streamStatus: event.streamStatus,
     });
+    // Surface ingest faults (dropped chunks, provider errors) into the call log
+    // so a stalled conversation can be explained after the fact.
+    const entry = this.ingestRegistry.get(event.processingSessionId);
+    const fault = event.transcription?.error ?? event.monitoring?.lastError ?? null;
+    if (entry && (fault || event.streamStatus === 'failed')) {
+      const signature = `${event.streamStatus}:${fault ?? ''}`;
+      if (entry.lastLoggedFault !== signature) {
+        entry.lastLoggedFault = signature;
+        this.transcriptLog.append({
+          kind: 'ingest-fault',
+          callId: entry.callId,
+          speakerParticipantId: entry.participantId,
+          ingestSessionId: event.processingSessionId,
+          streamStatus: event.streamStatus,
+          error: fault,
+        });
+      }
+    }
     return true;
   }
 
@@ -669,13 +717,27 @@ export class CallRuntime {
   }
 
   private deliverCaptions(entry: CallIngestRegistryEntry, source: CallCaptionSourceEvent): void {
-    for (const delivery of this.store.routeCaption(entry.callId, entry.participantId, source)) {
+    const deliveries = this.store.routeCaption(entry.callId, entry.participantId, source);
+    for (const delivery of deliveries) {
       this.emitToRoom(
         callParticipantRoom(entry.callId, delivery.recipientParticipantId),
         CALL_EVENTS.CAPTION,
         delivery.payload,
       );
     }
+    this.transcriptLog.append({
+      kind: 'caption',
+      callId: entry.callId,
+      speakerParticipantId: entry.participantId,
+      sourceLanguage: source.sourceLanguage,
+      targetLanguage: source.targetLanguage,
+      originalText: source.originalText,
+      translatedText: source.translatedText,
+      sequence: source.sequence,
+      mediaRevision: source.mediaRevision,
+      isFinal: source.isFinal,
+      deliveredTo: deliveries.length,
+    });
   }
 
   /** Backend media peer ICE for the publish leg, relayed as `call:publish:ice`. */
@@ -864,6 +926,7 @@ export class CallRuntime {
       void socket.leave(callRoom(callId));
       void socket.leave(callParticipantRoom(callId, participantId));
     }
+    this.transcriptLog.append({ kind: 'leave', callId, participantId, reason });
     if (result.callEnded) {
       this.teardownCall(callId, 'call ended');
     } else if (result.snapshot) {

@@ -29,6 +29,7 @@ const gateway = new Gateway(server, config.corsOrigins, {
       }
     : undefined,
   webRtcTranscriptionStagingDir: config.webRtcTranscriptionStagingDir,
+  callTranscriptLogDir: config.callTranscriptLogDir,
 });
 
 server.listen(config.port, config.host, () => {

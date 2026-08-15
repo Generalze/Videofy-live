@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+﻿import { describe, expect, it } from 'vitest';
 import {
   CallGeneratedAudioQueueController,
   type CallGeneratedAudioQueueState,
@@ -196,5 +196,29 @@ describe('CallGeneratedAudioQueueController', () => {
     expect(created[0]?.paused).toBe(true);
     expect(controller.getState().pendingCount).toBe(0);
     expect(controller.enqueue(generatedEvent({ sequence: 1, mediaRevision: 1 }))).toBe(true);
+  });
+});
+
+describe('playback failure surfacing', () => {
+  it('reports an error state when the browser rejects playback, so the UI can offer recovery', async () => {
+    const states: string[] = [];
+    const controller = new CallGeneratedAudioQueueController({
+      createAudio: () => ({
+        volume: 1,
+        onended: null,
+        onerror: null,
+        pause: () => undefined,
+        play: async () => {
+          throw new Error('NotAllowedError');
+        },
+      }),
+      onStateChange: (state) => states.push(state.status),
+    });
+
+    controller.start();
+    controller.enqueue(generatedEvent({ sequence: 0 }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(states).toContain('error');
   });
 });

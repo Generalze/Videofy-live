@@ -104,6 +104,12 @@ export default function App() {
     queueRef.current = new CallGeneratedAudioQueueController({
       createAudio: (url) => new Audio(url) as unknown as CallQueueAudio,
       onSpeechActiveChange: setSpeechActive,
+      // A blocked or failed clip must never fail silently: surface the
+      // recovery affordance instead of leaving the listener in silence.
+      onStateChange: (state) => {
+        if (state.status === 'error') setPlaybackBlocked(true);
+        else if (state.status === 'playing') setPlaybackBlocked(false);
+      },
     });
   }
 

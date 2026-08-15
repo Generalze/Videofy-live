@@ -60,6 +60,7 @@ import {
 import { CallSessionStore } from '@videofy-live/call-session';
 import { CallRuntime, CALL_PARTICIPANT_ROLE } from './call-runtime.js';
 import { CallReceivePeerManager } from './call-receive-peers.js';
+import { CallTranscriptLog } from './call-transcript-log.js';
 
 /** Pseudo-language channel for listeners following the untranslated programme captions. */
 const ORIGINAL_LANGUAGE_CHANNEL = 'original';
@@ -130,6 +131,7 @@ export class Gateway {
       webRtcTranscriptionChunkMs?: number;
       webRtcTranscriptionRequestTimeoutMs?: number;
       webRtcTranscriptionStagingDir?: string;
+      callTranscriptLogDir?: string | null;
       vad?: ConstructorParameters<typeof WebRtcTranscriptionBridge>[0]['vad'];
     } = {},
   ) {
@@ -226,6 +228,7 @@ export class Gateway {
       transcriptionBridge: this.webRtcTranscriptionBridge,
       createMediaPeers: (handlers) => new BackendWebRtcMediaPeerRegistry(handlers),
       createReceivePeers: (handlers) => new CallReceivePeerManager(handlers),
+      transcriptLog: new CallTranscriptLog(options.callTranscriptLogDir ?? null),
     });
     this.io = new SocketServer(httpServer, {
       cors: { origin: corsOrigins, methods: ['GET', 'POST'] },

@@ -18,6 +18,8 @@ export interface GatewayConfig {
   webRtcVadMinSpeechMs: number;
   webRtcVadMaxSegmentMs: number;
   webRtcTranscriptionStagingDir: string;
+  /** Development call-session transcript log directory; disabled when null. */
+  callTranscriptLogDir: string | null;
 }
 
 export function loadConfig(): GatewayConfig {
@@ -55,6 +57,7 @@ export function loadConfig(): GatewayConfig {
     webRtcTranscriptionStagingDir:
       process.env['WEBRTC_AUDIO_CHUNK_STAGING_DIR'] ??
       resolve(process.cwd(), '../../uploads/webrtc-staging'),
+    callTranscriptLogDir: process.env['CALL_TRANSCRIPT_LOG_DIR']?.trim() || null,
   };
 }
 

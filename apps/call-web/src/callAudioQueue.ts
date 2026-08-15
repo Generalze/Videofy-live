@@ -60,6 +60,7 @@ export class CallGeneratedAudioQueueController {
   private readonly latestRevisionBySpeaker = new Map<string, SpeakerRevision>();
   private audio: CallQueueAudio | null = null;
   private playing = false;
+  /** Armed by start(), which App calls inside the join click gesture. */
   private started = false;
   private enabled = true;
   private volume = 1;
