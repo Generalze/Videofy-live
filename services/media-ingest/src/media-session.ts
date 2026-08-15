@@ -1178,11 +1178,19 @@ export class ProcessingSessionStore {
     const transcribed = result.segments
       .filter((segment) => segment.text.trim() !== '')
       .map((segment, index): PartialTranscriptionEvent => {
+        // Clamped so the window is always non-empty. A segment landing on (or
+        // past) the chunk boundary would otherwise produce endMs === startMs,
+        // which the timestamped-translation contract rejects outright — the
+        // gateway logs "invalid timestamped translation event" and the caption
+        // is silently lost, which looks exactly like the pipeline stalling.
         const startMs = Math.min(
           Math.max(chunk.startMs + segment.startMs, chunk.startMs),
+          Math.max(chunk.startMs, chunk.endMs - 1),
+        );
+        const endMs = Math.min(
+          Math.max(chunk.startMs + segment.endMs, startMs + 1),
           chunk.endMs,
         );
-        const endMs = Math.min(Math.max(chunk.startMs + segment.endMs, startMs), chunk.endMs);
         return {
           sessionId: session.id,
           streamId: session.streamId,
@@ -3397,11 +3405,19 @@ export class ProcessingSessionStore {
     const transcribed = result.segments
       .filter((segment) => segment.text.trim() !== '')
       .map((segment, index): TranscriptionEvent => {
+        // Clamped so the window is always non-empty. A segment landing on (or
+        // past) the chunk boundary would otherwise produce endMs === startMs,
+        // which the timestamped-translation contract rejects outright — the
+        // gateway logs "invalid timestamped translation event" and the caption
+        // is silently lost, which looks exactly like the pipeline stalling.
         const startMs = Math.min(
           Math.max(chunk.startMs + segment.startMs, chunk.startMs),
+          Math.max(chunk.startMs, chunk.endMs - 1),
+        );
+        const endMs = Math.min(
+          Math.max(chunk.startMs + segment.endMs, startMs + 1),
           chunk.endMs,
         );
-        const endMs = Math.min(Math.max(chunk.startMs + segment.endMs, startMs), chunk.endMs);
         return {
           ...transcribing,
           chunkId: `${transcribing.chunkId}-s${index}`,

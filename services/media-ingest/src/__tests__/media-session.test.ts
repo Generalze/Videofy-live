@@ -1214,6 +1214,70 @@ describe('ProcessingSessionStore', () => {
     expect(outputFiles.some((name) => name.startsWith('webrtc-partial-'))).toBe(false);
   });
 
+  it('never emits a zero-length caption window, even for a boundary segment', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    const windows: string[] = [];
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+      translationTargetLanguage: 'fr',
+      translationSupportedTargetLanguages: ['fr'],
+      textToSpeechSupportedLanguages: ['fr'],
+      onTranscriptionEvent: (event) => windows.push(`${event.startMs}-${event.endMs}`),
+      transcriptionProvider: {
+        name: 'boundary-transcriber',
+        // A segment that starts at (and runs past) the end of the chunk window:
+        // the clamp used to collapse it to endMs === startMs, which the
+        // timestamped-translation contract rejects, losing the caption.
+        transcribe: async (input) => ({
+          segments: [
+            {
+              text: 'boundary segment',
+              startMs: input.chunk.endMs - input.chunk.startMs + 500,
+              endMs: input.chunk.endMs - input.chunk.startMs + 900,
+            },
+          ],
+          detectedLanguage: 'en',
+          confidence: 0.9,
+        }),
+      },
+    });
+    const session = await sessionStore.createWebRtcSession({
+      sessionId: 'call_boundary_participant_1_r1',
+      broadcastId: 'callcast_boundary_participant_1_r1',
+      broadcasterPeerId: 'peer_call_participant_1',
+      revision: 1,
+      targetLanguage: 'fr',
+      targetLanguages: ['fr'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+
+    await sessionStore.ingestWebRtcChunk(session.id, {
+      sequence: 0,
+      startMs: 0,
+      endMs: 2_000,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: wavFixture().length,
+      sourcePath: await createStagedWav(stagingDir, 'boundary.wav'),
+    });
+
+    // The store emits an event per status transition, so assert the invariant
+    // over every window rather than assuming how many there are.
+    expect(windows.length).toBeGreaterThan(0);
+    for (const window of windows) {
+      const [startMs, endMs] = window.split('-').map(Number);
+      expect(endMs).toBeGreaterThan(startMs as number);
+    }
+    // The boundary segment specifically must survive as a one-millisecond
+    // window rather than collapsing to nothing.
+    expect(windows).toContain('1999-2000');
+  });
+
   it('keeps a failed partial off the speech-loss counters', async () => {
     const outputDir = await createTempDir();
     const stagingDir = await createTempDir();

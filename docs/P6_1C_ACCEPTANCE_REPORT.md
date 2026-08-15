@@ -115,6 +115,63 @@ generated contiguous, gapless chunk timelines that real speech never produces.
   translation), voice clips, faults, and the summary. Development-only, off unless
   `CALL_TRANSCRIPT_LOG_DIR` is set, since call content is written to disk (§23).
 
+## Correction: browser acceptance runs were not measuring what they claimed (2026-08-15)
+
+The two-browser harness used Chrome/Edge's `--use-fake-device-for-media-capture` with
+`--use-file-for-fake-audio-capture` to play known speech into a call. **On this machine that flag
+has no effect**: `enumerateDevices()` returns only real hardware, and `getUserMedia` hands back
+`"Default - Microphone Array (Intel Smart Sound Technology)"` with or without the flag. Every
+browser acceptance run therefore captured the room, not the speech file.
+
+That explains behaviour previously read as flakiness — runs "passed" when ambient noise crossed the
+VAD threshold and speech recognition hallucinated plausible text on it, and "failed" when the room
+was quiet. The recurring `"Subtitles directed by the community of Amara.org"` line in earlier
+transcripts is a well-known Whisper hallucination on near-silence, and should have been the tell.
+
+What this does and does not invalidate:
+
+- **Still sound.** The transport, routing, caption delivery, voice selection, mix modes, revision
+  handling and fault behaviour were all exercised by real two-browser calls, and the delivery
+  counts and latency figures are real measurements of real deliveries.
+- **Not established by those runs.** That the *right words* survived the pipeline. Content accuracy
+  was never actually under test, because the input was not the intended audio.
+
+Content correctness is now verified deterministically instead, by submitting known speech directly
+to media-ingest and asserting on the transcript and the translation (`pipeline-verify.mjs`). A pass
+means the words really did survive:
+
+| Pair | Utterances transcribed | Exact word match | Translated | Voice generated |
+| --- | --- | --- | --- | --- |
+| en→fr | 4/4 | 4/4 | 4/4 | 4 clips |
+| en→es | 4/4 | 4/4 | 4/4 | 4 clips |
+| es→en | 4/4 | 4/4 | 4/4 | 4 clips |
+| fr→en | 4/4 | 3/4 | 4/4 | 4 clips |
+
+The one fr→en miss is a recognition slip on synthesised speech ("part à huit heures" heard as
+"Pare à 8h"); the translation remains sensible. Sample: "Quiero confirmar que la traducción funciona
+en ambas direcciones." → "I want to confirm that the translation works in both directions."
+
+**Browser-level acceptance with known audio remains open** and is an owner action: it needs either a
+machine where the fake-device flag works, a virtual audio cable routed into the browser, or a human
+simply speaking into a call. This is exactly the human-verification gate that cannot be self-served.
+
+## Defect this correction uncovered: es→en translation was dead
+
+Verifying Spanish properly immediately exposed a real fault that the browser harness could never
+have found. Spanish recognition was perfect while **every es→en translation failed**, so a Spanish
+speaker would have been captioned in Spanish and never translated for an English listener — the
+explicit P6.1A/P6.1B criterion.
+
+The cause was a corrupt local model cache, not code: `models--Helsinki-NLP--opus-mt-es-en/refs/`
+was empty, so with downloads disabled the Hugging Face resolver could not map the repo id to its
+snapshot and handed the tokenizer `None` for `source.spm`, surfacing as
+`"OPUS-MT translation failed. expected str, bytes or os.PathLike object, not NoneType"`. Every other
+pair had a `refs/main`. Writing the missing ref restored it, and es→en now translates correctly.
+
+Worth noting for operations: the failure was *reported* honestly — it landed in the session's
+`monitoring.lastError` — but nothing surfaces a per-pair translation outage at the call level, so
+one language pair can be completely dead while the call looks healthy.
+
 ## Explicitly not claimed
 
 - **Camera video.** Not a §30.4 criterion; server-relaying video on the demonstration machine is a
