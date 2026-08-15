@@ -40,6 +40,10 @@ import {
 } from './audio-extraction.js';
 import { MediaIngestError } from './ingest-error.js';
 import {
+  filterHallucinatedSegments,
+  INTERIM_HALLUCINATION_FILTER,
+} from './hallucination-filter.js';
+import {
   MockTranscriptionProvider,
   transcribeWithTimeout,
   type TranscriptionProvider,
@@ -1176,7 +1180,16 @@ export class ProcessingSessionStore {
     // `<chunkId>-s<index>` segment id, so a caption surface upserts in place.
     const baseSequence = this.peekTranscriptionSequence(session.id);
     const finalChunkId = this.webRtcChunkId(session, chunk.index);
-    const transcribed = result.segments
+    // An interim caption must clear a higher bar than a final. The recogniser
+    // is being handed a truncated clause and will complete it with whatever is
+    // most likely, which shows up as a preview that is a different sentence
+    // from the final rather than a prefix of it. The final is only about a
+    // second and a half behind, so waiting beats guessing.
+    const confident = filterHallucinatedSegments(
+      result.segments,
+      INTERIM_HALLUCINATION_FILTER,
+    ).kept;
+    const transcribed = confident
       .filter((segment) => segment.text.trim() !== '')
       .map((segment, index): PartialTranscriptionEvent => {
         // Clamped so the window is always non-empty. A segment landing on (or

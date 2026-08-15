@@ -7,6 +7,10 @@ import { promisify } from 'node:util';
 import type { AudioChunkMetadata } from '@videofy-live/shared-types';
 import { MediaIngestError } from './ingest-error.js';
 import {
+  filterHallucinatedSegments,
+  type RecognisedSegment,
+} from './hallucination-filter.js';
+import {
   PYTHON_WORKER_LOOP,
   createPersistentPythonWorker,
   type PythonWorkerFactory,
@@ -53,6 +57,15 @@ export interface TranscriptionSegment {
   text: string;
   startMs: number;
   endMs: number;
+  /**
+   * The recogniser's own doubt about this segment, passed on rather than
+   * consumed. The provider drops what is plainly not speech, but a caller with
+   * more context can be stricter — an interim caption is a preview of a
+   * half-spoken sentence and can afford to wait, where a final cannot.
+   * Absent when the provider does not report them.
+   */
+  noSpeechProb?: number | null;
+  avgLogProb?: number | null;
 }
 
 export interface TranscriptionProviderResult {
@@ -224,8 +237,20 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
       );
     }
 
+    // Silence transcribed as subtitle credits or invented replies reaches
+    // participants as captions that appear by themselves, so it is removed here
+    // rather than downstream: everything after this point treats a segment as
+    // something a person said.
+    const { kept } = filterHallucinatedSegments(result.segments);
+
     return {
-      segments: result.segments,
+      segments: kept.map((segment) => ({
+        text: segment.text,
+        startMs: segment.startMs,
+        endMs: segment.endMs,
+        noSpeechProb: segment.noSpeechProb ?? null,
+        avgLogProb: segment.avgLogProb ?? null,
+      })),
       detectedLanguage: result.detectedLanguage,
       confidence: result.confidence,
       providerLatencyMs,
@@ -365,7 +390,8 @@ async function defaultCommandRunner(
 }
 
 interface FasterWhisperJsonResult {
-  segments: TranscriptionSegment[];
+  /** Carries the recogniser's own non-speech/confidence signals for filtering. */
+  segments: RecognisedSegment[];
   detectedLanguage: string;
   confidence: number | null;
   device: string;
@@ -393,9 +419,9 @@ function parseFasterWhisperResult(raw: unknown): FasterWhisperJsonResult {
   };
 }
 
-function parseFasterWhisperSegments(value: unknown): TranscriptionSegment[] {
+function parseFasterWhisperSegments(value: unknown): RecognisedSegment[] {
   if (!Array.isArray(value)) return [];
-  const segments: TranscriptionSegment[] = [];
+  const segments: RecognisedSegment[] = [];
   for (const entry of value) {
     if (!isRecord(entry) || typeof entry['text'] !== 'string') continue;
     const startMs =
@@ -406,9 +432,21 @@ function parseFasterWhisperSegments(value: unknown): TranscriptionSegment[] {
       typeof entry['endMs'] === 'number' && Number.isFinite(entry['endMs'])
         ? Math.max(startMs, Math.round(entry['endMs']))
         : startMs;
-    segments.push({ text: entry['text'], startMs, endMs });
+    segments.push({
+      text: entry['text'],
+      startMs,
+      endMs,
+      // Absent when a provider does not report them; the filter then leaves the
+      // segment alone rather than dropping everything it cannot judge.
+      noSpeechProb: finiteOrNull(entry['noSpeechProb']),
+      avgLogProb: finiteOrNull(entry['avgLogProb']),
+    });
   }
   return segments;
+}
+
+function finiteOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function classifyCommandError(
@@ -514,7 +552,14 @@ model = WhisperModel(model_size, **kwargs)
 def handle(payload):
     audio_path = payload["audioPath"]
     language_hint = payload.get("languageHint") or None
-    transcribe_kwargs = {"vad_filter": True}
+    transcribe_kwargs = {
+        "vad_filter": True,
+        # Each chunk is an independent utterance from a live call, not the next
+        # part of one recording. Conditioning on previous text lets an invented
+        # line become the context for the next one, which is how a single
+        # hallucination turns into a run of them.
+        "condition_on_previous_text": False,
+    }
     if language_hint:
         transcribe_kwargs["language"] = language_hint
     segments, info = model.transcribe(audio_path, **transcribe_kwargs)
@@ -522,10 +567,17 @@ def handle(payload):
     for segment in segments:
         text = (segment.text or "").strip()
         if text:
+            # The recogniser's own view of whether this was speech at all, and
+            # how confident it was, travel with the text so the caller can drop
+            # confident silence without re-deriving it.
+            no_speech = getattr(segment, "no_speech_prob", None)
+            avg_logprob = getattr(segment, "avg_logprob", None)
             segment_payloads.append({
                 "text": text,
                 "startMs": int(round((segment.start or 0.0) * 1000)),
                 "endMs": int(round((segment.end or 0.0) * 1000)),
+                "noSpeechProb": float(no_speech) if no_speech is not None and math.isfinite(no_speech) else None,
+                "avgLogProb": float(avg_logprob) if avg_logprob is not None and math.isfinite(avg_logprob) else None,
             })
     confidence = getattr(info, "language_probability", None)
     if confidence is not None and not math.isfinite(confidence):
