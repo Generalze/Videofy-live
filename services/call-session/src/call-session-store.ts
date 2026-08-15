@@ -76,10 +76,16 @@ export type CallLanguageChangeResult =
       /** The speaker's revision after the change; the gateway stamps events with it. */
       languageRevision: number;
       snapshot: CallSnapshot;
+      /**
+       * Recomputed work orders for every connected participant, so the caller
+       * applies a language change through exactly the same path as a join
+       * rather than a parallel one that could drift from it.
+       */
+      ingestPlans: CallIngestPlan[];
     }
   | {
       ok: false;
-      reason: 'unknown-participant' | 'language-stated-by-speaker';
+      reason: 'unknown-participant' | 'language-stated-by-speaker' | 'unsupported-language';
     };
 
 export interface CallJoinResult {
@@ -431,7 +437,7 @@ export class CallSessionStore {
   applyDetectedLanguage(
     callId: string,
     participantId: string,
-    detected: CallLanguage,
+    detectedLanguage: string,
   ): CallLanguageChangeResult {
     const call = this.calls.get(callId);
     const state = call?.participants.get(participantId);
@@ -439,6 +445,10 @@ export class CallSessionStore {
     if (state.participant.sourceLanguageMode !== 'auto') {
       return { ok: false, reason: 'language-stated-by-speaker' };
     }
+    // Validated here rather than by the caller, so every entry point applies
+    // the same rule about what this call can actually speak.
+    const detected = primaryLanguageSubtag(detectedLanguage);
+    if (!isCallLanguage(detected)) return { ok: false, reason: 'unsupported-language' };
     if (state.participant.sourceLanguage === detected) {
       // The guess was right. Settle it so later utterances cannot reopen it,
       // but nothing has moved, so no revision bump and no re-routing.
@@ -452,6 +462,7 @@ export class CallSessionStore {
         changed: false,
         languageRevision: state.participant.languageRevision,
         snapshot: buildSnapshot(call),
+        ingestPlans: connectedIngestPlans(call),
       };
     }
 
@@ -476,6 +487,7 @@ export class CallSessionStore {
       changed: true,
       languageRevision: state.participant.languageRevision,
       snapshot: buildSnapshot(call),
+      ingestPlans: connectedIngestPlans(call),
     };
   }
 
@@ -636,6 +648,13 @@ function hasDuplicateDisplayName(call: CallState, displayName: string): boolean 
 
 function normalizeDisplayName(displayName: string): string {
   return displayName.trim().toLowerCase();
+}
+
+/** Work orders for every connected participant, recomputed from current state. */
+function connectedIngestPlans(call: CallState): CallIngestPlan[] {
+  return [...call.participants.values()]
+    .filter((state) => state.connected)
+    .map((state) => buildIngestPlan(call, state));
 }
 
 function buildSnapshot(call: CallState): CallSnapshot {

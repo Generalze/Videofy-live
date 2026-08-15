@@ -32,6 +32,11 @@ export interface CallJoinPayload {
   captionsEnabled: boolean;
   voiceGender: CallVoiceGender;
   audioMode: CallAudioMode;
+  /**
+   * Absent means the speaker stated their language and it is final. `auto`
+   * treats `speakLanguage` as a starting guess the first utterance may correct.
+   */
+  sourceLanguageMode?: 'auto';
   resumeParticipantId?: string;
   resumeToken?: string;
 }

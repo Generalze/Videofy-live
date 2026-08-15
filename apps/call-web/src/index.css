@@ -764,3 +764,26 @@ select {
     width: 100%;
   }
 }
+
+/*
+ * Sits under the "I speak" picker because it changes what that picker means:
+ * ticking it greys the picker out and hands the decision to the first sentence.
+ */
+.detect-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--color-text-muted);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.detect-toggle input {
+  accent-color: var(--color-brand);
+}
+
+select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

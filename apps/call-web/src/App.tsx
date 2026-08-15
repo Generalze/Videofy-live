@@ -546,6 +546,9 @@ export default function App() {
           onCallCodeChange={(value) => setForm((current) => ({ ...current, callCode: value }))}
           onGenerateCode={() => setForm((current) => ({ ...current, callCode: generateCallCode() }))}
           onSpeakLanguageChange={(language) => setForm((current) => withSpeakLanguage(current, language))}
+          onDetectLanguageToggle={(enabled) =>
+            setForm((current) => ({ ...current, detectSpeakLanguage: enabled }))
+          }
           onHearLanguageChange={(language) => setForm((current) => withHearLanguage(current, language))}
           onCaptionsToggle={(enabled) => setForm((current) => ({ ...current, captionsEnabled: enabled }))}
           onVoiceGenderChange={(voice) => setForm((current) => ({ ...current, voiceGender: voice }))}

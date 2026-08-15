@@ -63,6 +63,9 @@ export function buildCallJoinPayload(
     captionsEnabled: form.captionsEnabled,
     voiceGender: form.voiceGender,
     audioMode: form.audioMode,
+    // Omitted rather than sent as 'manual', so a gateway that predates this
+    // option keeps its existing default instead of seeing an unknown field.
+    ...(form.detectSpeakLanguage ? { sourceLanguageMode: 'auto' as const } : {}),
   };
   if (resume !== undefined) {
     payload.resumeParticipantId = resume.participantId;

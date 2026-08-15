@@ -10,6 +10,12 @@ export interface CallJoinFormState {
   captionsEnabled: boolean;
   voiceGender: CallVoiceGender;
   audioMode: CallAudioMode;
+  /**
+   * When true, `speakLanguage` is only a starting guess and the first thing the
+   * speaker says decides it. Stating a language is still the stronger claim, so
+   * this is off unless the speaker asks for it.
+   */
+  detectSpeakLanguage: boolean;
 }
 
 export interface CallJoinFormErrors {
@@ -104,6 +110,7 @@ export function createInitialCallJoinForm(): CallJoinFormState {
     captionsEnabled: true,
     voiceGender: 'female',
     audioMode: 'translated',
+    detectSpeakLanguage: false,
   };
 }
 

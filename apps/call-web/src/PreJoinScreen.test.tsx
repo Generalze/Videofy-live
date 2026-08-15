@@ -27,6 +27,7 @@ function render(overrides: Partial<PreJoinScreenProps> = {}): string {
     onCallCodeChange: vi.fn(),
     onGenerateCode: vi.fn(),
     onSpeakLanguageChange: vi.fn(),
+    onDetectLanguageToggle: vi.fn(),
     onHearLanguageChange: vi.fn(),
     onCaptionsToggle: vi.fn(),
     onVoiceGenderChange: vi.fn(),
@@ -123,5 +124,23 @@ describe('PreJoinScreen', () => {
     expect(html).toContain('Call service could not be reached.');
     expect(html).toContain('Alice');
     expect(html).toContain('calm-river-42');
+  });
+
+  it('offers to work the language out from the first sentence', () => {
+    const html = render();
+
+    expect(html).toContain('id="detect-language"');
+    // Phrased as what happens, not as a setting name.
+    expect(html).toContain('Work it out from my first sentence');
+  });
+
+  it('greys out the language picker once detection is chosen', () => {
+    // The picker still shows a value, so it has to look inert or it reads as
+    // the language that will be used.
+    const off = render();
+    expect(off).not.toMatch(/id="speak-language"[^>]*disabled/);
+
+    const on = render({ form: { ...createInitialCallJoinForm(), detectSpeakLanguage: true } });
+    expect(on).toMatch(/id="speak-language"[^>]*disabled/);
   });
 });

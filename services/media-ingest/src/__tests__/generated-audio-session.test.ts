@@ -515,7 +515,15 @@ describe('generated-audio sessions', () => {
     );
 
     const created = store.createFromUpload(upload(), async () => validProbe);
-    await waitUntil(() => activeSessionId !== '' && activeSegmentId !== '');
+    // `release` must be waited for too, not just the 'generating' status. The
+    // store marks the event generating and emits the change BEFORE it calls the
+    // provider, so under load this resolved while `release` was still
+    // undefined — and `release?.()` below then did nothing at all, leaving the
+    // provider promise unresolved and the test hanging until its timeout.
+    await waitUntil(
+      () => activeSessionId !== '' && activeSegmentId !== '' && release !== undefined,
+      10_000,
+    );
 
     await expect(store.retryGeneratedAudioSegment(activeSessionId, activeSegmentId)).rejects.toMatchObject({
       code: 'duplicate-processing',
@@ -523,13 +531,7 @@ describe('generated-audio sessions', () => {
 
     release?.({ audioPath: 'released', providerLatencyMs: 1 });
     await created;
-    // Longer than the 5s default: this drives a whole upload through extraction,
-    // transcription, translation and speech synthesis, and it is the only test
-    // here that must also wait for a segment to reach 'generating' before it can
-    // assert. It passes consistently on its own and only times out when the full
-    // suite runs the machine hot — a red gate nobody trusts is worse than the
-    // flake, and the work being timed is real rather than a hang.
-  }, 20_000);
+  });
 
   it('cleans failed partial output before exposing failed state', async () => {
     let partialPath = '';

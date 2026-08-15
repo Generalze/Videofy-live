@@ -584,6 +584,13 @@ export class CallRuntime {
     if (!entry || event.status !== 'transcribed' || event.sourceText.trim().length === 0) {
       return true;
     }
+    // A participant who joined under auto-detect gets their language settled by
+    // the first real utterance. Done before the caption is routed so this
+    // caption is already addressed with the corrected language and revision,
+    // rather than being delivered against a language we now know was wrong.
+    if (!isInterimEvent(event)) {
+      this.settleDetectedLanguage(entry, event.detectedLanguage);
+    }
     // Original transcript: the store delivers it as the caption for
     // same-language recipients; translated captions ride the translation events.
     const source: CallCaptionSourceEvent = {
@@ -602,6 +609,42 @@ export class CallRuntime {
     };
     this.deliverCaptions(entry, source);
     return true;
+  }
+
+  /**
+   * Settles the language of a participant who joined under auto-detect.
+   *
+   * The call core decides whether the change is allowed — a stated language is
+   * never overridden, and a settled one never moves again — so this only feeds
+   * it what the recogniser heard and reacts to the answer. When the language
+   * really did change, the speaker's ingest session is now planned for the
+   * wrong pair: it is retired so the next chunk starts a session that
+   * translates from what they are actually speaking.
+   */
+  private settleDetectedLanguage(entry: CallIngestRegistryEntry, detectedLanguage: string): void {
+    if (entry.plan.sourceLanguageMode !== 'auto') return;
+
+    // The core decides whether this is allowed and what it means; the gateway
+    // only reports what was heard and carries out the consequences.
+    const result = this.store.applyDetectedLanguage(
+      entry.callId,
+      entry.participantId,
+      detectedLanguage,
+    );
+    if (!result.ok || !result.changed) return;
+
+    logger.info('Call source language settled by detection', {
+      callId: entry.callId,
+      participantId: entry.participantId,
+      from: entry.plan.sourceLanguage,
+      to: detectedLanguage,
+      languageRevision: result.languageRevision,
+    });
+    this.emitToRoom(callRoom(entry.callId), CALL_EVENTS.STATE, toWireCallState(result.snapshot));
+    // Every participant's work order changed, not just the speaker's: the
+    // others' translation target for this speaker moved with it. Applied
+    // through the same path a join uses, so the two cannot drift apart.
+    void this.applyIngestPlans(entry.callId, result.snapshot, result.ingestPlans);
   }
 
   /** Intercept a media-ingest timestamped translation event for call sessions. */

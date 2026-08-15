@@ -22,6 +22,7 @@ export interface PreJoinScreenProps {
   onCallCodeChange: (value: string) => void;
   onGenerateCode: () => void;
   onSpeakLanguageChange: (language: CallLanguage) => void;
+  onDetectLanguageToggle: (enabled: boolean) => void;
   onHearLanguageChange: (language: CallLanguage) => void;
   onCaptionsToggle: (enabled: boolean) => void;
   onVoiceGenderChange: (voice: CallVoiceGender) => void;
@@ -94,6 +95,7 @@ export function PreJoinScreen(props: PreJoinScreenProps) {
             <select
               id="speak-language"
               value={form.speakLanguage}
+              disabled={form.detectSpeakLanguage}
               onChange={(event) => props.onSpeakLanguageChange(event.target.value as CallLanguage)}
             >
               {CALL_LANGUAGES.map((language) => (
@@ -102,6 +104,17 @@ export function PreJoinScreen(props: PreJoinScreenProps) {
                 </option>
               ))}
             </select>
+            <label className="detect-toggle" htmlFor="detect-language">
+              <input
+                id="detect-language"
+                type="checkbox"
+                checked={form.detectSpeakLanguage}
+                onChange={(event) => props.onDetectLanguageToggle(event.target.checked)}
+              />
+              {/* Says what happens, not what it is: the picker greys out, so the
+                  user needs to know the first sentence is what decides. */}
+              Work it out from my first sentence
+            </label>
           </div>
           <div className="field">
             <label className="field-label" htmlFor="hear-language">
