@@ -36,10 +36,15 @@ export const DEFAULT_TRANSLATED_LEVEL = 1;
  * Not zero, because laughter, sighs and interjections are never translated —
  * they carry feeling rather than words, so nothing is generated for them. At a
  * hard zero those moments simply vanish and the other person sounds absent
- * between sentences. Low enough that their untranslated speech does not compete
- * with the translation that is about to arrive.
+ * between sentences.
+ *
+ * Set to a level you can actually hear a laugh at. A first attempt at 0.15 was
+ * technically non-zero and practically silent: the caption appeared and no
+ * sound did. Laughter is quieter than speech to begin with, so a "trace" of it
+ * is nothing at all. It still ducks to zero the moment the translation speaks,
+ * which is what keeps the mode meaning what it says.
  */
-export const TRANSLATED_MODE_PRESENCE_LEVEL = 0.15;
+export const TRANSLATED_MODE_PRESENCE_LEVEL = 0.55;
 
 /**
  * Mix policy (mirrors listener-web semantics):

@@ -28,6 +28,21 @@ describe('filterHallucinatedSegments', () => {
     expect(result.dropped.every((d) => d.reason === 'credit-line')).toBe(true);
   });
 
+  it('matches sign-offs with words inserted mid-phrase', () => {
+    // Seen in a real call: a plain substring for "thank you for watching"
+    // missed "Thank you very much for watching." because two words split it.
+    expect(isCreditLineHallucination('Thank you very much for watching.')).toBe(true);
+    expect(isCreditLineHallucination('Thanks so much for listening!')).toBe(true);
+    expect(isCreditLineHallucination('See you in the next video')).toBe(true);
+  });
+
+  it('does not treat ordinary gratitude as a sign-off', () => {
+    // "Thank you" is one of the most common things said on a call.
+    expect(isCreditLineHallucination('Thank you.')).toBe(false);
+    expect(isCreditLineHallucination('Thank you very much for your help.')).toBe(false);
+    expect(isCreditLineHallucination('Thanks for sending the file.')).toBe(false);
+  });
+
   it('matches credit lines regardless of accents or spacing', () => {
     expect(isCreditLineHallucination('SOUS-TITRES  REALISES PAR la communauté')).toBe(true);
     expect(isCreditLineHallucination('Subtítulos realizados por la comunidad')).toBe(true);

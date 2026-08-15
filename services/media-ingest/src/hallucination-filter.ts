@@ -81,10 +81,24 @@ const CREDIT_LINE_MARKERS = [
   'sous-titrage par',
   'subtitulos realizados por',
   'subtitulado por',
-  'thanks for watching',
-  'thank you for watching',
   'untertitel von',
   'untertitelung im auftrag',
+];
+
+/**
+ * Sign-off lines, which vary too much for fixed strings: a plain substring for
+ * "thank you for watching" missed the real "Thank you very much for watching."
+ * because two words were inserted mid-phrase. The gap between the thanks and
+ * the watching is bounded so an ordinary sentence that happens to contain both
+ * ideas is not swept up.
+ */
+const SIGN_OFF_PATTERNS = [
+  /\bthank(?:s| you)\b[^.!?]{0,24}\bfor watching\b/,
+  /\bthank(?:s| you)\b[^.!?]{0,24}\bfor listening\b/,
+  /\bmerci\b[^.!?]{0,24}\bd(?:e|'avoir) regard/,
+  /\bgracias por (?:ver|mirar|escuchar)\b/,
+  /\bdon(?:'|)t forget to (?:like|subscribe)\b/,
+  /\bsee you (?:in the )?next (?:video|time)\b/,
 ];
 
 function normalise(text: string): string {
@@ -100,7 +114,10 @@ function normalise(text: string): string {
 /** True when the text is a subtitle credit rather than something anyone said. */
 export function isCreditLineHallucination(text: string): boolean {
   const normalised = normalise(text);
-  return CREDIT_LINE_MARKERS.some((marker) => normalised.includes(marker));
+  return (
+    CREDIT_LINE_MARKERS.some((marker) => normalised.includes(marker)) ||
+    SIGN_OFF_PATTERNS.some((pattern) => pattern.test(normalised))
+  );
 }
 
 export interface FilterResult {
