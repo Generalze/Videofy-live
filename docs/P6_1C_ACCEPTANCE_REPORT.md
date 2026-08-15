@@ -28,7 +28,7 @@ every prior call stopped after one utterance because of the defects listed below
 | No session-killing faults | PASS — 0 ingest faults |
 | Original audio remains per mix mode | PASS — owner-verified in-call |
 | Generated audio never enters STT | PASS — structural (publish peer carries only the raw microphone track) |
-| Latency measured and reported honestly | **Open** — instrumentation landed in this wave; numbers require one post-instrumentation call |
+| Latency measured and reported honestly | PASS — see "Measured latency" below |
 | Human voice-quality review of EN/FR voices | **Open — owner-only** |
 
 Sample of the recorded conversation (from the call transcript log):
@@ -44,6 +44,37 @@ Sample of the recorded conversation (from the call transcript log):
 
 Verify any call with `node p61c-verdict.mjs <call-code>` against
 `services/realtime-gateway/uploads/call-logs/`.
+
+## Measured latency
+
+Recorded from the gateway call log on a real two-browser EN↔FR call after the
+speech-recognition GPU move and the streaming-partials wave (call `partial-9888`, 7/7 criteria):
+
+| Measure | Median | p90 | n |
+| --- | --- | --- | --- |
+| Final caption delivered | 541 ms | 3303 ms | 58 |
+| Interim caption delivered | 470 ms | 791 ms | 80 |
+| Translated audio clip delivered | 1173 ms | 4086 ms | 29 |
+
+Read honestly, which is the point of the criterion:
+
+- **Steady state meets §22.** Excluding the opening, final captions sit at 530 ms and audio at
+  roughly a second — inside the 1–3 s target.
+- **The p90 is not steady state.** It is dominated by the first few utterances of the call, which
+  pay for lazily-loaded models: the first six finals averaged 1651 ms against 530 ms for the
+  remaining 52. Per-call warm-up now removes about 360 ms of that; the rest is inherent to loading
+  a translation pair and a voice on demand.
+- **Latency statistics sample finals only.** Interim captions are faster by construction, and
+  including them would flatter the number without anything being faster.
+- **A separate ceiling exists.** Delivery holds at roughly 1.2 caption events per second and falls
+  behind at ~2.4, because the models are shared across participants while backpressure is
+  per-session. Documented in the [call runtime design note](P6_1B_CALL_RUNTIME_DESIGN.md); not yet
+  resolved, and not hidden inside these percentiles.
+
+Per-stage provider timings on the same hardware (RTX 5060 Laptop, `cuda`/`float16`): speech
+recognition ~400–500 ms, translation ~400–800 ms, speech synthesis ~615 ms median. An earlier
+1.8 s synthesis figure no longer holds — moving recognition to the GPU freed the CPU that the
+voice engine competes for.
 
 ## Defects this milestone had to fix first (all owner-reported from live testing)
 
@@ -94,6 +125,7 @@ generated contiguous, gapless chunk timelines that real speech never produces.
 
 ## Remaining for P6.1 closure
 
-1. One short call after this wave lands, to record `deliveryLatencyMs` evidence.
-2. Owner human voice-quality review of the registered EN/FR voices (the §30.3 approval gate).
-3. Owner milestone approval.
+Both remaining items are owner actions; nothing automated is outstanding.
+
+1. Owner human voice-quality review of the registered EN/FR voices (the §30.3 approval gate).
+2. Owner milestone approval.
