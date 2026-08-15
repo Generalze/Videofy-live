@@ -14,6 +14,42 @@ import {
 } from './webrtc-transcription-chunker.js';
 import { logger } from './logger.js';
 
+/**
+ * Media-ingest processing-session ids for P6.1B native calls carry this prefix
+ * (`call-runtime.ts` owns the canonical constant). It is duplicated locally on
+ * purpose: the bridge is programme-path infrastructure and must not depend on
+ * the call runtime, and the prefix is part of the media-ingest id contract
+ * rather than of either module.
+ */
+const CALL_BRIDGE_SESSION_PREFIX = 'call_';
+
+function isCallBridgeSessionId(sessionId: string): boolean {
+  return sessionId.startsWith(CALL_BRIDGE_SESSION_PREFIX);
+}
+
+/** Recent chunks per bridge session are remembered for at most this many entries. */
+const CHUNK_TIMING_HISTORY = 128;
+
+/**
+ * Wall-clock anchors for one emitted chunk, so downstream events (which carry
+ * media-timeline positions, not wall clocks) can be turned into an honest
+ * end-to-end latency number.
+ */
+export interface WebRtcChunkTiming {
+  sequence: number;
+  /** Chunk media-timeline window, exactly as submitted to media-ingest. */
+  startMs: number;
+  endMs: number;
+  /**
+   * `Date.now()` at the moment the chunker finished the chunk — i.e. when the
+   * last audio sample of that speech segment had arrived at the gateway.
+   * Frames arrive in real time, so this is the wall clock of `endMs`.
+   */
+  capturedAtMs: number;
+  /** `Date.now()` when media-ingest accepted the chunk; null until it does. */
+  submittedAtMs: number | null;
+}
+
 export interface WebRtcTranscriptionBridgeContext {
   sessionId: string;
   broadcastId: string;
@@ -51,15 +87,25 @@ export interface WebRtcTranscriptionBridgeOptions {
   createExternalAudioProcess?: (url: string) => ChildProcessWithoutNullStreams;
 }
 
+/** Backpressure bookkeeping shared with the chunker's eviction callback. */
+interface WebRtcTranscriptionBackpressureState {
+  evictedChunkCount: number;
+  lastEvictedSequence: number | null;
+}
+
 interface WebRtcTranscriptionSessionState {
   context: WebRtcTranscriptionBridgeContext;
   chunker: WebRtcTranscriptionChunker;
   queue: WebRtcTranscriptionChunk[];
+  /** Recent chunk wall-clock anchors, newest last, bounded to CHUNK_TIMING_HISTORY. */
+  chunkTimings: WebRtcChunkTiming[];
+  backpressure: WebRtcTranscriptionBackpressureState;
   created: boolean;
   active: boolean;
   closed: boolean;
   stopped: boolean;
   failure: string | null;
+  submissionFailureCount: number;
   skippedFrameCount: number;
   lastSkippedFrameReason: string | null;
   externalAudioStarted: boolean;
@@ -121,10 +167,7 @@ export class WebRtcTranscriptionBridge {
       return;
     }
     try {
-      const chunks = session.chunker.pushFrame(data);
-      for (const chunk of chunks) {
-        session.queue.push(chunk);
-      }
+      this.enqueueChunks(session, session.chunker.pushFrame(data));
     } catch (error) {
       if (!(error instanceof WebRtcTranscriptionChunkerError)) throw error;
       session.chunker.markDiscontinuity();
@@ -159,9 +202,7 @@ export class WebRtcTranscriptionBridge {
       session.externalAudioProcess = null;
     }
     try {
-      for (const chunk of session.chunker.flush(true)) {
-        session.queue.push(chunk);
-      }
+      this.enqueueChunks(session, session.chunker.flush(true));
       this.processQueue(session);
     } catch (error) {
       session.failure = error instanceof Error ? error.message : 'WebRTC transcription flush failed.';
@@ -185,9 +226,45 @@ export class WebRtcTranscriptionBridge {
       active: session.active,
       closed: session.closed,
       failure: session.failure,
+      submissionFailureCount: session.submissionFailureCount,
       skippedFrameCount: session.skippedFrameCount,
       lastSkippedFrameReason: session.lastSkippedFrameReason,
+      lastEvictedSequence: session.backpressure.lastEvictedSequence,
       externalAudioStarted: session.externalAudioStarted,
+    };
+  }
+
+  /**
+   * Wall-clock anchors for the chunk that produced a downstream event.
+   *
+   * Media-ingest events carry media-timeline positions inside the chunk they
+   * came from (segment timestamps are clamped to their chunk's window), and
+   * chunks cover disjoint, increasing windows. The newest chunk whose window
+   * starts at or before `mediaMs` is therefore the one that produced the
+   * event. Returns null when the chunk is no longer in the bounded history or
+   * the session is unknown.
+   */
+  lookupChunkTiming(sessionId: string, revision: number, mediaMs: number): WebRtcChunkTiming | null {
+    const session = this.sessions.get(`${sessionId}:${revision}`);
+    if (!session) return null;
+    for (let index = session.chunkTimings.length - 1; index >= 0; index--) {
+      const timing = session.chunkTimings[index];
+      if (timing && timing.startMs <= mediaMs) return { ...timing };
+    }
+    return null;
+  }
+
+  /** Per-session backpressure/failure counters, keyed without a full context. */
+  getSessionCounters(
+    sessionId: string,
+    revision: number,
+  ): { evictedChunkCount: number; skippedFrameCount: number; submissionFailureCount: number } | null {
+    const session = this.sessions.get(`${sessionId}:${revision}`);
+    if (!session) return null;
+    return {
+      evictedChunkCount: session.backpressure.evictedChunkCount,
+      skippedFrameCount: session.skippedFrameCount,
+      submissionFailureCount: session.submissionFailureCount,
     };
   }
 
@@ -197,6 +274,7 @@ export class WebRtcTranscriptionBridge {
     closedSessionCount: number;
     failedSessionCount: number;
     queuedChunkCount: number;
+    evictedChunkCount: number;
   } {
     const sessions = [...this.sessions.values()];
     return {
@@ -205,6 +283,10 @@ export class WebRtcTranscriptionBridge {
       closedSessionCount: sessions.filter((session) => session.closed).length,
       failedSessionCount: sessions.filter((session) => Boolean(session.failure)).length,
       queuedChunkCount: sessions.reduce((total, session) => total + session.queue.length, 0),
+      evictedChunkCount: sessions.reduce(
+        (total, session) => total + session.backpressure.evictedChunkCount,
+        0,
+      ),
     };
   }
 
@@ -221,6 +303,11 @@ export class WebRtcTranscriptionBridge {
       queueLength: session.queue.length,
       skippedFrameCount: session.skippedFrameCount,
       lastSkippedFrameReason: session.lastSkippedFrameReason,
+      submissionFailureCount: session.submissionFailureCount,
+      // Recency-preserving backpressure: how much stale queued speech was
+      // dropped so the newest speech could still be transcribed.
+      evictedChunkCount: session.backpressure.evictedChunkCount,
+      lastEvictedSequence: session.backpressure.lastEvictedSequence,
       chunker: session.chunker.snapshot(),
     }));
   }
@@ -239,6 +326,13 @@ export class WebRtcTranscriptionBridge {
     const key = sessionKey(context);
     const existing = this.sessions.get(key);
     if (existing) return existing;
+    // The queue and the backpressure counters are built first so the chunker's
+    // eviction callback can close over them without a back-reference.
+    const queue: WebRtcTranscriptionChunk[] = [];
+    const backpressure: WebRtcTranscriptionBackpressureState = {
+      evictedChunkCount: 0,
+      lastEvictedSequence: null,
+    };
     const state: WebRtcTranscriptionSessionState = {
       context,
       chunker: new WebRtcTranscriptionChunker({
@@ -247,13 +341,26 @@ export class WebRtcTranscriptionBridge {
         ...(this.maxQueuedChunks ? { maxQueuedChunks: this.maxQueuedChunks } : {}),
         ...(this.maxQueuedBytes ? { maxQueuedBytes: this.maxQueuedBytes } : {}),
         ...(this.vad ? { vad: this.vad } : {}),
+        // A live call keeps the NEWEST speech: under sustained talking the
+        // stale backlog is dropped rather than the sentence just spoken.
+        // Programme sessions keep the pre-P6.1C reject-new behavior exactly.
+        ...(isCallBridgeSessionId(context.sessionId)
+          ? {
+              queueOverflowPolicy: 'evict-oldest' as const,
+              onQueueOverflow: () =>
+                this.evictOldestQueuedChunk(context, queue, backpressure),
+            }
+          : {}),
       }),
-      queue: [],
+      queue,
+      chunkTimings: [],
+      backpressure,
       created: false,
       active: false,
       closed: false,
       stopped: false,
       failure: null,
+      submissionFailureCount: 0,
       skippedFrameCount: 0,
       lastSkippedFrameReason: null,
       externalAudioStarted: false,
@@ -263,6 +370,58 @@ export class WebRtcTranscriptionBridge {
     };
     this.sessions.set(key, state);
     return state;
+  }
+
+  /**
+   * Hand the chunker the oldest chunk still waiting in this session's queue so
+   * it can release that chunk's accounting and admit the newest one. Returns
+   * null when nothing is left to give up (everything outstanding is in flight),
+   * which makes the chunker reject the new chunk as `reject-new` would.
+   */
+  private evictOldestQueuedChunk(
+    context: WebRtcTranscriptionBridgeContext,
+    queue: WebRtcTranscriptionChunk[],
+    backpressure: WebRtcTranscriptionBackpressureState,
+  ): WebRtcTranscriptionChunk | null {
+    const oldest = queue.shift();
+    if (!oldest) return null;
+    backpressure.evictedChunkCount += 1;
+    backpressure.lastEvictedSequence = oldest.sequence;
+    logger.warn('WebRTC transcription queue evicted the oldest chunk to keep the newest speech', {
+      sessionId: context.sessionId,
+      broadcastId: context.broadcastId,
+      revision: context.revision,
+      evictedSequence: oldest.sequence,
+      evictedDurationMs: oldest.durationMs,
+      queueLengthAfterEviction: queue.length,
+      evictedChunkCount: backpressure.evictedChunkCount,
+    });
+    return oldest;
+  }
+
+  /**
+   * Queue freshly emitted chunks and stamp each one with the wall clock at
+   * which its audio finished arriving, so a delivered caption or generated
+   * clip can later be reported with an honest end-to-end latency.
+   */
+  private enqueueChunks(
+    session: WebRtcTranscriptionSessionState,
+    chunks: WebRtcTranscriptionChunk[],
+  ): void {
+    const capturedAtMs = Date.now();
+    for (const chunk of chunks) {
+      session.queue.push(chunk);
+      session.chunkTimings.push({
+        sequence: chunk.sequence,
+        startMs: chunk.startMs,
+        endMs: chunk.endMs,
+        capturedAtMs,
+        submittedAtMs: null,
+      });
+    }
+    if (session.chunkTimings.length > CHUNK_TIMING_HISTORY) {
+      session.chunkTimings.splice(0, session.chunkTimings.length - CHUNK_TIMING_HISTORY);
+    }
   }
 
   private processQueue(session: WebRtcTranscriptionSessionState): void {
@@ -300,13 +459,15 @@ export class WebRtcTranscriptionBridge {
       session.externalAudioRemainder = samples.remainder;
       if (samples.pcm.length === 0) return;
       try {
-        const chunks = session.chunker.pushFrame({
-          samples: samples.pcm,
-          sampleRate: 16000,
-          channelCount: 1,
-          bitsPerSample: 16,
-        });
-        for (const chunk of chunks) session.queue.push(chunk);
+        this.enqueueChunks(
+          session,
+          session.chunker.pushFrame({
+            samples: samples.pcm,
+            sampleRate: 16000,
+            channelCount: 1,
+            bitsPerSample: 16,
+          }),
+        );
         this.processQueue(session);
       } catch (error) {
         session.chunker.markDiscontinuity();
@@ -339,16 +500,19 @@ export class WebRtcTranscriptionBridge {
           const samples = pcm16BufferToSamples(session.externalAudioRemainder);
           session.externalAudioRemainder = samples.remainder;
           if (samples.pcm.length > 0) {
-            for (const chunk of session.chunker.pushFrame({
-              samples: samples.pcm,
-              sampleRate: 16000,
-              channelCount: 1,
-              bitsPerSample: 16,
-            })) session.queue.push(chunk);
+            this.enqueueChunks(
+              session,
+              session.chunker.pushFrame({
+                samples: samples.pcm,
+                sampleRate: 16000,
+                channelCount: 1,
+                bitsPerSample: 16,
+              }),
+            );
           }
         }
         session.closed = true;
-        for (const chunk of session.chunker.flush(true)) session.queue.push(chunk);
+        this.enqueueChunks(session, session.chunker.flush(true));
       } catch (error) {
         session.failure = error instanceof Error ? error.message : 'RTMP HLS audio flush failed.';
       }
@@ -379,6 +543,8 @@ export class WebRtcTranscriptionBridge {
       sourcePath = await this.writeStagedChunk(chunk);
       await this.submitWithRetry(session.context.sessionId, chunk, sourcePath);
       session.chunker.ackChunk(chunk);
+      const timing = session.chunkTimings.find((entry) => entry.sequence === chunk.sequence);
+      if (timing) timing.submittedAtMs = Date.now();
       const audio = inspectPcm16Samples(chunk.samples);
       logger.debug('WebRTC transcription chunk submitted', {
         sessionId: chunk.sessionId,
@@ -401,6 +567,7 @@ export class WebRtcTranscriptionBridge {
       // chunker's queuedChunks/queuedBytes limits cannot leak permanently.
       session.chunker.releaseChunk(chunk);
       session.chunker.markDiscontinuity();
+      session.submissionFailureCount += 1;
       session.failure = error instanceof Error ? error.message : 'WebRTC transcription submission failed.';
       if (sourcePath) await rm(sourcePath, { force: true });
       logger.warn('WebRTC transcription chunk submission failed', {

@@ -4,6 +4,7 @@ import {
   WebRtcTranscriptionChunkerError,
   normalizePcmFrame,
   normalizePcmFrameWithDiagnostics,
+  type WebRtcTranscriptionChunk,
 } from '../webrtc-transcription-chunker.js';
 
 const context = {
@@ -12,6 +13,25 @@ const context = {
   broadcasterPeerId: 'peer_broadcaster',
   revision: 2,
 };
+
+/** Stands in for the bridge: owns the queue the chunker only accounts for. */
+function fakeQueueOwner() {
+  const owner = {
+    queue: [] as WebRtcTranscriptionChunk[],
+    evictionCount: 0,
+    take(chunks: WebRtcTranscriptionChunk[]): WebRtcTranscriptionChunk[] {
+      owner.queue.push(...chunks);
+      return chunks;
+    },
+    evictOldest(): WebRtcTranscriptionChunk | null {
+      const oldest = owner.queue.shift();
+      if (!oldest) return null;
+      owner.evictionCount += 1;
+      return oldest;
+    },
+  };
+  return owner;
+}
 
 describe('WebRtcTranscriptionChunker', () => {
   it('normalizes stereo 48 kHz PCM to mono 16 kHz PCM', () => {
@@ -335,6 +355,144 @@ describe('WebRtcTranscriptionChunker', () => {
         bitsPerSample: 16,
       }),
     ).toThrow(WebRtcTranscriptionChunkerError);
+  });
+
+  it('defaults to reject-new: the NEW chunk is refused and the stale backlog is kept', () => {
+    const owner = fakeQueueOwner();
+    const chunker = new WebRtcTranscriptionChunker({
+      ...context,
+      chunkDurationMs: 100,
+      maxQueuedChunks: 2,
+      // No policy given: programme behavior must be byte-identical.
+      onQueueOverflow: owner.evictOldest,
+    });
+    const push = () =>
+      owner.take(
+        chunker.pushFrame({
+          samples: new Int16Array(1600),
+          sampleRate: 16000,
+          channelCount: 1,
+          bitsPerSample: 16,
+        }),
+      );
+
+    push();
+    push();
+    expect(owner.queue.map((chunk) => chunk.sequence)).toEqual([0, 1]);
+
+    expect(() => push()).toThrow(WebRtcTranscriptionChunkerError);
+    // The owner's queue is untouched and the callback was never consulted.
+    expect(owner.evictionCount).toBe(0);
+    expect(owner.queue.map((chunk) => chunk.sequence)).toEqual([0, 1]);
+    expect(chunker.snapshot()).toMatchObject({
+      queueOverflowPolicy: 'reject-new',
+      queuedChunks: 2,
+      evictedChunkCount: 0,
+      lastEvictedSequence: null,
+    });
+  });
+
+  it('evicts the OLDEST queued chunk to admit the newest speech with exact accounting', () => {
+    const owner = fakeQueueOwner();
+    const chunker = new WebRtcTranscriptionChunker({
+      ...context,
+      chunkDurationMs: 100,
+      maxQueuedChunks: 2,
+      queueOverflowPolicy: 'evict-oldest',
+      onQueueOverflow: owner.evictOldest,
+    });
+    const push = () =>
+      owner.take(
+        chunker.pushFrame({
+          samples: new Int16Array(1600),
+          sampleRate: 16000,
+          channelCount: 1,
+          bitsPerSample: 16,
+        }),
+      );
+
+    push();
+    push();
+    const bytesPerChunk = owner.queue[0]?.byteLength ?? 0;
+    expect(chunker.snapshot()).toMatchObject({
+      queuedChunks: 2,
+      queuedBytes: bytesPerChunk * 2,
+    });
+
+    // The third chunk does not fit: the OLDEST is dropped, never the newest.
+    expect(() => push()).not.toThrow();
+    expect(owner.queue.map((chunk) => chunk.sequence)).toEqual([1, 2]);
+    expect(owner.evictionCount).toBe(1);
+    // Accounting is exact: still two chunks and two chunks' worth of bytes.
+    expect(chunker.snapshot()).toMatchObject({
+      queueOverflowPolicy: 'evict-oldest',
+      queuedChunks: 2,
+      queuedBytes: bytesPerChunk * 2,
+      evictedChunkCount: 1,
+      lastEvictedSequence: 0,
+      evictedMs: 100,
+    });
+    // The replacement carries the timeline hole the eviction created.
+    expect(owner.queue[1]).toMatchObject({ sequence: 2, discontinuity: true });
+
+    // Draining normally leaves accounting back at zero — no drift.
+    for (const chunk of owner.queue.splice(0)) chunker.ackChunk(chunk);
+    expect(chunker.snapshot()).toMatchObject({ queuedChunks: 0, queuedBytes: 0 });
+  });
+
+  it('rejects the new chunk when eviction has nothing left to give up', () => {
+    const owner = fakeQueueOwner();
+    const chunker = new WebRtcTranscriptionChunker({
+      ...context,
+      chunkDurationMs: 100,
+      maxQueuedChunks: 1,
+      queueOverflowPolicy: 'evict-oldest',
+      onQueueOverflow: owner.evictOldest,
+    });
+    const push = () =>
+      owner.take(
+        chunker.pushFrame({
+          samples: new Int16Array(1600),
+          sampleRate: 16000,
+          channelCount: 1,
+          bitsPerSample: 16,
+        }),
+      );
+
+    push();
+    // Simulate the only outstanding chunk being IN FLIGHT: it has left the
+    // owner's queue but still holds its accounting, so nothing is evictable.
+    const inFlight = owner.queue.shift();
+    expect(inFlight).toBeDefined();
+
+    expect(() => push()).toThrow(WebRtcTranscriptionChunkerError);
+    expect(owner.evictionCount).toBe(0);
+    expect(chunker.snapshot()).toMatchObject({ queuedChunks: 1, evictedChunkCount: 0 });
+
+    // Once the in-flight chunk is acked the chunker recovers.
+    chunker.ackChunk(inFlight!);
+    expect(() => push()).not.toThrow();
+    expect(chunker.snapshot()).toMatchObject({ queuedChunks: 1 });
+  });
+
+  it('releases accounting for a multi-chunk batch aborted mid-drain', () => {
+    const chunker = new WebRtcTranscriptionChunker({
+      ...context,
+      chunkDurationMs: 100,
+      maxQueuedChunks: 2,
+    });
+
+    // One 300 ms frame drains into three 100 ms chunks; the third exceeds the
+    // queue limit, so the caller receives nothing and keeps nothing queued.
+    expect(() =>
+      chunker.pushFrame({
+        samples: new Int16Array(4800),
+        sampleRate: 16000,
+        channelCount: 1,
+        bitsPerSample: 16,
+      }),
+    ).toThrow(WebRtcTranscriptionChunkerError);
+    expect(chunker.snapshot()).toMatchObject({ queuedChunks: 0, queuedBytes: 0 });
   });
 
   it('rejects malformed or unsupported PCM frames', () => {

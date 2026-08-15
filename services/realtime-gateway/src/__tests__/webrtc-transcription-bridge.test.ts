@@ -320,6 +320,112 @@ describe('WebRtcTranscriptionBridge', () => {
     });
   });
 
+  it('keeps the NEWEST speech for call sessions by evicting the oldest queued chunk', async () => {
+    const stagingDir = await tempDir();
+    const gate = manualSubmitGate();
+    const client = fakeClient({ gate });
+    const callContext: WebRtcTranscriptionBridgeContext = {
+      ...context,
+      sessionId: 'call_demo_participant_1_r2',
+      broadcastId: 'callcast_demo_participant_1_r2',
+    };
+    const bridge = new WebRtcTranscriptionBridge({
+      stagingDir,
+      chunkDurationMs: 100,
+      maxQueuedChunks: 3,
+      client,
+    });
+
+    // Chunk 0 is taken in flight and held there; 1 and 2 fill the queue.
+    for (let index = 0; index < 3; index++) speak(bridge, callContext);
+    await vi.waitFor(() => expect(client.submitAttempts).toBe(1));
+    expect(bridge.getSnapshot(callContext)).toMatchObject({ queuedChunks: 3, queueLength: 2 });
+
+    // Chunk 3 does not fit: the OLDEST QUEUED chunk (1) is dropped, not the new
+    // one, and the in-flight chunk 0 is left alone.
+    speak(bridge, callContext);
+    expect(bridge.getSnapshot(callContext)).toMatchObject({
+      queueOverflowPolicy: 'evict-oldest',
+      queuedChunks: 3,
+      queueLength: 2,
+      evictedChunkCount: 1,
+      lastEvictedSequence: 1,
+      // Eviction is not a frame skip: no speech was refused at the input.
+      skippedFrameCount: 0,
+    });
+
+    gate.release();
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(3));
+    // The stale chunk 1 never reached media-ingest; the newest chunk 3 did.
+    expect(client.submitted.map((entry) => entry.chunk.sequence)).toEqual([0, 2, 3]);
+    expect(bridge.getSnapshot(callContext)).toMatchObject({ queuedChunks: 0, queuedBytes: 0 });
+    expect(bridge.getSessionCounters('call_demo_participant_1_r2', 1)).toEqual({
+      evictedChunkCount: 1,
+      skippedFrameCount: 0,
+      submissionFailureCount: 0,
+    });
+    expect(bridge.getDiagnostics()).toMatchObject({ evictedChunkCount: 1 });
+  });
+
+  it('keeps programme sessions on reject-new so the recorded timeline stays complete', async () => {
+    const stagingDir = await tempDir();
+    const gate = manualSubmitGate();
+    const client = fakeClient({ gate });
+    const bridge = new WebRtcTranscriptionBridge({
+      stagingDir,
+      chunkDurationMs: 100,
+      maxQueuedChunks: 3,
+      client,
+    });
+
+    for (let index = 0; index < 3; index++) speak(bridge, context);
+    await vi.waitFor(() => expect(client.submitAttempts).toBe(1));
+    speak(bridge, context);
+
+    // Byte-identical pre-P6.1C behavior: the NEW chunk is skipped, the backlog
+    // is kept, and nothing is evicted.
+    expect(bridge.getSnapshot(context)).toMatchObject({
+      queueOverflowPolicy: 'reject-new',
+      queuedChunks: 3,
+      queueLength: 2,
+      evictedChunkCount: 0,
+      skippedFrameCount: 1,
+      lastSkippedFrameReason: 'WebRTC transcription chunk queue limit exceeded.',
+    });
+
+    gate.release();
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(3));
+    expect(client.submitted.map((entry) => entry.chunk.sequence)).toEqual([0, 1, 2]);
+  });
+
+  it('anchors each chunk to wall clock so a delivered event can be timed honestly', async () => {
+    const stagingDir = await tempDir();
+    const client = fakeClient();
+    const bridge = new WebRtcTranscriptionBridge({
+      stagingDir,
+      chunkDurationMs: 100,
+      client,
+    });
+
+    const before = Date.now();
+    speak(bridge, context);
+    speak(bridge, context);
+    await vi.waitFor(() => expect(client.submitted).toHaveLength(2));
+    const after = Date.now();
+
+    // A media position inside the second chunk resolves to the second chunk.
+    const timing = bridge.lookupChunkTiming('wrs_demo', 1, 150);
+    expect(timing).toMatchObject({ sequence: 1, startMs: 100, endMs: 200 });
+    expect(timing?.capturedAtMs).toBeGreaterThanOrEqual(before);
+    expect(timing?.capturedAtMs).toBeLessThanOrEqual(after);
+    expect(timing?.submittedAtMs).toBeGreaterThanOrEqual(timing!.capturedAtMs);
+
+    expect(bridge.lookupChunkTiming('wrs_demo', 1, 0)).toMatchObject({ sequence: 0, startMs: 0 });
+    // Unknown session or revision is reported as unknown, never guessed.
+    expect(bridge.lookupChunkTiming('wrs_demo', 99, 150)).toBeNull();
+    expect(bridge.getSessionCounters('wrs_missing', 1)).toBeNull();
+  });
+
   it('reports diagnostics and cleans closed sessions after queues drain', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
@@ -348,8 +454,28 @@ describe('WebRtcTranscriptionBridge', () => {
   });
 });
 
-function fakeClient(options: { failSubmitAttempts?: number } = {}) {
+/** One 100 ms speech frame, i.e. exactly one chunk at chunkDurationMs: 100. */
+function speak(bridge: WebRtcTranscriptionBridge, context: WebRtcTranscriptionBridgeContext): void {
+  bridge.handleFrame(context, {
+    samples: new Int16Array(1600),
+    sampleRate: 16000,
+    channelCount: 1,
+    bitsPerSample: 16,
+  });
+}
+
+/** Holds the FIRST submission open so the queue can be driven into overflow. */
+function manualSubmitGate() {
+  let release = (): void => {};
+  const opened = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { opened, release: () => release() };
+}
+
+function fakeClient(options: { failSubmitAttempts?: number; gate?: { opened: Promise<void> } } = {}) {
   let failuresRemaining = options.failSubmitAttempts ?? 0;
+  let gateRemaining = options.gate ? 1 : 0;
   const client: WebRtcTranscriptionSubmissionClient & {
     created: WebRtcTranscriptionBridgeContext[];
     submitted: { sessionId: string; chunk: WebRtcTranscriptionChunk; sourcePath: string }[];
@@ -365,6 +491,10 @@ function fakeClient(options: { failSubmitAttempts?: number } = {}) {
     },
     async submitChunk(sessionId, chunk, sourcePath) {
       this.submitAttempts += 1;
+      if (gateRemaining > 0 && options.gate) {
+        gateRemaining -= 1;
+        await options.gate.opened;
+      }
       if (failuresRemaining > 0) {
         failuresRemaining -= 1;
         throw new Error('planned submit failure');

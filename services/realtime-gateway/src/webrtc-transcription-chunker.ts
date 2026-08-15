@@ -54,12 +54,36 @@ export interface NormalizedWebRtcPcmFrame {
   diagnostics: WebRtcAudioPcmDiagnostics;
 }
 
+/**
+ * What happens when a new chunk does not fit inside the queue limits.
+ *
+ * - `reject-new` (default): the NEW chunk is refused with
+ *   `queue-limit-exceeded` and the existing backlog is kept. Correct for
+ *   programme media, where the recorded timeline must stay complete.
+ * - `evict-oldest`: the OLDEST chunk still waiting in the owner's queue is
+ *   dropped to make room for the new one. Correct for a live call, where the
+ *   newest speech is what the other person is waiting to hear; a stale backlog
+ *   is worth less than the sentence just spoken.
+ */
+export type WebRtcTranscriptionQueueOverflowPolicy = 'reject-new' | 'evict-oldest';
+
 export interface WebRtcTranscriptionChunkerOptions extends WebRtcTranscriptionChunkerContext {
   chunkDurationMs?: number;
   maxBufferedDurationMs?: number;
   maxQueuedChunks?: number;
   maxQueuedBytes?: number;
   vad?: WebRtcVadOptions;
+  /** Defaults to `reject-new`, i.e. byte-identical to the pre-P6.1C behavior. */
+  queueOverflowPolicy?: WebRtcTranscriptionQueueOverflowPolicy;
+  /**
+   * Required for `evict-oldest`. The chunker owns the queue ACCOUNTING
+   * (queuedChunks/queuedBytes) but not the queue itself, so eviction is
+   * cooperative: the chunker asks the owner to hand back the oldest chunk it
+   * still holds, then releases that chunk's accounting itself. Return null
+   * when the owner has nothing left to give up (everything outstanding is
+   * already in flight), in which case the new chunk is rejected as before.
+   */
+  onQueueOverflow?: () => WebRtcTranscriptionChunk | null;
 }
 
 export interface WebRtcVadOptions {
@@ -92,6 +116,11 @@ export class WebRtcTranscriptionChunker {
   private readonly maxBufferedSamples: number;
   private readonly maxQueuedChunks: number;
   private readonly maxQueuedBytes: number;
+  private readonly queueOverflowPolicy: WebRtcTranscriptionQueueOverflowPolicy;
+  private readonly onQueueOverflow: (() => WebRtcTranscriptionChunk | null) | null;
+  private evictedChunkCount = 0;
+  private evictedSampleCount = 0;
+  private lastEvictedSequence: number | null = null;
   private buffer = new Int16Array(0);
   private emittedChunkCount = 0;
   private emittedSampleCount = 0;
@@ -127,6 +156,14 @@ export class WebRtcTranscriptionChunker {
     );
     this.maxQueuedChunks = options.maxQueuedChunks ?? 8;
     this.maxQueuedBytes = options.maxQueuedBytes ?? 8 * 1024 * 1024;
+    // Eviction needs a cooperating owner; without one the policy would silently
+    // do nothing, so fall back to the honest, documented reject-new behavior.
+    this.queueOverflowPolicy =
+      options.queueOverflowPolicy === 'evict-oldest' && options.onQueueOverflow
+        ? 'evict-oldest'
+        : 'reject-new';
+    this.onQueueOverflow =
+      this.queueOverflowPolicy === 'evict-oldest' ? (options.onQueueOverflow ?? null) : null;
     this.vadRequestedMode = options.vad?.enabled ? options.vad.mode : null;
     if (this.vadRequestedMode === 'silero') warnSileroUnavailableOnce();
     this.vad = options.vad?.enabled
@@ -187,6 +224,10 @@ export class WebRtcTranscriptionChunker {
       queuedChunks: this.queuedChunks,
       queuedBytes: this.queuedBytes,
       emittedChunkCount: this.emittedChunkCount,
+      queueOverflowPolicy: this.queueOverflowPolicy,
+      evictedChunkCount: this.evictedChunkCount,
+      evictedMs: Math.round((this.evictedSampleCount / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
+      lastEvictedSequence: this.lastEvictedSequence,
       vadMode: this.vad?.mode ?? 'disabled',
       vadRequestedMode: this.vadRequestedMode ?? 'disabled',
       vadModeFellBack: this.vadRequestedMode === 'silero',
@@ -301,12 +342,57 @@ export class WebRtcTranscriptionChunker {
 
   private drain(endOfStream: boolean): WebRtcTranscriptionChunk[] {
     const chunks: WebRtcTranscriptionChunk[] = [];
-    while (this.buffer.length >= this.chunkSamples) {
-      const samples = this.buffer.slice(0, this.chunkSamples);
-      this.buffer = this.buffer.slice(this.chunkSamples);
-      chunks.push(this.createChunk(samples, endOfStream && this.buffer.length === 0));
+    try {
+      while (this.buffer.length >= this.chunkSamples) {
+        const samples = this.buffer.slice(0, this.chunkSamples);
+        this.buffer = this.buffer.slice(this.chunkSamples);
+        chunks.push(this.createChunk(samples, endOfStream && this.buffer.length === 0));
+      }
+    } catch (error) {
+      // A throw aborts the WHOLE batch: callers discard the returned array, so
+      // chunks already created in it never reach the owner's queue and will
+      // never be acked. Release their accounting here or queuedChunks/
+      // queuedBytes drift upward permanently.
+      for (const chunk of chunks) this.releaseChunk(chunk);
+      throw error;
     }
     return chunks;
+  }
+
+  /**
+   * Reserve queue accounting for one more chunk, applying the overflow policy.
+   * Throws `queue-limit-exceeded` when the chunk cannot be admitted.
+   */
+  private admitChunk(byteLength: number): void {
+    if (this.fitsInQueue(byteLength)) return;
+    if (this.onQueueOverflow) {
+      while (!this.fitsInQueue(byteLength)) {
+        const evicted = this.onQueueOverflow();
+        // Nothing left to give up (the remaining chunks are already in flight):
+        // fall through and reject the new chunk exactly as reject-new would.
+        if (!evicted) break;
+        this.releaseChunk(evicted);
+        this.evictedChunkCount += 1;
+        this.evictedSampleCount += evicted.samples.length;
+        this.lastEvictedSequence = evicted.sequence;
+        // The evicted audio never reaches media-ingest, so the submitted
+        // timeline now has a hole: flag the replacement chunk accordingly.
+        this.nextDiscontinuity = true;
+      }
+      if (this.fitsInQueue(byteLength)) return;
+    }
+    this.nextDiscontinuity = true;
+    throw new WebRtcTranscriptionChunkerError(
+      'queue-limit-exceeded',
+      'WebRTC transcription chunk queue limit exceeded.',
+    );
+  }
+
+  private fitsInQueue(byteLength: number): boolean {
+    return (
+      this.queuedChunks + 1 <= this.maxQueuedChunks &&
+      this.queuedBytes + byteLength <= this.maxQueuedBytes
+    );
   }
 
   private createChunk(
@@ -315,13 +401,7 @@ export class WebRtcTranscriptionChunker {
     explicitStartSample?: number,
   ): WebRtcTranscriptionChunk {
     const byteLength = samples.byteLength;
-    if (this.queuedChunks + 1 > this.maxQueuedChunks || this.queuedBytes + byteLength > this.maxQueuedBytes) {
-      this.nextDiscontinuity = true;
-      throw new WebRtcTranscriptionChunkerError(
-        'queue-limit-exceeded',
-        'WebRTC transcription chunk queue limit exceeded.',
-      );
-    }
+    this.admitChunk(byteLength);
     const startSample = explicitStartSample ?? this.emittedSampleCount;
     const endSample = startSample + samples.length;
     const startMs = Math.round((startSample / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000);

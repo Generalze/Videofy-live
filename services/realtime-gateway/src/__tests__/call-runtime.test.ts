@@ -23,6 +23,7 @@ import {
   type CallSocketLike,
 } from '../call-runtime.js';
 import type { CallReceivePeerHandlers } from '../call-receive-peers.js';
+import { CallTranscriptLog, type CallTranscriptRecord } from '../call-transcript-log.js';
 import type { WebRtcAudioDataLike } from '../webrtc-audio-ingest-bridge.js';
 import {
   HttpWebRtcTranscriptionSubmissionClient,
@@ -88,6 +89,27 @@ const JOIN_B = {
 
 const GRACE_MS = 5_000;
 
+/** Captures records in memory instead of writing the development JSONL file. */
+class RecordingTranscriptLog extends CallTranscriptLog {
+  readonly records: CallTranscriptRecord[] = [];
+
+  constructor() {
+    super(null);
+  }
+
+  override append(record: CallTranscriptRecord): void {
+    this.records.push(record);
+  }
+}
+
+interface FakeChunkTiming {
+  sequence: number;
+  startMs: number;
+  endMs: number;
+  capturedAtMs: number;
+  submittedAtMs: number | null;
+}
+
 function createHarness() {
   let tokenSerial = 0;
   const store = new CallSessionStore({
@@ -100,13 +122,33 @@ function createHarness() {
     stopSession: vi.fn(async (_sessionId: string) => {}),
     deleteSession: vi.fn(async (_sessionId: string) => {}),
   };
+  // Stands in for WebRtcTranscriptionBridge: chunk wall-clock anchors and
+  // backpressure counters the runtime reads for latency and the call summary.
+  const chunkTimings = new Map<string, FakeChunkTiming[]>();
+  const sessionCounters = new Map<
+    string,
+    { evictedChunkCount: number; skippedFrameCount: number; submissionFailureCount: number }
+  >();
   const transcriptionBridge = {
     handleFrame: vi.fn(
       (_context: WebRtcTranscriptionBridgeContext, _data: WebRtcAudioDataLike) => {},
     ),
     endSession: vi.fn((_context: WebRtcTranscriptionBridgeContext, _reason: string) => {}),
     cleanupClosedSessions: vi.fn(() => 0),
+    lookupChunkTiming: vi.fn((sessionId: string, revision: number, mediaMs: number) => {
+      const timings = chunkTimings.get(`${sessionId}:${revision}`) ?? [];
+      for (let index = timings.length - 1; index >= 0; index--) {
+        const timing = timings[index];
+        if (timing && timing.startMs <= mediaMs) return { ...timing };
+      }
+      return null;
+    }),
+    getSessionCounters: vi.fn(
+      (sessionId: string, revision: number) => sessionCounters.get(`${sessionId}:${revision}`) ?? null,
+    ),
   };
+  const transcriptLog = new RecordingTranscriptLog();
+  let clockMs = 100_000;
   const mediaPeers = {
     acceptOffer: vi.fn(
       async (
@@ -171,6 +213,8 @@ function createHarness() {
       const timer = timers.find((candidate) => candidate.id === (handle as unknown as number));
       if (timer) timer.cleared = true;
     },
+    transcriptLog,
+    now: () => clockMs,
   });
   return {
     store,
@@ -181,6 +225,22 @@ function createHarness() {
     mediaPeers,
     receivePeers,
     timers,
+    transcriptLog,
+    setClock: (nextMs: number) => {
+      clockMs = nextMs;
+    },
+    setChunkTimings: (sessionId: string, revision: number, timings: FakeChunkTiming[]) => {
+      chunkTimings.set(`${sessionId}:${revision}`, timings);
+    },
+    setSessionCounters: (
+      sessionId: string,
+      revision: number,
+      counters: { evictedChunkCount: number; skippedFrameCount: number; submissionFailureCount: number },
+    ) => {
+      sessionCounters.set(`${sessionId}:${revision}`, counters);
+    },
+    records: (kind: CallTranscriptRecord['kind']) =>
+      transcriptLog.records.filter((record) => record.kind === kind),
     mediaHandlers: () => {
       if (!mediaHandlers) throw new Error('media peer handlers were not captured');
       return mediaHandlers;
@@ -1088,6 +1148,182 @@ describe('CallRuntime lifecycle: disconnect, reaper, leave, resume', () => {
     for (const call of harness.emitToRoom.mock.calls) {
       expect(JSON.stringify(call[2])).not.toContain('resume-token');
     }
+  });
+});
+
+describe('CallRuntime measured delivery latency and call summary', () => {
+  const SPEAKER_SESSION = 'call_demo_participant_1_r2';
+  let harness: Harness;
+
+  /**
+   * Three utterances on the speaker's chunk timeline. `capturedAtMs` is the
+   * wall clock at which each segment's last audio sample reached the gateway;
+   * media-ingest accepted each chunk 40 ms later.
+   */
+  const CHUNKS = [
+    { sequence: 0, startMs: 0, endMs: 1_200, capturedAtMs: 100_000, submittedAtMs: 100_040 },
+    { sequence: 1, startMs: 2_000, endMs: 3_200, capturedAtMs: 102_000, submittedAtMs: 102_040 },
+    { sequence: 2, startMs: 4_000, endMs: 5_200, capturedAtMs: 104_000, submittedAtMs: 104_040 },
+  ];
+
+  beforeEach(async () => {
+    harness = createHarness();
+    await join(harness, new FakeSocket('socket-a'), { ...JOIN_A });
+    await join(harness, new FakeSocket('socket-b'), { ...JOIN_B });
+    harness.setChunkTimings(SPEAKER_SESSION, 2, CHUNKS);
+  });
+
+  it('stamps caption deliveries with the measured end-of-segment to delivery latency', () => {
+    harness.setClock(102_500);
+    harness.runtime.interceptTimestampedTranslationEvent(
+      translationEvent({ sequence: 1, startMs: 0, endMs: 1_200 }),
+    );
+
+    const [caption] = harness.records('caption');
+    expect(caption).toMatchObject({
+      deliveredTo: 1,
+      segmentEndMs: 1_200,
+      // 102_500 delivered − 100_000 segment captured.
+      deliveryLatencyMs: 2_500,
+      // 102_500 delivered − 100_040 accepted by media-ingest.
+      sinceChunkSubmittedMs: 2_460,
+    });
+  });
+
+  it('stamps generated audio with the SOURCE segment end, not the generated clip length', () => {
+    harness.setClock(107_000);
+    harness.runtime.interceptGeneratedAudioEvent(
+      // Natural pacing: the clip is 900 ms long but covers a 1_200 ms segment.
+      generatedAudioEvent({ sequence: 1, startMs: 4_000, endMs: 5_200, durationMs: 900 }),
+    );
+
+    const [audio] = harness.records('generated-audio');
+    expect(audio).toMatchObject({
+      deliveredTo: 1,
+      durationMs: 900,
+      segmentEndMs: 5_200,
+      deliveryLatencyMs: 3_000,
+      sinceChunkSubmittedMs: 2_960,
+    });
+  });
+
+  it('reports latency as unknown rather than guessing when the chunk timing is gone', async () => {
+    // A harness with no registered chunk timings: the bridge no longer knows
+    // when this audio was captured, so no number is invented.
+    const bare = createHarness();
+    await join(bare, new FakeSocket('socket-a'), { ...JOIN_A });
+    await join(bare, new FakeSocket('socket-b'), { ...JOIN_B });
+    bare.runtime.interceptTimestampedTranslationEvent(translationEvent({}));
+
+    const [caption] = bare.records('caption');
+    expect(caption).toMatchObject({
+      deliveredTo: 1,
+      deliveryLatencyMs: null,
+      sinceChunkSubmittedMs: null,
+    });
+  });
+
+  it('advances latency monotonically with the clock across successive deliveries', () => {
+    const latencies: unknown[] = [];
+    for (const [index, chunk] of CHUNKS.entries()) {
+      harness.setClock(chunk.capturedAtMs + 1_000 * (index + 1));
+      harness.runtime.interceptTimestampedTranslationEvent(
+        translationEvent({ sequence: index + 1, startMs: chunk.startMs, endMs: chunk.endMs }),
+      );
+      latencies.push(harness.records('caption').at(-1)?.deliveryLatencyMs);
+    }
+    expect(latencies).toEqual([1_000, 2_000, 3_000]);
+  });
+
+  it('writes a call-summary with delivery counts, drops, and latency percentiles on teardown', async () => {
+    // Three delivered captions at 1 s / 2 s / 3 s, one delivered clip at 4 s.
+    for (const [index, chunk] of CHUNKS.entries()) {
+      harness.setClock(chunk.capturedAtMs + 1_000 * (index + 1));
+      harness.runtime.interceptTimestampedTranslationEvent(
+        translationEvent({ sequence: index + 1, startMs: chunk.startMs, endMs: chunk.endMs }),
+      );
+    }
+    harness.setClock(108_000);
+    harness.runtime.interceptGeneratedAudioEvent(
+      generatedAudioEvent({ sequence: 3, startMs: 4_000, endMs: 5_200 }),
+    );
+
+    // An ingest fault and per-speaker backpressure counters to report.
+    harness.runtime.interceptMediaStateEvent({
+      eventId: 'evt',
+      processingSessionId: SPEAKER_SESSION,
+      streamStatus: 'failed',
+      videoSource: 'webrtc',
+      videoTimestampMs: 0,
+      sourceAudioActive: true,
+      translatedLanguages: ['es'],
+      connectedListeners: 0,
+      createdAt: '2026-08-14T00:00:00.000Z',
+    });
+    harness.setSessionCounters(SPEAKER_SESSION, 2, {
+      evictedChunkCount: 2,
+      skippedFrameCount: 1,
+      submissionFailureCount: 1,
+    });
+    harness.setSessionCounters('call_demo_participant_2_r1', 1, {
+      evictedChunkCount: 0,
+      skippedFrameCount: 3,
+      submissionFailureCount: 0,
+    });
+
+    harness.setClock(120_000);
+    harness.runtime.handleSocketDisconnect('socket-a');
+    harness.runtime.handleSocketDisconnect('socket-b');
+    firePendingTimers(harness);
+    await flushAsync();
+
+    const summaries = harness.records('call-summary');
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({
+      callId: 'demo',
+      durationMs: 20_000,
+      participantCount: 2,
+      captionsDelivered: 3,
+      captionsDeliveredByRecipient: { participant_2: 3 },
+      captionEvents: 3,
+      generatedAudioDelivered: 1,
+      generatedAudioDeliveredByRecipient: { participant_2: 1 },
+      generatedAudioEvents: 1,
+      droppedChunksEvicted: 2,
+      droppedFramesSkipped: 4,
+      chunkSubmissionFailures: 1,
+      ingestFaults: 1,
+      latencyField: 'deliveryLatencyMs',
+      latencySampleCount: 4,
+      latencySamplesKept: 4,
+      // Nearest rank over [1000, 2000, 3000, 4000].
+      latencyMedianMs: 2_000,
+      latencyP90Ms: 4_000,
+    });
+    expect(String(summaries[0]?.latencyDefinition)).toContain('end of the captured speech segment');
+  });
+
+  it('counts an undelivered event but never times it', async () => {
+    harness.runtime.handleSocketDisconnect('socket-b');
+    harness.setClock(103_000);
+    harness.runtime.interceptTimestampedTranslationEvent(
+      translationEvent({ sequence: 1, startMs: 0, endMs: 1_200 }),
+    );
+    const [caption] = harness.records('caption');
+    expect(caption).toMatchObject({ deliveredTo: 0 });
+
+    harness.runtime.handleSocketDisconnect('socket-a');
+    firePendingTimers(harness);
+    await flushAsync();
+
+    expect(harness.records('call-summary')[0]).toMatchObject({
+      captionEvents: 1,
+      captionsDelivered: 0,
+      captionsDeliveredByRecipient: {},
+      latencySampleCount: 0,
+      latencyMedianMs: null,
+      latencyP90Ms: null,
+    });
   });
 });
 

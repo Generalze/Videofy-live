@@ -14,7 +14,15 @@ import { logger } from './logger.js';
  * tokens, and no transport internals are written.
  */
 export interface CallTranscriptRecord {
-  kind: 'join' | 'leave' | 'caption' | 'generated-audio' | 'ingest-fault' | 'note';
+  kind:
+    | 'join'
+    | 'leave'
+    | 'caption'
+    | 'generated-audio'
+    | 'ingest-fault'
+    /** One per call, written at teardown: delivery counts, drops, latency percentiles. */
+    | 'call-summary'
+    | 'note';
   callId: string;
   [field: string]: unknown;
 }

@@ -128,6 +128,21 @@ export interface CallTranscriptionBridgeLike {
   handleFrame(context: WebRtcTranscriptionBridgeContext, data: WebRtcAudioDataLike): void;
   endSession(context: WebRtcTranscriptionBridgeContext, reason: string): void;
   cleanupClosedSessions(): number;
+  /**
+   * Wall-clock anchors for the chunk a media-ingest event came from. Optional
+   * so a bridge without latency instrumentation still satisfies the contract;
+   * latency is then reported as null rather than guessed.
+   */
+  lookupChunkTiming?(
+    sessionId: string,
+    revision: number,
+    mediaMs: number,
+  ): { sequence: number; startMs: number; endMs: number; capturedAtMs: number; submittedAtMs: number | null } | null;
+  /** Backpressure/failure counters harvested into the call summary at teardown. */
+  getSessionCounters?(
+    sessionId: string,
+    revision: number,
+  ): { evictedChunkCount: number; skippedFrameCount: number; submissionFailureCount: number } | null;
 }
 
 export interface CallRuntimeDependencies {
@@ -144,6 +159,47 @@ export interface CallRuntimeDependencies {
   clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
   /** Development call-session transcript log; disabled when omitted. */
   transcriptLog?: CallTranscriptLog;
+  /** Injectable wall clock for the latency measurement; defaults to Date.now. */
+  now?: () => number;
+}
+
+/**
+ * THE latency number this runtime reports, defined once so the log field, the
+ * summary, and any acceptance report all mean the same thing.
+ *
+ * `deliveryLatencyMs` = (wall clock when the gateway emitted this caption /
+ * generated-audio payload into the recipient participant rooms) − (wall clock
+ * when the gateway finished capturing the speech segment that produced it,
+ * i.e. when the last audio sample of that VAD segment arrived from the
+ * speaker's microphone peer).
+ *
+ * It therefore INCLUDES: gateway chunk staging, time waiting in the gateway
+ * submission queue, the media-ingest HTTP hop, STT, translation, TTS, and the
+ * gateway's own routing. It EXCLUDES only the browser-to-gateway WebRTC
+ * transport of the final frame (tens of ms on a LAN) and any client-side
+ * render/playback delay. It is null when the originating chunk is no longer in
+ * the bridge's bounded timing history — never estimated.
+ */
+export const CALL_DELIVERY_LATENCY_DEFINITION =
+  'deliveryLatencyMs = wall-clock ms from the end of the captured speech segment (last audio sample of the VAD chunk reaching the gateway) to the moment the gateway emitted the caption or generated-audio payload to the recipient participant rooms; includes staging, gateway queue wait, media-ingest STT/translation/TTS and routing; excludes browser-to-gateway transport and client playback.';
+
+/** Bounded latency sample pool per call, so a long call cannot grow without limit. */
+const CALL_LATENCY_SAMPLE_LIMIT = 2_000;
+
+/** Per-call delivery/backpressure accounting behind the `call-summary` record. */
+interface CallStatsAccumulator {
+  startedAtMs: number;
+  participantIds: Set<string>;
+  captionsDeliveredByRecipient: Map<string, number>;
+  generatedAudioDeliveredByRecipient: Map<string, number>;
+  captionEventCount: number;
+  generatedAudioEventCount: number;
+  latenciesMs: number[];
+  latencySampleCount: number;
+  ingestFaultCount: number;
+  evictedChunkCount: number;
+  skippedFrameCount: number;
+  submissionFailureCount: number;
 }
 
 /** Wire shape of `call:state` per the design note: sanitized, `joined` flag, no internals. */
@@ -216,6 +272,12 @@ interface CallIngestRegistryEntry {
   pendingStop: Promise<void> | null;
   /** De-duplicates repeated ingest-fault log lines for the same condition. */
   lastLoggedFault?: string;
+  /**
+   * Bridge counters are read once, just before this entry's bridge session is
+   * ended (the bridge sweeps closed sessions away right after), so the call
+   * summary can never double-count or miss a revision.
+   */
+  countersHarvested: boolean;
 }
 
 const USER_FACING_ERRORS = {
@@ -243,6 +305,9 @@ export class CallRuntime {
   private readonly setTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   private readonly clearTimer: (timer: ReturnType<typeof setTimeout>) => void;
   private readonly transcriptLog: CallTranscriptLog;
+  private readonly now: () => number;
+  /** Per-call delivery/latency accounting, emitted as `call-summary` on teardown. */
+  private readonly callStats = new Map<string, CallStatsAccumulator>();
 
   private readonly socketBindings = new Map<string, CallSocketBinding>();
   private readonly participants = new Map<string, CallParticipantRuntimeState>();
@@ -260,6 +325,7 @@ export class CallRuntime {
     this.setTimer = dependencies.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs));
     this.clearTimer = dependencies.clearTimer ?? ((timer) => clearTimeout(timer));
     this.transcriptLog = dependencies.transcriptLog ?? new CallTranscriptLog(null);
+    this.now = dependencies.now ?? (() => Date.now());
     this.mediaPeers = dependencies.createMediaPeers({
       onLocalSignal: (envelope) => this.handleMediaLocalSignal(envelope),
       onAudioFrame: (context, data) => this.handleMediaAudioFrame(context, data),
@@ -349,6 +415,7 @@ export class CallRuntime {
     void socket.join(callRoom(callId));
     void socket.join(callParticipantRoom(callId, participantId));
 
+    this.statsFor(callId).participantIds.add(participantId);
     const wireSnapshot = toWireCallState(result.snapshot);
     this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, wireSnapshot);
     const joined = result.snapshot.participants.find(
@@ -581,6 +648,14 @@ export class CallRuntime {
         delivery.payload,
       );
     }
+    // Measured AFTER the emits, exactly as for captions.
+    const latency = this.measureDeliveryLatency(entry, event.startMs);
+    const stats = this.statsFor(entry.callId);
+    stats.generatedAudioEventCount += 1;
+    for (const delivery of deliveries) {
+      bump(stats.generatedAudioDeliveredByRecipient, delivery.recipientParticipantId);
+    }
+    if (deliveries.length > 0) this.recordLatencySample(stats, latency.deliveryLatencyMs);
     this.transcriptLog.append({
       kind: 'generated-audio',
       callId: entry.callId,
@@ -591,6 +666,15 @@ export class CallRuntime {
       sequence: source.sequence,
       audioUrl: source.audioUrl,
       deliveredTo: deliveries.length,
+      /**
+       * Media-timeline end of the SOURCE speech segment (not of the generated
+       * clip: with natural pacing the clip's own length differs).
+       */
+      segmentEndMs: event.endMs,
+      /** See CALL_DELIVERY_LATENCY_DEFINITION. Null when the chunk timing is unknown. */
+      deliveryLatencyMs: latency.deliveryLatencyMs,
+      /** Delivery minus the moment media-ingest accepted the chunk (no gateway queue wait). */
+      sinceChunkSubmittedMs: latency.sinceChunkSubmittedMs,
     });
     return true;
   }
@@ -612,6 +696,7 @@ export class CallRuntime {
       const signature = `${event.streamStatus}:${fault ?? ''}`;
       if (entry.lastLoggedFault !== signature) {
         entry.lastLoggedFault = signature;
+        this.statsFor(entry.callId).ingestFaultCount += 1;
         this.transcriptLog.append({
           kind: 'ingest-fault',
           callId: entry.callId,
@@ -688,6 +773,7 @@ export class CallRuntime {
         active: sameIdEntry?.active ?? false,
         everCreated: sameIdEntry?.everCreated ?? false,
         pendingStop: sameIdEntry?.pendingStop ?? null,
+        countersHarvested: sameIdEntry?.countersHarvested ?? false,
       };
       this.ingestRegistry.set(plan.ingestSessionId, entry);
 
@@ -725,6 +811,17 @@ export class CallRuntime {
         delivery.payload,
       );
     }
+    // Measured AFTER the emits: the number is the moment of delivery, not the
+    // moment the runtime decided to deliver.
+    const latency = this.measureDeliveryLatency(entry, source.startMs);
+    const stats = this.statsFor(entry.callId);
+    stats.captionEventCount += 1;
+    for (const delivery of deliveries) {
+      bump(stats.captionsDeliveredByRecipient, delivery.recipientParticipantId);
+    }
+    // Only a delivered payload can have a delivery latency: an event routed to
+    // nobody is counted, never timed.
+    if (deliveries.length > 0) this.recordLatencySample(stats, latency.deliveryLatencyMs);
     this.transcriptLog.append({
       kind: 'caption',
       callId: entry.callId,
@@ -737,7 +834,84 @@ export class CallRuntime {
       mediaRevision: source.mediaRevision,
       isFinal: source.isFinal,
       deliveredTo: deliveries.length,
+      /** Media-timeline end of the spoken segment this caption came from. */
+      segmentEndMs: source.endMs,
+      /** See CALL_DELIVERY_LATENCY_DEFINITION. Null when the chunk timing is unknown. */
+      deliveryLatencyMs: latency.deliveryLatencyMs,
+      /** Delivery minus the moment media-ingest accepted the chunk (no gateway queue wait). */
+      sinceChunkSubmittedMs: latency.sinceChunkSubmittedMs,
     });
+  }
+
+  /**
+   * Turn a media-ingest event's media-timeline position into wall-clock
+   * latency, using the bridge's record of when that chunk's audio finished
+   * arriving. Returns nulls (never an estimate) when the chunk is unknown.
+   */
+  private measureDeliveryLatency(
+    entry: CallIngestRegistryEntry,
+    mediaMs: number,
+  ): { deliveryLatencyMs: number | null; sinceChunkSubmittedMs: number | null } {
+    const timing = this.transcriptionBridge.lookupChunkTiming?.(
+      entry.plan.ingestSessionId,
+      entry.plan.mediaRevision,
+      mediaMs,
+    );
+    if (!timing) return { deliveryLatencyMs: null, sinceChunkSubmittedMs: null };
+    const deliveredAtMs = this.now();
+    return {
+      deliveryLatencyMs: Math.max(0, deliveredAtMs - timing.capturedAtMs),
+      sinceChunkSubmittedMs:
+        timing.submittedAtMs === null ? null : Math.max(0, deliveredAtMs - timing.submittedAtMs),
+    };
+  }
+
+  private recordLatencySample(stats: CallStatsAccumulator, latencyMs: number | null): void {
+    if (latencyMs === null) return;
+    stats.latencySampleCount += 1;
+    // Bounded pool: percentiles come from the first N samples of a call and
+    // the summary reports how many were actually kept.
+    if (stats.latenciesMs.length < CALL_LATENCY_SAMPLE_LIMIT) stats.latenciesMs.push(latencyMs);
+  }
+
+  private statsFor(callId: string): CallStatsAccumulator {
+    const existing = this.callStats.get(callId);
+    if (existing) return existing;
+    const created: CallStatsAccumulator = {
+      startedAtMs: this.now(),
+      participantIds: new Set<string>(),
+      captionsDeliveredByRecipient: new Map<string, number>(),
+      generatedAudioDeliveredByRecipient: new Map<string, number>(),
+      captionEventCount: 0,
+      generatedAudioEventCount: 0,
+      latenciesMs: [],
+      latencySampleCount: 0,
+      ingestFaultCount: 0,
+      evictedChunkCount: 0,
+      skippedFrameCount: 0,
+      submissionFailureCount: 0,
+    };
+    this.callStats.set(callId, created);
+    return created;
+  }
+
+  /**
+   * Read this entry's bridge backpressure counters exactly once, before its
+   * bridge session is ended and swept away, so the call summary can report how
+   * much speech the pipeline actually dropped.
+   */
+  private harvestBridgeCounters(entry: CallIngestRegistryEntry): void {
+    if (entry.countersHarvested) return;
+    entry.countersHarvested = true;
+    const counters = this.transcriptionBridge.getSessionCounters?.(
+      entry.plan.ingestSessionId,
+      entry.plan.mediaRevision,
+    );
+    if (!counters) return;
+    const stats = this.statsFor(entry.callId);
+    stats.evictedChunkCount += counters.evictedChunkCount;
+    stats.skippedFrameCount += counters.skippedFrameCount;
+    stats.submissionFailureCount += counters.submissionFailureCount;
   }
 
   /** Backend media peer ICE for the publish leg, relayed as `call:publish:ice`. */
@@ -853,6 +1027,8 @@ export class CallRuntime {
   }
 
   private endBridgeSessionSafely(entry: CallIngestRegistryEntry, reason: string): void {
+    // Read counters first: ending the session lets the bridge sweep it away.
+    this.harvestBridgeCounters(entry);
     try {
       this.transcriptionBridge.endSession(bridgeContextFor(entry), reason);
     } catch (error) {
@@ -947,7 +1123,48 @@ export class CallRuntime {
       if (entry.callId === callId) this.retireIngestEntry(ingestSessionId, reason);
     }
     this.receivePeers.closeCall(callId, reason);
+    // Emitted last: every entry has been retired, so all bridge counters for
+    // every revision of this call have been harvested.
+    this.appendCallSummary(callId, reason);
     logger.info('Call torn down', { callId, reason });
+  }
+
+  /**
+   * §30.4 acceptance evidence: one record per call stating what was actually
+   * delivered, what was dropped, and how long delivery took. Percentiles use
+   * the nearest-rank method over the kept latency samples.
+   */
+  private appendCallSummary(callId: string, reason: string): void {
+    const stats = this.callStats.get(callId);
+    if (!stats) return;
+    this.callStats.delete(callId);
+    const captionsByRecipient = Object.fromEntries(stats.captionsDeliveredByRecipient);
+    const audioByRecipient = Object.fromEntries(stats.generatedAudioDeliveredByRecipient);
+    this.transcriptLog.append({
+      kind: 'call-summary',
+      callId,
+      reason,
+      durationMs: Math.max(0, this.now() - stats.startedAtMs),
+      participantCount: stats.participantIds.size,
+      captionsDelivered: sumValues(captionsByRecipient),
+      captionsDeliveredByRecipient: captionsByRecipient,
+      captionEvents: stats.captionEventCount,
+      generatedAudioDelivered: sumValues(audioByRecipient),
+      generatedAudioDeliveredByRecipient: audioByRecipient,
+      generatedAudioEvents: stats.generatedAudioEventCount,
+      /** Stale queued speech dropped so the newest speech could be transcribed. */
+      droppedChunksEvicted: stats.evictedChunkCount,
+      /** Frames the chunker refused (queue/buffer limits, malformed audio). */
+      droppedFramesSkipped: stats.skippedFrameCount,
+      chunkSubmissionFailures: stats.submissionFailureCount,
+      ingestFaults: stats.ingestFaultCount,
+      latencyField: 'deliveryLatencyMs',
+      latencyDefinition: CALL_DELIVERY_LATENCY_DEFINITION,
+      latencySampleCount: stats.latencySampleCount,
+      latencySamplesKept: stats.latenciesMs.length,
+      latencyMedianMs: nearestRankPercentile(stats.latenciesMs, 0.5),
+      latencyP90Ms: nearestRankPercentile(stats.latenciesMs, 0.9),
+    });
   }
 
   /** Arm (or re-arm) the disconnect grace reaper for a disconnected seat. */
@@ -1073,6 +1290,26 @@ function callPublisherPeerId(participantId: string): string {
 
 function participantKey(callId: string, participantId: string): string {
   return `${callId}:${participantId}`;
+}
+
+function bump(counts: Map<string, number>, key: string): void {
+  counts.set(key, (counts.get(key) ?? 0) + 1);
+}
+
+function sumValues(counts: Record<string, number>): number {
+  return Object.values(counts).reduce((total, value) => total + value, 0);
+}
+
+/**
+ * Nearest-rank percentile: the smallest observed sample at or above the given
+ * rank. No interpolation, so every reported number is a value that was really
+ * measured. Null for an empty sample set — never 0, which would read as fast.
+ */
+function nearestRankPercentile(samples: number[], percentile: number): number | null {
+  if (samples.length === 0) return null;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(percentile * sorted.length) - 1));
+  return sorted[index] ?? null;
 }
 
 /**
