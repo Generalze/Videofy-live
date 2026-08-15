@@ -108,7 +108,7 @@ describe('filterHallucinatedSegments', () => {
     // final, not a prefix of it, because the recogniser completed a truncated
     // clause. A preview is worth only its head start, and the final is about a
     // second and a half behind, so waiting beats guessing.
-    const marginal = [segment("It's nice to talk.", { noSpeechProb: 0.45, avgLogProb: -0.8 })];
+    const marginal = [segment("It's nice to talk.", { noSpeechProb: 0.5, avgLogProb: -0.95 })];
 
     expect(filterHallucinatedSegments(marginal).kept).toHaveLength(1);
     expect(filterHallucinatedSegments(marginal, INTERIM_HALLUCINATION_FILTER).kept).toHaveLength(0);

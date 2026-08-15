@@ -51,8 +51,11 @@ export interface HallucinationFilterOptions {
  * and waiting is strictly better than showing an invention.
  */
 export const INTERIM_HALLUCINATION_FILTER: HallucinationFilterOptions = {
-  noSpeechProbability: 0.3,
-  minAverageLogProbability: -0.7,
+  // Stricter than a final, but only moderately. A first attempt at 0.3/-0.7 was
+  // set without field data and is easily met by ordinary call audio, which
+  // would thin previews out until the feature stopped being worth having.
+  noSpeechProbability: 0.4,
+  minAverageLogProbability: -0.85,
 };
 
 export const DEFAULT_HALLUCINATION_FILTER: HallucinationFilterOptions = {

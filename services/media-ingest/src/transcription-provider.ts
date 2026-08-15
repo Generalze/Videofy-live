@@ -243,27 +243,6 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
     // something a person said.
     const { kept } = filterHallucinatedSegments(result.segments);
 
-    // A participant who declared French but whose microphone is carrying
-    // English — a shared device, a speaker bleeding into the mic, or another
-    // person in the room — produces confident nonsense, not silence. Refusing
-    // the utterance is better than publishing an invented sentence under their
-    // name. Only a confident disagreement counts: short utterances are detected
-    // unreliably, and the participant's own declaration wins any close call.
-    const declared = input.sourceLanguageMode === 'manual' ? input.sourceLanguage : null;
-    if (
-      declared &&
-      result.detectedLanguage !== 'und' &&
-      primarySubtag(result.detectedLanguage) !== primarySubtag(declared) &&
-      (result.confidence ?? 0) >= FOREIGN_LANGUAGE_CONFIDENCE
-    ) {
-      return {
-        segments: [],
-        detectedLanguage: result.detectedLanguage,
-        confidence: result.confidence,
-        providerLatencyMs,
-      };
-    }
-
     return {
       segments: kept.map((segment) => ({
         text: segment.text,
@@ -470,21 +449,6 @@ function finiteOrNull(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-/**
- * How sure the recogniser must be that it heard a DIFFERENT language before an
- * utterance is refused on a manual-language session.
- *
- * Set high on purpose. Dropping speech someone really said is the worse
- * failure, and short utterances detect unreliably, so the participant's own
- * declaration wins every close call — this only catches the clear case of a
- * microphone carrying a language the speaker did not choose.
- */
-const FOREIGN_LANGUAGE_CONFIDENCE = 0.85;
-
-/** Compares languages by primary subtag, matching the rest of the pipeline. */
-function primarySubtag(language: string): string {
-  return language.trim().toLowerCase().split('-')[0] ?? '';
-}
 
 function classifyCommandError(
   error: unknown,
@@ -597,12 +561,14 @@ def handle(payload):
         # hallucination turns into a run of them.
         "condition_on_previous_text": False,
     }
-    # The declared language is NOT forced onto the decoder. Forcing "french"
-    # onto English audio does not produce silence, it produces confident
-    # nonsense — which is exactly what a shared microphone or a second voice in
-    # the room delivers. Detecting instead lets the caller compare what was
-    # heard against what the participant declared and refuse the mismatch.
-    # The detected language travels back so the caller can make that comparison.
+    # The declared language IS forced onto the decoder. Letting it auto-detect
+    # instead was tried and made recognition materially worse: a French speaker
+    # producing short utterances is frequently detected as English, and the
+    # result is either English words published under their name or the
+    # utterance discarded entirely. Manual language authority exists precisely
+    # because the speaker knows better than the detector.
+    if language_hint:
+        transcribe_kwargs["language"] = language_hint
     segments, info = model.transcribe(audio_path, **transcribe_kwargs)
     segment_payloads = []
     for segment in segments:
