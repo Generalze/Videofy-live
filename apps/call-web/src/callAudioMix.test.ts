@@ -1,7 +1,6 @@
 ﻿import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_ORIGINAL_DUCK_LEVEL,
-  TRANSLATED_MODE_PRESENCE_LEVEL,
   primaryLanguageSubtag,
   defaultOriginalVolumeForMode,
   resolveCallAudioMix,
@@ -19,11 +18,7 @@ describe('resolveCallAudioMix', () => {
     expect(decision).toEqual({ originalVolume: 0.8, translatedVolume: 0, playGenerated: false });
   });
 
-  it('translated mode keeps a trace of the speaker between translations', () => {
-    // Replacement while the translation speaks, presence in between. Laughter,
-    // sighs and interjections are never translated — nothing is generated for
-    // them — so a hard zero here deleted every laugh and left the other person
-    // sounding absent between sentences.
+  it('translated mode fully suppresses the original even while translation is silent', () => {
     const idle = resolveCallAudioMix({
       audioMode: 'translated',
       originalVolume: 0.8,
@@ -37,11 +32,7 @@ describe('resolveCallAudioMix', () => {
       translatedSpeechActive: true,
     });
 
-    expect(idle).toEqual({
-      originalVolume: TRANSLATED_MODE_PRESENCE_LEVEL,
-      translatedVolume: 0.7,
-      playGenerated: true,
-    });
+    expect(idle).toEqual({ originalVolume: 0, translatedVolume: 0.7, playGenerated: true });
     expect(speaking).toEqual({ originalVolume: 0, translatedVolume: 0.7, playGenerated: true });
   });
 
@@ -113,7 +104,7 @@ describe('same-language direction (no translation will arrive)', () => {
     ).toEqual({ originalVolume: 0.9, translatedVolume: 0, playGenerated: false });
   });
 
-  it('keeps translation-pair semantics when the flag is omitted', () => {
+  it('keeps translation-pair replacement behavior when the flag is omitted', () => {
     expect(
       resolveCallAudioMix({
         audioMode: 'translated',
@@ -121,24 +112,7 @@ describe('same-language direction (no translation will arrive)', () => {
         translatedVolume: 1,
         translatedSpeechActive: false,
       }),
-    ).toEqual({
-      originalVolume: TRANSLATED_MODE_PRESENCE_LEVEL,
-      translatedVolume: 1,
-      playGenerated: true,
-    });
-  });
-
-  it('never lets presence exceed what the listener asked for', () => {
-    // Someone who has pulled the original slider right down wants it down; the
-    // presence level is a ceiling, not a floor.
-    expect(
-      resolveCallAudioMix({
-        audioMode: 'translated',
-        originalVolume: 0.05,
-        translatedVolume: 1,
-        translatedSpeechActive: false,
-      }).originalVolume,
-    ).toBe(0.05);
+    ).toEqual({ originalVolume: 0, translatedVolume: 1, playGenerated: true });
   });
 
   it('compares languages by primary subtag', () => {

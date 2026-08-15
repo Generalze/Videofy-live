@@ -7,10 +7,6 @@ import { promisify } from 'node:util';
 import type { AudioChunkMetadata } from '@videofy-live/shared-types';
 import { MediaIngestError } from './ingest-error.js';
 import {
-  filterHallucinatedSegments,
-  type RecognisedSegment,
-} from './hallucination-filter.js';
-import {
   PYTHON_WORKER_LOOP,
   createPersistentPythonWorker,
   type PythonWorkerFactory,
@@ -57,15 +53,6 @@ export interface TranscriptionSegment {
   text: string;
   startMs: number;
   endMs: number;
-  /**
-   * The recogniser's own doubt about this segment, passed on rather than
-   * consumed. The provider drops what is plainly not speech, but a caller with
-   * more context can be stricter — an interim caption is a preview of a
-   * half-spoken sentence and can afford to wait, where a final cannot.
-   * Absent when the provider does not report them.
-   */
-  noSpeechProb?: number | null;
-  avgLogProb?: number | null;
 }
 
 export interface TranscriptionProviderResult {
@@ -97,8 +84,6 @@ export interface FasterWhisperConfig {
   computeType: string;
   modelCacheDir: string | null;
   allowGpuFallback: boolean;
-  /** See FasterWhisperProviderOptions.detectForeignSpeech. */
-  detectForeignSpeech?: boolean;
   timeoutMs: number;
 }
 
@@ -118,19 +103,6 @@ export interface FasterWhisperProviderOptions extends FasterWhisperConfig {
   runCommand?: CommandRunner;
   /** Seam for the persistent faster-whisper python worker. */
   createWorker?: PythonWorkerFactory;
-  /**
-   * Ask the recogniser, separately from transcription, what language was
-   * actually spoken, and discard the utterance when it confidently disagrees
-   * with what the participant declared.
-   *
-   * This exists for the case where one microphone feeds two sessions with
-   * different declared languages — a shared device, or a second voice in the
-   * room. The session whose language is not being spoken otherwise publishes
-   * fluent nonsense under that participant's name.
-   *
-   * Costs an extra detection pass per chunk, so it is opt-in.
-   */
-  detectForeignSpeech?: boolean;
 }
 
 export function createTranscriptionProvider(
@@ -252,39 +224,8 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
       );
     }
 
-    // Silence transcribed as subtitle credits or invented replies reaches
-    // participants as captions that appear by themselves, so it is removed here
-    // rather than downstream: everything after this point treats a segment as
-    // something a person said.
-    const { kept } = filterHallucinatedSegments(result.segments);
-
-    // The declared language still drives transcription; this only refuses to
-    // publish when the recogniser separately says, with high confidence, that
-    // a different language was spoken. Silence is better than a fluent
-    // invention attributed to someone who did not say it.
-    const declared = input.sourceLanguageMode === 'manual' ? input.sourceLanguage : null;
-    if (
-      declared &&
-      result.spokenLanguage &&
-      primarySubtag(result.spokenLanguage) !== primarySubtag(declared) &&
-      (result.spokenLanguageProbability ?? 0) >= FOREIGN_SPEECH_CONFIDENCE
-    ) {
-      return {
-        segments: [],
-        detectedLanguage: result.detectedLanguage,
-        confidence: result.confidence,
-        providerLatencyMs,
-      };
-    }
-
     return {
-      segments: kept.map((segment) => ({
-        text: segment.text,
-        startMs: segment.startMs,
-        endMs: segment.endMs,
-        noSpeechProb: segment.noSpeechProb ?? null,
-        avgLogProb: segment.avgLogProb ?? null,
-      })),
+      segments: result.segments,
       detectedLanguage: result.detectedLanguage,
       confidence: result.confidence,
       providerLatencyMs,
@@ -370,7 +311,6 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
         device,
         this.options.computeType,
         this.options.modelCacheDir ?? '',
-        this.options.detectForeignSpeech ? '1' : '',
       ],
       maxConcurrency: 1,
       label: 'faster-whisper',
@@ -425,30 +365,10 @@ async function defaultCommandRunner(
 }
 
 interface FasterWhisperJsonResult {
-  /** Carries the recogniser's own non-speech/confidence signals for filtering. */
-  segments: RecognisedSegment[];
+  segments: TranscriptionSegment[];
   detectedLanguage: string;
   confidence: number | null;
-  /**
-   * What the recogniser believes was actually spoken, asked separately so a
-   * forced decoder cannot simply echo the language it was told to use. Null
-   * when detection is off or failed.
-   */
-  spokenLanguage: string | null;
-  spokenLanguageProbability: number | null;
   device: string;
-}
-
-/**
- * How sure the recogniser must be that a DIFFERENT language was spoken before
- * an utterance is refused. Deliberately high: losing real speech is the worse
- * failure, and the participant's declaration wins every close call.
- */
-const FOREIGN_SPEECH_CONFIDENCE = 0.85;
-
-/** Compares languages by primary subtag, matching the rest of the pipeline. */
-function primarySubtag(language: string): string {
-  return language.trim().toLowerCase().split('-')[0] ?? '';
 }
 
 function parseFasterWhisperResult(raw: unknown): FasterWhisperJsonResult {
@@ -469,18 +389,13 @@ function parseFasterWhisperResult(raw: unknown): FasterWhisperJsonResult {
       typeof raw['confidence'] === 'number' && Number.isFinite(raw['confidence'])
         ? Math.max(0, Math.min(1, raw['confidence']))
         : null,
-    spokenLanguage:
-      typeof raw['spokenLanguage'] === 'string' && raw['spokenLanguage']
-        ? raw['spokenLanguage']
-        : null,
-    spokenLanguageProbability: finiteOrNull(raw['spokenLanguageProbability']),
     device: typeof raw['device'] === 'string' && raw['device'] ? raw['device'] : '',
   };
 }
 
-function parseFasterWhisperSegments(value: unknown): RecognisedSegment[] {
+function parseFasterWhisperSegments(value: unknown): TranscriptionSegment[] {
   if (!Array.isArray(value)) return [];
-  const segments: RecognisedSegment[] = [];
+  const segments: TranscriptionSegment[] = [];
   for (const entry of value) {
     if (!isRecord(entry) || typeof entry['text'] !== 'string') continue;
     const startMs =
@@ -491,23 +406,10 @@ function parseFasterWhisperSegments(value: unknown): RecognisedSegment[] {
       typeof entry['endMs'] === 'number' && Number.isFinite(entry['endMs'])
         ? Math.max(startMs, Math.round(entry['endMs']))
         : startMs;
-    segments.push({
-      text: entry['text'],
-      startMs,
-      endMs,
-      // Absent when a provider does not report them; the filter then leaves the
-      // segment alone rather than dropping everything it cannot judge.
-      noSpeechProb: finiteOrNull(entry['noSpeechProb']),
-      avgLogProb: finiteOrNull(entry['avgLogProb']),
-    });
+    segments.push({ text: entry['text'], startMs, endMs });
   }
   return segments;
 }
-
-function finiteOrNull(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
 
 function classifyCommandError(
   error: unknown,
@@ -601,10 +503,7 @@ device = sys.argv[2]
 compute_type = sys.argv[3]
 model_cache_dir = sys.argv[4] or None
 
-detect_foreign = (sys.argv[5] if len(sys.argv) > 5 else "") == "1"
-
 from faster_whisper import WhisperModel
-from faster_whisper.audio import decode_audio
 
 kwargs = {"device": device, "compute_type": compute_type}
 if model_cache_dir:
@@ -615,58 +514,18 @@ model = WhisperModel(model_size, **kwargs)
 def handle(payload):
     audio_path = payload["audioPath"]
     language_hint = payload.get("languageHint") or None
-    transcribe_kwargs = {
-        "vad_filter": True,
-        # Each chunk is an independent utterance from a live call, not the next
-        # part of one recording. Conditioning on previous text lets an invented
-        # line become the context for the next one, which is how a single
-        # hallucination turns into a run of them.
-        "condition_on_previous_text": False,
-    }
-    # The declared language IS forced onto the decoder. Letting it auto-detect
-    # instead was tried and made recognition materially worse: a French speaker
-    # producing short utterances is frequently detected as English, and the
-    # result is either English words published under their name or the
-    # utterance discarded entirely. Manual language authority exists precisely
-    # because the speaker knows better than the detector.
+    transcribe_kwargs = {"vad_filter": True}
     if language_hint:
         transcribe_kwargs["language"] = language_hint
-
-    # What was ACTUALLY spoken, asked separately so it cannot influence the
-    # transcription above. A forced decoder reports back the language it was
-    # told to use, so it can never reveal that the microphone is carrying
-    # something else — which is what a shared device or a second voice in the
-    # room produces. Best effort only: if detection fails the utterance is
-    # published as normal.
-    spoken_language = None
-    spoken_probability = None
-    if language_hint and detect_foreign:
-        try:
-            waveform = decode_audio(audio_path, sampling_rate=16000)
-            spoken_language, spoken_probability, _ = model.detect_language(
-                audio=waveform, vad_filter=True
-            )
-            spoken_probability = float(spoken_probability)
-        except Exception:
-            spoken_language = None
-            spoken_probability = None
-
     segments, info = model.transcribe(audio_path, **transcribe_kwargs)
     segment_payloads = []
     for segment in segments:
         text = (segment.text or "").strip()
         if text:
-            # The recogniser's own view of whether this was speech at all, and
-            # how confident it was, travel with the text so the caller can drop
-            # confident silence without re-deriving it.
-            no_speech = getattr(segment, "no_speech_prob", None)
-            avg_logprob = getattr(segment, "avg_logprob", None)
             segment_payloads.append({
                 "text": text,
                 "startMs": int(round((segment.start or 0.0) * 1000)),
                 "endMs": int(round((segment.end or 0.0) * 1000)),
-                "noSpeechProb": float(no_speech) if no_speech is not None and math.isfinite(no_speech) else None,
-                "avgLogProb": float(avg_logprob) if avg_logprob is not None and math.isfinite(avg_logprob) else None,
             })
     confidence = getattr(info, "language_probability", None)
     if confidence is not None and not math.isfinite(confidence):
@@ -675,8 +534,6 @@ def handle(payload):
         "segments": segment_payloads,
         "detectedLanguage": getattr(info, "language", None) or "und",
         "confidence": confidence,
-        "spokenLanguage": spoken_language,
-        "spokenLanguageProbability": spoken_probability,
         "device": device,
     }
 

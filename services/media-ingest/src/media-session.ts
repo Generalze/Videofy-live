@@ -40,11 +40,6 @@ import {
 } from './audio-extraction.js';
 import { MediaIngestError } from './ingest-error.js';
 import {
-  filterHallucinatedSegments,
-  INTERIM_HALLUCINATION_FILTER,
-} from './hallucination-filter.js';
-import { isNonLexicalUtterance } from './non-lexical-speech.js';
-import {
   MockTranscriptionProvider,
   transcribeWithTimeout,
   type TranscriptionProvider,
@@ -1181,16 +1176,7 @@ export class ProcessingSessionStore {
     // `<chunkId>-s<index>` segment id, so a caption surface upserts in place.
     const baseSequence = this.peekTranscriptionSequence(session.id);
     const finalChunkId = this.webRtcChunkId(session, chunk.index);
-    // An interim caption must clear a higher bar than a final. The recogniser
-    // is being handed a truncated clause and will complete it with whatever is
-    // most likely, which shows up as a preview that is a different sentence
-    // from the final rather than a prefix of it. The final is only about a
-    // second and a half behind, so waiting beats guessing.
-    const confident = filterHallucinatedSegments(
-      result.segments,
-      INTERIM_HALLUCINATION_FILTER,
-    ).kept;
-    const transcribed = confident
+    const transcribed = result.segments
       .filter((segment) => segment.text.trim() !== '')
       .map((segment, index): PartialTranscriptionEvent => {
         // Clamped so the window is always non-empty. A segment landing on (or
@@ -1233,9 +1219,6 @@ export class ProcessingSessionStore {
     const targetLanguages =
       session.targetLanguages.length > 0 ? session.targetLanguages : [session.targetLanguage];
     for (const segment of transcribed) {
-      // Wordless sound needs no preview translation either; the original audio
-      // is already carrying it.
-      if (isNonLexicalUtterance(segment.sourceText)) continue;
       for (const targetLanguage of targetLanguages) {
         await this.emitPartialTranslation(session, segment, targetLanguage, partialSequence);
       }
@@ -3015,14 +2998,6 @@ export class ProcessingSessionStore {
     session: ProcessingSession,
     segment: TranscriptionEvent,
   ): Promise<ProcessingSession> {
-    if (isRealtimeCallSession(session) && isNonLexicalUtterance(segment.sourceText)) {
-      // Laughter, sighs and bare interjections carry feeling, not words. They
-      // are already universal, so translating them gains nothing, and voicing
-      // them in a standard voice replaces a real laugh with a flat "Ha ha ha."
-      // The original audio carries them perfectly — the right move is to
-      // produce nothing and let the moment through untouched.
-      return { ...session };
-    }
     if (this.isStaleSourceLanguageRevision(session, segment)) {
       const failed = this.createTranslationEvent(
         session,

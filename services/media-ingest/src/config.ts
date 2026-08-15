@@ -32,14 +32,6 @@ export interface IngestConfig {
   fasterWhisperComputeType: string;
   fasterWhisperModelCacheDir: string | null;
   fasterWhisperAllowGpuFallback: boolean;
-  /**
-   * Discard an utterance when the recogniser separately reports that a
-   * different language was spoken than the participant declared. Guards against
-   * one microphone feeding two sessions with different languages, where the
-   * session whose language is not being spoken publishes fluent nonsense.
-   * Set FASTER_WHISPER_DETECT_FOREIGN_SPEECH=false to turn it off.
-   */
-  fasterWhisperDetectForeignSpeech: boolean;
   translationProvider: 'mock' | 'argos' | 'opus-mt' | 'm2m100';
   translationFallbackProvider: 'none' | 'm2m100' | 'nllb200';
   translationTimeoutMs: number;
@@ -202,8 +194,6 @@ export function loadConfig(): IngestConfig {
     fasterWhisperModelCacheDir: process.env['FASTER_WHISPER_MODEL_CACHE_DIR']?.trim() || null,
     fasterWhisperAllowGpuFallback:
       (process.env['FASTER_WHISPER_ALLOW_GPU_FALLBACK'] ?? 'false').toLowerCase() === 'true',
-    fasterWhisperDetectForeignSpeech:
-      (process.env['FASTER_WHISPER_DETECT_FOREIGN_SPEECH'] ?? 'true').toLowerCase() === 'true',
     translationProvider,
     translationFallbackProvider,
     translationTimeoutMs: readPositiveInt('TRANSLATION_TIMEOUT_MS', 30_000),
