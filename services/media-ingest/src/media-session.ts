@@ -43,6 +43,7 @@ import {
   filterHallucinatedSegments,
   INTERIM_HALLUCINATION_FILTER,
 } from './hallucination-filter.js';
+import { isNonLexicalUtterance } from './non-lexical-speech.js';
 import {
   MockTranscriptionProvider,
   transcribeWithTimeout,
@@ -1232,6 +1233,9 @@ export class ProcessingSessionStore {
     const targetLanguages =
       session.targetLanguages.length > 0 ? session.targetLanguages : [session.targetLanguage];
     for (const segment of transcribed) {
+      // Wordless sound needs no preview translation either; the original audio
+      // is already carrying it.
+      if (isNonLexicalUtterance(segment.sourceText)) continue;
       for (const targetLanguage of targetLanguages) {
         await this.emitPartialTranslation(session, segment, targetLanguage, partialSequence);
       }
@@ -3011,6 +3015,14 @@ export class ProcessingSessionStore {
     session: ProcessingSession,
     segment: TranscriptionEvent,
   ): Promise<ProcessingSession> {
+    if (isRealtimeCallSession(session) && isNonLexicalUtterance(segment.sourceText)) {
+      // Laughter, sighs and bare interjections carry feeling, not words. They
+      // are already universal, so translating them gains nothing, and voicing
+      // them in a standard voice replaces a real laugh with a flat "Ha ha ha."
+      // The original audio carries them perfectly — the right move is to
+      // produce nothing and let the moment through untouched.
+      return { ...session };
+    }
     if (this.isStaleSourceLanguageRevision(session, segment)) {
       const failed = this.createTranslationEvent(
         session,

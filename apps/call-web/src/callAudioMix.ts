@@ -30,6 +30,18 @@ export const DEFAULT_ORIGINAL_DUCK_LEVEL = 0.2;
 export const DEFAULT_TRANSLATED_LEVEL = 1;
 
 /**
+ * How much of the speaker's own audio stays audible in `translated` mode while
+ * no translation is playing.
+ *
+ * Not zero, because laughter, sighs and interjections are never translated —
+ * they carry feeling rather than words, so nothing is generated for them. At a
+ * hard zero those moments simply vanish and the other person sounds absent
+ * between sentences. Low enough that their untranslated speech does not compete
+ * with the translation that is about to arrive.
+ */
+export const TRANSLATED_MODE_PRESENCE_LEVEL = 0.15;
+
+/**
  * Mix policy (mirrors listener-web semantics):
  * - `original`: the real voice plays at the original slider level; generated
  *   audio never plays.
@@ -54,7 +66,16 @@ export function resolveCallAudioMix(inputs: CallAudioMixInputs): CallAudioMixDec
   }
 
   if (inputs.audioMode === 'translated') {
-    return { originalVolume: 0, translatedVolume: translated, playGenerated: true };
+    // Replacement semantics while the translation is speaking, but not silence
+    // in between: wordless sound is never translated, so a hard zero would
+    // delete every laugh and leave the other person sounding absent.
+    return {
+      originalVolume: inputs.translatedSpeechActive
+        ? 0
+        : Math.min(original, TRANSLATED_MODE_PRESENCE_LEVEL),
+      translatedVolume: translated,
+      playGenerated: true,
+    };
   }
 
   return {
