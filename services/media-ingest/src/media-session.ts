@@ -2199,12 +2199,19 @@ export class ProcessingSessionStore {
     }
     const previous = session.audioExtraction.chunks.at(-1);
     if (previous && input.startMs !== previous.endMs && !input.discontinuity) {
-      throw new MediaIngestError(
-        'WebRTC chunk timeline failed: gap or overlap detected.',
-        'audio-timeline-invalid',
-        409,
-        { ...session },
-      );
+      // Native calls are VAD-segmented: chunks cover speech, and the silence
+      // between utterances is a legitimate gap. Requiring contiguity here
+      // rejected every utterance after the first for the rest of the call.
+      // Overlap (starting before the previous chunk ended) still fails.
+      const isCallGap = isRealtimeCallSession(session) && input.startMs > previous.endMs;
+      if (!isCallGap) {
+        throw new MediaIngestError(
+          'WebRTC chunk timeline failed: gap or overlap detected.',
+          'audio-timeline-invalid',
+          409,
+          { ...session },
+        );
+      }
     }
     if (
       input.sampleRate !== 16000 ||

@@ -812,6 +812,69 @@ describe('ProcessingSessionStore', () => {
     ).rejects.toMatchObject({ code: 'unsafe-filename' });
   });
 
+  it('accepts VAD-gapped call utterances (silence between speech) but still rejects overlap', async () => {
+    const outputDir = await createTempDir();
+    const stagingDir = await createTempDir();
+    const captions: string[] = [];
+    const sessionStore = new ProcessingSessionStore({
+      outputBaseDir: outputDir,
+      webRtcStagingDir: stagingDir,
+      translationTargetLanguage: 'fr',
+      translationSupportedTargetLanguages: ['fr'],
+      textToSpeechSupportedLanguages: ['fr'],
+      onTranslationEvent: (event) => captions.push(`${event.sequence}:${event.status}`),
+    });
+    const session = await sessionStore.createWebRtcSession({
+      sessionId: 'call_gaps_participant_1_r1',
+      broadcastId: 'callcast_gaps_participant_1_r1',
+      broadcasterPeerId: 'peer_call_participant_1',
+      revision: 1,
+      targetLanguage: 'fr',
+      targetLanguages: ['fr'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+
+    async function utterance(sequence: number, startMs: number, endMs: number): Promise<void> {
+      await sessionStore.ingestWebRtcChunk(session.id, {
+        sequence,
+        startMs,
+        endMs,
+        sampleRate: 16000,
+        channelCount: 1,
+        pcmFormat: 'pcm_s16le',
+        mimeType: 'audio/wav',
+        sizeBytes: wavFixture().length,
+        sourcePath: await createStagedWav(stagingDir, `gap-${sequence}.wav`),
+      });
+    }
+
+    // Real speech: an utterance, a pause, another utterance, a longer pause.
+    await utterance(0, 0, 3_000);
+    await utterance(1, 9_500, 12_000);
+    await utterance(2, 21_000, 24_000);
+
+    const after = sessionStore.get(session.id)!;
+    expect(after.state).toBe('processing');
+    expect(after.audioExtraction.chunks.map((chunk) => chunk.startMs)).toEqual([0, 9_500, 21_000]);
+    expect(captions.length).toBeGreaterThanOrEqual(3);
+
+    // Overlapping audio is still a timeline error, recorded without killing the call.
+    const overlapped = await sessionStore.ingestWebRtcChunk(session.id, {
+      sequence: 3,
+      startMs: 22_000,
+      endMs: 26_000,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: wavFixture().length,
+      sourcePath: await createStagedWav(stagingDir, 'gap-overlap.wav'),
+    });
+    expect(overlapped.state).toBe('processing');
+    expect(overlapped.audioExtraction.chunks).toHaveLength(3);
+  });
+
   it('keeps a native call alive after a failed chunk and still processes later audio', async () => {
     const outputDir = await createTempDir();
     const stagingDir = await createTempDir();

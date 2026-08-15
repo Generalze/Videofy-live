@@ -124,12 +124,20 @@ Live calls used to lose translation permanently after a single bad chunk, while 
 untranslated voice kept flowing. Two compounding causes, both fixed for `call_` sessions only
 (programme/Live keeps its existing strict behavior):
 
-1. **Fatal per-chunk failure.** Any chunk error called `failWebRtcSession`, so the session left
+1. **Timeline contiguity vs VAD segmentation (the dominant cause).** Chunk acceptance required
+   each chunk to start exactly where the previous one ended. That is correct for programme media
+   (one continuous file timeline) but wrong for a call: VAD emits chunks around *speech*, so
+   every natural pause is a legitimate gap. The first utterance was accepted and every later one
+   was rejected with *"gap or overlap detected"* — for the rest of the call. Call sessions now
+   accept a forward gap; overlap (starting before the previous chunk ended) still fails. Found
+   from a real owner call log after synthetic tests missed it: they generated contiguous
+   timestamps, which real speech never produces.
+2. **Fatal per-chunk failure.** Any chunk error called `failWebRtcSession`, so the session left
    `processing` and media-ingest rejected every later utterance with *"chunks can only be
    accepted while the session is processing"* — with no recovery path. Call sessions now record
    the failure (`webrtcTranscriptionBridge.failedChunks`, `lastError`, monitoring) and stay
    `processing`.
-2. **Strict sequence contiguity.** The expected chunk sequence was the count of *stored* chunks,
+3. **Strict sequence contiguity.** The expected chunk sequence was the count of *stored* chunks,
    so one dropped chunk made every later chunk "out of order" forever. Call sessions now require
    a strictly increasing sequence and tolerate gaps; duplicates and stale chunks are still
    rejected.
