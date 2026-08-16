@@ -156,6 +156,8 @@ venv/
 .openvoice-evidence/
 # Third-party OpenVoice / MeloTTS checkouts for the spike.
 .openvoice-src/
+# Derived personal-voice representations. Small, but they identify a person.
+voice-assets/
 env/
 .env/
 __pycache__/

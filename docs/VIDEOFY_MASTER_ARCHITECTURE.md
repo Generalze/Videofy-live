@@ -1704,6 +1704,56 @@ extracts a small reusable tone-colour representation; synthesis combines
 translated text, a base target-language voice and that representation. Nobody
 waits through per-person model training to enroll.
 
+### 21.9.2.4 OpenVoice V2 acceptance — two gates, recorded separately
+
+Owner decision, 2026-08-16, after human review of a real browser enrollment.
+
+**Engine viability: PASS.** Real enrollment through the browser path, real
+human voice, cross-language conversion in both directions, measured identity
+movement (EN→ES 0.26→0.79, ES→EN 0.10→0.63 cosine against the speaker),
+~0.36–0.52s engine latency, RTF ~0.06, ~1.5 GB VRAM, with the fallback,
+consent and revocation architecture already proven.
+
+**Human quality: ACCEPTABLE FOR DEVELOPMENT-DEMO. NOT PRODUCTION QUALITY.**
+Owner scored it approximately 7/10: "still a bit synthetic, doesn't have the
+accent or emotions, sounds straight."
+
+These are deliberately recorded as two results rather than one. The original
+B4 gate asked for identity ≥4/5, and the owner's actual perception is nearer
+3.5/5. **That gate did not pass as written.** The decision is that the
+prototype is useful enough to integrate despite falling short of the
+aspirational bar — not that the bar was met. Restating the criterion to match
+the result would be how a project quietly loses the ability to fail.
+
+`productionApproved = false`.
+
+**Why the limitation is architectural.** OpenVoice V2 transfers tone colour —
+timbre — only. Accent, rhythm and expressiveness come from the base speaker,
+so translated speech carries the enrolled voice's colour over MeloTTS's
+delivery. No converter tuning changes this, and P6.3 must not be held open
+waiting for it.
+
+**Product wording is constrained by what was demonstrated.** "Your translated
+voice" and "a voice based on your recording" are supportable. "Your exact
+voice", "speak exactly like yourself in another language" and "preserves your
+accent and emotion" are not: speaker/timbre transfer was demonstrated,
+faithful preservation of accent, prosody, emotion, cadence and speaking style
+was not.
+
+**Base speaker is configuration, not a prerequisite.** It measurably changes
+delivery and belongs beneath the provider so it can be tuned later. Comparison
+across all five MeloTTS English bases is recorded in the spike evidence.
+
+**Two accent problems, related but distinct.** C-AI1 concerns recognition
+robustness — Nigerian-accented speech being understood correctly by STT. This
+concerns expressive synthesis — a speaker's accent and prosody surviving into
+translated output. They should eventually share evaluation material; they are
+not one subsystem, and collapsing them would produce a component responsible
+for everything and accountable for nothing.
+
+Accent preservation, prosody, emotion and streaming-native synthesis belong to
+Videofy Voice (VI-R1), not to this engine.
+
 ### 21.9.2.2 Prototype voice ownership is temporary by design
 
 P6.3 binds a personal voice to a `VoiceOwnerId` minted into browser
