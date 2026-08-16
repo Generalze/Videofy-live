@@ -152,6 +152,10 @@ venv/
 .venv-openvoice/
 # Large wheels staged for resumable download on a slow link.
 .wheels/
+# Stage-gate evidence for the OpenVoice spike: machine-specific pip/CUDA state.
+.openvoice-evidence/
+# Third-party OpenVoice / MeloTTS checkouts for the spike.
+.openvoice-src/
 env/
 .env/
 __pycache__/
