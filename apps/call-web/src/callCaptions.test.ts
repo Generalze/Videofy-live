@@ -180,6 +180,25 @@ describe('mergeCallCaption', () => {
     expect(entries[0]?.primaryText).toBe('New wording');
   });
 
+  it('discards a caption still in the language the reader just left', () => {
+    // The moment a reader changes reading language, captions in the old
+    // language are already on the wire. They arrive AFTER the new ones and
+    // carry the older language revision, so they must not overwrite what the
+    // reader asked for — otherwise the switch visibly flickers backwards.
+    let entries: readonly CallCaptionEntry[] = [];
+    entries = mergeCallCaption(
+      entries,
+      captionEvent({ languageRevision: 2, translatedText: 'Bonjour tout le monde', isFinal: true }),
+    );
+    entries = mergeCallCaption(
+      entries,
+      captionEvent({ languageRevision: 1, translatedText: 'Hello everyone', isFinal: true }),
+    );
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.primaryText).toBe('Bonjour tout le monde');
+  });
+
   it('keeps captions from different speakers separate', () => {
     let entries: readonly CallCaptionEntry[] = [];
     entries = mergeCallCaption(entries, captionEvent({ sequence: 1 }));
