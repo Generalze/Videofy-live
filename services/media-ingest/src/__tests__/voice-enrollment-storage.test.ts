@@ -7,15 +7,22 @@ import { createFileVoiceEnrollmentStorage } from '../voice-enrollment-storage.js
 
 describe('file enrollment storage', () => {
   let directory: string;
+  /** Records what the SEPARATE asset store was asked to remove. */
+  let assetDeletions: string[];
+  const deleteAsset = async (ref: string) => {
+    assetDeletions.push(ref);
+    return true;
+  };
 
   beforeEach(async () => {
     directory = await mkdtemp(join(tmpdir(), 'videofy-voice-'));
+    assetDeletions = [];
   });
 
   it('never puts the participant or profile id in the filename', async () => {
     // A path identifies whose voice it is, and paths reach logs, backups and
     // directory listings.
-    const storage = createFileVoiceEnrollmentStorage({ directory });
+    const storage = createFileVoiceEnrollmentStorage({ directory, deleteVoiceAsset: deleteAsset });
 
     const reference = await storage.writeEnrollmentRecording(
       'vp_zoe_meak',
@@ -29,14 +36,14 @@ describe('file enrollment storage', () => {
   });
 
   it('writes the audio it was given', async () => {
-    const storage = createFileVoiceEnrollmentStorage({ directory });
+    const storage = createFileVoiceEnrollmentStorage({ directory, deleteVoiceAsset: deleteAsset });
     const reference = await storage.writeEnrollmentRecording('vp1', new Uint8Array([9, 8, 7]));
 
     expect([...(await readFile(join(directory, reference)))]).toEqual([9, 8, 7]);
   });
 
   it('actually removes the file, and says so', async () => {
-    const storage = createFileVoiceEnrollmentStorage({ directory });
+    const storage = createFileVoiceEnrollmentStorage({ directory, deleteVoiceAsset: deleteAsset });
     const reference = await storage.writeEnrollmentRecording('vp1', new Uint8Array([1]));
 
     expect(await storage.deleteEnrollmentRecording(reference)).toBe(true);
@@ -44,7 +51,7 @@ describe('file enrollment storage', () => {
   });
 
   it('reports nothing removed when there was nothing there', async () => {
-    const storage = createFileVoiceEnrollmentStorage({ directory });
+    const storage = createFileVoiceEnrollmentStorage({ directory, deleteVoiceAsset: deleteAsset });
 
     expect(await storage.deleteEnrollmentRecording('missing.wav')).toBe(false);
   });
@@ -54,9 +61,9 @@ describe('file enrollment storage', () => {
     // remarkable way to fail a compliance feature.
     const outside = join(directory, '..', 'videofy-escape-probe');
     await writeFile(outside, 'do not delete me');
-    const storage = createFileVoiceEnrollmentStorage({ directory });
+    const storage = createFileVoiceEnrollmentStorage({ directory, deleteVoiceAsset: deleteAsset });
 
-    expect(await storage.deleteVoiceAsset('../videofy-escape-probe')).toBe(false);
+    expect(await storage.deleteEnrollmentRecording('../videofy-escape-probe')).toBe(false);
     expect(await readFile(outside, 'utf8')).toBe('do not delete me');
   });
 });

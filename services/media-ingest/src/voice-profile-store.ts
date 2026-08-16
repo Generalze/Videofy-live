@@ -39,9 +39,22 @@ import {
 export interface VoiceEnrollmentStoragePort {
   /** Persist a raw enrollment recording; returns an opaque reference. */
   writeEnrollmentRecording(profileId: string, audio: Uint8Array): Promise<string>;
+  /**
+   * The bytes behind a reference, for a provider that must actually derive
+   * something from them. Returns the audio, never a path: a provider that
+   * learned filesystem layout would be a provider that outlives it.
+   */
+  readEnrollmentRecording(recordingRef: string): Promise<Uint8Array | null>;
   /** Remove a raw enrollment recording. False when nothing was there. */
   deleteEnrollmentRecording(recordingRef: string): Promise<boolean>;
-  /** Remove a derived voice asset. False when nothing was there. */
+  /**
+   * Remove a derived voice asset. False when nothing was there.
+   *
+   * NOT the same storage as the enrollment recording. The derived
+   * representation is owned by the voice engine's own store, and wiring both
+   * deletions to one enrollment-directory helper made asset removal silently
+   * impossible — it reported none-held while the representation survived.
+   */
   deleteVoiceAsset(voiceAssetRef: string): Promise<boolean>;
 }
 

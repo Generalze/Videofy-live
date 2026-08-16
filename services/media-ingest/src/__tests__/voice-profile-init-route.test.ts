@@ -13,6 +13,7 @@ const OWNER = 'devid_aaaaaaaaaaaa';
 
 const storagePort: VoiceEnrollmentStoragePort = {
   writeEnrollmentRecording: async () => 'rec_1',
+  readEnrollmentRecording: async () => null,
   deleteEnrollmentRecording: async () => true,
   deleteVoiceAsset: async () => true,
 };

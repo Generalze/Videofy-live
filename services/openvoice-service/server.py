@@ -132,6 +132,27 @@ class Handler(BaseHTTPRequestHandler):
             "baseSpeakers": BASE_SPEAKER,
         })
 
+    def do_DELETE(self):  # noqa: N802
+        """Remove a derived representation. The engine owns this store, so
+        nothing else can honestly claim to have deleted it."""
+        prefix = "/voice-assets/"
+        if not self.path.startswith(prefix):
+            self._send(404, {"error": "not found"})
+            return
+        # Basename only: a reference must never reach outside the asset store.
+        reference = Path(self.path[len(prefix):]).name
+        if not reference:
+            self._send(400, {"ok": False, "reason": "no asset reference"})
+            return
+        asset_path = ASSET_DIR / f"{reference}.pth"
+        existed = asset_path.exists()
+        try:
+            asset_path.unlink(missing_ok=True)
+        except OSError:
+            self._send(500, {"ok": False, "removed": False, "reason": "could not remove asset"})
+            return
+        self._send(200, {"ok": True, "removed": existed})
+
     def do_POST(self):  # noqa: N802
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
@@ -145,12 +166,19 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as error:  # noqa: BLE001
             # A failure here is a routing input, not an incident: the caller
             # falls back to the standard voice. Never surface a stack or path.
-            self._send(500, {"ok": False, "reason": str(error)[:120]})
+            # Deliberately not str(error): exception text carries filesystem
+            # paths and asset references, which identify whose voice it is.
+            self._send(500, {"ok": False, "reason": type(error).__name__})
 
     def _create_asset(self, body: bytes):
-        suffix = self.headers.get("X-Videofy-Container", ".webm")
+        ALLOWED = {".webm", ".ogg", ".wav", ".mp3", ".m4a"}
+        declared = (self.headers.get("X-Videofy-Container") or ".webm").lower()
+        if not declared.startswith("."):
+            declared = f".{declared}"
+        # An arbitrary header must not become part of a filename.
+        suffix = declared if declared in ALLOWED else ".webm"
         started = time.perf_counter()
-        wav = normalize_to_wav(body, suffix if suffix.startswith(".") else f".{suffix}")
+        wav = normalize_to_wav(body, suffix)
         try:
             asset_id = f"ov2_{uuid.uuid4().hex[:16]}"
             asset_path = ASSET_DIR / f"{asset_id}.pth"

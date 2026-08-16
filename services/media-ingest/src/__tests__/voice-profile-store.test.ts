@@ -25,6 +25,7 @@ function createStorage() {
       recordings.set(ref, audio);
       return ref;
     }),
+    readEnrollmentRecording: vi.fn(async (ref: string) => recordings.get(ref) ?? null),
     deleteEnrollmentRecording: vi.fn(async (ref: string) => recordings.delete(ref)),
     deleteVoiceAsset: vi.fn(async (ref: string) => assets.delete(ref)),
   };

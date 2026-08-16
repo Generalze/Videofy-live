@@ -25,6 +25,7 @@ function createStorage() {
       recordings.set(ref, audio);
       return ref;
     },
+    readEnrollmentRecording: async (ref) => recordings.get(ref) ?? null,
     deleteEnrollmentRecording: async (ref) => recordings.delete(ref),
     deleteVoiceAsset: async () => true,
   };

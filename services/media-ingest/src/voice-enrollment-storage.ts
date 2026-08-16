@@ -15,7 +15,7 @@
  * log lines travel to places recordings should not.
  */
 import { createHash } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { containerExtension, detectAudioContainer } from './audio-container.js';
 import type { VoiceEnrollmentStoragePort } from './voice-profile-store.js';
@@ -31,6 +31,15 @@ function safeName(voiceProfileId: string): string {
 export interface FileVoiceEnrollmentStorageOptions {
   /** Root for enrollment material. Must be inside a git-ignored location. */
   readonly directory: string;
+  /**
+   * Removes a DERIVED voice asset, which this store does not own.
+   *
+   * Injected because the representation lives in the voice engine's own
+   * storage. Pointing this at the enrollment directory — as an earlier version
+   * did — makes deletion report none-held while the asset survives, which is
+   * the most dangerous possible way for a deletion feature to fail.
+   */
+  readonly deleteVoiceAsset: (voiceAssetRef: string) => Promise<boolean>;
 }
 
 export function createFileVoiceEnrollmentStorage(
@@ -71,7 +80,16 @@ export function createFileVoiceEnrollmentStorage(
       await writeFile(join(root, reference), audio);
       return reference;
     },
+    async readEnrollmentRecording(reference) {
+      const target = within(reference);
+      if (target === null) return null;
+      try {
+        return new Uint8Array(await readFile(target));
+      } catch {
+        return null;
+      }
+    },
     deleteEnrollmentRecording: remove,
-    deleteVoiceAsset: remove,
+    deleteVoiceAsset: options.deleteVoiceAsset,
   };
 }

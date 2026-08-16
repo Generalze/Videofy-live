@@ -413,9 +413,28 @@ app.post('/sessions/:sessionId/source-language', (req, res) => {
 
 // Personal voice (P6.3). Enrollment material lives beside the uploads, in a
 // git-ignored directory, and never in the repository or the logs.
+const personalVoiceServiceUrl = process.env['OPENVOICE_SERVICE_URL'] ?? 'http://127.0.0.1:3005';
 const voiceProfileStore = new VoiceProfileStore(
   createFileVoiceEnrollmentStorage({
     directory: resolve(process.cwd(), '../../voice-enrollment'),
+    // The derived representation lives in the voice engine's own store, so
+    // deletion is delegated there. Pointing this at the enrollment directory
+    // made asset removal silently impossible.
+    deleteVoiceAsset: async (voiceAssetRef) => {
+      try {
+        const response = await fetch(
+          `${personalVoiceServiceUrl}/voice-assets/${encodeURIComponent(voiceAssetRef)}`,
+          { method: 'DELETE' },
+        );
+        if (!response.ok) return false;
+        const body = (await response.json()) as { removed?: boolean };
+        return body.removed === true;
+      } catch {
+        // Unreachable engine means the asset survives; reporting false keeps it
+        // in pendingCleanups() for retry rather than orphaning it.
+        return false;
+      }
+    },
   }),
 );
 let voiceProfileSerial = 0;
