@@ -51,13 +51,24 @@
 
 .main {
   flex: 1;
-  max-width: 900px;
+  /* Wide enough for the video to dominate, bounded so captions stay inside a
+     readable measure on very large displays. */
+  max-width: 1360px;
   margin: 0 auto;
   width: 100%;
-  padding: 1.5rem;
+  padding: var(--vf-space-4) var(--vf-space-4) var(--vf-space-6);
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: var(--vf-space-4);
+}
+
+@media (max-width: 767.98px) {
+  .main {
+    /* On a phone the video should reach the edges: side padding here costs
+       stage width, which is the one thing the viewer came for. */
+    padding: 0 0 var(--vf-space-5);
+    gap: var(--vf-space-3);
+  }
 }
 
 .eventInfo {
@@ -147,7 +158,7 @@
   position: absolute;
   left: clamp(1rem, 4vw, 3rem);
   right: clamp(1rem, 4vw, 3rem);
-  bottom: clamp(2.5rem, 8vw, 4rem);
+  bottom: clamp(3.5rem, 10vw, 5.5rem);
   display: grid;
   gap: 0.25rem;
   justify-items: center;
@@ -156,14 +167,19 @@
 }
 
 .captionText {
-  max-width: 100%;
-  padding: 0.45rem 0.75rem;
-  border-radius: var(--radius-sm);
-  background: rgba(0, 0, 0, 0.72);
-  color: #fff;
-  font-size: clamp(1rem, 2vw, 1.35rem);
-  line-height: 1.35;
+  /* A measure, not a percentage: caption lines that span a 1360px stage are
+     physically hard to track back to the start of the next line. */
+  max-width: var(--vf-caption-max-width);
+  padding: var(--vf-caption-padding-block) var(--vf-caption-padding-inline);
+  border-radius: var(--vf-caption-radius);
+  background: var(--vf-caption-background);
+  color: var(--vf-caption-final-color);
+  font-size: var(--vf-caption-font-size);
+  font-weight: var(--vf-caption-font-weight);
+  line-height: var(--vf-caption-line-height);
+  letter-spacing: var(--vf-caption-letter-spacing);
   text-align: center;
+  text-wrap: balance;
   overflow-wrap: anywhere;
 }
 
@@ -736,5 +752,155 @@
 
   .volumeRow {
     flex-direction: column;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Viewer overhaul: header language, status, settings sheet.
+   --------------------------------------------------------------------------- */
+
+/*
+ * Language in the header, sized like a control rather than a caption. It is
+ * the first thing a viewer looks for and the only one they must find without
+ * being told, so it gets its own space between the brand and the status.
+ */
+.headerLanguage {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-space-2);
+  margin-inline-start: auto;
+  margin-inline-end: var(--vf-space-3);
+}
+
+.headerLanguageLabel {
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-sm);
+  font-weight: var(--vf-font-weight-medium);
+}
+
+.headerLanguageSelect {
+  min-height: var(--vf-control-height-md);
+  padding: 0 var(--vf-space-3);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-default);
+  border-radius: var(--vf-radius-md);
+  background: var(--vf-surface-2);
+  color: var(--vf-text-primary);
+  font: inherit;
+  font-size: var(--vf-font-size-md);
+}
+
+.headerLanguageSelect:focus-visible {
+  /* --vf-focus-ring is a box-shadow value, not an outline. */
+  outline: none;
+  box-shadow: var(--vf-focus-ring);
+}
+
+/*
+ * One sentence, in the viewer's terms. Tone is carried by a border and a label
+ * rather than colour alone, because colour alone is not a message (§5.1.13).
+ */
+.viewerStatus {
+  padding: var(--vf-space-2) var(--vf-space-3);
+  border-inline-start: 3px solid var(--vf-status-neutral-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-status-neutral-surface);
+  color: var(--vf-text-primary);
+  font-size: var(--vf-font-size-md);
+  line-height: var(--vf-line-height-normal);
+}
+
+.viewerStatus_info {
+  border-inline-start-color: var(--vf-status-info-border);
+  background: var(--vf-status-info-surface);
+}
+
+.viewerStatus_warn {
+  border-inline-start-color: var(--vf-status-warn-border);
+  background: var(--vf-status-warn-surface);
+}
+
+.viewerStatus_danger {
+  border-inline-start-color: var(--vf-status-danger-border);
+  background: var(--vf-status-danger-surface);
+}
+
+/*
+ * Secondary controls open on request. They are real controls a viewer
+ * sometimes wants; they are not what watching a programme is about, so they
+ * stop holding permanent space beside the video.
+ */
+.settingsSheet {
+  border: var(--vf-border-width-hairline) solid var(--vf-border-default);
+  border-radius: var(--vf-radius-lg);
+  background: var(--vf-surface-1);
+}
+
+.settingsSummary {
+  padding: var(--vf-space-3) var(--vf-space-4);
+  color: var(--vf-text-primary);
+  font-size: var(--vf-font-size-md);
+  font-weight: var(--vf-font-weight-medium);
+  cursor: pointer;
+  list-style: none;
+}
+
+.settingsSummary::after {
+  content: ' ▾';
+  color: var(--vf-text-muted);
+}
+
+.settingsSheet[open] .settingsSummary::after {
+  content: ' ▴';
+}
+
+.settingsSummary:focus-visible {
+  outline: none;
+  box-shadow: var(--vf-focus-ring);
+}
+
+@media (max-width: 767.98px) {
+  .header {
+    flex-wrap: wrap;
+    gap: var(--vf-space-2);
+    padding: var(--vf-space-2) var(--vf-space-3);
+  }
+
+  .headerLanguage {
+    /* Full width on its own row rather than squeezed against the brand: a
+       cramped language control is the one thing that must not happen on the
+       screen size most viewers will arrive on. */
+    order: 3;
+    width: 100%;
+    margin-inline: 0;
+  }
+
+  .headerLanguageSelect {
+    flex: 1;
+  }
+
+  /* The stage keeps its own rounding off at the edges so it reads as the page
+     rather than as a card floating on one. */
+  .videoSection {
+    border-radius: 0;
+  }
+
+  .viewerStatus,
+  .settingsSheet,
+  .eventInfo,
+  .phrasesSection {
+    margin-inline: var(--vf-space-3);
+  }
+}
+
+/* The connection state is a dot plus a word; below sm the word is redundant
+   next to a status message that already says what is happening. */
+@media (max-width: 479.98px) {
+  .connectionText {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 }

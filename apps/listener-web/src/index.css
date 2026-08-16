@@ -1,3 +1,5 @@
+@import '@videofy-live/design-system/tokens.css';
+
 *,
 *::before,
 *::after {
@@ -7,22 +9,29 @@
 }
 
 :root {
-  --color-brand: #7c3aed;
-  --color-brand-light: #a78bfa;
-  --color-bg: #0f0f13;
-  --color-surface: #1a1a22;
-  --color-surface-raised: #22222e;
-  --color-text: #e8e8f0;
-  --color-text-muted: #8888aa;
-  --color-success: #22c55e;
-  --color-warn: #eab308;
-  --color-error: #ef4444;
-  --color-live: #22c55e;
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  /*
+   * The viewer's palette is now a thin alias layer over the Videofy design
+   * system rather than a second set of hex values. Aliasing instead of
+   * rewriting 700 lines of rules at once keeps this an experience-layer
+   * change: every existing selector keeps working, and it stops the viewer
+   * drifting away from Call and Conference on colour.
+   */
+  --color-brand: var(--vf-violet-500);
+  --color-brand-light: var(--vf-violet-300);
+  --color-bg: var(--vf-surface-canvas);
+  --color-surface: var(--vf-surface-1);
+  --color-surface-raised: var(--vf-surface-2);
+  --color-text: var(--vf-text-primary);
+  --color-text-muted: var(--vf-text-muted);
+  --color-success: var(--vf-success-500);
+  --color-warn: var(--vf-warn-500);
+  --color-error: var(--vf-danger-500);
+  --color-live: var(--vf-success-500);
+  --radius-sm: var(--vf-radius-sm);
+  --radius-md: var(--vf-radius-md);
+  --radius-lg: var(--vf-radius-lg);
+  --shadow-md: var(--vf-elevation-2);
+  font-family: var(--vf-font-family-sans);
 }
 
 body {

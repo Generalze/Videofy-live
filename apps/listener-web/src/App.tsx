@@ -60,6 +60,7 @@ import {
   viewerLanguageLabel,
   type ListenerCaptionPhrase,
 } from './listenerLanguageSelection';
+import { resolveViewerStatus } from './viewerStatus';
 import {
   captionPhraseId,
   filterCaptionPhrasesForLanguage,
@@ -1324,6 +1325,17 @@ export default function App(): React.ReactElement {
       listenerTransport.state === 'failed' ||
       listenerSignalling.state === 'failed' ||
       listenerSignalling.state === 'reconnecting');
+  // One sentence, in the viewer's terms, or nothing at all. The engineering
+  // conditions behind it stay in diagnostics.
+  const viewerStatus = resolveViewerStatus({
+    connectionStatus,
+    targetLanguage: viewingOriginalProgramme ? null : targetLanguage,
+    languageOutputStatus: selectedLanguageOutput?.status ?? null,
+    buffering: buffering || uploadedStartGate.buffering,
+    audioFailure: Boolean(mixState.error) || Boolean(audioQueue.generatedState.error),
+    programmeCompleted,
+  });
+
   const activeCaption =
     subtitlesEnabled && currentPhrase
       ? currentPhrase
@@ -1347,23 +1359,55 @@ export default function App(): React.ReactElement {
           <span className={styles.brandIcon}>▶</span>
           <span className={styles.brandName}>Videofy Live</span>
         </div>
+
+        {/*
+          Language sits in the header, at full size, because it is the one
+          control a first-time viewer has to find without being told. Buried in
+          a settings sheet it becomes a feature you have to already know about.
+        */}
+        <label className={styles.headerLanguage}>
+          <span className={styles.headerLanguageLabel}>Language</span>
+          <select
+            className={styles.headerLanguageSelect}
+            value={targetLanguage}
+            onChange={handleLanguageChange}
+            aria-label="Language"
+          >
+            {listenerLanguageOptions.map((language) => (
+              <option key={language.code} value={language.code}>
+                {language.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
         <div className={styles.connectionBadge} style={{ color: statusColor }}>
           <span className={styles.dot} style={{ background: statusColor }} />
-          {connectionStatus === 'connected'
-            ? 'Connected'
-            : connectionStatus === 'connecting'
-              ? 'Connecting…'
-              : connectionStatus === 'error'
-                ? 'Connection error'
-                : connectionStatus === 'disconnected'
-                  ? 'Disconnected'
-                  : 'Not connected'}
+          <span className={styles.connectionText}>
+            {connectionStatus === 'connected'
+              ? 'Connected'
+              : connectionStatus === 'connecting'
+                ? 'Connecting…'
+                : connectionStatus === 'error'
+                  ? 'Connection error'
+                  : connectionStatus === 'disconnected'
+                    ? 'Disconnected'
+                    : 'Not connected'}
+          </span>
         </div>
       </header>
 
       <main className={styles.main}>
         <section className={styles.eventInfo} aria-label="Event information">
           <h1 className={styles.eventTitle}>{mediaState?.eventId ?? 'Videofy Live Demo Event'}</h1>
+          {viewerStatus && (
+            <p
+              className={`${styles.viewerStatus} ${styles[`viewerStatus_${viewerStatus.tone}`] ?? ''}`}
+              role={viewerStatus.tone === 'warn' ? 'alert' : 'status'}
+            >
+              {viewerStatus.message}
+            </p>
+          )}
           <div className={styles.streamStatusRow}>
             <span
               className={styles.liveIndicator}
@@ -1455,35 +1499,14 @@ export default function App(): React.ReactElement {
           </div>
 
           <div className={styles.controlGroup}>
-            <label htmlFor="target-lang" className={styles.label}>
-              View in
-            </label>
-            <select
-              id="target-lang"
-              className={styles.select}
-              value={targetLanguage}
-              onChange={handleLanguageChange}
-              aria-label="Target language selector"
-            >
-              {listenerLanguageOptions.map((language) => {
-                const output = mediaState?.targetLanguageOutputs?.find(
-                  (candidate) => candidate.language === language.code,
-                );
-                return (
-                <option key={language.code} value={language.code}>
-                  {language.label}
-                  {output ? ` - ${describeLanguageOutput(output.status)}` : ''}
-                </option>
-                );
-              })}
-            </select>
-            <span className={styles.volValue} aria-live="polite">
+            <span className={styles.label}>You are watching in</span>
+            <div className={styles.sourceLanguage}>
               {viewingOriginalProgramme
                 ? 'Original audio and captions'
                 : selectedLanguageOutput
                   ? describeLanguageOutput(selectedLanguageOutput.status)
                   : 'Waiting for programme'}
-            </span>
+            </div>
           </div>
 
           {hasStarted && (
@@ -1516,6 +1539,18 @@ export default function App(): React.ReactElement {
           )}
         </section>
 
+        {/*
+          A mixer failure is the explanation for silence, so it must not sit
+          behind a disclosure the viewer has to think to open.
+        */}
+        {mixState.error && (
+          <p className={styles.viewerStatus + ' ' + styles.viewerStatus_warn} role="alert">
+            {mixState.error}
+          </p>
+        )}
+
+        <details className={styles.settingsSheet}>
+          <summary className={styles.settingsSummary}>Audio &amp; captions</summary>
         <section className={styles.audioSection} aria-label="Volume controls">
           <div className={styles.volumeRow}>
             <div className={styles.volumeControl}>
@@ -1572,19 +1607,6 @@ export default function App(): React.ReactElement {
               Reset mix
             </button>
           </div>
-
-          {/*
-            A mixer failure is the listener's problem — it is why they cannot
-            hear anything — so it stays on the public surface. The levels it
-            used to sit beside are already visible as the slider positions, and
-            the context/limiter state is Web Audio internals: both moved to
-            technical diagnostics.
-          */}
-          {mixState.error && (
-            <p className={styles.generatedQueueError} role="alert">
-              {mixState.error}
-            </p>
-          )}
 
           <div className={styles.generatedQueuePanel} aria-live="polite" hidden={!showDiagnostics}>
             <div className={styles.generatedQueueHeader}>
@@ -1677,6 +1699,8 @@ export default function App(): React.ReactElement {
             </div>
           )}
         </section>
+
+        </details>
 
         {displayedRecentPhrases.length > 0 && (
           <section className={styles.phrasesSection} aria-label="Recent translated phrases">
