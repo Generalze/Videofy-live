@@ -63,6 +63,15 @@ export interface CallIngestPlan {
   targetLanguages: CallLanguage[];
   voiceIdsByLanguage: Record<string, string>;
   mediaRevision: number;
+  /**
+   * The language revision this order was planned under.
+   *
+   * Carried on the work order because stale-event rejection compares against
+   * it: results produced for a target set that has since changed must be
+   * refused, and the only honest source for "which target set was this planned
+   * for" is the plan itself.
+   */
+  languageRevision: number;
 }
 
 /**
@@ -189,6 +198,15 @@ export interface CallSessionStoreOptions {
   now?: () => string;
   /** Injectable resume-token factory; the default is node:crypto randomUUID. */
   createResumeToken?: () => string;
+  /**
+   * Seats in a call. Two for the product (P6.1B); raising it is P6.4's job.
+   *
+   * Configurable because personalized caption routing is inherently an
+   * N-recipient behaviour: proving it with two participants cannot show that
+   * each recipient gets THEIR language rather than simply the other one's. The
+   * runtime keeps the two-seat default until conference ships.
+   */
+  maxParticipants?: number;
 }
 
 /**
@@ -204,7 +222,7 @@ export const STANDARD_CALL_VOICES: Readonly<
 };
 
 /** Two-person cap for this wave; disconnected identities keep their seat for resume. */
-const MAX_CALL_PARTICIPANTS = 2;
+const DEFAULT_MAX_CALL_PARTICIPANTS = 2;
 /**
  * Call ids are embedded into media-ingest session/broadcast ids, which require
  * the `[A-Za-z0-9_-]` charset and a 120-character ceiling after prefixing, so
@@ -234,12 +252,14 @@ interface CallState {
 
 export class CallSessionStore {
   private readonly calls = new Map<string, CallState>();
+  private readonly maxParticipants: number;
   private readonly now: () => string;
   private readonly createResumeToken: () => string;
 
   constructor(options: CallSessionStoreOptions = {}) {
     this.now = options.now ?? (() => new Date().toISOString());
     this.createResumeToken = options.createResumeToken ?? (() => randomUUID());
+    this.maxParticipants = Math.max(2, options.maxParticipants ?? DEFAULT_MAX_CALL_PARTICIPANTS);
   }
 
   createOrJoin(input: CallJoinInput): CallJoinResult | CallJoinFailure {
@@ -255,7 +275,7 @@ export class CallSessionStore {
     const existingCall = this.calls.get(input.callId);
     const displayName = input.displayName.trim();
     if (existingCall) {
-      if (existingCall.participants.size >= MAX_CALL_PARTICIPANTS) {
+      if (existingCall.participants.size >= this.maxParticipants) {
         return failure('call-full', 'This call already has two participants.');
       }
       if (hasDuplicateDisplayName(existingCall, displayName)) {
@@ -491,6 +511,56 @@ export class CallSessionStore {
     };
   }
 
+  /**
+   * Changes the language ONE recipient reads captions in, mid-call.
+   *
+   * Only that person's future captions move. Everyone else keeps reading what
+   * they were reading, which is the whole point of personalized captions: a
+   * shared call does not have a shared caption language.
+   *
+   * The speakers' work orders do change, because a new target language has to
+   * be produced for this listener, so every language revision moves with it.
+   * That is what makes results planned against the old target set rejectable
+   * rather than delivered to someone who is no longer expecting them.
+   */
+  setCaptionLanguage(
+    callId: string,
+    participantId: string,
+    language: string,
+  ): CallLanguageChangeResult {
+    const call = this.calls.get(callId);
+    const state = call?.participants.get(participantId);
+    if (!call || !state) return { ok: false, reason: 'unknown-participant' };
+
+    const wanted = primaryLanguageSubtag(language);
+    if (!isCallLanguage(wanted)) return { ok: false, reason: 'unsupported-language' };
+    if (state.participant.preferredLanguage === wanted) {
+      return {
+        ok: true,
+        changed: false,
+        languageRevision: state.participant.languageRevision,
+        snapshot: buildSnapshot(call),
+        ingestPlans: connectedIngestPlans(call),
+      };
+    }
+
+    for (const participant of call.participants.values()) {
+      const isTheOneChanging = participant.participant.participantId === participantId;
+      participant.participant = parseParticipant({
+        ...participant.participant,
+        ...(isTheOneChanging ? { preferredLanguage: wanted, captionLanguage: wanted } : {}),
+        languageRevision: participant.participant.languageRevision + 1,
+      });
+    }
+    return {
+      ok: true,
+      changed: true,
+      languageRevision: state.participant.languageRevision,
+      snapshot: buildSnapshot(call),
+      ingestPlans: connectedIngestPlans(call),
+    };
+  }
+
   activeCallCount(): number {
     return this.calls.size;
   }
@@ -678,7 +748,10 @@ function lifecycleStateOf(participants: CallParticipantState[]): string {
   const state =
     participants.length > connectedCount
       ? 'reconnecting'
-      : connectedCount >= MAX_CALL_PARTICIPANTS
+      // Deliberately the product default, not a configured override: this is a
+      // user-facing lifecycle label, and a test raising the seat count should
+      // not change what a normal call reports.
+      : connectedCount >= DEFAULT_MAX_CALL_PARTICIPANTS
         ? 'active'
         : 'waiting';
   return CallSessionLifecycleStateSchema.parse(state);
@@ -709,6 +782,7 @@ function buildIngestPlan(call: CallState, speaker: CallParticipantState): CallIn
     targetLanguages,
     voiceIdsByLanguage,
     mediaRevision: speaker.participant.mediaRevision,
+    languageRevision: speaker.participant.languageRevision,
   };
 }
 

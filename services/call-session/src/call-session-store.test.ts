@@ -85,6 +85,7 @@ describe('CallSessionStore.createOrJoin', () => {
         targetLanguages: [],
         voiceIdsByLanguage: {},
         mediaRevision: 1,
+        languageRevision: 1,
       },
     ]);
   });
@@ -107,6 +108,7 @@ describe('CallSessionStore.createOrJoin', () => {
       targetLanguages: ['es'],
       voiceIdsByLanguage: { es: 'es_ES-sharvard-female' },
       mediaRevision: 2,
+      languageRevision: 1,
     });
     // Carlos speaks es; Zoe hears en and picked the male voice.
     expect(carlosPlan).toEqual({
@@ -117,6 +119,7 @@ describe('CallSessionStore.createOrJoin', () => {
       targetLanguages: ['en'],
       voiceIdsByLanguage: { en: 'en_US-hfc_male-medium' },
       mediaRevision: 1,
+      languageRevision: 1,
     });
   });
 
@@ -670,5 +673,153 @@ describe('auto-detected source language (P6.2)', () => {
     const result = store.applyDetectedLanguage('call-1', 'participant_999', 'fr');
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('unknown-participant');
+  });
+});
+
+describe('personalized captions (P6.2 closure)', () => {
+  /**
+   * The owner's closure test, written literally.
+   *
+   * Three participants are required on purpose: with two, "each recipient gets
+   * THEIR language" is indistinguishable from "the recipient gets the other
+   * one's language". The runtime seat cap stays at two until conference ships;
+   * this raises it only to prove the routing is per-recipient.
+   */
+  function threeWayCall() {
+    const store = new CallSessionStore({ maxParticipants: 3 });
+    const a = mustJoin(store, { displayName: 'A', speakLanguage: 'en', hearLanguage: 'en' });
+    const b = mustJoin(store, { displayName: 'B', speakLanguage: 'es', hearLanguage: 'es' });
+    const c = mustJoin(store, { displayName: 'C', speakLanguage: 'fr', hearLanguage: 'fr' });
+    return { store, a, b, c };
+  }
+
+  /**
+   * One sentence from A, delivered as media-ingest reports it per target.
+   *
+   * Revisions come from A's CURRENT work order, not from the join ack: joining
+   * bumps everyone else's media revision, so a test holding the ack's value
+   * would be sending events the store is right to reject.
+   */
+  function aSpeaks(store: CallSessionStore, a: CallJoinResult, languageRevisionOverride?: number) {
+    const plan = store.ingestPlan('call-1', a.participantId);
+    if (!plan) throw new Error('expected a work order for A');
+    const base = {
+      sourceLanguage: 'en',
+      originalText: 'The meeting starts at nine.',
+      sequence: 0,
+      mediaRevision: plan.mediaRevision,
+      languageRevision: languageRevisionOverride ?? plan.languageRevision,
+      startMs: 0,
+      endMs: 2_000,
+      isFinal: true,
+    };
+    return [
+      // The original transcript, which is what a same-language reader sees.
+      ...store.routeCaption('call-1', a.participantId, { ...base, targetLanguage: null, translatedText: null }),
+      ...store.routeCaption('call-1', a.participantId, {
+        ...base, targetLanguage: 'es', translatedText: 'La reunión empieza a las nueve.',
+      }),
+      ...store.routeCaption('call-1', a.participantId, {
+        ...base, targetLanguage: 'fr', translatedText: 'La réunion commence à neuf heures.',
+      }),
+    ];
+  }
+
+  function payloadFor(deliveries: ReturnType<typeof aSpeaks>, participantId: string) {
+    return deliveries
+      .filter((d) => d.recipientParticipantId === participantId)
+      .map((d) => d.payload as Record<string, unknown>);
+  }
+
+  it('gives each recipient their own language, attributed to the speaker', () => {
+    const { store, a, b, c } = threeWayCall();
+    const deliveries = aSpeaks(store, a);
+
+    const toB = payloadFor(deliveries, b.participantId);
+    expect(toB).toHaveLength(1);
+    expect(toB[0]).toMatchObject({
+      targetLanguage: 'es',
+      translatedText: 'La reunión empieza a las nueve.',
+      speakerParticipantId: a.participantId,
+      speakerDisplayName: 'A',
+      // The original stays available, so a reader can check a name or a number.
+      originalText: 'The meeting starts at nine.',
+    });
+
+    const toC = payloadFor(deliveries, c.participantId);
+    expect(toC).toHaveLength(1);
+    expect(toC[0]).toMatchObject({
+      targetLanguage: 'fr',
+      translatedText: 'La réunion commence à neuf heures.',
+      speakerParticipantId: a.participantId,
+      originalText: 'The meeting starts at nine.',
+    });
+  });
+
+  it('never sends the speaker a translation of themselves', () => {
+    const { store, a } = threeWayCall();
+    const toA = payloadFor(aSpeaks(store, a), a.participantId);
+
+    // A sees their own words once, as the original, and nothing else.
+    expect(toA).toHaveLength(1);
+    expect(toA[0]).toMatchObject({ targetLanguage: null, originalText: 'The meeting starts at nine.' });
+    expect(toA.some((p) => p.translatedText !== null)).toBe(false);
+  });
+
+  it('does not leak one recipient’s caption to another', () => {
+    const { store, a, b, c } = threeWayCall();
+    const deliveries = aSpeaks(store, a);
+
+    // Every delivery is addressed to exactly one participant, and nobody
+    // receives a language they did not ask for.
+    expect(payloadFor(deliveries, b.participantId).every((p) => p.targetLanguage === 'es')).toBe(true);
+    expect(payloadFor(deliveries, c.participantId).every((p) => p.targetLanguage === 'fr')).toBe(true);
+    expect(deliveries).toHaveLength(3);
+  });
+
+  it('changes only the caption language of the person who changed it', () => {
+    const { store, a, b, c } = threeWayCall();
+    const changed = store.setCaptionLanguage('call-1', b.participantId, 'fr');
+    expect(changed.ok).toBe(true);
+    if (!changed.ok) return;
+
+    const deliveries = aSpeaks(store, a);
+    // B now reads French...
+    expect(payloadFor(deliveries, b.participantId)[0]).toMatchObject({ targetLanguage: 'fr' });
+    // ...and C, who changed nothing, still reads exactly what they were reading.
+    expect(payloadFor(deliveries, c.participantId)[0]).toMatchObject({ targetLanguage: 'fr' });
+    expect(payloadFor(deliveries, a.participantId)[0]).toMatchObject({ targetLanguage: null });
+  });
+
+  it('rejects events planned against the language revision that was replaced', () => {
+    const { store, a, b } = threeWayCall();
+    const staleRevision = store.ingestPlan('call-1', a.participantId)!.languageRevision;
+    store.setCaptionLanguage('call-1', b.participantId, 'fr');
+
+    // Work produced before the change was planned for the old target set, so
+    // delivering it would show a reader a caption in a language they left.
+    expect(aSpeaks(store, a, staleRevision)).toHaveLength(0);
+  });
+
+  it('does not duplicate captions when a participant reconnects', () => {
+    const { store, a, b, c } = threeWayCall();
+    store.markDisconnected('call-1', b.participantId);
+    const resumed = store.createOrJoin(
+      joinInput({
+        displayName: 'B',
+        speakLanguage: 'es',
+        hearLanguage: 'es',
+        resumeParticipantId: b.participantId,
+        resumeToken: b.resumeToken,
+      }),
+    );
+    if (!resumed.ok) throw new Error(`resume failed: ${resumed.code}`);
+
+    const deliveries = aSpeaks(store, a);
+    // One caption each, to one seat each — a resumed identity keeps its seat
+    // rather than becoming a second recipient.
+    expect(payloadFor(deliveries, b.participantId)).toHaveLength(1);
+    expect(payloadFor(deliveries, c.participantId)).toHaveLength(1);
+    expect(new Set(deliveries.map((d) => d.recipientParticipantId)).size).toBe(deliveries.length);
   });
 });
