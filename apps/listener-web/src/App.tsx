@@ -61,6 +61,7 @@ import {
   type ListenerCaptionPhrase,
 } from './listenerLanguageSelection';
 import { resolveViewerStatus } from './viewerStatus';
+import { isDiagnosticsRequested } from './viewerDiagnostics';
 import {
   captionPhraseId,
   filterCaptionPhrasesForLanguage,
@@ -194,6 +195,12 @@ export default function App(): React.ReactElement {
   const [activeShareableSessionId, setActiveShareableSessionId] = useState<string | null>(null);
   const [activeProcessingSessionId, setActiveProcessingSessionId] = useState<string | null>(null);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  // Absent for viewers, present only when a developer explicitly asks
+  // (?diagnostics=1). Decided once: how the page was opened does not change
+  // while somebody is watching a programme.
+  const [diagnosticsAvailable] = useState(() =>
+    typeof window === 'undefined' ? false : isDiagnosticsRequested(window.location.search),
+  );
   const [showOriginalText, setShowOriginalText] = useState(false);
   const phraseSourceBySequenceRef = useRef(new Map<string, string>());
   const lastJoinedShareableSessionRef = useRef<string | null>(null);
@@ -1761,6 +1768,7 @@ export default function App(): React.ReactElement {
             Reconnect
           </button>
         )}
+        {diagnosticsAvailable && (
         <details
           className={styles.devDiagnostics}
           open={showDiagnostics}
@@ -1857,6 +1865,7 @@ export default function App(): React.ReactElement {
             </p>
           )}
         </details>
+        )}
       </main>
     </div>
   );
