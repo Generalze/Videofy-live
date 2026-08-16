@@ -147,6 +147,11 @@ vite.config.ts.timestamp-*
 venv/
 .venv/
 .venv-ai/
+# Isolated OpenVoice V2 environment (Python 3.9 + CUDA torch). Multi-gigabyte,
+# machine-specific, and deliberately never shared with .venv-ai.
+.venv-openvoice/
+# Large wheels staged for resumable download on a slow link.
+.wheels/
 env/
 .env/
 __pycache__/
