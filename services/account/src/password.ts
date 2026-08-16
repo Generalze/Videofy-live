@@ -16,10 +16,20 @@
  * A password is NEVER logged, never returned, never placed in an error, and
  * never compared with `===`.
  */
-import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import { randomBytes, scrypt, timingSafeEqual, type ScryptOptions } from 'node:crypto';
 import { promisify } from 'node:util';
 
-const scryptAsync = promisify(scrypt);
+/**
+ * `promisify` picks the overload without options, which silently drops the cost
+ * parameters — the ONLY thing that makes this expensive to attack. Typed
+ * explicitly so passing them is checked rather than accepted and ignored.
+ */
+const scryptAsync = promisify(scrypt) as (
+  password: string,
+  salt: Buffer,
+  keylen: number,
+  options: ScryptOptions,
+) => Promise<Buffer>;
 
 /**
  * Cost parameters. N=2^15 with r=8 is roughly 32 MB and tens of milliseconds
@@ -73,12 +83,12 @@ export function describePasswordRejection(rejection: PasswordRejection): string 
 /** `scrypt$N$r$p$salt$hash`, all parameters recorded so cost can be raised later. */
 export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(SALT_BYTES);
-  const derived = (await scryptAsync(password, salt, KEY_LENGTH, {
+  const derived = await scryptAsync(password, salt, KEY_LENGTH, {
     N,
     r: R,
     p: P,
     maxmem: MAX_MEMORY,
-  })) as Buffer;
+  });
   return [
     'scrypt',
     N,
@@ -114,12 +124,12 @@ export async function verifyPassword(password: string, stored: string): Promise<
   let actual: Buffer;
   try {
     expected = Buffer.from(rawHash, 'base64');
-    actual = (await scryptAsync(password, Buffer.from(rawSalt, 'base64'), expected.length, {
+    actual = await scryptAsync(password, Buffer.from(rawSalt, 'base64'), expected.length, {
       N: n,
       r,
       p,
       maxmem: MAX_MEMORY,
-    })) as Buffer;
+    });
   } catch {
     return false;
   }

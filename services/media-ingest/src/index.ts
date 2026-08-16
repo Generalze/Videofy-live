@@ -1,3 +1,5 @@
+// FIRST import: loads .env before any module below reads process.env.
+import '@videofy-live/service-env/auto';
 import express from 'express';
 import http from 'http';
 import multer from 'multer';

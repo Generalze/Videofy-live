@@ -1,3 +1,5 @@
+// FIRST import: loads .env before any module below reads process.env.
+import '@videofy-live/service-env/auto';
 import { createServer } from 'node:http';
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';

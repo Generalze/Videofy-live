@@ -132,8 +132,23 @@ function speak(model, text, name) {
 
 // ------------------------------------------------------------------ enrollment
 
-const ownerId = `devid_${Math.random().toString(16).slice(2, 8)}${Date.now().toString(16).slice(-6)}`;
-const ownerHeader = { 'x-videofy-voice-owner': ownerId };
+// A real account, created through the real account service. Ownership is no
+// longer something a script can assert with a header — it has to be proved.
+const ACCOUNT_BASE = process.env['ACCOUNT_URL'] ?? 'http://localhost:3006';
+const email = `verify-${Date.now().toString(36)}@videofy.local`;
+const signUp = await fetch(`${ACCOUNT_BASE}/accounts`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ email, password: 'verification script passphrase' }),
+});
+const account = await signUp.json().catch(() => ({}));
+if (signUp.status !== 201 || !account.token) {
+  console.error('Could not create an account:', signUp.status, account);
+  console.error('Is the account service running with VIDEOFY_AUTH_SECRET set?');
+  process.exit(2);
+}
+const ownerId = account.accountId;
+const ownerHeader = { authorization: `Bearer ${account.token}` };
 
 const created = await postJson(
   '/voice-profiles',
@@ -166,7 +181,7 @@ const enrollBody = await enrollResponse.json().catch(() => null);
 const enrolled = enrollResponse.status >= 200 && enrollResponse.status < 300;
 
 console.log(`\n=== PERSONAL VOICE: ${sourceLanguage.toUpperCase()} -> ${targetLanguage.toUpperCase()} ===`);
-console.log(`  owner    ${ownerId}`);
+console.log(`  account  ${ownerId}`);
 console.log(`  profile  ${voiceProfileId}`);
 console.log(`  enrolled ${enrollResponse.status} ${JSON.stringify(enrollBody)}`);
 
@@ -187,6 +202,8 @@ const session = await postJson('/internal/webrtc/sessions', {
   targetLanguages: [targetLanguage],
   voiceIdsByLanguage: { [targetLanguage]: VOICES[targetLanguage] },
   generatedAudioPacing: 'natural',
+  // media-ingest's internal route still takes the owner directly; the
+  // gateway is what derives it from a token on a real call join.
   voiceOwnerId: ownerId,
 });
 if (session.status !== 201) {

@@ -7,6 +7,8 @@
  * session token that other services verify locally, so a call cannot become
  * unjoinable because sign-in is restarting.
  */
+// FIRST import: loads .env before any module below reads process.env.
+import '@videofy-live/service-env/auto';
 import express from 'express';
 import { resolve } from 'node:path';
 import { requireSessionSecret } from '@videofy-live/account-tokens';
