@@ -370,6 +370,52 @@ describe('a failing voice engine costs the voice, never the words', () => {
   });
 });
 
+describe('withdrawal reaches audio that already exists', () => {
+  it('destroys the generated clips, so a queued one cannot be fetched', async () => {
+    // The decisive property. Translated speech is generated ahead of playback
+    // and sits in every listener's queue, so consent withdrawal that only
+    // changed future routing would let several more cloned utterances play
+    // out while the system considered itself compliant. The only thing this
+    // process controls is whether the bytes are still there to fetch.
+    const h = await harness();
+    await enrolledVoice(h.voices, 'vp_a', OWNER_A);
+    const sessionId = await joinCall(h, 'call_m_participant_1', OWNER_A);
+    await say(h, sessionId, 0);
+    await say(h, sessionId, 1);
+
+    const outputBase = (h.sessions as unknown as { outputBaseDir: string }).outputBaseDir;
+    const clipPath = (sequence: number) =>
+      join(outputBase, sessionId, 'tts', 'es', `tts-${String(sequence).padStart(6, '0')}.wav`);
+    await expect(readFile(clipPath(0))).resolves.toBeDefined();
+
+    const removed = await h.sessions.purgePersonalVoiceAudio(personalVoiceId('vp_a'));
+
+    expect(removed).toBe(2);
+    await expect(readFile(clipPath(0))).rejects.toBeDefined();
+    await expect(readFile(clipPath(1))).rejects.toBeDefined();
+    // The record stops advertising a clip that can no longer be played.
+    const session = h.sessions.get(sessionId)!;
+    expect(session.generatedAudio.events.every((e) => e.status !== 'generated')).toBe(true);
+  });
+
+  it('leaves audio spoken in every other voice alone', async () => {
+    // A withdrawal that reached further than the voice withdrawn would delete
+    // other people's translated speech out of a live call.
+    const h = await harness();
+    await enrolledVoice(h.voices, 'vp_a', OWNER_A);
+    const mine = await joinCall(h, 'call_n_participant_1', OWNER_A);
+    const theirs = await joinCall(h, 'call_n_participant_2');
+    await say(h, mine, 0);
+    await say(h, theirs, 0);
+
+    const removed = await h.sessions.purgePersonalVoiceAudio(personalVoiceId('vp_a'));
+
+    expect(removed).toBe(1);
+    const untouched = h.sessions.get(theirs)!;
+    expect(untouched.generatedAudio.events.some((e) => e.status === 'generated')).toBe(true);
+  });
+});
+
 describe('the owner never leaks out of media-ingest', () => {
   it('is absent from the session every route and the dashboard can see', async () => {
     const h = await harness();

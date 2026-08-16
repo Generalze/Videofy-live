@@ -578,6 +578,20 @@ export class IngestService {
     return session;
   }
 
+  /**
+   * Destroy audio already generated in a personal voice.
+   *
+   * Called when consent is withdrawn. Nothing is logged but the count: naming
+   * the voice would put the thing being withdrawn into the log that outlives it.
+   */
+  async purgePersonalVoiceAudio(personalVoiceId: string): Promise<number> {
+    const removed = await this.sessions.purgePersonalVoiceAudio(personalVoiceId);
+    if (removed > 0) {
+      logger.info('Generated personal-voice audio destroyed after withdrawal', { removed });
+    }
+    return removed;
+  }
+
   async removeCallSession(sessionId: string): Promise<boolean> {
     const removed = await this.sessions.removeCallSession(sessionId);
     if (removed) {

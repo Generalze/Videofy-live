@@ -7,8 +7,12 @@ import { writeFile } from 'node:fs/promises';
 import { loadConfig } from './config.js';
 import { registerGeneratedAudioDeliveryRoute } from './generated-audio-delivery-route.js';
 import { createUnavailablePersonalVoiceProvider } from './personal-voice-provider.js';
-import { createOpenVoicePersonalVoiceProvider } from './openvoice-personal-voice.js';
+import {
+  createOpenVoicePersonalVoiceProvider,
+  personalVoiceId,
+} from './openvoice-personal-voice.js';
 import { createPersonalVoiceWiring } from './personal-voice-wiring.js';
+import { registerVoiceWithdrawalRoutes } from './voice-withdrawal-route.js';
 import { registerVoiceEnrollmentRoute } from './voice-enrollment-route.js';
 import { registerVoiceProfileInitRoute } from './voice-profile-init-route.js';
 import { createFileVoiceEnrollmentStorage } from './voice-enrollment-storage.js';
@@ -108,7 +112,7 @@ app.use(express.json({ limit: '1mb' }));
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
   // The voice-owner header is a custom one, so it must be listed explicitly or
   // the browser preflight rejects the request before it is ever sent.
   res.setHeader(
@@ -135,11 +139,17 @@ app.get('/health', (_req, res) => {
   const unavailablePairs = ingest.translationPairAvailability
     .filter((pair) => !pair.available)
     .map((pair) => ({ pair: pair.pair, reason: pair.reason }));
+  // Withdrawn voices whose stored material refused to go. A count, never an
+  // id: this endpoint is public. Zero is the healthy state, and anything else
+  // is somebody's biometric data still on disk after they asked for it to go —
+  // which is worth seeing without having to know to look.
+  const strandedVoiceCleanups = voiceProfileStore.pendingCleanups().length;
   res.status(connected ? 200 : 503).json({
     status: connected ? 'ok' : 'degraded',
     service: 'media-ingest',
     gatewayConnected: connected,
     ...(unavailablePairs.length > 0 ? { unavailableTranslationPairs: unavailablePairs } : {}),
+    ...(strandedVoiceCleanups > 0 ? { strandedVoiceCleanups } : {}),
     timestamp: new Date().toISOString(),
   });
 });
@@ -498,6 +508,34 @@ registerVoiceEnrollmentRoute(app, {
   store: voiceProfileStore,
   provider: personalVoiceProvider,
   newVoiceProfileId: () => `vp_${Date.now().toString(36)}_${++voiceProfileSerial}`,
+});
+registerVoiceWithdrawalRoutes(app, {
+  store: voiceProfileStore,
+  personalVoiceIdFor: personalVoiceId,
+  purgeGeneratedAudio: (voiceId) => ingest.purgePersonalVoiceAudio(voiceId),
+});
+
+/**
+ * Finish a withdrawal whose cleanup failed.
+ *
+ * Internal, because it is an operational verb rather than a participant's. It
+ * exists at all because the alternative — a store that quietly keeps a list of
+ * material it failed to delete, with no way to act on it — is how "we deleted
+ * your recording" becomes untrue over time rather than all at once.
+ */
+app.post('/internal/voice-cleanups/retry', async (req, res) => {
+  if (!assertInternalWebRtcRequest(req, res)) return;
+  const outstanding = voiceProfileStore.pendingCleanups();
+  let finished = 0;
+  for (const cleanup of outstanding) {
+    const evidence = await voiceProfileStore.retryCleanup(cleanup.voiceProfileId);
+    if (evidence && !evidence.cleanupRetryRequired) finished += 1;
+  }
+  res.json({
+    attempted: outstanding.length,
+    finished,
+    stillStranded: voiceProfileStore.pendingCleanups().length,
+  });
 });
 
 registerGeneratedAudioDeliveryRoute(app, ingest);

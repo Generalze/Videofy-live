@@ -266,6 +266,86 @@ describe('a working clone engine completes enrollment', () => {
   });
 });
 
+describe('recording again replaces a voice rather than adding one', () => {
+  function workingProvider(): VoiceProfileProvider {
+    return {
+      resolve: vi.fn(async () => ({ ok: true as const, voiceId: 'personal_vp' })),
+      createAsset: vi.fn(async (input) => ({
+        ok: true as const,
+        voiceAssetRef: `asset_${input.voiceProfileId}`,
+      })),
+    };
+  }
+
+  it('retires the previous enrolment so the newest voice is the one used', async () => {
+    // The store used to answer with whichever profile came first out of its
+    // map — insertion order — so an owner who recorded a second time kept
+    // being given their first voice and re-recording appeared to do nothing.
+    const harness = await createHarness(workingProvider());
+    for (const profileId of ['vp_first', 'vp_second']) {
+      harness.store.begin({ voiceProfileId: profileId, ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
+      harness.store.grantCallUse(profileId);
+      await fetch(`${harness.url}/voice-profiles/${profileId}/enrollment`, {
+        method: 'POST',
+        headers: { 'content-type': 'audio/webm', 'x-videofy-voice-owner': OWNER },
+        body: AUDIO,
+      });
+    }
+
+    expect(harness.store.usableForOwner(OWNER)?.voiceProfileId).toBe('vp_second');
+    // And the superseded one is gone, not merely losing: a replaced recording
+    // that stays on disk is material nobody asked to keep.
+    expect(harness.store.get('vp_first')).toBeNull();
+    expect(harness.recordings.size).toBe(1);
+    await harness.close();
+  });
+
+  it('keeps the existing voice when the new enrolment fails', async () => {
+    // Losing a working voice because a second attempt failed would punish
+    // someone for trying to improve it.
+    const harness = await createHarness(createUnavailablePersonalVoiceProvider());
+    harness.store.begin({ voiceProfileId: 'vp_good', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
+    harness.store.grantCallUse('vp_good');
+    await harness.store.attachEnrollmentRecording('vp_good', AUDIO, 'en');
+    harness.store.accept('vp_good', 'asset_good');
+
+    harness.store.begin({ voiceProfileId: 'vp_bad', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
+    harness.store.grantCallUse('vp_bad');
+    const response = await fetch(`${harness.url}/voice-profiles/vp_bad/enrollment`, {
+      method: 'POST',
+      headers: { 'content-type': 'audio/webm', 'x-videofy-voice-owner': OWNER },
+      body: AUDIO,
+    });
+
+    expect(response.status).toBe(202);
+    expect(harness.store.usableForOwner(OWNER)?.voiceProfileId).toBe('vp_good');
+    await harness.close();
+  });
+});
+
+describe('a profile cannot be enrolled into by someone else', () => {
+  it('refuses a recording for a profile belonging to another owner', async () => {
+    // Knowing a profile id was enough to overwrite somebody's enrolment with
+    // your own recording — and their calls would then have gone out in your
+    // voice.
+    const harness = await createHarness();
+    harness.store.begin({
+      voiceProfileId: 'vp1',
+      ownerId: OWNER,
+      consentTextVersion: CONSENT_VERSION,
+    });
+    harness.store.grantCallUse('vp1');
+
+    const response = await post(harness, AUDIO, {
+      'x-videofy-voice-owner': 'devid_bbbbbbbbbbbb',
+    });
+
+    expect(response.status).toBe(404);
+    expect(harness.recordings.size).toBe(0);
+    await harness.close();
+  });
+});
+
 describe('the bytes are the authority, not the header', () => {
   it('refuses audio announced as one format and sent as another', async () => {
     // A caller claiming audio/wav while sending WebM is either confused or

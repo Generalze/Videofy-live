@@ -64,12 +64,14 @@ import { defaultCaptureEnvironment, VoiceEnrollmentCapture } from './voiceEnroll
 import {
   createEnrollmentInitializer,
   createEnrollmentUploader,
+  createVoiceDeleter,
   INITIAL_ENROLLMENT_STATE,
   VOICE_CONSENT_TEXT_VERSION,
   VoiceEnrollmentFlow,
   type EnrollmentFlowState,
 } from './voiceEnrollmentFlow';
 import {
+  clearVoiceOwnerId,
   defaultOwnerStorage,
   existingVoiceOwnerId,
   resolveVoiceOwnerId,
@@ -129,6 +131,7 @@ export default function App() {
   const [voiceTrainingGranted, setVoiceTrainingGranted] = useState(false);
   const [enrollmentState, setEnrollmentState] =
     useState<EnrollmentFlowState>(INITIAL_ENROLLMENT_STATE);
+  const [voiceDeletionInProgress, setVoiceDeletionInProgress] = useState(false);
   const enrollmentFlowRef = useRef<VoiceEnrollmentFlow | null>(null);
 
   const enrollmentFlow = (): VoiceEnrollmentFlow => {
@@ -153,6 +156,50 @@ export default function App() {
       });
     }
     return ownerId;
+  };
+
+  /**
+   * Erase this browser's voice, on the server and then locally.
+   *
+   * The local reset happens ONLY after the server acknowledges. Clearing the
+   * identity first would leave the recording on disk with the one handle able
+   * to find it thrown away — the same orphan the store was reworked to prevent,
+   * arrived at from the interface instead.
+   */
+  const handleDeleteVoice = (): void => {
+    const ownerId = existingVoiceOwnerId(defaultOwnerStorage());
+    if (!ownerId) {
+      // Nothing was ever enrolled from this browser, so there is nothing to
+      // erase and the honest thing is to say it is already gone.
+      enrollmentFlow().reRecord();
+      setVoiceCallUseGranted(false);
+      setVoiceTrainingGranted(false);
+      return;
+    }
+    setVoiceDeletionInProgress(true);
+    void createVoiceDeleter(readIngestUrl())
+      .deleteAll(ownerId)
+      .then((result) => {
+        if (!result.acknowledged) {
+          // The voice stays exactly as it was, and so does the interface. A
+          // panel that looked emptied would be telling the user their recording
+          // is gone when the request never arrived.
+          setEnrollmentState({
+            ...enrollmentState,
+            error: result.message ?? 'Your voice could not be deleted.',
+          });
+          return;
+        }
+        clearVoiceOwnerId(defaultOwnerStorage());
+        enrollmentFlow().reRecord();
+        setVoiceCallUseGranted(false);
+        setVoiceTrainingGranted(false);
+        setEnrollmentState({
+          ...INITIAL_ENROLLMENT_STATE,
+          ...(result.nothingLeft ? {} : { error: result.message }),
+        });
+      })
+      .finally(() => setVoiceDeletionInProgress(false));
   };
 
   const handleStartVoiceRecording = (): void => {
@@ -658,7 +705,7 @@ export default function App() {
           trainingUseGranted={voiceTrainingGranted}
           previewUrl={enrollmentState.previewUrl}
           error={enrollmentState.error}
-          deletionInProgress={false}
+          deletionInProgress={voiceDeletionInProgress}
           personalVoiceReady={enrollmentState.personalVoiceReady}
           onCallUseChange={setVoiceCallUseGranted}
           onTrainingUseChange={setVoiceTrainingGranted}
@@ -666,11 +713,7 @@ export default function App() {
           onStopRecording={() => void enrollmentFlow().stopRecording()}
           onReRecord={() => enrollmentFlow().reRecord()}
           onAccept={handleAcceptVoice}
-          onDelete={() => {
-            enrollmentFlow().reRecord();
-            setVoiceCallUseGranted(false);
-            setVoiceTrainingGranted(false);
-          }}
+          onDelete={handleDeleteVoice}
           onClose={handleCloseVoiceEnrollment}
         />
       ) : null}

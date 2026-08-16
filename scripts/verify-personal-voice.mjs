@@ -216,6 +216,56 @@ for (const event of generated) {
   console.log(`  seq ${event.sequence}  voice=${event.voiceId}  ${event.durationMs ?? '?'}ms`);
 }
 
+// -------------------------------------------------------------- taking it back
+//
+// Consent that cannot be withdrawn through the running system is not consent,
+// and withdrawal that only changes future routing leaves cloned utterances
+// sitting in listeners' playback queues. So this checks the harder half: that
+// audio which ALREADY EXISTS stops being fetchable.
+
+const firstClip = generated[0];
+const clipUrl = firstClip
+  ? `${BASE}/sessions/${encodeURIComponent(sessionId)}/generated-audio/segments/${encodeURIComponent(firstClip.segmentId)}/audio?language=${targetLanguage}`
+  : null;
+const beforeStatus = clipUrl ? (await fetch(clipUrl)).status : 0;
+
+const deleted = await fetch(`${BASE}/voice-profiles`, {
+  method: 'DELETE',
+  headers: ownerHeader,
+});
+const deletedBody = await deleted.json().catch(() => ({}));
+const afterStatus = clipUrl ? (await fetch(clipUrl)).status : 0;
+
+// One more utterance on the SAME live session: no rejoin, no restart.
+const afterClip = speak(sourceModel, expected[0], 'after-delete');
+const stagedAfter = join(STAGING, `pv-after-${Date.now()}.wav`);
+copyFileSync(afterClip, stagedAfter);
+const afterBytes = statSync(afterClip).size;
+const afterResult = await postJson(
+  `/internal/webrtc/sessions/${encodeURIComponent(sessionId)}/chunks`,
+  {
+    sequence: expected.length,
+    startMs: cursor,
+    endMs: cursor + Math.max(1000, Math.round((afterBytes - 44) / 32)),
+    sampleRate: 16000,
+    channelCount: 1,
+    pcmFormat: 'pcm_s16le',
+    mimeType: 'audio/wav',
+    sizeBytes: afterBytes,
+    sourcePath: stagedAfter,
+  },
+);
+const afterEvents = (afterResult.json?.session?.generatedAudio?.events ?? []).filter(
+  (e) => e.status === 'generated' && e.sequence === expected.length,
+);
+
+console.log('');
+console.log(`  withdrawal ${deleted.status} ${JSON.stringify(deletedBody)}`);
+console.log(`  queued clip fetch: before=${beforeStatus} after=${afterStatus}`);
+for (const event of afterEvents) {
+  console.log(`  seq ${event.sequence}  voice=${event.voiceId}   (after deletion)`);
+}
+
 // --------------------------------------------------------------- what it means
 
 const checks = [
@@ -228,6 +278,15 @@ const checks = [
   ],
   ['Nothing silently fell back to a standard voice', standardClips.length === 0],
   ['No session error', !latest?.error],
+  ['Deletion was accepted', deleted.status === 200 && deletedBody.deleted >= 1],
+  ['Deletion reports nothing left behind', deletedBody.nothingLeft === true],
+  ['Already-generated audio was destroyed', deletedBody.generatedAudioRemoved >= expected.length],
+  ['A queued clip was fetchable before deletion', beforeStatus === 200],
+  ['That same clip is NOT fetchable after deletion', afterStatus === 404],
+  [
+    'The next utterance uses the standard voice, with no restart',
+    afterEvents.length > 0 && afterEvents.every((e) => e.voiceId === VOICES[targetLanguage]),
+  ],
 ];
 
 console.log('');

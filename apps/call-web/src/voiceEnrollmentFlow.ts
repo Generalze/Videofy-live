@@ -52,6 +52,26 @@ export interface EnrollmentUploader {
   }): Promise<EnrollmentUploadResult | null>;
 }
 
+/** What actually happened when someone asked to be erased. */
+export interface VoiceDeletionResult {
+  /** True when the server confirmed; false when it could not be reached. */
+  acknowledged: boolean;
+  /** False when material survived and a retry is owed. */
+  nothingLeft: boolean;
+  message: string | null;
+}
+
+/**
+ * Erasing a voice.
+ *
+ * Owner-scoped, not profile-scoped: a browser coming back tomorrow knows its
+ * identity and not which profile it once created, so a delete keyed on the
+ * profile id would work exactly once — in the session that made it.
+ */
+export interface VoiceDeleter {
+  deleteAll(ownerId: string): Promise<VoiceDeletionResult>;
+}
+
 export interface EnrollmentFlowState {
   stage: VoiceEnrollmentStage;
   previewUrl: string | null;
@@ -223,6 +243,49 @@ export function createEnrollmentInitializer(ingestUrl: string): EnrollmentInitia
         return body.voiceProfileId ? { voiceProfileId: body.voiceProfileId } : null;
       } catch {
         return null;
+      }
+    },
+  };
+}
+
+/**
+ * Deletes every voice this browser's identity holds.
+ *
+ * A network failure reports `acknowledged: false` rather than a comforting
+ * success. Telling someone their recording is gone when the request never
+ * arrived is the single worst thing this function could do.
+ */
+export function createVoiceDeleter(ingestUrl: string): VoiceDeleter {
+  return {
+    async deleteAll(ownerId) {
+      try {
+        const response = await fetch(`${ingestUrl}/voice-profiles`, {
+          method: 'DELETE',
+          headers: { 'x-videofy-voice-owner': ownerId },
+        });
+        const body = (await response.json().catch(() => ({}))) as {
+          nothingLeft?: boolean;
+          message?: string;
+          error?: string;
+        };
+        if (!response.ok) {
+          return {
+            acknowledged: false,
+            nothingLeft: false,
+            message: body.error ?? 'Your voice could not be deleted.',
+          };
+        }
+        return {
+          acknowledged: true,
+          nothingLeft: body.nothingLeft === true,
+          message: body.message ?? null,
+        };
+      } catch {
+        return {
+          acknowledged: false,
+          nothingLeft: false,
+          message: 'Your voice could not be deleted. Check your connection and try again.',
+        };
       }
     },
   };

@@ -177,14 +177,53 @@ export class VoiceProfileStore {
    *
    * Keyed by owner rather than participant: a participant id is minted per
    * call, so looking up by one would find nothing on the second join.
+   *
+   * The NEWEST usable profile wins. This used to return whichever one came
+   * first out of the map, which is insertion order — so an owner who recorded a
+   * second time kept being given their first voice, and re-recording looked
+   * like it silently did nothing. `supersede` normally leaves only one, and
+   * this is the guarantee that does not depend on it having been called.
    */
   usableForOwner(ownerId: VoiceOwnerId): VoiceProfile | null {
+    let newest: VoiceProfile | null = null;
     for (const stored of this.profiles.values()) {
-      if (stored.profile.ownerId === ownerId && isVoiceProfileUsable(stored.profile)) {
-        return stored.profile;
+      if (stored.profile.ownerId !== ownerId) continue;
+      if (!isVoiceProfileUsable(stored.profile)) continue;
+      if (newest === null || stored.profile.updatedAt >= newest.updatedAt) {
+        newest = stored.profile;
       }
     }
-    return null;
+    return newest;
+  }
+
+  /** Every profile this owner holds, newest first. */
+  profilesForOwner(ownerId: VoiceOwnerId): VoiceProfile[] {
+    return [...this.profiles.values()]
+      .map((stored) => stored.profile)
+      .filter((profile) => profile.ownerId === ownerId)
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  }
+
+  /**
+   * Retire everything this owner holds except the profile just accepted.
+   *
+   * Recording again is replacing a voice, not adding one. Without this an owner
+   * accumulates enrolments, every superseded recording stays on disk
+   * indefinitely, and the store holds several voices for a person who believes
+   * they have one — which is both a wrong answer and material nobody asked to
+   * keep.
+   *
+   * Deletion rather than revocation: the old recording was not withdrawn, it
+   * was replaced, and there is no reason to keep a record that it existed.
+   */
+  async supersede(ownerId: VoiceOwnerId, keepVoiceProfileId: string): Promise<string[]> {
+    const superseded = this.profilesForOwner(ownerId)
+      .map((profile) => profile.voiceProfileId)
+      .filter((voiceProfileId) => voiceProfileId !== keepVoiceProfileId);
+    for (const voiceProfileId of superseded) {
+      await this.delete(voiceProfileId);
+    }
+    return superseded;
   }
 
   /**

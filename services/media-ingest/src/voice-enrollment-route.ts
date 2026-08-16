@@ -114,6 +114,16 @@ async function handleEnrollment(
   const enrolledLanguage = req.header('x-videofy-enrolled-language') ?? 'en';
   const voiceProfileId = req.params.voiceProfileId || deps.newVoiceProfileId();
 
+  // A profile that already exists must belong to the browser presenting it.
+  // Without this, knowing someone's profile id was enough to overwrite their
+  // enrollment with your own recording — and their calls would then have gone
+  // out in your voice. Absent profiles fall through: this route also creates
+  // one, and the store refuses anything that has not been consented to.
+  const existing = deps.store.get(voiceProfileId);
+  if (existing && existing.profile.ownerId !== ownerId) {
+    return { status: 404, body: { error: 'No voice was found for this browser.' } };
+  }
+
   // The store is the consent authority. If the profile does not exist, or
   // call-use consent has not been granted, it refuses and NOTHING is written.
   const attached = await deps.store.attachEnrollmentRecording(
@@ -157,6 +167,14 @@ async function handleEnrollment(
   }
 
   const ready = deps.store.accept(voiceProfileId, created.voiceAssetRef);
+  if (ready) {
+    // Recording again REPLACES a voice. Superseded enrolments are removed here
+    // rather than left behind, because an owner holding several voices is both
+    // a wrong answer to "which is theirs" and a pile of recordings nobody asked
+    // to keep. Only once the new one is genuinely usable, so a failed
+    // enrollment never costs someone the voice they already had.
+    await deps.store.supersede(ownerId, voiceProfileId);
+  }
   return {
     status: 201,
     body: { state: ready?.state ?? attached.state, personalVoiceReady: ready !== null },

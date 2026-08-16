@@ -1544,6 +1544,59 @@ export class ProcessingSessionStore {
   }
 
   /**
+   * Destroy audio already generated in a personal voice (P6.3 withdrawal).
+   *
+   * Withdrawing consent has to reach audio that EXISTS, not just audio not yet
+   * produced. Translated speech is generated ahead of playback and queued in
+   * every listener's browser, so a revocation that only changed future routing
+   * would let several more cloned utterances play out while the system
+   * considered itself compliant.
+   *
+   * The files are removed rather than the events rewritten, because the
+   * listeners holding those clips in a queue are other people's browsers and
+   * the only thing this process controls is whether the bytes are still there
+   * to fetch. A queued clip whose file is gone fails to load and is dropped by
+   * the player, which is the outcome consent withdrawal is asking for.
+   *
+   * Returns how many were destroyed, so the caller can say what happened
+   * instead of asserting it.
+   */
+  async purgePersonalVoiceAudio(personalVoiceId: string): Promise<number> {
+    let removed = 0;
+    for (const session of this.sessions.values()) {
+      const affected = session.generatedAudio.events.filter(
+        (event) => event.voiceId === personalVoiceId,
+      );
+      if (affected.length === 0) continue;
+
+      for (const event of affected) {
+        try {
+          await rm(
+            this.generatedAudioOutputPath(session.id, event.targetLanguage, event.sequence),
+            { force: true },
+          );
+          removed += 1;
+        } catch {
+          // A file that refuses to go is reported by not being counted. The
+          // route says how many were destroyed, never how many it meant to.
+        }
+      }
+
+      // The record stops advertising a clip that can no longer be played. The
+      // words are kept: the translation happened and denying it would be a
+      // different kind of dishonesty from the one this is preventing.
+      session.generatedAudio.events = session.generatedAudio.events.map((event) =>
+        event.voiceId === personalVoiceId
+          ? { ...event, status: 'failed' as const, error: 'Consent for this voice was withdrawn.' }
+          : event,
+      );
+      this.updateGeneratedAudioProgress(session);
+      this.emitSession(session);
+    }
+    return removed;
+  }
+
+  /**
    * P6.1B: remove a retired or ended native-call ingest session together with
    * its output directory, so call membership churn cannot accumulate stopped
    * sessions. Restricted to `call_` WebRTC sessions; programme sessions keep
