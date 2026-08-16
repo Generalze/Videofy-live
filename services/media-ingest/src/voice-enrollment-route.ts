@@ -14,7 +14,7 @@
  * identifies whose voice it is and travels to places recordings should not.
  */
 import type express from 'express';
-import { parseVoiceOwnerId } from '@videofy-live/participant-contracts';
+import type { AuthenticateRequest } from './account-authentication.js';
 import { declaredTypeMatches, detectAudioContainer } from './audio-container.js';
 import type { VoiceProfileStore } from './voice-profile-store.js';
 import type { VoiceProfileProvider } from './voice-profile-provider.js';
@@ -36,6 +36,12 @@ export interface VoiceEnrollmentRouteDependencies {
   readonly store: VoiceProfileStore;
   readonly provider: VoiceProfileProvider;
   readonly newVoiceProfileId: () => string;
+  /**
+   * Establishes who is calling from a verified session token. Injected so this
+   * route never learns how a token is signed, and so tests cannot accidentally
+   * exercise a different rule from the one production uses.
+   */
+  readonly authenticate: AuthenticateRequest;
 }
 
 interface EnrollmentOutcome {
@@ -92,11 +98,12 @@ async function handleEnrollment(
   req: express.Request,
   audio: Buffer,
 ): Promise<EnrollmentOutcome> {
-  // Ownership comes from the trusted prototype identity path only. A display
-  // name or participant id arriving in this header is refused by shape.
-  const ownerId = parseVoiceOwnerId(req.header('x-videofy-voice-owner'));
+  // Ownership comes from a verified session token and nowhere else. It used
+  // to come from a header the client simply asserted, which with real
+  // accounts would let anybody enrol into somebody else's voice.
+  const ownerId = deps.authenticate(req);
   if (!ownerId) {
-    return { status: 400, body: { error: 'This browser has no voice identity yet.' } };
+    return { status: 401, body: { error: 'Sign in to record your voice.' } };
   }
   if (audio.byteLength === 0) {
     return { status: 400, body: { error: 'Nothing was recorded.' } };

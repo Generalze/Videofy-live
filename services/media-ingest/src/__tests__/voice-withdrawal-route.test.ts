@@ -10,6 +10,7 @@
  * for the person it belongs to.
  */
 import express from 'express';
+import { parseVoiceOwnerId } from '@videofy-live/participant-contracts';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { registerVoiceWithdrawalRoutes } from '../voice-withdrawal-route.js';
@@ -20,8 +21,8 @@ import {
   type VoiceEnrollmentStoragePort,
 } from '../voice-profile-store.js';
 
-const OWNER = 'devid_aaaaaaaaaaaa';
-const INTRUDER = 'devid_bbbbbbbbbbbb';
+const OWNER = 'acct_aaaaaaaaaaaaaaaa';
+const INTRUDER = 'acct_bbbbbbbbbbbbbbbb';
 
 interface Harness {
   url: string;
@@ -64,6 +65,10 @@ async function createHarness(): Promise<Harness> {
   registerVoiceWithdrawalRoutes(app, {
     store,
     personalVoiceIdFor: personalVoiceId,
+    // The route's real authentication is a verified bearer token; these tests
+    // are about ownership rules, so they inject a stand-in that names the
+    // caller directly. Token verification has its own tests.
+    authenticate: (req) => parseVoiceOwnerId(req.header('x-videofy-voice-owner')),
     purgeGeneratedAudio: async (voiceId) => {
       purged.push(voiceId);
       return 2;
@@ -198,8 +203,8 @@ describe('a voice can only be taken back by its owner', () => {
   it('refuses a request with no voice identity at all', async () => {
     await enrolled(h, 'vp1', OWNER);
 
-    expect((await send(h, 'DELETE', '/voice-profiles/vp1')).status).toBe(400);
-    expect((await send(h, 'POST', '/voice-profiles/vp1/revocation')).status).toBe(400);
+    expect((await send(h, 'DELETE', '/voice-profiles/vp1')).status).toBe(401);
+    expect((await send(h, 'POST', '/voice-profiles/vp1/revocation')).status).toBe(401);
     expect(h.store.usableForOwner(OWNER)).not.toBeNull();
   });
 });

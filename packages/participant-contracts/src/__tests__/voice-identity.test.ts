@@ -1,7 +1,8 @@
 /** @author masterzee001 */
 import { describe, expect, it } from 'vitest';
 import {
-  createDevelopmentVoiceOwnerId,
+  createAccountId,
+  parseAccountId,
   parseVoiceOwnerId,
   VoiceOwnerIdSchema,
 } from '../voice-identity.js';
@@ -19,16 +20,29 @@ describe('voice ownership is not a call identity', () => {
     expect(parseVoiceOwnerId('calm-river-42')).toBeNull();
   });
 
-  it('accepts only an identity that was deliberately minted', () => {
-    const owner = createDevelopmentVoiceOwnerId(() => '0123456789ab');
+  it('accepts an account id, because the owner IS the account', () => {
+    const owner = createAccountId(() => '0123456789abcdef');
 
     expect(parseVoiceOwnerId(owner)).toBe(owner);
+    expect(parseAccountId(owner)).toBe(owner);
     expect(VoiceOwnerIdSchema.safeParse(owner).success).toBe(true);
   });
 
+  it('refuses the retired browser identity outright', () => {
+    // devid_ values were scoped to a browser profile rather than a person, so
+    // two people sharing one browser shared one voice. They are not
+    // grandfathered in: a voice recorded by whoever last used a machine is
+    // exactly the ownership problem accounts exist to end.
+    expect(parseVoiceOwnerId('devid_aaaaaaaaaaaa')).toBeNull();
+    expect(parseVoiceOwnerId('devid_0123456789abcdef')).toBeNull();
+  });
+
   it('refuses a prefix with nothing meaningful behind it', () => {
-    expect(parseVoiceOwnerId('devid_')).toBeNull();
-    expect(parseVoiceOwnerId('devid_x')).toBeNull();
+    expect(parseVoiceOwnerId('acct_')).toBeNull();
+    expect(parseVoiceOwnerId('acct_x')).toBeNull();
+    // Sixteen characters is the floor; fifteen is not close enough.
+    expect(parseVoiceOwnerId(`acct_${'a'.repeat(15)}`)).toBeNull();
+    expect(parseVoiceOwnerId(`acct_${'a'.repeat(16)}`)).not.toBeNull();
   });
 
   it('refuses a non-string outright', () => {

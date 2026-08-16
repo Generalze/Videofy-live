@@ -831,12 +831,12 @@ describe('voice ownership reaches the work order without caching a decision', ()
     // decision for the life of the media revision, so revoke and delete would
     // not take effect until the session restarted.
     const store = new CallSessionStore();
-    const zoe = mustJoin(store, { voiceOwnerId: 'devid_aaaaaaaaaaaa' });
+    const zoe = mustJoin(store, { voiceOwnerId: 'acct_aaaaaaaaaaaaaaaa' });
     const carlos = mustJoin(store, { displayName: 'Carlos', speakLanguage: 'es', hearLanguage: 'es' });
     if (!zoe.ok || !carlos.ok) throw new Error('join failed');
 
     const plan = carlos.ingestPlans.find((p) => p.ingestSessionId.includes(zoe.participantId));
-    expect(plan?.voiceOwnerId).toBe('devid_aaaaaaaaaaaa');
+    expect(plan?.voiceOwnerId).toBe('acct_aaaaaaaaaaaaaaaa');
     for (const voiceId of Object.values(plan?.voiceIdsByLanguage ?? {})) {
       expect(voiceId).not.toContain('personal:');
     }
@@ -859,7 +859,10 @@ describe('voice ownership reaches the work order without caching a decision', ()
     // never happens, with nothing anywhere explaining why.
     const store = new CallSessionStore();
 
-    for (const candidate of ['participant_1', 'Zoe Meak', 'devid_', '']) {
+    // `devid_…` is the retired browser identity: it is refused rather than
+    // grandfathered, because a voice recorded by whoever last used a browser is
+    // the ownership problem accounts exist to end.
+    for (const candidate of ['participant_1', 'Zoe Meak', 'devid_aaaaaaaaaaaa', 'acct_', '']) {
       const result = store.createOrJoin({
         callId: 'calm-river-42',
         displayName: 'Zoe',
@@ -878,9 +881,9 @@ describe('voice ownership reaches the work order without caching a decision', ()
     // It identifies whose voice may be spoken, so it must not travel in
     // call:state alongside display names.
     const store = new CallSessionStore();
-    const zoe = mustJoin(store, { voiceOwnerId: 'devid_aaaaaaaaaaaa' });
+    const zoe = mustJoin(store, { voiceOwnerId: 'acct_aaaaaaaaaaaaaaaa' });
     if (!zoe.ok) throw new Error('join failed');
 
-    expect(JSON.stringify(zoe.snapshot)).not.toContain('devid_');
+    expect(JSON.stringify(zoe.snapshot)).not.toContain('acct_0000000000000000');
   });
 });

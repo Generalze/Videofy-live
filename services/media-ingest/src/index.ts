@@ -4,6 +4,7 @@ import multer from 'multer';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
+import { requireSessionSecret } from '@videofy-live/account-tokens';
 import { loadConfig } from './config.js';
 import { registerGeneratedAudioDeliveryRoute } from './generated-audio-delivery-route.js';
 import { createUnavailablePersonalVoiceProvider } from './personal-voice-provider.js';
@@ -17,6 +18,10 @@ import { registerVoiceEnrollmentRoute } from './voice-enrollment-route.js';
 import { registerVoiceProfileInitRoute } from './voice-profile-init-route.js';
 import { createFileVoiceEnrollmentStorage } from './voice-enrollment-storage.js';
 import { createFileVoiceProfileRecords } from './voice-profile-records.js';
+import {
+  createRefusingAuthentication,
+  createTokenAuthentication,
+} from './account-authentication.js';
 import { reconcileVoiceMaterial } from './voice-material-reconciliation.js';
 import { VoiceProfileStore } from './voice-profile-store.js';
 import { registerSourceMediaDeliveryRoute } from './source-media-delivery-route.js';
@@ -127,7 +132,7 @@ app.use((req, res, next) => {
   // the browser preflight rejects the request before it is ever sent.
   res.setHeader(
     'Access-Control-Allow-Headers',
-    'Content-Type,Range,X-Videofy-Voice-Owner,X-Videofy-Enrolled-Language',
+    'Content-Type,Range,Authorization,X-Videofy-Enrolled-Language',
   );
   if (req.method === 'OPTIONS') {
     res.status(204).end();
@@ -509,18 +514,42 @@ app.post('/sessions/:sessionId/source-language', (req, res) => {
   }
 });
 
+/**
+ * Who is calling, from a verified session token.
+ *
+ * With no secret configured this refuses everybody rather than falling back to
+ * trusting a header. Failing closed costs the voice feature; failing open costs
+ * somebody their voice, because an unverified owner id is just a string the
+ * client chose.
+ */
+const authenticate = (() => {
+  const configured = process.env['VIDEOFY_AUTH_SECRET'];
+  if (!configured) {
+    logger.warn(
+      'VIDEOFY_AUTH_SECRET is not set; personal voice endpoints will refuse every request',
+    );
+    return createRefusingAuthentication();
+  }
+  return createTokenAuthentication(
+    requireSessionSecret(configured, 'VIDEOFY_AUTH_SECRET'),
+  );
+})();
+
 let voiceProfileSerial = 0;
 registerVoiceProfileInitRoute(app, {
   store: voiceProfileStore,
+  authenticate,
   newVoiceProfileId: () => `vp_${Date.now().toString(36)}_${++voiceProfileSerial}`,
 });
 registerVoiceEnrollmentRoute(app, {
   store: voiceProfileStore,
+  authenticate,
   provider: personalVoiceProvider,
   newVoiceProfileId: () => `vp_${Date.now().toString(36)}_${++voiceProfileSerial}`,
 });
 registerVoiceWithdrawalRoutes(app, {
   store: voiceProfileStore,
+  authenticate,
   personalVoiceIdFor: personalVoiceId,
   purgeGeneratedAudio: (voiceId) => ingest.purgePersonalVoiceAudio(voiceId),
 });

@@ -24,7 +24,7 @@ import {
   type VoiceEnrollmentStoragePort,
 } from '../voice-profile-store.js';
 
-const OWNER = 'devid_aaaaaaaaaaaa';
+const OWNER = 'acct_aaaaaaaaaaaaaaaa';
 /** A real WebM/Matroska EBML header, so the container probe agrees. */
 const AUDIO = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x01, 0x00, 0x00, 0x00]);
 

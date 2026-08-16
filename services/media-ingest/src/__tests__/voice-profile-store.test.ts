@@ -40,7 +40,7 @@ function createStorage() {
 }
 
 const CONSENT_VERSION = 'voice-consent-v1';
-const OWNER = 'devid_0123456789ab';
+const OWNER = 'acct_0123456789abbbbb';
 const AUDIO = new Uint8Array([1, 2, 3, 4]);
 
 describe('enrollment', () => {
@@ -336,7 +336,7 @@ describe('ownership survives the call it was created in', () => {
     const store = new VoiceProfileStore(storage.port, () => '2026-08-16T00:00:00.000Z');
     store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
 
-    expect(store.usableForOwner('devid_ffffffffffff')).toBeNull();
+    expect(store.usableForOwner('acct_ffffffffffffffff')).toBeNull();
   });
 });
 

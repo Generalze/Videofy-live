@@ -12,7 +12,7 @@ import {
 
 const NOW = '2026-08-16T00:00:00.000Z';
 /** A prototype identity, not a participant id — see voice-identity.ts. */
-const OWNER = 'devid_0123456789ab';
+const OWNER = 'acct_0123456789abcdef';
 
 function profile(overrides: Partial<VoiceProfile> = {}): VoiceProfile {
   return {

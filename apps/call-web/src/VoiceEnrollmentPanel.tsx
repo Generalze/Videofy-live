@@ -1,4 +1,5 @@
 import { useId } from 'react';
+import { VoiceAccountGate } from './VoiceAccountGate';
 
 /**
  * Personal voice enrollment.
@@ -40,6 +41,15 @@ export interface VoiceEnrollmentPanelProps {
    * not available yet — two contradictory sentences on screen at once.
    */
   personalVoiceReady: boolean;
+  /**
+   * Null until somebody signs in. A voice belongs to a person, so there is
+   * nobody to attach one to until this exists.
+   */
+  signedInEmail: string | null;
+  accountBusy: boolean;
+  accountError: string | null;
+  onAccountSubmit: (mode: 'sign-in' | 'sign-up', email: string, password: string) => void;
+  onSignOut: () => void;
   onCallUseChange: (granted: boolean) => void;
   onTrainingUseChange: (granted: boolean) => void;
   onStartRecording: () => void;
@@ -54,6 +64,7 @@ export function VoiceEnrollmentPanel(props: VoiceEnrollmentPanelProps) {
   const callUseId = useId();
   const trainingId = useId();
   const enrolled = props.stage === 'enrolled';
+  const signedIn = props.signedInEmail !== null;
 
   return (
     <div className="voice-enrollment-backdrop" role="presentation">
@@ -80,7 +91,16 @@ export function VoiceEnrollmentPanel(props: VoiceEnrollmentPanelProps) {
         </p>
       ) : null}
 
-      {enrolled ? (
+      {!signedIn ? (
+        // Everything below is unreachable until there is somebody to attach a
+        // voice to. Rendering the consent controls behind a disabled state
+        // instead would invite agreeing to something on nobody's behalf.
+        <VoiceAccountGate
+          busy={props.accountBusy}
+          error={props.accountError}
+          onSubmit={props.onAccountSubmit}
+        />
+      ) : enrolled ? (
         <div className="voice-enrollment-enrolled">
           <p className="voice-enrollment-state">
             {props.personalVoiceReady

@@ -1,5 +1,6 @@
 /** @owner masterzee001 */
 import express from 'express';
+import { parseVoiceOwnerId } from '@videofy-live/participant-contracts';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createUnavailablePersonalVoiceProvider } from '../personal-voice-provider.js';
@@ -13,7 +14,7 @@ import {
 } from '../voice-profile-store.js';
 import type { VoiceProfileProvider } from '../voice-profile-provider.js';
 
-const OWNER = 'devid_aaaaaaaaaaaa';
+const OWNER = 'acct_aaaaaaaaaaaaaaaa';
 const CONSENT_VERSION = 'voice-consent-v1';
 
 function createStorage() {
@@ -48,6 +49,10 @@ async function createHarness(provider?: VoiceProfileProvider): Promise<Harness> 
     store,
     provider: provider ?? createUnavailablePersonalVoiceProvider(),
     newVoiceProfileId: () => 'vp_generated',
+    // The route's real authentication is a verified bearer token; these tests
+    // are about ownership rules, so they inject a stand-in that names the
+    // caller directly. Token verification has its own tests.
+    authenticate: (req) => parseVoiceOwnerId(req.header('x-videofy-voice-owner')),
   });
   const server = app.listen(0);
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -150,7 +155,7 @@ describe('ownership is resolved from the trusted identity path', () => {
   it('refuses a participant id or display name in the owner header', async () => {
     for (const candidate of ['participant_1', 'Zoe Meak', 'socket-abc']) {
       const response = await post(harness, AUDIO, { 'x-videofy-voice-owner': candidate });
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(401);
     }
     expect(harness.recordings.size).toBe(0);
   });
@@ -162,7 +167,7 @@ describe('ownership is resolved from the trusted identity path', () => {
       body: AUDIO,
     });
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(401);
     expect(harness.recordings.size).toBe(0);
   });
 });
@@ -337,7 +342,7 @@ describe('a profile cannot be enrolled into by someone else', () => {
     harness.store.grantCallUse('vp1');
 
     const response = await post(harness, AUDIO, {
-      'x-videofy-voice-owner': 'devid_bbbbbbbbbbbb',
+      'x-videofy-voice-owner': 'acct_bbbbbbbbbbbbbbbb',
     });
 
     expect(response.status).toBe(404);

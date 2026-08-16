@@ -59,7 +59,7 @@ describe('buildCallJoinPayload', () => {
   it('carries an existing voice owner on both join and resume', () => {
     // Resume matters as much as join: a reconnect that dropped the owner would
     // silently move the speaker back to a standard voice mid-call.
-    const owner = 'devid_aabbccddeeff';
+    const owner = 'acct_aabbccddeeffffff';
 
     expect(buildCallJoinPayload(completedForm(), undefined, owner).voiceOwnerId).toBe(owner);
     expect(

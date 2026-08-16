@@ -52,13 +52,13 @@ function createFlow(
 }
 
 const BEGIN_INPUT = {
-  ownerId: 'devid_aaaaaaaaaaaa',
+  token: 'session-token',
   consentTextVersion: 'voice-consent-v1',
   trainingUseGranted: false,
 };
 
 const ACCEPT_INPUT = {
-  ownerId: 'devid_aaaaaaaaaaaa',
+  token: 'session-token',
   enrolledLanguage: 'en',
 };
 
@@ -190,7 +190,7 @@ describe('what is sent', () => {
     expect(upload).toHaveBeenCalledWith(
       expect.objectContaining({
         voiceProfileId: 'vp1',
-        ownerId: 'devid_aaaaaaaaaaaa',
+        token: 'session-token',
         enrolledLanguage: 'en',
         mimeType: 'audio/webm',
       }),
@@ -222,7 +222,7 @@ describe('consent is recorded before any audio exists', () => {
     await flow.begin({ ...BEGIN_INPUT, trainingUseGranted: true });
 
     expect(begin).toHaveBeenCalledWith({
-      ownerId: 'devid_aaaaaaaaaaaa',
+      token: 'session-token',
       consentTextVersion: 'voice-consent-v1',
       callUseGranted: true,
       trainingUseGranted: true,

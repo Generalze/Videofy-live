@@ -1,5 +1,5 @@
 {
-  "name": "@videofy-live/media-ingest",
+  "name": "@videofy-live/account",
   "version": "0.1.0",
   "private": true,
   "author": "masterzee001",
@@ -10,21 +10,18 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
   },
   "dependencies": {
-    "@videofy-live/ai-registry": "*",
-    "@videofy-live/shared-types": "*",
-    "express": "^4.19.2",
-    "multer": "^2.2.0",
-    "socket.io-client": "^4.7.5",
-    "@videofy-live/account-tokens": "*"
+    "@videofy-live/account-tokens": "*",
+    "@videofy-live/participant-contracts": "*",
+    "express": "^4.19.2"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
-    "@types/multer": "^2.2.0",
     "@types/node": "^22.0.0",
-    "tsx": "^4.17.0",
+    "tsx": "^4.16.2",
     "typescript": "^5.5.4",
     "vitest": "^2.1.9"
   }

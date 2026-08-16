@@ -35,7 +35,7 @@ export interface EnrollmentUploadResult {
  */
 export interface EnrollmentInitializer {
   begin(input: {
-    ownerId: string;
+    token: string;
     consentTextVersion: string;
     callUseGranted: boolean;
     trainingUseGranted: boolean;
@@ -45,7 +45,7 @@ export interface EnrollmentInitializer {
 export interface EnrollmentUploader {
   upload(input: {
     voiceProfileId: string;
-    ownerId: string;
+    token: string;
     blob: Blob;
     mimeType: string;
     enrolledLanguage: string;
@@ -64,12 +64,12 @@ export interface VoiceDeletionResult {
 /**
  * Erasing a voice.
  *
- * Owner-scoped, not profile-scoped: a browser coming back tomorrow knows its
- * identity and not which profile it once created, so a delete keyed on the
+ * Account-scoped, not profile-scoped: a client signing in tomorrow knows its
+ * account and not which profile it once created, so a delete keyed on the
  * profile id would work exactly once — in the session that made it.
  */
 export interface VoiceDeleter {
-  deleteAll(ownerId: string): Promise<VoiceDeletionResult>;
+  deleteAll(token: string): Promise<VoiceDeletionResult>;
 }
 
 export interface EnrollmentFlowState {
@@ -106,7 +106,7 @@ export class VoiceEnrollmentFlow {
    * inspecting a screen must not manufacture a consent record.
    */
   async begin(input: {
-    ownerId: string;
+    token: string;
     consentTextVersion: string;
     trainingUseGranted: boolean;
   }): Promise<boolean> {
@@ -163,7 +163,7 @@ export class VoiceEnrollmentFlow {
    * that personal voice is unavailable, and this reports the same thing rather
    * than showing a success that would be a lie.
    */
-  async accept(input: { ownerId: string; enrolledLanguage: string }): Promise<void> {
+  async accept(input: { token: string; enrolledLanguage: string }): Promise<void> {
     const recording = this.recording;
     const voiceProfileId = this.voiceProfileId;
     if (!voiceProfileId) {
@@ -181,7 +181,7 @@ export class VoiceEnrollmentFlow {
     this.emit({ stage: 'saving', previewUrl: recording.previewUrl, error: null, personalVoiceReady: false });
     const result = await this.uploader.upload({
       voiceProfileId,
-      ownerId: input.ownerId,
+      token: input.token,
       enrolledLanguage: input.enrolledLanguage,
       blob: recording.blob,
       mimeType: recording.mimeType,
@@ -230,7 +230,7 @@ export function createEnrollmentInitializer(ingestUrl: string): EnrollmentInitia
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            'x-videofy-voice-owner': input.ownerId,
+            authorization: `Bearer ${input.token}`,
           },
           body: JSON.stringify({
             consentTextVersion: input.consentTextVersion,
@@ -257,11 +257,11 @@ export function createEnrollmentInitializer(ingestUrl: string): EnrollmentInitia
  */
 export function createVoiceDeleter(ingestUrl: string): VoiceDeleter {
   return {
-    async deleteAll(ownerId) {
+    async deleteAll(token) {
       try {
         const response = await fetch(`${ingestUrl}/voice-profiles`, {
           method: 'DELETE',
-          headers: { 'x-videofy-voice-owner': ownerId },
+          headers: { authorization: `Bearer ${token}` },
         });
         const body = (await response.json().catch(() => ({}))) as {
           nothingLeft?: boolean;
@@ -294,7 +294,7 @@ export function createVoiceDeleter(ingestUrl: string): VoiceDeleter {
 /** Posts to the media-ingest enrollment endpoint. */
 export function createEnrollmentUploader(ingestUrl: string): EnrollmentUploader {
   return {
-    async upload({ voiceProfileId, ownerId, blob, mimeType, enrolledLanguage }) {
+    async upload({ voiceProfileId, token, blob, mimeType, enrolledLanguage }) {
       try {
         const response = await fetch(
           `${ingestUrl}/voice-profiles/${encodeURIComponent(voiceProfileId)}/enrollment`,
@@ -302,7 +302,7 @@ export function createEnrollmentUploader(ingestUrl: string): EnrollmentUploader 
             method: 'POST',
             headers: {
               'content-type': mimeType,
-              'x-videofy-voice-owner': ownerId,
+              authorization: `Bearer ${token}`,
               'x-videofy-enrolled-language': enrolledLanguage,
             },
             body: blob,

@@ -29,8 +29,8 @@ import type {
   TextToSpeechProviderInput,
 } from '../text-to-speech-provider.js';
 
-const OWNER_A = 'devid_aaaaaaaaaaaa';
-const OWNER_B = 'devid_bbbbbbbbbbbb';
+const OWNER_A = 'acct_aaaaaaaaaaaaaaaa';
+const OWNER_B = 'acct_bbbbbbbbbbbbbbbb';
 /** The session's own standard voice, distinct from the service-wide default. */
 const SESSION_STANDARD_VOICE = 'es_ES-sharvard-female';
 const SERVICE_DEFAULT_VOICE = 'en_US-default';
@@ -426,9 +426,9 @@ describe('the owner never leaks out of media-ingest', () => {
 
     // ProcessingSession is what the HTTP routes return and what is pushed to
     // the operator dashboard, so the owner must be reachable through neither.
-    expect(JSON.stringify(h.sessions.get(sessionId))).not.toContain('devid_');
+    expect(JSON.stringify(h.sessions.get(sessionId))).not.toContain('acct_0000000000000000');
     expect(h.emitted.length).toBeGreaterThan(0);
-    expect(JSON.stringify(h.emitted)).not.toContain('devid_');
+    expect(JSON.stringify(h.emitted)).not.toContain('acct_0000000000000000');
   });
 
   it('refuses a session whose owner id is not a real voice identity', async () => {

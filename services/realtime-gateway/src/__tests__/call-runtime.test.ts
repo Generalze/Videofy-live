@@ -452,13 +452,13 @@ describe('CallRuntime join and ingest plan handling', () => {
     // whose voice it was allowed to speak in.
     await join(harness, new FakeSocket('socket-a'), {
       ...JOIN_A,
-      voiceOwnerId: 'devid_aaaaaaaaaaaa',
+      voiceOwnerId: 'acct_aaaaaaaaaaaaaaaa',
     });
     await join(harness, new FakeSocket('socket-b'), { ...JOIN_B });
 
     const [ana] = harness.ingestControl.createSession.mock.calls[0]!;
     const [beto] = harness.ingestControl.createSession.mock.calls[1]!;
-    expect(ana.voiceOwnerId).toBe('devid_aaaaaaaaaaaa');
+    expect(ana.voiceOwnerId).toBe('acct_aaaaaaaaaaaaaaaa');
     // Beto never enrolled, so the field is absent rather than empty — an
     // owner id on his session would be somebody else's voice.
     expect('voiceOwnerId' in beto).toBe(false);
@@ -470,11 +470,11 @@ describe('CallRuntime join and ingest plan handling', () => {
   it('never puts the voice owner in anything the room can see', async () => {
     await join(harness, new FakeSocket('socket-a'), {
       ...JOIN_A,
-      voiceOwnerId: 'devid_aaaaaaaaaaaa',
+      voiceOwnerId: 'acct_aaaaaaaaaaaaaaaa',
     });
     await join(harness, new FakeSocket('socket-b'), { ...JOIN_B });
 
-    expect(JSON.stringify(harness.emitToRoom.mock.calls)).not.toContain('devid_');
+    expect(JSON.stringify(harness.emitToRoom.mock.calls)).not.toContain('acct_0000000000000000');
   });
 
   it('uses a synthetic other-language target and no voice overrides for a same-language pair', async () => {

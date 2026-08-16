@@ -11,6 +11,13 @@ function render(overrides: Partial<VoiceEnrollmentPanelProps> = {}): string {
     error: null,
     deletionInProgress: false,
     personalVoiceReady: false,
+    // Signed in by default: these tests are about the consent and recording
+    // screens, which do not exist until somebody is.
+    signedInEmail: 'zoe@example.com',
+    accountBusy: false,
+    accountError: null,
+    onAccountSubmit: vi.fn(),
+    onSignOut: vi.fn(),
     onCallUseChange: vi.fn(),
     onTrainingUseChange: vi.fn(),
     onStartRecording: vi.fn(),
@@ -92,7 +99,7 @@ describe('what the speaker is never shown', () => {
       error: 'Your voice could not be saved. Please try again.',
     });
 
-    expect(html).not.toMatch(/devid_|asset_|\.wav|rec_|piper|whisper|voiceProfileId/i);
+    expect(html).not.toMatch(/acct_0000000000000000|asset_|\.wav|rec_|piper|whisper|voiceProfileId/i);
   });
 
   it('says deletion is being completed without exposing what survived', () => {

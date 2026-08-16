@@ -4,7 +4,7 @@
   "private": true,
   "author": "masterzee001",
   "license": "SEE LICENSE IN LICENSE.md",
-  "description": "Videofy Live \u2013 real-time multilingual video streaming and audio interpretation platform",
+  "description": "Videofy Live – real-time multilingual video streaming and audio interpretation platform",
   "workspaces": [
     "apps/*",
     "packages/*",
@@ -12,7 +12,8 @@
     "services/language-router",
     "services/call-session",
     "services/realtime-gateway",
-    "services/media-ingest"
+    "services/media-ingest",
+    "services/account"
   ],
   "scripts": {
     "dev": "concurrently -n gateway,ingest,listener,operator,call -c cyan,yellow,green,magenta,blue \"npm run dev -w services/realtime-gateway\" \"npm run dev -w services/media-ingest\" \"npm run dev -w apps/listener-web\" \"npm run dev -w apps/operator-web\" \"npm run dev -w apps/call-web\"",

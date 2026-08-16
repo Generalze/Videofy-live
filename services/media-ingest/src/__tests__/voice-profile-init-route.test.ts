@@ -1,5 +1,6 @@
 /** @owner masterzee001 */
 import express from 'express';
+import { parseVoiceOwnerId } from '@videofy-live/participant-contracts';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mayUseForTraining } from '@videofy-live/participant-contracts';
@@ -9,7 +10,7 @@ import {
   type VoiceEnrollmentStoragePort,
 } from '../voice-profile-store.js';
 
-const OWNER = 'devid_aaaaaaaaaaaa';
+const OWNER = 'acct_aaaaaaaaaaaaaaaa';
 
 const storagePort: VoiceEnrollmentStoragePort = {
   writeEnrollmentRecording: async () => 'rec_1',
@@ -32,6 +33,10 @@ async function createHarness(): Promise<Harness> {
   registerVoiceProfileInitRoute(app, {
     store,
     newVoiceProfileId: () => `vp_${++serial}`,
+    // The route's real authentication is a verified bearer token; these tests
+    // are about consent rules, so they inject a stand-in that names the caller
+    // directly. Token verification has its own tests.
+    authenticate: (req) => parseVoiceOwnerId(req.header('x-videofy-voice-owner')),
   });
   const server = app.listen(0);
   await new Promise<void>((resolve) => server.once('listening', resolve));
@@ -134,7 +139,9 @@ describe('starting an enrollment', () => {
         { consentTextVersion: 'voice-consent-v1', callUseGranted: true },
         { 'x-videofy-voice-owner': candidate },
       );
-      expect(response.status).toBe(400);
+      // Unauthenticated, not malformed: nothing about the request was wrong
+      // except that it did not establish who was making it.
+      expect(response.status).toBe(401);
     }
     expect(harness.store.get('vp_1')).toBeNull();
   });

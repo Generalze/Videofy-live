@@ -22,7 +22,8 @@
  * A log line naming any of them would preserve exactly what was just withdrawn.
  */
 import type express from 'express';
-import { parseVoiceOwnerId, type VoiceOwnerId } from '@videofy-live/participant-contracts';
+import type { VoiceOwnerId } from '@videofy-live/participant-contracts';
+import type { AuthenticateRequest } from './account-authentication.js';
 import { isDeletionComplete, type VoiceProfileStore } from './voice-profile-store.js';
 
 export interface VoiceWithdrawalRouteDependencies {
@@ -35,6 +36,12 @@ export interface VoiceWithdrawalRouteDependencies {
   readonly personalVoiceIdFor: (voiceProfileId: string) => string;
   /** Destroy generated audio spoken in that voice; returns how many went. */
   readonly purgeGeneratedAudio: (personalVoiceId: string) => Promise<number>;
+  /**
+   * Establishes who is calling from a verified session token. Injected so this
+   * route never learns how a token is signed, and so tests cannot accidentally
+   * exercise a different rule from the one production uses.
+   */
+  readonly authenticate: AuthenticateRequest;
 }
 
 /**
@@ -44,7 +51,7 @@ export interface VoiceWithdrawalRouteDependencies {
  * given profile id exists, which is a question only its owner should be able
  * to ask.
  */
-const NOT_FOUND = { error: 'No voice was found for this browser.' } as const;
+const NOT_FOUND = { error: 'No voice was found for this account.' } as const;
 
 type Resolved =
   | { readonly ok: true; readonly ownerId: VoiceOwnerId; readonly voiceProfileId: string }
@@ -54,9 +61,9 @@ function resolveOwnedProfile(
   deps: VoiceWithdrawalRouteDependencies,
   req: express.Request,
 ): Resolved {
-  const ownerId = parseVoiceOwnerId(req.header('x-videofy-voice-owner'));
+  const ownerId = deps.authenticate(req);
   if (!ownerId) {
-    return { ok: false, status: 400, body: { error: 'This browser has no voice identity yet.' } };
+    return { ok: false, status: 401, body: { error: 'Sign in to continue.' } };
   }
   const voiceProfileId = req.params.voiceProfileId ?? '';
   if (!voiceProfileId) {
@@ -109,11 +116,11 @@ export function registerVoiceWithdrawalRoutes(
   });
 
   /**
-   * "Delete my voice" — everything this browser's identity holds.
+   * "Delete my voice" — everything this account holds.
    *
    * Owner-scoped rather than profile-scoped because that is the question the
-   * person is actually asking, and because a browser returning tomorrow knows
-   * its owner id and not which profile it once created. A profile-only endpoint
+   * person is actually asking, and because a client signing in tomorrow knows
+   * its account and not which profile it once created. A profile-only endpoint
    * would work exactly once, in the session that made it.
    *
    * Deleting nothing is a success. Someone who asks to be erased and never
@@ -121,9 +128,9 @@ export function registerVoiceWithdrawalRoutes(
    * caller to treat their absence as an error.
    */
   app.delete('/voice-profiles', (req, res) => {
-    const ownerId = parseVoiceOwnerId(req.header('x-videofy-voice-owner'));
+    const ownerId = deps.authenticate(req);
     if (!ownerId) {
-      res.status(400).json({ error: 'This browser has no voice identity yet.' });
+      res.status(401).json({ error: 'Sign in to continue.' });
       return;
     }
 

@@ -71,11 +71,13 @@ import {
   type EnrollmentFlowState,
 } from './voiceEnrollmentFlow';
 import {
-  clearVoiceOwnerId,
-  defaultOwnerStorage,
-  existingVoiceOwnerId,
-  resolveVoiceOwnerId,
-} from './voiceOwnerIdentity';
+  clearAccountSession,
+  createAccountClient,
+  defaultSessionStorage,
+  readAccountSession,
+  writeAccountSession,
+  type AccountSession,
+} from './accountSession';
 
 const ACK_TIMEOUT_MS = 8_000;
 const SDP_ACK_TIMEOUT_MS = 10_000;
@@ -132,6 +134,13 @@ export default function App() {
   const [enrollmentState, setEnrollmentState] =
     useState<EnrollmentFlowState>(INITIAL_ENROLLMENT_STATE);
   const [voiceDeletionInProgress, setVoiceDeletionInProgress] = useState(false);
+  // Restored from storage on load, so signing in survives a refresh. Being
+  // signed out by pressing reload is how people end up writing passwords down.
+  const [accountSession, setAccountSession] = useState<AccountSession | null>(() =>
+    readAccountSession(defaultSessionStorage()),
+  );
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
   const enrollmentFlowRef = useRef<VoiceEnrollmentFlow | null>(null);
 
   const enrollmentFlow = (): VoiceEnrollmentFlow => {
@@ -146,16 +155,63 @@ export default function App() {
     return enrollmentFlowRef.current;
   };
 
-  /** The owner identity, minted on first affirmative use rather than on open. */
-  const requireOwnerId = (): string | null => {
-    const ownerId = resolveVoiceOwnerId(defaultOwnerStorage());
-    if (!ownerId) {
+  /**
+   * The signed-in account, or null.
+   *
+   * A voice belongs to a person, so enrolling one requires proving who you are.
+   * Joining a call does not: translation is the product, and a login wall in
+   * front of a conversation would charge everybody for a feature most of them
+   * are not using.
+   */
+  const requireSession = (): AccountSession | null => {
+    const session = accountSession;
+    if (!session) {
       setEnrollmentState({
         ...INITIAL_ENROLLMENT_STATE,
-        error: 'This browser cannot store a voice identity.',
+        error: 'Sign in to record your voice.',
       });
     }
-    return ownerId;
+    return session;
+  };
+
+  /**
+   * Sign in or sign up, depending on which the person asked for.
+   *
+   * Both land in the same place — a session — so they share a path. A failure
+   * leaves the form exactly as it was: retyping a password because the server
+   * was unreachable is a punishment for the server's problem.
+   */
+  const handleAccountSubmit = (
+    mode: 'sign-in' | 'sign-up',
+    email: string,
+    password: string,
+  ): void => {
+    setAccountBusy(true);
+    setAccountError(null);
+    const client = createAccountClient();
+    void (mode === 'sign-up' ? client.register({ email, password }) : client.signIn({ email, password }))
+      .then((result) => {
+        if (!result.ok) {
+          // The server's wording is shown unchanged: it is deliberately the
+          // same for a wrong password and an unknown address.
+          setAccountError(result.message);
+          return;
+        }
+        writeAccountSession(defaultSessionStorage(), result.session);
+        setAccountSession(result.session);
+        setEnrollmentState(INITIAL_ENROLLMENT_STATE);
+      })
+      .finally(() => setAccountBusy(false));
+  };
+
+  const handleSignOut = (): void => {
+    const current = accountSession;
+    // Cleared locally first and unconditionally. Somebody asking to sign out on
+    // a shared machine must not stay signed in because the network was down.
+    clearAccountSession(defaultSessionStorage());
+    setAccountSession(null);
+    setEnrollmentState(INITIAL_ENROLLMENT_STATE);
+    if (current) void createAccountClient().signOut(current);
   };
 
   /**
@@ -167,8 +223,8 @@ export default function App() {
    * arrived at from the interface instead.
    */
   const handleDeleteVoice = (): void => {
-    const ownerId = existingVoiceOwnerId(defaultOwnerStorage());
-    if (!ownerId) {
+    const session = accountSession;
+    if (!session) {
       // Nothing was ever enrolled from this browser, so there is nothing to
       // erase and the honest thing is to say it is already gone.
       enrollmentFlow().reRecord();
@@ -178,7 +234,7 @@ export default function App() {
     }
     setVoiceDeletionInProgress(true);
     void createVoiceDeleter(readIngestUrl())
-      .deleteAll(ownerId)
+      .deleteAll(session.token)
       .then((result) => {
         if (!result.acknowledged) {
           // The voice stays exactly as it was, and so does the interface. A
@@ -190,7 +246,9 @@ export default function App() {
           });
           return;
         }
-        clearVoiceOwnerId(defaultOwnerStorage());
+        // The account survives; only the voice is gone. Signing somebody out
+        // because they deleted a recording would be a different action from
+        // the one they asked for.
         enrollmentFlow().reRecord();
         setVoiceCallUseGranted(false);
         setVoiceTrainingGranted(false);
@@ -203,13 +261,13 @@ export default function App() {
   };
 
   const handleStartVoiceRecording = (): void => {
-    const ownerId = requireOwnerId();
-    if (!ownerId) return;
+    const session = requireSession();
+    if (!session) return;
     void (async () => {
       // Consent is recorded server-side BEFORE any audio exists. Opening the
       // panel creates nothing; proceeding to record is the affirmative act.
       const started = await enrollmentFlow().begin({
-        ownerId,
+        token: session.token,
         consentTextVersion: VOICE_CONSENT_TEXT_VERSION,
         trainingUseGranted: voiceTrainingGranted,
       });
@@ -218,9 +276,9 @@ export default function App() {
   };
 
   const handleAcceptVoice = (): void => {
-    const ownerId = requireOwnerId();
-    if (!ownerId) return;
-    void enrollmentFlow().accept({ ownerId, enrolledLanguage: form.speakLanguage });
+    const session = requireSession();
+    if (!session) return;
+    void enrollmentFlow().accept({ token: session.token, enrolledLanguage: form.speakLanguage });
   };
 
   const handleCloseVoiceEnrollment = (): void => {
@@ -448,7 +506,9 @@ export default function App() {
       token !== null ? { participantId: active.participantId, resumeToken: token } : undefined,
       // Re-read rather than captured at join: someone who enrolled mid-call
       // gets their voice from the reconnect onward instead of never.
-      existingVoiceOwnerId(defaultOwnerStorage()),
+      // Re-read rather than captured at join: somebody who signs in mid-call
+      // gets their voice from the reconnect onward instead of never.
+      readAccountSession(defaultSessionStorage())?.accountId ?? null,
     );
     void (async () => {
       try {
@@ -574,7 +634,7 @@ export default function App() {
       const storage = defaultResumeStorage();
       // Only an identity this browser already had. Someone who has never
       // enrolled joins without one, exactly as before.
-      const voiceOwnerId = existingVoiceOwnerId(defaultOwnerStorage());
+      const voiceOwnerId = accountSession?.accountId ?? null;
       const freshPayload = buildCallJoinPayload(form, undefined, voiceOwnerId);
       // A stored resume entry for this call (e.g. after a page reload) means
       // we resume the previous seat instead of joining fresh.
@@ -706,6 +766,11 @@ export default function App() {
           previewUrl={enrollmentState.previewUrl}
           error={enrollmentState.error}
           deletionInProgress={voiceDeletionInProgress}
+          signedInEmail={accountSession ? 'signed in' : null}
+          accountBusy={accountBusy}
+          accountError={accountError}
+          onAccountSubmit={handleAccountSubmit}
+          onSignOut={handleSignOut}
           personalVoiceReady={enrollmentState.personalVoiceReady}
           onCallUseChange={setVoiceCallUseGranted}
           onTrainingUseChange={setVoiceTrainingGranted}

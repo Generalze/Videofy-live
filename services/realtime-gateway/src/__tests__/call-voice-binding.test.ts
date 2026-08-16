@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { VoiceProfile } from '@videofy-live/participant-contracts';
 import { CallVoiceBindings, type VoiceProfileLookup } from '../call-voice-binding.js';
 
-const OWNER_A = 'devid_aaaaaaaaaaaa';
-const OWNER_B = 'devid_bbbbbbbbbbbb';
+const OWNER_A = 'acct_aaaaaaaaaaaaaaaa';
+const OWNER_B = 'acct_bbbbbbbbbbbbbbbb';
 const NOW = '2026-08-16T00:00:00.000Z';
 
 function profile(voiceProfileId: string, ownerId: string): VoiceProfile {

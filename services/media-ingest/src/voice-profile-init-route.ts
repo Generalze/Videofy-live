@@ -14,12 +14,18 @@
  * Nothing is logged. The owner id alone identifies whose voice this is.
  */
 import type express from 'express';
-import { parseVoiceOwnerId } from '@videofy-live/participant-contracts';
+import type { AuthenticateRequest } from './account-authentication.js';
 import type { VoiceProfileStore } from './voice-profile-store.js';
 
 export interface VoiceProfileInitDependencies {
   readonly store: VoiceProfileStore;
   readonly newVoiceProfileId: () => string;
+  /**
+   * Establishes who is calling from a verified session token. Injected so this
+   * route never learns how a token is signed, and so tests cannot accidentally
+   * exercise a different rule from the one production uses.
+   */
+  readonly authenticate: AuthenticateRequest;
 }
 
 export function registerVoiceProfileInitRoute(
@@ -33,9 +39,9 @@ export function registerVoiceProfileInitRoute(
       trainingUseGranted?: unknown;
     };
 
-    const ownerId = parseVoiceOwnerId(req.header('x-videofy-voice-owner'));
+    const ownerId = deps.authenticate(req);
     if (!ownerId) {
-      res.status(400).json({ error: 'This browser has no voice identity yet.' });
+      res.status(401).json({ error: 'Sign in to record your voice.' });
       return;
     }
 
