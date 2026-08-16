@@ -2149,7 +2149,7 @@ export default function App(): React.ReactElement {
             <p className={styles.liveText}>
               {generatedAudioEvents[generatedAudioEvents.length - 1]?.translatedText ||
                 generatedAudio?.providerStatus ||
-                'Piper audio will be delivered to viewers after translation.'}
+                'Translated speech will be delivered to viewers after translation.'}
             </p>
           </section>
         </section>
