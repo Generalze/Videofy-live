@@ -169,6 +169,11 @@ tmp/audio/
 generated_speech/
 recordings/
 uploads/
+# Personal voice enrollment material: biometric data about a specific person.
+# It must never reach Git, and the directory is named here so an accidental
+# `git add -A` cannot carry it in.
+voice-enrollment/
+*.enrollment.wav
 *.wav
 *.mp3
 *.ogg
