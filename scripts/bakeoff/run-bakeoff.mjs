@@ -13,9 +13,10 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { CORPUS, NIGERIAN_ACCENT_GAP, corpusFor } from './corpus.mjs';
+import { ACCENT_TIER, CORPUS, TIERS, availableAccentUtterances, corpusFor } from './corpus.mjs';
 import { scoreUtterance, summarize } from './metrics.mjs';
 import { assertProvider } from './provider-contract.mjs';
+import { createAzureSpeechProvider } from './providers/azure-speech.mjs';
 import { createBaselineBatchProvider } from './providers/baseline-batch.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..', '..');
@@ -39,7 +40,11 @@ loadEnvFile(join(ROOT, '.env'));
 const pairArg = process.argv.includes('--pair')
   ? process.argv[process.argv.indexOf('--pair') + 1]
   : null;
-const utterances = corpusFor(pairArg);
+const synthetic = corpusFor(pairArg);
+// Real recordings are scored the moment they appear; until then the tier is
+// reported UNMEASURED rather than quietly skipped.
+const accent = availableAccentUtterances((name) => existsSync(join(AUDIO_DIR, name)));
+const utterances = [...synthetic, ...accent];
 
 /** Synthesises corpus audio once; reused by every provider so input is identical. */
 function ensureCorpusAudio() {
@@ -56,7 +61,7 @@ function ensureCorpusAudio() {
   }
 
   let built = 0;
-  for (const utterance of utterances) {
+  for (const utterance of synthetic) {
     const ready = join(AUDIO_DIR, `${utterance.id}.wav`);
     if (existsSync(ready)) continue;
     const model = voices.get(utterance.sourceLanguage);
@@ -93,6 +98,10 @@ function pct(value) {
 }
 
 function report(summaries) {
+  console.log('');
+  for (const [tier, means] of Object.entries(TIERS)) {
+    console.log(`tier ${tier.padEnd(10)} ${means}`);
+  }
   for (const summary of summaries) {
     console.log(`\n${'='.repeat(64)}\n${summary.provider}  (${summary.utterances} utterances)`);
     console.log('  latency            p50      p90      p95');
@@ -120,8 +129,13 @@ function report(summaries) {
     if (e.note) console.log(`    note                         ${e.note}`);
   }
   console.log(`\n${'='.repeat(64)}`);
-  console.log(`UNMEASURED  ${NIGERIAN_ACCENT_GAP.dimension}: ${NIGERIAN_ACCENT_GAP.reason}`);
-  console.log(`            ${NIGERIAN_ACCENT_GAP.howToSupply}`);
+  if (accent.length === 0) {
+    console.log(`UNMEASURED  ${ACCENT_TIER.dimension}: ${ACCENT_TIER.reason}`);
+    console.log(`            ${ACCENT_TIER.howToSupply}`);
+    console.log('            No vendor verdict may be issued while this tier is unmeasured.');
+  } else {
+    console.log(`accent tier: ${accent.length}/${ACCENT_TIER.utterances.length} recordings present and scored`);
+  }
 }
 
 const built = ensureCorpusAudio();
@@ -130,8 +144,14 @@ console.log(
 );
 
 const providers = [createBaselineBatchProvider({ stagingDir: STAGING, audioDir: AUDIO_DIR })];
-// Azure and OpenAI adapters register here once credentials exist; the runner and
-// the scoring do not change to accommodate them, which is the point.
+if (process.env['AZURE_SPEECH_KEY'] && process.env['AZURE_SPEECH_REGION']) {
+  // Both passes run, and both are reported. The tuned pass never replaces the
+  // default one: they answer different questions.
+  providers.push(createAzureSpeechProvider({ mode: 'default', audioDir: AUDIO_DIR, corpus: utterances }));
+  providers.push(createAzureSpeechProvider({ mode: 'hinted', audioDir: AUDIO_DIR, corpus: utterances }));
+} else {
+  console.log('azure: skipped (set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION to include it)');
+}
 
 const runs = [];
 for (const provider of providers) {
@@ -153,7 +173,8 @@ writeFileSync(
       // Per-utterance detail is the point of keeping evidence: a surprising
       // summary must be traceable to what was actually said and heard.
       utterances: Object.fromEntries(runs.map((run) => [run.summary.provider, run.scored])),
-      unmeasured: [NIGERIAN_ACCENT_GAP],
+      tiers: TIERS,
+      accentTier: accent.length === 0 ? ACCENT_TIER : { ...ACCENT_TIER, status: 'measured', scored: accent.length },
     },
     null,
     2,
