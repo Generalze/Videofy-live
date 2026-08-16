@@ -765,24 +765,30 @@ select {
   }
 }
 
-/*
- * Sits under the "I speak" picker because it changes what that picker means:
- * ticking it greys the picker out and hands the decision to the first sentence.
- */
-.detect-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
+/* Explains the chosen audio mode now that the three cards are folded away. */
+.field-hint {
   color: var(--color-text-muted);
   font-size: 0.82rem;
-  cursor: pointer;
+  line-height: 1.4;
 }
 
-.detect-toggle input {
-  accent-color: var(--color-brand);
+.invite-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
+.invite-row .ghost-button {
+  padding: 8px 14px;
+}
+
+.invite-hint {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+button:disabled,
 select:disabled {
   opacity: 0.55;
   cursor: not-allowed;

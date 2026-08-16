@@ -2,8 +2,11 @@ import {
   CALL_AUDIO_MODES,
   CALL_LANGUAGES,
   CALL_VOICE_OPTIONS,
+  DETECT_LANGUAGE,
+  speakChoiceOf,
   type CallJoinFormErrors,
   type CallJoinFormState,
+  type SpeakLanguageChoice,
 } from './callFormState';
 import type {
   CallAudioMode,
@@ -18,11 +21,13 @@ export interface PreJoinScreenProps {
   micPermission: MicPermissionState;
   joinBusy: boolean;
   joinError: string | null;
+  /** True briefly after the invite link is copied, so the button can confirm. */
+  inviteCopied: boolean;
   onDisplayNameChange: (value: string) => void;
   onCallCodeChange: (value: string) => void;
   onGenerateCode: () => void;
-  onSpeakLanguageChange: (language: CallLanguage) => void;
-  onDetectLanguageToggle: (enabled: boolean) => void;
+  onSpeakChoiceChange: (choice: SpeakLanguageChoice) => void;
+  onCopyInvite: () => void;
   onHearLanguageChange: (language: CallLanguage) => void;
   onCaptionsToggle: (enabled: boolean) => void;
   onVoiceGenderChange: (voice: CallVoiceGender) => void;
@@ -33,6 +38,7 @@ export interface PreJoinScreenProps {
 
 export function PreJoinScreen(props: PreJoinScreenProps) {
   const { form, errors } = props;
+  const audioMode = CALL_AUDIO_MODES.find((mode) => mode.value === form.audioMode);
 
   return (
     <main className="prejoin">
@@ -85,6 +91,18 @@ export function PreJoinScreen(props: PreJoinScreenProps) {
             </button>
           </div>
           {errors?.callCode ? <p className="field-error">{errors.callCode}</p> : null}
+          {/* The code is what you read out; the link is what you send. */}
+          <div className="invite-row">
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={props.onCopyInvite}
+              disabled={form.callCode.trim() === ''}
+            >
+              {props.inviteCopied ? 'Invite link copied' : 'Copy invite link'}
+            </button>
+            <span className="invite-hint">Opens the call for whoever you send it to.</span>
+          </div>
         </div>
 
         <div className="language-grid">
@@ -92,29 +110,21 @@ export function PreJoinScreen(props: PreJoinScreenProps) {
             <label className="field-label" htmlFor="speak-language">
               I speak
             </label>
+            {/* Detection is a choice of language, not a switch beside one: the
+                control shows what will actually happen instead of naming a
+                language that would be silently corrected later. */}
             <select
               id="speak-language"
-              value={form.speakLanguage}
-              disabled={form.detectSpeakLanguage}
-              onChange={(event) => props.onSpeakLanguageChange(event.target.value as CallLanguage)}
+              value={speakChoiceOf(form)}
+              onChange={(event) => props.onSpeakChoiceChange(event.target.value as SpeakLanguageChoice)}
             >
+              <option value={DETECT_LANGUAGE}>Detect automatically</option>
               {CALL_LANGUAGES.map((language) => (
                 <option key={language.value} value={language.value}>
                   {language.label}
                 </option>
               ))}
             </select>
-            <label className="detect-toggle" htmlFor="detect-language">
-              <input
-                id="detect-language"
-                type="checkbox"
-                checked={form.detectSpeakLanguage}
-                onChange={(event) => props.onDetectLanguageToggle(event.target.checked)}
-              />
-              {/* Says what happens, not what it is: the picker greys out, so the
-                  user needs to know the first sentence is what decides. */}
-              Work it out from my first sentence
-            </label>
           </div>
           <div className="field">
             <label className="field-label" htmlFor="hear-language">
@@ -134,31 +144,25 @@ export function PreJoinScreen(props: PreJoinScreenProps) {
           </div>
         </div>
 
-        <fieldset className="field" style={{ border: 'none' }}>
-          <legend className="field-label">Audio</legend>
-          <div className="mode-list">
+        <div className="field">
+          <label className="field-label" htmlFor="audio-mode">
+            How you hear them
+          </label>
+          <select
+            id="audio-mode"
+            value={form.audioMode}
+            onChange={(event) => props.onAudioModeChange(event.target.value as CallAudioMode)}
+          >
             {CALL_AUDIO_MODES.map((mode) => (
-              <label
-                key={mode.value}
-                className={
-                  form.audioMode === mode.value ? 'mode-option is-selected' : 'mode-option'
-                }
-              >
-                <input
-                  type="radio"
-                  name="audio-mode"
-                  value={mode.value}
-                  checked={form.audioMode === mode.value}
-                  onChange={() => props.onAudioModeChange(mode.value)}
-                />
-                <span className="mode-option-copy">
-                  <span className="mode-option-label">{mode.label}</span>
-                  <span className="mode-option-description">{mode.description}</span>
-                </span>
-              </label>
+              <option key={mode.value} value={mode.value}>
+                {mode.label}
+              </option>
             ))}
-          </div>
-        </fieldset>
+          </select>
+          {/* Folded away, but the chosen mode still explains itself — these
+              differ in ways the label alone does not convey. */}
+          {audioMode ? <p className="field-hint">{audioMode.description}</p> : null}
+        </div>
 
         <div className="field">
           <span className="field-label">Translated voice</span>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import {
   DEFAULT_TRANSLATED_LEVEL,
@@ -10,11 +10,12 @@ import { CallGeneratedAudioQueueController, type CallQueueAudio } from './callAu
 import { mergeCallCaption, type CallCaptionEntry } from './callCaptions';
 import {
   createInitialCallJoinForm,
+  normalizeCallCode,
+  withSpeakChoice,
   generateCallCode,
   isCallJoinFormValid,
   validateCallJoinForm,
   withHearLanguage,
-  withSpeakLanguage,
   type CallJoinFormErrors,
   type CallJoinFormState,
 } from './callFormState';
@@ -53,6 +54,7 @@ import {
 } from './callTypes';
 import { CallPeer, stopMediaStreamTracks } from './callWebRtc';
 import { CallScreen, type CallConnectionPhase } from './CallScreen';
+import { buildInviteLink, callCodeFromLocation } from './callInvite';
 import { PreJoinScreen } from './PreJoinScreen';
 
 const ACK_TIMEOUT_MS = 8_000;
@@ -65,7 +67,34 @@ interface ActiveSession {
 
 export default function App() {
   const [screen, setScreen] = useState<'prejoin' | 'call'>('prejoin');
-  const [form, setForm] = useState<CallJoinFormState>(createInitialCallJoinForm);
+  const [form, setForm] = useState<CallJoinFormState>(() => {
+    const initial = createInitialCallJoinForm();
+    // Arriving through an invite link should need no typing. The code is
+    // normalised exactly as a typed one, so a link cannot introduce a shape the
+    // form would have rejected.
+    const invited = callCodeFromLocation(window.location.search);
+    return invited ? { ...initial, callCode: normalizeCallCode(invited) } : initial;
+  });
+  const [inviteCopied, setInviteCopied] = useState(false);
+
+  const copyInviteLink = useCallback(() => {
+    const link = buildInviteLink(
+      normalizeCallCode(form.callCode),
+      window.location.origin,
+      window.location.pathname,
+    );
+    if (!link) return;
+    void navigator.clipboard
+      ?.writeText(link)
+      .then(() => {
+        setInviteCopied(true);
+        window.setTimeout(() => setInviteCopied(false), 2_000);
+      })
+      .catch(() => {
+        // Clipboard permission can be refused; the code itself is still on
+        // screen to read out, so this is not worth interrupting the user for.
+      });
+  }, [form.callCode]);
   const [formErrors, setFormErrors] = useState<CallJoinFormErrors | null>(null);
   const [micPermission, setMicPermission] = useState<MicPermissionState>('idle');
   const [joinBusy, setJoinBusy] = useState(false);
@@ -545,10 +574,9 @@ export default function App() {
           onDisplayNameChange={(value) => setForm((current) => ({ ...current, displayName: value }))}
           onCallCodeChange={(value) => setForm((current) => ({ ...current, callCode: value }))}
           onGenerateCode={() => setForm((current) => ({ ...current, callCode: generateCallCode() }))}
-          onSpeakLanguageChange={(language) => setForm((current) => withSpeakLanguage(current, language))}
-          onDetectLanguageToggle={(enabled) =>
-            setForm((current) => ({ ...current, detectSpeakLanguage: enabled }))
-          }
+          onSpeakChoiceChange={(choice) => setForm((current) => withSpeakChoice(current, choice))}
+          onCopyInvite={copyInviteLink}
+          inviteCopied={inviteCopied}
           onHearLanguageChange={(language) => setForm((current) => withHearLanguage(current, language))}
           onCaptionsToggle={(enabled) => setForm((current) => ({ ...current, captionsEnabled: enabled }))}
           onVoiceGenderChange={(voice) => setForm((current) => ({ ...current, voiceGender: voice }))}

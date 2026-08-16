@@ -25,6 +25,14 @@ export interface CallJoinFormErrors {
 
 // English–French is the constant development pair (owner decision: French
 // verifiers are easier to source), so French sits directly under English.
+/**
+ * The value the "I speak" control uses when the speaker would rather the first
+ * sentence decide. It is not a language, so it never reaches the wire as one —
+ * `buildCallJoinPayload` turns it into `sourceLanguageMode: 'auto'`.
+ */
+export const DETECT_LANGUAGE = 'auto' as const;
+export type SpeakLanguageChoice = CallLanguage | typeof DETECT_LANGUAGE;
+
 export const CALL_LANGUAGES: readonly { value: CallLanguage; label: string }[] = [
   { value: 'en', label: 'English' },
   { value: 'fr', label: 'French' },
@@ -112,6 +120,35 @@ export function createInitialCallJoinForm(): CallJoinFormState {
     audioMode: 'translated',
     detectSpeakLanguage: false,
   };
+}
+
+/**
+ * Applies a choice from the "I speak" control, which may be a language or the
+ * request to detect one.
+ *
+ * Choosing detection must READ as auto rather than showing a language that will
+ * quietly be corrected later. The underlying language is still kept: it is the
+ * session's starting guess, and it becomes the selection again if the speaker
+ * changes their mind.
+ */
+export function withSpeakChoice(
+  form: CallJoinFormState,
+  choice: SpeakLanguageChoice,
+): CallJoinFormState {
+  if (choice === DETECT_LANGUAGE) {
+    return { ...form, detectSpeakLanguage: true };
+  }
+  return {
+    ...form,
+    detectSpeakLanguage: false,
+    speakLanguage: choice,
+    hearLanguage: form.hearChosenExplicitly ? form.hearLanguage : choice,
+  };
+}
+
+/** What the "I speak" control should currently show. */
+export function speakChoiceOf(form: CallJoinFormState): SpeakLanguageChoice {
+  return form.detectSpeakLanguage ? DETECT_LANGUAGE : form.speakLanguage;
 }
 
 export function withSpeakLanguage(

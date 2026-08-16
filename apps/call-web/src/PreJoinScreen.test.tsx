@@ -26,8 +26,9 @@ function render(overrides: Partial<PreJoinScreenProps> = {}): string {
     onDisplayNameChange: vi.fn(),
     onCallCodeChange: vi.fn(),
     onGenerateCode: vi.fn(),
-    onSpeakLanguageChange: vi.fn(),
-    onDetectLanguageToggle: vi.fn(),
+    onSpeakChoiceChange: vi.fn(),
+    onCopyInvite: vi.fn(),
+    inviteCopied: false,
     onHearLanguageChange: vi.fn(),
     onCaptionsToggle: vi.fn(),
     onVoiceGenderChange: vi.fn(),
@@ -126,21 +127,36 @@ describe('PreJoinScreen', () => {
     expect(html).toContain('calm-river-42');
   });
 
-  it('offers to work the language out from the first sentence', () => {
+  it('offers detection as a language choice, not a switch beside one', () => {
     const html = render();
 
-    expect(html).toContain('id="detect-language"');
-    // Phrased as what happens, not as a setting name.
-    expect(html).toContain('Work it out from my first sentence');
+    // One control, one decision: the picker itself can say "detect".
+    expect(html).toContain('Detect automatically');
+    expect(html).not.toContain('id="detect-language"');
   });
 
-  it('greys out the language picker once detection is chosen', () => {
-    // The picker still shows a value, so it has to look inert or it reads as
-    // the language that will be used.
-    const off = render();
-    expect(off).not.toMatch(/id="speak-language"[^>]*disabled/);
-
+  it('shows auto as the selection once detection is chosen', () => {
+    // Showing a language that will be silently corrected later is what made the
+    // previous version read as broken.
     const on = render({ form: { ...createInitialCallJoinForm(), detectSpeakLanguage: true } });
-    expect(on).toMatch(/id="speak-language"[^>]*disabled/);
+    expect(on).toMatch(/<option value="auto" selected/);
+  });
+
+  it('folds the audio modes into one control but still explains the choice', () => {
+    const html = render();
+
+    expect(html).toContain('id="audio-mode"');
+    expect(html).toContain('Hear the other person in your language.');
+    // The three-card radio block is gone.
+    expect(html).not.toContain('mode-option');
+  });
+
+  it('offers an invite link to send instead of a code to dictate', () => {
+    const withCode = render({
+      form: { ...createInitialCallJoinForm(), callCode: 'calm-river-42' },
+    });
+    expect(withCode).toContain('Copy invite link');
+    // Nothing to share before there is a code.
+    expect(render()).toMatch(/Copy invite link<\/button>/);
   });
 });
