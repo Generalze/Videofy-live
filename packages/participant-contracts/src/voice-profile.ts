@@ -24,6 +24,8 @@
  */
 import { z } from 'zod';
 
+import { VoiceOwnerIdSchema } from './voice-identity.js';
+
 /**
  * Where a profile is in its life.
  *
@@ -78,7 +80,14 @@ export type VoiceConsent = z.infer<typeof VoiceConsentSchema>;
 export const VoiceProfileSchema = z
   .object({
     voiceProfileId: z.string().min(1),
-    participantId: z.string().min(1),
+    /**
+     * The owner, NOT the participant.
+     *
+     * Participant ids are minted per call, so binding a reusable voice to one
+     * would make "the same person" a different owner on every join. See
+     * voice-identity.ts.
+     */
+    ownerId: VoiceOwnerIdSchema,
     state: VoiceProfileStateSchema,
     consent: VoiceConsentSchema,
     /** Language the enrollment was spoken in; used to report cross-lingual use. */

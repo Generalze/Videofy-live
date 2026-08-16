@@ -1601,6 +1601,23 @@ has an answer that predates being asked.
 **Customer calls are excluded from training by default.** Only explicitly
 permitted data crosses that boundary. Non-negotiable.
 
+### 21.9.2.1 What P6.3 proves, and what it does not
+
+Recorded precisely, because the difference is easy to lose on a checklist.
+
+**P6.3 guarantee.** Enrollment grants no training consent by default, and P6.3
+exposes no training-ingest path at all.
+
+**VI-L0 guarantee.** When a training-ingest path exists, withheld or absent
+consent is proven to reject the example before it can enter a training
+dataset.
+
+These are not the same claim. P6.3's holds because the subsystem does not
+exist; it says nothing about what happens once one does. Treating the absence
+of a pipeline as proof that the pipeline cannot leak is efficient mathematics
+and terrible engineering, so the second guarantee is owed at VI-L0 and cannot
+be inherited from the first.
+
 ### 21.9.3 Disagreement is the training signal
 
 Videofy does not learn equally from everything. It learns preferentially where

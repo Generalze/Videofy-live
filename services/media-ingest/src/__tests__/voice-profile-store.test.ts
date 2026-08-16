@@ -31,6 +31,7 @@ function createStorage() {
 }
 
 const CONSENT_VERSION = 'voice-consent-v1';
+const OWNER = 'devid_0123456789ab';
 const AUDIO = new Uint8Array([1, 2, 3, 4]);
 
 describe('enrollment', () => {
@@ -48,7 +49,7 @@ describe('enrollment', () => {
   it('refuses to store enrollment audio before call-use consent exists', async () => {
     // The moment biometric material would otherwise land on disk ahead of
     // permission. Ordering must not be what protects it.
-    store.begin({ voiceProfileId: 'vp1', participantId: 'p1', consentTextVersion: CONSENT_VERSION });
+    store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
 
     const result = await store.attachEnrollmentRecording('vp1', AUDIO, 'en');
 
@@ -58,24 +59,24 @@ describe('enrollment', () => {
   });
 
   it('walks consent → recording → accepted, and only then is it usable', async () => {
-    store.begin({ voiceProfileId: 'vp1', participantId: 'p1', consentTextVersion: CONSENT_VERSION });
-    expect(store.usableForParticipant('p1')).toBeNull();
+    store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
+    expect(store.usableForOwner(OWNER)).toBeNull();
 
     store.grantCallUse('vp1');
-    expect(store.usableForParticipant('p1')).toBeNull();
+    expect(store.usableForOwner(OWNER)).toBeNull();
 
     await store.attachEnrollmentRecording('vp1', AUDIO, 'en');
-    expect(store.usableForParticipant('p1')).toBeNull();
+    expect(store.usableForOwner(OWNER)).toBeNull();
 
     const ready = store.accept('vp1', 'asset_1');
     expect(ready && isVoiceProfileUsable(ready)).toBe(true);
-    expect(store.usableForParticipant('p1')?.voiceProfileId).toBe('vp1');
+    expect(store.usableForOwner(OWNER)?.voiceProfileId).toBe('vp1');
   });
 
   it('leaves training consent withheld through the whole enrollment', async () => {
     // P6.3 records eligibility only. Enrolling must not quietly create a
     // training grant along the way; VI-L0 owns the governed path.
-    store.begin({ voiceProfileId: 'vp1', participantId: 'p1', consentTextVersion: CONSENT_VERSION });
+    store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
     store.grantCallUse('vp1');
     await store.attachEnrollmentRecording('vp1', AUDIO, 'en');
     const ready = store.accept('vp1', 'asset_1');
@@ -85,7 +86,7 @@ describe('enrollment', () => {
 
   it('keeps the raw recording separate from the derived asset', async () => {
     // Conflating them lets deletion report success having removed only one.
-    store.begin({ voiceProfileId: 'vp1', participantId: 'p1', consentTextVersion: CONSENT_VERSION });
+    store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
     store.grantCallUse('vp1');
     await store.attachEnrollmentRecording('vp1', AUDIO, 'en');
     store.accept('vp1', 'asset_1');
@@ -104,7 +105,7 @@ describe('revocation during an active call', () => {
   beforeEach(async () => {
     storage = createStorage();
     store = new VoiceProfileStore(storage.port, () => '2026-08-16T00:00:00.000Z');
-    store.begin({ voiceProfileId: 'vp1', participantId: 'p1', consentTextVersion: CONSENT_VERSION });
+    store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
     store.grantCallUse('vp1');
     await store.attachEnrollmentRecording('vp1', AUDIO, 'en');
     storage.assets.add('asset_1');
@@ -116,7 +117,7 @@ describe('revocation during an active call', () => {
 
     expect(outcome?.nextSynthesisVoice).toBe('standard');
     expect(outcome?.invalidateQueuedPersonalAudio).toBe(true);
-    expect(store.usableForParticipant('p1')).toBeNull();
+    expect(store.usableForOwner(OWNER)).toBeNull();
   });
 
   it('removes the stored material rather than only marking the record', async () => {
@@ -153,7 +154,7 @@ describe('deletion evidence', () => {
     // A record flagged deleted while the WAV sits on disk is not deletion.
     const storage = createStorage();
     const store = new VoiceProfileStore(storage.port, () => '2026-08-16T00:00:00.000Z');
-    store.begin({ voiceProfileId: 'vp1', participantId: 'p1', consentTextVersion: CONSENT_VERSION });
+    store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
     store.grantCallUse('vp1');
     await store.attachEnrollmentRecording('vp1', AUDIO, 'en');
     storage.assets.add('asset_1');
@@ -176,7 +177,7 @@ describe('deletion evidence', () => {
       throw new Error('disk is busy');
     });
     const store = new VoiceProfileStore(storage.port, () => '2026-08-16T00:00:00.000Z');
-    store.begin({ voiceProfileId: 'vp1', participantId: 'p1', consentTextVersion: CONSENT_VERSION });
+    store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
     store.grantCallUse('vp1');
     await store.attachEnrollmentRecording('vp1', AUDIO, 'en');
 
@@ -186,17 +187,96 @@ describe('deletion evidence', () => {
     expect(isDeletionComplete(evidence)).toBe(false);
   });
 
+  it('keeps the reference to whatever survived, instead of orphaning it', async () => {
+    // The failure mode this guards: discarding the profile at the same moment
+    // an artefact refused to go destroys the only map to the file still on
+    // disk, leaving a well-documented orphan nobody can clean up.
+    const storage = createStorage();
+    storage.port.deleteEnrollmentRecording = vi.fn(async () => {
+      throw new Error('disk is busy');
+    });
+    const store = new VoiceProfileStore(storage.port, () => '2026-08-16T00:00:00.000Z');
+    store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
+    store.grantCallUse('vp1');
+    await store.attachEnrollmentRecording('vp1', AUDIO, 'en');
+
+    const evidence = await store.delete('vp1');
+
+    expect(evidence.cleanupRetryRequired).toBe(true);
+    const outstanding = store.pendingCleanups();
+    expect(outstanding).toHaveLength(1);
+    expect(outstanding[0]?.enrollmentRecordingRef).toBe('rec_vp1_1');
+    // The participant is still deleted from their own point of view.
+    expect(store.get('vp1')).toBeNull();
+    expect(store.usableForOwner(OWNER)).toBeNull();
+  });
+
+  it('finishes the job on retry and stops tracking it', async () => {
+    const storage = createStorage();
+    let failNext = true;
+    storage.port.deleteEnrollmentRecording = vi.fn(async (ref: string) => {
+      if (failNext) {
+        failNext = false;
+        throw new Error('disk is busy');
+      }
+      return storage.recordings.delete(ref);
+    });
+    const store = new VoiceProfileStore(storage.port, () => '2026-08-16T00:00:00.000Z');
+    store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
+    store.grantCallUse('vp1');
+    await store.attachEnrollmentRecording('vp1', AUDIO, 'en');
+    await store.delete('vp1');
+
+    const retry = await store.retryCleanup('vp1');
+
+    expect(retry?.cleanupRetryRequired).toBe(false);
+    expect(isDeletionComplete(retry!)).toBe(true);
+    expect(store.pendingCleanups()).toHaveLength(0);
+    expect(storage.recordings.size).toBe(0);
+  });
+
+  it('stays retryable when the retry fails too', async () => {
+    // A second failure must not quietly become the orphan the first one
+    // avoided.
+    const storage = createStorage();
+    storage.port.deleteEnrollmentRecording = vi.fn(async () => {
+      throw new Error('still busy');
+    });
+    const store = new VoiceProfileStore(storage.port, () => '2026-08-16T00:00:00.000Z');
+    store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
+    store.grantCallUse('vp1');
+    await store.attachEnrollmentRecording('vp1', AUDIO, 'en');
+    await store.delete('vp1');
+
+    const retry = await store.retryCleanup('vp1');
+
+    expect(retry?.cleanupRetryRequired).toBe(true);
+    expect(store.pendingCleanups()[0]?.enrollmentRecordingRef).toBe('rec_vp1_1');
+  });
+
+  it('has nothing pending when deletion simply worked', async () => {
+    const storage = createStorage();
+    const store = new VoiceProfileStore(storage.port, () => '2026-08-16T00:00:00.000Z');
+    store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
+    store.grantCallUse('vp1');
+    await store.attachEnrollmentRecording('vp1', AUDIO, 'en');
+
+    await store.delete('vp1');
+
+    expect(store.pendingCleanups()).toEqual([]);
+  });
+
   it('leaves a deleted participant behaving exactly as if they never enrolled', async () => {
     const storage = createStorage();
     const store = new VoiceProfileStore(storage.port, () => '2026-08-16T00:00:00.000Z');
-    store.begin({ voiceProfileId: 'vp1', participantId: 'p1', consentTextVersion: CONSENT_VERSION });
+    store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
     store.grantCallUse('vp1');
     await store.attachEnrollmentRecording('vp1', AUDIO, 'en');
     store.accept('vp1', 'asset_1');
 
     await store.delete('vp1');
 
-    expect(store.usableForParticipant('p1')).toBeNull();
+    expect(store.usableForOwner(OWNER)).toBeNull();
   });
 });
 

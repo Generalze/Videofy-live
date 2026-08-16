@@ -25,6 +25,7 @@
 import {
   isVoiceProfileUsable,
   revokeVoiceProfile,
+  type VoiceOwnerId,
   type VoiceProfile,
 } from '@videofy-live/participant-contracts';
 
@@ -70,15 +71,29 @@ export interface VoiceProfileDeletionEvidence {
   readonly voiceAssetRemoved: 'removed' | 'none-held' | 'failed';
   readonly enrollmentRecordingRemoved: 'removed' | 'none-held' | 'failed';
   readonly completedAt: string;
+  /**
+   * True when something survived and a retry is owed.
+   *
+   * When this is set the store keeps a cleanup record — see
+   * `pendingCleanups()` — because discarding the profile at the same moment an
+   * artefact refused to go would destroy the only reference to the file still
+   * on disk. Evidence that something went wrong is worth very little if it
+   * comes with no way to finish the job.
+   */
+  readonly cleanupRetryRequired: boolean;
+}
+
+/** What is left to remove for a profile whose deletion partly failed. */
+export interface PendingVoiceCleanup {
+  readonly voiceProfileId: string;
+  readonly voiceAssetRef: string | null;
+  readonly enrollmentRecordingRef: string | null;
+  readonly firstFailedAt: string;
 }
 
 /** Whether nothing identifiable remains. Anything failed means it does. */
 export function isDeletionComplete(evidence: VoiceProfileDeletionEvidence): boolean {
-  return (
-    evidence.recordRemoved &&
-    evidence.voiceAssetRemoved !== 'failed' &&
-    evidence.enrollmentRecordingRemoved !== 'failed'
-  );
+  return evidence.recordRemoved && !evidence.cleanupRetryRequired;
 }
 
 /**
@@ -116,6 +131,12 @@ export function invalidateQueuedPersonalAudio<T extends QueuedVoiceItem>(
 
 export class VoiceProfileStore {
   private readonly profiles = new Map<string, StoredVoiceProfile>();
+  /**
+   * Survives a partial deletion so cleanup can be retried. Deliberately not
+   * part of `profiles`: the participant is deleted the moment they ask, and
+   * this holds only the references needed to finish removing their data.
+   */
+  private readonly pending = new Map<string, PendingVoiceCleanup>();
 
   constructor(
     private readonly storage: VoiceEnrollmentStoragePort,
@@ -126,10 +147,15 @@ export class VoiceProfileStore {
     return this.profiles.get(voiceProfileId) ?? null;
   }
 
-  /** The usable profile for a participant, or null. Never throws. */
-  usableForParticipant(participantId: string): VoiceProfile | null {
+  /**
+   * The usable profile for an OWNER, or null. Never throws.
+   *
+   * Keyed by owner rather than participant: a participant id is minted per
+   * call, so looking up by one would find nothing on the second join.
+   */
+  usableForOwner(ownerId: VoiceOwnerId): VoiceProfile | null {
     for (const stored of this.profiles.values()) {
-      if (stored.profile.participantId === participantId && isVoiceProfileUsable(stored.profile)) {
+      if (stored.profile.ownerId === ownerId && isVoiceProfileUsable(stored.profile)) {
         return stored.profile;
       }
     }
@@ -142,13 +168,13 @@ export class VoiceProfileStore {
    */
   begin(input: {
     voiceProfileId: string;
-    participantId: string;
+    ownerId: VoiceOwnerId;
     consentTextVersion: string;
   }): VoiceProfile {
     const timestamp = this.now();
     const profile: VoiceProfile = {
       voiceProfileId: input.voiceProfileId,
-      participantId: input.participantId,
+      ownerId: input.ownerId,
       state: 'consent-pending',
       consent: {
         callUseGrantedAt: null,
@@ -260,6 +286,7 @@ export class VoiceProfileStore {
         voiceAssetRemoved: 'none-held',
         enrollmentRecordingRemoved: 'none-held',
         completedAt,
+        cleanupRetryRequired: false,
       };
     }
 
@@ -274,13 +301,80 @@ export class VoiceProfileStore {
         : Promise.resolve(null),
     );
 
+    // The profile goes either way: a participant who asked to be deleted is
+    // deleted, and must behave exactly as if they never enrolled.
     this.profiles.delete(voiceProfileId);
+
+    const cleanupRetryRequired =
+      voiceAssetRemoved === 'failed' || enrollmentRecordingRemoved === 'failed';
+    if (cleanupRetryRequired) {
+      this.pending.set(voiceProfileId, {
+        voiceProfileId,
+        voiceAssetRef: voiceAssetRemoved === 'failed' ? stored.profile.voiceAssetRef : null,
+        enrollmentRecordingRef:
+          enrollmentRecordingRemoved === 'failed' ? stored.enrollmentRecordingRef : null,
+        firstFailedAt: completedAt,
+      });
+    }
+
     return {
       voiceProfileId,
       recordRemoved: true,
       voiceAssetRemoved,
       enrollmentRecordingRemoved,
       completedAt,
+      cleanupRetryRequired,
+    };
+  }
+
+  /** Deletions that left something behind. Empty is the healthy state. */
+  pendingCleanups(): PendingVoiceCleanup[] {
+    return [...this.pending.values()];
+  }
+
+  /**
+   * Re-attempt a partly failed deletion.
+   *
+   * Only what actually survived is retried, and the cleanup record is dropped
+   * only once nothing is left — so a retry that fails again stays retryable
+   * rather than silently becoming an orphan on the second attempt.
+   */
+  async retryCleanup(voiceProfileId: string): Promise<VoiceProfileDeletionEvidence | null> {
+    const outstanding = this.pending.get(voiceProfileId);
+    if (!outstanding) return null;
+    const completedAt = this.now();
+
+    const voiceAssetRemoved = await this.removeArtefact(() =>
+      outstanding.voiceAssetRef
+        ? this.storage.deleteVoiceAsset(outstanding.voiceAssetRef)
+        : Promise.resolve(null),
+    );
+    const enrollmentRecordingRemoved = await this.removeArtefact(() =>
+      outstanding.enrollmentRecordingRef
+        ? this.storage.deleteEnrollmentRecording(outstanding.enrollmentRecordingRef)
+        : Promise.resolve(null),
+    );
+
+    const cleanupRetryRequired =
+      voiceAssetRemoved === 'failed' || enrollmentRecordingRemoved === 'failed';
+    if (cleanupRetryRequired) {
+      this.pending.set(voiceProfileId, {
+        ...outstanding,
+        voiceAssetRef: voiceAssetRemoved === 'failed' ? outstanding.voiceAssetRef : null,
+        enrollmentRecordingRef:
+          enrollmentRecordingRemoved === 'failed' ? outstanding.enrollmentRecordingRef : null,
+      });
+    } else {
+      this.pending.delete(voiceProfileId);
+    }
+
+    return {
+      voiceProfileId,
+      recordRemoved: true,
+      voiceAssetRemoved,
+      enrollmentRecordingRemoved,
+      completedAt,
+      cleanupRetryRequired,
     };
   }
 
