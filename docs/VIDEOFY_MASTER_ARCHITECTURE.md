@@ -1618,6 +1618,35 @@ of a pipeline as proof that the pipeline cannot leak is efficient mathematics
 and terrible engineering, so the second guarantee is owed at VI-L0 and cannot
 be inherited from the first.
 
+### 21.9.2.3 Personal-voice engine decision
+
+Owner decision, 2026-08-16. **OpenVoice V2** is the selected personal-voice
+engine candidate, on licence grounds before quality grounds: it is MIT, and a
+better-sounding voice Videofy cannot sell is worth less than a good one it can.
+
+**XTTS-v2 is blocked from any commercial runtime.** Its Coqui Public Model
+License restricts the model and its outputs to non-commercial use. It may be
+used as a development benchmark only.
+
+Selection is not approval. OpenVoice enters the registry as
+`development-unvalidated` and must still pass licence/checkpoint provenance, a
+dependency audit, installation reproducibility, EN→ES and ES→EN cloning,
+identity similarity, intelligibility, latency, GPU/CPU behaviour, and failure
+and cleanup behaviour before any production claim. No model receives a
+commercial halo because a metadata field says MIT.
+
+**Isolation is architectural, not stylistic.** OpenVoice runs as a local AI
+service behind `VoiceProfileProvider`, never inside the Node call runtime or
+the React call app. It also gets its own Python environment: its official
+instructions target Python 3.9 while the working Videofy AI environment is
+3.11.9, and contaminating a proven speech environment to add a voice feature
+would be an expensive way to lose both.
+
+**The derived asset is a representation, not a model per person.** Enrollment
+extracts a small reusable tone-colour representation; synthesis combines
+translated text, a base target-language voice and that representation. Nobody
+waits through per-person model training to enroll.
+
 ### 21.9.2.2 Prototype voice ownership is temporary by design
 
 P6.3 binds a personal voice to a `VoiceOwnerId` minted into browser
