@@ -26,8 +26,9 @@ function createStorage() {
       return ref;
     },
     readEnrollmentRecording: async (ref) => recordings.get(ref) ?? null,
-    deleteEnrollmentRecording: async (ref) => recordings.delete(ref),
-    deleteVoiceAsset: async () => true,
+    deleteEnrollmentRecording: async (ref) =>
+      recordings.delete(ref) ? 'removed' : 'not-found',
+    deleteVoiceAsset: async () => 'removed',
   };
   return { port, recordings };
 }

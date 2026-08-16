@@ -36,6 +36,16 @@ import {
  * Each delete returns whether something was actually removed, which is what
  * lets deletion produce evidence rather than an assertion.
  */
+/**
+ * Why a deletion did not happen.
+ *
+ * A boolean cannot carry this. `false` was doing double duty for "there was
+ * nothing there" and "I could not reach the store", so an unreachable voice
+ * engine read as absence and its surviving asset was discarded as already
+ * gone — recreating the orphan problem from a different doorway.
+ */
+export type ArtifactDeleteResult = 'removed' | 'not-found' | 'failed';
+
 export interface VoiceEnrollmentStoragePort {
   /** Persist a raw enrollment recording; returns an opaque reference. */
   writeEnrollmentRecording(profileId: string, audio: Uint8Array): Promise<string>;
@@ -45,17 +55,17 @@ export interface VoiceEnrollmentStoragePort {
    * learned filesystem layout would be a provider that outlives it.
    */
   readEnrollmentRecording(recordingRef: string): Promise<Uint8Array | null>;
-  /** Remove a raw enrollment recording. False when nothing was there. */
-  deleteEnrollmentRecording(recordingRef: string): Promise<boolean>;
+  /** Remove a raw enrollment recording. Absence and failure stay distinct. */
+  deleteEnrollmentRecording(recordingRef: string): Promise<ArtifactDeleteResult>;
   /**
-   * Remove a derived voice asset. False when nothing was there.
+   * Remove a derived voice asset.
    *
    * NOT the same storage as the enrollment recording. The derived
    * representation is owned by the voice engine's own store, and wiring both
    * deletions to one enrollment-directory helper made asset removal silently
    * impossible — it reported none-held while the representation survived.
    */
-  deleteVoiceAsset(voiceAssetRef: string): Promise<boolean>;
+  deleteVoiceAsset(voiceAssetRef: string): Promise<ArtifactDeleteResult>;
 }
 
 /**
@@ -121,6 +131,8 @@ export interface VoiceRevocationOutcome {
   readonly profile: VoiceProfile;
   readonly invalidateQueuedPersonalAudio: true;
   readonly nextSynthesisVoice: 'standard';
+  /** True when storage kept something and a retry is owed. */
+  readonly cleanupRetryRequired: boolean;
 }
 
 /** A queued synthesis item, as far as revocation is concerned. */
@@ -300,15 +312,44 @@ export class VoiceProfileStore {
     const timestamp = this.now();
     const profile = revokeVoiceProfile(stored.profile, timestamp);
 
-    if (stored.profile.voiceAssetRef) {
-      await this.storage.deleteVoiceAsset(stored.profile.voiceAssetRef).catch(() => false);
-    }
-    if (stored.enrollmentRecordingRef) {
-      await this.storage.deleteEnrollmentRecording(stored.enrollmentRecordingRef).catch(() => false);
+    // Consent and routing take effect immediately; physical cleanup is allowed
+    // to complete later. What is never allowed is cleanup failing while the
+    // only pointer needed to finish it is thrown away.
+    const voiceAssetRemoved = await this.removeArtefact(() =>
+      stored.profile.voiceAssetRef
+        ? this.storage.deleteVoiceAsset(stored.profile.voiceAssetRef)
+        : Promise.resolve(null),
+    );
+    const enrollmentRecordingRemoved = await this.removeArtefact(() =>
+      stored.enrollmentRecordingRef
+        ? this.storage.deleteEnrollmentRecording(stored.enrollmentRecordingRef)
+        : Promise.resolve(null),
+    );
+
+    const cleanupRetryRequired =
+      voiceAssetRemoved === 'failed' || enrollmentRecordingRemoved === 'failed';
+    if (cleanupRetryRequired) {
+      this.pending.set(voiceProfileId, {
+        voiceProfileId,
+        voiceAssetRef: voiceAssetRemoved === 'failed' ? stored.profile.voiceAssetRef : null,
+        enrollmentRecordingRef:
+          enrollmentRecordingRemoved === 'failed' ? stored.enrollmentRecordingRef : null,
+        firstFailedAt: timestamp,
+      });
     }
 
-    this.profiles.set(voiceProfileId, { profile, enrollmentRecordingRef: null });
-    return { profile, invalidateQueuedPersonalAudio: true, nextSynthesisVoice: 'standard' };
+    this.profiles.set(voiceProfileId, {
+      profile,
+      // Only forget the reference once it is genuinely gone.
+      enrollmentRecordingRef:
+        enrollmentRecordingRemoved === 'failed' ? stored.enrollmentRecordingRef : null,
+    });
+    return {
+      profile,
+      invalidateQueuedPersonalAudio: true,
+      nextSynthesisVoice: 'standard',
+      cleanupRetryRequired,
+    };
   }
 
   /** Delete everything and report what was actually removed. */
@@ -415,13 +456,14 @@ export class VoiceProfileStore {
   }
 
   /** `null` from the thunk means nothing was held; a throw means it survived. */
+  /** `null` from the thunk means nothing was held to begin with. */
   private async removeArtefact(
-    remove: () => Promise<boolean | null>,
+    remove: () => Promise<ArtifactDeleteResult | null>,
   ): Promise<'removed' | 'none-held' | 'failed'> {
     try {
       const result = await remove();
-      if (result === null) return 'none-held';
-      return result ? 'removed' : 'none-held';
+      if (result === null || result === 'not-found') return 'none-held';
+      return result === 'removed' ? 'removed' : 'failed';
     } catch {
       return 'failed';
     }

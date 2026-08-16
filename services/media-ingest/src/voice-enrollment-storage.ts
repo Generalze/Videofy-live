@@ -18,7 +18,10 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { containerExtension, detectAudioContainer } from './audio-container.js';
-import type { VoiceEnrollmentStoragePort } from './voice-profile-store.js';
+import type {
+  ArtifactDeleteResult,
+  VoiceEnrollmentStoragePort,
+} from './voice-profile-store.js';
 
 /**
  * A filename derived from the profile id rather than taken from anything a
@@ -39,7 +42,7 @@ export interface FileVoiceEnrollmentStorageOptions {
    * did — makes deletion report none-held while the asset survives, which is
    * the most dangerous possible way for a deletion feature to fail.
    */
-  readonly deleteVoiceAsset: (voiceAssetRef: string) => Promise<boolean>;
+  readonly deleteVoiceAsset: (voiceAssetRef: string) => Promise<ArtifactDeleteResult>;
 }
 
 export function createFileVoiceEnrollmentStorage(
@@ -55,16 +58,17 @@ export function createFileVoiceEnrollmentStorage(
       : null;
   }
 
-  async function remove(reference: string): Promise<boolean> {
+  async function remove(reference: string): Promise<ArtifactDeleteResult> {
     const target = within(reference);
-    if (target === null) return false;
+    // A traversal attempt is not absence: nothing was removed and nobody
+    // should record it as already gone.
+    if (target === null) return 'failed';
     try {
       await rm(target);
-      return true;
+      return 'removed';
     } catch (error) {
-      // Already gone is success: the caller asked for it not to exist.
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-      throw error;
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'not-found';
+      return 'failed';
     }
   }
 

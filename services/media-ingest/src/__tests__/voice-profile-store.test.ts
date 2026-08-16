@@ -9,6 +9,7 @@ import {
   invalidateQueuedPersonalAudio,
   isDeletionComplete,
   VoiceProfileStore,
+  type ArtifactDeleteResult,
   type VoiceEnrollmentStoragePort,
 } from '../voice-profile-store.js';
 import { describeSyntheticVoice } from '../voice-profile-provider.js';
@@ -26,8 +27,14 @@ function createStorage() {
       return ref;
     }),
     readEnrollmentRecording: vi.fn(async (ref: string) => recordings.get(ref) ?? null),
-    deleteEnrollmentRecording: vi.fn(async (ref: string) => recordings.delete(ref)),
-    deleteVoiceAsset: vi.fn(async (ref: string) => assets.delete(ref)),
+    deleteEnrollmentRecording: vi.fn(
+      async (ref: string): Promise<ArtifactDeleteResult> =>
+        recordings.delete(ref) ? 'removed' : 'not-found',
+    ),
+    deleteVoiceAsset: vi.fn(
+      async (ref: string): Promise<ArtifactDeleteResult> =>
+        assets.delete(ref) ? 'removed' : 'not-found',
+    ),
   };
   return { port, recordings, assets };
 }
@@ -175,9 +182,9 @@ describe('deletion evidence', () => {
 
   it('reports failure honestly when storage will not give the audio up', async () => {
     const storage = createStorage();
-    storage.port.deleteEnrollmentRecording = vi.fn(async () => {
-      throw new Error('disk is busy');
-    });
+    storage.port.deleteEnrollmentRecording = vi.fn(
+      async (): Promise<ArtifactDeleteResult> => 'failed',
+    );
     const store = new VoiceProfileStore(storage.port, () => '2026-08-16T00:00:00.000Z');
     store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
     store.grantCallUse('vp1');
@@ -194,9 +201,9 @@ describe('deletion evidence', () => {
     // an artefact refused to go destroys the only map to the file still on
     // disk, leaving a well-documented orphan nobody can clean up.
     const storage = createStorage();
-    storage.port.deleteEnrollmentRecording = vi.fn(async () => {
-      throw new Error('disk is busy');
-    });
+    storage.port.deleteEnrollmentRecording = vi.fn(
+      async (): Promise<ArtifactDeleteResult> => 'failed',
+    );
     const store = new VoiceProfileStore(storage.port, () => '2026-08-16T00:00:00.000Z');
     store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
     store.grantCallUse('vp1');
@@ -216,13 +223,15 @@ describe('deletion evidence', () => {
   it('finishes the job on retry and stops tracking it', async () => {
     const storage = createStorage();
     let failNext = true;
-    storage.port.deleteEnrollmentRecording = vi.fn(async (ref: string) => {
-      if (failNext) {
-        failNext = false;
-        throw new Error('disk is busy');
-      }
-      return storage.recordings.delete(ref);
-    });
+    storage.port.deleteEnrollmentRecording = vi.fn(
+      async (ref: string): Promise<ArtifactDeleteResult> => {
+        if (failNext) {
+          failNext = false;
+          return 'failed';
+        }
+        return storage.recordings.delete(ref) ? 'removed' : 'not-found';
+      },
+    );
     const store = new VoiceProfileStore(storage.port, () => '2026-08-16T00:00:00.000Z');
     store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
     store.grantCallUse('vp1');
@@ -241,9 +250,9 @@ describe('deletion evidence', () => {
     // A second failure must not quietly become the orphan the first one
     // avoided.
     const storage = createStorage();
-    storage.port.deleteEnrollmentRecording = vi.fn(async () => {
-      throw new Error('still busy');
-    });
+    storage.port.deleteEnrollmentRecording = vi.fn(
+      async (): Promise<ArtifactDeleteResult> => 'failed',
+    );
     const store = new VoiceProfileStore(storage.port, () => '2026-08-16T00:00:00.000Z');
     store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
     store.grantCallUse('vp1');
@@ -328,5 +337,76 @@ describe('ownership survives the call it was created in', () => {
     store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
 
     expect(store.usableForOwner('devid_ffffffffffff')).toBeNull();
+  });
+});
+
+describe('absence and failure are not the same answer', () => {
+  async function enrolled() {
+    const storage = createStorage();
+    const store = new VoiceProfileStore(storage.port, () => '2026-08-16T00:00:00.000Z');
+    store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
+    store.grantCallUse('vp1');
+    await store.attachEnrollmentRecording('vp1', AUDIO, 'en');
+    storage.assets.add('asset_1');
+    store.accept('vp1', 'asset_1');
+    return { storage, store };
+  }
+
+  it('keeps the asset retryable when the voice engine is unreachable', async () => {
+    // The bug this replaces: an unreachable engine returned `false`, which the
+    // store read as "there was nothing there", so the surviving asset was
+    // discarded as already gone.
+    const { storage, store } = await enrolled();
+    storage.port.deleteVoiceAsset = vi.fn(
+      async (): Promise<ArtifactDeleteResult> => 'failed',
+    );
+
+    const evidence = await store.delete('vp1');
+
+    expect(evidence.voiceAssetRemoved).toBe('failed');
+    expect(evidence.cleanupRetryRequired).toBe(true);
+    expect(store.pendingCleanups()[0]?.voiceAssetRef).toBe('asset_1');
+  });
+
+  it('retires the reference when the engine says the asset is genuinely absent', async () => {
+    const { storage, store } = await enrolled();
+    storage.port.deleteVoiceAsset = vi.fn(
+      async (): Promise<ArtifactDeleteResult> => 'not-found',
+    );
+
+    const evidence = await store.delete('vp1');
+
+    expect(evidence.voiceAssetRemoved).toBe('none-held');
+    expect(evidence.cleanupRetryRequired).toBe(false);
+    expect(store.pendingCleanups()).toEqual([]);
+  });
+
+  it('revokes immediately but keeps what storage would not give up', async () => {
+    // Consent and routing take effect now; physical cleanup may finish later.
+    // What must never happen is cleanup failing while the pointer needed to
+    // finish it is destroyed.
+    const { storage, store } = await enrolled();
+    storage.port.deleteVoiceAsset = vi.fn(
+      async (): Promise<ArtifactDeleteResult> => 'failed',
+    );
+
+    const outcome = await store.revoke('vp1');
+
+    expect(outcome?.nextSynthesisVoice).toBe('standard');
+    expect(outcome?.invalidateQueuedPersonalAudio).toBe(true);
+    expect(store.usableForOwner(OWNER)).toBeNull();
+    expect(outcome?.cleanupRetryRequired).toBe(true);
+    expect(store.pendingCleanups()[0]?.voiceAssetRef).toBe('asset_1');
+  });
+
+  it('keeps the enrollment reference too when its deletion fails during revoke', async () => {
+    const { storage, store } = await enrolled();
+    storage.port.deleteEnrollmentRecording = vi.fn(
+      async (): Promise<ArtifactDeleteResult> => 'failed',
+    );
+
+    await store.revoke('vp1');
+
+    expect(store.pendingCleanups()[0]?.enrollmentRecordingRef).toBe('rec_vp1_1');
   });
 });

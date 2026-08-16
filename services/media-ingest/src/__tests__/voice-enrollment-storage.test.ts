@@ -9,9 +9,9 @@ describe('file enrollment storage', () => {
   let directory: string;
   /** Records what the SEPARATE asset store was asked to remove. */
   let assetDeletions: string[];
-  const deleteAsset = async (ref: string) => {
+  const deleteAsset = async (ref: string): Promise<'removed'> => {
     assetDeletions.push(ref);
-    return true;
+    return 'removed';
   };
 
   beforeEach(async () => {
@@ -46,14 +46,15 @@ describe('file enrollment storage', () => {
     const storage = createFileVoiceEnrollmentStorage({ directory, deleteVoiceAsset: deleteAsset });
     const reference = await storage.writeEnrollmentRecording('vp1', new Uint8Array([1]));
 
-    expect(await storage.deleteEnrollmentRecording(reference)).toBe(true);
+    expect(await storage.deleteEnrollmentRecording(reference)).toBe('removed');
     expect(await readdir(directory)).toHaveLength(0);
   });
 
   it('reports nothing removed when there was nothing there', async () => {
     const storage = createFileVoiceEnrollmentStorage({ directory, deleteVoiceAsset: deleteAsset });
 
-    expect(await storage.deleteEnrollmentRecording('missing.wav')).toBe(false);
+    // Absence, distinct from failure: nothing was there to remove.
+    expect(await storage.deleteEnrollmentRecording('missing.wav')).toBe('not-found');
   });
 
   it('refuses a reference that would escape the enrollment directory', async () => {
@@ -63,7 +64,9 @@ describe('file enrollment storage', () => {
     await writeFile(outside, 'do not delete me');
     const storage = createFileVoiceEnrollmentStorage({ directory, deleteVoiceAsset: deleteAsset });
 
-    expect(await storage.deleteEnrollmentRecording('../videofy-escape-probe')).toBe(false);
+    // A traversal attempt is a failure, never absence — recording it as
+    // "already gone" would retire a reference that still points at real data.
+    expect(await storage.deleteEnrollmentRecording('../videofy-escape-probe')).toBe('failed');
     expect(await readFile(outside, 'utf8')).toBe('do not delete me');
   });
 });

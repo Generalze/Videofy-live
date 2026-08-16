@@ -426,13 +426,16 @@ const voiceProfileStore = new VoiceProfileStore(
           `${personalVoiceServiceUrl}/voice-assets/${encodeURIComponent(voiceAssetRef)}`,
           { method: 'DELETE' },
         );
-        if (!response.ok) return false;
+        if (response.status === 404) return 'not-found';
+        // A 5xx means the engine still holds it.
+        if (!response.ok) return 'failed';
         const body = (await response.json()) as { removed?: boolean };
-        return body.removed === true;
+        return body.removed === true ? 'removed' : 'not-found';
       } catch {
-        // Unreachable engine means the asset survives; reporting false keeps it
-        // in pendingCleanups() for retry rather than orphaning it.
-        return false;
+        // Unreachable engine: the asset survives, so this must read as failure
+        // and stay in pendingCleanups(). Reporting absence here would discard
+        // the only pointer able to finish the job.
+        return 'failed';
       }
     },
   }),
