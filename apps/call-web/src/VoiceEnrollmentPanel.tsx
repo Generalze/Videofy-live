@@ -48,7 +48,12 @@ export interface VoiceEnrollmentPanelProps {
   signedInEmail: string | null;
   accountBusy: boolean;
   accountError: string | null;
-  onAccountSubmit: (mode: 'sign-in' | 'sign-up', email: string, password: string) => void;
+  onAccountSubmit: (
+    mode: 'sign-in' | 'sign-up',
+    email: string,
+    password: string,
+    voiceGender: 'male' | 'female',
+  ) => void;
   onSignOut: () => void;
   onCallUseChange: (granted: boolean) => void;
   onTrainingUseChange: (granted: boolean) => void;

@@ -28,6 +28,15 @@ export interface AccountRouteDependencies {
 interface Body {
   email?: unknown;
   password?: unknown;
+  voiceGender?: unknown;
+}
+
+/** Only the two values, and only when stated. Anything else is "not stated". */
+function voiceGenderOf(body: unknown): 'male' | 'female' | undefined {
+  const candidate = (body ?? {}) as Body;
+  return candidate.voiceGender === 'male' || candidate.voiceGender === 'female'
+    ? candidate.voiceGender
+    : undefined;
 }
 
 function credentials(body: unknown): { email: string; password: string } | null {
@@ -39,7 +48,11 @@ function credentials(body: unknown): { email: string; password: string } | null 
 export function registerAccountRoutes(app: express.Express, deps: AccountRouteDependencies): void {
   const nowSeconds = deps.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
 
-  const session = (accountId: string, version: number) => ({
+  const session = (
+    accountId: string,
+    version: number,
+    voiceGender: 'male' | 'female' | undefined,
+  ) => ({
     accountId,
     token: issueSessionToken({
       secret: deps.secret,
@@ -48,6 +61,9 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       nowSeconds: nowSeconds(),
     }),
     expiresInSeconds: SESSION_LIFETIME_SECONDS,
+    // Returned so the call form can default to the voice this person chose,
+    // instead of everybody starting out sounding female.
+    ...(voiceGender ? { voiceGender } : {}),
   });
 
   app.post('/accounts', (req, res) => {
@@ -57,7 +73,7 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       return;
     }
     void deps.store
-      .register(input)
+      .register({ ...input, ...(voiceGenderOf(req.body) ? { voiceGender: voiceGenderOf(req.body)! } : {}) })
       .then((result) => {
         if (!result.ok) {
           // 409 for a taken address, 400 for anything the caller can fix by
@@ -67,7 +83,13 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
         }
         // Signed up and signed in. Making somebody immediately repeat their
         // password to get a session serves nothing but ceremony.
-        res.status(201).json(session(result.account.accountId, result.account.tokenVersion));
+        res.status(201).json(
+            session(
+              result.account.accountId,
+              result.account.tokenVersion,
+              result.account.voiceGender,
+            ),
+          );
       })
       .catch(() => res.status(500).json({ error: 'Your account could not be created.' }));
   });
@@ -93,7 +115,13 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
           });
           return;
         }
-        res.status(200).json(session(result.account.accountId, result.account.tokenVersion));
+        res.status(200).json(
+          session(
+            result.account.accountId,
+            result.account.tokenVersion,
+            result.account.voiceGender,
+          ),
+        );
       })
       .catch(() => res.status(500).json({ error: 'You could not be signed in.' }));
   });
@@ -123,7 +151,11 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
     }
     // The account id is the caller's own, and the email is the one they typed.
     // Nothing else about the account is anybody's business over HTTP.
-    res.status(200).json({ accountId: account.accountId, email: account.email });
+    res.status(200).json({
+      accountId: account.accountId,
+      email: account.email,
+      ...(account.voiceGender ? { voiceGender: account.voiceGender } : {}),
+    });
   });
 
   /** Sign out everywhere: invalidates every token this account has been issued. */

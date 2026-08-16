@@ -833,8 +833,17 @@ function buildIngestPlan(call: CallState, speaker: CallParticipantState): CallIn
       continue;
     }
     targetLanguages.push(hearLanguage);
-    // The RECIPIENT's Male/Female choice selects the standard voice they hear.
-    voiceIdsByLanguage[hearLanguage] = STANDARD_CALL_VOICES[hearLanguage][other.voiceGender];
+    // The SPEAKER's own Male/Female choice selects the voice their translated
+    // words are spoken in.
+    //
+    // This used to be the RECIPIENT's preference, which meant a man was heard
+    // as a woman whenever the person listening had the default setting — and
+    // the default is female. Somebody setting "Translated voice: Male" on their
+    // own pre-join screen was in fact choosing how OTHER people would sound to
+    // them, which is neither what the control says nor what anybody wants: a
+    // translated voice stands in for the person speaking, so it belongs to
+    // them.
+    voiceIdsByLanguage[hearLanguage] = STANDARD_CALL_VOICES[hearLanguage][speaker.voiceGender];
   }
   // Revision-scoped identity: events and deferred stops addressed to an old
   // revision's session can never touch the replacement session.

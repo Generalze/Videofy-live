@@ -409,13 +409,14 @@ describe('CallRuntime join and ingest plan handling', () => {
     expect(harness.runtime.getDiagnostics().activeCallCount).toBe(0);
   });
 
-  it('creates BOTH revision-scoped ingest sessions with exact inputs including voiceIdsByLanguage on the second join', async () => {
+  it('creates BOTH revision-scoped ingest sessions with exact inputs including each speaker’s own voice', async () => {
     await join(harness, new FakeSocket('socket-a'), { ...JOIN_A });
     await join(harness, new FakeSocket('socket-b'), { ...JOIN_B });
 
     // Membership change bumped the first joiner to r2; the second joins at r1.
     expect(harness.ingestControl.createSession).toHaveBeenCalledTimes(2);
-    // Ana speaks en; Beto hears es with a female voice choice.
+    // Ana speaks en and chose male, so her Spanish is spoken by the male
+    // Spanish voice: the translated voice represents the speaker.
     expect(harness.ingestControl.createSession).toHaveBeenNthCalledWith(1, {
       sessionId: 'call_demo_participant_1_r2',
       broadcastId: 'callcast_demo_participant_1_r2',
@@ -425,10 +426,10 @@ describe('CallRuntime join and ingest plan handling', () => {
       sourceLanguageMode: 'manual',
       targetLanguages: ['es'],
       targetLanguage: 'es',
-      voiceIdsByLanguage: { es: 'es_ES-sharvard-female' },
+      voiceIdsByLanguage: { es: 'es_ES-sharvard-male' },
       generatedAudioPacing: 'natural',
     });
-    // Beto speaks es; Ana hears en with a male voice choice.
+    // Beto speaks es and chose female.
     expect(harness.ingestControl.createSession).toHaveBeenNthCalledWith(2, {
       sessionId: 'call_demo_participant_2_r1',
       broadcastId: 'callcast_demo_participant_2_r1',
@@ -438,7 +439,7 @@ describe('CallRuntime join and ingest plan handling', () => {
       sourceLanguageMode: 'manual',
       targetLanguages: ['en'],
       targetLanguage: 'en',
-      voiceIdsByLanguage: { en: 'en_US-hfc_male-medium' },
+      voiceIdsByLanguage: { en: 'en_US-hfc_female-medium' },
       generatedAudioPacing: 'natural',
     });
     // The first joiner's deferred r1 registry entry was retired (never created,
@@ -884,7 +885,7 @@ describe('CallRuntime WebRTC transport', () => {
       sourceLanguageMode: 'manual',
       targetLanguages: ['es'],
       targetLanguage: 'es',
-      voiceIdsByLanguage: { es: 'es_ES-sharvard-female' },
+      voiceIdsByLanguage: { es: 'es_ES-sharvard-male' },
       generatedAudioPacing: 'natural',
     });
     expect(harness.receivePeers.fanOut).toHaveBeenCalledWith('demo', 'participant_1', data);

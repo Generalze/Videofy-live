@@ -25,8 +25,18 @@ import {
   verifyPassword,
 } from './password.js';
 
+/**
+ * Which standard voice speaks this person's translated words.
+ *
+ * Asked once at sign-up rather than per call, because it is a fact about the
+ * person rather than a per-conversation preference. Absent is allowed and means
+ * "not stated": the call form keeps its own default rather than this guessing.
+ */
+export type AccountVoiceGender = 'male' | 'female';
+
 export interface AccountRecord {
   readonly accountId: AccountId;
+  readonly voiceGender?: AccountVoiceGender;
   /** Normalised: lowercased and trimmed. The stored form IS the lookup key. */
   readonly email: string;
   readonly passwordHash: string;
@@ -129,7 +139,11 @@ export class AccountStore {
     return this.byId.get(accountId) ?? null;
   }
 
-  async register(input: { email: string; password: string }): Promise<RegistrationResult> {
+  async register(input: {
+    email: string;
+    password: string;
+    voiceGender?: AccountVoiceGender;
+  }): Promise<RegistrationResult> {
     const email = normaliseEmail(input.email);
     if (email.length === 0 || email.length > MAX_EMAIL_LENGTH || !EMAIL_PATTERN.test(email)) {
       return { ok: false, reason: 'invalid-email', message: 'Enter a valid email address.' };
@@ -153,6 +167,10 @@ export class AccountStore {
     const account: AccountRecord = {
       accountId: createAccountId(this.newAccountSuffix),
       email,
+      // Only ever one of the two values, and only when explicitly chosen.
+      ...(input.voiceGender === 'male' || input.voiceGender === 'female'
+        ? { voiceGender: input.voiceGender }
+        : {}),
       passwordHash: await hashPassword(input.password),
       tokenVersion: 1,
       createdAt: timestamp,
@@ -210,6 +228,23 @@ export class AccountStore {
    * The only mechanism a stateless token has for revocation, so it is worth
    * more than the convenience of signing out one browser.
    */
+  /** Change which standard voice speaks this person's translated words. */
+  async setVoiceGender(
+    accountId: string,
+    voiceGender: AccountVoiceGender,
+  ): Promise<AccountRecord | null> {
+    const account = this.byId.get(accountId);
+    if (!account) return null;
+    const updated: AccountRecord = {
+      ...account,
+      voiceGender,
+      updatedAt: new Date(this.now()).toISOString(),
+    };
+    this.byId.set(accountId, updated);
+    await this.persist();
+    return updated;
+  }
+
   async signOutEverywhere(accountId: string): Promise<AccountRecord | null> {
     const account = this.byId.get(accountId);
     if (!account) return null;

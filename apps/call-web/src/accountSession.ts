@@ -21,6 +21,13 @@ import { parseAccountId } from '@videofy-live/participant-contracts';
 export interface AccountSession {
   readonly accountId: string;
   readonly token: string;
+  /**
+   * Which standard voice speaks this person's translated words.
+   *
+   * Stated once at sign-up so the call form does not start everybody at the
+   * same default. Absent means not stated, and the form keeps its own default.
+   */
+  readonly voiceGender?: 'male' | 'female';
 }
 
 export interface SessionStorageLike {
@@ -55,7 +62,13 @@ export function readAccountSession(storage: SessionStorageLike | null): AccountS
     const parsed = JSON.parse(raw) as Partial<AccountSession>;
     const accountId = parseAccountId(parsed.accountId);
     if (!accountId || typeof parsed.token !== 'string' || parsed.token.length === 0) return null;
-    return { accountId, token: parsed.token };
+    return {
+      accountId,
+      token: parsed.token,
+      ...(parsed.voiceGender === 'male' || parsed.voiceGender === 'female'
+        ? { voiceGender: parsed.voiceGender }
+        : {}),
+    };
   } catch {
     return null;
   }
@@ -86,7 +99,11 @@ export type AccountResult =
   | { readonly ok: false; readonly message: string };
 
 export interface AccountClient {
-  register(input: { email: string; password: string }): Promise<AccountResult>;
+  register(input: {
+    email: string;
+    password: string;
+    voiceGender?: 'male' | 'female';
+  }): Promise<AccountResult>;
   signIn(input: { email: string; password: string }): Promise<AccountResult>;
   signOut(session: AccountSession): Promise<void>;
 }
@@ -95,7 +112,10 @@ export function readAccountUrl(): string {
   return import.meta.env['VITE_ACCOUNT_URL'] ?? 'http://localhost:3006';
 }
 
-async function submit(url: string, input: { email: string; password: string }): Promise<AccountResult> {
+async function submit(
+  url: string,
+  input: { email: string; password: string; voiceGender?: 'male' | 'female' },
+): Promise<AccountResult> {
   try {
     const response = await fetch(url, {
       method: 'POST',
@@ -105,6 +125,7 @@ async function submit(url: string, input: { email: string; password: string }): 
     const body = (await response.json().catch(() => ({}))) as {
       accountId?: string;
       token?: string;
+      voiceGender?: string;
       error?: string;
     };
     if (!response.ok) {
@@ -117,7 +138,16 @@ async function submit(url: string, input: { email: string; password: string }): 
     if (!accountId || !body.token) {
       return { ok: false, message: 'That did not work. Try again.' };
     }
-    return { ok: true, session: { accountId, token: body.token } };
+    return {
+      ok: true,
+      session: {
+        accountId,
+        token: body.token,
+        ...(body.voiceGender === 'male' || body.voiceGender === 'female'
+          ? { voiceGender: body.voiceGender }
+          : {}),
+      },
+    };
   } catch {
     return { ok: false, message: 'Could not reach the account service. Check your connection.' };
   }

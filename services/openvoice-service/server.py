@@ -47,6 +47,23 @@ BASE_SPEAKER = {
 MELO_LANGUAGE = {"en": "EN", "es": "ES", "fr": "FR"}
 SOURCE_SE = {"en": "en-newest", "es": "es", "fr": "fr"}
 
+
+def speakable_languages() -> list[str]:
+    """Languages this engine can ACTUALLY speak, checked against the files.
+
+    Advertising a language whose source-speaker embedding was never downloaded
+    is how French came to be accepted, fail with a 500 deep inside synthesis,
+    and fall back silently to a standard voice — which, with the default voice
+    setting, meant a man was heard as a woman and nothing anywhere said why.
+
+    A capability that is not on disk is not a capability.
+    """
+    return [
+        language
+        for language, name in SOURCE_SE.items()
+        if (CHECKPOINTS / f"base_speakers/ses/{name}.pth").exists()
+    ]
+
 ASSET_DIR.mkdir(parents=True, exist_ok=True)
 
 _converter = None
@@ -129,7 +146,17 @@ class Handler(BaseHTTPRequestHandler):
             "approval": "development-unvalidated",
             "productionApproved": False,
             "watermarked": True,
-            "baseSpeakers": BASE_SPEAKER,
+            # Only what is actually on disk. A caller reads this to decide
+            # whether to offer a personal voice at all.
+            "languages": speakable_languages(),
+            "baseSpeakers": {
+                language: BASE_SPEAKER[language]
+                for language in speakable_languages()
+                if language in BASE_SPEAKER
+            },
+            "unavailableLanguages": [
+                language for language in SOURCE_SE if language not in speakable_languages()
+            ],
         })
 
     def do_DELETE(self):  # noqa: N802
@@ -210,6 +237,14 @@ class Handler(BaseHTTPRequestHandler):
 
         if not text:
             self._send(400, {"ok": False, "reason": "no text"})
+            return
+        # Refused here, before a TTS model is loaded and a converter is asked
+        # for an embedding that does not exist. French previously got all the
+        # way to torch.load and raised FileNotFoundError as a 500, which the
+        # caller could only read as "the engine broke", not "this language was
+        # never installed".
+        if language not in speakable_languages():
+            self._send(400, {"ok": False, "reason": "unsupported-target-language"})
             return
         tts = tts_for(language)
         if tts is None:

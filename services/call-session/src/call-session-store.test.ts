@@ -90,7 +90,7 @@ describe('CallSessionStore.createOrJoin', () => {
     ]);
   });
 
-  it('second join bumps the existing speaker and recomputes both plans with recipient voices', () => {
+  it('second join bumps the existing speaker and recomputes both plans with speaker voices', () => {
     const store = new CallSessionStore();
     const { carlos } = translatedPair(store);
 
@@ -99,25 +99,26 @@ describe('CallSessionStore.createOrJoin', () => {
     expect(carlos.snapshot.lifecycleState).toBe('active');
     expect(carlos.ingestPlans).toHaveLength(2);
     const [zoePlan, carlosPlan] = carlos.ingestPlans;
-    // Zoe speaks en; Carlos hears es and picked the female voice.
+    // Zoe speaks en and chose the male voice, so her Spanish is spoken by the
+    // male Spanish voice — it represents HER, not the person listening.
     expect(zoePlan).toEqual({
       ingestSessionId: 'call_call-1_participant_1_r2',
       broadcastId: 'callcast_call-1_participant_1_r2',
       sourceLanguage: 'en',
       sourceLanguageMode: 'manual',
       targetLanguages: ['es'],
-      voiceIdsByLanguage: { es: 'es_ES-sharvard-female' },
+      voiceIdsByLanguage: { es: 'es_ES-sharvard-male' },
       mediaRevision: 2,
       languageRevision: 1,
     });
-    // Carlos speaks es; Zoe hears en and picked the male voice.
+    // Carlos speaks es and chose the female voice.
     expect(carlosPlan).toEqual({
       ingestSessionId: 'call_call-1_participant_2_r1',
       broadcastId: 'callcast_call-1_participant_2_r1',
       sourceLanguage: 'es',
       sourceLanguageMode: 'manual',
       targetLanguages: ['en'],
-      voiceIdsByLanguage: { en: 'en_US-hfc_male-medium' },
+      voiceIdsByLanguage: { en: 'en_US-hfc_female-medium' },
       mediaRevision: 1,
       languageRevision: 1,
     });
@@ -542,7 +543,7 @@ describe('STANDARD_CALL_VOICES', () => {
     });
   });
 
-  it('routes an EN-FR pair with each recipient gender selecting the French/English voice', () => {
+  it('routes an EN-FR pair with each SPEAKER’s gender selecting their own voice', () => {
     const store = new CallSessionStore({ createResumeToken: () => 'token-en-fr' });
     const first = store.createOrJoin(
       joinInput({ callId: 'call-en-fr', displayName: 'Zoe', speakLanguage: 'en', hearLanguage: 'en' }),
@@ -562,14 +563,18 @@ describe('STANDARD_CALL_VOICES', () => {
     const ameliePlan = second.ingestPlans.find((plan) =>
       plan.ingestSessionId.includes(second.participantId),
     );
+    // Zoe's French is spoken in ZOE's voice setting (female by default), not
+    // Amelie's. A speaker's translated voice stands in for the speaker.
     expect(zoePlan).toMatchObject({
       sourceLanguage: 'en',
       targetLanguages: ['fr'],
-      voiceIdsByLanguage: { fr: 'fr_FR-upmc-pierre' },
+      voiceIdsByLanguage: { fr: 'fr_FR-siwis-medium' },
     });
+    // Amelie chose male, so her English is spoken by the male English voice.
     expect(ameliePlan).toMatchObject({
       sourceLanguage: 'fr',
       targetLanguages: ['en'],
+      voiceIdsByLanguage: { en: 'en_US-hfc_male-medium' },
     });
   });
 });

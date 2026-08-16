@@ -18,7 +18,12 @@ import { useId, useState } from 'react';
 export interface VoiceAccountGateProps {
   busy: boolean;
   error: string | null;
-  onSubmit: (mode: 'sign-in' | 'sign-up', email: string, password: string) => void;
+  onSubmit: (
+    mode: 'sign-in' | 'sign-up',
+    email: string,
+    password: string,
+    voiceGender: 'male' | 'female',
+  ) => void;
 }
 
 export function VoiceAccountGate(props: VoiceAccountGateProps) {
@@ -27,6 +32,7 @@ export function VoiceAccountGate(props: VoiceAccountGateProps) {
   const [mode, setMode] = useState<'sign-in' | 'sign-up'>('sign-up');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [voiceGender, setVoiceGender] = useState<'male' | 'female'>('female');
   const signingUp = mode === 'sign-up';
 
   return (
@@ -35,7 +41,7 @@ export function VoiceAccountGate(props: VoiceAccountGateProps) {
       onSubmit={(event) => {
         event.preventDefault();
         if (props.busy) return;
-        props.onSubmit(mode, email, password);
+        props.onSubmit(mode, email, password, voiceGender);
       }}
     >
       <p className="voice-account-lead">
@@ -69,6 +75,29 @@ export function VoiceAccountGate(props: VoiceAccountGateProps) {
           required
         />
       </label>
+
+      {signingUp ? (
+        <fieldset className="voice-account-field voice-account-voice">
+          <legend>Your translated voice</legend>
+          <p className="voice-account-hint">
+            Which voice speaks your words when they are translated. Set once
+            here so you do not sound like somebody else on your first call.
+          </p>
+          <div className="segmented" role="group" aria-label="Your translated voice">
+            {(['female', 'male'] as const).map((option) => (
+              <button
+                key={option}
+                type="button"
+                className={voiceGender === option ? 'is-selected' : undefined}
+                aria-pressed={voiceGender === option}
+                onClick={() => setVoiceGender(option)}
+              >
+                {option === 'female' ? 'Female' : 'Male'}
+              </button>
+            ))}
+          </div>
+        </fieldset>
+      ) : null}
 
       {signingUp ? (
         <p className="voice-account-hint">

@@ -185,11 +185,14 @@ export default function App() {
     mode: 'sign-in' | 'sign-up',
     email: string,
     password: string,
+    voiceGender: 'male' | 'female',
   ): void => {
     setAccountBusy(true);
     setAccountError(null);
     const client = createAccountClient();
-    void (mode === 'sign-up' ? client.register({ email, password }) : client.signIn({ email, password }))
+    void (mode === 'sign-up'
+      ? client.register({ email, password, voiceGender })
+      : client.signIn({ email, password }))
       .then((result) => {
         if (!result.ok) {
           // The server's wording is shown unchanged: it is deliberately the
@@ -199,6 +202,12 @@ export default function App() {
         }
         writeAccountSession(defaultSessionStorage(), result.session);
         setAccountSession(result.session);
+        // The voice this person chose becomes the one their translated words
+        // are spoken in, instead of everybody starting out on the same default.
+        if (result.session.voiceGender) {
+          const chosen = result.session.voiceGender;
+          setForm((current) => ({ ...current, voiceGender: chosen }));
+        }
         setEnrollmentState(INITIAL_ENROLLMENT_STATE);
       })
       .finally(() => setAccountBusy(false));
