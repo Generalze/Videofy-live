@@ -17,6 +17,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { containerExtension, detectAudioContainer } from './audio-container.js';
 import type { VoiceEnrollmentStoragePort } from './voice-profile-store.js';
 
 /**
@@ -61,7 +62,12 @@ export function createFileVoiceEnrollmentStorage(
   return {
     async writeEnrollmentRecording(voiceProfileId, audio) {
       await mkdir(root, { recursive: true });
-      const reference = `${safeName(voiceProfileId)}.enrollment.wav`;
+      // The suffix follows the ACTUAL container, probed from the bytes. The
+      // browser supplies WebM/Opus; storing it as .wav would mislead any
+      // engine that decodes by extension, and unknown bytes get `.bin` rather
+      // than a format name nobody verified.
+      const extension = containerExtension(detectAudioContainer(audio));
+      const reference = `${safeName(voiceProfileId)}.enrollment.${extension}`;
       await writeFile(join(root, reference), audio);
       return reference;
     },

@@ -79,7 +79,12 @@ async function post(
   return { status: response.status, json };
 }
 
-const AUDIO = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+/**
+ * A real WebM/Matroska EBML header, because the route now identifies the
+ * container from the bytes. The previous fixture was arbitrary numbers with an
+ * audio/webm header — exactly the mismatch the check exists to refuse.
+ */
+const AUDIO = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x01, 0x00, 0x00, 0x00]);
 
 describe('consent gates the endpoint, not just the store call', () => {
   let harness: Harness;
@@ -255,6 +260,42 @@ describe('a working clone engine completes enrollment', () => {
     expect(response.status).toBe(201);
     expect(response.json['personalVoiceReady']).toBe(true);
     expect(harness.store.usableForOwner(OWNER)?.voiceProfileId).toBe('vp1');
+    await harness.close();
+  });
+});
+
+describe('the bytes are the authority, not the header', () => {
+  it('refuses audio announced as one format and sent as another', async () => {
+    // A caller claiming audio/wav while sending WebM is either confused or
+    // probing, and neither earns the filename it asked for.
+    const harness = await createHarness();
+    harness.store.begin({
+      voiceProfileId: 'vp1',
+      ownerId: OWNER,
+      consentTextVersion: CONSENT_VERSION,
+    });
+    harness.store.grantCallUse('vp1');
+
+    const response = await post(harness, AUDIO, { 'content-type': 'audio/wav' });
+
+    expect(response.status).toBe(415);
+    expect(harness.recordings.size).toBe(0);
+    await harness.close();
+  });
+
+  it('refuses bytes that are not audio at all', async () => {
+    const harness = await createHarness();
+    harness.store.begin({
+      voiceProfileId: 'vp1',
+      ownerId: OWNER,
+      consentTextVersion: CONSENT_VERSION,
+    });
+    harness.store.grantCallUse('vp1');
+
+    const response = await post(harness, new TextEncoder().encode('not audio at all'));
+
+    expect(response.status).toBe(415);
+    expect(harness.recordings.size).toBe(0);
     await harness.close();
   });
 });

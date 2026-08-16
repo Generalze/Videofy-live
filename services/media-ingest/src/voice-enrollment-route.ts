@@ -15,6 +15,7 @@
  */
 import type express from 'express';
 import { parseVoiceOwnerId } from '@videofy-live/participant-contracts';
+import { declaredTypeMatches, detectAudioContainer } from './audio-container.js';
 import type { VoiceProfileStore } from './voice-profile-store.js';
 import type { VoiceProfileProvider } from './voice-profile-provider.js';
 
@@ -99,6 +100,15 @@ async function handleEnrollment(
   }
   if (audio.byteLength === 0) {
     return { status: 400, body: { error: 'Nothing was recorded.' } };
+  }
+
+  // The bytes are the authority, not the header. A caller announcing one
+  // format while sending another is refused rather than stored under the name
+  // it asked for.
+  const container = detectAudioContainer(new Uint8Array(audio));
+  const declared = req.header('content-type') ?? '';
+  if (!declaredTypeMatches(declared, container)) {
+    return { status: 415, body: { error: 'That recording format is not supported.' } };
   }
 
   const enrolledLanguage = req.header('x-videofy-enrolled-language') ?? 'en';
