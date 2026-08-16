@@ -37,6 +37,7 @@ import {
   buildCallSdpPayload,
   createCallSocketOptions,
   readGatewayUrl,
+  readIngestUrl,
 } from './callSocketPayloads';
 import {
   CALL_EVENTS,
@@ -58,6 +59,15 @@ import { CallPeer, stopMediaStreamTracks } from './callWebRtc';
 import { CallScreen, type CallConnectionPhase } from './CallScreen';
 import { buildInviteLink, callCodeFromLocation } from './callInvite';
 import { PreJoinScreen } from './PreJoinScreen';
+import { VoiceEnrollmentPanel } from './VoiceEnrollmentPanel';
+import { defaultCaptureEnvironment, VoiceEnrollmentCapture } from './voiceEnrollmentCapture';
+import {
+  createEnrollmentUploader,
+  INITIAL_ENROLLMENT_STATE,
+  VoiceEnrollmentFlow,
+  type EnrollmentFlowState,
+} from './voiceEnrollmentFlow';
+import { defaultOwnerStorage, resolveVoiceOwnerId } from './voiceOwnerIdentity';
 
 const ACK_TIMEOUT_MS = 8_000;
 const SDP_ACK_TIMEOUT_MS = 10_000;
@@ -106,6 +116,47 @@ export default function App() {
   const [captions, setCaptions] = useState<readonly CallCaptionEntry[]>([]);
   const [captionsVisible, setCaptionsVisible] = useState(true);
   const [captionLanguageBusy, setCaptionLanguageBusy] = useState(false);
+  // Personal voice enrollment. Entirely optional: none of this state can
+  // prevent somebody joining a call.
+  const [voiceEnrollmentOpen, setVoiceEnrollmentOpen] = useState(false);
+  const [voiceCallUseGranted, setVoiceCallUseGranted] = useState(false);
+  const [voiceTrainingGranted, setVoiceTrainingGranted] = useState(false);
+  const [enrollmentState, setEnrollmentState] =
+    useState<EnrollmentFlowState>(INITIAL_ENROLLMENT_STATE);
+  const enrollmentFlowRef = useRef<VoiceEnrollmentFlow | null>(null);
+  const voiceProfileIdRef = useRef<string>(`vp_${Math.random().toString(36).slice(2, 10)}`);
+
+  const enrollmentFlow = (): VoiceEnrollmentFlow => {
+    if (!enrollmentFlowRef.current) {
+      enrollmentFlowRef.current = new VoiceEnrollmentFlow(
+        new VoiceEnrollmentCapture(defaultCaptureEnvironment()),
+        createEnrollmentUploader(readIngestUrl()),
+        setEnrollmentState,
+      );
+    }
+    return enrollmentFlowRef.current;
+  };
+
+  const handleAcceptVoice = (): void => {
+    const ownerId = resolveVoiceOwnerId(defaultOwnerStorage());
+    if (!ownerId) {
+      setEnrollmentState({
+        ...INITIAL_ENROLLMENT_STATE,
+        error: 'This browser cannot store a voice identity.',
+      });
+      return;
+    }
+    void enrollmentFlow().accept({
+      voiceProfileId: voiceProfileIdRef.current,
+      ownerId,
+      enrolledLanguage: form.speakLanguage,
+    });
+  };
+
+  const handleCloseVoiceEnrollment = (): void => {
+    enrollmentFlowRef.current?.close();
+    setVoiceEnrollmentOpen(false);
+  };
   const [audioMode, setAudioMode] = useState<CallAudioMode>('translated');
   const [originalVolume, setOriginalVolume] = useState(1);
   const [translatedVolume, setTranslatedVolume] = useState(DEFAULT_TRANSLATED_LEVEL);
@@ -570,6 +621,28 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      {voiceEnrollmentOpen ? (
+        <VoiceEnrollmentPanel
+          stage={enrollmentState.stage}
+          callUseGranted={voiceCallUseGranted}
+          trainingUseGranted={voiceTrainingGranted}
+          previewUrl={enrollmentState.previewUrl}
+          error={enrollmentState.error}
+          deletionInProgress={false}
+          onCallUseChange={setVoiceCallUseGranted}
+          onTrainingUseChange={setVoiceTrainingGranted}
+          onStartRecording={() => void enrollmentFlow().startRecording()}
+          onStopRecording={() => void enrollmentFlow().stopRecording()}
+          onReRecord={() => enrollmentFlow().reRecord()}
+          onAccept={handleAcceptVoice}
+          onDelete={() => {
+            enrollmentFlow().reRecord();
+            setVoiceCallUseGranted(false);
+            setVoiceTrainingGranted(false);
+          }}
+          onClose={handleCloseVoiceEnrollment}
+        />
+      ) : null}
       {screen === 'call' && session ? (
         <CallScreen
           callCode={session.callId}
@@ -611,6 +684,8 @@ export default function App() {
           onCaptionsToggle={(enabled) => setForm((current) => ({ ...current, captionsEnabled: enabled }))}
           onVoiceGenderChange={(voice) => setForm((current) => ({ ...current, voiceGender: voice }))}
           onAudioModeChange={(mode) => setForm((current) => ({ ...current, audioMode: mode }))}
+          onOpenVoiceEnrollment={() => setVoiceEnrollmentOpen(true)}
+          voiceEnrolled={enrollmentState.stage === 'enrolled'}
           onRequestMic={() => {
             void ensureMicStream().catch(() => undefined);
           }}

@@ -33,6 +33,10 @@ export interface PreJoinScreenProps {
   onVoiceGenderChange: (voice: CallVoiceGender) => void;
   onAudioModeChange: (mode: CallAudioMode) => void;
   onRequestMic: () => void;
+  /** Opens personal-voice enrollment. Optional: a call never depends on it. */
+  onOpenVoiceEnrollment: () => void;
+  /** True once this browser has an accepted profile, so the wording can differ. */
+  voiceEnrolled: boolean;
   onJoin: () => void;
 }
 
@@ -214,6 +218,14 @@ export function PreJoinScreen(props: PreJoinScreenProps) {
             {props.micPermission === 'requesting' ? 'Checking…' : 'Check microphone'}
           </button>
         </div>
+
+        {/*
+          Discoverable, not dominant. Enrollment is a thing you can choose to
+          do, never a step between someone and the call they came to join.
+        */}
+        <button type="button" className="ghost-button" onClick={props.onOpenVoiceEnrollment}>
+          {props.voiceEnrolled ? 'Manage your translated voice' : 'Use your own translated voice'}
+        </button>
 
         {props.joinError ? <p className="join-error">{props.joinError}</p> : null}
 

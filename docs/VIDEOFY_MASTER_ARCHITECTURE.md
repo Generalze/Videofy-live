@@ -1618,6 +1618,63 @@ of a pipeline as proof that the pipeline cannot leak is efficient mathematics
 and terrible engineering, so the second guarantee is owed at VI-L0 and cannot
 be inherited from the first.
 
+### 24.6 Call Mode — normal and translated calls
+
+Owner decision, 2026-08-16. Contract recorded ahead of implementation.
+
+Videofy Call is a calling system that can invoke translation, not a translation
+app that happens to place calls. Call Mode sits ABOVE the existing audio modes
+and must not be confused with them:
+
+```text
+Call Mode          normal | translated        session level
+Audio Mode         translated | interpretation | original
+                                              participant level,
+                                              inside a translated call
+```
+
+**Normal call.** Direct WebRTC conversation. No VAD, STT, translation, TTS or
+personal-voice synthesis runs, and no AI-provider cost is incurred. Camera,
+microphone and screen sharing behave exactly as in any ordinary call. A
+45-minute meeting that needs translation for ten minutes must not be processed
+through paid providers for forty-five.
+
+**Translated call.** The Videofy realtime language engine is active and the
+existing pipeline applies unchanged.
+
+**Mode changes are revisioned**, exactly like language changes, and carry
+`callMode` plus `callModeRevision`. Switching must not restart the call, drop
+the WebRTC session, or disturb cameras and microphones — only the
+language-processing path changes.
+
+Leaving translated mode:
+
+- stop admitting new utterances into translation;
+- invalidate queued translated and personal-voice audio that has not played,
+  reusing the P6.3 revocation semantics;
+- reject stale translation results carrying the old revision;
+- restore direct original audio.
+
+Entering translated mode: processing begins at the NEXT speech. Backfilling the
+previous ten minutes would be neither expected nor causal.
+
+**Authority.** `callMode` is session level and belongs to the host, or the
+moderator in a conference; a participant cannot switch the whole room. Spoken
+language, preferred language, caption preference, audio mode and voice profile
+remain individual once translated mode is active. That separation is what P6.4
+Conference will need anyway.
+
+**Personal voice follows from this cleanly.** In a normal call personal voice is
+inactive, because there is no translated speech for it to speak. It applies only
+inside a translated call, where the P6.3 chain runs: personal when usable, then
+standard, then captions plus original audio.
+
+**UI.** Call mode is a two-way choice presented plainly. Language and audio
+controls are revealed when translated is selected and collapse when it is not,
+rather than sitting scattered around a call that is not translating anything.
+
+Implementation is a dedicated wave after P6.3, before or within P6.4.
+
 ### 21.9.2.3 Personal-voice engine decision
 
 Owner decision, 2026-08-16. **OpenVoice V2** is the selected personal-voice

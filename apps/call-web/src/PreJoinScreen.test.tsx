@@ -34,6 +34,8 @@ function render(overrides: Partial<PreJoinScreenProps> = {}): string {
     onVoiceGenderChange: vi.fn(),
     onAudioModeChange: vi.fn(),
     onRequestMic: vi.fn(),
+    onOpenVoiceEnrollment: vi.fn(),
+    voiceEnrolled: false,
     onJoin: vi.fn(),
     ...overrides,
     // Applied after the spread so a caller's partial `form` is merged onto the

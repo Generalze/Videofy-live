@@ -47,6 +47,11 @@ export function readGatewayUrl(): string {
   return import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
 }
 
+/** Media ingest, which owns voice enrollment storage. */
+export function readIngestUrl(): string {
+  return import.meta.env['VITE_INGEST_URL'] ?? 'http://localhost:3002';
+}
+
 export interface CallResumeCredentials {
   participantId: string;
   resumeToken: string;
