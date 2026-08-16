@@ -28,6 +28,7 @@ import {
   readFileSync,
   statSync,
   utimesSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -221,8 +222,109 @@ const standardClips = generated.filter((e) => !String(e.voiceId).startsWith('per
 
 console.log('');
 for (const event of generated) {
-  console.log(`  seq ${event.sequence}  voice=${event.voiceId}  ${event.durationMs ?? '?'}ms`);
+  // Latency is the engine's own synthesis time, reported by the router.
+  // The ratio against the clip it produced is the number that says whether a
+  // live call can afford this voice at all.
+  const latency = event.providerLatencyMs ?? null;
+  const duration = event.durationMs ?? null;
+  const ratio = latency !== null && duration ? (latency / duration).toFixed(2) : '?';
+  console.log(
+    `  seq ${event.sequence}  voice=${event.voiceId}  ` +
+      `synth=${latency ?? '?'}ms  audio=${duration ?? '?'}ms  ratio=${ratio}`,
+  );
 }
+
+// ------------------------------------------------------------- intelligibility
+//
+// §21.9.2.3 lists intelligibility among the gates OpenVoice must pass before any
+// production claim, and until now nothing checked it: every test so far asserted
+// which voice was SELECTED, not whether that voice still said the words.
+//
+// A cloned voice that mangles the sentence is worse than a standard one that
+// does not, so the generated clip is fetched back through the real delivery
+// route and put through the same speech recognition a call uses. What comes out
+// is compared against the translation it was generated from.
+
+const normalise = (text) =>
+  String(text)
+    .toLowerCase()
+    .replace(/[^\p{Letter}\p{Number} ]/gu, '')
+    .trim();
+
+function wordOverlap(expectedText, heardText) {
+  const wanted = new Set(normalise(expectedText).split(/\s+/).filter((w) => w.length > 2));
+  const heard = new Set(normalise(heardText).split(/\s+/));
+  if (wanted.size === 0) return 0;
+  let hits = 0;
+  for (const word of wanted) if (heard.has(word)) hits += 1;
+  return hits / wanted.size;
+}
+
+const translations = (latest?.translation?.events ?? []).filter((e) => e.status === 'translated');
+let intelligibility = 0;
+let intelligibilityExpected = '';
+let intelligibilityHeard = '';
+
+const probeClip = generated[0];
+if (probeClip) {
+  const spokenUrl = `${BASE}/sessions/${encodeURIComponent(sessionId)}/generated-audio/segments/${encodeURIComponent(probeClip.segmentId)}/audio?language=${targetLanguage}`;
+  const spoken = await fetch(spokenUrl);
+  if (spoken.ok) {
+    const cloned = join(workDir, 'cloned.wav');
+    const clonedReady = join(workDir, 'cloned-16k.wav');
+    writeFileSync(cloned, Buffer.from(await spoken.arrayBuffer()));
+    execFileSync(FFMPEG, ['-y', '-i', cloned, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', clonedReady], {
+      stdio: 'ignore',
+    });
+
+    // A separate session that LISTENS in the target language, so the cloned
+    // audio goes through exactly the recogniser a call would use on it.
+    const listenId = `call_hear${Math.floor(Math.random() * 99999)}_participant_1_r1`;
+    await postJson('/internal/webrtc/sessions', {
+      sessionId: listenId,
+      broadcastId: 'callcast_hear_participant_1_r1',
+      broadcasterPeerId: 'peer_hear',
+      revision: 1,
+      sourceLanguage: targetLanguage,
+      sourceLanguageMode: 'manual',
+      targetLanguage: sourceLanguage,
+      targetLanguages: [sourceLanguage],
+    });
+    const stagedCloned = join(STAGING, `hear-${Date.now()}.wav`);
+    copyFileSync(clonedReady, stagedCloned);
+    const clonedBytes = statSync(clonedReady).size;
+    const heardResult = await postJson(
+      `/internal/webrtc/sessions/${encodeURIComponent(listenId)}/chunks`,
+      {
+        sequence: 0,
+        startMs: 0,
+        endMs: Math.max(1000, Math.round((clonedBytes - 44) / 32)),
+        sampleRate: 16000,
+        channelCount: 1,
+        pcmFormat: 'pcm_s16le',
+        mimeType: 'audio/wav',
+        sizeBytes: clonedBytes,
+        sourcePath: stagedCloned,
+      },
+    );
+    const heard = (heardResult.json?.session?.transcription?.events ?? []).filter(
+      (e) => e.status === 'transcribed',
+    );
+    intelligibilityExpected = translations[0]?.translatedText ?? '';
+    intelligibilityHeard = heard[0]?.sourceText ?? '';
+    intelligibility = wordOverlap(intelligibilityExpected, intelligibilityHeard);
+
+    await postJson(`/internal/webrtc/sessions/${encodeURIComponent(listenId)}/stop`, {});
+    await fetch(`${BASE}/internal/webrtc/sessions/${encodeURIComponent(listenId)}`, {
+      method: 'DELETE',
+    }).catch(() => {});
+  }
+}
+
+console.log('');
+console.log(`  cloned audio said  "${intelligibilityHeard}"`);
+console.log(`  generated from     "${intelligibilityExpected}"`);
+console.log(`  word overlap       ${Math.round(intelligibility * 100)}%`);
 
 // ------------------------------------------------------------ across a restart
 //
@@ -384,6 +486,10 @@ const checks = [
   ],
   ['Nothing silently fell back to a standard voice', standardClips.length === 0],
   ['No session error', !latest?.error],
+  // The gate is that the words survive being spoken in a cloned voice. 60% of
+  // content words is the same bar verify-language-pair holds the standard path
+  // to, so a personal voice is not being graded more gently than a standard one.
+  ['The cloned voice is intelligible', intelligibility >= 0.6],
   // Reported separately from PASS/FAIL when the service never restarted, so a
   // check that could not run never reads as a check that succeeded.
   [

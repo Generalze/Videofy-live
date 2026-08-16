@@ -1,0 +1,186 @@
+# OpenVoice V2 personal-voice service — resolved environment (P6.3).
+#
+# Captured from the isolated .venv-openvoice interpreter so the environment can
+# be rebuilt rather than remembered. It is a RECORD of what was verified, not a
+# clean dependency declaration: pinning every transitive package is the point,
+# because the gate evidence in docs/P6_3_OPENVOICE_GATE_STATUS.md was gathered
+# against exactly these versions.
+#
+# torch/torchaudio are the CUDA 12.8 builds, installed from a locally downloaded
+# wheel rather than PyPI (sm_120 / Blackwell needs cu128). pip freeze recorded
+# that as an absolute file:// path containing a machine path and username, which
+# is rewritten here to a plain pin — a lockfile is not a place to publish
+# somebody home directory layout. Install those two first, from the CUDA index:
+#
+#   pip install torch==2.7.1+cu128 torchaudio==2.7.1+cu128 #       --index-url https://download.pytorch.org/whl/cu128
+#   pip install -r requirements.lock.txt
+#
+# Order matters: torch must already be present and immovable, or resolving the
+# rest of this file pulls a CPU build over it.
+#
+# Python 3.9 (the OpenVoice/MeloTTS dependency floor), isolated in
+# .venv-openvoice. It must never share .venv-ai.
+
+absl-py==2.3.1
+aiofiles==23.2.1
+altair==5.5.0
+annotated-doc==0.0.5
+annotated-types==0.7.0
+anyascii==0.3.2
+anyio==4.12.1
+attrs==26.1.0
+audioread==3.1.0
+babel==2.18.0
+boto3==1.42.97
+botocore==1.42.97
+cached_path==1.8.10
+certifi==2026.7.22
+cffi==2.0.0
+charset-normalizer==3.5.1
+click==8.1.8
+cn2an==0.5.22
+colorama==0.4.6
+contourpy==1.3.0
+cryptography==50.0.0
+cycler==0.12.1
+dateparser==1.1.8
+decorator==5.3.1
+Deprecated==1.3.1
+Distance==0.1.3
+docopt==0.6.2
+eng_to_ipa==0.0.2
+exceptiongroup==1.3.1
+fastapi==0.128.8
+ffmpy==1.0.0
+filelock==3.19.1
+fonttools==4.60.2
+fsspec==2025.10.0
+fugashi==1.3.0
+g2p-en==2.1.0
+g2pkk==0.1.2
+google==3.0.0
+google-api-core==2.30.3
+google-auth==2.50.0
+google-cloud-core==2.5.1
+google-cloud-storage==3.9.0
+google-crc32c==1.8.0
+google-resumable-media==2.8.2
+googleapis-common-protos==1.75.0
+gradio==4.26.0
+gradio_client==0.15.1
+grpcio==1.80.0
+gruut==2.2.3
+gruut-ipa==0.13.0
+gruut_lang_de==2.0.1
+gruut_lang_en==2.0.1
+gruut_lang_es==2.0.1
+gruut_lang_fr==2.0.2
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==0.36.2
+idna==3.18
+importlib_metadata==8.7.1
+importlib_resources==6.5.2
+inflect==7.0.0
+jaconv==0.5.0
+jamo==0.4.1
+jieba==0.42.1
+Jinja2==3.1.6
+jmespath==1.1.0
+joblib==1.5.3
+jsonlines==1.2.0
+jsonschema==4.25.1
+jsonschema-specifications==2025.9.1
+kiwisolver==1.4.7
+langid==1.1.6
+lazy-loader==0.5
+librosa==0.9.1
+llvmlite==0.43.0
+loguru==0.7.2
+Markdown==3.9
+markdown-it-py==3.0.0
+MarkupSafe==2.1.5
+matplotlib==3.9.4
+mdurl==0.1.2
+mecab-python3==1.0.9
+more-itertools==10.8.0
+mpmath==1.3.0
+msgpack==1.1.2
+-e git+https://github.com/myshell-ai/OpenVoice.git@74a1d147b17a8c3092dd5430504bd83ef6c7eb23#egg=MyShell_OpenVoice
+narwhals==2.21.0
+networkx==2.8.8
+nltk==3.9.2
+num2words==0.5.12
+numba==0.60.0
+numpy==1.26.4
+orjson==3.11.5
+packaging==26.3
+pandas==2.3.3
+pillow==10.4.0
+plac==1.4.5
+platformdirs==4.4.0
+pooch==1.9.0
+proces==0.1.7
+proto-plus==1.27.2
+protobuf==6.33.6
+pyasn1==0.6.4
+pyasn1_modules==0.4.2
+pycparser==2.23
+pydantic==2.13.4
+pydantic_core==2.46.4
+pydub==0.25.1
+Pygments==2.20.0
+pykakasi==2.2.1
+pyparsing==3.3.2
+pypinyin==0.50.0
+python-crfsuite==0.9.11
+python-dateutil==2.9.0.post0
+python-multipart==0.0.20
+pytz==2026.3.post1
+PyYAML==6.0.3
+referencing==0.36.2
+regex==2026.1.15
+requests==2.32.5
+resampy==0.4.3
+rich==13.9.4
+rpds-py==0.27.1
+ruff==0.16.3
+s3transfer==0.16.1
+safetensors==0.7.0
+scikit-learn==1.6.1
+scipy==1.11.4
+semantic-version==2.10.0
+shellingham==1.5.4
+six==1.17.0
+soundfile==0.13.1
+soxr==1.1.0
+starlette==0.49.3
+sympy==1.14.0
+tensorboard==2.16.2
+tensorboard-data-server==0.7.2
+threadpoolctl==3.6.0
+tokenizers==0.13.3
+tomlkit==0.12.0
+torch==2.7.1+cu128
+torchaudio==2.7.1+cu128
+tqdm==4.70.0
+transformers==4.27.4
+txtsplit==1.0.0
+typeguard==4.5.2
+typer==0.23.2
+typing-inspection==0.4.2
+typing_extensions==4.16.0
+tzdata==2026.3
+tzlocal==5.3.1
+Unidecode==1.3.7
+unidic-lite==1.0.8
+urllib3==1.26.20
+uvicorn==0.39.0
+wasabi==0.10.1
+wavmark==0.0.3
+websockets==11.0.3
+Werkzeug==3.1.8
+win32_setctime==1.2.0
+wrapt==2.3.0
+zipp==3.23.1
