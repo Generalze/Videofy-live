@@ -202,3 +202,6 @@ build/
 # Python test cache
 .pytest_cache/
 *.tsbuildinfo
+
+# C-AI1 bake-off evidence: raw provider comparisons, kept local
+.videofy-bakeoff/

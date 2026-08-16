@@ -241,3 +241,108 @@ goal survives intact; the mechanism has to differ:
 
 This is exactly the surface an institutional customer's legal review would examine first, which is
 why it is recorded here rather than left to implementation.
+
+## C-AI1 — commercial streaming providers (owner decisions, 2026-08-16)
+
+C-AI1 runs as a PARALLEL commercialization track. It does not replace product
+work: P6.2's remainder and the listener/operator shells continue alongside it.
+
+### Why streaming, not another tuning pass
+
+The commit history is the argument. Chunking went from sub-second fragments, to
+a 12-second ceiling, back to an 8-second compromise, because correctness and
+latency pull in opposite directions: shorter chunks invent words at the
+boundary, longer chunks delay the call. Every measurement in that sequence is
+recorded in the call-runtime design note. A streaming path makes the boundary
+itself disappear rather than moving it, which is why C-AI1 addresses both
+complaints together. The batch path is not obsolete — it stays for uploaded
+programme media, offline processing, regression comparison, development-demo
+and fallback — but no VAD constant turns batch into conversational streaming.
+
+### Vendor order
+
+1. **Azure Speech** — real-time speech translation, interim results, source
+   language identification and synthesis in one path, which is the closest match
+   to the architecture already designed.
+2. **OpenAI Realtime Translate** — the direct comparison.
+3. **Google** — only if the first two leave a meaningful gap.
+
+### Cost policy
+
+Not chosen from list price. The measure is the **effective translated
+participant-minute**, including speech input, translation, synthesized output,
+each additional target language, and any session or provider charge.
+
+| Band | Effective cost per translated participant-minute |
+| --- | --- |
+| Target | ≤ $0.05 |
+| Acceptable for premium quality | $0.05 – $0.08 |
+| Requires business justification | > $0.08 |
+| Red flag | > $0.10 unless quality and latency are substantially superior |
+
+### Runtime classes — audio leaving the machine
+
+Two commercial classes, not one:
+
+```text
+commercial-cloud     audio may leave the machine, but only where the
+                     organization's policy explicitly permits it
+commercial-local     raw call audio stays inside the customer-controlled
+                     environment; only approved local providers may run
+```
+
+For ministry, government, sensitive enterprise and confidential meetings the
+default is **`commercial-local`**, and `commercial-cloud` requires explicit
+organization-level authorization. This is an administrative policy, not a toggle
+on the call screen — the person in the call is not the person who can consent to
+their organization's audio leaving its environment.
+
+### C-AI1.0 — provider bake-off
+
+Starts before any vendor account exists, because the harness, corpus and
+measurements are vendor-neutral. Compares the current batch baseline against
+each candidate on identical speech, and wires nothing into production.
+
+Measured, at P50/P90/P95: first partial transcript, stable transcript, first
+translated text, first translated audio, utterance completion. Quality: invented
+words, dropped words, sentence-boundary damage, names, numbers, Nigerian-accented
+English, EN→ES and ES→EN. Economics: input and output duration, characters or
+tokens where the provider exposes them, provider charge, and the effective
+translated participant-minute.
+
+Raw comparison evidence is kept in ignored local storage, never in Git.
+
+### C-AI1.1 — streaming provider contract
+
+Capabilities are declared, and the session engine selects a pipeline from them:
+
+```ts
+providerCapabilities: {
+  streamingAudioInput: boolean;
+  partialTranscript: boolean;
+  streamingTranslation: boolean;
+  streamingAudioOutput: boolean;
+  automaticLanguageDetection: boolean;
+  multipleTargetLanguages: boolean;
+}
+```
+
+The contract changes; the call core does not. No vendor-specific logic reaches
+call or session code, and the batch providers stay intact beside the streaming
+ones.
+
+### C-AI1.2 — first commercial EN↔ES path
+
+Exit conditions, all required:
+
+- commercially approved speech recognition or speech interpretation;
+- commercially approved translation;
+- commercially approved English Male and Female voices;
+- commercially approved Spanish Male and Female voices;
+- no development-only fallback reachable from the commercial profile;
+- `commercial-cloud` profile passes;
+- measured quality, latency and cost all pass, with cost inside an approved band.
+
+The commercial implementation is built BESIDE the current chain and compared
+against identical speech. The existing provider chain is not replaced while
+benchmarking.
