@@ -648,6 +648,7 @@ export default function App() {
           previewUrl={enrollmentState.previewUrl}
           error={enrollmentState.error}
           deletionInProgress={false}
+          personalVoiceReady={enrollmentState.personalVoiceReady}
           onCallUseChange={setVoiceCallUseGranted}
           onTrainingUseChange={setVoiceTrainingGranted}
           onStartRecording={handleStartVoiceRecording}

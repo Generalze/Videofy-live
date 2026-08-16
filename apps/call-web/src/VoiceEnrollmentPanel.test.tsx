@@ -10,6 +10,7 @@ function render(overrides: Partial<VoiceEnrollmentPanelProps> = {}): string {
     previewUrl: null,
     error: null,
     deletionInProgress: false,
+    personalVoiceReady: false,
     onCallUseChange: vi.fn(),
     onTrainingUseChange: vi.fn(),
     onStartRecording: vi.fn(),
@@ -107,5 +108,48 @@ describe('what the speaker is never shown', () => {
     const html = render({ stage: 'enrolled', deletionInProgress: true });
 
     expect(html).toMatch(/<button[^>]*disabled[^>]*>Delete my voice/);
+  });
+});
+
+describe('the panel does not promise a voice it does not have', () => {
+  it('says the recording is saved but the voice is not ready yet', () => {
+    // The state the owner actually hit: "Personal voice is on." and "not
+    // available yet" rendered together, contradicting each other on screen.
+    const html = render({ stage: 'enrolled', personalVoiceReady: false });
+
+    expect(html).toContain('not available yet');
+    expect(html).toContain('standard voice');
+    expect(html).not.toContain('Personal voice is on');
+  });
+
+  it('claims personal voice only when one really exists', () => {
+    const html = render({ stage: 'enrolled', personalVoiceReady: true });
+
+    expect(html).toContain('Personal voice is on');
+  });
+});
+
+describe('the panel is visible when open', () => {
+  it('renders as a modal dialog rather than text stacked above the page', () => {
+    // It previously had class names and no CSS at all, so it appeared as raw
+    // text above the call and had to be scrolled up to.
+    const html = render();
+
+    expect(html).toContain('voice-enrollment-backdrop');
+    expect(html).toContain('role="dialog"');
+    expect(html).toContain('aria-modal="true"');
+  });
+
+  it('shows that recording is actually happening', () => {
+    const html = render({ stage: 'recording', callUseGranted: true });
+
+    expect(html).toContain('Recording');
+    expect(html).toContain('voice-recording-dot');
+  });
+
+  it('shows that accepting is in progress', () => {
+    const html = render({ stage: 'saving', callUseGranted: true });
+
+    expect(html).toContain('Saving your recording');
   });
 });

@@ -34,6 +34,12 @@ export interface VoiceEnrollmentPanelProps {
   error: string | null;
   /** Set while deletion is finishing in the background. */
   deletionInProgress: boolean;
+  /**
+   * True only when a real personal voice asset exists. Without this the panel
+   * claimed "Personal voice is on." while simultaneously reporting that it was
+   * not available yet — two contradictory sentences on screen at once.
+   */
+  personalVoiceReady: boolean;
   onCallUseChange: (granted: boolean) => void;
   onTrainingUseChange: (granted: boolean) => void;
   onStartRecording: () => void;
@@ -50,13 +56,21 @@ export function VoiceEnrollmentPanel(props: VoiceEnrollmentPanelProps) {
   const enrolled = props.stage === 'enrolled';
 
   return (
-    <section className="voice-enrollment" aria-label="Personal voice">
+    <div className="voice-enrollment-backdrop" role="presentation">
+    <section
+      className="voice-enrollment"
+      aria-label="Personal voice"
+      role="dialog"
+      aria-modal="true"
+    >
       <header className="voice-enrollment-header">
         <h2>Your translated voice</h2>
         <p className="voice-enrollment-lead">
-          {enrolled
+          {enrolled && props.personalVoiceReady
             ? 'People on your calls hear your translated words in your own voice.'
-            : 'Record a short sample and your translated words can be spoken in your own voice instead of a standard one.'}
+            : enrolled
+              ? 'Your recording is safe. We will use it as soon as your own voice is ready.'
+              : 'Record a short sample and your translated words can be spoken in your own voice instead of a standard one.'}
         </p>
       </header>
 
@@ -68,7 +82,11 @@ export function VoiceEnrollmentPanel(props: VoiceEnrollmentPanelProps) {
 
       {enrolled ? (
         <div className="voice-enrollment-enrolled">
-          <p className="voice-enrollment-state">Personal voice is on.</p>
+          <p className="voice-enrollment-state">
+            {props.personalVoiceReady
+              ? 'Personal voice is on. People on your calls will hear your translated words in your own voice.'
+              : 'Your recording is saved. Your own voice is not available yet, so calls will use a standard voice.'}
+          </p>
           {props.deletionInProgress ? (
             // The technical recovery state stays in the service. The speaker is
             // told the truth — it is being completed — without being handed a
@@ -127,8 +145,13 @@ export function VoiceEnrollmentPanel(props: VoiceEnrollmentPanelProps) {
 
           <div className="voice-enrollment-actions">
             {props.stage === 'recording' ? (
-              <button type="button" className="control-button is-active" onClick={props.onStopRecording}>
-                Stop recording
+              <button
+                type="button"
+                className="control-button is-recording"
+                onClick={props.onStopRecording}
+              >
+                <span className="voice-recording-dot" aria-hidden="true" />
+                Recording — tap to stop
               </button>
             ) : (
               <button
@@ -143,6 +166,12 @@ export function VoiceEnrollmentPanel(props: VoiceEnrollmentPanelProps) {
                 {props.stage === 'preview' ? 'Record again' : 'Start recording'}
               </button>
             )}
+
+            {props.stage === 'saving' ? (
+              <p className="voice-enrollment-state" aria-live="polite">
+                Saving your recording…
+              </p>
+            ) : null}
 
             {props.stage === 'preview' && props.previewUrl ? (
               <>
@@ -160,5 +189,6 @@ export function VoiceEnrollmentPanel(props: VoiceEnrollmentPanelProps) {
         Close
       </button>
     </section>
+    </div>
   );
 }
