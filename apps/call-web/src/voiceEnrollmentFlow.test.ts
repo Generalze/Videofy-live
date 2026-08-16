@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   VoiceEnrollmentFlow,
+  type EnrollmentInitializer,
   type EnrollmentUploader,
   type EnrollmentFlowState,
 } from './voiceEnrollmentFlow';
@@ -36,18 +37,27 @@ function captureEnvironment(overrides: Partial<CaptureEnvironment> = {}): Captur
 function createFlow(
   uploader: EnrollmentUploader,
   environment = captureEnvironment(),
+  initializer: EnrollmentInitializer = {
+    begin: async () => ({ voiceProfileId: 'vp1' }),
+  },
 ): { flow: VoiceEnrollmentFlow; states: EnrollmentFlowState[] } {
   const states: EnrollmentFlowState[] = [];
   const flow = new VoiceEnrollmentFlow(
     new VoiceEnrollmentCapture(environment),
     uploader,
     (state) => states.push(state),
+    initializer,
   );
   return { flow, states };
 }
 
+const BEGIN_INPUT = {
+  ownerId: 'devid_aaaaaaaaaaaa',
+  consentTextVersion: 'voice-consent-v1',
+  trainingUseGranted: false,
+};
+
 const ACCEPT_INPUT = {
-  voiceProfileId: 'vp1',
   ownerId: 'devid_aaaaaaaaaaaa',
   enrolledLanguage: 'en',
 };
@@ -65,6 +75,7 @@ describe('a saved recording is not a personal voice', () => {
     };
     const { flow, states } = createFlow(uploader);
 
+    await flow.begin(BEGIN_INPUT);
     await flow.startRecording();
     await flow.stopRecording();
     await flow.accept(ACCEPT_INPUT);
@@ -81,6 +92,7 @@ describe('a saved recording is not a personal voice', () => {
     };
     const { flow, states } = createFlow(uploader);
 
+    await flow.begin(BEGIN_INPUT);
     await flow.startRecording();
     await flow.stopRecording();
     await flow.accept(ACCEPT_INPUT);
@@ -109,6 +121,7 @@ describe('nothing here can prevent joining a call', () => {
     // reason the user can see.
     const { flow, states } = createFlow({ upload: vi.fn(async () => null) });
 
+    await flow.begin(BEGIN_INPUT);
     await flow.startRecording();
     await flow.stopRecording();
     await flow.accept(ACCEPT_INPUT);
@@ -120,8 +133,11 @@ describe('nothing here can prevent joining a call', () => {
   });
 
   it('does not upload when there is nothing recorded', async () => {
+    // Consent given and the profile created, but the speaker accepted without
+    // ever recording. Distinct from never having started enrollment at all.
     const upload = vi.fn();
     const { flow, states } = createFlow({ upload });
+    await flow.begin(BEGIN_INPUT);
 
     await flow.accept(ACCEPT_INPUT);
 
@@ -133,6 +149,7 @@ describe('nothing here can prevent joining a call', () => {
 describe('re-recording', () => {
   it('discards the current take and returns to the start', async () => {
     const { flow, states } = createFlow({ upload: vi.fn() });
+    await flow.begin(BEGIN_INPUT);
     await flow.startRecording();
     await flow.stopRecording();
 
@@ -145,6 +162,7 @@ describe('re-recording', () => {
   it('does not upload a discarded take afterwards', async () => {
     const upload = vi.fn();
     const { flow } = createFlow({ upload });
+    await flow.begin(BEGIN_INPUT);
     await flow.startRecording();
     await flow.stopRecording();
 
@@ -164,6 +182,7 @@ describe('what is sent', () => {
     });
     const { flow } = createFlow({ upload });
 
+    await flow.begin(BEGIN_INPUT);
     await flow.startRecording();
     await flow.stopRecording();
     await flow.accept(ACCEPT_INPUT);
@@ -177,5 +196,45 @@ describe('what is sent', () => {
       }),
     );
     expect(sentPayloads[0]?.blob.size).toBeGreaterThan(0);
+  });
+});
+
+describe('consent is recorded before any audio exists', () => {
+  it('refuses to upload when the profile was never created', async () => {
+    // Without this, audio would be posted for a profile the server never
+    // consented to hold — which is the 409 that proved Step A was not yet
+    // functionally complete.
+    const upload = vi.fn();
+    const { flow, states } = createFlow({ upload });
+
+    await flow.startRecording();
+    await flow.stopRecording();
+    await flow.accept(ACCEPT_INPUT);
+
+    expect(upload).not.toHaveBeenCalled();
+    expect(states.at(-1)?.error).toContain('could not be started');
+  });
+
+  it('sends call-use consent and passes training through unchanged', async () => {
+    const begin = vi.fn(async () => ({ voiceProfileId: 'vp1' }));
+    const { flow } = createFlow({ upload: vi.fn() }, captureEnvironment(), { begin });
+
+    await flow.begin({ ...BEGIN_INPUT, trainingUseGranted: true });
+
+    expect(begin).toHaveBeenCalledWith({
+      ownerId: 'devid_aaaaaaaaaaaa',
+      consentTextVersion: 'voice-consent-v1',
+      callUseGranted: true,
+      trainingUseGranted: true,
+    });
+  });
+
+  it('reports a failed start rather than proceeding to record', async () => {
+    const { flow, states } = createFlow({ upload: vi.fn() }, captureEnvironment(), {
+      begin: async () => null,
+    });
+
+    expect(await flow.begin(BEGIN_INPUT)).toBe(false);
+    expect(states.at(-1)?.error).toContain('could not be started');
   });
 });

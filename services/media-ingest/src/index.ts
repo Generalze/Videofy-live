@@ -7,6 +7,7 @@ import { loadConfig } from './config.js';
 import { registerGeneratedAudioDeliveryRoute } from './generated-audio-delivery-route.js';
 import { createUnavailablePersonalVoiceProvider } from './personal-voice-provider.js';
 import { registerVoiceEnrollmentRoute } from './voice-enrollment-route.js';
+import { registerVoiceProfileInitRoute } from './voice-profile-init-route.js';
 import { createFileVoiceEnrollmentStorage } from './voice-enrollment-storage.js';
 import { VoiceProfileStore } from './voice-profile-store.js';
 import { registerSourceMediaDeliveryRoute } from './source-media-delivery-route.js';
@@ -34,7 +35,12 @@ app.use(express.json({ limit: '1mb' }));
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Range');
+  // The voice-owner header is a custom one, so it must be listed explicitly or
+  // the browser preflight rejects the request before it is ever sent.
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Content-Type,Range,X-Videofy-Voice-Owner,X-Videofy-Enrolled-Language',
+  );
   if (req.method === 'OPTIONS') {
     res.status(204).end();
     return;
@@ -413,6 +419,10 @@ const voiceProfileStore = new VoiceProfileStore(
   }),
 );
 let voiceProfileSerial = 0;
+registerVoiceProfileInitRoute(app, {
+  store: voiceProfileStore,
+  newVoiceProfileId: () => `vp_${Date.now().toString(36)}_${++voiceProfileSerial}`,
+});
 registerVoiceEnrollmentRoute(app, {
   store: voiceProfileStore,
   // Until a cloning engine is validated this refuses every creation, so a

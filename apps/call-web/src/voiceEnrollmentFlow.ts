@@ -13,11 +13,33 @@ import {
 } from './voiceEnrollmentCapture';
 import type { VoiceEnrollmentStage } from './VoiceEnrollmentPanel';
 
+/**
+ * The wording a speaker agreed to. Bumped whenever the consent text changes,
+ * so a stored profile records which version it was granted under.
+ */
+export const VOICE_CONSENT_TEXT_VERSION = 'voice-consent-v1';
+
 export interface EnrollmentUploadResult {
   /** True only when a real personal voice asset was produced. */
   personalVoiceReady: boolean;
   /** A human sentence, or null when there is nothing to say. */
   message: string | null;
+}
+
+/**
+ * The consent transaction that must precede any recording.
+ *
+ * Separate from upload because the upload endpoint must never create a profile
+ * on its own: letting audio arrival manufacture the permission to store audio
+ * would be circular.
+ */
+export interface EnrollmentInitializer {
+  begin(input: {
+    ownerId: string;
+    consentTextVersion: string;
+    callUseGranted: boolean;
+    trainingUseGranted: boolean;
+  }): Promise<{ voiceProfileId: string } | null>;
 }
 
 export interface EnrollmentUploader {
@@ -47,11 +69,39 @@ export const INITIAL_ENROLLMENT_STATE: EnrollmentFlowState = {
 export class VoiceEnrollmentFlow {
   private recording: EnrollmentRecording | null = null;
 
+  /** Set once the server has created the profile this recording belongs to. */
+  private voiceProfileId: string | null = null;
+
   constructor(
     private readonly capture: VoiceEnrollmentCapture,
     private readonly uploader: EnrollmentUploader,
     private readonly emit: (state: EnrollmentFlowState) => void,
+    private readonly initializer?: EnrollmentInitializer,
   ) {}
+
+  /**
+   * Create the profile and record consent, before any audio exists.
+   *
+   * Called when somebody affirmatively proceeds, never when the panel opens:
+   * inspecting a screen must not manufacture a consent record.
+   */
+  async begin(input: {
+    ownerId: string;
+    consentTextVersion: string;
+    trainingUseGranted: boolean;
+  }): Promise<boolean> {
+    if (!this.initializer) return false;
+    const created = await this.initializer.begin({ ...input, callUseGranted: true });
+    if (!created) {
+      this.emit({
+        ...INITIAL_ENROLLMENT_STATE,
+        error: 'Enrollment could not be started. Please try again.',
+      });
+      return false;
+    }
+    this.voiceProfileId = created.voiceProfileId;
+    return true;
+  }
 
   async startRecording(): Promise<void> {
     this.emit({ ...INITIAL_ENROLLMENT_STATE, stage: 'recording' });
@@ -93,8 +143,16 @@ export class VoiceEnrollmentFlow {
    * that personal voice is unavailable, and this reports the same thing rather
    * than showing a success that would be a lie.
    */
-  async accept(input: { voiceProfileId: string; ownerId: string; enrolledLanguage: string }): Promise<void> {
+  async accept(input: { ownerId: string; enrolledLanguage: string }): Promise<void> {
     const recording = this.recording;
+    const voiceProfileId = this.voiceProfileId;
+    if (!voiceProfileId) {
+      this.emit({
+        ...INITIAL_ENROLLMENT_STATE,
+        error: 'Enrollment could not be started. Please try again.',
+      });
+      return;
+    }
     if (!recording) {
       this.emit({ ...INITIAL_ENROLLMENT_STATE, error: 'Nothing was recorded. Please try again.' });
       return;
@@ -102,7 +160,9 @@ export class VoiceEnrollmentFlow {
 
     this.emit({ stage: 'saving', previewUrl: recording.previewUrl, error: null, personalVoiceReady: false });
     const result = await this.uploader.upload({
-      ...input,
+      voiceProfileId,
+      ownerId: input.ownerId,
+      enrolledLanguage: input.enrolledLanguage,
       blob: recording.blob,
       mimeType: recording.mimeType,
     });
@@ -139,6 +199,33 @@ export class VoiceEnrollmentFlow {
     this.recording = null;
     this.capture.teardown();
   }
+}
+
+/** Creates the profile and records consent before any audio is captured. */
+export function createEnrollmentInitializer(ingestUrl: string): EnrollmentInitializer {
+  return {
+    async begin(input) {
+      try {
+        const response = await fetch(`${ingestUrl}/voice-profiles`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-videofy-voice-owner': input.ownerId,
+          },
+          body: JSON.stringify({
+            consentTextVersion: input.consentTextVersion,
+            callUseGranted: input.callUseGranted,
+            trainingUseGranted: input.trainingUseGranted,
+          }),
+        });
+        if (!response.ok) return null;
+        const body = (await response.json()) as { voiceProfileId?: string };
+        return body.voiceProfileId ? { voiceProfileId: body.voiceProfileId } : null;
+      } catch {
+        return null;
+      }
+    },
+  };
 }
 
 /** Posts to the media-ingest enrollment endpoint. */

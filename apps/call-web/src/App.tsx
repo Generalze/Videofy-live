@@ -62,8 +62,10 @@ import { PreJoinScreen } from './PreJoinScreen';
 import { VoiceEnrollmentPanel } from './VoiceEnrollmentPanel';
 import { defaultCaptureEnvironment, VoiceEnrollmentCapture } from './voiceEnrollmentCapture';
 import {
+  createEnrollmentInitializer,
   createEnrollmentUploader,
   INITIAL_ENROLLMENT_STATE,
+  VOICE_CONSENT_TEXT_VERSION,
   VoiceEnrollmentFlow,
   type EnrollmentFlowState,
 } from './voiceEnrollmentFlow';
@@ -124,7 +126,6 @@ export default function App() {
   const [enrollmentState, setEnrollmentState] =
     useState<EnrollmentFlowState>(INITIAL_ENROLLMENT_STATE);
   const enrollmentFlowRef = useRef<VoiceEnrollmentFlow | null>(null);
-  const voiceProfileIdRef = useRef<string>(`vp_${Math.random().toString(36).slice(2, 10)}`);
 
   const enrollmentFlow = (): VoiceEnrollmentFlow => {
     if (!enrollmentFlowRef.current) {
@@ -132,25 +133,43 @@ export default function App() {
         new VoiceEnrollmentCapture(defaultCaptureEnvironment()),
         createEnrollmentUploader(readIngestUrl()),
         setEnrollmentState,
+        createEnrollmentInitializer(readIngestUrl()),
       );
     }
     return enrollmentFlowRef.current;
   };
 
-  const handleAcceptVoice = (): void => {
+  /** The owner identity, minted on first affirmative use rather than on open. */
+  const requireOwnerId = (): string | null => {
     const ownerId = resolveVoiceOwnerId(defaultOwnerStorage());
     if (!ownerId) {
       setEnrollmentState({
         ...INITIAL_ENROLLMENT_STATE,
         error: 'This browser cannot store a voice identity.',
       });
-      return;
     }
-    void enrollmentFlow().accept({
-      voiceProfileId: voiceProfileIdRef.current,
-      ownerId,
-      enrolledLanguage: form.speakLanguage,
-    });
+    return ownerId;
+  };
+
+  const handleStartVoiceRecording = (): void => {
+    const ownerId = requireOwnerId();
+    if (!ownerId) return;
+    void (async () => {
+      // Consent is recorded server-side BEFORE any audio exists. Opening the
+      // panel creates nothing; proceeding to record is the affirmative act.
+      const started = await enrollmentFlow().begin({
+        ownerId,
+        consentTextVersion: VOICE_CONSENT_TEXT_VERSION,
+        trainingUseGranted: voiceTrainingGranted,
+      });
+      if (started) await enrollmentFlow().startRecording();
+    })();
+  };
+
+  const handleAcceptVoice = (): void => {
+    const ownerId = requireOwnerId();
+    if (!ownerId) return;
+    void enrollmentFlow().accept({ ownerId, enrolledLanguage: form.speakLanguage });
   };
 
   const handleCloseVoiceEnrollment = (): void => {
@@ -631,7 +650,7 @@ export default function App() {
           deletionInProgress={false}
           onCallUseChange={setVoiceCallUseGranted}
           onTrainingUseChange={setVoiceTrainingGranted}
-          onStartRecording={() => void enrollmentFlow().startRecording()}
+          onStartRecording={handleStartVoiceRecording}
           onStopRecording={() => void enrollmentFlow().stopRecording()}
           onReRecord={() => enrollmentFlow().reRecord()}
           onAccept={handleAcceptVoice}

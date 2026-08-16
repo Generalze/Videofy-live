@@ -207,6 +207,29 @@ export class VoiceProfileStore {
   }
 
   /**
+   * Grant the separate, optional permission to train on this recording.
+   *
+   * Its own method rather than a flag on grantCallUse, so that granting call
+   * use cannot pick this up by accident — which is the entire reason the two
+   * timestamps are separate fields in the first place.
+   */
+  grantTrainingUse(voiceProfileId: string): VoiceProfile | null {
+    const stored = this.profiles.get(voiceProfileId);
+    if (!stored || stored.profile.consent.revokedAt !== null) return null;
+    // Training use without call use would be a recording kept only to train
+    // on, which nobody consented to by enrolling.
+    if (stored.profile.consent.callUseGrantedAt === null) return null;
+    const timestamp = this.now();
+    const profile: VoiceProfile = {
+      ...stored.profile,
+      consent: { ...stored.profile.consent, trainingUseGrantedAt: timestamp },
+      updatedAt: timestamp,
+    };
+    this.profiles.set(voiceProfileId, { ...stored, profile });
+    return profile;
+  }
+
+  /**
    * Store the enrollment recording.
    *
    * Refused unless call-use consent exists. This is the point where biometric
