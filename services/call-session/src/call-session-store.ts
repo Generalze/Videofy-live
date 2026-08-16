@@ -7,6 +7,7 @@ import {
   CallSessionIdSchema,
   ParticipantIdSchema,
   StandardVoiceGenderSchema,
+  VoiceOwnerIdSchema,
   parseParticipant,
   type CallSessionId,
   type Participant,
@@ -37,6 +38,19 @@ export interface CallJoinInput {
   voiceGender: 'male' | 'female';
   audioMode: 'translated' | 'interpretation' | 'original';
   /**
+   * Development-prototype voice ownership (P6.3), if this browser has one.
+   *
+   * Carried so media-ingest can resolve the CURRENT usable profile fresh at
+   * synthesis time. Deliberately NOT the resolved personal voice: storing
+   * `personal:<profileId>` here would cache the decision at session creation
+   * and break the promise that revoke, delete and re-record take effect on the
+   * next utterance.
+   *
+   * Never exposed in call:state, snapshots, captions or logs — it identifies
+   * whose voice may be spoken.
+   */
+  voiceOwnerId?: string;
+  /**
    * `manual` (default) takes `speakLanguage` as the speaker's own statement and
    * never revisits it. `auto` treats it as a starting guess that the first
    * recognised utterance may correct — see `applyDetectedLanguage`.
@@ -61,7 +75,22 @@ export interface CallIngestPlan {
    */
   sourceLanguageMode: 'manual' | 'auto';
   targetLanguages: CallLanguage[];
+  /**
+   * STANDARD fallback voices, chosen by each recipient's Male/Female setting.
+   *
+   * These stay standard on purpose. A personal voice is never written here:
+   * the plan is built once per media revision, so a personal id stored here
+   * would outlive revoke, delete and re-record until the session restarted.
+   */
   voiceIdsByLanguage: Record<string, string>;
+  /**
+   * Who is speaking, for synthesis-time personal-voice lookup (P6.3).
+   *
+   * The OWNER, never the resolved voice. media-ingest asks the voice store for
+   * this owner's currently usable profile on each utterance, which is what
+   * makes revocation effective on the next one rather than the next call.
+   */
+  voiceOwnerId?: string;
   mediaRevision: number;
   /**
    * The language revision this order was planned under.
@@ -237,6 +266,12 @@ interface CallParticipantState {
   /** Private resume credential; compared on resume, never exposed in snapshots. */
   resumeToken: string;
   voiceGender: 'male' | 'female';
+  /**
+   * Development-prototype voice ownership (P6.3). Held privately: it is never
+   * placed in a snapshot, caption or log, because it identifies whose voice
+   * may be spoken.
+   */
+  voiceOwnerId?: string;
   captionsEnabled: boolean;
   connected: boolean;
   joinedAtIso: string;
@@ -316,6 +351,7 @@ export class CallSessionStore {
       participant,
       resumeToken: this.createResumeToken(),
       voiceGender: input.voiceGender,
+      ...(input.voiceOwnerId === undefined ? {} : { voiceOwnerId: input.voiceOwnerId }),
       captionsEnabled: input.captionsEnabled,
       connected: true,
       joinedAtIso: this.now(),
@@ -590,6 +626,7 @@ export class CallSessionStore {
       mediaRevision: state.participant.mediaRevision + 1,
     });
     state.voiceGender = input.voiceGender;
+    if (input.voiceOwnerId !== undefined) state.voiceOwnerId = input.voiceOwnerId;
     state.captionsEnabled = input.captionsEnabled;
     state.connected = true;
     bumpOtherConnectedParticipants(call, state);
@@ -703,6 +740,15 @@ function validateJoinInput(input: CallJoinInput): string | null {
   ) {
     return 'The resume participant id is not valid.';
   }
+  // Refused rather than ignored. A voice identity that fails to parse is a bug
+  // or a tampered payload, and silently dropping it would present as "personal
+  // voice mysteriously stopped working" with nothing anywhere saying why.
+  if (
+    input.voiceOwnerId !== undefined &&
+    !VoiceOwnerIdSchema.safeParse(input.voiceOwnerId).success
+  ) {
+    return 'The voice identity is not valid.';
+  }
   return null;
 }
 
@@ -781,6 +827,7 @@ function buildIngestPlan(call: CallState, speaker: CallParticipantState): CallIn
     sourceLanguageMode: speaker.participant.sourceLanguageMode === 'auto' ? 'auto' : 'manual',
     targetLanguages,
     voiceIdsByLanguage,
+    ...(speaker.voiceOwnerId === undefined ? {} : { voiceOwnerId: speaker.voiceOwnerId }),
     mediaRevision: speaker.participant.mediaRevision,
     languageRevision: speaker.participant.languageRevision,
   };

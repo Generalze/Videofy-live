@@ -28,6 +28,15 @@ export interface TextToSpeechProviderInput {
   startMs: number;
   endMs: number;
   voiceId: string;
+  /**
+   * The standard voice this session selected, when `voiceId` is something else.
+   *
+   * Only the personal-voice router reads it, and only to fall back. Without it
+   * a failed personal synthesis would fall back to the service-wide default
+   * voice — which for an English→Spanish call means Spanish words spoken by an
+   * English voice, a worse outcome than the failure it is recovering from.
+   */
+  standardVoiceId?: string;
   outputPath: string;
   /**
    * 'fit-window' (default) compresses speech into the source segment window
@@ -41,6 +50,14 @@ export interface TextToSpeechProviderInput {
 export interface TextToSpeechProviderResult {
   audioPath: string;
   providerLatencyMs?: number | null;
+  /**
+   * The voice actually used, when it differs from the one requested.
+   *
+   * A provider that fell back is the only thing that knows it did. Reporting it
+   * keeps the generated-audio record honest instead of claiming a personal
+   * voice for audio produced by the standard one.
+   */
+  effectiveVoiceId?: string;
 }
 
 export interface TextToSpeechProvider {

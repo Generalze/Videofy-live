@@ -823,3 +823,64 @@ describe('personalized captions (P6.2 closure)', () => {
     expect(new Set(deliveries.map((d) => d.recipientParticipantId)).size).toBe(deliveries.length);
   });
 });
+
+describe('voice ownership reaches the work order without caching a decision', () => {
+  it('carries the owner into the ingest plan, and keeps standard voices standard', () => {
+    // The owner travels; the resolved personal voice deliberately does not.
+    // Writing personal:<profileId> into voiceIdsByLanguage would cache the
+    // decision for the life of the media revision, so revoke and delete would
+    // not take effect until the session restarted.
+    const store = new CallSessionStore();
+    const zoe = mustJoin(store, { voiceOwnerId: 'devid_aaaaaaaaaaaa' });
+    const carlos = mustJoin(store, { displayName: 'Carlos', speakLanguage: 'es', hearLanguage: 'es' });
+    if (!zoe.ok || !carlos.ok) throw new Error('join failed');
+
+    const plan = carlos.ingestPlans.find((p) => p.ingestSessionId.includes(zoe.participantId));
+    expect(plan?.voiceOwnerId).toBe('devid_aaaaaaaaaaaa');
+    for (const voiceId of Object.values(plan?.voiceIdsByLanguage ?? {})) {
+      expect(voiceId).not.toContain('personal:');
+    }
+  });
+
+  it('omits the owner entirely for someone who never enrolled', () => {
+    const store = new CallSessionStore();
+    const zoe = mustJoin(store);
+    const carlos = mustJoin(store, { displayName: 'Carlos', speakLanguage: 'es', hearLanguage: 'es' });
+    if (!zoe.ok || !carlos.ok) throw new Error('join failed');
+
+    const plan = carlos.ingestPlans.find((p) => p.ingestSessionId.includes(zoe.participantId));
+    expect(plan?.voiceOwnerId).toBeUndefined();
+  });
+
+  it('refuses a voice identity that did not come from enrollment', () => {
+    // A participant id, socket id or display name is a string in scope at the
+    // join call site. Accepting one would bind a voice to something minted per
+    // call; ignoring it silently would present as a personal voice that just
+    // never happens, with nothing anywhere explaining why.
+    const store = new CallSessionStore();
+
+    for (const candidate of ['participant_1', 'Zoe Meak', 'devid_', '']) {
+      const result = store.createOrJoin({
+        callId: 'calm-river-42',
+        displayName: 'Zoe',
+        speakLanguage: 'en',
+        hearLanguage: 'en',
+        captionsEnabled: true,
+        voiceGender: 'female',
+        audioMode: 'translated',
+        voiceOwnerId: candidate,
+      });
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  it('never exposes the owner in a public snapshot', () => {
+    // It identifies whose voice may be spoken, so it must not travel in
+    // call:state alongside display names.
+    const store = new CallSessionStore();
+    const zoe = mustJoin(store, { voiceOwnerId: 'devid_aaaaaaaaaaaa' });
+    if (!zoe.ok) throw new Error('join failed');
+
+    expect(JSON.stringify(zoe.snapshot)).not.toContain('devid_');
+  });
+});

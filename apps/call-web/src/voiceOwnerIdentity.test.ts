@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   clearVoiceOwnerId,
+  existingVoiceOwnerId,
   resolveVoiceOwnerId,
   VOICE_OWNER_STORAGE_KEY,
   type OwnerStorageLike,
@@ -15,6 +16,37 @@ function storage(seed: Record<string, string> = {}): OwnerStorageLike & { data: 
     removeItem: (key) => void data.delete(key),
   };
 }
+
+describe('existingVoiceOwnerId', () => {
+  it('never mints one, so joining a call cannot create an identity', () => {
+    // Joining is not enrolling. Minting here would stamp a durable identifier
+    // on every participant who never asked for a personal voice, and then send
+    // it to the server on every join for the rest of that browser's life.
+    const store = storage();
+
+    expect(existingVoiceOwnerId(store)).toBeNull();
+    expect(store.data.size).toBe(0);
+  });
+
+  it('returns the identity an enrolled owner already has', () => {
+    const store = storage();
+    const owner = resolveVoiceOwnerId(store, () => 'aabbccddeeff');
+
+    expect(existingVoiceOwnerId(store)).toBe(owner);
+  });
+
+  it('refuses a stored value that did not come from here', () => {
+    const store = storage({ [VOICE_OWNER_STORAGE_KEY]: 'participant_1' });
+
+    expect(existingVoiceOwnerId(store)).toBeNull();
+    // And leaves it alone: reading is not the moment to rewrite storage.
+    expect(store.data.get(VOICE_OWNER_STORAGE_KEY)).toBe('participant_1');
+  });
+
+  it('survives storage being unavailable', () => {
+    expect(existingVoiceOwnerId(null)).toBeNull();
+  });
+});
 
 describe('resolveVoiceOwnerId', () => {
   it('mints an identity on first use and stores it', () => {

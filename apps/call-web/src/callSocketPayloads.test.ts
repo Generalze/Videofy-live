@@ -48,6 +48,29 @@ describe('buildCallJoinPayload', () => {
     expect(payload.resumeToken).toBe('token-1');
   });
 
+  it('omits the voice owner for everyone who has never enrolled', () => {
+    // Which is most joins. An absent field is how the gateway tells "no
+    // personal voice" apart from "a personal voice I could not resolve".
+    const payload = buildCallJoinPayload(completedForm(), undefined, null);
+
+    expect('voiceOwnerId' in payload).toBe(false);
+  });
+
+  it('carries an existing voice owner on both join and resume', () => {
+    // Resume matters as much as join: a reconnect that dropped the owner would
+    // silently move the speaker back to a standard voice mid-call.
+    const owner = 'devid_aabbccddeeff';
+
+    expect(buildCallJoinPayload(completedForm(), undefined, owner).voiceOwnerId).toBe(owner);
+    expect(
+      buildCallJoinPayload(
+        completedForm(),
+        { participantId: 'participant-a', resumeToken: 'token-1' },
+        owner,
+      ).voiceOwnerId,
+    ).toBe(owner);
+  });
+
   it('carries the hear language that followed the speak language', () => {
     const form = withSpeakLanguage(completedForm(), 'es');
     const payload = buildCallJoinPayload(form);

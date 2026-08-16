@@ -69,7 +69,11 @@ import {
   VoiceEnrollmentFlow,
   type EnrollmentFlowState,
 } from './voiceEnrollmentFlow';
-import { defaultOwnerStorage, resolveVoiceOwnerId } from './voiceOwnerIdentity';
+import {
+  defaultOwnerStorage,
+  existingVoiceOwnerId,
+  resolveVoiceOwnerId,
+} from './voiceOwnerIdentity';
 
 const ACK_TIMEOUT_MS = 8_000;
 const SDP_ACK_TIMEOUT_MS = 10_000;
@@ -395,6 +399,9 @@ export default function App() {
     const payload = buildCallJoinPayload(
       runtimeFormRef.current,
       token !== null ? { participantId: active.participantId, resumeToken: token } : undefined,
+      // Re-read rather than captured at join: someone who enrolled mid-call
+      // gets their voice from the reconnect onward instead of never.
+      existingVoiceOwnerId(defaultOwnerStorage()),
     );
     void (async () => {
       try {
@@ -518,15 +525,19 @@ export default function App() {
       await waitForSocketConnect(socket, ACK_TIMEOUT_MS);
       runtimeFormRef.current = { ...form };
       const storage = defaultResumeStorage();
-      const freshPayload = buildCallJoinPayload(form);
+      // Only an identity this browser already had. Someone who has never
+      // enrolled joins without one, exactly as before.
+      const voiceOwnerId = existingVoiceOwnerId(defaultOwnerStorage());
+      const freshPayload = buildCallJoinPayload(form, undefined, voiceOwnerId);
       // A stored resume entry for this call (e.g. after a page reload) means
       // we resume the previous seat instead of joining fresh.
       const stored = resumeSessionForCall(storage, freshPayload.callId);
       let payload = stored
-        ? buildCallJoinPayload(form, {
-            participantId: stored.participantId,
-            resumeToken: stored.resumeToken,
-          })
+        ? buildCallJoinPayload(
+            form,
+            { participantId: stored.participantId, resumeToken: stored.resumeToken },
+            voiceOwnerId,
+          )
         : freshPayload;
       let ack = await emitJoinRequest(socket, payload);
       if (!ack.ok && stored) {

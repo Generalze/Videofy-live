@@ -38,6 +38,7 @@ import {
   safeSessionOutputDir,
   type AudioExtractionInput,
 } from './audio-extraction.js';
+import { parseVoiceOwnerId } from '@videofy-live/participant-contracts';
 import { MediaIngestError } from './ingest-error.js';
 import {
   MockTranscriptionProvider,
@@ -137,6 +138,15 @@ export interface WebRtcSessionInput {
    * voice IDs fail at generation time exactly like a misconfigured registry.
    */
   voiceIdsByLanguage?: Record<string, string>;
+  /**
+   * P6.3 personal voice: whose voice may be spoken in this session.
+   *
+   * The OWNER, deliberately not a resolved voice id. The current usable profile
+   * is looked up per utterance, which is what makes revoking, deleting or
+   * re-recording a voice take effect on the next thing said rather than on the
+   * next call. Held privately — see `voiceOwnersBySession`.
+   */
+  voiceOwnerId?: string;
   /**
    * 'natural' keeps translated speech at the voice's own pace and full length
    * (native calls); default fits clips into the source segment window
@@ -266,6 +276,17 @@ export interface ProcessingSessionStoreOptions {
   textToSpeechTimeoutMs?: number;
   textToSpeechVoiceId?: string;
   textToSpeechVoiceIds?: ReadonlyMap<string, string>;
+  /**
+   * The owner's CURRENT personal voice, or null when they have none usable.
+   *
+   * A callback rather than a value, and consulted on every utterance rather
+   * than once per session. Caching the answer anywhere is precisely how
+   * revoke, delete and re-record would stop taking effect until a restart.
+   *
+   * Left unset the pipeline behaves exactly as it did before personal voice
+   * existed, so this cannot regress a deployment that has no voice engine.
+   */
+  resolvePersonalVoiceId?: (ownerId: string) => string | null;
   textToSpeechSupportedLanguages?: readonly string[];
   renderViewerReadyMedia?: ViewerReadyMediaRenderer;
   renderViewerReadyMediaOnCompletion?: boolean;
@@ -469,6 +490,16 @@ export class ProcessingSessionStore {
   private readonly textToSpeechTimeoutMs: number;
   private readonly textToSpeechVoiceId: string;
   private readonly textToSpeechVoiceIds: ReadonlyMap<string, string>;
+  private readonly resolvePersonalVoiceId: (ownerId: string) => string | null;
+  /**
+   * Session id -> voice owner, held OUTSIDE ProcessingSession on purpose.
+   *
+   * ProcessingSession is emitted to the operator dashboard and returned from
+   * HTTP routes; an owner id placed on it would travel to every one of those
+   * surfaces. It identifies whose voice may be spoken, so it stays here and
+   * reaches nothing but the synthesis lookup.
+   */
+  private readonly voiceOwnersBySession = new Map<string, string>();
   private readonly textToSpeechSupportedLanguages: readonly string[];
   private readonly renderViewerReadyMedia: ViewerReadyMediaRenderer;
   private readonly renderViewerReadyMediaOnCompletion: boolean;
@@ -529,6 +560,9 @@ export class ProcessingSessionStore {
         normalizeVoiceId(options.textToSpeechVoiceIds?.get(language) ?? this.textToSpeechVoiceId),
       ]),
     );
+    // Default: nobody has a personal voice. A deployment without a voice engine
+    // keeps the standard path untouched rather than acquiring a new branch.
+    this.resolvePersonalVoiceId = options.resolvePersonalVoiceId ?? (() => null);
     this.renderViewerReadyMedia =
       options.renderViewerReadyMedia ?? defaultViewerReadyMediaRenderer;
     this.renderViewerReadyMediaOnCompletion = options.renderViewerReadyMediaOnCompletion ?? false;
@@ -753,6 +787,7 @@ export class ProcessingSessionStore {
       this.generatedAudioReadyKeysBySession.delete(existing.id);
       this.viewerReadyRenders.delete(existing.id);
       this.targetLanguageTallies.delete(existing.id);
+      this.voiceOwnersBySession.delete(existing.id);
     }
 
     const sourceLanguageControl = createInitialSourceLanguageControl({
@@ -816,6 +851,15 @@ export class ProcessingSessionStore {
       updatedAt: now,
       error: null,
     };
+
+    // Privately, alongside the session rather than on it: everything on
+    // ProcessingSession is emitted to the operator dashboard and returned by
+    // the HTTP routes, and this belongs on none of those.
+    if (input.voiceOwnerId) {
+      this.voiceOwnersBySession.set(session.id, input.voiceOwnerId);
+    } else {
+      this.voiceOwnersBySession.delete(session.id);
+    }
 
     this.sessions.set(session.id, session);
     this.emitSession(session);
@@ -1523,6 +1567,8 @@ export class ProcessingSessionStore {
     this.generatedAudioReadyKeysBySession.delete(sessionId);
     this.viewerReadyRenders.delete(sessionId);
     this.targetLanguageTallies.delete(sessionId);
+    // The call is over; there is no reason to keep knowing whose voice it was.
+    this.voiceOwnersBySession.delete(sessionId);
     return true;
   }
 
@@ -3138,6 +3184,7 @@ export class ProcessingSessionStore {
         segment.targetLanguage,
         segment.sequence,
       );
+      const voice = this.synthesisVoiceFor(session, segment.targetLanguage);
       const result = await generateSpeechWithTimeout(
         this.textToSpeechProvider,
         {
@@ -3149,7 +3196,8 @@ export class ProcessingSessionStore {
           translatedText: segment.translatedText,
           startMs: segment.startMs,
           endMs: segment.endMs,
-          voiceId: this.voiceIdForLanguage(session, segment.targetLanguage),
+          voiceId: voice.voiceId,
+          standardVoiceId: voice.standardVoiceId,
           outputPath: audioPath,
           ...(session.generatedAudioPacing ? { pacing: session.generatedAudioPacing } : {}),
         },
@@ -3160,6 +3208,9 @@ export class ProcessingSessionStore {
         status: 'generated' as const,
         durationMs: await readWavDurationMs(audioPath),
         providerLatencyMs: result.providerLatencyMs ?? null,
+        // What was actually spoken, which after a personal-voice fallback is
+        // not what was asked for.
+        voiceId: result.effectiveVoiceId ?? voice.voiceId,
         createdAt: new Date().toISOString(),
       };
       this.replaceGeneratedAudioEvent(session, generated);
@@ -3674,6 +3725,7 @@ export class ProcessingSessionStore {
           event.targetLanguage,
           translatedSegment.sequence,
         );
+        const voice = this.synthesisVoiceFor(session, event.targetLanguage);
         const result = await generateSpeechWithTimeout(
           this.textToSpeechProvider,
           {
@@ -3685,7 +3737,8 @@ export class ProcessingSessionStore {
             translatedText: translatedSegment.translatedText,
             startMs: translatedSegment.startMs,
             endMs: translatedSegment.endMs,
-            voiceId: this.voiceIdForLanguage(session, event.targetLanguage),
+            voiceId: voice.voiceId,
+            standardVoiceId: voice.standardVoiceId,
             outputPath: audioPath,
             ...(session.generatedAudioPacing ? { pacing: session.generatedAudioPacing } : {}),
           },
@@ -3696,6 +3749,7 @@ export class ProcessingSessionStore {
           audioFilename: generatedAudioFilename(translatedSegment.sequence),
           durationMs: await readWavDurationMs(audioPath),
           providerLatencyMs: result.providerLatencyMs ?? null,
+          voiceId: result.effectiveVoiceId ?? voice.voiceId,
           status: 'generated' as const,
           createdAt: new Date().toISOString(),
         };
@@ -4138,6 +4192,36 @@ export class ProcessingSessionStore {
       this.textToSpeechVoiceIds.get(targetLanguage) ??
       this.textToSpeechVoiceId
     );
+  }
+
+  /**
+   * Which voice speaks THIS utterance, resolved now rather than at session
+   * creation.
+   *
+   * The standard voice is always computed, because it is both the answer for
+   * everyone without a personal voice and the fallback for everyone with one.
+   * The owner lookup runs fresh every time: that single decision is what makes
+   * revoke, delete and re-record take effect on the next utterance instead of
+   * the next call, and it is the reason nothing here is memoised.
+   *
+   * A lookup that throws is treated as "no personal voice". Somebody speaking
+   * mid-call is not a good moment to discover that the voice store had an
+   * opinion about error handling.
+   */
+  private synthesisVoiceFor(
+    session: ProcessingSession,
+    targetLanguage: string,
+  ): { voiceId: string; standardVoiceId: string } {
+    const standardVoiceId = this.voiceIdForLanguage(session, targetLanguage);
+    const ownerId = this.voiceOwnersBySession.get(session.id);
+    if (!ownerId) return { voiceId: standardVoiceId, standardVoiceId };
+    let personalVoiceId: string | null = null;
+    try {
+      personalVoiceId = this.resolvePersonalVoiceId(ownerId);
+    } catch {
+      personalVoiceId = null;
+    }
+    return { voiceId: personalVoiceId ?? standardVoiceId, standardVoiceId };
   }
 
   private generatedAudioOutputPath(
@@ -4612,6 +4696,12 @@ function assertSafeWebRtcSessionInput(input: WebRtcSessionInput): void {
   }
   if (!Number.isInteger(input.revision) || input.revision < 0) {
     throw new MediaIngestError('WebRTC revision must be a non-negative integer.', 'invalid-media', 400);
+  }
+  // Refused, not ignored: an owner id that fails to parse means something
+  // upstream sent the wrong string, and quietly dropping it would present as a
+  // personal voice that simply never happens.
+  if (input.voiceOwnerId !== undefined && parseVoiceOwnerId(input.voiceOwnerId) === null) {
+    throw new MediaIngestError('Unsafe WebRTC voice owner rejected.', 'invalid-media', 400);
   }
   for (const [language, voiceId] of Object.entries(input.voiceIdsByLanguage ?? {})) {
     if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/.test(language) || !/^[A-Za-z0-9_.-]{1,120}$/.test(voiceId)) {

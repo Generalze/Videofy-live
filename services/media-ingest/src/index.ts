@@ -3,9 +3,12 @@ import http from 'http';
 import multer from 'multer';
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { writeFile } from 'node:fs/promises';
 import { loadConfig } from './config.js';
 import { registerGeneratedAudioDeliveryRoute } from './generated-audio-delivery-route.js';
 import { createUnavailablePersonalVoiceProvider } from './personal-voice-provider.js';
+import { createOpenVoicePersonalVoiceProvider } from './openvoice-personal-voice.js';
+import { createPersonalVoiceWiring } from './personal-voice-wiring.js';
 import { registerVoiceEnrollmentRoute } from './voice-enrollment-route.js';
 import { registerVoiceProfileInitRoute } from './voice-profile-init-route.js';
 import { createFileVoiceEnrollmentStorage } from './voice-enrollment-storage.js';
@@ -28,7 +31,78 @@ const upload = multer({
   dest: uploadDir,
   limits: { fileSize: config.uploadMaxBytes },
 });
-const ingest = new IngestService(config);
+// Personal voice (P6.3). Enrollment material lives beside the uploads, in a
+// git-ignored directory, and never in the repository or the logs.
+const personalVoiceServiceUrl = process.env['OPENVOICE_SERVICE_URL'] ?? 'http://127.0.0.1:3005';
+const voiceEnrollmentStorage = createFileVoiceEnrollmentStorage({
+    directory: resolve(process.cwd(), '../../voice-enrollment'),
+    // The derived representation lives in the voice engine's own store, so
+    // deletion is delegated there. Pointing this at the enrollment directory
+    // made asset removal silently impossible.
+    deleteVoiceAsset: async (voiceAssetRef) => {
+      try {
+        const response = await fetch(
+          `${personalVoiceServiceUrl}/voice-assets/${encodeURIComponent(voiceAssetRef)}`,
+          { method: 'DELETE' },
+        );
+        if (response.status === 404) return 'not-found';
+        // A 5xx means the engine still holds it.
+        if (!response.ok) return 'failed';
+        const body = (await response.json()) as { removed?: boolean };
+        return body.removed === true ? 'removed' : 'not-found';
+      } catch {
+        // Unreachable engine: the asset survives, so this must read as failure
+        // and stay in pendingCleanups(). Reporting absence here would discard
+        // the only pointer able to finish the job.
+        return 'failed';
+      }
+    },
+});
+const voiceProfileStore = new VoiceProfileStore(voiceEnrollmentStorage);
+/**
+ * The real engine when one is configured, and the honest refusal otherwise.
+ *
+ * OPENVOICE_SERVICE_URL being unset is a deliberate, supported state: every
+ * creation fails, no profile reaches `ready`, and calls use the standard voice.
+ */
+const openVoicePersonal =
+  process.env['OPENVOICE_SERVICE_URL'] === undefined
+    ? null
+    : createOpenVoicePersonalVoiceProvider({
+        serviceUrl: personalVoiceServiceUrl,
+        // Bytes, never a path: the provider must not learn storage layout.
+        readEnrollment: (recordingRef) =>
+          voiceEnrollmentStorage.readEnrollmentRecording(recordingRef),
+      });
+
+const personalVoiceProvider = openVoicePersonal ?? createUnavailablePersonalVoiceProvider();
+
+/**
+ * Personal voice reaches synthesis through `createPersonalVoiceWiring`, which
+ * the acceptance tests import too — so the composition running here is the one
+ * under test rather than a lookalike written twice.
+ *
+ * With no engine configured the service receives no personal-voice
+ * dependencies at all and behaves exactly as it did before P6.3.
+ */
+const ingest = new IngestService(
+  config,
+  openVoicePersonal === null
+    ? {}
+    : createPersonalVoiceWiring({
+        voiceProfileStore,
+        engine: openVoicePersonal,
+        defaultVoiceId: config.textToSpeechDefaultVoiceId,
+        writeAudio: async (outputPath, audio) => {
+          await writeFile(outputPath, audio);
+        },
+        onFallback: (reason) => {
+          // The reason, never the asset or owner: this line reaches logs.
+          logger.warn('Personal voice unavailable; using standard voice', { reason });
+        },
+      }),
+);
+
 
 app.use(express.json({ limit: '1mb' }));
 
@@ -145,6 +219,7 @@ app.post('/internal/webrtc/sessions', async (req, res) => {
       sourceLanguage?: unknown;
       sourceLanguageMode?: unknown;
       voiceIdsByLanguage?: unknown;
+      voiceOwnerId?: unknown;
       generatedAudioPacing?: unknown;
     };
     const session = await ingest.createWebRtcSession({
@@ -163,6 +238,9 @@ app.post('/internal/webrtc/sessions', async (req, res) => {
       ...(voiceIdRecordOrNull(body.voiceIdsByLanguage)
         ? { voiceIdsByLanguage: voiceIdRecordOrNull(body.voiceIdsByLanguage)! }
         : {}),
+      // Passed through unparsed; the session store validates it and rejects the
+      // request rather than accepting a string that only looks like an owner.
+      ...(typeof body.voiceOwnerId === 'string' ? { voiceOwnerId: body.voiceOwnerId } : {}),
       ...(body.generatedAudioPacing === 'natural' || body.generatedAudioPacing === 'fit-window'
         ? { generatedAudioPacing: body.generatedAudioPacing }
         : {}),
@@ -411,35 +489,6 @@ app.post('/sessions/:sessionId/source-language', (req, res) => {
   }
 });
 
-// Personal voice (P6.3). Enrollment material lives beside the uploads, in a
-// git-ignored directory, and never in the repository or the logs.
-const personalVoiceServiceUrl = process.env['OPENVOICE_SERVICE_URL'] ?? 'http://127.0.0.1:3005';
-const voiceProfileStore = new VoiceProfileStore(
-  createFileVoiceEnrollmentStorage({
-    directory: resolve(process.cwd(), '../../voice-enrollment'),
-    // The derived representation lives in the voice engine's own store, so
-    // deletion is delegated there. Pointing this at the enrollment directory
-    // made asset removal silently impossible.
-    deleteVoiceAsset: async (voiceAssetRef) => {
-      try {
-        const response = await fetch(
-          `${personalVoiceServiceUrl}/voice-assets/${encodeURIComponent(voiceAssetRef)}`,
-          { method: 'DELETE' },
-        );
-        if (response.status === 404) return 'not-found';
-        // A 5xx means the engine still holds it.
-        if (!response.ok) return 'failed';
-        const body = (await response.json()) as { removed?: boolean };
-        return body.removed === true ? 'removed' : 'not-found';
-      } catch {
-        // Unreachable engine: the asset survives, so this must read as failure
-        // and stay in pendingCleanups(). Reporting absence here would discard
-        // the only pointer able to finish the job.
-        return 'failed';
-      }
-    },
-  }),
-);
 let voiceProfileSerial = 0;
 registerVoiceProfileInitRoute(app, {
   store: voiceProfileStore,
@@ -447,9 +496,7 @@ registerVoiceProfileInitRoute(app, {
 });
 registerVoiceEnrollmentRoute(app, {
   store: voiceProfileStore,
-  // Until a cloning engine is validated this refuses every creation, so a
-  // profile never reaches `ready` and calls keep using the standard voice.
-  provider: createUnavailablePersonalVoiceProvider(),
+  provider: personalVoiceProvider,
   newVoiceProfileId: () => `vp_${Date.now().toString(36)}_${++voiceProfileSerial}`,
 });
 

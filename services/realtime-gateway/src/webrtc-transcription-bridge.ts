@@ -70,6 +70,14 @@ export interface WebRtcTranscriptionBridgeContext {
   sourceLanguageMode?: SourceLanguageMode;
   /** Per-target standard voice overrides (P6.1B calls); media-ingest validates values. */
   voiceIdsByLanguage?: Record<string, string>;
+  /**
+   * Whose voice may be spoken (P6.3), when the speaker has enrolled one.
+   *
+   * The owner, never a resolved personal voice: media-ingest looks up the
+   * current usable profile per utterance. Carried privately to media-ingest and
+   * never emitted to a room, a snapshot or a log.
+   */
+  voiceOwnerId?: string;
   generatedAudioPacing?: 'natural' | 'fit-window';
 }
 
@@ -765,6 +773,7 @@ export class HttpWebRtcTranscriptionSubmissionClient
       ...(input.voiceIdsByLanguage && Object.keys(input.voiceIdsByLanguage).length > 0
         ? { voiceIdsByLanguage: input.voiceIdsByLanguage }
         : {}),
+      ...(input.voiceOwnerId ? { voiceOwnerId: input.voiceOwnerId } : {}),
     });
   }
 

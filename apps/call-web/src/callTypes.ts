@@ -38,6 +38,17 @@ export interface CallJoinPayload {
    * treats `speakLanguage` as a starting guess the first utterance may correct.
    */
   sourceLanguageMode?: 'auto';
+  /**
+   * This browser's existing personal-voice owner, when it has one (P6.3).
+   *
+   * The OWNER, never a resolved voice. media-ingest asks for the owner's
+   * currently usable profile on each utterance, so revoking, deleting or
+   * re-recording takes effect on the next thing said rather than the next call.
+   *
+   * Absent for anyone who has never enrolled — joining a call does not mint an
+   * identity.
+   */
+  voiceOwnerId?: string;
   resumeParticipantId?: string;
   resumeToken?: string;
 }

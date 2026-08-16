@@ -33,7 +33,10 @@ import {
   type Nllb200Config,
   type TimestampedTranslationProvider,
 } from './translation-provider.js';
-import { createTextToSpeechProvider } from './text-to-speech-provider.js';
+import {
+  createTextToSpeechProvider,
+  type TextToSpeechProvider,
+} from './text-to-speech-provider.js';
 import {
   buildTargetLanguageOutputs,
   capRecentEvents,
@@ -273,6 +276,27 @@ export function programmeTimestampMs(
   return positionMs;
 }
 
+/**
+ * Optional assembly hooks.
+ *
+ * The seam exists so personal voice can be routed at synthesis time WITHOUT
+ * this service learning that voice profiles, enrollment storage or any
+ * particular engine exist. It receives the standard provider it already built
+ * and may return a replacement; whoever supplies the wrapper owns that
+ * knowledge, not the media pipeline.
+ */
+export interface IngestServiceDependencies {
+  wrapTextToSpeechProvider?: (standard: TextToSpeechProvider) => TextToSpeechProvider;
+  /**
+   * The owner's CURRENT personal voice, or null. Called per utterance.
+   *
+   * The second half of the same seam: the wrapper knows how to SPEAK in a
+   * personal voice, this knows WHETHER there is one to speak in right now.
+   * Both are injected, so this service still has no idea voice profiles exist.
+   */
+  resolvePersonalVoiceId?: (ownerId: string) => string | null;
+}
+
 export class IngestService {
   private socket: Socket | null = null;
   /**
@@ -289,7 +313,24 @@ export class IngestService {
   private currentSession: ProcessingSession | null = null;
   private readonly sessions: ProcessingSessionStore;
 
-  constructor(private readonly config: IngestConfig) {
+  /**
+   * The standard provider, optionally wrapped.
+   *
+   * With no wrapper supplied the returned provider is exactly what
+   * createTextToSpeechProvider produced, so the existing Piper/MMS path is
+   * unchanged rather than merely equivalent.
+   */
+  private buildTextToSpeechProvider(
+    options: Parameters<typeof createTextToSpeechProvider>[0],
+  ): TextToSpeechProvider {
+    const standard = createTextToSpeechProvider(options);
+    return this.deps.wrapTextToSpeechProvider?.(standard) ?? standard;
+  }
+
+  constructor(
+    private readonly config: IngestConfig,
+    private readonly deps: IngestServiceDependencies = {},
+  ) {
     this.provider = new MockProvider();
     const translationLanguages = resolveTranslationLanguages(config);
     const translationModelIds = buildTranslationModelIds(config);
@@ -319,7 +360,7 @@ export class IngestService {
       translationTargetLanguage: config.translationTargetLanguage,
       translationSupportedTargetLanguages: translationLanguages,
       translationModelIds,
-      textToSpeechProvider: createTextToSpeechProvider({
+      textToSpeechProvider: this.buildTextToSpeechProvider({
         providerName: config.textToSpeechProvider,
         timeoutMs: config.textToSpeechTimeoutMs,
         supportedLanguages: config.textToSpeechSupportedLanguages,
@@ -342,6 +383,9 @@ export class IngestService {
       textToSpeechTimeoutMs: config.textToSpeechTimeoutMs,
       textToSpeechVoiceId: config.textToSpeechDefaultVoiceId,
       textToSpeechVoiceIds: buildTextToSpeechVoiceIdsByLanguage(config),
+      ...(deps.resolvePersonalVoiceId
+        ? { resolvePersonalVoiceId: deps.resolvePersonalVoiceId }
+        : {}),
       textToSpeechSupportedLanguages: resolveTextToSpeechLanguages(config),
       renderViewerReadyMediaOnCompletion: false,
       // Service start warms transcription only. Each OPUS-MT pair and Piper

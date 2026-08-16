@@ -1,0 +1,254 @@
+// Videofy Live - P6.3 personal-voice pipeline verification.
+//
+// Answers one question the unit tests structurally cannot: does the RUNNING
+// media-ingest service actually speak an enrolled voice?
+//
+// Three times in this milestone a personal-voice component was correct and the
+// running service used none of it — the provider existed and nothing called it,
+// then the router existed and nothing gave it an owner. Every one of those was
+// reported as working on green tests. So this drives the real HTTP surface of
+// the real process: enroll, join with an owner, speak, and then look at what
+// voice actually came out.
+//
+// What this CANNOT verify is whether the result sounds like the person. That is
+// a human judgement and it stays one.
+//
+// Usage:
+//   node scripts/verify-personal-voice.mjs [sourceLanguage] [targetLanguage]
+//   node scripts/verify-personal-voice.mjs en es      (default)
+//
+// Requires: media-ingest running with OPENVOICE_SERVICE_URL set, the OpenVoice
+// service running, and the Piper voices the .env registry points at.
+import { execFileSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+const ROOT = resolve(import.meta.dirname, '..');
+
+function loadEnvFile(path) {
+  if (!existsSync(path)) return;
+  for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    const key = trimmed.slice(0, eq).trim();
+    if (process.env[key] !== undefined) continue;
+    process.env[key] = trimmed.slice(eq + 1).trim();
+  }
+}
+loadEnvFile(join(ROOT, '.env'));
+
+const BASE = process.env['MEDIA_INGEST_URL'] ?? 'http://localhost:3002';
+const STAGING =
+  process.env['WEBRTC_AUDIO_CHUNK_STAGING_DIR'] ?? join(ROOT, 'uploads', 'webrtc-staging');
+const PIPER = process.env['PIPER_EXECUTABLE'] ?? '';
+const FFMPEG = process.env['PIPER_FFMPEG'] ?? 'ffmpeg';
+
+const sourceLanguage = process.argv[2] ?? 'en';
+// EN<->ES by default: Spanish is the direction the accepted OpenVoice quality
+// evidence was actually gathered against.
+const targetLanguage = process.argv[3] ?? 'es';
+
+const SENTENCES = {
+  en: [
+    'Good morning. Can you hear me clearly?',
+    'I would like to book a table for four people.',
+    'Thank you very much for your help.',
+  ],
+  es: [
+    'Hola, buenos días. ¿Me escuchas bien?',
+    'Quiero confirmar que la traducción funciona.',
+    'Muchas gracias por su ayuda.',
+  ],
+};
+
+const VOICES = {
+  en: 'en_US-hfc_female-medium',
+  fr: 'fr_FR-siwis-medium',
+  es: 'es_ES-sharvard-medium',
+};
+
+/**
+ * The enrollment voice is deliberately a DIFFERENT Piper voice from the one the
+ * call would otherwise use.
+ *
+ * If the pipeline quietly fell back, the output would be the ordinary target
+ * voice and the difference would be audible as well as visible in the voiceId.
+ */
+const ENROLLMENT_VOICE = 'en_US-hfc_male-medium';
+
+const expected = SENTENCES[sourceLanguage];
+if (!expected) {
+  console.error(`No known sentences for "${sourceLanguage}".`);
+  process.exit(2);
+}
+
+function piperEntryFor(language, voiceId) {
+  const raw = process.env['PIPER_VOICES'] ?? '';
+  for (const entry of raw.split(',')) {
+    const [lang, id, modelPath] = entry.split('|');
+    if (lang === language && id === voiceId && modelPath) return modelPath;
+  }
+  return null;
+}
+
+async function postJson(path, body, headers = {}) {
+  const response = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  });
+  return { status: response.status, json: await response.json().catch(() => null) };
+}
+
+const workDir = mkdtempSync(join(tmpdir(), 'videofy-personal-'));
+const sourceModel = piperEntryFor(sourceLanguage, VOICES[sourceLanguage]);
+const enrollmentModel = piperEntryFor('en', ENROLLMENT_VOICE) ?? sourceModel;
+if (!PIPER || !sourceModel) {
+  console.error('Set PIPER_EXECUTABLE and PIPER_VOICES (load .env).');
+  process.exit(2);
+}
+
+function speak(model, text, name) {
+  const raw = join(workDir, `${name}-raw.wav`);
+  const ready = join(workDir, `${name}.wav`);
+  execFileSync(PIPER, ['--model', model, '--output_file', raw, '--quiet'], { input: `${text}\n` });
+  execFileSync(FFMPEG, ['-y', '-i', raw, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', ready], {
+    stdio: 'ignore',
+  });
+  return ready;
+}
+
+// ------------------------------------------------------------------ enrollment
+
+const ownerId = `devid_${Math.random().toString(16).slice(2, 8)}${Date.now().toString(16).slice(-6)}`;
+const ownerHeader = { 'x-videofy-voice-owner': ownerId };
+
+const created = await postJson(
+  '/voice-profiles',
+  { consentTextVersion: 'verify-script-v1', callUseGranted: true },
+  ownerHeader,
+);
+if (created.status !== 201) {
+  console.error('Could not start enrollment:', created.status, created.json);
+  process.exit(1);
+}
+const voiceProfileId = created.json.voiceProfileId;
+
+// A long enough sample for the engine to derive a tone colour from.
+const enrollmentClip = speak(
+  enrollmentModel,
+  'This is my voice. I am recording a sample so that my translated speech can sound like me. ' +
+    'The quick brown fox jumps over the lazy dog, and the weather today is bright and clear.',
+  'enrollment',
+);
+const enrollmentBytes = readFileSync(enrollmentClip);
+const enrollResponse = await fetch(
+  `${BASE}/voice-profiles/${encodeURIComponent(voiceProfileId)}/enrollment`,
+  {
+    method: 'POST',
+    headers: { 'content-type': 'audio/wav', 'x-videofy-enrolled-language': 'en', ...ownerHeader },
+    body: enrollmentBytes,
+  },
+);
+const enrollBody = await enrollResponse.json().catch(() => null);
+const enrolled = enrollResponse.status >= 200 && enrollResponse.status < 300;
+
+console.log(`\n=== PERSONAL VOICE: ${sourceLanguage.toUpperCase()} -> ${targetLanguage.toUpperCase()} ===`);
+console.log(`  owner    ${ownerId}`);
+console.log(`  profile  ${voiceProfileId}`);
+console.log(`  enrolled ${enrollResponse.status} ${JSON.stringify(enrollBody)}`);
+
+// ------------------------------------------------------------------- the call
+
+const clips = expected.map((sentence, index) => speak(sourceModel, sentence, `clip-${index}`));
+
+const sessionId = `call_pv${Math.floor(Math.random() * 99999)}_participant_1_r1`;
+mkdirSync(STAGING, { recursive: true });
+const session = await postJson('/internal/webrtc/sessions', {
+  sessionId,
+  broadcastId: 'callcast_pv_participant_1_r1',
+  broadcasterPeerId: 'peer_call_participant_1',
+  revision: 1,
+  sourceLanguage,
+  sourceLanguageMode: 'manual',
+  targetLanguage,
+  targetLanguages: [targetLanguage],
+  voiceIdsByLanguage: { [targetLanguage]: VOICES[targetLanguage] },
+  generatedAudioPacing: 'natural',
+  voiceOwnerId: ownerId,
+});
+if (session.status !== 201) {
+  console.error('Session creation refused:', session.status, session.json);
+  process.exit(1);
+}
+
+let cursor = 0;
+let latest = null;
+for (const [index, clip] of clips.entries()) {
+  const staged = join(STAGING, `pv-${index}-${Date.now()}.wav`);
+  copyFileSync(clip, staged);
+  const bytes = statSync(clip).size;
+  const durationMs = Math.max(1000, Math.round((bytes - 44) / 32));
+  const result = await postJson(`/internal/webrtc/sessions/${encodeURIComponent(sessionId)}/chunks`, {
+    sequence: index,
+    startMs: cursor,
+    endMs: cursor + durationMs,
+    sampleRate: 16000,
+    channelCount: 1,
+    pcmFormat: 'pcm_s16le',
+    mimeType: 'audio/wav',
+    sizeBytes: bytes,
+    sourcePath: staged,
+  });
+  cursor += durationMs + 1200;
+  latest = result.json?.session ?? latest;
+}
+
+const generated = (latest?.generatedAudio?.events ?? []).filter((e) => e.status === 'generated');
+const personalClips = generated.filter((e) => String(e.voiceId).startsWith('personal:'));
+const standardClips = generated.filter((e) => !String(e.voiceId).startsWith('personal:'));
+
+console.log('');
+for (const event of generated) {
+  console.log(`  seq ${event.sequence}  voice=${event.voiceId}  ${event.durationMs ?? '?'}ms`);
+}
+
+// --------------------------------------------------------------- what it means
+
+const checks = [
+  ['Enrollment produced a usable profile', enrolled],
+  ['Every utterance produced audio', generated.length >= expected.length],
+  ['Audio was generated in the PERSONAL voice', personalClips.length >= expected.length],
+  [
+    'The personal voice is this owner’s profile',
+    personalClips.every((e) => e.voiceId === `personal:${voiceProfileId}`),
+  ],
+  ['Nothing silently fell back to a standard voice', standardClips.length === 0],
+  ['No session error', !latest?.error],
+];
+
+console.log('');
+for (const [label, ok] of checks) console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}`);
+const passed = checks.filter(([, ok]) => ok).length;
+console.log(`Summary: ${passed}/${checks.length} passed`);
+
+if (personalClips.length === 0 && generated.length > 0) {
+  console.log(
+    '\nAudio was produced in the standard voice. That is the pipeline working and the\n' +
+      'personal voice not being selected — check that OPENVOICE_SERVICE_URL is set on\n' +
+      'media-ingest and that the OpenVoice service is reachable.',
+  );
+}
+
+console.log(
+  '\nSTILL PENDING HUMAN VERIFICATION: whether the generated audio actually sounds\n' +
+    'like the enrolled voice. This script proves the routing, not the resemblance.',
+);
+console.log(`Generated clips: ${join('uploads', 'audio-chunks', sessionId, 'tts', targetLanguage)}`);
+
+await postJson(`/internal/webrtc/sessions/${encodeURIComponent(sessionId)}/stop`, {});
+
+process.exit(passed === checks.length ? 0 : 1);

@@ -1463,6 +1463,11 @@ function bridgeContextFor(entry: CallIngestRegistryEntry): WebRtcTranscriptionBr
     ...(Object.keys(entry.plan.voiceIdsByLanguage).length > 0
       ? { voiceIdsByLanguage: { ...entry.plan.voiceIdsByLanguage } }
       : {}),
+    // The speaker's voice owner, when they have one. Kept separate from
+    // voiceIdsByLanguage on purpose: those are the standard fallbacks, planned
+    // once per media revision, and a personal voice must never be planned
+    // ahead — only resolved at the moment of speaking.
+    ...(entry.plan.voiceOwnerId ? { voiceOwnerId: entry.plan.voiceOwnerId } : {}),
     // Calls play translations at the voice's own pace; the programme
     // window-fit compressed them into the source segment and clipped speech.
     generatedAudioPacing: 'natural',

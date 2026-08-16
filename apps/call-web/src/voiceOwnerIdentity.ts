@@ -75,6 +75,24 @@ export function resolveVoiceOwnerId(
   }
 }
 
+/**
+ * The owner identity this browser ALREADY has, or null. Never mints one.
+ *
+ * Joining an ordinary call must not create a voice identity. Minting on join
+ * would stamp a durable `devid_` on every participant who never asked for a
+ * personal voice, and send it to the server on every join thereafter — an
+ * identifier manufactured by the act of observing, which is the opposite of
+ * what an opt-in feature should do.
+ */
+export function existingVoiceOwnerId(storage: OwnerStorageLike | null): string | null {
+  if (!storage) return null;
+  try {
+    return parseVoiceOwnerId(storage.getItem(VOICE_OWNER_STORAGE_KEY));
+  } catch {
+    return null;
+  }
+}
+
 /** Forget this browser's identity. Used when the owner deletes their voice. */
 export function clearVoiceOwnerId(storage: OwnerStorageLike | null): void {
   try {

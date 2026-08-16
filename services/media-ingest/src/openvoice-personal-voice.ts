@@ -53,6 +53,13 @@ export function isPersonalVoiceId(voiceId: string): boolean {
   return voiceId.startsWith('personal:');
 }
 
+/** The profile behind an opaque personal identity, or null. */
+export function profileIdFromPersonalVoiceId(voiceId: string): string | null {
+  if (!isPersonalVoiceId(voiceId)) return null;
+  const profileId = voiceId.slice('personal:'.length);
+  return profileId.length > 0 ? profileId : null;
+}
+
 async function withTimeout<T>(
   work: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
@@ -217,6 +224,7 @@ export function createPersonalVoiceRoutingProvider(
           return {
             audioPath: input.outputPath,
             providerLatencyMs: Date.now() - startedAt,
+            effectiveVoiceId: input.voiceId,
           };
         }
         options.onFallback?.(result.reason, input);
@@ -226,10 +234,12 @@ export function createPersonalVoiceRoutingProvider(
 
       // The words were already translated. Losing the utterance because a voice
       // engine failed would punish the listener for an infrastructure problem.
-      return options.standard.generate({
-        ...input,
-        voiceId: options.fallbackVoiceId(input),
-      });
+      const fallbackVoiceId = options.fallbackVoiceId(input);
+      const fallback = await options.standard.generate({ ...input, voiceId: fallbackVoiceId });
+      // Reported as what it is. A record that still said `personal:…` after a
+      // fallback would make every future failure invisible in exactly the place
+      // someone would look for it.
+      return { ...fallback, effectiveVoiceId: fallbackVoiceId };
     },
   };
 }
