@@ -1618,6 +1618,24 @@ of a pipeline as proof that the pipeline cannot leak is efficient mathematics
 and terrible engineering, so the second guarantee is owed at VI-L0 and cannot
 be inherited from the first.
 
+### 21.9.2.2 Prototype voice ownership is temporary by design
+
+P6.3 binds a personal voice to a `VoiceOwnerId` minted into browser
+localStorage, because Videofy has no account authentication yet and a voice
+profile must outlive the call it was recorded in.
+
+**The limitation, stated so it cannot be forgotten:** localStorage is scoped to
+a browser profile, not to a human. Two people sharing one browser profile share
+one prototype identity, and would share a personal voice. This is acceptable
+for development and unacceptable for production.
+
+The replacement is mandatory, not optional, and must not be skipped on the
+grounds that the prototype has proven reliable. `VoiceOwnerId` exists precisely
+so the replacement is cheap: an account id takes its place, and neither the
+voice-provider nor the call-routing contracts move. What must never happen is
+the prototype mechanism being promoted into production architecture because it
+survived enough tests to feel established.
+
 ### 21.9.3 Disagreement is the training signal
 
 Videofy does not learn equally from everything. It learns preferentially where

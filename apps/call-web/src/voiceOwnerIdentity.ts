@@ -8,8 +8,17 @@
 // them would produce a lookup that works in one demo and is wrong afterwards.
 //
 // It lives in localStorage rather than sessionStorage because the whole point
-// is surviving the tab being closed. It is a prototype mechanism: an account
-// system replaces it later, and only this file has to change.
+// is surviving the tab being closed.
+//
+// KNOWN LIMITATION, and the reason this must not outlive P6.3: localStorage is
+// scoped to a BROWSER PROFILE, not to a human. Two people sharing one browser
+// profile share one prototype owner identity, and would therefore share a
+// personal voice. That is acceptable for a development prototype and
+// unacceptable for anything real, so this mechanism must be replaced when
+// account authentication lands rather than promoted on the grounds that it has
+// been working fine. VoiceOwnerId is the seam that makes the replacement
+// cheap: the account id takes its place and nothing in the voice-provider or
+// call-routing contracts moves.
 import { parseVoiceOwnerId } from '@videofy-live/participant-contracts';
 
 export interface OwnerStorageLike {
