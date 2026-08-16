@@ -4,7 +4,7 @@
   "private": true,
   "author": "masterzee001",
   "license": "SEE LICENSE IN LICENSE.md",
-  "description": "Videofy Live – real-time multilingual video streaming and audio interpretation platform",
+  "description": "Videofy Live \u2013 real-time multilingual video streaming and audio interpretation platform",
   "workspaces": [
     "apps/*",
     "packages/*",
@@ -21,7 +21,8 @@
     "test:integration": "npm run test:integration -w services/realtime-gateway",
     "lint": "npm run lint -w apps/listener-web && npm run lint -w apps/operator-web && npm run lint -w apps/call-web",
     "typecheck": "npm run typecheck -w packages/design-system && npm run typecheck -w packages/shared-types && npm run typecheck -w packages/media-contracts && npm run typecheck -w packages/participant-contracts && npm run typecheck -w packages/call-contracts && npm run typecheck -w services/ai-registry && npm run typecheck -w services/language-router && npm run typecheck -w services/call-session && npm run typecheck -w services/realtime-gateway && npm run typecheck -w services/media-ingest && npm run typecheck -w apps/listener-web && npm run typecheck -w apps/operator-web && npm run typecheck -w apps/call-web",
-    "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\" --ignore-path .gitignore"
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\" --ignore-path .gitignore",
+    "viewer:screenshots": "node scripts/viewer-screenshots.mjs"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",
