@@ -86,9 +86,9 @@ export function availableViewerLanguages(
   ];
 }
 
-function viewerLanguageLabel(
+export function viewerLanguageLabel(
   code: string,
-  catalogue: readonly ViewerLanguageOption[] | undefined,
+  catalogue?: readonly ViewerLanguageOption[],
 ): string {
   const catalogueLabel = catalogue?.find((entry) => entry.code === code)?.label;
   if (catalogueLabel) return catalogueLabel;

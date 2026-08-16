@@ -392,20 +392,8 @@
   align-self: flex-end;
 }
 
-.audioStatus {
-  font-size: 0.8rem;
-  color: var(--color-text-muted);
-}
 
-.mixStatePanel {
-  font-size: 0.8rem;
-  color: var(--color-text-muted);
-}
 
-.audioPending {
-  color: #555577;
-  font-style: italic;
-}
 
 .generatedQueuePanel {
   display: grid;
@@ -445,9 +433,6 @@
 .subtitleSection,
 .phrasesSection,
 .deliveredAudioSection,
-.mixStatePanel {
-  display: none;
-}
 
 .generatedQueueGrid {
   display: grid;
@@ -578,11 +563,6 @@
   color: var(--color-text);
 }
 
-.phraseSeq {
-  font-family: monospace;
-  font-size: 0.7rem;
-  color: #444466;
-}
 
 .deliveredAudioSection {
   background: var(--color-surface);

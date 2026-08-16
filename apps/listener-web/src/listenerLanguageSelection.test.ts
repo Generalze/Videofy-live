@@ -12,6 +12,7 @@ import {
   requiresOriginalAudio,
   resolveLegacyListenerOutputDecision,
   shouldMergeGeneratedCaption,
+  viewerLanguageLabel,
 } from './listenerLanguageSelection';
 
 describe('listener language selection', () => {
@@ -164,3 +165,16 @@ function audio(targetLanguage: string, sequence: number): GeneratedAudioReadyEve
     createdAt: '2026-08-03T00:00:00.000Z',
   };
 }
+
+describe('viewerLanguageLabel', () => {
+  it('names the language being spoken, which the viewer catalogue never lists', () => {
+    // The catalogue holds languages a programme is translated INTO, so English
+    // — the usual source — is absent from it. The viewer still needs it named.
+    expect(viewerLanguageLabel('en')).toBe('English');
+    expect(viewerLanguageLabel('fr')).toBe('French');
+  });
+
+  it('falls back to the code rather than showing the viewer nothing', () => {
+    expect(viewerLanguageLabel('zz')).toBeTruthy();
+  });
+});

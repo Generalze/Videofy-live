@@ -57,6 +57,7 @@ import {
   resolveLegacyListenerOutputDecision,
   shouldMergeGeneratedCaption,
   targetLanguagesForSession,
+  viewerLanguageLabel,
   type ListenerCaptionPhrase,
 } from './listenerLanguageSelection';
 import {
@@ -1449,7 +1450,7 @@ export default function App(): React.ReactElement {
               Source language
             </label>
             <div id="source-lang" className={styles.sourceLanguage}>
-              {sourceLanguage.toUpperCase()} · {mediaState?.videoSource ?? 'no source'}
+              {viewerLanguageLabel(sourceLanguage)}
             </div>
           </div>
 
@@ -1570,46 +1571,20 @@ export default function App(): React.ReactElement {
             <button type="button" className={styles.resetMixBtn} onClick={handleResetMixDefaults}>
               Reset mix
             </button>
-            <label className={styles.toggleLabel}>
-              <input
-                type="checkbox"
-                checked={subtitlesEnabled}
-                onChange={(event) => setSubtitlesEnabled(event.target.checked)}
-                aria-label="Toggle captions"
-              />
-              Captions
-            </label>
           </div>
 
-          <div className={styles.audioStatus} aria-live="polite">
-            <span className={styles.label}>Status: </span>
-            <span>{audioQueue.generatedState.status}</span>
-            {selectedDeliveredAudio.length > 0 && (
-              <span className={styles.audioPending}>
-                {' '}
-                - {selectedDeliveredAudio.length} delivered
-              </span>
-            )}
-          </div>
-
-          <div className={styles.mixStatePanel} aria-live="polite">
-            <span className={styles.label}>Mix state: </span>
-            <span>{mixState.mode}</span>
-            <span className={styles.audioPending}>
-              {' '}
-              - original{' '}
-              {mixState.mode === 'replacement'
-                ? '0%'
-                : `${Math.round(mixState.originalLevel * 100)}%`}{' '}
-              - translated{' '}
-              {mixState.translatedMuted
-                ? 'muted'
-                : `${Math.round(mixState.translatedLevel * 100)}%`}{' '}
-              - context {mixState.contextState}
-              {mixState.limiterActive ? ' - limiter on' : ''}
-            </span>
-            {mixState.error && <p className={styles.generatedQueueError}>{mixState.error}</p>}
-          </div>
+          {/*
+            A mixer failure is the listener's problem — it is why they cannot
+            hear anything — so it stays on the public surface. The levels it
+            used to sit beside are already visible as the slider positions, and
+            the context/limiter state is Web Audio internals: both moved to
+            technical diagnostics.
+          */}
+          {mixState.error && (
+            <p className={styles.generatedQueueError} role="alert">
+              {mixState.error}
+            </p>
+          )}
 
           <div className={styles.generatedQueuePanel} aria-live="polite" hidden={!showDiagnostics}>
             <div className={styles.generatedQueueHeader}>
@@ -1717,7 +1692,7 @@ export default function App(): React.ReactElement {
                     {formatTimestamp(phrase.startMs)}
                   </span>
                   <span className={styles.phraseText}>{phrase.translatedText}</span>
-                  <span className={styles.phraseSeq}>#{phrase.sequence}</span>
+
                 </li>
               ))}
             </ol>
@@ -1778,6 +1753,39 @@ export default function App(): React.ReactElement {
                   audio {listenerTransport.remoteAudioTrackReceived ? 'yes' : 'no'} / video{' '}
                   {listenerTransport.remoteVideoTrackReceived ? 'yes' : 'no'}
                 </dd>
+              </div>
+              <div>
+                <dt>Audio queue</dt>
+                <dd>
+                  {audioQueue.generatedState.status}
+                  {selectedDeliveredAudio.length > 0
+                    ? ` · ${selectedDeliveredAudio.length} delivered`
+                    : ''}
+                </dd>
+              </div>
+              <div>
+                <dt>Mix state</dt>
+                <dd>
+                  {mixState.mode} · original{' '}
+                  {mixState.mode === 'replacement'
+                    ? '0%'
+                    : `${Math.round(mixState.originalLevel * 100)}%`}{' '}
+                  · translated{' '}
+                  {mixState.translatedMuted
+                    ? 'muted'
+                    : `${Math.round(mixState.translatedLevel * 100)}%`}
+                </dd>
+              </div>
+              <div>
+                <dt>Audio context</dt>
+                <dd>
+                  {mixState.contextState}
+                  {mixState.limiterActive ? ' · limiter on' : ''}
+                </dd>
+              </div>
+              <div>
+                <dt>Programme source</dt>
+                <dd>{mediaState?.videoSource ?? '-'}</dd>
               </div>
               <div>
                 <dt>Applied sync delay</dt>
