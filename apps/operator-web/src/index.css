@@ -1,3 +1,5 @@
+@import '@videofy-live/design-system/tokens.css';
+
 *,
 *::before,
 *::after {
@@ -7,21 +9,27 @@
 }
 
 :root {
-  --color-brand: #7c3aed;
-  --color-brand-light: #a78bfa;
-  --color-bg: #0a0a10;
-  --color-surface: #141420;
-  --color-surface-raised: #1e1e2c;
-  --color-border: #2a2a3e;
-  --color-text: #e8e8f0;
-  --color-text-muted: #7777aa;
-  --color-success: #22c55e;
-  --color-warn: #eab308;
-  --color-error: #ef4444;
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  /*
+   * Aliases onto the Videofy design system rather than a third set of hex
+   * values. Call and the Viewer already resolve their palette this way; the
+   * operator was the last surface still holding its own colours, which is how
+   * three products drift apart one shade at a time.
+   */
+  --color-brand: var(--vf-border-accent);
+  --color-brand-light: var(--vf-text-accent);
+  --color-bg: var(--vf-surface-canvas);
+  --color-surface: var(--vf-surface-1);
+  --color-surface-raised: var(--vf-surface-2);
+  --color-border: var(--vf-border-default);
+  --color-text: var(--vf-text-primary);
+  --color-text-muted: var(--vf-text-muted);
+  --color-success: var(--vf-status-success-solid);
+  --color-warn: var(--vf-status-warn-solid);
+  --color-error: var(--vf-status-danger-solid);
+  --radius-sm: var(--vf-radius-sm);
+  --radius-md: var(--vf-radius-md);
+  --radius-lg: var(--vf-radius-lg);
+  font-family: var(--vf-font-family-sans);
 }
 
 body {

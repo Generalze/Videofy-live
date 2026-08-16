@@ -597,24 +597,32 @@ select {
 .caption-entry {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  max-width: 60ch;
+  gap: var(--vf-space-1);
+  /* The panel measure, not a number chosen here. Captions in a side panel and
+     captions over a stage are the same reading problem at different widths,
+     and the design system already holds both answers. */
+  max-width: var(--vf-caption-max-width-panel);
 }
 
 .caption-speaker {
   color: var(--color-brand-light);
-  font-size: 0.82rem;
-  font-weight: 650;
+  font-size: var(--vf-font-size-sm);
+  font-weight: var(--vf-font-weight-semibold);
   letter-spacing: 0.03em;
 }
 
 .caption-text {
-  font-size: 1.05rem;
-  line-height: 1.5;
+  font-size: var(--vf-caption-font-size);
+  font-weight: var(--vf-caption-font-weight);
+  line-height: var(--vf-caption-line-height);
+  letter-spacing: var(--vf-caption-letter-spacing);
+  color: var(--vf-caption-final-color);
 }
 
 .caption-entry.is-partial .caption-text {
-  color: var(--color-text-muted);
+  /* Interim wording is a distinct token, not "muted text": it is a state the
+     product reasons about, and it is announced to screen readers as well. */
+  color: var(--vf-caption-interim-color);
   font-style: italic;
 }
 
