@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { CallCaptionEntry } from './callCaptions';
-import { CALL_AUDIO_MODES, languageLabel } from './callFormState';
-import type { CallAudioMode, CallParticipantSummary } from './callTypes';
+import { CALL_AUDIO_MODES, CALL_LANGUAGES, languageLabel } from './callFormState';
+import type { CallAudioMode, CallLanguage, CallParticipantSummary } from './callTypes';
 
 export type CallConnectionPhase = 'connecting' | 'connected' | 'reconnecting' | 'restoring';
 
@@ -20,6 +20,8 @@ export interface CallScreenProps {
   micMuted: boolean;
   onToggleMute: () => void;
   onToggleCaptions: () => void;
+  onCaptionLanguageChange: (language: CallLanguage) => void;
+  captionLanguageBusy: boolean;
   onAudioModeChange: (mode: CallAudioMode) => void;
   onOriginalVolumeChange: (value: number) => void;
   onTranslatedVolumeChange: (value: number) => void;
@@ -92,6 +94,27 @@ export function CallScreen(props: CallScreenProps) {
         <div className="captions-header">
           <span className="captions-live-dot" aria-hidden="true" />
           Live captions
+          {/*
+            Reading language belongs beside the captions it governs, not in a
+            settings screen: it is what the reader is looking at when they
+            realise they want a different one. Only this reader moves.
+          */}
+          <label className="captions-language">
+            <span className="sr-only">Read captions in</span>
+            <select
+              value={self?.hearLanguage ?? 'en'}
+              disabled={props.captionLanguageBusy}
+              onChange={(event) =>
+                props.onCaptionLanguageChange(event.target.value as CallLanguage)
+              }
+            >
+              {CALL_LANGUAGES.map((language) => (
+                <option key={language.value} value={language.value}>
+                  {language.label}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
         {props.captionsVisible ? (
           <div className="captions-body" ref={captionsBodyRef}>

@@ -64,6 +64,7 @@ export const CALL_EVENTS = {
   PUBLISH_ICE: 'call:publish:ice',
   RECEIVE_OFFER: 'call:receive:offer',
   RECEIVE_ICE: 'call:receive:ice',
+  SET_CAPTION_LANGUAGE: 'call:caption-language',
   STATE: 'call:state',
   CAPTION: 'call:caption',
   GENERATED_AUDIO: 'call:generated-audio',
@@ -358,6 +359,52 @@ export class CallRuntime {
       this.deliverAck(ack, await this.handleReceiveOffer(socket, raw));
     });
     this.onGuarded(socket, CALL_EVENTS.RECEIVE_ICE, (raw) => this.handleReceiveIce(socket, raw));
+    this.onGuarded(socket, CALL_EVENTS.SET_CAPTION_LANGUAGE, async (raw, ack) => {
+      this.deliverAck(ack, await this.handleSetCaptionLanguage(socket, raw));
+    });
+  }
+
+  /**
+   * A reader changing the language they read captions in, mid-call.
+   *
+   * Only this participant's captions move. The binding check is what keeps it
+   * that way: a socket may only change its OWN preference, so one participant
+   * can never re-language another's call.
+   */
+  async handleSetCaptionLanguage(
+    socket: CallSocketLike,
+    raw: unknown,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const binding = this.requireBinding(socket, raw);
+    if (!binding) return { ok: false, error: USER_FACING_ERRORS.notInCall };
+    const language = (raw as { hearLanguage?: unknown }).hearLanguage;
+    if (typeof language !== 'string') {
+      return { ok: false, error: 'Choose a language to read captions in.' };
+    }
+
+    const result = this.store.setCaptionLanguage(binding.callId, binding.participantId, language);
+    if (!result.ok) {
+      return {
+        ok: false,
+        error:
+          result.reason === 'unsupported-language'
+            ? 'That language is not available on this call yet.'
+            : USER_FACING_ERRORS.notInCall,
+      };
+    }
+    if (!result.changed) return { ok: true };
+
+    logger.info('Call caption language changed', {
+      callId: binding.callId,
+      participantId: binding.participantId,
+      hearLanguage: language,
+      languageRevision: result.languageRevision,
+    });
+    this.emitToRoom(callRoom(binding.callId), CALL_EVENTS.STATE, toWireCallState(result.snapshot));
+    // The speakers now owe this reader a language they were not producing, so
+    // work orders are reapplied through the same path a join uses.
+    await this.applyIngestPlans(binding.callId, result.snapshot, result.ingestPlans);
+    return { ok: true };
   }
 
   async handleJoin(socket: CallSocketLike, raw: unknown): Promise<CallJoinAck> {

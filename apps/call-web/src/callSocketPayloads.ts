@@ -1,5 +1,6 @@
 import type { ManagerOptions, SocketOptions } from 'socket.io-client';
 import type {
+  CallCaptionLanguagePayload,
   CallIcePayload,
   CallJoinPayload,
   CallLeavePayload,
@@ -76,6 +77,14 @@ export function buildCallJoinPayload(
 
 export function buildCallLeavePayload(callId: string, participantId: string): CallLeavePayload {
   return { callId, participantId };
+}
+
+export function buildCallCaptionLanguagePayload(
+  callId: string,
+  participantId: string,
+  hearLanguage: string,
+): CallCaptionLanguagePayload {
+  return { callId, participantId, hearLanguage };
 }
 
 export function buildCallSdpPayload(

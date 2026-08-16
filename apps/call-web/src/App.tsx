@@ -30,6 +30,7 @@ import {
 } from './callResumeStorage';
 import {
   ackErrorMessage,
+  buildCallCaptionLanguagePayload,
   buildCallIcePayload,
   buildCallJoinPayload,
   buildCallLeavePayload,
@@ -47,6 +48,7 @@ import {
   type CallIcePayload,
   type CallJoinAck,
   type CallJoinPayload,
+  type CallLanguage,
   type CallSdpAck,
   type CallSdpPayload,
   type CallStateSnapshot,
@@ -103,6 +105,7 @@ export default function App() {
   const [callState, setCallState] = useState<CallStateSnapshot | null>(null);
   const [captions, setCaptions] = useState<readonly CallCaptionEntry[]>([]);
   const [captionsVisible, setCaptionsVisible] = useState(true);
+  const [captionLanguageBusy, setCaptionLanguageBusy] = useState(false);
   const [audioMode, setAudioMode] = useState<CallAudioMode>('translated');
   const [originalVolume, setOriginalVolume] = useState(1);
   const [translatedVolume, setTranslatedVolume] = useState(DEFAULT_TRANSLATED_LEVEL);
@@ -535,6 +538,31 @@ export default function App() {
     });
   };
 
+  /**
+   * Changing the language THIS reader reads captions in, mid-call.
+   *
+   * The new language is not applied optimistically: the store is the authority
+   * on whether the call can produce it, and the snapshot it broadcasts is what
+   * moves the select. Showing "French" before the gateway agreed would lie for
+   * as long as the round trip takes, and keep lying if it was refused.
+   */
+  const handleCaptionLanguageChange = (language: CallLanguage): void => {
+    const socket = socketRef.current;
+    const active = sessionRef.current;
+    if (!socket || !active) return;
+    setCaptionLanguageBusy(true);
+    socket.emit(
+      CALL_EVENTS.SET_CAPTION_LANGUAGE,
+      buildCallCaptionLanguagePayload(active.callId, active.participantId, language),
+      (ack?: { ok: boolean; error?: string }) => {
+        setCaptionLanguageBusy(false);
+        if (ack && !ack.ok) {
+          setStatusNote(ack.error ?? 'That caption language could not be applied.');
+        }
+      },
+    );
+  };
+
   const handleAudioModeChange = (mode: CallAudioMode): void => {
     setAudioMode(mode);
     setOriginalVolume(defaultOriginalVolumeForMode(mode));
@@ -558,6 +586,8 @@ export default function App() {
           micMuted={micMuted}
           onToggleMute={handleToggleMute}
           onToggleCaptions={() => setCaptionsVisible((current) => !current)}
+          onCaptionLanguageChange={handleCaptionLanguageChange}
+          captionLanguageBusy={captionLanguageBusy}
           onAudioModeChange={handleAudioModeChange}
           onOriginalVolumeChange={setOriginalVolume}
           onTranslatedVolumeChange={setTranslatedVolume}

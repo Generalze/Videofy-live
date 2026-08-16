@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialCallJoinForm, withSpeakLanguage } from './callFormState';
 import {
+  buildCallCaptionLanguagePayload,
   buildCallIcePayload,
   buildCallJoinPayload,
   buildCallLeavePayload,
@@ -107,10 +108,21 @@ describe('call socket contract', () => {
       PUBLISH_ICE: 'call:publish:ice',
       RECEIVE_OFFER: 'call:receive:offer',
       RECEIVE_ICE: 'call:receive:ice',
+      SET_CAPTION_LANGUAGE: 'call:caption-language',
       STATE: 'call:state',
       CAPTION: 'call:caption',
       GENERATED_AUDIO: 'call:generated-audio',
       ERROR: 'call:error',
+    });
+  });
+});
+
+describe('buildCallCaptionLanguagePayload', () => {
+  it('names the participant whose captions move, so the gateway can refuse anyone else', () => {
+    expect(buildCallCaptionLanguagePayload('demo', 'participant_1', 'fr')).toEqual({
+      callId: 'demo',
+      participantId: 'participant_1',
+      hearLanguage: 'fr',
     });
   });
 });

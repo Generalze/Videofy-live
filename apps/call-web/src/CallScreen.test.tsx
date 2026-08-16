@@ -63,6 +63,8 @@ function render(overrides: Partial<CallScreenProps> = {}): string {
     micMuted: false,
     onToggleMute: vi.fn(),
     onToggleCaptions: vi.fn(),
+    onCaptionLanguageChange: vi.fn(),
+    captionLanguageBusy: false,
     onAudioModeChange: vi.fn(),
     onOriginalVolumeChange: vi.fn(),
     onTranslatedVolumeChange: vi.fn(),
@@ -72,6 +74,28 @@ function render(overrides: Partial<CallScreenProps> = {}): string {
   };
   return renderToStaticMarkup(<CallScreen {...props} />);
 }
+
+describe('CallScreen caption language', () => {
+  it('offers the reader their own reading language, showing the one in force', () => {
+    const html = render({
+      participants: [
+        participant({ participantId: 'p1', displayName: 'Alice', speakLanguage: 'en', hearLanguage: 'fr' }),
+        participant({ participantId: 'p2', displayName: 'Bruno', speakLanguage: 'fr', hearLanguage: 'fr' }),
+      ],
+    });
+
+    expect(html).toContain('Read captions in');
+    // The select reflects the snapshot, not a local guess, so a refused change
+    // cannot leave the control showing a language nobody is receiving.
+    expect(html).toMatch(/<option[^>]*value="fr"[^>]*selected/);
+  });
+
+  it('locks the control while a change is in flight', () => {
+    const html = render({ captionLanguageBusy: true });
+
+    expect(html).toMatch(/<select[^>]*disabled/);
+  });
+});
 
 describe('CallScreen', () => {
   it('identifies the call and the people on it, marking which one is you', () => {

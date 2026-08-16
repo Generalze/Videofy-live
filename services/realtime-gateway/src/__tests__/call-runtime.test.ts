@@ -1457,3 +1457,69 @@ describe('HttpWebRtcTranscriptionSubmissionClient call session creation', () => 
     }
   });
 });
+
+describe('CallRuntime caption language changes', () => {
+  let harness: Harness;
+
+  beforeEach(() => {
+    harness = createHarness();
+  });
+
+  it('moves only the requesting reader onto the new caption language', async () => {
+    const socketA = new FakeSocket('socket-a');
+    const socketB = new FakeSocket('socket-b');
+    const ackA = await join(harness, socketA, { ...JOIN_A });
+    await join(harness, socketB, { ...JOIN_B });
+    if (!ackA.ok) throw new Error('join A failed');
+
+    const ack = vi.fn();
+    await socketA.trigger(CALL_EVENTS.SET_CAPTION_LANGUAGE, {
+      callId: 'demo',
+      participantId: ackA.participantId,
+      hearLanguage: 'fr',
+    }, ack);
+
+    expect(ack).toHaveBeenCalledWith({ ok: true });
+    const states = roomEmissions(harness, CALL_EVENTS.STATE);
+    const latest = states.at(-1)?.payload as { participants: { participantId: string; hearLanguage: string }[] };
+    expect(latest.participants.find((p) => p.participantId === ackA.participantId)?.hearLanguage).toBe('fr');
+    // Beto asked for nothing and must not have been re-languaged.
+    expect(latest.participants.find((p) => p.participantId !== ackA.participantId)?.hearLanguage).toBe('es');
+  });
+
+  it('refuses a participant trying to re-language somebody else', async () => {
+    const socketA = new FakeSocket('socket-a');
+    const socketB = new FakeSocket('socket-b');
+    const ackA = await join(harness, socketA, { ...JOIN_A });
+    await join(harness, socketB, { ...JOIN_B });
+    if (!ackA.ok) throw new Error('join A failed');
+
+    const ack = vi.fn();
+    // Beto's socket, Ana's participantId: the binding check is the whole defence.
+    await socketB.trigger(CALL_EVENTS.SET_CAPTION_LANGUAGE, {
+      callId: 'demo',
+      participantId: ackA.participantId,
+      hearLanguage: 'fr',
+    }, ack);
+
+    expect(ack.mock.calls[0]?.[0]).toEqual({ ok: false, error: expect.any(String) });
+    const state = harness.store.snapshot('demo');
+    expect(state?.participants.find((p) => p.participantId === ackA.participantId)?.hearLanguage).toBe('en');
+  });
+
+  it('rejects a language the call cannot produce, without changing anything', async () => {
+    const socketA = new FakeSocket('socket-a');
+    const ackA = await join(harness, socketA, { ...JOIN_A });
+    if (!ackA.ok) throw new Error('join A failed');
+
+    const ack = vi.fn();
+    await socketA.trigger(CALL_EVENTS.SET_CAPTION_LANGUAGE, {
+      callId: 'demo',
+      participantId: ackA.participantId,
+      hearLanguage: 'kl',
+    }, ack);
+
+    expect((ack.mock.calls[0]?.[0] as { ok: boolean }).ok).toBe(false);
+    expect(harness.store.snapshot('demo')?.participants[0]?.hearLanguage).toBe('en');
+  });
+});

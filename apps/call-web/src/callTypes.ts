@@ -9,6 +9,7 @@ export const CALL_EVENTS = {
   PUBLISH_ICE: 'call:publish:ice',
   RECEIVE_OFFER: 'call:receive:offer',
   RECEIVE_ICE: 'call:receive:ice',
+  SET_CAPTION_LANGUAGE: 'call:caption-language',
   STATE: 'call:state',
   CAPTION: 'call:caption',
   GENERATED_AUDIO: 'call:generated-audio',
@@ -44,6 +45,13 @@ export interface CallJoinPayload {
 export interface CallLeavePayload {
   callId: string;
   participantId: string;
+}
+
+/** A reader changing the language they read captions in, mid-call. */
+export interface CallCaptionLanguagePayload {
+  callId: string;
+  participantId: string;
+  hearLanguage: string;
 }
 
 export interface CallSdpPayload {

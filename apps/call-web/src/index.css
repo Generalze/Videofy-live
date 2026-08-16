@@ -550,6 +550,28 @@ select {
   text-transform: uppercase;
 }
 
+.captions-language {
+  /* Pushed to the trailing edge: a control the reader reaches for
+     occasionally must not compete with the caption text itself. */
+  margin-left: auto;
+}
+
+.captions-language select {
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.75rem;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.captions-language select:disabled {
+  opacity: 0.6;
+}
+
 .captions-live-dot {
   width: 8px;
   height: 8px;
