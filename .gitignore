@@ -205,3 +205,6 @@ build/
 
 # C-AI1 bake-off evidence: raw provider comparisons, kept local
 .videofy-bakeoff/
+# Visual-review captures: binary, regenerated on demand, and not evidence Git
+# should carry.
+.videofy-screenshots/

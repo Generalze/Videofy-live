@@ -445,10 +445,17 @@
   opacity: 0.65;
 }
 
+/*
+ * Panels the Viewer does not get. They predate the overhaul and are kept
+ * mounted because their state feeds diagnostics, but they are not viewer
+ * surfaces. The subtitle section is deliberately NOT in this list any more:
+ * it now carries the caption controls.
+ */
 .generatedQueuePanel,
-.subtitleSection,
 .phrasesSection,
-.deliveredAudioSection,
+.deliveredAudioSection {
+  display: none;
+}
 
 .generatedQueueGrid {
   display: grid;
@@ -491,8 +498,10 @@
 .subtitleHeader {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 0.75rem;
+  /* A gap, not space-between: inside the column-stacked sheet the row shrinks
+     to its content and space-between leaves the label touching its box. */
+  gap: var(--vf-space-2);
+  margin-bottom: 0;
 }
 
 .toggleLabel {
@@ -932,4 +941,83 @@
   color: var(--vf-text-muted);
   font-size: var(--vf-font-size-xs);
   line-height: var(--vf-line-height-snug);
+}
+
+/*
+ * The stage must fit the screen.
+ *
+ * A 16:9 box at full column width is 765px tall at 1360px wide, which on a
+ * 900px laptop viewport pushed the bottom of the video below the fold: the
+ * viewer had to scroll to see the thing they came for. Capping the WIDTH by
+ * the available height keeps aspect-ratio in charge of the shape while
+ * guaranteeing the whole frame is visible. The subtracted space is the header,
+ * title and status banner above it.
+ */
+@media (min-width: 768px) {
+  .videoSection {
+    max-width: calc((100vh - 15rem) * 16 / 9);
+    margin-inline: auto;
+    width: 100%;
+  }
+}
+
+/*
+ * The empty stage, designed rather than left as a grey void with a caption in
+ * the corner. This is the first thing a viewer sees when a link is opened
+ * before the programme starts, so it is a first impression, not an error.
+ */
+.stageEmpty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--vf-space-3);
+  padding: var(--vf-space-4);
+  background: var(--vf-surface-void);
+  text-align: center;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.stageEmptyMark {
+  color: var(--vf-violet-500);
+  font-size: 2.5rem;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.stageEmptyText {
+  max-width: 32ch;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-md);
+  line-height: var(--vf-line-height-normal);
+}
+
+/*
+ * Caption controls. They live with the audio controls in the sheet, while the
+ * captions themselves stay on the video where the viewer reads them.
+ */
+.subtitleSection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vf-space-3);
+  padding-top: var(--vf-space-3);
+  border-top: var(--vf-border-width-hairline) solid var(--vf-border-default);
+}
+
+@media (max-width: 767.98px) {
+  /* Sliders and toggles stack rather than being squeezed into columns. */
+  .volumeRow {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--vf-space-3);
+  }
+
+  .subtitleSection {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }

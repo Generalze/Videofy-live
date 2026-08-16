@@ -1410,6 +1410,7 @@ export default function App(): React.ReactElement {
             </p>
           )}
           <div className={styles.streamStatusRow}>
+            {!viewerStatus && (
             <span
               className={styles.liveIndicator}
               style={{
@@ -1425,6 +1426,7 @@ export default function App(): React.ReactElement {
                     ? 'COMPLETED'
                     : displayStreamStatus.toUpperCase()}
             </span>
+            )}
             {(buffering || uploadedStartGate.buffering) && (
               <span className={styles.bufferingBadge} aria-live="polite">
                 Buffering…
@@ -1473,12 +1475,26 @@ export default function App(): React.ReactElement {
                   aria-hidden="true"
                 />
               )}
-            <div className={styles.videoOverlay} aria-hidden>
-              <span className={styles.mockLabel}>{programmeVideoLabel}</span>
-            </div>
+            {hasReceivedProgrammeVideo ? (
+              <div className={styles.videoOverlay} aria-hidden>
+                <span className={styles.mockLabel}>{programmeVideoLabel}</span>
+              </div>
+            ) : (
+              <div className={styles.stageEmpty}>
+                <span className={styles.stageEmptyMark} aria-hidden="true">
+                  ▶
+                </span>
+                <p className={styles.stageEmptyText}>{programmeVideoLabel}</p>
+              </div>
+            )}
             {activeCaption && (
               <div className={styles.captionOverlay} aria-live="polite" aria-atomic="true">
                 <p className={styles.captionText}>{activeCaption.translatedText}</p>
+                {showOriginalText && activeCaption.sourceText && (
+                  <p className={styles.captionSource} lang={sourceLanguage}>
+                    {activeCaption.sourceText}
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -1711,24 +1727,6 @@ export default function App(): React.ReactElement {
             Show original text
           </label>
 
-          {subtitlesEnabled && (
-            <div className={styles.subtitleBox} aria-live="polite" aria-atomic="true">
-              {currentPhrase ? (
-                <>
-                  <p className={styles.translatedText}>{currentPhrase.translatedText}</p>
-                  {showOriginalText && currentPhrase.sourceText && (
-                    <p className={styles.originalText} lang={sourceLanguage}>
-                      {currentPhrase.sourceText}
-                    </p>
-                  )}
-                </>
-              ) : (
-                <p className={styles.subtitlePlaceholder}>
-                  {hasStarted ? 'Waiting for translated text...' : 'Press play to begin'}
-                </p>
-              )}
-            </div>
-          )}
         </section>
 
         </details>
