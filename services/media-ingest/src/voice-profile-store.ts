@@ -28,6 +28,11 @@ import {
   type VoiceOwnerId,
   type VoiceProfile,
 } from '@videofy-live/participant-contracts';
+import {
+  createEphemeralVoiceProfileRecords,
+  type VoiceProfileRecordPort,
+  type VoiceProfileRecordSnapshot,
+} from './voice-profile-records.js';
 
 /**
  * Storage port. Deliberately dumb: it moves bytes and reports what it removed,
@@ -66,6 +71,15 @@ export interface VoiceEnrollmentStoragePort {
    * impossible — it reported none-held while the representation survived.
    */
   deleteVoiceAsset(voiceAssetRef: string): Promise<ArtifactDeleteResult>;
+  /**
+   * Every enrollment reference the store physically holds.
+   *
+   * Optional because enumeration is a property of a store you can walk, and a
+   * future encrypted vault may not offer one. A store that cannot list cannot
+   * be reconciled, and the consequence — orphaned material staying invisible —
+   * is said out loud at startup rather than assumed away.
+   */
+  listEnrollmentRecordings?(): Promise<string[]>;
 }
 
 /**
@@ -163,10 +177,94 @@ export class VoiceProfileStore {
    */
   private readonly pending = new Map<string, PendingVoiceCleanup>();
 
+  /** Where records go so they outlive the process. Ephemeral unless supplied. */
+  private readonly records: VoiceProfileRecordPort;
+  /** The write-behind for mutations that are not themselves async. */
+  private writing: Promise<void> = Promise.resolve();
+
   constructor(
     private readonly storage: VoiceEnrollmentStoragePort,
     private readonly now: () => string = () => new Date().toISOString(),
-  ) {}
+    records: VoiceProfileRecordPort = createEphemeralVoiceProfileRecords(),
+  ) {
+    this.records = records;
+  }
+
+  /**
+   * Load persisted records. Call once, before serving.
+   *
+   * Returns how many profiles came back, so a caller can say what it restored
+   * rather than assume. A store that fails to load starts empty rather than
+   * refusing to start: an unreadable record file must not take a call service
+   * down, and reconciliation is what stops the material it described becoming
+   * invisible.
+   */
+  async hydrate(): Promise<number> {
+    const snapshot = await this.records.load();
+    if (!snapshot) return 0;
+    this.profiles.clear();
+    this.pending.clear();
+    for (const stored of snapshot.profiles) {
+      this.profiles.set(stored.profile.voiceProfileId, {
+        profile: stored.profile,
+        enrollmentRecordingRef: stored.enrollmentRecordingRef,
+      });
+    }
+    for (const cleanup of snapshot.pending) {
+      this.pending.set(cleanup.voiceProfileId, cleanup);
+    }
+    return this.profiles.size;
+  }
+
+  /** Every enrollment reference a record still points at. */
+  referencedEnrollmentRecordings(): string[] {
+    const refs = new Set<string>();
+    for (const stored of this.profiles.values()) {
+      if (stored.enrollmentRecordingRef) refs.add(stored.enrollmentRecordingRef);
+    }
+    // Material awaiting a retry is still ours to delete, so it is referenced —
+    // sweeping it as an orphan would discard the pointer that finishes the job.
+    for (const cleanup of this.pending.values()) {
+      if (cleanup.enrollmentRecordingRef) refs.add(cleanup.enrollmentRecordingRef);
+    }
+    return [...refs];
+  }
+
+  /** Await any write-behind. Mainly for tests and for shutdown. */
+  async flush(): Promise<void> {
+    await this.writing;
+  }
+
+  private snapshot(): VoiceProfileRecordSnapshot {
+    return {
+      version: 1,
+      profiles: [...this.profiles.values()].map((stored) => ({
+        profile: stored.profile,
+        enrollmentRecordingRef: stored.enrollmentRecordingRef,
+      })),
+      pending: [...this.pending.values()],
+    };
+  }
+
+  /**
+   * Persist the current state.
+   *
+   * Awaited by every mutation that touches stored material, so the record
+   * describing a file is durable before the caller is told the file exists.
+   * The purely-consent transitions write behind instead: nothing is on disk yet
+   * for a lost record to orphan.
+   */
+  private async persist(): Promise<void> {
+    const write = this.writing.then(() => this.records.save(this.snapshot()));
+    this.writing = write.catch(() => {});
+    await write;
+  }
+
+  private persistLater(): void {
+    // Deliberately not awaited, and deliberately chained: writes stay ordered
+    // even though the caller is not waiting for them.
+    this.writing = this.writing.then(() => this.records.save(this.snapshot())).catch(() => {});
+  }
 
   get(voiceProfileId: string): StoredVoiceProfile | null {
     return this.profiles.get(voiceProfileId) ?? null;
@@ -252,6 +350,7 @@ export class VoiceProfileStore {
       updatedAt: timestamp,
     };
     this.profiles.set(profile.voiceProfileId, { profile, enrollmentRecordingRef: null });
+    this.persistLater();
     return profile;
   }
 
@@ -267,6 +366,7 @@ export class VoiceProfileStore {
       updatedAt: timestamp,
     };
     this.profiles.set(voiceProfileId, { ...stored, profile });
+    this.persistLater();
     return profile;
   }
 
@@ -290,6 +390,7 @@ export class VoiceProfileStore {
       updatedAt: timestamp,
     };
     this.profiles.set(voiceProfileId, { ...stored, profile });
+    this.persistLater();
     return profile;
   }
 
@@ -319,6 +420,10 @@ export class VoiceProfileStore {
       updatedAt: timestamp,
     };
     this.profiles.set(voiceProfileId, { profile, enrollmentRecordingRef: recordingRef });
+    // Awaited, not written behind. The bytes are on disk now, and the caller
+    // must not be told the recording was saved before the record able to find
+    // it — and therefore delete it — is durable.
+    await this.persist();
     return profile;
   }
 
@@ -335,6 +440,9 @@ export class VoiceProfileStore {
       updatedAt: timestamp,
     };
     this.profiles.set(voiceProfileId, { ...stored, profile });
+    // The derived asset exists in the engine's own store from this moment. A
+    // lost record would leave it there with nothing able to name it.
+    this.persistLater();
     return profile;
   }
 
@@ -383,6 +491,9 @@ export class VoiceProfileStore {
       enrollmentRecordingRef:
         enrollmentRecordingRemoved === 'failed' ? stored.enrollmentRecordingRef : null,
     });
+    // Withdrawal must survive a restart. A revocation that came back as
+    // consent-still-granted would be the worst of every outcome here.
+    await this.persist();
     return {
       profile,
       invalidateQueuedPersonalAudio: true,
@@ -433,6 +544,7 @@ export class VoiceProfileStore {
       });
     }
 
+    await this.persist();
     return {
       voiceProfileId,
       recordRemoved: true,
@@ -484,6 +596,7 @@ export class VoiceProfileStore {
       this.pending.delete(voiceProfileId);
     }
 
+    await this.persist();
     return {
       voiceProfileId,
       recordRemoved: true,

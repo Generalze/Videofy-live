@@ -16,6 +16,8 @@ import { registerVoiceWithdrawalRoutes } from './voice-withdrawal-route.js';
 import { registerVoiceEnrollmentRoute } from './voice-enrollment-route.js';
 import { registerVoiceProfileInitRoute } from './voice-profile-init-route.js';
 import { createFileVoiceEnrollmentStorage } from './voice-enrollment-storage.js';
+import { createFileVoiceProfileRecords } from './voice-profile-records.js';
+import { reconcileVoiceMaterial } from './voice-material-reconciliation.js';
 import { VoiceProfileStore } from './voice-profile-store.js';
 import { registerSourceMediaDeliveryRoute } from './source-media-delivery-route.js';
 import { registerViewerReadyMediaDeliveryRoute } from './viewer-ready-media-delivery-route.js';
@@ -62,7 +64,15 @@ const voiceEnrollmentStorage = createFileVoiceEnrollmentStorage({
       }
     },
 });
-const voiceProfileStore = new VoiceProfileStore(voiceEnrollmentStorage);
+// Records live beside the material they describe, in the same ignored
+// directory. Without this the store was a Map, and every deletion guarantee
+// held only until the process restarted — at which point the records vanished
+// and the recordings they described did not.
+const voiceProfileStore = new VoiceProfileStore(
+  voiceEnrollmentStorage,
+  undefined,
+  createFileVoiceProfileRecords(resolve(process.cwd(), '../../voice-enrollment/profiles.json')),
+);
 /**
  * The real engine when one is configured, and the honest refusal otherwise.
  *
@@ -541,6 +551,28 @@ app.post('/internal/voice-cleanups/retry', async (req, res) => {
 registerGeneratedAudioDeliveryRoute(app, ingest);
 registerSourceMediaDeliveryRoute(app, ingest);
 registerViewerReadyMediaDeliveryRoute(app, ingest);
+
+// Records first, then the sweep, and only then the port. Serving before
+// hydration would let a call resolve a personal voice from an empty store and
+// conclude the speaker had none — and reconciling after would race a fresh
+// enrollment whose record had not been written yet.
+const restoredVoiceProfiles = await voiceProfileStore.hydrate();
+const voiceMaterial = await reconcileVoiceMaterial({
+  storage: voiceEnrollmentStorage,
+  referenced: voiceProfileStore.referencedEnrollmentRecordings(),
+});
+// Counts only. Naming an orphan in a log would preserve the very thing that is
+// being removed for having no record.
+logger.info('Voice profile records restored', {
+  restoredVoiceProfiles,
+  strandedCleanups: voiceProfileStore.pendingCleanups().length,
+  ...voiceMaterial,
+});
+if (voiceMaterial.orphansRemaining > 0) {
+  logger.warn('Enrollment material outlived its record and could not be removed', {
+    orphansRemaining: voiceMaterial.orphansRemaining,
+  });
+}
 
 server.listen(config.port, () => {
   logger.info('Media ingest endpoint started', { port: config.port, uploadDir });

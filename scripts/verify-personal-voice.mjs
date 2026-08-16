@@ -20,7 +20,15 @@
 // Requires: media-ingest running with OPENVOICE_SERVICE_URL set, the OpenVoice
 // service running, and the Piper voices the .env registry points at.
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  utimesSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -216,6 +224,103 @@ for (const event of generated) {
   console.log(`  seq ${event.sequence}  voice=${event.voiceId}  ${event.durationMs ?? '?'}ms`);
 }
 
+// ------------------------------------------------------------ across a restart
+//
+// The store used to be a Map, so every guarantee built on it expired when the
+// process did — while the recordings it described stayed on disk. This proves
+// the record came back from storage rather than being enrolled again: the
+// profile id after the restart must be the SAME one.
+//
+// Restarting is triggered by touching a watched source file, which only works
+// under `tsx watch`. When it does not restart, this reports SKIPPED rather than
+// PASS, because "the service never restarted" and "the voice survived a
+// restart" must not produce the same green line.
+
+const RESTART_PROBE = {
+  sessionId: `call_probe${Math.floor(Math.random() * 99999)}_participant_1_r1`,
+  broadcastId: 'callcast_probe_participant_1_r1',
+  broadcasterPeerId: 'peer_probe',
+  revision: 1,
+  sourceLanguage,
+  sourceLanguageMode: 'manual',
+  targetLanguage,
+  targetLanguages: [targetLanguage],
+};
+
+/** Sessions live in memory, so an id that can be recreated means a new process. */
+async function processRestarted() {
+  const again = await postJson('/internal/webrtc/sessions', RESTART_PROBE);
+  return again.status === 201;
+}
+
+await postJson('/internal/webrtc/sessions', RESTART_PROBE);
+const watchedFile = join(ROOT, 'services', 'media-ingest', 'src', 'index.ts');
+utimesSync(watchedFile, new Date(), new Date());
+
+let restarted = false;
+for (let attempt = 0; attempt < 60 && !restarted; attempt += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  try {
+    restarted = await processRestarted();
+  } catch {
+    // The port is down mid-restart, which is the expected middle of this.
+  }
+}
+
+// Which session the withdrawal phase should act on. A restart wipes in-memory
+// sessions, so continuing to use the first one would test nothing but its
+// absence — and read as a withdrawal failure when it is only a dead session.
+let activeSessionId = sessionId;
+let activeGenerated = generated;
+let activeCursor = cursor;
+
+let survivedProfileId = null;
+if (restarted) {
+  const afterSessionId = `call_pv${Math.floor(Math.random() * 99999)}_participant_2_r1`;
+  await postJson('/internal/webrtc/sessions', {
+    sessionId: afterSessionId,
+    broadcastId: 'callcast_pv_participant_2_r1',
+    broadcasterPeerId: 'peer_call_participant_2',
+    revision: 1,
+    sourceLanguage,
+    sourceLanguageMode: 'manual',
+    targetLanguage,
+    targetLanguages: [targetLanguage],
+    voiceIdsByLanguage: { [targetLanguage]: VOICES[targetLanguage] },
+    generatedAudioPacing: 'natural',
+    voiceOwnerId: ownerId,
+  });
+  const restartClip = speak(sourceModel, expected[0], 'after-restart');
+  const stagedRestart = join(STAGING, `pv-restart-${Date.now()}.wav`);
+  copyFileSync(restartClip, stagedRestart);
+  const restartBytes = statSync(restartClip).size;
+  const restartResult = await postJson(
+    `/internal/webrtc/sessions/${encodeURIComponent(afterSessionId)}/chunks`,
+    {
+      sequence: 0,
+      startMs: 0,
+      endMs: Math.max(1000, Math.round((restartBytes - 44) / 32)),
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmFormat: 'pcm_s16le',
+      mimeType: 'audio/wav',
+      sizeBytes: restartBytes,
+      sourcePath: stagedRestart,
+    },
+  );
+  const restartEvents = (restartResult.json?.session?.generatedAudio?.events ?? []).filter(
+    (e) => e.status === 'generated',
+  );
+  survivedProfileId = restartEvents[0]?.voiceId ?? null;
+  console.log(`\n  after restart  voice=${survivedProfileId}`);
+
+  activeSessionId = afterSessionId;
+  activeGenerated = restartEvents;
+  activeCursor = Math.max(1000, Math.round((restartBytes - 44) / 32)) + 1200;
+} else {
+  console.log('\n  restart did not happen (not running under tsx watch) — SKIPPED');
+}
+
 // -------------------------------------------------------------- taking it back
 //
 // Consent that cannot be withdrawn through the running system is not consent,
@@ -223,9 +328,9 @@ for (const event of generated) {
 // sitting in listeners' playback queues. So this checks the harder half: that
 // audio which ALREADY EXISTS stops being fetchable.
 
-const firstClip = generated[0];
+const firstClip = activeGenerated[0];
 const clipUrl = firstClip
-  ? `${BASE}/sessions/${encodeURIComponent(sessionId)}/generated-audio/segments/${encodeURIComponent(firstClip.segmentId)}/audio?language=${targetLanguage}`
+  ? `${BASE}/sessions/${encodeURIComponent(activeSessionId)}/generated-audio/segments/${encodeURIComponent(firstClip.segmentId)}/audio?language=${targetLanguage}`
   : null;
 const beforeStatus = clipUrl ? (await fetch(clipUrl)).status : 0;
 
@@ -241,12 +346,13 @@ const afterClip = speak(sourceModel, expected[0], 'after-delete');
 const stagedAfter = join(STAGING, `pv-after-${Date.now()}.wav`);
 copyFileSync(afterClip, stagedAfter);
 const afterBytes = statSync(afterClip).size;
+const afterSequence = activeGenerated.length;
 const afterResult = await postJson(
-  `/internal/webrtc/sessions/${encodeURIComponent(sessionId)}/chunks`,
+  `/internal/webrtc/sessions/${encodeURIComponent(activeSessionId)}/chunks`,
   {
-    sequence: expected.length,
-    startMs: cursor,
-    endMs: cursor + Math.max(1000, Math.round((afterBytes - 44) / 32)),
+    sequence: afterSequence,
+    startMs: activeCursor,
+    endMs: activeCursor + Math.max(1000, Math.round((afterBytes - 44) / 32)),
     sampleRate: 16000,
     channelCount: 1,
     pcmFormat: 'pcm_s16le',
@@ -256,7 +362,7 @@ const afterResult = await postJson(
   },
 );
 const afterEvents = (afterResult.json?.session?.generatedAudio?.events ?? []).filter(
-  (e) => e.status === 'generated' && e.sequence === expected.length,
+  (e) => e.status === 'generated' && e.sequence === afterSequence,
 );
 
 console.log('');
@@ -278,9 +384,20 @@ const checks = [
   ],
   ['Nothing silently fell back to a standard voice', standardClips.length === 0],
   ['No session error', !latest?.error],
+  // Reported separately from PASS/FAIL when the service never restarted, so a
+  // check that could not run never reads as a check that succeeded.
+  [
+    restarted
+      ? 'The SAME voice profile survived a process restart'
+      : 'SKIPPED (no restart): voice survives a process restart',
+    restarted ? survivedProfileId === `personal:${voiceProfileId}` : true,
+  ],
   ['Deletion was accepted', deleted.status === 200 && deletedBody.deleted >= 1],
   ['Deletion reports nothing left behind', deletedBody.nothingLeft === true],
-  ['Already-generated audio was destroyed', deletedBody.generatedAudioRemoved >= expected.length],
+  [
+    'Already-generated audio was destroyed',
+    activeGenerated.length > 0 && deletedBody.generatedAudioRemoved >= activeGenerated.length,
+  ],
   ['A queued clip was fetchable before deletion', beforeStatus === 200],
   ['That same clip is NOT fetchable after deletion', afterStatus === 404],
   [

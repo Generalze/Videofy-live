@@ -15,7 +15,7 @@
  * log lines travel to places recordings should not.
  */
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { containerExtension, detectAudioContainer } from './audio-container.js';
 import type {
@@ -95,5 +95,18 @@ export function createFileVoiceEnrollmentStorage(
     },
     deleteEnrollmentRecording: remove,
     deleteVoiceAsset: options.deleteVoiceAsset,
+
+    async listEnrollmentRecordings() {
+      try {
+        const entries = await readdir(root, { withFileTypes: true });
+        return entries
+          .filter((entry) => entry.isFile() && entry.name.includes('.enrollment.'))
+          .map((entry) => entry.name);
+      } catch {
+        // No directory yet means no material, which is the healthy state and
+        // not something to report as a failure to enumerate.
+        return [];
+      }
+    },
   };
 }
