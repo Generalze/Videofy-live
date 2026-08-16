@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@videofy-live/design-system": "*",
+    "@videofy-live/participant-contracts": "*",
     "@videofy-live/shared-types": "*",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

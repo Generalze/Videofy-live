@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   isVoiceProfileUsable,
   mayUseForTraining,
+  resolveVoiceForParticipant,
 } from '@videofy-live/participant-contracts';
 import {
   invalidateQueuedPersonalAudio,
@@ -292,5 +293,39 @@ describe('describeSyntheticVoice', () => {
     // A personal voice is a machine speaking either way, and listeners are
     // entitled to know that.
     expect(describeSyntheticVoice({ voice: 'personal' })).toBe('Personal translated voice');
+  });
+});
+
+describe('ownership survives the call it was created in', () => {
+  it('resolves the same profile after leaving and rejoining with new call identifiers', async () => {
+    // THE test for the ownership fix. Under the previous binding the profile
+    // was keyed by participantId, so a second join — new participant, new
+    // socket — found nothing and silently fell back to a standard voice. If
+    // this passes, the fix changed behaviour and not just a type name.
+    const storage = createStorage();
+    const store = new VoiceProfileStore(storage.port, () => '2026-08-16T00:00:00.000Z');
+
+    // First call: enroll and accept.
+    store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
+    store.grantCallUse('vp1');
+    await store.attachEnrollmentRecording('vp1', AUDIO, 'en');
+    store.accept('vp1', 'asset_1');
+    expect(store.usableForOwner(OWNER)?.voiceProfileId).toBe('vp1');
+
+    // The call ends. Nothing about the store changes, because nothing in it
+    // was ever tied to that call.
+    const afterRejoin = store.usableForOwner(OWNER);
+
+    expect(afterRejoin?.voiceProfileId).toBe('vp1');
+    expect(resolveVoiceForParticipant({ profile: afterRejoin, standardVoiceId: 'std_en_female' }))
+      .toEqual({ voice: 'personal', voiceProfileId: 'vp1', synthetic: true });
+  });
+
+  it('does not hand one owner voice profile to a different owner', () => {
+    const storage = createStorage();
+    const store = new VoiceProfileStore(storage.port, () => '2026-08-16T00:00:00.000Z');
+    store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
+
+    expect(store.usableForOwner('devid_ffffffffffff')).toBeNull();
   });
 });
