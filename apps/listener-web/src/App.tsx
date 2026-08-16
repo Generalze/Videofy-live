@@ -194,6 +194,7 @@ export default function App(): React.ReactElement {
   const [activeShareableSessionId, setActiveShareableSessionId] = useState<string | null>(null);
   const [activeProcessingSessionId, setActiveProcessingSessionId] = useState<string | null>(null);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [showOriginalText, setShowOriginalText] = useState(false);
   const phraseSourceBySequenceRef = useRef(new Map<string, string>());
   const lastJoinedShareableSessionRef = useRef<string | null>(null);
   const activeProcessingSessionIdRef = useRef<string | null>(null);
@@ -1511,8 +1512,8 @@ export default function App(): React.ReactElement {
 
           {hasStarted && (
             <div className={styles.controlGroup}>
-              <label className={styles.label}>Mode</label>
-              <div className={styles.modeToggle} role="group" aria-label="Viewer audio mode">
+              <label className={styles.label}>How I hear this</label>
+              <div className={styles.modeToggle} role="group" aria-label="How I hear this">
                 <button
                   type="button"
                   className={`${styles.modeBtn} ${
@@ -1521,7 +1522,10 @@ export default function App(): React.ReactElement {
                   onClick={() => handleAudioModeChange('interpretation')}
                   aria-pressed={mixState.mode === 'interpretation'}
                 >
-                  Interpretation
+                  <span className={styles.modeBtnName}>Interpretation</span>
+                  <span className={styles.modeBtnHint}>
+                    Translated voice, original speaker softly underneath
+                  </span>
                 </button>
                 <button
                   type="button"
@@ -1532,7 +1536,12 @@ export default function App(): React.ReactElement {
                   disabled={originalAudioRequired}
                   aria-pressed={mixState.mode === 'replacement'}
                 >
-                  Replacement
+                  <span className={styles.modeBtnName}>Translated only</span>
+                  <span className={styles.modeBtnHint}>
+                    {originalAudioRequired
+                      ? 'Not available for this programme'
+                      : 'Original speaker silent'}
+                  </span>
                 </button>
               </div>
             </div>
@@ -1687,10 +1696,32 @@ export default function App(): React.ReactElement {
             </label>
           </div>
 
+          {/*
+            Opt-in rather than always on: showing both languages doubles the
+            height of the caption block, and most viewers want the one they
+            chose. Those who are checking a translation want it very much.
+          */}
+          <label className={styles.toggleLabel}>
+            <input
+              type="checkbox"
+              checked={showOriginalText}
+              onChange={(event) => setShowOriginalText(event.target.checked)}
+              disabled={!subtitlesEnabled}
+            />
+            Show original text
+          </label>
+
           {subtitlesEnabled && (
             <div className={styles.subtitleBox} aria-live="polite" aria-atomic="true">
               {currentPhrase ? (
-                <p className={styles.translatedText}>{currentPhrase.translatedText}</p>
+                <>
+                  <p className={styles.translatedText}>{currentPhrase.translatedText}</p>
+                  {showOriginalText && currentPhrase.sourceText && (
+                    <p className={styles.originalText} lang={sourceLanguage}>
+                      {currentPhrase.sourceText}
+                    </p>
+                  )}
+                </>
               ) : (
                 <p className={styles.subtitlePlaceholder}>
                   {hasStarted ? 'Waiting for translated text...' : 'Press play to begin'}

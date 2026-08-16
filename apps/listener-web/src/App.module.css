@@ -904,3 +904,32 @@
     white-space: nowrap;
   }
 }
+
+/*
+ * The original wording, when asked for. Deliberately quieter than the
+ * translation: it is a reference, not a second caption competing for the same
+ * attention.
+ */
+.originalText {
+  margin-top: var(--vf-space-1);
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-sm);
+  line-height: var(--vf-line-height-normal);
+}
+
+/*
+ * Each mode names what happens to the speaker's own voice, because that is
+ * the actual difference between them and the mixer vocabulary never said it.
+ */
+.modeBtnName {
+  display: block;
+  font-weight: var(--vf-font-weight-medium);
+}
+
+.modeBtnHint {
+  display: block;
+  margin-top: 2px;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-xs);
+  line-height: var(--vf-line-height-snug);
+}
