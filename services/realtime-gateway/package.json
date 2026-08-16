@@ -11,7 +11,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "npm run build -w @videofy-live/shared-types && npm run build -w @videofy-live/media-contracts && npm run build -w @videofy-live/participant-contracts && npm run build -w @videofy-live/call-contracts && npm run build -w @videofy-live/language-router && npm run build -w @videofy-live/call-session && tsc --noEmit",
-    "test": "npm run build -w @videofy-live/shared-types && npm run build -w @videofy-live/media-contracts && npm run build -w @videofy-live/participant-contracts && npm run build -w @videofy-live/call-contracts && npm run build -w @videofy-live/language-router && npm run build -w @videofy-live/call-session && vitest run src/__tests__/app.test.ts src/__tests__/config.test.ts src/__tests__/event-store.test.ts src/__tests__/generated-audio-store.test.ts src/__tests__/integration.test.ts src/__tests__/webrtc-session-registry.test.ts src/__tests__/webrtc-signalling.integration.test.ts src/__tests__/webrtc-audio-ingest-bridge.test.ts src/__tests__/webrtc-transcription-chunker.test.ts src/__tests__/webrtc-transcription-bridge.test.ts src/__tests__/webrtc-media-peer-registry.test.ts src/__tests__/webrtc-listener-peer-registry.test.ts src/__tests__/call-runtime.test.ts src/__tests__/call-prefix-guard.integration.test.ts",
+    "test": "npm run build -w @videofy-live/shared-types && npm run build -w @videofy-live/media-contracts && npm run build -w @videofy-live/participant-contracts && npm run build -w @videofy-live/call-contracts && npm run build -w @videofy-live/language-router && npm run build -w @videofy-live/call-session && vitest run src/__tests__/app.test.ts src/__tests__/config.test.ts src/__tests__/event-store.test.ts src/__tests__/generated-audio-store.test.ts src/__tests__/integration.test.ts src/__tests__/webrtc-session-registry.test.ts src/__tests__/webrtc-signalling.integration.test.ts src/__tests__/webrtc-audio-ingest-bridge.test.ts src/__tests__/webrtc-transcription-chunker.test.ts src/__tests__/webrtc-transcription-bridge.test.ts src/__tests__/webrtc-media-peer-registry.test.ts src/__tests__/webrtc-listener-peer-registry.test.ts src/__tests__/call-runtime.test.ts src/__tests__/call-voice-identity.test.ts src/__tests__/call-prefix-guard.integration.test.ts",
     "test:integration": "npm run build -w @videofy-live/shared-types && npm run build -w @videofy-live/media-contracts && npm run build -w @videofy-live/participant-contracts && npm run build -w @videofy-live/call-contracts && npm run build -w @videofy-live/language-router && npm run build -w @videofy-live/call-session && npm run build && vitest run src/__tests__/integration.test.ts src/__tests__/python-worker-smoke.test.ts",
     "test:watch": "vitest"
   },
@@ -23,7 +23,8 @@
     "@videofy-live/shared-types": "*",
     "express": "^4.19.2",
     "socket.io": "^4.7.5",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "@videofy-live/account-tokens": "*"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

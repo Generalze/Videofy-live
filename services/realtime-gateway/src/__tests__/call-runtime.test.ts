@@ -110,7 +110,7 @@ interface FakeChunkTiming {
   submittedAtMs: number | null;
 }
 
-function createHarness() {
+function createHarness(verifyVoiceIdentity?: (token: string) => string | null) {
   let tokenSerial = 0;
   const store = new CallSessionStore({
     now: () => '2026-08-14T00:00:00.000Z',
@@ -215,6 +215,9 @@ function createHarness() {
     },
     transcriptLog,
     now: () => clockMs,
+    // The REAL verifier over a real secret, so these tests exercise signature
+    // checking rather than a stand-in that agrees with them.
+    ...(verifyVoiceIdentity ? { verifyVoiceIdentity } : {}),
   });
   return {
     store,
@@ -446,20 +449,18 @@ describe('CallRuntime join and ingest plan handling', () => {
     expect(harness.runtime.getDiagnostics().ingestSessionCount).toBe(2);
   });
 
-  it('carries the speaker’s voice owner to media-ingest, and only theirs', async () => {
-    // The last live failure had the personal-voice router present in the path
-    // and receiving a standard voice, because nothing ever told media-ingest
-    // whose voice it was allowed to speak in.
-    await join(harness, new FakeSocket('socket-a'), {
-      ...JOIN_A,
-      voiceOwnerId: 'acct_aaaaaaaaaaaaaaaa',
-    });
-    await join(harness, new FakeSocket('socket-b'), { ...JOIN_B });
+  it('carries a VERIFIED speaker’s voice owner to media-ingest, and only theirs', async () => {
+    // Ana presents a token this gateway can verify; Beto presents nothing.
+    const verified = createHarness((token) =>
+      token === 'ana-token' ? 'acct_aaaaaaaaaaaaaaaa' : null,
+    );
+    await join(verified, new FakeSocket('socket-a'), { ...JOIN_A, sessionToken: 'ana-token' });
+    await join(verified, new FakeSocket('socket-b'), { ...JOIN_B });
 
-    const [ana] = harness.ingestControl.createSession.mock.calls[0]!;
-    const [beto] = harness.ingestControl.createSession.mock.calls[1]!;
+    const [ana] = verified.ingestControl.createSession.mock.calls[0]!;
+    const [beto] = verified.ingestControl.createSession.mock.calls[1]!;
     expect(ana.voiceOwnerId).toBe('acct_aaaaaaaaaaaaaaaa');
-    // Beto never enrolled, so the field is absent rather than empty — an
+    // Beto is not signed in, so the field is absent rather than empty — an
     // owner id on his session would be somebody else's voice.
     expect('voiceOwnerId' in beto).toBe(false);
     // And the voice planning stays standard: a personal voice resolved here
@@ -467,14 +468,42 @@ describe('CallRuntime join and ingest plan handling', () => {
     expect(JSON.stringify(ana.voiceIdsByLanguage)).not.toContain('personal:');
   });
 
-  it('never puts the voice owner in anything the room can see', async () => {
+  it('ignores an account named in the join payload, however confidently', async () => {
+    // The closed hole, asserted end to end through the runtime: the client
+    // asserts an account and offers no evidence for it.
     await join(harness, new FakeSocket('socket-a'), {
       ...JOIN_A,
       voiceOwnerId: 'acct_aaaaaaaaaaaaaaaa',
     });
     await join(harness, new FakeSocket('socket-b'), { ...JOIN_B });
 
-    expect(JSON.stringify(harness.emitToRoom.mock.calls)).not.toContain('acct_0000000000000000');
+    const [ana] = harness.ingestControl.createSession.mock.calls[0]!;
+    expect('voiceOwnerId' in ana).toBe(false);
+  });
+
+  it('tells the joiner privately when their sign-in was not accepted', async () => {
+    // The call still joins — an expired session must not stop a conversation —
+    // and the flag names neither the account nor the reason.
+    const rejecting = createHarness(() => null);
+    const ack = await join(rejecting, new FakeSocket('socket-a'), {
+      ...JOIN_A,
+      sessionToken: 'expired',
+    });
+
+    expect(ack.ok).toBe(true);
+    if (!ack.ok) return;
+    expect(ack.voiceIdentityRejected).toBe(true);
+    expect(JSON.stringify(ack)).not.toContain('acct_');
+  });
+
+  it('never puts a voice owner or a session token in anything the room can see', async () => {
+    const verified = createHarness(() => 'acct_aaaaaaaaaaaaaaaa');
+    await join(verified, new FakeSocket('socket-a'), { ...JOIN_A, sessionToken: 'ana-token' });
+    await join(verified, new FakeSocket('socket-b'), { ...JOIN_B });
+
+    const emitted = JSON.stringify(verified.emitToRoom.mock.calls);
+    expect(emitted).not.toContain('acct_');
+    expect(emitted).not.toContain('ana-token');
   });
 
   it('uses a synthetic other-language target and no voice overrides for a same-language pair', async () => {

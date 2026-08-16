@@ -162,6 +162,17 @@ export interface CallRuntimeDependencies {
   transcriptLog?: CallTranscriptLog;
   /** Injectable wall clock for the latency measurement; defaults to Date.now. */
   now?: () => number;
+  /**
+   * Establishes WHO is speaking from a signed session token, or returns null.
+   *
+   * The gateway derives voice ownership here and nowhere else. The join payload
+   * has no field for naming an account precisely because a client that could
+   * name one could name somebody else's, and be spoken in their voice.
+   *
+   * Omitted, nobody gets a personal voice and every call still works — which is
+   * the correct failure direction for an optional feature.
+   */
+  verifyVoiceIdentity?: (sessionToken: string) => string | null;
 }
 
 /**
@@ -217,7 +228,21 @@ export interface CallStateWirePayload {
 }
 
 export type CallJoinAck =
-  | { ok: true; participantId: string; resumeToken: string; snapshot: CallStateWirePayload }
+  | {
+      ok: true;
+      participantId: string;
+      resumeToken: string;
+      snapshot: CallStateWirePayload;
+      /**
+       * Present only when a session token was offered and did not verify. The
+       * join itself succeeded — an expired sign-in must not stop somebody
+       * joining a conversation — and the call will use a standard voice.
+       *
+       * A bare flag on purpose. Naming the account, the reason or the expiry
+       * would hand a prober precisely what the single rejection path withholds.
+       */
+      voiceIdentityRejected?: true;
+    }
   /** `code` is machine-readable; `error` stays the human-facing string. */
   | { ok: false; code: CallJoinFailure['code']; error: string };
 
@@ -303,6 +328,7 @@ export class CallRuntime {
   private readonly mediaPeers: CallMediaPeersLike;
   private readonly receivePeers: CallReceivePeersLike;
   private readonly disconnectGraceMs: number;
+  private readonly verifyVoiceIdentity: ((sessionToken: string) => string | null) | undefined;
   private readonly setTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   private readonly clearTimer: (timer: ReturnType<typeof setTimeout>) => void;
   private readonly transcriptLog: CallTranscriptLog;
@@ -327,6 +353,7 @@ export class CallRuntime {
     this.clearTimer = dependencies.clearTimer ?? ((timer) => clearTimeout(timer));
     this.transcriptLog = dependencies.transcriptLog ?? new CallTranscriptLog(null);
     this.now = dependencies.now ?? (() => Date.now());
+    this.verifyVoiceIdentity = dependencies.verifyVoiceIdentity;
     this.mediaPeers = dependencies.createMediaPeers({
       onLocalSignal: (envelope) => this.handleMediaLocalSignal(envelope),
       onAudioFrame: (context, data) => this.handleMediaAudioFrame(context, data),
@@ -413,8 +440,33 @@ export class CallRuntime {
     }
     // The store is the single validation/auth authority for join and resume
     // (including resumeToken checks); the raw payload is never logged because
-    // it may carry the private resume token.
-    const result = this.store.createOrJoin(raw as CallJoinInput);
+    // it carries the private resume token and may carry a session token.
+    //
+    // Voice ownership is the one thing the store must NOT take from the wire.
+    // `voiceOwnerId` is stripped from the client payload unconditionally and
+    // re-supplied only from a verified signature, so a caller naming somebody
+    // else's account gets exactly what a caller naming nobody gets.
+    const { voiceOwnerId: _discarded, sessionToken, ...clientInput } = raw as CallJoinInput & {
+      sessionToken?: unknown;
+    };
+    const verifiedOwnerId =
+      typeof sessionToken === 'string' && sessionToken.length > 0
+        ? (this.verifyVoiceIdentity?.(sessionToken) ?? null)
+        : null;
+    // A token that was presented and did not verify is reported back, so the
+    // browser can say "personal voice is not active" instead of leaving someone
+    // wondering why they sound like a stranger. It never says WHY.
+    const voiceIdentityRejected =
+      typeof sessionToken === 'string' && sessionToken.length > 0 && verifiedOwnerId === null;
+
+    const result = this.store.createOrJoin({
+      ...(clientInput as CallJoinInput),
+      // Always present, never conditional. Passing the key only when a token
+      // verified would let a resume keep whichever account was attached to that
+      // seat before — the shared-browser defect, rebuilt on top of real
+      // accounts. `null` means "nobody", and the store must hear it said.
+      voiceOwnerId: verifiedOwnerId,
+    });
     if (!result.ok) {
       return { ok: false, code: result.code, error: result.message };
     }
@@ -480,7 +532,16 @@ export class CallRuntime {
     await this.applyIngestPlans(callId, result.snapshot, result.ingestPlans);
 
     // resumeToken travels ONLY in this private ack, never in call:state/logs.
-    return { ok: true, participantId, resumeToken: result.resumeToken, snapshot: wireSnapshot };
+    return {
+      ok: true,
+      participantId,
+      resumeToken: result.resumeToken,
+      snapshot: wireSnapshot,
+      // Only ever `true`, and only in this private ack. A field that named the
+      // account, the reason, or the expiry would be handing a prober exactly
+      // the information the single rejection path exists to withhold.
+      ...(voiceIdentityRejected ? { voiceIdentityRejected: true as const } : {}),
+    };
   }
 
   handleLeave(socket: CallSocketLike, raw: unknown): { ok: boolean } {

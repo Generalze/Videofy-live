@@ -506,9 +506,11 @@ export default function App() {
       token !== null ? { participantId: active.participantId, resumeToken: token } : undefined,
       // Re-read rather than captured at join: someone who enrolled mid-call
       // gets their voice from the reconnect onward instead of never.
-      // Re-read rather than captured at join: somebody who signs in mid-call
-      // gets their voice from the reconnect onward instead of never.
-      readAccountSession(defaultSessionStorage())?.accountId ?? null,
+      // Re-read rather than captured at join, and the TOKEN rather than an
+      // account id: every reconnect re-proves who is speaking, so signing out
+      // or signing in as somebody else takes effect on the next resume instead
+      // of leaving the previous account attached to this seat.
+      readAccountSession(defaultSessionStorage())?.token ?? null,
     );
     void (async () => {
       try {
@@ -634,8 +636,8 @@ export default function App() {
       const storage = defaultResumeStorage();
       // Only an identity this browser already had. Someone who has never
       // enrolled joins without one, exactly as before.
-      const voiceOwnerId = accountSession?.accountId ?? null;
-      const freshPayload = buildCallJoinPayload(form, undefined, voiceOwnerId);
+      const sessionToken = accountSession?.token ?? null;
+      const freshPayload = buildCallJoinPayload(form, undefined, sessionToken);
       // A stored resume entry for this call (e.g. after a page reload) means
       // we resume the previous seat instead of joining fresh.
       const stored = resumeSessionForCall(storage, freshPayload.callId);
@@ -643,7 +645,7 @@ export default function App() {
         ? buildCallJoinPayload(
             form,
             { participantId: stored.participantId, resumeToken: stored.resumeToken },
-            voiceOwnerId,
+            sessionToken,
           )
         : freshPayload;
       let ack = await emitJoinRequest(socket, payload);

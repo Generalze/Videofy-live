@@ -61,11 +61,14 @@ export function buildCallJoinPayload(
   form: CallJoinFormState,
   resume?: CallResumeCredentials,
   /**
-   * The owner identity this browser already has, or null. Passed in rather than
-   * read here so the caller decides — and so this stays a pure function of its
-   * arguments. Never minted: see `existingVoiceOwnerId`.
+   * The signed session token, when somebody is signed in. Passed in rather than
+   * read here so this stays a pure function of its arguments.
+   *
+   * There is deliberately no parameter for an account id: the gateway derives
+   * that from this signature, and a client that could name an account could
+   * name somebody else's.
    */
-  voiceOwnerId?: string | null,
+  sessionToken?: string | null,
 ): CallJoinPayload {
   const payload: CallJoinPayload = {
     callId: normalizeCallCode(form.callCode),
@@ -78,8 +81,8 @@ export function buildCallJoinPayload(
     // Omitted rather than sent as 'manual', so a gateway that predates this
     // option keeps its existing default instead of seeing an unknown field.
     ...(form.detectSpeakLanguage ? { sourceLanguageMode: 'auto' as const } : {}),
-    // Absent for everyone who has never enrolled, which is most joins.
-    ...(voiceOwnerId ? { voiceOwnerId } : {}),
+    // Absent for everyone not signed in, which is most joins.
+    ...(sessionToken ? { sessionToken } : {}),
   };
   if (resume !== undefined) {
     payload.resumeParticipantId = resume.participantId;

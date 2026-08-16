@@ -35,6 +35,7 @@ import {
   safeParseWebRtcSignallingEnvelope,
   isUnsupportedWebRtcProtocolVersion,
 } from '@videofy-live/media-contracts';
+import { createCallVoiceIdentityVerifier } from './call-voice-identity.js';
 import { EventStore } from './event-store.js';
 import { GeneratedAudioStore } from './generated-audio-store.js';
 import { logger } from './logger.js';
@@ -224,6 +225,7 @@ export class Gateway {
     // P6.1B call runtime: reuses the backend media peer machinery and the
     // transcription bridge with call-scoped contexts; owns its own peer
     // registry so call publish peers never mix with programme callbacks.
+    const callVoiceIdentityVerifier = createCallVoiceIdentityVerifier();
     this.callRuntime = new CallRuntime({
       store: new CallSessionStore(),
       emitToRoom: (room, event, payload) => {
@@ -238,6 +240,13 @@ export class Gateway {
       createMediaPeers: (handlers) => new BackendWebRtcMediaPeerRegistry(handlers),
       createReceivePeers: (handlers) => new CallReceivePeerManager(handlers),
       transcriptLog: new CallTranscriptLog(options.callTranscriptLogDir ?? null),
+      // WHO is speaking, derived from a signature rather than accepted from the
+      // join payload. Absent when no secret is configured, in which case nobody
+      // gets a personal voice and every call still works — the correct failure
+      // direction for an optional feature.
+      ...(callVoiceIdentityVerifier
+        ? { verifyVoiceIdentity: callVoiceIdentityVerifier }
+        : {}),
     });
     this.io = new SocketServer(httpServer, {
       cors: { origin: corsOrigins, methods: ['GET', 'POST'] },

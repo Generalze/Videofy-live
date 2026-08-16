@@ -38,7 +38,11 @@ export interface CallJoinInput {
   voiceGender: 'male' | 'female';
   audioMode: 'translated' | 'interpretation' | 'original';
   /**
-   * Development-prototype voice ownership (P6.3), if this browser has one.
+   * Whose voice may be spoken, DERIVED BY THE GATEWAY from a verified session
+   * token — never taken from the client's join payload.
+   *
+   * `null` and absent both mean nobody, and both must be said explicitly on a
+   * resume so a seat cannot keep an account that is no longer signed in.
    *
    * Carried so media-ingest can resolve the CURRENT usable profile fresh at
    * synthesis time. Deliberately NOT the resolved personal voice: storing
@@ -49,7 +53,7 @@ export interface CallJoinInput {
    * Never exposed in call:state, snapshots, captions or logs — it identifies
    * whose voice may be spoken.
    */
-  voiceOwnerId?: string;
+  voiceOwnerId?: string | null;
   /**
    * `manual` (default) takes `speakLanguage` as the speaker's own statement and
    * never revisits it. `auto` treats it as a starting guess that the first
@@ -351,7 +355,7 @@ export class CallSessionStore {
       participant,
       resumeToken: this.createResumeToken(),
       voiceGender: input.voiceGender,
-      ...(input.voiceOwnerId === undefined ? {} : { voiceOwnerId: input.voiceOwnerId }),
+      ...(input.voiceOwnerId ? { voiceOwnerId: input.voiceOwnerId } : {}),
       captionsEnabled: input.captionsEnabled,
       connected: true,
       joinedAtIso: this.now(),
@@ -626,7 +630,17 @@ export class CallSessionStore {
       mediaRevision: state.participant.mediaRevision + 1,
     });
     state.voiceGender = input.voiceGender;
-    if (input.voiceOwnerId !== undefined) state.voiceOwnerId = input.voiceOwnerId;
+    // ASSIGNED on every resume, never merged. Leaving the previous value in
+    // place when none arrives is how a seat keeps the account that last held
+    // it: sign out, reconnect, and the browser is still speaking as whoever was
+    // authenticated before — the shared-browser defect rebuilt on top of real
+    // accounts, with better paperwork. Identity is re-proved every time or it
+    // is absent.
+    if (input.voiceOwnerId) {
+      state.voiceOwnerId = input.voiceOwnerId;
+    } else {
+      delete state.voiceOwnerId;
+    }
     state.captionsEnabled = input.captionsEnabled;
     state.connected = true;
     bumpOtherConnectedParticipants(call, state);
@@ -743,8 +757,13 @@ function validateJoinInput(input: CallJoinInput): string | null {
   // Refused rather than ignored. A voice identity that fails to parse is a bug
   // or a tampered payload, and silently dropping it would present as "personal
   // voice mysteriously stopped working" with nothing anywhere saying why.
+  // Defence in depth. The gateway derives this from a verified signature and
+  // never from the wire, so anything malformed reaching here is a bug rather
+  // than a hostile client — but a bug that silently attached the wrong owner
+  // would be indistinguishable from the hole this replaced.
   if (
     input.voiceOwnerId !== undefined &&
+    input.voiceOwnerId !== null &&
     !VoiceOwnerIdSchema.safeParse(input.voiceOwnerId).success
   ) {
     return 'The voice identity is not valid.';

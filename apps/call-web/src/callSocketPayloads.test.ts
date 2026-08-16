@@ -48,27 +48,42 @@ describe('buildCallJoinPayload', () => {
     expect(payload.resumeToken).toBe('token-1');
   });
 
-  it('omits the voice owner for everyone who has never enrolled', () => {
-    // Which is most joins. An absent field is how the gateway tells "no
-    // personal voice" apart from "a personal voice I could not resolve".
+  it('sends nothing about identity when nobody is signed in', () => {
+    // Which is most joins. A personal voice is optional and a call never
+    // requires one.
     const payload = buildCallJoinPayload(completedForm(), undefined, null);
 
-    expect('voiceOwnerId' in payload).toBe(false);
+    expect('sessionToken' in payload).toBe(false);
   });
 
-  it('carries an existing voice owner on both join and resume', () => {
-    // Resume matters as much as join: a reconnect that dropped the owner would
+  it('carries the session token on both join and resume', () => {
+    // Resume matters as much as join: a reconnect that dropped the token would
     // silently move the speaker back to a standard voice mid-call.
-    const owner = 'acct_aabbccddeeffffff';
+    const token = 'header.signature';
 
-    expect(buildCallJoinPayload(completedForm(), undefined, owner).voiceOwnerId).toBe(owner);
+    expect(buildCallJoinPayload(completedForm(), undefined, token).sessionToken).toBe(token);
     expect(
       buildCallJoinPayload(
         completedForm(),
         { participantId: 'participant-a', resumeToken: 'token-1' },
-        owner,
-      ).voiceOwnerId,
-    ).toBe(owner);
+        token,
+      ).sessionToken,
+    ).toBe(token);
+  });
+
+  it('has NO field for asserting an account, signed in or not', () => {
+    // The closure. A client that can name an account can name somebody else's
+    // and be spoken in their voice, so the join contract offers evidence and
+    // no way to state a conclusion. This is a structural guarantee, not a
+    // convention: if the field returns, this fails.
+    const anonymous = buildCallJoinPayload(completedForm(), undefined, null);
+    const signedIn = buildCallJoinPayload(completedForm(), undefined, 'header.signature');
+
+    for (const payload of [anonymous, signedIn]) {
+      expect('voiceOwnerId' in payload).toBe(false);
+      expect('accountId' in payload).toBe(false);
+      expect(JSON.stringify(payload)).not.toContain('acct_');
+    }
   });
 
   it('carries the hear language that followed the speak language', () => {

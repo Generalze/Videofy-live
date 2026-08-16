@@ -39,16 +39,21 @@ export interface CallJoinPayload {
    */
   sourceLanguageMode?: 'auto';
   /**
-   * This browser's existing personal-voice owner, when it has one (P6.3).
+   * Evidence of who is speaking, when they are signed in.
    *
-   * The OWNER, never a resolved voice. media-ingest asks for the owner's
-   * currently usable profile on each utterance, so revoking, deleting or
-   * re-recording takes effect on the next thing said rather than the next call.
+   * Deliberately a TOKEN and not an account id. A client saying "I am acct_A"
+   * is an assertion the gateway would have to take on trust, and taking it on
+   * trust means anybody can be spoken in anybody's voice by typing their id.
+   * The gateway verifies this signature and derives the account itself; there
+   * is no field here for naming an account, on purpose.
    *
-   * Absent for anyone who has never enrolled — joining a call does not mint an
-   * identity.
+   * Absent for anyone not signed in, which is most joins — a personal voice is
+   * optional and a call never requires one.
+   *
+   * Travels only in the private `call:join` request. Never logged, never echoed
+   * into `call:state`, never sent onward to another service.
    */
-  voiceOwnerId?: string;
+  sessionToken?: string;
   resumeParticipantId?: string;
   resumeToken?: string;
 }
@@ -101,7 +106,20 @@ export type CallJoinFailureCode =
   | 'internal';
 
 export type CallJoinAck =
-  | { ok: true; participantId: string; resumeToken: string; snapshot?: CallStateSnapshot }
+  | {
+      ok: true;
+      participantId: string;
+      resumeToken: string;
+      snapshot?: CallStateSnapshot;
+      /**
+       * Present only when a session token was offered and not accepted. The
+       * call joined normally and will use a standard voice.
+       *
+       * Deliberately a bare flag: naming the account, the reason or the expiry
+       * would hand a prober exactly what the single rejection path withholds.
+       */
+      voiceIdentityRejected?: true;
+    }
   | { ok: false; code?: CallJoinFailureCode; error?: string };
 
 export interface CallLeaveAck {
