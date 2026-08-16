@@ -5,6 +5,10 @@ import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { loadConfig } from './config.js';
 import { registerGeneratedAudioDeliveryRoute } from './generated-audio-delivery-route.js';
+import { createUnavailablePersonalVoiceProvider } from './personal-voice-provider.js';
+import { registerVoiceEnrollmentRoute } from './voice-enrollment-route.js';
+import { createFileVoiceEnrollmentStorage } from './voice-enrollment-storage.js';
+import { VoiceProfileStore } from './voice-profile-store.js';
 import { registerSourceMediaDeliveryRoute } from './source-media-delivery-route.js';
 import { registerViewerReadyMediaDeliveryRoute } from './viewer-ready-media-delivery-route.js';
 import { IngestService } from './ingest-service.js';
@@ -399,6 +403,22 @@ app.post('/sessions/:sessionId/source-language', (req, res) => {
   } catch (error) {
     sendIngestError(res, error);
   }
+});
+
+// Personal voice (P6.3). Enrollment material lives beside the uploads, in a
+// git-ignored directory, and never in the repository or the logs.
+const voiceProfileStore = new VoiceProfileStore(
+  createFileVoiceEnrollmentStorage({
+    directory: resolve(process.cwd(), '../../voice-enrollment'),
+  }),
+);
+let voiceProfileSerial = 0;
+registerVoiceEnrollmentRoute(app, {
+  store: voiceProfileStore,
+  // Until a cloning engine is validated this refuses every creation, so a
+  // profile never reaches `ready` and calls keep using the standard voice.
+  provider: createUnavailablePersonalVoiceProvider(),
+  newVoiceProfileId: () => `vp_${Date.now().toString(36)}_${++voiceProfileSerial}`,
 });
 
 registerGeneratedAudioDeliveryRoute(app, ingest);
