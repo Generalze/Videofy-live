@@ -1538,6 +1538,82 @@ Videofy Intelligence
 
 The long-term commercial opportunity is not limited to Videofy Call. Mature native capabilities may later be exposed as Videofy Speech API, Videofy Translate API, Videofy Voice API and Realtime Interpretation API through Videofy Connect.
 
+### 21.9.1 Videofy Intelligence is a learning system
+
+Owner decision, 2026-08-16. The objective is no longer "eventually train our
+own models". It is:
+
+> Videofy continuously learns from legally usable development models,
+> commercial teachers, verified human corrections and rights-cleared
+> first-party data, while building smaller, faster, context-aware native
+> speech, translation and voice models optimized specifically for real-time
+> multilingual communication.
+
+The difference matters architecturally: learning capability becomes part of
+the platform rather than a future research project, so the contracts for it
+are owed now, not at VI-R2.
+
+**Two speeds, deliberately separated.** Live adaptation and model training are
+different mechanisms with different risk. Session context adapts in seconds —
+names, terminology, pronunciation, speaker and accent characteristics. Model
+weights change only through a verified training and evaluation release. A
+speech model permitted to rewrite itself from live calls is a speech model
+being taught somebody's cough as a surname.
+
+**Streaming-first.** The native runtime targets continuous audio with cached
+acoustic state and a context-aware decoder, not collect-chunk-wait-decode.
+Context must survive segment boundaries: a new chunk must not give the model
+amnesia. This is the architectural wall the P6.1 chunk-tuning work found
+experimentally (§22), and it is the reason it cannot be tuned away.
+
+**Development models stay.** faster-whisper, OPUS-MT and Piper remain useful
+teachers and baselines when commercial providers arrive. They are not
+discarded on arrival.
+
+### 21.9.2 Training rights are a hard gate
+
+Videofy trains from a provider's outputs only when that provider's terms
+explicitly permit training or distillation. Where they do not, the provider
+remains available as a benchmark, comparison, error detector, quality judge
+and production route — but its outputs never become training data.
+
+This lives in the model registry as provider metadata rather than in anyone's
+memory:
+
+```ts
+TeacherProvider {
+  providerId: string
+  mayServeProduction: boolean
+  mayGenerateEvaluationData: boolean
+  mayGenerateTrainingData: boolean
+  mayBeUsedForDistillation: boolean
+  rightsEvidence: string
+  rightsVerifiedAt: string
+  capabilities: { speech, translation, tts, streaming }
+}
+```
+
+Every training example carries its own provenance — source audio, reference
+transcript, teacher outputs, human verification, consent state, training
+rights, dataset version — so the question "where did this voice come from?"
+has an answer that predates being asked.
+
+**Customer calls are excluded from training by default.** Only explicitly
+permitted data crosses that boundary. Non-negotiable.
+
+### 21.9.3 Disagreement is the training signal
+
+Videofy does not learn equally from everything. It learns preferentially where
+its teachers disagree, and where the native student is wrong while verified
+teachers are right. An utterance every system already transcribes correctly
+teaches nothing on the four-hundredth repetition; a Nigerian surname that one
+teacher hears and another mangles is worth a great deal.
+
+This makes the C-AI1 bake-off dual-purpose. It was built to choose a vendor;
+it also produces exactly the artefacts the learning engine needs — teacher
+outputs, measured disagreement, difficult names, accent cases and latency
+evidence.
+
 ### 21.10 Model-development maturity ladder
 
 Videofy should learn and grow in stages:
@@ -1930,6 +2006,7 @@ Both matter, but they are different gates.
 | P6.7 | Zoom adapter. | RTMS ingress plus verified supported egress/sidecar behavior. |
 | P6.8 | SIP/RTP gateway. | Two SIP endpoints complete translated call. |
 | C-AI1 Commercial provider certification | Implement and certify at least one commercial translation/TTS/STT route per launch language, local or cloud. | Commercial profile has no blocked/unknown fallback and passes quality/latency/security gates. |
+| VI-L0 Videofy Learning Foundation | TeacherProvider contract, training-rights registry, contextual-memory contract, disagreement collection, correction/reference format, dataset provenance, evaluation-harness integration and streaming-native performance requirements. | Rights metadata gates every teacher; a disagreement example can be collected, attributed and refused on rights grounds without human memory being the control. |
 | VI-R1 Videofy Voice Library | Voice Studio, rights-cleared recording/training flow and first Videofy-owned standard voice assets. | At least one native voice release has full data/model lineage and can be loaded through `VoiceProvider`. |
 | VI-R2 Videofy Speech/Translate specialization | Fine-tuning/adapters for priority accents/language pairs and evaluation corpus. | First specialized native model beats or complements the chosen baseline on a defined acceptance suite. |
 | VI-R3 Videofy-native service offering | Harden selected native models for internal production and later external API use. | Native capability passes commercial runtime gates and can be exposed through Videofy Connect without special media code. |
@@ -2396,7 +2473,9 @@ Before implementing or certifying any external adapter, model or voice:
 | SIP/RTP | Common VoIP signaling/media standards. |
 | Standard voice | Shared product voice from the approved Male/Female catalogue for a language. |
 | Videofy Connect | SDK/API/adapter layer for external integration. |
-| Videofy Intelligence | Long-term native AI programme spanning Speech, Translate, Voice, Language Lab and Model Registry. |
+| Videofy Live Viewer | The audience-facing page for a programme: video, translated captions, language choice and audio mode. The product name for what the repository calls `listener-web`. |
+| Videofy Intelligence | Native AI programme spanning Speech, Translate, Voice, Context Engine, Teacher Network, Learning Engine and Model Registry. A learning system, not a set of future models (§21.9.1). |
+| Teacher | A model or human whose output can train or evaluate a Videofy native model, subject to explicit training rights (§21.9.2). |
 | Videofy Language Lab | Rights/provenance-controlled datasets and evaluation corpora for native AI development. |
 | Videofy Voice | Male/Female standard voices for every fully voice-ready language plus optional personal translated voice subsystem. |
 | Videofy Voice Studio | Internal workflow/tooling for rights-cleared voice recording, training, evaluation and library publication. |
