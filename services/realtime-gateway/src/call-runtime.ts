@@ -1200,20 +1200,6 @@ export class CallRuntime {
     const state = this.participants.get(participantKey(identity.callId, identity.participantId));
     const entry = state ? this.currentEntryFor(state) : undefined;
     const receivedAtMs = frame?.receivedAtMs ?? this.now();
-    // W3: stamped once per participant, so a corpus recording carries the rate
-    // its acoustic measurements were taken at.
-    this.recordInputFormat(identity.callId, identity.participantId, frame);
-    // W5A: envelope extraction only. No correlation runs here — that is on a
-    // timer — and nothing this call does is conditioned on the result.
-    if (data.samples) {
-      this.acousticObserver.observeFrame(
-        identity.callId,
-        identity.participantId,
-        data.samples,
-        frame?.sampleRate ?? data.sampleRate ?? 0,
-        receivedAtMs,
-      );
-    }
     if (entry?.active) {
       try {
         this.transcriptionBridge.handleFrame(bridgeContextFor(entry), data, receivedAtMs);
@@ -1232,6 +1218,34 @@ export class CallRuntime {
         callId: identity.callId,
         participantId: identity.participantId,
         message: error instanceof Error ? error.message : 'unknown fanout failure',
+      });
+    }
+    // INSTRUMENTATION RUNS LAST, AND CANNOT THROW PAST HERE.
+    //
+    // Both of these originally sat above the bridge and the fan-out, unguarded.
+    // Nothing in them throws today — which is exactly why it was easy to miss
+    // that a throw would have silently stopped the frame reaching either. That
+    // is the road by which "observation only" stops being true, and it is worth
+    // more as an ordering guarantee than as a promise about today's code.
+    try {
+      // W3: stamped once per participant, so a corpus recording carries the
+      // rate its acoustic measurements were taken at.
+      this.recordInputFormat(identity.callId, identity.participantId, frame);
+      // W5A: envelope extraction only. No correlation runs here — that is on a
+      // timer — and nothing this call does is conditioned on the result.
+      if (data.samples) {
+        this.acousticObserver.observeFrame(
+          identity.callId,
+          identity.participantId,
+          data.samples,
+          frame?.sampleRate ?? data.sampleRate ?? 0,
+          receivedAtMs,
+        );
+      }
+    } catch (error) {
+      logger.debug('Call acoustic instrumentation failed for one frame', {
+        callId: identity.callId,
+        message: error instanceof Error ? error.message : 'unknown instrumentation failure',
       });
     }
   }

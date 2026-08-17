@@ -233,13 +233,96 @@ was "Yes.", which does not match), not classified as Path B (the speaker said "O
 "c'est ça"), not made into a third defect class, not filtered, not tuned around, and not
 explained in a source comment. Revisit only if M1 / W2 / W4 evidence resolves it.
 
-## Next
+## Next — M1, the real physical-device corpus
 
-**M1 — the real physical-device corpus.** W1–W4 and W5A must be running during collection:
-M5 derives its calibration from exactly these features, and a threshold derived from a
-separately reimplemented analysis would mean the production extractor was never the thing
-validated.
+W1–W4 and W5A must be **running during collection**: M5 derives its calibration from
+exactly these features, and a threshold derived from a separately reimplemented analysis
+would mean the production extractor was never the thing validated.
 
-Configuration 3 — one laptop with its own speaker and genuinely remote participants — has
-never been tested, is probably the representative customer configuration, and is the only
-topology W6 cures outright.
+**The instrumentation is frozen for the duration of M1.** Do not improve the detector while
+collecting the corpus. M1 exists to expose its weaknesses, not to give it a chance to study
+for the exam — and a corpus spanning two measurement semantics acquires footnotes longer
+than the data.
+
+### Run order
+
+| | topology | why |
+|---|---|---|
+| M1-1 | one laptop + genuinely remote peer + **speakers** | highest priority; never represented; the only topology W6 cures outright |
+| M1-2 | same + headphones | acoustic-negative control |
+| M1-3 | two physical laptops, same room, speakers | true co-location corpus |
+| M1-4 | same two laptops + headphones | co-location without acoustic coupling |
+| M1-5 | double-talk while translated TTS plays | Path A stress |
+| M1-6 | double-talk while original remote audio plays | Path B stress |
+| M1-7 | quiet local speech against loud remote playback | barge-in / W6 risk |
+| M1-8 | same room at ~0.5 m, ~1.5 m, ~3 m | separation gradient |
+| M1-9 | cadence-matched remote control | see M5-A1 below |
+
+**M1-1 must vary loudspeaker volume at least once.** A topology that passes at 20% and
+loops at 80% is evidence, not a failed run.
+
+### Capture per run
+
+Everything W1–W5A now exposes, plus human ground truth:
+
+- granted capture settings per participant (W1), including the **actual** `echoCancellation`
+- input sample rate at collection time (W3)
+- browser, device and output sink context — recorded by hand, as in `rig-topology.md`
+- generated-clip and remote-original playback intervals, with emit-vs-actual skew (W4)
+- true VAD wall clocks and close reasons (W2)
+- correlation, lag, per-band coherence, concurrent voiced duration (W5A)
+- **whether the participants were physically co-located** — the label, written down by a
+  human at the time, because nothing in the system knows it
+
+### M5-A1 — remote false-positive control
+
+Promoted to a formal adversarial case by a result the W5A unit tests produced before any
+calibration existed.
+
+```
+Two GENUINELY REMOTE participants:
+  - same sentence rhythm
+  - similar syllable cadence
+  - overlapping speech onset
+  - different audio content, different machines, different rooms
+
+Expected:
+  high envelope correlation is POSSIBLE
+  and MUST NOT imply co-location by itself
+```
+
+The observer correlates envelopes, so anything sharing a rhythm correlates whatever the
+underlying audio is: two "independent" speakers given the same syllable envelope scored
+**0.96**. The detector has already shown one of the ways it can lie, before anyone tried to
+calibrate it. M5 must show what separates M1-9 from M1-3 — lag stability, band tilt,
+something else, or nothing, in which case correlation alone cannot carry a room binding.
+
+This is the concrete reason W5A was forbidden from producing a `roomId`.
+
+## One decision needed before M1-1
+
+**W1 changes the echo-cancellation regime, and that is a confound for the corpus.**
+
+The frozen evidence corpus was captured under `{ audio: true }`, which granted
+`echoCancellation: true`. W1 now requests `{ ideal: 'all' }`, and `rig-topology.md` records
+that this machine advertises `[true, false, 'remote-only', 'all']` — so Chrome may well
+grant `'all'`.
+
+That matters twice over:
+
+1. **M1 is not comparable to the frozen corpus on the AEC axis.** Any reduction in recapture
+   between them could be topology, or could be the canceller.
+2. **`'all'` partially overlaps W6's mechanism.** W6 exists to put translated playback into a
+   path the canceller references; `'all'` asks it to reference everything the machine
+   renders. If it is honoured, W6's later A/B measures a smaller delta from an already
+   partially-cancelled baseline — and a weak W6 result would be ambiguous rather than
+   informative.
+
+W1 makes this **measurable rather than assumed** — the granted value is on every call log.
+The minimum discipline is therefore: read the granted `echoCancellation` off the first M1-1
+recording, and if it is `'all'`, record that the run is not AEC-comparable to
+`gentle-atlas-54` / `swift-ember-69`.
+
+If a within-corpus A/B on the constraint itself is wanted, the toggle has to exist **before**
+M1 starts. Adding it mid-corpus is the source change during collection that this freeze
+exists to prevent.

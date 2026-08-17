@@ -442,6 +442,31 @@ describe('the instrumentation changes no audio', () => {
     );
   });
 
+  it('delivers the frame even when the observer throws', async () => {
+    // Found by auditing the diff, not by a failing test: the instrumentation
+    // originally ran BEFORE the bridge and the fan-out, unguarded. Nothing in
+    // it throws today, which is precisely why it was easy to miss that a throw
+    // would have silently stopped audio. Order and guard are asserted here so
+    // the guarantee survives whatever gets added to the observer later.
+    const hostile = new CallAcousticRoomObserver({ intervalMs: 1_000_000 });
+    hostile.observeFrame = () => {
+      throw new Error('instrumentation exploded');
+    };
+    const harness = createHarness(hostile);
+    const socket = new FakeSocket('socket-a');
+    await join(harness, socket, JOIN_A);
+    await join(harness, new FakeSocket('socket-b'), JOIN_B);
+    await publish(harness, socket, 'participant_1');
+
+    const data = { samples: new Int16Array(480), sampleRate: 48_000, channelCount: 1 };
+    expect(() =>
+      harness.mediaHandlers().onAudioFrame(AUDIO_CONTEXT, data, frameMetadata(200_010)),
+    ).not.toThrow();
+
+    expect(harness.transcriptionBridge.handleFrame).toHaveBeenCalledTimes(1);
+    expect(harness.receivePeers.fanOut).toHaveBeenCalledTimes(1);
+  });
+
   it('produces no room id and nothing that could bind a participant', async () => {
     const harness = createHarness();
     const socketA = new FakeSocket('socket-a');
