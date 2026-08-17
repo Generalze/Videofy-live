@@ -139,8 +139,11 @@ describe('CallSessionStore.createOrJoin', () => {
     }
   });
 
-  it('rejects a third join with a typed call-full error and leaves the call untouched', () => {
-    const store = new CallSessionStore();
+  it('rejects a join past the cap with a typed error and leaves the call untouched', () => {
+    // Cap stated explicitly rather than inherited from the default, so this
+    // keeps testing the SEMANTICS — typed refusal, nobody bumped — after the
+    // conference default moved from 2 to 4.
+    const store = new CallSessionStore({ maxParticipants: 2 });
     const { zoe, carlos } = translatedPair(store);
 
     const third = store.createOrJoin(joinInput({ displayName: 'Amelie' }));
@@ -152,8 +155,10 @@ describe('CallSessionStore.createOrJoin', () => {
     expect(planRevision(store, 'call-1', carlos.participantId)).toBe(1);
   });
 
-  it('still counts a disconnected identity toward the two-participant cap', () => {
-    const store = new CallSessionStore();
+  it('still counts a disconnected identity toward the cap', () => {
+    // A held seat is a seat: it must not be handed to a stranger while its
+    // owner is reconnecting.
+    const store = new CallSessionStore({ maxParticipants: 2 });
     const { carlos } = translatedPair(store);
     store.markDisconnected('call-1', carlos.participantId);
 

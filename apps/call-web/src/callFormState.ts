@@ -52,7 +52,7 @@ export const CALL_AUDIO_MODES: readonly {
   {
     value: 'translated',
     label: 'Translated',
-    description: 'Hear the other person in your language.',
+    description: 'Hear everyone in your language.',
   },
   {
     value: 'interpretation',

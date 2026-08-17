@@ -101,7 +101,8 @@ export function CallScreen(props: CallScreenProps) {
         ) : null}
         {others.length === 0 ? (
           <p className="participant-waiting">
-            Waiting for the other person to join — share the call code {props.callCode}.
+            {/* Capacity-neutral: a conference is not "the other person". */}
+            Waiting for someone to join — share the call code {props.callCode}.
           </p>
         ) : null}
       </section>

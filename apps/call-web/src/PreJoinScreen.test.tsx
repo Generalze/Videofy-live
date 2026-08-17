@@ -82,7 +82,7 @@ describe('PreJoinScreen', () => {
     expect(html).toContain('Translated');
     expect(html).toContain('Interpretation');
     expect(html).toContain('Original');
-    expect(html).toContain('Hear the other person in your language.');
+    expect(html).toContain('Hear everyone in your language.');
   });
 
   it('marks the selected audio mode and voice as chosen', () => {
@@ -148,7 +148,7 @@ describe('PreJoinScreen', () => {
     const html = render();
 
     expect(html).toContain('id="audio-mode"');
-    expect(html).toContain('Hear the other person in your language.');
+    expect(html).toContain('Hear everyone in your language.');
     // The three-card radio block is gone.
     expect(html).not.toContain('mode-option');
   });

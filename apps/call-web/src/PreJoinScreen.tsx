@@ -70,7 +70,7 @@ export function PreJoinScreen(props: PreJoinScreenProps) {
             id="display-name"
             type="text"
             autoComplete="name"
-            placeholder="How the other person sees you"
+            placeholder="How others see you"
             value={form.displayName}
             onChange={(event) => props.onDisplayNameChange(event.target.value)}
           />

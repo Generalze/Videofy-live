@@ -254,8 +254,28 @@ export const STANDARD_CALL_VOICES: Readonly<
   fr: { male: 'fr_FR-upmc-pierre', female: 'fr_FR-siwis-medium' },
 };
 
-/** Two-person cap for this wave; disconnected identities keep their seat for resume. */
-const DEFAULT_MAX_CALL_PARTICIPANTS = 2;
+/**
+ * Development-demo conference cap; disconnected identities keep their seat for
+ * resume, so this counts seats rather than people currently present.
+ *
+ * FOUR is a measured limit, not a round number. The gateway decodes every
+ * publisher's Opus to PCM and re-encodes per recipient, so the cost is N(N-1)
+ * encoder streams in one process: 2 at N=2, 12 at N=4, 56 at N=8. Four is
+ * comfortable; beyond about six this stops being a demo and starts being an
+ * SFU, which this architecture is not — it forwards nothing, it decodes
+ * everything.
+ */
+const DEFAULT_MAX_CALL_PARTICIPANTS = 4;
+
+/**
+ * People needed before a call is a conversation rather than someone waiting.
+ *
+ * Deliberately NOT the seat cap, though it used to be read from it. That worked
+ * only while the cap was 2: raising the cap to 4 would otherwise have reported
+ * every two- and three-person call as `waiting`, because "the call is full" and
+ * "somebody is here to talk to" had been the same number by coincidence.
+ */
+const CONVERSATION_QUORUM = 2;
 /**
  * Call ids are embedded into media-ingest session/broadcast ids, which require
  * the `[A-Za-z0-9_-]` charset and a 120-character ceiling after prefixing, so
@@ -315,7 +335,9 @@ export class CallSessionStore {
     const displayName = input.displayName.trim();
     if (existingCall) {
       if (existingCall.participants.size >= this.maxParticipants) {
-        return failure('call-full', 'This call already has two participants.');
+        // Capacity-neutral: the number is configuration, and copy that names it
+        // becomes wrong the moment it changes — as it just did.
+        return failure('call-full', 'This call is full.');
       }
       if (hasDuplicateDisplayName(existingCall, displayName)) {
         return failure(
@@ -813,10 +835,10 @@ function lifecycleStateOf(participants: CallParticipantState[]): string {
   const state =
     participants.length > connectedCount
       ? 'reconnecting'
-      // Deliberately the product default, not a configured override: this is a
-      // user-facing lifecycle label, and a test raising the seat count should
-      // not change what a normal call reports.
-      : connectedCount >= DEFAULT_MAX_CALL_PARTICIPANTS
+      // Deliberately the QUORUM, not the configured cap: this is a user-facing
+      // lifecycle label, and neither a test raising the seat count nor the
+      // conference cap should change what a normal call reports.
+      : connectedCount >= CONVERSATION_QUORUM
         ? 'active'
         : 'waiting';
   return CallSessionLifecycleStateSchema.parse(state);
