@@ -273,7 +273,7 @@ describe('WebRtcTranscriptionChunker', () => {
     expect(chunks).toHaveLength(1);
   });
 
-  it('drops an over-long armed VAD segment instead of growing without bound', () => {
+  it('drops a segment that never contained enough voice, without waiting for the buffer to burst', () => {
     const chunker = new WebRtcTranscriptionChunker({
       ...context,
       maxBufferedDurationMs: 300,
@@ -291,16 +291,22 @@ describe('WebRtcTranscriptionChunker', () => {
     const push = (samples: Int16Array) =>
       chunker.pushFrame({ samples, sampleRate: 16000, channelCount: 1, bitsPerSample: 16 });
 
-    // Below-minimum speech arms the VAD; trailing silence can never end it,
-    // so the buffered segment would previously grow forever.
+    // 100 ms of voice arms the VAD but is under the 200 ms minimum. It used to
+    // be unable to CLOSE — "not enough speech" blocked closure — so it hoarded
+    // silence until the buffer limit threw it away, and a later blip could
+    // promote the hoard into an eight-second near-silent chunk.
+    //
+    // Now it closes on end-silence and is dropped for what it actually is:
+    // a segment nobody spoke enough into.
     expect(push(speech100Ms)).toHaveLength(0);
     for (let index = 0; index < 4; index++) {
       expect(push(silence100Ms)).toHaveLength(0);
     }
 
-    expect(chunker.snapshot()).toMatchObject({ vadDroppedSegmentCount: 1 });
+    expect(chunker.snapshot()).toMatchObject({ vadInsufficientVoicedCount: 1 });
+    // Dropped on its own terms, not by running out of buffer.
+    expect(chunker.snapshot().vadDroppedSegmentCount).toBe(0);
     expect(chunker.snapshot().bufferedDurationMs).toBeLessThanOrEqual(300);
-    expect(chunker.snapshot().vadDroppedMs).toBeGreaterThan(0);
 
     // The chunker keeps working afterwards and flags the discontinuity.
     expect(push(speech100Ms)).toHaveLength(0);
@@ -733,5 +739,161 @@ describe('WebRtcTranscriptionChunker', () => {
         bitsPerSample: 32,
       }),
     ).toThrow('sample rate');
+  });
+});
+
+/**
+ * Source-level regression for the defect that made the recogniser invent words.
+ *
+ * These use REALISTIC waveforms rather than constant-amplitude blocks. The old
+ * suite pushed frames far above the gate, so every frame counted as speech and
+ * the accounting bug was invisible — the tests stayed green while quiet real
+ * speech and near-silent noise were treated identically in production.
+ *
+ * Production values are used throughout: 0.012 gate, 700 ms end silence,
+ * 8000 ms max segment.
+ */
+describe('VAD segmentation refuses audio nobody spoke into', () => {
+  const FRAME = 160; // 10 ms at 16 kHz, the real RTCAudioSink cadence.
+  const PRODUCTION_VAD = {
+    enabled: true as const,
+    mode: 'fallback' as const,
+    speechThreshold: 0.012,
+    minSpeechMs: 150,
+    endSilenceMs: 700,
+    maxSegmentMs: 8000,
+  };
+
+  function chunkerFor(vad = PRODUCTION_VAD) {
+    return new WebRtcTranscriptionChunker({ ...context, vad, maxBufferedDurationMs: 30_000 });
+  }
+
+  /** A 10 ms frame at a given RMS amplitude, with noise rather than a constant. */
+  function frame(amplitude: number): Int16Array {
+    const samples = new Int16Array(FRAME);
+    for (let index = 0; index < FRAME; index += 1) {
+      samples[index] = Math.round((Math.random() * 2 - 1) * amplitude);
+    }
+    return samples;
+  }
+
+  const ROOM_TONE = 120; // ~0.004 RMS: audible room, well under the gate.
+  const VOICE = 6000; // ordinary speech.
+  const QUIET_VOICE = 700; // a soft speaker, just over the gate.
+
+  function push(chunker: WebRtcTranscriptionChunker, samples: Int16Array) {
+    return chunker.pushFrame({ samples, sampleRate: 16000, channelCount: 1, bitsPerSample: 16 });
+  }
+
+  function pushMany(chunker: WebRtcTranscriptionChunker, amplitude: number, ms: number) {
+    const emitted = [];
+    for (let index = 0; index < ms / 10; index += 1) {
+      emitted.push(...push(chunker, frame(amplitude)));
+    }
+    return emitted.filter((chunk) => !chunk.partial);
+  }
+
+  it('1. digital silence produces nothing', () => {
+    const chunker = chunkerFor();
+    expect(pushMany(chunker, 0, 5_000)).toHaveLength(0);
+  });
+
+  it('2. a quiet room for ten seconds produces nothing', () => {
+    const chunker = chunkerFor();
+    expect(pushMany(chunker, ROOM_TONE, 10_000)).toHaveLength(0);
+  });
+
+  it('3. a single impulse then silence never reaches the recogniser', () => {
+    // A keyboard tap. It may arm a segment; it must never be transcribed.
+    const chunker = chunkerFor();
+    push(chunker, frame(VOICE));
+    expect(pushMany(chunker, ROOM_TONE, 3_000)).toHaveLength(0);
+    expect(chunker.snapshot().vadInsufficientVoicedCount).toBeGreaterThan(0);
+  });
+
+  it('4. two blips separated by silence do NOT add up to speech', () => {
+    // THE regression. Silence between two 10 ms blips used to be promoted into
+    // the speech counter, so 500 ms of nothing satisfied minSpeechMs and an
+    // eight-second near-silent chunk went to the recogniser.
+    const chunker = chunkerFor();
+    push(chunker, frame(VOICE));
+    pushMany(chunker, ROOM_TONE, 500);
+    push(chunker, frame(VOICE));
+    const emitted = pushMany(chunker, ROOM_TONE, 1_000);
+
+    expect(emitted).toHaveLength(0);
+  });
+
+  it('5. sparse blips for over eight seconds never emit an eight-second chunk', () => {
+    // Blips closer together than the 700 ms end-silence, so the segment can
+    // never close on silence and runs to the max-duration cap — which is
+    // exactly how the observed eight-second fabrications were produced.
+    const chunker = chunkerFor();
+    const emitted = [];
+    for (let round = 0; round < 20; round += 1) {
+      emitted.push(...push(chunker, frame(VOICE)));
+      emitted.push(...pushMany(chunker, ROOM_TONE, 500));
+    }
+
+    expect(emitted.filter((chunk) => !chunk.partial)).toHaveLength(0);
+  });
+
+  it('6. a short real answer still gets through', () => {
+    // Measured: "Non." is 290 ms of voiced audio, "Oui." 320 ms, "Yes." 380 ms.
+    // Every one of them would have been deleted silently by the old 500 ms
+    // minimum once the counter stopped absorbing silence.
+    const chunker = chunkerFor();
+    pushMany(chunker, VOICE, 290);
+    const emitted = pushMany(chunker, ROOM_TONE, 800);
+
+    expect(emitted).toHaveLength(1);
+  });
+
+  it('7. quiet speech is not mistaken for silence', () => {
+    const chunker = chunkerFor();
+    pushMany(chunker, QUIET_VOICE, 400);
+    const emitted = pushMany(chunker, ROOM_TONE, 800);
+
+    expect(emitted).toHaveLength(1);
+  });
+
+  it('8. an ordinary sentence is emitted once', () => {
+    const chunker = chunkerFor();
+    pushMany(chunker, VOICE, 2_000);
+    const emitted = pushMany(chunker, ROOM_TONE, 800);
+
+    expect(emitted).toHaveLength(1);
+  });
+
+  it('9. a pause inside a sentence does not become evidence of speech', () => {
+    // The pause is kept in the audio so words are not spliced together, but it
+    // must not count toward the minimum.
+    const chunker = chunkerFor();
+    pushMany(chunker, VOICE, 300);
+    pushMany(chunker, ROOM_TONE, 300);
+    pushMany(chunker, VOICE, 300);
+    const emitted = pushMany(chunker, ROOM_TONE, 800);
+
+    expect(emitted).toHaveLength(1);
+    // 600 ms of voice, not 900 ms of buffered audio.
+    expect(emitted[0]!.samples.length).toBeLessThan(16000 * 1.2);
+  });
+
+  it('10. the closing silence is trimmed off the emitted chunk', () => {
+    // 700 ms of room tone on the end of every chunk is an invitation to fill it.
+    const chunker = chunkerFor();
+    pushMany(chunker, VOICE, 1_000);
+    const emitted = pushMany(chunker, ROOM_TONE, 800);
+
+    expect(emitted).toHaveLength(1);
+    // 1000 ms of speech plus at most a 200 ms post-roll, not 1700 ms.
+    expect(emitted[0]!.samples.length).toBeLessThanOrEqual(16000 * 1.25);
+  });
+
+  it('11. long real speech still emits at the max-duration cap', () => {
+    const chunker = chunkerFor();
+    const emitted = pushMany(chunker, VOICE, 9_000);
+
+    expect(emitted.length).toBeGreaterThanOrEqual(1);
   });
 });

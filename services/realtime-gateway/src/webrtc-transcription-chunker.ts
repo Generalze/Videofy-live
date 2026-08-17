@@ -2,6 +2,34 @@ import type { WebRtcAudioDataLike } from './webrtc-audio-ingest-bridge.js';
 import { logger } from './logger.js';
 
 export const WEBRTC_TRANSCRIPTION_SAMPLE_RATE = 16000;
+
+/**
+ * Silence kept after the last voiced frame, so a word's final consonant is not
+ * clipped. Everything past this is discarded: it is below the speech gate by
+ * definition, and it is exactly what the recogniser was filling in.
+ */
+const VAD_POST_ROLL_SAMPLES = Math.round(0.2 * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+
+/**
+ * The least voice a segment may be made of and still be somebody talking.
+ *
+ * Absolute duration alone cannot separate the two cases, which is why this
+ * exists. Measured with scripts/measure-voiced-duration.mjs:
+ *
+ *   "Non."  290 ms voiced in a ~1 s segment   = 29%
+ *   "Oui."  320 ms                            = 32%
+ *   sparse noise: ~160 ms voiced in 8000 ms   =  2%
+ *
+ * A threshold low enough to keep "Non." is high enough to admit eight seconds
+ * of intermittent keyboard taps. The FRACTION separates them cleanly, and it is
+ * the rule that actually kills the fabrications: a chunk that is 2% voice is
+ * not a person speaking, however long it ran.
+ */
+const VAD_MIN_VOICED_FRACTION = 0.1;
+
+function samplesToMs(samples: number): number {
+  return Math.round((samples / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000);
+}
 export const WEBRTC_TRANSCRIPTION_CHANNEL_COUNT = 1;
 export const WEBRTC_TRANSCRIPTION_PCM_FORMAT = 'pcm_s16le';
 
@@ -183,6 +211,16 @@ export class WebRtcTranscriptionChunker {
   private readonly vadRequestedMode: WebRtcVadOptions['mode'] | null;
   private vadSpeechFrames: Int16Array[] = [];
   private vadSpeechSampleCount = 0;
+  /**
+   * Samples from frames that were ACTUALLY above the speech gate.
+   *
+   * Deliberately separate from vadSpeechSampleCount, which counts everything
+   * buffered as part of the utterance including internal pauses. One counter
+   * serving both meanings is what let silence prove that speech happened.
+   */
+  private vadVoicedSampleCount = 0;
+  /** Segments closed with too little voiced audio to be anybody speaking. */
+  private vadInsufficientVoicedCount = 0;
   private vadSpeechStartSample: number | null = null;
   private vadSilenceFrames: Int16Array[] = [];
   private vadSilenceSampleCount = 0;
@@ -317,6 +355,10 @@ export class WebRtcTranscriptionChunker {
       vadRequestedMode: this.vadRequestedMode ?? 'disabled',
       vadModeFellBack: this.vadRequestedMode === 'silero',
       vadDroppedSegmentCount: this.vadDroppedSegmentCount,
+      // Segments that closed without enough voiced audio to be a person
+      // speaking. Zero on a quiet call is expected; a rising number in a noisy
+      // room is this working, not this failing.
+      vadInsufficientVoicedCount: this.vadInsufficientVoicedCount,
       vadDroppedMs: Math.round((this.vadDroppedSampleCount / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
       skippedSilenceMs: Math.round((this.skippedSilenceSamples / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
       partialIntervalMs: Math.round(
@@ -346,6 +388,15 @@ export class WebRtcTranscriptionChunker {
         this.vadSpeechStartSample = startSample;
       }
       if (this.vadSilenceSampleCount > 0) {
+        // The pause is KEPT in the audio, because cutting it would splice two
+        // half-words together. It is not added to the voiced count.
+        //
+        // This line used to read `this.vadSpeechSampleCount += this.vadSilenceSampleCount`,
+        // which promoted accumulated silence into the counter that decides
+        // whether anybody spoke. `minSpeechMs` of 500 was then satisfied by
+        // 500 ms of silence plus two 10 ms blips, so a keyboard tap and a
+        // creaking chair produced an eight-second near-silent chunk, and the
+        // recogniser answered it with the highest-prior sentence it knew.
         this.vadSpeechFrames.push(...this.vadSilenceFrames);
         this.vadSpeechSampleCount += this.vadSilenceSampleCount;
         this.vadSilenceFrames = [];
@@ -353,6 +404,8 @@ export class WebRtcTranscriptionChunker {
       }
       this.vadSpeechFrames.push(samples);
       this.vadSpeechSampleCount += samples.length;
+      // The only counter that grows on evidence of a human voice.
+      this.vadVoicedSampleCount += samples.length;
     } else if (this.vadSpeechStartSample === null) {
       this.skippedSilenceSamples += samples.length;
       return [];
@@ -365,16 +418,46 @@ export class WebRtcTranscriptionChunker {
     const endSilenceSamples = Math.round((vad.endSilenceMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
     const maxSegmentSamples = Math.round((vad.maxSegmentMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
     const minSpeechSamples = Math.round((vad.minSpeechMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
-    if (
+    // Closing and emitting are now SEPARATE decisions.
+    //
+    // They used to be one condition, so a segment without enough speech could
+    // not close — it stayed open waiting to become "enough", hoarding silence
+    // until a later blip promoted the hoard or the buffer limit threw the whole
+    // thing away. A segment now always ends when its time is up, and only then
+    // is it asked whether a human actually spoke into it.
+    const shouldClose =
       this.vadSpeechStartSample !== null &&
-      this.vadSpeechSampleCount >= minSpeechSamples &&
-      (this.vadSilenceSampleCount >= endSilenceSamples || segmentLength >= maxSegmentSamples)
-    ) {
-      const segment = joinFrames([...this.vadSpeechFrames, ...this.vadSilenceFrames], segmentLength);
+      (this.vadSilenceSampleCount >= endSilenceSamples || segmentLength >= maxSegmentSamples);
+    if (shouldClose) {
       const segmentStartSample = this.vadSpeechStartSample;
+      const voiced = this.vadVoicedSampleCount;
+      const closeReason =
+        this.vadSilenceSampleCount >= endSilenceSamples ? 'end-silence' : 'max-duration';
+      const voicedFraction = segmentLength > 0 ? voiced / segmentLength : 0;
+      if (voiced < minSpeechSamples || voicedFraction < VAD_MIN_VOICED_FRACTION) {
+        // Nobody spoke into this. Dropping it here is the whole fix: it is the
+        // chunk that would otherwise have been handed to a recogniser with
+        // nothing to recognise.
+        this.vadInsufficientVoicedCount += 1;
+        logger.debug('WebRTC transcription VAD segment dropped: insufficient voiced audio', {
+          sessionId: this.context.sessionId,
+          revision: this.context.revision,
+          closeReason,
+          voicedMs: samplesToMs(voiced),
+          bufferedMs: samplesToMs(segmentLength),
+          voicedFraction: Number(voicedFraction.toFixed(3)),
+        });
+        this.resetVadBuffers();
+        // Audio WAS discarded here, and some of it was above the gate even if
+        // there was too little to be speech. Downstream is told there is a gap
+        // rather than being left to assume the timeline is continuous.
+        this.nextDiscontinuity = true;
+        return [];
+      }
+      const trimmed = this.trimTrailingSilence(endSilenceSamples);
       // Reset before createChunk so a queue-limit throw leaves the next frame clean.
       this.resetVadBuffers();
-      return [this.createChunk(segment, false, segmentStartSample)];
+      return [this.createChunk(trimmed, false, segmentStartSample)];
     }
     const partial = this.maybeCreatePartialChunk();
     return partial ? [partial] : [];
@@ -394,15 +477,17 @@ export class WebRtcTranscriptionChunker {
     if (this.partialIntervalSamples <= 0) return null;
     const segmentStartSample = this.vadSpeechStartSample;
     if (segmentStartSample === null) return null;
-    // Measured in SPEECH, not wall time: a long pause inside a segment must not
-    // keep re-emitting the same audio under a new partialSequence.
-    if (this.vadSpeechSampleCount - this.vadPartialSpeechSampleMark < this.partialIntervalSamples) {
+    // Measured in VOICED audio, not wall time and not the buffered length. The
+    // comment always said "speech"; until the counter stopped absorbing silence
+    // that was not true, and sparse noise could emit a partial caption every
+    // 1.5 seconds without anybody speaking.
+    if (this.vadVoicedSampleCount - this.vadPartialSpeechSampleMark < this.partialIntervalSamples) {
       return null;
     }
     const segmentLength = this.vadSpeechSampleCount + this.vadSilenceSampleCount;
     const segment = joinFrames([...this.vadSpeechFrames, ...this.vadSilenceFrames], segmentLength);
     const chunk = this.createPartialChunk(segment, segmentStartSample);
-    this.vadPartialSpeechSampleMark = this.vadSpeechSampleCount;
+    this.vadPartialSpeechSampleMark = this.vadVoicedSampleCount;
     this.vadPartialSequence += 1;
     return chunk;
   }
@@ -411,13 +496,52 @@ export class WebRtcTranscriptionChunker {
     if (this.closed && this.vadSpeechSampleCount === 0 && this.vadSilenceSampleCount === 0) return [];
     const segmentStartSample = this.vadSpeechStartSample;
     const speechSampleCount = this.vadSpeechSampleCount;
+    const voicedSampleCount = this.vadVoicedSampleCount;
     const segmentLength = speechSampleCount + this.vadSilenceSampleCount;
     const frames = [...this.vadSpeechFrames, ...this.vadSilenceFrames];
     // Reset before createChunk so a queue-limit throw leaves the chunker cleanly closed.
     this.resetVadBuffers();
     this.closed = true;
     if (segmentStartSample === null || speechSampleCount === 0) return [];
+    // End of stream still has to contain a voice. A session that ends during
+    // room tone must not emit one last chunk for the recogniser to invent into.
+    if (voicedSampleCount < this.minSpeechSamples()) {
+      this.vadInsufficientVoicedCount += 1;
+      return [];
+    }
     return [this.createChunk(joinFrames(frames, segmentLength), endOfStream, segmentStartSample)];
+  }
+
+  private minSpeechSamples(): number {
+    const vad = this.vad;
+    if (!vad) return 0;
+    return Math.round((vad.minSpeechMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+  }
+
+  /**
+   * The segment audio with most of its closing silence removed.
+   *
+   * A chunk that ends with 700 ms of room tone is an invitation for the
+   * recogniser to fill it, and that tail is by definition below the speech
+   * gate — so removing it cannot remove speech. A short post-roll is kept so
+   * the final consonant of a word is not clipped, which is the one way this
+   * could damage a real transcript.
+   *
+   * Internal pauses are untouched. Only the tail after the last voiced frame
+   * is trimmed.
+   */
+  private trimTrailingSilence(endSilenceSamples: number): Int16Array {
+    const spoken = joinFrames(this.vadSpeechFrames, this.vadSpeechSampleCount);
+    const postRoll = Math.min(
+      this.vadSilenceSampleCount,
+      Math.min(endSilenceSamples, VAD_POST_ROLL_SAMPLES),
+    );
+    if (postRoll <= 0) return spoken;
+    const tail = joinFrames(this.vadSilenceFrames, this.vadSilenceSampleCount).subarray(0, postRoll);
+    const combined = new Int16Array(spoken.length + tail.length);
+    combined.set(spoken, 0);
+    combined.set(tail, spoken.length);
+    return combined;
   }
 
   private dropVadSegment(): void {
@@ -441,6 +565,7 @@ export class WebRtcTranscriptionChunker {
     this.vadSpeechStartSample = null;
     this.vadSpeechFrames = [];
     this.vadSpeechSampleCount = 0;
+    this.vadVoicedSampleCount = 0;
     this.vadSilenceFrames = [];
     this.vadSilenceSampleCount = 0;
     // partialSequence is per segment, so the next utterance starts at 0 again.
