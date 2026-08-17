@@ -569,8 +569,24 @@ def handle(payload):
         # a call chunk is never that long — so for live calls this kwarg is a
         # no-op. It still matters for the upload/programme path, and it would
         # matter here if chunk length ever grew, which is why it stays set.
-        # The repetition it was blamed for comes from the gateway submitting
-        # near-silent audio over and over; see the VAD notes in the chunker.
+        #
+        # SCOPE (corrected 17 Aug 2026). The paragraph below is accurate about
+        # the session it describes: same-language identical repetition while the
+        # synthesiser was speaking a DIFFERENT language, which is the recogniser
+        # filling in near-silence. It is not a complete account of "repetition on
+        # a call", and reading it as one sent a later investigation down the
+        # wrong path. There are TWO distinct defects:
+        #
+        #   Defect A - near-silence / recogniser fabrication. This comment, the
+        #     gateway VAD voiced-fraction rule, and speech-confidence.ts.
+        #   Defect B - ACOUSTIC RECAPTURE: translated speech leaves a
+        #     loudspeaker, re-enters an open microphone, and is transcribed as
+        #     fresh human speech. Nothing here addresses it, and no Whisper
+        #     setting can: the audio really was spoken, just not by a person.
+        #     Its signature is a caption whose text is in the WRONG LANGUAGE for
+        #     its declared sourceLanguage while playback was active.
+        #
+        # Both are real. Neither fix substitutes for the other.
         #
         # With this true the model is primed with the text it produced for the
         # PREVIOUS chunk, so a call becomes a feedback loop: it completes

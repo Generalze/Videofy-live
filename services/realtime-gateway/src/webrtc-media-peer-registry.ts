@@ -72,6 +72,9 @@ export interface BackendMediaPeerSnapshot {
   audioTrackState: BackendMediaTrackState;
   videoTrackState: BackendMediaTrackState;
   ingestBridgeState: WebRtcAudioIngestBridgeSnapshot['state'];
+  /** W3: the true input format, so the diagnostics endpoint stops hiding it. */
+  audioInputSampleRate: number | null;
+  audioInputChannelCount: number | null;
   videoExpected: boolean;
   audioFrameCount: number;
   videoFrameCount: number;
@@ -820,6 +823,8 @@ export class BackendWebRtcMediaPeerRegistry {
       audioTrackState: record.audioTrackState,
       videoTrackState: record.videoTrackState,
       ingestBridgeState: bridge.state,
+      audioInputSampleRate: bridge.inputSampleRate,
+      audioInputChannelCount: bridge.inputChannelCount,
       videoExpected: record.videoExpected,
       audioFrameCount: bridge.frameCount,
       videoFrameCount: record.videoFrameCount,

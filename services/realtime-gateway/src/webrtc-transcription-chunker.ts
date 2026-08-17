@@ -48,6 +48,40 @@ export interface WebRtcTranscriptionChunkerContext {
   revision: number;
 }
 
+/**
+ * W2 — wall clocks for one emitted chunk, each meaning exactly ONE thing.
+ *
+ * The instrument this replaces was a single `capturedAtMs` stamped at segment
+ * CLOSE, which downstream read as "when the speech ended". Those differ by the
+ * end-silence window: on a 700 ms close the voiced end sits ~500 ms earlier
+ * than the stamp, and on a max-duration close they very nearly coincide. So the
+ * error was not a constant offset that could be subtracted out — it depended on
+ * why the segment closed, and it ran in the direction that understates how much
+ * playback a segment overlapped.
+ *
+ * Every field here is a WALL CLOCK in `Date.now()` terms. Chunk `startMs` and
+ * `endMs` remain media-timeline positions and are unchanged. Nothing in this
+ * interface is derived from `capturedAtMs`, on purpose.
+ *
+ * Present only on VAD-segmented chunks: fixed-interval programme chunking has
+ * no voiced extent to report, and inventing one would be the exact failure this
+ * exists to correct.
+ */
+export interface WebRtcChunkWallClock {
+  /** (1) When the first sample of this segment was captured. */
+  firstCapturedSampleAtMs: number;
+  /** (2) When the last sample ABOVE THE SPEECH GATE was captured. */
+  lastVoicedSampleAtMs: number;
+  /** (3) When the last sample actually kept was captured — (2) plus the retained post-roll. */
+  lastRetainedSampleAtMs: number;
+  /** (4) When the VAD decided the segment was over. Later than (2) by the end-silence window. */
+  vadClosedAtMs: number;
+  /** (5) Gateway receive time of the frame that closed the segment. */
+  gatewayReceivedAtMs: number;
+  /** Why it closed, because that is what makes (4) minus (2) interpretable. */
+  closeReason: 'end-silence' | 'max-duration' | 'flush';
+}
+
 export interface WebRtcTranscriptionChunk {
   sessionId: string;
   broadcastId: string;
@@ -94,6 +128,8 @@ export interface WebRtcTranscriptionChunk {
    * `partialSequence`) supersedes them all.
    */
   partialSequence?: number;
+  /** W2 wall clocks. VAD chunks only; see WebRtcChunkWallClock. */
+  wallClock?: WebRtcChunkWallClock;
 }
 
 export interface WebRtcAudioPcmDiagnostics {
@@ -171,6 +207,11 @@ export interface WebRtcTranscriptionChunkerOptions extends WebRtcTranscriptionCh
    * to be partway through, and fixed chunking already emits on a fixed cadence.
    */
   partialIntervalMs?: number;
+  /**
+   * Wall clock source, injectable so tests can assert stamped timings against
+   * an exact schedule rather than against however long the test took to run.
+   */
+  nowMs?: () => number;
 }
 
 export interface WebRtcVadOptions {
@@ -244,8 +285,16 @@ export class WebRtcTranscriptionChunker {
   private partialChunkCount = 0;
   private droppedPartialChunkCount = 0;
   private lastDroppedPartialReason: WebRtcPartialDropReason | null = null;
+  private readonly nowMs: () => number;
+  /** W2 (1): capture wall clock of the segment's first sample. */
+  private vadFirstCapturedSampleAtMs: number | null = null;
+  /** W2 (2): capture wall clock of the last sample above the speech gate. */
+  private vadLastVoicedSampleAtMs: number | null = null;
+  /** W2 (5): receive wall clock of the most recent frame. */
+  private lastFrameReceivedAtMs: number | null = null;
 
   constructor(options: WebRtcTranscriptionChunkerOptions) {
+    this.nowMs = options.nowMs ?? (() => Date.now());
     this.context = {
       sessionId: options.sessionId,
       broadcastId: options.broadcastId,
@@ -286,7 +335,9 @@ export class WebRtcTranscriptionChunker {
           // Silero is not implemented yet; be honest and use the energy gate.
           mode: 'fallback',
           speechThreshold: options.vad.speechThreshold ?? 0.012,
-          endSilenceMs: options.vad.endSilenceMs ?? 650,
+          // Kept equal to WEBRTC_VAD_END_SILENCE_MS's default in config.ts, for
+          // the same reason minSpeechMs is: one number, one default.
+          endSilenceMs: options.vad.endSilenceMs ?? 700,
           // Kept equal to WEBRTC_VAD_MIN_SPEECH_MS's default in config.ts. Two
           // defaults for one number is how a service acquires folklore: the
           // fallback drifts, nobody notices, and a year later the gate behaves
@@ -297,12 +348,20 @@ export class WebRtcTranscriptionChunker {
       : null;
   }
 
-  pushFrame(data: WebRtcAudioDataLike): WebRtcTranscriptionChunk[] {
+  /**
+   * @param receivedAtMs Gateway wall clock at which this frame arrived. Passed
+   * in rather than read here so the stamped extent reflects when the audio
+   * actually landed, not when the chunker got round to it. Falls back to the
+   * clock only when a caller has none to give.
+   */
+  pushFrame(data: WebRtcAudioDataLike, receivedAtMs?: number): WebRtcTranscriptionChunk[] {
     if (this.closed) {
       throw new WebRtcTranscriptionChunkerError('closed', 'WebRTC transcription chunker is closed.');
     }
     const { samples: normalized } = normalizePcmFrameWithDiagnostics(data);
-    if (this.vad) return this.pushVadFrame(normalized);
+    const arrivedAtMs = receivedAtMs ?? this.nowMs();
+    this.lastFrameReceivedAtMs = arrivedAtMs;
+    if (this.vad) return this.pushVadFrame(normalized, arrivedAtMs);
     this.appendSamples(normalized);
     return this.drain(false);
   }
@@ -383,11 +442,15 @@ export class WebRtcTranscriptionChunker {
     };
   }
 
-  private pushVadFrame(samples: Int16Array): WebRtcTranscriptionChunk[] {
+  private pushVadFrame(samples: Int16Array, receivedAtMs: number): WebRtcTranscriptionChunk[] {
     const startSample = this.inputSampleCount;
     this.inputSampleCount += samples.length;
     const vad = this.vad;
     if (!vad) return [];
+    // Frames arrive in real time, so a frame's audio ENDS at its receive time
+    // and began one frame-duration earlier. That is the only assumption in the
+    // whole scheme, and it is stated here rather than buried in a subtraction.
+    const frameDurationMs = samplesToMs(samples.length);
     if (
       this.vadSpeechSampleCount + this.vadSilenceSampleCount + samples.length >
       this.maxBufferedSamples
@@ -398,7 +461,9 @@ export class WebRtcTranscriptionChunker {
     if (isSpeech) {
       if (this.vadSpeechStartSample === null) {
         this.vadSpeechStartSample = startSample;
+        this.vadFirstCapturedSampleAtMs = receivedAtMs - frameDurationMs;
       }
+      this.vadLastVoicedSampleAtMs = receivedAtMs;
       if (this.vadSilenceSampleCount > 0) {
         // The pause is KEPT in the audio, because cutting it would splice two
         // half-words together. It is not added to the voiced count.
@@ -456,9 +521,10 @@ export class WebRtcTranscriptionChunker {
         return [];
       }
       const trimmed = this.trimTrailingSilence();
+      const wallClock = this.wallClockFor(closeReason, receivedAtMs);
       // Reset before createChunk so a queue-limit throw leaves the next frame clean.
       this.resetVadBuffers();
-      return [this.createChunk(trimmed, false, segmentStartSample)];
+      return [this.createChunk(trimmed, false, segmentStartSample, wallClock)];
     }
     const partial = this.maybeCreatePartialChunk();
     return partial ? [partial] : [];
@@ -517,11 +583,39 @@ export class WebRtcTranscriptionChunker {
     // in room tone invites the recogniser to fill it whether the stream ended
     // or the speaker merely paused.
     const audio = admitted ? this.trimTrailingSilence() : null;
+    const wallClock = admitted
+      ? this.wallClockFor('flush', this.lastFrameReceivedAtMs ?? this.nowMs())
+      : undefined;
     // Reset before createChunk so a queue-limit throw leaves the chunker cleanly closed.
     this.resetVadBuffers();
     this.closed = true;
     if (audio === null || segmentStartSample === null) return [];
-    return [this.createChunk(audio, endOfStream, segmentStartSample)];
+    return [this.createChunk(audio, endOfStream, segmentStartSample, wallClock)];
+  }
+
+  /**
+   * The five wall clocks for the segment about to be emitted.
+   *
+   * Read BEFORE resetVadBuffers, and computed from the retained post-roll
+   * rather than from the configured one: a segment closed by max duration may
+   * have no trailing silence to keep at all, and reporting a 200 ms tail it
+   * does not have would be the same class of fiction this replaces.
+   */
+  private wallClockFor(
+    closeReason: WebRtcChunkWallClock['closeReason'],
+    gatewayReceivedAtMs: number,
+  ): WebRtcChunkWallClock | undefined {
+    const firstCapturedSampleAtMs = this.vadFirstCapturedSampleAtMs;
+    const lastVoicedSampleAtMs = this.vadLastVoicedSampleAtMs;
+    if (firstCapturedSampleAtMs === null || lastVoicedSampleAtMs === null) return undefined;
+    return {
+      firstCapturedSampleAtMs,
+      lastVoicedSampleAtMs,
+      lastRetainedSampleAtMs: lastVoicedSampleAtMs + samplesToMs(this.retainedPostRollSamples()),
+      vadClosedAtMs: this.nowMs(),
+      gatewayReceivedAtMs,
+      closeReason,
+    };
   }
 
   /**
@@ -576,12 +670,17 @@ export class WebRtcTranscriptionChunker {
    * Internal pauses are untouched. Only the tail after the last voiced frame
    * is trimmed.
    */
-  private trimTrailingSilence(): Int16Array {
-    const spoken = joinFrames(this.vadSpeechFrames, this.vadSpeechSampleCount);
-    const postRoll = Math.min(
+  /** Silence actually kept after the last voiced frame — often less than the post-roll. */
+  private retainedPostRollSamples(): number {
+    return Math.min(
       this.vadSilenceSampleCount,
       Math.min(this.endSilenceSamples(), VAD_POST_ROLL_SAMPLES),
     );
+  }
+
+  private trimTrailingSilence(): Int16Array {
+    const spoken = joinFrames(this.vadSpeechFrames, this.vadSpeechSampleCount);
+    const postRoll = this.retainedPostRollSamples();
     if (postRoll <= 0) return spoken;
     const tail = joinFrames(this.vadSilenceFrames, this.vadSilenceSampleCount).subarray(0, postRoll);
     const combined = new Int16Array(spoken.length + tail.length);
@@ -608,6 +707,8 @@ export class WebRtcTranscriptionChunker {
   }
 
   private resetVadBuffers(): void {
+    this.vadFirstCapturedSampleAtMs = null;
+    this.vadLastVoicedSampleAtMs = null;
     this.vadSpeechStartSample = null;
     this.vadSpeechFrames = [];
     this.vadSpeechSampleCount = 0;
@@ -692,6 +793,7 @@ export class WebRtcTranscriptionChunker {
     samples: Int16Array,
     endOfStream: boolean,
     explicitStartSample?: number,
+    wallClock?: WebRtcChunkWallClock,
   ): WebRtcTranscriptionChunk {
     const byteLength = samples.byteLength;
     this.admitChunk(byteLength);
@@ -712,6 +814,7 @@ export class WebRtcTranscriptionChunker {
       byteLength,
       discontinuity: this.nextDiscontinuity,
       endOfStream,
+      ...(wallClock ? { wallClock } : {}),
     };
     this.nextDiscontinuity = false;
     this.emittedChunkCount += 1;

@@ -567,12 +567,19 @@ describe('WebRtcTranscriptionChunker', () => {
   });
 
   it('emits a final chunk identical to the one it would emit with partials disabled', () => {
+    // Both chunkers share ONE fake clock. With Date.now() the two would drift a
+    // millisecond apart whenever the loop straddled a tick, and this deep-equal
+    // would fail perhaps one run in a few hundred — the kind of flake that gets
+    // "fixed" by loosening the assertion that is doing the actual work here.
+    let clock = 1_000_000;
+    const nowMs = () => clock;
     const streaming = new WebRtcTranscriptionChunker({
       ...context,
       vad: partialVad,
       partialIntervalMs: 300,
+      nowMs,
     });
-    const today = new WebRtcTranscriptionChunker({ ...context, vad: partialVad });
+    const today = new WebRtcTranscriptionChunker({ ...context, vad: partialVad, nowMs });
     // Two sentences and a mid-sentence cut-off, so the flush path is compared
     // as well as the VAD boundary path.
     const frames = [
@@ -586,6 +593,7 @@ describe('WebRtcTranscriptionChunker', () => {
     const streamingFinals: WebRtcTranscriptionChunk[] = [];
     const todayFinals: WebRtcTranscriptionChunk[] = [];
     for (const frame of frames) {
+      clock += 100;
       streamingFinals.push(...push(streaming, frame.slice()).filter((chunk) => !chunk.partial));
       todayFinals.push(...push(today, frame.slice()));
     }
@@ -984,6 +992,134 @@ describe('VAD segmentation refuses audio nobody spoke into', () => {
       pushMany(chunker, ROOM_TONE, 3_000);
 
       expect(chunker.flush()).toHaveLength(0);
+    });
+  });
+
+  /**
+   * W2 — the stamped extent must describe the SPEECH, not the bookkeeping.
+   *
+   * The instrument this replaces stamped one time at segment close and was read
+   * downstream as "when the speech ended". Those differ by the end-silence
+   * window, and — the part that made it uncorrectable — by a DIFFERENT amount
+   * depending on why the segment closed. A constant could have been subtracted
+   * out; this could not.
+   */
+  describe('wall clocks describe the speech, not the close', () => {
+    const START = 1_700_000_000_000;
+
+    /** Push `ms` of audio, advancing an injected clock exactly one frame at a time. */
+    function speak(
+      chunker: WebRtcTranscriptionChunker,
+      clock: { at: number },
+      amplitude: number,
+      ms: number,
+    ) {
+      const emitted = [];
+      for (let index = 0; index < ms / 10; index += 1) {
+        clock.at += FRAME_MS;
+        emitted.push(
+          ...chunker.pushFrame(
+            { samples: frame(amplitude), sampleRate: 16000, channelCount: 1, bitsPerSample: 16 },
+            clock.at,
+          ),
+        );
+      }
+      return emitted.filter((chunk) => !chunk.partial);
+    }
+
+    const FRAME_MS = 10;
+
+    function timedChunker(clock: { at: number }) {
+      return new WebRtcTranscriptionChunker({
+        ...context,
+        vad: PRODUCTION_VAD,
+        maxBufferedDurationMs: 30_000,
+        nowMs: () => clock.at,
+      });
+    }
+
+    it('stamps the voiced extent to the injected schedule on an end-silence close', () => {
+      const clock = { at: START };
+      const chunker = timedChunker(clock);
+
+      const speechStart = clock.at;
+      speak(chunker, clock, VOICE, 1_000);
+      const lastVoiced = clock.at;
+      const emitted = speak(chunker, clock, ROOM_TONE, 800);
+
+      expect(emitted).toHaveLength(1);
+      const wallClock = emitted[0]!.wallClock!;
+      expect(wallClock.closeReason).toBe('end-silence');
+      expect(Math.abs(wallClock.firstCapturedSampleAtMs - speechStart)).toBeLessThanOrEqual(10);
+      expect(Math.abs(wallClock.lastVoicedSampleAtMs - lastVoiced)).toBeLessThanOrEqual(10);
+      expect(Math.abs(wallClock.lastRetainedSampleAtMs - (lastVoiced + 200))).toBeLessThanOrEqual(10);
+      // THE BIAS, made visible. The close is a full end-silence window after
+      // the speech, and reading the close as the speech end is what put every
+      // downstream containment measurement ~500 ms out.
+      expect(wallClock.vadClosedAtMs - wallClock.lastVoicedSampleAtMs).toBeGreaterThanOrEqual(690);
+    });
+
+    it('stamps it just as accurately on a max-duration close, where the bias is ~0', () => {
+      // The reason a single close-stamped timestamp could not be corrected by
+      // subtracting a constant: here the close IS the speech end.
+      const clock = { at: START };
+      const chunker = timedChunker(clock);
+
+      const speechStart = clock.at;
+      const emitted = speak(chunker, clock, VOICE, 8_100);
+
+      expect(emitted.length).toBeGreaterThanOrEqual(1);
+      const wallClock = emitted[0]!.wallClock!;
+      expect(wallClock.closeReason).toBe('max-duration');
+      expect(Math.abs(wallClock.firstCapturedSampleAtMs - speechStart)).toBeLessThanOrEqual(10);
+      expect(wallClock.vadClosedAtMs - wallClock.lastVoicedSampleAtMs).toBeLessThanOrEqual(10);
+      // No trailing silence exists to keep, so none is claimed.
+      expect(wallClock.lastRetainedSampleAtMs).toBe(wallClock.lastVoicedSampleAtMs);
+    });
+
+    it('stamps a flushed segment and says it was a flush', () => {
+      const clock = { at: START };
+      const chunker = timedChunker(clock);
+
+      speak(chunker, clock, VOICE, 400);
+      const lastVoiced = clock.at;
+      speak(chunker, clock, ROOM_TONE, 300);
+      const finals = chunker.flush().filter((chunk) => !chunk.partial);
+
+      expect(finals).toHaveLength(1);
+      const wallClock = finals[0]!.wallClock!;
+      expect(wallClock.closeReason).toBe('flush');
+      expect(Math.abs(wallClock.lastVoicedSampleAtMs - lastVoiced)).toBeLessThanOrEqual(10);
+    });
+
+    it('starts each segment from its own first voiced frame, not the previous one', () => {
+      const clock = { at: START };
+      const chunker = timedChunker(clock);
+
+      speak(chunker, clock, VOICE, 400);
+      speak(chunker, clock, ROOM_TONE, 800);
+      const secondStart = clock.at;
+      speak(chunker, clock, VOICE, 400);
+      const emitted = speak(chunker, clock, ROOM_TONE, 800);
+
+      expect(emitted).toHaveLength(1);
+      expect(
+        Math.abs(emitted[0]!.wallClock!.firstCapturedSampleAtMs - secondStart),
+      ).toBeLessThanOrEqual(10);
+    });
+
+    it('reports no wall clock at all for fixed-interval chunking', () => {
+      // Programme chunking has no voiced extent. Reporting one would be exactly
+      // the class of invented millisecond this work exists to remove.
+      const chunker = new WebRtcTranscriptionChunker({ ...context, chunkDurationMs: 100 });
+      const [chunk] = chunker.pushFrame({
+        samples: new Int16Array(1600),
+        sampleRate: 16000,
+        channelCount: 1,
+        bitsPerSample: 16,
+      });
+
+      expect(chunk!.wallClock).toBeUndefined();
     });
   });
 });

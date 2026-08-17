@@ -6,7 +6,12 @@ import {
   primaryLanguageSubtag,
   resolveCallAudioMix,
 } from './callAudioMix';
-import { CallGeneratedAudioQueueController, type CallQueueAudio } from './callAudioQueue';
+import {
+  CallGeneratedAudioQueueController,
+  generatedClipId,
+  type CallQueueAudio,
+} from './callAudioQueue';
+import { createCallAudioConstraints, readCallCaptureSettings } from './callCapture';
 import { mergeCallCaption, type CallCaptionEntry } from './callCaptions';
 import {
   createInitialCallJoinForm,
@@ -318,12 +323,33 @@ export default function App() {
   const resumeTokenRef = useRef<string | null>(null);
   const queueRef = useRef<CallGeneratedAudioQueueController | null>(null);
 
+  /**
+   * W4 reporters, held in refs because the audio queue's callbacks are created
+   * ONCE for the app's lifetime while these are rebuilt every render. Reading
+   * through a ref means the callback always reaches the live socket instead of
+   * the one that existed on first paint.
+   */
+  const reportPlaybackRef = useRef<
+    (stream: 'generated' | 'remote-original', phase: 'start' | 'end', clipId: string | null) => void
+  >(() => {});
+  const reportCaptureSettingsRef = useRef<(reason: 'join' | 'device-change') => void>(() => {});
+  const remoteAudibleRef = useRef(false);
+  const remoteListenerElementRef = useRef<HTMLAudioElement | null>(null);
+
   if (!queueRef.current) {
     // One queue instance for the whole app lifetime: reconnects rebuild peers,
     // never the queue, so audio can never double up.
     queueRef.current = new CallGeneratedAudioQueueController({
       createAudio: (url) => new Audio(url) as unknown as CallQueueAudio,
-      onSpeechActiveChange: setSpeechActive,
+      onSpeechActiveChange: (active, clip) => {
+        setSpeechActive(active);
+        // W4 Path A. The transition already fired exactly at clip start and
+        // clip end; it simply never said WHICH clip, which is the one fact the
+        // gateway ledger needs to match it to what it emitted.
+        if (clip) {
+          reportPlaybackRef.current('generated', active ? 'start' : 'end', generatedClipId(clip));
+        }
+      },
       // A blocked or failed clip must never fail silently: surface the
       // recovery affordance instead of leaving the listener in silence.
       onStateChange: (state) => {
@@ -354,12 +380,89 @@ export default function App() {
   const mixRef = useRef(mix);
   mixRef.current = mix;
 
+  /**
+   * Instrumentation emit. Never acked, never awaited, never allowed to throw
+   * into a call: a diagnostics report that can break a conversation is worse
+   * than no diagnostics.
+   */
+  const emitInstrumentation = (event: string, payload: Record<string, unknown>): void => {
+    const socket = socketRef.current;
+    const active = sessionRef.current;
+    if (!socket || !active) return;
+    try {
+      socket.emit(event, {
+        callId: active.callId,
+        participantId: active.participantId,
+        ...payload,
+      });
+    } catch {
+      // Deliberately swallowed.
+    }
+  };
+
+  /** W1: what this browser actually granted, at join and whenever devices change. */
+  const reportCaptureSettings = (reason: 'join' | 'device-change'): void => {
+    const track = micStreamRef.current?.getAudioTracks()[0] ?? null;
+    const settings = readCallCaptureSettings(track);
+    if (!settings) return;
+    emitInstrumentation(CALL_EVENTS.CAPTURE_SETTINGS, { settings, reason });
+  };
+  reportCaptureSettingsRef.current = reportCaptureSettings;
+
+  reportPlaybackRef.current = (stream, phase, clipId) => {
+    emitInstrumentation(CALL_EVENTS.PLAYBACK, {
+      stream,
+      phase,
+      ...(clipId ? { clipId } : {}),
+      // The CLIENT's clock. The gateway stamps its own separately; keeping both
+      // is what makes the skew between them measurable instead of assumed.
+      atMs: Date.now(),
+    });
+  };
+
+  /**
+   * W4 Path B — the raw fan-out of somebody else's live microphone.
+   *
+   * It comes out of the same loudspeaker as the translated clips and has no
+   * clip identity, no duration and no end: it is audible for exactly as long as
+   * the other person keeps talking. So it is tracked as element state crossed
+   * with the mix policy, which is the only place that truth exists — in
+   * 'translated' mode `originalVolume` is 0 and this stream is not audible at
+   * all, however much data is flowing.
+   */
+  const syncRemoteOriginalAudible = (): void => {
+    const element = remoteAudioElementRef.current;
+    const audible =
+      !!element &&
+      !!remoteStreamRef.current &&
+      !element.paused &&
+      !element.ended &&
+      mixRef.current.originalVolume > 0;
+    if (audible === remoteAudibleRef.current) return;
+    remoteAudibleRef.current = audible;
+    reportPlaybackRef.current('remote-original', audible ? 'start' : 'end', null);
+  };
+
   useEffect(() => {
     const element = remoteAudioElementRef.current;
     if (element) {
       element.volume = mix.originalVolume;
     }
+    // A mode change can silence the original stream without touching the
+    // element, so the audible interval has to close here too.
+    syncRemoteOriginalAudible();
   }, [mix.originalVolume]);
+
+  useEffect(() => {
+    const media = navigator.mediaDevices;
+    if (!media?.addEventListener) return;
+    // Through the ref: the listener is attached once for the app's lifetime
+    // while the reporter is rebuilt every render, so capturing it directly
+    // would pin the version that existed before anyone had joined.
+    const handler = (): void => reportCaptureSettingsRef.current('device-change');
+    media.addEventListener('devicechange', handler);
+    return () => media.removeEventListener('devicechange', handler);
+  }, []);
 
   useEffect(() => {
     queueRef.current?.setVolume(mix.translatedVolume);
@@ -399,8 +502,32 @@ export default function App() {
     );
   }, []);
 
+  /**
+   * The element's own transitions are the ground truth for Path B audibility.
+   * `stalled`/`waiting` matter as much as `pause`: a stream that has stopped
+   * delivering is not coming out of the speaker, whatever the element says
+   * about being un-paused.
+   */
+  const REMOTE_AUDIO_EVENTS = ['play', 'playing', 'pause', 'ended', 'stalled', 'waiting', 'emptied'];
+
+  const attachRemoteAudioListeners = (element: HTMLAudioElement | null): void => {
+    const previous = remoteListenerElementRef.current;
+    if (previous === element) return;
+    if (previous) {
+      for (const name of REMOTE_AUDIO_EVENTS) {
+        previous.removeEventListener(name, syncRemoteOriginalAudible);
+      }
+    }
+    remoteListenerElementRef.current = element;
+    if (!element) return;
+    for (const name of REMOTE_AUDIO_EVENTS) {
+      element.addEventListener(name, syncRemoteOriginalAudible);
+    }
+  };
+
   const attachRemoteAudioElement = (element: HTMLAudioElement | null): void => {
     remoteAudioElementRef.current = element;
+    attachRemoteAudioListeners(element);
     if (!element) return;
     element.volume = mixRef.current.originalVolume;
     if (remoteStreamRef.current && element.srcObject !== remoteStreamRef.current) {
@@ -417,6 +544,7 @@ export default function App() {
       element.srcObject = stream;
     }
     element.volume = mixRef.current.originalVolume;
+    syncRemoteOriginalAudible();
     void element
       .play()
       .then(() => setPlaybackBlocked(false))
@@ -444,7 +572,11 @@ export default function App() {
     }
     setMicPermission('requesting');
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // W1: state the capture contract, then read back what was actually
+      // granted. `{ audio: true }` asked for nothing and inspected nothing, so
+      // when acceptance failed on 17 Aug 2026 no call log could say what echo
+      // cancellation had been doing and it had to be measured by hand.
+      const stream = await navigator.mediaDevices.getUserMedia(createCallAudioConstraints());
       for (const track of stream.getAudioTracks()) {
         track.enabled = !micMutedRef.current;
       }
@@ -610,6 +742,12 @@ export default function App() {
     if (element) {
       element.srcObject = null;
     }
+    // Close any interval still open, BEFORE the socket goes: an interval whose
+    // end report never arrives reads downstream as "still playing forever".
+    if (remoteAudibleRef.current) {
+      remoteAudibleRef.current = false;
+      reportPlaybackRef.current('remote-original', 'end', null);
+    }
     socketRef.current?.disconnect();
     socketRef.current = null;
     sessionRef.current = null;
@@ -701,6 +839,7 @@ export default function App() {
       setScreen('call');
       // Start inside the click gesture so browsers allow audio playback.
       queueRef.current?.start();
+      reportCaptureSettings('join');
       try {
         await establishPeers(socket, mic);
       } catch {

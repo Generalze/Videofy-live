@@ -1,0 +1,112 @@
+// Microphone capture contract for the call app.
+//
+// apps/operator-web/src/broadcasterCapture.ts has stated its capture contract
+// since P3 and reads the granted settings back. This app asked for
+// `{ audio: true }` and inspected nothing — so when the 17 Aug 2026 acceptance
+// failed, no call log could say what echo cancellation had actually been doing,
+// and it had to be measured by hand afterwards from a live browser.
+//
+// The request is a preference. The SETTINGS ARE THE FACT, and the fact is what
+// every later acoustic measurement has to be interpreted against.
+
+/**
+ * Chrome exposes more than a boolean here.
+ *
+ * `true` references this page's own render streams. `'all'` asks the canceller
+ * to reference everything the machine plays, which is the only value that could
+ * address audio arriving from a DIFFERENT browser context — the configuration
+ * that actually failed. Support is not universal, so it is requested as `ideal`
+ * and reported as whatever came back.
+ */
+export type EchoCancellationSetting = boolean | 'all' | 'remote-only';
+
+export interface CallCaptureSettings {
+  /**
+   * Hardware name, e.g. "Microphone Array (Intel Smart Sound Technology)".
+   *
+   * The device LABEL is recorded and the device ID deliberately is not. The
+   * label names a piece of hardware, which is what M1's rig question needs; the
+   * id is a stable per-origin identifier that would correlate one person across
+   * every call they ever join, which no acoustic measurement needs.
+   */
+  deviceLabel: string | null;
+  channelCount: number | null;
+  sampleRate: number | null;
+  latencyMs: number | null;
+  echoCancellation: EchoCancellationSetting | null;
+  noiseSuppression: boolean | null;
+  autoGainControl: boolean | null;
+  /** What this browser says it COULD do, so a `false` reading can be read as refusal vs absence. */
+  echoCancellationCapabilities: EchoCancellationSetting[] | null;
+}
+
+/**
+ * `ideal`, never `exact`.
+ *
+ * `exact: 'all'` rejects with OverconstrainedError on every browser that does
+ * not implement the string form, and the participant then cannot join the call
+ * at all. A capture preference is not worth a join failure.
+ */
+export function createCallAudioConstraints(deviceId?: string): MediaStreamConstraints {
+  // `echoCancellation: { ideal: 'all' }` is outside lib.dom's ConstrainBoolean.
+  // The cast is the honest way to say "this is a real Chrome constraint the DOM
+  // typings do not model yet" rather than silently downgrading to a boolean.
+  const audio = {
+    channelCount: { ideal: 1 },
+    echoCancellation: { ideal: 'all' },
+    noiseSuppression: true,
+    autoGainControl: true,
+  } as unknown as MediaTrackConstraints;
+  if (deviceId) {
+    (audio as { deviceId?: unknown }).deviceId = { ideal: deviceId };
+  }
+  return { audio, video: false };
+}
+
+/** Read back what the browser actually granted. Never throws: this is instrumentation. */
+export function readCallCaptureSettings(track: MediaStreamTrack | null): CallCaptureSettings | null {
+  if (!track) return null;
+  let settings: MediaTrackSettings = {};
+  try {
+    settings = track.getSettings?.() ?? {};
+  } catch {
+    settings = {};
+  }
+  const raw = settings as MediaTrackSettings & {
+    echoCancellation?: EchoCancellationSetting;
+    latency?: number;
+  };
+  return {
+    deviceLabel: track.label || null,
+    channelCount: numberOrNull(raw.channelCount),
+    sampleRate: numberOrNull(raw.sampleRate),
+    // Reported in seconds by the spec; ms is the unit every other timing value
+    // in this system uses, and mixed units are how comparisons go wrong.
+    latencyMs: typeof raw.latency === 'number' ? Math.round(raw.latency * 1000) : null,
+    echoCancellation: raw.echoCancellation ?? null,
+    noiseSuppression: booleanOrNull(raw.noiseSuppression),
+    autoGainControl: booleanOrNull(raw.autoGainControl),
+    echoCancellationCapabilities: readEchoCancellationCapabilities(track),
+  };
+}
+
+function readEchoCancellationCapabilities(track: MediaStreamTrack): EchoCancellationSetting[] | null {
+  try {
+    const capabilities = track.getCapabilities?.() as
+      | { echoCancellation?: EchoCancellationSetting[] }
+      | undefined;
+    const values = capabilities?.echoCancellation;
+    return Array.isArray(values) && values.length > 0 ? [...values] : null;
+  } catch {
+    // getCapabilities is absent on Firefox and throws on some Safari builds.
+    return null;
+  }
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function booleanOrNull(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}

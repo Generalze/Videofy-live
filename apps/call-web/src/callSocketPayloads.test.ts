@@ -147,6 +147,12 @@ describe('call socket contract', () => {
       RECEIVE_OFFER: 'call:receive:offer',
       RECEIVE_ICE: 'call:receive:ice',
       SET_CAPTION_LANGUAGE: 'call:caption-language',
+      // P6.3 acoustic instrumentation. Both are client-to-gateway REPORTS with
+      // no ack and no consequence for routing: one records what the browser
+      // granted, the other records when this participant's own loudspeaker was
+      // audible. Neither carries audio.
+      CAPTURE_SETTINGS: 'call:capture-settings',
+      PLAYBACK: 'call:playback',
       STATE: 'call:state',
       CAPTION: 'call:caption',
       GENERATED_AUDIO: 'call:generated-audio',

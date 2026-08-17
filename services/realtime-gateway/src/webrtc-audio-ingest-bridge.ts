@@ -27,6 +27,16 @@ export interface WebRtcAudioIngestBridgeSnapshot {
   lastFrameAtMs: number | null;
   lastActivityAtMs: number | null;
   lastFrame: WebRtcAudioFrameMetadata | null;
+  /**
+   * W3 — the rate frames ACTUALLY arrive at, before any gateway resampling.
+   *
+   * It was recorded on every frame and then dropped before anything could read
+   * it, which is why nobody could say whether the 48 kHz path was engaged. It
+   * has to be stamped on each corpus recording: change the resampler and you
+   * need to know which recordings' acoustic measurements must be rerun.
+   */
+  inputSampleRate: number | null;
+  inputChannelCount: number | null;
   error: string | null;
 }
 
@@ -149,6 +159,8 @@ export class WebRtcAudioIngestBridge {
       lastFrameAtMs: this.lastFrameAtMs,
       lastActivityAtMs: this.lastActivityAtMs,
       lastFrame: this.lastFrame,
+      inputSampleRate: this.lastFrame?.sampleRate ?? null,
+      inputChannelCount: this.lastFrame?.channelCount ?? null,
       error: this.error,
     };
   }

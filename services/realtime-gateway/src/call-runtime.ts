@@ -31,6 +31,8 @@ import type { BackendMediaPeerAudioContext } from './webrtc-media-peer-registry.
 import type { WebRtcTranscriptionBridgeContext } from './webrtc-transcription-bridge.js';
 import type { CallReceivePeersLike, CallReceivePeerHandlers } from './call-receive-peers.js';
 import { CallTranscriptLog } from './call-transcript-log.js';
+import { CallPlaybackLedger, generatedClipId } from './call-playback-ledger.js';
+import { CallAcousticRoomObserver } from './call-acoustic-rooms.js';
 import { logger } from './logger.js';
 
 /**
@@ -65,6 +67,21 @@ export const CALL_EVENTS = {
   RECEIVE_OFFER: 'call:receive:offer',
   RECEIVE_ICE: 'call:receive:ice',
   SET_CAPTION_LANGUAGE: 'call:caption-language',
+  /**
+   * W1: the capture settings the browser actually granted. A preference asked
+   * for is not a fact; this is the fact, and every acoustic measurement taken
+   * later has to be read against it.
+   */
+  CAPTURE_SETTINGS: 'call:capture-settings',
+  /**
+   * W4: a participant's own loudspeaker started or stopped being audible.
+   *
+   * Reported by the client because only the client knows when its audio element
+   * really began, and aggregated HERE because the consequence belongs to a
+   * DIFFERENT participant's microphone — which is precisely the thing a
+   * client-local "am I playing audio" signal cannot see (NG6).
+   */
+  PLAYBACK: 'call:playback',
   STATE: 'call:state',
   CAPTION: 'call:caption',
   GENERATED_AUDIO: 'call:generated-audio',
@@ -101,7 +118,16 @@ export interface CallMediaPeerHandlers {
       Extract<WebRtcIncomingSignallingEnvelope, { type: 'session-create' | 'session-join' }>
     >,
   ): void;
-  onAudioFrame(context: BackendMediaPeerAudioContext, data: WebRtcAudioDataLike): void;
+  /**
+   * @param frame Metadata the registry already stamps — receive wall clock and
+   * true input format. Both existed before W2/W3; this signature simply stopped
+   * discarding them.
+   */
+  onAudioFrame(
+    context: BackendMediaPeerAudioContext,
+    data: WebRtcAudioDataLike,
+    frame?: { receivedAtMs: number; sampleRate: number | null; channelCount: number | null },
+  ): void;
   onAudioPeerClosed(context: BackendMediaPeerAudioContext, reason: string): void;
 }
 
@@ -126,7 +152,11 @@ export interface CallIngestControlClient {
 
 /** The subset of WebRtcTranscriptionBridge the call runtime drives. */
 export interface CallTranscriptionBridgeLike {
-  handleFrame(context: WebRtcTranscriptionBridgeContext, data: WebRtcAudioDataLike): void;
+  handleFrame(
+    context: WebRtcTranscriptionBridgeContext,
+    data: WebRtcAudioDataLike,
+    receivedAtMs?: number,
+  ): void;
   endSession(context: WebRtcTranscriptionBridgeContext, reason: string): void;
   cleanupClosedSessions(): number;
   /**
@@ -173,6 +203,10 @@ export interface CallRuntimeDependencies {
    * the correct failure direction for an optional feature.
    */
   verifyVoiceIdentity?: (sessionToken: string) => string | null;
+  /** W4. Injectable so tests can drive it with a fake clock. */
+  playbackLedger?: CallPlaybackLedger;
+  /** W5A. Observation only — it has no consumer, by design. */
+  acousticObserver?: CallAcousticRoomObserver;
 }
 
 /**
@@ -333,6 +367,18 @@ export class CallRuntime {
   private readonly clearTimer: (timer: ReturnType<typeof setTimeout>) => void;
   private readonly transcriptLog: CallTranscriptLog;
   private readonly now: () => number;
+  /** W4: when each participant's loudspeaker was actually audible. */
+  private readonly playbackLedger: CallPlaybackLedger;
+  /**
+   * W5A: co-location FEATURES, observed and logged.
+   *
+   * Nothing in this runtime reads back from it. It produces no room id, and no
+   * branch anywhere consults it — that absence is the acceptance criterion, not
+   * an oversight.
+   */
+  private readonly acousticObserver: CallAcousticRoomObserver;
+  /** W3: input formats already reported per participant, so it is logged once. */
+  private readonly loggedInputFormats = new Set<string>();
   /** Per-call delivery/latency accounting, emitted as `call-summary` on teardown. */
   private readonly callStats = new Map<string, CallStatsAccumulator>();
 
@@ -354,9 +400,17 @@ export class CallRuntime {
     this.transcriptLog = dependencies.transcriptLog ?? new CallTranscriptLog(null);
     this.now = dependencies.now ?? (() => Date.now());
     this.verifyVoiceIdentity = dependencies.verifyVoiceIdentity;
+    this.playbackLedger = dependencies.playbackLedger ?? new CallPlaybackLedger({ nowMs: this.now });
+    this.acousticObserver =
+      dependencies.acousticObserver ??
+      new CallAcousticRoomObserver({
+        nowMs: this.now,
+        onObservation: (observation) => this.logAcousticObservation(observation),
+      });
+    this.acousticObserver.start();
     this.mediaPeers = dependencies.createMediaPeers({
       onLocalSignal: (envelope) => this.handleMediaLocalSignal(envelope),
-      onAudioFrame: (context, data) => this.handleMediaAudioFrame(context, data),
+      onAudioFrame: (context, data, frame) => this.handleMediaAudioFrame(context, data, frame),
       onAudioPeerClosed: (context, reason) => this.handleMediaAudioPeerClosed(context, reason),
     });
     this.receivePeers = dependencies.createReceivePeers({
@@ -389,6 +443,12 @@ export class CallRuntime {
     this.onGuarded(socket, CALL_EVENTS.SET_CAPTION_LANGUAGE, async (raw, ack) => {
       this.deliverAck(ack, await this.handleSetCaptionLanguage(socket, raw));
     });
+    // Both are instrumentation reports: no ack, nothing to fail, and both are
+    // bound to the socket's own identity before anything is recorded.
+    this.onGuarded(socket, CALL_EVENTS.CAPTURE_SETTINGS, (raw) =>
+      this.handleCaptureSettings(socket, raw),
+    );
+    this.onGuarded(socket, CALL_EVENTS.PLAYBACK, (raw) => this.handlePlayback(socket, raw));
   }
 
   /**
@@ -794,6 +854,21 @@ export class CallRuntime {
       languageRevision: entry.languageRevision,
     };
     const deliveries = this.store.routeGeneratedAudio(entry.callId, entry.participantId, source);
+    // W4 Path A: register the clip against its recipients BEFORE emitting, so a
+    // client that reports playback immediately still finds its interval waiting.
+    const clipId = generatedClipId({
+      speakerParticipantId: entry.participantId,
+      targetLanguage: source.targetLanguage,
+      mediaRevision: source.mediaRevision,
+      languageRevision: source.languageRevision,
+      sequence: source.sequence,
+    });
+    this.playbackLedger.registerGeneratedClip({
+      callId: entry.callId,
+      clipId,
+      recipientParticipantIds: deliveries.map((delivery) => delivery.recipientParticipantId),
+      durationMs: source.durationMs,
+    });
     for (const delivery of deliveries) {
       this.emitToRoom(
         callParticipantRoom(entry.callId, delivery.recipientParticipantId),
@@ -1118,14 +1193,30 @@ export class CallRuntime {
   private handleMediaAudioFrame(
     context: BackendMediaPeerAudioContext,
     data: WebRtcAudioDataLike,
+    frame?: { receivedAtMs: number; sampleRate: number | null; channelCount: number | null },
   ): void {
     const identity = this.publishPeerIndex.get(context.sessionId);
     if (!identity) return;
     const state = this.participants.get(participantKey(identity.callId, identity.participantId));
     const entry = state ? this.currentEntryFor(state) : undefined;
+    const receivedAtMs = frame?.receivedAtMs ?? this.now();
+    // W3: stamped once per participant, so a corpus recording carries the rate
+    // its acoustic measurements were taken at.
+    this.recordInputFormat(identity.callId, identity.participantId, frame);
+    // W5A: envelope extraction only. No correlation runs here — that is on a
+    // timer — and nothing this call does is conditioned on the result.
+    if (data.samples) {
+      this.acousticObserver.observeFrame(
+        identity.callId,
+        identity.participantId,
+        data.samples,
+        frame?.sampleRate ?? data.sampleRate ?? 0,
+        receivedAtMs,
+      );
+    }
     if (entry?.active) {
       try {
-        this.transcriptionBridge.handleFrame(bridgeContextFor(entry), data);
+        this.transcriptionBridge.handleFrame(bridgeContextFor(entry), data, receivedAtMs);
       } catch (error) {
         logger.warn('Call transcription bridge frame handling failed', {
           ingestSessionId: entry.plan.ingestSessionId,
@@ -1143,6 +1234,145 @@ export class CallRuntime {
         message: error instanceof Error ? error.message : 'unknown fanout failure',
       });
     }
+  }
+
+  /**
+   * W3 — write the true input format down once per participant.
+   *
+   * Once, not per frame: it does not change mid-track, and a per-frame record
+   * would bury the log in the one fact it is trying to make findable.
+   */
+  private recordInputFormat(
+    callId: string,
+    participantId: string,
+    frame?: { sampleRate: number | null; channelCount: number | null },
+  ): void {
+    const sampleRate = frame?.sampleRate ?? null;
+    if (sampleRate === null) return;
+    const key = `${callId}:${participantId}:${sampleRate}`;
+    if (this.loggedInputFormats.has(key)) return;
+    this.loggedInputFormats.add(key);
+    this.acousticObserver.setProvenance(callId, participantId, { inputSampleRate: sampleRate });
+    this.transcriptLog.append({
+      kind: 'input-format',
+      callId,
+      participantId,
+      inputSampleRate: sampleRate,
+      inputChannelCount: frame?.channelCount ?? null,
+    });
+  }
+
+  /**
+   * W5A — record an observed feature row. This is its ONLY destination.
+   *
+   * Deliberately written to the development transcript log and nowhere else:
+   * no room id is produced, no state is updated, and nothing in this runtime
+   * reads it back.
+   */
+  private logAcousticObservation(observation: {
+    callId: string;
+    pairKey: string;
+    correlation: number;
+    lagMs: number;
+    lowBandCoherence: number;
+    midBandCoherence: number;
+    highBandCoherence: number;
+    concurrentVoicedMs: number;
+    comparedMs: number;
+    hypothesis: string;
+    provenanceA: unknown;
+    provenanceB: unknown;
+  }): void {
+    this.transcriptLog.append({
+      kind: 'acoustic-observation',
+      callId: observation.callId,
+      pairKey: observation.pairKey,
+      correlation: observation.correlation,
+      lagMs: observation.lagMs,
+      lowBandCoherence: observation.lowBandCoherence,
+      midBandCoherence: observation.midBandCoherence,
+      highBandCoherence: observation.highBandCoherence,
+      concurrentVoicedMs: observation.concurrentVoicedMs,
+      comparedMs: observation.comparedMs,
+      /** An unconsumed hypothesis for M5 to score. Never an authority. */
+      hypothesis: observation.hypothesis,
+      provenanceA: observation.provenanceA,
+      provenanceB: observation.provenanceB,
+    });
+  }
+
+  /** W1 — the capture settings the browser granted this participant. */
+  private handleCaptureSettings(socket: CallSocketLike, raw: unknown): void {
+    const binding = this.requireBinding(socket, raw);
+    if (!binding) return;
+    const payload = raw as {
+      settings?: Record<string, unknown>;
+      reason?: unknown;
+    };
+    const settings = payload.settings;
+    if (!settings || typeof settings !== 'object') return;
+    const echoCancellation = settings['echoCancellation'];
+    this.acousticObserver.setProvenance(binding.callId, binding.participantId, {
+      echoCancellation:
+        typeof echoCancellation === 'boolean' || typeof echoCancellation === 'string'
+          ? (echoCancellation as boolean | 'all' | 'remote-only')
+          : null,
+      noiseSuppression: typeof settings['noiseSuppression'] === 'boolean' ? settings['noiseSuppression'] : null,
+      autoGainControl: typeof settings['autoGainControl'] === 'boolean' ? settings['autoGainControl'] : null,
+      deviceLabel: typeof settings['deviceLabel'] === 'string' ? settings['deviceLabel'] : null,
+    });
+    this.transcriptLog.append({
+      kind: 'capture-settings',
+      callId: binding.callId,
+      participantId: binding.participantId,
+      reason: payload.reason === 'device-change' ? 'device-change' : 'join',
+      settings,
+    });
+  }
+
+  /**
+   * W4 — a client reporting its OWN loudspeaker.
+   *
+   * Behind `requireBinding`, so a socket can only ever speak for the identity it
+   * joined with. That matters more here than elsewhere: a playback report is a
+   * claim about a loudspeaker, and an unbound socket claiming somebody else's
+   * would corrupt the one measurement this wave exists to establish.
+   */
+  private handlePlayback(socket: CallSocketLike, raw: unknown): void {
+    const binding = this.requireBinding(socket, raw);
+    if (!binding) return;
+    const payload = raw as { stream?: unknown; clipId?: unknown; phase?: unknown; atMs?: unknown };
+    const stream = payload.stream === 'remote-original' ? 'remote-original' : 'generated';
+    const phase = payload.phase === 'end' ? 'end' : 'start';
+    this.playbackLedger.reportPlayback({
+      callId: binding.callId,
+      participantId: binding.participantId,
+      stream,
+      clipId: typeof payload.clipId === 'string' ? payload.clipId : null,
+      phase,
+      clientAtMs: typeof payload.atMs === 'number' && Number.isFinite(payload.atMs) ? payload.atMs : null,
+    });
+    this.transcriptLog.append({
+      kind: 'playback',
+      callId: binding.callId,
+      participantId: binding.participantId,
+      stream,
+      clipId: typeof payload.clipId === 'string' ? payload.clipId : null,
+      phase,
+      /** The client's own clock, kept SEPARATE from the gateway's so skew is measurable. */
+      clientAtMs: typeof payload.atMs === 'number' ? payload.atMs : null,
+      gatewayAtMs: this.now(),
+    });
+  }
+
+  /** W4 diagnostics: both interval streams plus what was never reported at all. */
+  getPlaybackLedger(): CallPlaybackLedger {
+    return this.playbackLedger;
+  }
+
+  /** W5A diagnostics: the frame-path cost a call actually pays. */
+  getAcousticObserverCost(): ReturnType<CallAcousticRoomObserver['costSnapshot']> {
+    return this.acousticObserver.costSnapshot();
   }
 
   private handleMediaAudioPeerClosed(context: BackendMediaPeerAudioContext, reason: string): void {
@@ -1170,6 +1400,8 @@ export class CallRuntime {
       this.stopIngestSessionSafely(entry);
     }
     this.receivePeers.closePeer(callId, participantId, reason);
+    // W5A holds ~12 s of envelope per participant; release it with the transport.
+    this.acousticObserver.dropParticipant(callId, participantId);
   }
 
   /**
@@ -1307,6 +1539,8 @@ export class CallRuntime {
     this.callStats.delete(callId);
     const captionsByRecipient = Object.fromEntries(stats.captionsDeliveredByRecipient);
     const audioByRecipient = Object.fromEntries(stats.generatedAudioDeliveredByRecipient);
+    const playback = this.playbackLedger.statsFor(callId);
+    const acoustic = this.acousticObserver.costSnapshot();
     this.transcriptLog.append({
       kind: 'call-summary',
       callId,
@@ -1331,7 +1565,27 @@ export class CallRuntime {
       latencySamplesKept: stats.latenciesMs.length,
       latencyMedianMs: nearestRankPercentile(stats.latenciesMs, 0.5),
       latencyP90Ms: nearestRankPercentile(stats.latenciesMs, 0.9),
+      /**
+       * W4. `playbackClipsUnreported` is the load-bearing one: those are clips
+       * this gateway emitted and no client ever confirmed playing. They are
+       * reported as MISSING rather than backfilled from emit time, because a
+       * clip nobody confirmed is not evidence that anything was audible.
+       */
+      playbackClipsRegistered: playback.registeredClipCount,
+      playbackClipsStarted: playback.startedClipCount,
+      playbackClipsUnreported: playback.unreportedClipCount,
+      playbackUnknownClipReports: playback.unknownClipReportCount,
+      playbackRemoteOriginalIntervals: playback.remoteOriginalIntervalCount,
+      /** M3: distribution of (client-reported start − gateway emit). */
+      playbackStartSkewMedianMs: nearestRankPercentile([...playback.startSkewSamples], 0.5),
+      playbackStartSkewP90Ms: nearestRankPercentile([...playback.startSkewSamples], 0.9),
+      /** W5A cost, so "it is only observation" is a measured claim. */
+      acousticFrameCostP50Ms: acoustic.frameCostP50Ms,
+      acousticFrameCostP99Ms: acoustic.frameCostP99Ms,
+      acousticObservationCount: acoustic.observationCount,
     });
+    this.playbackLedger.dropCall(callId);
+    this.acousticObserver.dropCall(callId);
   }
 
   /** Arm (or re-arm) the disconnect grace reaper for a disconnected seat. */

@@ -10,6 +10,7 @@ import {
   WebRtcTranscriptionChunker,
   WebRtcTranscriptionChunkerError,
   inspectPcm16Samples,
+  type WebRtcChunkWallClock,
   type WebRtcTranscriptionChunk,
 } from './webrtc-transcription-chunker.js';
 import { logger } from './logger.js';
@@ -48,13 +49,25 @@ export interface WebRtcChunkTiming {
   startMs: number;
   endMs: number;
   /**
-   * `Date.now()` at the moment the chunker finished the chunk — i.e. when the
-   * last audio sample of that speech segment had arrived at the gateway.
-   * Frames arrive in real time, so this is the wall clock of `endMs`.
+   * `Date.now()` at the moment the chunker HANDED OVER the chunk.
+   *
+   * Historically documented as "when the last audio sample of that speech
+   * segment had arrived", which it is not: a VAD segment is handed over after
+   * its end-silence window has elapsed, so this sits up to `endSilenceMs` later
+   * than the speech it describes, and by a different amount depending on why
+   * the segment closed. Kept for the existing latency figures, which measure
+   * gateway-to-delivery and are unaffected.
+   *
+   * Anything asking WHEN SOMEBODY SPOKE must read `wallClock` instead. W2 added
+   * it precisely because this field cannot answer that question, and every
+   * containment measurement built on it inherited a ~500 ms bias in the
+   * direction that understates overlap.
    */
   capturedAtMs: number;
   /** `Date.now()` when media-ingest accepted the chunk; null until it does. */
   submittedAtMs: number | null;
+  /** W2: true voiced extent and close reason. Absent for non-VAD chunking. */
+  wallClock: WebRtcChunkWallClock | null;
 }
 
 export interface WebRtcTranscriptionBridgeContext {
@@ -186,7 +199,17 @@ export class WebRtcTranscriptionBridge {
       });
   }
 
-  handleFrame(context: WebRtcTranscriptionBridgeContext, data: WebRtcAudioDataLike): void {
+  /**
+   * @param receivedAtMs Gateway wall clock at which this frame arrived, which
+   * the media peer registry already stamps. Passed through so the chunker's
+   * voiced extent describes when the audio landed rather than when it was
+   * processed.
+   */
+  handleFrame(
+    context: WebRtcTranscriptionBridgeContext,
+    data: WebRtcAudioDataLike,
+    receivedAtMs?: number,
+  ): void {
     const session = this.getOrCreateSession(context);
     if (session.closed) return;
     if (context.externalAudioSource === 'rtmp-hls' && context.externalAudioUrl) {
@@ -194,7 +217,7 @@ export class WebRtcTranscriptionBridge {
       return;
     }
     try {
-      this.enqueueChunks(session, session.chunker.pushFrame(data));
+      this.enqueueChunks(session, session.chunker.pushFrame(data, receivedAtMs));
     } catch (error) {
       if (!(error instanceof WebRtcTranscriptionChunkerError)) throw error;
       session.chunker.markDiscontinuity();
@@ -495,6 +518,7 @@ export class WebRtcTranscriptionBridge {
         endMs: chunk.endMs,
         capturedAtMs,
         submittedAtMs: null,
+        wallClock: chunk.wallClock ?? null,
       });
     }
     if (session.chunkTimings.length > CHUNK_TIMING_HISTORY) {

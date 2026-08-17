@@ -12,6 +12,12 @@ import { logger } from './logger.js';
  * explicitly configured. It is off by default, never enabled implicitly, and is
  * a development/demo aid — not a production retention mechanism. No audio, no
  * tokens, and no transport internals are written.
+ *
+ * The P6.3 acoustic instrumentation adds four record kinds and does NOT relax
+ * that rule. No PCM, no waveform, no correlation input and no audio file path
+ * is written here — the acoustic records carry derived scalars only. Device
+ * LABELS are recorded (hardware names, which the rig question needs); device
+ * IDs are not (stable per-origin identifiers, which nothing here needs).
  */
 export interface CallTranscriptRecord {
   kind:
@@ -20,6 +26,14 @@ export interface CallTranscriptRecord {
     | 'caption'
     | 'generated-audio'
     | 'ingest-fault'
+    /** W1: granted microphone settings per participant, at join and on device change. */
+    | 'capture-settings'
+    /** W3: the sample rate frames actually arrive at, stamped at collection time. */
+    | 'input-format'
+    /** W4: one loudspeaker interval — generated clip or raw remote fan-out. */
+    | 'playback'
+    /** W5A: an OBSERVED co-location feature row. Never a binding, never consumed. */
+    | 'acoustic-observation'
     /** One per call, written at teardown: delivery counts, drops, latency percentiles. */
     | 'call-summary'
     | 'note';

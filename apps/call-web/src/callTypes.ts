@@ -10,6 +10,10 @@ export const CALL_EVENTS = {
   RECEIVE_OFFER: 'call:receive:offer',
   RECEIVE_ICE: 'call:receive:ice',
   SET_CAPTION_LANGUAGE: 'call:caption-language',
+  /** W1: what the browser actually granted for this participant's microphone. */
+  CAPTURE_SETTINGS: 'call:capture-settings',
+  /** W4: this participant's loudspeaker started or stopped being audible. */
+  PLAYBACK: 'call:playback',
   STATE: 'call:state',
   CAPTION: 'call:caption',
   GENERATED_AUDIO: 'call:generated-audio',
@@ -17,6 +21,48 @@ export const CALL_EVENTS = {
 } as const;
 
 export type CallEventName = (typeof CALL_EVENTS)[keyof typeof CALL_EVENTS];
+
+/**
+ * W1 capture provenance. Sent once after join and again on device change, so a
+ * participant who unplugs a headset mid-call does not leave the log asserting
+ * settings that stopped being true.
+ */
+export interface CallCaptureSettingsPayload {
+  callId: string;
+  participantId: string;
+  settings: {
+    deviceLabel: string | null;
+    channelCount: number | null;
+    sampleRate: number | null;
+    latencyMs: number | null;
+    echoCancellation: boolean | 'all' | 'remote-only' | null;
+    noiseSuppression: boolean | null;
+    autoGainControl: boolean | null;
+    echoCancellationCapabilities: (boolean | 'all' | 'remote-only')[] | null;
+  };
+  /** 'join' or 'device-change' — why this reading was taken. */
+  reason: 'join' | 'device-change';
+}
+
+/**
+ * W4 playback report. A client may only ever report its OWN loudspeaker; the
+ * gateway is what knows that participant 1's speaker is audible to participant
+ * 2's microphone, because a client cannot know that and must not be asked to.
+ *
+ * `generated` is Path A — a translated clip, with an identity and a duration.
+ * `remote-original` is Path B — the raw fan-out of somebody else's live
+ * microphone, which has neither, and is played by the same loudspeaker.
+ */
+export interface CallPlaybackPayload {
+  callId: string;
+  participantId: string;
+  stream: 'generated' | 'remote-original';
+  /** Present only for `generated`: the clip identity the gateway registered. */
+  clipId?: string;
+  phase: 'start' | 'end';
+  /** Client wall clock at the transition. Gateway records BOTH this and its own. */
+  atMs: number;
+}
 
 export type CallLanguage = 'en' | 'es' | 'fr';
 export type CallVoiceGender = 'male' | 'female';

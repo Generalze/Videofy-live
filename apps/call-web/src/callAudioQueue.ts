@@ -23,7 +23,14 @@ export interface CallGeneratedAudioQueueState {
 export interface CallGeneratedAudioQueueOptions {
   createAudio: (url: string) => CallQueueAudio;
   onStateChange?: (state: CallGeneratedAudioQueueState) => void;
-  onSpeechActiveChange?: (active: boolean) => void;
+  /**
+   * Fires exactly at clip start and clip end.
+   *
+   * W4 gives it the clip's IDENTITY as well as the boolean, because the
+   * gateway's playback ledger has to match this transition to the clip it
+   * registered. It already knew which clip it was; it simply was not saying.
+   */
+  onSpeechActiveChange?: (active: boolean, clip: CallGeneratedAudioEvent | null) => void;
 }
 
 interface QueueItem {
@@ -54,7 +61,11 @@ const initialState: CallGeneratedAudioQueueState = {
 export class CallGeneratedAudioQueueController {
   private readonly createAudio: (url: string) => CallQueueAudio;
   private readonly onStateChange: ((state: CallGeneratedAudioQueueState) => void) | undefined;
-  private readonly onSpeechActiveChange: ((active: boolean) => void) | undefined;
+  private readonly onSpeechActiveChange:
+    | ((active: boolean, clip: CallGeneratedAudioEvent | null) => void)
+    | undefined;
+  /** The clip currently on the wire, so its END transition can name it too. */
+  private current: QueueItem | null = null;
   private readonly queue: QueueItem[] = [];
   private readonly seen = new Set<string>();
   private readonly latestRevisionBySpeaker = new Map<string, SpeakerRevision>();
@@ -89,10 +100,15 @@ export class CallGeneratedAudioQueueController {
     this.enabled = enabled;
     if (!enabled) {
       const droppedNow = this.queue.splice(0).length + (this.playing ? 1 : 0);
+      // Switching to original-only cuts the clip that is playing RIGHT NOW, so
+      // this is a genuine playback end and has to be reported as one — an
+      // interval left open here would read as audible for the rest of the call.
+      const stopped = this.current;
       this.audio?.pause();
       this.audio = null;
+      this.current = null;
       this.playing = false;
-      this.setSpeechActive(false);
+      this.setSpeechActive(false, stopped?.event ?? null);
       this.setState({
         status: 'idle',
         pendingCount: 0,
@@ -150,10 +166,12 @@ export class CallGeneratedAudioQueueController {
     this.queue.splice(0);
     this.seen.clear();
     this.latestRevisionBySpeaker.clear();
+    const stopped = this.current;
     this.audio?.pause();
     this.audio = null;
+    this.current = null;
     this.playing = false;
-    this.setSpeechActive(false);
+    this.setSpeechActive(false, stopped?.event ?? null);
     this.setState({ ...initialState });
   }
 
@@ -177,8 +195,9 @@ export class CallGeneratedAudioQueueController {
     const audio = this.createAudio(item.event.audioUrl);
     audio.volume = this.volume;
     this.audio = audio;
+    this.current = item;
     this.playing = true;
-    this.setSpeechActive(true);
+    this.setSpeechActive(true, item.event);
     this.setState({ status: 'playing', pendingCount: this.queue.length, error: null });
 
     audio.onended = () => this.finishCurrent(audio, null);
@@ -192,9 +211,11 @@ export class CallGeneratedAudioQueueController {
     // A late callback from a superseded or stopped audio object must never
     // finish the segment that is currently playing.
     if (!this.playing || this.audio !== audio) return;
+    const finished = this.current;
     this.audio = null;
+    this.current = null;
     this.playing = false;
-    this.setSpeechActive(false);
+    this.setSpeechActive(false, finished?.event ?? null);
     this.setState({
       status: error === null ? 'idle' : 'error',
       playedCount: error === null ? this.state.playedCount + 1 : this.state.playedCount,
@@ -233,10 +254,10 @@ export class CallGeneratedAudioQueueController {
     });
   }
 
-  private setSpeechActive(active: boolean): void {
+  private setSpeechActive(active: boolean, clip: CallGeneratedAudioEvent | null): void {
     if (this.speechActive === active) return;
     this.speechActive = active;
-    this.onSpeechActiveChange?.(active);
+    this.onSpeechActiveChange?.(active, clip);
   }
 
   private setState(next: Partial<CallGeneratedAudioQueueState>): void {
@@ -245,7 +266,15 @@ export class CallGeneratedAudioQueueController {
   }
 }
 
-function queueKey(event: CallGeneratedAudioEvent): string {
+/**
+ * The clip identity, derived from the event's own fields.
+ *
+ * The gateway derives the SAME string from the SAME fields (see
+ * `generatedClipId` in call-playback-ledger.ts). Deriving it on both sides
+ * rather than passing an opaque id means a disagreement shows up immediately as
+ * an unknown-clip report, instead of as a ledger that is quietly always empty.
+ */
+export function generatedClipId(event: CallGeneratedAudioEvent): string {
   return [
     event.speakerParticipantId,
     event.targetLanguage,
@@ -253,6 +282,10 @@ function queueKey(event: CallGeneratedAudioEvent): string {
     event.languageRevision,
     event.sequence,
   ].join(':');
+}
+
+function queueKey(event: CallGeneratedAudioEvent): string {
+  return generatedClipId(event);
 }
 
 function compareRevisions(a: SpeakerRevision, b: SpeakerRevision): number {
