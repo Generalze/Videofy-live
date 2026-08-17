@@ -563,7 +563,14 @@ def handle(payload):
     language_hint = payload.get("languageHint") or None
     transcribe_kwargs = {
         "vad_filter": True,
-        # THE repetition/invention driver, and it is on by default.
+        # Kept, but NOT the fix it was credited with being.
+        #
+        # This library only carries context across 30-second decode windows, and
+        # a call chunk is never that long — so for live calls this kwarg is a
+        # no-op. It still matters for the upload/programme path, and it would
+        # matter here if chunk length ever grew, which is why it stays set.
+        # The repetition it was blamed for comes from the gateway submitting
+        # near-silent audio over and over; see the VAD notes in the chunker.
         #
         # With this true the model is primed with the text it produced for the
         # PREVIOUS chunk, so a call becomes a feedback loop: it completes

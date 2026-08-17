@@ -917,6 +917,13 @@ export class CallRuntime {
       if (state) {
         state.currentIngestSessionId = plan.ingestSessionId;
         state.mediaRevision = plan.mediaRevision;
+        // The plan is the authority for BOTH revisions, and this line was
+        // missing while its sibling above was correct. Without it the registry
+        // kept a stale languageRevision, routableSpeaker refused every event as
+        // out-of-date, and one "Read captions in" change silenced captions AND
+        // generated audio for every participant, permanently, with no error
+        // anywhere. Reproduced: deliveries drop to zero and never recover.
+        state.languageRevision = plan.languageRevision;
       }
       const sameIdEntry = this.ingestRegistry.get(plan.ingestSessionId);
       const entry: CallIngestRegistryEntry = {
@@ -924,7 +931,8 @@ export class CallRuntime {
         participantId,
         plan,
         effectiveTargetLanguages: effectiveIngestTargets(plan),
-        languageRevision: state?.languageRevision ?? 1,
+        // From the plan, not from possibly-stale participant state.
+        languageRevision: plan.languageRevision,
         active: sameIdEntry?.active ?? false,
         everCreated: sameIdEntry?.everCreated ?? false,
         pendingStop: sameIdEntry?.pendingStop ?? null,

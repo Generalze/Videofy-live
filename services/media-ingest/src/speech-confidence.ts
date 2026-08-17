@@ -29,7 +29,19 @@
 
 export interface SpeechCandidate {
   readonly text: string;
-  /** The model's estimate that this segment contained no speech, 0–1. */
+  /**
+   * The model's estimate that there was no speech, 0–1.
+   *
+   * PER DECODE WINDOW, not per segment. faster-whisper stamps one window's
+   * score onto every segment it produced, and a call chunk is never longer than
+   * one 30 s window — so every segment of a chunk carries the SAME number.
+   * Measured on this repository's own call audio: five segments, all 0.5449.
+   *
+   * The consequence matters. A fabricated tail attached to real speech inherits
+   * the real speech's confidence and is invisible here, and lowering
+   * `maxNoSpeechProb` does not delete a bad sentence — it deletes the whole
+   * chunk, including the real words in it.
+   */
   readonly noSpeechProb?: number | null;
   /** Mean token log-probability. Closer to 0 is more confident. */
   readonly avgLogProb?: number | null;
@@ -106,8 +118,7 @@ const MEMORISED_CREDITS: readonly RegExp[] = [
   //   "We will try to catch them, and I will see you in the next video."
   //   "Nous allons essayer de les attraper, et je vous verrai dans la prochaine vidéo."
   /see you (in|on) the next (video|one)/i,
-  /(dans|à) la prochaine vidéo/i,
-  /à la prochaine/i,
+  /dans la prochaine vidéo/i,
   /like and subscribe/i,
   /n[’']oubliez pas de vous abonner/i,
   /sous-titres? (réalisés?|faits?) par/i,
@@ -117,8 +128,9 @@ const MEMORISED_CREDITS: readonly RegExp[] = [
   /merci d[’']avoir regardé/i,
   /thanks? for watching/i,
   /abonnez-vous/i,
-  /université de montréal/i,
-  /university of montreal/i,
+  // Narrowed to the memorised form. Bare "Montreal" is a city people mention.
+  /communautés? de l[’']université de montréal/i,
+  /communit(y|ies) of the university of montreal/i,
   /traduit par/i,
   /transcription (by|par)/i,
 ];

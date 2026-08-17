@@ -103,6 +103,12 @@ describe('memorised subtitle credits', () => {
       'I am flying to Montreal on Tuesday.',
       'Thanks, I appreciate it.',
       'We watched it together.',
+      // "à la prochaine" is how French speakers say "see you soon". It was in
+      // the list and would have deleted an ordinary goodbye on every call.
+      'À la prochaine !',
+      'Bon, à la prochaine alors.',
+      'Je suis à Montréal cette semaine.',
+      "L'université de Montréal est très bonne.",
     ]) {
       expect(isMemorisedCredit(text), text).toBe(false);
       expect(hallucinationReason({ text, noSpeechProb: 0.05, avgLogProb: -0.2 })).toBeNull();

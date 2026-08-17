@@ -497,6 +497,41 @@ describe('CallRuntime join and ingest plan handling', () => {
     expect(JSON.stringify(ack)).not.toContain('acct_');
   });
 
+  it('keeps delivering captions after somebody changes their caption language', async () => {
+    // A total delivery outage that nothing caught. The registry stamped
+    // languageRevision from possibly-stale participant state instead of from
+    // the plan, so after ANY caption-language change or auto-detect settle,
+    // routableSpeaker rejected every event as out of date — zero captions and
+    // zero generated audio for every participant, permanently, with no error.
+    const changer = new FakeSocket('socket-b');
+    await join(harness, new FakeSocket('socket-a'), { ...JOIN_A });
+    const joined = await join(harness, changer, { ...JOIN_B });
+    if (!joined.ok) throw new Error('join failed');
+
+    // Before: delivery works.
+    harness.runtime.interceptTimestampedTranslationEvent(translationEvent({ sequence: 1 }));
+    expect(harness.records('caption')).toHaveLength(1);
+
+    // Beto switches the language he reads captions in, which bumps every
+    // participant's languageRevision.
+    await harness.runtime.handleSetCaptionLanguage(changer, {
+      callId: 'demo',
+      participantId: joined.participantId,
+      hearLanguage: 'fr',
+    });
+
+    harness.runtime.interceptTimestampedTranslationEvent(
+      translationEvent({ sequence: 2, targetLanguage: 'fr' }),
+    );
+
+    // Assert on deliveredTo, NOT on record count. The caption record is still
+    // written when routing rejects the event — a first version of this test
+    // counted records, passed with the fix reverted, and proved nothing.
+    // Reverted, this reads deliveredTo: 0.
+    const delivered = harness.records('caption').map((record) => record.deliveredTo);
+    expect(delivered).toEqual([1, 1]);
+  });
+
   it('never puts a voice owner or a session token in anything the room can see', async () => {
     const verified = createHarness(() => 'acct_aaaaaaaaaaaaaaaa');
     await join(verified, new FakeSocket('socket-a'), { ...JOIN_A, sessionToken: 'ana-token' });
