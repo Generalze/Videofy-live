@@ -26,8 +26,10 @@ import hashlib
 import io
 import json
 import os
+import sys
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -104,6 +106,103 @@ def artifact_ok(relative_name: str) -> bool:
     return bool(expected) and _sha256(path) == expected
 
 
+# Languages whose model is loaded and can answer within a caller's timeout.
+# Populated by the warm-up thread; empty until it has done its work.
+_ready_languages: set = set()
+_warm_error: str | None = None
+
+
+def warm_up() -> None:
+    """Load the converter and every configured base speaker BEFORE saying ready.
+
+    Measured, not assumed. First-ever synthesis in a fresh process:
+
+        EN  151308 ms      warm  1094 ms
+        FR    7211 ms      warm  1039 ms
+        ES    2048 ms      warm  1894 ms
+
+    The caller's timeout is 20 s. So the first English utterance of a call did
+    not fail — it TIMED OUT, the router did exactly what it should, and the
+    speaker was heard in a standard voice with nothing anywhere explaining why.
+    That is the 13/14 and 9/14 harness results, and it would have been
+    "occasionally the wrong voice" in production.
+
+    Raising the timeout would hide it: a caller waiting 151 s for one sentence
+    is not a working call either. So the service simply does not advertise a
+    language until it can actually serve it.
+    """
+    global _warm_error
+    try:
+        converter()
+        for language in SOURCE_SE:
+            if not artifact_ok(f"base_speakers/ses/{SOURCE_SE[language]}.pth"):
+                continue
+            started = time.perf_counter()
+            tts = tts_for(language)
+            if tts is None:
+                continue
+            # Loading the model is most of it, but the FIRST inference pays its
+            # own one-off costs, so the warm-up performs one.
+            with tempfile.TemporaryDirectory(prefix="videofy-warm-") as work:
+                speakers = tts.hps.data.spk2id
+                wanted = BASE_SPEAKER.get(language)
+                key = wanted if wanted in speakers else list(speakers.keys())[0]
+                tts.tts_to_file("Videofy.", speakers[key], str(Path(work) / "warm.wav"), speed=1.0)
+            _ready_languages.add(language)
+            print(
+                json.dumps({
+                    "service": "openvoice",
+                    "message": "language ready",
+                    "language": language,
+                    "elapsedMs": round((time.perf_counter() - started) * 1000),
+                }),
+                flush=True,
+            )
+    except Exception as error:  # noqa: BLE001
+        # A warm-up failure must not take the process down: the rest of the
+        # languages may still be serviceable, and liveness is not readiness.
+        _warm_error = type(error).__name__
+
+
+def runtime_identity() -> dict:
+    """How this process was installed, without saying where.
+
+    `installedFromWheel` is the load-bearing field: a source checkout reached
+    through PYTHONPATH and a pinned non-editable wheel are indistinguishable
+    from the outside, and for months the recorded environment was the wrong one.
+    Upstream commits come from the source manifest rather than from the running
+    files, so this reports what the runtime CLAIMS to be and the manifest hash
+    check is what makes the claim checkable.
+    """
+    def installed(module_name: str) -> bool:
+        try:
+            module = __import__(module_name)
+        except Exception:
+            return False
+        location = getattr(module, "__file__", "") or ""
+        return "site-packages" in location
+
+    sources = {}
+    try:
+        manifest = json.loads(
+            Path("services/openvoice-service/engine-sources.json").read_text(encoding="utf-8")
+        )
+        sources = {
+            entry["project"]: entry.get("commit")
+            for entry in manifest.get("sources", [])
+        }
+    except Exception:
+        sources = {}
+
+    return {
+        "python": ".".join(str(part) for part in sys.version_info[:3]),
+        "virtualEnvironment": sys.prefix != sys.base_prefix,
+        "pythonPathSet": bool(os.environ.get("PYTHONPATH")),
+        "installedFromWheel": installed("openvoice") and installed("melo"),
+        "sourceCommits": sources,
+    }
+
+
 def speakable_languages() -> list[str]:
     """Languages this engine can ACTUALLY speak, checked against the files.
 
@@ -121,7 +220,10 @@ def speakable_languages() -> list[str]:
     return [
         language
         for language, name in SOURCE_SE.items()
-        if artifact_ok(f"base_speakers/ses/{name}.pth")
+        # Warmed AND identified. A language whose model has not been loaded
+        # cannot answer inside a caller's timeout, and advertising it means the
+        # first caller silently pays the model-load cost and gets a fallback.
+        if language in _ready_languages and artifact_ok(f"base_speakers/ses/{name}.pth")
     ]
 
 ASSET_DIR.mkdir(parents=True, exist_ok=True)
@@ -220,6 +322,16 @@ class Handler(BaseHTTPRequestHandler):
             # Whether the artifacts behind those languages are the validated
             # ones. False means the engine is serving whatever is on disk.
             "provenanceVerified": VERIFY_PROVENANCE and bool(_manifest().get("artifacts")),
+            # Liveness is "this process exists". Readiness is "its models can
+            # serve within a caller's timeout". Only the second is useful to
+            # somebody deciding whether to route a personal voice here.
+            "ready": bool(_ready_languages),
+            **({"warmUpError": _warm_error} if _warm_error else {}),
+            # WHICH runtime is answering. Enough to tell a pinned-wheel install
+            # from a source checkout on PYTHONPATH — which is the confusion that
+            # made a lockfile describe an environment nobody was serving from —
+            # and never a filesystem path, because those contain a username.
+            "runtime": runtime_identity(),
         })
 
     def do_DELETE(self):  # noqa: N802
@@ -357,4 +469,10 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     print(f"personal-voice service on :{PORT}  device={DEVICE}  cuda={torch.cuda.is_available()}")
     print("approval=development-unvalidated  productionApproved=False  watermarked=True")
+    # The port opens immediately (liveness) while models load in the background;
+    # /health reports ready=false and advertises NO languages until each one can
+    # actually answer. A caller that waits for readiness never pays the
+    # 151-second first-English-utterance cost, and one that does not wait is
+    # told plainly that there is nothing here to route to yet.
+    threading.Thread(target=warm_up, name="videofy-warm-up", daemon=True).start()
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

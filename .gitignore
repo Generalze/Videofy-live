@@ -231,3 +231,6 @@ build/
 # Locally built engine wheels. Identified by hash in engine-sources.json and
 # rebuildable from pinned commits, so never committed.
 .engine-dist/
+
+# Throwaway cold-start probe.
+.cold-matrix.mjs

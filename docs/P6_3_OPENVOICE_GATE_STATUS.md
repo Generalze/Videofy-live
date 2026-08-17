@@ -31,11 +31,11 @@ string.
 |---|------|--------|----------|
 | 1 | Licence provenance | **Met** | OpenVoice V2 is MIT; MeloTTS base speakers ship with it. Selected on licence grounds ahead of quality grounds (§21.9.2.3). |
 | 2 | Checkpoint provenance | **Partial** | Every behaviour-critical artifact is now SHA-256 recorded in [`engine-provenance.json`](../services/openvoice-service/engine-provenance.json) and verified at startup. Still partial because the derived French embedding is **not byte-reproducible** — see below. |
-| 3 | Dependency audit | **Met** | The runtime is now identified: engine installed non-editably from wheels built at pinned commits, lockfile recaptured from that interpreter, no `-e` installs and no machine paths. Upstream's unused Whisper/PyAV stack is excluded on evidence — [`openvoice-runtime-graph.py`](../scripts/openvoice-runtime-graph.py) exercises the real path and reports none of it imported. |
+| 3 | Dependency audit | **Met** | The SERVING runtime is now identified — `/health` reports `installedFromWheel: true`, `pythonPathSet: false`: engine installed non-editably from wheels built at pinned commits, lockfile recaptured from that interpreter, no `-e` installs and no machine paths. Upstream's unused Whisper/PyAV stack is excluded on evidence — [`openvoice-runtime-graph.py`](../scripts/openvoice-runtime-graph.py) exercises the real path and reports none of it imported. |
 | 4 | Installation reproducibility | **Partial** | Reproduced once in a fresh local venv: `PYTHONPATH` unset, imports resolving from site-packages, and the engine path still producing audio with the source checkouts **renamed away**. That is a local clean-environment reproduction, not a clean-machine one — cached wheels, build tools and model caches on this laptop can still rescue a supposedly clean setup. Fully met only after a rebuild on a genuinely fresh host. |
-| 5 | EN→ES cloning | **Met** | `verify-personal-voice.mjs en es` — 14/14. |
-| 6 | ES→EN cloning | **Met** | `verify-personal-voice.mjs es en` — 14/14. First run 2026-08-16; this direction had never been exercised before. |
-| 6b | EN→FR cloning | **Met** | `verify-personal-voice.mjs en fr` — 14/14, 2026-08-17. French previously failed and fell back silently; see below. |
+| 5 | EN→ES cloning | **Met** | `verify-personal-voice.mjs en es` — 14/14 on the clean pinned runtime. |
+| 6 | ES→EN cloning | **Met** | `verify-personal-voice.mjs es en` — 14/14 on the clean pinned runtime. |
+| 6b | EN→FR cloning | **Met** | `verify-personal-voice.mjs en fr` — 14/14 on the clean pinned runtime, 2026-08-17. |
 | 7 | Identity similarity | **Owner-judged, development-demo only** | ~7/10, owner, 2026-08-16. Explicitly not a production claim. No automated similarity metric exists, and one should not be invented to make this row look greener. |
 | 8 | Intelligibility | **Met** | Cloned audio fetched back through the delivery route and re-recognised: 100% content-word overlap in both directions. Held to the same 60% bar as the standard path. |
 | 9 | Latency | **Met for a live call** | Engine synthesis 438–669 ms for 2.7–4.2 s of speech; ratio 0.12–0.17. Comfortably faster than real time on the development GPU. |
@@ -83,11 +83,14 @@ a language nobody has yet; it is not a substitute for shipping the bytes.
 This is why gate 2 stays partial and cannot close by adding hashes alone.
 
 Finding this exposed a bigger problem. The service was running on the **system
-Python 3.9**, not the isolated `.venv-openvoice` this document claimed, with
-`melo` and `openvoice` imported from source checkouts under `.openvoice-src`.
-The lockfile captured on 2026-08-16 described an environment that was not the
-one serving requests, and gates 3 and 4 were marked met on that basis. Both are
-now marked **not met**, which is what they always were.
+Python 3.9**, not the isolated venv this document claimed, with `melo` and
+`openvoice` imported from source checkouts through `PYTHONPATH`. The lockfile
+captured on 2026-08-16 described an environment that was not serving requests.
+
+That is now fixed rather than merely documented. The service runs from
+`.venv-openvoice-clean`, with both packages installed non-editably from wheels
+built at the pinned commits, `PYTHONPATH` unset, and `/health` reporting
+`installedFromWheel: true` so the claim is checkable from outside.
 
 ## What is not met, and what it would take
 
@@ -119,18 +122,18 @@ Requires media-ingest running with `OPENVOICE_SERVICE_URL` set, and the
 OpenVoice service up.
 
 ```
-node scripts/verify-personal-voice.mjs en es
-node scripts/verify-personal-voice.mjs es en
-node scripts/verify-personal-voice.mjs en fr
+node scripts/verify-personal-voice.mjs en es    # 14/14 on the clean runtime
+node scripts/verify-personal-voice.mjs es en    # 14/14
+node scripts/verify-personal-voice.mjs en fr    # 14/14
 ```
 
-The engine currently needs the source checkouts on its path, which is itself
-gate 4 being unmet:
+The engine runs from the pinned clean environment, with no `PYTHONPATH`:
 
 ```
-$env:PYTHONPATH = "$PWD\.openvoice-src\MeloTTS;$PWD\.openvoice-src\OpenVoice"
-.\.venv-openvoice\Scripts\python.exe services\openvoice-service\server.py
+.\.venv-openvoice-clean\Scripts\python.exe services\openvoice-service\server.py
 ```
+
+Wait for `ready: true` before expecting a personal voice — see below.
 
 Each run enrols a fresh voice, speaks, checks intelligibility, restarts
 media-ingest to prove the record persisted, withdraws consent, and deletes
@@ -151,6 +154,45 @@ These are owner decisions and do not move because a gate went green.
   permitted data crosses that boundary.
 - **Videofy trains from a commercial provider's outputs only where that
   provider's terms explicitly permit training or distillation.**
+
+## Cold start: the anomaly, and its cause
+
+An EN→FR run once produced 13/14 with a single utterance in a standard voice.
+Cutting over to the clean runtime made it far worse and therefore far easier to
+see: EN→ES 13/14 and ES→EN **9/14**.
+
+Measured rather than guessed — first synthesis in a fresh process against warm:
+
+| language | cold | warm |
+|---|---|---|
+| EN | 151308 ms (includes a one-off download; 10 s thereafter) | 1094 ms |
+| FR | 7211 ms | 1039 ms |
+| ES | 2048 ms | 1894 ms |
+
+The caller's timeout is 20 s. So the first utterance in a language did not fail
+— it **timed out**, the router fell back exactly as designed, and the speaker
+was heard in a standard voice with nothing explaining why. Classification:
+caller timeout caused by cold model initialisation. Not a 5xx, not an empty
+response, not a lookup failure.
+
+Raising the timeout would have hidden it: a caller waiting 151 seconds for one
+sentence is not a working call either. Instead the service now separates
+**liveness** from **readiness** — the port opens immediately, models load in a
+background thread, and a language is advertised only once it has been loaded AND
+had one inference performed. `/health` reports `ready`.
+
+Five complete restarts of the clean runtime, first request being EN→FR:
+
+```
+round 1 ready after 20.3s   fr 826ms  fallback=no    es 640ms  fallback=no
+round 2 ready after 21.4s   fr 1136ms fallback=no    es 936ms  fallback=no
+round 3 ready after 23.4s   fr 1140ms fallback=no    es 883ms  fallback=no
+round 4 ready after 20.8s   fr 758ms  fallback=no    es 648ms  fallback=no
+round 5 ready after 20.2s   fr 837ms  fallback=no    es 661ms  fallback=no
+```
+
+Cold first-request fallbacks: **0/5**. Readiness costs about 21 seconds of
+startup, once, instead of one wrong voice per language per restart.
 
 ## Where identity stands, above all of this
 
