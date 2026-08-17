@@ -6,6 +6,12 @@ import { basename, extname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { AudioChunkMetadata } from '@videofy-live/shared-types';
 import { MediaIngestError } from './ingest-error.js';
+import { logger } from './logger.js';
+import {
+  readHallucinationThresholds,
+  rejectHallucinatedSpeech,
+  type HallucinationThresholds,
+} from './speech-confidence.js';
 import {
   PYTHON_WORKER_LOOP,
   createPersistentPythonWorker,
@@ -53,6 +59,15 @@ export interface TranscriptionSegment {
   text: string;
   startMs: number;
   endMs: number;
+  /**
+   * The model's own estimate that this segment contained no speech, 0-1.
+   *
+   * Optional because not every provider reports it. Present, it is what
+   * separates an utterance from a fabrication — see speech-confidence.ts.
+   */
+  noSpeechProb?: number | null;
+  /** Mean token log-probability; closer to 0 is more confident. */
+  avgLogProb?: number | null;
 }
 
 export interface TranscriptionProviderResult {
@@ -175,6 +190,9 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
   private readonly workers = new Map<FasterWhisperConfig['device'], PythonWorkerLike>();
   private preferCpuFallback = false;
 
+  /** Where "the model heard nothing" is defined. Read once, at construction. */
+  private readonly hallucination: HallucinationThresholds = readHallucinationThresholds(process.env);
+
   constructor(private readonly options: FasterWhisperProviderOptions) {
     validateFasterWhisperConfig(options);
     this.runCommand = options.runCommand ?? defaultCommandRunner;
@@ -224,8 +242,20 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
       );
     }
 
+    // Words the model itself believes were never spoken are dropped HERE, at
+    // the boundary where they enter the system, rather than downstream. A
+    // fabricated sentence that gets past this point is translated and then
+    // spoken in the speaker's own voice, and by then nothing can tell it from
+    // something they said.
+    const { kept, rejected } = rejectHallucinatedSpeech(result.segments, this.hallucination);
+    if (rejected > 0) {
+      // A count, never the invented text: writing it down is how it ends up
+      // quoted back as though somebody said it.
+      logger.info('Discarded transcription the model reported as silence', { rejected });
+    }
+
     return {
-      segments: result.segments,
+      segments: kept,
       detectedLanguage: result.detectedLanguage,
       confidence: result.confidence,
       providerLatencyMs,
@@ -406,7 +436,17 @@ function parseFasterWhisperSegments(value: unknown): TranscriptionSegment[] {
       typeof entry['endMs'] === 'number' && Number.isFinite(entry['endMs'])
         ? Math.max(startMs, Math.round(entry['endMs']))
         : startMs;
-    segments.push({ text: entry['text'], startMs, endMs });
+    const probability = (name: string): number | null =>
+      typeof entry[name] === 'number' && Number.isFinite(entry[name] as number)
+        ? (entry[name] as number)
+        : null;
+    segments.push({
+      text: entry['text'],
+      startMs,
+      endMs,
+      noSpeechProb: probability('noSpeechProb'),
+      avgLogProb: probability('avgLogProb'),
+    });
   }
   return segments;
 }
@@ -522,10 +562,17 @@ def handle(payload):
     for segment in segments:
         text = (segment.text or "").strip()
         if text:
+            # noSpeechProb and avgLogProb are the model's own evidence that it
+            # heard nothing and guessed anyway. Discarding them — as this did —
+            # leaves no way to tell an utterance from a fabrication.
+            no_speech = getattr(segment, "no_speech_prob", None)
+            avg_logprob = getattr(segment, "avg_logprob", None)
             segment_payloads.append({
                 "text": text,
                 "startMs": int(round((segment.start or 0.0) * 1000)),
                 "endMs": int(round((segment.end or 0.0) * 1000)),
+                "noSpeechProb": no_speech if isinstance(no_speech, float) and math.isfinite(no_speech) else None,
+                "avgLogProb": avg_logprob if isinstance(avg_logprob, float) and math.isfinite(avg_logprob) else None,
             })
     confidence = getattr(info, "language_probability", None)
     if confidence is not None and not math.isfinite(confidence):
