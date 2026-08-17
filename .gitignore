@@ -227,3 +227,7 @@ build/
 # Visual-review captures: binary, regenerated on demand, and not evidence Git
 # should carry.
 .videofy-screenshots/
+
+# Locally built engine wheels. Identified by hash in engine-sources.json and
+# rebuildable from pinned commits, so never committed.
+.engine-dist/

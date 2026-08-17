@@ -1,29 +1,74 @@
 {
-  "schema": 1,
-  "note": "Upstream sources the personal-voice engine is built from. Pinned to exact commits so a runtime is rebuildable rather than whatever a checkout happened to be on. The repositories are NOT vendored into Videofy: they are third-party MIT projects and copying them would make Videofy responsible for code it does not maintain.",
+  "schema": 2,
+  "note": "Upstream sources the personal-voice engine is built from, pinned to exact commits, plus the wheels built from them. The repositories are NOT vendored: they are third-party MIT projects and copying them would make Videofy responsible for code it does not maintain. The wheels are built locally and identified by hash rather than committed.",
   "sources": [
     {
       "project": "OpenVoice",
       "repository": "https://github.com/myshell-ai/OpenVoice.git",
       "commit": "74a1d147b17a8c3092dd5430504bd83ef6c7eb23",
       "licence": "MIT",
-      "role": "Tone-colour converter: extracts a speaker embedding and repaints base-speaker audio with it."
+      "role": "Tone-colour converter: extracts a speaker representation and repaints base-speaker audio with it.",
+      "wheel": {
+        "filename": "myshell_openvoice-0.0.0-py3-none-any.whl",
+        "sha256": "5b33222801d4b099a10b86c731132e3d9633d60353b13a672cf5f2a6aaaeabac"
+      },
+      "installedWith": "--no-deps",
+      "installedWithReason": "Upstream metadata requires faster-whisper==0.9.0 (and through it an old PyAV that fails to build from source), whisper-timestamped and a pinned gradio — all for the se_extractor/Whisper path Videofy never calls. Proved by scripts/openvoice-runtime-graph.py, which exercises the real path and reports that none of them are imported. Its genuine runtime need, wavmark, is installed explicitly."
     },
     {
       "project": "MeloTTS",
       "repository": "https://github.com/myshell-ai/MeloTTS.git",
       "commit": "209145371cff8fc3bd60d7be902ea69cbdb7965a",
       "licence": "MIT",
-      "role": "Base speakers. Delivery — accent, rhythm, expressiveness — comes from here rather than from the enrolled voice."
+      "role": "Base speakers. Delivery — accent, rhythm, expressiveness — comes from here rather than from the enrolled voice.",
+      "wheel": {
+        "filename": "melotts-0.1.2-py3-none-any.whl",
+        "sha256": "75bef0187399944f18ff55b74222f244c18f9807ed26e8e1eb5205989b46f59e"
+      },
+      "installedWith": "with dependencies"
     }
   ],
   "checkoutRoot": ".openvoice-src",
+  "wheelOutput": ".engine-dist",
+  "deliberateExclusions": [
+    {
+      "package": "faster-whisper / ctranslate2 / av / whisper-timestamped",
+      "reason": "Required by upstream OpenVoice metadata for se_extractor, which this service does not use. Never imported by the executed path."
+    },
+    {
+      "package": "unidic",
+      "reason": "Installs an EMPTY Japanese dictionary directory that mecab then prefers over the bundled unidic-lite, breaking French synthesis at import time. Videofy synthesises no Japanese."
+    }
+  ],
+  "additionalRuntimeRequirements": [
+    {
+      "package": "wavmark",
+      "reason": "ToneColorConverter imports it at construction. The service watermarks every generated clip, so this is genuinely required and was skipped by --no-deps."
+    },
+    {
+      "package": "setuptools<81",
+      "reason": "librosa 0.9.1 imports pkg_resources, which newer setuptools no longer provides."
+    }
+  ],
   "rebuild": [
-    "git clone <repository> .openvoice-src/<project>",
-    "git -C .openvoice-src/<project> checkout <commit>",
-    "python -m venv .venv-openvoice",
-    ".venv-openvoice/Scripts/python -m pip install torch==2.7.1+cu128 torchaudio==2.7.1+cu128 --index-url https://download.pytorch.org/whl/cu128",
-    ".venv-openvoice/Scripts/python -m pip install -e .openvoice-src/OpenVoice -e .openvoice-src/MeloTTS",
+    "git clone <repository> .openvoice-src/<project> && git -C .openvoice-src/<project> checkout <commit>",
+    "python -m venv .venv-openvoice-clean",
+    ".venv-openvoice-clean/Scripts/python -m pip install torch==2.7.1+cu128 torchaudio==2.7.1+cu128 --index-url https://download.pytorch.org/whl/cu128",
+    ".venv-openvoice-clean/Scripts/python -m pip wheel --no-deps .openvoice-src/OpenVoice -w .engine-dist",
+    ".venv-openvoice-clean/Scripts/python -m pip wheel --no-deps .openvoice-src/MeloTTS -w .engine-dist",
+    ".venv-openvoice-clean/Scripts/python -m pip install --no-deps .engine-dist/myshell_openvoice-0.0.0-py3-none-any.whl",
+    ".venv-openvoice-clean/Scripts/python -m pip install .engine-dist/melotts-0.1.2-py3-none-any.whl",
+    ".venv-openvoice-clean/Scripts/python -m pip install wavmark \"setuptools<81\"",
+    ".venv-openvoice-clean/Scripts/python -m pip uninstall -y unidic",
+    "python scripts/openvoice-runtime-graph.py     # must import none of the excluded packages",
     "python scripts/openvoice-provenance.py --write"
-  ]
+  ],
+  "isolationProof": {
+    "date": "2026-08-17",
+    "pythonPathUnset": true,
+    "importsResolveFrom": "site-packages",
+    "sourceCheckoutsRenamedAway": true,
+    "enginePathExercised": ["load_ckpt", "extract_se", "convert", "melo TTS.tts_to_file"],
+    "result": "converter produced audio with the source checkouts unavailable"
+  }
 }
