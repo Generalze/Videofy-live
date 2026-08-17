@@ -39,6 +39,7 @@ import {
   type AudioExtractionInput,
 } from './audio-extraction.js';
 import { parseVoiceOwnerId } from '@videofy-live/participant-contracts';
+import { createRepetitionFilter, type RepetitionFilter } from './speech-confidence.js';
 import { MediaIngestError } from './ingest-error.js';
 import {
   MockTranscriptionProvider,
@@ -512,6 +513,14 @@ export class ProcessingSessionStore {
   private readonly onGeneratedAudioReady: (event: GeneratedAudioEvent, session: ProcessingSession) => void;
   private readonly generatedAudioReadyKeysBySession = new Map<string, Set<string>>();
   private readonly transcriptionSequences = new Map<string, number>();
+  /**
+   * Per-session loop detection for the recogniser.
+   *
+   * Whisper repeats the same sentence chunk after chunk when a speaker stops
+   * talking, so a live caller's own cloned voice recites one line until they
+   * mute. Kept per session because a loop is a property of one conversation.
+   */
+  private readonly repetitionFilters = new Map<string, RepetitionFilter>();
   private readonly viewerReadyRenders = new Map<string, Promise<void>>();
   private readonly targetLanguageTallies = new Map<string, MutableSessionLanguageTallies>();
 
@@ -788,6 +797,7 @@ export class ProcessingSessionStore {
       this.viewerReadyRenders.delete(existing.id);
       this.targetLanguageTallies.delete(existing.id);
       this.voiceOwnersBySession.delete(existing.id);
+      this.repetitionFilters.delete(existing.id);
     }
 
     const sourceLanguageControl = createInitialSourceLanguageControl({
@@ -1622,6 +1632,7 @@ export class ProcessingSessionStore {
     this.targetLanguageTallies.delete(sessionId);
     // The call is over; there is no reason to keep knowing whose voice it was.
     this.voiceOwnersBySession.delete(sessionId);
+    this.repetitionFilters.delete(sessionId);
     return true;
   }
 
@@ -3538,11 +3549,27 @@ export class ProcessingSessionStore {
           createdAt: new Date().toISOString(),
         };
       });
+    // A sentence the recogniser has locked onto is dropped here, before it
+    // becomes a caption, a translation and a spoken clip. The speaker has
+    // stopped talking; nothing downstream can tell that from speech.
+    //
+    // LIVE CALLS ONLY. In a recorded programme three identical lines can be a
+    // chorus, a repeated announcement, or a stutter somebody wants captioned,
+    // and there is no cloned voice reciting them at a listener. The harm this
+    // prevents is specific to a conversation, so the rule is too.
+    const loopFilter = isRealtimeCallSession(session)
+      ? this.repetitionFilterFor(session.id)
+      : null;
+    const withoutLoops = !loopFilter ? transcribed : transcribed.filter((event) => {
+      // Never logged with its text: writing a fabrication down is how it gets
+      // quoted back as something somebody said.
+      return !event.sourceText || !loopFilter.isLooping(event.sourceText);
+    });
     session.transcription.events = session.transcription.events
       .filter((event) => event.chunkId !== transcribing.chunkId)
-      .concat(transcribed)
+      .concat(withoutLoops)
       .sort((a, b) => a.sequence - b.sequence);
-    return transcribed;
+    return withoutLoops;
   }
 
   private updateTranscriptionProgress(session: ProcessingSession): void {
@@ -4237,6 +4264,15 @@ export class ProcessingSessionStore {
       voiceId: this.voiceIdForLanguage(session, session.targetLanguage),
       progressPct: events.length === 0 ? 0 : Math.round((generatedSegments / events.length) * 100),
     };
+  }
+
+  private repetitionFilterFor(sessionId: string): RepetitionFilter {
+    let filter = this.repetitionFilters.get(sessionId);
+    if (!filter) {
+      filter = createRepetitionFilter();
+      this.repetitionFilters.set(sessionId, filter);
+    }
+    return filter;
   }
 
   private voiceIdForLanguage(session: ProcessingSession, targetLanguage: string): string {

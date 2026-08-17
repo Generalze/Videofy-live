@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  createRepetitionFilter,
   DEFAULT_HALLUCINATION_THRESHOLDS,
   hallucinationReason,
   isMemorisedCredit,
@@ -76,6 +77,8 @@ describe('memorised subtitle credits', () => {
       'Subtitles directed by the community of Amara.org',
       "sur les communautés de l'Université de Montréal.",
       'on the communities of the University of Montreal.',
+      'And I will see you in the next video.',
+      'et je vous verrai dans la prochaine vidéo.',
     ]) {
       expect(hallucinationReason({ text, noSpeechProb: 0.05, avgLogProb: -0.15 })).toBe(
         'memorised-credit',
@@ -104,6 +107,47 @@ describe('memorised subtitle credits', () => {
       expect(isMemorisedCredit(text), text).toBe(false);
       expect(hallucinationReason({ text, noSpeechProb: 0.05, avgLogProb: -0.2 })).toBeNull();
     }
+  });
+});
+
+describe('the recogniser looping on one sentence', () => {
+  it('stops the exact loop observed after a speaker went quiet', () => {
+    // Eight identical sentences in the speaker's own cloned voice, ending only
+    // when they muted.
+    const filter = createRepetitionFilter();
+    const looped = 'We will try to catch them, and I will see you in the next video.';
+
+    const kept = Array.from({ length: 8 }, () => looped).filter((t) => !filter.isLooping(t));
+
+    expect(kept).toHaveLength(2);
+  });
+
+  it('allows a person repeating themselves', () => {
+    // "no, no" is speech. A caption system that deletes the second one is
+    // broken in a way that is harder to notice than the loop it prevents.
+    const filter = createRepetitionFilter();
+
+    expect(filter.isLooping('No.')).toBe(false);
+    expect(filter.isLooping('No.')).toBe(false);
+  });
+
+  it('treats punctuation drift between decodes as the same sentence', () => {
+    // The observed loop alternated "catch them and I will" with
+    // "catch them, and I will" — the same sentence, differently punctuated.
+    const filter = createRepetitionFilter();
+
+    expect(filter.isLooping('We will try to catch them and I will see you')).toBe(false);
+    expect(filter.isLooping('We will try to catch them, and I will see you.')).toBe(false);
+    expect(filter.isLooping('We will try to catch them and I will see you!')).toBe(true);
+  });
+
+  it('resets when the speaker says something else', () => {
+    const filter = createRepetitionFilter();
+    filter.isLooping('Same sentence.');
+    filter.isLooping('Same sentence.');
+
+    expect(filter.isLooping('Something different.')).toBe(false);
+    expect(filter.isLooping('Same sentence.')).toBe(false);
   });
 });
 

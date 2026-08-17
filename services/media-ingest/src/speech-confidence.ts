@@ -101,6 +101,15 @@ export type HallucinationReason =
  */
 const MEMORISED_CREDITS: readonly RegExp[] = [
   /amara\.org/i,
+  // The video-outro family. Observed repeating eight times after the speaker
+  // stopped talking, and it only stopped when they muted:
+  //   "We will try to catch them, and I will see you in the next video."
+  //   "Nous allons essayer de les attraper, et je vous verrai dans la prochaine vidéo."
+  /see you (in|on) the next (video|one)/i,
+  /(dans|à) la prochaine vidéo/i,
+  /à la prochaine/i,
+  /like and subscribe/i,
+  /n[’']oubliez pas de vous abonner/i,
   /sous-titres? (réalisés?|faits?) par/i,
   /sous-titrage (société|par)/i,
   /subtitles? (by|directed by|created by|provided by)/i,
@@ -169,6 +178,55 @@ export function rejectHallucinatedSpeech<T extends SpeechCandidate>(
     else rejected += 1;
   }
   return { kept, rejected };
+}
+
+/**
+ * Suppress a sentence the recogniser has started looping on.
+ *
+ * Whisper repeats. Given silence it will emit the same memorised sentence for
+ * chunk after chunk, and a speaker who has simply stopped talking gets their
+ * cloned voice reciting one line until they mute. Observed eight times running.
+ *
+ * The phrase list catches the ones we have seen. This catches the ones we have
+ * not, because a loop is recognisable by its shape rather than its wording.
+ *
+ * Two consecutive identical sentences are ALLOWED. People repeat themselves —
+ * "no, no" — and a caption system that deletes the second "no" is broken in a
+ * way that is harder to notice than the loop it was preventing. The third
+ * identical sentence in a row is not a person.
+ */
+export const MAX_CONSECUTIVE_REPEATS = 2;
+
+export interface RepetitionFilter {
+  /** True when this text should be dropped as a loop. */
+  isLooping(text: string): boolean;
+}
+
+export function createRepetitionFilter(
+  maxConsecutive: number = MAX_CONSECUTIVE_REPEATS,
+): RepetitionFilter {
+  let previous: string | null = null;
+  let run = 0;
+  return {
+    isLooping(text: string): boolean {
+      // Compared on normalised text so punctuation drift between decodes —
+      // "catch them and I will" vs "catch them, and I will" — still counts as
+      // the same sentence, which is exactly how the observed loop varied.
+      const normalised = text
+        .toLowerCase()
+        .replace(/[^\p{Letter}\p{Number} ]/gu, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (normalised.length === 0) return false;
+      if (normalised === previous) {
+        run += 1;
+        return run >= maxConsecutive;
+      }
+      previous = normalised;
+      run = 0;
+      return false;
+    },
+  };
 }
 
 function numberOrNull(value: number | null | undefined): number | null {
