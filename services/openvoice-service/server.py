@@ -19,6 +19,10 @@ development-demo only; it is not production certified, and its output is
 currently watermarked.
 """
 
+# Python 3.9 evaluates annotations at runtime; `X | None` needs this.
+from __future__ import annotations
+
+import hashlib
 import io
 import json
 import os
@@ -48,6 +52,58 @@ MELO_LANGUAGE = {"en": "EN", "es": "ES", "fr": "FR"}
 SOURCE_SE = {"en": "en-newest", "es": "es", "fr": "fr"}
 
 
+PROVENANCE = Path(
+    os.environ.get("OPENVOICE_PROVENANCE", "services/openvoice-service/engine-provenance.json")
+)
+# Set to "0" to serve without provenance checking. A deliberate escape hatch for
+# the moment somebody is deriving a new artifact and does not yet have its hash.
+VERIFY_PROVENANCE = os.environ.get("OPENVOICE_VERIFY_PROVENANCE", "1") != "0"
+
+_manifest_cache: dict | None = None
+
+
+def _manifest() -> dict:
+    """Recorded hashes for behaviour-critical artifacts, or an empty record."""
+    global _manifest_cache
+    if _manifest_cache is None:
+        try:
+            _manifest_cache = json.loads(PROVENANCE.read_text(encoding="utf-8"))
+        except Exception:
+            _manifest_cache = {}
+    return _manifest_cache
+
+
+def _sha256(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def artifact_ok(relative_name: str) -> bool:
+    """Whether this artifact is present AND is the one that was validated.
+
+    A filename proves nothing about which model is behind it. Without this, a
+    checkpoint swapped by a bad sync or a half-finished download would be
+    synthesised with silently, and the resulting voice would be attributed to a
+    system somebody had signed off.
+    """
+    path = CHECKPOINTS / relative_name
+    if not path.is_file():
+        return False
+    if not VERIFY_PROVENANCE:
+        return True
+    recorded = (_manifest().get("artifacts") or {}).get(relative_name) or {}
+    expected = recorded.get("sha256")
+    # No recorded hash means unidentified, and unidentified is not usable.
+    # Failing closed here costs a language; failing open costs the meaning of
+    # every acceptance run performed against "the model".
+    return bool(expected) and _sha256(path) == expected
+
+
 def speakable_languages() -> list[str]:
     """Languages this engine can ACTUALLY speak, checked against the files.
 
@@ -58,10 +114,14 @@ def speakable_languages() -> list[str]:
 
     A capability that is not on disk is not a capability.
     """
+    # The converter is required by every language, so a converter that is not
+    # the validated one makes nothing speakable.
+    if not artifact_ok("converter/checkpoint.pth"):
+        return []
     return [
         language
         for language, name in SOURCE_SE.items()
-        if (CHECKPOINTS / f"base_speakers/ses/{name}.pth").exists()
+        if artifact_ok(f"base_speakers/ses/{name}.pth")
     ]
 
 ASSET_DIR.mkdir(parents=True, exist_ok=True)
@@ -157,6 +217,9 @@ class Handler(BaseHTTPRequestHandler):
             "unavailableLanguages": [
                 language for language in SOURCE_SE if language not in speakable_languages()
             ],
+            # Whether the artifacts behind those languages are the validated
+            # ones. False means the engine is serving whatever is on disk.
+            "provenanceVerified": VERIFY_PROVENANCE and bool(_manifest().get("artifacts")),
         })
 
     def do_DELETE(self):  # noqa: N802

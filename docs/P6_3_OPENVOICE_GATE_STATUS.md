@@ -30,7 +30,7 @@ string.
 | # | Gate | Status | Evidence |
 |---|------|--------|----------|
 | 1 | Licence provenance | **Met** | OpenVoice V2 is MIT; MeloTTS base speakers ship with it. Selected on licence grounds ahead of quality grounds (§21.9.2.3). |
-| 2 | Checkpoint provenance | **Partial** | Checkpoints are the published OpenVoice V2 release. No hash manifest is recorded, so "the same checkpoints" is an assumption. The French source-speaker embedding is now DERIVED locally rather than published — see below. |
+| 2 | Checkpoint provenance | **Partial** | Every behaviour-critical artifact is now SHA-256 recorded in [`engine-provenance.json`](../services/openvoice-service/engine-provenance.json) and verified at startup. Still partial because the derived French embedding is **not byte-reproducible** — see below. |
 | 3 | Dependency audit | **Not met** | The lockfile was captured from `.venv-openvoice`, but the service was found running on the SYSTEM Python 3.9 with `melo` and `openvoice` imported from source checkouts under `.openvoice-src`. The lockfile therefore describes an environment that was not the one in use. Corrected 2026-08-17; see below. |
 | 4 | Installation reproducibility | **Not met** | Two source checkouts (`MeloTTS`, `OpenVoice`) are reached through `PYTHONPATH` rather than installed, and nothing records that. A clean machine following this repository would not reproduce the running service. |
 | 5 | EN→ES cloning | **Met** | `verify-personal-voice.mjs en es` — 14/14. |
@@ -39,7 +39,7 @@ string.
 | 7 | Identity similarity | **Owner-judged, development-demo only** | ~7/10, owner, 2026-08-16. Explicitly not a production claim. No automated similarity metric exists, and one should not be invented to make this row look greener. |
 | 8 | Intelligibility | **Met** | Cloned audio fetched back through the delivery route and re-recognised: 100% content-word overlap in both directions. Held to the same 60% bar as the standard path. |
 | 9 | Latency | **Met for a live call** | Engine synthesis 438–669 ms for 2.7–4.2 s of speech; ratio 0.12–0.17. Comfortably faster than real time on the development GPU. |
-| 10 | GPU/CPU behaviour | **Met (single GPU)** | CUDA on sm_120 (RTX 5060 Blackwell), 1.2–1.5 GB VRAM. CPU-only fallback behaviour is not characterised. |
+| 10 | GPU/CPU behaviour | **Partial** | GPU characterised: CUDA on sm_120 (RTX 5060 Blackwell), 1.2–1.5 GB VRAM. CPU-only behaviour has never been run and is unknown, not slow. "Met (single GPU)" previously stood next to evidence saying the CPU half was uncharacterised — a status doing administrative work on the missing half of its own gate. |
 | 11 | Failure behaviour | **Met** | Personal synthesis failure re-speaks the same text in the session's own standard voice, not the service default. Covered by tests against the real wiring, and observed live: after deletion the next utterance used the standard voice on the same session. |
 | 12 | Cleanup behaviour | **Met** | Revocation and deletion destroy the recording, the derived asset and already-generated audio. Verified live: a clip fetchable before withdrawal (200) is gone after (404). Records survive restart; material that outlives its record is swept at startup. |
 
@@ -58,9 +58,29 @@ how the published ones were made, and the French base speaker was already
 installed. No network, no drift against a release archive, and the embedding
 provably matches the voice this machine actually synthesises with.
 
-It is also, unavoidably, **not the published `fr.pth`**. That is why gate 2 stays
-partial: two machines could now hold different French embeddings and neither
-would know. A hash manifest would close both halves of that.
+### The derivation is NOT byte-deterministic
+
+Tested rather than assumed. The validated `fr.pth` was set aside, a fresh
+derivation run from the same pinned environment, and the hashes compared:
+
+```
+validated  : f79376d3ace46158f2904436f7439ab89666a27839661e77549838bd85026b6c
+re-derived : ed50743ef8c25eccfa1c92689bb2420d03b75f0a2bfd8fe67e23951f4f5ac669
+NOT DETERMINISTIC
+```
+
+MeloTTS synthesis samples, so every derivation produces different audio and
+therefore a different embedding. The validated artifact was restored; the
+re-derived one was discarded.
+
+The consequence is a rule, not a caveat: **`fr.pth` is a versioned external
+model artifact identified by its hash, and must be distributed rather than
+regenerated per machine.** A second machine running the derivation script gets a
+French voice that is *similar* and not *the same*, and no acceptance evidence
+gathered here would transfer to it. The script remains useful for bootstrapping
+a language nobody has yet; it is not a substitute for shipping the bytes.
+
+This is why gate 2 stays partial and cannot close by adding hashes alone.
 
 Finding this exposed a bigger problem. The service was running on the **system
 Python 3.9**, not the isolated `.venv-openvoice` this document claimed, with
@@ -71,10 +91,11 @@ now marked **not met**, which is what they always were.
 
 ## What is not met, and what it would take
 
-**Checkpoint provenance (2).** Record the hashes of the checkpoint files the
-service actually loads, and verify them at startup. Without this, "the same
-model we validated" is trust rather than a fact, and a silently swapped
-checkpoint is invisible.
+**Checkpoint provenance (2).** Hashing and startup verification are DONE: a
+mismatched artifact removes its language rather than being synthesised with
+(proved by tampering the French hash and watching `["en","es","fr"]` become
+`["en","es"]`). What remains is distribution — the derived `fr.pth` must be
+published by hash, because it cannot be reproduced.
 
 **Dependency audit (3) and installation reproducibility (4).** Decide what the
 engine environment actually IS, then record it: pin the `MeloTTS` and
@@ -131,12 +152,28 @@ These are owner decisions and do not move because a gate went green.
 - **Videofy trains from a commercial provider's outputs only where that
   provider's terms explicitly permit training or distillation.**
 
-## Known limitation above all of this
+## Where identity stands, above all of this
 
-Voice ownership is a `devid_` value in browser `localStorage`. It is scoped to a
-browser profile, not a person: two people sharing one browser share one voice,
-and the same person on a second device cannot find theirs. Every guarantee in
-the table above is sound and rests on this. `VoiceOwnerId` is the single seam
-that makes the replacement cheap — an account id takes its place and nothing in
-the voice-provider or call-routing contracts moves — but the replacement has not
-happened, and this identity must not outlive P6.3.
+Voice ownership was a `devid_` value in browser `localStorage` until 2026-08-16.
+That is no longer true and this section previously still said it was.
+
+`VoiceOwnerId` is now an account id, derived by the gateway from a verified
+session token and never accepted from a client. Enrolment, deletion and call
+join all authenticate; resume re-proves identity on every reconnect rather than
+keeping whoever was last attached to a seat.
+
+| | |
+|---|---|
+| Browser-local authority removed | done |
+| Client owner assertion removed | done, the field no longer exists |
+| Enrolment / deletion authenticated | done |
+| Call join authenticated | done |
+| Resume re-verifies identity | done |
+| Server-side identity proof | `verify-account-identity.mjs` 8/8 |
+| Human browser acceptance | **pending** — see [ACCOUNT_IDENTITY_ACCEPTANCE.md](ACCOUNT_IDENTITY_ACCEPTANCE.md) |
+
+One limitation is deliberate and unclosed: services verify session tokens
+locally, so a token stays usable at the gateway and media-ingest until it
+expires even after the account service has revoked that generation. That keeps a
+call joinable while sign-in restarts, and it must be revisited before any public
+staging.

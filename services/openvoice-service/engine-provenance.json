@@ -1,0 +1,64 @@
+{
+  "artifacts": {
+    "base_speakers/ses/en-newest.pth": {
+      "bytes": 1692,
+      "sha256": "6a3798229b1114f0e9cc137b33211809def7dda5a8a9398d5a112c0b42699177"
+    },
+    "base_speakers/ses/es.pth": {
+      "bytes": 1692,
+      "sha256": "b8cece8853fb75b9f5217a1f5cda9807bac92a3e4c4547fc651e404d05deff63"
+    },
+    "base_speakers/ses/fr.pth": {
+      "bytes": 2438,
+      "sha256": "f79376d3ace46158f2904436f7439ab89666a27839661e77549838bd85026b6c"
+    },
+    "converter/checkpoint.pth": {
+      "bytes": 131320490,
+      "sha256": "9652c27e92b6b2a91632590ac9962ef7ae2b712e5c5b7f4c34ec55ee2b37ab9e"
+    },
+    "converter/config.json": {
+      "bytes": 838,
+      "sha256": "9dfff60350b8c63f2c664efd92a61b2516efb22671466960f0e5dfebd881fa47"
+    }
+  },
+  "checkpointsRoot": ".openvoice-src/checkpoints_v2",
+  "modules": {
+    "melo": {
+      "importable": true,
+      "insideRepository": true,
+      "installed": false,
+      "location": ".openvoice-src/MeloTTS/melo",
+      "version": null
+    },
+    "openvoice": {
+      "importable": true,
+      "insideRepository": true,
+      "installed": false,
+      "location": ".openvoice-src/OpenVoice/openvoice",
+      "version": null
+    }
+  },
+  "python": {
+    "pythonPathSet": true,
+    "version": "3.9.13",
+    "virtualEnvironment": true
+  },
+  "schema": 1,
+  "sources": {
+    "MeloTTS": {
+      "commit": "209145371cff8fc3bd60d7be902ea69cbdb7965a",
+      "repository": "https://github.com/myshell-ai/MeloTTS.git"
+    },
+    "OpenVoice": {
+      "commit": "74a1d147b17a8c3092dd5430504bd83ef6c7eb23",
+      "repository": "https://github.com/myshell-ai/OpenVoice.git"
+    }
+  },
+  "torch": {
+    "cudaAvailable": true,
+    "cudaBuild": "12.8",
+    "device": "NVIDIA GeForce RTX 5060 Laptop GPU",
+    "importable": true,
+    "version": "2.7.1+cu128"
+  }
+}

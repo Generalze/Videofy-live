@@ -19,6 +19,14 @@ Usage:
 Writes <checkpoints>/base_speakers/ses/<name>.pth and refuses to overwrite an
 existing one — a published embedding is the reference, and quietly replacing it
 would make two machines disagree about what a voice sounds like.
+
+NOT BYTE-DETERMINISTIC, and this was measured rather than assumed: two runs from
+the same pinned environment produced different hashes, because MeloTTS samples
+during synthesis. So this BOOTSTRAPS a language nobody has an embedding for; it
+does not reproduce one. The artifact it produces must then be treated as a
+versioned model file identified by its SHA-256 and distributed by hash. Running
+this on a second machine yields a voice that is similar, not the same, and no
+acceptance evidence gathered against the first transfers to it.
 """
 
 import os

@@ -150,6 +150,9 @@ venv/
 # Isolated OpenVoice V2 environment (Python 3.9 + CUDA torch). Multi-gigabyte,
 # machine-specific, and deliberately never shared with .venv-ai.
 .venv-openvoice/
+# Reproduction environment built to prove the runtime installs from pinned
+# sources without PYTHONPATH. Rebuildable, so never committed.
+.venv-openvoice-clean/
 # Large wheels staged for resumable download on a slow link.
 .wheels/
 # Stage-gate evidence for the OpenVoice spike: machine-specific pip/CUDA state.

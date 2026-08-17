@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "note": "Upstream sources the personal-voice engine is built from. Pinned to exact commits so a runtime is rebuildable rather than whatever a checkout happened to be on. The repositories are NOT vendored into Videofy: they are third-party MIT projects and copying them would make Videofy responsible for code it does not maintain.",
+  "sources": [
+    {
+      "project": "OpenVoice",
+      "repository": "https://github.com/myshell-ai/OpenVoice.git",
+      "commit": "74a1d147b17a8c3092dd5430504bd83ef6c7eb23",
+      "licence": "MIT",
+      "role": "Tone-colour converter: extracts a speaker embedding and repaints base-speaker audio with it."
+    },
+    {
+      "project": "MeloTTS",
+      "repository": "https://github.com/myshell-ai/MeloTTS.git",
+      "commit": "209145371cff8fc3bd60d7be902ea69cbdb7965a",
+      "licence": "MIT",
+      "role": "Base speakers. Delivery — accent, rhythm, expressiveness — comes from here rather than from the enrolled voice."
+    }
+  ],
+  "checkoutRoot": ".openvoice-src",
+  "rebuild": [
+    "git clone <repository> .openvoice-src/<project>",
+    "git -C .openvoice-src/<project> checkout <commit>",
+    "python -m venv .venv-openvoice",
+    ".venv-openvoice/Scripts/python -m pip install torch==2.7.1+cu128 torchaudio==2.7.1+cu128 --index-url https://download.pytorch.org/whl/cu128",
+    ".venv-openvoice/Scripts/python -m pip install -e .openvoice-src/OpenVoice -e .openvoice-src/MeloTTS",
+    "python scripts/openvoice-provenance.py --write"
+  ]
+}
