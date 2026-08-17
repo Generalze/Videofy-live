@@ -11,7 +11,18 @@ export interface CallScreenProps {
   participants: readonly CallParticipantSummary[];
   phase: CallConnectionPhase;
   statusNote: string | null;
+  /**
+   * Autoplay policy refused playback. A tap genuinely fixes this, which is why
+   * it is the ONLY state that offers "Enable audio".
+   */
   playbackBlocked: boolean;
+  /**
+   * Translated audio could not be fetched or decoded. A tap cannot fix it, so
+   * offering one would be a button that does nothing — which is worse than
+   * saying plainly that the audio is unavailable. The call continues on the
+   * original voice and captions.
+   */
+  translatedAudioUnavailable: boolean;
   captions: readonly CallCaptionEntry[];
   captionsVisible: boolean;
   audioMode: CallAudioMode;
@@ -64,6 +75,11 @@ export function CallScreen(props: CallScreenProps) {
             <button type="button" className="enable-audio-button" onClick={props.onEnableAudio}>
               Enable audio
             </button>
+          ) : null}
+          {!props.playbackBlocked && props.translatedAudioUnavailable ? (
+            <span className="translated-audio-unavailable" role="alert">
+              Translated audio unavailable
+            </span>
           ) : null}
         </div>
       </header>

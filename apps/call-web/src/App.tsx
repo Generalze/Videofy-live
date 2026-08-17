@@ -6,11 +6,13 @@ import {
   primaryLanguageSubtag,
   resolveCallAudioMix,
 } from './callAudioMix';
+import { CallGeneratedAudioQueueController, generatedClipId } from './callAudioQueue';
+import { createBrowserGeneratedAudioPlayer } from './callGeneratedAudioPlayer';
 import {
-  CallGeneratedAudioQueueController,
-  generatedClipId,
-  type CallQueueAudio,
-} from './callAudioQueue';
+  GeneratedAudioDiagnostics,
+  generatedAudioDiagnosticsEnabled,
+} from './callGeneratedAudioDiagnostics';
+import { GeneratedAudioDiagnosticsPanel } from './GeneratedAudioDiagnosticsPanel';
 import {
   DEFAULT_CALL_CAPTURE_PROFILE,
   captureProfileFromLocation,
@@ -312,6 +314,8 @@ export default function App() {
   const [phase, setPhase] = useState<CallConnectionPhase>('connecting');
   const [statusNote, setStatusNote] = useState<string | null>(null);
   const [playbackBlocked, setPlaybackBlocked] = useState(false);
+  /** Distinct from `playbackBlocked`: a media/source fault no gesture can fix. */
+  const [translatedAudioUnavailable, setTranslatedAudioUnavailable] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
   const sessionRef = useRef<ActiveSession | null>(null);
@@ -352,25 +356,53 @@ export default function App() {
   const remoteAudibleRef = useRef(false);
   const remoteListenerElementRef = useRef<HTMLAudioElement | null>(null);
 
+  /**
+   * TEMPORARY generated-audio forensics — P6.3 pre-M1.
+   *
+   * Recording only. Nothing here influences playback, retry policy or the state
+   * the queue acts on; `diagnosticsTick` exists solely to repaint the panel.
+   */
+  const [diagnosticsTick, setDiagnosticsTick] = useState(0);
+  const diagnosticsEnabledRef = useRef(generatedAudioDiagnosticsEnabled(window.location.search));
+  const diagnosticsRef = useRef<GeneratedAudioDiagnostics | null>(null);
+  if (!diagnosticsRef.current) {
+    diagnosticsRef.current = new GeneratedAudioDiagnostics(
+      // Recording happens either way; only the repaint is conditional, so
+      // turning the panel off costs nothing but also hides nothing.
+      diagnosticsEnabledRef.current
+        ? { onChange: () => setDiagnosticsTick((value) => value + 1) }
+        : {},
+    );
+  }
+  const diagnostics = diagnosticsRef.current;
+
   if (!queueRef.current) {
     // One queue instance for the whole app lifetime: reconnects rebuild peers,
     // never the queue, so audio can never double up.
     queueRef.current = new CallGeneratedAudioQueueController({
-      createAudio: (url) => new Audio(url) as unknown as CallQueueAudio,
+      // ONE player for the app's lifetime. Autoplay permission belongs to the
+      // playback element, not the page, so a per-clip element arrives locked
+      // again every time and "Enable audio" only ever fixes one clip.
+      player: createBrowserGeneratedAudioPlayer({
+        onDiagnostic: (event, detail) => diagnostics.record(event, detail),
+      }),
+      // Attributes the element events that follow to a clip. Observational.
+      onClipAttempt: (clip) => diagnostics.beginClip(generatedClipId(clip), clip.audioUrl),
       onSpeechActiveChange: (active, clip) => {
         setSpeechActive(active);
-        // W4 Path A. The transition already fired exactly at clip start and
-        // clip end; it simply never said WHICH clip, which is the one fact the
-        // gateway ledger needs to match it to what it emitted.
+        // W4 Path A. Fires when the clip becomes AUDIBLE and when it stops —
+        // never when playback was merely attempted, because an interval for a
+        // refused clip would be a fabricated measurement.
         if (clip) {
           reportPlaybackRef.current('generated', active ? 'start' : 'end', generatedClipId(clip));
         }
       },
-      // A blocked or failed clip must never fail silently: surface the
-      // recovery affordance instead of leaving the listener in silence.
+      // Two different failures, two different offers. "Enable audio" is only
+      // honest for an autoplay refusal — a tap cannot fetch a clip that failed
+      // to load, and a button that does nothing is worse than saying so.
       onStateChange: (state) => {
-        if (state.status === 'error') setPlaybackBlocked(true);
-        else if (state.status === 'playing') setPlaybackBlocked(false);
+        setPlaybackBlocked(state.status === 'blocked');
+        setTranslatedAudioUnavailable(state.status === 'source-error' || state.status === 'error');
       },
     });
   }
@@ -574,14 +606,25 @@ export default function App() {
       .catch(() => setPlaybackBlocked(true));
   };
 
+  /**
+   * Runs inside the tap, which is the only context in which either unlock can
+   * succeed. `unlock()` is a real gesture unlock of the persistent generated
+   * player, not another attempt down the same locked path — the previous
+   * `start()` only set a boolean, so on Android every clip re-asked.
+   *
+   * Both paths are unlocked because they are separate elements: the remote
+   * WebRTC stream and the generated clips have their own permissions.
+   */
   const handleEnableAudio = (): void => {
-    queueRef.current?.start();
+    const generated = queueRef.current?.unlock() ?? Promise.resolve();
     const element = remoteAudioElementRef.current;
-    if (!element) return;
-    void element
-      .play()
-      .then(() => setPlaybackBlocked(false))
-      .catch(() => setPlaybackBlocked(true));
+    const original = element ? element.play() : Promise.resolve();
+    void Promise.allSettled([generated, original]).then(() => {
+      const queueBlocked = queueRef.current?.getState().status === 'blocked';
+      const originalBlocked = !!element && element.paused;
+      setPlaybackBlocked(queueBlocked || originalBlocked);
+      syncRemoteOriginalAudible();
+    });
   };
 
   const ensureMicStream = async (): Promise<MediaStream> => {
@@ -863,7 +906,9 @@ export default function App() {
       setPhase('connected');
       setScreen('call');
       // Start inside the click gesture so browsers allow audio playback.
-      queueRef.current?.start();
+      // Not awaited: the join must not wait on an unlock. If it is refused the
+      // queue reports `blocked` and the Enable audio affordance appears.
+      void queueRef.current?.start();
       reportCaptureSettings('join');
       try {
         await establishPeers(socket, mic);
@@ -965,6 +1010,7 @@ export default function App() {
           phase={phase}
           statusNote={statusNote}
           playbackBlocked={playbackBlocked}
+          translatedAudioUnavailable={translatedAudioUnavailable}
           captions={captions}
           captionsVisible={captionsVisible}
           audioMode={audioMode}
@@ -1011,6 +1057,17 @@ export default function App() {
       {/* Single persistent element for the remote original voice. Playback
           only; it is never connected to any capture or publish path. */}
       <audio ref={attachRemoteAudioElement} autoPlay playsInline hidden />
+      {/* TEMPORARY, `?diag=audio` only. Readable on the phone where the fault
+          actually reproduces, so diagnosing it needs no cable and no second
+          machine. `diagnosticsTick` is read here purely to repaint. */}
+      {diagnosticsEnabledRef.current ? (
+        <GeneratedAudioDiagnosticsPanel
+          key={diagnosticsTick}
+          entries={diagnostics.entries()}
+          latestFailure={diagnostics.latestFailure()}
+          onClear={() => diagnostics.clear()}
+        />
+      ) : null}
     </div>
   );
 }

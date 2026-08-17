@@ -1,6 +1,8 @@
 // Repository owner: masterzee001.
 import { parseRuntimeProfile, type RuntimeProfile } from '@videofy-live/ai-registry';
 import { loadRootEnv, readCsv, readPort, readPositiveInt } from './env.js';
+import { resolvePublicIngestUrl } from '@videofy-live/service-env';
+import { logger } from './logger.js';
 import { resolve } from 'node:path';
 
 /**
@@ -168,11 +170,20 @@ export function loadConfig(): IngestConfig {
   });
 
   const port = readPort('INGEST_PORT', 3002);
+  const publicIngest = resolvePublicIngestUrl(process.env, {
+    defaultPort: port,
+    serviceName: 'media-ingest',
+  });
+  for (const warning of publicIngest.warnings) logger.warn(warning);
 
   return {
     aiRuntimeProfile,
     port,
-    ingestPublicUrl: process.env['INGEST_PUBLIC_URL'] ?? `http://localhost:${port}`,
+    // THE url browsers are handed for generated audio. Resolved through the one
+    // shared contract, because this service silently minting `localhost` while
+    // the gateway read a correctly-configured LAN address is precisely how an
+    // Android phone was told to fetch its translated speech from itself.
+    ingestPublicUrl: publicIngest.url,
     gatewayUrl: process.env['GATEWAY_URL'] ?? 'http://localhost:3001',
     internalWebRtcToken: process.env['INTERNAL_WEBRTC_TOKEN']?.trim() || null,
     eventId: process.env['EVENT_ID'] ?? 'demo-event',

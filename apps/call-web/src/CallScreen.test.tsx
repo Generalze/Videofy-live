@@ -55,6 +55,7 @@ function render(overrides: Partial<CallScreenProps> = {}): string {
     phase: 'connected',
     statusNote: null,
     playbackBlocked: false,
+    translatedAudioUnavailable: false,
     captions: [],
     captionsVisible: true,
     audioMode: 'translated',
@@ -176,6 +177,24 @@ describe('CallScreen', () => {
 
   it('offers an explicit way in when the browser blocks playback', () => {
     expect(render({ playbackBlocked: false })).not.toContain('Enable audio');
+  });
+
+  it('does not offer "Enable audio" when the audio simply failed to load', () => {
+    // A tap cannot fetch a clip that 404'd or would not decode. Offering one is
+    // a button that does nothing, which is worse than saying plainly that the
+    // translated audio is unavailable — the call continues on the original
+    // voice and captions either way.
+    const markup = render({ playbackBlocked: false, translatedAudioUnavailable: true });
+
+    expect(markup).not.toContain('Enable audio');
+    expect(markup).toContain('Translated audio unavailable');
+  });
+
+  it('prefers the actionable offer when a gesture really would help', () => {
+    const markup = render({ playbackBlocked: true, translatedAudioUnavailable: true });
+
+    expect(markup).toContain('Enable audio');
+    expect(markup).not.toContain('Translated audio unavailable');
     // Autoplay policy silence is recoverable only by a user gesture, so the
     // affordance has to be present and obvious when it applies.
     expect(render({ playbackBlocked: true })).toContain('Enable audio');

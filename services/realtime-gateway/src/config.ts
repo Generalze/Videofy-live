@@ -1,4 +1,6 @@
 import { loadRootEnv, readCsv, readPort } from './env.js';
+import { resolvePublicIngestUrl } from '@videofy-live/service-env';
+import { logger } from './logger.js';
 import { resolve } from 'node:path';
 
 export interface GatewayConfig {
@@ -34,6 +36,11 @@ export interface GatewayConfig {
 
 export function loadConfig(): GatewayConfig {
   loadRootEnv();
+  const publicIngest = resolvePublicIngestUrl(process.env, {
+    defaultPort: 3002,
+    serviceName: 'realtime-gateway',
+  });
+  for (const warning of publicIngest.warnings) logger.warn(warning);
 
   return {
     port: readPort('GATEWAY_PORT', 3001),
@@ -46,12 +53,10 @@ export function loadConfig(): GatewayConfig {
       'http://localhost:5173,http://localhost:5174,http://localhost:5175',
     ),
     mediaIngestUrl: process.env['MEDIA_INGEST_URL'] ?? 'http://localhost:3002',
-    // Blank counts as unset so a templated MEDIA_INGEST_PUBLIC_URL= line
-    // still falls back to the internal URL.
-    mediaIngestPublicUrl:
-      process.env['MEDIA_INGEST_PUBLIC_URL']?.trim() ||
-      process.env['MEDIA_INGEST_URL']?.trim() ||
-      'http://localhost:3002',
+    // Resolved through the SAME contract media-ingest uses, so the two can no
+    // longer disagree about what a browser will be told. They did, and the
+    // disagreement was invisible on the machine that produced it.
+    mediaIngestPublicUrl: publicIngest.url,
     internalWebRtcToken: process.env['INTERNAL_WEBRTC_TOKEN']?.trim() || null,
     webRtcTranscriptionChunkMs: readPositiveGatewayInt('WEBRTC_TRANSCRIPTION_CHUNK_MS', 5_000),
     webRtcTranscriptionRequestTimeoutMs: readPositiveGatewayInt(

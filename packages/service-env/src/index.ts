@@ -83,3 +83,17 @@ export function loadEnvFile(filePath: string): LoadedEnvFile {
 export function loadRepositoryEnv(fromDirectory: string = process.cwd()): LoadedEnvFile {
   return loadEnvFile(resolve(fromDirectory, '../../.env'));
 }
+
+// One canonical answer to "what URL will a browser be given for generated
+// audio?" — see public-ingest-url.ts for why that needed a module.
+export {
+  DEPRECATED_PUBLIC_INGEST_URL_VARIABLE,
+  PUBLIC_INGEST_URL_VARIABLE,
+  PublicIngestUrlError,
+  REQUIRE_PUBLIC_INGEST_URL_VARIABLE,
+  isLoopbackHost,
+  resolvePublicIngestUrl,
+  type PublicIngestUrlResolution,
+  type PublicIngestUrlSource,
+  type ResolvePublicIngestUrlOptions,
+} from './public-ingest-url.js';
