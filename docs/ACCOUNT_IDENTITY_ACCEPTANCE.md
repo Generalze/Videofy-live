@@ -1,33 +1,58 @@
 # Account identity — human acceptance
 
-**Owner:** masterzee001 · **Prepared:** 2026-08-17 · **Status:** awaiting human passes
+**Owner:** masterzee001 · **Prepared:** 2026-08-17 · **Environment verified:** 2026-08-17 · **Status:** awaiting human passes
 
-Two manual passes remain before the account identity foundation can be marked
-closed. Everything that can be proved without a browser has been, so these
+Four manual passes remain before P6.3 can be marked closed for development. Everything that can be proved without a browser has been, so these
 passes cover only what a browser uniquely proves: that the app **stores, clears
 and re-presents a session** correctly, and that the result **sounds right**.
 
 ## Before you start
 
+The voice engine starts **separately** and is the only piece with a wait:
+
+```powershell
+.\.venv-openvoice-clean\Scripts\python.exe services\openvoice-service\server.py
+```
+
+Give it about 21 seconds, then check it is genuinely ready:
+
+```
+curl http://127.0.0.1:3005/health
+```
+
+```json
+{ "ready": true, "languages": ["en","es","fr"], "provenanceVerified": true }
+```
+
+`ready: false` with an empty `languages` list is correct and temporary — the
+models are still loading. A language is not advertised until it can answer
+inside a caller's timeout, which is what stopped the first utterance of every
+call coming out in the wrong voice. Do not start testing before `ready: true`.
+
+Then everything else:
+
 ```
 npm run dev
 ```
 
-The account service is now part of that command, and every service reads `.env`
-itself rather than inheriting whatever terminal started it. `VIDEOFY_AUTH_SECRET`
-is already generated in your `.env` and is git-ignored.
+That starts the gateway, media-ingest, the account service and the three apps.
+Every service reads `.env` itself rather than inheriting whatever terminal
+started it, and `VIDEOFY_AUTH_SECRET` is already generated there (git-ignored).
 
-Two ways to tell it is wired correctly:
+Three checks that the wiring is live, all of which should pass before you touch
+a browser:
 
 ```
-curl http://localhost:3006/health          # account service
-node scripts/verify-account-identity.mjs   # expect 8/8
+node scripts/verify-call-join-identity.mjs   # 7/7  gateway derives identity from a token
+node scripts/verify-account-identity.mjs     # 8/8  A/B isolation and cross-client continuity
+node scripts/verify-personal-voice.mjs en es # 14/14 full lifecycle
 ```
 
 If personal voice silently does nothing, the first suspect is the secret. A
-service without it **fails closed on purpose** — it refuses every enrolment
-rather than trusting the client — and the symptom looks exactly like a broken
-sign-in.
+service without it **fails closed on purpose** — refusing rather than trusting
+the client — and the symptom looks exactly like a broken sign-in. The first
+script above tells you which: it distinguishes "the gateway rejected a forged
+token" from "the gateway rejects everything".
 
 ## Already proved without you
 
@@ -39,6 +64,10 @@ sign-in.
 | A signing in from a **second client** finds A's voice with no re-recording | same |
 | A second sign-in issues a different token naming the same account | same |
 | Enrolment refuses a forged token, and an absent one | live, against the running service |
+| The live gateway accepts a valid token and derives the account from it | `verify-call-join-identity.mjs` 7/7 |
+| A forged token joins the call but gets no voice identity | same |
+| Naming an account in the join payload grants nothing | same |
+| First utterance after a restart is personal, not a fallback | 5 cold restarts, 0/5 fallbacks |
 | A valid token enrols, speaks, withdraws and deletes end to end | `verify-personal-voice.mjs` 14/14 |
 | Forged / expired / foreign-signed / edited tokens yield no owner | 201 gateway tests |
 | Resume re-derives identity; B never inherits A on resume | same |
@@ -101,9 +130,47 @@ localStorage.setItem(key, JSON.stringify({ ...s, token: s.token.slice(0, -4) + '
 An expired or forged session costs the optional personal voice, never the
 conversation.
 
+## PASS 4 — real microphone silence
+
+Separate from the identity passes, and the one no synthetic test can stand in
+for. Whisper does not report "I heard nothing" — given near-silence it returns
+its best guess at what silence would have been, and on a call that guess is
+translated and then spoken in your own voice.
+
+A guard now drops segments the model itself scores as no-speech, and eight
+seconds of synthetic near-silence produces nothing. But synthetic dither is
+quieter than a real room, so this needs **your microphone, in your room**.
+
+| # | Step |
+|---|---|
+| 1 | Join a translated call |
+| 2 | Say nothing for 20–30 seconds |
+| 3 | Let normal room noise happen — fan, traffic, a chair |
+| 4 | Breathe and move normally |
+| 5 | Then speak several real sentences with pauses between them |
+
+| Required |
+|---|
+| Silence produces **no transcript** |
+| Silence produces **no translation** |
+| Silence produces **no spoken audio** |
+| Quiet but genuine speech is **still transcribed** |
+| Normal speech works exactly as before |
+
+If invented text still appears, the dial is in `.env` and needs no code change —
+lower means stricter:
+
+```
+TRANSCRIPTION_CERTAIN_NO_SPEECH_PROB=0.75
+TRANSCRIPTION_MAX_NO_SPEECH_PROB=0.5
+```
+
+Dropping real speech is the opposite failure and is not an improvement, so
+report that too if step 5 starts losing sentences.
+
 ## Recording the result
 
-If all three pass:
+If all four pass:
 
 ```
 ACCOUNT IDENTITY FOUNDATION
@@ -117,6 +184,9 @@ Resume re-verifies identity            ✅
 Shared-browser A→B isolation           ✅ human proof
 Cross-browser account continuity       ✅ human proof
 Anonymous calls preserved              ✅
+Invalid-token degradation              ✅ human proof
+Silence hallucination                  ✅ human proof
+Owner listening acceptance             ✅ human proof
 ```
 
 ## What this does NOT close
