@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import {
   WebRtcTranscriptionChunker,
   WebRtcTranscriptionChunkerError,
@@ -768,18 +768,41 @@ describe('VAD segmentation refuses audio nobody spoke into', () => {
     return new WebRtcTranscriptionChunker({ ...context, vad, maxBufferedDurationMs: 30_000 });
   }
 
+  /**
+   * Deterministic noise, seeded identically before every test.
+   *
+   * Math.random() would make QUIET_VOICE land on either side of the gate by
+   * chance — a suite that passes locally and fails in CI once a fortnight,
+   * about the one behavior nobody wants to debug from a flake.
+   */
+  let noise = 0;
+  const seedNoise = () => {
+    noise = 0x5eed;
+  };
+  function nextNoise(): number {
+    noise = (noise + 0x6d2b79f5) | 0;
+    let value = noise;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  }
+  beforeEach(seedNoise);
+
   /** A 10 ms frame at a given RMS amplitude, with noise rather than a constant. */
   function frame(amplitude: number): Int16Array {
     const samples = new Int16Array(FRAME);
     for (let index = 0; index < FRAME; index += 1) {
-      samples[index] = Math.round((Math.random() * 2 - 1) * amplitude);
+      samples[index] = Math.round((nextNoise() * 2 - 1) * amplitude);
     }
     return samples;
   }
 
   const ROOM_TONE = 120; // ~0.004 RMS: audible room, well under the gate.
   const VOICE = 6000; // ordinary speech.
-  const QUIET_VOICE = 700; // a soft speaker, just over the gate.
+  // ~0.015 RMS: a soft speaker. Uniform noise at amplitude A has RMS A/√3, and
+  // a 160-sample frame's RMS wobbles by ~5.6%, so this sits a few sigma above
+  // the 0.012 gate rather than straddling it.
+  const QUIET_VOICE = 850;
 
   function push(chunker: WebRtcTranscriptionChunker, samples: Int16Array) {
     return chunker.pushFrame({ samples, sampleRate: 16000, channelCount: 1, bitsPerSample: 16 });
@@ -895,5 +918,72 @@ describe('VAD segmentation refuses audio nobody spoke into', () => {
     const emitted = pushMany(chunker, VOICE, 9_000);
 
     expect(emitted.length).toBeGreaterThanOrEqual(1);
+  });
+
+  /**
+   * Ending a call is not evidence that somebody spoke.
+   *
+   * The ordinary close path weighs voiced duration AND voiced fraction; flush
+   * used to weigh duration alone and emit the segment untrimmed. Since a stream
+   * can end at any instant — including inside a noise-armed segment that had
+   * not yet reached the max-duration cap — that left the whole defect reachable
+   * through the one path nobody thinks to test.
+   */
+  describe('end of stream obeys the same rule as an ordinary close', () => {
+    it('A. sparse blips over several seconds emit nothing when the stream ends', () => {
+      // 16 taps of 10 ms = 160 ms voiced, over 4960 ms. That clears the 150 ms
+      // absolute minimum — which is all flush used to check — at 3% voiced.
+      const chunker = chunkerFor();
+      for (let round = 0; round < 16; round += 1) {
+        push(chunker, frame(VOICE));
+        pushMany(chunker, ROOM_TONE, 300); // under the 700 ms close, so it stays open
+      }
+
+      expect(chunker.flush().filter((chunk) => !chunk.partial)).toHaveLength(0);
+      expect(chunker.snapshot().vadInsufficientVoicedCount).toBeGreaterThan(0);
+    });
+
+    it('B. voiced duration well past the minimum still fails on fraction', () => {
+      // 250 ms voiced — nearly a spoken "Non." — but smeared across 4 seconds
+      // at 6%. Duration alone cannot tell this from somebody answering.
+      const chunker = chunkerFor();
+      for (let round = 0; round < 25; round += 1) {
+        pushMany(chunker, VOICE, 10);
+        pushMany(chunker, ROOM_TONE, 150);
+      }
+
+      expect(chunker.flush().filter((chunk) => !chunk.partial)).toHaveLength(0);
+    });
+
+    it('C. a short real answer cut off by the hang-up is still delivered', () => {
+      // "Non." at 290 ms voiced, then the call ends before the 700 ms silence
+      // would have closed the segment. This is the case the fix must not break.
+      const chunker = chunkerFor();
+      pushMany(chunker, VOICE, 290);
+      pushMany(chunker, ROOM_TONE, 300);
+
+      const finals = chunker.flush().filter((chunk) => !chunk.partial);
+      expect(finals).toHaveLength(1);
+      expect(finals[0]).toMatchObject({ endOfStream: true });
+    });
+
+    it('D. a flushed chunk carries at most the 200 ms post-roll', () => {
+      const chunker = chunkerFor();
+      pushMany(chunker, VOICE, 1_000);
+      pushMany(chunker, ROOM_TONE, 690);
+
+      const finals = chunker.flush().filter((chunk) => !chunk.partial);
+      expect(finals).toHaveLength(1);
+      // 1000 ms of speech plus the post-roll, not 1690 ms of mostly room tone.
+      expect(finals[0]!.samples.length).toBeGreaterThan(16_000);
+      expect(finals[0]!.samples.length).toBeLessThanOrEqual(Math.round(16_000 * 1.2));
+    });
+
+    it('E. a stream that ends during room tone emits nothing at all', () => {
+      const chunker = chunkerFor();
+      pushMany(chunker, ROOM_TONE, 3_000);
+
+      expect(chunker.flush()).toHaveLength(0);
+    });
   });
 });

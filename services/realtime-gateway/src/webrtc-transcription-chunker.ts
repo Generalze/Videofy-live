@@ -279,7 +279,11 @@ export class WebRtcTranscriptionChunker {
           mode: 'fallback',
           speechThreshold: options.vad.speechThreshold ?? 0.012,
           endSilenceMs: options.vad.endSilenceMs ?? 650,
-          minSpeechMs: options.vad.minSpeechMs ?? 180,
+          // Kept equal to WEBRTC_VAD_MIN_SPEECH_MS's default in config.ts. Two
+          // defaults for one number is how a service acquires folklore: the
+          // fallback drifts, nobody notices, and a year later the gate behaves
+          // differently depending on which caller built the chunker.
+          minSpeechMs: options.vad.minSpeechMs ?? 150,
           maxSegmentMs: options.vad.maxSegmentMs ?? 8_000,
         }
       : null;
@@ -417,7 +421,6 @@ export class WebRtcTranscriptionChunker {
     const segmentLength = this.vadSpeechSampleCount + this.vadSilenceSampleCount;
     const endSilenceSamples = Math.round((vad.endSilenceMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
     const maxSegmentSamples = Math.round((vad.maxSegmentMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
-    const minSpeechSamples = Math.round((vad.minSpeechMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
     // Closing and emitting are now SEPARATE decisions.
     //
     // They used to be one condition, so a segment without enough speech could
@@ -433,20 +436,10 @@ export class WebRtcTranscriptionChunker {
       const voiced = this.vadVoicedSampleCount;
       const closeReason =
         this.vadSilenceSampleCount >= endSilenceSamples ? 'end-silence' : 'max-duration';
-      const voicedFraction = segmentLength > 0 ? voiced / segmentLength : 0;
-      if (voiced < minSpeechSamples || voicedFraction < VAD_MIN_VOICED_FRACTION) {
+      if (!this.containsSpeech(voiced, segmentLength, closeReason)) {
         // Nobody spoke into this. Dropping it here is the whole fix: it is the
         // chunk that would otherwise have been handed to a recogniser with
         // nothing to recognise.
-        this.vadInsufficientVoicedCount += 1;
-        logger.debug('WebRTC transcription VAD segment dropped: insufficient voiced audio', {
-          sessionId: this.context.sessionId,
-          revision: this.context.revision,
-          closeReason,
-          voicedMs: samplesToMs(voiced),
-          bufferedMs: samplesToMs(segmentLength),
-          voicedFraction: Number(voicedFraction.toFixed(3)),
-        });
         this.resetVadBuffers();
         // Audio WAS discarded here, and some of it was above the gate even if
         // there was too little to be speech. Downstream is told there is a gap
@@ -454,7 +447,7 @@ export class WebRtcTranscriptionChunker {
         this.nextDiscontinuity = true;
         return [];
       }
-      const trimmed = this.trimTrailingSilence(endSilenceSamples);
+      const trimmed = this.trimTrailingSilence();
       // Reset before createChunk so a queue-limit throw leaves the next frame clean.
       this.resetVadBuffers();
       return [this.createChunk(trimmed, false, segmentStartSample)];
@@ -492,30 +485,75 @@ export class WebRtcTranscriptionChunker {
     return chunk;
   }
 
+  /**
+   * End of stream is held to the SAME admission rule as an ordinary VAD close.
+   *
+   * Nothing about a hang-up makes near-silence more likely to be speech, and
+   * people end calls at arbitrary moments — including in the middle of the very
+   * noise-armed segment this gate exists to refuse. A flush that only checked
+   * the absolute minimum would let a segment carrying 160 ms of taps spread
+   * over several seconds through as the last thing the recogniser ever sees,
+   * which is precisely the shape that produced the invented outros.
+   */
   private flushVad(endOfStream: boolean): WebRtcTranscriptionChunk[] {
     if (this.closed && this.vadSpeechSampleCount === 0 && this.vadSilenceSampleCount === 0) return [];
     const segmentStartSample = this.vadSpeechStartSample;
     const speechSampleCount = this.vadSpeechSampleCount;
     const voicedSampleCount = this.vadVoicedSampleCount;
     const segmentLength = speechSampleCount + this.vadSilenceSampleCount;
-    const frames = [...this.vadSpeechFrames, ...this.vadSilenceFrames];
+    const admitted =
+      segmentStartSample !== null &&
+      speechSampleCount > 0 &&
+      this.containsSpeech(voicedSampleCount, segmentLength, 'flush');
+    // Trim BEFORE the reset, and by the same post-roll rule: a chunk that ends
+    // in room tone invites the recogniser to fill it whether the stream ended
+    // or the speaker merely paused.
+    const audio = admitted ? this.trimTrailingSilence() : null;
     // Reset before createChunk so a queue-limit throw leaves the chunker cleanly closed.
     this.resetVadBuffers();
     this.closed = true;
-    if (segmentStartSample === null || speechSampleCount === 0) return [];
-    // End of stream still has to contain a voice. A session that ends during
-    // room tone must not emit one last chunk for the recogniser to invent into.
-    if (voicedSampleCount < this.minSpeechSamples()) {
-      this.vadInsufficientVoicedCount += 1;
-      return [];
+    if (audio === null || segmentStartSample === null) return [];
+    return [this.createChunk(audio, endOfStream, segmentStartSample)];
+  }
+
+  /**
+   * The single admission rule, shared by ordinary VAD closure and by flush.
+   *
+   * Two callers asking the same question in two places is how the flush path
+   * came to check only half of it, so there is deliberately only one copy.
+   * Counting the drop lives here too, for the same reason.
+   */
+  private containsSpeech(
+    voicedSamples: number,
+    segmentLength: number,
+    closeReason: 'end-silence' | 'max-duration' | 'flush',
+  ): boolean {
+    const voicedFraction = segmentLength > 0 ? voicedSamples / segmentLength : 0;
+    if (voicedSamples >= this.minSpeechSamples() && voicedFraction >= VAD_MIN_VOICED_FRACTION) {
+      return true;
     }
-    return [this.createChunk(joinFrames(frames, segmentLength), endOfStream, segmentStartSample)];
+    this.vadInsufficientVoicedCount += 1;
+    logger.debug('WebRTC transcription VAD segment dropped: insufficient voiced audio', {
+      sessionId: this.context.sessionId,
+      revision: this.context.revision,
+      closeReason,
+      voicedMs: samplesToMs(voicedSamples),
+      bufferedMs: samplesToMs(segmentLength),
+      voicedFraction: Number(voicedFraction.toFixed(3)),
+    });
+    return false;
   }
 
   private minSpeechSamples(): number {
     const vad = this.vad;
     if (!vad) return 0;
     return Math.round((vad.minSpeechMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+  }
+
+  private endSilenceSamples(): number {
+    const vad = this.vad;
+    if (!vad) return 0;
+    return Math.round((vad.endSilenceMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
   }
 
   /**
@@ -530,11 +568,11 @@ export class WebRtcTranscriptionChunker {
    * Internal pauses are untouched. Only the tail after the last voiced frame
    * is trimmed.
    */
-  private trimTrailingSilence(endSilenceSamples: number): Int16Array {
+  private trimTrailingSilence(): Int16Array {
     const spoken = joinFrames(this.vadSpeechFrames, this.vadSpeechSampleCount);
     const postRoll = Math.min(
       this.vadSilenceSampleCount,
-      Math.min(endSilenceSamples, VAD_POST_ROLL_SAMPLES),
+      Math.min(this.endSilenceSamples(), VAD_POST_ROLL_SAMPLES),
     );
     if (postRoll <= 0) return spoken;
     const tail = joinFrames(this.vadSilenceFrames, this.vadSilenceSampleCount).subarray(0, postRoll);
