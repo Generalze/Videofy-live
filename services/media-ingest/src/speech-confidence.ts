@@ -69,7 +69,55 @@ export function readHallucinationThresholds(
   };
 }
 
-export type HallucinationReason = 'no-speech' | 'no-speech-and-uncertain' | 'empty';
+export type HallucinationReason =
+  | 'no-speech'
+  | 'no-speech-and-uncertain'
+  | 'empty'
+  | 'memorised-credit';
+
+/**
+ * Subtitle credits Whisper memorised from its training data.
+ *
+ * Observed in a real call, in French, spoken in the speaker's cloned voice:
+ *
+ *   "Sous-titres réalisés par la communauté d'Amara.org"
+ *   "sur les communautés de l'Université de Montréal."
+ *
+ * The probability guard cannot catch these. They are not low-confidence
+ * mumbling — the model is CERTAIN, because it saw them at the end of thousands
+ * of subtitled videos, so `noSpeechProb` stays low and `avgLogProb` stays high.
+ * Confidence is exactly the wrong instrument for a fabrication the model is
+ * sure about.
+ *
+ * So they are matched by text, which is a blunt instrument and is chosen
+ * deliberately. Nobody on a translated call says "Subtitles by the Amara.org
+ * community", and if somebody ever does, losing that one sentence costs far
+ * less than speaking an invention in their own voice to a listener who cannot
+ * tell the difference.
+ *
+ * Matched as PHRASES, never single words: "subtitles" alone is a thing people
+ * say, and dropping real speech is a different failure rather than a smaller
+ * one.
+ */
+const MEMORISED_CREDITS: readonly RegExp[] = [
+  /amara\.org/i,
+  /sous-titres? (réalisés?|faits?) par/i,
+  /sous-titrage (société|par)/i,
+  /subtitles? (by|directed by|created by|provided by)/i,
+  /subtitled by/i,
+  /merci d[’']avoir regardé/i,
+  /thanks? for watching/i,
+  /abonnez-vous/i,
+  /université de montréal/i,
+  /university of montreal/i,
+  /traduit par/i,
+  /transcription (by|par)/i,
+];
+
+/** Whether this text is a subtitle credit the model memorised. */
+export function isMemorisedCredit(text: string): boolean {
+  return MEMORISED_CREDITS.some((pattern) => pattern.test(text));
+}
 
 /**
  * Why this segment should not be spoken, or null to keep it.
@@ -84,6 +132,11 @@ export function hallucinationReason(
   thresholds: HallucinationThresholds = DEFAULT_HALLUCINATION_THRESHOLDS,
 ): HallucinationReason | null {
   if (candidate.text.trim().length === 0) return 'empty';
+
+  // Checked BEFORE the probabilities, because these are the fabrications the
+  // model is most confident about and the probability rules would wave them
+  // straight through.
+  if (isMemorisedCredit(candidate.text)) return 'memorised-credit';
 
   const noSpeech = numberOrNull(candidate.noSpeechProb);
   const avgLogProb = numberOrNull(candidate.avgLogProb);

@@ -249,9 +249,16 @@ export class FasterWhisperTranscriptionProvider implements TranscriptionProvider
     // something they said.
     const { kept, rejected } = rejectHallucinatedSpeech(result.segments, this.hallucination);
     if (rejected > 0) {
-      // A count, never the invented text: writing it down is how it ends up
-      // quoted back as though somebody said it.
-      logger.info('Discarded transcription the model reported as silence', { rejected });
+      // Counts and probabilities, never the invented text: writing that down is
+      // how it ends up quoted back as though somebody said it. The numbers are
+      // here so the thresholds can be tuned from a real microphone in a real
+      // room rather than guessed at.
+      logger.info('Discarded transcription the model reported as silence', {
+        rejected,
+        noSpeechProbs: result.segments
+          .filter((segment) => typeof segment.noSpeechProb === 'number')
+          .map((segment) => Number(segment.noSpeechProb).toFixed(2)),
+      });
     }
 
     return {
@@ -554,7 +561,29 @@ model = WhisperModel(model_size, **kwargs)
 def handle(payload):
     audio_path = payload["audioPath"]
     language_hint = payload.get("languageHint") or None
-    transcribe_kwargs = {"vad_filter": True}
+    transcribe_kwargs = {
+        "vad_filter": True,
+        # THE repetition/invention driver, and it is on by default.
+        #
+        # With this true the model is primed with the text it produced for the
+        # PREVIOUS chunk, so a call becomes a feedback loop: it completes
+        # sentences the speaker never finished, and once it repeats a phrase it
+        # keeps repeating it. Reported from a real call as "a lot of
+        # repetitions" and "I only said the first words" — and this service
+        # transcribes an interim chunk every 1.5 seconds, which hands the loop
+        # a fresh opportunity six times a sentence.
+        #
+        # Off means each chunk is transcribed on its own audio and nothing else.
+        "condition_on_previous_text": False,
+        # No sampling. The default falls back through increasing temperatures
+        # when a decode looks poor, which is how a doubtful segment becomes a
+        # confident invention on the retry.
+        "temperature": 0.0,
+        # The model's own silence filters, aligned with speech-confidence.ts so
+        # the same numbers mean the same thing on both sides of the boundary.
+        "no_speech_threshold": 0.6,
+        "log_prob_threshold": -1.0,
+    }
     if language_hint:
         transcribe_kwargs["language"] = language_hint
     segments, info = model.transcribe(audio_path, **transcribe_kwargs)

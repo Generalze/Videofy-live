@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_HALLUCINATION_THRESHOLDS,
   hallucinationReason,
+  isMemorisedCredit,
   readHallucinationThresholds,
   rejectHallucinatedSpeech,
 } from '../speech-confidence.js';
@@ -42,12 +43,12 @@ describe('invented speech is refused', () => {
   });
 
   it('refuses a CONFIDENT fabrication when no-speech evidence is overwhelming', () => {
-    // The characteristic silence hallucination is a memorised subtitle credit
-    // the model is very confident about, so a rule requiring low confidence
-    // lets exactly the worst case through.
+    // Deliberately ordinary text, so this exercises the PROBABILITY rule alone.
+    // A subtitle credit here would be caught by the phrase rule first and this
+    // test would pass without proving anything about the numbers.
     expect(
       hallucinationReason({
-        text: 'Merci d’avoir regardé cette vidéo.',
+        text: 'And that is really the whole point of it.',
         noSpeechProb: 0.97,
         avgLogProb: -0.1,
       }),
@@ -63,6 +64,46 @@ describe('invented speech is refused', () => {
     // Below the certain threshold the pairing is the rule, and half a rule is
     // not a reason to delete somebody's sentence.
     expect(hallucinationReason({ text: 'maybe', noSpeechProb: 0.7 })).toBeNull();
+  });
+});
+
+describe('memorised subtitle credits', () => {
+  it('refuses the exact fabrications observed in a real call', () => {
+    // Both were spoken aloud in the speaker's own cloned voice, in French, to
+    // somebody with no way to know they were invented.
+    for (const text of [
+      "Sous-titres réalisés par la communauté d'Amara.org",
+      'Subtitles directed by the community of Amara.org',
+      "sur les communautés de l'Université de Montréal.",
+      'on the communities of the University of Montreal.',
+    ]) {
+      expect(hallucinationReason({ text, noSpeechProb: 0.05, avgLogProb: -0.15 })).toBe(
+        'memorised-credit',
+      );
+    }
+  });
+
+  it('catches them even when the model is CERTAIN they are speech', () => {
+    // The whole reason this rule exists. The probability guard waves these
+    // through: the model is not mumbling, it is confidently reciting something
+    // it saw at the end of thousands of subtitled videos.
+    const confident = { text: 'Thanks for watching!', noSpeechProb: 0.01, avgLogProb: -0.05 };
+
+    expect(hallucinationReason(confident)).toBe('memorised-credit');
+  });
+
+  it('matches phrases, never bare words', () => {
+    // Dropping real speech is a different failure, not a smaller one. Somebody
+    // discussing subtitles or Montreal must still be heard.
+    for (const text of [
+      'Can you turn the subtitles on please?',
+      'I am flying to Montreal on Tuesday.',
+      'Thanks, I appreciate it.',
+      'We watched it together.',
+    ]) {
+      expect(isMemorisedCredit(text), text).toBe(false);
+      expect(hallucinationReason({ text, noSpeechProb: 0.05, avgLogProb: -0.2 })).toBeNull();
+    }
   });
 });
 
