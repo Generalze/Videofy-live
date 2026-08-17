@@ -11,7 +11,12 @@ import {
   generatedClipId,
   type CallQueueAudio,
 } from './callAudioQueue';
-import { createCallAudioConstraints, readCallCaptureSettings } from './callCapture';
+import {
+  DEFAULT_CALL_CAPTURE_PROFILE,
+  captureProfileFromLocation,
+  createCallAudioConstraints,
+  readCallCaptureSettings,
+} from './callCapture';
 import { mergeCallCaption, type CallCaptionEntry } from './callCaptions';
 import {
   createInitialCallJoinForm,
@@ -333,6 +338,17 @@ export default function App() {
     (stream: 'generated' | 'remote-original', phase: 'start' | 'end', clipId: string | null) => void
   >(() => {});
   const reportCaptureSettingsRef = useRef<(reason: 'join' | 'device-change') => void>(() => {});
+  /**
+   * Resolved ONCE, before any microphone is acquired, and never reassigned.
+   *
+   * A mid-call switch would give one corpus row two capture regimes, which is a
+   * more interesting way to ruin the experiment than the timestamps were. A ref
+   * initialised from the URL at first render is immutable for the session:
+   * changing `?capture=` means a reload, which is a new session anyway.
+   */
+  const captureProfileRef = useRef(
+    captureProfileFromLocation(window.location.search) ?? DEFAULT_CALL_CAPTURE_PROFILE,
+  );
   const remoteAudibleRef = useRef(false);
   const remoteListenerElementRef = useRef<HTMLAudioElement | null>(null);
 
@@ -405,7 +421,14 @@ export default function App() {
     const track = micStreamRef.current?.getAudioTracks()[0] ?? null;
     const settings = readCallCaptureSettings(track);
     if (!settings) return;
-    emitInstrumentation(CALL_EVENTS.CAPTURE_SETTINGS, { settings, reason });
+    emitInstrumentation(CALL_EVENTS.CAPTURE_SETTINGS, {
+      settings,
+      reason,
+      // Asked-for and granted travel together, always. Without the request the
+      // granted values cannot be attributed; without the granted values the
+      // request is a wish.
+      requestedCaptureProfile: captureProfileRef.current,
+    });
   };
   reportCaptureSettingsRef.current = reportCaptureSettings;
 
@@ -576,7 +599,9 @@ export default function App() {
       // granted. `{ audio: true }` asked for nothing and inspected nothing, so
       // when acceptance failed on 17 Aug 2026 no call log could say what echo
       // cancellation had been doing and it had to be measured by hand.
-      const stream = await navigator.mediaDevices.getUserMedia(createCallAudioConstraints());
+      const stream = await navigator.mediaDevices.getUserMedia(
+        createCallAudioConstraints(captureProfileRef.current),
+      );
       for (const track of stream.getAudioTracks()) {
         track.enabled = !micMutedRef.current;
       }

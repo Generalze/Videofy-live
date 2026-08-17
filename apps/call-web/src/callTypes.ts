@@ -30,6 +30,11 @@ export type CallEventName = (typeof CALL_EVENTS)[keyof typeof CALL_EVENTS];
 export interface CallCaptureSettingsPayload {
   callId: string;
   participantId: string;
+  /**
+   * Which contract was ASKED FOR. The granted values below remain the source of
+   * truth: `explicit-all` means "we asked", never "Chrome complied".
+   */
+  requestedCaptureProfile: 'browser-default' | 'explicit-all';
   settings: {
     deviceLabel: string | null;
     channelCount: number | null;

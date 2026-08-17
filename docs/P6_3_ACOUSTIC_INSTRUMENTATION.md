@@ -28,13 +28,42 @@ The call app requested `{ audio: true }` and inspected nothing, while
 That is why, when acceptance failed, no call log could say what echo cancellation had been
 doing and it had to be measured by hand from a live browser afterwards.
 
-Now requested: `echoCancellation: { ideal: 'all' }`, `noiseSuppression`, `autoGainControl`,
-`channelCount: { ideal: 1 }`. **`ideal`, never `exact`** — `exact: 'all'` rejects with
-`OverconstrainedError` on any browser without the string form, and the participant then
-cannot join at all.
-
 `track.getSettings()` is read back and forwarded as `call:capture-settings`, at join and
 again on `devicechange`. One record per participant per reading.
+
+#### Two capture profiles
+
+W1 changed an independent experimental variable that **overlaps the mechanism W6 exists to
+test**. Without a control, every later result carries an unanswerable footnote: did
+recapture improve because of topology, because Chrome granted `'all'`, because W6 worked,
+or because `'all'` had already done part of W6's job?
+
+| profile | request | purpose |
+|---|---|---|
+| `browser-default` | `{ audio: true }` | the control — byte-for-byte the request that produced the frozen corpus |
+| `explicit-all` | `echoCancellation:{ideal:'all'}`, `noiseSuppression`, `autoGainControl`, `channelCount:{ideal:1}` | W1's preferred modern request (default) |
+
+**Two complete contracts, not one contract with the AEC value swapped.** Keeping the
+explicit NS/AGC/channel constraints and changing only echo cancellation would leave the
+control measuring a capture request nobody has ever shipped — worse than having no control,
+because it looks like one.
+
+**`ideal`, never `exact`** — `exact: 'all'` rejects with `OverconstrainedError` on any
+browser without the string form, and the participant then cannot join at all.
+
+Selected with `?capture=browser-default` or `?capture=explicit-all`, **resolved once before
+the microphone is acquired and immutable for the session**. A mid-call switch would give one
+corpus row two capture regimes. An unrecognised value falls back to the default rather than
+silently creating a third regime.
+
+Not named `legacy`: naming a profile after its age turns temporary history into
+architecture. It is a browser default, and that is what it says.
+
+Every capture-settings record carries `requestedCaptureProfile` alongside the granted
+values. **The granted values remain the source of truth** — `explicit-all` means "we asked",
+never "Chrome complied". An unrecognised profile name is recorded verbatim, because
+normalising it would destroy the evidence that a run was collected under something nobody
+planned.
 
 **Device labels are recorded; device ids are not.** A label names hardware, which is what
 M1's rig question needs. An id is a stable per-origin identifier that would correlate one
@@ -261,6 +290,40 @@ than the data.
 **M1-1 must vary loudspeaker volume at least once.** A topology that passes at 20% and
 loops at 80% is evidence, not a failed run.
 
+### Capture profile per run
+
+Both profiles only where the distinction answers something. Doubling the whole corpus would
+turn a useful control into a small doctoral programme.
+
+| run | profiles |
+|---|---|
+| M1-1 | **both** — `browser-default` and `explicit-all` |
+| M1-2 | one control run per profile, if cheap |
+| M1-3 | **both** |
+| M1-5, M1-6 | **both** — barge-in and AEC behaviour is the point |
+| M1-4, M1-7, M1-8, M1-9 | the profile chosen as the primary operating baseline after the M1-1/M1-3 comparisons |
+
+Launch with `?capture=browser-default` or `?capture=explicit-all`; the URL that produced a
+recording therefore states its own capture regime, and the granted values are in the log
+either way.
+
+### W6 is then evaluated factorially
+
+On the critical topology at minimum:
+
+```
+                    W6 OFF     W6 ON
+  browser-default      A         B
+  explicit-all         C         D
+```
+
+- **A→B** what W6 itself contributes against default capture
+- **C→D** whether W6 adds anything once `'all'` is granted
+- **A→C** what requesting `'all'` contributes without W6
+- **B→D** whether `'all'` changes W6's behaviour, double-talk damage included
+
+Four answers instead of one muddy one. This is the reason the toggle exists.
+
 ### Capture per run
 
 Everything W1–W5A now exposes, plus human ground truth:
@@ -299,9 +362,9 @@ something else, or nothing, in which case correlation alone cannot carry a room 
 
 This is the concrete reason W5A was forbidden from producing a `roomId`.
 
-## One decision needed before M1-1
+## The confound the profiles control
 
-**W1 changes the echo-cancellation regime, and that is a confound for the corpus.**
+**W1 changed an independent experimental variable that overlaps W6's own mechanism.**
 
 The frozen evidence corpus was captured under `{ audio: true }`, which granted
 `echoCancellation: true`. W1 now requests `{ ideal: 'all' }`, and `rig-topology.md` records
@@ -318,11 +381,9 @@ That matters twice over:
    partially-cancelled baseline — and a weak W6 result would be ambiguous rather than
    informative.
 
-W1 makes this **measurable rather than assumed** — the granted value is on every call log.
-The minimum discipline is therefore: read the granted `echoCancellation` off the first M1-1
-recording, and if it is `'all'`, record that the run is not AEC-comparable to
-`gentle-atlas-54` / `swift-ember-69`.
+Documenting that would not have been enough. `browser-default` makes it a **controlled
+variable** rather than a footnote, and the factorial table above is what that buys: without
+it, A→B and A→C collapse into one measurement and neither can be recovered afterwards.
 
-If a within-corpus A/B on the constraint itself is wanted, the toggle has to exist **before**
-M1 starts. Adding it mid-corpus is the source change during collection that this freeze
-exists to prevent.
+The toggle exists **before** collection starts. Adding it mid-corpus would have been exactly
+the source change this freeze prevents.

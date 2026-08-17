@@ -219,6 +219,7 @@ describe('W1 — capture settings provenance', () => {
       callId: 'demo',
       participantId: 'participant_1',
       reason: 'join',
+      requestedCaptureProfile: 'explicit-all',
       settings: {
         deviceLabel: 'Microphone Array (Intel Smart Sound)',
         echoCancellation: 'all',
@@ -234,11 +235,51 @@ describe('W1 — capture settings provenance', () => {
       callId: 'demo',
       participantId: 'participant_1',
       reason: 'join',
+      requestedCaptureProfile: 'explicit-all',
     });
     // The measurement that removed echo-cancellation tuning from the candidate
     // list had to be taken by hand last time. Now every call carries it.
     expect((record as unknown as { settings: Record<string, unknown> }).settings).toMatchObject({
       echoCancellation: 'all',
+    });
+  });
+
+  it('keeps asked-for and granted apart, because asking is not complying', async () => {
+    // The control profile asks for nothing and Chrome grants its defaults; the
+    // modern profile asks for 'all' and may be refused. Either way the corpus
+    // needs BOTH halves — the request to attribute the run, the grant to know
+    // what actually happened.
+    await socketA.trigger(CALL_EVENTS.CAPTURE_SETTINGS, {
+      callId: 'demo',
+      participantId: 'participant_1',
+      reason: 'join',
+      requestedCaptureProfile: 'explicit-all',
+      settings: { echoCancellation: true },
+    });
+
+    const [record] = harness.records('capture-settings');
+    expect(record).toMatchObject({ requestedCaptureProfile: 'explicit-all' });
+    // Asked for 'all', got plain `true`. That is a real and reportable outcome,
+    // not a reason to rewrite either field.
+    expect((record as unknown as { settings: Record<string, unknown> }).settings).toMatchObject({
+      echoCancellation: true,
+    });
+  });
+
+  it('records an unrecognised profile name rather than normalising it away', async () => {
+    // An unexpected profile is a provenance question. Rewriting it to a known
+    // value would destroy the evidence that a run was collected under something
+    // nobody planned.
+    await socketA.trigger(CALL_EVENTS.CAPTURE_SETTINGS, {
+      callId: 'demo',
+      participantId: 'participant_1',
+      reason: 'join',
+      requestedCaptureProfile: 'something-nobody-defined',
+      settings: { echoCancellation: true },
+    });
+
+    expect(harness.records('capture-settings')[0]).toMatchObject({
+      requestedCaptureProfile: 'something-nobody-defined',
     });
   });
 

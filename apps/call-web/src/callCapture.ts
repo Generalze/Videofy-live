@@ -41,13 +41,74 @@ export interface CallCaptureSettings {
 }
 
 /**
- * `ideal`, never `exact`.
+ * Which capture contract this call asked the browser for.
  *
- * `exact: 'all'` rejects with OverconstrainedError on every browser that does
- * not implement the string form, and the participant then cannot join the call
- * at all. A capture preference is not worth a join failure.
+ * W1 changed an independent experimental variable that overlaps the mechanism
+ * W6 is meant to test: `'all'` asks the canceller to reference everything the
+ * machine renders, which is part of what W6 exists to achieve by other means.
+ * Without a control profile, every later result carries an unanswerable
+ * footnote — did recapture improve because of topology, because Chrome granted
+ * `'all'`, because W6 worked, or because `'all'` had already done part of W6's
+ * job?
+ *
+ * - `browser-default` — `{ audio: true }`, byte-for-byte the request that
+ *   produced the frozen evidence corpus. The CONTROL.
+ * - `explicit-all` — W1's preferred modern request.
+ *
+ * Deliberately not called `legacy`: naming it after its age would turn a
+ * temporary piece of history into architecture. It is a browser default, and
+ * that is exactly what it says.
  */
-export function createCallAudioConstraints(deviceId?: string): MediaStreamConstraints {
+export type CallCaptureProfile = 'browser-default' | 'explicit-all';
+
+export const CALL_CAPTURE_PROFILES: readonly CallCaptureProfile[] = [
+  'browser-default',
+  'explicit-all',
+];
+
+/** W1's preferred request. `browser-default` is the control you opt into. */
+export const DEFAULT_CALL_CAPTURE_PROFILE: CallCaptureProfile = 'explicit-all';
+
+const CAPTURE_QUERY_PARAM = 'capture';
+
+/**
+ * The profile named by `?capture=`, or null.
+ *
+ * A query parameter rather than a build flag because a corpus operator needs to
+ * choose per call, at the moment of joining, without a rebuild between runs —
+ * and because the choice is then visible in the URL that produced the recording.
+ */
+export function captureProfileFromLocation(search: string): CallCaptureProfile | null {
+  const query = search.startsWith('?') ? search.slice(1) : search;
+  if (!query) return null;
+  const value = new URLSearchParams(query).get(CAPTURE_QUERY_PARAM)?.trim();
+  return CALL_CAPTURE_PROFILES.includes(value as CallCaptureProfile)
+    ? (value as CallCaptureProfile)
+    : null;
+}
+
+/**
+ * The constraints for a profile.
+ *
+ * Two COMPLETE contracts, not one contract with the echo-cancellation value
+ * swapped. Keeping the explicit noiseSuppression/autoGainControl/channelCount
+ * while changing only the AEC value would not reproduce the original capture
+ * request, and the control would be measuring something nobody ever shipped.
+ *
+ * `ideal`, never `exact`: `exact: 'all'` rejects with OverconstrainedError on
+ * any browser without the string form, and the participant then cannot join at
+ * all. A capture preference is not worth a join failure.
+ */
+export function createCallAudioConstraints(
+  profile: CallCaptureProfile = DEFAULT_CALL_CAPTURE_PROFILE,
+  deviceId?: string,
+): MediaStreamConstraints {
+  if (profile === 'browser-default') {
+    // Exactly what gentle-atlas-54 and swift-ember-69 were captured under. If a
+    // device is named, that is the ONLY addition — anything more and this stops
+    // being the historical contract.
+    return { audio: deviceId ? { deviceId: { ideal: deviceId } } : true, video: false };
+  }
   // `echoCancellation: { ideal: 'all' }` is outside lib.dom's ConstrainBoolean.
   // The cast is the honest way to say "this is a real Chrome constraint the DOM
   // typings do not model yet" rather than silently downgrading to a boolean.

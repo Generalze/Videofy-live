@@ -7,7 +7,12 @@
  * answer had to be measured by hand from a live browser afterwards.
  */
 import { describe, expect, it } from 'vitest';
-import { createCallAudioConstraints, readCallCaptureSettings } from './callCapture';
+import {
+  DEFAULT_CALL_CAPTURE_PROFILE,
+  captureProfileFromLocation,
+  createCallAudioConstraints,
+  readCallCaptureSettings,
+} from './callCapture';
 
 function fakeTrack(
   settings: Record<string, unknown>,
@@ -23,12 +28,12 @@ function fakeTrack(
   } as unknown as MediaStreamTrack;
 }
 
-describe('capture constraints', () => {
-  it('asks for the widest echo cancellation as an IDEAL, never an exact', () => {
+describe('capture profiles', () => {
+  it('explicit-all asks for the widest echo cancellation as an IDEAL, never an exact', () => {
     // `exact: 'all'` rejects with OverconstrainedError on any browser without
     // the string form, and the participant then cannot join the call at all. A
     // capture preference is not worth a join failure.
-    const audio = createCallAudioConstraints().audio as Record<string, unknown>;
+    const audio = createCallAudioConstraints('explicit-all').audio as Record<string, unknown>;
 
     expect(audio['echoCancellation']).toEqual({ ideal: 'all' });
     expect(JSON.stringify(audio)).not.toContain('exact');
@@ -37,17 +42,51 @@ describe('capture constraints', () => {
       autoGainControl: true,
       channelCount: { ideal: 1 },
     });
-    expect(createCallAudioConstraints().video).toBe(false);
+    expect(createCallAudioConstraints('explicit-all').video).toBe(false);
   });
 
-  it('keeps a requested device ideal too, so a vanished device cannot block the join', () => {
-    const audio = createCallAudioConstraints('device-7') as unknown as {
-      audio: Record<string, unknown>;
-    };
-    expect((createCallAudioConstraints('device-7').audio as Record<string, unknown>)['deviceId']).toEqual(
-      { ideal: 'device-7' },
+  it('browser-default reproduces the WHOLE historical contract, not just its AEC value', () => {
+    // The control has to be `{ audio: true }` exactly. Keeping the explicit
+    // noiseSuppression/autoGainControl/channelCount and changing only the echo
+    // cancellation would leave the control measuring a capture request that
+    // nobody has ever shipped — which is worse than having no control, because
+    // it looks like one.
+    expect(createCallAudioConstraints('browser-default')).toEqual({ audio: true, video: false });
+  });
+
+  it('adds a named device to either profile without changing anything else', () => {
+    expect(createCallAudioConstraints('browser-default', 'device-7')).toEqual({
+      audio: { deviceId: { ideal: 'device-7' } },
+      video: false,
+    });
+    expect(
+      (createCallAudioConstraints('explicit-all', 'device-7').audio as Record<string, unknown>)[
+        'deviceId'
+      ],
+    ).toEqual({ ideal: 'device-7' });
+  });
+
+  it('defaults to the modern request, so the control is the thing you opt into', () => {
+    expect(DEFAULT_CALL_CAPTURE_PROFILE).toBe('explicit-all');
+    expect(createCallAudioConstraints()).toEqual(createCallAudioConstraints('explicit-all'));
+  });
+});
+
+describe('profile selection', () => {
+  it('reads the profile a corpus run was launched with', () => {
+    expect(captureProfileFromLocation('?capture=browser-default')).toBe('browser-default');
+    expect(captureProfileFromLocation('capture=explicit-all')).toBe('explicit-all');
+    expect(captureProfileFromLocation('?call=abc-123&capture=browser-default')).toBe(
+      'browser-default',
     );
-    expect(audio).toBeDefined();
+  });
+
+  it('ignores anything it does not recognise instead of guessing', () => {
+    // A typo must fall back to the documented default rather than silently
+    // producing a third, undocumented capture regime in the corpus.
+    for (const search of ['', '?capture=', '?capture=legacy', '?capture=all', '?other=1']) {
+      expect(captureProfileFromLocation(search), search).toBeNull();
+    }
   });
 });
 

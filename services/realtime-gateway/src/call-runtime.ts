@@ -1322,9 +1322,16 @@ export class CallRuntime {
     const payload = raw as {
       settings?: Record<string, unknown>;
       reason?: unknown;
+      requestedCaptureProfile?: unknown;
     };
     const settings = payload.settings;
     if (!settings || typeof settings !== 'object') return;
+    // Recorded as reported and NOT validated against an allow-list here: an
+    // unrecognised profile name is a corpus provenance question, and silently
+    // rewriting it to a known value would destroy the evidence that a run was
+    // collected under something nobody expected.
+    const requestedCaptureProfile =
+      typeof payload.requestedCaptureProfile === 'string' ? payload.requestedCaptureProfile : null;
     const echoCancellation = settings['echoCancellation'];
     this.acousticObserver.setProvenance(binding.callId, binding.participantId, {
       echoCancellation:
@@ -1340,6 +1347,8 @@ export class CallRuntime {
       callId: binding.callId,
       participantId: binding.participantId,
       reason: payload.reason === 'device-change' ? 'device-change' : 'join',
+      /** What was asked for. `settings` below is what was granted. */
+      requestedCaptureProfile,
       settings,
     });
   }
