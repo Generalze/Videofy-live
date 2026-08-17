@@ -7,8 +7,12 @@ export const WEBRTC_TRANSCRIPTION_SAMPLE_RATE = 16000;
  * Silence kept after the last voiced frame, so a word's final consonant is not
  * clipped. Everything past this is discarded: it is below the speech gate by
  * definition, and it is exactly what the recogniser was filling in.
+ *
+ * Exported so scripts/verify-vad-source-silence.mjs can assert the trim against
+ * the real number instead of re-typing 200 ms into a second file, where it
+ * would go stale the first time this one changed.
  */
-const VAD_POST_ROLL_SAMPLES = Math.round(0.2 * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+export const VAD_POST_ROLL_SAMPLES = Math.round(0.2 * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
 
 /**
  * The least voice a segment may be made of and still be somebody talking.
@@ -24,8 +28,12 @@ const VAD_POST_ROLL_SAMPLES = Math.round(0.2 * WEBRTC_TRANSCRIPTION_SAMPLE_RATE)
  * of intermittent keyboard taps. The FRACTION separates them cleanly, and it is
  * the rule that actually kills the fabrications: a chunk that is 2% voice is
  * not a person speaking, however long it ran.
+ *
+ * Exported for the same reason as VAD_POST_ROLL_SAMPLES: the verification
+ * harness must build its cases from THIS number, so that changing it here
+ * changes what the harness demands rather than quietly disagreeing with it.
  */
-const VAD_MIN_VOICED_FRACTION = 0.1;
+export const VAD_MIN_VOICED_FRACTION = 0.1;
 
 function samplesToMs(samples: number): number {
   return Math.round((samples / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000);
