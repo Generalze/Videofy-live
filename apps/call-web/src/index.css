@@ -1,26 +1,12 @@
-@import '@videofy-live/design-system/tokens.css';
-
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
+@import '@videofy-live/design-system/base.css';
 
 /*
- * Adoption layer for the shared design system (§5.1.11).
+ * base.css owns the reset, body treatment (canvas + wash), focus-visible ring,
+ * and the reduced-motion guarantee. This file styles call-web's surfaces only,
+ * in design-system tokens (§5.1.11).
  *
- * The app's own names are kept and re-pointed at the shared semantic tokens
- * rather than being renamed across every rule: the design system was built so
- * that adopting it is a re-point, and doing it this way means one reviewable
- * diff instead of hundreds of unrelated edits. These aliases are a migration
- * step — new rules should use `--vf-*` directly, and this block shrinks as
- * existing rules are touched.
- *
- * Adopting the shared palette also fixes a real contrast defect: the previous
- * muted text (#8d8daa) measured 4.38:1 against the border surface it sat on,
- * under the 4.5:1 the architecture requires. The shared token measures 5.14:1.
+ * Adoption layer: the app's older names re-point at shared semantic tokens.
+ * New rules use `--vf-*` directly; this block shrinks as old rules are touched.
  */
 :root {
   --color-brand: var(--vf-border-accent);
@@ -38,28 +24,9 @@
   --radius-md: var(--vf-radius-md);
   --radius-lg: var(--vf-radius-lg);
   --shadow-lg: var(--vf-elevation-4);
-  font-family: var(--vf-font-family-sans);
 }
 
-body {
-  background-color: var(--color-bg);
-  background-image:
-    radial-gradient(1100px 520px at 85% -10%, rgba(124, 58, 237, 0.16), transparent 60%),
-    radial-gradient(900px 480px at -10% 110%, rgba(167, 139, 250, 0.08), transparent 55%);
-  color: var(--color-text);
-  min-height: 100vh;
-}
-
-button {
-  cursor: pointer;
-  font-family: inherit;
-}
-
-/*
- * Available to assistive technology, absent for everyone else. Used where a
- * state is otherwise carried by styling alone — an interim caption reads as
- * provisional visually, and must say so out loud as well (§5.1.13).
- */
+/* App-local visually-hidden helper (same mechanism as .vf-sr-only). */
 .sr-only {
   position: absolute;
   width: 1px;
@@ -72,34 +39,15 @@ button {
   border: 0;
 }
 
-/*
- * A single visible focus treatment for every interactive element. `:focus-visible`
- * rather than `:focus` so pointer users do not get a ring they did not ask for,
- * while keyboard navigation is never left guessing where it is.
- */
-:where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
-  outline: 2px solid var(--color-brand-light);
-  outline-offset: 2px;
-  border-radius: var(--radius-sm);
+button {
+  cursor: pointer;
+  font-family: inherit;
 }
 
-/*
- * Motion here is functional — state changes and caption arrival — so when it is
- * unwelcome it is removed rather than merely shortened (§5.1.12).
- */
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
-}
-
-button:disabled {
-  cursor: default;
+button:disabled,
+select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 input,
@@ -110,138 +58,297 @@ select {
 .app-shell {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 
-/* ---------- Pre-join ---------- */
+/* ─────────────────────────────────────────────────────────────────────────────
+   Entry flow — Home and Call Mode.
+   The first thing anyone sees: spacious, display type, two clear cards.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.home-screen,
+.mode-screen {
+  flex: 1;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--vf-space-4);
+  padding: var(--vf-space-6) var(--vf-page-gutter);
+  text-align: center;
+}
+
+.home-eyebrow {
+  color: var(--vf-text-accent);
+  font-size: var(--vf-font-size-xs);
+  font-weight: var(--vf-font-weight-semibold);
+  letter-spacing: var(--vf-letter-spacing-caps);
+  text-transform: uppercase;
+}
+
+.home-title {
+  font-family: var(--vf-font-family-display);
+  font-size: var(--vf-font-size-4xl);
+  font-weight: var(--vf-font-weight-bold);
+  letter-spacing: var(--vf-letter-spacing-tight);
+  line-height: var(--vf-line-height-tight);
+}
+
+.home-lede,
+.mode-lede {
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-font-size-lg);
+  max-width: 36ch;
+}
+
+.home-choices,
+.mode-choices {
+  display: flex;
+  gap: var(--vf-space-4);
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: var(--vf-space-4);
+}
+
+.home-choice,
+.mode-choice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-2);
+  width: min(19rem, 100%);
+  padding: var(--vf-space-5) var(--vf-space-5) var(--vf-space-6);
+  text-align: left;
+  border: var(--vf-border-width-hairline) solid var(--vf-border-subtle);
+  border-radius: var(--vf-radius-xl);
+  background: var(--vf-surface-1);
+  box-shadow: var(--vf-elevation-2);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition:
+    border-color var(--vf-duration-fast) var(--vf-ease-standard),
+    background-color var(--vf-duration-fast) var(--vf-ease-standard),
+    box-shadow var(--vf-duration-normal) var(--vf-ease-standard),
+    transform var(--vf-duration-normal) var(--vf-ease-standard);
+}
+
+.home-choice:hover,
+.mode-choice:hover:enabled {
+  border-color: var(--vf-border-interactive);
+  background: var(--vf-surface-2);
+  box-shadow: var(--vf-elevation-3);
+  transform: translateY(-2px);
+}
+
+.home-choice-name,
+.mode-choice-name {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--vf-space-3);
+  font-family: var(--vf-font-family-display);
+  font-size: var(--vf-font-size-xl);
+  font-weight: var(--vf-font-weight-semibold);
+}
+
+.home-choice-name::after,
+.mode-choice:not([disabled]) .mode-choice-name::after {
+  content: '→';
+  color: var(--vf-text-accent);
+  transition: transform var(--vf-duration-fast) var(--vf-ease-standard);
+}
+
+.home-choice:hover .home-choice-name::after,
+.mode-choice:hover:enabled .mode-choice-name::after {
+  transform: translateX(4px);
+}
+
+.home-choice-hint,
+.mode-choice-hint {
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-sm);
+  line-height: var(--vf-line-height-snug);
+}
+
+.mode-choice[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  box-shadow: var(--vf-elevation-0);
+}
+
+.mode-title {
+  font-family: var(--vf-font-family-display);
+  font-size: var(--vf-font-size-3xl);
+  font-weight: var(--vf-font-weight-bold);
+  letter-spacing: var(--vf-letter-spacing-tight);
+}
+
+.mode-back {
+  align-self: flex-start;
+  background: none;
+  border: var(--vf-border-width-hairline) solid transparent;
+  border-radius: var(--vf-radius-pill);
+  padding: var(--vf-space-1) var(--vf-space-3);
+  min-height: var(--vf-control-height-sm);
+  color: var(--vf-text-secondary);
+  font: inherit;
+  cursor: pointer;
+  transition:
+    color var(--vf-duration-fast) var(--vf-ease-standard),
+    border-color var(--vf-duration-fast) var(--vf-ease-standard);
+}
+
+.mode-back:hover {
+  color: var(--vf-text-primary);
+  border-color: var(--vf-border-subtle);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Pre-join
+   ──────────────────────────────────────────────────────────────────────────── */
 
 .prejoin {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 48px 20px;
+  padding: var(--vf-space-8) var(--vf-space-4);
 }
 
 .prejoin-card {
   width: 100%;
-  max-width: 460px;
-  background: linear-gradient(180deg, var(--color-surface-raised), var(--color-surface));
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
-  padding: 40px 36px 36px;
+  max-width: var(--vf-container-sm);
+  background: var(--vf-surface-1);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-subtle);
+  border-radius: var(--vf-radius-xl);
+  box-shadow: var(--vf-elevation-4);
+  padding: var(--vf-space-7) var(--vf-space-6) var(--vf-space-6);
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: var(--vf-space-5);
 }
 
 .brand {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--vf-space-1);
 }
 
 .brand-name {
-  font-size: 1.6rem;
-  font-weight: 650;
-  letter-spacing: 0.01em;
+  font-family: var(--vf-font-family-display);
+  font-size: var(--vf-font-size-2xl);
+  font-weight: var(--vf-font-weight-bold);
+  letter-spacing: var(--vf-letter-spacing-tight);
 }
 
 .brand-name span {
-  color: var(--color-brand-light);
+  color: var(--vf-text-accent);
 }
 
 .brand-tagline {
-  color: var(--color-text-muted);
-  font-size: 0.95rem;
-  line-height: 1.45;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-sm);
+  line-height: var(--vf-line-height-normal);
 }
 
 .field {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--vf-space-2);
 }
 
 .field-label {
-  font-size: 0.8rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
+  font-size: var(--vf-font-size-2xs);
+  font-weight: var(--vf-font-weight-semibold);
+  letter-spacing: var(--vf-letter-spacing-caps);
   text-transform: uppercase;
-  color: var(--color-text-muted);
+  color: var(--vf-text-muted);
 }
 
 .field input[type='text'] {
-  background: var(--color-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  color: var(--color-text);
-  font-size: 1rem;
-  padding: 12px 14px;
+  background: var(--vf-surface-sunken);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-default);
+  border-radius: var(--vf-radius-md);
+  color: var(--vf-text-primary);
+  font-size: var(--vf-font-size-md);
+  min-height: var(--vf-control-height-lg);
+  padding: 0 var(--vf-space-4);
   outline: none;
-  transition: border-color 120ms ease;
+  transition: border-color var(--vf-duration-fast) var(--vf-ease-standard);
 }
 
 .field input[type='text']:focus {
-  border-color: var(--color-brand-light);
+  border-color: var(--vf-border-accent);
 }
 
 .field-error {
-  color: var(--color-error);
-  font-size: 0.85rem;
+  color: var(--vf-status-danger-text);
+  font-size: var(--vf-font-size-sm);
+}
+
+.field-hint {
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-xs);
+  line-height: var(--vf-line-height-normal);
 }
 
 .code-row {
   display: flex;
-  gap: 10px;
+  gap: var(--vf-space-2);
 }
 
 .code-row input {
   flex: 1;
   min-width: 0;
+  font-family: var(--vf-font-family-mono);
+  letter-spacing: var(--vf-letter-spacing-wide);
 }
 
 .ghost-button {
   background: transparent;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  color: var(--color-brand-light);
-  font-size: 0.9rem;
-  font-weight: 600;
-  padding: 0 16px;
+  border: var(--vf-border-width-hairline) solid var(--vf-border-default);
+  border-radius: var(--vf-radius-md);
+  color: var(--vf-text-accent);
+  font-size: var(--vf-font-size-sm);
+  font-weight: var(--vf-font-weight-semibold);
+  padding: 0 var(--vf-space-4);
+  min-height: var(--vf-control-height-md);
   white-space: nowrap;
-  transition: border-color 120ms ease, color 120ms ease;
+  transition:
+    border-color var(--vf-duration-fast) var(--vf-ease-standard),
+    color var(--vf-duration-fast) var(--vf-ease-standard);
 }
 
 .ghost-button:hover:enabled {
-  border-color: var(--color-brand-light);
+  border-color: var(--vf-border-interactive);
 }
 
 .language-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  gap: var(--vf-space-4);
 }
 
 .field select {
-  background: var(--color-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  color: var(--color-text);
-  font-size: 1rem;
-  padding: 11px 12px;
+  background: var(--vf-surface-sunken);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-default);
+  border-radius: var(--vf-radius-md);
+  color: var(--vf-text-primary);
+  font-size: var(--vf-font-size-md);
+  min-height: var(--vf-control-height-md);
+  padding: 0 var(--vf-space-3);
   outline: none;
 }
 
 .field select:focus {
-  border-color: var(--color-brand-light);
+  border-color: var(--vf-border-accent);
 }
 
 .segmented {
   display: flex;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-default);
+  border-radius: var(--vf-radius-md);
   overflow: hidden;
 }
 
@@ -249,39 +356,43 @@ select {
   flex: 1;
   background: transparent;
   border: none;
-  color: var(--color-text-muted);
-  font-size: 0.95rem;
-  font-weight: 600;
-  padding: 11px 0;
-  transition: background-color 120ms ease, color 120ms ease;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-sm);
+  font-weight: var(--vf-font-weight-semibold);
+  min-height: var(--vf-control-height-md);
+  transition:
+    background-color var(--vf-duration-fast) var(--vf-ease-standard),
+    color var(--vf-duration-fast) var(--vf-ease-standard);
 }
 
 .segmented button.is-selected {
-  background: rgba(124, 58, 237, 0.22);
-  color: var(--color-text);
+  background: var(--vf-surface-accent-strong);
+  color: var(--vf-text-primary);
 }
 
 .mode-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--vf-space-2);
 }
 
 .mode-option {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  background: var(--color-bg);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: 12px 14px;
+  gap: var(--vf-space-3);
+  background: var(--vf-surface-sunken);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-default);
+  border-radius: var(--vf-radius-md);
+  padding: var(--vf-space-3) var(--vf-space-4);
   cursor: pointer;
-  transition: border-color 120ms ease, background-color 120ms ease;
+  transition:
+    border-color var(--vf-duration-fast) var(--vf-ease-standard),
+    background-color var(--vf-duration-fast) var(--vf-ease-standard);
 }
 
 .mode-option.is-selected {
-  border-color: var(--color-brand);
-  background: rgba(124, 58, 237, 0.1);
+  border-color: var(--vf-border-accent);
+  background: var(--vf-surface-accent-weak);
 }
 
 .mode-option input {
@@ -296,28 +407,28 @@ select {
 }
 
 .mode-option-label {
-  font-weight: 600;
+  font-weight: var(--vf-font-weight-semibold);
 }
 
 .mode-option-description {
-  color: var(--color-text-muted);
-  font-size: 0.88rem;
-  line-height: 1.4;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-sm);
+  line-height: var(--vf-line-height-normal);
 }
 
 .toggle-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--vf-space-3);
 }
 
 .toggle-row .field-label {
   text-transform: none;
-  font-size: 0.95rem;
-  font-weight: 500;
-  letter-spacing: normal;
-  color: var(--color-text);
+  font-size: var(--vf-font-size-md);
+  font-weight: var(--vf-font-weight-medium);
+  letter-spacing: var(--vf-letter-spacing-normal);
+  color: var(--vf-text-primary);
 }
 
 .toggle-row input {
@@ -330,36 +441,36 @@ select {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--vf-space-3);
 }
 
 .mic-status {
-  font-size: 0.9rem;
-  color: var(--color-text-muted);
+  font-size: var(--vf-font-size-sm);
+  color: var(--vf-text-muted);
 }
 
 .mic-status.is-ok {
-  color: var(--color-success);
+  color: var(--vf-status-success-text);
 }
 
 .mic-status.is-denied {
-  color: var(--color-warn);
+  color: var(--vf-status-warn-text);
 }
 
 .primary-button {
-  background: linear-gradient(135deg, var(--color-brand), #6d28d9);
+  background: var(--color-brand);
   border: none;
-  border-radius: var(--radius-md);
-  color: #fff;
-  font-size: 1.05rem;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-  padding: 14px 0;
-  transition: filter 120ms ease;
+  border-radius: var(--vf-radius-md);
+  color: var(--vf-text-on-accent);
+  font-size: var(--vf-font-size-md);
+  font-weight: var(--vf-font-weight-semibold);
+  letter-spacing: var(--vf-letter-spacing-snug);
+  min-height: var(--vf-control-height-lg);
+  transition: filter var(--vf-duration-fast) var(--vf-ease-standard);
 }
 
 .primary-button:hover:enabled {
-  filter: brightness(1.1);
+  filter: brightness(1.12);
 }
 
 .primary-button:disabled {
@@ -367,85 +478,147 @@ select {
 }
 
 .join-error {
-  color: var(--color-error);
-  font-size: 0.92rem;
+  color: var(--vf-status-danger-text);
+  font-size: var(--vf-font-size-sm);
   text-align: center;
 }
 
-/* ---------- Call screen ---------- */
+.invite-row {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-space-2);
+  flex-wrap: wrap;
+}
+
+.invite-row .ghost-button {
+  min-height: var(--vf-control-height-sm);
+  padding: 0 var(--vf-space-3);
+}
+
+.invite-hint {
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-xs);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Call screen — a fixed-height grid; the page never grows with the call.
+
+   Column 1 is the call itself: header / stage / captions / dock. Column 2 is
+   the transcript, which on desktop is a real side panel that PUSHES the call
+   column rather than covering it (the 2026-08-18 retest screenshots showed an
+   overlay drawer sitting permanently over participant tiles). On small
+   screens it is a bottom sheet instead, and column 2 collapses.
+   ──────────────────────────────────────────────────────────────────────────── */
 
 .call-screen {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  max-width: 880px;
   width: 100%;
+  max-width: var(--vf-container-md);
   margin: 0 auto;
-  padding: 28px 24px 24px;
-  gap: 20px;
-  min-height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  column-gap: var(--vf-space-5);
+  row-gap: var(--vf-space-4);
+  padding: var(--vf-space-4) var(--vf-page-gutter);
+  padding-bottom: max(var(--vf-space-4), env(safe-area-inset-bottom));
+}
+
+.call-header,
+.call-stage,
+.captions,
+.control-bar {
+  grid-column: 1;
 }
 
 .call-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--vf-space-3);
   flex-wrap: wrap;
 }
 
 .call-title {
-  font-size: 1.15rem;
-  font-weight: 650;
+  display: flex;
+  align-items: center;
+  gap: var(--vf-space-2);
+  font-family: var(--vf-font-family-display);
+  font-size: var(--vf-font-size-lg);
+  font-weight: var(--vf-font-weight-semibold);
+  letter-spacing: var(--vf-letter-spacing-snug);
 }
 
+/* Join codes are data, and data is set in mono (§5.1.11 typography). */
 .call-title span {
-  color: var(--color-brand-light);
+  font-family: var(--vf-font-family-mono);
+  font-size: var(--vf-font-size-sm);
+  font-weight: var(--vf-font-weight-medium);
+  letter-spacing: var(--vf-letter-spacing-wide);
+  color: var(--vf-text-accent);
+  background: var(--vf-surface-accent-weak);
+  border: var(--vf-border-width-hairline) solid var(--vf-surface-accent-strong);
+  border-radius: var(--vf-radius-sm);
+  padding: 0.2em 0.6em;
 }
 
 .call-status {
   display: flex;
   align-items: center;
-  gap: 10px;
-  color: var(--color-text-muted);
-  font-size: 0.92rem;
+  gap: var(--vf-space-2);
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-font-size-sm);
+  background: var(--vf-surface-1);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-subtle);
+  border-radius: var(--vf-radius-pill);
+  padding: var(--vf-space-1) var(--vf-space-3);
 }
 
 .status-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--color-text-muted);
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--vf-radius-circle);
+  background: var(--vf-state-connecting);
 }
 
 .status-dot.is-connected {
   background: var(--color-success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-success) 22%, transparent);
 }
 
 .status-dot.is-recovering {
-  background: var(--color-warn);
+  background: var(--vf-state-recovering);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--vf-state-recovering) 22%, transparent);
 }
 
 .enable-audio-button {
-  background: rgba(124, 58, 237, 0.2);
-  border: 1px solid var(--color-brand);
-  border-radius: var(--radius-sm);
-  color: var(--color-text);
-  font-size: 0.85rem;
-  font-weight: 600;
-  padding: 5px 12px;
+  background: var(--vf-surface-accent);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-accent);
+  border-radius: var(--vf-radius-pill);
+  color: var(--vf-text-primary);
+  font-size: var(--vf-font-size-xs);
+  font-weight: var(--vf-font-weight-semibold);
+  padding: var(--vf-space-1) var(--vf-space-3);
 }
 
-/*
- * The stage is the top of the call hierarchy (§5.1.6). Until camera video
- * lands it presents people rather than tiles of video, but it holds the same
- * dominant position so the layout does not have to be re-thought when video
- * arrives — the tile simply gains a frame.
- */
+.translated-audio-unavailable {
+  color: var(--vf-status-warn-text);
+  font-size: var(--vf-font-size-xs);
+}
+
+/* ── Stage ── */
+
 .call-stage {
+  min-height: 0;
+  overflow-y: auto;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 22rem));
+  justify-content: center;
+  align-content: safe center;
+  gap: var(--vf-space-4);
+  padding-block: var(--vf-space-1);
 }
 
 .participant-tile {
@@ -453,144 +626,235 @@ select {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  background: linear-gradient(180deg, var(--color-surface-raised), var(--color-surface));
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: 28px 20px 22px;
-  text-align: center;
-  /* Reserves the stage proportions video will need, so the shift is not jarring. */
-  min-height: 200px;
   justify-content: center;
-  transition: border-color 160ms ease, box-shadow 160ms ease;
+  gap: var(--vf-space-2);
+  background: var(--vf-surface-1);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-subtle);
+  border-radius: var(--vf-radius-xl);
+  box-shadow: var(--vf-elevation-2);
+  padding: var(--vf-space-6) var(--vf-space-4) var(--vf-space-5);
+  text-align: center;
+  min-height: 13.5rem;
+  transition:
+    border-color var(--vf-duration-fast) var(--vf-ease-standard),
+    box-shadow var(--vf-duration-normal) var(--vf-ease-standard);
 }
 
-/*
- * Speaking state is driven by interim captions, so it tracks live speech. The
- * ring is reinforced by a visible "Speaking" label, because status must never
- * be carried by colour alone (§5.1.13).
- */
 .participant-tile.is-speaking {
-  border-color: var(--color-brand);
-  box-shadow: 0 0 0 1px var(--color-brand), 0 12px 32px rgba(124, 58, 237, 0.18);
+  border-color: transparent;
+  box-shadow: var(--vf-media-speaking-ring), var(--vf-elevation-3);
 }
 
 .participant-avatar {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  background: rgba(124, 58, 237, 0.18);
-  border: 1px solid rgba(167, 139, 250, 0.35);
-  color: var(--color-brand-light);
-  font-size: 1.35rem;
-  font-weight: 650;
-  letter-spacing: 0.04em;
+  width: 4.25rem;
+  height: 4.25rem;
+  border-radius: var(--vf-radius-circle);
+  background: var(--vf-surface-accent);
+  border: var(--vf-border-width-hairline) solid var(--vf-surface-accent-strong);
+  color: var(--vf-text-accent);
+  font-family: var(--vf-font-family-display);
+  font-size: var(--vf-font-size-xl);
+  font-weight: var(--vf-font-weight-semibold);
+  letter-spacing: var(--vf-letter-spacing-wide);
+  margin-bottom: var(--vf-space-1);
 }
 
 .participant-speaking {
-  color: var(--color-brand-light);
-  font-size: 0.78rem;
-  font-weight: 650;
-  letter-spacing: 0.08em;
+  color: var(--vf-text-accent);
+  font-size: var(--vf-font-size-2xs);
+  font-weight: var(--vf-font-weight-semibold);
+  letter-spacing: var(--vf-letter-spacing-caps);
   text-transform: uppercase;
 }
 
 .participant-name {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-weight: 600;
+  gap: var(--vf-space-2);
+  font-weight: var(--vf-font-weight-semibold);
 }
 
 .participant-you {
-  color: var(--color-text-muted);
-  font-size: 0.85rem;
-  font-weight: 500;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-sm);
+  font-weight: var(--vf-font-weight-regular);
 }
 
 .participant-languages {
-  color: var(--color-text-muted);
-  font-size: 0.85rem;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-sm);
 }
 
 .participant-waiting {
-  display: flex;
-  align-items: center;
-  color: var(--color-text-muted);
-  font-size: 0.92rem;
-  border: 1px dashed var(--color-border);
-  border-radius: var(--radius-md);
-  padding: 14px 18px;
+  grid-column: 1 / -1;
+  place-self: center;
+  color: var(--vf-empty-text);
+  font-size: var(--vf-font-size-sm);
+  border: var(--vf-empty-border);
+  border-radius: var(--vf-empty-radius);
+  padding: var(--vf-empty-padding);
 }
 
+/* Per-speaker listener preferences, sited on the tile they govern (P6.4-W3). */
+.participant-audio-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--vf-space-2);
+  flex-wrap: wrap;
+  margin-top: var(--vf-space-2);
+}
+
+.participant-mute {
+  padding: 0 var(--vf-space-3);
+  min-height: var(--vf-control-height-sm);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-default);
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-surface-2);
+  color: inherit;
+  font: inherit;
+  font-size: var(--vf-font-size-xs);
+  font-weight: var(--vf-font-weight-medium);
+  cursor: pointer;
+  transition: border-color var(--vf-duration-fast) var(--vf-ease-standard);
+}
+
+.participant-mute:hover:enabled {
+  border-color: var(--vf-border-interactive);
+}
+
+.participant-mute[aria-pressed='true'] {
+  border-color: var(--vf-status-danger-border);
+  background: var(--vf-status-danger-surface);
+  color: var(--vf-status-danger-text);
+}
+
+.participant-volume {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-space-2);
+  font-size: var(--vf-font-size-xs);
+  color: var(--vf-text-muted);
+}
+
+.participant-volume input[type='range'] {
+  width: 96px;
+  accent-color: var(--color-brand);
+}
+
+/* Unresolved audio: controls stay visible and inert. Hiding them made a
+   participant with a transport fault look identical to a healthy one. */
+.participant-audio-controls.is-unavailable,
+.participant-audio-controls.is-suppressed {
+  opacity: 0.55;
+}
+
+.participant-audio-controls button[disabled],
+.participant-audio-controls input[disabled] {
+  cursor: not-allowed;
+}
+
+.participant-audio-pending {
+  width: 100%;
+  font-size: var(--vf-font-size-xs);
+  color: var(--vf-text-muted);
+}
+
+/* ── Captions: live strip only. History is the transcript's job. ── */
+
 .captions {
-  flex: 1;
   display: flex;
   flex-direction: column;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  background: var(--vf-surface-1);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-subtle);
+  border-radius: var(--vf-radius-lg);
+  box-shadow: var(--vf-elevation-1);
   overflow: hidden;
-  min-height: 240px;
 }
 
 .captions-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px 18px;
-  border-bottom: 1px solid var(--color-border);
-  color: var(--color-text-muted);
-  font-size: 0.8rem;
-  font-weight: 600;
-  letter-spacing: 0.1em;
+  gap: var(--vf-space-2);
+  padding: var(--vf-space-2) var(--vf-space-4);
+  border-bottom: var(--vf-border-width-hairline) solid var(--vf-border-subtle);
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-2xs);
+  font-weight: var(--vf-font-weight-semibold);
+  letter-spacing: var(--vf-letter-spacing-caps);
   text-transform: uppercase;
 }
 
+.captions-live-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--vf-radius-circle);
+  background: var(--vf-state-live);
+}
+
 .captions-language {
-  /* Pushed to the trailing edge: a control the reader reaches for
-     occasionally must not compete with the caption text itself. */
   margin-left: auto;
 }
 
 .captions-language select {
-  padding: 4px 8px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-surface);
-  color: var(--color-text);
+  padding: var(--vf-space-1) var(--vf-space-2);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-default);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface-2);
+  color: var(--vf-text-primary);
   font: inherit;
-  font-size: 0.75rem;
-  letter-spacing: normal;
+  font-size: var(--vf-font-size-xs);
+  letter-spacing: var(--vf-letter-spacing-normal);
   text-transform: none;
 }
 
-.captions-language select:disabled {
-  opacity: 0.6;
+.transcript-toggle {
+  padding: var(--vf-space-1) var(--vf-space-3);
+  min-height: var(--vf-control-height-sm);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-default);
+  border-radius: var(--vf-radius-pill);
+  background: transparent;
+  color: var(--vf-text-secondary);
+  font: inherit;
+  font-size: var(--vf-font-size-xs);
+  font-weight: var(--vf-font-weight-medium);
+  letter-spacing: var(--vf-letter-spacing-normal);
+  text-transform: none;
+  cursor: pointer;
+  transition:
+    border-color var(--vf-duration-fast) var(--vf-ease-standard),
+    color var(--vf-duration-fast) var(--vf-ease-standard);
 }
 
-.captions-live-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--color-error);
+.transcript-toggle:hover {
+  border-color: var(--vf-border-interactive);
+  color: var(--vf-text-primary);
 }
 
-.captions-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 18px;
+.transcript-toggle.is-active {
+  border-color: var(--vf-border-accent);
+  background: var(--vf-surface-accent-weak);
+  color: var(--vf-text-accent);
+}
+
+.captions-live {
+  max-height: 9.5rem;
+  min-height: 3.5rem;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  justify-content: flex-end;
+  gap: var(--vf-space-3);
+  padding: var(--vf-space-3) var(--vf-space-4);
 }
 
 .captions-empty {
-  color: var(--color-text-muted);
-  font-size: 0.95rem;
+  color: var(--vf-empty-text);
+  font-size: var(--vf-font-size-sm);
   margin: auto;
 }
 
@@ -598,17 +862,14 @@ select {
   display: flex;
   flex-direction: column;
   gap: var(--vf-space-1);
-  /* The panel measure, not a number chosen here. Captions in a side panel and
-     captions over a stage are the same reading problem at different widths,
-     and the design system already holds both answers. */
   max-width: var(--vf-caption-max-width-panel);
 }
 
 .caption-speaker {
-  color: var(--color-brand-light);
-  font-size: var(--vf-font-size-sm);
-  font-weight: var(--vf-font-weight-semibold);
-  letter-spacing: 0.03em;
+  color: var(--vf-caption-speaker-color);
+  font-size: var(--vf-caption-speaker-font-size);
+  font-weight: var(--vf-caption-speaker-font-weight);
+  letter-spacing: var(--vf-caption-speaker-letter-spacing);
 }
 
 .caption-text {
@@ -620,8 +881,6 @@ select {
 }
 
 .caption-entry.is-partial .caption-text {
-  /* Interim wording is a distinct token, not "muted text": it is a state the
-     product reasons about, and it is announced to screen readers as well. */
   color: var(--vf-caption-interim-color);
   font-style: italic;
 }
@@ -631,15 +890,15 @@ select {
 }
 
 .caption-original summary {
-  color: var(--color-text-muted);
-  font-size: 0.8rem;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-xs);
   cursor: pointer;
   list-style: none;
 }
 
 .caption-original summary::before {
   content: '›  ';
-  color: var(--color-brand-light);
+  color: var(--vf-text-accent);
 }
 
 .caption-original[open] summary::before {
@@ -647,113 +906,226 @@ select {
 }
 
 .caption-original p {
-  color: var(--color-text-muted);
-  font-size: 0.92rem;
-  line-height: 1.45;
-  padding: 6px 0 0 14px;
-  border-left: 2px solid var(--color-border);
-  margin-top: 4px;
-  margin-left: 2px;
+  color: var(--vf-caption-original-color);
+  font-size: var(--vf-caption-original-font-size);
+  line-height: var(--vf-line-height-normal);
+  padding: var(--vf-space-1) 0 0 var(--vf-caption-original-indent);
+  border-left: var(--vf-caption-original-rail);
+  margin-top: var(--vf-space-1);
 }
 
 .captions-hidden-note {
-  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--color-text-muted);
-  font-size: 0.95rem;
+  min-height: 3.5rem;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-sm);
 }
+
+/* ── Transcript ──
+   Mobile-first: a bottom sheet, controls reachable above it. From lg up it
+   becomes grid column 2 — a side panel that pushes the call column.
+
+   `display` must be re-killed for [hidden]: this rule sets `display: flex`,
+   which otherwise OVERRIDES the hidden attribute — the drawer then overlays
+   every call permanently. That is exactly the defect the 2026-08-18 retest
+   screenshots showed, and .audio-drawer below guards the same trap. */
+.transcript-drawer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: min(60dvh, 34rem);
+  z-index: var(--vf-z-drawer);
+  display: flex;
+  flex-direction: column;
+  background: var(--vf-surface-2);
+  border-top: var(--vf-border-width-hairline) solid var(--vf-border-strong);
+  border-radius: var(--vf-radius-xl) var(--vf-radius-xl) 0 0;
+  box-shadow: var(--vf-elevation-5);
+  padding-bottom: env(safe-area-inset-bottom);
+  opacity: 1;
+  translate: 0 0;
+  transition:
+    opacity var(--vf-duration-slow) var(--vf-ease-decelerate),
+    translate var(--vf-duration-slow) var(--vf-ease-decelerate);
+}
+
+.transcript-drawer[hidden] {
+  display: none;
+}
+
+/* Entry only; closing is instant. Ignored by engines without @starting-style. */
+@starting-style {
+  .transcript-drawer {
+    opacity: 0;
+    translate: 0 var(--vf-space-4);
+  }
+}
+
+/* Sheet grab affordance; the side-panel form factor removes it. */
+.transcript-drawer::before {
+  content: '';
+  flex: none;
+  align-self: center;
+  width: 2.25rem;
+  height: 4px;
+  margin-top: var(--vf-space-2);
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-border-strong);
+}
+
+.transcript-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-space-3);
+  padding: var(--vf-space-2) var(--vf-space-4);
+  border-bottom: var(--vf-border-width-hairline) solid var(--vf-border-subtle);
+}
+
+.transcript-title {
+  font-size: var(--vf-font-size-2xs);
+  font-weight: var(--vf-font-weight-semibold);
+  letter-spacing: var(--vf-letter-spacing-caps);
+  text-transform: uppercase;
+  color: var(--vf-text-muted);
+}
+
+.transcript-close {
+  padding: var(--vf-space-1) var(--vf-space-3);
+  min-height: var(--vf-control-height-sm);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-default);
+  border-radius: var(--vf-radius-pill);
+  background: transparent;
+  color: var(--vf-text-secondary);
+  font: inherit;
+  font-size: var(--vf-font-size-xs);
+  cursor: pointer;
+  transition:
+    border-color var(--vf-duration-fast) var(--vf-ease-standard),
+    color var(--vf-duration-fast) var(--vf-ease-standard);
+}
+
+.transcript-close:hover {
+  border-color: var(--vf-border-interactive);
+  color: var(--vf-text-primary);
+}
+
+.transcript-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--vf-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-3);
+  -webkit-overflow-scrolling: touch;
+}
+
+.transcript-empty {
+  margin: auto;
+  color: var(--vf-empty-text);
+  font-size: var(--vf-font-size-sm);
+}
+
+/* ── Control dock ── */
 
 .control-bar {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: 14px 18px;
+  gap: var(--vf-space-3);
+  background: var(--vf-surface-2);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-subtle);
+  border-radius: var(--vf-radius-xl);
+  box-shadow: var(--vf-elevation-3);
+  padding: var(--vf-space-3) var(--vf-space-4);
 }
 
 .control-cluster {
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: center;
+  gap: var(--vf-space-3);
   flex-wrap: wrap;
 }
 
-/*
- * The audio mix is secondary (§5.1.3): it expands from the compact Audio
- * control instead of holding permanent space. `hidden` does the hiding, so a
- * collapsed drawer is out of the tab order and the accessibility tree too —
- * `display` is restored here only because flex layout would otherwise override
- * the attribute.
- */
+.control-button {
+  background: var(--vf-surface-3);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-subtle);
+  border-radius: var(--vf-control-radius);
+  color: var(--vf-text-primary);
+  font-size: var(--vf-font-size-sm);
+  font-weight: var(--vf-font-weight-semibold);
+  min-height: var(--vf-control-height-md);
+  padding: 0 var(--vf-control-padding-inline-md);
+  transition:
+    border-color var(--vf-duration-fast) var(--vf-ease-standard),
+    background-color var(--vf-duration-fast) var(--vf-ease-standard);
+}
+
+.control-button:hover:enabled {
+  background: var(--vf-surface-4);
+  border-color: var(--vf-border-interactive);
+}
+
+.control-button.is-active {
+  background: var(--vf-surface-accent-strong);
+  border-color: var(--vf-border-accent);
+}
+
+.control-button.is-danger {
+  background: var(--vf-status-danger-solid);
+  border-color: transparent;
+  color: var(--vf-status-on-solid);
+}
+
+.control-button.is-danger:hover:enabled {
+  background: var(--vf-status-danger-solid);
+  border-color: transparent;
+  filter: brightness(1.12);
+}
+
+/* Expands from the compact Audio control; `hidden` removes it from the tab
+   order and accessibility tree, so display must be re-killed here too. */
 .audio-drawer {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: var(--vf-space-4);
   flex-wrap: wrap;
-  border-top: 1px solid var(--color-border);
-  padding-top: 14px;
+  border-top: var(--vf-border-width-hairline) solid var(--vf-border-subtle);
+  padding-top: var(--vf-space-3);
 }
 
 .audio-drawer[hidden] {
   display: none;
 }
 
-.control-button {
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  color: var(--color-text);
-  font-size: 0.92rem;
-  font-weight: 600;
-  padding: 10px 18px;
-  transition: border-color 120ms ease, background-color 120ms ease;
-}
-
-.control-button:hover:enabled {
-  border-color: var(--color-brand-light);
-}
-
-.control-button.is-active {
-  background: rgba(124, 58, 237, 0.22);
-  border-color: var(--color-brand);
-}
-
-.control-button.is-danger {
-  background: rgba(239, 68, 68, 0.12);
-  border-color: rgba(239, 68, 68, 0.45);
-  color: #fca5a5;
-}
-
-.control-button.is-danger:hover:enabled {
-  border-color: var(--color-error);
-}
-
 .mode-select {
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: var(--color-text-muted);
-  font-size: 0.88rem;
+  gap: var(--vf-space-2);
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-sm);
 }
 
 .mode-select select {
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  color: var(--color-text);
-  font-size: 0.92rem;
-  padding: 9px 10px;
+  background: var(--vf-surface-3);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-default);
+  border-radius: var(--vf-radius-md);
+  color: var(--vf-text-primary);
+  font-size: var(--vf-font-size-sm);
+  min-height: var(--vf-control-height-sm);
+  padding: 0 var(--vf-space-2);
   outline: none;
 }
 
 .slider-group {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: var(--vf-space-5);
   flex-wrap: wrap;
   margin-left: auto;
 }
@@ -761,15 +1133,15 @@ select {
 .slider {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  min-width: 160px;
+  gap: var(--vf-space-1);
+  min-width: 10rem;
 }
 
 .slider label {
-  color: var(--color-text-muted);
-  font-size: 0.78rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-2xs);
+  font-weight: var(--vf-font-weight-semibold);
+  letter-spacing: var(--vf-letter-spacing-wide);
 }
 
 .slider input {
@@ -780,62 +1152,134 @@ select {
   opacity: 0.4;
 }
 
-@media (max-width: 640px) {
+/* ─────────────────────────────────────────────────────────────────────────────
+   Responsive. System breakpoints only: 768 ends the stacked call layout,
+   1024 is where the transcript earns a side panel (§5.1.11 — no 640 stop).
+   ──────────────────────────────────────────────────────────────────────────── */
+
+@media (max-width: 767.98px) {
+  .home-title {
+    font-size: var(--vf-font-size-3xl);
+  }
+
+  .mode-title {
+    font-size: var(--vf-font-size-2xl);
+  }
+
+  .prejoin {
+    padding: var(--vf-space-5) var(--vf-space-3);
+  }
+
   .prejoin-card {
-    padding: 28px 22px 24px;
+    padding: var(--vf-space-5) var(--vf-space-4);
   }
 
   .call-screen {
-    padding: 18px 14px 16px;
+    row-gap: var(--vf-space-3);
+    padding: var(--vf-space-3);
+    padding-bottom: max(var(--vf-space-3), env(safe-area-inset-bottom));
+  }
+
+  .call-title {
+    font-size: var(--vf-font-size-md);
+  }
+
+  .call-stage {
+    grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+    align-content: start;
+    gap: var(--vf-space-3);
+  }
+
+  .participant-tile {
+    min-height: 0;
+    padding: var(--vf-space-4) var(--vf-space-3);
+  }
+
+  .participant-avatar {
+    width: 3rem;
+    height: 3rem;
+    font-size: var(--vf-font-size-md);
+  }
+
+  .participant-volume input[type='range'] {
+    width: 84px;
+  }
+
+  .captions-live {
+    max-height: 7.5rem;
+  }
+
+  .control-bar {
+    padding: var(--vf-space-2) var(--vf-space-3);
+  }
+
+  .control-cluster {
+    gap: var(--vf-space-2);
+  }
+
+  .control-button {
+    flex: 1 1 auto;
+    min-height: var(--vf-tap-target-min);
+    padding: 0 var(--vf-space-2);
   }
 
   .slider-group {
     margin-left: 0;
     width: 100%;
   }
+
+  .slider {
+    flex: 1;
+    min-width: 0;
+  }
 }
 
-/* Explains the chosen audio mode now that the three cards are folded away. */
-.field-hint {
-  color: var(--color-text-muted);
-  font-size: 0.82rem;
-  line-height: 1.4;
+/* Anything used mid-call with a thumb clears the 44px tap floor. */
+@media (pointer: coarse) {
+  .participant-mute,
+  .transcript-toggle,
+  .transcript-close,
+  .captions-language select,
+  .mode-select select {
+    min-height: var(--vf-tap-target-min);
+  }
 }
 
-.invite-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+@media (min-width: 1024px) {
+  /* Room for the call column AND the open panel; :has() falls back to a
+     narrower-but-correct layout on engines without it. */
+  .call-screen:has(.transcript-drawer:not([hidden])) {
+    max-width: calc(var(--vf-container-md) + 24rem + var(--vf-space-5));
+  }
+
+  .transcript-drawer {
+    position: static;
+    grid-column: 2;
+    grid-row: 1 / -1;
+    width: 24rem;
+    height: auto;
+    min-height: 0;
+    border: var(--vf-border-width-hairline) solid var(--vf-border-subtle);
+    border-radius: var(--vf-radius-lg);
+    box-shadow: var(--vf-elevation-2);
+    background: var(--vf-surface-1);
+    padding-bottom: 0;
+  }
+
+  .transcript-drawer::before {
+    content: none;
+  }
 }
 
-.invite-row .ghost-button {
-  padding: 8px 14px;
-}
-
-.invite-hint {
-  color: var(--color-text-muted);
-  font-size: 0.8rem;
-}
-
-button:disabled,
-select:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-/* ---------------------------------------------------------------------------
-   Personal voice enrollment.
-
-   These rules were missing entirely: the panel shipped with class names and no
-   styles, so it rendered as unstyled text stacked above the call and a viewer
-   had to scroll up to discover it existed.
-   --------------------------------------------------------------------------- */
+/* ─────────────────────────────────────────────────────────────────────────────
+   Personal voice enrollment (P6.3). These rules were once missing entirely —
+   the panel shipped with class names and no styles.
+   ──────────────────────────────────────────────────────────────────────────── */
 
 .voice-enrollment-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 200;
+  z-index: var(--vf-z-modal);
   display: grid;
   place-items: center;
   padding: var(--vf-space-4);
@@ -949,11 +1393,15 @@ select:disabled {
 }
 
 @keyframes voice-recording-pulse {
-  50% { opacity: 0.25; }
+  50% {
+    opacity: 0.25;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .voice-recording-dot { animation: none; }
+  .voice-recording-dot {
+    animation: none;
+  }
 }
 
 .control-button.is-destructive {

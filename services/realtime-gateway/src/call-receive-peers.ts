@@ -195,6 +195,14 @@ export class CallReceivePeerManager implements CallReceivePeersLike {
   private readonly remoteSlotCount: number;
   /** Frames for a speaker with no slot on that listener. Should stay zero. */
   private unboundFrameCount = 0;
+  /**
+   * Speakers who could not be given a NEGOTIATED slot.
+   *
+   * Non-zero means the client offered fewer recvonly m-lines than the gateway
+   * has slots, and somebody is inaudible. Counted because that failure is
+   * otherwise completely silent.
+   */
+  private unplaceableSpeakerCount = 0;
 
   constructor(handlers: CallReceivePeerHandlers, options: CallReceivePeerManagerOptions = {}) {
     this.handlers = handlers;
@@ -353,16 +361,28 @@ export class CallReceivePeerManager implements CallReceivePeersLike {
       // 2. Bind anyone unbound to the lowest free slot, in a deterministic
       //    order so two listeners agree about nothing — they need not — but a
       //    single listener is reproducible across reconnects.
+      // A slot with no mid was never negotiated — the client's offer did not
+      // carry an m-line for it — so audio written there goes nowhere. Binding a
+      // speaker to one silently discards them, which is exactly how W3 came to
+      // look like it was working. Prefer negotiated slots; fall back only when
+      // no slot has a mid at all, which is the case for a peer double that
+      // cannot report transceivers.
+      const anyNegotiated = record.slots.some((slot) => slot.mid !== null);
       for (const speakerId of wanted) {
         if (record.slots.some((slot) => slot.speakerParticipantId === speakerId)) continue;
-        const free = record.slots.find((slot) => slot.speakerParticipantId === null);
+        const free =
+          record.slots.find(
+            (slot) => slot.speakerParticipantId === null && (!anyNegotiated || slot.mid !== null),
+          ) ?? null;
         if (!free) {
           // More speakers than slots: the conference cap is meant to prevent
           // this, so it is a configuration error rather than a routine state.
-          logger.warn('Call receive peer has no free slot for a speaker', {
+          this.unplaceableSpeakerCount += 1;
+          logger.warn('Call receive peer has no usable slot for a speaker', {
             callId,
             participantId: record.participantId,
             slotCount: record.slots.length,
+            negotiatedSlotCount: record.slots.filter((slot) => slot.mid !== null).length,
           });
           break;
         }
@@ -382,6 +402,17 @@ export class CallReceivePeerManager implements CallReceivePeersLike {
   /** Diagnostics: frames arriving for a speaker with no slot. Expected zero. */
   unboundFrames(): number {
     return this.unboundFrameCount;
+  }
+
+  /** Diagnostics: speakers with no negotiated slot, i.e. inaudible. Expected zero. */
+  unplaceableSpeakers(): number {
+    return this.unplaceableSpeakerCount;
+  }
+
+  /** How many of a listener's slots the client actually negotiated. */
+  negotiatedSlotCount(callId: string, participantId: string): number {
+    const record = this.peers.get(keyFor(callId, participantId));
+    return record ? record.slots.filter((slot) => slot.mid !== null).length : 0;
   }
 
   closePeer(callId: string, participantId: string, reason: string): void {

@@ -49,6 +49,27 @@ export interface CallPeerOptions {
   sendOffer: (sdp: string) => Promise<string>;
   onLocalIceCandidate: (candidate: RTCIceCandidateInit) => void;
   onRemoteStream?: (stream: MediaStream) => void;
+  /**
+   * P6.4-W3: one remote track, with the transceiver `mid` that identifies WHICH
+   * conference slot it is.
+   *
+   * `onRemoteStream` collapses every remote into one anonymous stream, which is
+   * fine for a two-party call and useless for a conference: the constituent
+   * speakers cannot be controlled separately. Both are emitted so the existing
+   * two-party path is untouched.
+   */
+  onRemoteTrack?: (mid: string | null, track: MediaStreamTrack, stream: MediaStream) => void;
+  /**
+   * How many remote speakers this receive peer must be able to carry.
+   *
+   * ONE transceiver was offered here until P6.4-W3 human acceptance. The
+   * gateway adds a track per conference slot, but SDP can only negotiate as
+   * many m-lines as the OFFER contains — so with one, `getTransceivers()`
+   * reported mids ["0", null, null] and two of the three slots were never
+   * transmitted at all. The audio still worked, through the legacy
+   * single-stream path, which is why it looked fine.
+   */
+  remoteSlotCount?: number;
   onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
   createPeerConnection?: () => RTCPeerConnection;
 }
@@ -86,10 +107,18 @@ export class CallPeer {
         this.peer.addTrack(track, stream);
       }
     } else {
-      this.peer.addTransceiver('audio', { direction: 'recvonly' });
+      // One per slot: fewer here silently discards the extra speakers.
+      const slots = Math.max(1, options.remoteSlotCount ?? 1);
+      for (let slot = 0; slot < slots; slot += 1) {
+        this.peer.addTransceiver('audio', { direction: 'recvonly' });
+      }
       this.peer.ontrack = (event) => {
         if (this.closed || event.track.kind !== 'audio') return;
         const stream = event.streams[0] ?? new MediaStream([event.track]);
+        // mid comes from the transceiver, never from parsing SDP. Null when the
+        // browser cannot say, in which case the binder leaves it unresolved
+        // rather than guessing whose voice it is.
+        this.options.onRemoteTrack?.(event.transceiver?.mid ?? null, event.track, stream);
         this.options.onRemoteStream?.(stream);
       };
     }

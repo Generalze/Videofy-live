@@ -2,11 +2,17 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import {
   DEFAULT_TRANSLATED_LEVEL,
+  anyRemoteTranslationExpected,
   defaultOriginalVolumeForMode,
-  primaryLanguageSubtag,
   resolveCallAudioMix,
+  speakerOriginalSuppressed,
 } from './callAudioMix';
 import { CallGeneratedAudioQueueController, generatedClipId } from './callAudioQueue';
+import { CallRemoteSlotBinder, type CallReceiveTrackMapping } from './callRemoteSlots';
+import {
+  CallRemoteSpeakerAudioController,
+  type RemoteSpeakerAudio,
+} from './callRemoteSpeakerAudio';
 import { createBrowserGeneratedAudioPlayer } from './callGeneratedAudioPlayer';
 import {
   GeneratedAudioDiagnostics,
@@ -53,6 +59,7 @@ import {
 } from './callSocketPayloads';
 import {
   CALL_EVENTS,
+  CALL_REMOTE_SLOT_COUNT,
   type CallAudioMode,
   type CallCaptionEvent,
   type CallErrorEvent,
@@ -69,6 +76,8 @@ import {
 } from './callTypes';
 import { CallPeer, stopMediaStreamTracks } from './callWebRtc';
 import { CallScreen, type CallConnectionPhase } from './CallScreen';
+import { HomeScreen, type CallType } from './HomeScreen';
+import { CallModeScreen } from './CallModeScreen';
 import { buildInviteLink, callCodeFromLocation } from './callInvite';
 import { PreJoinScreen } from './PreJoinScreen';
 import { VoiceEnrollmentPanel } from './VoiceEnrollmentPanel';
@@ -100,7 +109,16 @@ interface ActiveSession {
 }
 
 export default function App() {
-  const [screen, setScreen] = useState<'prejoin' | 'call'>('prejoin');
+  /**
+   * P6.4-W3.1 progressive flow: choose the product, then the mode, then set
+   * up, then talk — instead of one page carrying every possible state.
+   * An invite link skips straight to setup: the caller already decided what
+   * kind of call this is, and the invited person's job is only to join it.
+   */
+  const [screen, setScreen] = useState<'home' | 'mode' | 'prejoin' | 'call'>(() =>
+    callCodeFromLocation(window.location.search) ? 'prejoin' : 'home',
+  );
+  const [callType, setCallType] = useState<CallType>('conference');
   const [form, setForm] = useState<CallJoinFormState>(() => {
     const initial = createInitialCallJoinForm();
     // Arriving through an invite link should need no typing. The code is
@@ -323,8 +341,14 @@ export default function App() {
   const micMutedRef = useRef(false);
   const publishPeerRef = useRef<CallPeer | null>(null);
   const receivePeerRef = useRef<CallPeer | null>(null);
-  const remoteAudioElementRef = useRef<HTMLAudioElement | null>(null);
-  const remoteStreamRef = useRef<MediaStream | null>(null);
+  /**
+   * P6.4-W3 conference audio: authoritative track binding, then one playback
+   * path per bound speaker. Refs because both outlive any single render and
+   * neither belongs in React state — only the derived speaker list does.
+   */
+  const slotBinderRef = useRef<CallRemoteSlotBinder | null>(null);
+  const speakerAudioRef = useRef<CallRemoteSpeakerAudioController | null>(null);
+  const [remoteSpeakers, setRemoteSpeakers] = useState<readonly RemoteSpeakerAudio[]>([]);
   const runtimeFormRef = useRef<CallJoinFormState>(createInitialCallJoinForm());
   const resumeInFlightRef = useRef(false);
   // The resume token is private credential material: it lives only in this
@@ -353,8 +377,6 @@ export default function App() {
   const captureProfileRef = useRef(
     captureProfileFromLocation(window.location.search) ?? DEFAULT_CALL_CAPTURE_PROFILE,
   );
-  const remoteAudibleRef = useRef(false);
-  const remoteListenerElementRef = useRef<HTMLAudioElement | null>(null);
 
   /**
    * TEMPORARY generated-audio forensics — P6.3 pre-M1.
@@ -375,6 +397,25 @@ export default function App() {
     );
   }
   const diagnostics = diagnosticsRef.current;
+
+  if (!slotBinderRef.current) {
+    const binder = new CallRemoteSlotBinder();
+    const speakerAudio = new CallRemoteSpeakerAudioController({
+      onStateChange: setRemoteSpeakers,
+      onPlaybackBlocked: setPlaybackBlocked,
+      // W4 Path B, re-sourced. The single anonymous remote element it used to
+      // come from is gone; this covers EVERY speaker instead of whichever
+      // stream happened to land on the shared one.
+      onRemoteOriginalAudibleChange: (audible) =>
+        reportPlaybackRef.current('remote-original', audible ? 'start' : 'end', null),
+    });
+    // The binder decides WHO; the controller decides how it is heard. Keeping
+    // them apart is what lets attribution fail closed without silencing
+    // everybody: an unresolved track simply produces no speaker.
+    binder.onChange((bindings) => speakerAudio.applyBindings(bindings));
+    slotBinderRef.current = binder;
+    speakerAudioRef.current = speakerAudio;
+  }
 
   if (!queueRef.current) {
     // One queue instance for the whole app lifetime: reconnects rebuild peers,
@@ -407,16 +448,14 @@ export default function App() {
     });
   }
 
-  // Same-language direction: the remote speaker's language matches what this
-  // participant hears, so no translation will arrive and the original voice is
-  // the delivery (otherwise "Translated" mode would sit in silence).
-  const remoteParticipant = callState?.participants?.find(
-    (participant) => participant.participantId !== session?.participantId,
+  // Whether ANY remote speaker needs translating for this listener. The old
+  // version consulted only the FIRST other participant — a two-party residue
+  // that keyed the whole mix to whoever happened to sort first at N>2.
+  const remoteTranslationExpected = anyRemoteTranslationExpected(
+    callState?.participants ?? [],
+    session?.participantId ?? '',
+    form.hearLanguage,
   );
-  const remoteTranslationExpected =
-    !remoteParticipant?.speakLanguage ||
-    primaryLanguageSubtag(remoteParticipant.speakLanguage) !==
-      primaryLanguageSubtag(form.hearLanguage);
 
   const mix = resolveCallAudioMix({
     audioMode,
@@ -475,38 +514,29 @@ export default function App() {
     });
   };
 
-  /**
-   * W4 Path B — the raw fan-out of somebody else's live microphone.
-   *
-   * It comes out of the same loudspeaker as the translated clips and has no
-   * clip identity, no duration and no end: it is audible for exactly as long as
-   * the other person keeps talking. So it is tracked as element state crossed
-   * with the mix policy, which is the only place that truth exists — in
-   * 'translated' mode `originalVolume` is 0 and this stream is not audible at
-   * all, however much data is flowing.
-   */
-  const syncRemoteOriginalAudible = (): void => {
-    const element = remoteAudioElementRef.current;
-    const audible =
-      !!element &&
-      !!remoteStreamRef.current &&
-      !element.paused &&
-      !element.ended &&
-      mixRef.current.originalVolume > 0;
-    if (audible === remoteAudibleRef.current) return;
-    remoteAudibleRef.current = audible;
-    reportPlaybackRef.current('remote-original', audible ? 'start' : 'end', null);
-  };
+  useEffect(() => {
+    // Mode-level gain over the remote originals. In translated mode this stays
+    // at 1 and suppression is decided PER SPEAKER below — a blanket 0 was what
+    // silenced same-language speakers whose original IS their delivery, and
+    // what left calm-tide-33's fr listener with controls that did nothing.
+    speakerAudioRef.current?.setMasterVolume(audioMode === 'translated' ? 1 : mix.originalVolume);
+  }, [audioMode, mix.originalVolume]);
 
   useEffect(() => {
-    const element = remoteAudioElementRef.current;
-    if (element) {
-      element.volume = mix.originalVolume;
+    // The mode's verdict per speaker: in translated mode a cross-language
+    // speaker arrives as TTS, so their original is silenced; a same-language
+    // speaker's original is the delivery and stays audible.
+    const participants = callState?.participants ?? [];
+    for (const speaker of remoteSpeakers) {
+      const summary = participants.find(
+        (participant) => participant.participantId === speaker.speakerParticipantId,
+      );
+      speakerAudioRef.current?.setModeSuppressed(
+        speaker.speakerParticipantId,
+        speakerOriginalSuppressed(audioMode, summary?.speakLanguage, form.hearLanguage),
+      );
     }
-    // A mode change can silence the original stream without touching the
-    // element, so the audible interval has to close here too.
-    syncRemoteOriginalAudible();
-  }, [mix.originalVolume]);
+  }, [audioMode, callState, remoteSpeakers, form.hearLanguage]);
 
   useEffect(() => {
     const media = navigator.mediaDevices;
@@ -541,6 +571,7 @@ export default function App() {
       receivePeerRef.current?.close();
       stopMediaStreamTracks(micStreamRef.current);
       queueRef.current?.dispose();
+      speakerAudioRef.current?.dispose();
       socketRef.current?.disconnect();
       socketRef.current = null;
     };
@@ -558,55 +589,6 @@ export default function App() {
   }, []);
 
   /**
-   * The element's own transitions are the ground truth for Path B audibility.
-   * `stalled`/`waiting` matter as much as `pause`: a stream that has stopped
-   * delivering is not coming out of the speaker, whatever the element says
-   * about being un-paused.
-   */
-  const REMOTE_AUDIO_EVENTS = ['play', 'playing', 'pause', 'ended', 'stalled', 'waiting', 'emptied'];
-
-  const attachRemoteAudioListeners = (element: HTMLAudioElement | null): void => {
-    const previous = remoteListenerElementRef.current;
-    if (previous === element) return;
-    if (previous) {
-      for (const name of REMOTE_AUDIO_EVENTS) {
-        previous.removeEventListener(name, syncRemoteOriginalAudible);
-      }
-    }
-    remoteListenerElementRef.current = element;
-    if (!element) return;
-    for (const name of REMOTE_AUDIO_EVENTS) {
-      element.addEventListener(name, syncRemoteOriginalAudible);
-    }
-  };
-
-  const attachRemoteAudioElement = (element: HTMLAudioElement | null): void => {
-    remoteAudioElementRef.current = element;
-    attachRemoteAudioListeners(element);
-    if (!element) return;
-    element.volume = mixRef.current.originalVolume;
-    if (remoteStreamRef.current && element.srcObject !== remoteStreamRef.current) {
-      element.srcObject = remoteStreamRef.current;
-      void element.play().catch(() => setPlaybackBlocked(true));
-    }
-  };
-
-  const attachRemoteStream = (stream: MediaStream): void => {
-    remoteStreamRef.current = stream;
-    const element = remoteAudioElementRef.current;
-    if (!element) return;
-    if (element.srcObject !== stream) {
-      element.srcObject = stream;
-    }
-    element.volume = mixRef.current.originalVolume;
-    syncRemoteOriginalAudible();
-    void element
-      .play()
-      .then(() => setPlaybackBlocked(false))
-      .catch(() => setPlaybackBlocked(true));
-  };
-
-  /**
    * Runs inside the tap, which is the only context in which either unlock can
    * succeed. `unlock()` is a real gesture unlock of the persistent generated
    * player, not another attempt down the same locked path — the previous
@@ -616,14 +598,13 @@ export default function App() {
    * WebRTC stream and the generated clips have their own permissions.
    */
   const handleEnableAudio = (): void => {
+    // Unlocks BOTH playback families in the one gesture: the translated-clip
+    // player and every per-speaker original element. They are separate media
+    // elements with separate permissions.
     const generated = queueRef.current?.unlock() ?? Promise.resolve();
-    const element = remoteAudioElementRef.current;
-    const original = element ? element.play() : Promise.resolve();
-    void Promise.allSettled([generated, original]).then(() => {
-      const queueBlocked = queueRef.current?.getState().status === 'blocked';
-      const originalBlocked = !!element && element.paused;
-      setPlaybackBlocked(queueBlocked || originalBlocked);
-      syncRemoteOriginalAudible();
+    const speakers = speakerAudioRef.current?.unlock() ?? Promise.resolve();
+    void Promise.allSettled([generated, speakers]).then(() => {
+      setPlaybackBlocked(queueRef.current?.getState().status === 'blocked');
     });
   };
 
@@ -665,6 +646,10 @@ export default function App() {
     // leave a duplicate audio path behind.
     publishPeerRef.current?.close();
     receivePeerRef.current?.close();
+    // Both halves describe a peer that no longer exists; keeping either would
+    // leave the client attributing audio through dead handles.
+    slotBinderRef.current?.reset();
+    speakerAudioRef.current?.reset();
 
     const publish = new CallPeer({
       direction: 'publish',
@@ -696,7 +681,8 @@ export default function App() {
           CALL_EVENTS.RECEIVE_ICE,
           buildCallIcePayload(active.callId, active.participantId, candidate),
         ),
-      onRemoteStream: attachRemoteStream,
+      remoteSlotCount: CALL_REMOTE_SLOT_COUNT,
+      onRemoteTrack: (mid, track) => slotBinderRef.current?.acceptTrack(mid, track),
     });
     receivePeerRef.current = receive;
 
@@ -791,6 +777,13 @@ export default function App() {
     socket.on(CALL_EVENTS.PUBLISH_ICE, (payload: CallIcePayload) => {
       void publishPeerRef.current?.addRemoteCandidate(payload?.candidate);
     });
+    socket.on(
+      CALL_EVENTS.RECEIVE_TRACKS,
+      (payload: { tracks?: CallReceiveTrackMapping[] } | null) => {
+        // Authoritative: which remote speaker each receive slot is carrying.
+        slotBinderRef.current?.acceptMapping(payload?.tracks ?? []);
+      },
+    );
     socket.on(CALL_EVENTS.RECEIVE_ICE, (payload: CallIcePayload) => {
       void receivePeerRef.current?.addRemoteCandidate(payload?.candidate);
     });
@@ -805,17 +798,9 @@ export default function App() {
     stopMediaStreamTracks(micStreamRef.current);
     micStreamRef.current = null;
     queueRef.current?.reset();
-    remoteStreamRef.current = null;
-    const element = remoteAudioElementRef.current;
-    if (element) {
-      element.srcObject = null;
-    }
-    // Close any interval still open, BEFORE the socket goes: an interval whose
-    // end report never arrives reads downstream as "still playing forever".
-    if (remoteAudibleRef.current) {
-      remoteAudibleRef.current = false;
-      reportPlaybackRef.current('remote-original', 'end', null);
-    }
+    slotBinderRef.current?.reset();
+    speakerAudioRef.current?.reset();
+    setRemoteSpeakers([]);
     socketRef.current?.disconnect();
     socketRef.current = null;
     sessionRef.current = null;
@@ -832,7 +817,7 @@ export default function App() {
     setPhase('connecting');
     setMicPermission('idle');
     if (returnToPrejoin) {
-      setScreen('prejoin');
+      setScreen('home');
     }
   };
 
@@ -1002,8 +987,24 @@ export default function App() {
           onClose={handleCloseVoiceEnrollment}
         />
       ) : null}
+      {screen === 'home' ? (
+        <HomeScreen
+          onChooseType={(type) => {
+            setCallType(type);
+            setScreen('mode');
+          }}
+        />
+      ) : null}
+      {screen === 'mode' ? (
+        <CallModeScreen
+          callType={callType}
+          onChooseTranslated={() => setScreen('prejoin')}
+          onBack={() => setScreen('home')}
+        />
+      ) : null}
       {screen === 'call' && session ? (
         <CallScreen
+          callType={callType}
           callCode={session.callId}
           selfParticipantId={session.participantId}
           participants={callState?.participants ?? []}
@@ -1011,6 +1012,9 @@ export default function App() {
           statusNote={statusNote}
           playbackBlocked={playbackBlocked}
           translatedAudioUnavailable={translatedAudioUnavailable}
+          remoteSpeakers={remoteSpeakers}
+          onSpeakerMutedChange={(id, muted) => speakerAudioRef.current?.setMuted(id, muted)}
+          onSpeakerVolumeChange={(id, volume) => speakerAudioRef.current?.setVolume(id, volume)}
           captions={captions}
           captionsVisible={captionsVisible}
           audioMode={audioMode}
@@ -1027,7 +1031,8 @@ export default function App() {
           onEnableAudio={handleEnableAudio}
           onLeave={handleLeave}
         />
-      ) : (
+      ) : null}
+      {screen === 'prejoin' ? (
         <PreJoinScreen
           form={form}
           errors={formErrors}
@@ -1053,10 +1058,10 @@ export default function App() {
             void handleJoin();
           }}
         />
-      )}
-      {/* Single persistent element for the remote original voice. Playback
-          only; it is never connected to any capture or publish path. */}
-      <audio ref={attachRemoteAudioElement} autoPlay playsInline hidden />
+      ) : null}
+      {/* No shared remote-audio element. P6.4-W3 gives each remote speaker its
+          own element inside CallRemoteSpeakerAudioController; a second
+          anonymous one here would play every remote a second time. */}
       {/* TEMPORARY, `?diag=audio` only. Readable on the phone where the fault
           actually reproduces, so diagnosing it needs no cable and no second
           machine. `diagnosticsTick` is read here purely to repaint. */}

@@ -47,7 +47,8 @@ class FakePeer {
     this.tracks.push(track);
     return {};
   }
-  getTransceivers() {
+  /** Widened so a test can model a SHORT client offer: mids ["m0", null, null]. */
+  getTransceivers(): { mid: string | null; sender: { track: { stop?: () => void } } }[] {
     return this.tracks.map((track, index) => ({ mid: `m${index}`, sender: { track } }));
   }
   async setRemoteDescription() {}
@@ -483,3 +484,84 @@ function bound(h: Harness, listenerId: string): string[] {
     .map((slot) => slot.speakerParticipantId)
     .filter((id): id is string => id !== null);
 }
+
+/**
+ * The W3 acceptance defect, from the gateway's side.
+ *
+ * A client that offers fewer recvonly m-lines than there are slots leaves the
+ * extra transceivers with no mid. Binding a speaker to one of those writes
+ * their audio into a source that is never transmitted — silently. That is what
+ * made two of three conference speakers inaudible while everything looked fine.
+ */
+describe('speakers are never bound to an unnegotiated slot', () => {
+  function partiallyNegotiated(negotiated: number) {
+    const sources: FakeSource[] = [];
+    const manager = new CallReceivePeerManager(
+      { onLocalIceCandidate: () => {} },
+      {
+        createPeerConnection: () => {
+          const peer = new FakePeer();
+          // Only the first `negotiated` transceivers get a mid, exactly as wrtc
+          // reports against a short offer: ["0", null, null].
+          peer.getTransceivers = () =>
+            peer.tracks.map((track, index) => ({
+              mid: index < negotiated ? `m${index}` : null,
+              sender: { track },
+            }));
+          return peer as never;
+        },
+        createAudioSource: () => {
+          const source = new FakeSource();
+          sources.push(source);
+          return source as never;
+        },
+      },
+    );
+    return { manager, sources };
+  }
+
+  it('places a speaker only on a slot the client actually negotiated', async () => {
+    const h = partiallyNegotiated(1);
+    await h.manager.acceptOffer(CALL, 'p1', 'offer');
+
+    h.manager.syncSpeakers(CALL, ['p1', 'p2']);
+
+    const mapping = h.manager.trackMapping(CALL, 'p1');
+    const boundSlot = mapping.find((slot) => slot.speakerParticipantId === 'p2');
+    expect(boundSlot?.mid).toBe('m0');
+  });
+
+  it('counts a speaker it cannot place, instead of silencing them quietly', async () => {
+    const h = partiallyNegotiated(1);
+    await h.manager.acceptOffer(CALL, 'p1', 'offer');
+
+    h.manager.syncSpeakers(CALL, ['p1', 'p2', 'p3']);
+
+    // p2 takes the one negotiated slot; p3 cannot be placed at all.
+    expect(h.manager.unplaceableSpeakers()).toBeGreaterThan(0);
+    const bound = h.manager
+      .trackMapping(CALL, 'p1')
+      .filter((slot) => slot.speakerParticipantId !== null);
+    expect(bound).toHaveLength(1);
+  });
+
+  it('reports how many slots a client negotiated, so a short offer is visible', async () => {
+    const h = partiallyNegotiated(1);
+    await h.manager.acceptOffer(CALL, 'p1', 'offer');
+
+    expect(h.manager.negotiatedSlotCount(CALL, 'p1')).toBe(1);
+  });
+
+  it('places everybody when the client negotiates every slot', async () => {
+    const h = partiallyNegotiated(3);
+    await h.manager.acceptOffer(CALL, 'p1', 'offer');
+
+    h.manager.syncSpeakers(CALL, ['p1', 'p2', 'p3', 'p4']);
+
+    expect(h.manager.unplaceableSpeakers()).toBe(0);
+    expect(h.manager.negotiatedSlotCount(CALL, 'p1')).toBe(3);
+    expect(
+      h.manager.trackMapping(CALL, 'p1').filter((slot) => slot.speakerParticipantId !== null),
+    ).toHaveLength(3);
+  });
+});

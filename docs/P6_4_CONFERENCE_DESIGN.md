@@ -207,3 +207,171 @@ Losing current output for three remaining people in order to save a little
 unnecessary synthesis would be a bad trade. W5 reconciles the plan without
 touching revisions, alongside the Call Mode teardown path, which already has to
 stop ingest sessions mid-call.
+
+## P6.4-W3.1 — product contract (LOCKED) and evidence findings
+
+### Product hierarchy
+
+```
+CALL TYPE        Personal Call | Conference        both: audio + video
+      ↓
+CALL MODE        Normal | Translated               owner-controlled (W5)
+      ↓ if Translated
+AUDIO MODE       Translated | Interpretation | Original    per listener
+      ↓
+MEDIA            camera on/off · mic on/off · speaker/output
+```
+
+- **Normal**: direct original WebRTC. No STT, no translation, no translated
+  captions, no TTS, no personal voice — and no translated-voice controls shown.
+- **Translated**: full pipeline; language controls; Audio Mode per listener;
+  personal voice selectable where available.
+- **Personal Call is a dedicated 1:1 flow, not conference UI with a cap of 2.**
+- Conference demo cap stays 4; owner controls global Call Mode.
+- W5 still owns the authoritative Call Mode engine. The entry flow ships the
+  structure now; **Normal is honestly disabled** until W5 exists, because a
+  Normal that secretly ran translation underneath is precisely the kind of
+  contradiction this contract removes.
+
+### Entry flow (implemented structurally in W3.1)
+
+```
+Home → Personal Call | Conference → Mode (Translated live, Normal disabled)
+     → setup (existing prejoin) → call surface (type-aware)
+```
+
+Deferred to later UI increments, deliberately: create/join before mode,
+camera/mic preview step (camera arrives with video), and the dedicated
+Personal call surface. Invite links skip straight to setup — the caller
+already decided what the call is.
+
+### Caption architecture (implemented in W3.1)
+
+The page never grows with the conversation:
+
+```
+live strip        newest 3 lines, bounded, overflow hidden
+transcript        drawer/side panel, full history, scrolls INSIDE itself
+control dock      sticky; reachable after 300 captions (tested)
+```
+
+Desktop: right-side panel. Mobile: bottom sheet (55dvh). Hiding captions
+withholds the text from the markup entirely, not merely from view.
+
+### calm-tide-33 evidence findings (18 Aug 2026, real 3-device session)
+
+Status of W3/W3.1: code complete, all gates green, **awaiting the final human
+retest** (entry flow, three-party audio, rejoin sequence, transcript layout,
+acoustic observation-only). On a pass, W3 and W3.1 close together as one
+commit: `feat(p6.4): establish multi-speaker conference call experience`.
+
+Retest attempt, 18 Aug 2026 ~11:55: **failed on visual quality before the
+functional checks concluded.** Two findings, both fixed the same day:
+
+- `.transcript-drawer` set `display: flex`, which overrides the `hidden`
+  attribute — the drawer overlaid the right ~384px of every call permanently,
+  clipping participant tiles and the connection status. The `.audio-drawer`
+  rules guarded this exact trap; the transcript rules did not. Fixed with
+  `.transcript-drawer[hidden] { display: none }` plus a redesign: the
+  transcript is now a real grid side panel that PUSHES the call column on
+  desktop (≥1024px) and a bottom sheet on mobile — it can no longer cover
+  call content in either form.
+- The surface styling used token names that do not exist in the design system
+  (`--vf-surface-raised`, `--vf-accent`), silently falling back to hardcoded
+  near-black — the drawer rendered as raw unstyled text. The visual pass that
+  followed adopted `base.css` and real `--vf-*` tokens throughout call-web,
+  replaced the app's 640px media queries with the system's 768/1024
+  breakpoints, and strengthened `--vf-canvas-wash` at its source in
+  tokens.css (still two low-alpha radial fields — the whole gradient budget).
+
+The functional retest checklist (A–E) remains open and human-owned.
+
+Retest rule for fabricated captions, locked in advance: record time, speaking
+device, audible TTS, and the immediately preceding noise/action. **Do not
+adjust thresholds during the test.**
+
+1. **PROBABLE Defect B — acoustic recapture. Confidence: high, not proven.**
+
+   ```
+   Classification:  PROBABLE Defect B — acoustic recapture
+   Confidence:      High
+   Evidence:        12/12 fabricated phone captions ("thank you" family)
+                    temporally associated (±1.5 s) with generated TTS playback
+                    on the co-located laptop, via W4 ledger containment;
+                    revision, queue and routing explanations excluded.
+   Limitation:      the phone's microphone WAVs are unavailable for this
+                    session, so direct acoustic-content confirmation is
+                    impossible. Timing containment alone does not prove what
+                    entered the microphone — this is one evidentiary tier
+                    below the earlier forensic corpus, where generated speech
+                    was matched to recaptured speech directly.
+   Not authorised:  threshold tuning, phrase filtering, acoustic suppression.
+   ```
+
+   This wording is deliberate and must not harden in later summaries: evidence
+   records have a way of becoming more certain every time they are retold.
+   It does NOT reopen P6.3 now; it strengthens the case for returning to the
+   parked acoustic work later.
+2. **Caption-language targets generate undeliverable TTS.** "Read captions
+   in: Spanish" put `es` into speaker plans; 301 es captions delivered
+   correctly, but **143 es TTS clips were synthesised and 0 were ever
+   deliverable** (nobody *hears* es), using a fallback voice
+   (`es_ES-sharvard-medium`) outside the male/female table. Wasted synthesis
+   on every caption-only language. **Open defect — W5 ingest reconciliation.**
+
+   **LOCKED — planning invariant for the W5 fix:**
+
+   ```
+   Caption target language ≠ automatically an audio synthesis target.
+   TTS is planned only when at least one listener currently requires
+   generated audio in that language.
+   ```
+
+   At four participants this compounds per caption-only language, per
+   utterance — otherwise the platform synthesises speech for an audience
+   consisting entirely of the garbage collector.
+3. **Per-call master volume was structurally wrong at N>2** and keyed to an
+   arbitrary "first other participant". Fixed in W3.1: original-voice
+   suppression is now **per speaker-pair** (translated mode: cross-language
+   speakers arrive as TTS and their originals are silenced; same-language
+   speakers stay audible because their original IS the delivery), and the UI
+   states "Hearing translated voice" instead of showing controls that move
+   and do nothing. Interpretation **ducking** remains W4 policy.
+4. **"Male/female made no difference" — by design, plus finding 2.** All
+   pairs were en↔en until 08:26 (original voice is the delivery; gender
+   selects the *speaker's own* outbound TTS voice and never what a listener
+   hears). The only delivered TTS (fr, 15/15) used the speakers' default
+   female voice.
+
+   **LOCKED — voice-selector presentation:**
+
+   ```
+   Normal                              → no translated-voice selector at all
+   Translated, same-language delivery  → selector must not imply it changes
+                                         the original audio being delivered
+   Translated, cross-language delivery → Standard Male / Standard Female /
+                                         Personal Voice applies
+   ```
+
+### Video capability audit (W3.1, findings only)
+
+| Layer | Today | For 1:1 video | For 4-way video |
+|---|---|---|---|
+| client capture | `video: false` everywhere; no `<video>` elements | camera constraint + local preview + remote `<video>` | same + tile grid (2-up / 2×2) |
+| publish peer | audio tracks only | add video track | same |
+| gateway | `videoExpected`/`videoFrameCount` exist for the *programme* path; call path is audio-only; receive slots are `RTCAudioSource` only | wrtc has `RTCVideoSource`/`RTCVideoSink`, but decoding+re-encoding video per recipient in Node is expensive and buys nothing (nothing server-side needs the pixels) | quadratic and worse |
+
+**APPROVED topology for the P6.4 demo: hybrid.** Audio stays through the
+gateway — it must be decoded for transcription anyway. Video goes
+**peer-to-peer mesh between clients** (N=4 → at most 3 remote video peers each,
+comfortably in-browser), so the gateway never touches pixels. Translation
+transport stays independent of camera media.
+
+```
+P6.4 video mesh = development-demo topology
+NOT long-term conference video architecture
+```
+
+At larger conference scale video moves toward an SFU-style architecture; no
+reason to build that now. Implemented in its own conference-video wave before
+P6.4 closes; nothing implemented in W3.1.

@@ -56,6 +56,7 @@ function render(overrides: Partial<CallScreenProps> = {}): string {
     statusNote: null,
     playbackBlocked: false,
     translatedAudioUnavailable: false,
+    remoteSpeakers: [],
     captions: [],
     captionsVisible: true,
     audioMode: 'translated',
@@ -262,5 +263,218 @@ describe('CallScreen', () => {
     // Collapsed means genuinely hidden — out of the tab order and the
     // accessibility tree, not merely visually dimmed.
     expect(html).toMatch(/class="audio-drawer"[^>]*hidden/);
+  });
+});
+
+/**
+ * P6.4-W3 conference controls. The tile is the natural home: mute and volume
+ * belong beside the person they apply to, not in a settings screen where the
+ * listener has to remember which of three sliders was whose.
+ */
+describe('per-speaker audio controls', () => {
+  const conference = [
+    participant({ participantId: 'p1', displayName: 'Alice' }),
+    participant({ participantId: 'p2', displayName: 'Bruno' }),
+    participant({ participantId: 'p3', displayName: 'Chloe' }),
+  ];
+
+  it('offers a mute and a volume control for each bound speaker', () => {
+    const html = render({
+      participants: conference,
+      selfParticipantId: 'p1',
+      remoteSpeakers: [
+        { speakerParticipantId: 'p2', muted: false, volume: 1 },
+        { speakerParticipantId: 'p3', muted: false, volume: 1 },
+      ],
+    });
+
+    expect(html).toContain('Mute Bruno');
+    expect(html).toContain('Mute Chloe');
+    expect(html).toContain('Bruno volume');
+    expect(html).toContain('Chloe volume');
+  });
+
+  it('names every control after its person, so three sliders stay distinguishable', () => {
+    const html = render({
+      participants: conference,
+      selfParticipantId: 'p1',
+      remoteSpeakers: [{ speakerParticipantId: 'p2', muted: true, volume: 0.5 }],
+    });
+
+    // Bruno is bound and muted, so his control offers the opposite action.
+    expect(html).toContain('Unmute Bruno');
+    expect(html).toContain('Bruno volume');
+    // Chloe is unresolved: still named, still present, but inert.
+    expect(html).toContain('Mute Chloe');
+    expect(html).toContain('Chloe volume');
+  });
+
+  it('shows DISABLED controls for a participant whose audio has not resolved', () => {
+    // Hiding them entirely was the original behaviour, and it made a
+    // participant with a transport fault look identical to a healthy one —
+    // which is how a defect that silenced two of three speakers survived a live
+    // 3-party test. The participant stays visible; the controls go inert.
+    const html = render({
+      participants: conference,
+      selfParticipantId: 'p1',
+      remoteSpeakers: [],
+    });
+
+    expect(html).toContain('Bruno');
+    expect(html).toContain('Mute Bruno');
+    expect(html).toContain('is-unavailable');
+    expect(html).toContain('Audio connecting');
+    expect(html).toMatch(/<button[^>]*disabled/);
+    expect(html).toMatch(/<input[^>]*type="range"[^>]*disabled/);
+  });
+
+  it('enables only the participants whose audio IS bound', () => {
+    // The exact live symptom: one remote resolved, the other not.
+    const html = render({
+      participants: conference,
+      selfParticipantId: 'p1',
+      remoteSpeakers: [{ speakerParticipantId: 'p2', muted: false, volume: 1 }],
+    });
+
+    // Both are present and both offer controls...
+    expect(html).toContain('Mute Bruno');
+    expect(html).toContain('Mute Chloe');
+    // ...but exactly one is inert, and it says why.
+    expect(html.match(/is-unavailable/g)).toHaveLength(1);
+    expect(html).toContain('Audio connecting');
+  });
+
+  it('offers no remote-audio controls for yourself, resolved or not', () => {
+    const html = render({
+      participants: conference,
+      selfParticipantId: 'p1',
+      remoteSpeakers: [{ speakerParticipantId: 'p1', muted: false, volume: 1 }],
+    });
+
+    expect(html).not.toContain('Mute Alice');
+    expect(html).not.toContain('Alice volume');
+  });
+
+  it('gives a two-party call one remote participant with working controls', () => {
+    const html = render({
+      participants: [
+        participant({ participantId: 'p1', displayName: 'Alice' }),
+        participant({ participantId: 'p2', displayName: 'Bruno' }),
+      ],
+      selfParticipantId: 'p1',
+      remoteSpeakers: [{ speakerParticipantId: 'p2', muted: false, volume: 0.6 }],
+    });
+
+    expect(html.match(/participant-audio-controls/g)).toHaveLength(1);
+    expect(html).toContain('Mute Bruno');
+    expect(html).not.toContain('is-unavailable');
+    expect(html).not.toContain('Audio connecting');
+  });
+
+  it('reflects the muted state for assistive technology, not colour alone', () => {
+    const html = render({
+      participants: conference,
+      selfParticipantId: 'p1',
+      remoteSpeakers: [{ speakerParticipantId: 'p2', muted: true, volume: 1 }],
+    });
+
+    expect(html).toContain('aria-pressed="true"');
+  });
+});
+
+/**
+ * P6.4-W3.1 caption architecture: a conversation must never grow the page.
+ *
+ * The live strip carries only the newest lines; history lives in a transcript
+ * drawer with its own scroll. The user should never scroll through 800
+ * captions to find the microphone button.
+ */
+describe('caption layout never displaces the controls', () => {
+  const longHistory = Array.from({ length: 300 }, (_, index) =>
+    caption({ id: `c${index}`, primaryText: `Sentence number ${index}.` }),
+  );
+
+  it('renders only the newest lines in the live strip, however long the call', () => {
+    const html = render({ captions: longHistory });
+    const strip = html.slice(html.indexOf('captions-live'), html.indexOf('transcript-drawer'));
+
+    expect(strip).toContain('Sentence number 299.');
+    expect(strip).toContain('Sentence number 297.');
+    expect(strip).not.toContain('Sentence number 296.');
+    expect(strip).not.toContain('Sentence number 0.');
+  });
+
+  it('keeps the control dock in the markup after 300 captions', () => {
+    const html = render({ captions: longHistory });
+
+    expect(html).toContain('control-bar');
+    expect(html.indexOf('control-bar')).toBeGreaterThan(html.indexOf('captions-live'));
+  });
+
+  it('offers the full history through the transcript control, with a count', () => {
+    const html = render({ captions: longHistory });
+
+    expect(html).toContain('Transcript (300)');
+    expect(html).toContain('transcript-drawer');
+    expect(html).toContain('transcript-scroll');
+  });
+
+  it('keeps the drawer hidden until asked for', () => {
+    const html = render({ captions: longHistory });
+
+    // renderToStaticMarkup keeps the hidden attribute; the drawer starts closed.
+    expect(html).toMatch(/<aside[^>]*hidden/);
+  });
+
+  it('withholds every caption when captions are off — strip AND drawer', () => {
+    const html = render({ captions: longHistory, captionsVisible: false });
+
+    expect(html).toContain('Captions are off.');
+    expect(html).not.toContain('Sentence number 299.');
+    expect(html).not.toContain('Sentence number 0.');
+  });
+});
+
+describe('mode-suppressed speaker controls', () => {
+  it('marks a translated speaker inert WITH the reason, distinct from unresolved', () => {
+    // calm-tide-33: the fr listener's controls governed originals the mode had
+    // silenced, moved freely, and did nothing. Controls that do nothing must
+    // say why.
+    const html = render({
+      participants: [
+        participant({ participantId: 'p1', displayName: 'Alice' }),
+        participant({ participantId: 'p2', displayName: 'Bruno', speakLanguage: 'fr' }),
+      ],
+      selfParticipantId: 'p1',
+      remoteSpeakers: [
+        { speakerParticipantId: 'p2', muted: false, volume: 1, originalSuppressed: true },
+      ],
+    });
+
+    expect(html).toContain('is-suppressed');
+    expect(html).toContain('Hearing translated voice');
+    expect(html).not.toContain('Audio connecting');
+    expect(html).toMatch(/<button[^>]*class="participant-mute"[^>]*disabled/);
+  });
+
+  it('leaves an unsuppressed speaker fully operable', () => {
+    const html = render({
+      remoteSpeakers: [
+        { speakerParticipantId: 'p2', muted: false, volume: 1, originalSuppressed: false },
+      ],
+    });
+
+    expect(html).not.toContain('is-suppressed');
+    expect(html).not.toContain('Hearing translated voice');
+  });
+});
+
+describe('call type identity', () => {
+  it('presents a conference as a conference', () => {
+    expect(render({ callType: 'conference' })).toContain('Videofy Conference');
+  });
+
+  it('defaults to the personal call title', () => {
+    expect(render({})).toContain('Videofy Call');
   });
 });

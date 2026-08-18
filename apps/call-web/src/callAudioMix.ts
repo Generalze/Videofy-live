@@ -81,3 +81,58 @@ export function clampLevel(value: number): number {
 export function primaryLanguageSubtag(language: string): string {
   return language.trim().toLowerCase().split('-')[0] ?? '';
 }
+
+/**
+ * P6.4-W3.1 — is THIS speaker's original voice suppressed for THIS listener?
+ *
+ * The per-call master volume was structurally wrong at conference size. With
+ * one flag for the whole call, a listener in Translated mode either lost the
+ * original voice of a SAME-language speaker (whose original IS the delivery —
+ * nothing else carries them), or kept hearing a cross-language speaker's
+ * original underneath their translation. calm-tide-33 showed the third
+ * symptom: the flag keyed off an arbitrary "first other participant", so the
+ * fr listener's per-speaker mute/volume governed audio the mode had silenced —
+ * controls that moved and did nothing.
+ *
+ * Suppression is a property of the PAIR (their language, my hear language),
+ * not of the call:
+ *
+ *   translated mode, they speak my language      → original audible (delivery)
+ *   translated mode, they speak another language → original suppressed (TTS is
+ *                                                  the delivery)
+ *   interpretation / original modes              → never suppressed here;
+ *                                                  interpretation DUCKING is
+ *                                                  W4 policy, not this rule
+ */
+export function speakerOriginalSuppressed(
+  audioMode: CallAudioMode,
+  speakerLanguage: string | undefined,
+  hearLanguage: string,
+): boolean {
+  if (audioMode !== 'translated') return false;
+  if (!speakerLanguage) return false;
+  return primaryLanguageSubtag(speakerLanguage) !== primaryLanguageSubtag(hearLanguage);
+}
+
+/**
+ * Does ANY remote speaker need translating for this listener?
+ *
+ * Replaces the two-party residue that consulted only the FIRST other
+ * participant — at N>2 that silently keyed the whole mix to whoever happened
+ * to sort first. Safe to generalise now that original suppression is
+ * per-speaker: this flag only governs whether generated playback is expected
+ * at all.
+ */
+export function anyRemoteTranslationExpected(
+  participants: readonly { participantId: string; speakLanguage?: string }[],
+  selfParticipantId: string,
+  hearLanguage: string,
+): boolean {
+  const remotes = participants.filter((p) => p.participantId !== selfParticipantId);
+  if (remotes.length === 0) return true; // nobody yet: assume a translation pair
+  return remotes.some(
+    (p) =>
+      !p.speakLanguage ||
+      primaryLanguageSubtag(p.speakLanguage) !== primaryLanguageSubtag(hearLanguage),
+  );
+}

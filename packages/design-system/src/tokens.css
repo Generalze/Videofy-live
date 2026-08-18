@@ -175,14 +175,14 @@
    * with video. */
   --vf-canvas-wash:
     radial-gradient(
-      1100px 520px at 85% -10%,
-      color-mix(in srgb, var(--vf-violet-600) 14%, transparent),
-      transparent 60%
+      1400px 720px at 85% -10%,
+      color-mix(in srgb, var(--vf-violet-600) 26%, transparent),
+      transparent 62%
     ),
     radial-gradient(
-      900px 480px at -10% 110%,
-      color-mix(in srgb, var(--vf-violet-300) 7%, transparent),
-      transparent 55%
+      1100px 620px at -10% 110%,
+      color-mix(in srgb, var(--vf-violet-300) 12%, transparent),
+      transparent 58%
     );
 
   /* --- Text ----------------------------------------------------------------

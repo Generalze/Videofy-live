@@ -9,6 +9,8 @@ export const CALL_EVENTS = {
   PUBLISH_ICE: 'call:publish:ice',
   RECEIVE_OFFER: 'call:receive:offer',
   RECEIVE_ICE: 'call:receive:ice',
+  /** P6.4-W2: which remote speaker each receive slot is carrying, for this listener only. */
+  RECEIVE_TRACKS: 'call:receive:tracks',
   SET_CAPTION_LANGUAGE: 'call:caption-language',
   /** W1: what the browser actually granted for this participant's microphone. */
   CAPTURE_SETTINGS: 'call:capture-settings',
@@ -21,6 +23,16 @@ export const CALL_EVENTS = {
 } as const;
 
 export type CallEventName = (typeof CALL_EVENTS)[keyof typeof CALL_EVENTS];
+
+/**
+ * Remote receive slots this client offers, mirroring the gateway's
+ * DEFAULT_REMOTE_SLOT_COUNT (conference cap 4, minus yourself).
+ *
+ * MUST NOT be smaller than the gateway's: SDP negotiates only as many m-lines
+ * as the offer carries, so a client offering fewer silently drops the extra
+ * speakers' audio while everything still appears to work.
+ */
+export const CALL_REMOTE_SLOT_COUNT = 3;
 
 /**
  * W1 capture provenance. Sent once after join and again on device change, so a
