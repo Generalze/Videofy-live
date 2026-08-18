@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CallCameraPreviewController,
+  hdCameraVideoConstraints,
   type CameraDeviceInfoLike,
   type CameraMediaDevicesLike,
   type CameraPreviewState,
@@ -170,7 +171,7 @@ describe('device switching', () => {
     await h.controller.start();
     await h.controller.selectDevice('cam-b');
 
-    expect(h.constraintsSeen[1]).toEqual({ video: { deviceId: { exact: 'cam-b' } } });
+    expect(h.constraintsSeen[1]).toEqual({ video: hdCameraVideoConstraints('cam-b') });
     expect(first.stoppedTracks()).toBe(2);
     expect(h.controller.stream()).toBe(second.stream);
     expect(h.controller.state().status).toBe('active');
@@ -187,7 +188,7 @@ describe('device switching', () => {
 
     await h.controller.start();
 
-    expect(h.constraintsSeen[0]).toEqual({ video: { deviceId: { exact: 'cam-b' } } });
+    expect(h.constraintsSeen[0]).toEqual({ video: hdCameraVideoConstraints('cam-b') });
   });
 });
 
@@ -285,5 +286,27 @@ describe('release', () => {
 
     h.controller.attachElement(null);
     expect(element.srcObject).toBeNull();
+  });
+});
+
+describe('HD capture request (post-freeze exception, 18 Aug)', () => {
+  it('asks for 720p ideals — never exacts — with and without a chosen device', () => {
+    expect(hdCameraVideoConstraints()).toEqual({
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      frameRate: { ideal: 30 },
+    });
+    expect(hdCameraVideoConstraints('cam-b')).toEqual({
+      deviceId: { exact: 'cam-b' },
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      frameRate: { ideal: 30 },
+    });
+  });
+
+  it('start() carries the HD request by default', async () => {
+    const h = createHarness();
+    await h.controller.start();
+    expect(h.constraintsSeen[0]).toEqual({ video: hdCameraVideoConstraints() });
   });
 });

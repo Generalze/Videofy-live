@@ -50,7 +50,33 @@ export interface CameraDeviceInfoLike {
   label: string;
 }
 export interface CameraStreamConstraints {
-  video: boolean | { deviceId?: { exact: string } };
+  video:
+    | boolean
+    | {
+        deviceId?: { exact: string };
+        width?: { ideal: number };
+        height?: { ideal: number };
+        frameRate?: { ideal: number };
+      };
+}
+
+/**
+ * The capture request every camera site makes (post-freeze exception,
+ * accepted 18 Aug: the browser's bare-`video: true` default is commonly
+ * 640x480, which is the blurry frame the acceptance session saw). `ideal`
+ * rather than `exact` on purpose — a camera that cannot do 720p degrades
+ * gracefully instead of failing the call.
+ */
+export function hdCameraVideoConstraints(deviceId?: string | null): Exclude<
+  CameraStreamConstraints['video'],
+  boolean
+> {
+  return {
+    ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+    width: { ideal: 1280 },
+    height: { ideal: 720 },
+    frameRate: { ideal: 30 },
+  };
 }
 export interface CameraMediaDevicesLike {
   getUserMedia(constraints: CameraStreamConstraints): Promise<CameraStreamLike>;
@@ -189,8 +215,7 @@ export class CallCameraPreviewController {
   }
 
   private defaultConstraints(): CameraStreamConstraints {
-    const deviceId = this.current.selectedDeviceId;
-    return { video: deviceId ? { deviceId: { exact: deviceId } } : true };
+    return { video: hdCameraVideoConstraints(this.current.selectedDeviceId) };
   }
 
   private async refreshDevices(epoch: number): Promise<void> {

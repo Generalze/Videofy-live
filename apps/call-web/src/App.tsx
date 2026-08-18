@@ -89,6 +89,7 @@ import { CreateJoinScreen, type CallJoinIntent } from './CreateJoinScreen';
 import {
   CallCameraPreviewController,
   defaultCameraMediaDevices,
+  hdCameraVideoConstraints,
   type CameraPreviewState,
 } from './callCameraPreview';
 import {
@@ -1341,7 +1342,12 @@ export default function App() {
     }
     cameraToggleBusyRef.current = true;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: hdCameraVideoConstraints(),
+      });
+      // Talking heads: keep motion smooth, shed resolution first under
+      // pressure. A hint to the encoder, never a requirement.
+      for (const track of stream.getVideoTracks()) track.contentHint = 'motion';
       if (!sessionRef.current) {
         // The call ended while permission was pending: the light must not
         // survive the call it was granted for.
