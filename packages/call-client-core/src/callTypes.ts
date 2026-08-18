@@ -1,36 +1,16 @@
 // Local mirror of the P6.1B `call:*` socket contract
-// (docs/P6_1B_CALL_RUNTIME_DESIGN.md). call-web keeps its own copy of these
-// shapes so the app package depends only on @videofy-live/shared-types.
+// (docs/P6_1B_CALL_RUNTIME_DESIGN.md). Event NAMES are re-exported from the
+// private wire authority @videofy-live/call-wire; payload TYPES remain the
+// client's own mirror.
 
-export const CALL_EVENTS = {
-  JOIN: 'call:join',
-  LEAVE: 'call:leave',
-  PUBLISH_OFFER: 'call:publish:offer',
-  PUBLISH_ICE: 'call:publish:ice',
-  RECEIVE_OFFER: 'call:receive:offer',
-  RECEIVE_ICE: 'call:receive:ice',
-  /** P6.4-W2: which remote speaker each receive slot is carrying, for this listener only. */
-  RECEIVE_TRACKS: 'call:receive:tracks',
-  SET_CAPTION_LANGUAGE: 'call:caption-language',
-  /** W1: what the browser actually granted for this participant's microphone. */
-  CAPTURE_SETTINGS: 'call:capture-settings',
-  /** W4: this participant's loudspeaker started or stopped being audible. */
-  PLAYBACK: 'call:playback',
-  STATE: 'call:state',
-  CAPTION: 'call:caption',
-  GENERATED_AUDIO: 'call:generated-audio',
-  ERROR: 'call:error',
-  /** W5: call-global mode change; owner authority only. */
-  SET_MODE: 'call:mode:set',
-  /** W5.1: this listener's own mid-call Audio Mode; ingest planning reacts immediately. */
-  SET_AUDIO_MODE: 'call:audio-mode:set',
-  /** Owner-only transcript-download policy for the whole call. */
-  SET_TRANSCRIPT_POLICY: 'call:transcript-policy:set',
-  /** V1: P2P video mesh signalling, relayed peer-to-peer by the gateway. */
-  VIDEO_OFFER: 'call:video:offer',
-  VIDEO_ANSWER: 'call:video:answer',
-  VIDEO_ICE: 'call:video:ice',
-} as const;
+/*
+ * Event names come from the single wire authority. The literal that
+ * lived here (and its twin in call-runtime.ts) is retired: call-wire
+ * pins every name byte-identically by test, so this re-export cannot
+ * change a single event on the wire.
+ */
+export { CALL_EVENTS } from '@videofy-live/call-wire';
+import { CALL_EVENTS } from '@videofy-live/call-wire';
 
 export type CallEventName = (typeof CALL_EVENTS)[keyof typeof CALL_EVENTS];
 

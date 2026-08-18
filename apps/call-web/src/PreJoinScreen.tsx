@@ -8,7 +8,7 @@ import {
   type CallJoinFormState,
   type SpeakLanguageChoice,
 } from './callFormState';
-import type { CameraPreviewState } from './callCameraPreview';
+import type { CameraPreviewState } from '@videofy-live/call-client-core';
 import type { CallJoinIntent } from './CreateJoinScreen';
 import type {
   CallAudioMode,
@@ -17,7 +17,7 @@ import type {
   CallType,
   CallVoiceGender,
   MicPermissionState,
-} from './callTypes';
+} from '@videofy-live/call-client-core';
 
 export interface PreJoinScreenProps {
   /** Which product this setup belongs to; the title says so. */

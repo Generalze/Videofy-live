@@ -1,0 +1,22 @@
+// @owner masterzee001
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Browser SDK: media elements, WebRTC, storage. Platform handles are
+    // injectable (node tests), but the TYPES are DOM types.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    // tsup owns emit; tsc is typecheck-only here.
+    "noEmit": true,
+    // The dts bundling step inlines the internal packages' declarations,
+    // which reach zod types. zod's exports map hands resolvers its .d.cts
+    // flavor, whose .cjs-suffixed internal imports the dts bundler maps to
+    // RUNTIME files (emitting broken `undefined<...>` types). Point the type
+    // resolution at zod's .d.ts flavor, whose .js-suffixed imports map
+    // correctly. Runtime resolution is untouched.
+    "baseUrl": ".",
+    "paths": {
+      "zod": ["../../node_modules/zod/index.d.ts"]
+    }
+  },
+  "include": ["src", "tsup.config.ts", "vitest.config.ts"]
+}

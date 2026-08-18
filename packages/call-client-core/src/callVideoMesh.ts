@@ -27,7 +27,6 @@
 // the W4 mix policy.
 
 import type { CallVideoIcePayload, CallVideoSdpPayload } from './callTypes';
-import { readIceServers } from './callWebRtc';
 
 /** Conference seat cap (4) minus yourself. Extras are ignored and counted. */
 export const CALL_VIDEO_MESH_MAX_REMOTES = 3;
@@ -44,7 +43,9 @@ export interface CallVideoMeshOptions {
   /** Null when the peer departs: clear the tile. */
   onRemoteStream: (participantId: string, stream: MediaStream | null) => void;
   onPeerState: (participantId: string, state: RTCPeerConnectionState) => void;
-  /** Injectable for tests; defaults to RTCPeerConnection with VITE_WEBRTC_ICE_SERVERS. */
+  /** Used by the default RTCPeerConnection factory; omitted means no ICE servers. */
+  iceServers?: RTCIceServer[];
+  /** Injectable for tests; defaults to RTCPeerConnection with `iceServers`. */
   createPeerConnection?: (remoteParticipantId: string) => RTCPeerConnection;
 }
 
@@ -250,7 +251,7 @@ export class CallVideoMesh {
   private createPeer(participantId: string): void {
     const pc = this.options.createPeerConnection
       ? this.options.createPeerConnection(participantId)
-      : new RTCPeerConnection({ iceServers: readIceServers() });
+      : new RTCPeerConnection({ iceServers: this.options.iceServers ?? [] });
     const entry: MeshPeer = {
       participantId,
       polite: this.options.selfParticipantId < participantId,

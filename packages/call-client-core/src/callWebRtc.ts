@@ -6,8 +6,12 @@
 
 const MAX_QUEUED_REMOTE_CANDIDATES = 32;
 
-export function readIceServers(): RTCIceServer[] {
-  const raw = import.meta.env.VITE_WEBRTC_ICE_SERVERS;
+/**
+ * Parses the host's configured ICE server list (call-web passes
+ * VITE_WEBRTC_ICE_SERVERS). Anything absent or unparseable is NO servers,
+ * never a throw — a bad config must not take down joining.
+ */
+export function readIceServers(raw?: string): RTCIceServer[] {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw) as RTCIceServer[];
@@ -71,6 +75,8 @@ export interface CallPeerOptions {
    */
   remoteSlotCount?: number;
   onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
+  /** Used by the default RTCPeerConnection factory; omitted means no ICE servers. */
+  iceServers?: RTCIceServer[];
   createPeerConnection?: () => RTCPeerConnection;
 }
 
@@ -87,7 +93,7 @@ export class CallPeer {
     }
     this.peer =
       options.createPeerConnection?.() ??
-      new RTCPeerConnection({ iceServers: readIceServers() });
+      new RTCPeerConnection({ iceServers: options.iceServers ?? [] });
 
     this.peer.onicecandidate = (event) => {
       if (this.closed || !event.candidate) return;

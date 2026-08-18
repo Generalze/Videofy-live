@@ -6,7 +6,7 @@
  * The choice made here shapes everything after it — copy, capacity, and
  * eventually the call surface itself — so it comes first and stands alone.
  */
-import type { CallType } from './callTypes';
+import type { CallType } from '@videofy-live/call-client-core';
 
 export type { CallType };
 

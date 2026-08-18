@@ -1,0 +1,12 @@
+// @owner masterzee001
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // These modules run in the browser (WebRTC, media elements, storage);
+    // platform handles are injectable, but the TYPES are DOM types.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src"]
+}

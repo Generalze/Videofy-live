@@ -371,6 +371,8 @@ describe('CallRuntime join and ingest plan handling', () => {
       callType: 'conference',
       callMode: 'translated',
       ownerParticipantId: 'participant_1',
+      // Review fix: the transcript policy now actually crosses the wire.
+      transcriptDownloadAllowed: true,
       participants: [
         {
           participantId: 'participant_1',

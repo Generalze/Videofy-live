@@ -1,0 +1,30 @@
+{
+  "name": "@videofy-live/call-wire",
+  "version": "0.1.0",
+  "private": true,
+  "author": "masterzee001",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "npm run build -w @videofy-live/shared-types && tsc --noEmit",
+    "test": "npm run build -w @videofy-live/shared-types && npm run build -w @videofy-live/call-wire && vitest run",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@videofy-live/shared-types": "*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "@videofy-live/connect-sample",
+  "version": "0.1.0",
+  "private": true,
+  "author": "masterzee001",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "description": "Independent partner app demonstrating Videofy Connect: an Express server on @videofy/server-sdk plus two framework-free pages on @videofy/connect.",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "npm run build -w @videofy/server-sdk && tsc",
+    "start": "node dist/server.js",
+    "typecheck": "npm run build -w @videofy/server-sdk && tsc --noEmit",
+    "check:vocab": "node scripts/check-vocab.mjs",
+    "test": "npm run build -w @videofy/server-sdk -w @videofy/connect && node scripts/check-vocab.mjs && vitest run"
+  },
+  "dependencies": {
+    "@videofy/connect": "*",
+    "@videofy/server-sdk": "*",
+    "express": "^4.19.2",
+    "socket.io-client": "^4.7.5"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.17.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
+  }
+}

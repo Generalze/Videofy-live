@@ -1,13 +1,13 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import type { CallCaptionEntry } from './callCaptions';
+import type { CallCaptionEntry } from '@videofy-live/call-client-core';
 import { CALL_AUDIO_MODES, CALL_LANGUAGES, languageLabel } from './callFormState';
-import { downloadTranscript } from './callTranscriptExport';
+import { downloadTranscript } from '@videofy-live/call-client-core';
 import type {
   CallAudioMode,
   CallLanguage,
   CallMode,
   CallParticipantSummary,
-} from './callTypes';
+} from '@videofy-live/call-client-core';
 
 export type CallConnectionPhase = 'connecting' | 'connected' | 'reconnecting' | 'restoring';
 

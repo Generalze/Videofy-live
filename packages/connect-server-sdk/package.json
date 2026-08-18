@@ -1,0 +1,38 @@
+{
+  "name": "@videofy/server-sdk",
+  "version": "0.1.0",
+  "description": "Typed server-side SDK for the Videofy Connect v1 API: create calls, mint join tokens, and manage call state from your backend.",
+  "author": "masterzee001",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "npm run build -w @videofy-live/connect-contracts && tsup",
+    "typecheck": "npm run build -w @videofy-live/connect-contracts && tsc --noEmit",
+    "test": "npm run build && vitest run",
+    "dev": "tsup --watch",
+    "prepack": "npm run build"
+  },
+  "devDependencies": {
+    "@videofy-live/connect-contracts": "*",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
+  }
+}

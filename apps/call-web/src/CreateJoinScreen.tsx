@@ -7,7 +7,7 @@
  * and mode are the call's, not theirs (the wire snapshot is authoritative) —
  * so the join path goes straight to pre-join with the code field leading.
  */
-import type { CallType } from './callTypes';
+import type { CallType } from '@videofy-live/call-client-core';
 
 /** How this browser is entering the call: making it, or entering a code. */
 export type CallJoinIntent = 'create' | 'join';

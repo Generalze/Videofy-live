@@ -69,6 +69,16 @@ export interface CallJoinInput {
    */
   voiceOwnerId?: string | null;
   /**
+   * Partner-supplied stable opaque identity (P6.5 R8) — e.g. customer_8291 —
+   * NEVER interpreted by Videofy; 1..128 characters. Stored on the seat and
+   * exposed in snapshots deliberately (both identities are public participant
+   * state). Stamped at seat creation and immutable after: a resume's own
+   * value is ignored, the seat already has its identity. The
+   * one-connected-per-subject rule is enforced by the GATEWAY via
+   * hasConnectedSubject, never here.
+   */
+  subject?: string;
+  /**
    * `manual` (default) takes `speakLanguage` as the speaker's own statement and
    * never revisits it. `auto` treats it as a starting guess that the first
    * recognised utterance may correct — see `applyDetectedLanguage`.
@@ -192,6 +202,38 @@ export type CallModeChangeResult =
     }
   | { ok: false; reason: 'not-owner' | 'unknown-call' | 'unknown-participant' | 'invalid-mode' };
 
+/** `preregisterCall` input (P6.5 FE1): type and mode are fixed before any join. */
+export interface CallPreregisterInput {
+  callType: CallType;
+  callMode: CallMode;
+  /** Opaque host-side tag; held on the call, never exposed anywhere. */
+  projectTag?: string;
+}
+
+export type CallPreregisterResult =
+  | { ok: true; snapshot: CallSnapshot }
+  | {
+      ok: false;
+      reason: 'invalid-call-id' | 'invalid-call-type' | 'invalid-call-mode' | 'call-already-exists';
+    };
+
+/** `endCall` outcome (P6.5 FE1): the whole call ends, so EVERYTHING retires. */
+export type CallEndResult =
+  | {
+      ok: true;
+      /** Final pre-deletion state, for one last STATE emit. */
+      snapshot: CallSnapshot;
+      /**
+       * The revision-scoped session id of EVERY seat's current work order,
+       * disconnected-in-grace seats included — their sessions may still be
+       * registered, and a reap that fires after the call is gone must find
+       * nothing left to touch. The runtime retires each id through the same
+       * path finalizeLeave uses, just for all seats at once.
+       */
+      retiredIngestSessionIds: string[];
+    }
+  | { ok: false; reason: 'unknown-call' };
+
 export interface CallJoinResult {
   ok: true;
   participantId: string;
@@ -240,6 +282,8 @@ export interface CallSnapshot {
     speakLanguage: CallLanguage;
     hearLanguage: CallLanguage;
     connected: boolean;
+    /** Opaque partner identity (P6.5 R8); present only on seats that joined with one. */
+    subject?: string;
   }[];
 }
 
@@ -369,6 +413,8 @@ const CONVERSATION_QUORUM = 2;
  */
 const SAFE_CALL_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const MAX_DISPLAY_NAME_LENGTH = 80;
+/** R8 subject cap: an opaque identity is sized like an id, not a document. */
+const MAX_SUBJECT_LENGTH = 128;
 
 interface CallParticipantState {
   /** Authoritative record composed from participant-contracts; never a second authority. */
@@ -382,6 +428,11 @@ interface CallParticipantState {
    * may be spoken.
    */
   voiceOwnerId?: string;
+  /**
+   * Opaque partner identity (P6.5 R8), never interpreted. Stamped at seat
+   * creation, kept across resume, shown in snapshots deliberately.
+   */
+  subject?: string;
   captionsEnabled: boolean;
   connected: boolean;
   joinedAtIso: string;
@@ -401,6 +452,8 @@ interface CallState {
    */
   ownerParticipantId: string;
   transcriptDownloadAllowed: boolean;
+  /** P6.5: opaque host-side tag from preregistration; never in snapshots, plans, or logs. */
+  projectTag?: string;
   /** Monotonic per-call serial so a departed participant's id is never reused. */
   nextParticipantSerial: number;
   participants: Map<string, CallParticipantState>;
@@ -416,6 +469,38 @@ export class CallSessionStore {
     this.now = options.now ?? (() => new Date().toISOString());
     this.createResumeToken = options.createResumeToken ?? (() => randomUUID());
     this.maxParticipants = Math.max(2, options.maxParticipants ?? DEFAULT_MAX_CALL_PARTICIPANTS);
+  }
+
+  /**
+   * P6.5 FE1 — server-authority call creation: an EMPTY call whose type and
+   * mode are authoritative before anyone joins. The eventual creating join
+   * arrives on the existing-call path, so its callType/callMode inputs are
+   * ignored exactly as on any existing call; its participant takes ownership,
+   * and capacity resolves from the preregistered type.
+   *
+   * Lifecycle: this store performs no I/O and keeps no timers (P6.1B
+   * charter), so an empty preregistered call lives — and counts toward
+   * activeCallCount — until someone joins or the HOST retires it via
+   * endCall; the Connect registry owns idle-expiry. Once seated, ordinary
+   * leave semantics apply: the call dies with its last seat and never
+   * reverts to the empty preregistered state.
+   */
+  preregisterCall(callId: string, input: CallPreregisterInput): CallPreregisterResult {
+    if (typeof callId !== 'string' || !SAFE_CALL_ID_PATTERN.test(callId)) {
+      return { ok: false, reason: 'invalid-call-id' };
+    }
+    // Refused rather than ignored, like every enum on the join path (W5).
+    if (input.callType !== 'personal' && input.callType !== 'conference') {
+      return { ok: false, reason: 'invalid-call-type' };
+    }
+    if (input.callMode !== 'normal' && input.callMode !== 'translated') {
+      return { ok: false, reason: 'invalid-call-mode' };
+    }
+    if (this.calls.has(callId)) {
+      return { ok: false, reason: 'call-already-exists' };
+    }
+    const call = this.mintCall(callId, input.callType, input.callMode, input.projectTag);
+    return { ok: true, snapshot: buildSnapshot(call) };
   }
 
   createOrJoin(input: CallJoinInput): CallJoinResult | CallJoinFailure {
@@ -475,14 +560,18 @@ export class CallSessionStore {
       resumeToken: this.createResumeToken(),
       voiceGender: input.voiceGender,
       ...(input.voiceOwnerId ? { voiceOwnerId: input.voiceOwnerId } : {}),
+      // Stamped once here; resume never reassigns it (R8).
+      ...(input.subject === undefined ? {} : { subject: input.subject }),
       captionsEnabled: input.captionsEnabled,
       connected: true,
       joinedAtIso: this.now(),
     };
     call.participants.set(participant.participantId, state);
-    if (!existingCall) {
-      // Owner = whoever's join created the call. The participantId survives
-      // resume, so authority survives reconnects without any election.
+    if (call.ownerParticipantId === '') {
+      // Owner = whoever's join created the call — including the FIRST join
+      // into a preregistered call, which arrives on the existing-call path
+      // (P6.5). The participantId survives resume, so authority survives
+      // reconnects without any election.
       call.ownerParticipantId = participant.participantId;
     }
     bumpOtherConnectedParticipants(call, state);
@@ -549,6 +638,23 @@ export class CallSessionStore {
       ingestPlans.push(buildIngestPlan(call, state));
     }
     return { ok: true, callEnded: false, snapshot: buildSnapshot(call), ingestPlans };
+  }
+
+  /**
+   * P6.5 FE1 — project authority ending the whole call. Deliberately NOT
+   * leave() per seat: leave reconciles the REMAINING membership, and here
+   * there is none — no revision moves, no plan is rebuilt. Every seat's
+   * current work order retires instead, and the call is deleted whole.
+   */
+  endCall(callId: string): CallEndResult {
+    const call = this.calls.get(callId);
+    if (!call) return { ok: false, reason: 'unknown-call' };
+    const snapshot = buildSnapshot(call);
+    const retiredIngestSessionIds = [...call.participants.values()].map(
+      (state) => buildIngestPlan(call, state).ingestSessionId,
+    );
+    this.calls.delete(callId);
+    return { ok: true, snapshot, retiredIngestSessionIds };
   }
 
   /** Keeps the participant's identity and revisions so a resume can reclaim them. */
@@ -936,33 +1042,41 @@ export class CallSessionStore {
     if (participantId !== call.ownerParticipantId) {
       return { ok: false, reason: 'not-owner' };
     }
-    if (call.callMode === mode) {
-      // Already set: nothing moved, so nothing may be invalidated.
-      return {
-        ok: true,
-        changed: false,
-        snapshot: buildSnapshot(call),
-        ingestPlans: connectedIngestPlans(call),
-      };
+    return applyCallMode(call, mode);
+  }
+
+  /**
+   * P6.5 FE1 — the PROJECT (server authority, R4) switching the call-global
+   * mode. Same bump/plan semantics as setCallMode through the shared
+   * applyCallMode body, so the two entry points cannot drift; only the owner
+   * check is absent, because project authority is a separate concept from
+   * the in-call owner (R5) and no participant id exists to check.
+   */
+  setCallModeByAuthority(callId: string, mode: CallMode): CallModeChangeResult {
+    if (mode !== 'normal' && mode !== 'translated') {
+      return { ok: false, reason: 'invalid-mode' };
     }
-    call.callMode = mode;
-    for (const participant of call.participants.values()) {
-      if (!participant.connected) continue;
-      participant.participant = parseParticipant({
-        ...participant.participant,
-        mediaRevision: participant.participant.mediaRevision + 1,
-      });
-    }
-    return {
-      ok: true,
-      changed: true,
-      snapshot: buildSnapshot(call),
-      ingestPlans: connectedIngestPlans(call),
-    };
+    const call = this.calls.get(callId);
+    if (!call) return { ok: false, reason: 'unknown-call' };
+    return applyCallMode(call, mode);
   }
 
   activeCallCount(): number {
     return this.calls.size;
+  }
+
+  /**
+   * R8's one-connected-per-subject rule INPUT; enforcement is the gateway's.
+   * A disconnected-in-grace seat does not count, so the recovery path — a
+   * fresh join while the old seat awaits its reap — stays open.
+   */
+  hasConnectedSubject(callId: string, subject: string): boolean {
+    const call = this.calls.get(callId);
+    if (!call) return false;
+    for (const state of call.participants.values()) {
+      if (state.connected && state.subject === subject) return true;
+    }
+    return false;
   }
 
   private resume(input: CallJoinInput, resumeParticipantId: string): CallJoinResult | CallJoinFailure {
@@ -981,6 +1095,20 @@ export class CallSessionStore {
         'invalid-input',
         'Languages are locked for this call; resume with your original selections.',
       );
+    }
+    // R8 through RESUME (review finding): while this seat sat in grace, a
+    // fresh partner-minted token may have seated the SAME subject — the
+    // sanctioned recovery path, and the NEWER seat wins. Letting the old seat
+    // resume as well would put two connected participants under one subject.
+    // Identical failure on purpose: resume rejections stay indistinguishable,
+    // and the Connect SDK's answer is needsNewJoinToken.
+    if (
+      state.subject !== undefined &&
+      [...call.participants.values()].some(
+        (other) => other !== state && other.connected && other.subject === state.subject,
+      )
+    ) {
+      return resumeRejected();
     }
     // Resume is a media replacement (§8.3): bump mediaRevision so stale AI
     // results are rejected, keep languageRevision because languages are locked.
@@ -1002,6 +1130,9 @@ export class CallSessionStore {
       delete state.voiceOwnerId;
     }
     state.captionsEnabled = input.captionsEnabled;
+    // `subject` is deliberately NOT reassigned: it is the seat's identity
+    // stamp (R8), enforced above on resume (one connected seat per subject;
+    // the newer seat wins) and by the gateway's fresh-join gate.
     state.connected = true;
     bumpOtherConnectedParticipants(call, state);
     return this.joinResult(call, state);
@@ -1045,20 +1176,32 @@ export class CallSessionStore {
   }
 
   private createCall(input: CallJoinInput): CallState {
+    // The creating join's choice, defaulted; joiners' values are ignored.
+    return this.mintCall(input.callId, input.callType ?? 'conference', input.callMode ?? 'translated');
+  }
+
+  /** Single construction site for both creation paths: implicit join and preregister. */
+  private mintCall(
+    callId: string,
+    callType: CallType,
+    callMode: CallMode,
+    projectTag?: string,
+  ): CallState {
     const call: CallState = {
-      callId: CallSessionIdSchema.parse(input.callId),
+      callId: CallSessionIdSchema.parse(callId),
       createdAtIso: this.now(),
-      // The creating join's choice, defaulted; joiners' values are ignored.
-      callType: input.callType ?? 'conference',
-      callMode: input.callMode ?? 'translated',
-      // Overwritten with the creating participant's id before anyone can
-      // observe the call; see createOrJoin.
+      callType,
+      callMode,
+      // Assigned to the first participant's id by createOrJoin; '' means no
+      // authority yet — a preregistered call IS observable while empty, and
+      // an empty owner refuses every owner-gated change.
       ownerParticipantId: '',
       transcriptDownloadAllowed: true,
       nextParticipantSerial: 1,
       participants: new Map(),
+      ...(projectTag === undefined ? {} : { projectTag }),
     };
-    this.calls.set(input.callId, call);
+    this.calls.set(callId, call);
     return call;
   }
 }
@@ -1092,6 +1235,39 @@ function bumpOtherConnectedParticipants(call: CallState, joined: CallParticipant
       mediaRevision: state.participant.mediaRevision + 1,
     });
   }
+}
+
+/**
+ * The one mode-change body, shared by the owner path (setCallMode) and the
+ * project-authority path (setCallModeByAuthority) so their semantics cannot
+ * drift. A real change bumps EVERY connected participant's mediaRevision so
+ * all live session ids are superseded at once; disconnected-in-grace seats
+ * keep their revision, exactly as the owner path always did.
+ */
+function applyCallMode(call: CallState, mode: CallMode): CallModeChangeResult {
+  if (call.callMode === mode) {
+    // Already set: nothing moved, so nothing may be invalidated.
+    return {
+      ok: true,
+      changed: false,
+      snapshot: buildSnapshot(call),
+      ingestPlans: connectedIngestPlans(call),
+    };
+  }
+  call.callMode = mode;
+  for (const participant of call.participants.values()) {
+    if (!participant.connected) continue;
+    participant.participant = parseParticipant({
+      ...participant.participant,
+      mediaRevision: participant.participant.mediaRevision + 1,
+    });
+  }
+  return {
+    ok: true,
+    changed: true,
+    snapshot: buildSnapshot(call),
+    ingestPlans: connectedIngestPlans(call),
+  };
 }
 
 /** User-facing wording only, per the `call:error` contract. */
@@ -1137,6 +1313,15 @@ function validateJoinInput(input: CallJoinInput): string | null {
     !ParticipantIdSchema.safeParse(input.resumeParticipantId).success
   ) {
     return 'The resume participant id is not valid.';
+  }
+  // Opaque means uninterpreted, not unbounded: length is the ONLY rule.
+  if (
+    input.subject !== undefined &&
+    (typeof input.subject !== 'string' ||
+      input.subject.length === 0 ||
+      input.subject.length > MAX_SUBJECT_LENGTH)
+  ) {
+    return `A subject must be between 1 and ${MAX_SUBJECT_LENGTH} characters.`;
   }
   // Refused rather than ignored. A voice identity that fails to parse is a bug
   // or a tampered payload, and silently dropping it would present as "personal
@@ -1191,6 +1376,7 @@ function buildSnapshot(call: CallState): CallSnapshot {
       speakLanguage: toCallLanguage(state.participant.sourceLanguage),
       hearLanguage: toCallLanguage(state.participant.preferredLanguage),
       connected: state.connected,
+      ...(state.subject === undefined ? {} : { subject: state.subject }),
     })),
   };
 }

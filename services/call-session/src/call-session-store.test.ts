@@ -498,7 +498,17 @@ describe('CallSessionStore snapshots', () => {
   it('is sanitized: no voice ids, ingest ids, revisions, or resume tokens', () => {
     let serial = 0;
     const store = new CallSessionStore({ createResumeToken: () => `secret-resume-${serial++}` });
-    translatedPair(store);
+    // Zoe joins as a Connect seat: `subject` is a DELIBERATE P6.5 addition to
+    // the exact key set — R8 makes both identities public participant state,
+    // and the name carries none of the forbidden substrings below.
+    mustJoin(store, {
+      displayName: 'Zoe',
+      speakLanguage: 'en',
+      hearLanguage: 'en',
+      voiceGender: 'male',
+      subject: 'customer_8291',
+    });
+    mustJoin(store, { displayName: 'Carlos', speakLanguage: 'es', hearLanguage: 'es' });
 
     const snapshot = store.snapshot('call-1');
     expect(snapshot).not.toBeNull();
@@ -512,15 +522,11 @@ describe('CallSessionStore snapshots', () => {
       'participants',
       'transcriptDownloadAllowed',
     ]);
-    for (const participant of snapshot.participants) {
-      expect(Object.keys(participant).sort()).toEqual([
-        'connected',
-        'displayName',
-        'hearLanguage',
-        'participantId',
-        'speakLanguage',
-      ]);
-    }
+    expect(snapshot.participants.map((participant) => Object.keys(participant).sort())).toEqual([
+      ['connected', 'displayName', 'hearLanguage', 'participantId', 'speakLanguage', 'subject'],
+      // No `subject` key at all for a seat that joined without one.
+      ['connected', 'displayName', 'hearLanguage', 'participantId', 'speakLanguage'],
+    ]);
     const serialized = JSON.stringify(snapshot);
     expect(serialized).not.toContain('secret-resume-');
     expect(serialized).not.toContain('voice');

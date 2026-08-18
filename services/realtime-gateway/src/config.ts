@@ -32,6 +32,15 @@ export interface GatewayConfig {
   webRtcPartialCaptionIntervalMs: number;
   /** Development call-session transcript log directory; disabled when null. */
   callTranscriptLogDir: string | null;
+  /**
+   * P6.5 Videofy Connect. The secret signs single-use join tokens (min 32
+   * chars — validated fail-visible where it is first used, never logged);
+   * null means token mint/verify is unavailable and /v1 join-token minting
+   * answers 503. The projects path names the hash-only registry file; an
+   * absent file disables /v1 cleanly, a malformed one fails startup (R12).
+   */
+  connectAuthSecret: string | null;
+  connectProjectsPath: string;
 }
 
 export function loadConfig(): GatewayConfig {
@@ -77,6 +86,9 @@ export function loadConfig(): GatewayConfig {
       1_500,
     ),
     callTranscriptLogDir: process.env['CALL_TRANSCRIPT_LOG_DIR']?.trim() || null,
+    connectAuthSecret: process.env['CONNECT_AUTH_SECRET']?.trim() || null,
+    connectProjectsPath:
+      process.env['CONNECT_PROJECTS_PATH']?.trim() || './connect-projects.json',
   };
 }
 

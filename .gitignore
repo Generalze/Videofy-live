@@ -234,3 +234,10 @@ build/
 
 # Throwaway cold-start probe.
 .cold-matrix.mjs
+
+# Connect project registry: partner authorization data, never committed.
+connect-projects.json
+connect-projects.*.json
+
+# npm pack artifacts
+packages/**/*.tgz

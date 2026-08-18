@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Videofy Connect sample — host</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 2rem auto;
+        max-width: 44rem;
+        padding: 0 1rem;
+        line-height: 1.5;
+      }
+      fieldset { border: 1px solid #8884; border-radius: 8px; margin-bottom: 1rem; }
+      button { padding: 0.4rem 0.9rem; border-radius: 6px; border: 1px solid #8886; cursor: pointer; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      code { background: #8882; padding: 0.1rem 0.3rem; border-radius: 4px; overflow-wrap: anywhere; }
+      .muted { opacity: 0.7; }
+      .error { color: #c0392b; white-space: pre-wrap; }
+      #created { border: 1px solid #8884; border-radius: 8px; padding: 0 1rem 1rem; }
+      ul { padding-left: 1.2rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Videofy Connect sample — host</h1>
+    <p class="muted">
+      The partner side. This page only talks to the sample server, which holds the project key and
+      uses <code>@videofy/server-sdk</code> to create video chats and mint single-use join tokens.
+    </p>
+
+    <form id="create-form">
+      <fieldset>
+        <legend>New video chat</legend>
+        <p>
+          Type —
+          <label><input type="radio" name="type" value="personal" checked /> personal (2 seats)</label>
+          <label><input type="radio" name="type" value="conference" /> conference (4 seats)</label>
+        </p>
+        <p>
+          Mode —
+          <label><input type="radio" name="mode" value="translated" checked /> translated</label>
+          <label><input type="radio" name="mode" value="normal" /> normal</label>
+        </p>
+        <button type="submit">Create</button>
+      </fieldset>
+    </form>
+
+    <section id="created" hidden>
+      <h2>Ready to join</h2>
+      <p>Id <code id="created-id"></code> — <span id="created-kind"></span></p>
+      <p>
+        Join link <code id="join-link"></code>
+        <button id="copy-link" type="button">Copy</button>
+        <a id="open-link" target="_blank">Open join page</a>
+      </p>
+      <p class="muted">
+        Open it in two browsers (or a normal plus a private window), pick different names, join.
+      </p>
+      <h3>Participants <button id="refresh" type="button">Refresh</button></h3>
+      <ul id="participants"><li class="muted">Nobody yet.</li></ul>
+      <p><button id="end" type="button">End for everyone (project authority)</button></p>
+    </section>
+
+    <p id="error" class="error" role="alert"></p>
+
+    <script type="module">
+      const byId = (id) => document.getElementById(id);
+      const errorLine = byId('error');
+
+      async function api(path, options) {
+        const response = await fetch(path, options);
+        const body = await response.json().catch(() => null);
+        if (!response.ok) {
+          const reason =
+            body && body.error
+              ? body.error.code + ' - ' + body.error.message
+              : 'HTTP ' + response.status;
+          throw new Error(reason);
+        }
+        return body;
+      }
+
+      const showError = (error) =>
+        (errorLine.textContent = String(error && error.message ? error.message : error));
+
+      let currentId = null;
+      let pollTimer = null;
+
+      byId('create-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        errorLine.textContent = '';
+        const form = new FormData(event.currentTarget);
+        try {
+          const created = await api('/api/calls', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ type: form.get('type'), mode: form.get('mode') }),
+          });
+          currentId = created.callId;
+          byId('created-id').textContent = created.callId;
+          byId('created-kind').textContent = created.type + ' / ' + created.mode;
+          const link = new URL('/join.html', location.origin);
+          link.searchParams.set('vc', created.callId);
+          byId('join-link').textContent = link.href;
+          byId('open-link').href = link.href;
+          byId('created').hidden = false;
+          byId('end').disabled = false;
+          if (pollTimer !== null) clearInterval(pollTimer);
+          pollTimer = setInterval(refresh, 3000);
+          void refresh();
+        } catch (error) {
+          showError(error);
+        }
+      });
+
+      async function refresh() {
+        if (currentId === null) return;
+        try {
+          const state = await api('/api/calls/' + encodeURIComponent(currentId) + '/state');
+          const list = byId('participants');
+          list.textContent = '';
+          if (state.participants.length === 0) {
+            const empty = document.createElement('li');
+            empty.className = 'muted';
+            empty.textContent = 'Nobody yet.';
+            list.append(empty);
+            return;
+          }
+          for (const person of state.participants) {
+            const item = document.createElement('li');
+            item.textContent =
+              person.displayName +
+              ' (' + person.subject + ') speaks ' + person.speakLanguage +
+              ', hears ' + person.hearLanguage +
+              (person.connected ? '' : ' — disconnected');
+            list.append(item);
+          }
+        } catch (error) {
+          showError(error);
+        }
+      }
+
+      byId('refresh').addEventListener('click', () => void refresh());
+
+      byId('copy-link').addEventListener('click', () => {
+        void navigator.clipboard.writeText(byId('join-link').textContent);
+      });
+
+      byId('end').addEventListener('click', async () => {
+        if (currentId === null) return;
+        errorLine.textContent = '';
+        try {
+          await api('/api/calls/' + encodeURIComponent(currentId) + '/end', { method: 'POST' });
+          if (pollTimer !== null) clearInterval(pollTimer);
+          byId('end').disabled = true;
+          byId('created-kind').textContent += ' — ended';
+        } catch (error) {
+          showError(error);
+        }
+      });
+    </script>
+  </body>
+</html>

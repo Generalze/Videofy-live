@@ -59,6 +59,17 @@ import {
   type WebRtcTranscriptionBridgeContext,
 } from './webrtc-transcription-bridge.js';
 import { CallSessionStore } from '@videofy-live/call-session';
+import type { Router } from 'express';
+import {
+  ConnectJoinGate,
+  ConnectJtiRegistry,
+  ConnectLiveCallRegistry,
+  createConnectV1Router,
+  loadConnectProjectRegistry,
+  requireConnectAuthSecret,
+  type ConnectCallFacade,
+  type ConnectProjectRegistry,
+} from '@videofy-live/connect-control';
 import { CallRuntime, CALL_PARTICIPANT_ROLE } from './call-runtime.js';
 import { CallReceivePeerManager } from './call-receive-peers.js';
 import { CallTranscriptLog } from './call-transcript-log.js';
@@ -122,6 +133,16 @@ export class Gateway {
   };
   private listenerCount = 0;
 
+  // ---- P6.5 Connect control plane (FE3) --------------------------------
+  /** Null when connect-projects.json is absent or Connect is unconfigured: /v1 fails closed. */
+  private readonly connectRegistry: ConnectProjectRegistry | null;
+  /** Null when CONNECT_AUTH_SECRET is unusable: token mint/verify unavailable, visibly. */
+  private readonly connectSecret: Buffer | null;
+  /** In-memory on purpose (R13): a restart voids Connect calls and outstanding tokens with it. */
+  private readonly connectLiveCalls = new ConnectLiveCallRegistry();
+  private readonly connectJti = new ConnectJtiRegistry();
+  private connectV1Router: Router | null = null;
+
   constructor(
     httpServer: HttpServer,
     corsOrigins: string[],
@@ -140,8 +161,53 @@ export class Gateway {
       webRtcPartialCaptionIntervalMs?: number;
       callTranscriptLogDir?: string | null;
       vad?: ConstructorParameters<typeof WebRtcTranscriptionBridge>[0]['vad'];
+      /**
+       * P6.5 Videofy Connect. Omitted (tests, embedders), Connect is cleanly
+       * off: /v1 answers 503 and every connectToken join is refused.
+       */
+      connect?: {
+        authSecret?: string | null;
+        projectsPath?: string | null;
+      };
     } = {},
   ) {
+    // P6.5: Connect state comes FIRST — a malformed registry must fail the
+    // gateway at startup (R12), before any socket machinery exists to serve.
+    const connectOptions = options.connect;
+    if (connectOptions?.projectsPath) {
+      const registryState = loadConnectProjectRegistry(connectOptions.projectsPath);
+      if (registryState.status === 'active') {
+        this.connectRegistry = registryState.registry;
+        logger.info('Connect project registry loaded', { path: connectOptions.projectsPath });
+      } else {
+        this.connectRegistry = null;
+        logger.warn(`Videofy Connect /v1 is disabled: ${registryState.reason}`);
+      }
+    } else {
+      this.connectRegistry = null;
+      if (connectOptions) {
+        logger.warn('Videofy Connect /v1 is disabled: no CONNECT_PROJECTS_PATH configured');
+      }
+    }
+    if (connectOptions?.authSecret) {
+      let secret: Buffer | null = null;
+      try {
+        secret = requireConnectAuthSecret(connectOptions.authSecret, 'CONNECT_AUTH_SECRET');
+      } catch (error) {
+        // Visible (R12), and never the value itself.
+        logger.warn('CONNECT_AUTH_SECRET is unusable; Connect join tokens cannot be issued or verified', {
+          message: error instanceof Error ? error.message : 'invalid secret',
+        });
+      }
+      this.connectSecret = secret;
+    } else {
+      this.connectSecret = null;
+      if (connectOptions) {
+        logger.warn(
+          'CONNECT_AUTH_SECRET is not set; Connect join tokens cannot be issued or verified',
+        );
+      }
+    }
     this.mediaIngestUrl = options.mediaIngestUrl ?? 'http://localhost:3002';
     this.mediaIngestPublicUrl = options.mediaIngestPublicUrl ?? this.mediaIngestUrl;
     this.webRtcTranscriptionBridge = new WebRtcTranscriptionBridge({
@@ -247,14 +313,93 @@ export class Gateway {
       ...(callVoiceIdentityVerifier
         ? { verifyVoiceIdentity: callVoiceIdentityVerifier }
         : {}),
+      // P6.5: the synchronous connect-join gate (jti claim, verify, project,
+      // origin, live-registry). Always constructed — with a missing secret or
+      // registry it refuses every connect join, which is the fail-closed
+      // default a bare Gateway (tests, embedders) should have.
+      connectAuthority: new ConnectJoinGate({
+        secret: this.connectSecret,
+        registry: this.connectRegistry,
+        liveCalls: this.connectLiveCalls,
+        jti: this.connectJti,
+      }),
     });
     this.io = new SocketServer(httpServer, {
-      cors: { origin: corsOrigins, methods: ['GET', 'POST'] },
+      cors: {
+        // P6.5 (R7): dev origins ∪ ACTIVE projects' origins, resolved per
+        // handshake. Reaching the transport is necessary but never
+        // sufficient — connect joins still authorize Origin per token.
+        origin: createSocketOriginPolicy(corsOrigins, () =>
+          this.connectRegistry ? this.connectRegistry.activeOrigins() : [],
+        ),
+        methods: ['GET', 'POST'],
+      },
       transports: ['websocket', 'polling'],
     });
 
     this.io.on('connection', (socket: Socket) => this.handleConnection(socket));
     logger.info('Gateway socket server initialised');
+  }
+
+  /**
+   * P6.5 (FE3): the NARROW Connect facade — exactly what connect-control's
+   * /v1 router needs, and nothing else (R1). Mode changes and call ends go
+   * through the CallRuntime's authority entry points so the STATE broadcast
+   * and ingest-plan consequences ride the same path an in-call owner uses;
+   * the store is never handed out.
+   */
+  createConnectFacade(): ConnectCallFacade {
+    return {
+      preregisterCall: (internalCallId, input) =>
+        this.callRuntime.preregisterConnectCall(internalCallId, input),
+      snapshot: (internalCallId) => {
+        const snapshot = this.callRuntime.getCallSnapshot(internalCallId);
+        if (!snapshot) return null;
+        return {
+          callType: snapshot.callType,
+          callMode: snapshot.callMode,
+          participants: snapshot.participants.map((participant) => ({
+            participantId: participant.participantId,
+            displayName: participant.displayName,
+            speakLanguage: participant.speakLanguage,
+            hearLanguage: participant.hearLanguage,
+            connected: participant.connected,
+            ...(participant.subject === undefined ? {} : { subject: participant.subject }),
+          })),
+        };
+      },
+      applyAuthorityModeChange: async (internalCallId, mode) => {
+        const result = await this.callRuntime.applyAuthorityModeChange(internalCallId, mode);
+        if (result.ok) return { ok: true, changed: result.changed };
+        return {
+          ok: false,
+          reason: result.reason === 'invalid-mode' ? 'invalid-mode' : 'unknown-call',
+        };
+      },
+      endCallByAuthority: async (internalCallId) => {
+        const result = await this.callRuntime.endCallByAuthority(internalCallId);
+        return result.ok ? { ok: true } : { ok: false, reason: 'unknown-call' };
+      },
+    };
+  }
+
+  /**
+   * The /v1 router, built once on first use. index.ts hands createApp a lazy
+   * closure over this method (the diagnostics pattern — the app is built
+   * before the Gateway exists), so the router materializes on the first /v1
+   * request, after this Gateway is fully constructed.
+   */
+  getConnectV1Router(): Router {
+    if (!this.connectV1Router) {
+      this.connectV1Router = createConnectV1Router({
+        registry: this.connectRegistry,
+        liveCalls: this.connectLiveCalls,
+        facade: this.createConnectFacade(),
+        tokenSecret: this.connectSecret,
+        logger,
+      });
+    }
+    return this.connectV1Router;
   }
 
   private handleConnection(socket: Socket): void {
@@ -1395,6 +1540,31 @@ export class Gateway {
       subtitlesEnabled: candidate.subtitlesEnabled,
     };
   }
+}
+
+/**
+ * P6.5 (R7): the Socket.IO CORS origin callback — dev origins ∪ whatever the
+ * project-origin provider answers at handshake time (so registry changes need
+ * no socket-server rebuild). A missing Origin passes the TRANSPORT layer —
+ * non-browser clients and native tests have none, and CORS cannot authenticate
+ * anybody — because reaching the handshake is never sufficient: connect joins
+ * authorize the Origin against the token's own project afterwards.
+ */
+export function createSocketOriginPolicy(
+  devOrigins: readonly string[],
+  projectOrigins: () => readonly string[],
+): (origin: string | undefined, callback: (error: Error | null, allow?: boolean) => void) => void {
+  return (origin, callback) => {
+    if (origin === undefined) {
+      callback(null, true);
+      return;
+    }
+    if (devOrigins.includes(origin) || projectOrigins().includes(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(null, false);
+  };
 }
 
 function normalizeBackendGatewayError(error: unknown): WebRtcSignallingError {

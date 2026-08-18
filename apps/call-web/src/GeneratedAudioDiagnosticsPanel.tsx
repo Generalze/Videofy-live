@@ -2,7 +2,7 @@ import { useState } from 'react';
 import {
   formatDiagnostics,
   type GeneratedAudioDiagnosticEntry,
-} from './callGeneratedAudioDiagnostics';
+} from '@videofy-live/call-client-core';
 
 /**
  * TEMPORARY on-device diagnostic surface — P6.3 pre-M1.

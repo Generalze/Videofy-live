@@ -354,3 +354,35 @@ describe('transcript-download policy (owner-only, default on)', () => {
     });
   });
 });
+
+describe('R8 holds through RESUME: the newer seat wins (review fix)', () => {
+  it('refuses the old seat’s resume once a fresh seat holds the same subject', () => {
+    const store = new CallSessionStore();
+    const first = mustJoin(store, {
+      displayName: 'Old seat',
+      subject: 'customer_1',
+    });
+    store.markDisconnected(CALL, first.participantId);
+    // The sanctioned recovery: a fresh partner-minted token seats the same
+    // subject while the old seat sits in grace.
+    mustJoin(store, { displayName: 'New seat', subject: 'customer_1' });
+
+    const resumed = store.createOrJoin({
+      ...joinInput({ displayName: 'Old seat' }),
+      resumeParticipantId: first.participantId,
+      resumeToken: first.resumeToken,
+    });
+
+    // Identical failure to every other resume rejection — no probing.
+    expect(resumed.ok).toBe(false);
+    // Subject-less seats are untouched by the rule.
+    const plain = mustJoin(store, { displayName: 'Native' });
+    store.markDisconnected(CALL, plain.participantId);
+    const plainResume = store.createOrJoin({
+      ...joinInput({ displayName: 'Native' }),
+      resumeParticipantId: plain.participantId,
+      resumeToken: plain.resumeToken,
+    });
+    expect(plainResume.ok).toBe(true);
+  });
+});

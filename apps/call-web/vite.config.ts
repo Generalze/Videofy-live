@@ -23,6 +23,9 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     resolve: {
       alias: {
+        '@videofy-live/call-client-core': fileURLToPath(
+          new URL('../../packages/call-client-core/src/index.ts', import.meta.url),
+        ),
         '@videofy-live/shared-types': fileURLToPath(
           new URL('../../packages/shared-types/src/index.ts', import.meta.url),
         ),

@@ -1,0 +1,36 @@
+{
+  "name": "@videofy/connect",
+  "version": "0.1.0",
+  "description": "Videofy Connect browser SDK: join live translated calls with a partner-minted join token.",
+  "author": "masterzee001",
+  "license": "SEE LICENSE IN LICENSE",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup && node ./scripts/finalize-dts.mjs",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && vitest run",
+    "dev": "tsup --watch"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.7.5"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.1",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
+  }
+}

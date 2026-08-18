@@ -10,7 +10,7 @@ import type {
   CallSdpPayload,
   CallType,
 } from './callTypes';
-import { normalizeCallCode, type CallJoinFormState } from './callFormState';
+import { normalizeCallCode, type CallJoinFormState } from './callJoinForm';
 
 export type CallSocketClientOptions = Partial<ManagerOptions & SocketOptions>;
 
@@ -40,20 +40,25 @@ export function resolveSocketTransportOptions(
   return {};
 }
 
-export function createCallSocketOptions(): CallSocketClientOptions {
+/**
+ * `transport` is the host's configured override (call-web passes
+ * VITE_SOCKET_TRANSPORT); absent means socket.io's default transports.
+ */
+export function createCallSocketOptions(transport?: string): CallSocketClientOptions {
   return {
     query: { role: 'call-participant' },
-    ...resolveSocketTransportOptions(import.meta.env['VITE_SOCKET_TRANSPORT']),
+    ...resolveSocketTransportOptions(transport),
   };
 }
 
-export function readGatewayUrl(): string {
-  return import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
+/** Defaults to the single-machine dev topology when the host configures no URL. */
+export function readGatewayUrl(configuredUrl?: string): string {
+  return configuredUrl ?? 'http://localhost:3001';
 }
 
 /** Media ingest, which owns voice enrollment storage. */
-export function readIngestUrl(): string {
-  return import.meta.env['VITE_INGEST_URL'] ?? 'http://localhost:3002';
+export function readIngestUrl(configuredUrl?: string): string {
+  return configuredUrl ?? 'http://localhost:3002';
 }
 
 export interface CallResumeCredentials {

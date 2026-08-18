@@ -1,0 +1,36 @@
+{
+  "name": "@videofy-live/connect-control",
+  "version": "0.1.0",
+  "private": true,
+  "author": "masterzee001",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "npm run build -w @videofy-live/connect-contracts && tsc",
+    "typecheck": "npm run build -w @videofy-live/connect-contracts && tsc --noEmit",
+    "test": "npm run build -w @videofy-live/participant-contracts && npm run build -w @videofy-live/account-tokens && npm run build -w @videofy-live/connect-contracts && npm run build -w @videofy-live/connect-control && vitest run",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@videofy-live/connect-contracts": "*",
+    "express": "^4.19.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "@types/supertest": "^6.0.2",
+    "@videofy-live/account-tokens": "*",
+    "supertest": "^7.0.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
+  }
+}

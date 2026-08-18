@@ -1,0 +1,869 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Videofy Connect API",
+    "version": "1.0.0",
+    "description": "Public control plane for Videofy Connect v1. Authentication is a project API key presented as a Bearer token; join tokens minted here are opaque, single-use credentials the partner hands to the client SDK. Live calls and outstanding join tokens are process-bound: a gateway restart voids them, and the client SDK reports needsNewJoinToken when a fresh one must be minted. Every response carries an X-Request-Id header for correlation."
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Paths are gateway-relative; /v1 is served by the gateway process."
+    }
+  ],
+  "security": [
+    {
+      "projectKey": []
+    }
+  ],
+  "paths": {
+    "/v1/calls": {
+      "post": {
+        "operationId": "createCall",
+        "summary": "Create a call",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCallRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Call created.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallResource"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error envelope; retryable is derived from the code classification and the two never disagree.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/calls/{callId}": {
+      "get": {
+        "operationId": "getCall",
+        "summary": "Fetch a call",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CallId"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The call.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallResource"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error envelope; retryable is derived from the code classification and the two never disagree.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateCallMode",
+        "summary": "Change call mode (project authority)",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CallId"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateCallModeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Mode changed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallResource"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error envelope; retryable is derived from the code classification and the two never disagree.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/calls/{callId}/state": {
+      "get": {
+        "operationId": "getCallState",
+        "summary": "Fetch live participant state",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CallId"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current participant state.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallState"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error envelope; retryable is derived from the code classification and the two never disagree.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/calls/{callId}/join-tokens": {
+      "post": {
+        "operationId": "createJoinToken",
+        "summary": "Mint a single-use join token",
+        "description": "Tokens are single-use with first-claim-wins semantics, default lifetime 300 seconds and hard maximum 900. A token burned by a failed join is replaced by minting a fresh one, never retried.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CallId"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JoinTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Token minted.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinTokenResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error envelope; retryable is derived from the code classification and the two never disagree.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/calls/{callId}/end": {
+      "post": {
+        "operationId": "endCall",
+        "summary": "End a call (project authority)",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CallId"
+          },
+          {
+            "$ref": "#/components/parameters/RequestId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Call ended.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallResource"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error envelope; retryable is derived from the code classification and the two never disagree.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/capabilities": {
+      "get": {
+        "operationId": "getCapabilities",
+        "summary": "Discover platform capabilities",
+        "description": "Additive-only: fields are never removed or renamed within v1, and no provider, model, or internal detail ever appears here.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Capability document.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilitiesResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error envelope; retryable is derived from the code classification and the two never disagree.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/XRequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "projectKey": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Project API key (vfk_...) sent as a Bearer token. Server-side only; it must never reach a browser."
+      }
+    },
+    "headers": {
+      "XRequestId": {
+        "description": "Correlation id; echoes the inbound request id when one was sent, otherwise server-generated.",
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "parameters": {
+      "CallId": {
+        "name": "callId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "pattern": "^vc_[A-Za-z0-9]{16}$",
+          "description": "Public call id: \"vc_\" followed by 16 alphanumeric characters."
+        }
+      },
+      "RequestId": {
+        "name": "X-Request-Id",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Optional caller correlation id, echoed on the response."
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": false,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Replay guard for POSTs: the same key with the same body returns the stored outcome; the same key with a different body is refused as IDEMPOTENCY_CONFLICT."
+      }
+    },
+    "schemas": {
+      "CreateCallRequest": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "personal",
+              "conference"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "translated"
+            ]
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Opaque partner-supplied JSON object, echoed back verbatim; serialized size is capped at 1024 bytes."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "mode"
+        ]
+      },
+      "CallResource": {
+        "type": "object",
+        "properties": {
+          "callId": {
+            "type": "string",
+            "pattern": "^vc_[A-Za-z0-9]{16}$",
+            "description": "Public call id: \"vc_\" followed by 16 alphanumeric characters."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "personal",
+              "conference"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "translated"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "UTC ISO-8601 timestamp."
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Opaque partner-supplied JSON object, echoed back verbatim; serialized size is capped at 1024 bytes."
+          },
+          "ended": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "callId",
+          "type",
+          "mode",
+          "createdAt"
+        ]
+      },
+      "CallState": {
+        "type": "object",
+        "properties": {
+          "callId": {
+            "type": "string",
+            "pattern": "^vc_[A-Za-z0-9]{16}$",
+            "description": "Public call id: \"vc_\" followed by 16 alphanumeric characters."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "personal",
+              "conference"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "translated"
+            ]
+          },
+          "participants": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "participantId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "subject": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "description": "Partner-supplied stable identity for the participant; opaque to Videofy."
+                },
+                "displayName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "speakLanguage": {
+                  "type": "string",
+                  "maxLength": 35,
+                  "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$",
+                  "description": "BCP-47 language tag (shape-checked; supported values come from GET /v1/capabilities)."
+                },
+                "hearLanguage": {
+                  "type": "string",
+                  "maxLength": 35,
+                  "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$",
+                  "description": "BCP-47 language tag (shape-checked; supported values come from GET /v1/capabilities)."
+                },
+                "connected": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "participantId",
+                "subject",
+                "displayName",
+                "speakLanguage",
+                "hearLanguage",
+                "connected"
+              ]
+            }
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "callId",
+          "type",
+          "mode",
+          "participants"
+        ]
+      },
+      "JoinTokenRequest": {
+        "type": "object",
+        "properties": {
+          "participant": {
+            "type": "object",
+            "properties": {
+              "subject": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": "Partner-supplied stable identity for the participant; opaque to Videofy."
+              },
+              "displayName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "speakLanguage": {
+                "type": "string",
+                "maxLength": 35,
+                "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$",
+                "description": "BCP-47 language tag (shape-checked; supported values come from GET /v1/capabilities)."
+              },
+              "hearLanguage": {
+                "type": "string",
+                "maxLength": 35,
+                "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$",
+                "description": "BCP-47 language tag (shape-checked; supported values come from GET /v1/capabilities)."
+              },
+              "audioMode": {
+                "type": "string",
+                "enum": [
+                  "translated",
+                  "interpretation",
+                  "original"
+                ],
+                "default": "translated"
+              },
+              "captionsEnabled": {
+                "type": "boolean",
+                "default": true
+              },
+              "voiceGender": {
+                "type": "string",
+                "enum": [
+                  "female",
+                  "male"
+                ],
+                "default": "female"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "subject",
+              "displayName",
+              "speakLanguage",
+              "hearLanguage"
+            ]
+          },
+          "expiresInSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 900,
+            "description": "Token lifetime in seconds; server default 300, hard maximum 900."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "participant"
+        ]
+      },
+      "JoinTokenResponse": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Opaque single-use credential; hand it to the client SDK unmodified."
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "UTC ISO-8601 timestamp."
+          },
+          "participant": {
+            "type": "object",
+            "properties": {
+              "subject": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "description": "Partner-supplied stable identity for the participant; opaque to Videofy."
+              },
+              "displayName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "speakLanguage": {
+                "type": "string",
+                "maxLength": 35,
+                "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$",
+                "description": "BCP-47 language tag (shape-checked; supported values come from GET /v1/capabilities)."
+              },
+              "hearLanguage": {
+                "type": "string",
+                "maxLength": 35,
+                "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$",
+                "description": "BCP-47 language tag (shape-checked; supported values come from GET /v1/capabilities)."
+              },
+              "audioMode": {
+                "type": "string",
+                "enum": [
+                  "translated",
+                  "interpretation",
+                  "original"
+                ]
+              },
+              "captionsEnabled": {
+                "type": "boolean"
+              },
+              "voiceGender": {
+                "type": "string",
+                "enum": [
+                  "female",
+                  "male"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "subject",
+              "displayName",
+              "speakLanguage",
+              "hearLanguage",
+              "audioMode",
+              "captionsEnabled",
+              "voiceGender"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "token",
+          "expiresAt",
+          "participant"
+        ]
+      },
+      "UpdateCallModeRequest": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "normal",
+              "translated"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "mode"
+        ]
+      },
+      "CapabilitiesResponse": {
+        "type": "object",
+        "properties": {
+          "languages": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 35,
+              "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$",
+              "description": "BCP-47 language tag (shape-checked; supported values come from GET /v1/capabilities)."
+            },
+            "minItems": 1
+          },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "personalParticipants": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              "conferenceParticipants": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "personalParticipants",
+              "conferenceParticipants"
+            ]
+          },
+          "features": {
+            "type": "object",
+            "properties": {
+              "personalCall": {
+                "type": "boolean"
+              },
+              "conference": {
+                "type": "boolean"
+              },
+              "video": {
+                "type": "boolean"
+              },
+              "translatedCalls": {
+                "type": "boolean"
+              },
+              "personalVoice": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "personalCall",
+              "conference",
+              "video",
+              "translatedCalls",
+              "personalVoice"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "languages",
+          "limits",
+          "features"
+        ]
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "AUTH_INVALID_KEY",
+                  "AUTH_INVALID_TOKEN",
+                  "AUTH_EXPIRED_TOKEN",
+                  "AUTH_TOKEN_USED",
+                  "FORBIDDEN_PROJECT",
+                  "FORBIDDEN_ORIGIN",
+                  "CALL_NOT_FOUND",
+                  "CALL_FULL",
+                  "CALL_ENDED",
+                  "SUBJECT_ALREADY_ACTIVE",
+                  "DISPLAY_NAME_TAKEN",
+                  "OWNER_REQUIRED",
+                  "INVALID_MODE",
+                  "INVALID_LANGUAGE",
+                  "INVALID_REQUEST",
+                  "MEDIA_PERMISSION_DENIED",
+                  "MEDIA_UNAVAILABLE",
+                  "CONNECTION_LOST",
+                  "TRANSLATION_UNAVAILABLE",
+                  "GENERATED_AUDIO_UNAVAILABLE",
+                  "UNSUPPORTED_CAPABILITY",
+                  "RATE_LIMITED",
+                  "IDEMPOTENCY_CONFLICT",
+                  "INTERNAL"
+                ]
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1
+              },
+              "requestId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "retryable": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "message",
+              "requestId",
+              "retryable"
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ]
+      }
+    }
+  }
+}

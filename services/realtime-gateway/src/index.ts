@@ -12,6 +12,8 @@ setLogLevel(config.logLevel);
 const app = createApp({
   diagnostics: () => gateway.getWebRtcDiagnostics(),
   internalToken: config.internalWebRtcToken,
+  // Lazy on purpose (same pattern as diagnostics): `gateway` is created below.
+  connectV1Router: () => gateway.getConnectV1Router(),
 });
 const server = createServer(app);
 const gateway = new Gateway(server, config.corsOrigins, {
@@ -33,6 +35,10 @@ const gateway = new Gateway(server, config.corsOrigins, {
   webRtcTranscriptionStagingDir: config.webRtcTranscriptionStagingDir,
   webRtcPartialCaptionIntervalMs: config.webRtcPartialCaptionIntervalMs,
   callTranscriptLogDir: config.callTranscriptLogDir,
+  connect: {
+    authSecret: config.connectAuthSecret,
+    projectsPath: config.connectProjectsPath,
+  },
 });
 
 server.listen(config.port, config.host, () => {

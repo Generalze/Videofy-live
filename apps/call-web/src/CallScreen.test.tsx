@@ -2,8 +2,8 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { CallScreen, type CallScreenProps } from './CallScreen';
-import type { CallCaptionEntry } from './callCaptions';
-import type { CallParticipantSummary } from './callTypes';
+import type { CallCaptionEntry } from '@videofy-live/call-client-core';
+import type { CallParticipantSummary } from '@videofy-live/call-client-core';
 
 /**
  * Behaviour contract for the call surface.

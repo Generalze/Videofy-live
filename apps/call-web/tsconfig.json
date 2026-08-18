@@ -10,6 +10,7 @@
     "rootDir": "../..",
     "outDir": "./dist",
     "paths": {
+      "@videofy-live/call-client-core": ["../../packages/call-client-core/src/index.ts"],
       "@videofy-live/shared-types": ["../../packages/shared-types/src/index.ts"]
     }
   },

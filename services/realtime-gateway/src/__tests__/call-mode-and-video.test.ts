@@ -236,12 +236,16 @@ describe('call:mode:set — owner authority', () => {
       callType: 'conference',
       callMode: 'translated',
       ownerParticipantId: 'participant_1',
+      // Review fix: the transcript policy now actually crosses the wire.
+      transcriptDownloadAllowed: true,
     });
     const [state] = roomEmissions(late, CALL_EVENTS.STATE);
     expect(state?.payload).toMatchObject({
       callType: 'conference',
       callMode: 'translated',
       ownerParticipantId: 'participant_1',
+      // Review fix: the transcript policy now actually crosses the wire.
+      transcriptDownloadAllowed: true,
     });
   });
 

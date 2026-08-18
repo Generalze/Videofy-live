@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { PreJoinScreen, type PreJoinScreenProps } from './PreJoinScreen';
 import { createInitialCallJoinForm } from './callFormState';
 import type { CallJoinFormState } from './callFormState';
-import type { CameraPreviewState } from './callCameraPreview';
+import type { CameraPreviewState } from '@videofy-live/call-client-core';
 
 /**
  * Behaviour contract for the pre-join surface.

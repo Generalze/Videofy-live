@@ -7,18 +7,18 @@ import {
   resolveCallAudioMix,
   resolveSpeakerAudioMixes,
   type GeneratedClipEligibility,
-} from './callAudioMix';
-import { CallGeneratedAudioQueueController, generatedClipId } from './callAudioQueue';
-import { CallRemoteSlotBinder, type CallReceiveTrackMapping } from './callRemoteSlots';
+} from '@videofy-live/call-client-core';
+import { CallGeneratedAudioQueueController, generatedClipId } from '@videofy-live/call-client-core';
+import { CallRemoteSlotBinder, type CallReceiveTrackMapping } from '@videofy-live/call-client-core';
 import {
   CallRemoteSpeakerAudioController,
   type RemoteSpeakerAudio,
-} from './callRemoteSpeakerAudio';
-import { createBrowserGeneratedAudioPlayer } from './callGeneratedAudioPlayer';
+} from '@videofy-live/call-client-core';
+import { createBrowserGeneratedAudioPlayer } from '@videofy-live/call-client-core';
 import {
   GeneratedAudioDiagnostics,
   generatedAudioDiagnosticsEnabled,
-} from './callGeneratedAudioDiagnostics';
+} from '@videofy-live/call-client-core';
 import { GeneratedAudioDiagnosticsPanel } from './GeneratedAudioDiagnosticsPanel';
 import {
   DEFAULT_CALL_CAPTURE_PROFILE,
@@ -26,7 +26,7 @@ import {
   createCallAudioConstraints,
   readCallCaptureSettings,
 } from './callCapture';
-import { mergeCallCaption, type CallCaptionEntry } from './callCaptions';
+import { mergeCallCaption, type CallCaptionEntry } from '@videofy-live/call-client-core';
 import {
   createInitialCallJoinForm,
   normalizeCallCode,
@@ -46,7 +46,7 @@ import {
   resumeSessionForCall,
   saveResumeSession,
   type ResumeStorageLike,
-} from './callResumeStorage';
+} from '@videofy-live/call-client-core';
 import {
   ackErrorMessage,
   buildCallCaptionLanguagePayload,
@@ -59,7 +59,7 @@ import {
   createCallSocketOptions,
   readGatewayUrl,
   readIngestUrl,
-} from './callSocketPayloads';
+} from '@videofy-live/call-client-core';
 import {
   CALL_EVENTS,
   CALL_REMOTE_SLOT_COUNT,
@@ -81,8 +81,8 @@ import {
   type CallSdpPayload,
   type CallStateSnapshot,
   type MicPermissionState,
-} from './callTypes';
-import { CallPeer, stopMediaStreamTracks } from './callWebRtc';
+} from '@videofy-live/call-client-core';
+import { CallPeer, readIceServers, stopMediaStreamTracks } from '@videofy-live/call-client-core';
 import { CallScreen, type CallConnectionPhase } from './CallScreen';
 import { HomeScreen, type CallType } from './HomeScreen';
 import { CreateJoinScreen, type CallJoinIntent } from './CreateJoinScreen';
@@ -91,15 +91,15 @@ import {
   defaultCameraMediaDevices,
   hdCameraVideoConstraints,
   type CameraPreviewState,
-} from './callCameraPreview';
+} from '@videofy-live/call-client-core';
 import {
   CallAudioOutputController,
   detectAudioOutputCapability,
   listAudioOutputs,
   type CallAudioOutputDevice,
-} from './callAudioOutput';
-import { CallLifecycleObserver, CallWakeLock, type CallLifecycleEvent } from './callLifecycle';
-import { CallVideoMesh } from './callVideoMesh';
+} from '@videofy-live/call-client-core';
+import { CallLifecycleObserver, CallWakeLock, type CallLifecycleEvent } from '@videofy-live/call-client-core';
+import { CallVideoMesh } from '@videofy-live/call-client-core';
 import { CallModeScreen } from './CallModeScreen';
 import { buildInviteLink, callCodeFromLocation } from './callInvite';
 import { PreJoinScreen } from './PreJoinScreen';
@@ -242,9 +242,9 @@ export default function App() {
     if (!enrollmentFlowRef.current) {
       enrollmentFlowRef.current = new VoiceEnrollmentFlow(
         new VoiceEnrollmentCapture(defaultCaptureEnvironment()),
-        createEnrollmentUploader(readIngestUrl()),
+        createEnrollmentUploader(readIngestUrl(import.meta.env['VITE_INGEST_URL'])),
         setEnrollmentState,
-        createEnrollmentInitializer(readIngestUrl()),
+        createEnrollmentInitializer(readIngestUrl(import.meta.env['VITE_INGEST_URL'])),
       );
     }
     return enrollmentFlowRef.current;
@@ -337,7 +337,7 @@ export default function App() {
       return;
     }
     setVoiceDeletionInProgress(true);
-    void createVoiceDeleter(readIngestUrl())
+    void createVoiceDeleter(readIngestUrl(import.meta.env['VITE_INGEST_URL']))
       .deleteAll(session.token)
       .then((result) => {
         if (!result.acknowledged) {
@@ -854,6 +854,7 @@ export default function App() {
     const publish = new CallPeer({
       direction: 'publish',
       stream: mic,
+      iceServers: readIceServers(import.meta.env['VITE_WEBRTC_ICE_SERVERS']),
       onConnectionStateChange: (state) => {
         peerStatesRef.current.publish = state;
       },
@@ -873,6 +874,7 @@ export default function App() {
 
     const receive = new CallPeer({
       direction: 'receive',
+      iceServers: readIceServers(import.meta.env['VITE_WEBRTC_ICE_SERVERS']),
       onConnectionStateChange: (state) => {
         peerStatesRef.current.receive = state;
       },
@@ -902,6 +904,7 @@ export default function App() {
       const mesh = new CallVideoMesh({
         callId: active.callId,
         selfParticipantId: active.participantId,
+        iceServers: readIceServers(import.meta.env['VITE_WEBRTC_ICE_SERVERS']),
         sendOffer: (payload) => socket.emit(CALL_EVENTS.VIDEO_OFFER, payload),
         sendAnswer: (payload) => socket.emit(CALL_EVENTS.VIDEO_ANSWER, payload),
         sendIce: (payload) => socket.emit(CALL_EVENTS.VIDEO_ICE, payload),
@@ -1010,7 +1013,10 @@ export default function App() {
   const ensureSocket = (): Socket => {
     const existing = socketRef.current;
     if (existing) return existing;
-    const socket = io(readGatewayUrl(), createCallSocketOptions());
+    const socket = io(
+      readGatewayUrl(import.meta.env['VITE_GATEWAY_URL']),
+      createCallSocketOptions(import.meta.env['VITE_SOCKET_TRANSPORT']),
+    );
     socketRef.current = socket;
 
     socket.on('connect', () => {

@@ -1,4 +1,4 @@
-import type { CallMode, CallType } from './callTypes';
+import type { CallMode, CallType } from '@videofy-live/call-client-core';
 
 /**
  * P6.4-W3.1/W5 — Call Mode selection.

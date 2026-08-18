@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { HomeScreen } from './HomeScreen';
 import { CreateJoinScreen } from './CreateJoinScreen';
 import { CallModeScreen } from './CallModeScreen';
-import type { CallType } from './callTypes';
+import type { CallType } from '@videofy-live/call-client-core';
 
 /**
  * P6.4 entry flow: choose the product, then create or join, then (creators

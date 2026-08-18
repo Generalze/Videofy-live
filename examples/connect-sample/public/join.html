@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Videofy Connect sample — join</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 2rem auto;
+        max-width: 56rem;
+        padding: 0 1rem;
+        line-height: 1.5;
+      }
+      fieldset { border: 1px solid #8884; border-radius: 8px; }
+      button { padding: 0.4rem 0.9rem; border-radius: 6px; border: 1px solid #8886; cursor: pointer; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      input, select { padding: 0.25rem 0.4rem; }
+      .muted { opacity: 0.7; }
+      .error { color: #c0392b; white-space: pre-wrap; }
+      .badge {
+        border: 1px solid #8886;
+        border-radius: 999px;
+        padding: 0.1rem 0.6rem;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      #enable-audio { font-weight: 700; }
+      #tiles { display: flex; flex-wrap: wrap; gap: 1rem; }
+      figure.tile { margin: 0; }
+      figure.tile video { width: 260px; aspect-ratio: 4 / 3; background: #0008; border-radius: 8px; }
+      figure.tile.faded { opacity: 0.5; }
+      figcaption { max-width: 260px; font-size: 0.9rem; }
+      #captions { min-height: 3rem; }
+      #captions .muted { font-style: italic; }
+    </style>
+    <script type="importmap">
+      { "imports": { "socket.io-client": "/vendor/socket.io-client/socket.io.esm.min.js" } }
+    </script>
+  </head>
+  <body>
+    <h1>Videofy Connect sample — join</h1>
+
+    <form id="join-form">
+      <fieldset>
+        <legend>Join a video chat</legend>
+        <p><label>Id <input id="vc-id" required placeholder="vc_..." size="24" /></label></p>
+        <p><label>Your name <input id="display-name" required maxlength="80" /></label></p>
+        <p>
+          <label>Your user id (subject) <input id="subject" maxlength="128" /></label>
+          <span class="muted">the partner-side identity; keep the random guest id if unsure</span>
+        </p>
+        <p>
+          <label>I speak <select id="speak"></select></label>
+          <label>I want to hear <select id="hear"></select></label>
+        </p>
+        <p>
+          <label><input type="checkbox" id="with-mic" checked /> microphone</label>
+          <label><input type="checkbox" id="with-camera" /> camera</label>
+        </p>
+        <button type="submit" id="join-button">Join</button>
+      </fieldset>
+    </form>
+
+    <section id="in-room" hidden>
+      <p>
+        <strong id="room-title"></strong>
+        <span id="connection" class="badge"></span>
+      </p>
+      <p>
+        <button id="enable-audio" type="button" hidden>Enable audio</button>
+        <button id="mic-toggle" type="button"></button>
+        <button id="camera-toggle" type="button"></button>
+        <label>
+          Cross-language voices:
+          <select id="audio-mode">
+            <option value="translated">translated voice</option>
+            <option value="interpretation">interpretation (original lowered)</option>
+            <option value="original">original voice</option>
+          </select>
+        </label>
+        <button id="leave" type="button">Leave</button>
+      </p>
+      <div id="tiles"></div>
+      <h3>Captions</h3>
+      <ol id="captions"></ol>
+    </section>
+
+    <p id="notice"></p>
+    <p id="error" class="error" role="alert"></p>
+
+    <script type="module">
+      import { createVideofyClient } from '/vendor/videofy-connect/index.js';
+
+      const byId = (id) => document.getElementById(id);
+      const errorLine = byId('error');
+      const noticeLine = byId('notice');
+
+      const query = new URLSearchParams(location.search);
+      if (query.get('vc')) byId('vc-id').value = query.get('vc');
+      byId('subject').value = 'guest-' + Math.random().toString(36).slice(2, 8);
+
+      async function api(path, options) {
+        const response = await fetch(path, options);
+        const body = await response.json().catch(() => null);
+        if (!response.ok) {
+          const reason =
+            body && body.error
+              ? body.error.code + ' - ' + body.error.message
+              : 'HTTP ' + response.status;
+          throw new Error(reason);
+        }
+        return body;
+      }
+
+      function reportFailure(error) {
+        const code = error && error.code ? error.code + ' - ' : '';
+        errorLine.textContent = code + String(error && error.message ? error.message : error);
+      }
+
+      // Today's supported languages, used only if /api/capabilities is unreachable.
+      const FALLBACK_LANGUAGES = ['en', 'es', 'fr'];
+      async function fillLanguages() {
+        let languages = FALLBACK_LANGUAGES;
+        try {
+          const capabilities = await api('/api/capabilities');
+          if (Array.isArray(capabilities.languages) && capabilities.languages.length > 0) {
+            languages = capabilities.languages;
+          }
+        } catch {
+          /* keep the fallback list */
+        }
+        for (const select of [byId('speak'), byId('hear')]) {
+          select.textContent = '';
+          for (const tag of languages) {
+            const option = document.createElement('option');
+            option.value = tag;
+            option.textContent = tag;
+            select.append(option);
+          }
+        }
+        byId('hear').value = languages.includes('en') ? 'en' : languages[0];
+      }
+      void fillLanguages();
+
+      let activeCall = null;
+      let micOn = true;
+      let cameraOn = false;
+      const tileByParticipant = new Map();
+
+      byId('join-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        errorLine.textContent = '';
+        noticeLine.textContent = '';
+        byId('join-button').disabled = true;
+        try {
+          // 1. OUR server mints a single-use token (it holds the project key).
+          const minted = await api(
+            '/api/calls/' + encodeURIComponent(byId('vc-id').value.trim()) + '/join-tokens',
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                subject: byId('subject').value.trim(),
+                displayName: byId('display-name').value.trim(),
+                speakLanguage: byId('speak').value,
+                hearLanguage: byId('hear').value,
+              }),
+            },
+          );
+          // 2. The browser SDK spends the token against the Videofy gateway.
+          const { videofyUrl } = await api('/api/config');
+          const client = createVideofyClient({ baseUrl: videofyUrl });
+          micOn = byId('with-mic').checked;
+          cameraOn = byId('with-camera').checked;
+          activeCall = await client.join({
+            token: minted.token,
+            media: { microphone: micOn, camera: cameraOn },
+          });
+          enterRoom();
+        } catch (error) {
+          reportFailure(error);
+          byId('join-button').disabled = false;
+        }
+      });
+
+      function enterRoom() {
+        byId('join-form').hidden = true;
+        byId('in-room').hidden = false;
+        activeCall.on('state', renderSnapshot);
+        activeCall.on('audioBlocked', () => {
+          byId('enable-audio').hidden = false;
+        });
+        activeCall.on('needsNewJoinToken', () => {
+          leaveRoom(
+            'That token is spent (they are single-use) or the seat is gone — mint a fresh one by joining again.',
+          );
+        });
+        activeCall.on('connectionChanged', (change) => {
+          if (change.connection === 'ended') leaveRoom('This video chat has ended.');
+        });
+        activeCall.on('error', (failure) => {
+          errorLine.textContent =
+            failure.code + ' - ' + failure.message + (failure.retryable ? ' (may recover)' : '');
+        });
+        renderSnapshot(activeCall.getSnapshot());
+        renderControls();
+      }
+
+      function leaveRoom(message) {
+        if (activeCall !== null) {
+          const finished = activeCall;
+          activeCall = null;
+          try {
+            finished.leave();
+          } catch {
+            /* seat already gone */
+          }
+          finished.dispose();
+        }
+        for (const tile of tileByParticipant.values()) tile.remove();
+        tileByParticipant.clear();
+        byId('in-room').hidden = true;
+        byId('join-form').hidden = false;
+        byId('join-button').disabled = false;
+        byId('enable-audio').hidden = true;
+        if (message) noticeLine.textContent = message;
+      }
+
+      function renderControls() {
+        byId('mic-toggle').textContent = micOn ? 'Mute mic' : 'Unmute mic';
+        byId('camera-toggle').textContent = cameraOn ? 'Stop camera' : 'Start camera';
+      }
+
+      function renderSnapshot(snapshot) {
+        byId('room-title').textContent =
+          snapshot.call.id + ' — ' + snapshot.call.type + ' / ' + snapshot.call.mode;
+        byId('connection').textContent = snapshot.connection;
+        byId('audio-mode').value = snapshot.self.audioMode;
+
+        const seen = new Set();
+        upsertTile(snapshot.self.participantId, {
+          name: snapshot.self.displayName + ' (you)',
+          detail: 'speaks ' + snapshot.self.speakLanguage + ', hears ' + snapshot.self.hearLanguage,
+          faded: false,
+        });
+        seen.add(snapshot.self.participantId);
+        for (const person of snapshot.participants) {
+          upsertTile(person.participantId, {
+            name: person.displayName,
+            detail:
+              'speaks ' + person.speakLanguage + ' — you hear the ' + person.deliveryState +
+              ' voice' + (person.connected ? '' : ' — reconnecting'),
+            faded: !person.connected,
+          });
+          seen.add(person.participantId);
+        }
+        for (const [participantId, tile] of tileByParticipant) {
+          if (!seen.has(participantId)) {
+            if (activeCall !== null) activeCall.detachVideo(participantId);
+            tile.remove();
+            tileByParticipant.delete(participantId);
+          }
+        }
+        renderCaptions(snapshot.captions);
+      }
+
+      function upsertTile(participantId, info) {
+        let tile = tileByParticipant.get(participantId);
+        if (tile === undefined) {
+          tile = document.createElement('figure');
+          tile.className = 'tile';
+          const video = document.createElement('video');
+          video.autoplay = true;
+          video.playsInline = true;
+          // Voices travel through the SDK's own audio pipeline; tiles render video only.
+          video.muted = true;
+          const label = document.createElement('figcaption');
+          tile.append(video, label);
+          byId('tiles').append(tile);
+          tileByParticipant.set(participantId, tile);
+          if (activeCall !== null) activeCall.attachVideo(participantId, video);
+        }
+        tile.querySelector('figcaption').textContent = info.name + ' — ' + info.detail;
+        tile.classList.toggle('faded', info.faded);
+      }
+
+      function renderCaptions(entries) {
+        const list = byId('captions');
+        list.textContent = '';
+        for (const entry of entries.slice(-8)) {
+          const item = document.createElement('li');
+          item.textContent = entry.displayName + ' [' + entry.language + '] ' + entry.text;
+          if (!entry.final) item.className = 'muted';
+          list.append(item);
+        }
+      }
+
+      byId('enable-audio').addEventListener('click', async () => {
+        if (activeCall === null) return;
+        try {
+          // Inside the click gesture, as the SDK requires: unlocks both the
+          // translated voices and the originals in one go.
+          await activeCall.enableAudio();
+          byId('enable-audio').hidden = true;
+        } catch (error) {
+          reportFailure(error);
+        }
+      });
+
+      byId('mic-toggle').addEventListener('click', async () => {
+        if (activeCall === null) return;
+        try {
+          await activeCall.setMicrophone(!micOn);
+          micOn = !micOn;
+          renderControls();
+        } catch (error) {
+          reportFailure(error);
+        }
+      });
+
+      byId('camera-toggle').addEventListener('click', async () => {
+        if (activeCall === null) return;
+        try {
+          await activeCall.setCamera(!cameraOn);
+          cameraOn = !cameraOn;
+          renderControls();
+        } catch (error) {
+          reportFailure(error);
+        }
+      });
+
+      byId('audio-mode').addEventListener('change', () => {
+        if (activeCall !== null) activeCall.setAudioMode(byId('audio-mode').value);
+      });
+
+      byId('leave').addEventListener('click', () => leaveRoom('You left.'));
+    </script>
+  </body>
+</html>

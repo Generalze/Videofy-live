@@ -5,13 +5,36 @@ import {
   type CallCaptionSourceEvent,
   type CallGeneratedAudioSourceEvent,
   type CallIngestPlan,
-  type CallJoinFailure,
   type CallJoinInput,
-  type CallLanguage,
+  type CallJoinResult,
   type CallMode,
+  type CallModeChangeResult,
+  type CallPreregisterInput,
+  type CallPreregisterResult,
   type CallSnapshot,
   type CallType,
 } from '@videofy-live/call-session';
+import {
+  CALL_EVENTS,
+  CallAudioModePayloadSchema,
+  CallBoundPayloadSchema,
+  CallCaptionLanguagePayloadSchema,
+  CallCaptureSettingsPayloadSchema,
+  CallIcePayloadSchema,
+  CallJoinPayloadSchema,
+  CallPlaybackPayloadSchema,
+  CallSdpPayloadSchema,
+  CallSetModePayloadSchema,
+  CallTranscriptPolicyPayloadSchema,
+  CallVideoIcePayloadSchema,
+  CallVideoSdpPayloadSchema,
+  type CallJoinAck,
+  type CallSdpAck,
+  type CallSetModeAck,
+  type CallStateWirePayload,
+  type CallVideoIcePayload,
+  type CallVideoSdpPayload,
+} from '@videofy-live/call-wire';
 import type {
   GeneratedAudioReadyEvent,
   MediaStateEvent,
@@ -25,7 +48,6 @@ import type {
 } from '@videofy-live/shared-types';
 import {
   WEBRTC_BACKEND_MEDIA_PEER_ID,
-  WEBRTC_SIGNALLING_LIMITS,
   WEBRTC_SIGNALLING_PROTOCOL_VERSION,
 } from '@videofy-live/shared-types';
 import type { WebRtcAudioDataLike } from './webrtc-audio-ingest-bridge.js';
@@ -61,51 +83,24 @@ import { logger } from './logger.js';
 /** Media-ingest processing-session ids for calls always carry this prefix. */
 export const CALL_INGEST_SESSION_PREFIX = 'call_';
 
-export const CALL_EVENTS = {
-  JOIN: 'call:join',
-  LEAVE: 'call:leave',
-  PUBLISH_OFFER: 'call:publish:offer',
-  PUBLISH_ICE: 'call:publish:ice',
-  RECEIVE_OFFER: 'call:receive:offer',
-  RECEIVE_ICE: 'call:receive:ice',
-  /**
-   * P6.4-W2: which remote speaker each of this listener's receive slots is
-   * carrying. Sent to the one listener it describes, never broadcast — a
-   * call-wide mapping would hand everybody a map of everyone else's transport
-   * state for no reason.
-   */
-  RECEIVE_TRACKS: 'call:receive:tracks',
-  SET_CAPTION_LANGUAGE: 'call:caption-language',
-  /**
-   * W1: the capture settings the browser actually granted. A preference asked
-   * for is not a fact; this is the fact, and every acoustic measurement taken
-   * later has to be read against it.
-   */
-  CAPTURE_SETTINGS: 'call:capture-settings',
-  /**
-   * W4: a participant's own loudspeaker started or stopped being audible.
-   *
-   * Reported by the client because only the client knows when its audio element
-   * really began, and aggregated HERE because the consequence belongs to a
-   * DIFFERENT participant's microphone — which is precisely the thing a
-   * client-local "am I playing audio" signal cannot see (NG6).
-   */
-  PLAYBACK: 'call:playback',
-  STATE: 'call:state',
-  CAPTION: 'call:caption',
-  GENERATED_AUDIO: 'call:generated-audio',
-  ERROR: 'call:error',
-  /** W5: call-global mode change; owner authority only. */
-  SET_MODE: 'call:mode:set',
-  /** W5.1: a listener's own mid-call Audio Mode change; planning reacts immediately. */
-  SET_AUDIO_MODE: 'call:audio-mode:set',
-  /** Owner-only transcript-download policy for the whole call. */
-  SET_TRANSCRIPT_POLICY: 'call:transcript-policy:set',
-  /** V1: P2P video mesh signalling, relayed peer-to-peer by the gateway. */
-  VIDEO_OFFER: 'call:video:offer',
-  VIDEO_ANSWER: 'call:video:answer',
-  VIDEO_ICE: 'call:video:ice',
-} as const;
+/**
+ * P6.5: the `call:*` wire contract — event names (byte-identical to the
+ * values that were defined here), the zod payload schemas that replaced this
+ * file's hand-rolled checks, and the server->client payload/ack types — lives
+ * in @videofy-live/call-wire. Re-exported so the existing import surface of
+ * this module (gateway, tests) stays stable.
+ */
+export { CALL_EVENTS } from '@videofy-live/call-wire';
+export type {
+  CallEventName,
+  CallJoinAck,
+  CallSdpAck,
+  CallSetModeAck,
+  CallSetModePayload,
+  CallStateWirePayload,
+  CallVideoIcePayload,
+  CallVideoSdpPayload,
+} from '@videofy-live/call-wire';
 
 /** Socket.IO handshake query role used by apps/call-web. */
 export const CALL_PARTICIPANT_ROLE = 'call-participant';
@@ -128,6 +123,66 @@ export interface CallSocketLike {
   leave(room: string): void | Promise<void>;
   emit(event: string, payload: unknown): void;
   on(event: string, handler: (...args: never[]) => void): void;
+  /**
+   * P6.5: present on real Socket.IO sockets. The handshake Origin header is
+   * what connect-join authorization compares against a project's
+   * allowedOrigins (R7) — absent (non-browser client, bare test socket) reads
+   * as "no origin", which passes only under explicit allowOriginless.
+   */
+  handshake?: { headers?: Record<string, string | string[] | undefined> };
+}
+
+/**
+ * P6.5 (FE2): internal call ids minted for Videofy Connect calls carry this
+ * prefix. A raw `call:join` naming one WITHOUT a valid connectToken is refused
+ * structurally, regardless of whether the call exists (R12) — with one carve
+ * -out: a resume attempt (resumeParticipantId + resumeToken) passes through to
+ * the store, whose private resume token is the credential that authorized the
+ * original connect join's seat. Case-insensitive so lookalike ids cannot be
+ * created natively either.
+ */
+const CONNECT_INTERNAL_CALL_ID_PATTERN = /^connect_/i;
+
+/**
+ * The connect-join authority the gateway injects (implemented by
+ * connect-control's ConnectJoinGate). `authorizeJoin` MUST be fully
+ * synchronous: it performs the single-use jti check-and-claim, and R6 requires
+ * that claim to land before the join path's first await so two joins racing on
+ * the event loop resolve to exactly one winner. Once it has claimed, the token
+ * is burned even when a later step refuses the join.
+ */
+export interface CallConnectJoinGrant {
+  internalCallId: string;
+  subject: string;
+  displayName: string;
+  speakLanguage: string;
+  hearLanguage: string;
+  audioMode: 'translated' | 'interpretation' | 'original';
+  captionsEnabled: boolean;
+  voiceGender: 'male' | 'female';
+  /** Registry values, injected (strip-and-rederive); the preregistered call is authoritative anyway. */
+  callType: CallType;
+  callMode: CallMode;
+}
+
+export type CallConnectJoinDecision =
+  | { ok: true; grant: CallConnectJoinGrant }
+  | { ok: false; code: string; message: string };
+
+export interface CallConnectJoinAuthority {
+  authorizeJoin(connectToken: string, origin: string | null): CallConnectJoinDecision;
+}
+
+/**
+ * Connect-join refusals ride the ordinary join-ack envelope with the Connect
+ * error vocabulary (AUTH_INVALID_TOKEN, AUTH_TOKEN_USED, FORBIDDEN_ORIGIN,
+ * SUBJECT_ALREADY_ACTIVE, ...). The wire contract documents the failure-code
+ * set as open — clients treat unknown codes as failures, never as crashes.
+ */
+export interface CallConnectJoinRefusalAck {
+  ok: false;
+  code: string;
+  error: string;
 }
 
 export interface CallMediaPeerHandlers {
@@ -226,6 +281,13 @@ export interface CallRuntimeDependencies {
   playbackLedger?: CallPlaybackLedger;
   /** W5A. Observation only — it has no consumer, by design. */
   acousticObserver?: CallAcousticRoomObserver;
+  /**
+   * P6.5: the connect-join authority (jti claim + verify + project/origin/
+   * live-registry checks), injected by the gateway. Omitted, every join
+   * carrying a connectToken is refused — the correct failure direction for a
+   * gateway without Connect configured.
+   */
+  connectAuthority?: CallConnectJoinAuthority;
 }
 
 /**
@@ -265,90 +327,6 @@ interface CallStatsAccumulator {
   evictedChunkCount: number;
   skippedFrameCount: number;
   submissionFailureCount: number;
-}
-
-/** Wire shape of `call:state` per the design note: sanitized, `joined` flag, no internals. */
-export interface CallStateWirePayload {
-  callId: string;
-  state: string;
-  /** W5: which product this call is. */
-  callType: CallType;
-  /** W5: the authoritative call-global mode. */
-  callMode: CallMode;
-  /** W5: the one participant allowed to change callMode. */
-  ownerParticipantId: string;
-  participants: {
-    participantId: string;
-    displayName: string;
-    speakLanguage: CallLanguage;
-    hearLanguage: CallLanguage;
-    joined: boolean;
-  }[];
-}
-
-/** W5: owner-only call-global mode change (client mirror in callTypes.ts). */
-export interface CallSetModePayload {
-  callId: string;
-  participantId: string;
-  mode: CallMode;
-}
-
-export type CallSetModeAck =
-  | { ok: true; state: CallStateWirePayload }
-  | {
-      ok: false;
-      error: 'not-owner' | 'unknown-call' | 'unknown-participant' | 'invalid-mode';
-    };
-
-/**
- * V1 video mesh signalling (client mirror in callTypes.ts). Relay-only: the
- * gateway validates the sender's binding and that the target is a current
- * participant of the SAME call, then forwards to the target's private room.
- * Video never touches STT/media-ingest.
- */
-export interface CallVideoSdpPayload {
-  callId: string;
-  participantId: string;
-  targetParticipantId: string;
-  sdp: string;
-}
-
-export interface CallVideoIcePayload {
-  callId: string;
-  participantId: string;
-  targetParticipantId: string;
-  /** Structural RTCIceCandidateInit; null is the end-of-candidates marker. */
-  candidate: {
-    candidate: string;
-    sdpMid?: string | null;
-    sdpMLineIndex?: number | null;
-    usernameFragment?: string | null;
-  } | null;
-}
-
-export type CallJoinAck =
-  | {
-      ok: true;
-      participantId: string;
-      resumeToken: string;
-      snapshot: CallStateWirePayload;
-      /**
-       * Present only when a session token was offered and did not verify. The
-       * join itself succeeded — an expired sign-in must not stop somebody
-       * joining a conversation — and the call will use a standard voice.
-       *
-       * A bare flag on purpose. Naming the account, the reason or the expiry
-       * would hand a prober precisely what the single rejection path withholds.
-       */
-      voiceIdentityRejected?: true;
-    }
-  /** `code` is machine-readable; `error` stays the human-facing string. */
-  | { ok: false; code: CallJoinFailure['code']; error: string };
-
-export interface CallSdpAck {
-  ok: boolean;
-  sdp?: string;
-  error?: string;
 }
 
 interface CallSocketBinding {
@@ -426,6 +404,7 @@ export class CallRuntime {
   private readonly receivePeers: CallReceivePeersLike;
   private readonly disconnectGraceMs: number;
   private readonly verifyVoiceIdentity: ((sessionToken: string) => string | null) | undefined;
+  private readonly connectAuthority: CallConnectJoinAuthority | undefined;
   private readonly setTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   private readonly clearTimer: (timer: ReturnType<typeof setTimeout>) => void;
   private readonly transcriptLog: CallTranscriptLog;
@@ -470,6 +449,7 @@ export class CallRuntime {
     this.transcriptLog = dependencies.transcriptLog ?? new CallTranscriptLog(null);
     this.now = dependencies.now ?? (() => Date.now());
     this.verifyVoiceIdentity = dependencies.verifyVoiceIdentity;
+    this.connectAuthority = dependencies.connectAuthority;
     this.playbackLedger = dependencies.playbackLedger ?? new CallPlaybackLedger({ nowMs: this.now });
     this.acousticObserver =
       dependencies.acousticObserver ??
@@ -564,10 +544,11 @@ export class CallRuntime {
   ): Promise<{ ok: boolean; error?: string }> {
     const binding = this.requireBinding(socket, raw);
     if (!binding) return { ok: false, error: USER_FACING_ERRORS.notInCall };
-    const language = (raw as { hearLanguage?: unknown }).hearLanguage;
-    if (typeof language !== 'string') {
+    const parsed = CallCaptionLanguagePayloadSchema.safeParse(raw);
+    if (!parsed.success) {
       return { ok: false, error: 'Choose a language to read captions in.' };
     }
+    const language = parsed.data.hearLanguage;
 
     const result = this.store.setCaptionLanguage(binding.callId, binding.participantId, language);
     if (!result.ok) {
@@ -601,14 +582,14 @@ export class CallRuntime {
   ): { ok: boolean; error?: string } {
     const binding = this.requireBinding(socket, raw);
     if (!binding) return { ok: false, error: USER_FACING_ERRORS.notInCall };
-    const allowed = (raw as { allowed?: unknown }).allowed;
-    if (typeof allowed !== 'boolean') {
+    const parsed = CallTranscriptPolicyPayloadSchema.safeParse(raw);
+    if (!parsed.success) {
       return { ok: false, error: 'Choose whether the transcript can be downloaded.' };
     }
     const result = this.store.setTranscriptDownloadAllowed(
       binding.callId,
       binding.participantId,
-      allowed,
+      parsed.data.allowed,
     );
     if (!result.ok) {
       return {
@@ -641,10 +622,13 @@ export class CallRuntime {
   ): Promise<{ ok: boolean; error?: string }> {
     const binding = this.requireBinding(socket, raw);
     if (!binding) return { ok: false, error: USER_FACING_ERRORS.notInCall };
-    const audioMode = (raw as { audioMode?: unknown }).audioMode;
-    if (typeof audioMode !== 'string') {
+    // The schema is any-string on purpose: the store owns the vocabulary and
+    // answers 'invalid-audio-mode' with its own ack wording.
+    const parsed = CallAudioModePayloadSchema.safeParse(raw);
+    if (!parsed.success) {
       return { ok: false, error: 'Choose how you hear the call.' };
     }
+    const audioMode = parsed.data.audioMode;
     const result = this.store.setAudioMode(
       binding.callId,
       binding.participantId,
@@ -682,10 +666,11 @@ export class CallRuntime {
   async handleSetCallMode(socket: CallSocketLike, raw: unknown): Promise<CallSetModeAck> {
     const binding = this.requireBinding(socket, raw);
     if (!binding) return { ok: false, error: 'unknown-participant' };
-    const mode = (raw as { mode?: unknown }).mode;
-    if (mode !== 'normal' && mode !== 'translated') {
+    const parsed = CallSetModePayloadSchema.safeParse(raw);
+    if (!parsed.success) {
       return { ok: false, error: 'invalid-mode' };
     }
+    const mode = parsed.data.mode;
 
     const result = this.store.setCallMode(binding.callId, binding.participantId, mode);
     if (!result.ok) return { ok: false, error: result.reason };
@@ -709,21 +694,66 @@ export class CallRuntime {
     return { ok: true, state };
   }
 
-  async handleJoin(socket: CallSocketLike, raw: unknown): Promise<CallJoinAck> {
-    if (!raw || typeof raw !== 'object') {
+  async handleJoin(
+    socket: CallSocketLike,
+    raw: unknown,
+  ): Promise<CallJoinAck | CallConnectJoinRefusalAck> {
+    // Object-ness is the only schema-level check on join, by contract: the
+    // store is the single validation/auth authority for join and resume
+    // (including resumeToken checks), and its specific rejection wording is
+    // part of the ack contract. The raw payload is never logged because it
+    // carries the private resume token and may carry a session token or a
+    // connect token.
+    const parsedJoin = CallJoinPayloadSchema.safeParse(raw);
+    if (!parsedJoin.success) {
       return { ok: false, code: 'invalid-input', error: USER_FACING_ERRORS.join };
     }
-    // The store is the single validation/auth authority for join and resume
-    // (including resumeToken checks); the raw payload is never logged because
-    // it carries the private resume token and may carry a session token.
-    //
     // Voice ownership is the one thing the store must NOT take from the wire.
     // `voiceOwnerId` is stripped from the client payload unconditionally and
     // re-supplied only from a verified signature, so a caller naming somebody
     // else's account gets exactly what a caller naming nobody gets.
-    const { voiceOwnerId: _discarded, sessionToken, ...clientInput } = raw as CallJoinInput & {
+    // `connectToken` is stripped the same way and handled below (P6.5): the
+    // token itself goes no further than this boundary — never into the store,
+    // the plans, or any log line.
+    const {
+      voiceOwnerId: _discarded,
+      // `subject` is the THIRD wire-influential identity field this boundary
+      // strips (review finding): it is partner-supplied through a verified
+      // connect token ONLY — a native client stating one would broadcast a
+      // forged partner identity to the whole room via call:state.
+      subject: _discardedSubject,
+      sessionToken,
+      connectToken,
+      ...clientInput
+    } = parsedJoin.data as unknown as CallJoinInput & {
       sessionToken?: unknown;
+      connectToken?: unknown;
     };
+
+    // P6.5 Connect join: a partner-minted single-use token replaces every
+    // client-stated identity and preference. Handled on this same synchronous
+    // stack — the jti claim inside must land before the first await (R6).
+    if (typeof connectToken === 'string' && connectToken.length > 0) {
+      return this.handleConnectJoin(socket, connectToken, sessionToken);
+    }
+
+    // R12 prefix rule: a tokenless join may never name a connect_* call id,
+    // whether or not such a call exists — existence must not be probeable.
+    // The one carve-out is a resume attempt, whose credential is the private
+    // resumeToken issued to the seat's original (token-bearing) join; the
+    // store verifies it and answers all failures identically.
+    const requestedCallId = (clientInput as { callId?: unknown }).callId;
+    const isResumeAttempt =
+      typeof (clientInput as { resumeParticipantId?: unknown }).resumeParticipantId === 'string' &&
+      typeof (clientInput as { resumeToken?: unknown }).resumeToken === 'string';
+    if (
+      typeof requestedCallId === 'string' &&
+      CONNECT_INTERNAL_CALL_ID_PATTERN.test(requestedCallId) &&
+      !isResumeAttempt
+    ) {
+      return { ok: false, code: 'invalid-input', error: USER_FACING_ERRORS.join };
+    }
+
     const verifiedOwnerId =
       typeof sessionToken === 'string' && sessionToken.length > 0
         ? (this.verifyVoiceIdentity?.(sessionToken) ?? null)
@@ -745,7 +775,95 @@ export class CallRuntime {
     if (!result.ok) {
       return { ok: false, code: result.code, error: result.message };
     }
-    const callId = (raw as { callId: string }).callId;
+    return this.completeJoin(socket, (raw as { callId: string }).callId, result, voiceIdentityRejected);
+  }
+
+  /**
+   * P6.5 — a join carrying a partner-minted connect token (FE2).
+   *
+   * SYNCHRONOUS from entry to seat creation: the authority's `authorizeJoin`
+   * performs the single-use jti check-and-claim, so it must run — and the
+   * store join after it must run — before this method's first await (R6; the
+   * race is two joins on the event loop, and the sync prefix of an async
+   * function is what makes first-claim-wins atomic). After the claim the
+   * token is BURNED whatever happens: origin refusals, subject conflicts and
+   * store refusals all cost the token, and the partner re-mints.
+   *
+   * Strip-and-rederive, like voiceOwnerId: every identity and preference the
+   * store hears comes from the verified token and the project registry. The
+   * client's own callId/callType/callMode/displayName/... are ignored
+   * entirely, so a tampered payload changes nothing.
+   */
+  private async handleConnectJoin(
+    socket: CallSocketLike,
+    connectToken: string,
+    sessionToken: unknown,
+  ): Promise<CallJoinAck | CallConnectJoinRefusalAck> {
+    // R12: no personal voice through Connect v1 — the two credentials
+    // together are refused. Deliberately BEFORE the jti claim, so a partner
+    // integration mistake does not cost the token.
+    if (typeof sessionToken === 'string' && sessionToken.length > 0) {
+      return {
+        ok: false,
+        code: 'INVALID_REQUEST',
+        error: 'A connect join must not carry an account session token.',
+      };
+    }
+    if (!this.connectAuthority) {
+      // A gateway without Connect configured refuses like a bad token: the
+      // partner-facing truth is "this token does not work here".
+      return { ok: false, code: 'AUTH_INVALID_TOKEN', error: 'This join token is not valid.' };
+    }
+    const decision = this.connectAuthority.authorizeJoin(
+      connectToken,
+      callSocketOrigin(socket),
+    );
+    if (!decision.ok) {
+      return { ok: false, code: decision.code, error: decision.message };
+    }
+    const grant = decision.grant;
+    // R8: one CONNECTED participant per subject per call. Disconnected-in-
+    // grace seats do not block — that is the recovery path; the old seat
+    // reaps normally. Checked before the store join; the jti is already
+    // burned by design.
+    if (this.store.hasConnectedSubject(grant.internalCallId, grant.subject)) {
+      return {
+        ok: false,
+        code: 'SUBJECT_ALREADY_ACTIVE',
+        error: 'This participant is already connected to the call.',
+      };
+    }
+    const result = this.store.createOrJoin({
+      callId: grant.internalCallId,
+      displayName: grant.displayName,
+      speakLanguage: grant.speakLanguage as CallJoinInput['speakLanguage'],
+      hearLanguage: grant.hearLanguage as CallJoinInput['hearLanguage'],
+      captionsEnabled: grant.captionsEnabled,
+      voiceGender: grant.voiceGender,
+      audioMode: grant.audioMode,
+      callType: grant.callType,
+      callMode: grant.callMode,
+      subject: grant.subject,
+      // Nobody, said explicitly — Connect v1 carries no personal voice (R12).
+      voiceOwnerId: null,
+    });
+    if (!result.ok) {
+      return { ok: false, code: result.code, error: result.message };
+    }
+    return this.completeJoin(socket, grant.internalCallId, result, false);
+  }
+
+  /**
+   * Transport bookkeeping shared by native and connect joins, verbatim from
+   * the pre-P6.5 join path: bindings, rooms, STATE broadcast, transcript
+   * record, ingest plans, and the private ack.
+   */
+  private async completeJoin(
+    socket: CallSocketLike,
+    callId: string,
+    result: CallJoinResult,
+    voiceIdentityRejected: boolean,
+  ): Promise<CallJoinAck> {
     const participantId = result.participantId;
 
     const previous = this.socketBindings.get(socket.id);
@@ -848,8 +966,9 @@ export class CallRuntime {
   async handlePublishOffer(socket: CallSocketLike, raw: unknown): Promise<CallSdpAck> {
     const binding = this.requireBinding(socket, raw);
     if (!binding) return { ok: false, error: USER_FACING_ERRORS.notInCall };
-    const sdp = readSdp(raw);
-    if (!sdp) return { ok: false, error: USER_FACING_ERRORS.publish };
+    const parsedOffer = CallSdpPayloadSchema.safeParse(raw);
+    if (!parsedOffer.success) return { ok: false, error: USER_FACING_ERRORS.publish };
+    const sdp = parsedOffer.data.sdp;
     const { callId, participantId } = binding;
     const state = this.participants.get(participantKey(callId, participantId));
     if (!state) return { ok: false, error: USER_FACING_ERRORS.notInCall };
@@ -893,8 +1012,9 @@ export class CallRuntime {
   async handlePublishIce(socket: CallSocketLike, raw: unknown): Promise<void> {
     const binding = this.requireBinding(socket, raw);
     if (!binding) return;
-    const candidate = readCandidate(raw);
-    if (!candidate) return;
+    const parsedIce = CallIcePayloadSchema.safeParse(raw);
+    if (!parsedIce.success) return;
+    const candidate = parsedIce.data.candidate;
     const { callId, participantId } = binding;
     const state = this.participants.get(participantKey(callId, participantId));
     if (!state) return;
@@ -932,8 +1052,9 @@ export class CallRuntime {
   async handleReceiveOffer(socket: CallSocketLike, raw: unknown): Promise<CallSdpAck> {
     const binding = this.requireBinding(socket, raw);
     if (!binding) return { ok: false, error: USER_FACING_ERRORS.notInCall };
-    const sdp = readSdp(raw);
-    if (!sdp) return { ok: false, error: USER_FACING_ERRORS.receive };
+    const parsedOffer = CallSdpPayloadSchema.safeParse(raw);
+    if (!parsedOffer.success) return { ok: false, error: USER_FACING_ERRORS.receive };
+    const sdp = parsedOffer.data.sdp;
     try {
       const answerSdp = await this.receivePeers.acceptOffer(binding.callId, binding.participantId, sdp);
       // A freshly negotiated peer has empty slots. Binding here is what makes a
@@ -954,9 +1075,13 @@ export class CallRuntime {
   async handleReceiveIce(socket: CallSocketLike, raw: unknown): Promise<void> {
     const binding = this.requireBinding(socket, raw);
     if (!binding) return;
-    const candidate = readCandidate(raw);
-    if (!candidate) return;
-    await this.receivePeers.addRemoteCandidate(binding.callId, binding.participantId, candidate);
+    const parsedIce = CallIcePayloadSchema.safeParse(raw);
+    if (!parsedIce.success) return;
+    await this.receivePeers.addRemoteCandidate(
+      binding.callId,
+      binding.participantId,
+      parsedIce.data.candidate,
+    );
   }
 
   /**
@@ -980,36 +1105,36 @@ export class CallRuntime {
       this.videoRelayDropCount += 1;
       return;
     }
-    const target = (raw as { targetParticipantId?: unknown }).targetParticipantId;
-    const snapshot = typeof target === 'string' ? this.store.snapshot(binding.callId) : null;
-    const targetIsCurrent =
-      snapshot?.participants.some((participant) => participant.participantId === target) ?? false;
-    if (typeof target !== 'string' || !targetIsCurrent) {
-      this.videoRelayDropCount += 1;
-      return;
-    }
     if (kind === 'sdp') {
-      const sdp = readSdp(raw);
-      if (!sdp) {
+      const parsed = CallVideoSdpPayloadSchema.safeParse(raw);
+      if (
+        !parsed.success ||
+        !this.isCurrentParticipant(binding.callId, parsed.data.targetParticipantId)
+      ) {
         this.videoRelayDropCount += 1;
         return;
       }
+      const target = parsed.data.targetParticipantId;
       this.emitToRoom(callParticipantRoom(binding.callId, target), event, {
         callId: binding.callId,
         participantId: binding.participantId,
         targetParticipantId: target,
-        sdp,
+        sdp: parsed.data.sdp,
       } satisfies CallVideoSdpPayload);
       return;
     }
     // A null candidate is the end-of-candidates marker and is relayed as
     // such; anything else must survive the same size limits as audio ICE.
-    const rawCandidate = (raw as { candidate?: unknown }).candidate;
-    const candidate = rawCandidate === null ? null : readCandidate(raw);
-    if (rawCandidate !== null && !candidate) {
+    const parsed = CallVideoIcePayloadSchema.safeParse(raw);
+    if (
+      !parsed.success ||
+      !this.isCurrentParticipant(binding.callId, parsed.data.targetParticipantId)
+    ) {
       this.videoRelayDropCount += 1;
       return;
     }
+    const target = parsed.data.targetParticipantId;
+    const candidate = parsed.data.candidate;
     this.emitToRoom(callParticipantRoom(binding.callId, target), event, {
       callId: binding.callId,
       participantId: binding.participantId,
@@ -1019,13 +1144,25 @@ export class CallRuntime {
           ? null
           : {
               candidate: candidate.candidate,
-              sdpMid: candidate.sdpMid ?? null,
-              sdpMLineIndex: candidate.sdpMLineIndex ?? null,
+              sdpMid: candidate.sdpMid,
+              sdpMLineIndex: candidate.sdpMLineIndex,
               ...(candidate.usernameFragment !== undefined
                 ? { usernameFragment: candidate.usernameFragment }
                 : {}),
             },
     } satisfies CallVideoIcePayload);
+  }
+
+  /**
+   * The membership lookup never leaves the given call — which is what makes
+   * cross-call video relay impossible, not a separate rule about call ids.
+   */
+  private isCurrentParticipant(callId: string, participantId: string): boolean {
+    const snapshot = this.store.snapshot(callId);
+    return (
+      snapshot?.participants.some((participant) => participant.participantId === participantId) ??
+      false
+    );
   }
 
   /**
@@ -1226,6 +1363,69 @@ export class CallRuntime {
       }
     }
     return true;
+  }
+
+  // -------------------------------------------------------------------------
+  // P6.5 (FE2): server-authority entry points for the Connect control plane.
+  // The gateway's createConnectFacade() is the only caller; connect-control
+  // reaches these through that narrow facade, never through the store.
+  // -------------------------------------------------------------------------
+
+  /** Store passthrough: an empty call whose type/mode are authoritative before any join. */
+  preregisterConnectCall(callId: string, input: CallPreregisterInput): CallPreregisterResult {
+    return this.store.preregisterCall(callId, input);
+  }
+
+  /** Store passthrough for the /v1 read surface. */
+  getCallSnapshot(callId: string): CallSnapshot | null {
+    return this.store.snapshot(callId);
+  }
+
+  /**
+   * R4 — the PROJECT switching the call-global mode. Identical transport
+   * consequences to the owner's SET_MODE handler, deliberately line-for-line:
+   * STATE broadcast, then retire-all on `normal` or plan reapplication on
+   * `translated`. Only the store entry point differs (no owner check; project
+   * authority is a separate concept from the in-call owner, R5).
+   */
+  async applyAuthorityModeChange(callId: string, mode: CallMode): Promise<CallModeChangeResult> {
+    const result = this.store.setCallModeByAuthority(callId, mode);
+    if (!result.ok) return result;
+    if (!result.changed) return result;
+
+    logger.info('Call mode changed by project authority', { callId, mode });
+    this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, toWireCallState(result.snapshot));
+    if (mode === 'normal') {
+      this.retireCallIngestSessions(callId, 'call mode set to normal by project authority');
+    } else {
+      await this.applyIngestPlans(callId, result.snapshot, result.ingestPlans);
+    }
+    return result;
+  }
+
+  /**
+   * R4 — the PROJECT ending the whole call. Order matters:
+   *  1. the store deletes the call and returns the final snapshot plus every
+   *     seat's CURRENT revision-scoped ingest id;
+   *  2. one last STATE broadcast (state: 'ended') while the rooms still hold
+   *     their members, so connected clients learn the call is over;
+   *  3. the returned ids retire (belt-and-braces — deleting a never-created
+   *     session is benign), then teardownCall scans the runtime's own
+   *     ingestRegistry by callId, which also catches sessions from OLDER
+   *     superseded revisions the store no longer knows about.
+   */
+  async endCallByAuthority(callId: string): Promise<{ ok: boolean }> {
+    const result = this.store.endCall(callId);
+    if (!result.ok) return { ok: false };
+    this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, {
+      ...toWireCallState(result.snapshot),
+      state: 'ended',
+    });
+    for (const ingestSessionId of result.retiredIngestSessionIds) {
+      this.retireIngestEntry(ingestSessionId, 'call ended by project authority');
+    }
+    this.teardownCall(callId, 'call ended by project authority');
+    return { ok: true };
   }
 
   /** Cleanup evidence for tests and diagnostics. */
@@ -1648,19 +1848,14 @@ export class CallRuntime {
   private handleCaptureSettings(socket: CallSocketLike, raw: unknown): void {
     const binding = this.requireBinding(socket, raw);
     if (!binding) return;
-    const payload = raw as {
-      settings?: Record<string, unknown>;
-      reason?: unknown;
-      requestedCaptureProfile?: unknown;
-    };
-    const settings = payload.settings;
-    if (!settings || typeof settings !== 'object') return;
-    // Recorded as reported and NOT validated against an allow-list here: an
+    // Recorded as reported and NOT validated against an allow-list: the schema
+    // only requires `settings` to BE an object and coerces reason/profile. An
     // unrecognised profile name is a corpus provenance question, and silently
     // rewriting it to a known value would destroy the evidence that a run was
     // collected under something nobody expected.
-    const requestedCaptureProfile =
-      typeof payload.requestedCaptureProfile === 'string' ? payload.requestedCaptureProfile : null;
+    const parsed = CallCaptureSettingsPayloadSchema.safeParse(raw);
+    if (!parsed.success) return;
+    const { settings, requestedCaptureProfile, reason } = parsed.data;
     const echoCancellation = settings['echoCancellation'];
     this.acousticObserver.setProvenance(binding.callId, binding.participantId, {
       echoCancellation:
@@ -1675,7 +1870,7 @@ export class CallRuntime {
       kind: 'capture-settings',
       callId: binding.callId,
       participantId: binding.participantId,
-      reason: payload.reason === 'device-change' ? 'device-change' : 'join',
+      reason,
       /** What was asked for. `settings` below is what was granted. */
       requestedCaptureProfile,
       settings,
@@ -1693,26 +1888,31 @@ export class CallRuntime {
   private handlePlayback(socket: CallSocketLike, raw: unknown): void {
     const binding = this.requireBinding(socket, raw);
     if (!binding) return;
-    const payload = raw as { stream?: unknown; clipId?: unknown; phase?: unknown; atMs?: unknown };
-    const stream = payload.stream === 'remote-original' ? 'remote-original' : 'generated';
-    const phase = payload.phase === 'end' ? 'end' : 'start';
+    // Field-by-field degradation, never refusal: the schema coerces each
+    // malformed field to its legacy default, so this parse cannot fail after
+    // the binding check.
+    const parsed = CallPlaybackPayloadSchema.safeParse(raw);
+    if (!parsed.success) return;
+    const { stream, clipId, phase, atMs } = parsed.data;
     this.playbackLedger.reportPlayback({
       callId: binding.callId,
       participantId: binding.participantId,
       stream,
-      clipId: typeof payload.clipId === 'string' ? payload.clipId : null,
+      clipId,
       phase,
-      clientAtMs: typeof payload.atMs === 'number' && Number.isFinite(payload.atMs) ? payload.atMs : null,
+      // The ledger refuses a non-finite clock; the transcript log below keeps
+      // it verbatim so skew (and nonsense) stays measurable.
+      clientAtMs: atMs !== null && Number.isFinite(atMs) ? atMs : null,
     });
     this.transcriptLog.append({
       kind: 'playback',
       callId: binding.callId,
       participantId: binding.participantId,
       stream,
-      clipId: typeof payload.clipId === 'string' ? payload.clipId : null,
+      clipId,
       phase,
       /** The client's own clock, kept SEPARATE from the gateway's so skew is measurable. */
-      clientAtMs: typeof payload.atMs === 'number' ? payload.atMs : null,
+      clientAtMs: atMs,
       gatewayAtMs: this.now(),
     });
   }
@@ -2010,9 +2210,15 @@ export class CallRuntime {
   private requireBinding(socket: CallSocketLike, raw: unknown): CallSocketBinding | null {
     const binding = this.socketBindings.get(socket.id);
     if (!binding) return null;
-    if (!raw || typeof raw !== 'object') return null;
-    const candidate = raw as { callId?: unknown; participantId?: unknown };
-    if (candidate.callId !== binding.callId || candidate.participantId !== binding.participantId) {
+    // The schema checks object-ness only; the id EQUALITY below is this
+    // runtime's check, because only the runtime knows the socket's binding.
+    const parsed = CallBoundPayloadSchema.safeParse(raw);
+    if (!parsed.success) return null;
+    const candidate = parsed.data;
+    if (
+      candidate['callId'] !== binding.callId ||
+      candidate['participantId'] !== binding.participantId
+    ) {
       return null;
     }
     return binding;
@@ -2193,55 +2399,50 @@ function callPeerSessionSummary(
   };
 }
 
+/**
+ * P6.5: the handshake Origin header, for connect-join authorization (R7).
+ * Reads structurally so bare test sockets (no handshake) simply have none.
+ */
+function callSocketOrigin(socket: CallSocketLike): string | null {
+  const header = socket.handshake?.headers?.['origin'];
+  if (typeof header === 'string' && header.length > 0) return header;
+  if (Array.isArray(header) && typeof header[0] === 'string' && header[0].length > 0) {
+    return header[0];
+  }
+  return null;
+}
+
+/**
+ * Wire participants may carry the seat's `subject` (P6.5 R8: both identities
+ * are public participant state). Widened locally because the call-wire type
+ * predates the field; native seats have none, so their wire shape is
+ * byte-identical to P6.4. Promoting `subject` into call-wire's
+ * CallStateWirePayload is a wire wave, not a drive-by edit here.
+ */
+type CallStateWireParticipant = CallStateWirePayload['participants'][number] & {
+  subject?: string;
+};
+
 function toWireCallState(snapshot: CallSnapshot): CallStateWirePayload {
   // Sanitized projection: no ingest ids, revisions, voice ids, resume tokens.
+  const participants: CallStateWireParticipant[] = snapshot.participants.map((participant) => ({
+    participantId: participant.participantId,
+    displayName: participant.displayName,
+    speakLanguage: participant.speakLanguage,
+    hearLanguage: participant.hearLanguage,
+    joined: participant.connected,
+    ...(participant.subject === undefined ? {} : { subject: participant.subject }),
+  }));
   return {
     callId: snapshot.callId,
     state: snapshot.lifecycleState,
     callType: snapshot.callType,
     callMode: snapshot.callMode,
     ownerParticipantId: snapshot.ownerParticipantId,
-    participants: snapshot.participants.map((participant) => ({
-      participantId: participant.participantId,
-      displayName: participant.displayName,
-      speakLanguage: participant.speakLanguage,
-      hearLanguage: participant.hearLanguage,
-      joined: participant.connected,
-    })),
-  };
-}
-
-function readSdp(raw: unknown): string | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const sdp = (raw as { sdp?: unknown }).sdp;
-  if (typeof sdp !== 'string' || sdp.length === 0) return null;
-  if (sdp.length > WEBRTC_SIGNALLING_LIMITS.sdpMaxLength) return null;
-  return sdp;
-}
-
-function readCandidate(raw: unknown): {
-  candidate: string;
-  sdpMid?: string | null;
-  sdpMLineIndex?: number | null;
-  usernameFragment?: string | null;
-} | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const candidate = (raw as { candidate?: unknown }).candidate;
-  if (!candidate || typeof candidate !== 'object') return null;
-  const init = candidate as {
-    candidate?: unknown;
-    sdpMid?: unknown;
-    sdpMLineIndex?: unknown;
-    usernameFragment?: unknown;
-  };
-  if (typeof init.candidate !== 'string' || init.candidate.length === 0) return null;
-  if (init.candidate.length > WEBRTC_SIGNALLING_LIMITS.iceCandidateMaxLength) return null;
-  return {
-    candidate: init.candidate,
-    sdpMid: typeof init.sdpMid === 'string' ? init.sdpMid : null,
-    sdpMLineIndex: typeof init.sdpMLineIndex === 'number' ? init.sdpMLineIndex : null,
-    ...(typeof init.usernameFragment === 'string'
-      ? { usernameFragment: init.usernameFragment }
-      : {}),
+    // Review finding (latent since the transcript wave): the policy lived in
+    // the store snapshot but never crossed the wire, so the owner's toggle
+    // was invisible to every client.
+    transcriptDownloadAllowed: snapshot.transcriptDownloadAllowed,
+    participants,
   };
 }
