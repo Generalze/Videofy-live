@@ -29,6 +29,20 @@ import {
  */
 export type CallLanguage = 'en' | 'es' | 'fr';
 
+/**
+ * W5 product model. Personal Call and Conference are distinct PRODUCTS
+ * (capacity 2 vs 4, dedicated surfaces), even where primitives are shared.
+ */
+export type CallType = 'personal' | 'conference';
+
+/**
+ * W5 call-global mode. `normal` = direct original audio, translation engine
+ * fully OFF (no STT, no translation, no TTS, no personal voice, no translated
+ * captions). `translated` = the engine is live and Audio Mode applies per
+ * listener. Authority: the call owner only.
+ */
+export type CallMode = 'normal' | 'translated';
+
 export interface CallJoinInput {
   callId: string;
   displayName: string;
@@ -63,6 +77,13 @@ export interface CallJoinInput {
    * is believed, and detection never overrides them.
    */
   sourceLanguageMode?: 'manual' | 'auto';
+  /**
+   * Consulted ONLY when this join CREATES the call; ignored on an existing
+   * call, where the call itself is authoritative (invite links join without
+   * knowing either). Defaults when absent: 'conference', 'translated'.
+   */
+  callType?: CallType;
+  callMode?: CallMode;
   resumeParticipantId?: string;
   /** Required alongside resumeParticipantId; issued privately by the join ack. */
   resumeToken?: string;
@@ -79,6 +100,20 @@ export interface CallIngestPlan {
    */
   sourceLanguageMode: 'manual' | 'auto';
   targetLanguages: CallLanguage[];
+  /**
+   * W5: the SUBSET of `targetLanguages` translated for captions but NEVER
+   * synthesized — every current listener of such a language has
+   * audioMode 'original'. A text-only language must never reach media-ingest's
+   * default-voice fallback, so it also never appears in `voiceIdsByLanguage`.
+   */
+  textOnlyLanguages: CallLanguage[];
+  /**
+   * W5: true when at least one connected same-language recipient has captions
+   * on. Same-language pairs need no translation target, so with EMPTY
+   * `targetLanguages` this is what tells the gateway an STT-only session still
+   * has an audience; false with no targets means creation is deferred.
+   */
+  sameLanguageCaptionsNeeded: boolean;
   /**
    * STANDARD fallback voices, chosen by each recipient's Male/Female setting.
    *
@@ -130,6 +165,33 @@ export type CallLanguageChangeResult =
       reason: 'unknown-participant' | 'language-stated-by-speaker' | 'unsupported-language';
     };
 
+/**
+ * Outcome of an owner changing the call-global mode (W5). Reasons mirror the
+ * `call:mode:set` ack vocabulary so the gateway forwards them verbatim.
+ */
+/** `call:audio-mode:set` outcome; the gateway forwards reasons verbatim. */
+export type CallAudioModeChangeResult =
+  | {
+      ok: true;
+      /** False when the mode was already set: nothing bumped, no plans. */
+      changed: boolean;
+      snapshot: CallSnapshot;
+      /** Fresh plans for ONLY the speakers whose work order changed. */
+      ingestPlans: CallIngestPlan[];
+    }
+  | { ok: false; reason: 'unknown-participant' | 'invalid-audio-mode' };
+
+export type CallModeChangeResult =
+  | {
+      ok: true;
+      /** False when the mode was already set: nothing bumped, nothing re-routed. */
+      changed: boolean;
+      snapshot: CallSnapshot;
+      /** EMPTY when the mode is now 'normal': the engine is off, all sessions retire. */
+      ingestPlans: CallIngestPlan[];
+    }
+  | { ok: false; reason: 'not-owner' | 'unknown-call' | 'unknown-participant' | 'invalid-mode' };
+
 export interface CallJoinResult {
   ok: true;
   participantId: string;
@@ -155,6 +217,23 @@ export interface CallJoinFailure {
 export interface CallSnapshot {
   callId: string;
   lifecycleState: string;
+  /** W5: which product this call is; stamped by the creating join. */
+  callType: CallType;
+  /** W5: the authoritative call-global mode. */
+  callMode: CallMode;
+  /**
+   * W5: the one participant allowed to change callMode — whoever's join
+   * created the call. Stable across resume (participantId survives); no
+   * election when absent, the mode simply cannot change. Named to avoid the
+   * 'voice' and 'Revision' substrings the leak assertions refuse.
+   */
+  ownerParticipantId: string;
+  /**
+   * Transcript-download policy, owner-switchable, default ON. A meeting's
+   * words are working material. This is a POLICY over the download
+   * affordance, not DRM: captions already reached every participant's screen.
+   */
+  transcriptDownloadAllowed: boolean;
   participants: {
     participantId: string;
     displayName: string;
@@ -268,6 +347,13 @@ export const STANDARD_CALL_VOICES: Readonly<
 const DEFAULT_MAX_CALL_PARTICIPANTS = 4;
 
 /**
+ * A Personal Call is exactly two seats by definition of the product, not by
+ * configuration: `maxParticipants` keeps meaning "conference seats" (W5), and
+ * the store resolves the effective capacity from the call's type at join time.
+ */
+const PERSONAL_CALL_SEATS = 2;
+
+/**
  * People needed before a call is a conversation rather than someone waiting.
  *
  * Deliberately NOT the seat cap, though it used to be read from it. That worked
@@ -304,6 +390,17 @@ interface CallParticipantState {
 interface CallState {
   callId: CallSessionId;
   createdAtIso: string;
+  /** W5: stamped once by the creating join; joiners' values are ignored. */
+  callType: CallType;
+  /** W5: owner-switchable mid-call; `normal` turns the engine fully off. */
+  callMode: CallMode;
+  /**
+   * W5: the creating join's participantId — the only mode authority. Assigned
+   * by createOrJoin immediately after the creating participant is minted,
+   * before the call is observable to anyone.
+   */
+  ownerParticipantId: string;
+  transcriptDownloadAllowed: boolean;
   /** Monotonic per-call serial so a departed participant's id is never reused. */
   nextParticipantSerial: number;
   participants: Map<string, CallParticipantState>;
@@ -334,7 +431,7 @@ export class CallSessionStore {
     const existingCall = this.calls.get(input.callId);
     const displayName = input.displayName.trim();
     if (existingCall) {
-      if (existingCall.participants.size >= this.maxParticipants) {
+      if (existingCall.participants.size >= this.capacityOf(existingCall)) {
         // Capacity-neutral: the number is configuration, and copy that names it
         // becomes wrong the moment it changes — as it just did.
         return failure('call-full', 'This call is full.');
@@ -347,7 +444,7 @@ export class CallSessionStore {
       }
     }
 
-    const call = existingCall ?? this.createCall(input.callId);
+    const call = existingCall ?? this.createCall(input);
     const participant = parseParticipant({
       participantId: `participant_${call.nextParticipantSerial++}`,
       sessionId: call.callId,
@@ -383,24 +480,75 @@ export class CallSessionStore {
       joinedAtIso: this.now(),
     };
     call.participants.set(participant.participantId, state);
+    if (!existingCall) {
+      // Owner = whoever's join created the call. The participantId survives
+      // resume, so authority survives reconnects without any election.
+      call.ownerParticipantId = participant.participantId;
+    }
     bumpOtherConnectedParticipants(call, state);
     return this.joinResult(call, state);
   }
 
+  /**
+   * W5 membership reconciliation runs HERE — on leave and on the gateway's
+   * grace-expiry reap (which arrives as a leave), never on mere disconnect.
+   * Remaining speakers whose target set actually changed get their
+   * mediaRevision bumped and a fresh plan returned, so the gateway replaces
+   * exactly those sessions (an explicit cutoff of work addressed to the
+   * departed listener); unaffected speakers' in-flight work stays untouched.
+   */
   leave(
     callId: string,
     participantId: string,
-  ): { ok: boolean; callEnded: boolean; snapshot: CallSnapshot | null } {
+  ): {
+    ok: boolean;
+    callEnded: boolean;
+    snapshot: CallSnapshot | null;
+    /** Fresh plans for ONLY the speakers whose target set changed. */
+    ingestPlans: CallIngestPlan[];
+  } {
     const call = this.calls.get(callId);
-    if (!call || !call.participants.has(participantId)) {
-      return { ok: false, callEnded: false, snapshot: call ? buildSnapshot(call) : null };
+    const departing = call?.participants.get(participantId);
+    if (!call || !departing) {
+      return {
+        ok: false,
+        callEnded: false,
+        snapshot: call ? buildSnapshot(call) : null,
+        ingestPlans: [],
+      };
+    }
+    // Baseline: what each remaining speaker's work order covered while the
+    // departing seat was last planned for. The departing participant is
+    // treated as connected because a reaped seat disconnected WITHOUT a
+    // recompute — the live sessions still carry the targets planned when it
+    // was present.
+    const before = new Map<string, string>();
+    if (call.callMode === 'translated') {
+      const wasConnected = departing.connected;
+      departing.connected = true;
+      for (const state of call.participants.values()) {
+        if (state === departing || !state.connected) continue;
+        before.set(state.participant.participantId, planSignature(call, state));
+      }
+      departing.connected = wasConnected;
     }
     call.participants.delete(participantId);
     if (call.participants.size === 0) {
       this.calls.delete(callId);
-      return { ok: true, callEnded: true, snapshot: null };
+      return { ok: true, callEnded: true, snapshot: null, ingestPlans: [] };
     }
-    return { ok: true, callEnded: false, snapshot: buildSnapshot(call) };
+    const ingestPlans: CallIngestPlan[] = [];
+    for (const state of call.participants.values()) {
+      if (!state.connected) continue;
+      const baseline = before.get(state.participant.participantId);
+      if (baseline === undefined || baseline === planSignature(call, state)) continue;
+      state.participant = parseParticipant({
+        ...state.participant,
+        mediaRevision: state.participant.mediaRevision + 1,
+      });
+      ingestPlans.push(buildIngestPlan(call, state));
+    }
+    return { ok: true, callEnded: false, snapshot: buildSnapshot(call), ingestPlans };
   }
 
   /** Keeps the participant's identity and revisions so a resume can reclaim them. */
@@ -435,6 +583,30 @@ export class CallSessionStore {
       return [];
     }
     const { call, speaker } = routable;
+    // Normal mode (redefined 18 Aug on acceptance feedback): the TRANSLATION
+    // engine is off, but captions are not translation-gated — STT-only
+    // sessions caption the ORIGINAL words for everyone, because a meeting's
+    // transcript is working material. Translated stragglers from a dying
+    // translated-mode session are still refused.
+    if (call.callMode === 'normal') {
+      if (event.targetLanguage !== null || event.originalText.trim() === '') {
+        return [];
+      }
+      const normalDeliveries: CallRouteDelivery[] = [];
+      if (speaker.connected) {
+        normalDeliveries.push({
+          recipientParticipantId: speaker.participant.participantId,
+          payload: buildCaptionPayload(call, speaker, event, null, null),
+        });
+      }
+      for (const recipient of connectedOtherParticipants(call, speaker)) {
+        normalDeliveries.push({
+          recipientParticipantId: recipient.participant.participantId,
+          payload: buildCaptionPayload(call, speaker, event, null, null),
+        });
+      }
+      return normalDeliveries;
+    }
     const deliveries: CallRouteDelivery[] = [];
     // Speakers see their own words (§12: captions let users verify names,
     // numbers and terms). Only the original transcript, never a translation of
@@ -475,6 +647,10 @@ export class CallSessionStore {
       return [];
     }
     const { call, speaker } = routable;
+    // Same belt and braces as routeCaption: normal mode delivers nothing (W5).
+    if (call.callMode === 'normal') {
+      return [];
+    }
     const deliveries: CallRouteDelivery[] = [];
     for (const recipient of connectedOtherParticipants(call, speaker)) {
       if (!isSameLanguage(recipient.participant.preferredLanguage, event.targetLanguage)) {
@@ -548,6 +724,8 @@ export class CallSessionStore {
       };
     }
 
+    const settlingSignatureBefore =
+      call.callMode === 'translated' && state.connected ? planSignature(call, state) : null;
     state.participant = parseParticipant({
       ...state.participant,
       sourceLanguage: detected,
@@ -562,6 +740,19 @@ export class CallSessionStore {
       other.participant = parseParticipant({
         ...other.participant,
         languageRevision: other.participant.languageRevision + 1,
+      });
+    }
+    // The corrected source language re-partitions same-language vs translated
+    // recipients, so the speaker's own target set usually changes; the
+    // in-place source-language update cannot carry a target change, so the
+    // session is replaced (mediaRevision bump) exactly when the order moved.
+    if (
+      settlingSignatureBefore !== null &&
+      settlingSignatureBefore !== planSignature(call, state)
+    ) {
+      state.participant = parseParticipant({
+        ...state.participant,
+        mediaRevision: state.participant.mediaRevision + 1,
       });
     }
     return {
@@ -606,6 +797,21 @@ export class CallSessionStore {
       };
     }
 
+    // An ACTIVE media-ingest session is fixed at creation: a plan whose id
+    // does not change is unappliable, so a caption change that alters a
+    // speaker's target set MUST replace their session (explicit cutoff) or
+    // the new language is never produced while the old one routes to nobody.
+    // Same signature discipline as leave(): capture each connected speaker's
+    // work order first, bump mediaRevision for exactly the speakers whose
+    // order changed. The FULL plan list is still returned, because unchanged
+    // speakers' registry stamps (languageRevision) must refresh in place.
+    const before = new Map<string, string>();
+    if (call.callMode === 'translated') {
+      for (const speaker of call.participants.values()) {
+        if (!speaker.connected) continue;
+        before.set(speaker.participant.participantId, planSignature(call, speaker));
+      }
+    }
     for (const participant of call.participants.values()) {
       const isTheOneChanging = participant.participant.participantId === participantId;
       participant.participant = parseParticipant({
@@ -614,10 +820,142 @@ export class CallSessionStore {
         languageRevision: participant.participant.languageRevision + 1,
       });
     }
+    for (const speaker of call.participants.values()) {
+      if (!speaker.connected) continue;
+      const baseline = before.get(speaker.participant.participantId);
+      if (baseline === undefined || baseline === planSignature(call, speaker)) continue;
+      speaker.participant = parseParticipant({
+        ...speaker.participant,
+        mediaRevision: speaker.participant.mediaRevision + 1,
+      });
+    }
     return {
       ok: true,
       changed: true,
       languageRevision: state.participant.languageRevision,
+      snapshot: buildSnapshot(call),
+      ingestPlans: connectedIngestPlans(call),
+    };
+  }
+
+  /**
+   * Transcript-download policy: owner-only, call-global, no engine effect —
+   * no revisions move, captions keep flowing; only the download affordance
+   * follows this flag through the snapshot.
+   */
+  setTranscriptDownloadAllowed(
+    callId: string,
+    participantId: string,
+    allowed: boolean,
+  ):
+    | { ok: true; changed: boolean; snapshot: CallSnapshot }
+    | { ok: false; reason: 'not-owner' | 'unknown-call' | 'unknown-participant' } {
+    const call = this.calls.get(callId);
+    if (!call) return { ok: false, reason: 'unknown-call' };
+    if (!call.participants.has(participantId)) {
+      return { ok: false, reason: 'unknown-participant' };
+    }
+    if (participantId !== call.ownerParticipantId) {
+      return { ok: false, reason: 'not-owner' };
+    }
+    const changed = call.transcriptDownloadAllowed !== allowed;
+    call.transcriptDownloadAllowed = allowed;
+    return { ok: true, changed, snapshot: buildSnapshot(call) };
+  }
+
+  /**
+   * W5.1 — a listener changing their Audio Mode mid-call, AUTHORITATIVELY.
+   *
+   * Audio Mode is a per-listener preference, but the TTS planner reads it:
+   * `original` removes this listener's generated-audio requirement while
+   * their translated captions may continue. Before this event existed the
+   * planner learned the mode only at join/resume — the client stopped
+   * PLAYING clips while the server kept GENERATING them, violating "TTS only
+   * when at least one listener currently requires generated audio".
+   *
+   * Same reconciliation discipline as leave(): only speakers whose work-order
+   * signature changed are bumped and replaced (explicit cutoff); a
+   * translated↔interpretation flip changes no signature and produces no
+   * ingest churn at all. No languageRevision moves — no language moved.
+   */
+  setAudioMode(
+    callId: string,
+    participantId: string,
+    audioMode: CallJoinInput['audioMode'],
+  ): CallAudioModeChangeResult {
+    if (!AudioModeSchema.safeParse(audioMode).success) {
+      return { ok: false, reason: 'invalid-audio-mode' };
+    }
+    const call = this.calls.get(callId);
+    const state = call?.participants.get(participantId);
+    if (!call || !state) return { ok: false, reason: 'unknown-participant' };
+    if (state.participant.audioMode === audioMode) {
+      return { ok: true, changed: false, snapshot: buildSnapshot(call), ingestPlans: [] };
+    }
+    const before = new Map<string, string>();
+    if (call.callMode === 'translated') {
+      for (const speaker of call.participants.values()) {
+        if (!speaker.connected) continue;
+        before.set(speaker.participant.participantId, planSignature(call, speaker));
+      }
+    }
+    state.participant = parseParticipant({ ...state.participant, audioMode });
+    const ingestPlans: CallIngestPlan[] = [];
+    for (const speaker of call.participants.values()) {
+      if (!speaker.connected) continue;
+      const baseline = before.get(speaker.participant.participantId);
+      if (baseline === undefined || baseline === planSignature(call, speaker)) continue;
+      speaker.participant = parseParticipant({
+        ...speaker.participant,
+        mediaRevision: speaker.participant.mediaRevision + 1,
+      });
+      ingestPlans.push(buildIngestPlan(call, speaker));
+    }
+    return { ok: true, changed: true, snapshot: buildSnapshot(call), ingestPlans };
+  }
+
+  /**
+   * W5: the owner turning the whole call's translation engine on or off.
+   *
+   * Owner-only, and call-global on purpose: mode is a property of the
+   * conversation, not of a listener (that is what Audio Mode is for). A real
+   * change bumps EVERY connected participant's mediaRevision, so all live
+   * session ids are superseded at once — switching to `normal` therefore
+   * returns no plans and the gateway retires everything; switching back to
+   * `translated` returns a full set of fresh plans through the same path a
+   * join uses.
+   */
+  setCallMode(callId: string, participantId: string, mode: CallMode): CallModeChangeResult {
+    if (mode !== 'normal' && mode !== 'translated') {
+      return { ok: false, reason: 'invalid-mode' };
+    }
+    const call = this.calls.get(callId);
+    if (!call) return { ok: false, reason: 'unknown-call' };
+    const state = call.participants.get(participantId);
+    if (!state) return { ok: false, reason: 'unknown-participant' };
+    if (participantId !== call.ownerParticipantId) {
+      return { ok: false, reason: 'not-owner' };
+    }
+    if (call.callMode === mode) {
+      // Already set: nothing moved, so nothing may be invalidated.
+      return {
+        ok: true,
+        changed: false,
+        snapshot: buildSnapshot(call),
+        ingestPlans: connectedIngestPlans(call),
+      };
+    }
+    call.callMode = mode;
+    for (const participant of call.participants.values()) {
+      if (!participant.connected) continue;
+      participant.participant = parseParticipant({
+        ...participant.participant,
+        mediaRevision: participant.participant.mediaRevision + 1,
+      });
+    }
+    return {
+      ok: true,
+      changed: true,
       snapshot: buildSnapshot(call),
       ingestPlans: connectedIngestPlans(call),
     };
@@ -670,7 +1008,6 @@ export class CallSessionStore {
   }
 
   private joinResult(call: CallState, joined: CallParticipantState): CallJoinResult {
-    const connected = [...call.participants.values()].filter((state) => state.connected);
     return {
       ok: true,
       participantId: joined.participant.participantId,
@@ -678,7 +1015,7 @@ export class CallSessionStore {
       mediaRevision: joined.participant.mediaRevision,
       languageRevision: joined.participant.languageRevision,
       snapshot: buildSnapshot(call),
-      ingestPlans: connected.map((state) => buildIngestPlan(call, state)),
+      ingestPlans: connectedIngestPlans(call),
     };
   }
 
@@ -702,14 +1039,26 @@ export class CallSessionStore {
     return { call, speaker };
   }
 
-  private createCall(callId: string): CallState {
+  /** Effective seat cap, resolved from the call's type at join time (W5). */
+  private capacityOf(call: CallState): number {
+    return call.callType === 'personal' ? PERSONAL_CALL_SEATS : this.maxParticipants;
+  }
+
+  private createCall(input: CallJoinInput): CallState {
     const call: CallState = {
-      callId: CallSessionIdSchema.parse(callId),
+      callId: CallSessionIdSchema.parse(input.callId),
       createdAtIso: this.now(),
+      // The creating join's choice, defaulted; joiners' values are ignored.
+      callType: input.callType ?? 'conference',
+      callMode: input.callMode ?? 'translated',
+      // Overwritten with the creating participant's id before anyone can
+      // observe the call; see createOrJoin.
+      ownerParticipantId: '',
+      transcriptDownloadAllowed: true,
       nextParticipantSerial: 1,
       participants: new Map(),
     };
-    this.calls.set(callId, call);
+    this.calls.set(input.callId, call);
     return call;
   }
 }
@@ -726,8 +1075,12 @@ function resumeRejected(): CallJoinFailure {
 /**
  * Membership changed: every other connected speaker's ingest session must be
  * recreated with the current recipient set and voice choices, and the bump
- * makes the old revision-scoped session ids inert (§8.3). leave() deliberately
- * does not bump; the runtime tears sessions down without churn.
+ * makes the old revision-scoped session ids inert (§8.3).
+ *
+ * The W5 rule for the other direction: leave() and the grace-expiry reap bump
+ * ONLY the speakers whose target set actually changed (see leave()), and a
+ * mere disconnect never bumps — a seat inside its 120 s resume grace would
+ * churn sessions that come back seconds later.
  */
 function bumpOtherConnectedParticipants(call: CallState, joined: CallParticipantState): void {
   for (const state of call.participants.values()) {
@@ -769,6 +1122,15 @@ function validateJoinInput(input: CallJoinInput): string | null {
   }
   if (!AudioModeSchema.safeParse(input.audioMode).success) {
     return 'The audio mode must be translated, interpretation, or original.';
+  }
+  // Refused rather than ignored, like every other enum here: a value outside
+  // the vocabulary is a bug or a tampered payload either way (W5). On an
+  // existing call a VALID value is still ignored — the call is authoritative.
+  if (input.callType !== undefined && input.callType !== 'personal' && input.callType !== 'conference') {
+    return 'The call type must be personal or conference.';
+  }
+  if (input.callMode !== undefined && input.callMode !== 'normal' && input.callMode !== 'translated') {
+    return 'The call mode must be normal or translated.';
   }
   if (
     input.resumeParticipantId !== undefined &&
@@ -819,6 +1181,10 @@ function buildSnapshot(call: CallState): CallSnapshot {
   return {
     callId: call.callId,
     lifecycleState: lifecycleStateOf(participants),
+    callType: call.callType,
+    callMode: call.callMode,
+    ownerParticipantId: call.ownerParticipantId,
+    transcriptDownloadAllowed: call.transcriptDownloadAllowed,
     participants: participants.map((state) => ({
       participantId: state.participant.participantId,
       displayName: state.participant.displayName,
@@ -847,14 +1213,66 @@ function lifecycleStateOf(participants: CallParticipantState[]): string {
 function buildIngestPlan(call: CallState, speaker: CallParticipantState): CallIngestPlan {
   const sourceLanguage = toCallLanguage(speaker.participant.sourceLanguage);
   const targetLanguages: CallLanguage[] = [];
+  const textOnlyLanguages: CallLanguage[] = [];
   const voiceIdsByLanguage: Record<string, string> = {};
+  const synthesisWanted = new Set<CallLanguage>();
+  let sameLanguageCaptionsNeeded = false;
+  if (call.callMode === 'normal') {
+    // STT-only: no translation targets, no voices — the session exists to
+    // caption the original words, and only when somebody wants captions.
+    const captionsWanted =
+      (speaker.connected && speaker.captionsEnabled) ||
+      [...call.participants.values()].some(
+        (state) => state !== speaker && state.connected && state.captionsEnabled,
+      );
+    const scopedIdentity = `${call.callId}_${speaker.participant.participantId}_r${speaker.participant.mediaRevision}`;
+    return {
+      ingestSessionId: `call_${scopedIdentity}`,
+      broadcastId: `callcast_${scopedIdentity}`,
+      sourceLanguage,
+      sourceLanguageMode: speaker.participant.sourceLanguageMode === 'auto' ? 'auto' : 'manual',
+      targetLanguages: [],
+      textOnlyLanguages: [],
+      sameLanguageCaptionsNeeded: captionsWanted,
+      voiceIdsByLanguage: {},
+      // Deliberately NO voiceOwnerId: an STT-only session synthesizes
+      // nothing, so the identity has no business travelling with it.
+      mediaRevision: speaker.participant.mediaRevision,
+      languageRevision: speaker.participant.languageRevision,
+    };
+  }
   for (const other of connectedOtherParticipants(call, speaker)) {
     const hearLanguage = toCallLanguage(other.participant.preferredLanguage);
-    // Same-language recipients get original captions; no translation target.
-    if (isSameLanguage(hearLanguage, sourceLanguage) || targetLanguages.includes(hearLanguage)) {
+    // Same-language recipients hear the original; the only engine work they
+    // can create is captions, which need STT and no translation target.
+    if (isSameLanguage(hearLanguage, sourceLanguage)) {
+      sameLanguageCaptionsNeeded = sameLanguageCaptionsNeeded || other.captionsEnabled;
       continue;
     }
-    targetLanguages.push(hearLanguage);
+    // W5: what a cross-language recipient WANTS decides what is produced.
+    // audioMode is authoritative LIVE state: joins/resumes set it and the
+    // `call:audio-mode:set` event (setAudioMode above) updates it mid-call,
+    // reconciling exactly the speakers whose work order changes.
+    const wantsGeneratedAudio = other.participant.audioMode !== 'original';
+    if (!other.captionsEnabled && !wantsGeneratedAudio) {
+      // Captions off, original audio only: this recipient needs nothing made.
+      continue;
+    }
+    if (!targetLanguages.includes(hearLanguage)) {
+      targetLanguages.push(hearLanguage);
+    }
+    if (wantsGeneratedAudio) {
+      synthesisWanted.add(hearLanguage);
+    }
+  }
+  for (const language of targetLanguages) {
+    if (!synthesisWanted.has(language)) {
+      // Every listener of this language keeps the original audio: translated
+      // for captions, never synthesized, and no voice id — a text-only
+      // language must never reach the default-voice fallback.
+      textOnlyLanguages.push(language);
+      continue;
+    }
     // The SPEAKER's own Male/Female choice selects the voice their translated
     // words are spoken in.
     //
@@ -865,7 +1283,7 @@ function buildIngestPlan(call: CallState, speaker: CallParticipantState): CallIn
     // them, which is neither what the control says nor what anybody wants: a
     // translated voice stands in for the person speaking, so it belongs to
     // them.
-    voiceIdsByLanguage[hearLanguage] = STANDARD_CALL_VOICES[hearLanguage][speaker.voiceGender];
+    voiceIdsByLanguage[language] = STANDARD_CALL_VOICES[language][speaker.voiceGender];
   }
   // Revision-scoped identity: events and deferred stops addressed to an old
   // revision's session can never touch the replacement session.
@@ -876,11 +1294,28 @@ function buildIngestPlan(call: CallState, speaker: CallParticipantState): CallIn
     sourceLanguage,
     sourceLanguageMode: speaker.participant.sourceLanguageMode === 'auto' ? 'auto' : 'manual',
     targetLanguages,
+    textOnlyLanguages,
+    sameLanguageCaptionsNeeded,
     voiceIdsByLanguage,
     ...(speaker.voiceOwnerId === undefined ? {} : { voiceOwnerId: speaker.voiceOwnerId }),
     mediaRevision: speaker.participant.mediaRevision,
     languageRevision: speaker.participant.languageRevision,
   };
+}
+
+/**
+ * What a speaker's work order asks the engine FOR, revision excluded: leave
+ * reconciliation compares this before and after a departure to decide whether
+ * the session must be replaced. Voice ids are derived (synthesized languages ×
+ * the speaker's own gender), so the three planned facts cover them.
+ */
+function planSignature(call: CallState, speaker: CallParticipantState): string {
+  const plan = buildIngestPlan(call, speaker);
+  return JSON.stringify([
+    [...plan.targetLanguages].sort(),
+    [...plan.textOnlyLanguages].sort(),
+    plan.sameLanguageCaptionsNeeded,
+  ]);
 }
 
 function buildCaptionPayload(

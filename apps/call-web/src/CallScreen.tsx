@@ -1,7 +1,13 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { CallCaptionEntry } from './callCaptions';
 import { CALL_AUDIO_MODES, CALL_LANGUAGES, languageLabel } from './callFormState';
-import type { CallAudioMode, CallLanguage, CallParticipantSummary } from './callTypes';
+import { downloadTranscript } from './callTranscriptExport';
+import type {
+  CallAudioMode,
+  CallLanguage,
+  CallMode,
+  CallParticipantSummary,
+} from './callTypes';
 
 export type CallConnectionPhase = 'connecting' | 'connected' | 'reconnecting' | 'restoring';
 
@@ -11,6 +17,42 @@ export interface CallScreenProps {
    * products sharing a call surface, not one page pretending to be both.
    */
   callType?: 'personal' | 'conference';
+  /**
+   * W5: the authoritative call-global mode from the snapshot. In `normal` the
+   * translation engine is OFF, so every translated-call control (captions,
+   * transcript, audio-mode, translated volume) is WITHHELD from the markup,
+   * not merely disabled — the W3.1 rule.
+   */
+  callMode?: CallMode;
+  /** W5: whether THIS participant is the call owner (mode authority). */
+  isOwner?: boolean;
+  callModeBusy?: boolean;
+  /** Owner-only; the gateway refuses anyone else. */
+  onCallModeChange?: (mode: CallMode) => void;
+  /**
+   * Owner-switchable, default true. When off, the download affordance is
+   * withheld for everyone (the owner keeps the policy toggle itself).
+   */
+  transcriptDownloadAllowed?: boolean;
+  /** Owner-only; the gateway refuses anyone else. */
+  onTranscriptPolicyChange?: (allowed: boolean) => void;
+  /**
+   * V1 video (development-demo P2P mesh). Streams are keyed by participant;
+   * a missing entry renders the avatar — an audio-only participant is a
+   * first-class state, not a degraded one.
+   */
+  localVideoStream?: MediaStream | null;
+  remoteVideoStreams?: ReadonlyMap<string, MediaStream>;
+  cameraOn?: boolean;
+  onToggleCamera?: () => void;
+  /**
+   * W8 output routing. Null means the platform exposes ONLY the system
+   * default — the surface then says so honestly instead of faking routes.
+   * deviceIds live exclusively inside option values here; they are never
+   * logged or emitted anywhere.
+   */
+  audioOutput?: { devices: readonly { deviceId: string; label: string }[]; selectedId: string | null } | null;
+  onAudioOutputChange?: (deviceId: string | null) => void;
   callCode: string;
   selfParticipantId: string;
   participants: readonly CallParticipantSummary[];
@@ -37,6 +79,8 @@ export interface CallScreenProps {
     speakerParticipantId: string;
     muted: boolean;
     volume: number;
+    /** The mode's gain over this speaker's original, 0..1 (W4). */
+    modeGain?: number;
     /** The audio mode silenced this speaker's original; their delivery is TTS. */
     originalSuppressed?: boolean;
   }[];
@@ -67,6 +111,13 @@ export function CallScreen(props: CallScreenProps) {
   const [audioSettingsOpen, setAudioSettingsOpen] = useState(false);
   const audioSettingsId = useId();
   const [transcriptOpen, setTranscriptOpen] = useState(false);
+  /**
+   * V1 spotlight: click a video to bring that person up; click again to go
+   * back. Double-click hands the element to the browser's fullscreen, which
+   * is where pinch/scroll zoom lives. Cleared automatically if the featured
+   * participant leaves.
+   */
+  const [featuredParticipantId, setFeaturedParticipantId] = useState<string | null>(null);
   const transcriptId = useId();
 
   useEffect(() => {
@@ -76,6 +127,12 @@ export function CallScreen(props: CallScreenProps) {
     }
   }, [props.captions, props.captionsVisible]);
 
+  const callMode: CallMode = props.callMode ?? 'translated';
+  const featuredId =
+    featuredParticipantId !== null &&
+    props.participants.some((participant) => participant.participantId === featuredParticipantId)
+      ? featuredParticipantId
+      : null;
   const others = props.participants.filter(
     (participant) => participant.participantId !== props.selfParticipantId,
   );
@@ -94,6 +151,9 @@ export function CallScreen(props: CallScreenProps) {
         <div className="call-status" role="status">
           <span className={statusDotClass(props.phase)} aria-hidden="true" />
           <span>{statusText(props.phase, props.statusNote)}</span>
+          <span className="call-mode-chip">
+            {callMode === 'normal' ? 'Normal' : 'Translated'}
+          </span>
           {props.playbackBlocked ? (
             <button type="button" className="enable-audio-button" onClick={props.onEnableAudio}>
               Enable audio
@@ -107,7 +167,16 @@ export function CallScreen(props: CallScreenProps) {
         </div>
       </header>
 
-      <section className="call-stage" aria-label="People on this call">
+      <section
+        className={[
+          'call-stage',
+          props.callType === 'personal' ? 'is-personal' : '',
+          featuredId !== null ? 'is-spotlight' : '',
+        ]
+          .filter(Boolean)
+          .join(' ')}
+        aria-label="People on this call"
+      >
         {others.map((participant) => {
           const audio = props.remoteSpeakers?.find(
             (speaker) => speaker.speakerParticipantId === participant.participantId,
@@ -117,6 +186,13 @@ export function CallScreen(props: CallScreenProps) {
               key={participant.participantId}
               participant={participant}
               speaking={participant.participantId === speakingParticipantId}
+              videoStream={props.remoteVideoStreams?.get(participant.participantId) ?? null}
+              featured={participant.participantId === featuredId}
+              onToggleFeatured={() =>
+                setFeaturedParticipantId((current) =>
+                  current === participant.participantId ? null : participant.participantId,
+                )
+              }
               {...(audio ? { audio } : {})}
               {...(props.onSpeakerMutedChange
                 ? { onMutedChange: props.onSpeakerMutedChange }
@@ -132,6 +208,7 @@ export function CallScreen(props: CallScreenProps) {
             participant={self}
             isSelf
             speaking={self.participantId === speakingParticipantId}
+            videoStream={props.localVideoStream ?? null}
           />
         ) : null}
         {others.length === 0 ? (
@@ -151,6 +228,7 @@ export function CallScreen(props: CallScreenProps) {
             settings screen: it is what the reader is looking at when they
             realise they want a different one. Only this reader moves.
           */}
+          {callMode === 'normal' ? null : (
           <label className="captions-language">
             <span className="sr-only">Read captions in</span>
             <select
@@ -167,6 +245,7 @@ export function CallScreen(props: CallScreenProps) {
               ))}
             </select>
           </label>
+          )}
           <button
             type="button"
             className={transcriptOpen ? 'transcript-toggle is-active' : 'transcript-toggle'}
@@ -208,13 +287,36 @@ export function CallScreen(props: CallScreenProps) {
       >
         <header className="transcript-header">
           <h2 className="transcript-title">Transcript</h2>
-          <button
-            type="button"
-            className="transcript-close"
-            onClick={() => setTranscriptOpen(false)}
-          >
-            Close
-          </button>
+          <div className="transcript-actions">
+            {props.isOwner && props.onTranscriptPolicyChange ? (
+              /* Call-global policy, so it is owner-only — like Call Mode, a
+                 control the gateway would refuse must not look available. */
+              <label className="transcript-policy">
+                <input
+                  type="checkbox"
+                  checked={props.transcriptDownloadAllowed ?? true}
+                  onChange={(event) => props.onTranscriptPolicyChange?.(event.target.checked)}
+                />
+                Downloadable
+              </label>
+            ) : null}
+            {(props.transcriptDownloadAllowed ?? true) && props.captions.length > 0 ? (
+              <button
+                type="button"
+                className="transcript-close transcript-download"
+                onClick={() => downloadTranscript(props.callCode, props.captions)}
+              >
+                Download
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="transcript-close"
+              onClick={() => setTranscriptOpen(false)}
+            >
+              Close
+            </button>
+          </div>
         </header>
         <div className="transcript-scroll" ref={captionsBodyRef}>
           {/* Hiding captions must WITHHOLD the text, not merely style it away:
@@ -240,6 +342,17 @@ export function CallScreen(props: CallScreenProps) {
             {props.micMuted ? 'Unmute' : 'Mute'}
           </button>
 
+          {props.onToggleCamera ? (
+            <button
+              type="button"
+              className={props.cameraOn ? 'control-button is-active' : 'control-button'}
+              aria-pressed={props.cameraOn ?? false}
+              onClick={props.onToggleCamera}
+            >
+              Camera
+            </button>
+          ) : null}
+
           <button
             type="button"
             className={props.captionsVisible ? 'control-button is-active' : 'control-button'}
@@ -248,6 +361,26 @@ export function CallScreen(props: CallScreenProps) {
           >
             Captions
           </button>
+
+          {props.isOwner && props.onCallModeChange ? (
+            /*
+              Call Mode is CALL-GLOBAL and owner-only — everyone's call flips,
+              which is why this is not offered to other participants at all
+              rather than shown disabled: a control that would be refused by
+              the gateway must not look available.
+            */
+            <label className="mode-select call-mode-owner">
+              Call mode
+              <select
+                value={callMode}
+                disabled={props.callModeBusy ?? false}
+                onChange={(event) => props.onCallModeChange?.(event.target.value as CallMode)}
+              >
+                <option value="normal">Normal</option>
+                <option value="translated">Translated</option>
+              </select>
+            </label>
+          ) : null}
 
           <button
             type="button"
@@ -270,6 +403,7 @@ export function CallScreen(props: CallScreenProps) {
           cannot trap focus, while the controls keep their identity and state.
         */}
         <div className="audio-drawer" id={audioSettingsId} hidden={!audioSettingsOpen}>
+          {callMode === 'normal' ? null : (
           <label className="mode-select">
             How you hear them
             <select
@@ -282,15 +416,38 @@ export function CallScreen(props: CallScreenProps) {
                 </option>
               ))}
             </select>
+            <span className="mode-select-hint">
+              {CALL_AUDIO_MODES.find((mode) => mode.value === props.audioMode)?.description}
+            </span>
           </label>
+          )}
+
+          {props.audioOutput ? (
+            <label className="mode-select audio-output-select">
+              Audio output
+              <select
+                value={props.audioOutput.selectedId ?? ''}
+                onChange={(event) =>
+                  props.onAudioOutputChange?.(
+                    event.target.value === '' ? null : event.target.value,
+                  )
+                }
+              >
+                <option value="">System default</option>
+                {props.audioOutput.devices.map((device, index) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label || `Audio output ${index + 1}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <span className="audio-output-static">Playing through the system audio output</span>
+          )}
 
           <div className="slider-group">
             <div className={props.audioMode === 'translated' ? 'slider is-disabled' : 'slider'}>
-              <label htmlFor="original-volume">
-                {props.audioMode === 'interpretation'
-                  ? 'Their voice under translation'
-                  : 'Their voice'}
-              </label>
+              <label htmlFor="original-volume">Their voice</label>
               <input
                 id="original-volume"
                 type="range"
@@ -302,6 +459,7 @@ export function CallScreen(props: CallScreenProps) {
                 onChange={(event) => props.onOriginalVolumeChange(Number(event.target.value))}
               />
             </div>
+            {callMode === 'normal' ? null : (
             <div className={props.audioMode === 'original' ? 'slider is-disabled' : 'slider'}>
               <label htmlFor="translated-volume">Translated voice</label>
               <input
@@ -315,6 +473,7 @@ export function CallScreen(props: CallScreenProps) {
                 onChange={(event) => props.onTranslatedVolumeChange(Number(event.target.value))}
               />
             </div>
+            )}
           </div>
         </div>
       </footer>
@@ -363,17 +522,69 @@ function ParticipantTile(props: {
     speakerParticipantId: string;
     muted: boolean;
     volume: number;
+    modeGain?: number;
     originalSuppressed?: boolean;
   };
+  /** Null/absent = audio-only participant; the avatar is the clean placeholder. */
+  videoStream?: MediaStream | null;
+  /** Spotlighted by a click; the stage lays this tile out large. */
+  featured?: boolean;
+  onToggleFeatured?: () => void;
   onMutedChange?: (speakerParticipantId: string, muted: boolean) => void;
   onVolumeChange?: (speakerParticipantId: string, volume: number) => void;
 }) {
   const { participant, audio } = props;
+  const tileClass = [
+    'participant-tile',
+    props.speaking ? 'is-speaking' : '',
+    props.isSelf ? 'is-self' : '',
+    props.videoStream ? 'has-video' : '',
+    props.featured ? 'is-featured' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
   return (
-    <article className={props.speaking ? 'participant-tile is-speaking' : 'participant-tile'}>
-      <span className="participant-avatar" aria-hidden="true">
-        {initials(participant.displayName)}
-      </span>
+    <article className={tileClass}>
+      {props.videoStream ? (
+        /*
+          The video is the control: click brings this person up (spotlight),
+          double-click asks the browser for real fullscreen — pinch/scroll
+          zoom belongs to the platform, not to a homemade zoom UI.
+        */
+        <button
+          type="button"
+          className="participant-video-button"
+          aria-label={
+            props.featured
+              ? `Shrink ${participant.displayName}'s video`
+              : `Expand ${participant.displayName}'s video`
+          }
+          aria-pressed={props.featured ?? false}
+          onClick={props.onToggleFeatured}
+          onDoubleClick={(event) => {
+            const video = event.currentTarget.querySelector('video');
+            void video?.requestFullscreen?.().catch(() => {});
+          }}
+        >
+          <video
+            className="participant-video"
+            autoPlay
+            playsInline
+            /* The video track carries no audio (voice arrives through the
+               per-speaker audio elements); muted also keeps autoplay safe. */
+            muted
+            ref={(element) => {
+              if (element && element.srcObject !== props.videoStream) {
+                element.srcObject = props.videoStream ?? null;
+              }
+            }}
+          />
+        </button>
+      ) : (
+        <span className="participant-avatar" aria-hidden="true">
+          {initials(participant.displayName)}
+        </span>
+      )}
       <span className="participant-name">
         <span
           className={participant.joined ? 'status-dot is-connected' : 'status-dot'}
@@ -382,10 +593,12 @@ function ParticipantTile(props: {
         {participant.displayName}
         {props.isSelf ? <span className="participant-you">(you)</span> : null}
       </span>
-      <span className="participant-languages">
-        Speaks {languageLabel(participant.speakLanguage)} · hears{' '}
-        {languageLabel(participant.hearLanguage)}
-      </span>
+      {props.videoStream ? null : (
+        <span className="participant-languages">
+          Speaks {languageLabel(participant.speakLanguage)} · hears{' '}
+          {languageLabel(participant.hearLanguage)}
+        </span>
+      )}
       {props.speaking ? <span className="participant-speaking">Speaking</span> : null}
       {props.isSelf ? null : (
         <div
@@ -437,6 +650,17 @@ function ParticipantTile(props: {
             <span className="participant-audio-pending" role="status">
               Hearing translated voice
             </span>
+          ) : interpretationReduced(audio.modeGain) ? (
+            /*
+              W4 interpretation: the original is intentionally quiet underneath
+              the translation. The controls stay LIVE — mute and volume govern
+              that audible original — but the reduced level is the mode's
+              doing, and the tile must say so or a working slider reads as a
+              broken one.
+            */
+            <span className="participant-audio-pending" role="status">
+              Original voice under translation
+            </span>
           ) : null}
         </div>
       )}
@@ -458,6 +682,11 @@ function activeSpeakerId(captions: readonly CallCaptionEntry[]): string | null {
     if (entry && !entry.isFinal) return entry.speakerParticipantId;
   }
   return null;
+}
+
+/** Strictly between silent and full: the interpretation "underneath" level. */
+function interpretationReduced(modeGain: number | undefined): boolean {
+  return modeGain !== undefined && modeGain > 0 && modeGain < 1;
 }
 
 function initials(displayName: string): string {

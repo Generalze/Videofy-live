@@ -89,6 +89,11 @@ export interface GeneratedAudioElementLike {
   load(): void;
   play(): Promise<void>;
   pause(): void;
+  /**
+   * W8: present where the platform supports output routing. Without it the
+   * element stays on the system default — honest, not a fault.
+   */
+  setSinkId?(sinkId: string): Promise<void>;
 }
 
 /** Diagnostics only. Never consulted by playback logic. */
@@ -105,6 +110,17 @@ export interface CallGeneratedAudioPlayerOptions {
   createElement?: () => GeneratedAudioElementLike;
   /** Optional and side-effect-free: attaching it changes no playback behaviour. */
   onDiagnostic?: GeneratedAudioDiagnosticSink;
+  /**
+   * W8: the one persistent element registers here on creation and unregisters
+   * on dispose, so generated translated playback follows the same selected
+   * output as the remote originals, where the mechanism supports it.
+   * Structural on purpose — only the registration half of
+   * CallAudioOutputController is needed, and a test can hand in a recorder.
+   */
+  outputController?: {
+    registerElement(element: GeneratedAudioElementLike): void;
+    unregisterElement(element: GeneratedAudioElementLike): void;
+  };
 }
 
 /** Element events worth seeing when a clip does not reach the speaker. */
@@ -165,6 +181,9 @@ export function createBrowserGeneratedAudioPlayer(
   element.preload = 'auto';
   // iOS refuses inline playback without this and takes the clip fullscreen.
   element.setAttribute('playsinline', '');
+  // W8: registered once for the element's whole lifetime, so a standing
+  // output selection reaches it before the first clip plays.
+  options.outputController?.registerElement(element);
   let unlocked = false;
   /** Null while no clip is loaded, so the unlock tone cannot fire clip callbacks. */
   let activeUrl: string | null = null;
@@ -263,6 +282,7 @@ export function createBrowserGeneratedAudioPlayer(
       }
     },
     dispose(): void {
+      options.outputController?.unregisterElement(element);
       activeUrl = null;
       element.pause();
       element.removeAttribute('src');

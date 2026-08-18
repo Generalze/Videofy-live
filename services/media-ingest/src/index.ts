@@ -243,6 +243,7 @@ app.post('/internal/webrtc/sessions', async (req, res) => {
       revision?: unknown;
       targetLanguage?: unknown;
       targetLanguages?: unknown;
+      textOnlyLanguages?: unknown;
       sourceLanguage?: unknown;
       sourceLanguageMode?: unknown;
       voiceIdsByLanguage?: unknown;
@@ -257,6 +258,11 @@ app.post('/internal/webrtc/sessions', async (req, res) => {
       ...(typeof body.targetLanguage === 'string' ? { targetLanguage: body.targetLanguage } : {}),
       ...(Array.isArray(body.targetLanguages)
         ? { targetLanguages: body.targetLanguages.filter((value): value is string => typeof value === 'string') }
+        : {}),
+      // P6.4: targets translated for captions but never synthesized. The
+      // session store enforces the subset-of-targetLanguages rule.
+      ...(Array.isArray(body.textOnlyLanguages)
+        ? { textOnlyLanguages: body.textOnlyLanguages.filter((value): value is string => typeof value === 'string') }
         : {}),
       ...(typeof body.sourceLanguage === 'string' ? { sourceLanguage: body.sourceLanguage } : {}),
       ...(body.sourceLanguageMode === 'manual' || body.sourceLanguageMode === 'auto-detect'

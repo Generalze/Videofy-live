@@ -62,11 +62,12 @@ select {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   Entry flow — Home and Call Mode.
+   Entry flow — Home, Create/Join, and Call Mode.
    The first thing anyone sees: spacious, display type, two clear cards.
    ──────────────────────────────────────────────────────────────────────────── */
 
 .home-screen,
+.createjoin-screen,
 .mode-screen {
   flex: 1;
   min-height: 100dvh;
@@ -96,6 +97,7 @@ select {
 }
 
 .home-lede,
+.createjoin-lede,
 .mode-lede {
   color: var(--vf-text-secondary);
   font-size: var(--vf-font-size-lg);
@@ -103,6 +105,7 @@ select {
 }
 
 .home-choices,
+.createjoin-choices,
 .mode-choices {
   display: flex;
   gap: var(--vf-space-4);
@@ -112,6 +115,7 @@ select {
 }
 
 .home-choice,
+.createjoin-choice,
 .mode-choice {
   display: flex;
   flex-direction: column;
@@ -134,7 +138,8 @@ select {
 }
 
 .home-choice:hover,
-.mode-choice:hover:enabled {
+.createjoin-choice:hover,
+.mode-choice:hover {
   border-color: var(--vf-border-interactive);
   background: var(--vf-surface-2);
   box-shadow: var(--vf-elevation-3);
@@ -142,6 +147,7 @@ select {
 }
 
 .home-choice-name,
+.createjoin-choice-name,
 .mode-choice-name {
   display: flex;
   align-items: baseline;
@@ -153,30 +159,28 @@ select {
 }
 
 .home-choice-name::after,
-.mode-choice:not([disabled]) .mode-choice-name::after {
+.createjoin-choice-name::after,
+.mode-choice-name::after {
   content: '→';
   color: var(--vf-text-accent);
   transition: transform var(--vf-duration-fast) var(--vf-ease-standard);
 }
 
 .home-choice:hover .home-choice-name::after,
-.mode-choice:hover:enabled .mode-choice-name::after {
+.createjoin-choice:hover .createjoin-choice-name::after,
+.mode-choice:hover .mode-choice-name::after {
   transform: translateX(4px);
 }
 
 .home-choice-hint,
+.createjoin-choice-hint,
 .mode-choice-hint {
   color: var(--vf-text-muted);
   font-size: var(--vf-font-size-sm);
   line-height: var(--vf-line-height-snug);
 }
 
-.mode-choice[disabled] {
-  opacity: 0.5;
-  cursor: not-allowed;
-  box-shadow: var(--vf-elevation-0);
-}
-
+.createjoin-title,
 .mode-title {
   font-family: var(--vf-font-family-display);
   font-size: var(--vf-font-size-3xl);
@@ -184,6 +188,7 @@ select {
   letter-spacing: var(--vf-letter-spacing-tight);
 }
 
+.createjoin-back,
 .mode-back {
   align-self: flex-start;
   background: none;
@@ -199,6 +204,7 @@ select {
     border-color var(--vf-duration-fast) var(--vf-ease-standard);
 }
 
+.createjoin-back:hover,
 .mode-back:hover {
   color: var(--vf-text-primary);
   border-color: var(--vf-border-subtle);
@@ -498,6 +504,76 @@ select {
 .invite-hint {
   color: var(--vf-text-muted);
   font-size: var(--vf-font-size-xs);
+}
+
+/* Join path: the code IS the task, so its field leads the form, takes focus,
+   and reads as the primary entry. */
+.field.is-primary-entry input {
+  border-color: var(--vf-border-accent);
+  background: var(--vf-surface-accent-weak);
+}
+
+/* Normal mode withholds every translation control (W3.1: hidden = absent),
+   leaving a short column; a narrower card keeps it a setup card, not a hole. */
+.prejoin-card.is-normal {
+  max-width: 26rem;
+}
+
+/* Camera preview. The frame holds its 16:9 shape in every status, so a grant
+   or a denial never reflows the form around it. */
+.camera-preview {
+  aspect-ratio: 16 / 9;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: var(--vf-surface-sunken);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-default);
+  border-radius: var(--vf-radius-md);
+}
+
+.camera-preview-video {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  object-fit: cover;
+  /* Self-view: people expect a mirror. Remote video (V1) must NOT mirror. */
+  transform: scaleX(-1);
+}
+
+.camera-preview-status {
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-sm);
+  text-align: center;
+  padding: var(--vf-space-3) var(--vf-space-4);
+}
+
+.camera-preview-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-space-2);
+  flex-wrap: wrap;
+}
+
+.camera-preview-controls .ghost-button {
+  min-height: var(--vf-control-height-sm);
+  padding: 0 var(--vf-space-3);
+}
+
+.camera-preview-controls select {
+  flex: 1;
+  min-width: 8rem;
+  background: var(--vf-surface-sunken);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-default);
+  border-radius: var(--vf-radius-md);
+  color: var(--vf-text-primary);
+  font-size: var(--vf-font-size-sm);
+  min-height: var(--vf-control-height-sm);
+  padding: 0 var(--vf-space-2);
+  outline: none;
+}
+
+.camera-preview-controls select:focus {
+  border-color: var(--vf-border-accent);
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -1106,9 +1182,18 @@ select {
 .mode-select {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--vf-space-2);
   color: var(--vf-text-muted);
   font-size: var(--vf-font-size-sm);
+}
+
+/* What the chosen mode does, in listener words — no implementation terms. */
+.mode-select-hint {
+  flex-basis: 100%;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-xs);
+  line-height: var(--vf-line-height-snug);
 }
 
 .mode-select select {
@@ -1162,6 +1247,7 @@ select {
     font-size: var(--vf-font-size-3xl);
   }
 
+  .createjoin-title,
   .mode-title {
     font-size: var(--vf-font-size-2xl);
   }
@@ -1471,4 +1557,245 @@ select {
   overflow: auto;
   white-space: pre;
   -webkit-overflow-scrolling: touch;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   W5 call mode + V1 video + W8 output — call-surface additions.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+/* The mode, stated on the status pill: call-global fact, not a control. */
+.call-mode-chip {
+  padding: 0 var(--vf-space-2);
+  border-left: var(--vf-border-width-hairline) solid var(--vf-border-subtle);
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-xs);
+  font-weight: var(--vf-font-weight-medium);
+  letter-spacing: var(--vf-letter-spacing-wide);
+  text-transform: uppercase;
+}
+
+/* Owner-only global control: visually a control, labelled as call-wide. */
+.call-mode-owner {
+  color: var(--vf-text-secondary);
+}
+
+/* Tiles that carry live video: the frame becomes the person. */
+.participant-tile.has-video {
+  padding: 0;
+  overflow: hidden;
+  justify-content: flex-end;
+  min-height: 13.5rem;
+  background: var(--vf-surface-void);
+}
+
+.participant-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: var(--vf-surface-void);
+}
+
+/* Name, languages and controls float over the video on a readable scrim. */
+.participant-tile.has-video > :not(.participant-video) {
+  position: relative;
+  z-index: 1;
+}
+
+.participant-tile.has-video {
+  gap: var(--vf-space-1);
+}
+
+.participant-tile.has-video .participant-name,
+.participant-tile.has-video .participant-languages,
+.participant-tile.has-video .participant-speaking,
+.participant-tile.has-video .participant-audio-controls {
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.8);
+}
+
+.participant-tile.has-video .participant-audio-controls {
+  margin-bottom: var(--vf-space-3);
+}
+
+/* Personal call: one person fills the stage; you are a corner preview. */
+.call-stage.is-personal {
+  grid-template-columns: minmax(0, 1fr);
+  position: relative;
+}
+
+.call-stage.is-personal .participant-tile {
+  min-height: 16rem;
+}
+
+.call-stage.is-personal .participant-tile.is-self {
+  position: absolute;
+  right: var(--vf-space-3);
+  bottom: var(--vf-space-3);
+  width: clamp(7rem, 26%, 11rem);
+  min-height: 0;
+  padding: var(--vf-space-2);
+  box-shadow: var(--vf-elevation-3);
+  z-index: var(--vf-z-media-overlay);
+}
+
+.call-stage.is-personal .participant-tile.is-self .participant-avatar {
+  width: 2.5rem;
+  height: 2.5rem;
+  font-size: var(--vf-font-size-sm);
+}
+
+.call-stage.is-personal .participant-tile.is-self .participant-languages {
+  display: none;
+}
+
+/* W8: the honest no-selection state — system output, said plainly. */
+.audio-output-static {
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-sm);
+}
+
+@media (max-width: 767.98px) {
+  .call-stage.is-personal .participant-tile.is-self {
+    width: clamp(6rem, 34%, 9rem);
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   V1 video polish (18 Aug acceptance feedback): the video IS the tile.
+   Click = spotlight, double-click = platform fullscreen (real zoom).
+   Text lives on a bottom scrim, never across the picture.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+/* The clickable video surface fills its tile completely. */
+.participant-video-button {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: var(--vf-surface-void);
+  cursor: zoom-in;
+}
+
+.participant-tile.is-featured .participant-video-button {
+  cursor: zoom-out;
+}
+
+/* A phone's portrait frame arrives tall: featured and personal views show the
+   WHOLE frame (contain, letterboxed on void) instead of cover-cropping it
+   into a sliver. Small grid tiles keep cover so the grid stays dense. */
+.participant-tile.is-featured .participant-video,
+.call-stage.is-personal .participant-tile:not(.is-self) .participant-video {
+  object-fit: contain;
+}
+
+/* Personal call: the remote tile takes ALL the stage height, full width. */
+.call-stage.is-personal {
+  align-content: stretch;
+  height: 100%;
+}
+
+.call-stage.is-personal .participant-tile:not(.is-self) {
+  min-height: 100%;
+}
+
+/* Spotlight (conference): featured video takes the stage; the rest becomes a
+   compact film strip underneath. */
+.call-stage.is-spotlight {
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 11rem));
+  grid-template-rows: minmax(0, 1fr) auto;
+  align-content: stretch;
+  justify-content: center;
+}
+
+.call-stage.is-spotlight .participant-tile {
+  min-height: 0;
+  padding: var(--vf-space-3);
+}
+
+.call-stage.is-spotlight .participant-tile.is-featured {
+  grid-row: 1;
+  grid-column: 1 / -1;
+  min-height: 100%;
+}
+
+.call-stage.is-spotlight .participant-tile:not(.is-featured) {
+  grid-row: 2;
+}
+
+.call-stage.is-spotlight .participant-tile:not(.is-featured) .participant-avatar {
+  width: 2.75rem;
+  height: 2.75rem;
+  font-size: var(--vf-font-size-sm);
+}
+
+.call-stage.is-spotlight .participant-tile:not(.is-featured) .participant-audio-controls,
+.call-stage.is-spotlight .participant-tile:not(.is-featured) .participant-languages {
+  display: none;
+}
+
+/* Video tiles: name on a readable bottom scrim; the picture stays clean. */
+.participant-tile.has-video {
+  justify-content: flex-end;
+}
+
+.participant-tile.has-video > :not(.participant-video-button) {
+  position: relative;
+  z-index: 1;
+}
+
+.participant-tile.has-video .participant-name {
+  font-size: var(--vf-font-size-sm);
+}
+
+.participant-tile.has-video::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 7rem;
+  background: var(--vf-media-scrim-bottom);
+  pointer-events: none;
+}
+
+.participant-tile.has-video > :not(.participant-video-button):not(.participant-video) {
+  z-index: 2;
+}
+
+/* Per-speaker controls stay out of the way until wanted: pointer hover or
+   keyboard focus reveals them; touch (no hover) keeps them visible. */
+@media (hover: hover) {
+  .participant-tile.has-video .participant-audio-controls {
+    opacity: 0;
+    transition: opacity var(--vf-duration-fast) var(--vf-ease-standard);
+  }
+
+  .participant-tile.has-video:hover .participant-audio-controls,
+  .participant-tile.has-video:focus-within .participant-audio-controls {
+    opacity: 1;
+  }
+}
+
+/* Transcript actions: download + owner policy, compact in the drawer header. */
+.transcript-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-space-2);
+}
+
+.transcript-policy {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-space-1);
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-xs);
+  cursor: pointer;
+}
+
+.transcript-policy input {
+  accent-color: var(--color-brand);
 }

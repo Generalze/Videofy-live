@@ -131,6 +131,13 @@ export interface WebRtcSessionInput {
   revision: number;
   targetLanguage?: string;
   targetLanguages?: string[];
+  /**
+   * P6.4 text-only targets: a SUBSET of `targetLanguages` that is translated
+   * for captions but never synthesized, because no current listener wants
+   * generated audio in them. Merged with the capability-based text-only set
+   * (languages the voice engine cannot speak) wherever synthesis is planned.
+   */
+  textOnlyLanguages?: string[];
   sourceLanguage?: string;
   sourceLanguageMode?: SourceLanguageMode;
   /**
@@ -221,6 +228,12 @@ export interface ProcessingSession {
   monitoring: SessionMonitoringMetadata;
   targetLanguage: string;
   targetLanguages: string[];
+  /**
+   * P6.4: caller-declared text-only targets (subset of `targetLanguages`).
+   * Distinct from `generatedAudio.textOnlyLanguages`, which additionally folds
+   * in languages the voice engine cannot speak.
+   */
+  textOnlyLanguages?: string[];
   sourceLanguageControl: SourceLanguageControlMetadata;
   targetLanguageCatalogue: TargetLanguageCapability[];
   aiProviderStatus: AiProviderStatusMetadata;
@@ -521,6 +534,13 @@ export class ProcessingSessionStore {
    * mute. Kept per session because a loop is a property of one conversation.
    */
   private readonly repetitionFilters = new Map<string, RepetitionFilter>();
+  /**
+   * P6.4 diagnostic accounting: per session, how many translated segments were
+   * deliberately NOT synthesized, by target language. Languages and counts
+   * only, never text — this is what makes a captions-without-clips session
+   * checkable from diagnostics.
+   */
+  private readonly skippedSynthesisBySession = new Map<string, Map<string, number>>();
   private readonly viewerReadyRenders = new Map<string, Promise<void>>();
   private readonly targetLanguageTallies = new Map<string, MutableSessionLanguageTallies>();
 
@@ -798,6 +818,7 @@ export class ProcessingSessionStore {
       this.targetLanguageTallies.delete(existing.id);
       this.voiceOwnersBySession.delete(existing.id);
       this.repetitionFilters.delete(existing.id);
+      this.skippedSynthesisBySession.delete(existing.id);
     }
 
     const sourceLanguageControl = createInitialSourceLanguageControl({
@@ -806,12 +827,31 @@ export class ProcessingSessionStore {
       confidenceThreshold: this.sourceLanguageConfidenceThreshold,
     });
     const targetLanguage = this.resolveSessionTargetLanguage(input.targetLanguage);
-    const targetLanguages = this.resolveSessionTargetLanguages(
-      input.targetLanguages,
-      targetLanguage,
-      sourceLanguageControl.activeLanguage,
-      isSourceLanguageKnown(sourceLanguageControl),
-    );
+    // P6.4 STT-only sessions: an EXPLICITLY empty target list is valid — every
+    // listener shares the speaker's language and wants captions, so
+    // transcription flows while translation and synthesis never run. Only an
+    // OMITTED list falls back to the configured default target.
+    const targetLanguages =
+      input.targetLanguages !== undefined && input.targetLanguages.length === 0
+        ? []
+        : this.resolveSessionTargetLanguages(
+            input.targetLanguages,
+            targetLanguage,
+            sourceLanguageControl.activeLanguage,
+            isSourceLanguageKnown(sourceLanguageControl),
+          );
+    // Refused, not intersected: a text-only language outside the target list
+    // means the planner and this session disagree about what is delivered.
+    const textOnlyLanguages = normalizeSupportedTargetLanguages(input.textOnlyLanguages ?? []);
+    for (const language of textOnlyLanguages) {
+      if (!targetLanguages.includes(language)) {
+        throw new MediaIngestError(
+          `Text-only language ${language} is not a session target language.`,
+          'unsupported-language',
+          400,
+        );
+      }
+    }
     const now = new Date().toISOString();
     const session: ProcessingSession = {
       id: input.sessionId,
@@ -852,6 +892,7 @@ export class ProcessingSessionStore {
       sourceLanguageControl,
       targetLanguageCatalogue: this.targetLanguageCatalogue,
       aiProviderStatus: defaultAiProviderStatus(),
+      ...(textOnlyLanguages.length > 0 ? { textOnlyLanguages } : {}),
       ...(input.voiceIdsByLanguage && Object.keys(input.voiceIdsByLanguage).length > 0
         ? { voiceIdsByLanguage: { ...input.voiceIdsByLanguage } }
         : {}),
@@ -1270,10 +1311,10 @@ export class ProcessingSessionStore {
       this.onTranscriptionEvent(event);
     }
 
-    const targetLanguages =
-      session.targetLanguages.length > 0 ? session.targetLanguages : [session.targetLanguage];
+    // Every target, including text-only ones: partials are captions and never
+    // synthesize. An STT-only session (no targets) emits transcription only.
     for (const segment of transcribed) {
-      for (const targetLanguage of targetLanguages) {
+      for (const targetLanguage of session.targetLanguages) {
         await this.emitPartialTranslation(session, segment, targetLanguage, partialSequence);
       }
     }
@@ -1361,15 +1402,17 @@ export class ProcessingSessionStore {
 
   private async runCallWarmUp(session: ProcessingSession): Promise<void> {
     const sourceLanguage = session.sourceLanguageControl.activeLanguage;
-    // Translation is warmed for every target: partials translate into all of
-    // them. Speech is warmed only for the primary target, because that is the
-    // only language the final path ever synthesizes.
-    const targetLanguages =
-      session.targetLanguages.length > 0 ? session.targetLanguages : [session.targetLanguage];
-    for (const targetLanguage of targetLanguages) {
+    // Translation is warmed for every target: captions translate into all of
+    // them. Speech is warmed only for the targets the final path will actually
+    // synthesize — a text-only target never loads a voice, and an STT-only
+    // session (no targets) warms nothing.
+    for (const targetLanguage of session.targetLanguages) {
       await this.warmUpTranslationPair(session, sourceLanguage, targetLanguage);
     }
-    await this.warmUpVoice(session, session.targetLanguage);
+    for (const targetLanguage of session.targetLanguages) {
+      if (this.isTextOnlyTargetLanguage(session, targetLanguage)) continue;
+      await this.warmUpVoice(session, targetLanguage);
+    }
   }
 
   private async warmUpTranslationPair(
@@ -1633,6 +1676,7 @@ export class ProcessingSessionStore {
     // The call is over; there is no reason to keep knowing whose voice it was.
     this.voiceOwnersBySession.delete(sessionId);
     this.repetitionFilters.delete(sessionId);
+    this.skippedSynthesisBySession.delete(sessionId);
     return true;
   }
 
@@ -2240,6 +2284,24 @@ export class ProcessingSessionStore {
       translation: cloneTallyMap(tallies?.translation),
       generatedAudio: cloneTallyMap(tallies?.generatedAudio),
     };
+  }
+
+  /**
+   * P6.4: how many translated segments were skipped rather than synthesized,
+   * per target language. Diagnostic only — carries languages and counts, never
+   * transcript text. Torn down with the session.
+   */
+  skippedSynthesisCounts(sessionId: string): Record<string, number> {
+    return Object.fromEntries(this.skippedSynthesisBySession.get(sessionId) ?? []);
+  }
+
+  private recordSkippedSynthesis(session: ProcessingSession, targetLanguage: string): void {
+    let counts = this.skippedSynthesisBySession.get(session.id);
+    if (!counts) {
+      counts = new Map<string, number>();
+      this.skippedSynthesisBySession.set(session.id, counts);
+    }
+    counts.set(targetLanguage, (counts.get(targetLanguage) ?? 0) + 1);
   }
 
   private sessionLanguageTallies(sessionId: string): MutableSessionLanguageTallies {
@@ -3013,7 +3075,7 @@ export class ProcessingSessionStore {
       if (session.state === 'failed' || session.state === 'cancelled') {
         return { ...session };
       }
-      updated = await this.processMicrophoneTranslationEvent(session, transcribed);
+      updated = await this.processRealtimeSegmentOutputs(session, transcribed);
     }
     return updated;
   }
@@ -3080,7 +3142,7 @@ export class ProcessingSessionStore {
         if (session.state === 'failed' || session.state === 'cancelled') {
           return { ...session };
         }
-        updated = await this.processMicrophoneTranslationEvent(session, transcribed);
+        updated = await this.processRealtimeSegmentOutputs(session, transcribed);
       }
       return updated;
     } catch (error) {
@@ -3104,10 +3166,20 @@ export class ProcessingSessionStore {
     }
   }
 
-  private async processMicrophoneTranslationEvent(
+  /**
+   * P6.4: fans one transcribed utterance out to every session target language.
+   * Translation always runs (captions, including text-only targets); synthesis
+   * is decided per language downstream. An empty target list is a valid
+   * STT-only session: the transcription events are already delivered, and
+   * nothing runs beyond them.
+   */
+  private async processRealtimeSegmentOutputs(
     session: ProcessingSession,
     segment: TranscriptionEvent,
   ): Promise<ProcessingSession> {
+    if (session.targetLanguages.length === 0) {
+      return { ...session };
+    }
     if (this.isStaleSourceLanguageRevision(session, segment)) {
       const failed = this.createTranslationEvent(
         session,
@@ -3130,12 +3202,31 @@ export class ProcessingSessionStore {
         `${session.sourceKind === 'webrtc' ? 'WebRTC' : 'Microphone'} translation failed.`,
       );
     }
+    let updated: ProcessingSession = { ...session };
+    for (const targetLanguage of session.targetLanguages) {
+      // A language channel can fail the whole session (programme sessions) or
+      // degrade per utterance (calls); stop only when the session itself has.
+      if (session.state === 'failed' || session.state === 'cancelled') {
+        return { ...session };
+      }
+      updated = await this.processMicrophoneTranslationEvent(session, segment, targetLanguage);
+    }
+    return updated;
+  }
+
+  private async processMicrophoneTranslationEvent(
+    session: ProcessingSession,
+    segment: TranscriptionEvent,
+    targetLanguage: string,
+  ): Promise<ProcessingSession> {
     const queued = this.createTranslationEvent(
       session,
       segment,
       '',
       'queued',
       zeroTranslationLatency(),
+      undefined,
+      targetLanguage,
     );
     session.translation.events = [...session.translation.events, queued].sort(
       (a, b) => a.sequence - b.sequence,
@@ -3166,7 +3257,7 @@ export class ProcessingSessionStore {
           segmentId: segment.chunkId,
           sequence: segment.sequence,
           sourceLanguage: segment.detectedLanguage,
-          targetLanguage: session.targetLanguage,
+          targetLanguage,
           sourceText: segment.sourceText,
           startMs: segment.startMs,
           endMs: segment.endMs,
@@ -3218,10 +3309,14 @@ export class ProcessingSessionStore {
     session: ProcessingSession,
     segment: TimestampedTranslationEvent,
   ): Promise<ProcessingSession> {
-    if (!this.textToSpeechSupportedLanguages.includes(segment.targetLanguage)) {
-      // Mirror the batch pipeline: a target language without an approved voice
-      // stays captions-only instead of failing the whole live session.
+    if (this.isTextOnlyTargetLanguage(session, segment.targetLanguage)) {
+      // Captions carry this channel: either the language has no approved voice
+      // or every current listener in it wants the original voice. Counted so a
+      // captions-without-clips session is checkable; the gate sits before any
+      // voice lookup, so a text-only language never reaches the voice map or
+      // its default fallback.
       this.markRealtimeCaptionsOnlyLanguage(session, segment.targetLanguage);
+      this.recordSkippedSynthesis(session, segment.targetLanguage);
       return { ...session };
     }
     try {
@@ -3697,12 +3792,12 @@ export class ProcessingSessionStore {
       );
     }
 
-    const voiceSegments = translatedSegments.filter((event) =>
-      this.textToSpeechSupportedLanguages.includes(event.targetLanguage),
+    const voiceSegments = translatedSegments.filter(
+      (event) => !this.isTextOnlyTargetLanguage(session, event.targetLanguage),
     );
     const textOnlyLanguages = session.targetLanguages.filter(
       (language) =>
-        !this.textToSpeechSupportedLanguages.includes(language) &&
+        this.isTextOnlyTargetLanguage(session, language) &&
         translatedSegments.some((event) => event.targetLanguage === language),
     );
 
@@ -4284,6 +4379,20 @@ export class ProcessingSessionStore {
   }
 
   /**
+   * P6.4: whether target language L is captions-only for this session — either
+   * the caller declared it text-only (no current listener wants generated
+   * audio in L) or the voice engine cannot speak L. TTS runs for L iff L is a
+   * session target and this is false; a text-only language must never reach
+   * `voiceIdForLanguage` or its default-voice fallback.
+   */
+  private isTextOnlyTargetLanguage(session: ProcessingSession, language: string): boolean {
+    return (
+      (session.textOnlyLanguages?.includes(language) ?? false) ||
+      !this.textToSpeechSupportedLanguages.includes(language)
+    );
+  }
+
+  /**
    * Which voice speaks THIS utterance, resolved now rather than at session
    * creation.
    *
@@ -4603,8 +4712,8 @@ export class ProcessingSessionStore {
         this.textToSpeechProvider.name,
       ),
       targetLanguages: session.targetLanguages,
-      textOnlyLanguages: session.targetLanguages.filter(
-        (language) => !this.textToSpeechSupportedLanguages.includes(language),
+      textOnlyLanguages: session.targetLanguages.filter((language) =>
+        this.isTextOnlyTargetLanguage(session, language),
       ),
     };
     this.rebuildLanguageTallies(session);
@@ -4795,6 +4904,11 @@ function assertSafeWebRtcSessionInput(input: WebRtcSessionInput): void {
   for (const [language, voiceId] of Object.entries(input.voiceIdsByLanguage ?? {})) {
     if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/.test(language) || !/^[A-Za-z0-9_.-]{1,120}$/.test(voiceId)) {
       throw new MediaIngestError('Unsafe WebRTC voice selection rejected.', 'unsafe-filename', 400);
+    }
+  }
+  for (const language of input.textOnlyLanguages ?? []) {
+    if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})?$/.test(normalizeTargetLanguage(language))) {
+      throw new MediaIngestError('Unsafe WebRTC text-only language rejected.', 'unsafe-filename', 400);
     }
   }
 }

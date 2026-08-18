@@ -375,3 +375,119 @@ NOT long-term conference video architecture
 At larger conference scale video moves toward an SFU-style architecture; no
 reason to build that now. Implemented in its own conference-video wave before
 P6.4 closes; nothing implemented in W3.1.
+
+## P6.4 completion wave — W4+W5+W6+W7+W8+V1 (18 Aug 2026)
+
+Delivered as ONE integrated wave on `p6.4/conference-completion` (from W3/W3.1
+baseline 404893f), per the decision to stop fragmenting into per-wave commits.
+Uncommitted pending the single integrated human acceptance.
+
+**W4 (approved, corrected):** per-pair mix locked (translated 0 / interpretation
+0.25 dev-demo constant / original 1; same-language never touched). Correction
+applied: a generated clip for an UNRESOLVED speaker fails CLOSED — dropped and
+counted (`clip-dropped-unresolved-speaker`) — never played on a mode-level
+guess. Originals fail open on unknown language; synthetics fail closed on
+unknown identity.
+
+**W5:** Call Type (personal=2/conference=4) + call-global Call Mode
+(normal|translated), owner-only authority (creator; no election; disconnect
+does not change mode). Normal = engine OFF: no plans, no routing, translated UI
+withheld from markup; client maps effective audio mode to `original` so no
+original is ever suppressed while TTS is off. Ingest reconciliation on
+leave/reap (never on mere disconnect) bumps ONLY speakers whose target set
+changed. Caption ≠ audio target: plans carry `textOnlyLanguages` ⊆
+`targetLanguages`; voices only for synthesized languages; the synthetic
+same-language target is gone (STT-only sessions are valid).
+
+**HARD BLOCKER RESOLVED — multi-audio-target synthesis:** media-ingest's
+single-target final path (`targetLanguages[0]`) was removed, not reordered:
+finals now translate AND synthesize EVERY audio-flagged target. Locked:
+*array position must not determine whether a language gets TTS; multiple audio
+target languages are multiple legitimate generated outputs.* Pinned by the
+deterministic four-person matrix (A en; B fr Translated; C es Translated; D
+fr-captions Original): 1 STT, 2 translations, 2 TTS, zero D-caused synthesis;
+B-leaves/C-original/B-returns/Normal variations all proven at store
+(call-session-acceptance-matrix.test.ts) and ingest
+(text-only-targets.test.ts multi-audio suite) layers.
+
+**W6:** development-demo freshness scheduler (explicitly NOT production
+interpreter scheduling): serial line kept; newest pending clip per speaker
+(supersededCount), round-robin across speakers, no preemption, revision/seen
+guards intact.
+
+**W7:** explicit lifecycle observation (visibility/pagehide/pageshow/freeze/
+resume/online) — suspend is NOT network loss; resume nudges the EXISTING
+resume-token reconnect path and rebuilds dead peers; wake lock as pure
+enhancement. **W8:** honest output routing — selectable only where
+setSinkId+enumerateDevices exist, otherwise a stated system-output; applies to
+remote originals AND generated playback; deviceIds never logged.
+
+**V1 video:** P2P mesh (≤3 remotes), perfect negotiation, gateway relay-only
+signalling (sender binding + same-call target checks; no server decode).
+LOCKED: development-demo topology, NOT the long-term architecture (SFU later).
+Internet traversal needs deployed ICE/TURN (`VITE_WEBRTC_ICE_SERVERS`).
+Video never touches STT/media-ingest.
+
+**UX:** Home → Create/Join → Mode (Normal now real) → pre-join with camera
+preview; Normal pre-join withholds all translation setup; joiners skip mode
+selection (snapshot is authoritative); personal call is a dedicated 1:1
+surface (large remote + self PiP), not a small grid.
+
+**Gates:** repo test 0 (1930 passed, 1 self-gated skip), typecheck 0, lint 0,
+build 0, VAD harness 9/9, instrument health I1–I8 PASS. Known boundaries
+recorded in the completion report (mid-call audio-mode changes re-plan on
+resume only; routeGeneratedAudio still hearLanguage-matched with client-side
+gating; call:* rate limiting still absent — pre-existing).
+
+**Adversarial review (4 lenses, 20 findings):** forbidden-area audit fully
+clean (every changed file classified in-scope; frozen P6.3 evidence
+byte-untouched; no acoustic tokens in the diff). Fixed before acceptance:
+caption-language changes now REPLACE affected speakers' sessions (signature
+bump, same discipline as leave) instead of stranding active sessions on old
+targets; the client mixes by the SNAPSHOT hear language, not the join form,
+and syncs the form on a successful change so resume is never refused as a
+language change; SET_MODE/resume acks no longer overwrite newer broadcast
+snapshots; camera toggle is single-flight with abandoned-grant cleanup;
+establishPeers is single-flight with honest 'failed' states so the W7 rebuild
+can trigger after an initial negotiation failure; transient resume failures
+actually retry; a session created into a superseded registry entry is stopped
+instead of leaked; the video relay refusing a departed target is pinned by
+test. Recorded, not fixed (known boundaries): generated clips still route to
+original-mode co-lingual listeners (client gates playback; ledger counts these
+as unconfirmed by design); disconnected-in-grace video targets receive into an
+empty room until their own resume; call:* events remain without rate limiting
+(pre-existing).
+
+**Final pre-human blocker CLOSED (report point 30 corrected):** mid-call Audio
+Mode is now AUTHORITATIVE, not resume-deferred. `call:audio-mode:set`
+({callId, participantId, audioMode}, behind requireBinding — a socket changes
+only its own preference in its own call) reaches `CallSessionStore.setAudioMode`,
+which reconciles with the leave() signature discipline: only speakers whose
+work order changed are bumped and replaced; translated↔interpretation flips
+change nothing and produce zero ingest churn; no languageRevision moves. The
+client flips its local mix immediately, then sends the authoritative update;
+an ack failure is reported as a PLANNING lag, never a failed click (the
+selector always shows the listener's real local preference; audioMode is not
+in the snapshot, so there is no server state for stale acks to revert).
+Proven through the REAL socket event path (call-mode-and-video.test.ts): the
+four-person matrix live — C→Original replaces A's session with es text-only
+and the fr voice intact (Spanish TTS stops, Spanish captions continue, no
+reconnect); Original→Interpretation restores es synthesis;
+Interpretation→Translated creates ZERO sessions; forged participantId and
+cross-call payloads refused; repeats idempotent; a departed seat refused.
+
+**18 Aug acceptance feedback — transcript wave:** Normal mode REDEFINED:
+"captions only come on when translation is on" was the defect, not the
+contract. Normal now runs STT-only sessions (empty targets, no voices, no
+voiceOwnerId travels) captioning the ORIGINAL words for the whole room;
+translation/TTS stay fully off; caption-language selection stays
+translated-only (Normal captions are verbatim). The transcript is downloadable
+on BOTH call types and BOTH modes — built locally from the captions the client
+already displayed, nothing new stored anywhere — governed by an owner-only
+call-global policy (`call:transcript-policy:set`, snapshot field
+`transcriptDownloadAllowed`, default ON; a policy over the affordance, not
+DRM). Interim lines are excluded from the export: a transcript quotes what was
+said, not what was guessed mid-sentence. Video polish, same wave: click-to-spotlight
+(whole portrait frame via contain), double-click platform fullscreen, names on
+a scrim instead of across the picture, hover-revealed per-speaker controls,
+type-neutral join surface.

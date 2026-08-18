@@ -20,6 +20,16 @@ export const CALL_EVENTS = {
   CAPTION: 'call:caption',
   GENERATED_AUDIO: 'call:generated-audio',
   ERROR: 'call:error',
+  /** W5: call-global mode change; owner authority only. */
+  SET_MODE: 'call:mode:set',
+  /** W5.1: this listener's own mid-call Audio Mode; ingest planning reacts immediately. */
+  SET_AUDIO_MODE: 'call:audio-mode:set',
+  /** Owner-only transcript-download policy for the whole call. */
+  SET_TRANSCRIPT_POLICY: 'call:transcript-policy:set',
+  /** V1: P2P video mesh signalling, relayed peer-to-peer by the gateway. */
+  VIDEO_OFFER: 'call:video:offer',
+  VIDEO_ANSWER: 'call:video:answer',
+  VIDEO_ICE: 'call:video:ice',
 } as const;
 
 export type CallEventName = (typeof CALL_EVENTS)[keyof typeof CALL_EVENTS];
@@ -85,6 +95,20 @@ export type CallLanguage = 'en' | 'es' | 'fr';
 export type CallVoiceGender = 'male' | 'female';
 export type CallAudioMode = 'translated' | 'interpretation' | 'original';
 
+/**
+ * W5 product model. Personal Call and Conference are distinct PRODUCTS
+ * (capacity 2 vs 4, dedicated surfaces), even where primitives are shared.
+ */
+export type CallType = 'personal' | 'conference';
+
+/**
+ * W5 call-global mode. `normal` = direct original audio, translation engine
+ * fully OFF (no STT, no translation, no TTS, no personal voice, no translated
+ * captions). `translated` = the engine is live and Audio Mode applies per
+ * listener. Authority: the call owner only.
+ */
+export type CallMode = 'normal' | 'translated';
+
 /** Pre-join microphone preview state (UI only, never sent to the gateway). */
 export type MicPermissionState = 'idle' | 'requesting' | 'granted' | 'denied';
 
@@ -96,6 +120,13 @@ export interface CallJoinPayload {
   captionsEnabled: boolean;
   voiceGender: CallVoiceGender;
   audioMode: CallAudioMode;
+  /**
+   * Consulted ONLY when this join CREATES the call; ignored on an existing
+   * call, where the call itself is authoritative (invite links join without
+   * knowing either). Defaults when absent: 'conference', 'translated'.
+   */
+  callType?: CallType;
+  callMode?: CallMode;
   /**
    * Absent means the speaker stated their language and it is final. `auto`
    * treats `speakLanguage` as a starting guess the first utterance may correct.
@@ -158,6 +189,66 @@ export interface CallStateSnapshot {
   callId?: string;
   state?: string;
   participants?: CallParticipantSummary[];
+  /** W5: which product this call is. */
+  callType?: CallType;
+  /** W5: the authoritative call-global mode. */
+  callMode?: CallMode;
+  /** W5: the one participant allowed to change callMode. */
+  ownerParticipantId?: string;
+  /** Owner-switchable; default true. Governs the download affordance only. */
+  transcriptDownloadAllowed?: boolean;
+}
+
+/** Owner-only: whether anyone on the call may download the transcript. */
+export interface CallTranscriptPolicyPayload {
+  callId: string;
+  participantId: string;
+  allowed: boolean;
+}
+
+/**
+ * W5.1: a listener's own Audio Mode, sent the moment it changes so the TTS
+ * planner can drop (or restore) their generated-audio requirement without a
+ * reconnect. The gateway's binding check means a socket can only ever change
+ * its own preference in its own call.
+ */
+export interface CallAudioModePayload {
+  callId: string;
+  participantId: string;
+  audioMode: CallAudioMode;
+}
+
+/** W5: owner-only call-global mode change. */
+export interface CallSetModePayload {
+  callId: string;
+  participantId: string;
+  mode: CallMode;
+}
+
+export type CallSetModeAck =
+  | { ok: true; state: CallStateSnapshot }
+  | {
+      ok: false;
+      error: 'not-owner' | 'unknown-call' | 'unknown-participant' | 'invalid-mode';
+    };
+
+/**
+ * V1 video mesh signalling. Relay-only: the gateway validates the sender's
+ * binding and that the target is a current participant of the SAME call, then
+ * forwards to the target's private room. Video never touches STT/media-ingest.
+ */
+export interface CallVideoSdpPayload {
+  callId: string;
+  participantId: string;
+  targetParticipantId: string;
+  sdp: string;
+}
+
+export interface CallVideoIcePayload {
+  callId: string;
+  participantId: string;
+  targetParticipantId: string;
+  candidate: RTCIceCandidateInit | null;
 }
 
 /** Known machine-readable join failure codes; the set may grow. */

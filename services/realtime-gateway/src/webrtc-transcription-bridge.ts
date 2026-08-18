@@ -79,6 +79,12 @@ export interface WebRtcTranscriptionBridgeContext {
   externalAudioUrl?: string;
   targetLanguage?: string;
   targetLanguages?: string[];
+  /**
+   * W5: the subset of `targetLanguages` translated for captions but NEVER
+   * synthesized — no current listener wants generated audio in them, so they
+   * must not reach the default-voice fallback either.
+   */
+  textOnlyLanguages?: string[];
   sourceLanguage?: string;
   sourceLanguageMode?: SourceLanguageMode;
   /** Per-target standard voice overrides (P6.1B calls); media-ingest validates values. */
@@ -791,6 +797,9 @@ export class HttpWebRtcTranscriptionSubmissionClient
       revision: input.revision,
       ...(input.targetLanguage ? { targetLanguage: input.targetLanguage } : {}),
       ...(input.targetLanguages ? { targetLanguages: input.targetLanguages } : {}),
+      ...(input.textOnlyLanguages && input.textOnlyLanguages.length > 0
+        ? { textOnlyLanguages: input.textOnlyLanguages }
+        : {}),
       ...(input.sourceLanguage ? { sourceLanguage: input.sourceLanguage } : {}),
       ...(input.sourceLanguageMode ? { sourceLanguageMode: input.sourceLanguageMode } : {}),
       ...(input.generatedAudioPacing ? { generatedAudioPacing: input.generatedAudioPacing } : {}),

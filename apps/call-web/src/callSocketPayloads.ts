@@ -1,10 +1,14 @@
 import type { ManagerOptions, SocketOptions } from 'socket.io-client';
 import type {
+  CallAudioModePayload,
+  CallTranscriptPolicyPayload,
   CallCaptionLanguagePayload,
   CallIcePayload,
   CallJoinPayload,
   CallLeavePayload,
+  CallMode,
   CallSdpPayload,
+  CallType,
 } from './callTypes';
 import { normalizeCallCode, type CallJoinFormState } from './callFormState';
 
@@ -69,6 +73,13 @@ export function buildCallJoinPayload(
    * name somebody else's.
    */
   sessionToken?: string | null,
+  /**
+   * W5: the product and mode chosen in the entry flow. Consulted by the
+   * gateway ONLY when this join CREATES the call; an existing call is
+   * authoritative and ignores them, so sending on every join (including
+   * rejoin) is harmless and keeps this a pure function of its inputs.
+   */
+  intent?: { callType: CallType; callMode: CallMode },
 ): CallJoinPayload {
   const payload: CallJoinPayload = {
     callId: normalizeCallCode(form.callCode),
@@ -78,6 +89,7 @@ export function buildCallJoinPayload(
     captionsEnabled: form.captionsEnabled,
     voiceGender: form.voiceGender,
     audioMode: form.audioMode,
+    ...(intent ? { callType: intent.callType, callMode: intent.callMode } : {}),
     // Omitted rather than sent as 'manual', so a gateway that predates this
     // option keeps its existing default instead of seeing an unknown field.
     ...(form.detectSpeakLanguage ? { sourceLanguageMode: 'auto' as const } : {}),
@@ -93,6 +105,22 @@ export function buildCallJoinPayload(
 
 export function buildCallLeavePayload(callId: string, participantId: string): CallLeavePayload {
   return { callId, participantId };
+}
+
+export function buildCallTranscriptPolicyPayload(
+  callId: string,
+  participantId: string,
+  allowed: boolean,
+): CallTranscriptPolicyPayload {
+  return { callId, participantId, allowed };
+}
+
+export function buildCallAudioModePayload(
+  callId: string,
+  participantId: string,
+  audioMode: CallAudioModePayload['audioMode'],
+): CallAudioModePayload {
+  return { callId, participantId, audioMode };
 }
 
 export function buildCallCaptionLanguagePayload(

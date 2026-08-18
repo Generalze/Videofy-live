@@ -368,6 +368,9 @@ describe('CallRuntime join and ingest plan handling', () => {
     expect(ack.snapshot).toEqual({
       callId: 'demo',
       state: 'waiting',
+      callType: 'conference',
+      callMode: 'translated',
+      ownerParticipantId: 'participant_1',
       participants: [
         {
           participantId: 'participant_1',
@@ -522,8 +525,18 @@ describe('CallRuntime join and ingest plan handling', () => {
       hearLanguage: 'fr',
     });
 
+    // W5 seam repair: the change REPLACES Ana's session (her target set moved
+    // es -> fr, so her mediaRevision bumped r2 -> r3 and the old session was
+    // retired). Continued delivery is proven from the SUCCESSOR session — an
+    // event still carrying the retired r2 id dying is the fix working, not a
+    // regression.
     harness.runtime.interceptTimestampedTranslationEvent(
-      translationEvent({ sequence: 2, targetLanguage: 'fr' }),
+      translationEvent({
+        sequence: 2,
+        targetLanguage: 'fr',
+        sessionId: 'call_demo_participant_1_r3',
+        streamId: 'callcast_demo_participant_1_r3',
+      }),
     );
 
     // Assert on deliveredTo, NOT on record count. The caption record is still
@@ -544,7 +557,7 @@ describe('CallRuntime join and ingest plan handling', () => {
     expect(emitted).not.toContain('ana-token');
   });
 
-  it('uses a synthetic other-language target and no voice overrides for a same-language pair', async () => {
+  it('runs a same-language pair STT-only: empty targets, no voices, no synthetic language (W5)', async () => {
     await join(harness, new FakeSocket('socket-a'), { ...JOIN_A });
     await join(harness, new FakeSocket('socket-b'), {
       ...JOIN_B,
@@ -552,15 +565,31 @@ describe('CallRuntime join and ingest plan handling', () => {
       hearLanguage: 'en',
     });
 
+    // Both readers have captions on, so both sessions exist — but as pure
+    // transcription. The synthetic other-language target this replaced made
+    // media-ingest translate and synthesize speech that routed to nobody.
     expect(harness.ingestControl.createSession).toHaveBeenCalledTimes(2);
     for (const [input] of harness.ingestControl.createSession.mock.calls) {
-      // Same-language pair: media-ingest rejects target === source, so the
-      // OTHER supported call language keeps transcription (captions) flowing.
       expect(input.sourceLanguage).toBe('en');
-      expect(input.targetLanguages).toEqual(['es']);
-      expect(input.targetLanguage).toBe('es');
+      expect(input.targetLanguages).toEqual([]);
+      expect('targetLanguage' in input).toBe(false);
+      expect('textOnlyLanguages' in input).toBe(false);
       expect('voiceIdsByLanguage' in input).toBe(false);
     }
+  });
+
+  it('defers a same-language pair entirely when nobody reads captions (W5)', async () => {
+    await join(harness, new FakeSocket('socket-a'), { ...JOIN_A, captionsEnabled: false });
+    await join(harness, new FakeSocket('socket-b'), {
+      ...JOIN_B,
+      speakLanguage: 'en',
+      hearLanguage: 'en',
+      captionsEnabled: false,
+    });
+
+    // No translation target and no caption reader: the engine has no
+    // audience, so no media-ingest session is created for either speaker.
+    expect(harness.ingestControl.createSession).not.toHaveBeenCalled();
   });
 
   it('rejects a resume with a wrong token using the indistinguishable store error', async () => {
@@ -1088,6 +1117,7 @@ describe('CallRuntime lifecycle: disconnect, reaper, leave, resume', () => {
       publishPeerBindingCount: 0,
       receivePeerCount: 0,
       publishPeerCount: 0,
+      videoRelayDropCount: 0,
     });
   });
 
@@ -1154,6 +1184,7 @@ describe('CallRuntime lifecycle: disconnect, reaper, leave, resume', () => {
       publishPeerBindingCount: 0,
       receivePeerCount: 0,
       publishPeerCount: 0,
+      videoRelayDropCount: 0,
     });
   });
 

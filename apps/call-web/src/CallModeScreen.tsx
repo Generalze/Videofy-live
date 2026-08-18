@@ -1,18 +1,17 @@
-import type { CallType } from './HomeScreen';
+import type { CallMode, CallType } from './callTypes';
 
 /**
- * P6.4-W3.1 — Call Mode selection, structurally.
+ * P6.4-W3.1/W5 — Call Mode selection.
  *
  * The contract: Normal is a direct original-voice call with the translation
  * engine fully inactive — no STT, no translation, no TTS, no personal voice.
- * That server behaviour is W5's, and it does not exist yet. So Normal is shown
- * and honestly disabled rather than being faked: a "Normal" call that secretly
- * ran the translation engine underneath would be exactly the kind of quiet
- * contradiction this redesign exists to remove.
+ * That server behaviour exists now (W5: callMode is call-global, owner
+ * authority, engine retired when normal), so Normal is a real choice. The
+ * hint copy states what each mode does; it sells neither.
  */
 export interface CallModeScreenProps {
   callType: CallType;
-  onChooseTranslated: () => void;
+  onChooseMode: (mode: CallMode) => void;
   onBack: () => void;
 }
 
@@ -29,14 +28,22 @@ export function CallModeScreen(props: CallModeScreenProps) {
       <p className="mode-lede">How should this {noun} work?</p>
 
       <div className="mode-choices">
-        <button type="button" className="mode-choice" disabled aria-disabled="true">
+        <button
+          type="button"
+          className="mode-choice"
+          onClick={() => props.onChooseMode('normal')}
+        >
           <span className="mode-choice-name">Normal</span>
           <span className="mode-choice-hint">
-            Direct call, original voices only — arrives with the Call Mode update
+            Direct call, original voices — no translation
           </span>
         </button>
 
-        <button type="button" className="mode-choice" onClick={props.onChooseTranslated}>
+        <button
+          type="button"
+          className="mode-choice"
+          onClick={() => props.onChooseMode('translated')}
+        >
           <span className="mode-choice-name">Translated</span>
           <span className="mode-choice-hint">
             Live translation, captions and translated voices

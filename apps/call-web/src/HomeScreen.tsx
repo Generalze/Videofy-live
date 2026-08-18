@@ -6,7 +6,9 @@
  * The choice made here shapes everything after it — copy, capacity, and
  * eventually the call surface itself — so it comes first and stands alone.
  */
-export type CallType = 'personal' | 'conference';
+import type { CallType } from './callTypes';
+
+export type { CallType };
 
 export interface HomeScreenProps {
   onChooseType: (type: CallType) => void;

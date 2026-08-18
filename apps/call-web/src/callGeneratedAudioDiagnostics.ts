@@ -33,7 +33,12 @@ export type GeneratedAudioEventName =
   | 'waiting'
   | 'abort'
   | 'media-error'
-  | 'ended';
+  | 'ended'
+  /* W4 correction: a generated clip arrived for a speaker whose participant/
+     language state is unresolved. Synthetic audio fails CLOSED on unknown
+     identity — the wrong synthetic voice is misleading — so the clip is
+     dropped and counted here rather than played on a mode-level guess. */
+  | 'clip-dropped-unresolved-speaker';
 
 /**
  * What the UI would be entitled to say, if the UI said technical things.

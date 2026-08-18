@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createInitialCallJoinForm, withSpeakLanguage } from './callFormState';
 import {
+  buildCallAudioModePayload,
   buildCallCaptionLanguagePayload,
   buildCallIcePayload,
   buildCallJoinPayload,
@@ -95,6 +96,37 @@ describe('buildCallJoinPayload', () => {
   });
 });
 
+describe('W5 creator intent on the join payload', () => {
+  it('includes callType and callMode when the entry flow provides them', () => {
+    const payload = buildCallJoinPayload(completedForm(), undefined, null, {
+      callType: 'personal',
+      callMode: 'normal',
+    });
+
+    expect(payload.callType).toBe('personal');
+    expect(payload.callMode).toBe('normal');
+  });
+
+  it('omits both fields entirely when no intent is given', () => {
+    const payload = buildCallJoinPayload(completedForm());
+
+    expect('callType' in payload).toBe(false);
+    expect('callMode' in payload).toBe(false);
+  });
+
+  it('sends intent alongside resume credentials unchanged; the existing call ignores it', () => {
+    const payload = buildCallJoinPayload(
+      completedForm(),
+      { participantId: 'p1', resumeToken: 'secret-resume-1' },
+      null,
+      { callType: 'conference', callMode: 'translated' },
+    );
+
+    expect(payload.callType).toBe('conference');
+    expect(payload.resumeParticipantId).toBe('p1');
+  });
+});
+
 describe('signalling payload builders', () => {
   it('builds the leave payload', () => {
     expect(buildCallLeavePayload('calm-river-42', 'participant-a')).toEqual({
@@ -160,6 +192,28 @@ describe('call socket contract', () => {
       CAPTION: 'call:caption',
       GENERATED_AUDIO: 'call:generated-audio',
       ERROR: 'call:error',
+      // W5: call-global mode change, owner authority only.
+      SET_MODE: 'call:mode:set',
+      // W5.1: a listener's own mid-call Audio Mode — planning authority,
+      // because the TTS planner reads it live.
+      SET_AUDIO_MODE: 'call:audio-mode:set',
+      // Owner-only transcript-download policy.
+      SET_TRANSCRIPT_POLICY: 'call:transcript-policy:set',
+      // V1: P2P video mesh signalling, relayed peer-to-peer by the gateway.
+      // Video never touches STT/media-ingest.
+      VIDEO_OFFER: 'call:video:offer',
+      VIDEO_ANSWER: 'call:video:answer',
+      VIDEO_ICE: 'call:video:ice',
+    });
+  });
+});
+
+describe('buildCallAudioModePayload', () => {
+  it('names the participant whose preference moves, so the gateway can refuse anyone else', () => {
+    expect(buildCallAudioModePayload('demo', 'participant_3', 'original')).toEqual({
+      callId: 'demo',
+      participantId: 'participant_3',
+      audioMode: 'original',
     });
   });
 });

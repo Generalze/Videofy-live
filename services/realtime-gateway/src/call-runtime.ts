@@ -8,7 +8,9 @@ import {
   type CallJoinFailure,
   type CallJoinInput,
   type CallLanguage,
+  type CallMode,
   type CallSnapshot,
+  type CallType,
 } from '@videofy-live/call-session';
 import type {
   GeneratedAudioReadyEvent,
@@ -93,6 +95,16 @@ export const CALL_EVENTS = {
   CAPTION: 'call:caption',
   GENERATED_AUDIO: 'call:generated-audio',
   ERROR: 'call:error',
+  /** W5: call-global mode change; owner authority only. */
+  SET_MODE: 'call:mode:set',
+  /** W5.1: a listener's own mid-call Audio Mode change; planning reacts immediately. */
+  SET_AUDIO_MODE: 'call:audio-mode:set',
+  /** Owner-only transcript-download policy for the whole call. */
+  SET_TRANSCRIPT_POLICY: 'call:transcript-policy:set',
+  /** V1: P2P video mesh signalling, relayed peer-to-peer by the gateway. */
+  VIDEO_OFFER: 'call:video:offer',
+  VIDEO_ANSWER: 'call:video:answer',
+  VIDEO_ICE: 'call:video:ice',
 } as const;
 
 /** Socket.IO handshake query role used by apps/call-web. */
@@ -259,6 +271,12 @@ interface CallStatsAccumulator {
 export interface CallStateWirePayload {
   callId: string;
   state: string;
+  /** W5: which product this call is. */
+  callType: CallType;
+  /** W5: the authoritative call-global mode. */
+  callMode: CallMode;
+  /** W5: the one participant allowed to change callMode. */
+  ownerParticipantId: string;
   participants: {
     participantId: string;
     displayName: string;
@@ -266,6 +284,46 @@ export interface CallStateWirePayload {
     hearLanguage: CallLanguage;
     joined: boolean;
   }[];
+}
+
+/** W5: owner-only call-global mode change (client mirror in callTypes.ts). */
+export interface CallSetModePayload {
+  callId: string;
+  participantId: string;
+  mode: CallMode;
+}
+
+export type CallSetModeAck =
+  | { ok: true; state: CallStateWirePayload }
+  | {
+      ok: false;
+      error: 'not-owner' | 'unknown-call' | 'unknown-participant' | 'invalid-mode';
+    };
+
+/**
+ * V1 video mesh signalling (client mirror in callTypes.ts). Relay-only: the
+ * gateway validates the sender's binding and that the target is a current
+ * participant of the SAME call, then forwards to the target's private room.
+ * Video never touches STT/media-ingest.
+ */
+export interface CallVideoSdpPayload {
+  callId: string;
+  participantId: string;
+  targetParticipantId: string;
+  sdp: string;
+}
+
+export interface CallVideoIcePayload {
+  callId: string;
+  participantId: string;
+  targetParticipantId: string;
+  /** Structural RTCIceCandidateInit; null is the end-of-candidates marker. */
+  candidate: {
+    candidate: string;
+    sdpMid?: string | null;
+    sdpMLineIndex?: number | null;
+    usernameFragment?: string | null;
+  } | null;
 }
 
 export type CallJoinAck =
@@ -320,16 +378,14 @@ interface CallParticipantRuntimeState {
 interface CallIngestRegistryEntry {
   callId: string;
   participantId: string;
-  plan: CallIngestPlan;
   /**
-   * Targets actually sent to media-ingest. For a same-language pair the plan's
-   * targetLanguages is empty, but media-ingest rejects sessions whose resolved
-   * target equals the source, so the OTHER supported call language is used as
-   * a synthetic target purely to keep the session valid; captions for
-   * same-language recipients come from the transcription (original) events and
-   * the unused translation/TTS output routes to nobody.
+   * The plan's targetLanguages go to media-ingest exactly as computed (W5):
+   * an EMPTY list runs the session STT-only — transcription events feed
+   * same-language captions, with no translation and no TTS. The synthetic
+   * same-language target this replaced made media-ingest synthesize speech
+   * that routed to nobody, with its default voice.
    */
-  effectiveTargetLanguages: CallLanguage[];
+  plan: CallIngestPlan;
   languageRevision: number;
   /** True while the media-ingest session for this revision-scoped id is running. */
   active: boolean;
@@ -388,6 +444,13 @@ export class CallRuntime {
   private readonly loggedInputFormats = new Set<string>();
   /** Per-call delivery/latency accounting, emitted as `call-summary` on teardown. */
   private readonly callStats = new Map<string, CallStatsAccumulator>();
+
+  /**
+   * V1 video relay refusals (unbound sender, unknown target, oversize
+   * payload). A counter and not a log line: the payloads are somebody's
+   * signalling, and the interesting fact is that drops are happening at all.
+   */
+  private videoRelayDropCount = 0;
 
   private readonly socketBindings = new Map<string, CallSocketBinding>();
   private readonly participants = new Map<string, CallParticipantRuntimeState>();
@@ -461,6 +524,25 @@ export class CallRuntime {
     this.onGuarded(socket, CALL_EVENTS.SET_CAPTION_LANGUAGE, async (raw, ack) => {
       this.deliverAck(ack, await this.handleSetCaptionLanguage(socket, raw));
     });
+    this.onGuarded(socket, CALL_EVENTS.SET_MODE, async (raw, ack) => {
+      this.deliverAck(ack, await this.handleSetCallMode(socket, raw));
+    });
+    this.onGuarded(socket, CALL_EVENTS.SET_AUDIO_MODE, async (raw, ack) => {
+      this.deliverAck(ack, await this.handleSetAudioMode(socket, raw));
+    });
+    this.onGuarded(socket, CALL_EVENTS.SET_TRANSCRIPT_POLICY, (raw, ack) => {
+      this.deliverAck(ack, this.handleSetTranscriptPolicy(socket, raw));
+    });
+    // V1 video mesh signalling: fire-and-forget relays, consistent with ICE.
+    this.onGuarded(socket, CALL_EVENTS.VIDEO_OFFER, (raw) =>
+      this.relayVideoSignal(socket, CALL_EVENTS.VIDEO_OFFER, raw, 'sdp'),
+    );
+    this.onGuarded(socket, CALL_EVENTS.VIDEO_ANSWER, (raw) =>
+      this.relayVideoSignal(socket, CALL_EVENTS.VIDEO_ANSWER, raw, 'sdp'),
+    );
+    this.onGuarded(socket, CALL_EVENTS.VIDEO_ICE, (raw) =>
+      this.relayVideoSignal(socket, CALL_EVENTS.VIDEO_ICE, raw, 'candidate'),
+    );
     // Both are instrumentation reports: no ack, nothing to fail, and both are
     // bound to the socket's own identity before anything is recorded.
     this.onGuarded(socket, CALL_EVENTS.CAPTURE_SETTINGS, (raw) =>
@@ -510,6 +592,121 @@ export class CallRuntime {
     // work orders are reapplied through the same path a join uses.
     await this.applyIngestPlans(binding.callId, result.snapshot, result.ingestPlans);
     return { ok: true };
+  }
+
+  /** Owner-only transcript-download policy; the snapshot carries it to everyone. */
+  handleSetTranscriptPolicy(
+    socket: CallSocketLike,
+    raw: unknown,
+  ): { ok: boolean; error?: string } {
+    const binding = this.requireBinding(socket, raw);
+    if (!binding) return { ok: false, error: USER_FACING_ERRORS.notInCall };
+    const allowed = (raw as { allowed?: unknown }).allowed;
+    if (typeof allowed !== 'boolean') {
+      return { ok: false, error: 'Choose whether the transcript can be downloaded.' };
+    }
+    const result = this.store.setTranscriptDownloadAllowed(
+      binding.callId,
+      binding.participantId,
+      allowed,
+    );
+    if (!result.ok) {
+      return {
+        ok: false,
+        error:
+          result.reason === 'not-owner'
+            ? 'Only the call owner can change transcript downloads.'
+            : USER_FACING_ERRORS.notInCall,
+      };
+    }
+    if (result.changed) {
+      this.emitToRoom(
+        callRoom(binding.callId),
+        CALL_EVENTS.STATE,
+        toWireCallState(result.snapshot),
+      );
+    }
+    return { ok: true };
+  }
+
+  /**
+   * W5.1 — a listener changing their own Audio Mode mid-call. The binding
+   * check is the whole security story: a socket may only change ITS OWN
+   * preference in ITS OWN call. No call:state broadcast — audioMode is not
+   * in the snapshot; only ingest planning reacts.
+   */
+  async handleSetAudioMode(
+    socket: CallSocketLike,
+    raw: unknown,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const binding = this.requireBinding(socket, raw);
+    if (!binding) return { ok: false, error: USER_FACING_ERRORS.notInCall };
+    const audioMode = (raw as { audioMode?: unknown }).audioMode;
+    if (typeof audioMode !== 'string') {
+      return { ok: false, error: 'Choose how you hear the call.' };
+    }
+    const result = this.store.setAudioMode(
+      binding.callId,
+      binding.participantId,
+      audioMode as 'translated' | 'interpretation' | 'original',
+    );
+    if (!result.ok) {
+      return {
+        ok: false,
+        error:
+          result.reason === 'invalid-audio-mode'
+            ? 'That audio mode is not available.'
+            : USER_FACING_ERRORS.notInCall,
+      };
+    }
+    if (!result.changed) return { ok: true };
+    logger.info('Call audio mode changed', {
+      callId: binding.callId,
+      participantId: binding.participantId,
+      audioMode,
+      replans: result.ingestPlans.length,
+    });
+    // Only affected speakers travel: their sessions are replaced so
+    // unnecessary synthesis stops (or resumes) without any reconnect.
+    await this.applyIngestPlans(binding.callId, result.snapshot, result.ingestPlans);
+    return { ok: true };
+  }
+
+  /**
+   * W5 — the owner turning the call's translation engine on or off for
+   * everyone. The store decides authority and revision consequences; this
+   * handler carries out the transport half: to `normal` it retires every
+   * ingest session for the call (the store returned no plans), to `translated`
+   * it applies the full fresh plan set through the same path a join uses.
+   */
+  async handleSetCallMode(socket: CallSocketLike, raw: unknown): Promise<CallSetModeAck> {
+    const binding = this.requireBinding(socket, raw);
+    if (!binding) return { ok: false, error: 'unknown-participant' };
+    const mode = (raw as { mode?: unknown }).mode;
+    if (mode !== 'normal' && mode !== 'translated') {
+      return { ok: false, error: 'invalid-mode' };
+    }
+
+    const result = this.store.setCallMode(binding.callId, binding.participantId, mode);
+    if (!result.ok) return { ok: false, error: result.reason };
+    const state = toWireCallState(result.snapshot);
+    if (!result.changed) return { ok: true, state };
+
+    logger.info('Call mode changed', {
+      callId: binding.callId,
+      participantId: binding.participantId,
+      mode,
+    });
+    this.emitToRoom(callRoom(binding.callId), CALL_EVENTS.STATE, state);
+    if (mode === 'normal') {
+      // The engine is off: every session retires. The store already bumped
+      // every connected participant, so any straggler event is also
+      // revision-rejected and mode-rejected in routing.
+      this.retireCallIngestSessions(binding.callId, 'call mode set to normal');
+    } else {
+      await this.applyIngestPlans(binding.callId, result.snapshot, result.ingestPlans);
+    }
+    return { ok: true, state };
   }
 
   async handleJoin(socket: CallSocketLike, raw: unknown): Promise<CallJoinAck> {
@@ -763,6 +960,75 @@ export class CallRuntime {
   }
 
   /**
+   * V1 — relay one video signalling event to its target's private room.
+   *
+   * Fire-and-forget, like the audio ICE relays: no ack, and a refused payload
+   * is dropped with a diagnostic count. The sender must pass `requireBinding`,
+   * and the target must hold a seat in this call (connected or in-grace; a disconnected target's private room is empty, so delivery waits for their own resume) of the sender's own call by
+   * the store snapshot — which is also what makes cross-call relay impossible,
+   * because the membership lookup never leaves the sender's call. The sender's
+   * participantId is preserved so the receiver knows which peer is talking.
+   */
+  private relayVideoSignal(
+    socket: CallSocketLike,
+    event: string,
+    raw: unknown,
+    kind: 'sdp' | 'candidate',
+  ): void {
+    const binding = this.requireBinding(socket, raw);
+    if (!binding) {
+      this.videoRelayDropCount += 1;
+      return;
+    }
+    const target = (raw as { targetParticipantId?: unknown }).targetParticipantId;
+    const snapshot = typeof target === 'string' ? this.store.snapshot(binding.callId) : null;
+    const targetIsCurrent =
+      snapshot?.participants.some((participant) => participant.participantId === target) ?? false;
+    if (typeof target !== 'string' || !targetIsCurrent) {
+      this.videoRelayDropCount += 1;
+      return;
+    }
+    if (kind === 'sdp') {
+      const sdp = readSdp(raw);
+      if (!sdp) {
+        this.videoRelayDropCount += 1;
+        return;
+      }
+      this.emitToRoom(callParticipantRoom(binding.callId, target), event, {
+        callId: binding.callId,
+        participantId: binding.participantId,
+        targetParticipantId: target,
+        sdp,
+      } satisfies CallVideoSdpPayload);
+      return;
+    }
+    // A null candidate is the end-of-candidates marker and is relayed as
+    // such; anything else must survive the same size limits as audio ICE.
+    const rawCandidate = (raw as { candidate?: unknown }).candidate;
+    const candidate = rawCandidate === null ? null : readCandidate(raw);
+    if (rawCandidate !== null && !candidate) {
+      this.videoRelayDropCount += 1;
+      return;
+    }
+    this.emitToRoom(callParticipantRoom(binding.callId, target), event, {
+      callId: binding.callId,
+      participantId: binding.participantId,
+      targetParticipantId: target,
+      candidate:
+        candidate === null
+          ? null
+          : {
+              candidate: candidate.candidate,
+              sdpMid: candidate.sdpMid ?? null,
+              sdpMLineIndex: candidate.sdpMLineIndex ?? null,
+              ...(candidate.usernameFragment !== undefined
+                ? { usernameFragment: candidate.usernameFragment }
+                : {}),
+            },
+    } satisfies CallVideoIcePayload);
+  }
+
+  /**
    * Intercept a media-ingest transcription event. Returns true when the event
    * belongs to a call session (the caller must NOT forward it to programme
    * rooms); unknown/stale revision-scoped call ids are swallowed — they are
@@ -971,6 +1237,7 @@ export class CallRuntime {
     publishPeerBindingCount: number;
     receivePeerCount: number;
     publishPeerCount: number;
+    videoRelayDropCount: number;
   } {
     return {
       activeCallCount: this.store.activeCallCount(),
@@ -980,6 +1247,7 @@ export class CallRuntime {
       publishPeerBindingCount: this.publishPeerIndex.size,
       receivePeerCount: this.receivePeers.count(),
       publishPeerCount: this.mediaPeers.getSnapshots().length,
+      videoRelayDropCount: this.videoRelayDropCount,
     };
   }
 
@@ -1053,7 +1321,6 @@ export class CallRuntime {
         callId,
         participantId,
         plan,
-        effectiveTargetLanguages: effectiveIngestTargets(plan),
         // From the plan, not from possibly-stale participant state.
         languageRevision: plan.languageRevision,
         active: sameIdEntry?.active ?? false,
@@ -1063,14 +1330,28 @@ export class CallRuntime {
       };
       this.ingestRegistry.set(plan.ingestSessionId, entry);
 
-      const hasRecipients = snapshot.participants.some(
-        (participant) => participant.participantId !== participantId && participant.connected,
-      );
-      if (!hasRecipients || entry.active) {
+      // W5: a session is created only when its output has an audience — at
+      // least one translation target, or at least one connected same-language
+      // recipient reading captions (an empty-target session runs STT-only).
+      // Otherwise creation stays deferred: the next membership change mints a
+      // fresh revision-scoped session anyway.
+      const sessionNeeded =
+        plan.targetLanguages.length > 0 || plan.sameLanguageCaptionsNeeded;
+      if (!sessionNeeded || entry.active) {
         continue;
       }
       try {
         await this.ingestControl.createSession(bridgeContextFor(entry));
+        if (this.ingestRegistry.get(plan.ingestSessionId) !== entry) {
+          // Retired or superseded while the create round-trip was in flight
+          // (concurrent join, SET_MODE normal, leave): nothing will ever stop
+          // this session through the registry, so it is stopped here — the
+          // one place that knows it exists (review finding).
+          entry.active = true;
+          this.stopIngestSessionSafely(entry);
+          this.deleteIngestSessionSafely(entry);
+          continue;
+        }
         entry.active = true;
         entry.everCreated = true;
       } catch (error) {
@@ -1581,8 +1862,26 @@ export class CallRuntime {
       this.teardownCall(callId, 'call ended');
     } else if (result.snapshot) {
       this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, toWireCallState(result.snapshot));
+      if (result.ingestPlans.length > 0) {
+        // W5 membership reconciliation: the store bumped ONLY the speakers
+        // whose target set changed and returned their fresh plans, so this
+        // replaces exactly those sessions — an explicit cutoff of work
+        // addressed to the departed listener — while every unaffected
+        // speaker's in-flight session stays untouched.
+        void this.applyIngestPlans(callId, result.snapshot, result.ingestPlans);
+      }
     }
     return { ok: result.ok };
+  }
+
+  /** W5: the call went to normal mode — every ingest session retires at once. */
+  private retireCallIngestSessions(callId: string, reason: string): void {
+    for (const [ingestSessionId, entry] of [...this.ingestRegistry]) {
+      if (entry.callId === callId) this.retireIngestEntry(ingestSessionId, reason);
+    }
+    for (const state of this.participants.values()) {
+      if (state.callId === callId) state.currentIngestSessionId = null;
+    }
   }
 
   private teardownCall(callId: string, reason: string): void {
@@ -1831,21 +2130,11 @@ function participantIdFromPlan(plan: CallIngestPlan, callId: string): string | n
   return participantId.length > 0 ? participantId : null;
 }
 
-/**
- * Media-ingest rejects a session whose resolved target equals its source, and
- * an empty target list resolves to the configured default target (which may
- * equal the source). For a same-language pair the plan therefore carries a
- * synthetic target: the OTHER supported call language. Transcription (and so
- * original-language captions) flows; the unused translation output routes to
- * no recipient.
- */
-function effectiveIngestTargets(plan: CallIngestPlan): CallLanguage[] {
-  if (plan.targetLanguages.length > 0) return [...plan.targetLanguages];
-  return [plan.sourceLanguage === 'en' ? 'es' : 'en'];
-}
-
 function bridgeContextFor(entry: CallIngestRegistryEntry): WebRtcTranscriptionBridgeContext {
-  const targetLanguage = entry.effectiveTargetLanguages[0];
+  // W5: targets go to media-ingest exactly as planned. EMPTY means STT-only
+  // (same-language captions), which media-ingest now accepts — the synthetic
+  // other-language target this replaced produced speech for nobody.
+  const targetLanguage = entry.plan.targetLanguages[0];
   return {
     sessionId: entry.plan.ingestSessionId,
     broadcastId: entry.plan.broadcastId,
@@ -1856,8 +2145,13 @@ function bridgeContextFor(entry: CallIngestRegistryEntry): WebRtcTranscriptionBr
     // a plan's `auto` is ingest's `auto-detect`. Translated here rather than
     // widening either contract to carry the other's spelling.
     sourceLanguageMode: entry.plan.sourceLanguageMode === 'auto' ? 'auto-detect' : 'manual',
-    targetLanguages: [...entry.effectiveTargetLanguages],
+    targetLanguages: [...entry.plan.targetLanguages],
     ...(targetLanguage ? { targetLanguage } : {}),
+    // Caption-only targets: translated for captions, never synthesized, and
+    // never eligible for the default-voice fallback.
+    ...(entry.plan.textOnlyLanguages.length > 0
+      ? { textOnlyLanguages: [...entry.plan.textOnlyLanguages] }
+      : {}),
     ...(Object.keys(entry.plan.voiceIdsByLanguage).length > 0
       ? { voiceIdsByLanguage: { ...entry.plan.voiceIdsByLanguage } }
       : {}),
@@ -1904,6 +2198,9 @@ function toWireCallState(snapshot: CallSnapshot): CallStateWirePayload {
   return {
     callId: snapshot.callId,
     state: snapshot.lifecycleState,
+    callType: snapshot.callType,
+    callMode: snapshot.callMode,
+    ownerParticipantId: snapshot.ownerParticipantId,
     participants: snapshot.participants.map((participant) => ({
       participantId: participant.participantId,
       displayName: participant.displayName,

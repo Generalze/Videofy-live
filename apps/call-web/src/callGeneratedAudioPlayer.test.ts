@@ -3,6 +3,7 @@ import {
   createBrowserGeneratedAudioPlayer,
   type GeneratedAudioElementLike,
 } from './callGeneratedAudioPlayer';
+import { CallAudioOutputController } from './callAudioOutput';
 
 /**
  * The element-level half of the Android fix.
@@ -67,6 +68,11 @@ class FakeElement implements GeneratedAudioElementLike {
   }
   emit(type: string): void {
     for (const listener of this.listeners.get(type) ?? []) listener();
+  }
+  /** W8: the platform's routing mechanism, recorded. */
+  readonly sinkIds: string[] = [];
+  async setSinkId(sinkId: string): Promise<void> {
+    this.sinkIds.push(sinkId);
   }
 }
 
@@ -340,5 +346,94 @@ describe('element setup', () => {
 
     expect(element.paused).toBe(true);
     expect(element.attributes['src']).toBeUndefined();
+  });
+});
+
+/**
+ * P6.4-W8 — generated playback follows the same selected output.
+ *
+ * The player owns exactly one persistent element, so following the selection
+ * means registering that one element for the player's whole lifetime. The
+ * unlock behaviour is untouched by routing — permission belongs to the
+ * element, and the element does not change when its sink does.
+ */
+describe('W8 output routing', () => {
+  it('registers its one persistent element with the output controller on creation', () => {
+    const element = new FakeElement();
+    const registered: unknown[] = [];
+    const unregistered: unknown[] = [];
+
+    const player = createBrowserGeneratedAudioPlayer({
+      createElement: () => element,
+      outputController: {
+        registerElement: (el) => registered.push(el),
+        unregisterElement: (el) => unregistered.push(el),
+      },
+    });
+
+    expect(registered).toEqual([element]);
+    expect(unregistered).toEqual([]);
+    void player;
+  });
+
+  it('unregisters the element on dispose', () => {
+    const element = new FakeElement();
+    const unregistered: unknown[] = [];
+    const player = createBrowserGeneratedAudioPlayer({
+      createElement: () => element,
+      outputController: {
+        registerElement: () => {},
+        unregisterElement: (el) => unregistered.push(el),
+      },
+    });
+
+    player.dispose();
+
+    expect(unregistered).toEqual([element]);
+  });
+
+  it('a standing selection reaches the element before the first clip plays', async () => {
+    const output = new CallAudioOutputController();
+    await output.setOutput('out-1');
+    const element = new FakeElement();
+
+    const player = createBrowserGeneratedAudioPlayer({
+      createElement: () => element,
+      outputController: output,
+    });
+    await player.play('clip-1');
+
+    expect(element.sinkIds).toEqual(['out-1']);
+    expect(element.playedSources).toEqual(['clip-1']);
+  });
+
+  it('a later selection follows the persistent element', async () => {
+    const output = new CallAudioOutputController();
+    const element = new FakeElement();
+    createBrowserGeneratedAudioPlayer({
+      createElement: () => element,
+      outputController: output,
+    });
+
+    await output.setOutput('out-2');
+    await output.setOutput(null);
+
+    expect(element.sinkIds).toEqual(['out-2', '']);
+  });
+
+  it('unlock behaviour is untouched by routing (still one silent tone, still quiet)', async () => {
+    const output = new CallAudioOutputController();
+    await output.setOutput('out-1');
+    const element = new FakeElement();
+    const player = createBrowserGeneratedAudioPlayer({
+      createElement: () => element,
+      outputController: output,
+    });
+
+    await expect(player.unlock()).resolves.toBe(true);
+
+    expect(element.playedSources[0]).toMatch(/^data:audio\/wav;base64,/);
+    expect(element.volumesAtPlay[0]).toBe(0);
+    expect(element.volume).toBe(1);
   });
 });

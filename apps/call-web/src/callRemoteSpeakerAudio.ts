@@ -40,6 +40,11 @@ export interface RemoteAudioElementLike {
   /** Playback confirmation comes from these; see CONFIRMED_PLAYBACK_EVENTS. */
   addEventListener?(type: string, listener: () => void): void;
   removeEventListener?(type: string, listener: () => void): void;
+  /**
+   * W8: present where the platform supports output routing. An element
+   * without it stays on the system default — that is honest, not a fault.
+   */
+  setSinkId?(sinkId: string): Promise<void>;
 }
 
 /**
@@ -66,9 +71,17 @@ export interface RemoteSpeakerAudio {
   /** Local listener preference, 0..1. */
   volume: number;
   /**
-   * The audio MODE has silenced this speaker's original because their delivery
-   * is the translated voice. Derived state, reapplied by the app — not a
-   * preference, and the UI must say so rather than showing controls that move
+   * The audio MODE's gain over this speaker's original voice, 0..1 (W4).
+   * 1 = full delivery, INTERPRETATION_ORIGINAL_GAIN = audible underneath the
+   * translation, 0 = suppressed because the translated voice IS the delivery.
+   * Derived state, reapplied by the app — not a preference. It multiplies with
+   * the listener's per-speaker volume; it never replaces it, and local mute
+   * always wins.
+   */
+  modeGain: number;
+  /**
+   * modeGain === 0: the mode silenced this original outright. Kept as its own
+   * field because the UI must SAY so rather than showing controls that move
    * and do nothing, which is exactly how calm-tide-33 read as broken.
    */
   originalSuppressed: boolean;
@@ -90,6 +103,16 @@ export interface CallRemoteSpeakerAudioOptions {
    * than whichever stream happened to land on the shared element.
    */
   onRemoteOriginalAudibleChange?: (audible: boolean) => void;
+  /**
+   * W8: every created element registers here on creation and unregisters on
+   * teardown, so remote originals follow the listener's selected output.
+   * Structural on purpose — this module needs only the registration half of
+   * CallAudioOutputController, and a test can hand in a recorder.
+   */
+  outputController?: {
+    registerElement(element: RemoteAudioElementLike): void;
+    unregisterElement(element: RemoteAudioElementLike): void;
+  };
 }
 
 interface SpeakerEntry extends RemoteSpeakerAudio {
@@ -101,9 +124,9 @@ interface SpeakerEntry extends RemoteSpeakerAudio {
   detach: () => void;
 }
 
-/** What actually reaches an element: master x per-speaker, silenced if the mode suppressed it. */
+/** What actually reaches an element: master x per-speaker x mode gain. */
 function reachingVolume(master: number, entry: SpeakerEntry): number {
-  return entry.originalSuppressed ? 0 : clamp(master * entry.volume);
+  return clamp(master * entry.volume * entry.modeGain);
 }
 
 const DEFAULT_VOLUME = 1;
@@ -122,13 +145,13 @@ export class CallRemoteSpeakerAudioController {
   private readonly onStateChange: ((speakers: readonly RemoteSpeakerAudio[]) => void) | undefined;
   private readonly onPlaybackBlocked: ((blocked: boolean) => void) | undefined;
   private readonly onRemoteOriginalAudibleChange: ((audible: boolean) => void) | undefined;
+  private readonly outputController: CallRemoteSpeakerAudioOptions['outputController'];
   /**
-   * Mode-level gain over every remote original, 0..1.
-   *
-   * Preserves the existing audio-mode semantics now that the shared element is
-   * gone: `translated` mode sets this to 0 and the originals are suppressed,
-   * exactly as before. Per-speaker volume multiplies with it, so the two
-   * controls remain independent. This is NOT ducking policy — that is W4.
+   * The listener's global original listening level, 0..1 (the "Their voice"
+   * slider). Mode policy does NOT live here — W4 made the mode's verdict a
+   * per-speaker gain (`setModeGain`), because one call-wide value is exactly
+   * what silenced same-language delivery. All three multiply per element:
+   * master x per-speaker volume x mode gain, and local mute wins over all.
    */
   private masterVolume = 1;
   private remoteAudible = false;
@@ -150,6 +173,7 @@ export class CallRemoteSpeakerAudioController {
     this.onStateChange = options.onStateChange;
     this.onPlaybackBlocked = options.onPlaybackBlocked;
     this.onRemoteOriginalAudibleChange = options.onRemoteOriginalAudibleChange;
+    this.outputController = options.outputController;
   }
 
   /** Mode-level gain over all remote originals. See `masterVolume`. */
@@ -168,19 +192,27 @@ export class CallRemoteSpeakerAudioController {
   }
 
   /**
-   * The mode's verdict on one speaker's original voice.
+   * The mode's verdict on one speaker's original voice, as a GAIN (W4).
    *
-   * Per SPEAKER, because suppression is a property of the language pair, not of
+   * Per SPEAKER, because the verdict is a property of the language pair, not of
    * the call. A translated-mode listener still hears a same-language speaker's
-   * original (it IS their delivery) while a cross-language speaker arrives as
-   * TTS only.
+   * original at 1 (it IS their delivery) while a cross-language speaker is 0
+   * (TTS only); interpretation puts a translated speaker at the interpretation
+   * level while their same-language neighbours stay untouched at 1.
    */
-  setModeSuppressed(speakerParticipantId: string, suppressed: boolean): void {
+  setModeGain(speakerParticipantId: string, gain: number): void {
+    const clamped = clamp(gain);
     const entry = this.entries.get(speakerParticipantId);
-    if (!entry || entry.originalSuppressed === suppressed) return;
-    entry.originalSuppressed = suppressed;
+    if (!entry || entry.modeGain === clamped) return;
+    entry.modeGain = clamped;
+    entry.originalSuppressed = clamped === 0;
     entry.element.volume = reachingVolume(this.masterVolume, entry);
     this.publish();
+  }
+
+  /** W3.1 compatibility: full suppression is a mode gain of 0. */
+  setModeSuppressed(speakerParticipantId: string, suppressed: boolean): void {
+    this.setModeGain(speakerParticipantId, suppressed ? 0 : 1);
   }
 
   /**
@@ -223,6 +255,9 @@ export class CallRemoteSpeakerAudioController {
         volume: DEFAULT_VOLUME,
       };
       const element = this.createElement();
+      // Registered BEFORE playback starts, so a standing output selection is
+      // already applied when the first audio leaves this element.
+      this.outputController?.registerElement(element);
       element.srcObject = this.createStream(binding.track);
       element.volume = this.effectiveVolume(preference.volume);
       element.muted = preference.muted;
@@ -231,6 +266,7 @@ export class CallRemoteSpeakerAudioController {
         slot: binding.slot,
         muted: preference.muted,
         volume: preference.volume,
+        modeGain: 1,
         originalSuppressed: false,
         element,
         track: binding.track,
@@ -269,11 +305,12 @@ export class CallRemoteSpeakerAudioController {
 
   speakers(): readonly RemoteSpeakerAudio[] {
     return [...this.entries.values()]
-      .map(({ speakerParticipantId, slot, muted, volume, originalSuppressed }) => ({
+      .map(({ speakerParticipantId, slot, muted, volume, modeGain, originalSuppressed }) => ({
         speakerParticipantId,
         slot,
         muted,
         volume,
+        modeGain,
         originalSuppressed,
       }))
       .sort((a, b) => a.slot - b.slot);
@@ -344,6 +381,7 @@ export class CallRemoteSpeakerAudioController {
   }
 
   private teardown(entry: SpeakerEntry): void {
+    this.outputController?.unregisterElement(entry.element);
     entry.detach();
     entry.confirmedPlaying = false;
     try {

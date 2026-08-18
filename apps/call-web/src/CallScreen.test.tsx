@@ -467,6 +467,65 @@ describe('mode-suppressed speaker controls', () => {
     expect(html).not.toContain('is-suppressed');
     expect(html).not.toContain('Hearing translated voice');
   });
+
+  it('W4 interpretation: a reduced original keeps LIVE controls, with the reason stated', () => {
+    // The reduced level is the mode's doing; the controls still govern the
+    // audible original underneath. A working slider with no explanation reads
+    // as a broken one — and an inert one would defeat a live preference.
+    const html = render({
+      audioMode: 'interpretation',
+      remoteSpeakers: [
+        {
+          speakerParticipantId: 'p2',
+          muted: false,
+          volume: 1,
+          modeGain: 0.25,
+          originalSuppressed: false,
+        },
+      ],
+    });
+
+    expect(html).toContain('Original voice under translation');
+    expect(html).not.toContain('is-suppressed');
+    expect(html).not.toMatch(/<button[^>]*class="participant-mute"[^>]*disabled/);
+  });
+
+  it('W4: a full-gain speaker shows no mode note at all', () => {
+    const html = render({
+      remoteSpeakers: [
+        {
+          speakerParticipantId: 'p2',
+          muted: false,
+          volume: 1,
+          modeGain: 1,
+          originalSuppressed: false,
+        },
+      ],
+    });
+
+    expect(html).not.toContain('Original voice under translation');
+    expect(html).not.toContain('Hearing translated voice');
+  });
+});
+
+describe('W4 audio-mode control', () => {
+  it('describes the active mode in listener words, without implementation terms', () => {
+    expect(render({ audioMode: 'translated' })).toContain('Hear translated speech.');
+    expect(render({ audioMode: 'interpretation' })).toContain(
+      'Hear translation with the original voice underneath.',
+    );
+    expect(render({ audioMode: 'original' })).toContain('Hear original participants.');
+  });
+
+  it('never leaks gain/TTS/suppression vocabulary into the call surface', () => {
+    for (const audioMode of ['translated', 'interpretation', 'original'] as const) {
+      const html = render({ audioMode });
+      expect(html).not.toMatch(/\bgain\b/i);
+      expect(html).not.toMatch(/\bTTS\b/);
+      expect(html).not.toMatch(/\bsuppress/i);
+      expect(html).not.toMatch(/\bPCM\b/);
+    }
+  });
 });
 
 describe('call type identity', () => {
@@ -476,5 +535,200 @@ describe('call type identity', () => {
 
   it('defaults to the personal call title', () => {
     expect(render({})).toContain('Videofy Call');
+  });
+});
+
+/* ============================================================================
+ * W5 — Call Mode on the call surface.
+ *
+ * Normal means the translation engine is OFF for the whole call. Translated
+ * controls are WITHHELD from the markup (the W3.1 rule), never merely
+ * disabled: a caption panel that renders while the engine is off would be a
+ * surface asserting a capability the call does not have.
+ * ========================================================================== */
+
+describe('W5 call mode surface', () => {
+  it('normal mode withholds TRANSLATION controls; captions and transcript stay (18 Aug redefinition)', () => {
+    const html = render({
+      callMode: 'normal',
+      captions: [caption({ id: 'c1', primaryText: 'Hello everyone.' })],
+    });
+
+    // Captions are not translation-gated: the transcript is working material.
+    expect(html).toContain('Live captions');
+    expect(html).toContain('transcript-drawer');
+    expect(html).toContain('Hello everyone.');
+    // The translation machinery stays withheld.
+    expect(html).not.toContain('How you hear them');
+    expect(html).not.toContain('Translated voice');
+    expect(html).not.toContain('Read captions in');
+    // The audio-only controls remain a working call surface.
+    expect(html).toContain('Mute');
+    expect(html).toContain('Leave');
+    expect(html).toContain('Their voice');
+  });
+
+  it('the status pill names the mode in both directions', () => {
+    expect(render({ callMode: 'normal' })).toContain('>Normal<');
+    expect(render({ callMode: 'translated' })).toContain('>Translated<');
+    // Absent snapshot field defaults to translated, matching the gateway.
+    expect(render({})).toContain('>Translated<');
+  });
+
+  it('only the owner is offered the call-mode control — a control the gateway would refuse must not look available', () => {
+    const owner = render({ callMode: 'translated', isOwner: true, onCallModeChange: vi.fn() });
+    const participant = render({
+      callMode: 'translated',
+      isOwner: false,
+      onCallModeChange: vi.fn(),
+    });
+
+    expect(owner).toContain('Call mode');
+    expect(owner).toContain('call-mode-owner');
+    expect(participant).not.toContain('call-mode-owner');
+  });
+
+  it('the owner control is disabled while a change is in flight', () => {
+    const html = render({
+      isOwner: true,
+      onCallModeChange: vi.fn(),
+      callModeBusy: true,
+    });
+
+    expect(html).toMatch(/call-mode-owner[\s\S]*?<select[^>]*disabled/);
+  });
+
+  it('translated mode keeps the full translated surface (regression guard)', () => {
+    const html = render({ callMode: 'translated' });
+
+    expect(html).toContain('Live captions');
+    expect(html).toContain('transcript-drawer');
+    expect(html).toContain('How you hear them');
+  });
+});
+
+/* ============================================================================
+ * V1 video + W8 output on the call surface.
+ * ========================================================================== */
+
+describe('V1 video tiles', () => {
+  it('renders live video for a participant with a stream and keeps the avatar for everyone else', () => {
+    const stream = { id: 'remote-video' } as unknown as MediaStream;
+    const html = render({
+      remoteVideoStreams: new Map([['p2', stream]]),
+    });
+
+    expect(html).toContain('has-video');
+    expect(html).toContain('participant-video');
+    // The self tile has no stream here: clean avatar placeholder, not a hole.
+    expect(html).toContain('participant-avatar');
+  });
+
+  it('an audio-only conference renders no video markup at all', () => {
+    const html = render({});
+
+    expect(html).not.toContain('participant-video');
+    expect(html).not.toContain('has-video');
+  });
+
+  it('offers the camera toggle only when the app wired one, with a truthful pressed state', () => {
+    const on = render({ cameraOn: true, onToggleCamera: vi.fn() });
+    const off = render({ cameraOn: false, onToggleCamera: vi.fn() });
+    const none = render({});
+
+    expect(on).toMatch(/aria-pressed="true"[^>]*>Camera</);
+    expect(off).toMatch(/aria-pressed="false"[^>]*>Camera</);
+    expect(none).not.toContain('>Camera<');
+  });
+
+  it('a personal call is a 1:1 surface, not a small conference grid', () => {
+    expect(render({ callType: 'personal' })).toContain('is-personal');
+    expect(render({ callType: 'conference' })).not.toContain('is-personal');
+  });
+});
+
+describe('W8 audio output surface', () => {
+  it('offers real routes when the platform exposes them, with generic labels for unnamed devices', () => {
+    const html = render({
+      audioOutput: {
+        devices: [
+          { deviceId: 'dev-1', label: 'Desk speakers' },
+          { deviceId: 'dev-2', label: '' },
+        ],
+        selectedId: null,
+      },
+      onAudioOutputChange: vi.fn(),
+    });
+
+    expect(html).toContain('Audio output');
+    expect(html).toContain('System default');
+    expect(html).toContain('Desk speakers');
+    expect(html).toContain('Audio output 2');
+  });
+
+  it('states the system-only reality instead of faking a picker', () => {
+    const html = render({ audioOutput: null });
+
+    expect(html).toContain('Playing through the system audio output');
+    expect(html).not.toContain('Audio output<select');
+  });
+});
+
+describe('V1 video polish (18 Aug acceptance feedback)', () => {
+  const stream = { id: 'remote-video' } as unknown as MediaStream;
+
+  it('the video is a control: click expands, and the label says so', () => {
+    const html = render({ remoteVideoStreams: new Map([['p2', stream]]) });
+
+    expect(html).toContain('participant-video-button');
+    expect(html).toMatch(/aria-label="Expand [^"]*video"/);
+    expect(html).toMatch(/participant-video-button[^>]*aria-pressed="false"/);
+  });
+
+  it('text stays off the picture: the languages line is withheld on video tiles', () => {
+    const withVideo = render({ remoteVideoStreams: new Map([['p2', stream]]) });
+    const audioOnly = render({});
+
+    const p2Tile = (html: string) =>
+      html.slice(html.indexOf('participant-tile'), html.indexOf('(you)'));
+    expect(p2Tile(withVideo)).not.toContain('Speaks French');
+    expect(p2Tile(audioOnly)).toContain('Speaks French');
+  });
+});
+
+describe('transcript download policy (18 Aug)', () => {
+  const oneCaption = [caption({ id: 'c1', primaryText: 'Hello.' })];
+
+  it('offers Download while the owner allows it and there is something to download', () => {
+    const html = render({ captions: oneCaption, transcriptDownloadAllowed: true });
+    expect(html).toContain('transcript-download');
+    expect(html).toContain('Download');
+  });
+
+  it('withholds Download for everyone when the owner turned it off', () => {
+    const html = render({ captions: oneCaption, transcriptDownloadAllowed: false });
+    expect(html).not.toContain('transcript-download');
+  });
+
+  it('only the owner sees the policy toggle', () => {
+    const owner = render({
+      captions: oneCaption,
+      isOwner: true,
+      onTranscriptPolicyChange: vi.fn(),
+    });
+    const guest = render({
+      captions: oneCaption,
+      isOwner: false,
+      onTranscriptPolicyChange: vi.fn(),
+    });
+    expect(owner).toContain('transcript-policy');
+    expect(owner).toContain('Downloadable');
+    expect(guest).not.toContain('transcript-policy');
+  });
+
+  it('nothing to download, nothing offered', () => {
+    expect(render({ captions: [], transcriptDownloadAllowed: true })).not.toContain(
+      'transcript-download',
+    );
   });
 });

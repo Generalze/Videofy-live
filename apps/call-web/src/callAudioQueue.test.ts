@@ -86,6 +86,17 @@ function generatedEvent(overrides: Partial<CallGeneratedAudioEvent> = {}): CallG
   };
 }
 
+/** A second speaker, with its own URL scheme so play order is unambiguous. */
+function speakerBEvent(
+  overrides: Partial<CallGeneratedAudioEvent> = {},
+): CallGeneratedAudioEvent {
+  return generatedEvent({
+    speakerParticipantId: 'participant-b',
+    audioUrl: `audio-b${overrides.sequence ?? 1}`,
+    ...overrides,
+  });
+}
+
 interface SpeechEvent {
   active: boolean;
   clipUrl: string | null;
@@ -109,24 +120,25 @@ function createController(configure: (player: FakePlayer) => void = () => {}) {
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe('CallGeneratedAudioQueueController', () => {
-  it('plays backlogged segments in sequence order once started', async () => {
+  it('plays only the newest backlogged clip per speaker once started', async () => {
+    // Freshness policy: a second same-speaker clip enqueued before start
+    // supersedes the first. Under the old global FIFO all three backlogged
+    // clips played in sequence order; now only the newest pending clip per
+    // speaker survives to play, and the displaced ones are counted superseded.
     const { controller, player } = createController();
 
     expect(controller.enqueue(generatedEvent({ sequence: 3 }))).toBe(true);
-    expect(controller.enqueue(generatedEvent({ sequence: 1 }))).toBe(true);
-    expect(controller.enqueue(generatedEvent({ sequence: 2 }))).toBe(true);
+    expect(controller.enqueue(generatedEvent({ sequence: 1 }))).toBe(false);
+    expect(controller.enqueue(generatedEvent({ sequence: 2 }))).toBe(false);
+    expect(controller.getState()).toMatchObject({ pendingCount: 1, supersededCount: 2 });
 
     await controller.start();
     await settle();
-    expect(player.played).toEqual(['audio-1']);
+    expect(player.played).toEqual(['audio-3']);
 
     player.onended?.();
     await settle();
-    player.onended?.();
-    await settle();
-
-    expect(player.played).toEqual(['audio-1', 'audio-2', 'audio-3']);
-    expect(controller.getState().playedCount).toBe(2);
+    expect(controller.getState()).toMatchObject({ playedCount: 1, pendingCount: 0 });
   });
 
   it('rejects duplicate deliveries of the same segment', () => {
@@ -147,7 +159,10 @@ describe('CallGeneratedAudioQueueController', () => {
     expect(controller.getState().droppedCount).toBe(1);
   });
 
-  it('flushes queued older-revision segments when a newer revision arrives', async () => {
+  it('flushes the pending older-revision segment when a newer revision arrives', async () => {
+    // Policy consequence: sequence 6 SUPERSEDES the pending sequence 5 (same
+    // revision, same speaker), then the revision bump DROPS the survivor —
+    // the two counters stay distinct.
     const { controller, player } = createController();
 
     controller.enqueue(generatedEvent({ sequence: 5, languageRevision: 1 }));
@@ -155,7 +170,8 @@ describe('CallGeneratedAudioQueueController', () => {
     controller.enqueue(generatedEvent({ sequence: 1, languageRevision: 2, audioUrl: 'audio-rev2' }));
 
     expect(controller.getState().pendingCount).toBe(1);
-    expect(controller.getState().droppedCount).toBe(2);
+    expect(controller.getState().droppedCount).toBe(1);
+    expect(controller.getState().supersededCount).toBe(1);
 
     await controller.start();
     await settle();
@@ -197,6 +213,25 @@ describe('CallGeneratedAudioQueueController', () => {
     controller.enqueue(generatedEvent({ sequence: 2 }));
     await settle();
     expect(player.volume).toBe(0.3);
+  });
+
+  it('W4: a clip dropped by switching to Original cannot replay when the listener switches back', async () => {
+    // setEnabled(false) stops the current clip and clears the backlog; the
+    // seen-set survives, so the SAME clip re-offered after re-enable is
+    // refused. Only genuinely new clips play — switching modes twice must
+    // never echo old speech.
+    const { controller, player } = createController();
+
+    controller.enqueue(generatedEvent({ sequence: 1 }));
+    await controller.start();
+    await settle();
+    controller.setEnabled(false);
+    controller.setEnabled(true);
+
+    expect(controller.enqueue(generatedEvent({ sequence: 1 }))).toBe(false);
+    await settle();
+    expect(player.played).toEqual(['audio-1']);
+    expect(controller.getState()).toMatchObject({ playedCount: 0, pendingCount: 0 });
   });
 
   it('does not count a stopped segment as played when the line is reused', async () => {
@@ -303,9 +338,12 @@ describe('W4 intervals describe audible playback, not attempted playback', () =>
   it('6. a mode switch during playback closes the interval exactly once', async () => {
     const { controller, player, speechEvents } = createController();
     controller.enqueue(generatedEvent({ sequence: 1 }));
-    controller.enqueue(generatedEvent({ sequence: 2 }));
     await controller.start();
     await settle();
+    // Enqueued while sequence 1 holds the line, so it waits as the speaker's
+    // pending clip. (Enqueued BEFORE start it would have superseded sequence 1
+    // under the freshness policy, and audio-2 would have played instead.)
+    controller.enqueue(generatedEvent({ sequence: 2 }));
 
     controller.setEnabled(false);
     await settle();
@@ -339,12 +377,15 @@ describe('W4 intervals describe audible playback, not attempted playback', () =>
     // pointed at the phone's own loopback; treating that as an autoplay block
     // retained the unplayable clip and froze everything behind it, while the UI
     // asked for a tap that could not have helped.
+    // Two SPEAKERS here: two same-speaker clips would supersede down to one
+    // under the freshness policy, and the guarantee under test is that the
+    // line keeps moving past every unplayable clip it attempts.
     const { controller, player, speechEvents } = createController((fake) => {
       fake.failWith = 'media-load-error';
     });
 
     controller.enqueue(generatedEvent({ sequence: 1 }));
-    controller.enqueue(generatedEvent({ sequence: 2 }));
+    controller.enqueue(speakerBEvent({ sequence: 1 }));
     await controller.start();
     await settle();
 
@@ -478,6 +519,8 @@ describe('mobile autoplay unlock', () => {
   });
 
   it('stays blocked while more clips arrive, rather than retrying into the same wall', async () => {
+    // Distinct speakers, so each clip occupies its own pending slot — a second
+    // same-speaker clip would supersede the retained one, not queue behind it.
     const { controller, player } = createController((fake) => {
       fake.requiresGesture = true;
       fake.unlockSucceeds = false;
@@ -486,8 +529,14 @@ describe('mobile autoplay unlock', () => {
     controller.enqueue(generatedEvent({ sequence: 1 }));
     await controller.start();
     await settle();
-    controller.enqueue(generatedEvent({ sequence: 2 }));
-    controller.enqueue(generatedEvent({ sequence: 3 }));
+    controller.enqueue(speakerBEvent({ sequence: 1 }));
+    controller.enqueue(
+      generatedEvent({
+        speakerParticipantId: 'participant-c',
+        sequence: 1,
+        audioUrl: 'audio-c1',
+      }),
+    );
     await settle();
 
     expect(player.played).toEqual([]);
@@ -556,5 +605,176 @@ describe('mobile autoplay unlock', () => {
     controller.dispose();
 
     expect(player.disposed).toBe(true);
+  });
+});
+
+/**
+ * W6 development-demo freshness scheduling — explicitly NOT production
+ * interpreter scheduling. The serial line stays; what changed is WHICH clip
+ * takes it: per speaker only the newest not-yet-playing clip survives
+ * (superseded, counted apart from drops), and speakers with pending work
+ * rotate round-robin from the last-played speaker.
+ */
+describe('W6 freshness scheduler', () => {
+  it('a newer clip from the same speaker supersedes their pending clip', async () => {
+    const { controller, player } = createController();
+
+    expect(controller.enqueue(generatedEvent({ sequence: 1 }))).toBe(true);
+    expect(controller.enqueue(generatedEvent({ sequence: 2 }))).toBe(true);
+    expect(controller.getState()).toMatchObject({
+      pendingCount: 1,
+      supersededCount: 1,
+      droppedCount: 0,
+    });
+
+    await controller.start();
+    await settle();
+    player.onended?.();
+    await settle();
+
+    // The superseded clip never reached the player, and the seen-set means a
+    // re-delivery cannot revive it after the newer clip has played.
+    expect(player.played).toEqual(['audio-2']);
+    expect(controller.enqueue(generatedEvent({ sequence: 1 }))).toBe(false);
+    await settle();
+    expect(player.played).toEqual(['audio-2']);
+  });
+
+  it('state exposes supersededCount as its own counter', () => {
+    const { controller, states } = createController();
+    expect(controller.getState().supersededCount).toBe(0);
+
+    controller.enqueue(generatedEvent({ sequence: 1 }));
+    controller.enqueue(generatedEvent({ sequence: 2 }));
+
+    expect(controller.getState()).toMatchObject({ supersededCount: 1, droppedCount: 0 });
+    expect(states.at(-1)?.supersededCount).toBe(1);
+  });
+
+  it('rotation: a rapid speaker cannot starve an occasional one', async () => {
+    const { controller, player } = createController();
+
+    controller.enqueue(generatedEvent({ sequence: 1 }));
+    await controller.start();
+    await settle();
+    expect(player.played).toEqual(['audio-1']);
+
+    // A floods while its first clip holds the line; B produces one clip.
+    controller.enqueue(generatedEvent({ sequence: 2 }));
+    controller.enqueue(generatedEvent({ sequence: 3 })); // supersedes sequence 2
+    controller.enqueue(speakerBEvent({ sequence: 1 }));
+
+    player.onended?.();
+    await settle();
+    // Round-robin advances from A, so B plays before A's next clip.
+    expect(player.played).toEqual(['audio-1', 'audio-b1']);
+
+    player.onended?.();
+    await settle();
+    // Then A's freshest clip; the superseded one never plays.
+    expect(player.played).toEqual(['audio-1', 'audio-b1', 'audio-3']);
+    expect(controller.getState().supersededCount).toBe(1);
+  });
+
+  it('never replaces the clip on the line, whoever produced a newer one', async () => {
+    const { controller, player, speechEvents } = createController();
+
+    controller.enqueue(generatedEvent({ sequence: 1 }));
+    await controller.start();
+    await settle();
+
+    // Another speaker's clip AND a newer clip from the same speaker: neither
+    // interrupts the audible clip — both wait as pending work.
+    controller.enqueue(speakerBEvent({ sequence: 1 }));
+    controller.enqueue(generatedEvent({ sequence: 2 }));
+    await settle();
+
+    expect(player.paused).toBe(false);
+    expect(player.played).toEqual(['audio-1']);
+    expect(speechEvents).toEqual([{ active: true, clipUrl: 'audio-1' }]);
+
+    player.onended?.();
+    await settle();
+    player.onended?.();
+    await settle();
+    expect(player.played).toEqual(['audio-1', 'audio-b1', 'audio-2']);
+  });
+
+  it('two speakers under sustained pressure alternate A B A B', async () => {
+    const { controller, player } = createController();
+
+    controller.enqueue(generatedEvent({ sequence: 1 }));
+    await controller.start();
+    await settle();
+
+    // Both speakers keep their pending slot topped up while each clip plays.
+    controller.enqueue(speakerBEvent({ sequence: 1 }));
+    controller.enqueue(generatedEvent({ sequence: 2 }));
+    player.onended?.();
+    await settle();
+
+    controller.enqueue(speakerBEvent({ sequence: 2 }));
+    player.onended?.();
+    await settle();
+
+    controller.enqueue(generatedEvent({ sequence: 3 }));
+    player.onended?.();
+    await settle();
+    player.onended?.();
+    await settle();
+
+    expect(player.played).toEqual(['audio-1', 'audio-b1', 'audio-2', 'audio-b2', 'audio-3']);
+  });
+
+  it('a revision bump invalidates the pending clip a supersede chain left behind', async () => {
+    const { controller, player } = createController();
+
+    controller.enqueue(generatedEvent({ sequence: 1 }));
+    controller.enqueue(generatedEvent({ sequence: 2 })); // supersedes sequence 1
+    controller.enqueue(generatedEvent({ sequence: 1, mediaRevision: 2, audioUrl: 'audio-r2' }));
+
+    // The survivor of the supersede chain is revision-invalidated as a DROP;
+    // superseding never resurrects anything behind it.
+    expect(controller.getState()).toMatchObject({
+      pendingCount: 1,
+      supersededCount: 1,
+      droppedCount: 1,
+    });
+
+    await controller.start();
+    await settle();
+    expect(player.played).toEqual(['audio-r2']);
+
+    // Nothing from the old revision can come back.
+    expect(controller.enqueue(generatedEvent({ sequence: 3 }))).toBe(false);
+  });
+
+  it('Original-mode disable clears every speaker pending slot and stops the line', async () => {
+    const { controller, player, speechEvents } = createController();
+
+    controller.enqueue(generatedEvent({ sequence: 1 }));
+    await controller.start();
+    await settle();
+    controller.enqueue(generatedEvent({ sequence: 2 }));
+    controller.enqueue(speakerBEvent({ sequence: 1 }));
+
+    controller.setEnabled(false);
+
+    // The audible clip and BOTH speakers' pending clips are dropped; nothing
+    // was superseded by the disable — the listener opted out, freshness did
+    // not displace anything.
+    expect(controller.getState()).toMatchObject({
+      status: 'idle',
+      pendingCount: 0,
+      droppedCount: 3,
+      supersededCount: 0,
+    });
+    expect(player.paused).toBe(true);
+    expect(speechEvents.at(-1)).toEqual({ active: false, clipUrl: 'audio-1' });
+
+    controller.setEnabled(true);
+    await settle();
+    // Nothing replays after re-enable.
+    expect(player.played).toEqual(['audio-1']);
   });
 });

@@ -23,9 +23,17 @@ export interface CallGeneratedAudioQueueState {
    * - `error`        a clip failed AFTER it had already been heard.
    */
   status: 'waiting' | 'playing' | 'idle' | 'blocked' | 'source-error' | 'error';
+  /** Speakers holding a pending clip — each speaker holds at most one. */
   pendingCount: number;
   playedCount: number;
   droppedCount: number;
+  /**
+   * Clips that never played because a newer clip from the SAME speaker took
+   * their pending slot, in either arrival order. Counted apart from
+   * `droppedCount`, which keeps meaning stale-revision, disable and failure
+   * losses — superseding is the freshness policy working, not audio lost.
+   */
+  supersededCount: number;
   error: string | null;
 }
 
@@ -69,6 +77,7 @@ const initialState: CallGeneratedAudioQueueState = {
   pendingCount: 0,
   playedCount: 0,
   droppedCount: 0,
+  supersededCount: 0,
   error: null,
 };
 
@@ -81,10 +90,19 @@ function isTerminalFailure(status: CallGeneratedAudioQueueState['status']): bool
 }
 
 /**
- * Playback queue for `call:generated-audio` events. Segments play one at a time
- * in sequence order per the queued backlog, with duplicate delivery and
- * stale-revision guards so a mid-call preference change never replays old
- * audio. Live-call semantics: segments play as soon as the line is free, no
+ * Playback queue for `call:generated-audio` events.
+ *
+ * DEVELOPMENT-DEMO freshness scheduler — explicitly NOT production interpreter
+ * scheduling. One generated clip is audible globally at a time (the serial
+ * line). Pending work is per speaker, and only the NEWEST not-yet-playing
+ * clip per speaker survives: a newer clip from the same speaker supersedes
+ * their older pending one (`supersededCount`, distinct from drops). Speakers
+ * with pending clips take the line round-robin, advancing from the
+ * last-played speaker, so a rapid speaker can never indefinitely starve an
+ * occasional one — and the clip currently on the line is never replaced
+ * because someone else produced one. Duplicate delivery and stale-revision
+ * guards are unchanged, so a mid-call preference change never replays old
+ * audio. Live-call semantics: clips play as soon as the line is free, no
  * programme sync clock.
  */
 export class CallGeneratedAudioQueueController {
@@ -94,7 +112,15 @@ export class CallGeneratedAudioQueueController {
     | ((active: boolean, clip: CallGeneratedAudioEvent | null) => void)
     | undefined;
   private readonly onClipAttempt: ((clip: CallGeneratedAudioEvent) => void) | undefined;
-  private readonly queue: QueueItem[] = [];
+  /**
+   * At most ONE not-yet-playing clip per speaker — the newest. The clip on the
+   * line lives in `current`, never here, so it cannot be superseded.
+   */
+  private readonly pendingBySpeaker = new Map<string, QueueItem>();
+  /** Speakers in first-pending order: the fixed cycle round-robin scans. */
+  private readonly speakerRotation: string[] = [];
+  /** Round-robin cursor — selection starts at the speaker after this one. */
+  private lastPlayedSpeakerId: string | null = null;
   private readonly seen = new Set<string>();
   private readonly latestRevisionBySpeaker = new Map<string, SpeakerRevision>();
   /** The clip being attempted or played. */
@@ -156,9 +182,9 @@ export class CallGeneratedAudioQueueController {
    * The recovery affordance behind "Enable audio", and a real unlock rather
    * than another attempt at the same locked path.
    *
-   * A clip refused before it became audible is still at the head of the queue,
-   * so unlocking resumes exactly where playback stopped. Nothing is replayed:
-   * the retained clip was never heard.
+   * A clip refused before it became audible is still its speaker's pending
+   * clip, so unlocking resumes exactly where playback stopped. Nothing is
+   * replayed: the retained clip was never heard.
    */
   async unlock(): Promise<void> {
     this.started = true;
@@ -180,7 +206,10 @@ export class CallGeneratedAudioQueueController {
     }
     this.locked = false;
     if (this.state.status === 'blocked') {
-      this.setState({ status: this.queue.length > 0 ? 'waiting' : 'idle', error: null });
+      this.setState({
+        status: this.pendingBySpeaker.size > 0 ? 'waiting' : 'idle',
+        error: null,
+      });
     }
     this.playNext();
   }
@@ -190,7 +219,10 @@ export class CallGeneratedAudioQueueController {
     if (this.enabled === enabled) return;
     this.enabled = enabled;
     if (!enabled) {
-      const droppedNow = this.queue.splice(0).length + (this.playing ? 1 : 0);
+      // Every speaker's pending clip plus the one on the line: dropped, not
+      // superseded — nothing newer displaced them, the listener opted out.
+      const droppedNow = this.pendingBySpeaker.size + (this.playing ? 1 : 0);
+      this.pendingBySpeaker.clear();
       this.stopCurrent();
       this.setState({
         status: 'idle',
@@ -229,15 +261,21 @@ export class CallGeneratedAudioQueueController {
     }
 
     this.seen.add(key);
-    this.queue.push({ key, event });
-    this.queue.sort(
-      (a, b) => a.event.sequence - b.event.sequence || a.event.startMs - b.event.startMs,
-    );
+    const placement = this.placePending({ key, event });
+    if (!placement.accepted) {
+      // Out-of-order arrival: the speaker's pending clip is already newer, so
+      // this one is superseded on arrival — only the newest not-yet-playing
+      // clip per speaker survives. Marked seen above, so a re-delivery cannot
+      // revive it after the pending clip plays.
+      this.setState({ supersededCount: this.state.supersededCount + 1 });
+      return false;
+    }
     this.setState({
       // A blocked queue stays blocked when more audio arrives: the browser has
       // not changed its mind, and only a gesture will change it.
       status: this.locked ? 'blocked' : this.playing ? 'playing' : 'waiting',
-      pendingCount: this.queue.length,
+      pendingCount: this.pendingBySpeaker.size,
+      supersededCount: this.state.supersededCount + placement.superseded,
       error: this.locked ? this.state.error : null,
     });
     this.playNext();
@@ -245,7 +283,9 @@ export class CallGeneratedAudioQueueController {
   }
 
   reset(): void {
-    this.queue.splice(0);
+    this.pendingBySpeaker.clear();
+    this.speakerRotation.splice(0);
+    this.lastPlayedSpeakerId = null;
     this.seen.clear();
     this.latestRevisionBySpeaker.clear();
     this.stopCurrent();
@@ -262,7 +302,7 @@ export class CallGeneratedAudioQueueController {
   private playNext(): void {
     if (!this.started || !this.enabled || this.playing || this.locked || this.unlocking) return;
 
-    const item = this.queue.shift() ?? null;
+    const item = this.takeNextItem();
     if (!item) {
       this.setState({
         // A terminal failure must SURVIVE the drain that follows it. The
@@ -281,11 +321,17 @@ export class CallGeneratedAudioQueueController {
       return;
     }
 
+    // The cursor advances at selection, so a speaker whose clip fails to load
+    // still spends their rotation turn. A blocked attempt reverts it below:
+    // nothing played, and unlock must resume with this speaker's clip.
+    const cursorBefore = this.lastPlayedSpeakerId;
+    this.lastPlayedSpeakerId = item.event.speakerParticipantId;
+
     this.current = item;
     this.playing = true;
     const token = ++this.playToken;
     this.player.volume = this.volume;
-    this.setState({ pendingCount: this.queue.length, error: null });
+    this.setState({ pendingCount: this.pendingBySpeaker.size, error: null });
     try {
       this.onClipAttempt?.(item.event);
     } catch {
@@ -310,12 +356,16 @@ export class CallGeneratedAudioQueueController {
           error instanceof GeneratedAudioPlaybackError ? error.reason : 'unknown-playback-failure';
 
         if (reason === 'autoplay-policy-blocked') {
-          // Keep the clip: it was never heard, and a gesture will play it.
+          // Keep the clip: it was never heard, and a gesture will play it —
+          // unless a newer clip from the same speaker arrived mid-attempt, in
+          // which case freshness keeps the newer one instead.
           this.locked = true;
-          this.queue.unshift(item);
+          const placement = this.placePending(item);
+          this.lastPlayedSpeakerId = cursorBefore;
           this.setState({
             status: 'blocked',
-            pendingCount: this.queue.length,
+            pendingCount: this.pendingBySpeaker.size,
+            supersededCount: this.state.supersededCount + placement.superseded,
             error: BLOCKED_MESSAGE,
           });
           return;
@@ -326,7 +376,7 @@ export class CallGeneratedAudioQueueController {
         // for a gesture that cannot help. Drop it and carry on.
         this.setState({
           status: 'source-error',
-          pendingCount: this.queue.length,
+          pendingCount: this.pendingBySpeaker.size,
           droppedCount: this.state.droppedCount + 1,
           error: SOURCE_ERROR_MESSAGE,
         });
@@ -351,7 +401,7 @@ export class CallGeneratedAudioQueueController {
       playedCount:
         error === null && wasAudible ? this.state.playedCount + 1 : this.state.playedCount,
       droppedCount: error === null ? this.state.droppedCount : this.state.droppedCount + 1,
-      pendingCount: this.queue.length,
+      pendingCount: this.pendingBySpeaker.size,
       error,
     });
     this.playNext();
@@ -372,25 +422,66 @@ export class CallGeneratedAudioQueueController {
     this.setSpeechActive(false, stopped?.event ?? null);
   }
 
-  private flushOlderQueuedItems(event: CallGeneratedAudioEvent): void {
-    let dropped = 0;
-    for (let index = this.queue.length - 1; index >= 0; index -= 1) {
-      const queued = this.queue[index];
-      if (!queued) continue;
-      if (
-        queued.event.speakerParticipantId === event.speakerParticipantId &&
-        compareRevisions(queued.event, event) < 0
-      ) {
-        this.queue.splice(index, 1);
-        dropped += 1;
+  /**
+   * Round-robin over speakers with pending clips, starting after the speaker
+   * who last took the line, so one rapid speaker can never indefinitely starve
+   * another. The rotation is first-pending order for the life of the call
+   * (reset() clears it); a speaker with nothing pending is simply skipped.
+   */
+  private takeNextItem(): QueueItem | null {
+    const speakerCount = this.speakerRotation.length;
+    if (speakerCount === 0) return null;
+    const lastIndex =
+      this.lastPlayedSpeakerId === null
+        ? -1
+        : this.speakerRotation.indexOf(this.lastPlayedSpeakerId);
+    for (let step = 1; step <= speakerCount; step += 1) {
+      const speakerId = this.speakerRotation[(lastIndex + step) % speakerCount];
+      if (speakerId === undefined) continue;
+      const item = this.pendingBySpeaker.get(speakerId);
+      if (item) {
+        this.pendingBySpeaker.delete(speakerId);
+        return item;
       }
     }
-    if (dropped > 0) {
-      this.setState({
-        pendingCount: this.queue.length,
-        droppedCount: this.state.droppedCount + dropped,
-      });
+    return null;
+  }
+
+  /**
+   * Newest-wins pending slot per speaker. `superseded` is 1 when either side
+   * of the comparison lost: the displaced pending clip, or an arriving clip
+   * already older than the pending one.
+   */
+  private placePending(item: QueueItem): { accepted: boolean; superseded: 0 | 1 } {
+    const speakerId = item.event.speakerParticipantId;
+    const existing = this.pendingBySpeaker.get(speakerId);
+    if (!existing) {
+      this.pendingBySpeaker.set(speakerId, item);
+      if (!this.speakerRotation.includes(speakerId)) {
+        this.speakerRotation.push(speakerId);
+      }
+      return { accepted: true, superseded: 0 };
     }
+    if (isNewerClip(item.event, existing.event)) {
+      this.pendingBySpeaker.set(speakerId, item);
+      return { accepted: true, superseded: 1 };
+    }
+    return { accepted: false, superseded: 1 };
+  }
+
+  /**
+   * Revision invalidation, exactly as before the freshness scheduler: the
+   * speaker's pending clip predates the bump and is DROPPED, not superseded —
+   * whatever supersede chain produced it is invalidated with it.
+   */
+  private flushOlderQueuedItems(event: CallGeneratedAudioEvent): void {
+    const pending = this.pendingBySpeaker.get(event.speakerParticipantId);
+    if (!pending || compareRevisions(pending.event, event) >= 0) return;
+    this.pendingBySpeaker.delete(event.speakerParticipantId);
+    this.setState({
+      pendingCount: this.pendingBySpeaker.size,
+      droppedCount: this.state.droppedCount + 1,
+    });
   }
 
   private rememberRevision(event: CallGeneratedAudioEvent): void {
@@ -436,6 +527,17 @@ function queueKey(event: CallGeneratedAudioEvent): string {
 
 function compareRevisions(a: SpeakerRevision, b: SpeakerRevision): number {
   return a.mediaRevision - b.mediaRevision || a.languageRevision - b.languageRevision;
+}
+
+/**
+ * Freshness order between two clips from ONE speaker. Revisions win outright
+ * when they differ (enqueue settles revisions before placement, but a blocked
+ * restore can race a bump); within a revision, sequence then startMs.
+ */
+function isNewerClip(a: CallGeneratedAudioEvent, b: CallGeneratedAudioEvent): boolean {
+  const byRevision = compareRevisions(a, b);
+  if (byRevision !== 0) return byRevision > 0;
+  return (a.sequence - b.sequence || a.startMs - b.startMs) > 0;
 }
 
 function clamp(value: number): number {

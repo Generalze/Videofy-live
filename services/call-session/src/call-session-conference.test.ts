@@ -531,44 +531,34 @@ describe('revision safety at conference size', () => {
   });
 
   /**
-   * FINDING (P6.4-W1, unresolved): leave is ASYMMETRIC with join.
-   *
-   * A join bumps every connected participant's mediaRevision and returns fresh
-   * ingest plans. A leave does neither — it deletes the seat and returns a
-   * snapshot. At two participants this never showed: the call ended.
-   *
-   * At conference size it means the departed listener's language stays in the
-   * speaker's LIVE ingest session, so media-ingest keeps translating and
-   * synthesising for a language nobody is listening to. Nothing is delivered
-   * wrongly — routing finds no recipient — so this is wasted work and a model
-   * inconsistency, not a leak.
-   *
-   * Deliberately NOT fixed here. Bumping on leave would invalidate output that
-   * is being spoken at that moment, so every remaining participant would lose a
-   * sentence because a fourth person hung up. That trade needs a decision, not
-   * a quiet change inside a wave whose job is to prove the existing model.
-   *
-   * This test pins TODAY's behaviour so the decision is explicit when it comes.
+   * The W1 FINDING that leave was asymmetric with join — the departed
+   * listener's language stayed in the speakers' LIVE ingest sessions — got
+   * its decision in W5: leave (and the grace-expiry reap, which arrives as a
+   * leave) reconciles membership. Speakers whose target set changed are
+   * bumped and their sessions replaced, an EXPLICIT cutoff of in-flight
+   * output; speakers whose target set did not change are left untouched, so
+   * nobody loses a sentence over a departure that never concerned them.
    */
-  it('does NOT invalidate in-flight output when somebody leaves (asymmetry, recorded)', () => {
+  it('cuts off in-flight output from speakers whose target set changed (W5 cutoff)', () => {
     const store = new CallSessionStore();
     const ids = conference(store, QUARTET);
     const inFlight = captionFrom(store, ids['Ana']!);
 
-    store.leave(CALL, ids['Diego']!);
+    const result = store.leave(CALL, ids['Diego']!);
 
-    // Still delivered to the remaining listeners: a caption already spoken is
-    // not made wrong by somebody else leaving.
-    const recipients = store
-      .routeCaption(CALL, ids['Ana']!, inFlight)
-      .map((d) => d.recipientParticipantId);
-    expect(recipients).not.toContain(ids['Diego']);
-    expect(recipients.length).toBeGreaterThan(0);
-
-    // But the PLAN has already dropped Spanish, so the live session and the
-    // current plan now disagree until the next revision bump.
+    // Diego was the only Spanish listener: Ana's session is replaced, so a
+    // caption planned before the leave is stale and delivers to nobody.
+    expect(store.routeCaption(CALL, ids['Ana']!, inFlight)).toEqual([]);
+    expect(planFor(store, ids['Ana']!).mediaRevision).toBe(inFlight.mediaRevision + 1);
+    // The replacement plan has already dropped Spanish.
     expect(planFor(store, ids['Ana']!).targetLanguages).toEqual(['fr']);
-    expect(planFor(store, ids['Ana']!).mediaRevision).toBe(inFlight.mediaRevision);
+    // Every remaining speaker had Diego's language in their targets, so every
+    // remaining speaker's session is replaced by the returned plans.
+    expect(result.ingestPlans.map((plan) => plan.ingestSessionId).sort()).toEqual([
+      'call_conf-1_participant_1_r5',
+      'call_conf-1_participant_2_r4',
+      'call_conf-1_participant_3_r3',
+    ]);
   });
 
   it('accepts output planned against the CURRENT revision after all that churn', () => {

@@ -7,6 +7,8 @@ import {
   STANDARD_CALL_VOICES,
   type CallJoinInput,
   type CallJoinResult,
+  type CallMode,
+  type CallType,
 } from './call-session-store.js';
 
 function joinInput(overrides: Partial<CallJoinInput> = {}): CallJoinInput {
@@ -83,6 +85,8 @@ describe('CallSessionStore.createOrJoin', () => {
         sourceLanguage: 'en',
         sourceLanguageMode: 'manual',
         targetLanguages: [],
+        textOnlyLanguages: [],
+        sameLanguageCaptionsNeeded: false,
         voiceIdsByLanguage: {},
         mediaRevision: 1,
         languageRevision: 1,
@@ -107,6 +111,8 @@ describe('CallSessionStore.createOrJoin', () => {
       sourceLanguage: 'en',
       sourceLanguageMode: 'manual',
       targetLanguages: ['es'],
+      textOnlyLanguages: [],
+      sameLanguageCaptionsNeeded: false,
       voiceIdsByLanguage: { es: 'es_ES-sharvard-male' },
       mediaRevision: 2,
       languageRevision: 1,
@@ -118,6 +124,8 @@ describe('CallSessionStore.createOrJoin', () => {
       sourceLanguage: 'es',
       sourceLanguageMode: 'manual',
       targetLanguages: ['en'],
+      textOnlyLanguages: [],
+      sameLanguageCaptionsNeeded: false,
       voiceIdsByLanguage: { en: 'en_US-hfc_female-medium' },
       mediaRevision: 1,
       languageRevision: 1,
@@ -410,7 +418,7 @@ describe('CallSessionStore disconnect and lifecycle', () => {
 });
 
 describe('CallSessionStore.leave', () => {
-  it('keeps the call alive and bumps nobody when one of two participants leaves', () => {
+  it('keeps the call alive and reconciles the remaining speaker when one of two leaves', () => {
     const store = new CallSessionStore();
     const { zoe, carlos } = translatedPair(store);
 
@@ -422,9 +430,14 @@ describe('CallSessionStore.leave', () => {
       carlos.participantId,
     ]);
     expect(store.activeCallCount()).toBe(1);
-    // leave() is bump-free: the remaining speaker's session id stays valid.
+    // W5: Zoe was Carlos's only English listener, so his target set changed
+    // and his session is replaced — an explicit cutoff, returned as a fresh
+    // plan so the gateway retires the old revision-scoped id.
+    expect(result.ingestPlans).toHaveLength(1);
+    expect(result.ingestPlans[0]?.ingestSessionId).toBe('call_call-1_participant_2_r2');
+    expect(result.ingestPlans[0]?.targetLanguages).toEqual([]);
     expect(store.ingestPlan('call-1', carlos.participantId)?.ingestSessionId).toBe(
-      'call_call-1_participant_2_r1',
+      'call_call-1_participant_2_r2',
     );
   });
 
@@ -434,7 +447,7 @@ describe('CallSessionStore.leave', () => {
 
     store.leave('call-1', zoe.participantId);
     const result = store.leave('call-1', carlos.participantId);
-    expect(result).toEqual({ ok: true, callEnded: true, snapshot: null });
+    expect(result).toEqual({ ok: true, callEnded: true, snapshot: null, ingestPlans: [] });
     expect(store.activeCallCount()).toBe(0);
     expect(store.snapshot('call-1')).toBeNull();
     expect(store.ingestPlan('call-1', carlos.participantId)).toBeNull();
@@ -450,7 +463,7 @@ describe('CallSessionStore.leave', () => {
     expect(unknownParticipant.snapshot?.participants).toHaveLength(2);
 
     const unknownCall = store.leave('ghost-call', 'participant_1');
-    expect(unknownCall).toEqual({ ok: false, callEnded: false, snapshot: null });
+    expect(unknownCall).toEqual({ ok: false, callEnded: false, snapshot: null, ingestPlans: [] });
     expect(store.activeCallCount()).toBe(1);
   });
 
@@ -490,7 +503,15 @@ describe('CallSessionStore snapshots', () => {
     const snapshot = store.snapshot('call-1');
     expect(snapshot).not.toBeNull();
     if (!snapshot) return;
-    expect(Object.keys(snapshot).sort()).toEqual(['callId', 'lifecycleState', 'participants']);
+    expect(Object.keys(snapshot).sort()).toEqual([
+      'callId',
+      'callMode',
+      'callType',
+      'lifecycleState',
+      'ownerParticipantId',
+      'participants',
+      'transcriptDownloadAllowed',
+    ]);
     for (const participant of snapshot.participants) {
       expect(Object.keys(participant).sort()).toEqual([
         'connected',
@@ -895,5 +916,402 @@ describe('voice ownership reaches the work order without caching a decision', ()
     if (!zoe.ok) throw new Error('join failed');
 
     expect(JSON.stringify(zoe.snapshot)).not.toContain('acct_0000000000000000');
+  });
+});
+
+describe('W5 call type and capacity', () => {
+  it('stamps the defaults — conference, translated — and the creator as owner', () => {
+    const store = new CallSessionStore();
+    const zoe = mustJoin(store);
+
+    expect(zoe.snapshot.callType).toBe('conference');
+    expect(zoe.snapshot.callMode).toBe('translated');
+    expect(zoe.snapshot.ownerParticipantId).toBe(zoe.participantId);
+  });
+
+  it("honours the creating join's type and mode", () => {
+    const store = new CallSessionStore();
+    const zoe = mustJoin(store, { callType: 'personal', callMode: 'normal' });
+
+    expect(zoe.snapshot.callType).toBe('personal');
+    expect(zoe.snapshot.callMode).toBe('normal');
+  });
+
+  it("ignores a joiner's type and mode on an existing call", () => {
+    // Invite links join without knowing either; the call is authoritative.
+    const store = new CallSessionStore();
+    mustJoin(store);
+    const joiner = mustJoin(store, {
+      displayName: 'Carlos',
+      callType: 'personal',
+      callMode: 'normal',
+    });
+
+    expect(joiner.snapshot.callType).toBe('conference');
+    expect(joiner.snapshot.callMode).toBe('translated');
+    // Capacity follows the CALL's type, not the joiner's claim: seats 3 and 4
+    // stay available.
+    expect(mustJoin(store, { displayName: 'C3' }).snapshot.participants).toHaveLength(3);
+    expect(mustJoin(store, { displayName: 'C4' }).snapshot.participants).toHaveLength(4);
+  });
+
+  it('refuses values outside the vocabulary rather than ignoring them', () => {
+    const store = new CallSessionStore();
+    for (const overrides of [
+      { callType: 'group' as unknown as CallType },
+      { callMode: 'silent' as unknown as CallMode },
+    ]) {
+      expect(store.createOrJoin(joinInput(overrides))).toMatchObject({
+        ok: false,
+        code: 'invalid-input',
+      });
+    }
+    expect(store.activeCallCount()).toBe(0);
+  });
+
+  it('seats exactly two in a personal call and four in a conference', () => {
+    const personal = new CallSessionStore();
+    mustJoin(personal, { callType: 'personal' });
+    mustJoin(personal, { displayName: 'Carlos' });
+    expect(personal.createOrJoin(joinInput({ displayName: 'Eve' }))).toMatchObject({
+      ok: false,
+      code: 'call-full',
+    });
+
+    const conference = new CallSessionStore();
+    mustJoin(conference, { callType: 'conference' });
+    for (const name of ['B', 'C', 'D']) {
+      mustJoin(conference, { displayName: name });
+    }
+    expect(conference.createOrJoin(joinInput({ displayName: 'Eve' }))).toMatchObject({
+      ok: false,
+      code: 'call-full',
+    });
+  });
+});
+
+describe('W5 call mode and owner authority', () => {
+  it('rejects a non-owner, an unknown participant, an unknown call, and an invalid mode by name', () => {
+    const store = new CallSessionStore();
+    const { zoe, carlos } = translatedPair(store);
+
+    expect(store.setCallMode('call-1', carlos.participantId, 'normal')).toEqual({
+      ok: false,
+      reason: 'not-owner',
+    });
+    expect(store.setCallMode('call-1', 'participant_99', 'normal')).toEqual({
+      ok: false,
+      reason: 'unknown-participant',
+    });
+    expect(store.setCallMode('ghost-call', zoe.participantId, 'normal')).toEqual({
+      ok: false,
+      reason: 'unknown-call',
+    });
+    expect(store.setCallMode('call-1', zoe.participantId, 'loud' as CallMode)).toEqual({
+      ok: false,
+      reason: 'invalid-mode',
+    });
+    // No refusal may bump anyone.
+    expect(planRevision(store, 'call-1', zoe.participantId)).toBe(2);
+    expect(planRevision(store, 'call-1', carlos.participantId)).toBe(1);
+  });
+
+  it('treats an already-set mode as a no-op: ok, current snapshot, no bumps', () => {
+    const store = new CallSessionStore();
+    const { zoe, carlos } = translatedPair(store);
+
+    const result = store.setCallMode('call-1', zoe.participantId, 'translated');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.changed).toBe(false);
+    expect(result.snapshot.callMode).toBe('translated');
+    expect(planRevision(store, 'call-1', zoe.participantId)).toBe(2);
+    expect(planRevision(store, 'call-1', carlos.participantId)).toBe(1);
+  });
+
+  it('turns TRANSLATION off for everyone; captions stay as STT-only work (18 Aug redefinition)', () => {
+    // Normal mode redefined on acceptance feedback: "caption only comes on
+    // when translation is on" was the DEFECT. The translation engine is off —
+    // no targets, no voices, no TTS — but the transcript is working material,
+    // so STT-only sessions caption the original words.
+    const store = new CallSessionStore();
+    const { zoe, carlos } = translatedPair(store);
+    const zoeRevisionBefore = planRevision(store, 'call-1', zoe.participantId);
+
+    const result = store.setCallMode('call-1', zoe.participantId, 'normal');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.changed).toBe(true);
+    expect(result.snapshot.callMode).toBe('normal');
+    // STT-only plans: sessions replaced, translation fully stripped.
+    expect(result.ingestPlans.length).toBeGreaterThan(0);
+    for (const plan of result.ingestPlans) {
+      expect(plan.targetLanguages).toEqual([]);
+      expect(plan.voiceIdsByLanguage).toEqual({});
+      expect(plan).not.toHaveProperty('voiceOwnerId');
+    }
+    const zoePlan = store.ingestPlan('call-1', zoe.participantId);
+    expect(zoePlan).not.toBeNull();
+    expect(zoePlan!.targetLanguages).toEqual([]);
+    expect(zoePlan!.sameLanguageCaptionsNeeded).toBe(true);
+    expect(store.ingestPlan('call-1', carlos.participantId)).not.toBeNull();
+
+    // Belt and braces: even an event stamped with the CURRENT (bumped)
+    // revisions is refused while the mode is normal.
+    const current = {
+      sequence: 0,
+      mediaRevision: zoeRevisionBefore + 1,
+      languageRevision: 1,
+      startMs: 0,
+      endMs: 1_000,
+      isFinal: true,
+    };
+    expect(
+      store.routeCaption('call-1', zoe.participantId, {
+        ...current,
+        sourceLanguage: 'en',
+        targetLanguage: 'es',
+        originalText: 'hello',
+        translatedText: 'hola',
+      }),
+    ).toEqual([]);
+    // The ORIGINAL transcript still flows: STT-only captions reach the
+    // speaker and every connected recipient, untranslated.
+    const originals = store.routeCaption('call-1', zoe.participantId, {
+      ...current,
+      sourceLanguage: 'en',
+      targetLanguage: null,
+      originalText: 'hello',
+      translatedText: null,
+    });
+    expect(originals.map((delivery) => delivery.recipientParticipantId).sort()).toEqual(
+      [zoe.participantId, carlos.participantId].sort(),
+    );
+    for (const delivery of originals) {
+      const payload = delivery.payload as {
+        translatedText: string | null;
+        targetLanguage: string | null;
+      };
+      expect(payload.translatedText).toBeNull();
+      expect(payload.targetLanguage).toBeNull();
+    }
+    expect(
+      store.routeGeneratedAudio('call-1', zoe.participantId, {
+        ...current,
+        targetLanguage: 'es',
+        voiceId: 'es_ES-sharvard-male',
+        audioUrl: 'http://host/clip.wav',
+        durationMs: 900,
+      }),
+    ).toEqual([]);
+  });
+
+  it('bumps every connected participant on a real change, visible when the engine returns', () => {
+    const store = new CallSessionStore();
+    const { zoe, carlos } = translatedPair(store);
+
+    store.setCallMode('call-1', zoe.participantId, 'normal');
+    const restored = store.setCallMode('call-1', zoe.participantId, 'translated');
+    expect(restored.ok).toBe(true);
+    if (!restored.ok) return;
+    expect(restored.changed).toBe(true);
+    // Zoe r2 -> r3 -> r4; Carlos r1 -> r2 -> r3: both switches bumped both
+    // seats, so every live session id was superseded both times.
+    expect(restored.ingestPlans.map((plan) => plan.ingestSessionId).sort()).toEqual([
+      'call_call-1_participant_1_r4',
+      'call_call-1_participant_2_r3',
+    ]);
+    expect(planRevision(store, 'call-1', zoe.participantId)).toBe(4);
+    expect(planRevision(store, 'call-1', carlos.participantId)).toBe(3);
+  });
+
+  it("keeps the owner's authority across resume", () => {
+    const store = new CallSessionStore();
+    const { zoe } = translatedPair(store);
+    store.markDisconnected('call-1', zoe.participantId);
+    const resumed = store.createOrJoin(
+      joinInput({ resumeParticipantId: zoe.participantId, resumeToken: zoe.resumeToken }),
+    );
+    expect(resumed.ok).toBe(true);
+    if (!resumed.ok) return;
+    expect(resumed.snapshot.ownerParticipantId).toBe(zoe.participantId);
+
+    const result = store.setCallMode('call-1', zoe.participantId, 'normal');
+    expect(result).toMatchObject({ ok: true, changed: true });
+  });
+
+  it('leaves the mode frozen when the owner is gone — no election', () => {
+    const store = new CallSessionStore();
+    const { zoe, carlos } = translatedPair(store);
+    store.leave('call-1', zoe.participantId);
+
+    // The seat is gone, so the departed owner cannot act...
+    expect(store.setCallMode('call-1', zoe.participantId, 'normal')).toEqual({
+      ok: false,
+      reason: 'unknown-participant',
+    });
+    // ...and nobody inherits the authority.
+    expect(store.setCallMode('call-1', carlos.participantId, 'normal')).toEqual({
+      ok: false,
+      reason: 'not-owner',
+    });
+    expect(store.snapshot('call-1')?.callMode).toBe('translated');
+  });
+});
+
+describe('W5 caption-only planning (audioMode and captions decide what is made)', () => {
+  it('plans a text-only language, with NO voice entry, for a cross-language reader keeping original audio', () => {
+    const store = new CallSessionStore();
+    const zoe = mustJoin(store);
+    mustJoin(store, {
+      displayName: 'Carlos',
+      speakLanguage: 'es',
+      hearLanguage: 'es',
+      audioMode: 'original',
+      captionsEnabled: true,
+    });
+
+    const plan = store.ingestPlan('call-1', zoe.participantId);
+    expect(plan?.targetLanguages).toEqual(['es']);
+    expect(plan?.textOnlyLanguages).toEqual(['es']);
+    // A text-only language must never reach the default-voice fallback.
+    expect(plan?.voiceIdsByLanguage).toEqual({});
+  });
+
+  it('plans nothing at all for a cross-language listener with captions off and original audio', () => {
+    const store = new CallSessionStore();
+    const zoe = mustJoin(store);
+    mustJoin(store, {
+      displayName: 'Carlos',
+      speakLanguage: 'es',
+      hearLanguage: 'es',
+      audioMode: 'original',
+      captionsEnabled: false,
+    });
+
+    const plan = store.ingestPlan('call-1', zoe.participantId);
+    expect(plan?.targetLanguages).toEqual([]);
+    expect(plan?.textOnlyLanguages).toEqual([]);
+    expect(plan?.sameLanguageCaptionsNeeded).toBe(false);
+  });
+
+  it('synthesizes a language while ANY of its listeners wants generated audio', () => {
+    const store = new CallSessionStore();
+    const zoe = mustJoin(store);
+    mustJoin(store, {
+      displayName: 'Carlos',
+      speakLanguage: 'es',
+      hearLanguage: 'es',
+      audioMode: 'original',
+    });
+    mustJoin(store, {
+      displayName: 'Diego',
+      speakLanguage: 'es',
+      hearLanguage: 'es',
+      audioMode: 'translated',
+    });
+
+    const plan = store.ingestPlan('call-1', zoe.participantId);
+    expect(plan?.targetLanguages).toEqual(['es']);
+    expect(plan?.textOnlyLanguages).toEqual([]);
+    expect(plan?.voiceIdsByLanguage).toEqual({ es: 'es_ES-sharvard-female' });
+  });
+
+  it("marks a same-language speaker's session as needed only while somebody reads captions", () => {
+    const readers = new CallSessionStore();
+    const zoe = mustJoin(readers);
+    mustJoin(readers, { displayName: 'Sam', captionsEnabled: true });
+    const withReader = readers.ingestPlan('call-1', zoe.participantId);
+    expect(withReader?.targetLanguages).toEqual([]);
+    expect(withReader?.sameLanguageCaptionsNeeded).toBe(true);
+
+    const noReaders = new CallSessionStore();
+    const solo = mustJoin(noReaders);
+    mustJoin(noReaders, { displayName: 'Sam', captionsEnabled: false });
+    const withoutReader = noReaders.ingestPlan('call-1', solo.participantId);
+    expect(withoutReader?.targetLanguages).toEqual([]);
+    expect(withoutReader?.sameLanguageCaptionsNeeded).toBe(false);
+  });
+});
+
+describe('W5 leave reconciliation', () => {
+  /**
+   * Ana (en→en) is AFFECTED by Dan leaving: he was her only French listener.
+   * Uma (fr→en) is NOT: her one target (en, for Ana) never involved Dan — he
+   * heard her original French, with captions off, wanting nothing made.
+   */
+  function trio(store: CallSessionStore) {
+    const ana = mustJoin(store, { displayName: 'Ana', speakLanguage: 'en', hearLanguage: 'en' });
+    const uma = mustJoin(store, { displayName: 'Uma', speakLanguage: 'fr', hearLanguage: 'en' });
+    const dan = mustJoin(store, {
+      displayName: 'Dan',
+      speakLanguage: 'es',
+      hearLanguage: 'fr',
+      captionsEnabled: false,
+      audioMode: 'translated',
+    });
+    return { ana, uma, dan };
+  }
+
+  it('bumps ONLY the speakers whose target set changed, and returns just their plans', () => {
+    const store = new CallSessionStore();
+    const { ana, uma, dan } = trio(store);
+    // After three joins: Ana r3 (bumped twice), Uma r2, Dan r1.
+    expect(store.ingestPlan('call-1', ana.participantId)?.targetLanguages).toEqual(['fr']);
+    const umaSessionBefore = store.ingestPlan('call-1', uma.participantId)?.ingestSessionId;
+    expect(umaSessionBefore).toBe('call_call-1_participant_2_r2');
+
+    const result = store.leave('call-1', dan.participantId);
+
+    // The departed listener's language disappears, via a replacement session
+    // for the one speaker who was producing it...
+    expect(result.ingestPlans).toHaveLength(1);
+    expect(result.ingestPlans[0]?.ingestSessionId).toBe('call_call-1_participant_1_r4');
+    expect(result.ingestPlans[0]?.targetLanguages).toEqual([]);
+    // ...who still needs an STT-only session: Uma reads Ana's captions.
+    expect(result.ingestPlans[0]?.sameLanguageCaptionsNeeded).toBe(true);
+    // The unaffected speaker's revision-scoped session id is untouched, so
+    // her in-flight work survives somebody else's departure.
+    expect(store.ingestPlan('call-1', uma.participantId)?.ingestSessionId).toBe(umaSessionBefore);
+  });
+
+  it('does not reconcile on mere disconnect — only when the seat is actually left', () => {
+    const store = new CallSessionStore();
+    const { ana, uma, dan } = trio(store);
+
+    store.markDisconnected('call-1', dan.participantId);
+    // A seat inside its resume grace bumps nobody.
+    expect(planRevision(store, 'call-1', ana.participantId)).toBe(3);
+    expect(planRevision(store, 'call-1', uma.participantId)).toBe(2);
+
+    // The reap arrives as a leave: the baseline treats the disconnected seat
+    // as it was last planned for, so Ana still reconciles now — not earlier.
+    const result = store.leave('call-1', dan.participantId);
+    expect(result.ingestPlans.map((plan) => plan.ingestSessionId)).toEqual([
+      'call_call-1_participant_1_r4',
+    ]);
+    expect(planRevision(store, 'call-1', uma.participantId)).toBe(2);
+  });
+
+  it("returns no plans when a leave changes nobody's targets", () => {
+    // Two French listeners: losing one keeps fr in every speaker's target set.
+    const store = new CallSessionStore();
+    const ana = mustJoin(store, { displayName: 'Ana', speakLanguage: 'en', hearLanguage: 'en' });
+    mustJoin(store, { displayName: 'Bruno', speakLanguage: 'fr', hearLanguage: 'fr' });
+    const chloe = mustJoin(store, {
+      displayName: 'Chloe',
+      speakLanguage: 'fr',
+      hearLanguage: 'fr',
+      captionsEnabled: false,
+      audioMode: 'translated',
+    });
+
+    const result = store.leave('call-1', chloe.participantId);
+
+    // Ana keeps translating to French for Bruno; Bruno's plan lost nothing
+    // either (Chloe heard his original, captions off). Nobody bumps.
+    expect(result.ingestPlans).toEqual([]);
+    expect(planRevision(store, 'call-1', ana.participantId)).toBe(3);
+    expect(store.ingestPlan('call-1', ana.participantId)?.targetLanguages).toEqual(['fr']);
   });
 });

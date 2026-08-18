@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   CallRemoteSpeakerAudioController,
+  type CallRemoteSpeakerAudioOptions,
   type RemoteAudioElementLike,
   type RemoteSpeakerAudio,
 } from './callRemoteSpeakerAudio';
 import type { CallRemoteBinding } from './callRemoteSlots';
+import { CallAudioOutputController } from './callAudioOutput';
 
 class FakeElement implements RemoteAudioElementLike {
   volume = 1;
@@ -39,6 +41,11 @@ class FakeElement implements RemoteAudioElementLike {
   /** The browser's own verdict. Nothing else may claim playback started. */
   emit(type: string): void {
     for (const listener of [...(this.listeners.get(type) ?? [])]) listener();
+  }
+  /** W8: the platform's routing mechanism, recorded. */
+  readonly sinkIds: string[] = [];
+  async setSinkId(sinkId: string): Promise<void> {
+    this.sinkIds.push(sinkId);
   }
 
   private readonly listeners = new Map<string, (() => void)[]>();
@@ -192,9 +199,9 @@ describe('per-speaker controls are independent and local', () => {
     h.controller.setVolume('p4', 0.5);
 
     expect(h.controller.speakers()).toEqual([
-      { speakerParticipantId: 'p2', slot: 0, muted: false, volume: 1, originalSuppressed: false },
-      { speakerParticipantId: 'p3', slot: 1, muted: true, volume: 1, originalSuppressed: false },
-      { speakerParticipantId: 'p4', slot: 2, muted: false, volume: 0.5, originalSuppressed: false },
+      { speakerParticipantId: 'p2', slot: 0, muted: false, volume: 1, modeGain: 1, originalSuppressed: false },
+      { speakerParticipantId: 'p3', slot: 1, muted: true, volume: 1, modeGain: 1, originalSuppressed: false },
+      { speakerParticipantId: 'p4', slot: 2, muted: false, volume: 0.5, modeGain: 1, originalSuppressed: false },
     ]);
   });
 });
@@ -298,8 +305,8 @@ describe('reconnect', () => {
     h.controller.applyBindings([binding('p2', 0), binding('p3', 1)]);
 
     expect(h.controller.speakers()).toEqual([
-      { speakerParticipantId: 'p2', slot: 0, muted: true, volume: 1, originalSuppressed: false },
-      { speakerParticipantId: 'p3', slot: 1, muted: false, volume: 0.3, originalSuppressed: false },
+      { speakerParticipantId: 'p2', slot: 0, muted: true, volume: 1, modeGain: 1, originalSuppressed: false },
+      { speakerParticipantId: 'p3', slot: 1, muted: false, volume: 0.3, modeGain: 1, originalSuppressed: false },
     ]);
     expect(elementFor(h, 'p2').muted).toBe(true);
     expect(elementFor(h, 'p3').volume).toBe(0.3);
@@ -348,7 +355,7 @@ describe('two-party parity', () => {
 
     expect(h.elements).toHaveLength(1);
     expect(h.controller.speakers()).toEqual([
-      { speakerParticipantId: 'p2', slot: 0, muted: true, volume: 0.4, originalSuppressed: false },
+      { speakerParticipantId: 'p2', slot: 0, muted: true, volume: 0.4, modeGain: 1, originalSuppressed: false },
     ]);
   });
 
@@ -755,5 +762,365 @@ describe('leave, language change, rejoin — the calm-tide-33 sequence', () => {
     expect(h.controller.speakers().every((s) => s.originalSuppressed)).toBe(true);
     expect(elementFor(h, 'p2').volume).toBe(0);
     expect(elementFor(h, 'p3').volume).toBe(0);
+  });
+});
+
+/* ============================================================================
+ * P6.4-W4 — the mode's verdict is a per-speaker GAIN.
+ *
+ * The reference topology throughout: the listener hears French; p2 speaks
+ * English (translation required), p3 speaks French (same language), p4 speaks
+ * Spanish (translation required). Gains here are what the app derives from
+ * resolveSpeakerAudioMix and applies via setModeGain.
+ * ========================================================================== */
+
+const INTERPRETATION = 0.25;
+
+describe('W4 per-speaker mode gains', () => {
+  it('translated: cross-language originals at 0, the same-language original at full — per PAIR, never per call', () => {
+    const h = controllerWith();
+    h.controller.applyBindings([binding('p2', 0), binding('p3', 1), binding('p4', 2)]);
+
+    h.controller.setModeGain('p2', 0);
+    h.controller.setModeGain('p3', 1);
+    h.controller.setModeGain('p4', 0);
+
+    expect(elementFor(h, 'p2').volume).toBe(0);
+    expect(elementFor(h, 'p3').volume).toBe(1);
+    expect(elementFor(h, 'p4').volume).toBe(0);
+  });
+
+  it('interpretation: BOTH translated speakers sit at the interpretation level simultaneously; the same-language speaker is untouched', () => {
+    const h = controllerWith();
+    h.controller.applyBindings([binding('p2', 0), binding('p3', 1), binding('p4', 2)]);
+
+    h.controller.setModeGain('p2', INTERPRETATION);
+    h.controller.setModeGain('p4', INTERPRETATION);
+
+    expect(elementFor(h, 'p2').volume).toBeCloseTo(INTERPRETATION);
+    expect(elementFor(h, 'p3').volume).toBe(1);
+    expect(elementFor(h, 'p4').volume).toBeCloseTo(INTERPRETATION);
+  });
+
+  it('original: every original back at full level', () => {
+    const h = controllerWith();
+    h.controller.applyBindings([binding('p2', 0), binding('p3', 1), binding('p4', 2)]);
+    h.controller.setModeGain('p2', 0);
+    h.controller.setModeGain('p4', INTERPRETATION);
+
+    h.controller.setModeGain('p2', 1);
+    h.controller.setModeGain('p4', 1);
+
+    expect(h.elements.map((element) => element.volume)).toEqual([1, 1, 1]);
+  });
+
+  it("changing one speaker's gain does not alter the others", () => {
+    const h = controllerWith();
+    h.controller.applyBindings([binding('p2', 0), binding('p3', 1), binding('p4', 2)]);
+    h.controller.setModeGain('p3', 1);
+    h.controller.setModeGain('p4', INTERPRETATION);
+
+    h.controller.setModeGain('p2', 0);
+
+    expect(elementFor(h, 'p3').volume).toBe(1);
+    expect(elementFor(h, 'p4').volume).toBeCloseTo(INTERPRETATION);
+  });
+
+  it('per-speaker user volume MULTIPLIES with the mode gain — it never replaces it', () => {
+    const h = controllerWith();
+    h.controller.applyBindings([binding('p2', 0)]);
+    h.controller.setVolume('p2', 0.6);
+
+    h.controller.setModeGain('p2', INTERPRETATION);
+
+    expect(elementFor(h, 'p2').volume).toBeCloseTo(0.6 * INTERPRETATION);
+    // And the same product from the other order.
+    h.controller.setVolume('p2', 0.2);
+    expect(elementFor(h, 'p2').volume).toBeCloseTo(0.2 * INTERPRETATION);
+    // The listener's own preference is preserved verbatim.
+    expect(h.controller.speakers()[0]!.volume).toBe(0.2);
+  });
+
+  it('the master level multiplies as the third factor', () => {
+    const h = controllerWith();
+    h.controller.applyBindings([binding('p2', 0)]);
+    h.controller.setMasterVolume(0.5);
+    h.controller.setVolume('p2', 0.8);
+
+    h.controller.setModeGain('p2', INTERPRETATION);
+
+    expect(elementFor(h, 'p2').volume).toBeCloseTo(0.5 * 0.8 * INTERPRETATION);
+  });
+
+  it('local mute wins over every gain', () => {
+    const h = controllerWith();
+    h.controller.applyBindings([binding('p2', 0)]);
+    h.controller.setMuted('p2', true);
+
+    h.controller.setModeGain('p2', INTERPRETATION);
+    expect(elementFor(h, 'p2').muted).toBe(true);
+    h.controller.setModeGain('p2', 1);
+    expect(elementFor(h, 'p2').muted).toBe(true);
+  });
+
+  it('a gain change reaches the element immediately, mid-playback', () => {
+    const h = controllerWith();
+    h.controller.applyBindings([binding('p2', 0)]);
+    elementFor(h, 'p2').emit('playing');
+
+    h.controller.setModeGain('p2', INTERPRETATION);
+    expect(elementFor(h, 'p2').volume).toBeCloseTo(INTERPRETATION);
+    h.controller.setModeGain('p2', 0);
+    expect(elementFor(h, 'p2').volume).toBe(0);
+  });
+
+  it('a full mode cycle lands every level exactly: translated → interpretation → original → translated', () => {
+    const h = controllerWith();
+    h.controller.applyBindings([binding('p2', 0), binding('p3', 1)]);
+
+    // translated: p2 (cross-language) suppressed, p3 (same-language) full
+    h.controller.setModeGain('p2', 0);
+    expect(h.elements.map((element) => element.volume)).toEqual([0, 1]);
+    // interpretation: p2 underneath the translation, p3 untouched
+    h.controller.setModeGain('p2', INTERPRETATION);
+    expect(elementFor(h, 'p2').volume).toBeCloseTo(INTERPRETATION);
+    expect(elementFor(h, 'p3').volume).toBe(1);
+    // original: everyone full
+    h.controller.setModeGain('p2', 1);
+    expect(h.elements.map((element) => element.volume)).toEqual([1, 1]);
+    // and back: only the translated pair moves again
+    h.controller.setModeGain('p2', 0);
+    expect(h.elements.map((element) => element.volume)).toEqual([0, 1]);
+  });
+
+  it('rebind after reset: listener preferences survive, the mode gain resets to 1 until the app reapplies it', () => {
+    // The gain is DERIVED state — recomputed from authoritative language state
+    // on every change — while mute/volume are the listener's own. A rejoin
+    // must restore the first from the source of truth, not from memory.
+    const h = controllerWith();
+    h.controller.applyBindings([binding('p2', 0)]);
+    h.controller.setVolume('p2', 0.4);
+    h.controller.setModeGain('p2', INTERPRETATION);
+
+    h.controller.reset();
+    h.controller.applyBindings([binding('p2', 0)]);
+
+    expect(h.controller.speakers()[0]).toMatchObject({ volume: 0.4, modeGain: 1 });
+    expect(elementFor(h, 'p2').volume).toBeCloseTo(0.4);
+  });
+
+  it('setModeSuppressed compatibility: suppression is a gain of 0, restoration a gain of 1', () => {
+    const h = controllerWith();
+    h.controller.applyBindings([binding('p2', 0)]);
+
+    h.controller.setModeSuppressed('p2', true);
+    expect(h.controller.speakers()[0]).toMatchObject({ modeGain: 0, originalSuppressed: true });
+    h.controller.setModeSuppressed('p2', false);
+    expect(h.controller.speakers()[0]).toMatchObject({ modeGain: 1, originalSuppressed: false });
+  });
+
+  it('an interpretation gain is NOT "suppressed": the UI flag stays false while the gain is audible', () => {
+    const h = controllerWith();
+    h.controller.applyBindings([binding('p2', 0)]);
+
+    h.controller.setModeGain('p2', INTERPRETATION);
+
+    expect(h.controller.speakers()[0]).toMatchObject({
+      modeGain: INTERPRETATION,
+      originalSuppressed: false,
+    });
+  });
+});
+
+describe('W4 Path B truthfulness under mode gains', () => {
+  function tracker() {
+    const audible: boolean[] = [];
+    const elements: FakeElement[] = [];
+    const controller = new CallRemoteSpeakerAudioController({
+      createElement: () => {
+        const element = new FakeElement();
+        elements.push(element);
+        return element;
+      },
+      createStream: (track) => ({ track }) as never,
+      onRemoteOriginalAudibleChange: (value) => audible.push(value),
+    });
+    return { controller, audible, elements };
+  }
+
+  function el(h: ReturnType<typeof tracker>, speakerId: string): FakeElement {
+    const found = h.elements.find(
+      (candidate) => (candidate.srcObject as { track?: { id?: string } })?.track?.id === speakerId,
+    );
+    if (!found) throw new Error(`no element for ${speakerId}`);
+    return found;
+  }
+
+  it('an interpretation-level original that is confirmed playing IS audible', () => {
+    const h = tracker();
+    h.controller.applyBindings([binding('p2', 0)]);
+    h.controller.setModeGain('p2', INTERPRETATION);
+
+    el(h, 'p2').emit('playing');
+
+    expect(h.audible).toEqual([true]);
+  });
+
+  it('a mode-suppressed speaker does not contribute; a full same-language speaker does — aggregate is ANY audible original', () => {
+    const h = tracker();
+    h.controller.applyBindings([binding('p2', 0), binding('p3', 1)]);
+    h.controller.setModeGain('p2', 0);
+
+    el(h, 'p2').emit('playing');
+    expect(h.audible).toEqual([]); // suppressed: playing but silent
+
+    el(h, 'p3').emit('playing');
+    expect(h.audible).toEqual([true]); // the same-language original carries it
+
+    el(h, 'p3').emit('pause');
+    expect(h.audible).toEqual([true, false]); // p2 still playing, still silent
+  });
+
+  it('restoring a gain over a still-playing element re-opens audibility without replaying anything', () => {
+    const h = tracker();
+    h.controller.applyBindings([binding('p2', 0)]);
+    el(h, 'p2').emit('playing');
+    expect(h.audible).toEqual([true]);
+
+    h.controller.setModeGain('p2', 0);
+    expect(h.audible).toEqual([true, false]);
+
+    h.controller.setModeGain('p2', INTERPRETATION);
+    expect(h.audible).toEqual([true, false, true]);
+  });
+});
+
+/* ============================================================================
+ * P6.4-W8 — remote originals follow the selected audio output.
+ *
+ * The controller does not route anything itself: it registers every element
+ * it creates with the output controller and unregisters it on teardown, so
+ * the one selection covers every remote original for its whole lifetime.
+ * ========================================================================== */
+
+describe('W8 output routing — elements register for their whole lifetime', () => {
+  function recordingRegistrar() {
+    const registered: RemoteAudioElementLike[] = [];
+    const unregistered: RemoteAudioElementLike[] = [];
+    return {
+      registered,
+      unregistered,
+      registerElement(element: RemoteAudioElementLike): void {
+        registered.push(element);
+      },
+      unregisterElement(element: RemoteAudioElementLike): void {
+        unregistered.push(element);
+      },
+    };
+  }
+
+  function routedController(
+    outputController: NonNullable<CallRemoteSpeakerAudioOptions['outputController']>,
+  ) {
+    const elements: FakeElement[] = [];
+    const controller = new CallRemoteSpeakerAudioController({
+      createElement: () => {
+        const element = new FakeElement();
+        elements.push(element);
+        return element;
+      },
+      createStream: (track) => ({ track }) as never,
+      outputController,
+    });
+    return { controller, elements };
+  }
+
+  it('registers every created element on creation', () => {
+    const registrar = recordingRegistrar();
+    const h = routedController(registrar);
+
+    h.controller.applyBindings([binding('p2', 0), binding('p3', 1)]);
+
+    expect(registrar.registered).toEqual(h.elements);
+    expect(registrar.unregistered).toEqual([]);
+  });
+
+  it('unregisters the departed speaker element and only that one', () => {
+    const registrar = recordingRegistrar();
+    const h = routedController(registrar);
+    h.controller.applyBindings([binding('p2', 0), binding('p3', 1)]);
+    const departing = h.elements.find(
+      (element) => (element.srcObject as { track: { id: string } }).track.id === 'p3',
+    )!;
+
+    h.controller.applyBindings([binding('p2', 0)]);
+
+    expect(registrar.unregistered).toEqual([departing]);
+  });
+
+  it('unregisters every element on reset, and registers fresh ones on rebuild', () => {
+    const registrar = recordingRegistrar();
+    const h = routedController(registrar);
+    h.controller.applyBindings([binding('p2', 0)]);
+
+    h.controller.reset();
+    h.controller.applyBindings([binding('p2', 0)]);
+
+    expect(registrar.unregistered).toEqual([h.elements[0]]);
+    expect(registrar.registered).toEqual([h.elements[0], h.elements[1]]);
+  });
+
+  it('re-pointing a speaker onto a new track does not re-register the element', () => {
+    const registrar = recordingRegistrar();
+    const h = routedController(registrar);
+    h.controller.applyBindings([binding('p2', 0, 'track-a')]);
+
+    h.controller.applyBindings([binding('p2', 1, 'track-b')]);
+
+    expect(registrar.registered).toHaveLength(1);
+    expect(registrar.unregistered).toEqual([]);
+  });
+
+  it('a standing selection reaches a speaker who binds later', () => {
+    const output = new CallAudioOutputController();
+    const h = routedController(output);
+    void output.setOutput('out-1');
+
+    h.controller.applyBindings([binding('p2', 0)]);
+
+    expect(h.elements[0]!.sinkIds).toEqual(['out-1']);
+  });
+
+  it('a new selection reaches every bound speaker element', async () => {
+    const output = new CallAudioOutputController();
+    const h = routedController(output);
+    h.controller.applyBindings([binding('p2', 0), binding('p3', 1)]);
+
+    await output.setOutput('out-2');
+
+    expect(h.elements.map((element) => element.sinkIds)).toEqual([['out-2'], ['out-2']]);
+  });
+
+  it('a torn-down element receives no further routing', async () => {
+    const output = new CallAudioOutputController();
+    const h = routedController(output);
+    h.controller.applyBindings([binding('p2', 0), binding('p3', 1)]);
+    const departed = h.elements.find(
+      (element) => (element.srcObject as { track: { id: string } }).track.id === 'p3',
+    )!;
+    h.controller.applyBindings([binding('p2', 0)]);
+
+    await output.setOutput('out-3');
+
+    expect(departed.sinkIds).toEqual([]);
+  });
+
+  it('works identically without an output controller (the option is optional)', () => {
+    const h = controllerWith();
+
+    h.controller.applyBindings([binding('p2', 0)]);
+
+    expect(h.controller.speakers()).toHaveLength(1);
+    expect(h.elements[0]!.sinkIds).toEqual([]);
   });
 });

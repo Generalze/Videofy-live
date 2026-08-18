@@ -52,17 +52,17 @@ export const CALL_AUDIO_MODES: readonly {
   {
     value: 'translated',
     label: 'Translated',
-    description: 'Hear everyone in your language.',
+    description: 'Hear translated speech.',
   },
   {
     value: 'interpretation',
     label: 'Interpretation',
-    description: 'Their real voice stays softly underneath the translation.',
+    description: 'Hear translation with the original voice underneath.',
   },
   {
     value: 'original',
     label: 'Original',
-    description: 'Hear their real voice only, without translation.',
+    description: 'Hear original participants.',
   },
 ];
 

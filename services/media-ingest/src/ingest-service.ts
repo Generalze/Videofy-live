@@ -574,6 +574,9 @@ export class IngestService {
     logger.info('WebRTC transcription session stopped', {
       sessionId: session.id,
       chunkCount: session.webrtcTranscriptionBridge?.chunkCount,
+      // Languages and counts only, never text: the record that says how many
+      // captions deliberately produced no clip (P6.4 text-only targets).
+      skippedSynthesisByLanguage: this.sessions.skippedSynthesisCounts(session.id),
     });
     return session;
   }
@@ -593,9 +596,14 @@ export class IngestService {
   }
 
   async removeCallSession(sessionId: string): Promise<boolean> {
+    // Read before removal: the skip counters are torn down with the session.
+    const skippedSynthesisByLanguage = this.sessions.skippedSynthesisCounts(sessionId);
     const removed = await this.sessions.removeCallSession(sessionId);
     if (removed) {
-      logger.info('Native-call ingest session removed', { sessionId });
+      logger.info('Native-call ingest session removed', {
+        sessionId,
+        skippedSynthesisByLanguage,
+      });
     }
     return removed;
   }
