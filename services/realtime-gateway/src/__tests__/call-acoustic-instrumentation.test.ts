@@ -107,6 +107,8 @@ function createHarness(acousticObserver?: CallAcousticRoomObserver) {
     acceptOffer: vi.fn(async () => 'receive-answer-sdp'),
     addRemoteCandidate: vi.fn(async () => {}),
     fanOut: vi.fn((_callId: string, _speakerId: string, _data: WebRtcAudioDataLike) => {}),
+    syncSpeakers: vi.fn((_callId: string, _participantIds: readonly string[]) => {}),
+    trackMapping: vi.fn(() => [] as { slot: number; mid: string | null; speakerParticipantId: string | null }[]),
     closePeer: vi.fn(() => {}),
     closeCall: vi.fn(() => {}),
     count: vi.fn(() => 0),

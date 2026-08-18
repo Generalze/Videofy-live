@@ -66,6 +66,13 @@ export const CALL_EVENTS = {
   PUBLISH_ICE: 'call:publish:ice',
   RECEIVE_OFFER: 'call:receive:offer',
   RECEIVE_ICE: 'call:receive:ice',
+  /**
+   * P6.4-W2: which remote speaker each of this listener's receive slots is
+   * carrying. Sent to the one listener it describes, never broadcast — a
+   * call-wide mapping would hand everybody a map of everyone else's transport
+   * state for no reason.
+   */
+  RECEIVE_TRACKS: 'call:receive:tracks',
   SET_CAPTION_LANGUAGE: 'call:caption-language',
   /**
    * W1: the capture settings the browser actually granted. A preference asked
@@ -421,6 +428,17 @@ export class CallRuntime {
           candidate,
         });
       },
+      onTrackMapping: (callId, participantId, tracks) => {
+        const state = this.participants.get(participantKey(callId, participantId));
+        this.emitToRoom(callParticipantRoom(callId, participantId), CALL_EVENTS.RECEIVE_TRACKS, {
+          callId,
+          participantId,
+          // Carried so a client can discard a mapping that arrived after it
+          // had already moved on, using the revision rules that already exist.
+          mediaRevision: state?.mediaRevision ?? null,
+          tracks,
+        });
+      },
     });
   }
 
@@ -721,6 +739,10 @@ export class CallRuntime {
     if (!sdp) return { ok: false, error: USER_FACING_ERRORS.receive };
     try {
       const answerSdp = await this.receivePeers.acceptOffer(binding.callId, binding.participantId, sdp);
+      // A freshly negotiated peer has empty slots. Binding here is what makes a
+      // reconnect recover its speakers without waiting for the next membership
+      // change, which might never come in a settled call.
+      this.syncReceiveSlots(binding.callId, this.store.snapshot(binding.callId));
       return { ok: true, sdp: answerSdp };
     } catch (error) {
       logger.warn('Call receive offer failed', {
@@ -971,11 +993,37 @@ export class CallRuntime {
    * recipients: transcription/translation would serve nobody, and the next
    * membership change mints a fresh revision-scoped session anyway.
    */
+  /**
+   * Reconcile receive-slot bindings against the authoritative snapshot.
+   *
+   * Driven from the store's snapshot rather than from the runtime's own maps,
+   * so the transport can never bind somebody the session layer does not
+   * consider present.
+   */
+  private syncReceiveSlots(callId: string, snapshot: CallSnapshot | null): void {
+    if (!snapshot) return;
+    try {
+      this.receivePeers.syncSpeakers(
+        callId,
+        snapshot.participants.map((participant) => participant.participantId),
+      );
+    } catch (error) {
+      logger.warn('Call receive slot reconciliation failed', {
+        callId,
+        message: error instanceof Error ? error.message : 'unknown slot sync failure',
+      });
+    }
+  }
+
   private async applyIngestPlans(
     callId: string,
     snapshot: CallSnapshot,
     plans: CallIngestPlan[],
   ): Promise<void> {
+    // Membership just changed, so every listener's slot bindings are reconciled
+    // here. Rebinding is metadata only — no track is added or removed — so this
+    // costs no renegotiation, which is the whole reason slots are preallocated.
+    this.syncReceiveSlots(callId, snapshot);
     for (const plan of plans) {
       const participantId = participantIdFromPlan(plan, callId);
       if (!participantId) {
@@ -1518,6 +1566,10 @@ export class CallRuntime {
       }
     }
     this.participants.delete(key);
+    // Free the departed speaker's slot on everyone still here. The track stays;
+    // only the binding is released, so nobody renegotiates because somebody
+    // else hung up.
+    this.syncReceiveSlots(callId, result.snapshot);
     if (state?.socketId) this.socketBindings.delete(state.socketId);
     if (socket) {
       this.socketBindings.delete(socket.id);

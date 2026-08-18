@@ -182,6 +182,8 @@ function createHarness(verifyVoiceIdentity?: (token: string) => string | null) {
     fanOut: vi.fn(
       (_callId: string, _speakerParticipantId: string, _data: WebRtcAudioDataLike) => {},
     ),
+    syncSpeakers: vi.fn((_callId: string, _participantIds: readonly string[]) => {}),
+    trackMapping: vi.fn(() => [] as { slot: number; mid: string | null; speakerParticipantId: string | null }[]),
     closePeer: vi.fn((_callId: string, _participantId: string, _reason: string) => {}),
     closeCall: vi.fn((_callId: string, _reason: string) => {}),
     count: vi.fn(() => 0),

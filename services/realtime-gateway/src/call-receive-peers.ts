@@ -13,9 +13,31 @@ import type { WebRtcAudioDataLike } from './webrtc-audio-ingest-bridge.js';
  * `call:receive:offer` and expects the answer in the ack. This manager is the
  * small per-call equivalent of that pipe using the same wrtc primitives:
  * the speaking participant's backend media peer RTCAudioSink frames are pushed
- * into the RECIPIENT's RTCAudioSource here (A's decoded mic -> B's receive
- * peer, and vice versa), so each participant hears only the OTHER
- * participant's original audio and never their own (§30.4 feedback isolation).
+ * into the RECIPIENT's RTCAudioSource here, so each participant hears only the
+ * OTHER participants' original audio and never their own (§30.4 feedback
+ * isolation).
+ *
+ * P6.4-W2 — ONE SLOT PER REMOTE SPEAKER.
+ *
+ * This used to hold a single RTCAudioSource per listener and push every remote
+ * speaker's PCM into it. With two participants exactly one speaker ever fed it,
+ * so it worked. With three or more, two people talking at once interleave 10 ms
+ * frames into the same source — which is not a mix, it is frame-level
+ * corruption, and it degrades to unintelligible audio rather than failing
+ * visibly.
+ *
+ * So each listener now gets `remoteSlotCount` preallocated sources and tracks,
+ * and each remote speaker is bound to exactly one of them.
+ *
+ * THE SLOT IS THE STABLE TRANSPORT RESOURCE. THE SPEAKER BINDING IS MUTABLE
+ * METADATA. That separation is what lets somebody join or leave without
+ * adding or removing a WebRTC track, and therefore without renegotiation,
+ * while still keeping every speaker's PCM physically separate.
+ *
+ * There is deliberately NO mixing here: no summing, no gain, no clipping
+ * protection. Server-side mixing would need per-recipient jitter alignment and
+ * real DSP; separate tracks let the browser do it natively and are what make
+ * per-speaker mute, volume and ducking possible at all (W3/W4).
  */
 
 export interface CallIceCandidateInit {
@@ -25,8 +47,34 @@ export interface CallIceCandidateInit {
   usernameFragment: string | null;
 }
 
+/**
+ * Which speaker each of a listener's receive slots is currently carrying.
+ *
+ * `slot` is the stable identity: it exists for the life of the receive peer
+ * whether or not anybody is bound to it. `mid` is the transport handle the
+ * browser sees on its `track` event, and is what lets the client attribute a
+ * track WITHOUT parsing SDP. `speakerParticipantId` is null for a free slot.
+ */
+export interface CallReceiveTrackMapping {
+  slot: number;
+  mid: string | null;
+  speakerParticipantId: string | null;
+}
+
 export interface CallReceivePeerHandlers {
   onLocalIceCandidate(callId: string, participantId: string, candidate: CallIceCandidateInit): void;
+  /**
+   * Slot bindings changed for ONE listener, and only that listener is told.
+   *
+   * Emitted on negotiation and on every membership change. Broadcasting it
+   * call-wide would hand every participant a map of everyone else's transport
+   * state for no reason.
+   */
+  onTrackMapping?(
+    callId: string,
+    participantId: string,
+    tracks: readonly CallReceiveTrackMapping[],
+  ): void;
 }
 
 interface CandidateLike {
@@ -45,10 +93,24 @@ interface AudioSourceLike {
   onData(data: WebRtcAudioDataLike): void;
 }
 
+interface TransceiverLike {
+  mid?: string | null;
+  sender?: { track?: TrackLike | null } | null;
+}
+
 interface PeerConnectionLike {
   connectionState: string;
   localDescription?: { sdp?: string | null } | null;
   remoteDescription?: { sdp?: string | null } | null;
+  /**
+   * Optional: used to read each slot's `mid` after negotiation.
+   *
+   * Absent on a minimal test double, in which case `mid` is reported as null
+   * and the client leaves that slot UNBOUND. Reported honestly rather than
+   * inventing a plausible mid: a wrong mid attributes one person's voice to
+   * another, which is worse than a silent track.
+   */
+  getTransceivers?(): TransceiverLike[];
   onicecandidate: ((event: { candidate: CandidateLike | null }) => void) | null;
   onconnectionstatechange: (() => void) | null;
   addTrack(track: TrackLike): unknown;
@@ -67,6 +129,17 @@ export interface CallReceivePeersLike {
     candidate: CandidateLike,
   ): Promise<void>;
   fanOut(callId: string, speakerParticipantId: string, data: WebRtcAudioDataLike): void;
+  /**
+   * Reconcile slot bindings against current membership.
+   *
+   * Idempotent, and STABLE: a speaker already bound keeps their slot, a
+   * departed speaker's slot is freed for reuse, and a new speaker takes the
+   * lowest free one. No track is added or removed, so this never triggers
+   * renegotiation.
+   */
+  syncSpeakers(callId: string, participantIds: readonly string[]): void;
+  /** Current bindings for one listener; the mapping the client is sent. */
+  trackMapping(callId: string, participantId: string): readonly CallReceiveTrackMapping[];
   closePeer(callId: string, participantId: string, reason: string): void;
   closeCall(callId: string, reason: string): void;
   count(): number;
@@ -76,6 +149,21 @@ export interface CallReceivePeerManagerOptions {
   createPeerConnection?: () => PeerConnectionLike;
   createAudioSource?: () => AudioSourceLike;
   maxQueuedCandidates?: number;
+  /**
+   * Preallocated remote slots per listener. Defaults to
+   * DEFAULT_REMOTE_SLOT_COUNT — one fewer than the conference cap, because a
+   * participant never receives themselves.
+   */
+  remoteSlotCount?: number;
+}
+
+interface CallReceiveSlot {
+  slot: number;
+  source: AudioSourceLike;
+  track: TrackLike;
+  mid: string | null;
+  /** Null while free. Mutable: rebinding does NOT replace the track. */
+  speakerParticipantId: string | null;
 }
 
 interface CallReceivePeerRecord {
@@ -83,8 +171,7 @@ interface CallReceivePeerRecord {
   callId: string;
   participantId: string;
   peer: PeerConnectionLike;
-  source: AudioSourceLike;
-  track: TrackLike;
+  slots: CallReceiveSlot[];
   answered: boolean;
   closed: boolean;
   queuedRemoteCandidates: CandidateLike[];
@@ -92,15 +179,26 @@ interface CallReceivePeerRecord {
 
 const DEFAULT_MAX_QUEUED_CANDIDATES = 64;
 
+/**
+ * One fewer than the P6.4 development-demo cap of 4: a participant is never
+ * their own remote. Preallocated so membership changes rebind metadata instead
+ * of renegotiating transport.
+ */
+export const DEFAULT_REMOTE_SLOT_COUNT = 3;
+
 export class CallReceivePeerManager implements CallReceivePeersLike {
   private readonly peers = new Map<string, CallReceivePeerRecord>();
   private readonly handlers: CallReceivePeerHandlers;
   private readonly createPeerConnection: () => PeerConnectionLike;
   private readonly createAudioSource: () => AudioSourceLike;
   private readonly maxQueuedCandidates: number;
+  private readonly remoteSlotCount: number;
+  /** Frames for a speaker with no slot on that listener. Should stay zero. */
+  private unboundFrameCount = 0;
 
   constructor(handlers: CallReceivePeerHandlers, options: CallReceivePeerManagerOptions = {}) {
     this.handlers = handlers;
+    this.remoteSlotCount = Math.max(1, options.remoteSlotCount ?? DEFAULT_REMOTE_SLOT_COUNT);
     this.createPeerConnection =
       options.createPeerConnection ??
       (() =>
@@ -121,16 +219,22 @@ export class CallReceivePeerManager implements CallReceivePeersLike {
     if (existing) this.closeRecord(existing, 'superseded by a new receive offer');
 
     const peer = this.createPeerConnection();
-    const source = this.createAudioSource();
-    const track = source.createTrack();
-    peer.addTrack(track);
+    // Every slot is created up front, bound or not. Adding tracks later would
+    // mean renegotiating whenever somebody joined, which is exactly what the
+    // preallocation exists to avoid.
+    const slots: CallReceiveSlot[] = [];
+    for (let slot = 0; slot < this.remoteSlotCount; slot += 1) {
+      const source = this.createAudioSource();
+      const track = source.createTrack();
+      peer.addTrack(track);
+      slots.push({ slot, source, track, mid: null, speakerParticipantId: null });
+    }
     const record: CallReceivePeerRecord = {
       key,
       callId,
       participantId,
       peer,
-      source,
-      track,
+      slots,
       answered: false,
       closed: false,
       queuedRemoteCandidates: [],
@@ -156,10 +260,16 @@ export class CallReceivePeerManager implements CallReceivePeersLike {
       const answer = await peer.createAnswer();
       await peer.setLocalDescription(answer);
       record.answered = true;
+      // mids exist only after setLocalDescription, so this is the first moment
+      // a slot can be given the handle the browser will see on its track event.
+      this.resolveMids(record);
       while (record.queuedRemoteCandidates.length > 0) {
         const queued = record.queuedRemoteCandidates.shift();
         if (queued) await peer.addIceCandidate(queued).catch(() => undefined);
       }
+      // Re-issued after every (re)negotiation, so a rebuilt peer never leaves
+      // the client holding a mapping for tracks that no longer exist.
+      this.emitMapping(record);
       return peer.localDescription?.sdp ?? answer.sdp ?? '';
     } catch (error) {
       this.closeRecord(record, 'receive peer negotiation failed');
@@ -182,13 +292,28 @@ export class CallReceivePeerManager implements CallReceivePeersLike {
     await record.peer.addIceCandidate(candidate).catch(() => undefined);
   }
 
-  /** Push one decoded audio frame from the speaker to every OTHER participant's receive peer. */
+  /**
+   * Push one decoded frame from the speaker into THAT SPEAKER'S SLOT on every
+   * other participant's receive peer.
+   *
+   * The frame goes to exactly one source per listener. Two people speaking at
+   * once therefore reach two different sources, which is the whole point: the
+   * previous single-source version interleaved their frames.
+   */
   fanOut(callId: string, speakerParticipantId: string, data: WebRtcAudioDataLike): void {
     for (const record of [...this.peers.values()]) {
       if (record.callId !== callId || record.participantId === speakerParticipantId) continue;
       if (record.closed) continue;
+      const slot = record.slots.find((entry) => entry.speakerParticipantId === speakerParticipantId);
+      if (!slot) {
+        // No slot means the runtime has not reconciled membership yet. Dropping
+        // is deliberate: writing into an arbitrary free slot would reintroduce
+        // nondeterministic attribution, which is the defect being removed.
+        this.unboundFrameCount += 1;
+        continue;
+      }
       try {
-        record.source.onData(data);
+        slot.source.onData(data);
       } catch (error) {
         logger.warn('Call receive peer audio push failed', {
           callId: record.callId,
@@ -198,6 +323,65 @@ export class CallReceivePeerManager implements CallReceivePeersLike {
         this.closeRecord(record, 'receive peer audio push failed');
       }
     }
+  }
+
+  /**
+   * Reconcile every listener's slot bindings against current membership.
+   *
+   * Stability is the contract: a speaker already bound KEEPS their slot, so a
+   * fourth person joining cannot silently move the person you were already
+   * listening to onto a different track.
+   */
+  syncSpeakers(callId: string, participantIds: readonly string[]): void {
+    const present = new Set(participantIds);
+    for (const record of this.peers.values()) {
+      if (record.callId !== callId || record.closed) continue;
+      const wanted = participantIds.filter((id) => id !== record.participantId);
+      let changed = false;
+
+      // 1. Release slots whose speaker has gone. The track and source stay:
+      //    only the binding is metadata.
+      for (const slot of record.slots) {
+        if (slot.speakerParticipantId === null) continue;
+        if (present.has(slot.speakerParticipantId) && slot.speakerParticipantId !== record.participantId) {
+          continue;
+        }
+        slot.speakerParticipantId = null;
+        changed = true;
+      }
+
+      // 2. Bind anyone unbound to the lowest free slot, in a deterministic
+      //    order so two listeners agree about nothing — they need not — but a
+      //    single listener is reproducible across reconnects.
+      for (const speakerId of wanted) {
+        if (record.slots.some((slot) => slot.speakerParticipantId === speakerId)) continue;
+        const free = record.slots.find((slot) => slot.speakerParticipantId === null);
+        if (!free) {
+          // More speakers than slots: the conference cap is meant to prevent
+          // this, so it is a configuration error rather than a routine state.
+          logger.warn('Call receive peer has no free slot for a speaker', {
+            callId,
+            participantId: record.participantId,
+            slotCount: record.slots.length,
+          });
+          break;
+        }
+        free.speakerParticipantId = speakerId;
+        changed = true;
+      }
+
+      if (changed) this.emitMapping(record);
+    }
+  }
+
+  trackMapping(callId: string, participantId: string): readonly CallReceiveTrackMapping[] {
+    const record = this.peers.get(keyFor(callId, participantId));
+    return record && !record.closed ? mappingOf(record) : [];
+  }
+
+  /** Diagnostics: frames arriving for a speaker with no slot. Expected zero. */
+  unboundFrames(): number {
+    return this.unboundFrameCount;
   }
 
   closePeer(callId: string, participantId: string, reason: string): void {
@@ -215,13 +399,44 @@ export class CallReceivePeerManager implements CallReceivePeersLike {
     return this.peers.size;
   }
 
+  /**
+   * Read each slot's `mid` from the negotiated transceivers.
+   *
+   * Matched by sender track identity rather than by index: transceiver order is
+   * not promised to match the order tracks were added, and guessing would give
+   * the client a mapping that is confidently wrong.
+   */
+  private resolveMids(record: CallReceivePeerRecord): void {
+    const transceivers = record.peer.getTransceivers?.();
+    if (!transceivers) return;
+    for (const slot of record.slots) {
+      const match = transceivers.find((transceiver) => transceiver.sender?.track === slot.track);
+      slot.mid = match?.mid ?? null;
+    }
+  }
+
+  private emitMapping(record: CallReceivePeerRecord): void {
+    if (record.closed) return;
+    try {
+      this.handlers.onTrackMapping?.(record.callId, record.participantId, mappingOf(record));
+    } catch (error) {
+      logger.warn('Call receive track mapping delivery failed', {
+        callId: record.callId,
+        participantId: record.participantId,
+        message: error instanceof Error ? error.message : 'unknown mapping failure',
+      });
+    }
+  }
+
   private closeRecord(record: CallReceivePeerRecord, reason: string): void {
     if (record.closed) return;
     record.closed = true;
-    try {
-      record.track.stop?.();
-    } catch {
-      // Best effort; the peer close below is what releases transport resources.
+    for (const slot of record.slots) {
+      try {
+        slot.track.stop?.();
+      } catch {
+        // Best effort; the peer close below is what releases transport resources.
+      }
     }
     try {
       record.peer.close();
@@ -240,6 +455,22 @@ export class CallReceivePeerManager implements CallReceivePeersLike {
 
 function keyFor(callId: string, participantId: string): string {
   return `${callId}:${participantId}`;
+}
+
+/**
+ * The mapping as the client receives it: EVERY slot, including free ones.
+ *
+ * Free slots are reported rather than omitted so the client can distinguish
+ * "this track carries nobody" from "I have not been told about this track yet".
+ * A shorter list would make those two states identical, and they need different
+ * handling.
+ */
+function mappingOf(record: CallReceivePeerRecord): CallReceiveTrackMapping[] {
+  return record.slots.map((slot) => ({
+    slot: slot.slot,
+    mid: slot.mid,
+    speakerParticipantId: slot.speakerParticipantId,
+  }));
 }
 
 function readCallIceServers(): { urls: string | string[]; username?: string; credential?: string }[] {
