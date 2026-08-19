@@ -1230,7 +1230,28 @@ Zoom's official Realtime Media Streams (RTMS) documentation states that RTMS can
 
 - Keep OBS/VB-CABLE as a demo/fallback Media Bridge, not the long-term enterprise integration.
 
-## 18. KingsConference Integration Strategy
+## 18. KingsConference Strategy
+
+> **Corrected 2026-08-19, superseding the same day's first-party ratification.**
+> KingsConference (kingsconference.app) is a REAL, INDEPENDENT third-party
+> conferencing product. It already owns rooms, video, scheduling, screen
+> sharing, chat, moderation, authentication, meeting links and its own UI, at
+> advertised scale [R15][R16]. Videofy does not build, rebuild or replace any
+> of that.
+>
+> P6.6 is therefore an ADAPTER: KingsConference keeps the meeting; Videofy adds
+> the LANGUAGE LAYER. Speaker audio plus participant identity leave their
+> conference, cross a KingsConference-to-Videofy adapter into Videofy Connect,
+> run the existing translation engine, and translated audio plus captions
+> return to the listeners who asked for them.
+>
+> The briefly-ratified reading — that KingsConference was a first-party Videofy
+> product to be built on Connect — was wrong and is withdrawn. The artifact
+> produced under it is real and is retained as the **Connect Reference App**
+> (`apps/connect-reference-web`, `services/connect-reference-server`): P6.5
+> evidence that an outside product can integrate through the public SDKs alone.
+> It is not KingsConference and never talked to kingsconference.app.
+
 
 ### 18.1 Verified public product surface
 
@@ -1239,6 +1260,13 @@ KingsConference publicly describes browser-based audio/video conferencing, parti
 ### 18.2 Recommended path
 
 Treat KingsConference as a direct-partnership integration candidate. If its engineering team can expose participant-level WebRTC tracks, SFU/media hooks or a server-side media interface, build a first-class adapter. If those hooks are not available, use an embedded/Media Bridge proof while negotiating a supported integration surface.
+
+**Access is the gating question, not engineering.** The integration path is
+decided by what KingsConference's own team can expose, so P6.6 opens with a
+read-only access investigation and a written request to them, not with code.
+Until that answer exists, no adapter shape is committed to. See
+`docs/adapters/kingsconference-integration.md` for the surveyed paths, the
+questions put to their team, and the decision record.
 
 - Request signaling and media topology docs.
 
@@ -2057,7 +2085,7 @@ videofy-live/
 +-- adapters/
 |   +-- native-webrtc/
 |   +-- zoom/
-|   +-- kingsconference/
+|   +-- kingsconference/   (adapter, P6.6)
 |   +-- sip/
 |   +-- media-bridge/
 |
@@ -2172,8 +2200,8 @@ Both matter, but they are different gates.
 | P6.2 | Auto-detect assistance and personalized captions. | Confidence/confirm/override/lock are revision-safe. |
 | P6.3 | Videofy Voice personal-voice prototype with consent/fallback. | Approved EN/ES personal-voice proof; standard voice fallback preserved. |
 | P6.4 | 3+ participant conference routing. | At least three language preferences with deduped target routing and correct attribution. |
-| P6.5 | Videofy Connect SDK/API. | Independent sample app integrates through public contracts only. |
-| P6.6 | KingsConference integration. | Direct supported adapter if access exists; otherwise documented bridge/partial proof. |
+| P6.5 | Videofy Connect SDK/API. | Independent sample app integrates through public contracts only. Strengthened 2026-08-19 by the Connect Reference App (`apps/connect-reference-web`, `services/connect-reference-server`): a full conference product — rooms, host keys, Normal/Translated modes, captions, transcripts, recovery — built on `@videofy/connect` and `@videofy/server-sdk` only, proven against SDK tarballs installed outside the workspace. |
+| P6.6 | KingsConference adapter: the FIRST third-party platform integration. KingsConference keeps its own conference; Videofy supplies the language layer through a trusted server-side adapter into Connect. (Corrected 2026-08-19: an earlier same-day ratification wrongly framed KingsConference as a first-party product. The artifact built under it is retained as the Connect Reference App and counts as P6.5 evidence, not as P6.6.) | A real KingsConference meeting carries at least two languages end to end: a speaker's audio leaves their conference, is recognised and translated by the existing Videofy engine, and translated audio plus captions return to the correct listeners inside that same meeting, with participant identity preserved across the seam and no Videofy-internal vocabulary crossing the adapter boundary. |
 | P6.7 | Zoom adapter. | RTMS ingress plus verified supported egress/sidecar behavior. |
 | P6.8 | SIP/RTP gateway. | Two SIP endpoints complete translated call. |
 | C-AI1 Commercial provider certification | Implement and certify at least one commercial translation/TTS/STT route per launch language, local or cloud. | Commercial profile has no blocked/unknown fallback and passes quality/latency/security gates. |
