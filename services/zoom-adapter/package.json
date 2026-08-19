@@ -1,0 +1,30 @@
+{
+  "name": "@videofy-live/zoom-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "author": "masterzee001",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "description": "Zoom RTMS ingress adapter: normalizes participant-separated Zoom meeting audio into the transport-neutral Videofy media-adapter seam. Carries no speech, translation or synthesis of its own.",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.17.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
+  }
+}

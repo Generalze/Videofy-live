@@ -1230,6 +1230,30 @@ Zoom's official Realtime Media Streams (RTMS) documentation states that RTMS can
 
 - Keep OBS/VB-CABLE as a demo/fallback Media Bridge, not the long-term enterprise integration.
 
+### 17.3 P6.7 audit outcome (2026-08-19)
+
+The official-surface audit is complete; findings, the egress evidence table and
+the open questions live in `docs/adapters/zoom-integration.md`.
+
+**Ingress is confirmed and built.** RTMS delivers per-participant audio for
+ordinary Meetings (`data_opt: AUDIO_MULTI_STREAMS`) as raw L16 16 kHz mono in
+20 ms packets with `user_id`, `user_name` and per-user timestamps — the engine's
+existing format, so no transcode. `services/zoom-adapter` implements that
+ingress and nothing else. Two constraints carried into the design: the DEFAULT
+mixed stream is anonymous (`user_id: 0`) and is refused, and multi-stream is
+documented as supporting up to 3 speakers per 20 ms.
+
+**Egress is unresolved and no path was invented.** RTMS is delivery-to-
+application; nothing in it returns audio to a meeting. The ranked candidate is
+Zoom's native interpretation channel driven by a Meeting SDK participant, whose
+two halves are separately documented while the join between them is not — that
+single unknown decides the architecture and must be settled with Zoom before
+commitment. Captions have an official third-party path that carries no language
+parameter, making a Zoom App panel the only per-user multilingual route.
+
+P6.7 therefore stands as: ingress complete, egress blocked on Zoom answers and
+Developer Pack credentials. The exit condition in §29 is unchanged and unmet.
+
 ## 18. KingsConference Strategy
 
 > **Corrected 2026-08-19, superseding the same day's first-party ratification.**
