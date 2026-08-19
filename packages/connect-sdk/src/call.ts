@@ -141,6 +141,18 @@ export class VideofyCallEngine implements VideofyCall {
   private socket: ConnectSocketLike | null = null;
   private session: { participantId: string } | null = null;
   private wireState: CallStateSnapshot | null = null;
+  /**
+   * Proven defect, found by the Connect Reference App's end-to-end runs: a
+   * join/resume ack can carry a snapshot CAPTURED
+   * BEFORE a STATE broadcast that this socket has already processed (the
+   * gateway broadcasts on join completion, then awaits ingest planning
+   * before acking). Socket delivery is in-order, so any broadcast seen
+   * after the request was emitted is at least as fresh as the ack —
+   * adopting the ack over it regresses the roster (observed as a one-tile
+   * room until the next broadcast). This flag marks that a fresher
+   * broadcast landed while the request was in flight.
+   */
+  private wireStateSupersedesAck = false;
 
   private localAudioMode: AudioMode;
   private captionsEnabled: boolean;
@@ -293,6 +305,7 @@ export class VideofyCallEngine implements VideofyCall {
       } else {
         payload = this.buildJoinPayload();
       }
+      this.wireStateSupersedesAck = false;
       let ack = await emitJoinRequest(socket, payload);
       if (!ack.ok && stored) {
         const handling = failedResumeAckHandling(ack.code);
@@ -304,6 +317,7 @@ export class VideofyCallEngine implements VideofyCall {
           // addressed by the token again.
           this.wireCallId = this.claims.call;
           payload = this.buildJoinPayload();
+          this.wireStateSupersedesAck = false;
           ack = await emitJoinRequest(socket, payload);
         }
       }
@@ -396,6 +410,7 @@ export class VideofyCallEngine implements VideofyCall {
 
   private handleWireState(snapshot: CallStateSnapshot | null): void {
     if (this.ended || this.disposed) return;
+    this.wireStateSupersedesAck = true;
     this.wireState = snapshot;
     if (snapshot?.state === 'ended') {
       // Server-authority end (Connect project or gateway). Terminal for the
@@ -482,6 +497,7 @@ export class VideofyCallEngine implements VideofyCall {
     );
     void (async () => {
       try {
+        this.wireStateSupersedesAck = false;
         const ack = await emitJoinRequest(socket, payload);
         if (!ack.ok) {
           if (isTerminalResumeCode(ack.code)) {
@@ -1224,7 +1240,11 @@ export class VideofyCallEngine implements VideofyCall {
   }
 
   private adoptAckSnapshot(ack: Extract<CallJoinAck, { ok: true }>): void {
-    this.wireState = ack.snapshot ?? null;
+    // Never regress: a broadcast processed since this request was emitted
+    // already reflects everything the ack's snapshot knew, and more.
+    if (!this.wireStateSupersedesAck || this.wireState === null) {
+      this.wireState = ack.snapshot ?? null;
+    }
     const callId = ack.snapshot?.callId;
     if (typeof callId === 'string' && callId.length > 0) {
       // Bound payloads must name the id the seat is registered under.

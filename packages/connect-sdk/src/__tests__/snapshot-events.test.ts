@@ -237,3 +237,29 @@ describe('self view', () => {
     call.dispose();
   });
 });
+
+describe('ack snapshot monotonicity (proven defect)', () => {
+  it('never regresses a STATE broadcast that raced ahead of the join ack', async () => {
+    // The gateway broadcasts STATE on join completion and only acks after an
+    // ingest round-trip: a second joiner's broadcast can land on this socket
+    // BEFORE our own ack. The ack's snapshot is older by construction and
+    // must not shrink the roster back (the one-tile-room incident).
+    const harness = makeHarness();
+    harness.socket.respond = (event) => {
+      if (event !== CALL_EVENTS.JOIN) return undefined;
+      // Fresher room state arrives synchronously, ahead of the microtask ack.
+      harness.socket.fire(
+        CALL_EVENTS.STATE,
+        wireSnapshot({
+          participants: [...wireSnapshot().participants!, remoteParticipant()],
+        }),
+      );
+      return okJoinAck(); // snapshot: self only — captured before Ben joined
+    };
+    const client = createVideofyClientWith(harness.config, harness.deps);
+    const call = await client.join({ token: buildTestToken() });
+    expect(call.getSnapshot().participants).toHaveLength(1);
+    expect(call.getSnapshot().participants[0]!.participantId).toBe('participant_2');
+    call.dispose();
+  });
+});
