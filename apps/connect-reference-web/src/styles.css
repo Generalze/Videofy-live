@@ -1,0 +1,430 @@
+/* owner: masterzee001 */
+/*
+ * The Connect Reference brand. Its own cloth, cut on purpose: deep ink ground,
+ * warm ivory type, a restrained gold that reads as brass rather than neon,
+ * and serif display headings. Nobody should mistake this for any other
+ * Videofy surface — Connect Reference dresses like the external product it is.
+ */
+
+:root {
+  --ref-ink: #0e0d12;
+  --ref-surface: #16141c;
+  --ref-raised: #1d1a25;
+  --ref-inset: #121017;
+  --ref-border: #2b2735;
+  --ref-border-strong: #3a3448;
+  --ref-text: #f1ece1;
+  --ref-muted: #9d95ad;
+  --ref-faint: #6d6580;
+  --ref-gold: #d8a648;
+  --ref-gold-strong: #eec06a;
+  --ref-gold-ink: #2a2008;
+  --ref-live: #46c98a;
+  --ref-danger: #e0596b;
+  --ref-danger-dim: #52222b;
+  --ref-serif: georgia, cambria, 'Times New Roman', serif;
+  --ref-sans: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --ref-radius: 10px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background:
+    radial-gradient(1200px 500px at 50% -200px, #1c1726 0%, var(--ref-ink) 70%) no-repeat,
+    var(--ref-ink);
+  color: var(--ref-text);
+  font-family: var(--ref-sans);
+  font-size: 15px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+.ref-shell {
+  margin: 0 auto;
+  max-width: 1060px;
+  padding: 0 20px 48px;
+}
+
+/* ————— masthead ————— */
+
+.ref-masthead {
+  align-items: baseline;
+  border-bottom: 1px solid var(--ref-border);
+  display: flex;
+  gap: 12px;
+  padding: 22px 0 14px;
+}
+
+.ref-wordmark {
+  color: var(--ref-text);
+  font-family: var(--ref-serif);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin: 0;
+}
+
+.ref-wordmark .ref-crown {
+  color: var(--ref-gold);
+  margin-right: 8px;
+}
+
+.ref-tagline {
+  color: var(--ref-faint);
+  font-size: 13px;
+}
+
+/* ————— shared chrome ————— */
+
+.ref-card {
+  background: var(--ref-surface);
+  border: 1px solid var(--ref-border);
+  border-radius: var(--ref-radius);
+  margin-top: 22px;
+  padding: 20px 22px;
+}
+
+.ref-card h2 {
+  border-bottom: 1px solid var(--ref-border);
+  font-family: var(--ref-serif);
+  font-size: 19px;
+  font-weight: 600;
+  margin: 0 0 14px;
+  padding-bottom: 10px;
+}
+
+.ref-field {
+  display: block;
+  margin-bottom: 14px;
+}
+
+.ref-field > span {
+  color: var(--ref-muted);
+  display: block;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+input[type='text'],
+input[type='datetime-local'],
+select {
+  background: var(--ref-inset);
+  border: 1px solid var(--ref-border-strong);
+  border-radius: 7px;
+  color: var(--ref-text);
+  font-family: var(--ref-sans);
+  font-size: 15px;
+  padding: 9px 11px;
+  width: 100%;
+}
+
+input:focus,
+select:focus,
+button:focus-visible {
+  outline: 2px solid var(--ref-gold);
+  outline-offset: 1px;
+}
+
+button {
+  background: var(--ref-raised);
+  border: 1px solid var(--ref-border-strong);
+  border-radius: 7px;
+  color: var(--ref-text);
+  cursor: pointer;
+  font-family: var(--ref-sans);
+  font-size: 14px;
+  padding: 9px 16px;
+}
+
+button:hover {
+  border-color: var(--ref-gold);
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+button.ref-primary {
+  background: var(--ref-gold);
+  border-color: var(--ref-gold);
+  color: var(--ref-gold-ink);
+  font-weight: 600;
+}
+
+button.ref-primary:hover {
+  background: var(--ref-gold-strong);
+}
+
+button.ref-danger {
+  background: var(--ref-danger-dim);
+  border-color: var(--ref-danger);
+  color: #ffd9de;
+}
+
+.ref-error {
+  background: var(--ref-danger-dim);
+  border: 1px solid var(--ref-danger);
+  border-radius: 7px;
+  color: #ffd9de;
+  margin: 12px 0;
+  padding: 9px 12px;
+}
+
+.ref-note {
+  color: var(--ref-muted);
+  font-size: 13px;
+}
+
+/* ————— badges & status ————— */
+
+.ref-badge {
+  border: 1px solid var(--ref-border-strong);
+  border-radius: 999px;
+  color: var(--ref-muted);
+  display: inline-block;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  padding: 2px 10px;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.ref-badge.ref-badge-translated {
+  border-color: var(--ref-gold);
+  color: var(--ref-gold-strong);
+}
+
+.ref-live-dot {
+  color: var(--ref-live);
+  font-weight: 600;
+}
+
+.ref-ended {
+  color: var(--ref-faint);
+}
+
+.ref-status {
+  align-items: center;
+  color: var(--ref-muted);
+  display: flex;
+  font-size: 13px;
+  gap: 8px;
+}
+
+.ref-status.ref-status-live {
+  color: var(--ref-live);
+}
+
+/* ————— rooms list ————— */
+
+.ref-room-row {
+  align-items: center;
+  border-bottom: 1px solid var(--ref-border);
+  display: flex;
+  gap: 14px;
+  padding: 13px 2px;
+}
+
+.ref-room-row:last-child {
+  border-bottom: none;
+}
+
+.ref-room-name {
+  font-family: var(--ref-serif);
+  font-size: 17px;
+}
+
+.ref-room-meta {
+  color: var(--ref-muted);
+  flex: 1;
+  font-size: 13px;
+}
+
+.ref-host-key-panel {
+  background: var(--ref-inset);
+  border: 1px solid var(--ref-gold);
+  border-radius: var(--ref-radius);
+  margin-top: 22px;
+  padding: 18px 22px;
+}
+
+.ref-host-key-panel code {
+  background: var(--ref-ink);
+  border: 1px dashed var(--ref-gold);
+  border-radius: 6px;
+  display: inline-block;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  margin: 8px 0;
+  padding: 8px 12px;
+  user-select: all;
+}
+
+/* ————— lobby ————— */
+
+.ref-preview-frame {
+  background: var(--ref-inset);
+  border: 1px solid var(--ref-border-strong);
+  border-radius: var(--ref-radius);
+  margin: 10px 0;
+  min-height: 180px;
+  overflow: hidden;
+}
+
+.ref-preview-frame video {
+  display: block;
+  max-height: 260px;
+  width: 100%;
+}
+
+/* ————— room ————— */
+
+.ref-room-topbar {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  padding: 16px 0 6px;
+}
+
+.ref-tiles {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  margin-top: 14px;
+}
+
+.ref-tile {
+  background: var(--ref-surface);
+  border: 1px solid var(--ref-border);
+  border-radius: var(--ref-radius);
+  margin: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.ref-tile video {
+  aspect-ratio: 4 / 3;
+  background: var(--ref-inset);
+  display: block;
+  object-fit: cover;
+  width: 100%;
+}
+
+.ref-tile figcaption {
+  border-top: 1px solid var(--ref-border);
+  font-size: 13px;
+  padding: 8px 10px;
+}
+
+.ref-tile .ref-tile-name {
+  font-family: var(--ref-serif);
+  font-size: 15px;
+}
+
+.ref-tile.ref-tile-away {
+  opacity: 0.55;
+}
+
+.ref-speaker-controls {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.ref-speaker-controls input[type='range'] {
+  flex: 1;
+}
+
+.ref-controls {
+  align-items: center;
+  background: var(--ref-surface);
+  border: 1px solid var(--ref-border);
+  border-radius: var(--ref-radius);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 12px 14px;
+}
+
+.ref-controls .ref-field-inline {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.ref-controls .ref-field-inline > span {
+  color: var(--ref-muted);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ref-controls select {
+  width: auto;
+}
+
+.ref-captions {
+  background: var(--ref-inset);
+  border: 1px solid var(--ref-border);
+  border-radius: var(--ref-radius);
+  list-style: none;
+  margin: 14px 0 0;
+  min-height: 52px;
+  padding: 10px 14px;
+}
+
+.ref-captions li {
+  padding: 2px 0;
+}
+
+.ref-captions .ref-caption-name {
+  color: var(--ref-gold-strong);
+  font-weight: 600;
+  margin-right: 6px;
+}
+
+.ref-captions li.ref-caption-interim {
+  color: var(--ref-muted);
+  font-style: italic;
+}
+
+.ref-transcript pre {
+  background: var(--ref-inset);
+  border: 1px solid var(--ref-border);
+  border-radius: 7px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+}
+
+.ref-host-panel {
+  border-color: var(--ref-gold);
+}
+
+.ref-banner {
+  background: var(--ref-raised);
+  border: 1px solid var(--ref-gold);
+  border-radius: var(--ref-radius);
+  margin-top: 16px;
+  padding: 12px 16px;
+}
+
+.ref-banner.ref-banner-trouble {
+  border-color: var(--ref-danger);
+}

@@ -241,3 +241,6 @@ connect-projects.*.json
 
 # npm pack artifacts
 packages/**/*.tgz
+
+# Connect Reference room registry: product data, never committed.
+connect-reference-rooms.json

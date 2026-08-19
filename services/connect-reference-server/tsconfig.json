@@ -1,0 +1,25 @@
+{
+  // owner: masterzee001
+  // Self-contained on purpose (P6.6 purity guard #3): an external customer
+  // has no monorepo tsconfig.base.json to extend. Options mirror the repo
+  // baseline so in-workspace and tarball-overlay builds see the same rules.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src"]
+}
