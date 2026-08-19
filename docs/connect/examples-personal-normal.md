@@ -5,7 +5,7 @@ the smallest possible integration, and the base the translated examples build
 on.
 
 In `normal` mode everyone hears everyone's original voice; translation,
-captions and transcripts are inactive. You can switch the same call to
+captions still flow — in the SPEAKER’S original language (speech recognition runs; translation does not) — and the transcript remains available. You can switch the same call to
 `translated` later without rejoining (shown at the end).
 
 ## Server
