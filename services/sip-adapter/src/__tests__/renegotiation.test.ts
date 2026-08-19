@@ -620,8 +620,10 @@ describe('the seam is never asked to close a session it is still opening', () =>
       mediaPolicy: TEST_POLICY,
     });
     await expect(call.onInvite(invite(PCMU_OFFER))).rejects.toThrow('no capacity');
-    // The first INVITE threw before answering, so nothing has been said yet.
-    expect(answered).toHaveLength(0);
+    // ADAPTED. This used to assert SILENCE, which was the defect: a refused
+    // INVITE that says nothing leaves the caller waiting on a transaction
+    // that will never complete. A refusal must be final.
+    expect(answered.map((message) => message.statusCode)).toEqual([503]);
 
     await call.onInvite(invite(PCMU_OFFER));
     // A definite answer, not another provisional. Absorbing this one too
@@ -634,9 +636,52 @@ describe('the seam is never asked to close a session it is still opening', () =>
     // retransmit arrives the dialog really has ceased to exist, and the
     // ordinary post-hangup guard answers it. The claim being pinned is
     // unchanged: one definite final response, not an endless provisional.
-    expect(answered.map((message) => message.statusCode)).toEqual([481]);
+    expect(answered.map((message) => message.statusCode)).toEqual([503, 481]);
     expect(call.isClosed).toBe(true);
     await call.close('nothing was ever opened');
+  });
+
+  it('PIN: a rejection landing AFTER an absorbed retransmit still produces a final response', async () => {
+    // The interleaving that matters, and the one no earlier pin reached: the
+    // seam takes longer than T1 to say no, so the caller has already
+    // retransmitted and already been given 100 Trying. That provisional moves
+    // its transaction from Calling into Proceeding, where it stops
+    // retransmitting AND its own timeout no longer applies — so if this path
+    // stays silent, nothing anywhere will ever complete that transaction.
+    class SlowRefusingSeam extends RecordingMediaAdapterPort {
+      override async openSession(): Promise<{ sessionId: string }> {
+        await sleep(60);
+        throw new Error('no capacity');
+      }
+    }
+    const answered: SipMessage[] = [];
+    const call = new SipCall({
+      port: new SlowRefusingSeam(),
+      localAddress: '203.0.113.5',
+      localRtpPort: 30000,
+      sendRtp: () => {},
+      sendSip: (message) => answered.push(message),
+      mintParticipantId: () => 'sp_1',
+      mediaPolicy: TEST_POLICY,
+    });
+
+    const first = call.onInvite(invite(PCMU_OFFER, '1 INVITE'));
+    await sleep(10);
+    // The caller repeats its INVITE, exactly as it does every T1 until answered.
+    await call.onInvite(invite(PCMU_OFFER, '1 INVITE'));
+    expect(answered.map((message) => message.statusCode)).toEqual([100]);
+
+    await expect(first).rejects.toThrow('no capacity');
+
+    // A final response, not just the provisional. Without it the caller holds
+    // ringback for minutes on a call refused in under a second, no failover
+    // fires, and the carrier leg stays pinned for the life of the hung
+    // transaction — once per INVITE for as long as the seam is degraded.
+    const finals = answered.filter((message) => (message.statusCode ?? 0) >= 200);
+    expect(finals).toHaveLength(1);
+    expect(finals[0]!.statusCode).toBe(503);
+    for (let waited = 0; waited < 100 && !call.isClosed; waited += 1) await sleep(5);
+    expect(call.isClosed).toBe(true);
   });
 
   it('PIN: a seam that REFUSED the session is not then told to close it', async () => {

@@ -661,6 +661,16 @@ export class SipCall {
         this.timers,
       );
       if (settled === 'rejected') {
+        // ANSWERED before rethrowing. A retransmit absorbed with 100 Trying
+        // has already moved the caller's transaction from Calling into
+        // Proceeding, where its Timer B no longer applies — so a silent
+        // rejection leaves that transaction with a provisional and no final,
+        // forever. The caller holds ringback for minutes on a call the seam
+        // refused in under a second, no failover fires, and the carrier leg
+        // stays pinned for the life of the hung transaction. The sibling
+        // timeout branch below has always said 504 rather than nothing; a
+        // refusal has to be just as final.
+        this.respond(message, 503, 'Service Unavailable');
         // Rethrown deliberately. A seam that REFUSES a call must fail loudly:
         // the caller of onInvite learns why, and the catch there ends the call
         // and releases what it was holding.
