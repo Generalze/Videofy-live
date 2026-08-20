@@ -1,7 +1,7 @@
 /** @owner masterzee001 */
 import wrtc from '@roamhq/wrtc';
 import { logger } from './logger.js';
-import type { WebRtcAudioDataLike } from './webrtc-audio-ingest-bridge.js';
+import type { MediaAudioDataLike } from './media-transcription-chunker.js';
 
 /**
  * P6.1B per-call remote-original-audio delivery.
@@ -90,7 +90,7 @@ interface TrackLike {
 
 interface AudioSourceLike {
   createTrack(): TrackLike;
-  onData(data: WebRtcAudioDataLike): void;
+  onData(data: MediaAudioDataLike): void;
 }
 
 interface TransceiverLike {
@@ -128,7 +128,7 @@ export interface CallReceivePeersLike {
     participantId: string,
     candidate: CandidateLike,
   ): Promise<void>;
-  fanOut(callId: string, speakerParticipantId: string, data: WebRtcAudioDataLike): void;
+  fanOut(callId: string, speakerParticipantId: string, data: MediaAudioDataLike): void;
   /**
    * Reconcile slot bindings against current membership.
    *
@@ -308,7 +308,7 @@ export class CallReceivePeerManager implements CallReceivePeersLike {
    * once therefore reach two different sources, which is the whole point: the
    * previous single-source version interleaved their frames.
    */
-  fanOut(callId: string, speakerParticipantId: string, data: WebRtcAudioDataLike): void {
+  fanOut(callId: string, speakerParticipantId: string, data: MediaAudioDataLike): void {
     for (const record of [...this.peers.values()]) {
       if (record.callId !== callId || record.participantId === speakerParticipantId) continue;
       if (record.closed) continue;

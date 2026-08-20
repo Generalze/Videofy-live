@@ -45,7 +45,7 @@ No listener microphone publishing, video delivery, translated-audio WebRTC deliv
 
 ## Transcription Flow
 
-- WebRTC decoded audio frames are chunked by `WebRtcTranscriptionChunker`.
+- WebRTC decoded audio frames are chunked by `MediaTranscriptionChunker`.
 - The bridge writes normalized WAV chunks into the configured staging directory.
 - Media ingest accepts only safe internal WebRTC chunk paths under the staging directory.
 - Chunk metadata preserves WebRTC session ID, broadcast ID, sequence, `startMs`, `endMs`, status, detected language, confidence, and provider latency.

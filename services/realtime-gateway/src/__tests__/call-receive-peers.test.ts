@@ -16,16 +16,16 @@ import {
   DEFAULT_REMOTE_SLOT_COUNT,
   type CallReceiveTrackMapping,
 } from '../call-receive-peers.js';
-import type { WebRtcAudioDataLike } from '../webrtc-audio-ingest-bridge.js';
+import type { MediaAudioDataLike } from '../media-transcription-chunker.js';
 
 /** One source per slot, recording exactly which frames it was handed. */
 class FakeSource {
-  readonly received: WebRtcAudioDataLike[] = [];
+  readonly received: MediaAudioDataLike[] = [];
   readonly track = { stop: vi.fn() };
   createTrack() {
     return this.track;
   }
-  onData(data: WebRtcAudioDataLike) {
+  onData(data: MediaAudioDataLike) {
     this.received.push(data);
   }
   /** The speaker signature of every frame this source got, in order. */
@@ -105,7 +105,7 @@ function harness(remoteSlotCount = DEFAULT_REMOTE_SLOT_COUNT): Harness {
 }
 
 /** A frame whose first sample identifies the speaker unmistakably. */
-function frame(signature: number): WebRtcAudioDataLike {
+function frame(signature: number): MediaAudioDataLike {
   const samples = new Int16Array(160);
   samples.fill(signature);
   return { samples, sampleRate: 16000, channelCount: 1, bitsPerSample: 16 };

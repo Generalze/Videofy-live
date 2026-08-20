@@ -8,15 +8,15 @@ import { PassThrough } from 'node:stream';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  HttpWebRtcTranscriptionSubmissionClient,
-  WebRtcTranscriptionBridge,
+  HttpMediaTranscriptionSubmissionClient,
+  MediaTranscriptionBridge,
   wavBufferFromPcm,
-  type WebRtcTranscriptionBridgeContext,
-  type WebRtcTranscriptionSubmissionClient,
-} from '../webrtc-transcription-bridge.js';
-import type { WebRtcTranscriptionChunk } from '../webrtc-transcription-chunker.js';
+  type MediaTranscriptionBridgeContext,
+  type MediaTranscriptionSubmissionClient,
+} from '../media-transcription-bridge.js';
+import type { MediaTranscriptionChunk } from '../media-transcription-chunker.js';
 
-const context: WebRtcTranscriptionBridgeContext = {
+const context: MediaTranscriptionBridgeContext = {
   sessionId: 'wrs_demo',
   broadcastId: 'broadcast_demo',
   broadcasterPeerId: 'peer_broadcaster',
@@ -31,11 +31,11 @@ afterEach(async () => {
   tempDirs = [];
 });
 
-describe('WebRtcTranscriptionBridge', () => {
+describe('MediaTranscriptionBridge', () => {
   it('maps ordered chunks to the media-ingest transcription boundary', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       chunkDurationMs: 100,
       client,
@@ -67,7 +67,7 @@ describe('WebRtcTranscriptionBridge', () => {
   it('flushes the final partial chunk and stops the session idempotently', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       chunkDurationMs: 100,
       client,
@@ -95,7 +95,7 @@ describe('WebRtcTranscriptionBridge', () => {
   it('retries submission failure without creating duplicate chunks', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient({ failSubmitAttempts: 1 });
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       chunkDurationMs: 100,
       maxRetries: 1,
@@ -117,7 +117,7 @@ describe('WebRtcTranscriptionBridge', () => {
   it('creates a fresh revision so stale restart audio cannot mix', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       chunkDurationMs: 100,
       client,
@@ -148,12 +148,12 @@ describe('WebRtcTranscriptionBridge', () => {
   it('creates one configured processing session for programme WebRTC transcription', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       chunkDurationMs: 100,
       client,
     });
-    const configuredContext: WebRtcTranscriptionBridgeContext = {
+    const configuredContext: MediaTranscriptionBridgeContext = {
       ...context,
       targetLanguage: 'es',
       targetLanguages: ['es'],
@@ -183,13 +183,13 @@ describe('WebRtcTranscriptionBridge', () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
     const external = fakeExternalAudioProcess();
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       chunkDurationMs: 100,
       client,
       createExternalAudioProcess: () => external.process,
     });
-    const rtmpContext: WebRtcTranscriptionBridgeContext = {
+    const rtmpContext: MediaTranscriptionBridgeContext = {
       ...context,
       externalAudioSource: 'rtmp-hls',
       externalAudioUrl: 'http://127.0.0.1:8888/live/videofy-demo/index.m3u8',
@@ -217,7 +217,7 @@ describe('WebRtcTranscriptionBridge', () => {
   it('skips malformed first frames without interrupting later transcription', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       chunkDurationMs: 100,
       client,
@@ -251,7 +251,7 @@ describe('WebRtcTranscriptionBridge', () => {
   it('rejects bit-depth-mismatched Int16 frames without interrupting later transcription', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       chunkDurationMs: 100,
       client,
@@ -289,7 +289,7 @@ describe('WebRtcTranscriptionBridge', () => {
   it('releases queue accounting for failed submissions so later chunks still emit', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient({ failSubmitAttempts: 8 });
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       chunkDurationMs: 100,
       maxRetries: 0,
@@ -338,13 +338,13 @@ describe('WebRtcTranscriptionBridge', () => {
       mediaSessionMode: 'programme' | 'live-conversation',
     ): Promise<string | undefined> => {
       const stagingDir = await tempDir();
-      const bridge = new WebRtcTranscriptionBridge({
+      const bridge = new MediaTranscriptionBridge({
         stagingDir,
         chunkDurationMs: 100,
         maxQueuedChunks: 3,
         client: fakeClient({ gate: manualSubmitGate() }),
       });
-      const modeContext: WebRtcTranscriptionBridgeContext = {
+      const modeContext: MediaTranscriptionBridgeContext = {
         ...context,
         sessionId: 'adapter_mode_probe_r1',
         broadcastId: 'adaptercast_mode_probe_r1',
@@ -364,7 +364,7 @@ describe('WebRtcTranscriptionBridge', () => {
     const stagingDir = await tempDir();
     const gate = manualSubmitGate();
     const client = fakeClient({ gate });
-    const callContext: WebRtcTranscriptionBridgeContext = {
+    const callContext: MediaTranscriptionBridgeContext = {
       ...context,
       // NOT a `call_` id, deliberately. The bridge used to switch into live
       // behaviour on that prefix, so a session named anything else — an
@@ -375,7 +375,7 @@ describe('WebRtcTranscriptionBridge', () => {
       broadcastId: 'adaptercast_demo_participant_1_r2',
       mediaSessionMode: 'live-conversation',
     };
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       chunkDurationMs: 100,
       maxQueuedChunks: 3,
@@ -417,7 +417,7 @@ describe('WebRtcTranscriptionBridge', () => {
     const stagingDir = await tempDir();
     const gate = manualSubmitGate();
     const client = fakeClient({ gate });
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       chunkDurationMs: 100,
       maxQueuedChunks: 3,
@@ -447,7 +447,7 @@ describe('WebRtcTranscriptionBridge', () => {
   it('anchors each chunk to wall clock so a delivered event can be timed honestly', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       chunkDurationMs: 100,
       client,
@@ -475,7 +475,7 @@ describe('WebRtcTranscriptionBridge', () => {
   it('streams interim partials for a call while the sentence is still being spoken', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       client,
       vad: partialVad,
@@ -524,7 +524,7 @@ describe('WebRtcTranscriptionBridge', () => {
   it('never streams partials for programme sessions, whatever the interval', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       client,
       vad: partialVad,
@@ -548,7 +548,7 @@ describe('WebRtcTranscriptionBridge', () => {
     const stagingDir = await tempDir();
     const gate = manualSubmitGate();
     const client = fakeClient({ gate });
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       client,
       vad: partialVad,
@@ -599,7 +599,7 @@ describe('WebRtcTranscriptionBridge', () => {
     const stagingDir = await tempDir();
     const gate = manualSubmitGate();
     const client = fakeClient({ gate });
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       client,
       vad: partialVad,
@@ -636,7 +636,7 @@ describe('WebRtcTranscriptionBridge', () => {
     const stagingDir = await tempDir();
     const gate = manualSubmitGate();
     const client = fakeClient({ gate });
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       client,
       maxQueuedChunks: 2,
@@ -683,7 +683,7 @@ describe('WebRtcTranscriptionBridge', () => {
     const stagingDir = await tempDir();
     const gate = manualSubmitGate();
     const client = fakeClient({ gate });
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       client,
       maxQueuedChunks: 1,
@@ -721,7 +721,7 @@ describe('WebRtcTranscriptionBridge', () => {
   it('treats a failed preview as a missed caption, not as lost speech', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient({ failSubmitAttempts: 1 });
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       client,
       maxRetries: 0,
@@ -760,7 +760,7 @@ describe('WebRtcTranscriptionBridge', () => {
   it('times a partial on its own clock without corrupting the final chunk entry', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       client,
       vad: partialVad,
@@ -794,7 +794,7 @@ describe('WebRtcTranscriptionBridge', () => {
   it('reports diagnostics and cleans closed sessions after queues drain', async () => {
     const stagingDir = await tempDir();
     const client = fakeClient();
-    const bridge = new WebRtcTranscriptionBridge({
+    const bridge = new MediaTranscriptionBridge({
       stagingDir,
       chunkDurationMs: 100,
       client,
@@ -820,7 +820,7 @@ describe('WebRtcTranscriptionBridge', () => {
 });
 
 /** One 100 ms speech frame, i.e. exactly one chunk at chunkDurationMs: 100. */
-function speak(bridge: WebRtcTranscriptionBridge, context: WebRtcTranscriptionBridgeContext): void {
+function speak(bridge: MediaTranscriptionBridge, context: MediaTranscriptionBridgeContext): void {
   bridge.handleFrame(context, {
     samples: new Int16Array(1600),
     sampleRate: 16000,
@@ -838,7 +838,7 @@ function speak(bridge: WebRtcTranscriptionBridge, context: WebRtcTranscriptionBr
  * the sentence being spoken. If these tests pass with this id, the policy is
  * coming from `mediaSessionMode` and not from a string.
  */
-const callContext: WebRtcTranscriptionBridgeContext = {
+const callContext: MediaTranscriptionBridgeContext = {
   ...context,
   sessionId: 'adapter_demo_participant_1_r2',
   broadcastId: 'adaptercast_demo_participant_1_r2',
@@ -857,8 +857,8 @@ const partialVad = {
 
 /** `frames` × 100 ms of speech: audible, so the VAD keeps the segment open. */
 function talk(
-  bridge: WebRtcTranscriptionBridge,
-  target: WebRtcTranscriptionBridgeContext,
+  bridge: MediaTranscriptionBridge,
+  target: MediaTranscriptionBridgeContext,
   frames: number,
 ): void {
   for (let index = 0; index < frames; index++) {
@@ -873,8 +873,8 @@ function talk(
 
 /** 100 ms of silence, i.e. the pause that closes a VAD segment. */
 function pause(
-  bridge: WebRtcTranscriptionBridge,
-  target: WebRtcTranscriptionBridgeContext,
+  bridge: MediaTranscriptionBridge,
+  target: MediaTranscriptionBridgeContext,
 ): void {
   bridge.handleFrame(target, {
     samples: new Int16Array(1600),
@@ -896,9 +896,9 @@ function manualSubmitGate() {
 function fakeClient(options: { failSubmitAttempts?: number; gate?: { opened: Promise<void> } } = {}) {
   let failuresRemaining = options.failSubmitAttempts ?? 0;
   let gateRemaining = options.gate ? 1 : 0;
-  const client: WebRtcTranscriptionSubmissionClient & {
-    created: WebRtcTranscriptionBridgeContext[];
-    submitted: { sessionId: string; chunk: WebRtcTranscriptionChunk; sourcePath: string }[];
+  const client: MediaTranscriptionSubmissionClient & {
+    created: MediaTranscriptionBridgeContext[];
+    submitted: { sessionId: string; chunk: MediaTranscriptionChunk; sourcePath: string }[];
     stopped: string[];
     submitAttempts: number;
   } = {
@@ -955,7 +955,7 @@ async function tempDir(): Promise<string> {
   return dir;
 }
 
-describe('HttpWebRtcTranscriptionSubmissionClient', () => {
+describe('HttpMediaTranscriptionSubmissionClient', () => {
   it('sends partial identity on a partial chunk and leaves a final body unchanged', async () => {
     const bodies: Record<string, unknown>[] = [];
     const server = createServer((request, response) => {
@@ -969,7 +969,7 @@ describe('HttpWebRtcTranscriptionSubmissionClient', () => {
     });
     await new Promise<void>((ready) => server.listen(0, '127.0.0.1', ready));
     const { port } = server.address() as AddressInfo;
-    const client = new HttpWebRtcTranscriptionSubmissionClient({
+    const client = new HttpMediaTranscriptionSubmissionClient({
       baseUrl: `http://127.0.0.1:${port}`,
       timeoutMs: 5_000,
     });
@@ -1001,7 +1001,7 @@ describe('HttpWebRtcTranscriptionSubmissionClient', () => {
 });
 
 /** A submitted-shaped chunk; the client only reads these fields. */
-function chunkFixture(): WebRtcTranscriptionChunk {
+function chunkFixture(): MediaTranscriptionChunk {
   const samples = new Int16Array(16_000);
   return {
     ...context,

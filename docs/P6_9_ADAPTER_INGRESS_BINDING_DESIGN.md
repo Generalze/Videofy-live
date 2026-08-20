@@ -500,6 +500,73 @@ Constraints:
 Transport-specific names stay where the thing really is transport-specific: the
 WebRTC peer registries, SDP handling, the RTMS client.
 
+### What was renamed, and what deliberately was not
+
+Renamed — the shared pipeline surface, none of which is WebRTC-specific:
+
+```text
+WebRtcTranscriptionChunker*   →  MediaTranscriptionChunker*
+WebRtcTranscriptionBridge*    →  MediaTranscriptionBridge*
+WebRtcAudioDataLike           →  MediaAudioDataLike   (and MOVED: the chunker
+                                  owns the frame shape it accepts; it used to
+                                  live in the WebRTC ingest bridge, so every
+                                  other producer imported its input contract
+                                  from whichever transport happened to be first)
+/internal/webrtc/*            →  /internal/media/*
+createWebRtcSession           →  createMediaSession
+ingestWebRtcChunk             →  ingestMediaChunk
+stopWebRtcSession             →  stopMediaSession
+```
+
+**Not** renamed, each for a reason:
+
+- `webrtc-audio-ingest-bridge`, the peer registries, the session registry, SDP
+  handling. Those really are WebRTC, and renaming them would be a lie pointing
+  the other way.
+- `WebRtcTranscriptionBridgeStatus` / `WebRtcTranscriptionBridgeMetadata` and
+  the `webrtcTranscriptionBridge` field on the media-state event. That is a
+  CLIENT-facing schema — a zod contract in `media-contracts`, consumed by
+  `operator-web` — not the internal gateway↔media-ingest contract this rename is
+  about. It has different deployment coupling: a stale browser tab is not a
+  coordinated restart. Renaming it is a separate migration, and leaving it is a
+  decision rather than an oversight.
+- Environment variable names (`WEBRTC_TRANSCRIPTION_CHUNK_MS` and friends).
+  Operator-facing, and a renamed variable does not fail — it falls back to a
+  default, silently. That is precisely the "missing configuration means wrong
+  behaviour" class that §7 exists to remove, so it deserves its own migration
+  rather than a ride on this one.
+
+### Deployment contract
+
+> `realtime-gateway` and `media-ingest` form a **coordinated deployment unit**
+> for breaking changes to their private internal media contract. P6.9 provides
+> no backward compatibility between internal API versions, and rolling
+> mixed-version deployment is not a current requirement. Deploy and roll back
+> the pair together.
+
+Written down because the absence of a compatibility shim should read as a
+decision. Carrying both `/internal/webrtc/*` and `/internal/media/*` to serve a
+rolling deploy nobody performs would add permanent complexity for a hypothetical
+problem, and temporary compatibility code has a way of outliving everyone who
+understood why it was temporary.
+
+Release choreography, even on one host:
+
+```text
+1. build and test the complete release
+2. stop gateway + media-ingest
+3. deploy both versions
+4. start media-ingest, verify health
+5. start realtime-gateway, verify health and its connection to ingest
+6. smoke test
+```
+
+If the services are ever split across hosts, replicated, or released
+independently, internal contract versioning (`/internal/media/v1/*`) with an
+additive compatibility window is the answer — new server accepts v1 and v2,
+clients migrate, v1 is removed in a later release. That machinery is deliberately
+not built now.
+
 ## 9. Identity mapping, and the media policy that must stop being a prefix
 
 `call-runtime` already solves the identity half; the binding follows it rather

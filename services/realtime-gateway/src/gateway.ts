@@ -54,10 +54,10 @@ import {
 } from './webrtc-media-peer-registry.js';
 import { BackendWebRtcListenerPeerRegistry } from './webrtc-listener-peer-registry.js';
 import {
-  HttpWebRtcTranscriptionSubmissionClient,
-  WebRtcTranscriptionBridge,
-  type WebRtcTranscriptionBridgeContext,
-} from './webrtc-transcription-bridge.js';
+  HttpMediaTranscriptionSubmissionClient,
+  MediaTranscriptionBridge,
+  type MediaTranscriptionBridgeContext,
+} from './media-transcription-bridge.js';
 import { CallSessionStore } from '@videofy-live/call-session';
 import type { Router } from 'express';
 import {
@@ -114,7 +114,7 @@ export class Gateway {
   });
   private readonly generatedAudioStore = new GeneratedAudioStore();
   private readonly webrtcSessions = new WebRtcSessionRegistry();
-  private readonly webRtcTranscriptionBridge: WebRtcTranscriptionBridge;
+  private readonly webRtcTranscriptionBridge: MediaTranscriptionBridge;
   private readonly backendMediaPeers: BackendWebRtcMediaPeerRegistry;
   private readonly listenerMediaPeers: BackendWebRtcListenerPeerRegistry;
   private readonly callRuntime: CallRuntime;
@@ -160,7 +160,7 @@ export class Gateway {
        */
       webRtcPartialCaptionIntervalMs?: number;
       callTranscriptLogDir?: string | null;
-      vad?: ConstructorParameters<typeof WebRtcTranscriptionBridge>[0]['vad'];
+      vad?: ConstructorParameters<typeof MediaTranscriptionBridge>[0]['vad'];
       /**
        * P6.5 Videofy Connect. Omitted (tests, embedders), Connect is cleanly
        * off: /v1 answers 503 and every connectToken join is refused.
@@ -210,7 +210,7 @@ export class Gateway {
     }
     this.mediaIngestUrl = options.mediaIngestUrl ?? 'http://localhost:3002';
     this.mediaIngestPublicUrl = options.mediaIngestPublicUrl ?? this.mediaIngestUrl;
-    this.webRtcTranscriptionBridge = new WebRtcTranscriptionBridge({
+    this.webRtcTranscriptionBridge = new MediaTranscriptionBridge({
       ...(options.mediaIngestUrl ? { mediaIngestUrl: options.mediaIngestUrl } : {}),
       ...(options.internalWebRtcToken ? { internalAuthToken: options.internalWebRtcToken } : {}),
       ...(options.webRtcTranscriptionRequestTimeoutMs
@@ -239,7 +239,7 @@ export class Gateway {
       },
       onAudioFrame: (context, data) => {
         const programmeConfig = this.programmeSessionConfigs.get(context.sessionId);
-        if (shouldUseWebRtcTranscriptionForProgrammeSource(programmeConfig?.programmeSourceType)) {
+        if (shouldUseMediaTranscriptionForProgrammeSource(programmeConfig?.programmeSourceType)) {
           try {
             this.webRtcTranscriptionBridge.handleFrame(
               this.applyProgrammeSessionConfig(context),
@@ -282,7 +282,7 @@ export class Gateway {
       },
       onAudioPeerClosed: (context, reason) => {
         const programmeConfig = this.programmeSessionConfigs.get(context.sessionId);
-        if (shouldUseWebRtcTranscriptionForProgrammeSource(programmeConfig?.programmeSourceType)) {
+        if (shouldUseMediaTranscriptionForProgrammeSource(programmeConfig?.programmeSourceType)) {
           this.webRtcTranscriptionBridge.endSession(this.applyProgrammeSessionConfig(context), reason);
         }
         this.listenerMediaPeers.closeSession(context.sessionId, reason);
@@ -297,7 +297,7 @@ export class Gateway {
       emitToRoom: (room, event, payload) => {
         this.io.to(room).emit(event, payload);
       },
-      ingestControl: new HttpWebRtcTranscriptionSubmissionClient({
+      ingestControl: new HttpMediaTranscriptionSubmissionClient({
         baseUrl: this.mediaIngestUrl,
         timeoutMs: options.webRtcTranscriptionRequestTimeoutMs ?? 30_000,
         ...(options.internalWebRtcToken ? { internalAuthToken: options.internalWebRtcToken } : {}),
@@ -1409,7 +1409,7 @@ export class Gateway {
 
   private applyProgrammeSessionConfig(
     context: BackendMediaPeerAudioContext,
-  ): WebRtcTranscriptionBridgeContext {
+  ): MediaTranscriptionBridgeContext {
     // A programme timeline must stay COMPLETE: when the pipeline falls behind,
     // the new chunk is refused rather than the recorded backlog being dropped.
     // Stated here because this is the programme path, rather than left to be
@@ -1608,7 +1608,7 @@ function isTerminalMediaState(status: string): boolean {
   return status === 'completed' || status === 'cancelled' || status === 'failed';
 }
 
-export function shouldUseWebRtcTranscriptionForProgrammeSource(
+export function shouldUseMediaTranscriptionForProgrammeSource(
   programmeSourceType: string | undefined,
 ): boolean {
   return programmeSourceType !== 'uploaded-video';

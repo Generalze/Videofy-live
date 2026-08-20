@@ -4,15 +4,15 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
 import { resolve } from 'node:path';
-import type { WebRtcAudioDataLike } from './webrtc-audio-ingest-bridge.js';
+import type { MediaAudioDataLike } from './media-transcription-chunker.js';
 import type { SourceLanguageMode } from '@videofy-live/shared-types';
 import {
-  WebRtcTranscriptionChunker,
-  WebRtcTranscriptionChunkerError,
+  MediaTranscriptionChunker,
+  MediaTranscriptionChunkerError,
   inspectPcm16Samples,
-  type WebRtcChunkWallClock,
-  type WebRtcTranscriptionChunk,
-} from './webrtc-transcription-chunker.js';
+  type MediaChunkWallClock,
+  type MediaTranscriptionChunk,
+} from './media-transcription-chunker.js';
 import { logger } from './logger.js';
 
 /**
@@ -60,7 +60,7 @@ const CHUNK_TIMING_HISTORY = 128;
  * media-timeline positions, not wall clocks) can be turned into an honest
  * end-to-end latency number.
  */
-export interface WebRtcChunkTiming {
+export interface MediaChunkTiming {
   sequence: number;
   /**
    * Which chunk of `sequence` this entry belongs to: the partial's own
@@ -91,10 +91,10 @@ export interface WebRtcChunkTiming {
   /** `Date.now()` when media-ingest accepted the chunk; null until it does. */
   submittedAtMs: number | null;
   /** W2: true voiced extent and close reason. Absent for non-VAD chunking. */
-  wallClock: WebRtcChunkWallClock | null;
+  wallClock: MediaChunkWallClock | null;
 }
 
-export interface WebRtcTranscriptionBridgeContext {
+export interface MediaTranscriptionBridgeContext {
   sessionId: string;
   broadcastId: string;
   broadcasterPeerId: string;
@@ -131,13 +131,13 @@ export interface WebRtcTranscriptionBridgeContext {
   generatedAudioPacing?: 'natural' | 'fit-window';
 }
 
-export interface WebRtcTranscriptionSubmissionClient {
-  createSession(input: WebRtcTranscriptionBridgeContext): Promise<void>;
-  submitChunk(sessionId: string, chunk: WebRtcTranscriptionChunk, sourcePath: string): Promise<void>;
+export interface MediaTranscriptionSubmissionClient {
+  createSession(input: MediaTranscriptionBridgeContext): Promise<void>;
+  submitChunk(sessionId: string, chunk: MediaTranscriptionChunk, sourcePath: string): Promise<void>;
   stopSession(sessionId: string): Promise<void>;
 }
 
-export interface WebRtcTranscriptionBridgeOptions {
+export interface MediaTranscriptionBridgeOptions {
   mediaIngestUrl?: string;
   stagingDir: string;
   chunkDurationMs?: number;
@@ -153,25 +153,25 @@ export interface WebRtcTranscriptionBridgeOptions {
    * Set to 0 to turn partials off for calls too.
    */
   partialIntervalMs?: number;
-  vad?: ConstructorParameters<typeof WebRtcTranscriptionChunker>[0]['vad'];
-  client?: WebRtcTranscriptionSubmissionClient;
+  vad?: ConstructorParameters<typeof MediaTranscriptionChunker>[0]['vad'];
+  client?: MediaTranscriptionSubmissionClient;
   ffmpegPath?: string;
   createExternalAudioProcess?: (url: string) => ChildProcessWithoutNullStreams;
 }
 
 /** Backpressure bookkeeping shared with the chunker's eviction callback. */
-interface WebRtcTranscriptionBackpressureState {
+interface MediaTranscriptionBackpressureState {
   evictedChunkCount: number;
   lastEvictedSequence: number | null;
 }
 
-interface WebRtcTranscriptionSessionState {
-  context: WebRtcTranscriptionBridgeContext;
-  chunker: WebRtcTranscriptionChunker;
-  queue: WebRtcTranscriptionChunk[];
+interface MediaTranscriptionSessionState {
+  context: MediaTranscriptionBridgeContext;
+  chunker: MediaTranscriptionChunker;
+  queue: MediaTranscriptionChunk[];
   /** Recent chunk wall-clock anchors, newest last, bounded to CHUNK_TIMING_HISTORY. */
-  chunkTimings: WebRtcChunkTiming[];
-  backpressure: WebRtcTranscriptionBackpressureState;
+  chunkTimings: MediaChunkTiming[];
+  backpressure: MediaTranscriptionBackpressureState;
   created: boolean;
   active: boolean;
   closed: boolean;
@@ -189,20 +189,20 @@ interface WebRtcTranscriptionSessionState {
   externalAudioStderr: string;
 }
 
-export class WebRtcTranscriptionBridge {
+export class MediaTranscriptionBridge {
   private readonly stagingDir: string;
   private readonly chunkDurationMs: number;
   private readonly maxQueuedChunks: number | undefined;
   private readonly maxQueuedBytes: number | undefined;
   private readonly partialIntervalMs: number;
-  private readonly vad: WebRtcTranscriptionBridgeOptions['vad'];
+  private readonly vad: MediaTranscriptionBridgeOptions['vad'];
   private readonly maxRetries: number;
-  private readonly client: WebRtcTranscriptionSubmissionClient;
+  private readonly client: MediaTranscriptionSubmissionClient;
   private readonly ffmpegPath: string;
   private readonly createExternalAudioProcess: (url: string) => ChildProcessWithoutNullStreams;
-  private readonly sessions = new Map<string, WebRtcTranscriptionSessionState>();
+  private readonly sessions = new Map<string, MediaTranscriptionSessionState>();
 
-  constructor(options: WebRtcTranscriptionBridgeOptions) {
+  constructor(options: MediaTranscriptionBridgeOptions) {
     this.stagingDir = options.stagingDir;
     this.chunkDurationMs = options.chunkDurationMs ?? 5_000;
     this.maxQueuedChunks = options.maxQueuedChunks;
@@ -229,7 +229,7 @@ export class WebRtcTranscriptionBridge {
       ]));
     this.client =
       options.client ??
-      new HttpWebRtcTranscriptionSubmissionClient({
+      new HttpMediaTranscriptionSubmissionClient({
         baseUrl: options.mediaIngestUrl ?? 'http://localhost:3002',
         timeoutMs: options.requestTimeoutMs ?? 30_000,
         ...(options.internalAuthToken ? { internalAuthToken: options.internalAuthToken } : {}),
@@ -243,8 +243,8 @@ export class WebRtcTranscriptionBridge {
    * processed.
    */
   handleFrame(
-    context: WebRtcTranscriptionBridgeContext,
-    data: WebRtcAudioDataLike,
+    context: MediaTranscriptionBridgeContext,
+    data: MediaAudioDataLike,
     receivedAtMs?: number,
   ): void {
     const session = this.getOrCreateSession(context);
@@ -256,7 +256,7 @@ export class WebRtcTranscriptionBridge {
     try {
       this.enqueueChunks(session, session.chunker.pushFrame(data, receivedAtMs));
     } catch (error) {
-      if (!(error instanceof WebRtcTranscriptionChunkerError)) throw error;
+      if (!(error instanceof MediaTranscriptionChunkerError)) throw error;
       session.chunker.markDiscontinuity();
       session.skippedFrameCount += 1;
       session.lastSkippedFrameReason = error.message;
@@ -280,7 +280,7 @@ export class WebRtcTranscriptionBridge {
     }
   }
 
-  endSession(context: WebRtcTranscriptionBridgeContext, reason: string): void {
+  endSession(context: MediaTranscriptionBridgeContext, reason: string): void {
     const session = this.sessions.get(sessionKey(context));
     if (!session || session.closed) return;
     session.closed = true;
@@ -304,7 +304,7 @@ export class WebRtcTranscriptionBridge {
     this.maybeStopSession(session);
   }
 
-  getSnapshot(context: WebRtcTranscriptionBridgeContext) {
+  getSnapshot(context: MediaTranscriptionBridgeContext) {
     const session = this.sessions.get(sessionKey(context));
     if (!session) return null;
     return {
@@ -340,7 +340,7 @@ export class WebRtcTranscriptionBridge {
    * can only have come from that utterance; which of an utterance's partials
    * produced a given caption is not knowable here, so it is not guessed.
    */
-  lookupChunkTiming(sessionId: string, revision: number, mediaMs: number): WebRtcChunkTiming | null {
+  lookupChunkTiming(sessionId: string, revision: number, mediaMs: number): MediaChunkTiming | null {
     const session = this.sessions.get(`${sessionId}:${revision}`);
     if (!session) return null;
     for (let index = session.chunkTimings.length - 1; index >= 0; index--) {
@@ -428,20 +428,20 @@ export class WebRtcTranscriptionBridge {
     return cleaned;
   }
 
-  private getOrCreateSession(context: WebRtcTranscriptionBridgeContext): WebRtcTranscriptionSessionState {
+  private getOrCreateSession(context: MediaTranscriptionBridgeContext): MediaTranscriptionSessionState {
     const key = sessionKey(context);
     const existing = this.sessions.get(key);
     if (existing) return existing;
     // The queue and the backpressure counters are built first so the chunker's
     // eviction callback can close over them without a back-reference.
-    const queue: WebRtcTranscriptionChunk[] = [];
-    const backpressure: WebRtcTranscriptionBackpressureState = {
+    const queue: MediaTranscriptionChunk[] = [];
+    const backpressure: MediaTranscriptionBackpressureState = {
       evictedChunkCount: 0,
       lastEvictedSequence: null,
     };
-    const state: WebRtcTranscriptionSessionState = {
+    const state: MediaTranscriptionSessionState = {
       context,
-      chunker: new WebRtcTranscriptionChunker({
+      chunker: new MediaTranscriptionChunker({
         ...context,
         chunkDurationMs: this.chunkDurationMs,
         ...(this.maxQueuedChunks ? { maxQueuedChunks: this.maxQueuedChunks } : {}),
@@ -493,10 +493,10 @@ export class WebRtcTranscriptionBridge {
    * which makes the chunker reject the new chunk as `reject-new` would.
    */
   private evictOldestQueuedChunk(
-    context: WebRtcTranscriptionBridgeContext,
-    queue: WebRtcTranscriptionChunk[],
-    backpressure: WebRtcTranscriptionBackpressureState,
-  ): WebRtcTranscriptionChunk | null {
+    context: MediaTranscriptionBridgeContext,
+    queue: MediaTranscriptionChunk[],
+    backpressure: MediaTranscriptionBackpressureState,
+  ): MediaTranscriptionChunk | null {
     // Partials hold no queue accounting, so handing one back would free
     // nothing. Throw them away first — they are the cheapest thing in the
     // queue to lose — and only then give up a real chunk.
@@ -527,8 +527,8 @@ export class WebRtcTranscriptionBridge {
    * clip can later be reported with an honest end-to-end latency.
    */
   private enqueueChunks(
-    session: WebRtcTranscriptionSessionState,
-    chunks: WebRtcTranscriptionChunk[],
+    session: MediaTranscriptionSessionState,
+    chunks: MediaTranscriptionChunk[],
   ): void {
     const capturedAtMs = Date.now();
     for (const chunk of chunks) {
@@ -570,7 +570,7 @@ export class WebRtcTranscriptionBridge {
    * anyway.
    */
   private dropSupersededPartials(
-    session: WebRtcTranscriptionSessionState,
+    session: MediaTranscriptionSessionState,
     sequence: number,
   ): void {
     if (session.queue.length === 0) return;
@@ -585,7 +585,7 @@ export class WebRtcTranscriptionBridge {
     session.queue.splice(0, session.queue.length, ...kept);
   }
 
-  private processQueue(session: WebRtcTranscriptionSessionState): void {
+  private processQueue(session: MediaTranscriptionSessionState): void {
     if (session.active || session.queue.length === 0) return;
     session.active = true;
     void this.processNext(session).finally(() => {
@@ -595,7 +595,7 @@ export class WebRtcTranscriptionBridge {
     });
   }
 
-  private startExternalAudio(session: WebRtcTranscriptionSessionState): void {
+  private startExternalAudio(session: MediaTranscriptionSessionState): void {
     if (session.externalAudioStarted || session.closed) return;
     const url = session.context.externalAudioUrl;
     if (!url) return;
@@ -692,7 +692,7 @@ export class WebRtcTranscriptionBridge {
     });
   }
 
-  private async processNext(session: WebRtcTranscriptionSessionState): Promise<void> {
+  private async processNext(session: MediaTranscriptionSessionState): Promise<void> {
     const chunk = session.queue.shift();
     if (!chunk) return;
     let sourcePath: string | null = null;
@@ -763,7 +763,7 @@ export class WebRtcTranscriptionBridge {
     }
   }
 
-  private maybeStopSession(session: WebRtcTranscriptionSessionState): void {
+  private maybeStopSession(session: MediaTranscriptionSessionState): void {
     if (!session.closed || session.active || session.queue.length > 0 || session.stopped) return;
     session.stopped = true;
     if (!session.created) return;
@@ -778,7 +778,7 @@ export class WebRtcTranscriptionBridge {
 
   private async submitWithRetry(
     sessionId: string,
-    chunk: WebRtcTranscriptionChunk,
+    chunk: MediaTranscriptionChunk,
     sourcePath: string,
   ): Promise<void> {
     let lastError: unknown = null;
@@ -793,7 +793,7 @@ export class WebRtcTranscriptionBridge {
     throw lastError instanceof Error ? lastError : new Error('WebRTC transcription submission failed.');
   }
 
-  private async writeStagedChunk(chunk: WebRtcTranscriptionChunk): Promise<string> {
+  private async writeStagedChunk(chunk: MediaTranscriptionChunk): Promise<string> {
     await mkdir(this.stagingDir, { recursive: true });
     // Partials share their final's sequence, so the staged name says which one
     // it is; the uuid keeps them unique either way.
@@ -807,8 +807,8 @@ export class WebRtcTranscriptionBridge {
   }
 }
 
-export class HttpWebRtcTranscriptionSubmissionClient
-  implements WebRtcTranscriptionSubmissionClient
+export class HttpMediaTranscriptionSubmissionClient
+  implements MediaTranscriptionSubmissionClient
 {
   private readonly baseUrl: URL;
   private readonly timeoutMs: number;
@@ -820,8 +820,8 @@ export class HttpWebRtcTranscriptionSubmissionClient
     this.internalAuthToken = options.internalAuthToken;
   }
 
-  async createSession(input: WebRtcTranscriptionBridgeContext): Promise<void> {
-    await this.postJson('/internal/webrtc/sessions', {
+  async createSession(input: MediaTranscriptionBridgeContext): Promise<void> {
+    await this.postJson('/internal/media/sessions', {
       sessionId: input.sessionId,
       broadcastId: input.broadcastId,
       broadcasterPeerId: input.broadcasterPeerId,
@@ -843,10 +843,10 @@ export class HttpWebRtcTranscriptionSubmissionClient
 
   async submitChunk(
     sessionId: string,
-    chunk: WebRtcTranscriptionChunk,
+    chunk: MediaTranscriptionChunk,
     sourcePath: string,
   ): Promise<void> {
-    await this.postJson(`/internal/webrtc/sessions/${encodeURIComponent(sessionId)}/chunks`, {
+    await this.postJson(`/internal/media/sessions/${encodeURIComponent(sessionId)}/chunks`, {
       sequence: chunk.sequence,
       startMs: chunk.startMs,
       endMs: chunk.endMs,
@@ -865,7 +865,7 @@ export class HttpWebRtcTranscriptionSubmissionClient
   }
 
   async stopSession(sessionId: string): Promise<void> {
-    await this.postJson(`/internal/webrtc/sessions/${encodeURIComponent(sessionId)}/stop`, {});
+    await this.postJson(`/internal/media/sessions/${encodeURIComponent(sessionId)}/stop`, {});
   }
 
   /**
@@ -876,7 +876,7 @@ export class HttpWebRtcTranscriptionSubmissionClient
   async deleteSession(sessionId: string): Promise<void> {
     await this.send(
       'DELETE',
-      `/internal/webrtc/sessions/${encodeURIComponent(sessionId)}`,
+      `/internal/media/sessions/${encodeURIComponent(sessionId)}`,
       null,
       [404],
     );
@@ -956,7 +956,7 @@ export function wavBufferFromPcm(samples: Int16Array, sampleRate: number, channe
   return Buffer.concat([header, Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength)]);
 }
 
-function sessionKey(context: WebRtcTranscriptionBridgeContext): string {
+function sessionKey(context: MediaTranscriptionBridgeContext): string {
   return `${context.sessionId}:${context.revision}`;
 }
 

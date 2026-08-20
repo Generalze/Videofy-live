@@ -22,7 +22,7 @@ No listener WebRTC playback, server-to-listener media, recording, raw audio logg
 - The backend peer registry emits decoded frames through callbacks; it does not call transcription providers.
 - The transcription boundary remains `services/media-ingest/src/media-session.ts` and `TranscriptionProvider`.
 - WebRTC sessions use safe `wrs_...` processing IDs so transcript events preserve WebRTC session identity.
-- The internal handoff is `/internal/webrtc/...` on media-ingest, with a staging-directory path check before any chunk is moved.
+- The internal handoff is `/internal/media/...` on media-ingest, with a staging-directory path check before any chunk is moved.
 - WebRTC chunks are WAV, mono, 16 kHz, PCM 16-bit before provider submission.
 - Default WebRTC chunk size is 5 seconds; local browser validation can set `WEBRTC_TRANSCRIPTION_CHUNK_MS=1000`.
 - Final partial chunks are flushed on stop/track end/session teardown.

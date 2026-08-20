@@ -16,7 +16,7 @@ import {
 import {
   WebRtcAudioIngestBridge,
   type WebRtcAudioIngestBridgeSnapshot,
-  type WebRtcAudioDataLike,
+  type MediaAudioDataLike,
 } from './webrtc-audio-ingest-bridge.js';
 import { logger } from './logger.js';
 
@@ -108,7 +108,7 @@ export interface BackendMediaPeerRegistryOptions {
   onTrackReady?: (context: BackendMediaPeerAudioContext) => void;
   onAudioFrame?: (
     context: BackendMediaPeerAudioContext,
-    data: WebRtcAudioDataLike,
+    data: MediaAudioDataLike,
     frame: ReturnType<WebRtcAudioIngestBridge['recordFrame']>,
   ) => void;
   onVideoFrame?: (
@@ -171,7 +171,7 @@ interface TrackEventLike {
 }
 
 interface AudioSinkLike {
-  ondata: ((data: WebRtcAudioDataLike) => void) | null;
+  ondata: ((data: MediaAudioDataLike) => void) | null;
   stop(): void;
 }
 
@@ -255,7 +255,7 @@ export class BackendWebRtcMediaPeerRegistry {
   private readonly onAudioFrame:
     | ((
         context: BackendMediaPeerAudioContext,
-        data: WebRtcAudioDataLike,
+        data: MediaAudioDataLike,
         frame: ReturnType<WebRtcAudioIngestBridge['recordFrame']>,
       ) => void)
     | undefined;
@@ -536,7 +536,7 @@ export class BackendWebRtcMediaPeerRegistry {
       const sink = this.createAudioSink(track);
       record.audioSink = sink;
       this.onTrackReady?.(audioContext(record));
-      sink.ondata = (data: WebRtcAudioDataLike) => {
+      sink.ondata = (data: MediaAudioDataLike) => {
         try {
           const frame = record.bridge.recordFrame(data);
           this.onAudioFrame?.(audioContext(record), data, frame);

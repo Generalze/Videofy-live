@@ -234,7 +234,7 @@ app.post('/microphone/sessions/:sessionId/stop', (req, res) => {
   }
 });
 
-app.post('/internal/webrtc/sessions', async (req, res) => {
+app.post('/internal/media/sessions', async (req, res) => {
   if (!assertInternalWebRtcRequest(req, res)) return;
   try {
     const body = (req.body ?? {}) as {
@@ -251,7 +251,7 @@ app.post('/internal/webrtc/sessions', async (req, res) => {
       voiceOwnerId?: unknown;
       generatedAudioPacing?: unknown;
     };
-    const session = await ingest.createWebRtcSession({
+    const session = await ingest.createMediaSession({
       sessionId: requireStringField(body.sessionId, 'sessionId'),
       broadcastId: requireStringField(body.broadcastId, 'broadcastId'),
       broadcasterPeerId: requireStringField(body.broadcasterPeerId, 'broadcasterPeerId'),
@@ -285,7 +285,7 @@ app.post('/internal/webrtc/sessions', async (req, res) => {
   }
 });
 
-app.delete('/internal/webrtc/sessions/:sessionId', async (req, res) => {
+app.delete('/internal/media/sessions/:sessionId', async (req, res) => {
   if (!assertInternalWebRtcRequest(req, res)) return;
   try {
     const sessionId = requireRouteParam(req.params.sessionId, 'sessionId');
@@ -296,13 +296,13 @@ app.delete('/internal/webrtc/sessions/:sessionId', async (req, res) => {
   }
 });
 
-app.post('/internal/webrtc/sessions/:sessionId/chunks', async (req, res) => {
+app.post('/internal/media/sessions/:sessionId/chunks', async (req, res) => {
   if (!assertInternalWebRtcRequest(req, res)) return;
   try {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const sessionId = requireRouteParam(req.params.sessionId, 'sessionId');
     const partial = parseOptionalBooleanField(body.partial, 'partial');
-    const session = await ingest.ingestWebRtcChunk(sessionId, {
+    const session = await ingest.ingestMediaChunk(sessionId, {
       sequence: parseIntegerField(body.sequence, 'sequence'),
       startMs: parseIntegerField(body.startMs, 'startMs'),
       endMs: parseIntegerField(body.endMs, 'endMs'),
@@ -329,10 +329,10 @@ app.post('/internal/webrtc/sessions/:sessionId/chunks', async (req, res) => {
   }
 });
 
-app.post('/internal/webrtc/sessions/:sessionId/stop', (req, res) => {
+app.post('/internal/media/sessions/:sessionId/stop', (req, res) => {
   if (!assertInternalWebRtcRequest(req, res)) return;
   try {
-    const session = ingest.stopWebRtcSession(req.params.sessionId);
+    const session = ingest.stopMediaSession(req.params.sessionId);
     res.json({ session });
   } catch (error) {
     sendIngestError(res, error);

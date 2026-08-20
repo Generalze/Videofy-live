@@ -522,8 +522,8 @@ export class IngestService {
     return session;
   }
 
-  async createWebRtcSession(input: WebRtcSessionInput): Promise<ProcessingSession> {
-    const session = await this.sessions.createWebRtcSession(input);
+  async createMediaSession(input: WebRtcSessionInput): Promise<ProcessingSession> {
+    const session = await this.sessions.createMediaSession(input);
     logger.info('WebRTC transcription session ready', {
       sessionId: session.id,
       streamId: session.streamId,
@@ -547,11 +547,11 @@ export class IngestService {
     return session;
   }
 
-  async ingestWebRtcChunk(
+  async ingestMediaChunk(
     sessionId: string,
     input: WebRtcChunkInput,
   ): Promise<ProcessingSession> {
-    const session = await this.sessions.ingestWebRtcChunk(sessionId, input);
+    const session = await this.sessions.ingestMediaChunk(sessionId, input);
     logger.info('WebRTC transcription chunk processed', {
       sessionId: session.id,
       chunkCount: session.webrtcTranscriptionBridge?.chunkCount,
@@ -569,8 +569,8 @@ export class IngestService {
     return session;
   }
 
-  stopWebRtcSession(sessionId: string): ProcessingSession {
-    const session = this.sessions.stopWebRtcSession(sessionId);
+  stopMediaSession(sessionId: string): ProcessingSession {
+    const session = this.sessions.stopMediaSession(sessionId);
     logger.info('WebRTC transcription session stopped', {
       sessionId: session.id,
       chunkCount: session.webrtcTranscriptionBridge?.chunkCount,

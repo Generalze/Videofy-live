@@ -8,7 +8,7 @@ import {
 } from '@videofy-live/shared-types';
 import type { WebRtcPeerRecord } from '../webrtc-session-registry.js';
 import { BackendWebRtcListenerPeerRegistry } from '../webrtc-listener-peer-registry.js';
-import type { WebRtcAudioDataLike } from '../webrtc-audio-ingest-bridge.js';
+import type { MediaAudioDataLike } from '../media-transcription-chunker.js';
 
 class FakePeer {
   connectionState = 'new';
@@ -108,7 +108,7 @@ function candidate(): WebRtcIceCandidateEnvelope {
   };
 }
 
-function frame(): WebRtcAudioDataLike {
+function frame(): MediaAudioDataLike {
   return {
     samples: new Int16Array([1, 2, 3]),
     sampleRate: 48000,

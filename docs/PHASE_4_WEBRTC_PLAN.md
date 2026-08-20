@@ -857,7 +857,7 @@ P4.4 made the following planning decisions concrete:
 - Backend peer lifecycle still lives in `services/realtime-gateway/src/webrtc-media-peer-registry.ts`; it now exposes decoded audio frames and teardown events through callbacks.
 - The gateway does not call a transcription provider directly.
 - Media ingest owns WebRTC processing sessions, transcript event creation, provider invocation and media-state publication.
-- Internal WebRTC media ingest endpoints are under `/internal/webrtc/...`.
+- Internal WebRTC media ingest endpoints are under `/internal/media/...`.
 - The internal handoff uses normalized WAV chunks in `WEBRTC_AUDIO_CHUNK_STAGING_DIR`; media-ingest verifies the resolved path is inside that directory before moving the file.
 - WebRTC chunks are normalized to WAV mono 16 kHz PCM 16-bit before transcription.
 - Default WebRTC transcription chunk duration is 5 seconds through `WEBRTC_TRANSCRIPTION_CHUNK_MS`.

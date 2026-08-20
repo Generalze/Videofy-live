@@ -1,3 +1,7 @@
+import type { MediaAudioDataLike } from './media-transcription-chunker.js';
+
+export type { MediaAudioDataLike };
+
 export type WebRtcAudioIngestBridgeState = 'idle' | 'opened' | 'track-attached' | 'active' | 'ended' | 'failed' | 'closed';
 
 export interface WebRtcAudioFrameMetadata {
@@ -50,14 +54,6 @@ export interface WebRtcAudioIngestBridgeOptions {
   maxStoredFrames?: number;
 }
 
-export interface WebRtcAudioDataLike {
-  samples?: Int16Array | Float32Array;
-  sampleRate?: number;
-  bitsPerSample?: number;
-  channelCount?: number;
-  numberOfFrames?: number;
-}
-
 export class WebRtcAudioIngestBridge {
   private readonly sessionId: string;
   private readonly broadcastId: string;
@@ -100,7 +96,7 @@ export class WebRtcAudioIngestBridge {
     return this.snapshot();
   }
 
-  recordFrame(data: WebRtcAudioDataLike): WebRtcAudioFrameMetadata {
+  recordFrame(data: MediaAudioDataLike): WebRtcAudioFrameMetadata {
     if (this.state === 'closed') {
       throw new Error('WebRTC audio ingest bridge is closed.');
     }

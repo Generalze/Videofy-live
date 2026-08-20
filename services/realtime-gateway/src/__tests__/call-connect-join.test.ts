@@ -38,8 +38,8 @@ import {
   callRoom,
   type CallSocketLike,
 } from '../call-runtime.js';
-import type { WebRtcAudioDataLike } from '../webrtc-audio-ingest-bridge.js';
-import type { WebRtcTranscriptionBridgeContext } from '../webrtc-transcription-bridge.js';
+import type { MediaAudioDataLike } from '../media-transcription-chunker.js';
+import type { MediaTranscriptionBridgeContext } from '../media-transcription-bridge.js';
 import { createApp } from '../app.js';
 import { Gateway, createSocketOriginPolicy } from '../gateway.js';
 import { loadConfig } from '../config.js';
@@ -129,13 +129,13 @@ function createHarness(options: { registerLiveCalls?: boolean } = {}) {
   });
   const emitToRoom = vi.fn<(room: string, event: string, payload: unknown) => void>();
   const ingestControl = {
-    createSession: vi.fn(async (_input: WebRtcTranscriptionBridgeContext) => {}),
+    createSession: vi.fn(async (_input: MediaTranscriptionBridgeContext) => {}),
     stopSession: vi.fn(async (_sessionId: string) => {}),
     deleteSession: vi.fn(async (_sessionId: string) => {}),
   };
   const transcriptionBridge = {
-    handleFrame: vi.fn((_context: WebRtcTranscriptionBridgeContext, _data: WebRtcAudioDataLike) => {}),
-    endSession: vi.fn((_context: WebRtcTranscriptionBridgeContext, _reason: string) => {}),
+    handleFrame: vi.fn((_context: MediaTranscriptionBridgeContext, _data: MediaAudioDataLike) => {}),
+    endSession: vi.fn((_context: MediaTranscriptionBridgeContext, _reason: string) => {}),
     cleanupClosedSessions: vi.fn(() => 0),
   };
   const mediaPeers = {

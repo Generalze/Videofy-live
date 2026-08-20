@@ -50,9 +50,9 @@ import {
   WEBRTC_BACKEND_MEDIA_PEER_ID,
   WEBRTC_SIGNALLING_PROTOCOL_VERSION,
 } from '@videofy-live/shared-types';
-import type { WebRtcAudioDataLike } from './webrtc-audio-ingest-bridge.js';
+import type { MediaAudioDataLike } from './media-transcription-chunker.js';
 import type { BackendMediaPeerAudioContext } from './webrtc-media-peer-registry.js';
-import type { WebRtcTranscriptionBridgeContext } from './webrtc-transcription-bridge.js';
+import type { MediaTranscriptionBridgeContext } from './media-transcription-bridge.js';
 import type { CallReceivePeersLike, CallReceivePeerHandlers } from './call-receive-peers.js';
 import { CallTranscriptLog } from './call-transcript-log.js';
 import { CallPlaybackLedger, generatedClipId } from './call-playback-ledger.js';
@@ -199,7 +199,7 @@ export interface CallMediaPeerHandlers {
    */
   onAudioFrame(
     context: BackendMediaPeerAudioContext,
-    data: WebRtcAudioDataLike,
+    data: MediaAudioDataLike,
     frame?: { receivedAtMs: number; sampleRate: number | null; channelCount: number | null },
   ): void;
   onAudioPeerClosed(context: BackendMediaPeerAudioContext, reason: string): void;
@@ -217,21 +217,21 @@ export interface CallMediaPeersLike {
   getSnapshots(): unknown[];
 }
 
-/** Create/stop/delete media-ingest WebRTC sessions (HttpWebRtcTranscriptionSubmissionClient subset). */
+/** Create/stop/delete media-ingest WebRTC sessions (HttpMediaTranscriptionSubmissionClient subset). */
 export interface CallIngestControlClient {
-  createSession(input: WebRtcTranscriptionBridgeContext): Promise<void>;
+  createSession(input: MediaTranscriptionBridgeContext): Promise<void>;
   stopSession(sessionId: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
 }
 
-/** The subset of WebRtcTranscriptionBridge the call runtime drives. */
+/** The subset of MediaTranscriptionBridge the call runtime drives. */
 export interface CallTranscriptionBridgeLike {
   handleFrame(
-    context: WebRtcTranscriptionBridgeContext,
-    data: WebRtcAudioDataLike,
+    context: MediaTranscriptionBridgeContext,
+    data: MediaAudioDataLike,
     receivedAtMs?: number,
   ): void;
-  endSession(context: WebRtcTranscriptionBridgeContext, reason: string): void;
+  endSession(context: MediaTranscriptionBridgeContext, reason: string): void;
   cleanupClosedSessions(): number;
   /**
    * Wall-clock anchors for the chunk a media-ingest event came from. Optional
@@ -1721,7 +1721,7 @@ export class CallRuntime {
    */
   private handleMediaAudioFrame(
     context: BackendMediaPeerAudioContext,
-    data: WebRtcAudioDataLike,
+    data: MediaAudioDataLike,
     frame?: { receivedAtMs: number; sampleRate: number | null; channelCount: number | null },
   ): void {
     const identity = this.publishPeerIndex.get(context.sessionId);
@@ -2336,7 +2336,7 @@ function participantIdFromPlan(plan: CallIngestPlan, callId: string): string | n
   return participantId.length > 0 ? participantId : null;
 }
 
-function bridgeContextFor(entry: CallIngestRegistryEntry): WebRtcTranscriptionBridgeContext {
+function bridgeContextFor(entry: CallIngestRegistryEntry): MediaTranscriptionBridgeContext {
   // W5: targets go to media-ingest exactly as planned. EMPTY means STT-only
   // (same-language captions), which media-ingest now accepts — the synthetic
   // other-language target this replaced produced speech for nobody.

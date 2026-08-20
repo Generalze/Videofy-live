@@ -1,7 +1,22 @@
-import type { WebRtcAudioDataLike } from './webrtc-audio-ingest-bridge.js';
 import { logger } from './logger.js';
 
-export const WEBRTC_TRANSCRIPTION_SAMPLE_RATE = 16000;
+/**
+ * One frame of audio as this pipeline accepts it, whatever produced it.
+ *
+ * Defined HERE because the consumer owns its own input contract. It used to
+ * live in the WebRTC ingest bridge, which made every other producer import its
+ * frame shape from the one transport that happens to have been first — the
+ * same category of accident as the `call_` prefix deciding queue policy.
+ */
+export interface MediaAudioDataLike {
+  samples?: Int16Array | Float32Array;
+  sampleRate?: number;
+  bitsPerSample?: number;
+  channelCount?: number;
+  numberOfFrames?: number;
+}
+
+export const MEDIA_TRANSCRIPTION_SAMPLE_RATE = 16000;
 
 /**
  * Silence kept after the last voiced frame, so a word's final consonant is not
@@ -12,7 +27,7 @@ export const WEBRTC_TRANSCRIPTION_SAMPLE_RATE = 16000;
  * the real number instead of re-typing 200 ms into a second file, where it
  * would go stale the first time this one changed.
  */
-export const VAD_POST_ROLL_SAMPLES = Math.round(0.2 * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+export const VAD_POST_ROLL_SAMPLES = Math.round(0.2 * MEDIA_TRANSCRIPTION_SAMPLE_RATE);
 
 /**
  * The least voice a segment may be made of and still be somebody talking.
@@ -36,12 +51,12 @@ export const VAD_POST_ROLL_SAMPLES = Math.round(0.2 * WEBRTC_TRANSCRIPTION_SAMPL
 export const VAD_MIN_VOICED_FRACTION = 0.1;
 
 function samplesToMs(samples: number): number {
-  return Math.round((samples / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000);
+  return Math.round((samples / MEDIA_TRANSCRIPTION_SAMPLE_RATE) * 1000);
 }
-export const WEBRTC_TRANSCRIPTION_CHANNEL_COUNT = 1;
-export const WEBRTC_TRANSCRIPTION_PCM_FORMAT = 'pcm_s16le';
+export const MEDIA_TRANSCRIPTION_CHANNEL_COUNT = 1;
+export const MEDIA_TRANSCRIPTION_PCM_FORMAT = 'pcm_s16le';
 
-export interface WebRtcTranscriptionChunkerContext {
+export interface MediaTranscriptionChunkerContext {
   sessionId: string;
   broadcastId: string;
   broadcasterPeerId: string;
@@ -67,7 +82,7 @@ export interface WebRtcTranscriptionChunkerContext {
  * no voiced extent to report, and inventing one would be the exact failure this
  * exists to correct.
  */
-export interface WebRtcChunkWallClock {
+export interface MediaChunkWallClock {
   /** (1) When the first sample of this segment was captured. */
   firstCapturedSampleAtMs: number;
   /** (2) When the last sample ABOVE THE SPEECH GATE was captured. */
@@ -82,7 +97,7 @@ export interface WebRtcChunkWallClock {
   closeReason: 'end-silence' | 'max-duration' | 'flush';
 }
 
-export interface WebRtcTranscriptionChunk {
+export interface MediaTranscriptionChunk {
   sessionId: string;
   broadcastId: string;
   broadcasterPeerId: string;
@@ -128,11 +143,11 @@ export interface WebRtcTranscriptionChunk {
    * `partialSequence`) supersedes them all.
    */
   partialSequence?: number;
-  /** W2 wall clocks. VAD chunks only; see WebRtcChunkWallClock. */
-  wallClock?: WebRtcChunkWallClock;
+  /** W2 wall clocks. VAD chunks only; see MediaChunkWallClock. */
+  wallClock?: MediaChunkWallClock;
 }
 
-export interface WebRtcAudioPcmDiagnostics {
+export interface MediaAudioPcmDiagnostics {
   inputSampleRate: number;
   inputChannelCount: number;
   inputBitsPerSample: number | null;
@@ -151,9 +166,9 @@ export interface WebRtcAudioPcmDiagnostics {
   metadataWarnings: string[];
 }
 
-export interface NormalizedWebRtcPcmFrame {
+export interface NormalizedMediaPcmFrame {
   samples: Int16Array;
-  diagnostics: WebRtcAudioPcmDiagnostics;
+  diagnostics: MediaAudioPcmDiagnostics;
 }
 
 /**
@@ -167,7 +182,7 @@ export interface NormalizedWebRtcPcmFrame {
  *   newest speech is what the other person is waiting to hear; a stale backlog
  *   is worth less than the sentence just spoken.
  */
-export type WebRtcTranscriptionQueueOverflowPolicy = 'reject-new' | 'evict-oldest';
+export type MediaTranscriptionQueueOverflowPolicy = 'reject-new' | 'evict-oldest';
 
 /**
  * Why the queue owner threw a partial away instead of submitting it.
@@ -177,16 +192,16 @@ export type WebRtcTranscriptionQueueOverflowPolicy = 'reject-new' | 'evict-oldes
  * - `superseded`: the segment's final chunk was emitted, which makes every
  *   still-queued partial for that segment obsolete.
  */
-export type WebRtcPartialDropReason = 'queue-busy' | 'superseded';
+export type MediaPartialDropReason = 'queue-busy' | 'superseded';
 
-export interface WebRtcTranscriptionChunkerOptions extends WebRtcTranscriptionChunkerContext {
+export interface MediaTranscriptionChunkerOptions extends MediaTranscriptionChunkerContext {
   chunkDurationMs?: number;
   maxBufferedDurationMs?: number;
   maxQueuedChunks?: number;
   maxQueuedBytes?: number;
-  vad?: WebRtcVadOptions;
+  vad?: MediaVadOptions;
   /** Defaults to `reject-new`, i.e. byte-identical to the pre-P6.1C behavior. */
-  queueOverflowPolicy?: WebRtcTranscriptionQueueOverflowPolicy;
+  queueOverflowPolicy?: MediaTranscriptionQueueOverflowPolicy;
   /**
    * Required for `evict-oldest`. The chunker owns the queue ACCOUNTING
    * (queuedChunks/queuedBytes) but not the queue itself, so eviction is
@@ -195,7 +210,7 @@ export interface WebRtcTranscriptionChunkerOptions extends WebRtcTranscriptionCh
    * when the owner has nothing left to give up (everything outstanding is
    * already in flight), in which case the new chunk is rejected as before.
    */
-  onQueueOverflow?: () => WebRtcTranscriptionChunk | null;
+  onQueueOverflow?: () => MediaTranscriptionChunk | null;
   /**
    * Emit an INTERIM chunk every `partialIntervalMs` of accumulated speech while
    * a VAD segment is still open, so downstream can show a partial caption
@@ -214,7 +229,7 @@ export interface WebRtcTranscriptionChunkerOptions extends WebRtcTranscriptionCh
   nowMs?: () => number;
 }
 
-export interface WebRtcVadOptions {
+export interface MediaVadOptions {
   enabled: boolean;
   mode: 'silero' | 'fallback';
   speechThreshold?: number;
@@ -223,7 +238,7 @@ export interface WebRtcVadOptions {
   maxSegmentMs?: number;
 }
 
-export class WebRtcTranscriptionChunkerError extends Error {
+export class MediaTranscriptionChunkerError extends Error {
   constructor(
     readonly code:
       | 'closed'
@@ -234,18 +249,18 @@ export class WebRtcTranscriptionChunkerError extends Error {
     message: string,
   ) {
     super(message);
-    this.name = 'WebRtcTranscriptionChunkerError';
+    this.name = 'MediaTranscriptionChunkerError';
   }
 }
 
-export class WebRtcTranscriptionChunker {
-  private readonly context: WebRtcTranscriptionChunkerContext;
+export class MediaTranscriptionChunker {
+  private readonly context: MediaTranscriptionChunkerContext;
   private readonly chunkSamples: number;
   private readonly maxBufferedSamples: number;
   private readonly maxQueuedChunks: number;
   private readonly maxQueuedBytes: number;
-  private readonly queueOverflowPolicy: WebRtcTranscriptionQueueOverflowPolicy;
-  private readonly onQueueOverflow: (() => WebRtcTranscriptionChunk | null) | null;
+  private readonly queueOverflowPolicy: MediaTranscriptionQueueOverflowPolicy;
+  private readonly onQueueOverflow: (() => MediaTranscriptionChunk | null) | null;
   private evictedChunkCount = 0;
   private evictedSampleCount = 0;
   private lastEvictedSequence: number | null = null;
@@ -256,8 +271,8 @@ export class WebRtcTranscriptionChunker {
   private queuedBytes = 0;
   private nextDiscontinuity = false;
   private closed = false;
-  private readonly vad: Required<WebRtcVadOptions> | null;
-  private readonly vadRequestedMode: WebRtcVadOptions['mode'] | null;
+  private readonly vad: Required<MediaVadOptions> | null;
+  private readonly vadRequestedMode: MediaVadOptions['mode'] | null;
   private vadSpeechFrames: Int16Array[] = [];
   private vadSpeechSampleCount = 0;
   /**
@@ -284,7 +299,7 @@ export class WebRtcTranscriptionChunker {
   private vadPartialSpeechSampleMark = 0;
   private partialChunkCount = 0;
   private droppedPartialChunkCount = 0;
-  private lastDroppedPartialReason: WebRtcPartialDropReason | null = null;
+  private lastDroppedPartialReason: MediaPartialDropReason | null = null;
   private readonly nowMs: () => number;
   /** W2 (1): capture wall clock of the segment's first sample. */
   private vadFirstCapturedSampleAtMs: number | null = null;
@@ -293,7 +308,7 @@ export class WebRtcTranscriptionChunker {
   /** W2 (5): receive wall clock of the most recent frame. */
   private lastFrameReceivedAtMs: number | null = null;
 
-  constructor(options: WebRtcTranscriptionChunkerOptions) {
+  constructor(options: MediaTranscriptionChunkerOptions) {
     this.nowMs = options.nowMs ?? (() => Date.now());
     this.context = {
       sessionId: options.sessionId,
@@ -303,10 +318,10 @@ export class WebRtcTranscriptionChunker {
     };
     this.chunkSamples = Math.max(
       1,
-      Math.round(((options.chunkDurationMs ?? 5_000) / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE),
+      Math.round(((options.chunkDurationMs ?? 5_000) / 1000) * MEDIA_TRANSCRIPTION_SAMPLE_RATE),
     );
     this.maxBufferedSamples = Math.round(
-      ((options.maxBufferedDurationMs ?? 30_000) / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE,
+      ((options.maxBufferedDurationMs ?? 30_000) / 1000) * MEDIA_TRANSCRIPTION_SAMPLE_RATE,
     );
     this.maxQueuedChunks = options.maxQueuedChunks ?? 8;
     this.maxQueuedBytes = options.maxQueuedBytes ?? 8 * 1024 * 1024;
@@ -324,7 +339,7 @@ export class WebRtcTranscriptionChunker {
       options.vad?.enabled && (options.partialIntervalMs ?? 0) > 0
         ? Math.max(
             1,
-            Math.round(((options.partialIntervalMs ?? 0) / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE),
+            Math.round(((options.partialIntervalMs ?? 0) / 1000) * MEDIA_TRANSCRIPTION_SAMPLE_RATE),
           )
         : 0;
     this.vadRequestedMode = options.vad?.enabled ? options.vad.mode : null;
@@ -354,9 +369,9 @@ export class WebRtcTranscriptionChunker {
    * actually landed, not when the chunker got round to it. Falls back to the
    * clock only when a caller has none to give.
    */
-  pushFrame(data: WebRtcAudioDataLike, receivedAtMs?: number): WebRtcTranscriptionChunk[] {
+  pushFrame(data: MediaAudioDataLike, receivedAtMs?: number): MediaTranscriptionChunk[] {
     if (this.closed) {
-      throw new WebRtcTranscriptionChunkerError('closed', 'WebRTC transcription chunker is closed.');
+      throw new MediaTranscriptionChunkerError('closed', 'WebRTC transcription chunker is closed.');
     }
     const { samples: normalized } = normalizePcmFrameWithDiagnostics(data);
     const arrivedAtMs = receivedAtMs ?? this.nowMs();
@@ -366,7 +381,7 @@ export class WebRtcTranscriptionChunker {
     return this.drain(false);
   }
 
-  flush(endOfStream = true): WebRtcTranscriptionChunk[] {
+  flush(endOfStream = true): MediaTranscriptionChunk[] {
     if (this.vad) return this.flushVad(endOfStream);
     if (this.closed && this.buffer.length === 0) return [];
     const chunks = this.buffer.length > 0 ? [this.createChunk(this.buffer, endOfStream)] : [];
@@ -379,7 +394,7 @@ export class WebRtcTranscriptionChunker {
     this.nextDiscontinuity = true;
   }
 
-  ackChunk(chunk: WebRtcTranscriptionChunk): void {
+  ackChunk(chunk: MediaTranscriptionChunk): void {
     // A partial never reserved queue capacity (see createPartialChunk), so it
     // must not release any either — otherwise every partial would silently
     // hand a final chunk's slot back and the accounting would drift down.
@@ -389,7 +404,7 @@ export class WebRtcTranscriptionChunker {
   }
 
   /** Release queue accounting for a chunk whose submission failed and will not be retried. */
-  releaseChunk(chunk: WebRtcTranscriptionChunk): void {
+  releaseChunk(chunk: MediaTranscriptionChunk): void {
     this.ackChunk(chunk);
   }
 
@@ -398,7 +413,7 @@ export class WebRtcTranscriptionChunker {
    * courtesy — a newer one supersedes an older one — so this is normal
    * behavior under load, recorded for diagnostics rather than treated as loss.
    */
-  dropPartialChunk(chunk: WebRtcTranscriptionChunk, reason: WebRtcPartialDropReason): void {
+  dropPartialChunk(chunk: MediaTranscriptionChunk, reason: MediaPartialDropReason): void {
     // Finals are never discarded silently; ignore a mistaken call rather than
     // reporting speech loss that did not happen.
     if (!chunk.partial) return;
@@ -413,14 +428,14 @@ export class WebRtcTranscriptionChunker {
       broadcastId: this.context.broadcastId,
       revision: this.context.revision,
       bufferedDurationMs: Math.round(
-        ((this.buffer.length + vadBufferedSamples) / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000,
+        ((this.buffer.length + vadBufferedSamples) / MEDIA_TRANSCRIPTION_SAMPLE_RATE) * 1000,
       ),
       queuedChunks: this.queuedChunks,
       queuedBytes: this.queuedBytes,
       emittedChunkCount: this.emittedChunkCount,
       queueOverflowPolicy: this.queueOverflowPolicy,
       evictedChunkCount: this.evictedChunkCount,
-      evictedMs: Math.round((this.evictedSampleCount / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
+      evictedMs: Math.round((this.evictedSampleCount / MEDIA_TRANSCRIPTION_SAMPLE_RATE) * 1000),
       lastEvictedSequence: this.lastEvictedSequence,
       vadMode: this.vad?.mode ?? 'disabled',
       vadRequestedMode: this.vadRequestedMode ?? 'disabled',
@@ -430,10 +445,10 @@ export class WebRtcTranscriptionChunker {
       // speaking. Zero on a quiet call is expected; a rising number in a noisy
       // room is this working, not this failing.
       vadInsufficientVoicedCount: this.vadInsufficientVoicedCount,
-      vadDroppedMs: Math.round((this.vadDroppedSampleCount / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
-      skippedSilenceMs: Math.round((this.skippedSilenceSamples / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
+      vadDroppedMs: Math.round((this.vadDroppedSampleCount / MEDIA_TRANSCRIPTION_SAMPLE_RATE) * 1000),
+      skippedSilenceMs: Math.round((this.skippedSilenceSamples / MEDIA_TRANSCRIPTION_SAMPLE_RATE) * 1000),
       partialIntervalMs: Math.round(
-        (this.partialIntervalSamples / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000,
+        (this.partialIntervalSamples / MEDIA_TRANSCRIPTION_SAMPLE_RATE) * 1000,
       ),
       partialChunkCount: this.partialChunkCount,
       droppedPartialChunkCount: this.droppedPartialChunkCount,
@@ -442,7 +457,7 @@ export class WebRtcTranscriptionChunker {
     };
   }
 
-  private pushVadFrame(samples: Int16Array, receivedAtMs: number): WebRtcTranscriptionChunk[] {
+  private pushVadFrame(samples: Int16Array, receivedAtMs: number): MediaTranscriptionChunk[] {
     const startSample = this.inputSampleCount;
     this.inputSampleCount += samples.length;
     const vad = this.vad;
@@ -492,8 +507,8 @@ export class WebRtcTranscriptionChunker {
     }
 
     const segmentLength = this.vadSpeechSampleCount + this.vadSilenceSampleCount;
-    const endSilenceSamples = Math.round((vad.endSilenceMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
-    const maxSegmentSamples = Math.round((vad.maxSegmentMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+    const endSilenceSamples = Math.round((vad.endSilenceMs / 1000) * MEDIA_TRANSCRIPTION_SAMPLE_RATE);
+    const maxSegmentSamples = Math.round((vad.maxSegmentMs / 1000) * MEDIA_TRANSCRIPTION_SAMPLE_RATE);
     // Closing and emitting are now SEPARATE decisions.
     //
     // They used to be one condition, so a segment without enough speech could
@@ -540,7 +555,7 @@ export class WebRtcTranscriptionChunker {
    * capacity is reserved. The final chunk is therefore exactly what it would
    * have been with partials disabled.
    */
-  private maybeCreatePartialChunk(): WebRtcTranscriptionChunk | null {
+  private maybeCreatePartialChunk(): MediaTranscriptionChunk | null {
     if (this.partialIntervalSamples <= 0) return null;
     const segmentStartSample = this.vadSpeechStartSample;
     if (segmentStartSample === null) return null;
@@ -569,7 +584,7 @@ export class WebRtcTranscriptionChunker {
    * over several seconds through as the last thing the recogniser ever sees,
    * which is precisely the shape that produced the invented outros.
    */
-  private flushVad(endOfStream: boolean): WebRtcTranscriptionChunk[] {
+  private flushVad(endOfStream: boolean): MediaTranscriptionChunk[] {
     if (this.closed && this.vadSpeechSampleCount === 0 && this.vadSilenceSampleCount === 0) return [];
     const segmentStartSample = this.vadSpeechStartSample;
     const speechSampleCount = this.vadSpeechSampleCount;
@@ -602,9 +617,9 @@ export class WebRtcTranscriptionChunker {
    * does not have would be the same class of fiction this replaces.
    */
   private wallClockFor(
-    closeReason: WebRtcChunkWallClock['closeReason'],
+    closeReason: MediaChunkWallClock['closeReason'],
     gatewayReceivedAtMs: number,
-  ): WebRtcChunkWallClock | undefined {
+  ): MediaChunkWallClock | undefined {
     const firstCapturedSampleAtMs = this.vadFirstCapturedSampleAtMs;
     const lastVoicedSampleAtMs = this.vadLastVoicedSampleAtMs;
     if (firstCapturedSampleAtMs === null || lastVoicedSampleAtMs === null) return undefined;
@@ -649,13 +664,13 @@ export class WebRtcTranscriptionChunker {
   private minSpeechSamples(): number {
     const vad = this.vad;
     if (!vad) return 0;
-    return Math.round((vad.minSpeechMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+    return Math.round((vad.minSpeechMs / 1000) * MEDIA_TRANSCRIPTION_SAMPLE_RATE);
   }
 
   private endSilenceSamples(): number {
     const vad = this.vad;
     if (!vad) return 0;
-    return Math.round((vad.endSilenceMs / 1000) * WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+    return Math.round((vad.endSilenceMs / 1000) * MEDIA_TRANSCRIPTION_SAMPLE_RATE);
   }
 
   /**
@@ -698,7 +713,7 @@ export class WebRtcTranscriptionChunker {
         sessionId: this.context.sessionId,
         broadcastId: this.context.broadcastId,
         revision: this.context.revision,
-        droppedMs: Math.round((droppedSamples / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
+        droppedMs: Math.round((droppedSamples / MEDIA_TRANSCRIPTION_SAMPLE_RATE) * 1000),
         droppedSegmentCount: this.vadDroppedSegmentCount,
       });
     }
@@ -723,7 +738,7 @@ export class WebRtcTranscriptionChunker {
   private appendSamples(samples: Int16Array): void {
     if (this.buffer.length + samples.length > this.maxBufferedSamples) {
       this.nextDiscontinuity = true;
-      throw new WebRtcTranscriptionChunkerError(
+      throw new MediaTranscriptionChunkerError(
         'buffer-limit-exceeded',
         'WebRTC transcription audio buffer duration limit exceeded.',
       );
@@ -734,8 +749,8 @@ export class WebRtcTranscriptionChunker {
     this.buffer = next;
   }
 
-  private drain(endOfStream: boolean): WebRtcTranscriptionChunk[] {
-    const chunks: WebRtcTranscriptionChunk[] = [];
+  private drain(endOfStream: boolean): MediaTranscriptionChunk[] {
+    const chunks: MediaTranscriptionChunk[] = [];
     try {
       while (this.buffer.length >= this.chunkSamples) {
         const samples = this.buffer.slice(0, this.chunkSamples);
@@ -776,7 +791,7 @@ export class WebRtcTranscriptionChunker {
       if (this.fitsInQueue(byteLength)) return;
     }
     this.nextDiscontinuity = true;
-    throw new WebRtcTranscriptionChunkerError(
+    throw new MediaTranscriptionChunkerError(
       'queue-limit-exceeded',
       'WebRTC transcription chunk queue limit exceeded.',
     );
@@ -793,23 +808,23 @@ export class WebRtcTranscriptionChunker {
     samples: Int16Array,
     endOfStream: boolean,
     explicitStartSample?: number,
-    wallClock?: WebRtcChunkWallClock,
-  ): WebRtcTranscriptionChunk {
+    wallClock?: MediaChunkWallClock,
+  ): MediaTranscriptionChunk {
     const byteLength = samples.byteLength;
     this.admitChunk(byteLength);
     const startSample = explicitStartSample ?? this.emittedSampleCount;
     const endSample = startSample + samples.length;
-    const startMs = Math.round((startSample / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000);
-    const endMs = Math.round((endSample / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000);
-    const chunk: WebRtcTranscriptionChunk = {
+    const startMs = Math.round((startSample / MEDIA_TRANSCRIPTION_SAMPLE_RATE) * 1000);
+    const endMs = Math.round((endSample / MEDIA_TRANSCRIPTION_SAMPLE_RATE) * 1000);
+    const chunk: MediaTranscriptionChunk = {
       ...this.context,
       sequence: this.emittedChunkCount,
       startMs,
       endMs,
       durationMs: endMs - startMs,
-      sampleRate: WEBRTC_TRANSCRIPTION_SAMPLE_RATE,
-      channelCount: WEBRTC_TRANSCRIPTION_CHANNEL_COUNT,
-      pcmFormat: WEBRTC_TRANSCRIPTION_PCM_FORMAT,
+      sampleRate: MEDIA_TRANSCRIPTION_SAMPLE_RATE,
+      channelCount: MEDIA_TRANSCRIPTION_CHANNEL_COUNT,
+      pcmFormat: MEDIA_TRANSCRIPTION_PCM_FORMAT,
       samples,
       byteLength,
       discontinuity: this.nextDiscontinuity,
@@ -842,10 +857,10 @@ export class WebRtcTranscriptionChunker {
   private createPartialChunk(
     samples: Int16Array,
     segmentStartSample: number,
-  ): WebRtcTranscriptionChunk {
+  ): MediaTranscriptionChunk {
     const endSample = segmentStartSample + samples.length;
-    const startMs = Math.round((segmentStartSample / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000);
-    const endMs = Math.round((endSample / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000);
+    const startMs = Math.round((segmentStartSample / MEDIA_TRANSCRIPTION_SAMPLE_RATE) * 1000);
+    const endMs = Math.round((endSample / MEDIA_TRANSCRIPTION_SAMPLE_RATE) * 1000);
     this.partialChunkCount += 1;
     return {
       ...this.context,
@@ -853,9 +868,9 @@ export class WebRtcTranscriptionChunker {
       startMs,
       endMs,
       durationMs: endMs - startMs,
-      sampleRate: WEBRTC_TRANSCRIPTION_SAMPLE_RATE,
-      channelCount: WEBRTC_TRANSCRIPTION_CHANNEL_COUNT,
-      pcmFormat: WEBRTC_TRANSCRIPTION_PCM_FORMAT,
+      sampleRate: MEDIA_TRANSCRIPTION_SAMPLE_RATE,
+      channelCount: MEDIA_TRANSCRIPTION_CHANNEL_COUNT,
+      pcmFormat: MEDIA_TRANSCRIPTION_PCM_FORMAT,
       samples,
       byteLength: samples.byteLength,
       discontinuity: this.nextDiscontinuity,
@@ -867,27 +882,27 @@ export class WebRtcTranscriptionChunker {
   }
 }
 
-export function normalizePcmFrame(data: WebRtcAudioDataLike): Int16Array {
+export function normalizePcmFrame(data: MediaAudioDataLike): Int16Array {
   return normalizePcmFrameWithDiagnostics(data).samples;
 }
 
-export function normalizePcmFrameWithDiagnostics(data: WebRtcAudioDataLike): NormalizedWebRtcPcmFrame {
+export function normalizePcmFrameWithDiagnostics(data: MediaAudioDataLike): NormalizedMediaPcmFrame {
   if (!(data.samples instanceof Int16Array) && !(data.samples instanceof Float32Array)) {
-    throw new WebRtcTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame has no PCM samples.');
+    throw new MediaTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame has no PCM samples.');
   }
   if (data.samples.length === 0) {
-    throw new WebRtcTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame has no PCM samples.');
+    throw new MediaTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame has no PCM samples.');
   }
   const sourceRate = data.sampleRate;
   const channelCount = data.channelCount;
   if (typeof sourceRate !== 'number' || !Number.isInteger(sourceRate) || sourceRate <= 0) {
-    throw new WebRtcTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame sample rate is invalid.');
+    throw new MediaTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame sample rate is invalid.');
   }
   if (typeof channelCount !== 'number' || !Number.isInteger(channelCount) || channelCount <= 0 || channelCount > 8) {
-    throw new WebRtcTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame channel count is invalid.');
+    throw new MediaTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame channel count is invalid.');
   }
   if (data.samples.length % channelCount !== 0) {
-    throw new WebRtcTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame sample layout is invalid.');
+    throw new MediaTranscriptionChunkerError('malformed-frame', 'WebRTC audio frame sample layout is invalid.');
   }
 
   const inputSampleType: 'int16' | 'float32' =
@@ -898,7 +913,7 @@ export function normalizePcmFrameWithDiagnostics(data: WebRtcAudioDataLike): Nor
     Number.isFinite(data.bitsPerSample) &&
     data.bitsPerSample !== expectedBitsPerSample
   ) {
-    throw new WebRtcTranscriptionChunkerError(
+    throw new MediaTranscriptionChunkerError(
       'unsupported-format',
       `WebRTC audio frame bit depth ${data.bitsPerSample} is unsupported; expected ${expectedBitsPerSample}-bit ${inputSampleType} PCM.`,
     );
@@ -907,9 +922,9 @@ export function normalizePcmFrameWithDiagnostics(data: WebRtcAudioDataLike): Nor
     data.samples instanceof Int16Array ? data.samples : float32ToInt16(data.samples);
   const mono = downmixToMono(pcm16, channelCount);
   const normalized =
-    sourceRate === WEBRTC_TRANSCRIPTION_SAMPLE_RATE
+    sourceRate === MEDIA_TRANSCRIPTION_SAMPLE_RATE
       ? mono
-      : resampleLinear(mono, sourceRate, WEBRTC_TRANSCRIPTION_SAMPLE_RATE);
+      : resampleLinear(mono, sourceRate, MEDIA_TRANSCRIPTION_SAMPLE_RATE);
 
   return {
     samples: normalized,
@@ -923,11 +938,11 @@ export function normalizePcmFrameWithDiagnostics(data: WebRtcAudioDataLike): Nor
       inputSampleType,
       inputSampleCount: data.samples.length,
       inputDurationMs: Math.round(((data.samples.length / channelCount) / sourceRate) * 1000),
-      normalizedSampleRate: WEBRTC_TRANSCRIPTION_SAMPLE_RATE,
-      normalizedChannelCount: WEBRTC_TRANSCRIPTION_CHANNEL_COUNT,
+      normalizedSampleRate: MEDIA_TRANSCRIPTION_SAMPLE_RATE,
+      normalizedChannelCount: MEDIA_TRANSCRIPTION_CHANNEL_COUNT,
       normalizedBitsPerSample: 16,
       normalizedSampleCount: normalized.length,
-      normalizedDurationMs: Math.round((normalized.length / WEBRTC_TRANSCRIPTION_SAMPLE_RATE) * 1000),
+      normalizedDurationMs: Math.round((normalized.length / MEDIA_TRANSCRIPTION_SAMPLE_RATE) * 1000),
       ...inspectPcm16Samples(normalized),
       metadataWarnings: [],
     },
@@ -977,7 +992,7 @@ function float32ToInt16(samples: Float32Array): Int16Array {
 }
 
 export function inspectPcm16Samples(samples: Int16Array): Pick<
-  WebRtcAudioPcmDiagnostics,
+  MediaAudioPcmDiagnostics,
   'rms' | 'peak' | 'clippedSampleCount' | 'silent'
 > {
   if (samples.length === 0) {

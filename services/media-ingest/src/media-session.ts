@@ -784,7 +784,7 @@ export class ProcessingSessionStore {
     return { ...session };
   }
 
-  async createWebRtcSession(input: WebRtcSessionInput): Promise<ProcessingSession> {
+  async createMediaSession(input: WebRtcSessionInput): Promise<ProcessingSession> {
     assertSafeWebRtcSessionInput(input);
     const existing = this.sessions.get(input.sessionId);
     if (existing) {
@@ -984,7 +984,7 @@ export class ProcessingSessionStore {
     }
   }
 
-  async ingestWebRtcChunk(sessionId: string, input: WebRtcChunkInput): Promise<ProcessingSession> {
+  async ingestMediaChunk(sessionId: string, input: WebRtcChunkInput): Promise<ProcessingSession> {
     const session = this.requireWebRtcSession(sessionId);
     if (input.partial) {
       return await this.ingestWebRtcPartialChunk(session, input);
@@ -1029,7 +1029,7 @@ export class ProcessingSessionStore {
       this.updateWebRtcBridgeMetadata(session);
       this.onTranscriptionEvent(transcriptionEvent);
       this.emitSession(session);
-      return await this.processWebRtcTranscriptionEvent(session, transcriptionEvent);
+      return await this.processMediaTranscriptionEvent(session, transcriptionEvent);
     } catch (error) {
       await rm(input.sourcePath, { force: true });
       if (isRealtimeCallSession(session)) {
@@ -1665,7 +1665,7 @@ export class ProcessingSessionStore {
       throw new MediaIngestError('Only WebRTC call sessions can be removed.', 'invalid-media', 400);
     }
     if (session.state === 'processing' || session.state === 'paused' || session.state === 'failed') {
-      this.stopWebRtcSession(sessionId);
+      this.stopMediaSession(sessionId);
     }
     await rm(safeSessionOutputDir(this.outputBaseDir, sessionId), { recursive: true, force: true });
     this.sessions.delete(sessionId);
@@ -1680,7 +1680,7 @@ export class ProcessingSessionStore {
     return true;
   }
 
-  stopWebRtcSession(sessionId: string): ProcessingSession {
+  stopMediaSession(sessionId: string): ProcessingSession {
     const session = this.requireWebRtcSession(sessionId);
     if (session.state !== 'processing' && session.state !== 'paused' && session.state !== 'failed') {
       throw new MediaIngestError(
@@ -3080,7 +3080,7 @@ export class ProcessingSessionStore {
     return updated;
   }
 
-  private async processWebRtcTranscriptionEvent(
+  private async processMediaTranscriptionEvent(
     session: ProcessingSession,
     event: TranscriptionEvent,
   ): Promise<ProcessingSession> {

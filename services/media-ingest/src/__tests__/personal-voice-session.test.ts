@@ -196,7 +196,7 @@ async function joinCall(
   sessionId: string,
   voiceOwnerId?: string,
 ): Promise<string> {
-  const session = await h.sessions.createWebRtcSession({
+  const session = await h.sessions.createMediaSession({
     sessionId,
     broadcastId: `callcast_${sessionId}`,
     broadcasterPeerId: `peer_${sessionId}`,
@@ -215,7 +215,7 @@ async function joinCall(
 async function say(h: Harness, sessionId: string, sequence: number): Promise<void> {
   const sourcePath = join(h.stagingDir, `utterance-${sequence}.wav`);
   await writeFile(sourcePath, wavFixture());
-  await h.sessions.ingestWebRtcChunk(sessionId, {
+  await h.sessions.ingestMediaChunk(sessionId, {
     sequence,
     startMs: sequence * 15_000,
     endMs: (sequence + 1) * 15_000,
@@ -437,7 +437,7 @@ describe('the owner never leaks out of media-ingest', () => {
     const h = await harness();
 
     await expect(
-      h.sessions.createWebRtcSession({
+      h.sessions.createMediaSession({
         sessionId: 'call_k_participant_1',
         broadcastId: 'callcast_k',
         broadcasterPeerId: 'peer_k',
@@ -456,7 +456,7 @@ describe('the owner never leaks out of media-ingest', () => {
     const sessionId = await joinCall(h, 'call_l_participant_1', OWNER_A);
     await say(h, sessionId, 0);
 
-    h.sessions.stopWebRtcSession(sessionId);
+    h.sessions.stopMediaSession(sessionId);
     await h.sessions.removeCallSession(sessionId);
 
     const owners = (h.sessions as unknown as { voiceOwnersBySession: Map<string, string> })

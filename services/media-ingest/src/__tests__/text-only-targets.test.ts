@@ -121,7 +121,7 @@ async function ingestChunk(
   const suffix = partial ? `-p${partial.partialSequence}` : '';
   const sourcePath = join(h.stagingDir, `chunk-${sequence}${suffix}.wav`);
   await writeFile(sourcePath, wavFixture());
-  return h.store.ingestWebRtcChunk(sessionId, {
+  return h.store.ingestMediaChunk(sessionId, {
     sequence,
     startMs: sequence * 5_000,
     endMs: sequence * 5_000 + 5_000,
@@ -138,7 +138,7 @@ async function ingestChunk(
 describe('text-only target languages (P6.4)', () => {
   it('translates a text-only target for captions but requests zero synthesis, counting every skip', async () => {
     const h = await harness();
-    const session = await h.store.createWebRtcSession(
+    const session = await h.store.createMediaSession(
       callInput({ targetLanguages: ['es'], textOnlyLanguages: ['es'] }),
     );
     expect(session.textOnlyLanguages).toEqual(['es']);
@@ -170,7 +170,7 @@ describe('text-only target languages (P6.4)', () => {
 
   it('runs an empty-target session as STT-only: transcription flows, nothing downstream runs, and stop completes it', async () => {
     const h = await harness();
-    const session = await h.store.createWebRtcSession(callInput({ targetLanguages: [] }));
+    const session = await h.store.createMediaSession(callInput({ targetLanguages: [] }));
     expect(session.targetLanguages).toEqual([]);
 
     await ingestChunk(h, session.id, 0);
@@ -197,12 +197,12 @@ describe('text-only target languages (P6.4)', () => {
     expect(h.translationRequests).toHaveLength(0);
 
     expect(h.store.skippedSynthesisCounts(session.id)).toEqual({});
-    expect(h.store.stopWebRtcSession(session.id).state).toBe('completed');
+    expect(h.store.stopMediaSession(session.id).state).toBe('completed');
   });
 
   it('keeps a synthesized language exactly as before, speaking with its mapped voice', async () => {
     const h = await harness();
-    const session = await h.store.createWebRtcSession(
+    const session = await h.store.createMediaSession(
       callInput({ targetLanguages: ['es'], voiceIdsByLanguage: { es: 'es-voice-1' } }),
     );
 
@@ -221,7 +221,7 @@ describe('text-only target languages (P6.4)', () => {
 
   it('never consults the default-voice fallback for a text-only target while the other target speaks', async () => {
     const h = await harness();
-    const session = await h.store.createWebRtcSession(
+    const session = await h.store.createMediaSession(
       callInput({
         targetLanguages: ['es', 'fr'],
         textOnlyLanguages: ['fr'],
@@ -253,7 +253,7 @@ describe('text-only target languages (P6.4)', () => {
   it('refuses a text-only language that is not a session target', async () => {
     const h = await harness();
     await expect(
-      h.store.createWebRtcSession(
+      h.store.createMediaSession(
         callInput({ targetLanguages: ['es'], textOnlyLanguages: ['fr'] }),
       ),
     ).rejects.toMatchObject({
@@ -302,7 +302,7 @@ function wavFixture(): Buffer {
 describe('multi-audio-target synthesis (P6.4 blocker)', () => {
   it('synthesizes EVERY audio target of one final segment — fr and es each get exactly one clip', async () => {
     const h = await harness();
-    const session = await h.store.createWebRtcSession(
+    const session = await h.store.createMediaSession(
       callInput({
         targetLanguages: ['fr', 'es'],
         voiceIdsByLanguage: { fr: 'fr-voice-1', es: 'es-voice-1' },
@@ -333,7 +333,7 @@ describe('multi-audio-target synthesis (P6.4 blocker)', () => {
 
   it('array position decides nothing: reversed target order produces the identical synthesized set', async () => {
     const h = await harness();
-    const session = await h.store.createWebRtcSession(
+    const session = await h.store.createMediaSession(
       callInput({
         targetLanguages: ['es', 'fr'],
         voiceIdsByLanguage: { fr: 'fr-voice-1', es: 'es-voice-1' },
@@ -353,7 +353,7 @@ describe('multi-audio-target synthesis (P6.4 blocker)', () => {
     // B, but D alone must never cause synthesis — with B present fr is an
     // audio target because of B, and the counts below are exactly B + C.
     const h = await harness();
-    const session = await h.store.createWebRtcSession(
+    const session = await h.store.createMediaSession(
       callInput({
         targetLanguages: ['fr', 'es'],
         voiceIdsByLanguage: { fr: 'fr-voice-1', es: 'es-voice-1' },
@@ -368,7 +368,7 @@ describe('multi-audio-target synthesis (P6.4 blocker)', () => {
     // B leaves: fr collapses to caption-only (D still reads it). Modeled as
     // the replacement session the gateway creates after the reconciliation
     // bump: fr text-only, es still audible.
-    const after = await h.store.createWebRtcSession(
+    const after = await h.store.createMediaSession(
       callInput({
         sessionId: 'call_call-1_p1_r2',
         revision: 2,

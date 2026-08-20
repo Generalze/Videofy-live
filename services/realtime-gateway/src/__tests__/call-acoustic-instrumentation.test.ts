@@ -27,8 +27,8 @@ import {
 import type { CallReceivePeerHandlers } from '../call-receive-peers.js';
 import { CallAcousticRoomObserver } from '../call-acoustic-rooms.js';
 import { CallTranscriptLog, type CallTranscriptRecord } from '../call-transcript-log.js';
-import type { WebRtcAudioDataLike } from '../webrtc-audio-ingest-bridge.js';
-import type { WebRtcTranscriptionBridgeContext } from '../webrtc-transcription-bridge.js';
+import type { MediaAudioDataLike } from '../media-transcription-chunker.js';
+import type { MediaTranscriptionBridgeContext } from '../media-transcription-bridge.js';
 
 class FakeSocket implements CallSocketLike {
   readonly rooms = new Set<string>();
@@ -95,8 +95,8 @@ function createHarness(acousticObserver?: CallAcousticRoomObserver) {
   const transcriptionBridge = {
     handleFrame: vi.fn(
       (
-        _context: WebRtcTranscriptionBridgeContext,
-        _data: WebRtcAudioDataLike,
+        _context: MediaTranscriptionBridgeContext,
+        _data: MediaAudioDataLike,
         _receivedAtMs?: number,
       ) => {},
     ),
@@ -106,7 +106,7 @@ function createHarness(acousticObserver?: CallAcousticRoomObserver) {
   const receivePeers = {
     acceptOffer: vi.fn(async () => 'receive-answer-sdp'),
     addRemoteCandidate: vi.fn(async () => {}),
-    fanOut: vi.fn((_callId: string, _speakerId: string, _data: WebRtcAudioDataLike) => {}),
+    fanOut: vi.fn((_callId: string, _speakerId: string, _data: MediaAudioDataLike) => {}),
     syncSpeakers: vi.fn((_callId: string, _participantIds: readonly string[]) => {}),
     trackMapping: vi.fn(() => [] as { slot: number; mid: string | null; speakerParticipantId: string | null }[]),
     closePeer: vi.fn(() => {}),

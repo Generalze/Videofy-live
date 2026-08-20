@@ -12,7 +12,7 @@ import {
   WEBRTC_SIGNALLING_PROTOCOL_VERSION,
 } from '@videofy-live/shared-types';
 import type { WebRtcPeerRecord } from './webrtc-session-registry.js';
-import type { WebRtcAudioDataLike } from './webrtc-audio-ingest-bridge.js';
+import type { MediaAudioDataLike } from './media-transcription-chunker.js';
 import { BackendMediaPeerError } from './webrtc-media-peer-registry.js';
 import type { WebRtcVideoFrameLike } from './webrtc-media-peer-registry.js';
 import { logger } from './logger.js';
@@ -39,7 +39,7 @@ interface TrackLike {
 
 interface AudioSourceLike {
   createTrack(): TrackLike;
-  onData(data: WebRtcAudioDataLike): void;
+  onData(data: MediaAudioDataLike): void;
 }
 
 interface VideoSourceLike {
@@ -282,7 +282,7 @@ export class BackendWebRtcListenerPeerRegistry {
     this.touch(record);
   }
 
-  fanOutAudioFrame(sessionId: string, data: WebRtcAudioDataLike): void {
+  fanOutAudioFrame(sessionId: string, data: MediaAudioDataLike): void {
     for (const record of this.peers.values()) {
       if (record.sessionId !== sessionId || record.state === 'closed' || record.state === 'failed') continue;
       try {

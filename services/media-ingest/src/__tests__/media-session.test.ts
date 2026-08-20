@@ -577,7 +577,7 @@ describe('ProcessingSessionStore', () => {
       onGeneratedAudioReady: (event) =>
         generatedAudioReady.push(`${event.sequence}:${event.targetLanguage}:${event.segmentId}`),
     });
-    const session = await sessionStore.createWebRtcSession({
+    const session = await sessionStore.createMediaSession({
       sessionId: 'wrs_demo',
       broadcastId: 'broadcast_demo',
       broadcasterPeerId: 'peer_broadcaster',
@@ -589,7 +589,7 @@ describe('ProcessingSessionStore', () => {
     });
     let updated = session;
     for (let sequence = 0; sequence < 5; sequence += 1) {
-      updated = await sessionStore.ingestWebRtcChunk(session.id, {
+      updated = await sessionStore.ingestMediaChunk(session.id, {
         sequence,
         startMs: sequence * 15_000,
         endMs: (sequence + 1) * 15_000,
@@ -660,7 +660,7 @@ describe('ProcessingSessionStore', () => {
       status: 'generated',
     });
 
-    const stopped = sessionStore.stopWebRtcSession(session.id);
+    const stopped = sessionStore.stopMediaSession(session.id);
     expect(stopped.state).toBe('completed');
     expect(stopped.webrtcTranscriptionBridge?.status).toBe('stopped');
     expect(events).toEqual([
@@ -726,8 +726,8 @@ describe('ProcessingSessionStore', () => {
       sourceLanguage: 'en',
       sourceLanguageMode: 'manual' as const,
     };
-    const session = await sessionStore.createWebRtcSession({ ...webRtcInput, revision: 1 });
-    await sessionStore.ingestWebRtcChunk(session.id, {
+    const session = await sessionStore.createMediaSession({ ...webRtcInput, revision: 1 });
+    await sessionStore.ingestMediaChunk(session.id, {
       sequence: 0,
       startMs: 0,
       endMs: 15_000,
@@ -739,7 +739,7 @@ describe('ProcessingSessionStore', () => {
       sourcePath: await createStagedWav(stagingDir, 'dedupe-0.wav'),
     });
     expect(generatedAudioReady).toHaveLength(1);
-    sessionStore.stopWebRtcSession(session.id);
+    sessionStore.stopMediaSession(session.id);
 
     const readyKeys = (
       sessionStore as unknown as {
@@ -749,10 +749,10 @@ describe('ProcessingSessionStore', () => {
     expect(readyKeys.has(session.id)).toBe(true);
 
     // Replacing the session for a new revision must release the old keys with it.
-    await sessionStore.createWebRtcSession({ ...webRtcInput, revision: 2 });
+    await sessionStore.createMediaSession({ ...webRtcInput, revision: 2 });
     expect(readyKeys.has(session.id)).toBe(false);
 
-    await sessionStore.ingestWebRtcChunk(session.id, {
+    await sessionStore.ingestMediaChunk(session.id, {
       sequence: 0,
       startMs: 0,
       endMs: 15_000,
@@ -778,7 +778,7 @@ describe('ProcessingSessionStore', () => {
       textToSpeechSupportedLanguages: ['es', 'fr'],
       onGeneratedAudioReady: (event) => generatedVoiceIds.push(event.voiceId),
     });
-    const session = await sessionStore.createWebRtcSession({
+    const session = await sessionStore.createMediaSession({
       sessionId: 'call_demo_participant_a',
       broadcastId: 'callcast_demo_participant_a',
       broadcasterPeerId: 'peer_call_a',
@@ -789,7 +789,7 @@ describe('ProcessingSessionStore', () => {
       sourceLanguageMode: 'manual',
       voiceIdsByLanguage: { es: 'es_ES-sharvard-female' },
     });
-    await sessionStore.ingestWebRtcChunk(session.id, {
+    await sessionStore.ingestMediaChunk(session.id, {
       sequence: 0,
       startMs: 0,
       endMs: 15_000,
@@ -802,7 +802,7 @@ describe('ProcessingSessionStore', () => {
     });
 
     expect(generatedVoiceIds).toEqual(['es_ES-sharvard-female']);
-    sessionStore.stopWebRtcSession(session.id);
+    sessionStore.stopMediaSession(session.id);
 
     await expect(sessionStore.removeCallSession('wrs_not_a_call')).rejects.toMatchObject({
       code: 'invalid-media',
@@ -812,7 +812,7 @@ describe('ProcessingSessionStore', () => {
     await expect(sessionStore.removeCallSession(session.id)).resolves.toBe(false);
 
     await expect(
-      sessionStore.createWebRtcSession({
+      sessionStore.createMediaSession({
         sessionId: 'call_demo_participant_b',
         broadcastId: 'callcast_demo_participant_b',
         broadcasterPeerId: 'peer_call_b',
@@ -838,7 +838,7 @@ describe('ProcessingSessionStore', () => {
       textToSpeechSupportedLanguages: ['fr'],
       onTranslationEvent: (event) => captions.push(`${event.sequence}:${event.status}`),
     });
-    const session = await sessionStore.createWebRtcSession({
+    const session = await sessionStore.createMediaSession({
       sessionId: 'call_gaps_participant_1_r1',
       broadcastId: 'callcast_gaps_participant_1_r1',
       broadcasterPeerId: 'peer_call_participant_1',
@@ -850,7 +850,7 @@ describe('ProcessingSessionStore', () => {
     });
 
     async function utterance(sequence: number, startMs: number, endMs: number): Promise<void> {
-      await sessionStore.ingestWebRtcChunk(session.id, {
+      await sessionStore.ingestMediaChunk(session.id, {
         sequence,
         startMs,
         endMs,
@@ -874,7 +874,7 @@ describe('ProcessingSessionStore', () => {
     expect(captions.length).toBeGreaterThanOrEqual(3);
 
     // Overlapping audio is still a timeline error, recorded without killing the call.
-    const overlapped = await sessionStore.ingestWebRtcChunk(session.id, {
+    const overlapped = await sessionStore.ingestMediaChunk(session.id, {
       sequence: 3,
       startMs: 22_000,
       endMs: 26_000,
@@ -901,7 +901,7 @@ describe('ProcessingSessionStore', () => {
       textToSpeechSupportedLanguages: ['fr'],
       onGeneratedAudioReady: (event) => generated.push(`${event.sequence}:${event.status}`),
     });
-    const session = await sessionStore.createWebRtcSession({
+    const session = await sessionStore.createMediaSession({
       sessionId: 'call_resilience_participant_1_r1',
       broadcastId: 'callcast_resilience_participant_1_r1',
       broadcasterPeerId: 'peer_call_participant_1',
@@ -914,7 +914,7 @@ describe('ProcessingSessionStore', () => {
 
     // A chunk whose staged file vanished (the exact production failure: a
     // retried submission after the file was already consumed).
-    const afterFailure = await sessionStore.ingestWebRtcChunk(session.id, {
+    const afterFailure = await sessionStore.ingestMediaChunk(session.id, {
       sequence: 0,
       startMs: 0,
       endMs: 15_000,
@@ -929,7 +929,7 @@ describe('ProcessingSessionStore', () => {
     expect(afterFailure.webrtcTranscriptionBridge?.failedChunks).toBe(1);
 
     // The next utterance must still be accepted and fully processed.
-    const afterRecovery = await sessionStore.ingestWebRtcChunk(session.id, {
+    const afterRecovery = await sessionStore.ingestMediaChunk(session.id, {
       sequence: 1,
       startMs: 15_000,
       endMs: 30_000,
@@ -951,7 +951,7 @@ describe('ProcessingSessionStore', () => {
       outputBaseDir: outputDir,
       webRtcStagingDir: stagingDir,
     });
-    const session = await sessionStore.createWebRtcSession({
+    const session = await sessionStore.createMediaSession({
       sessionId: 'wrs_order',
       broadcastId: 'broadcast_demo',
       broadcasterPeerId: 'peer_broadcaster',
@@ -959,7 +959,7 @@ describe('ProcessingSessionStore', () => {
     });
 
     await expect(
-      sessionStore.ingestWebRtcChunk(session.id, {
+      sessionStore.ingestMediaChunk(session.id, {
         sequence: 1,
         startMs: 0,
         endMs: 10,
@@ -991,7 +991,7 @@ describe('ProcessingSessionStore', () => {
         captions.push(`${event.sequence}:${event.status}:${finality(event)}:${event.translatedText}`),
       onGeneratedAudioReady: (event) => generated.push(`${event.sequence}:${event.status}`),
     });
-    const session = await sessionStore.createWebRtcSession({
+    const session = await sessionStore.createMediaSession({
       sessionId: 'call_partial_participant_1_r1',
       broadcastId: 'callcast_partial_participant_1_r1',
       broadcasterPeerId: 'peer_call_participant_1',
@@ -1004,7 +1004,7 @@ describe('ProcessingSessionStore', () => {
 
     // Two interim chunks while the speaker is still talking: same sequence and
     // startMs as the final that will follow, growing endMs.
-    const afterFirstPartial = await sessionStore.ingestWebRtcChunk(session.id, {
+    const afterFirstPartial = await sessionStore.ingestMediaChunk(session.id, {
       sequence: 0,
       startMs: 0,
       endMs: 4_000,
@@ -1017,7 +1017,7 @@ describe('ProcessingSessionStore', () => {
       partial: true,
       partialSequence: 0,
     });
-    await sessionStore.ingestWebRtcChunk(session.id, {
+    await sessionStore.ingestMediaChunk(session.id, {
       sequence: 0,
       startMs: 0,
       endMs: 7_000,
@@ -1050,7 +1050,7 @@ describe('ProcessingSessionStore', () => {
     expect(await readdir(join(outputDir, session.id))).toEqual([]);
 
     // The final chunk reuses the same sequence and startMs and is processed in full.
-    const final = await sessionStore.ingestWebRtcChunk(session.id, {
+    const final = await sessionStore.ingestMediaChunk(session.id, {
       sequence: 0,
       startMs: 0,
       endMs: 9_000,
@@ -1097,7 +1097,7 @@ describe('ProcessingSessionStore', () => {
       translationSupportedTargetLanguages: ['fr'],
       textToSpeechSupportedLanguages: ['fr'],
     });
-    const session = await sessionStore.createWebRtcSession({
+    const session = await sessionStore.createMediaSession({
       sessionId: 'wrs_partial_programme',
       broadcastId: 'broadcast_partial_programme',
       broadcasterPeerId: 'peer_broadcaster',
@@ -1109,7 +1109,7 @@ describe('ProcessingSessionStore', () => {
     });
 
     await expect(
-      sessionStore.ingestWebRtcChunk(session.id, {
+      sessionStore.ingestMediaChunk(session.id, {
         sequence: 0,
         startMs: 0,
         endMs: 4_000,
@@ -1132,7 +1132,7 @@ describe('ProcessingSessionStore', () => {
     expect(rejected.error).toBeNull();
     expect(await readdir(stagingDir)).toEqual([]);
 
-    const accepted = await sessionStore.ingestWebRtcChunk(session.id, {
+    const accepted = await sessionStore.ingestMediaChunk(session.id, {
       sequence: 0,
       startMs: 0,
       endMs: 15_000,
@@ -1161,7 +1161,7 @@ describe('ProcessingSessionStore', () => {
       onTranscriptionEvent: (event) =>
         transcripts.push(`${event.sequence}:${event.status}:${finality(event)}`),
     });
-    const session = await sessionStore.createWebRtcSession({
+    const session = await sessionStore.createMediaSession({
       sessionId: 'call_partial_race_participant_1_r1',
       broadcastId: 'callcast_partial_race_participant_1_r1',
       broadcasterPeerId: 'peer_call_participant_1',
@@ -1174,7 +1174,7 @@ describe('ProcessingSessionStore', () => {
 
     // Start a final chunk without awaiting it, then push a partial into the
     // same session while that work is still in flight.
-    const inFlight = sessionStore.ingestWebRtcChunk(session.id, {
+    const inFlight = sessionStore.ingestMediaChunk(session.id, {
       sequence: 0,
       startMs: 0,
       endMs: 9_000,
@@ -1185,7 +1185,7 @@ describe('ProcessingSessionStore', () => {
       sizeBytes: wavFixture().length,
       sourcePath: await createStagedWav(stagingDir, 'race-final.wav'),
     });
-    const dropped = await sessionStore.ingestWebRtcChunk(session.id, {
+    const dropped = await sessionStore.ingestMediaChunk(session.id, {
       sequence: 1,
       startMs: 9_000,
       endMs: 11_000,
@@ -1243,7 +1243,7 @@ describe('ProcessingSessionStore', () => {
         }),
       },
     });
-    const session = await sessionStore.createWebRtcSession({
+    const session = await sessionStore.createMediaSession({
       sessionId: 'call_boundary_participant_1_r1',
       broadcastId: 'callcast_boundary_participant_1_r1',
       broadcasterPeerId: 'peer_call_participant_1',
@@ -1254,7 +1254,7 @@ describe('ProcessingSessionStore', () => {
       sourceLanguageMode: 'manual',
     });
 
-    await sessionStore.ingestWebRtcChunk(session.id, {
+    await sessionStore.ingestMediaChunk(session.id, {
       sequence: 0,
       startMs: 0,
       endMs: 2_000,
@@ -1292,7 +1292,7 @@ describe('ProcessingSessionStore', () => {
     // Nobody has said what is being spoken yet, so 'en' is only the standing
     // default. Rejecting an English target here would lock out the ordinary
     // case of a Spanish speaker requesting English listeners.
-    const session = await sessionStore.createWebRtcSession({
+    const session = await sessionStore.createMediaSession({
       sessionId: 'call_autotarget_participant_1_r1',
       broadcastId: 'callcast_autotarget_participant_1_r1',
       broadcasterPeerId: 'peer_call_participant_1',
@@ -1322,7 +1322,7 @@ describe('ProcessingSessionStore', () => {
     // Manual mode is an explicit statement, so translating English to English
     // remains a configuration error rather than a request to honour.
     await expect(
-      sessionStore.createWebRtcSession({
+      sessionStore.createMediaSession({
         sessionId: 'call_sametarget_participant_1_r1',
         broadcastId: 'callcast_sametarget_participant_1_r1',
         broadcasterPeerId: 'peer_call_participant_1',
@@ -1351,7 +1351,7 @@ describe('ProcessingSessionStore', () => {
         },
       },
     });
-    const session = await sessionStore.createWebRtcSession({
+    const session = await sessionStore.createMediaSession({
       sessionId: 'call_partial_fail_participant_1_r1',
       broadcastId: 'callcast_partial_fail_participant_1_r1',
       broadcasterPeerId: 'peer_call_participant_1',
@@ -1362,7 +1362,7 @@ describe('ProcessingSessionStore', () => {
       sourceLanguageMode: 'manual',
     });
 
-    const afterFailure = await sessionStore.ingestWebRtcChunk(session.id, {
+    const afterFailure = await sessionStore.ingestMediaChunk(session.id, {
       sequence: 0,
       startMs: 0,
       endMs: 1_500,
@@ -1392,7 +1392,7 @@ describe('ProcessingSessionStore', () => {
     expect(outputFiles.some((name) => name.startsWith('webrtc-partial-'))).toBe(false);
 
     // The final chunk for the same utterance is unaffected and still accepted.
-    const final = await sessionStore.ingestWebRtcChunk(session.id, {
+    const final = await sessionStore.ingestMediaChunk(session.id, {
       sequence: 0,
       startMs: 0,
       endMs: 2_000,
@@ -1435,7 +1435,7 @@ describe('ProcessingSessionStore', () => {
       },
     });
 
-    await sessionStore.createWebRtcSession({
+    await sessionStore.createMediaSession({
       sessionId: 'call_warm_participant_1_r1',
       broadcastId: 'callcast_warm_participant_1_r1',
       broadcasterPeerId: 'peer_call_participant_1',
@@ -1458,7 +1458,7 @@ describe('ProcessingSessionStore', () => {
     expect(leftovers.filter((name) => name.startsWith('warmup-'))).toEqual([]);
 
     // A second call on the same pair must not pay for warming again.
-    await sessionStore.createWebRtcSession({
+    await sessionStore.createMediaSession({
       sessionId: 'call_warm_participant_2_r1',
       broadcastId: 'callcast_warm_participant_2_r1',
       broadcasterPeerId: 'peer_call_participant_2',
@@ -1494,7 +1494,7 @@ describe('ProcessingSessionStore', () => {
       },
     });
 
-    await sessionStore.createWebRtcSession({
+    await sessionStore.createMediaSession({
       sessionId: 'call_autodetect_participant_1_r1',
       broadcastId: 'callcast_autodetect_participant_1_r1',
       broadcasterPeerId: 'peer_call_participant_1',
@@ -1541,7 +1541,7 @@ describe('ProcessingSessionStore', () => {
     });
 
     const create = async (participant: number) =>
-      await sessionStore.createWebRtcSession({
+      await sessionStore.createMediaSession({
         sessionId: `call_captions_participant_${participant}_r1`,
         broadcastId: `callcast_captions_participant_${participant}_r1`,
         broadcasterPeerId: `peer_call_participant_${participant}`,
@@ -1584,7 +1584,7 @@ describe('ProcessingSessionStore', () => {
     });
 
     // A programme session is not a call: it must not warm at all.
-    const programme = await sessionStore.createWebRtcSession({
+    const programme = await sessionStore.createMediaSession({
       sessionId: 'wrs_warm_programme',
       broadcastId: 'broadcast_warm_programme',
       broadcasterPeerId: 'peer_broadcaster',
@@ -1599,7 +1599,7 @@ describe('ProcessingSessionStore', () => {
     expect(programme.state).toBe('processing');
 
     // A call whose warm-up throws still starts, clean.
-    const call = await sessionStore.createWebRtcSession({
+    const call = await sessionStore.createMediaSession({
       sessionId: 'call_warm_fail_participant_1_r1',
       broadcastId: 'callcast_warm_fail_participant_1_r1',
       broadcasterPeerId: 'peer_call_participant_1',
@@ -1625,7 +1625,7 @@ describe('ProcessingSessionStore', () => {
       outputBaseDir: outputDir,
       webRtcStagingDir: stagingDir,
     });
-    const session = await sessionStore.createWebRtcSession({
+    const session = await sessionStore.createMediaSession({
       sessionId: 'wrs_safe',
       broadcastId: 'broadcast_demo',
       broadcasterPeerId: 'peer_broadcaster',
@@ -1633,7 +1633,7 @@ describe('ProcessingSessionStore', () => {
     });
 
     await expect(
-      sessionStore.ingestWebRtcChunk(session.id, {
+      sessionStore.ingestMediaChunk(session.id, {
         sequence: 0,
         startMs: 0,
         endMs: 10,

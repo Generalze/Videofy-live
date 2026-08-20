@@ -10,7 +10,7 @@ import {
   BackendWebRtcMediaPeerRegistry,
   type WebRtcVideoFrameLike,
 } from '../webrtc-media-peer-registry.js';
-import type { WebRtcAudioDataLike } from '../webrtc-audio-ingest-bridge.js';
+import type { MediaAudioDataLike } from '../media-transcription-chunker.js';
 
 class FakePeer {
   connectionState = 'new';
@@ -40,7 +40,7 @@ class FakePeer {
 }
 
 class FakeSink {
-  ondata: ((data: WebRtcAudioDataLike) => void) | null = null;
+  ondata: ((data: MediaAudioDataLike) => void) | null = null;
   stop = vi.fn();
   emitFrame(): void {
     this.ondata?.({

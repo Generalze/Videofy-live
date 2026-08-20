@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../config.js';
 import {
   resolveProgrammeIngestStreamStatus,
-  shouldUseWebRtcTranscriptionForProgrammeSource,
+  shouldUseMediaTranscriptionForProgrammeSource,
 } from '../gateway.js';
 
 const ORIGINAL_ENV = { ...process.env };
@@ -97,10 +97,10 @@ describe('gateway config', () => {
   });
 
   it('uses file-ingest transcription for uploaded programme media only', () => {
-    expect(shouldUseWebRtcTranscriptionForProgrammeSource('uploaded-video')).toBe(false);
-    expect(shouldUseWebRtcTranscriptionForProgrammeSource('hls')).toBe(true);
-    expect(shouldUseWebRtcTranscriptionForProgrammeSource('rtmp')).toBe(true);
-    expect(shouldUseWebRtcTranscriptionForProgrammeSource(undefined)).toBe(true);
+    expect(shouldUseMediaTranscriptionForProgrammeSource('uploaded-video')).toBe(false);
+    expect(shouldUseMediaTranscriptionForProgrammeSource('hls')).toBe(true);
+    expect(shouldUseMediaTranscriptionForProgrammeSource('rtmp')).toBe(true);
+    expect(shouldUseMediaTranscriptionForProgrammeSource(undefined)).toBe(true);
   });
 
   it('keeps uploaded programme preprocessing from ending viewer media early', () => {

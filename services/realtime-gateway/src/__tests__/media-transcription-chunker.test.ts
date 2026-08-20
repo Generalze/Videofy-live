@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
-  WebRtcTranscriptionChunker,
-  WebRtcTranscriptionChunkerError,
+  MediaTranscriptionChunker,
+  MediaTranscriptionChunkerError,
   normalizePcmFrame,
   normalizePcmFrameWithDiagnostics,
-  type WebRtcTranscriptionChunk,
-} from '../webrtc-transcription-chunker.js';
+  type MediaTranscriptionChunk,
+} from '../media-transcription-chunker.js';
 
 const context = {
   sessionId: 'wrs_demo',
@@ -30,20 +30,20 @@ const partialVad = {
 const speech100Ms = (): Int16Array => new Int16Array(1600).fill(10_000);
 const silence100Ms = (): Int16Array => new Int16Array(1600);
 
-function push(chunker: WebRtcTranscriptionChunker, samples: Int16Array): WebRtcTranscriptionChunk[] {
+function push(chunker: MediaTranscriptionChunker, samples: Int16Array): MediaTranscriptionChunk[] {
   return chunker.pushFrame({ samples, sampleRate: 16000, channelCount: 1, bitsPerSample: 16 });
 }
 
 /** Stands in for the bridge: owns the queue the chunker only accounts for. */
 function fakeQueueOwner() {
   const owner = {
-    queue: [] as WebRtcTranscriptionChunk[],
+    queue: [] as MediaTranscriptionChunk[],
     evictionCount: 0,
-    take(chunks: WebRtcTranscriptionChunk[]): WebRtcTranscriptionChunk[] {
+    take(chunks: MediaTranscriptionChunk[]): MediaTranscriptionChunk[] {
       owner.queue.push(...chunks);
       return chunks;
     },
-    evictOldest(): WebRtcTranscriptionChunk | null {
+    evictOldest(): MediaTranscriptionChunk | null {
       const oldest = owner.queue.shift();
       if (!oldest) return null;
       owner.evictionCount += 1;
@@ -53,7 +53,7 @@ function fakeQueueOwner() {
   return owner;
 }
 
-describe('WebRtcTranscriptionChunker', () => {
+describe('MediaTranscriptionChunker', () => {
   it('normalizes stereo 48 kHz PCM to mono 16 kHz PCM', () => {
     const source = new Int16Array([1000, 3000, 2000, 4000, 3000, 5000]);
     const normalized = normalizePcmFrame({
@@ -106,8 +106,8 @@ describe('WebRtcTranscriptionChunker', () => {
       });
       expect.unreachable('expected unsupported-format rejection');
     } catch (error) {
-      expect(error).toBeInstanceOf(WebRtcTranscriptionChunkerError);
-      expect((error as WebRtcTranscriptionChunkerError).code).toBe('unsupported-format');
+      expect(error).toBeInstanceOf(MediaTranscriptionChunkerError);
+      expect((error as MediaTranscriptionChunkerError).code).toBe('unsupported-format');
     }
 
     expect(
@@ -146,7 +146,7 @@ describe('WebRtcTranscriptionChunker', () => {
   });
 
   it('creates ordered chunks with preserved sample-count timestamps and final partial flush', () => {
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       chunkDurationMs: 100,
     });
@@ -187,7 +187,7 @@ describe('WebRtcTranscriptionChunker', () => {
   });
 
   it('uses VAD-driven boundaries while preserving programme timestamps and skipped silence', () => {
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       vad: {
         enabled: true,
@@ -238,7 +238,7 @@ describe('WebRtcTranscriptionChunker', () => {
   });
 
   it('reports an honest energy-gate fallback when silero VAD is configured', () => {
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       vad: {
         enabled: true,
@@ -274,7 +274,7 @@ describe('WebRtcTranscriptionChunker', () => {
   });
 
   it('drops a segment that never contained enough voice, without waiting for the buffer to burst', () => {
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       maxBufferedDurationMs: 300,
       vad: {
@@ -317,7 +317,7 @@ describe('WebRtcTranscriptionChunker', () => {
   });
 
   it('clears VAD buffers when chunk creation throws so the next segment starts clean', () => {
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       maxQueuedChunks: 1,
       vad: {
@@ -339,7 +339,7 @@ describe('WebRtcTranscriptionChunker', () => {
     expect(firstChunk).toBeDefined();
 
     push(speech200Ms);
-    expect(() => push(silence100Ms)).toThrow(WebRtcTranscriptionChunkerError);
+    expect(() => push(silence100Ms)).toThrow(MediaTranscriptionChunkerError);
     expect(chunker.snapshot().bufferedDurationMs).toBe(0);
 
     chunker.ackChunk(firstChunk!);
@@ -349,7 +349,7 @@ describe('WebRtcTranscriptionChunker', () => {
   });
 
   it('falls back to fixed chunking when VAD is disabled', () => {
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       chunkDurationMs: 100,
       vad: { enabled: false, mode: 'fallback' },
@@ -367,7 +367,7 @@ describe('WebRtcTranscriptionChunker', () => {
   });
 
   it('marks discontinuity after a bounded buffer failure', () => {
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       chunkDurationMs: 1000,
       maxBufferedDurationMs: 10,
@@ -380,12 +380,12 @@ describe('WebRtcTranscriptionChunker', () => {
         channelCount: 1,
         bitsPerSample: 16,
       }),
-    ).toThrow(WebRtcTranscriptionChunkerError);
+    ).toThrow(MediaTranscriptionChunkerError);
   });
 
   it('defaults to reject-new: the NEW chunk is refused and the stale backlog is kept', () => {
     const owner = fakeQueueOwner();
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       chunkDurationMs: 100,
       maxQueuedChunks: 2,
@@ -406,7 +406,7 @@ describe('WebRtcTranscriptionChunker', () => {
     push();
     expect(owner.queue.map((chunk) => chunk.sequence)).toEqual([0, 1]);
 
-    expect(() => push()).toThrow(WebRtcTranscriptionChunkerError);
+    expect(() => push()).toThrow(MediaTranscriptionChunkerError);
     // The owner's queue is untouched and the callback was never consulted.
     expect(owner.evictionCount).toBe(0);
     expect(owner.queue.map((chunk) => chunk.sequence)).toEqual([0, 1]);
@@ -420,7 +420,7 @@ describe('WebRtcTranscriptionChunker', () => {
 
   it('evicts the OLDEST queued chunk to admit the newest speech with exact accounting', () => {
     const owner = fakeQueueOwner();
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       chunkDurationMs: 100,
       maxQueuedChunks: 2,
@@ -468,7 +468,7 @@ describe('WebRtcTranscriptionChunker', () => {
 
   it('rejects the new chunk when eviction has nothing left to give up', () => {
     const owner = fakeQueueOwner();
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       chunkDurationMs: 100,
       maxQueuedChunks: 1,
@@ -491,7 +491,7 @@ describe('WebRtcTranscriptionChunker', () => {
     const inFlight = owner.queue.shift();
     expect(inFlight).toBeDefined();
 
-    expect(() => push()).toThrow(WebRtcTranscriptionChunkerError);
+    expect(() => push()).toThrow(MediaTranscriptionChunkerError);
     expect(owner.evictionCount).toBe(0);
     expect(chunker.snapshot()).toMatchObject({ queuedChunks: 1, evictedChunkCount: 0 });
 
@@ -502,7 +502,7 @@ describe('WebRtcTranscriptionChunker', () => {
   });
 
   it('releases accounting for a multi-chunk batch aborted mid-drain', () => {
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       chunkDurationMs: 100,
       maxQueuedChunks: 2,
@@ -517,18 +517,18 @@ describe('WebRtcTranscriptionChunker', () => {
         channelCount: 1,
         bitsPerSample: 16,
       }),
-    ).toThrow(WebRtcTranscriptionChunkerError);
+    ).toThrow(MediaTranscriptionChunkerError);
     expect(chunker.snapshot()).toMatchObject({ queuedChunks: 0, queuedBytes: 0 });
   });
 
   it('streams interim partials during a sentence and still ends it with the whole utterance', () => {
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       vad: partialVad,
       partialIntervalMs: 300,
     });
 
-    const partials: WebRtcTranscriptionChunk[] = [];
+    const partials: MediaTranscriptionChunk[] = [];
     for (let index = 0; index < 6; index++) partials.push(...push(chunker, speech100Ms()));
 
     // Two 300 ms partials arrive DURING the sentence, both carrying the
@@ -573,13 +573,13 @@ describe('WebRtcTranscriptionChunker', () => {
     // "fixed" by loosening the assertion that is doing the actual work here.
     let clock = 1_000_000;
     const nowMs = () => clock;
-    const streaming = new WebRtcTranscriptionChunker({
+    const streaming = new MediaTranscriptionChunker({
       ...context,
       vad: partialVad,
       partialIntervalMs: 300,
       nowMs,
     });
-    const today = new WebRtcTranscriptionChunker({ ...context, vad: partialVad, nowMs });
+    const today = new MediaTranscriptionChunker({ ...context, vad: partialVad, nowMs });
     // Two sentences and a mid-sentence cut-off, so the flush path is compared
     // as well as the VAD boundary path.
     const frames = [
@@ -590,8 +590,8 @@ describe('WebRtcTranscriptionChunker', () => {
       ...Array.from({ length: 5 }, speech100Ms),
     ];
 
-    const streamingFinals: WebRtcTranscriptionChunk[] = [];
-    const todayFinals: WebRtcTranscriptionChunk[] = [];
+    const streamingFinals: MediaTranscriptionChunk[] = [];
+    const todayFinals: MediaTranscriptionChunk[] = [];
     for (const frame of frames) {
       clock += 100;
       streamingFinals.push(...push(streaming, frame.slice()).filter((chunk) => !chunk.partial));
@@ -607,7 +607,7 @@ describe('WebRtcTranscriptionChunker', () => {
   });
 
   it('emits no partials by default, so programme chunking is unchanged', () => {
-    const chunker = new WebRtcTranscriptionChunker({ ...context, vad: partialVad });
+    const chunker = new MediaTranscriptionChunker({ ...context, vad: partialVad });
 
     for (let index = 0; index < 20; index++) {
       expect(push(chunker, speech100Ms())).toHaveLength(0);
@@ -617,7 +617,7 @@ describe('WebRtcTranscriptionChunker', () => {
   });
 
   it('ignores a partial interval without VAD, where there is no segment to be partway through', () => {
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       chunkDurationMs: 100,
       partialIntervalMs: 300,
@@ -630,12 +630,12 @@ describe('WebRtcTranscriptionChunker', () => {
   });
 
   it('restarts partial numbering per segment without consuming a final sequence', () => {
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       vad: partialVad,
       partialIntervalMs: 300,
     });
-    const emitted: WebRtcTranscriptionChunk[] = [];
+    const emitted: MediaTranscriptionChunk[] = [];
     const speak = (frames: number) => {
       for (let index = 0; index < frames; index++) emitted.push(...push(chunker, speech100Ms()));
       emitted.push(...push(chunker, silence100Ms()));
@@ -650,13 +650,13 @@ describe('WebRtcTranscriptionChunker', () => {
   });
 
   it('keeps partials out of the queue accounting so they can never crowd out a final', () => {
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       maxQueuedChunks: 1,
       vad: partialVad,
       partialIntervalMs: 300,
     });
-    const partials: WebRtcTranscriptionChunk[] = [];
+    const partials: MediaTranscriptionChunk[] = [];
 
     for (let index = 0; index < 6; index++) partials.push(...push(chunker, speech100Ms()));
     expect(partials).toHaveLength(2);
@@ -675,10 +675,10 @@ describe('WebRtcTranscriptionChunker', () => {
 
     // The queue is full, yet the next sentence still previews: partials never
     // throw queue-limit-exceeded, only the final chunk does.
-    const nextPartials: WebRtcTranscriptionChunk[] = [];
+    const nextPartials: MediaTranscriptionChunk[] = [];
     for (let index = 0; index < 6; index++) nextPartials.push(...push(chunker, speech100Ms()));
     expect(nextPartials.map((chunk) => chunk.sequence)).toEqual([1, 1]);
-    expect(() => push(chunker, silence100Ms())).toThrow(WebRtcTranscriptionChunkerError);
+    expect(() => push(chunker, silence100Ms())).toThrow(MediaTranscriptionChunkerError);
     expect(chunker.snapshot()).toMatchObject({ queuedChunks: 1, queuedBytes: finalBytes });
 
     chunker.ackChunk(final!);
@@ -686,14 +686,14 @@ describe('WebRtcTranscriptionChunker', () => {
   });
 
   it('reports a pending discontinuity on a partial without consuming it', () => {
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       vad: partialVad,
       partialIntervalMs: 300,
     });
     chunker.markDiscontinuity();
 
-    const partials: WebRtcTranscriptionChunk[] = [];
+    const partials: MediaTranscriptionChunk[] = [];
     for (let index = 0; index < 6; index++) partials.push(...push(chunker, speech100Ms()));
     expect(partials.map((chunk) => chunk.discontinuity)).toEqual([true, true]);
 
@@ -702,18 +702,18 @@ describe('WebRtcTranscriptionChunker', () => {
     const [final] = push(chunker, silence100Ms());
     expect(final).toMatchObject({ discontinuity: true });
 
-    const nextPartials: WebRtcTranscriptionChunk[] = [];
+    const nextPartials: MediaTranscriptionChunk[] = [];
     for (let index = 0; index < 3; index++) nextPartials.push(...push(chunker, speech100Ms()));
     expect(nextPartials.map((chunk) => chunk.discontinuity)).toEqual([false]);
   });
 
   it('counts partials the owner threw away, and never counts a final as one', () => {
-    const chunker = new WebRtcTranscriptionChunker({
+    const chunker = new MediaTranscriptionChunker({
       ...context,
       vad: partialVad,
       partialIntervalMs: 300,
     });
-    const partials: WebRtcTranscriptionChunk[] = [];
+    const partials: MediaTranscriptionChunk[] = [];
     for (let index = 0; index < 6; index++) partials.push(...push(chunker, speech100Ms()));
     const [final] = push(chunker, silence100Ms());
 
@@ -773,7 +773,7 @@ describe('VAD segmentation refuses audio nobody spoke into', () => {
   };
 
   function chunkerFor(vad = PRODUCTION_VAD) {
-    return new WebRtcTranscriptionChunker({ ...context, vad, maxBufferedDurationMs: 30_000 });
+    return new MediaTranscriptionChunker({ ...context, vad, maxBufferedDurationMs: 30_000 });
   }
 
   /**
@@ -812,11 +812,11 @@ describe('VAD segmentation refuses audio nobody spoke into', () => {
   // the 0.012 gate rather than straddling it.
   const QUIET_VOICE = 850;
 
-  function push(chunker: WebRtcTranscriptionChunker, samples: Int16Array) {
+  function push(chunker: MediaTranscriptionChunker, samples: Int16Array) {
     return chunker.pushFrame({ samples, sampleRate: 16000, channelCount: 1, bitsPerSample: 16 });
   }
 
-  function pushMany(chunker: WebRtcTranscriptionChunker, amplitude: number, ms: number) {
+  function pushMany(chunker: MediaTranscriptionChunker, amplitude: number, ms: number) {
     const emitted = [];
     for (let index = 0; index < ms / 10; index += 1) {
       emitted.push(...push(chunker, frame(amplitude)));
@@ -1009,7 +1009,7 @@ describe('VAD segmentation refuses audio nobody spoke into', () => {
 
     /** Push `ms` of audio, advancing an injected clock exactly one frame at a time. */
     function speak(
-      chunker: WebRtcTranscriptionChunker,
+      chunker: MediaTranscriptionChunker,
       clock: { at: number },
       amplitude: number,
       ms: number,
@@ -1030,7 +1030,7 @@ describe('VAD segmentation refuses audio nobody spoke into', () => {
     const FRAME_MS = 10;
 
     function timedChunker(clock: { at: number }) {
-      return new WebRtcTranscriptionChunker({
+      return new MediaTranscriptionChunker({
         ...context,
         vad: PRODUCTION_VAD,
         maxBufferedDurationMs: 30_000,
@@ -1111,7 +1111,7 @@ describe('VAD segmentation refuses audio nobody spoke into', () => {
     it('reports no wall clock at all for fixed-interval chunking', () => {
       // Programme chunking has no voiced extent. Reporting one would be exactly
       // the class of invented millisecond this work exists to remove.
-      const chunker = new WebRtcTranscriptionChunker({ ...context, chunkDurationMs: 100 });
+      const chunker = new MediaTranscriptionChunker({ ...context, chunkDurationMs: 100 });
       const [chunk] = chunker.pushFrame({
         samples: new Int16Array(1600),
         sampleRate: 16000,

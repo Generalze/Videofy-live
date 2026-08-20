@@ -24,11 +24,11 @@ import {
 } from '../call-runtime.js';
 import type { CallReceivePeerHandlers } from '../call-receive-peers.js';
 import { CallTranscriptLog, type CallTranscriptRecord } from '../call-transcript-log.js';
-import type { WebRtcAudioDataLike } from '../webrtc-audio-ingest-bridge.js';
+import type { MediaAudioDataLike } from '../media-transcription-chunker.js';
 import {
-  HttpWebRtcTranscriptionSubmissionClient,
-  type WebRtcTranscriptionBridgeContext,
-} from '../webrtc-transcription-bridge.js';
+  HttpMediaTranscriptionSubmissionClient,
+  type MediaTranscriptionBridgeContext,
+} from '../media-transcription-bridge.js';
 
 class FakeSocket implements CallSocketLike {
   readonly rooms = new Set<string>();
@@ -118,11 +118,11 @@ function createHarness(verifyVoiceIdentity?: (token: string) => string | null) {
   });
   const emitToRoom = vi.fn<(room: string, event: string, payload: unknown) => void>();
   const ingestControl = {
-    createSession: vi.fn(async (_input: WebRtcTranscriptionBridgeContext) => {}),
+    createSession: vi.fn(async (_input: MediaTranscriptionBridgeContext) => {}),
     stopSession: vi.fn(async (_sessionId: string) => {}),
     deleteSession: vi.fn(async (_sessionId: string) => {}),
   };
-  // Stands in for WebRtcTranscriptionBridge: chunk wall-clock anchors and
+  // Stands in for MediaTranscriptionBridge: chunk wall-clock anchors and
   // backpressure counters the runtime reads for latency and the call summary.
   const chunkTimings = new Map<string, FakeChunkTiming[]>();
   const sessionCounters = new Map<
@@ -131,9 +131,9 @@ function createHarness(verifyVoiceIdentity?: (token: string) => string | null) {
   >();
   const transcriptionBridge = {
     handleFrame: vi.fn(
-      (_context: WebRtcTranscriptionBridgeContext, _data: WebRtcAudioDataLike) => {},
+      (_context: MediaTranscriptionBridgeContext, _data: MediaAudioDataLike) => {},
     ),
-    endSession: vi.fn((_context: WebRtcTranscriptionBridgeContext, _reason: string) => {}),
+    endSession: vi.fn((_context: MediaTranscriptionBridgeContext, _reason: string) => {}),
     cleanupClosedSessions: vi.fn(() => 0),
     lookupChunkTiming: vi.fn((sessionId: string, revision: number, mediaMs: number) => {
       const timings = chunkTimings.get(`${sessionId}:${revision}`) ?? [];
@@ -180,7 +180,7 @@ function createHarness(verifyVoiceIdentity?: (token: string) => string | null) {
       async (_callId: string, _participantId: string, _candidate: { candidate: string }) => {},
     ),
     fanOut: vi.fn(
-      (_callId: string, _speakerParticipantId: string, _data: WebRtcAudioDataLike) => {},
+      (_callId: string, _speakerParticipantId: string, _data: MediaAudioDataLike) => {},
     ),
     syncSpeakers: vi.fn((_callId: string, _participantIds: readonly string[]) => {}),
     trackMapping: vi.fn(() => [] as { slot: number; mid: string | null; speakerParticipantId: string | null }[]),
@@ -1510,7 +1510,7 @@ describe('CallRuntime async handler guard', () => {
   });
 });
 
-describe('HttpWebRtcTranscriptionSubmissionClient call session creation', () => {
+describe('HttpMediaTranscriptionSubmissionClient call session creation', () => {
   it('posts voiceIdsByLanguage to the media-ingest internal sessions endpoint', async () => {
     const requests: { url: string; body: Record<string, unknown> }[] = [];
     const server = createServer((request, response) => {
@@ -1526,7 +1526,7 @@ describe('HttpWebRtcTranscriptionSubmissionClient call session creation', () => 
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
-    const client = new HttpWebRtcTranscriptionSubmissionClient({
+    const client = new HttpMediaTranscriptionSubmissionClient({
       baseUrl: `http://127.0.0.1:${port}`,
       timeoutMs: 5_000,
     });
@@ -1548,7 +1548,7 @@ describe('HttpWebRtcTranscriptionSubmissionClient call session creation', () => 
     }
 
     expect(requests).toHaveLength(1);
-    expect(requests[0]?.url).toBe('/internal/webrtc/sessions');
+    expect(requests[0]?.url).toBe('/internal/media/sessions');
     expect(requests[0]?.body).toMatchObject({
       sessionId: 'call_demo_participant_1_r1',
       broadcastId: 'callcast_demo_participant_1_r1',
@@ -1573,7 +1573,7 @@ describe('HttpWebRtcTranscriptionSubmissionClient call session creation', () => 
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as AddressInfo;
-    const client = new HttpWebRtcTranscriptionSubmissionClient({
+    const client = new HttpMediaTranscriptionSubmissionClient({
       baseUrl: `http://127.0.0.1:${port}`,
       timeoutMs: 5_000,
     });
@@ -1588,7 +1588,7 @@ describe('HttpWebRtcTranscriptionSubmissionClient call session creation', () => 
     expect(requests).toHaveLength(2);
     for (const request of requests) {
       expect(request.method).toBe('DELETE');
-      expect(request.url).toBe('/internal/webrtc/sessions/call_demo_participant_1_r2');
+      expect(request.url).toBe('/internal/media/sessions/call_demo_participant_1_r2');
     }
   });
 });
