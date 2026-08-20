@@ -1,0 +1,28 @@
+{
+  "name": "@videofy-live/sip-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "npm run build -w @videofy-live/media-adapter-port && npm run build -w @videofy-live/adapter-wire && npm run build -w @videofy-live/media-adapter-remote && npm run build -w @videofy-live/sip-adapter && tsc --noEmit",
+    "test": "npm run build -w @videofy-live/media-adapter-port && npm run build -w @videofy-live/adapter-wire && npm run build -w @videofy-live/media-adapter-remote && npm run build -w @videofy-live/sip-adapter && vitest run src/__tests__/config.test.ts src/__tests__/lifecycle.test.ts src/__tests__/control-client.test.ts src/__tests__/test-manifest.test.ts"
+  },
+  "dependencies": {
+    "@videofy-live/media-adapter-port": "*",
+    "@videofy-live/media-adapter-remote": "*",
+    "@videofy-live/service-env": "*",
+    "@videofy-live/sip-adapter": "*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.17.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}
