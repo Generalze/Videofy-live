@@ -4,13 +4,18 @@
   "private": true,
   "author": "masterzee001",
   "license": "SEE LICENSE IN ../../LICENSE.md",
-  "description": "SIP/RTP transport adapter: normalizes telephony audio into the shared media-adapter seam. Transport only — no speech, translation, synthesis or language policy.",
+  "description": "SIP/RTP transport adapter LIBRARY: normalizes telephony audio into the shared media-adapter seam. Transport only — no speech, translation, synthesis or language policy. Not a runnable service; runtime composition arrives with the Adapter Ingress Binding in P6.9.",
   "type": "module",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
@@ -19,7 +24,6 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "tsx": "^4.17.0",
     "typescript": "^5.5.4",
     "vitest": "^2.1.9"
   }
