@@ -13,12 +13,15 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  ADAPTER_SERVICE_TOKEN_VARIABLE,
+  ALLOW_INSECURE_ADAPTER_INGRESS_VARIABLE,
   ALLOW_INSECURE_INTERNAL_INGRESS_VARIABLE,
   INTERNAL_INGRESS_TOKEN_VARIABLE,
   InternalIngressAuthError,
   MINIMUM_INTERNAL_INGRESS_TOKEN_LENGTH,
   internalIngressRequestAllowed,
   matchesInternalIngressToken,
+  resolveAdapterServiceAuth,
   resolveInternalIngressAuth,
 } from '../internal-ingress-auth.js';
 
@@ -159,6 +162,93 @@ describe('the credential does not leak', () => {
       // An error message that quotes the value ends up in a log, a ticket and
       // a screenshot.
       expect((error as Error).message).not.toContain(secret);
+    }
+  });
+});
+
+describe('the adapter service credential is a SEPARATE trust relationship', () => {
+  const ADAPTER = 'adapter-service-token-0123456789';
+  const MEDIA = 'internal-media-token-0123456789';
+
+  it('PIN: configuring one credential does not configure the other', () => {
+    // Two different pairs of processes. Sharing one secret would mean rotating
+    // a compromised adapter credential also restarts the media path, and an
+    // operator reading a fingerprint could not tell which relationship it
+    // described.
+    const onlyMedia = { [INTERNAL_INGRESS_TOKEN_VARIABLE]: MEDIA };
+    expect(resolveInternalIngressAuth({ env: onlyMedia }).mode).toBe('enforced');
+    expect(resolveAdapterServiceAuth({ env: onlyMedia }).mustRefuseToStart).toBe(true);
+
+    const onlyAdapter = { [ADAPTER_SERVICE_TOKEN_VARIABLE]: ADAPTER };
+    expect(resolveAdapterServiceAuth({ env: onlyAdapter }).mode).toBe('enforced');
+    expect(resolveInternalIngressAuth({ env: onlyAdapter }).mustRefuseToStart).toBe(true);
+  });
+
+  it('PIN: disabling one does not disable the other', () => {
+    // The dangerous direction. A developer opting out of internal ingress auth
+    // must not silently open the adapter endpoints to the network as well.
+    const env = {
+      [ALLOW_INSECURE_INTERNAL_INGRESS_VARIABLE]: 'true',
+      [ADAPTER_SERVICE_TOKEN_VARIABLE]: ADAPTER,
+    };
+    expect(resolveInternalIngressAuth({ env }).mode).toBe('insecure-explicit');
+    expect(resolveAdapterServiceAuth({ env }).mode).toBe('enforced');
+
+    const other = {
+      [ALLOW_INSECURE_ADAPTER_INGRESS_VARIABLE]: 'true',
+      [INTERNAL_INGRESS_TOKEN_VARIABLE]: MEDIA,
+    };
+    expect(resolveAdapterServiceAuth({ env: other }).mode).toBe('insecure-explicit');
+    expect(resolveInternalIngressAuth({ env: other }).mode).toBe('enforced');
+  });
+
+  it('PIN: an absent adapter credential refuses to start', () => {
+    const resolution = resolveAdapterServiceAuth({ env: {} });
+    expect(resolution.mode).toBe('unconfigured');
+    expect(resolution.mustRefuseToStart).toBe(true);
+    expect(resolution.token).toBeNull();
+    // Names its OWN variable, so an operator fixes the right one.
+    expect(resolution.summary).toContain(ADAPTER_SERVICE_TOKEN_VARIABLE);
+    expect(resolution.summary).not.toContain(INTERNAL_INGRESS_TOKEN_VARIABLE);
+    // And refuses every request even if the process somehow started.
+    expect(internalIngressRequestAllowed(resolution, ADAPTER)).toBe(false);
+  });
+
+  it('PIN: a short adapter token is refused without echoing it back', () => {
+    const secret = 'too-short-adapt';
+    try {
+      resolveAdapterServiceAuth({ env: { [ADAPTER_SERVICE_TOKEN_VARIABLE]: secret } });
+      throw new Error('expected a refusal');
+    } catch (error) {
+      expect(error).toBeInstanceOf(InternalIngressAuthError);
+      expect((error as Error).message).toContain(ADAPTER_SERVICE_TOKEN_VARIABLE);
+      expect((error as Error).message).not.toContain(secret);
+    }
+  });
+
+  it('PIN: the fingerprint correlates deployments without printing the secret', () => {
+    const gateway = resolveAdapterServiceAuth({
+      env: { [ADAPTER_SERVICE_TOKEN_VARIABLE]: ADAPTER },
+    });
+    const runtime = resolveAdapterServiceAuth({
+      env: { [ADAPTER_SERVICE_TOKEN_VARIABLE]: ADAPTER },
+    });
+    const wrong = resolveAdapterServiceAuth({
+      env: { [ADAPTER_SERVICE_TOKEN_VARIABLE]: `${ADAPTER}-different` },
+    });
+    // The question actually being asked when a connection starts returning 401.
+    expect(runtime.fingerprint).toBe(gateway.fingerprint);
+    expect(wrong.fingerprint).not.toBe(gateway.fingerprint);
+    expect(gateway.summary).not.toContain(ADAPTER);
+  });
+
+  it('PIN: the adapter credential is compared in constant time, not by equality', () => {
+    const resolution = resolveAdapterServiceAuth({
+      env: { [ADAPTER_SERVICE_TOKEN_VARIABLE]: ADAPTER },
+    });
+    expect(internalIngressRequestAllowed(resolution, ADAPTER)).toBe(true);
+    for (const wrong of [undefined, '', MEDIA, `${ADAPTER} `, ADAPTER.slice(0, -1)]) {
+      expect(internalIngressRequestAllowed(resolution, wrong)).toBe(false);
     }
   });
 });

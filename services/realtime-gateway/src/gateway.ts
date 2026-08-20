@@ -1293,6 +1293,18 @@ export class Gateway {
   }
 
   /** Broadcast a stream-status change to all connected clients. */
+  /**
+   * The media pipeline every producer shares.
+   *
+   * Exposed for the adapter ingress binding (P6.9 Step 8), which composes onto
+   * the SAME bridge the browser and native call paths use. A second bridge for
+   * adapters would be a second pipeline, which is the thing this milestone
+   * exists to avoid.
+   */
+  getMediaTranscriptionBridge(): MediaTranscriptionBridge {
+    return this.webRtcTranscriptionBridge;
+  }
+
   broadcastStreamStatus(status: string): void {
     this.io.emit(SOCKET_EVENTS.STREAM_STATUS, { status, timestamp: new Date().toISOString() });
   }

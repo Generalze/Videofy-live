@@ -8,7 +8,7 @@
  * the pin required to fail.
  */
 import { describe, expect, it } from 'vitest';
-import { AdapterAuthority } from '../authority.js';
+import { AdapterAuthority, AdapterAuthorityError } from '../authority.js';
 
 const HOUR = 60 * 60 * 1000;
 
@@ -309,5 +309,85 @@ describe('secrets do not leak', () => {
     expect(route.credential.split('.')[1]!.length).toBeGreaterThanOrEqual(64);
     expect(grant.capability.split('.')[1]!.length).toBeGreaterThanOrEqual(64);
     expect(route.credential).not.toBe(liveSession().route.credential);
+  });
+});
+
+describe('provisioned route credentials', () => {
+  const SECRET = 'operator-chosen-secret-0123456789abcdef';
+
+  it('an imported credential works exactly like an issued one', () => {
+    const authority = new AdapterAuthority();
+    authority.importRouteCredential({
+      id: 'r_sip_primary',
+      secret: SECRET,
+      adapterId: 'sip-1',
+      routes: ['route_17'],
+    });
+    const grant = authority.createSession({
+      credential: `vfr_r_sip_primary.${SECRET}`,
+      adapterSessionRef: 'sc_1',
+      routeRef: 'route_17',
+      idempotencyKey: 'k1',
+    });
+    expect(typeof grant).not.toBe('string');
+  });
+
+  it('PIN: an imported credential is subject to every check an issued one is', () => {
+    const authority = new AdapterAuthority();
+    authority.importRouteCredential({
+      id: 'r_sip_primary',
+      secret: SECRET,
+      adapterId: 'sip-1',
+      routes: ['route_17'],
+    });
+    const create = (credential: string, routeRef = 'route_17') =>
+      authority.createSession({
+        credential,
+        adapterSessionRef: 'sc_1',
+        routeRef,
+        idempotencyKey: `k-${credential.length}-${routeRef}`,
+      });
+
+    // Wrong secret, wrong prefix, wrong route, and revocation. Provisioning is
+    // not a side door into the authorization model.
+    expect(create(`vfr_r_sip_primary.${SECRET}-wrong`)).toBe('rejected-auth');
+    expect(create(`vfc_r_sip_primary.${SECRET}`)).toBe('rejected-auth');
+    expect(create(`vfr_r_sip_primary.${SECRET}`, 'route_OTHER')).toBe('rejected-route');
+    authority.revokeRouteCredential('r_sip_primary');
+    expect(create(`vfr_r_sip_primary.${SECRET}`)).toBe('rejected-auth');
+  });
+
+  it('PIN: a weak or malformed provisioned secret is refused at import', () => {
+    const authority = new AdapterAuthority();
+    const base = { adapterId: 'sip-1', routes: ['route_17'] };
+    // A short secret fails closed against accidents and open against anyone
+    // trying, which is worse than having none.
+    expect(() =>
+      authority.importRouteCredential({ ...base, id: 'r1', secret: 'short' }),
+    ).toThrow(AdapterAuthorityError);
+    // A dot in the id would let the credential parse into a different id than
+    // it was filed under.
+    expect(() =>
+      authority.importRouteCredential({ ...base, id: 'r.1', secret: SECRET }),
+    ).toThrow(AdapterAuthorityError);
+    expect(() =>
+      authority.importRouteCredential({ ...base, id: '', secret: SECRET }),
+    ).toThrow(AdapterAuthorityError);
+    // A credential granting no routes could originate nothing, so it is a
+    // configuration mistake rather than a valid restrictive setting.
+    expect(() =>
+      authority.importRouteCredential({ id: 'r2', secret: SECRET, adapterId: 'sip-1', routes: [] }),
+    ).toThrow(AdapterAuthorityError);
+  });
+
+  it('PIN: importing the same id twice is refused, never silently overwritten', () => {
+    const authority = new AdapterAuthority();
+    const first = { id: 'r1', secret: SECRET, adapterId: 'sip-1', routes: ['route_17'] };
+    authority.importRouteCredential(first);
+    // A duplicate id in a config file is a mistake. Last-one-wins would let a
+    // stray entry silently replace an adapter's identity and route scope.
+    expect(() =>
+      authority.importRouteCredential({ ...first, adapterId: 'someone-else' }),
+    ).toThrow(AdapterAuthorityError);
   });
 });

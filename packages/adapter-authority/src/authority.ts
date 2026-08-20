@@ -50,6 +50,23 @@ const CAPABILITY_PREFIX = 'vfc';
 /** 32 bytes of randomness. A guessable credential is worse than none. */
 const SECRET_BYTES = 32;
 
+/**
+ * The floor for an OPERATOR-provisioned secret.
+ *
+ * Issued secrets are 32 random bytes and never negotiable. A provisioned one is
+ * chosen by a person, so it needs a stated minimum, and it is stated here rather
+ * than left to whoever writes the deployment guide.
+ */
+const MINIMUM_PROVISIONED_SECRET_LENGTH = 32;
+
+/** Refusals that are a configuration mistake to correct, not a runtime outcome. */
+export class AdapterAuthorityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AdapterAuthorityError';
+  }
+}
+
 export interface IssuedRouteCredential {
   /** Public. Safe to log, and the handle for rotation and revocation. */
   readonly id: string;
@@ -160,6 +177,60 @@ export class AdapterAuthority {
       revoked: false,
     });
     return { id, credential: `${ROUTE_PREFIX}_${id}.${secret}` };
+  }
+
+  /**
+   * Adopt a credential the OPERATOR provisioned, rather than minting one.
+   *
+   * Deployment needs this and issuance cannot provide it. `issueRouteCredential`
+   * invents a secret and hands it back once, in memory, in this process — which
+   * is useless for a separate adapter process on a separate host that has to be
+   * configured before the gateway starts. Somebody has to choose the shared
+   * secret, and that somebody is the operator.
+   *
+   * This is PROVISIONING, not a new power: an imported credential is subject to
+   * every check an issued one is, and this method grants nothing that
+   * `issueRouteCredential` does not already grant. What it must not become is a
+   * way to install a weak secret, so a short one is refused outright — a
+   * four-character route credential fails closed against accidents and open
+   * against anyone trying.
+   *
+   * The secret is never stored, only its digest, exactly as with issuance.
+   */
+  importRouteCredential(input: {
+    id: string;
+    secret: string;
+    adapterId: string;
+    routes: readonly string[];
+    expiresAtMs?: number | null;
+  }): void {
+    if (input.id === '' || input.id.includes('.')) {
+      // A dot is the id/secret separator, so an id containing one would let a
+      // credential parse into a different id than it was filed under.
+      throw new AdapterAuthorityError('A route credential id must be non-empty and contain no dot.');
+    }
+    if (this.routes.has(input.id)) {
+      throw new AdapterAuthorityError(`A route credential with id ${input.id} already exists.`);
+    }
+    if (input.secret.length < MINIMUM_PROVISIONED_SECRET_LENGTH) {
+      throw new AdapterAuthorityError(
+        `A provisioned route credential secret must be at least ` +
+          `${MINIMUM_PROVISIONED_SECRET_LENGTH} characters.`,
+      );
+    }
+    if (input.routes.length === 0) {
+      throw new AdapterAuthorityError(
+        `Route credential ${input.id} grants no routes, so it could originate nothing.`,
+      );
+    }
+    this.routes.set(input.id, {
+      id: input.id,
+      adapterId: input.adapterId,
+      routes: new Set(input.routes),
+      secretHash: digest(input.secret),
+      expiresAtMs: input.expiresAtMs ?? null,
+      revoked: false,
+    });
   }
 
   /**

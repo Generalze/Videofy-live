@@ -144,12 +144,26 @@ export class AdapterIngressBinding implements StreamResolver, AdapterMediaSink {
       return resolved;
     }
 
-    const policy = await this.deps.policy.resolve({
-      videofySessionId: resolved.videofySessionId,
-      routeRef: resolved.routeRef,
-      adapterId: resolved.adapterId,
-      adapterSessionRef: resolved.adapterSessionRef,
-    });
+    // A policy resolver reaches configuration, and configuration can be wrong.
+    // Letting that throw would propagate out of the ingress connection's frame
+    // handling and take down the whole WebSocket -- including every OTHER call
+    // multiplexed on it. One misconfigured route must cost one stream.
+    let policy: AdapterSessionPolicy;
+    try {
+      policy = await this.deps.policy.resolve({
+        videofySessionId: resolved.videofySessionId,
+        routeRef: resolved.routeRef,
+        adapterId: resolved.adapterId,
+        adapterSessionRef: resolved.adapterSessionRef,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown';
+      this.log('adapter stream refused: policy could not be resolved', {
+        routeRef: resolved.routeRef,
+        message,
+      });
+      return 'internal-failure';
+    }
 
     const context: MediaTranscriptionBridgeContext = {
       // The PLATFORM's session, resolved from the capability. The adapter's

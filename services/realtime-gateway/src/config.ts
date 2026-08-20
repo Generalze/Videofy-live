@@ -1,5 +1,7 @@
+import { ADAPTER_ROUTE_POLICY_PATH_VARIABLE } from './adapter-route-policy.js';
 import { loadRootEnv, readCsv, readPort } from './env.js';
 import {
+  resolveAdapterServiceAuth,
   resolveInternalIngressAuth,
   resolvePublicIngestUrl,
   type InternalIngressAuthResolution,
@@ -21,6 +23,17 @@ export interface GatewayConfig {
    * discover in production.
    */
   internalIngressAuth: InternalIngressAuthResolution;
+  /**
+   * Layer 1 for transport adapters. A SEPARATE credential from the one above:
+   * different pair of processes, different trust relationship, rotated on its
+   * own. See `resolveAdapterServiceAuth`.
+   */
+  adapterServiceAuth: InternalIngressAuthResolution;
+  /**
+   * Path to the adapter configuration file, or null when this deployment runs
+   * no transport adapters. Its presence is what turns the adapter surface on.
+   */
+  adapterRoutePolicyPath: string | null;
   webRtcTranscriptionChunkMs: number;
   webRtcTranscriptionRequestTimeoutMs: number;
   webRtcVadEnabled: boolean;
@@ -53,6 +66,11 @@ export interface GatewayConfig {
   connectProjectsPath: string;
 }
 
+function readOptional(name: string): string | null {
+  const value = process.env[name];
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+}
+
 export function loadConfig(): GatewayConfig {
   loadRootEnv();
   const publicIngest = resolvePublicIngestUrl(process.env, {
@@ -77,6 +95,8 @@ export function loadConfig(): GatewayConfig {
     // disagreement was invisible on the machine that produced it.
     mediaIngestPublicUrl: publicIngest.url,
     internalIngressAuth: resolveInternalIngressAuth(),
+    adapterServiceAuth: resolveAdapterServiceAuth(),
+    adapterRoutePolicyPath: readOptional(ADAPTER_ROUTE_POLICY_PATH_VARIABLE),
     webRtcTranscriptionChunkMs: readPositiveGatewayInt('WEBRTC_TRANSCRIPTION_CHUNK_MS', 5_000),
     webRtcTranscriptionRequestTimeoutMs: readPositiveGatewayInt(
       'WEBRTC_TRANSCRIPTION_REQUEST_TIMEOUT_MS',

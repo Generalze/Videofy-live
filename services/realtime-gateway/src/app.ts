@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { CONNECT_API_BASE_PATH, buildErrorEnvelope } from '@videofy-live/connect-contracts';
+import { ADAPTER_CONTROL_BASE_PATH } from './adapter-control-routes.js';
 import { logger } from './logger.js';
 
 export interface CreateAppOptions {
@@ -18,6 +19,12 @@ export interface CreateAppOptions {
    * facade. Resolved once, on the first /v1 request.
    */
   connectV1Router?: () => express.Router;
+  /**
+   * P6.9 Step 8: lazy provider for the adapter control plane, for the same
+   * reason as the two above -- it needs the Gateway's media bridge, and the
+   * app is built first. Absent when the deployment runs no transport adapters.
+   */
+  adapterControlRouter?: () => express.Router;
 }
 
 export function createApp(options: CreateAppOptions = {}): express.Application {
@@ -53,6 +60,17 @@ export function createApp(options: CreateAppOptions = {}): express.Application {
     const provide = options.connectV1Router;
     let router: express.Router | null = null;
     app.use(CONNECT_API_BASE_PATH, (req: Request, res: Response, next: NextFunction) => {
+      router ??= provide();
+      router(req, res, next);
+    });
+  }
+
+  // P6.9: the adapter control plane. Mounted with its OWN json parser inside
+  // the router, before the 404 catch-all.
+  if (options.adapterControlRouter) {
+    const provide = options.adapterControlRouter;
+    let router: express.Router | null = null;
+    app.use(ADAPTER_CONTROL_BASE_PATH, (req: Request, res: Response, next: NextFunction) => {
       router ??= provide();
       router(req, res, next);
     });

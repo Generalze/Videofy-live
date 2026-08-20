@@ -86,10 +86,74 @@ function fingerprintOf(token: string): string {
   return createHash('sha256').update(token, 'utf8').digest('hex').slice(0, 12);
 }
 
+/**
+ * The name adapters present when they connect to the gateway.
+ *
+ * DELIBERATELY NOT `INTERNAL_WEBRTC_TOKEN`. That secret answers "may this
+ * caller inject media into media-ingest?", and this one answers "may this
+ * caller connect as a transport adapter?". They are different trust
+ * relationships between different pairs of processes, and sharing one string
+ * across both would mean rotating either one rotates the other — so a
+ * compromised adapter credential could not be replaced without also
+ * restarting the media path, and an operator reading a fingerprint in a log
+ * could not tell which relationship it described.
+ */
+export const ADAPTER_SERVICE_TOKEN_VARIABLE = 'ADAPTER_SERVICE_TOKEN';
+
+export const ALLOW_INSECURE_ADAPTER_INGRESS_VARIABLE = 'VIDEOFY_ALLOW_INSECURE_ADAPTER_INGRESS';
+
 export interface ResolveInternalIngressAuthOptions {
   /** Injectable so a test need not mutate the real process environment. */
   readonly env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
 }
+
+/** The phrasings that differ between the two credentials. */
+interface CredentialDescriptor {
+  readonly tokenVariable: string;
+  readonly insecureVariable: string;
+  readonly enforcedSummary: (fingerprint: string) => string;
+  readonly insecureSummary: string;
+  readonly unconfiguredSummary: string;
+}
+
+const GENERATE_HINT =
+  `  node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`;
+
+const INTERNAL_INGRESS: CredentialDescriptor = {
+  tokenVariable: INTERNAL_INGRESS_TOKEN_VARIABLE,
+  insecureVariable: ALLOW_INSECURE_INTERNAL_INGRESS_VARIABLE,
+  enforcedSummary: (fingerprint) =>
+    `internal ingress authentication enforced (token ${fingerprint})`,
+  insecureSummary:
+    `internal ingress authentication is DISABLED by ` +
+    `${ALLOW_INSECURE_INTERNAL_INGRESS_VARIABLE}. Anyone who can reach this ` +
+    `port can create sessions and inject audio. Development only — never ` +
+    `expose this service to a network you do not control.`,
+  unconfiguredSummary:
+    `${INTERNAL_INGRESS_TOKEN_VARIABLE} is not set, so the internal media API ` +
+    `would accept audio from anyone who can reach this port. Set it (the same ` +
+    `value in every service), or set ` +
+    `${ALLOW_INSECURE_INTERNAL_INGRESS_VARIABLE}=true to accept that risk ` +
+    `deliberately in development. Generate one with:\n${GENERATE_HINT}`,
+};
+
+const ADAPTER_SERVICE: CredentialDescriptor = {
+  tokenVariable: ADAPTER_SERVICE_TOKEN_VARIABLE,
+  insecureVariable: ALLOW_INSECURE_ADAPTER_INGRESS_VARIABLE,
+  enforcedSummary: (fingerprint) =>
+    `adapter service authentication enforced (token ${fingerprint})`,
+  insecureSummary:
+    `adapter service authentication is DISABLED by ` +
+    `${ALLOW_INSECURE_ADAPTER_INGRESS_VARIABLE}. Anyone who can reach the ` +
+    `adapter control and media endpoints can connect as a transport adapter. ` +
+    `Development only — never expose this service to a network you do not control.`,
+  unconfiguredSummary:
+    `${ADAPTER_SERVICE_TOKEN_VARIABLE} is not set, so the adapter control plane ` +
+    `and media channel would accept a connection from anyone who can reach ` +
+    `them. Set it (the same value in the gateway and in every adapter runtime), ` +
+    `or set ${ALLOW_INSECURE_ADAPTER_INGRESS_VARIABLE}=true to accept that risk ` +
+    `deliberately in development. Generate one with:\n${GENERATE_HINT}`,
+};
 
 /**
  * Decide the mode. Throws only for configuration that is present but unusable —
@@ -97,23 +161,24 @@ export interface ResolveInternalIngressAuthOptions {
  * a posture to adopt. An ABSENT token is not an error here: it is reported as
  * `unconfigured` so the caller can refuse to start with a message of its own.
  */
-export function resolveInternalIngressAuth(
-  options: ResolveInternalIngressAuthOptions = {},
+function resolveCredential(
+  descriptor: CredentialDescriptor,
+  options: ResolveInternalIngressAuthOptions,
 ): InternalIngressAuthResolution {
   const env = options.env ?? process.env;
-  const raw = env[INTERNAL_INGRESS_TOKEN_VARIABLE];
+  const raw = env[descriptor.tokenVariable];
   const token = typeof raw === 'string' ? raw.trim() : '';
   const allowInsecure =
-    String(env[ALLOW_INSECURE_INTERNAL_INGRESS_VARIABLE] ?? '')
+    String(env[descriptor.insecureVariable] ?? '')
       .trim()
       .toLowerCase() === 'true';
 
   if (token !== '') {
     if (token.length < MINIMUM_INTERNAL_INGRESS_TOKEN_LENGTH) {
       throw new InternalIngressAuthError(
-        `${INTERNAL_INGRESS_TOKEN_VARIABLE} is shorter than ` +
+        `${descriptor.tokenVariable} is shorter than ` +
           `${MINIMUM_INTERNAL_INGRESS_TOKEN_LENGTH} characters. Generate one with:\n` +
-          `  node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`,
+          GENERATE_HINT,
       );
     }
     return {
@@ -121,7 +186,7 @@ export function resolveInternalIngressAuth(
       token,
       fingerprint: fingerprintOf(token),
       mustRefuseToStart: false,
-      summary: `internal ingress authentication enforced (token ${fingerprintOf(token)})`,
+      summary: descriptor.enforcedSummary(fingerprintOf(token)),
     };
   }
 
@@ -131,11 +196,7 @@ export function resolveInternalIngressAuth(
       token: null,
       fingerprint: null,
       mustRefuseToStart: false,
-      summary:
-        `internal ingress authentication is DISABLED by ` +
-        `${ALLOW_INSECURE_INTERNAL_INGRESS_VARIABLE}. Anyone who can reach this ` +
-        `port can create sessions and inject audio. Development only — never ` +
-        `expose this service to a network you do not control.`,
+      summary: descriptor.insecureSummary,
     };
   }
 
@@ -144,14 +205,32 @@ export function resolveInternalIngressAuth(
     token: null,
     fingerprint: null,
     mustRefuseToStart: true,
-    summary:
-      `${INTERNAL_INGRESS_TOKEN_VARIABLE} is not set, so the internal media API ` +
-      `would accept audio from anyone who can reach this port. Set it (the same ` +
-      `value in every service), or set ` +
-      `${ALLOW_INSECURE_INTERNAL_INGRESS_VARIABLE}=true to accept that risk ` +
-      `deliberately in development. Generate one with:\n` +
-      `  node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`,
+    summary: descriptor.unconfiguredSummary,
   };
+}
+
+export function resolveInternalIngressAuth(
+  options: ResolveInternalIngressAuthOptions = {},
+): InternalIngressAuthResolution {
+  return resolveCredential(INTERNAL_INGRESS, options);
+}
+
+/**
+ * The credential a transport adapter presents to the gateway.
+ *
+ * Same fail-closed rules, same constant-time comparison, same startup refusal —
+ * a second copy of that machinery is a second place for it to be got subtly
+ * wrong. What differs is only which secret is read and what an operator is told
+ * about it.
+ *
+ * This is LAYER 1 of the three, and answers only "may this process connect as
+ * an adapter at all?". It does not say which session the connection may act
+ * within; that is the session capability, and the two must never be conflated.
+ */
+export function resolveAdapterServiceAuth(
+  options: ResolveInternalIngressAuthOptions = {},
+): InternalIngressAuthResolution {
+  return resolveCredential(ADAPTER_SERVICE, options);
 }
 
 /**

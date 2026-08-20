@@ -7,7 +7,7 @@
  * security properties are testable in isolation, which is the only way a
  * negative-security matrix is worth having.
  */
-export { AdapterAuthority } from './authority.js';
+export { AdapterAuthority, AdapterAuthorityError } from './authority.js';
 export type {
   AdapterAuthorityDeps,
   AuthorityRefusal,

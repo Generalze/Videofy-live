@@ -87,12 +87,15 @@ export function loadRepositoryEnv(fromDirectory: string = process.cwd()): Loaded
 // One canonical answer to "may this caller inject media into the platform?" —
 // see internal-ingress-auth.ts for why the default had to be inverted.
 export {
+  ADAPTER_SERVICE_TOKEN_VARIABLE,
+  ALLOW_INSECURE_ADAPTER_INGRESS_VARIABLE,
   ALLOW_INSECURE_INTERNAL_INGRESS_VARIABLE,
   INTERNAL_INGRESS_TOKEN_VARIABLE,
   InternalIngressAuthError,
   MINIMUM_INTERNAL_INGRESS_TOKEN_LENGTH,
   internalIngressRequestAllowed,
   matchesInternalIngressToken,
+  resolveAdapterServiceAuth,
   resolveInternalIngressAuth,
   type InternalIngressAuthMode,
   type InternalIngressAuthResolution,
