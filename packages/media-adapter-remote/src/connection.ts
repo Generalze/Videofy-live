@@ -537,5 +537,5 @@ export class AdapterConnection {
 }
 
 function streamKey(adapterSessionRef: string, participantId: string): string {
-  return `${adapterSessionRef} ${participantId}`;
+  return `${adapterSessionRef}\u0000${participantId}`;
 }
