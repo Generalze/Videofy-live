@@ -2346,6 +2346,10 @@ function bridgeContextFor(entry: CallIngestRegistryEntry): WebRtcTranscriptionBr
     broadcastId: entry.plan.broadcastId,
     broadcasterPeerId: callPublisherPeerId(entry.participantId),
     revision: entry.plan.mediaRevision,
+    // Declared, not inferred from the session id's prefix. A call keeps the
+    // NEWEST speech when the pipeline falls behind: the other person is
+    // waiting on the sentence being spoken now, not on a stale backlog.
+    mediaSessionMode: 'live-conversation',
     sourceLanguage: entry.plan.sourceLanguage,
     // The call core and media-ingest name this the same thing differently:
     // a plan's `auto` is ingest's `auto-detect`. Translated here rather than

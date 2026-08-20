@@ -21,6 +21,7 @@ const context: WebRtcTranscriptionBridgeContext = {
   broadcastId: 'broadcast_demo',
   broadcasterPeerId: 'peer_broadcaster',
   revision: 1,
+  mediaSessionMode: 'programme',
 };
 
 let tempDirs: string[] = [];
@@ -323,14 +324,56 @@ describe('WebRtcTranscriptionBridge', () => {
     });
   });
 
+  it('PIN: queue behaviour follows the declared mode, not the session name', async () => {
+    // The property, stated once. Two sessions with the SAME id, differing only
+    // in `mediaSessionMode`, must get different queue policies — which is only
+    // possible if the name has stopped deciding anything.
+    //
+    // Before this, `sessionId.startsWith('call_')` chose the policy. A producer
+    // whose sessions were named anything else got programme behaviour on a live
+    // conversation: under sustained speech it refused the newest chunk and kept
+    // a stale backlog, which is the opposite of what someone on a phone call is
+    // waiting to hear.
+    const policyFor = async (
+      mediaSessionMode: 'programme' | 'live-conversation',
+    ): Promise<string | undefined> => {
+      const stagingDir = await tempDir();
+      const bridge = new WebRtcTranscriptionBridge({
+        stagingDir,
+        chunkDurationMs: 100,
+        maxQueuedChunks: 3,
+        client: fakeClient({ gate: manualSubmitGate() }),
+      });
+      const modeContext: WebRtcTranscriptionBridgeContext = {
+        ...context,
+        sessionId: 'adapter_mode_probe_r1',
+        broadcastId: 'adaptercast_mode_probe_r1',
+        mediaSessionMode,
+      };
+      speak(bridge, modeContext);
+      return bridge.getSnapshot(modeContext)?.queueOverflowPolicy;
+    };
+
+    // A programme timeline must stay complete, so the NEW chunk is refused.
+    expect(await policyFor('programme')).toBe('reject-new');
+    // A live conversation sacrifices the oldest stale speech instead.
+    expect(await policyFor('live-conversation')).toBe('evict-oldest');
+  });
+
   it('keeps the NEWEST speech for call sessions by evicting the oldest queued chunk', async () => {
     const stagingDir = await tempDir();
     const gate = manualSubmitGate();
     const client = fakeClient({ gate });
     const callContext: WebRtcTranscriptionBridgeContext = {
       ...context,
-      sessionId: 'call_demo_participant_1_r2',
-      broadcastId: 'callcast_demo_participant_1_r2',
+      // NOT a `call_` id, deliberately. The bridge used to switch into live
+      // behaviour on that prefix, so a session named anything else — an
+      // adapter's, for instance — silently got programme behaviour on a live
+      // conversation. The mode below is what decides now, and this id proves
+      // the name no longer does.
+      sessionId: 'adapter_demo_participant_1_r2',
+      broadcastId: 'adaptercast_demo_participant_1_r2',
+      mediaSessionMode: 'live-conversation',
     };
     const bridge = new WebRtcTranscriptionBridge({
       stagingDir,
@@ -362,7 +405,7 @@ describe('WebRtcTranscriptionBridge', () => {
     // The stale chunk 1 never reached media-ingest; the newest chunk 3 did.
     expect(client.submitted.map((entry) => entry.chunk.sequence)).toEqual([0, 2, 3]);
     expect(bridge.getSnapshot(callContext)).toMatchObject({ queuedChunks: 0, queuedBytes: 0 });
-    expect(bridge.getSessionCounters('call_demo_participant_1_r2', 1)).toEqual({
+    expect(bridge.getSessionCounters('adapter_demo_participant_1_r2', 1)).toEqual({
       evictedChunkCount: 1,
       skippedFrameCount: 0,
       submissionFailureCount: 0,
@@ -786,11 +829,20 @@ function speak(bridge: WebRtcTranscriptionBridge, context: WebRtcTranscriptionBr
   });
 }
 
-/** `call_` ids are what switch the bridge into call behavior. */
+/**
+ * A live conversation, declared rather than inferred.
+ *
+ * The session id is deliberately NOT a `call_` id: that prefix used to be what
+ * switched the bridge into live behaviour, which meant any other producer got
+ * programme behaviour on a live call — keeping a stale backlog in preference to
+ * the sentence being spoken. If these tests pass with this id, the policy is
+ * coming from `mediaSessionMode` and not from a string.
+ */
 const callContext: WebRtcTranscriptionBridgeContext = {
   ...context,
-  sessionId: 'call_demo_participant_1_r2',
-  broadcastId: 'callcast_demo_participant_1_r2',
+  sessionId: 'adapter_demo_participant_1_r2',
+  broadcastId: 'adaptercast_demo_participant_1_r2',
+  mediaSessionMode: 'live-conversation',
 };
 
 /** VAD tuned for 100 ms frames: one silent frame ends the sentence. */

@@ -1410,10 +1410,16 @@ export class Gateway {
   private applyProgrammeSessionConfig(
     context: BackendMediaPeerAudioContext,
   ): WebRtcTranscriptionBridgeContext {
+    // A programme timeline must stay COMPLETE: when the pipeline falls behind,
+    // the new chunk is refused rather than the recorded backlog being dropped.
+    // Stated here because this is the programme path, rather than left to be
+    // deduced from what the session happens to be called.
+    const programmeMode = { mediaSessionMode: 'programme' as const };
     const config = this.programmeSessionConfigs.get(context.sessionId);
-    if (!config) return context;
+    if (!config) return { ...context, ...programmeMode };
     return {
       ...context,
+      ...programmeMode,
       ...(config.programmeSourceType === 'rtmp' && config.rtmpPlaybackUrl
         ? { externalAudioSource: 'rtmp-hls' as const, externalAudioUrl: config.rtmpPlaybackUrl }
         : {}),

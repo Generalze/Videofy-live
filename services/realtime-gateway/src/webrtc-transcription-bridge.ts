@@ -22,10 +22,34 @@ import { logger } from './logger.js';
  * the call runtime, and the prefix is part of the media-ingest id contract
  * rather than of either module.
  */
-const CALL_BRIDGE_SESSION_PREFIX = 'call_';
+/**
+ * What KIND of media a session carries, and therefore how it must behave when
+ * the pipeline falls behind.
+ *
+ * This used to be inferred from `sessionId.startsWith('call_')`. That worked
+ * for exactly as long as there were two producers and one of them happened to
+ * name its sessions with a prefix — and it silently gave PROGRAMME behaviour to
+ * anything that did not, which for a live phone call means keeping a stale
+ * backlog in preference to the sentence being spoken now.
+ *
+ * A naming convention is not a policy. Every producer declares what it is:
+ *
+ *   programme          a broadcast timeline that must stay complete
+ *   live-conversation  a call, where the newest speech is what someone is
+ *                      waiting to hear
+ *
+ * The mode is deliberately higher-level than the knobs it selects. Producers
+ * say what they ARE; the bridge decides what that means. That is the same
+ * boundary that keeps target languages and voices out of transport adapters.
+ */
+export type MediaSessionMode = 'programme' | 'live-conversation';
 
-function isCallBridgeSessionId(sessionId: string): boolean {
-  return sessionId.startsWith(CALL_BRIDGE_SESSION_PREFIX);
+/**
+ * The one place a mode becomes queue behaviour. Adding a producer means
+ * declaring its mode, never editing this function.
+ */
+function isLiveConversation(context: { mediaSessionMode: MediaSessionMode }): boolean {
+  return context.mediaSessionMode === 'live-conversation';
 }
 
 /** Recent chunks per bridge session are remembered for at most this many entries. */
@@ -75,6 +99,13 @@ export interface WebRtcTranscriptionBridgeContext {
   broadcastId: string;
   broadcasterPeerId: string;
   revision: number;
+  /**
+   * REQUIRED, and required on purpose. Making it optional would let a new
+   * producer forget it and silently inherit programme behaviour on a live
+   * call — which is precisely how the prefix inference failed. The compiler
+   * now asks every producer the question instead.
+   */
+  mediaSessionMode: MediaSessionMode;
   externalAudioSource?: 'rtmp-hls';
   externalAudioUrl?: string;
   targetLanguage?: string;
@@ -419,7 +450,7 @@ export class WebRtcTranscriptionBridge {
         // A live call keeps the NEWEST speech: under sustained talking the
         // stale backlog is dropped rather than the sentence just spoken.
         // Programme sessions keep the pre-P6.1C reject-new behavior exactly.
-        ...(isCallBridgeSessionId(context.sessionId)
+        ...(isLiveConversation(context)
           ? {
               queueOverflowPolicy: 'evict-oldest' as const,
               onQueueOverflow: () =>
