@@ -24,7 +24,7 @@
  * Secrets are stored hashed and never returned after issuance, never logged,
  * and never placed in an error message. Correlation is by `id`, which is public.
  */
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { videofySessionId, type VideofySessionId } from '@videofy-live/media-adapter-port/platform';
 
 /** What a ROUTE credential may do. Deliberately one thing. */
@@ -58,6 +58,31 @@ const SECRET_BYTES = 32;
  * than left to whoever writes the deployment guide.
  */
 const MINIMUM_PROVISIONED_SECRET_LENGTH = 32;
+
+/**
+ * A capability secret is DERIVED, not stored.
+ *
+ * The requirement that forces this: an idempotent replay must hand back the
+ * byte-identical capability, because the caller may already be using it for a
+ * live call. Three ways to satisfy that, and only one is good:
+ *
+ *   keep the plaintext secret        a table of live credentials in memory,
+ *                                    which is the thing hashing them avoided
+ *   accept many valid secrets        an unbounded set of simultaneously valid
+ *                                    credentials per session, and no way to
+ *                                    say which one leaked
+ *   DERIVE it from stable inputs     reproducible, nothing extra stored
+ *
+ * `HMAC(processKey, capabilityId + immutable binding identity)`. The inputs are
+ * public; the key is 32 random bytes per authority instance and never leaves
+ * this module, so the secret is unguessable without it. The record still stores
+ * only a digest, so verification is unchanged.
+ *
+ * The key's lifetime is the process, which matches the authority's own state:
+ * capabilities live in memory, so a restart already invalidates every one of
+ * them. An ephemeral key adds no new failure mode.
+ */
+const EMPTY_DIGEST = Buffer.alloc(32);
 
 /** Refusals that are a configuration mistake to correct, not a runtime outcome. */
 export class AdapterAuthorityError extends Error {
@@ -115,6 +140,11 @@ interface CapabilityRecord {
 
 export interface AdapterAuthorityDeps {
   readonly now?: () => number;
+  /**
+   * The capability-secret derivation key. Injectable ONLY so a suite can make
+   * derivation deterministic; production always takes the random default.
+   */
+  readonly capabilitySecretKey?: Buffer;
   /** How long a session capability lives. Long calls renew rather than outlive. */
   readonly capabilityTtlMs?: number;
   readonly randomBytes?: (size: number) => Buffer;
@@ -150,6 +180,7 @@ export class AdapterAuthority {
   private readonly ttlMs: number;
   private readonly random: (size: number) => Buffer;
   private readonly mintSessionId: () => string;
+  private readonly capabilitySecretKey: Buffer;
   private counter = 0;
 
   constructor(deps: AdapterAuthorityDeps = {}) {
@@ -157,6 +188,27 @@ export class AdapterAuthority {
     this.ttlMs = deps.capabilityTtlMs ?? 4 * 60 * 60 * 1000;
     this.random = deps.randomBytes ?? randomBytes;
     this.mintSessionId = deps.mintSessionId ?? (() => `cs_${randomBytes(12).toString('hex')}`);
+    this.capabilitySecretKey = deps.capabilitySecretKey ?? randomBytes(SECRET_BYTES);
+  }
+
+  /**
+   * Reproducible for the life of this process, and only over IMMUTABLE fields.
+   *
+   * Nothing here may ever depend on mutable state. Deriving from `participants`
+   * or `expiresAtMs` would silently rotate the secret the moment somebody
+   * joined or the session was touched -- the exact defect this replaced,
+   * arriving by a quieter route.
+   */
+  private deriveSecret(record: CapabilityRecord): string {
+    return createHmac('sha256', this.capabilitySecretKey)
+      .update(
+        [record.id, record.adapterId, record.routeRef, record.adapterSessionRef].join('\u0000'),
+      )
+      .digest('hex');
+  }
+
+  private capabilityFor(record: CapabilityRecord): string {
+    return `${CAPABILITY_PREFIX}_${record.id}.${this.deriveSecret(record)}`;
   }
 
   // --- Layer 1 and 2: issuance ------------------------------------------
@@ -279,31 +331,50 @@ export class AdapterAuthority {
     const existingId = this.bindings.get(input.idempotencyKey);
     if (existingId !== undefined) {
       const existing = this.capabilities.get(existingId);
-      // The key must belong to the same adapter and route, or a caller could
-      // adopt somebody else's binding by guessing a key.
-      if (
-        existing !== undefined &&
-        !existing.closed &&
-        existing.adapterId === route.adapterId &&
-        existing.routeRef === input.routeRef &&
-        existing.adapterSessionRef === input.adapterSessionRef
-      ) {
-        const reissued = this.random(SECRET_BYTES).toString('hex');
-        existing.secretHash = digest(reissued);
-        existing.expiresAtMs = this.now() + this.ttlMs;
-        return {
-          videofySessionId: existing.videofySessionId,
-          capability: `${CAPABILITY_PREFIX}_${existing.id}.${reissued}`,
-          capabilityId: existing.id,
-          expiresAtMs: existing.expiresAtMs,
-          idempotentReplay: true,
-        };
+      if (existing === undefined) {
+        // The correlation outlived the thing it correlated. Remembered
+        // correlation must not resurrect platform authority.
+        return 'rejected-stale';
       }
-      if (existing !== undefined && !existing.closed) return 'rejected-auth';
+      // IDENTITY IS CHECKED FIRST, before any state. A caller presenting
+      // somebody else's key gets the same answer whatever state that binding
+      // is in, so refusals cannot be used as an oracle for which keys exist.
+      if (
+        existing.adapterId !== route.adapterId ||
+        existing.routeRef !== input.routeRef ||
+        existing.adapterSessionRef !== input.adapterSessionRef
+      ) {
+        return 'rejected-auth';
+      }
+      // A replay may not revive anything. A closed session with the same key is
+      // a genuinely new call reusing an adapter reference it should not have
+      // reused; a new call needs a new `AdapterSessionRef` and therefore a new
+      // idempotency identity.
+      if (existing.closed) return 'rejected-stale';
+      if (existing.revoked) return 'rejected-auth';
+      if (existing.expiresAtMs <= this.now()) return 'rejected-stale';
+
+      // NOTHING IS MUTATED HERE. Not the secret, not the expiry.
+      //
+      // This branch previously minted a fresh secret and pushed the expiry out,
+      // which made it a credential-rotation endpoint wearing an idempotency
+      // badge: the capability the live call was already holding stopped
+      // working, and the session quietly outlived its own TTL. Two adapter
+      // processes behind a load balancer answering one retransmitted INVITE
+      // derive the SAME key, so the second one's replay would kill the first
+      // one's call.
+      //
+      // A retransmission must be observationally harmless.
+      return {
+        videofySessionId: existing.videofySessionId,
+        capability: this.capabilityFor(existing),
+        capabilityId: existing.id,
+        expiresAtMs: existing.expiresAtMs,
+        idempotentReplay: true,
+      };
     }
 
     const id = `c${(this.counter += 1)}${this.random(6).toString('hex')}`;
-    const secret = this.random(SECRET_BYTES).toString('hex');
     const expiresAtMs = this.now() + this.ttlMs;
     const record: CapabilityRecord = {
       id,
@@ -313,11 +384,14 @@ export class AdapterAuthority {
       adapterId: route.adapterId,
       routeRef: input.routeRef,
       participants: new Set(),
-      secretHash: digest(secret),
+      // Filled immediately below, once the record exists to derive from.
+      secretHash: EMPTY_DIGEST,
       expiresAtMs,
       revoked: false,
       closed: false,
     };
+    const secret = this.deriveSecret(record);
+    record.secretHash = digest(secret);
     this.capabilities.set(id, record);
     this.bindings.set(input.idempotencyKey, id);
     return {

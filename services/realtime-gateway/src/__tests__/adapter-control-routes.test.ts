@@ -263,19 +263,16 @@ describe('the full control lifecycle over HTTP', () => {
     expect((second.body as { idempotentReplay: boolean }).idempotentReplay).toBe(true);
 
     const capabilityOf = (body: unknown) => (body as { sessionCapability: string }).sessionCapability;
-    const idOf = (capability: string) => capability.split('.')[0];
-    // The session is the same one, which is the property that matters: no
-    // second call was created and the platform identity did not change.
-    expect(idOf(capabilityOf(second.body))).toBe(idOf(capabilityOf(first.body)));
-
-    // But the SECRET is reissued, and the first one stops working. Recorded
-    // here as the current behaviour rather than asserted as desirable: this is
-    // an authority-level decision, and the deployment topology the design
-    // anticipates makes it sharp. Two adapter processes behind a balancer
-    // handling one retransmitted INVITE derive the SAME idempotency key, so the
-    // second process's replay silently kills the capability the first is
-    // already using for a live call. See the note raised alongside Step 8.
-    expect(capabilityOf(second.body)).not.toBe(capabilityOf(first.body));
+    // BYTE-IDENTICAL, over HTTP as much as in memory.
+    //
+    // This assertion was inverted. It previously recorded that the secret was
+    // reissued on replay, marked as current behaviour rather than as an
+    // invariant -- which was the honest way to write down a defect, and not a
+    // substitute for fixing it. Two adapter processes behind a balancer
+    // answering one retransmitted INVITE derive the SAME idempotency key, so
+    // the second one's replay killed the capability the first was already
+    // using for a live call.
+    expect(capabilityOf(second.body)).toBe(capabilityOf(first.body));
   });
 
   it('PIN: a malformed body is a 400 and never reaches the control plane', async () => {

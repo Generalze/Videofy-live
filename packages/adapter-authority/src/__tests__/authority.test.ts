@@ -241,8 +241,15 @@ describe('session creation is retry-safe', () => {
     // holding resources nothing will ever close.
     expect(retry.videofySessionId).toBe(grant.videofySessionId);
     expect(retry.idempotentReplay).toBe(true);
-    // A fresh secret, so a response captured in transit is not reusable.
-    expect(retry.capability).not.toBe(grant.capability);
+    // The SAME secret, and this pin used to assert the opposite.
+    //
+    // The old rationale was "a fresh secret, so a response captured in transit
+    // is not reusable". That does not survive examination: an attacker who
+    // captured the REPLAY response holds a working credential either way, so
+    // rotation buys nothing against capture -- while reliably destroying the
+    // capability the legitimate caller is already using for a live call.
+    // A retransmission must be observationally harmless.
+    expect(retry.capability).toBe(grant.capability);
     expect(typeof auth.authorize(retry.capability, 'stop-session')).toBe('object');
   });
 
@@ -389,5 +396,183 @@ describe('provisioned route credentials', () => {
     expect(() =>
       authority.importRouteCredential({ ...first, adapterId: 'someone-else' }),
     ).toThrow(AdapterAuthorityError);
+  });
+});
+
+describe('an idempotent replay is observationally harmless', () => {
+  /** Two attempts at the same create, as a retransmit produces. */
+  function replay(startMs = 1_000_000) {
+    const { auth, clock } = authority(startMs);
+    const route = auth.issueRouteCredential({ adapterId: 'sip-adapter-1', routes: ['route_17'] });
+    const create = (overrides: Record<string, string> = {}) =>
+      auth.createSession({
+        credential: route.credential,
+        adapterSessionRef: 'sc_1',
+        routeRef: 'route_17',
+        idempotencyKey: 'sip-adapter-1:route_17:sc_1',
+        ...overrides,
+      });
+    return { auth, clock, route, create };
+  }
+
+  it('PIN: a replay returns the byte-identical capability', () => {
+    const r = replay();
+    const first = r.create();
+    const second = r.create();
+    if (typeof first === 'string' || typeof second === 'string') throw new Error('refused');
+
+    // Byte-identical, not merely equivalent. The caller may already be using
+    // this exact string for a live call.
+    expect(second.capability).toBe(first.capability);
+    expect(second.capabilityId).toBe(first.capabilityId);
+    expect(second.videofySessionId).toBe(first.videofySessionId);
+    expect(second.idempotentReplay).toBe(true);
+    expect(first.idempotentReplay).toBe(false);
+  });
+
+  it('PIN: a replay does not extend the expiry', () => {
+    const r = replay();
+    const first = r.create();
+    if (typeof first === 'string') throw new Error(first);
+    // Time passes, as it does between a retransmit and the original.
+    r.clock.now += 60_000;
+    const second = r.create();
+    if (typeof second === 'string') throw new Error(second);
+
+    // Otherwise a caller that retransmits often enough keeps a session alive
+    // past its own TTL for as long as it likes -- a hidden renewal endpoint.
+    expect(second.expiresAtMs).toBe(first.expiresAtMs);
+  });
+
+  it('PIN: the original capability still works after a replay', () => {
+    // The defect this replaced. Two adapter processes behind a load balancer
+    // answering one retransmitted INVITE derive the SAME idempotency key, so
+    // the second one's replay would kill the first one's live call.
+    const r = replay();
+    const first = r.create();
+    if (typeof first === 'string') throw new Error(first);
+    r.auth.announceParticipant(first.capability, 'sp_1');
+    r.create();
+
+    const resolved = r.auth.authorize(first.capability, 'push-audio', 'sp_1');
+    expect(typeof resolved).not.toBe('string');
+  });
+
+  it('PIN: a replay after a participant joined is still byte-identical', () => {
+    // Derivation must depend ONLY on immutable fields. Folding in anything that
+    // changes during a call -- the participant set, the expiry, a counter --
+    // would silently rotate the secret the moment somebody joined, which is the
+    // original defect arriving by a quieter route and only during real calls.
+    const r = replay();
+    const first = r.create();
+    if (typeof first === 'string') throw new Error(first);
+    r.auth.announceParticipant(first.capability, 'sp_1');
+    r.auth.announceParticipant(first.capability, 'sp_2');
+    const second = r.create();
+    if (typeof second === 'string') throw new Error(second);
+    expect(second.capability).toBe(first.capability);
+  });
+
+  it('PIN: the derivation key is per-process and random, so secrets are unguessable', () => {
+    // Two authorities given identical everything EXCEPT the key. If the key
+    // were a constant, anyone holding the source could compute any capability
+    // secret from public inputs -- derivation would have replaced a random
+    // secret with a published one.
+    const fixed = () => ({
+      randomBytes: (size: number) => Buffer.alloc(size, 5),
+      mintSessionId: () => 'cs_fixed',
+    });
+    const grants = [0, 1].map(() => {
+      const auth = new AdapterAuthority(fixed());
+      const route = auth.issueRouteCredential({ adapterId: 'sip-1', routes: ['route_17'] });
+      const grant = auth.createSession({
+        credential: route.credential,
+        adapterSessionRef: 'sc_1',
+        routeRef: 'route_17',
+        idempotencyKey: 'k1',
+      });
+      if (typeof grant === 'string') throw new Error(grant);
+      return grant;
+    });
+    // Same capability id -- everything public is identical.
+    expect(grants[1]!.capabilityId).toBe(grants[0]!.capabilityId);
+    // Different secret, because the key is not.
+    expect(grants[1]!.capability).not.toBe(grants[0]!.capability);
+  });
+
+  it('PIN: a second adapter receiving the replay gets a capability that works', () => {
+    const r = replay();
+    const first = r.create();
+    const second = r.create();
+    if (typeof first === 'string' || typeof second === 'string') throw new Error('refused');
+    r.auth.announceParticipant(second.capability, 'sp_1');
+    // Both halves of the pair hold something usable, because it is one string.
+    for (const capability of [first.capability, second.capability]) {
+      expect(typeof r.auth.authorize(capability, 'push-audio', 'sp_1')).not.toBe('string');
+    }
+  });
+});
+
+describe('a replay may not resurrect anything', () => {
+  function bound(startMs = 1_000_000) {
+    const { auth, clock } = authority(startMs);
+    const route = auth.issueRouteCredential({ adapterId: 'sip-adapter-1', routes: ['route_17'] });
+    const create = (overrides: Record<string, string> = {}) =>
+      auth.createSession({
+        credential: route.credential,
+        adapterSessionRef: 'sc_1',
+        routeRef: 'route_17',
+        idempotencyKey: 'k1',
+        ...overrides,
+      });
+    const first = create();
+    if (typeof first === 'string') throw new Error(first);
+    return { auth, clock, route, create, first };
+  }
+
+  it('PIN: an expired binding cannot be renewed through a create replay', () => {
+    const r = bound();
+    r.clock.now += HOUR * 2;
+    // Not a fresh secret and a pushed-out expiry. Expiry means expiry.
+    expect(r.create()).toBe('rejected-stale');
+  });
+
+  it('PIN: a revoked binding cannot be renewed through a create replay', () => {
+    const r = bound();
+    r.auth.revokeCapability(r.first.capabilityId);
+    expect(r.create()).toBe('rejected-auth');
+  });
+
+  it('PIN: a closed binding cannot be recreated with the same idempotency key', () => {
+    const r = bound();
+    r.auth.closeSession(r.first.capability);
+    // A genuinely new call needs a new AdapterSessionRef and therefore a new
+    // idempotency identity. Remembered correlation must not resurrect platform
+    // authority -- previously this fell through and minted a SECOND session
+    // under the same key.
+    expect(r.create()).toBe('rejected-stale');
+    // And nothing new was created behind it.
+    expect(r.auth.authorize(r.first.capability, 'stop-session')).toBe('rejected-stale');
+  });
+
+  it('PIN: a changed body under the same idempotency key is refused', () => {
+    const r = bound();
+    // Each of these describes a different call. Answering any of them with the
+    // first call's capability would hand one call's credential to another.
+    expect(r.create({ adapterSessionRef: 'sc_DIFFERENT' })).toBe('rejected-auth');
+
+    const other = r.auth.issueRouteCredential({ adapterId: 'sip-adapter-2', routes: ['route_17'] });
+    expect(r.create({ credential: other.credential })).toBe('rejected-auth');
+  });
+
+  it('PIN: identity is checked before state, so refusals are not an oracle', () => {
+    // A caller presenting somebody else's key gets the same answer whatever
+    // state that binding is in, rather than learning which keys exist.
+    const r = bound();
+    const other = r.auth.issueRouteCredential({ adapterId: 'sip-adapter-2', routes: ['route_17'] });
+    const wrongIdentity = () => r.create({ credential: other.credential });
+    expect(wrongIdentity()).toBe('rejected-auth');
+    r.auth.closeSession(r.first.capability);
+    expect(wrongIdentity()).toBe('rejected-auth');
   });
 });
