@@ -780,6 +780,99 @@ describe("teardown context belongs to work teardown is waiting for, and nothing 
   });
 });
 
+describe('every INVITE is answered, whatever happens behind it', () => {
+  // THE INVARIANT, not the branches.
+  //
+  // One `await` on the seam handshake has three exits, and all three were
+  // fixed one at a time as each was separately reported — 503 when the seam
+  // refuses, 504 when it never replies, 487 when a close lands mid-setup.
+  // Nothing asserted the property they share, so each fix left the next exit
+  // silent and the same defect was found three times.
+  //
+  // A SIP transaction that never receives a final response holds the caller
+  // on ringback and pins the carrier leg behind it. Worse, a retransmit
+  // absorbed with 100 Trying has already moved that transaction into
+  // Proceeding, where it has no timer of its own left to rescue it.
+  const answerFor = async (
+    seam: RecordingMediaAdapterPort,
+    options: { closeDuringSetup?: boolean; handshakeDeadlineMs?: number } = {},
+  ): Promise<SipMessage[]> => {
+    const answered: SipMessage[] = [];
+    const call = new SipCall({
+      port: seam,
+      localAddress: '203.0.113.5',
+      localRtpPort: 30000,
+      sendRtp: () => {},
+      sendSip: (message) => answered.push(message),
+      mintParticipantId: () => 'sp_1',
+      mediaPolicy: TEST_POLICY,
+      ...(options.handshakeDeadlineMs === undefined
+        ? {}
+        : { seamHandshakeDeadlineMs: options.handshakeDeadlineMs }),
+    });
+    const inviting = call.onInvite(invite(PCMU_OFFER, '1 INVITE'));
+    await sleep(10);
+    // The caller repeats its INVITE, as it does every T1 until answered. This
+    // is absorbed with 100 Trying — which is what removes the caller's own
+    // last-resort timer and makes silence unrecoverable.
+    await call.onInvite(invite(PCMU_OFFER, '1 INVITE'));
+    const pending: Array<Promise<unknown>> = [inviting.catch(() => {})];
+    if (options.closeDuringSetup === true) pending.push(call.close('rtp socket error', 'abort'));
+    await Promise.allSettled(pending);
+    for (let waited = 0; waited < 60 && !call.isClosed; waited += 1) await sleep(5);
+    return answered;
+  };
+
+  class RefusingSeam extends RecordingMediaAdapterPort {
+    override async openSession(): Promise<{ sessionId: string }> {
+      await sleep(30);
+      throw new Error('no capacity');
+    }
+  }
+
+  class SilentSeam extends RecordingMediaAdapterPort {
+    override async openSession(): Promise<{ sessionId: string }> {
+      return new Promise<{ sessionId: string }>(() => {});
+    }
+  }
+
+  class SlowSeam extends RecordingMediaAdapterPort {
+    override async openSession(input: {
+      sessionId: string;
+      platformSessionRef: string;
+    }): Promise<{ sessionId: string }> {
+      await sleep(60);
+      return super.openSession(input);
+    }
+  }
+
+  it('PIN: a refusal is answered, not left silent', async () => {
+    const answered = await answerFor(new RefusingSeam());
+    const finals = answered.filter((message) => (message.statusCode ?? 0) >= 200);
+    expect(answered.map((message) => message.statusCode)).toContain(100);
+    expect(finals).toHaveLength(1);
+    expect(finals[0]!.statusCode).toBe(503);
+  });
+
+  it('PIN: a seam that never replies is answered, not left silent', async () => {
+    const answered = await answerFor(new SilentSeam(), { handshakeDeadlineMs: 40 });
+    const finals = answered.filter((message) => (message.statusCode ?? 0) >= 200);
+    expect(finals).toHaveLength(1);
+    expect(finals[0]!.statusCode).toBe(504);
+  });
+
+  it('PIN: a close landing during setup is answered, not left silent', async () => {
+    // The exit that stayed silent through two rounds of fixing its siblings.
+    // The handshake RESOLVES here — the seam did nothing wrong — so neither
+    // the refusal branch nor the timeout branch fires, and the remaining path
+    // simply returned.
+    const answered = await answerFor(new SlowSeam(), { closeDuringSetup: true });
+    const finals = answered.filter((message) => (message.statusCode ?? 0) >= 200);
+    expect(finals).toHaveLength(1);
+    expect(finals[0]!.statusCode).toBe(487);
+  });
+});
+
 describe('a refused INVITE never leaves a call nobody will hang up', () => {
   it('PIN: an initial INVITE with no audio m-line releases the transport it was given', async () => {
     let releasedTransport = 0;

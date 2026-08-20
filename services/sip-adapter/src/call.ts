@@ -696,9 +696,23 @@ export class SipCall {
       }
     }
 
-    // Re-read after every await above: a close can land at any of them, and
-    // answering then would advertise media for a call that no longer exists.
-    if (!this.lifecycle.acceptingMedia) return;
+    // Re-read after every await above: a close can land at any of them.
+    //
+    // Answering 200 here would advertise media for a call that no longer
+    // exists — but answering NOTHING is worse, and that is what this did. A
+    // retransmit absorbed with 100 Trying has already moved the caller's
+    // transaction into Proceeding, where it has no timer of its own, so
+    // silence holds ringback on a call that is already closed and released
+    // and pins the carrier leg behind it.
+    //
+    // This is the THIRD exit from the same await. The other two learned to
+    // answer — 503 when the seam refuses, 504 when it never replies — and
+    // this one was left silent because each was fixed as it was reported
+    // rather than by auditing every way out.
+    if (!this.lifecycle.acceptingMedia) {
+      this.respond(message, 487, 'Request Terminated');
+      return;
+    }
     this.respond(message, 200, 'OK', buildSdp({
       address: this.deps.localAddress,
       port: this.deps.localRtpPort,
