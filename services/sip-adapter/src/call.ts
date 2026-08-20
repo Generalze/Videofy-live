@@ -231,6 +231,12 @@ export interface CallMeasurements {
   staleRequests: number;
   /** Times a sender re-based its media clock and the timeline was continued. */
   mediaClockRebases: number;
+  /**
+   * Pump requests folded into one already queued. A steady rise here is a
+   * seam running slower than real time, which is worth seeing before it is
+   * worth panicking about.
+   */
+  coalescedPumps: number;
   /** Opening handshakes the seam never completed; a spike here is a sick seam. */
   seamHandshakeTimeouts: number;
   jitter: JitterStats;
@@ -378,6 +384,7 @@ export class SipCall {
     refusedMediaDestinations: 0,
     staleRequests: 0,
     mediaClockRebases: 0,
+    coalescedPumps: 0,
     seamHandshakeTimeouts: 0,
     jitter: zeroedMediaCounters(),
   };
@@ -803,7 +810,49 @@ export class SipCall {
    * sentence arriving swapped is worse than either half being lost.
    */
   async pump(): Promise<void> {
-    return this.enqueueDelivery(() => this.pumpOnce());
+    // COALESCED, and this is a bound, not an optimisation.
+    //
+    // A pump drains everything currently available, so a second one queued
+    // behind the first would only do the first one's work over again. The
+    // production driver is a timer that neither awaits nor catches — this
+    // file prescribes exactly that shape — so whenever a delivery task
+    // outlasts one tick, appending unconditionally grew the chain by ~50
+    // links a second while completing one. Every other media queue here is
+    // deliberately bounded (maxPackets and maxBytes in the buffer,
+    // MAX_PENDING in the call); the queue of pump TASKS was not, and it ends
+    // in the process running out of memory. The ledger stays perfectly
+    // balanced throughout, every frame counted as discarded, which is why
+    // nothing else notices.
+    //
+    // A seam that never settles is only the extreme case: any seam
+    // sustainedly slower than real time diverges the same way.
+    const queued = this.queuedPump;
+    if (queued !== null) {
+      this.measurements.coalescedPumps += 1;
+      return queued;
+    }
+    const next = this.enqueueDelivery(() => {
+      // Cleared as the task STARTS, so a pump requested while this one runs
+      // still queues one successor rather than being swallowed. At most one
+      // running and one waiting, whatever the driver does.
+      this.queuedPump = null;
+      return this.pumpOnce();
+    });
+    this.queuedPump = next;
+    return next;
+  }
+
+  /** The pump waiting behind the running one, if any. See `pump`. */
+  private queuedPump: Promise<void> | null = null;
+  /** Delivery tasks appended to the chain and not yet settled. */
+  private outstandingDeliveries = 0;
+
+  /**
+   * How many delivery tasks are queued right now. Bounded by construction —
+   * a test that asserts this stays small is asserting the chain cannot grow.
+   */
+  get queuedDeliveries(): number {
+    return this.outstandingDeliveries;
   }
 
   /**
@@ -814,6 +863,7 @@ export class SipCall {
    * down for one unhappy frame.
    */
   private enqueueDelivery(task: () => Promise<void>): Promise<void> {
+    this.outstandingDeliveries += 1;
     const next = this.deliveryChain
       // Run inside the call's own context so that a close raised from within
       // a delivery callback is recognised as re-entrant rather than joining a
@@ -823,6 +873,9 @@ export class SipCall {
         this.log('sip call delivery task failed', {
           message: error instanceof Error ? error.message : 'unknown',
         });
+      })
+      .finally(() => {
+        this.outstandingDeliveries -= 1;
       });
     this.deliveryChain = next;
     return next;

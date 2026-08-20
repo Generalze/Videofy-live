@@ -721,6 +721,73 @@ describe('teardown under concurrency', () => {
   });
 });
 
+describe('the queue of pump tasks is bounded, like every other queue here', () => {
+  it('PIN: a timer driver against a wedged seam cannot grow the delivery chain', async () => {
+    // The production driver is documented in this file as setInterval(() =>
+    // call.pump(), 20) with no await and no catch. Against a seam slower than
+    // real time that appended ~50 tasks a second and completed one, so the
+    // chain grew without bound until the process died — while the ledger
+    // stayed perfectly balanced, every frame counted as discarded, which is
+    // exactly why nothing else here noticed.
+    const { call } = rig({ port: new SilentSeam(), seamCallbackDeadlineMs: 30 });
+    await call.onInvite(invite());
+    call.onAck();
+    for (let sequence = 1; sequence <= 20; sequence += 1) call.onRtpDatagram(rtpFrame(sequence));
+
+    // 500 ticks of the driver, fired the way the driver fires them.
+    for (let tick = 0; tick < 500; tick += 1) void call.pump();
+
+    // At most one running and one waiting, whatever the driver does. Asserting
+    // the queue DEPTH is the point: a count of frames or a balanced ledger is
+    // true the whole time this defect is killing the process.
+    expect(call.queuedDeliveries).toBeLessThanOrEqual(2);
+    expect(call.measurements.coalescedPumps).toBeGreaterThan(400);
+
+    // And the folding loses no work: a pump drains everything available, so
+    // the survivor does what all 500 would have done.
+    await call.close('caller hung up');
+    expect(call.queuedDeliveries).toBe(0);
+    expectLedgerBalances(call);
+  });
+
+  it('PIN: a pump folded into one already in flight still has its work done', async () => {
+    // Folding must never DROP work, only avoid repeating it. A pump that is
+    // already running has taken its snapshot of the buffer; media arriving
+    // after that needs a SUCCESSOR to drain it, so the flag has to clear when
+    // a task starts, not when it finishes. Clearing on completion swallows
+    // the request outright and leaves that audio sitting until something else
+    // happens to pump — and if the driver has stopped, that is never.
+    const { call, port } = rig({ port: new SlowSeam(20) });
+    await call.onInvite(invite());
+    call.onAck();
+    call.onRtpDatagram(rtpFrame(1));
+    const first = call.pump();
+    await sleep(5);
+    // Arrives while the first pump is parked inside the seam.
+    call.onRtpDatagram(rtpFrame(2));
+    const second = call.pump();
+    await Promise.all([first, second]);
+
+    expect(port.frames).toHaveLength(2);
+    expect(call.queuedDeliveries).toBeLessThanOrEqual(2);
+  });
+
+  it('a healthy call still pumps every time it is asked', async () => {
+    // The bound must not become a throttle. With nothing in flight, each pump
+    // runs on its own and nothing is folded away.
+    const { call, port } = rig();
+    await call.onInvite(invite());
+    call.onAck();
+    for (let sequence = 1; sequence <= 3; sequence += 1) {
+      call.onRtpDatagram(rtpFrame(sequence));
+      await call.pump();
+    }
+    expect(port.frames).toHaveLength(3);
+    expect(call.measurements.coalescedPumps).toBe(0);
+    expect(call.queuedDeliveries).toBe(0);
+  });
+});
+
 describe('the seam is only told what actually happened', () => {
   it('does not report a participant leaving who was never announced as joining', async () => {
     class RefusingSeam extends RecordingMediaAdapterPort {
