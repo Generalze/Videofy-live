@@ -1,7 +1,7 @@
 # P6.9 — Remote Media Adapter Wire Contract (Design)
 
 Date: 2026-08-20
-Status: DESIGN — for review before any network code is written.
+Status: DESIGN — approved with amendments, 2026-08-20. No network code written.
 Scope: the contract and protocol layer only. Credential and capability
 **issuance** is Step 5 and is deliberately not designed here; this document
 reserves the places authority attaches so Step 5 does not have to redesign
@@ -16,6 +16,13 @@ interface does not cross a process boundary, however confidently it is typed.
 An earlier draft of the P6.9 design filed this as an open question about where
 to put a capability header. That presupposed a transport nobody had chosen.
 This document chooses it.
+
+**One correction from review is worth reading before the rest**, because it was
+a genuine protocol bug rather than a matter of taste: the first draft
+acknowledged media with `acceptedThroughSequence`, which cannot state the truth
+when a frame inside the range was refused. §9 replaces it with settlement plus
+explicit exceptions. Implementing the original would have baked an accounting
+contradiction into version 1, and versioning a mistake only gives it a number.
 
 ## 1. Two planes, because they have opposite characteristics
 
@@ -138,6 +145,34 @@ Request envelope (illustrative):
 `platformSessionRef` is the external system's own identifier — a SIP `Call-ID`,
 a meeting id. Metadata, recorded for correlation, never authority.
 
+### Where `routeRef` comes from — and where it does not
+
+`routeRef` appears on the wire and **must not** appear in `MediaAdapterPort`.
+Route authorization is remote composition and security; the semantic seam faces
+the engine and has no business carrying either.
+
+The remote client is **bound to a route at construction**:
+
+```ts
+RemoteMediaAdapterPort.forRoute(routeRef, connection)
+```
+
+A process serving several numbers or meetings holds several lightweight
+route-scoped facades over ONE underlying connection. So:
+
+```text
+SIP signalling determines the configured route
+        ↓
+select that route's RemoteMediaAdapterPort facade
+        ↓
+SipCall sees an ordinary MediaAdapterPort — openSession(sessionRef, …)
+        ↓
+the remote implementation supplies routeRef itself
+```
+
+`SipCall` never learns a route exists, which is the same reason it never learns
+a language exists.
+
 ### Session creation is idempotent
 
 Encoded now, because retrofitting idempotency after an adapter is in production
@@ -200,6 +235,27 @@ MEDIA frames reference streamId only
 This is the same idea as an RTP SSRC, and it is what keeps the per-frame header
 at 24 bytes.
 
+`streamId` **0 is reserved** for connection-scoped messages, and **a streamId is
+never reused within one connection's lifetime**. A reconnect gets a fresh
+namespace. Both rules exist so that a frame still sitting in a buffer somewhere
+cannot acquire a new meaning by arriving late against a recycled number — the
+same class of hazard as an RTP SSRC being reused mid-call.
+
+### STREAM_OPEN binds media; it does not create a participant
+
+Participants exist because the control plane announced them:
+
+```text
+HTTPS participant announce   →  participant exists
+                                       ↓
+                             STREAM_OPEN may bind its media
+```
+
+`STREAM_OPEN` for a participant that was never announced is refused with
+`rejected-participant`. Two paths capable of creating participant state is one
+path too many, and P6.8 spent a round on the consequence of media arriving for
+a participant the seam had never been told about.
+
 ### Message types
 
 ```text
@@ -225,9 +281,8 @@ offset  size  field                type      notes
 ------  ----  -------------------  --------  ---------------------------------
 0       1     protocolVersion      uint8     1
 1       1     messageType          uint8     see above
-2       2     flags                uint16    bit 0: end of stream
-                                             bit 1: discontinuity
-                                             others reserved, must be zero
+2       2     flags                uint16    bit 0: discontinuity (§9)
+                                             bits 1-15 reserved, must be zero
 4       4     streamId             uint32    0 for connection-scoped messages
 8       4     wireSequence         uint32    per stream, see §8
 12      8     platformTimestampMs  float64   media time, exact to 2^53 ms
@@ -238,12 +293,35 @@ offset  size  field                type      notes
 **Endianness is pinned in two directions on purpose, and this is a trap worth
 naming.** Header fields are **big-endian**, by network convention. The PCM
 payload is **little-endian** `pcm_s16le`, because that is what the existing
-pipeline already declares end to end (`pcmFormat: 'pcm_s16le'`) and what an
-`Int16Array` is on every platform this runs on. Keeping the payload little-endian
-means both ends can hand the bytes straight to an `Int16Array` with no byte
-swapping on the audio path. Mixing them is deliberate; getting it wrong produces
-audio that is loud, wrong and superficially plausible, so both are pinned by
-test.
+pipeline already declares end to end (`pcmFormat: 'pcm_s16le'`). Mixing them is
+deliberate; getting it wrong produces audio that is loud, wrong and superficially
+plausible, so both are pinned by test.
+
+**The codec defines PCM as little-endian independently of host architecture.**
+An earlier draft said both ends could "hand the bytes straight to an
+`Int16Array`", which is true only because the machines involved happen to be
+little-endian — and a protocol whose correctness derives from CPU byte order is
+a protocol with an undocumented dependency on where it runs. A typed array uses
+NATIVE order, so that shortcut is a fast path, not a definition:
+
+```text
+host is little-endian   → zero-copy typed-array view
+otherwise               → explicit little-endian conversion
+```
+
+Both branches produce identical bytes by definition, and both are tested. At 640
+bytes per ordinary frame this is not where the CPU budget will be decided.
+
+### MEDIA payload validity
+
+```text
+payloadLength > 0
+payloadLength % 2 === 0        PCM16 with an odd byte count is malformed
+payloadLength <= 16 KiB        see §12
+```
+
+An odd length is not a short read to be tolerated; it is a frame that cannot be
+what it claims to be.
 
 `platformTimestampMs` is float64 rather than an integer type because JavaScript
 numbers already are float64: every integral millisecond value up to 2^53 is
@@ -276,6 +354,17 @@ signed 32-bit distance, exactly as RTP sequence numbers are compared in P6.8's
 jitter buffer — at 50 frames/second a wrap is 2.7 years away, but "unreachable"
 is not a specification.
 
+**It is allocated when a frame is committed to transmission** — after the
+outbound queue has made its eviction decisions, immediately before the send.
+That keeps the field true to its name: it numbers what went onto the wire, not
+every frame the adapter once contemplated sending. A locally evicted frame is
+counted as `adapterOutboundEvicted` and never manufactures a gap the network did
+not cause.
+
+`platformTimestampMs` must satisfy `Number.isFinite(value) && value >= 0`. NaN
+and the infinities are rejected as `protocol-error`: they encode and decode
+perfectly well as binary64 and would then poison every downstream comparison.
+
 ### Ordering
 
 For a given `streamId`, media frames are **logically ordered by `wireSequence`**.
@@ -286,29 +375,89 @@ the sequence merely confirms what the transport already provided. It earns its
 place across reconnects, in diagnostics, against application bugs, and for any
 future transport that is not a single ordered stream.
 
+### The ingress server does NOT reorder
+
+Transport reordering is already normalized before `MediaAdapterPort`: P6.8's
+jitter buffer exists precisely for that, and WSS is ordered besides. Adding
+another reorder buffer here would give one sentence three queues to clear:
+
+```text
+RTP jitter buffer  →  remote-wire reorder buffer  →  transcription chunk buffer
+```
+
+So the server classifies rather than buffers:
+
+```text
+expected sequence      accept
+duplicate or behind    count, do NOT deliver twice
+forward gap            report the missing range, mark discontinuity, deliver
+                       the current frame if the gap is within a sane bound
+absurd jump            stream protocol error (§13)
+```
+
 ## 9. Acknowledgement and backpressure
 
 **Media frames are not acknowledged individually.** Waiting for a round trip per
 20 ms frame would serialise a live conversation around network latency.
 
-```text
-adapter sends   101 102 103 104 105
-gateway replies ACK { streamId, acceptedThroughSequence: 105 }
-```
-
-Cumulative, periodic. Anything not covered by an ACK is reported explicitly:
+An earlier draft of this document used `acceptedThroughSequence`, and it was
+wrong in a way worth recording. Given:
 
 ```text
-DISPOSITION {
-  streamId,
-  outcome,                       one of §11
-  fromSequence, toSequence,
-  count
-}
+101 accepted   102 accepted   103 refused   104 accepted   105 accepted
 ```
 
-so a gap is a statement rather than an absence. This gives the ledger evidence
-P6.8 established without turning a realtime call into stop-and-wait networking.
+`acceptedThroughSequence: 105` asserts under ordinary cumulative semantics that
+103 was accepted, which is false. Holding at 102 leaves 104 and 105 unresolved
+forever. **There is no truthful value**, because one number was being asked to
+carry two different facts.
+
+Separate them. The cumulative number reports **settlement** — that a terminal
+disposition exists — and the exceptions are stated:
+
+```text
+SETTLEMENT  { streamId, settledThroughSequence: 105 }
+DISPOSITION { streamId, outcome: 'gateway-refused', fromSequence: 103,
+              toSequence: 103, count: 1 }
+```
+
+with one invariant:
+
+> Every sequence at or below `settledThroughSequence` has a terminal
+> disposition. Anything not named by a negative `DISPOSITION` was accepted.
+
+which reads back cleanly as 101 accepted, 102 accepted, 103 refused, 104 and 105
+accepted. A gap is a statement rather than an absence, and the ledger gets the
+evidence P6.8 established without stop-and-wait networking.
+
+### What settlement means, and what it does not
+
+> **Settlement is gateway wire-ingress custody, and nothing further.**
+
+It says the gateway owns the frame. It does not say the speech reached STT, nor
+that a listener will hear it. If the transcription chunker later evicts a chunk
+under its own bounds, that is downstream observability — it does **not**
+retroactively invalidate a settled frame, and no negative disposition is emitted
+for it.
+
+```text
+AdapterAudioFrame
+      ↓
+adapter outbound queue
+      ↓
+wire send
+      ↓
+gateway accepts custody          ← WIRE SETTLEMENT ENDS HERE
+      ↓
+MediaTranscriptionChunker
+      ↓
+chunk queue
+      ↓
+media-ingest  →  STT → MT → TTS
+```
+
+Collapsing that boundary would make a wire acknowledgement a promise about
+interpretation, which no transport can keep.
 
 ### Bounded outbound buffering
 
@@ -324,17 +473,29 @@ on saturation: evict OLDEST, preserve newest speech
 
 consistent with the `live-conversation` policy the pipeline already uses.
 
-**Five different things are counted separately.** Collapsing them into one
+**Each loss is counted at the custody boundary where it happened**, and the
+categories are mutually exclusive by construction. Collapsing them into one
 cheerful `dropped` is how a degraded seam becomes indistinguishable from a
 degraded network:
 
 ```text
-adapterOutboundEvicted     our queue, our choice
-networkSendFailed          the socket refused or died
-gatewayRefused             an explicit rejection
-gatewayBackpressure        accepted-then-shed downstream
-downstreamChunkEvicted     the chunker's own eviction
+adapterOutboundEvicted   discarded before transmission, by our own bounded queue
+networkSendFailed        transmission attempted, transport failed
+gatewayRefused           the gateway refused custody of the wire frame
+downstreamChunkEvicted   frame entered the pipeline; a later transcription
+                         chunk was evicted under the chunker's own bounds
 ```
+
+The first three are wire dispositions. The fourth is **observability, not a
+frame-level NACK** — by then the gateway has custody and settlement has already
+happened.
+
+A fifth category for gateway ingress queueing is deliberately absent. P6.9's
+binding drives the chunker directly and introduces no queue of its own between
+the wire and it, so there is nothing there to evict. If such a queue is ever
+added, it earns a category then. Inventing a metric for a queue that does not
+exist, merely because five sounds more comprehensive than four, would produce a
+counter that is always zero and a reader who trusts it.
 
 ## 10. Lifecycle and reconnection
 
@@ -368,10 +529,21 @@ and never:
 > "I used to send `sc_123`, therefore `sc_123` exists again."
 
 A reconnected client re-runs `HELLO` and re-opens each stream, presenting its
-capability. A stream whose session has since closed is refused with
-`rejected-stale`. `AdapterSessionRef` is correlation; it is not resurrection
-magic, and a reference an adapter still happens to remember is not evidence that
-a session exists.
+capability:
+
+```text
+reconnect  →  service credential on the Upgrade  →  HELLO  →  revalidate
+           →  STREAM_OPEN per live stream  →  NEW streamId
+           →  wireSequence restarts at 0 for that new stream
+```
+
+A stream whose session has since closed is refused with `rejected-stale`.
+`AdapterSessionRef` is correlation; it is not resurrection magic, and a reference
+an adapter still happens to remember is not evidence that a session exists.
+
+This costs a round trip per live stream on reconnect. That is the right trade:
+implicit resumption is exactly how "I remember `sc_123`" becomes "therefore it
+exists", and authority is worth more than one RTT of recovery latency.
 
 ## 11. Outcomes — silence is not a result
 
@@ -402,8 +574,8 @@ Generous is fine. Unbounded is not — the gateway becomes an authenticated pars
 facing adapter processes.
 
 ```text
-control message                 64 KiB
-binary frame payload            64 KiB      (a 20 ms 16 kHz mono frame is 640 B)
+control message (JSON)          64 KiB
+MEDIA payload                   16 KiB      even, non-zero; see below
 header                          24 B, fixed
 active streams per connection   256
 participants per session        64
@@ -411,6 +583,18 @@ outbound queue                  8 MiB / 2000 frames / 4 s, whichever first
 malformed messages              8, then the connection is closed
 idle without pong               30 s
 ```
+
+16 KiB for media rather than 64. At a fixed 16 kHz mono PCM16:
+
+```text
+ 20 ms  →     640 bytes
+100 ms  →   3,200 bytes
+~500 ms →  ~16 KiB
+```
+
+so 16 KiB is still twenty-five times an ordinary frame while rejecting absurd
+multi-second "frames" at the header rather than after allocating for them. A
+limit that only rejects the obviously insane is a limit doing half its job.
 
 ## 13. Malformed input — proportionate responses
 
@@ -454,9 +638,24 @@ Step 5 owns issuance. Step 4 reserves the slots so that adding them is not a
 transport redesign:
 
 ```text
-Control request     Authorization: <service credential>       ← Step 5
-Session create      response carries sessionCapability        ← Step 5
-STREAM_OPEN         presents sessionCapability                ← Step 5
+HTTPS control request   Authorization: <service credential>     ← Step 5
+WSS HTTP Upgrade        Authorization: <service credential>     ← Step 5
+                        validated BEFORE HELLO is accepted
+Session create          response carries sessionCapability      ← Step 5
+STREAM_OPEN             presents sessionCapability              ← Step 5
+```
+
+The persistent media connection authenticates on its **HTTP Upgrade**, not in a
+JSON frame afterwards. `HELLO` therefore carries protocol version and an adapter
+instance identity for correlation, and **no secret material at all** — long-lived
+credentials do not belong inside application frames that get logged, buffered and
+replayed.
+
+That gives two distinct authorities:
+
+```text
+connection authority  =  service identity      (who is connected)
+stream authority      =  session capability    (what this stream may touch)
 ```
 
 Until then these are typed as opaque and threaded through unvalidated, with the
@@ -505,9 +704,27 @@ paranoia and roughly ten pins have already passed vacuously in it.
 | Reserved flag bits set | `protocol-error` |
 | Unsupported protocol version | Connection refused before any stream |
 | Duplicate `wireSequence` | Detected, counted, not delivered twice |
-| Missing `wireSequence` | Gap reported by DISPOSITION |
-| Reordered arrival | Ordered by sequence, or reported |
+| Missing `wireSequence` | Gap reported by DISPOSITION, discontinuity marked |
+| Reordered arrival | Classified and reported; **never buffered for reorder** |
+| Absurd forward jump | Stream protocol error, connection survives |
 | Sequence wrap at 2^32 | Continues, no reordering artefact |
+| Sequence allocated after eviction | A locally evicted frame leaves no wire gap |
+| `platformTimestampMs` NaN or infinite | `protocol-error`, rejected |
+| `platformTimestampMs` negative | `protocol-error`, rejected |
+| MEDIA payload of zero bytes | `protocol-error` |
+| MEDIA payload of odd length | `protocol-error` — PCM16 cannot be odd |
+| MEDIA payload above 16 KiB | Refused at the header, not after allocating |
+| Settlement with a refused frame inside the range | Refusal named by DISPOSITION; every other sequence at or below reads as accepted |
+| Settlement never regresses | `settledThroughSequence` is monotonic per stream |
+| Downstream chunk eviction after settlement | No negative disposition; settlement stands |
+| Drop categories | Mutually exclusive; no frame counted in two |
+| `streamId` 0 used for MEDIA | `protocol-error` |
+| `streamId` reused within one connection | Refused |
+| Reconnect | New `streamId`, `wireSequence` restarts at 0 |
+| `STREAM_OPEN` for an unannounced participant | `rejected-participant` |
+| Big-endian host (simulated) | Identical bytes to the little-endian path |
+| `routeRef` present in `MediaAdapterPort` | Test fails |
+| Secret material in `HELLO` | Test fails |
 | Two participants on one session | Multiplexed, never interleaved |
 | Two sessions on one connection | Multiplexed, independent |
 | One malformed stream | Other streams unaffected |
@@ -536,8 +753,10 @@ paranoia and roughly ten pins have already passed vacuously in it.
 ```text
 1. packages/adapter-wire      types, codec, limits, outcomes — no sockets
 2. codec tests + mutation     the matrix above, before anything opens a port
-3. RemoteMediaAdapterPort     client, bounded queue, reconnect, state machine
-4. AdapterIngressServer       server, framing, multiplexing, dispositions
+3. RemoteMediaAdapterPort     client, route-scoped facade, bounded queue,
+                              reconnect, connection state machine
+4. AdapterIngressServer       server, framing, multiplexing, settlement,
+                              dispositions
 5. loopback protocol tests    client ↔ server over a real socket
 ```
 
