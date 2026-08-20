@@ -1,5 +1,9 @@
 import { loadRootEnv, readCsv, readPort } from './env.js';
-import { resolvePublicIngestUrl } from '@videofy-live/service-env';
+import {
+  resolveInternalIngressAuth,
+  resolvePublicIngestUrl,
+  type InternalIngressAuthResolution,
+} from '@videofy-live/service-env';
 import { logger } from './logger.js';
 import { resolve } from 'node:path';
 
@@ -10,7 +14,13 @@ export interface GatewayConfig {
   corsOrigins: string[];
   mediaIngestUrl: string;
   mediaIngestPublicUrl: string;
-  internalWebRtcToken: string | null;
+  /**
+   * The SAME resolution media-ingest performs, from the same module, so the two
+   * cannot disagree about whether internal calls are authenticated. They once
+   * disagreed about a URL; a disagreement about authentication is worse to
+   * discover in production.
+   */
+  internalIngressAuth: InternalIngressAuthResolution;
   webRtcTranscriptionChunkMs: number;
   webRtcTranscriptionRequestTimeoutMs: number;
   webRtcVadEnabled: boolean;
@@ -66,7 +76,7 @@ export function loadConfig(): GatewayConfig {
     // longer disagree about what a browser will be told. They did, and the
     // disagreement was invisible on the machine that produced it.
     mediaIngestPublicUrl: publicIngest.url,
-    internalWebRtcToken: process.env['INTERNAL_WEBRTC_TOKEN']?.trim() || null,
+    internalIngressAuth: resolveInternalIngressAuth(),
     webRtcTranscriptionChunkMs: readPositiveGatewayInt('WEBRTC_TRANSCRIPTION_CHUNK_MS', 5_000),
     webRtcTranscriptionRequestTimeoutMs: readPositiveGatewayInt(
       'WEBRTC_TRANSCRIPTION_REQUEST_TIMEOUT_MS',

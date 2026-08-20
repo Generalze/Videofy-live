@@ -84,6 +84,21 @@ export function loadRepositoryEnv(fromDirectory: string = process.cwd()): Loaded
   return loadEnvFile(resolve(fromDirectory, '../../.env'));
 }
 
+// One canonical answer to "may this caller inject media into the platform?" —
+// see internal-ingress-auth.ts for why the default had to be inverted.
+export {
+  ALLOW_INSECURE_INTERNAL_INGRESS_VARIABLE,
+  INTERNAL_INGRESS_TOKEN_VARIABLE,
+  InternalIngressAuthError,
+  MINIMUM_INTERNAL_INGRESS_TOKEN_LENGTH,
+  internalIngressRequestAllowed,
+  matchesInternalIngressToken,
+  resolveInternalIngressAuth,
+  type InternalIngressAuthMode,
+  type InternalIngressAuthResolution,
+  type ResolveInternalIngressAuthOptions,
+} from './internal-ingress-auth.js';
+
 // One canonical answer to "what URL will a browser be given for generated
 // audio?" — see public-ingest-url.ts for why that needed a module.
 export {

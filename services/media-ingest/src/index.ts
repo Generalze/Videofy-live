@@ -7,6 +7,7 @@ import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { requireSessionSecret } from '@videofy-live/account-tokens';
+import { internalIngressRequestAllowed } from '@videofy-live/service-env';
 import { loadConfig } from './config.js';
 import { registerGeneratedAudioDeliveryRoute } from './generated-audio-delivery-route.js';
 import { createUnavailablePersonalVoiceProvider } from './personal-voice-provider.js';
@@ -611,8 +612,37 @@ if (voiceMaterial.orphansRemaining > 0) {
   });
 }
 
+/**
+ * Refuse to start rather than start unprotected.
+ *
+ * A 403 on each request is the minimum, and it is not enough on its own: a
+ * service that boots without its credential is discovered by an attacker before
+ * it is discovered by an operator. The internal media API can create sessions
+ * and inject audio, so an unconfigured one is not a degraded service — it is an
+ * open one. This follows VIDEOFY_AUTH_SECRET, which services already refuse to
+ * start without.
+ */
+if (config.internalIngressAuth.mustRefuseToStart) {
+  logger.error('Refusing to start: internal media API would be unauthenticated', {
+    detail: config.internalIngressAuth.summary,
+  });
+  process.exit(1);
+}
+if (config.internalIngressAuth.mode === 'insecure-explicit') {
+  logger.warn(config.internalIngressAuth.summary);
+}
+
 server.listen(config.port, () => {
-  logger.info('Media ingest endpoint started', { port: config.port, uploadDir });
+  logger.info('Media ingest endpoint started', {
+    port: config.port,
+    uploadDir,
+    // Safe to log, and the question actually being asked when internal calls
+    // start returning 403: do these two services hold the SAME token?
+    internalIngressAuth: config.internalIngressAuth.mode,
+    ...(config.internalIngressAuth.fingerprint === null
+      ? {}
+      : { internalTokenFingerprint: config.internalIngressAuth.fingerprint }),
+  });
 });
 
 ingest.start().catch((err: Error) => {
@@ -714,9 +744,23 @@ function requireRouteParam(value: string | undefined, fieldName: string): string
   return value;
 }
 
+/**
+ * FAILS CLOSED. This previously read:
+ *
+ *     if (!config.internalWebRtcToken) return true;
+ *
+ * so an unconfigured deployment authenticated nobody and accepted audio from
+ * anyone who could reach the port. Absence of configuration is now a refusal,
+ * and disabling authentication requires an explicit, deliberate opt-out.
+ *
+ * This is Layer 1 — it authenticates a CALLER. It says nothing about which
+ * session that caller may write into; that is the session capability in P6.9,
+ * and this function must not be mistaken for it.
+ */
 function assertInternalWebRtcRequest(req: express.Request, res: express.Response): boolean {
-  if (!config.internalWebRtcToken) return true;
-  if (req.header('X-Videofy-Internal-Token') === config.internalWebRtcToken) return true;
-  res.status(403).json({ error: 'Forbidden internal WebRTC request.' });
+  if (internalIngressRequestAllowed(config.internalIngressAuth, req.header('X-Videofy-Internal-Token'))) {
+    return true;
+  }
+  res.status(403).json({ error: 'Forbidden internal media request.' });
   return false;
 }

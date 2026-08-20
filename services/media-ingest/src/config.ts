@@ -1,7 +1,11 @@
 // Repository owner: masterzee001.
 import { parseRuntimeProfile, type RuntimeProfile } from '@videofy-live/ai-registry';
 import { loadRootEnv, readCsv, readPort, readPositiveInt } from './env.js';
-import { resolvePublicIngestUrl } from '@videofy-live/service-env';
+import {
+  resolveInternalIngressAuth,
+  resolvePublicIngestUrl,
+  type InternalIngressAuthResolution,
+} from '@videofy-live/service-env';
 import { logger } from './logger.js';
 import { resolve } from 'node:path';
 
@@ -18,7 +22,14 @@ export interface IngestConfig {
   port: number;
   ingestPublicUrl: string;
   gatewayUrl: string;
-  internalWebRtcToken: string | null;
+  /**
+   * Whether the internal media API authenticates callers, and how.
+   *
+   * Replaces a bare `string | null`, which could not distinguish "no token, so
+   * allow everyone" from "no token, so allow no one" — and the code chose the
+   * first.
+   */
+  internalIngressAuth: InternalIngressAuthResolution;
   eventId: string;
   videoSource: 'mock' | 'local-file';
   uploadMaxBytes: number;
@@ -185,7 +196,10 @@ export function loadConfig(): IngestConfig {
     // Android phone was told to fetch its translated speech from itself.
     ingestPublicUrl: publicIngest.url,
     gatewayUrl: process.env['GATEWAY_URL'] ?? 'http://localhost:3001',
-    internalWebRtcToken: process.env['INTERNAL_WEBRTC_TOKEN']?.trim() || null,
+    // Resolved, not merely read. `loadConfig` does not decide whether the
+    // process may start — index.ts does — so an absent token is reported here
+    // rather than thrown, and refused there.
+    internalIngressAuth: resolveInternalIngressAuth(),
     eventId: process.env['EVENT_ID'] ?? 'demo-event',
     videoSource,
     uploadMaxBytes: readPositiveInt('INGEST_UPLOAD_MAX_BYTES', 2_147_483_648),
