@@ -156,9 +156,9 @@ class SlowSeam extends RecordingMediaAdapterPort {
     super();
   }
 
-  override async pushAudio(sessionId: string, frame: AdapterAudioFrame): Promise<void> {
+  override async pushAudio(sessionRef: string, frame: AdapterAudioFrame): Promise<void> {
     await sleep(this.delayMs);
-    await super.pushAudio(sessionId, frame);
+    await super.pushAudio(sessionRef, frame);
   }
 }
 
@@ -294,7 +294,7 @@ describe('round-4 finding C: an abort behind an in-flight graceful close', () =>
     // The predecessor discarded the second caller's mode and reason: it
     // pushed two frames into the seam and filed the hangup as "bye".
     expect(port.closes).toEqual([
-      { sessionId: call.sessionId, reason: 'compromised: media policy refusal' },
+      { sessionRef: call.sessionRef, reason: 'compromised: media policy refusal' },
     ]);
     expect(call.terminationIntent).toEqual({
       mode: 'abort',
@@ -327,7 +327,7 @@ describe('round-4 finding C: an abort behind an in-flight graceful close', () =>
     ]);
     // Delivery stopped at the escalation rather than running to the end.
     expect(seam.frames.length).toBeLessThan(4);
-    expect(seam.closes).toEqual([{ sessionId: call.sessionId, reason: 'compromised' }]);
+    expect(seam.closes).toEqual([{ sessionRef: call.sessionRef, reason: 'compromised' }]);
     expectLedgerBalances(call);
   });
 });
@@ -427,8 +427,8 @@ describe('round-4 finding E: close re-entered from a seam callback', () => {
     let call!: SipCall;
     let reentries = 0;
     class HangsUpMidFrame extends RecordingMediaAdapterPort {
-      override async pushAudio(sessionId: string, frame: AdapterAudioFrame): Promise<void> {
-        await super.pushAudio(sessionId, frame);
+      override async pushAudio(sessionRef: string, frame: AdapterAudioFrame): Promise<void> {
+        await super.pushAudio(sessionRef, frame);
         reentries += 1;
         // The exact cycle that used to wedge: teardown, pump chain, pushAudio,
         // the shared close promise, teardown.
@@ -456,8 +456,8 @@ describe('round-4 finding E: close re-entered from a seam callback', () => {
   it('PIN: the FIRST close may come from inside a live pump and still tear the call down', async () => {
     let call!: SipCall;
     class HangsUpOnFirstFrame extends RecordingMediaAdapterPort {
-      override async pushAudio(sessionId: string, frame: AdapterAudioFrame): Promise<void> {
-        await super.pushAudio(sessionId, frame);
+      override async pushAudio(sessionRef: string, frame: AdapterAudioFrame): Promise<void> {
+        await super.pushAudio(sessionRef, frame);
         // No teardown is running yet: this signal has to start one, and the
         // caller cannot be the thing that waits for it.
         await call.close('the seam asked to end the call');
@@ -478,7 +478,7 @@ describe('round-4 finding E: close re-entered from a seam callback', () => {
     expect(outcome).toBe('settled');
     expect(call.isClosed).toBe(true);
     expect(seam.closes).toEqual([
-      { sessionId: call.sessionId, reason: 'the seam asked to end the call' },
+      { sessionRef: call.sessionRef, reason: 'the seam asked to end the call' },
     ]);
     expectLedgerBalances(call);
   });
@@ -589,7 +589,7 @@ describe('teardown under concurrency', () => {
     // Exactly one coordinator: one release, one leave, one close.
     expect(releasedTransport).toBe(1);
     expect(port.leaves).toHaveLength(1);
-    expect(port.closes).toEqual([{ sessionId: call.sessionId, reason: 'rtp socket error' }]);
+    expect(port.closes).toEqual([{ sessionRef: call.sessionRef, reason: 'rtp socket error' }]);
     expect(call.lifecycle.refusedTransitions).toBe(0);
     expectLedgerBalances(call);
   });
@@ -598,8 +598,8 @@ describe('teardown under concurrency', () => {
     let call!: SipCall;
     let releasedTransport = 0;
     class ChattySeam extends RecordingMediaAdapterPort {
-      override async pushAudio(sessionId: string, frame: AdapterAudioFrame): Promise<void> {
-        await super.pushAudio(sessionId, frame);
+      override async pushAudio(sessionRef: string, frame: AdapterAudioFrame): Promise<void> {
+        await super.pushAudio(sessionRef, frame);
         await call.close('and the seam too');
       }
     }
@@ -692,10 +692,10 @@ describe('teardown under concurrency', () => {
     expect(quiet.port.frames).toHaveLength(0);
     expect(ordinary.port.frames).toHaveLength(1);
     expect(quiet.port.closes).toEqual([
-      { sessionId: quiet.call.sessionId, reason: 'compromised' },
+      { sessionRef: quiet.call.sessionRef, reason: 'compromised' },
     ]);
     expect(ordinary.port.closes).toEqual([
-      { sessionId: ordinary.call.sessionId, reason: 'caller hung up' },
+      { sessionRef: ordinary.call.sessionRef, reason: 'caller hung up' },
     ]);
     expectLedgerBalances(quiet.call);
     expectLedgerBalances(ordinary.call);

@@ -301,9 +301,9 @@ describe('an offer this dialog has already passed cannot re-open negotiation', (
   it('PIN: a second INVITE during the handshake cannot change what the answer advertises', async () => {
     class SlowOpenSeam extends RecordingMediaAdapterPort {
       override async openSession(input: {
-        sessionId: string;
+        sessionRef: string;
         platformSessionRef: string;
-      }): Promise<{ sessionId: string }> {
+      }): Promise<{ sessionRef: string }> {
         await sleep(40);
         return super.openSession(input);
       }
@@ -395,9 +395,9 @@ describe('the seam is never asked to close a session it is still opening', () =>
     const events: string[] = [];
     class SlowOpenSeam extends RecordingMediaAdapterPort {
       override async openSession(input: {
-        sessionId: string;
+        sessionRef: string;
         platformSessionRef: string;
-      }): Promise<{ sessionId: string }> {
+      }): Promise<{ sessionRef: string }> {
         events.push('open:start');
         // Deliberately LONGER than the single-callback budget below and well
         // inside the handshake budget. With 30 ms this pin passed while
@@ -410,9 +410,9 @@ describe('the seam is never asked to close a session it is still opening', () =>
         return super.openSession(input);
       }
 
-      override async closeSession(sessionId: string, reason: string): Promise<void> {
+      override async closeSession(sessionRef: string, reason: string): Promise<void> {
         events.push('close');
-        return super.closeSession(sessionId, reason);
+        return super.closeSession(sessionRef, reason);
       }
     }
 
@@ -446,18 +446,18 @@ describe('the seam is never asked to close a session it is still opening', () =>
     const events: string[] = [];
     class SlowOpenSeam extends RecordingMediaAdapterPort {
       override async openSession(input: {
-        sessionId: string;
+        sessionRef: string;
         platformSessionRef: string;
-      }): Promise<{ sessionId: string }> {
+      }): Promise<{ sessionRef: string }> {
         events.push('open:start');
         await sleep(40);
         events.push('open:done');
         return super.openSession(input);
       }
 
-      override async pushAudio(sessionId: string, audioFrame: AdapterAudioFrame): Promise<void> {
+      override async pushAudio(sessionRef: string, audioFrame: AdapterAudioFrame): Promise<void> {
         events.push('pushAudio');
-        return super.pushAudio(sessionId, audioFrame);
+        return super.pushAudio(sessionRef, audioFrame);
       }
     }
 
@@ -514,18 +514,18 @@ describe('the seam is never asked to close a session it is still opening', () =>
     const events: string[] = [];
     class SlowOpenSeam extends RecordingMediaAdapterPort {
       override async openSession(input: {
-        sessionId: string;
+        sessionRef: string;
         platformSessionRef: string;
-      }): Promise<{ sessionId: string }> {
+      }): Promise<{ sessionRef: string }> {
         events.push('open:start');
         await sleep(40);
         events.push('open:done');
         return super.openSession(input);
       }
 
-      override async pushAudio(sessionId: string, audioFrame: AdapterAudioFrame): Promise<void> {
+      override async pushAudio(sessionRef: string, audioFrame: AdapterAudioFrame): Promise<void> {
         events.push('pushAudio');
-        return super.pushAudio(sessionId, audioFrame);
+        return super.pushAudio(sessionRef, audioFrame);
       }
     }
 
@@ -558,24 +558,24 @@ describe('the seam is never asked to close a session it is still opening', () =>
     const events: string[] = [];
     class SlowJoinSeam extends RecordingMediaAdapterPort {
       override async participantJoined(
-        sessionId: string,
+        sessionRef: string,
         participantId: string,
         displayName: string,
       ): Promise<void> {
         events.push('join:start');
         await sleep(50);
         events.push('join:done');
-        return super.participantJoined(sessionId, participantId, displayName);
+        return super.participantJoined(sessionRef, participantId, displayName);
       }
 
-      override async participantLeft(sessionId: string, participantId: string): Promise<void> {
+      override async participantLeft(sessionRef: string, participantId: string): Promise<void> {
         events.push('left');
-        return super.participantLeft(sessionId, participantId);
+        return super.participantLeft(sessionRef, participantId);
       }
 
-      override async closeSession(sessionId: string, reason: string): Promise<void> {
+      override async closeSession(sessionRef: string, reason: string): Promise<void> {
         events.push('close');
-        return super.closeSession(sessionId, reason);
+        return super.closeSession(sessionRef, reason);
       }
     }
 
@@ -605,7 +605,7 @@ describe('the seam is never asked to close a session it is still opening', () =>
 
   it('PIN: once the seam has refused, a retransmit gets an answer rather than more waiting', async () => {
     class RefusingSeam extends RecordingMediaAdapterPort {
-      override async openSession(): Promise<{ sessionId: string }> {
+      override async openSession(): Promise<{ sessionRef: string }> {
         throw new Error('no capacity');
       }
     }
@@ -649,7 +649,7 @@ describe('the seam is never asked to close a session it is still opening', () =>
     // retransmitting AND its own timeout no longer applies — so if this path
     // stays silent, nothing anywhere will ever complete that transaction.
     class SlowRefusingSeam extends RecordingMediaAdapterPort {
-      override async openSession(): Promise<{ sessionId: string }> {
+      override async openSession(): Promise<{ sessionRef: string }> {
         await sleep(60);
         throw new Error('no capacity');
       }
@@ -686,7 +686,7 @@ describe('the seam is never asked to close a session it is still opening', () =>
 
   it('PIN: a seam that REFUSED the session is not then told to close it', async () => {
     class RefusingSeam extends RecordingMediaAdapterPort {
-      override async openSession(): Promise<{ sessionId: string }> {
+      override async openSession(): Promise<{ sessionRef: string }> {
         throw new Error('no capacity');
       }
     }
@@ -711,7 +711,7 @@ describe("teardown context belongs to work teardown is waiting for, and nothing 
     let seamInitiated: Promise<void> | null = null;
 
     class LingeringSeam extends RecordingMediaAdapterPort {
-      override async pushAudio(sessionId: string, audioFrame: AdapterAudioFrame): Promise<void> {
+      override async pushAudio(sessionRef: string, audioFrame: AdapterAudioFrame): Promise<void> {
         if (seamInitiated === null) {
           // Async work the SEAM owns, scheduled from inside our push. It
           // inherits whatever async context we were standing in, and it will
@@ -722,13 +722,13 @@ describe("teardown context belongs to work teardown is waiting for, and nothing 
             }, 25);
           });
         }
-        await super.pushAudio(sessionId, audioFrame);
+        await super.pushAudio(sessionRef, audioFrame);
       }
 
-      override async closeSession(sessionId: string, reason: string): Promise<void> {
+      override async closeSession(sessionRef: string, reason: string): Promise<void> {
         // Slow enough that returning early from close() is observable.
         await sleep(60);
-        return super.closeSession(sessionId, reason);
+        return super.closeSession(sessionRef, reason);
       }
     }
 
@@ -760,8 +760,8 @@ describe("teardown context belongs to work teardown is waiting for, and nothing 
     // stack, and waiting on it would be a deadlock with nothing to break it.
     let hangUp: (() => Promise<void>) | null = null;
     class ImmediateHangupSeam extends RecordingMediaAdapterPort {
-      override async pushAudio(sessionId: string, audioFrame: AdapterAudioFrame): Promise<void> {
-        await super.pushAudio(sessionId, audioFrame);
+      override async pushAudio(sessionRef: string, audioFrame: AdapterAudioFrame): Promise<void> {
+        await super.pushAudio(sessionRef, audioFrame);
         await hangUp?.();
       }
     }
@@ -824,23 +824,23 @@ describe('every INVITE is answered, whatever happens behind it', () => {
   };
 
   class RefusingSeam extends RecordingMediaAdapterPort {
-    override async openSession(): Promise<{ sessionId: string }> {
+    override async openSession(): Promise<{ sessionRef: string }> {
       await sleep(30);
       throw new Error('no capacity');
     }
   }
 
   class SilentSeam extends RecordingMediaAdapterPort {
-    override async openSession(): Promise<{ sessionId: string }> {
-      return new Promise<{ sessionId: string }>(() => {});
+    override async openSession(): Promise<{ sessionRef: string }> {
+      return new Promise<{ sessionRef: string }>(() => {});
     }
   }
 
   class SlowSeam extends RecordingMediaAdapterPort {
     override async openSession(input: {
-      sessionId: string;
+      sessionRef: string;
       platformSessionRef: string;
-    }): Promise<{ sessionId: string }> {
+    }): Promise<{ sessionRef: string }> {
       await sleep(60);
       return super.openSession(input);
     }
@@ -914,7 +914,7 @@ describe('a refused INVITE never leaves a call nobody will hang up', () => {
 
   it('PIN: an initial INVITE the seam refuses releases the transport too', async () => {
     class RefusingSeam extends RecordingMediaAdapterPort {
-      override async openSession(): Promise<{ sessionId: string }> {
+      override async openSession(): Promise<{ sessionRef: string }> {
         throw new Error('no capacity');
       }
     }
@@ -1094,9 +1094,9 @@ describe('a renegotiation keeps the stream, not just the buffer object', () => {
 describe('a seam that stops answering cannot strand a call', () => {
   it('PIN: an opening handshake that never completes is bounded, answered and released', async () => {
     class SilentOpenSeam extends RecordingMediaAdapterPort {
-      override async openSession(): Promise<{ sessionId: string }> {
+      override async openSession(): Promise<{ sessionRef: string }> {
         // Accepted the connection and then simply stopped answering.
-        return new Promise<{ sessionId: string }>(() => {});
+        return new Promise<{ sessionRef: string }>(() => {});
       }
     }
     let releasedTransport = 0;

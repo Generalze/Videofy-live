@@ -33,6 +33,10 @@
  * recording ports rather than against an endpoint that has never seen traffic.
  */
 
+export { AdapterIdentityError, adapterSessionRef, type AdapterSessionRef } from './identity.js';
+
+import type { AdapterSessionRef } from './identity.js';
+
 /** A participant as the ADAPTER sees them, before identity normalization. */
 export interface PlatformParticipant {
   /** The platform's own identifier — metadata, never engine identity. */
@@ -41,8 +45,16 @@ export interface PlatformParticipant {
 }
 
 export interface MediaAdapterSession {
-  /** Opaque session handle in Videofy's terms. */
-  sessionId: string;
+  /**
+   * The ADAPTER's reference for this session, echoed back.
+   *
+   * Not a Videofy session id, and deliberately not called one. The platform
+   * resolves its own session identity from the capability the adapter
+   * presents; nothing an adapter mints becomes authority. `VideofySessionId`
+   * is behind `@videofy-live/media-adapter-port/platform` and has no business
+   * appearing in this interface.
+   */
+  sessionRef: AdapterSessionRef;
 }
 
 /** One frame of speech, already in the engine's format. */
@@ -57,12 +69,29 @@ export interface AdapterAudioFrame {
   platformTimestampMs: number;
 }
 
+/**
+ * Every operation names the ADAPTER's own reference, never a platform session.
+ *
+ * The parameter is `sessionRef` rather than `sessionId` on purpose. Typing it
+ * as `AdapterSessionRef` while still calling it `sessionId` would be type-safe
+ * and linguistically false — the reader would have to inspect the declaration
+ * to learn that this identifier carries no authority. The name should tell the
+ * truth on its own.
+ */
 export interface MediaAdapterPort {
-  openSession(input: { sessionId: string; platformSessionRef: string }): Promise<MediaAdapterSession>;
-  participantJoined(sessionId: string, participantId: string, displayName: string): Promise<void>;
-  participantLeft(sessionId: string, participantId: string): Promise<void>;
-  pushAudio(sessionId: string, frame: AdapterAudioFrame): Promise<void>;
-  closeSession(sessionId: string, reason: string): Promise<void>;
+  openSession(input: {
+    sessionRef: AdapterSessionRef;
+    /** The external system's own id — a SIP Call-ID, a meeting id. Metadata. */
+    platformSessionRef: string;
+  }): Promise<MediaAdapterSession>;
+  participantJoined(
+    sessionRef: AdapterSessionRef,
+    participantId: string,
+    displayName: string,
+  ): Promise<void>;
+  participantLeft(sessionRef: AdapterSessionRef, participantId: string): Promise<void>;
+  pushAudio(sessionRef: AdapterSessionRef, frame: AdapterAudioFrame): Promise<void>;
+  closeSession(sessionRef: AdapterSessionRef, reason: string): Promise<void>;
 }
 
 /**
@@ -71,30 +100,41 @@ export interface MediaAdapterPort {
  * reference implementation of what a real binding must accept.
  */
 export class RecordingMediaAdapterPort implements MediaAdapterPort {
-  readonly sessions: Array<{ sessionId: string; platformSessionRef: string }> = [];
-  readonly joins: Array<{ sessionId: string; participantId: string; displayName: string }> = [];
-  readonly leaves: Array<{ sessionId: string; participantId: string }> = [];
+  readonly sessions: Array<{ sessionRef: AdapterSessionRef; platformSessionRef: string }> = [];
+  readonly joins: Array<{
+    sessionRef: AdapterSessionRef;
+    participantId: string;
+    displayName: string;
+  }> = [];
+  readonly leaves: Array<{ sessionRef: AdapterSessionRef; participantId: string }> = [];
   readonly frames: AdapterAudioFrame[] = [];
-  readonly closes: Array<{ sessionId: string; reason: string }> = [];
+  readonly closes: Array<{ sessionRef: AdapterSessionRef; reason: string }> = [];
 
-  async openSession(input: { sessionId: string; platformSessionRef: string }): Promise<MediaAdapterSession> {
+  async openSession(input: {
+    sessionRef: AdapterSessionRef;
+    platformSessionRef: string;
+  }): Promise<MediaAdapterSession> {
     this.sessions.push({ ...input });
-    return { sessionId: input.sessionId };
+    return { sessionRef: input.sessionRef };
   }
 
-  async participantJoined(sessionId: string, participantId: string, displayName: string): Promise<void> {
-    this.joins.push({ sessionId, participantId, displayName });
+  async participantJoined(
+    sessionRef: AdapterSessionRef,
+    participantId: string,
+    displayName: string,
+  ): Promise<void> {
+    this.joins.push({ sessionRef, participantId, displayName });
   }
 
-  async participantLeft(sessionId: string, participantId: string): Promise<void> {
-    this.leaves.push({ sessionId, participantId });
+  async participantLeft(sessionRef: AdapterSessionRef, participantId: string): Promise<void> {
+    this.leaves.push({ sessionRef, participantId });
   }
 
-  async pushAudio(sessionId: string, frame: AdapterAudioFrame): Promise<void> {
+  async pushAudio(sessionRef: AdapterSessionRef, frame: AdapterAudioFrame): Promise<void> {
     this.frames.push(frame);
   }
 
-  async closeSession(sessionId: string, reason: string): Promise<void> {
-    this.closes.push({ sessionId, reason });
+  async closeSession(sessionRef: AdapterSessionRef, reason: string): Promise<void> {
+    this.closes.push({ sessionRef, reason });
   }
 }

@@ -108,10 +108,10 @@ describe('codec negotiation', () => {
     // untrusted input and stays adapter metadata on platformSessionRef.
     expect(h.port.sessions).toHaveLength(1);
     expect(h.port.sessions[0]!.platformSessionRef).toBe('call-1');
-    expect(h.port.sessions[0]!.sessionId).not.toBe('call-1');
-    expect(h.port.sessions[0]!.sessionId).toMatch(/^sc_/);
+    expect(h.port.sessions[0]!.sessionRef).not.toBe('call-1');
+    expect(h.port.sessions[0]!.sessionRef).toMatch(/^sc_/);
     expect(h.port.joins).toEqual([
-      { sessionId: h.call.sessionId, participantId: 'sp_1', displayName: 'Ada Caller' },
+      { sessionRef: h.call.sessionRef, participantId: 'sp_1', displayName: 'Ada Caller' },
     ]);
   });
 });
@@ -206,9 +206,9 @@ describe('rtp egress', () => {
 describe('close and pump do not race (round-2 blockers)', () => {
   it('BLOCKER pin: close() joins the pump chain instead of interleaving with it', async () => {
     class SlowPort extends RecordingMediaAdapterPort {
-      async pushAudio(sessionId: string, frame: any): Promise<void> {
+      async pushAudio(sessionRef: string, frame: any): Promise<void> {
         await new Promise((resolve) => setTimeout(resolve, 5));
-        await super.pushAudio(sessionId, frame);
+        await super.pushAudio(sessionRef, frame);
       }
     }
     const port = new SlowPort();
@@ -511,8 +511,8 @@ describe('hangup and isolation', () => {
     h.call.onRtpDatagram(rtpFrame(1, 160));
     await h.call.close('caller hung up');
 
-    expect(h.port.leaves).toEqual([{ sessionId: h.call.sessionId, participantId: 'sp_1' }]);
-    expect(h.port.closes).toEqual([{ sessionId: h.call.sessionId, reason: 'caller hung up' }]);
+    expect(h.port.leaves).toEqual([{ sessionRef: h.call.sessionRef, participantId: 'sp_1' }]);
+    expect(h.port.closes).toEqual([{ sessionRef: h.call.sessionRef, reason: 'caller hung up' }]);
     // Idempotent: a BYE plus a socket close must not double-report.
     await h.call.close('again');
     expect(h.port.closes).toHaveLength(1);

@@ -40,7 +40,12 @@ import {
   type TerminationIntent,
   type TerminationMode,
 } from './lifecycle.js';
-import type { AdapterAudioFrame, MediaAdapterPort } from '@videofy-live/media-adapter-port';
+import {
+  adapterSessionRef,
+  type AdapterAudioFrame,
+  type AdapterSessionRef,
+  type MediaAdapterPort,
+} from '@videofy-live/media-adapter-port';
 
 /** Where audio must be sent for this call. */
 export interface RtpTarget {
@@ -440,10 +445,12 @@ export class SipCall {
    * would push an external identifier across a boundary whose whole purpose
    * is that external identifiers stay adapter metadata.
    */
-  private readonly localSessionId = `sc_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+  private readonly localSessionRef = adapterSessionRef(
+    `sc_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`,
+  );
 
-  get sessionId(): string {
-    return this.localSessionId;
+  get sessionRef(): AdapterSessionRef {
+    return this.localSessionRef;
   }
 
   get participantId(): string {
@@ -480,7 +487,7 @@ export class SipCall {
     this.respond(message, status, reason);
     if (isRenegotiation) {
       this.log('sip re-INVITE refused; the existing session carries on', {
-        sessionId: this.sessionId,
+        sessionRef: this.sessionRef,
         why,
       });
       return;
@@ -532,7 +539,7 @@ export class SipCall {
     // dialog's stored offer with whatever arrived — after which negotiation is
     // re-run from a message the dialog has already moved past.
     if (this.dialog.isStaleRequest(message)) {
-      this.log('sip refused an INVITE the dialog has already passed', { sessionId: this.sessionId });
+      this.log('sip refused an INVITE the dialog has already passed', { sessionRef: this.sessionRef });
       this.measurements.staleRequests += 1;
       this.respond(message, 500, 'Server Internal Error');
       return;
@@ -620,7 +627,7 @@ export class SipCall {
     const reachable = Number.isInteger(offered.port) && offered.port > 0 && offered.port <= 65535;
     const permitted = reachable && maySendMediaTo(offered.address, policy);
     if (!reachable ? offered.port !== 0 : !permitted) {
-      this.log('sip media destination refused by policy', { sessionId: this.sessionId });
+      this.log('sip media destination refused by policy', { sessionRef: this.sessionRef });
       this.measurements.refusedMediaDestinations += 1;
     }
     this.target = permitted ? { address: offered.address, port: offered.port } : null;
@@ -628,7 +635,7 @@ export class SipCall {
     if (!isRenegotiation) {
       const handshake = Promise.resolve(
         this.deps.port.openSession({
-          sessionId: this.sessionId,
+          sessionRef: this.sessionRef,
           platformSessionRef: snapshot.identity.callId,
         }),
       ).then(async () => {
@@ -638,7 +645,7 @@ export class SipCall {
         // who will never speak.
         if (!this.lifecycle.acceptingMedia) return;
         await this.deps.port.participantJoined(
-          this.sessionId,
+          this.sessionRef,
           snapshot.participantId,
           snapshot.remoteDisplayName,
         );
@@ -685,7 +692,7 @@ export class SipCall {
       }
       if (settled === 'timed-out') {
         this.log('sip seam did not complete the opening handshake in time', {
-          sessionId: this.sessionId,
+          sessionRef: this.sessionRef,
           deadlineMs: this.seamHandshakeDeadlineMs,
         });
         this.measurements.seamHandshakeTimeouts += 1;
@@ -772,7 +779,7 @@ export class SipCall {
     // restarting its sender. The dialog says who is on the call, so the
     // participant does not change — only the stream's continuity does.
     if (this.lastRemoteSsrc !== null && packet.ssrc !== this.lastRemoteSsrc) {
-      this.log('sip rtp ssrc changed; same participant, new stream', { sessionId: this.sessionId });
+      this.log('sip rtp ssrc changed; same participant, new stream', { sessionRef: this.sessionRef });
       // Bound to the codec in force NOW, which is the one the outgoing
       // stream's packets arrived under — a renegotiation flushes the buffer
       // before it changes the codec, so nothing older than this can be here.
@@ -805,7 +812,7 @@ export class SipCall {
       // measured against a base the sender abandoned. Anything already
       // extracted keeps the previous generation and its own correct base.
       this.log('sip rtp sender re-anchored on the same ssrc; new media run', {
-        sessionId: this.sessionId,
+        sessionRef: this.sessionRef,
       });
       this.streamGeneration += 1;
     }
@@ -981,7 +988,7 @@ export class SipCall {
       // answer — which is indistinguishable from slow until a deadline says
       // otherwise. One frame costs one deadline, never the call.
       const outcome = await invokeBounded(
-        () => this.deps.port.pushAudio(this.sessionId, frame),
+        () => this.deps.port.pushAudio(this.sessionRef, frame),
         this.seamCallbackDeadlineMs,
         this.timers,
       );
@@ -1153,7 +1160,7 @@ export class SipCall {
    * as the "bye" it replaced.
    */
   private async notifySeam(intent: TerminationIntent): Promise<void> {
-    const sessionId = this.sessionId;
+    const sessionId = this.sessionRef;
     const participantId = this.participantId;
     const handshake = this.handshake;
     if (handshake === null) {
@@ -1385,7 +1392,7 @@ export class SipCall {
       const arrivalGapMs = arrivedAtMs - stream.lastArrivalMs;
       if (mediaGapMs - arrivalGapMs > SipCall.RUN_CONTINUITY_LIMIT_MS) {
         this.log('sip rtp sender re-based its media clock; continuing the timeline', {
-          sessionId: this.sessionId,
+          sessionRef: this.sessionRef,
         });
         this.measurements.mediaClockRebases += 1;
         this.streamBases.delete(generation);
