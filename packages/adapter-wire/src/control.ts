@@ -142,6 +142,16 @@ export const dispositionSchema = z
   .object({
     streamId: z.number().int().positive(),
     outcome: z.enum([
+      /**
+       * The gateway never received these sequences.
+       *
+       * Distinct from every refusal below it: nothing rejected this audio, it
+       * simply did not arrive. Without this the client's frames would sit in
+       * flight forever waiting for a settlement that can never come, which
+       * breaks its own accounting invariant — found by implementing the server
+       * against the contract rather than by reading it.
+       */
+      'lost-in-transit',
       'rejected-auth',
       'rejected-route',
       'rejected-session',

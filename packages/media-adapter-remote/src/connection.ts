@@ -485,8 +485,15 @@ export class AdapterConnection {
   private applyDisposition(disposition: Disposition): void {
     const stream = this.byStreamId.get(disposition.streamId);
     if (stream === undefined) return;
+    // A frame that never arrived is not a refusal. `transportFailed` already
+    // means "transmission attempted, transport failed", which is exactly what
+    // happened; counting it as a gateway refusal would send an operator to
+    // inspect a system that never saw the frame.
+    const lost = disposition.outcome === 'lost-in-transit';
     for (let seq = disposition.fromSequence; seq <= disposition.toSequence; seq += 1) {
-      if (stream.inFlight.delete(seq)) this.counters.gatewayRefused += 1;
+      if (!stream.inFlight.delete(seq)) continue;
+      if (lost) this.counters.transportFailed += 1;
+      else this.counters.gatewayRefused += 1;
     }
     // The run is broken from the gateway's point of view, so the next frame
     // that leaves says so.
