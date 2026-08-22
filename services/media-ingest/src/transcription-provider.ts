@@ -1,3 +1,4 @@
+import type { TranscriptEvent } from './transcript-event.js';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { rm, writeFile } from 'node:fs/promises';
@@ -638,3 +639,106 @@ def handle(payload):
 
 run_worker_loop(handle)
 `}`;
+
+/**
+ * Per-request fallback for batch transcription.
+ *
+ * Translation and speech synthesis have had composites since P6.1; STT has not,
+ * which meant there was no degraded path at all -- a primary failure was a
+ * failed chunk. The asymmetry was an omission rather than a decision.
+ *
+ * Deliberately simpler than the translation composite: that one learns which
+ * language PAIRS a primary cannot serve and routes them permanently. There is no
+ * equivalent per-request key here, so this retries once and reports which
+ * provider actually answered.
+ */
+export interface CompositeTranscriptionProviderOptions {
+  primary: TranscriptionProvider;
+  fallback: TranscriptionProvider;
+  /** Called when the primary failed and the fallback was used. */
+  onFallback?: (detail: { provider: string; message: string }) => void;
+}
+
+export class CompositeTranscriptionProvider implements TranscriptionProvider {
+  readonly name: string;
+  private readonly primary: TranscriptionProvider;
+  private readonly fallback: TranscriptionProvider;
+  private readonly onFallback: (detail: { provider: string; message: string }) => void;
+
+  constructor(options: CompositeTranscriptionProviderOptions) {
+    this.primary = options.primary;
+    this.fallback = options.fallback;
+    this.name = `${options.primary.name}+${options.fallback.name}`;
+    this.onFallback = options.onFallback ?? (() => {});
+  }
+
+  async transcribe(input: TranscriptionProviderInput): Promise<TranscriptionProviderResult> {
+    try {
+      return await this.primary.transcribe(input);
+    } catch (error) {
+      // Reported, never silent. A fallback nobody knows happened is how a
+      // degraded provider stays degraded for a month.
+      const message = error instanceof Error ? error.message : 'unknown';
+      this.onFallback({ provider: this.primary.name, message });
+      return await this.fallback.transcribe(input);
+    }
+  }
+
+  async warmUp(): Promise<void> {
+    // Both, because either may serve the first real chunk.
+    await Promise.allSettled([this.primary.warmUp?.(), this.fallback.warmUp?.()]);
+  }
+}
+
+/**
+ * Normalize a batch result into platform-owned `TranscriptEvent`s.
+ *
+ * This is the batch half of the normalization boundary. Each provider segment
+ * becomes one CANONICAL FINAL -- batch has no interim state to be reversible
+ * about, so it never produces a partial.
+ *
+ * The segment ids come from `mintSegmentId`, exactly as on the streaming side.
+ * A provider index or a vendor-supplied id would make batch and streaming
+ * segments identify differently, and downstream would have to know which
+ * execution mode produced an event in order to interpret it -- which is the
+ * coupling this boundary exists to prevent.
+ */
+export function toTranscriptEvents(
+  result: TranscriptionProviderResult,
+  context: {
+    sessionId: string;
+    streamId: string;
+    providerName: string;
+    mintSegmentId: () => string;
+    /** Offset of this chunk on the platform timeline. */
+    chunkStartMs: number;
+    discontinuity?: boolean;
+  },
+): TranscriptEvent[] {
+  return result.segments
+    .filter((segment) => segment.text.trim() !== '')
+    .map((segment) => ({
+      kind: 'final' as const,
+      sessionId: context.sessionId,
+      streamId: context.streamId,
+      segmentId: context.mintSegmentId(),
+      // Batch emits one canonical final per segment, so the first revision is
+      // also the last. Streaming reaches higher numbers; nothing downstream
+      // should care which, only that higher supersedes lower.
+      revision: 1,
+      text: segment.text,
+      startMs: context.chunkStartMs + segment.startMs,
+      endMs: context.chunkStartMs + segment.endMs,
+      ...(result.detectedLanguage === '' ? {} : { detectedLanguage: result.detectedLanguage }),
+      ...(context.discontinuity ? { discontinuity: true } : {}),
+      provider: {
+        name: context.providerName,
+        startMs: segment.startMs,
+        endMs: segment.endMs,
+        confidence: result.confidence,
+        ...(segment.noSpeechProb === undefined ? {} : { noSpeechProb: segment.noSpeechProb }),
+        ...(segment.avgLogProb === undefined ? {} : { avgLogProb: segment.avgLogProb }),
+        ...(result.providerLatencyMs === undefined ? {} : { latencyMs: result.providerLatencyMs }),
+      },
+    }));
+}
