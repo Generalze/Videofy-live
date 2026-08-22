@@ -244,3 +244,6 @@ packages/**/*.tgz
 
 # Connect Reference room registry: product data, never committed.
 connect-reference-rooms.json
+
+# Staging SPA build output (deploy/staging/build-apps.sh)
+dist-staging/
