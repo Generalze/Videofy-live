@@ -296,6 +296,7 @@ describe('control frames', () => {
 describe('translated speech travels back frame by frame', () => {
   function translated(overrides: Partial<Parameters<typeof encodeTranslatedAudio>[0]> = {}) {
     return encodeTranslatedAudio({
+      targetLanguage: 'es',
       segmentId: 'seg_42',
       generation: 2,
       sequence: 5,
@@ -331,7 +332,7 @@ describe('translated speech travels back frame by frame', () => {
     expect(flagged.frame.audio.segmentStartMs).toBe(1_756_000_000_123);
     expect(plain.frame.audio.final).toBe(false);
     expect(flagged.frame.audio.final).toBe(true);
-    expect(TRANSLATED_AUDIO_HEADER_BYTES).toBe(20);
+    expect(TRANSLATED_AUDIO_HEADER_BYTES).toBe(22);
   });
 
   it('PIN: a segmentId longer than the frame is refused, not read past', () => {
@@ -345,6 +346,89 @@ describe('translated speech travels back frame by frame', () => {
   it('PIN: half a sample is refused here too', () => {
     const frame = Buffer.concat([translated(), Buffer.from([0x01])]);
     expect(decodeIngressFrame(frame)).toMatchObject({ ok: false, code: 'odd-payload-length' });
+  });
+
+  it('PIN: the target language survives, and several share a segmentId', () => {
+    // The field this protocol version exists for. Without it one source
+    // session could progressively speak exactly one language, because a second
+    // pipeline's frames were indistinguishable from the first's.
+    const spanish = decodeIngressFrame(translated({ targetLanguage: 'es' }));
+    const french = decodeIngressFrame(translated({ targetLanguage: 'fr' }));
+    if (!spanish.ok || spanish.frame.kind !== 'translated-audio') throw new Error('bad');
+    if (!french.ok || french.frame.kind !== 'translated-audio') throw new Error('bad');
+    expect(spanish.frame.audio.targetLanguage).toBe('es');
+    expect(french.frame.audio.targetLanguage).toBe('fr');
+    // Same segment, same sequence, different language: two streams, not a
+    // duplicate.
+    expect(spanish.frame.audio.segmentId).toBe(french.frame.audio.segmentId);
+    expect(spanish.frame.audio.sequence).toBe(french.frame.audio.sequence);
+  });
+
+  it('PIN: a language that is not a language tag is refused', () => {
+    for (const bad of ['', 'es fr', 'a'.repeat(33), 'es;drop']) {
+      expect(() => translated({ targetLanguage: bad }), bad).toThrow(/language|limit/);
+    }
+  });
+
+  it('PIN: a language length beyond the buffer is refused before allocation', () => {
+    const frame = translated();
+    frame.writeUInt8(31, 20);
+    // A length field from a peer is an instruction to allocate. Checking it
+    // against the real buffer FIRST is what stops that instruction being
+    // followed.
+    expect(decodeIngressFrame(frame)).toMatchObject({ ok: false, code: 'malformed-frame' });
+  });
+
+  it('PIN: an over-long language is refused BY LENGTH, before it is read', () => {
+    // A long segmentId leaves room, so the buffer is big enough and only the
+    // bound stops it. The DETAIL is asserted, not just the code: without the
+    // bound the value would be read and then fail the tag check instead --
+    // same refusal, different reason, and the difference is whether a
+    // 40-byte read happened first.
+    const frame = translated({ segmentId: 'x'.repeat(80) });
+    frame.writeUInt8(40, 20);
+    const result = decodeIngressFrame(frame);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.detail).toMatch(/targetLanguage length 40/);
+  });
+
+  it('PIN: a decoded language that is not a tag is refused', () => {
+    // Encode has its own guard; this proves the DECODER refuses independently,
+    // which is what matters for a peer we do not control.
+    const frame = translated({ targetLanguage: 'ab' });
+    // Overwrite the two language bytes with something that is not a tag.
+    const languageAt = TRANSLATED_AUDIO_HEADER_BYTES + Buffer.from('seg_42', 'utf8').length;
+    frame.write('e;', languageAt, 'utf8');
+    const result = decodeIngressFrame(frame);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.detail).toMatch(/not a language tag/);
+  });
+
+  it('PIN: the reserved byte beside the language length must be zero', () => {
+    const frame = translated();
+    frame.writeUInt8(1, 21);
+    expect(decodeIngressFrame(frame)).toMatchObject({ ok: false, code: 'reserved-bits-set' });
+  });
+
+  it('PIN: a v1 peer cannot open a stream, so its frames are never reinterpreted', () => {
+    // The translated-audio frame layout changed incompatibly. The version
+    // check at OPEN is what stops a v1 frame being read as the new shape: a v1
+    // connection never reaches the point of sending audio.
+    const open = encodeOpen({
+      sessionId: 's', streamId: 'st', context: { serviceCategory: 'call', mediaMode: 'live' },
+    });
+    const body = JSON.parse(open.subarray(1).toString('utf8')) as Record<string, unknown>;
+    expect(body['version']).toBe(INGRESS_PROTOCOL_VERSION);
+    expect(INGRESS_PROTOCOL_VERSION).toBe(2);
+    body['version'] = 1;
+    const v1 = Buffer.concat([
+      Buffer.from([IngressMessageType.OPEN]),
+      Buffer.from(JSON.stringify(body), 'utf8'),
+    ]);
+    expect(decodeIngressFrame(v1)).toMatchObject({
+      ok: false,
+      code: 'protocol-version-mismatch',
+    });
   });
 
   it('a nameless segment cannot be encoded', () => {

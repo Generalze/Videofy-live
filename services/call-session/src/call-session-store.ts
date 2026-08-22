@@ -330,6 +330,36 @@ export interface CallGeneratedAudioSourceEvent {
 }
 
 /** `call:generated-audio` payload per the P6.1B design note. */
+/**
+ * One frame of translated speech on its way to a call participant.
+ *
+ * `pcmBase64` is little-endian PCM16 at 16 kHz mono -- the engine's own format.
+ * Nothing here names a vendor, so changing synthesiser stays a configuration
+ * change rather than a client release.
+ *
+ * `targetLanguage` is explicit and load-bearing: one utterance produces several
+ * independent frame streams that share a `segmentId`, and the language is the
+ * only thing that tells them apart. A client that merged them would interleave
+ * Spanish and French renderings of one sentence.
+ */
+export interface CallTranslatedAudioFramePayload {
+  callId: string;
+  speakerParticipantId: string;
+  targetLanguage: string;
+  /** Revision pair the frame was produced under; a client rejects stale ones. */
+  mediaRevision: number;
+  languageRevision: number;
+  segmentId: string;
+  /** Which synthesis attempt, scoped to (targetLanguage, segmentId). */
+  generation: number;
+  sequence: number;
+  segmentStartMs: number;
+  final: boolean;
+  sampleRate: 16000;
+  channelCount: 1;
+  pcmBase64: string;
+}
+
 export interface CallGeneratedAudioPayload {
   callId: string;
   speakerParticipantId: string;
@@ -743,28 +773,56 @@ export class CallSessionStore {
     return deliveries;
   }
 
+  /**
+   * WHO should hear a speaker's words in a given language. The one authority.
+   *
+   * Extracted so that finished-file delivery and PROGRESSIVE frame delivery ask
+   * the same question of the same code. Two copies of an eligibility rule is
+   * two places to forget that `normal` mode delivers nothing, that a stale
+   * revision must not route, and that a speaker never hears their own
+   * translated voice -- and the copy that forgets is always the newer one.
+   *
+   * Returns participant ids and nothing else. Each delivery mechanism projects
+   * its own payload from them: a URL for the file path, PCM frames for the
+   * progressive one. Returning a payload here would force this to know about
+   * both, and it would grow a third shape the next time a transport appeared.
+   */
+  translatedAudioRecipients(
+    callId: string,
+    speakerParticipantId: string,
+    targetLanguage: string,
+    revisions: { mediaRevision: number; languageRevision: number },
+  ): string[] {
+    const routable = this.routableSpeaker(callId, speakerParticipantId, revisions);
+    if (!routable) return [];
+    const { call, speaker } = routable;
+    // Same belt and braces as routeCaption: normal mode delivers nothing (W5).
+    if (call.callMode === 'normal') return [];
+    return connectedOtherParticipants(call, speaker)
+      .filter((recipient) =>
+        isSameLanguage(recipient.participant.preferredLanguage, targetLanguage),
+      )
+      .map((recipient) => recipient.participant.participantId);
+  }
+
   routeGeneratedAudio(
     callId: string,
     speakerParticipantId: string,
     event: CallGeneratedAudioSourceEvent,
   ): CallRouteDelivery[] {
-    const routable = this.routableSpeaker(callId, speakerParticipantId, event);
-    if (!routable) {
-      return [];
-    }
-    const { call, speaker } = routable;
-    // Same belt and braces as routeCaption: normal mode delivers nothing (W5).
-    if (call.callMode === 'normal') {
-      return [];
-    }
-    const deliveries: CallRouteDelivery[] = [];
-    for (const recipient of connectedOtherParticipants(call, speaker)) {
-      if (!isSameLanguage(recipient.participant.preferredLanguage, event.targetLanguage)) {
-        continue;
-      }
-      const payload: CallGeneratedAudioPayload = {
-        callId: call.callId,
-        speakerParticipantId: speaker.participant.participantId,
+    // The SAME eligibility decision the progressive path uses. This method now
+    // only projects a payload onto it.
+    const recipients = this.translatedAudioRecipients(
+      callId,
+      speakerParticipantId,
+      event.targetLanguage,
+      event,
+    );
+    return recipients.map((recipientParticipantId) => ({
+      recipientParticipantId,
+      payload: {
+        callId,
+        speakerParticipantId,
         targetLanguage: event.targetLanguage,
         voiceId: event.voiceId,
         audioUrl: event.audioUrl,
@@ -773,13 +831,8 @@ export class CallSessionStore {
         durationMs: event.durationMs,
         mediaRevision: event.mediaRevision,
         languageRevision: event.languageRevision,
-      };
-      deliveries.push({
-        recipientParticipantId: recipient.participant.participantId,
-        payload,
-      });
-    }
-    return deliveries;
+      } satisfies CallGeneratedAudioPayload,
+    }));
   }
 
   /** Cleanup evidence for tests and gateway diagnostics. */

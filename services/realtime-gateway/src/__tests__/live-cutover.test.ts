@@ -19,6 +19,7 @@ import {
   type MediaTranscriptionSubmissionClient,
 } from '../media-transcription-bridge.js';
 import type { LiveIngressSender } from '../live-ingress-sender.js';
+import { requiresOperatorAttention, resolveLivePath } from '../live-path-policy.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -182,5 +183,85 @@ describe('the old live behaviour cannot come back by accident', () => {
     // bridge must not have taken a live branch that does not exist here.
     expect(submit).toHaveBeenCalledTimes(0);
     expect(() => bridge.endSession(callContext({ mediaSessionMode: 'programme' }), 'done')).not.toThrow();
+  });
+});
+
+describe('an unconfigured realtime path is a decision, never a silent fallback', () => {
+  it('PIN: a commercial call REFUSES rather than running the batch path', () => {
+    for (const profile of ['commercial-cloud', 'commercial-local'] as const) {
+      const decision = resolveLivePath({
+        profile,
+        mediaSessionMode: 'live-conversation',
+        realtimeConfigured: false,
+      });
+      // A deployment that configured commercial providers meant to use them.
+      // Falling through would look entirely healthy while running exactly the
+      // path the cutover replaced.
+      expect(decision.kind, profile).toBe('refuse');
+      expect(requiresOperatorAttention(decision)).toBe(true);
+    }
+  });
+
+  it('PIN: a commercial live programme degrades EXPLICITLY rather than silently', () => {
+    const decision = resolveLivePath({
+      profile: 'commercial-cloud',
+      mediaSessionMode: 'programme',
+      realtimeConfigured: false,
+    });
+    // A broadcast that keeps working with higher latency beats one that stops,
+    // and its audience is not waiting to reply. But somebody has to be told.
+    expect(decision.kind).toBe('batch-fallback');
+    if (decision.kind === 'batch-fallback') expect(decision.degraded).toBe(true);
+    expect(requiresOperatorAttention(decision)).toBe(true);
+  });
+
+  it('PIN: development keeps the chunker without complaint', () => {
+    const decision = resolveLivePath({
+      profile: 'development-demo',
+      mediaSessionMode: 'live-conversation',
+      realtimeConfigured: false,
+    });
+    // Demanding a streaming recogniser here would make the repository unusable
+    // without a commercial credential.
+    expect(decision.kind).toBe('batch-fallback');
+    if (decision.kind === 'batch-fallback') expect(decision.degraded).toBe(false);
+    expect(requiresOperatorAttention(decision)).toBe(false);
+  });
+
+  it('PIN: a configured realtime path is always realtime, whatever the profile', () => {
+    for (const profile of ['development-demo', 'commercial-cloud', 'videofy-native'] as const) {
+      expect(
+        resolveLivePath({ profile, mediaSessionMode: 'live-conversation', realtimeConfigured: true })
+          .kind,
+      ).toBe('realtime');
+    }
+  });
+
+  it('PIN: a refused commercial call submits nothing at all', async () => {
+    const recorded = recordingClient();
+    const bridge = new MediaTranscriptionBridge({
+      stagingDir: resolve(here, '__staging__'),
+      client: recorded.client,
+      livePathProfile: 'commercial-cloud',
+      // No realtimeIngress: the exact misconfiguration this guards.
+    });
+    for (let i = 0; i < 10; i += 1) bridge.handleFrame(callContext(), frame());
+    await new Promise((done) => setTimeout(done, 10));
+    // Not one chunk. The audio is dropped and the refusal is logged, which is
+    // discovered in seconds rather than in a bandwidth graph next quarter.
+    expect(recorded.calls.filter((c) => c.startsWith('submitChunk'))).toHaveLength(0);
+    expect(bridge.livePathFor(callContext()).kind).toBe('refuse');
+  });
+
+  it('PIN: a commercial live PROGRAMME still runs, degraded', async () => {
+    const recorded = recordingClient();
+    const bridge = new MediaTranscriptionBridge({
+      stagingDir: resolve(here, '__staging__'),
+      client: recorded.client,
+      livePathProfile: 'commercial-cloud',
+    });
+    const programme = callContext({ sessionId: 'prog_x', mediaSessionMode: 'programme' });
+    expect(bridge.livePathFor(programme).kind).toBe('batch-fallback');
+    expect(() => bridge.handleFrame(programme, frame())).not.toThrow();
   });
 });

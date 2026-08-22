@@ -27,6 +27,12 @@
  *   7. finish, abort and a dropped transport stay distinguishable
  *   8. a live programme takes the same path with stabilised finalisation
  *   9. the uploaded-programme batch path is untouched
+ *  10. the REAL client playback engine makes those frames audible, in order,
+ *      before synthesis of the utterance has finished
+ *
+ * Claim 10 is the one that stops this being a gateway test. A frame reaching
+ * `onTranslatedAudio` proves the gateway emitted it; only the client engine
+ * deciding to play it proves a listener would have heard anything.
  */
 import { createServer } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -42,6 +48,9 @@ const { MediaTranscriptionBridge, serviceContextForMode } = await import(
   `${gatewayDist}/media-transcription-bridge.js`
 );
 const { shouldUseMediaTranscriptionForProgrammeSource } = await import(`${gatewayDist}/gateway.js`);
+const { createTranslatedAudioSubscription, TRANSLATED_AUDIO_FRAME_EVENT } = await import(
+  '../packages/call-client-core/dist/translatedAudioSubscription.js'
+);
 
 const TOKEN = 'production-acceptance-token-32-chars';
 const AUTH = { mode: 'enforced', token: TOKEN, source: 'acceptance' };
@@ -156,7 +165,8 @@ const handle = attachRealtimeAudioIngress(server, {
     translation: scriptedTranslator(record),
     synthesis: scriptedSynthesiser(record),
     mintSegmentId: () => `seg_${(mintCounter += 1)}`,
-    speechPlanFor: () => ({ targetLanguage: 'es', voiceId: 'videofy-es' }),
+    // Plural now: one plan per distinct target language.
+    speechPlansFor: () => [{ targetLanguage: 'es', voiceId: 'videofy-es' }],
     onCaption: (event) => {
       record.captions.push(event);
       if (event.kind === 'final') record.timeline.push(`final:${event.segmentId}`);
@@ -176,6 +186,70 @@ const url = `ws://127.0.0.1:${server.address().port}${REALTIME_INGRESS_PATH}`;
 const submissions = [];
 const translatedToListener = [];
 
+// THE REAL CLIENT ENGINE, fed as frames arrive rather than replayed afterwards.
+// Replaying at the end would put every `audible` marker after `synth-complete`
+// and the "heard it before synthesis finished" claim would be measuring the
+// order of my own loop instead of the pipeline.
+const clientAudible = [];
+const clientDispositions = [];
+const clientSink = {
+  play: (samples) => {
+    clientAudible.push(samples.length);
+    record.timeline.push('audible');
+  },
+  // This sink hands audio straight to its output, so nothing is ever waiting:
+  // a flush has nothing to discard. A browser sink schedules ahead and really
+  // does have unheard audio to drop -- that difference is why `flush` returns
+  // a number rather than nothing.
+  flush: () => 0,
+  get playedMs() {
+    return clientAudible.reduce((total, length) => total + (length / 16000) * 1000, 0);
+  },
+};
+
+// THROUGH THE SUBSCRIPTION, not the player. The player is the engine; the
+// subscription is the wiring a component actually installs -- the shape check,
+// the session guard, the bind-once rule. Driving the player directly would
+// prove the engine works while leaving the part that goes wrong untested.
+const clientHandlers = new Map();
+const clientSocket = {
+  on: (event, handler) => clientHandlers.set(event, [...(clientHandlers.get(event) ?? []), handler]),
+  off: (event, handler) =>
+    clientHandlers.set(event, (clientHandlers.get(event) ?? []).filter((h) => h !== handler)),
+};
+const clientSubscription = createTranslatedAudioSubscription({
+  socket: clientSocket,
+  sink: clientSink,
+  isAudible: () => true,
+  sessionId: () => 'call_acceptance',
+  onDisposition: (disposition) => clientDispositions.push(disposition),
+});
+clientSubscription.subscribe();
+// Bound twice on purpose: a reconnect re-runs this in a real component, and a
+// second handler would play every frame twice.
+clientSubscription.subscribe();
+
+function feedClient(frame) {
+  const payload = {
+    sessionId: 'call_acceptance',
+    targetLanguage: frame.targetLanguage,
+    broadcastId: 'bc_call',
+    segmentId: frame.segmentId,
+    generation: frame.generation,
+    sequence: frame.sequence,
+    segmentStartMs: frame.segmentStartMs,
+    final: frame.final,
+    sampleRate: 16000,
+    channelCount: 1,
+    pcmBase64: Buffer.from(
+      frame.samples.buffer,
+      frame.samples.byteOffset,
+      frame.samples.byteLength,
+    ).toString('base64'),
+  };
+  for (const handler of clientHandlers.get(TRANSLATED_AUDIO_FRAME_EVENT) ?? []) handler(payload);
+}
+
 function makeBridge() {
   return new MediaTranscriptionBridge({
     stagingDir: new URL('../uploads/acceptance-staging', import.meta.url).pathname,
@@ -190,6 +264,9 @@ function makeBridge() {
       onTranslatedAudio: (context, frame) => {
         translatedToListener.push({ context: context.sessionId, frame });
         record.timeline.push(`listener:${frame.segmentId}#${frame.sequence}`);
+        // Straight into the client engine, exactly as a browser would on
+        // receiving the socket event.
+        if (context.sessionId === 'call_acceptance') feedClient(frame);
       },
     },
   });
@@ -337,6 +414,55 @@ const callContext = {
     ['live-conversation', 'programme'].every(
       (mode) => serviceContextForMode(mode).mediaMode === 'live',
     ),
+  );
+}
+
+// --- the real client playback engine ---------------------------------------
+
+{
+  check(
+    'the client SUBSCRIPTION makes every delivered frame audible',
+    clientDispositions.length > 0 && clientDispositions.every((d) => d === 'played'),
+    `${clientDispositions.filter((d) => d === 'played').length}/${clientDispositions.length} played`,
+  );
+  check(
+    'subscribing twice still plays each frame once',
+    clientAudible.length === clientDispositions.filter((d) => d === 'played').length,
+    `${clientAudible.length} audible for ${clientDispositions.filter((d) => d === 'played').length} played`,
+  );
+  check(
+    'audible audio equals the audio that was delivered',
+    Math.round(clientSubscription.player.state.playedMs) > 0 &&
+      clientAudible.length === translatedToListener.filter((t) => t.context === 'call_acceptance').length,
+    `${Math.round(clientSubscription.player.state.playedMs)} ms audible across ${clientAudible.length} frames`,
+  );
+
+  const firstAudible = record.timeline.indexOf('audible');
+  const synthDone = record.timeline.indexOf('synth-complete');
+  check(
+    'the FIRST audio is audible to the client before synthesis completes',
+    firstAudible >= 0 && synthDone >= 0 && firstAudible < synthDone,
+    `first audible at step ${firstAudible}, synthesis complete at ${synthDone}`,
+  );
+
+  // Supersession, through the real engine rather than asserted about it.
+  const superseded = clientSubscription.player.accept({
+    sessionId: 'call_acceptance', broadcastId: 'bc_call',
+    targetLanguage: 'es',
+    segmentId: translatedToListener[0].frame.segmentId,
+    generation: 0, sequence: 0, segmentStartMs: 0, final: false,
+    sampleRate: 16000, channelCount: 1, pcmBase64: Buffer.alloc(640).toString('base64'),
+  });
+  check(
+    'a superseded generation is refused by the client, not played late',
+    superseded === 'dropped-superseded',
+    superseded,
+  );
+
+  check(
+    'cancelling reports only what nobody heard',
+    clientSubscription.player.cancelAll() === 0,
+    'nothing was still waiting in this sink',
   );
 }
 

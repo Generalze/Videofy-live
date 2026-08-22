@@ -16,9 +16,22 @@
  *   speech     wants finals only, because a sentence somebody has heard
  *              cannot be corrected at all
  *
- * So `onCaption` sees everything and the translation pipeline sees finals. The
+ * So `onCaption` sees everything and the translation pipelines see finals. The
  * filter lives inside the translation pipeline rather than here, so a future
  * caller cannot forget it.
+ *
+ * ONE TRANSCRIPTION, SEVERAL LANGUAGES. A conference with Spanish and French
+ * listeners transcribes the speaker ONCE and then translates and synthesises
+ * once per distinct target language. The earlier shape held a single pipeline
+ * chosen from the first configured target, so French was simply never spoken
+ * while every component reported success -- the most expensive kind of bug,
+ * because nothing looks wrong.
+ *
+ * GENERATIONS ARE PER LANGUAGE. A Spanish retry must not cancel the French
+ * rendering of the same sentence: they are separate attempts at separate
+ * outputs that happen to share a segment id. Each pipeline keeps its own
+ * counter, and the language travels on every frame so the two never merge
+ * downstream.
  */
 import type {
   IngressOpen,
@@ -36,6 +49,48 @@ import type { StreamingTranscriptionProvider } from './streaming-transcription-p
 import type { TimestampedTranslationProvider } from './translation-provider.js';
 import type { TranscriptEvent } from './transcript-event.js';
 
+/** One language this session wants spoken, and the voice to speak it in. */
+export interface LiveSpeechPlan {
+  readonly targetLanguage: string;
+  readonly voiceId: string;
+}
+
+/**
+ * Which languages a session should be SPOKEN in, from what it was configured
+ * with. Pure, so the rule is provable without a running session.
+ *
+ * Three separate exclusions, each with a different reason, and each one a way
+ * a language could otherwise get a voice it should not have:
+ *
+ *   already planned   ten Spanish listeners are ONE translation and ONE
+ *                     synthesis. Per-recipient streams would multiply the
+ *                     vendor bill by the size of the audience for no audible
+ *                     difference.
+ *   text-only         translated for captions and deliberately never spoken.
+ *                     Its audience asked for text.
+ *   no voice          a language with no voice configured is left out rather
+ *                     than given a default one, which for Spanish words would
+ *                     be an English voice -- worse than the silence.
+ */
+export function planSpeechTargets(input: {
+  readonly targetLanguages?: readonly string[] | undefined;
+  readonly textOnlyLanguages?: readonly string[] | undefined;
+  readonly voiceIdsByLanguage?: Readonly<Record<string, string>> | undefined;
+}): LiveSpeechPlan[] {
+  const textOnly = new Set(input.textOnlyLanguages ?? []);
+  const plans: LiveSpeechPlan[] = [];
+  const seen = new Set<string>();
+  for (const targetLanguage of input.targetLanguages ?? []) {
+    if (seen.has(targetLanguage)) continue;
+    if (textOnly.has(targetLanguage)) continue;
+    const voiceId = input.voiceIdsByLanguage?.[targetLanguage];
+    if (voiceId === undefined) continue;
+    seen.add(targetLanguage);
+    plans.push({ targetLanguage, voiceId });
+  }
+  return plans;
+}
+
 export interface LiveSessionHostDeps {
   readonly transcription: StreamingTranscriptionProvider;
   readonly translation: TimestampedTranslationProvider;
@@ -43,17 +98,26 @@ export interface LiveSessionHostDeps {
   readonly synthesis: StreamingSpeechSynthesisProvider | null;
   readonly mintSegmentId: (open: IngressOpen) => string;
   /**
-   * What this stream translates into, decided by the platform per session.
+   * Every language this stream should be SPOKEN in, one plan per distinct
+   * language.
    *
-   * Returning null means captions only: a target language with no listener
-   * wanting audio must not reach synthesis, and must not silently fall back to
-   * a default voice speaking the wrong language.
+   * PLURAL, and that is the point. The singular version returned the first
+   * non-text-only target, so a conference with Spanish and French listeners
+   * progressively spoke Spanish and silently never spoke French -- while every
+   * component reported success, because nothing was broken. It was a contract
+   * that could not express the product.
+   *
+   * An empty list is a real answer: captions only. A language with no voice
+   * configured is left out rather than given a default one, which for Spanish
+   * words would be an English voice -- worse than the silence it replaced.
    */
-  readonly speechPlanFor: (
-    open: IngressOpen,
-  ) => { targetLanguage: string; voiceId: string } | null;
+  readonly speechPlansFor: (open: IngressOpen) => readonly LiveSpeechPlan[];
   readonly onCaption?: (event: TranscriptEvent) => void;
-  readonly onSpoken?: (segmentId: string, generation: number) => void;
+  readonly onSpoken?: (
+    segmentId: string,
+    generation: number,
+    targetLanguage: string,
+  ) => void;
   readonly speech?: LiveStreamPipelineDeps['speech'];
   readonly stabilizationMs?: number;
   readonly maxUtteranceMs?: number;
@@ -67,7 +131,8 @@ export interface LiveSessionHostDeps {
 export class LiveSessionHost implements IngressStreamHandler {
   private constructor(
     private readonly transcript: LiveStreamPipeline,
-    private readonly speech: LiveTranslationPipeline | null,
+    /** Keyed by target language. Empty means captions only. */
+    private readonly speech: ReadonlyMap<string, LiveTranslationPipeline>,
     private readonly context: RealtimeServiceContext,
   ) {}
 
@@ -76,10 +141,13 @@ export class LiveSessionHost implements IngressStreamHandler {
     sender: IngressStreamSender,
     deps: LiveSessionHostDeps,
   ): Promise<LiveSessionHost> {
-    const plan = deps.speechPlanFor(open);
-    let speech: LiveTranslationPipeline | null = null;
+    const plans = deps.synthesis === null ? [] : deps.speechPlansFor(open);
+    const synthesis = deps.synthesis;
+    const speech = new Map<string, LiveTranslationPipeline>();
 
-    if (plan !== null && deps.synthesis !== null) {
+    for (const plan of plans) {
+      if (synthesis === null) break;
+      if (speech.has(plan.targetLanguage)) continue;
       const translationDeps: LiveTranslationPipelineDeps = {
         sessionId: open.sessionId,
         streamId: open.streamId,
@@ -88,11 +156,14 @@ export class LiveSessionHost implements IngressStreamHandler {
         targetLanguage: plan.targetLanguage,
         voiceId: plan.voiceId,
         translation: deps.translation,
-        synthesis: deps.synthesis,
-        // Straight back down the same socket the audio came up. Nothing about
-        // which vendor synthesised it survives this boundary.
+        synthesis,
+        // Straight back down the same socket the audio came up. The LANGUAGE
+        // travels with every frame: several pipelines share this socket and a
+        // segment id, and the language is the only thing that tells their
+        // frames apart.
         deliver: (frame): boolean =>
           sender.sendTranslatedAudio({
+            targetLanguage: plan.targetLanguage,
             segmentId: frame.segmentId,
             generation: frame.generation,
             sequence: frame.sequence,
@@ -105,7 +176,7 @@ export class LiveSessionHost implements IngressStreamHandler {
         ...(deps.now === undefined ? {} : { now: deps.now }),
         ...(deps.log === undefined ? {} : { log: deps.log }),
       };
-      speech = new LiveTranslationPipeline(translationDeps);
+      speech.set(plan.targetLanguage, new LiveTranslationPipeline(translationDeps));
     }
 
     const transcript = await LiveStreamPipeline.open({
@@ -118,22 +189,29 @@ export class LiveSessionHost implements IngressStreamHandler {
       mintSegmentId: () => deps.mintSegmentId(open),
       onTranscriptEvent: (event) => {
         deps.onCaption?.(event);
-        if (speech === null) return;
-        // Deliberately not awaited. Transcription must not stall behind
-        // translation and synthesis: the next frame of somebody's speech is
-        // already arriving, and holding the recogniser to wait for a vendor to
-        // finish a sentence would make the whole stream stutter.
-        void speech
-          .onTranscriptEvent(event)
-          .then((record) => {
-            if (record !== null) deps.onSpoken?.(record.segmentId, record.generation);
-          })
-          .catch((error: unknown) => {
-            deps.log?.('speech pipeline failed', {
-              segmentId: event.segmentId,
-              message: error instanceof Error ? error.message : 'unknown',
+        // ONE final, EVERY language. Fanned out here rather than by
+        // transcribing per language: the speaker said the sentence once.
+        for (const [targetLanguage, pipeline] of speech) {
+          // Deliberately not awaited. Transcription must not stall behind
+          // translation and synthesis: the next frame of somebody's speech is
+          // already arriving, and holding the recogniser to wait for a vendor
+          // to finish a sentence would make the whole stream stutter. Nor may
+          // one slow language hold up another.
+          void pipeline
+            .onTranscriptEvent(event)
+            .then((record) => {
+              if (record !== null) {
+                deps.onSpoken?.(record.segmentId, record.generation, targetLanguage);
+              }
+            })
+            .catch((error: unknown) => {
+              deps.log?.('speech pipeline failed', {
+                segmentId: event.segmentId,
+                targetLanguage,
+                message: error instanceof Error ? error.message : 'unknown',
+              });
             });
-          });
+        }
       },
       ...(deps.speech === undefined ? {} : { speech: deps.speech }),
       ...(deps.stabilizationMs === undefined ? {} : { stabilizationMs: deps.stabilizationMs }),
@@ -154,9 +232,14 @@ export class LiveSessionHost implements IngressStreamHandler {
     return this.transcript.stats;
   }
 
+  /** Every language this stream is being spoken in. */
+  get spokenLanguages(): string[] {
+    return [...this.speech.keys()];
+  }
+
   /** The socket has room again; release whatever translated audio was held. */
   resume(): void {
-    this.speech?.resume();
+    for (const pipeline of this.speech.values()) pipeline.resume();
   }
 
   async onAudio(frame: Parameters<IngressStreamHandler['onAudio']>[0]): Promise<void> {
@@ -171,9 +254,10 @@ export class LiveSessionHost implements IngressStreamHandler {
 
   async abort(reason: string): Promise<void> {
     await this.transcript.abort(reason);
-    // Whatever was being spoken for this stream is withdrawn too. Leaving it
-    // running would speak a sentence whose transcript was just discarded.
-    this.speech?.cancelAll(reason);
+    // Whatever was being spoken for this stream is withdrawn too, in EVERY
+    // language. Leaving one running would speak a sentence whose transcript
+    // was just discarded.
+    for (const pipeline of this.speech.values()) pipeline.cancelAll(reason);
   }
 
   async disconnected(reason: string): Promise<void> {

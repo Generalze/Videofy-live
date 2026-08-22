@@ -23,6 +23,7 @@ import {
   type CommercialProvider,
   type ProviderServiceContext,
   allStageEvidenceComplaints,
+  describedEnvVarNames,
   stageEvidenceComplaints,
 } from './index.js';
 
@@ -37,7 +38,10 @@ function provider(overrides: Partial<CommercialProvider> = {}): CommercialProvid
   return {
     providerId: 'test-vendor',
     displayName: 'Test Vendor',
-    credentialEnvVars: ['TEST_VENDOR_API_KEY'],
+    requirements: {
+      configEnvVars: [],
+      auth: { kind: 'api-key', envVars: ['TEST_VENDOR_API_KEY'] },
+    },
     integrationStage: 'certified',
     capabilities: {
       transcription: { ...UNVERIFIED_TRANSCRIPTION, batch: 'yes', streaming: 'yes', partialResults: 'yes' },
@@ -267,7 +271,7 @@ describe('unverified is not a claim', () => {
 describe('credentials', () => {
   it('PIN: the registry records env var NAMES, never values', () => {
     for (const p of COMMERCIAL_PROVIDERS) {
-      for (const name of p.credentialEnvVars) {
+      for (const name of describedEnvVarNames(p.requirements)) {
         // A value would fail this shape. The schema enforces it too; this pin
         // states the intent so the reason survives a refactor.
         expect(name).toMatch(/^[A-Z][A-Z0-9_]*$/);
@@ -278,7 +282,7 @@ describe('credentials', () => {
   it('PIN: presence is a predicate, so no secret enters the module', () => {
     const seen: string[] = [];
     resolveOperationalState({
-      credentialEnvVars: ['A_KEY', 'B_KEY'],
+      requirements: { configEnvVars: [], auth: { kind: 'api-key', envVars: ['A_KEY', 'B_KEY'] } },
       isPresent: (name) => { seen.push(name); return false; },
     });
     // Only names were passed in, and only names come back out.
@@ -287,7 +291,9 @@ describe('credentials', () => {
 
   it('an explicit administrative disable is distinct from a missing credential', () => {
     const admin = resolveOperationalState({
-      credentialEnvVars: ['A_KEY'], administrativelyDisabled: true, isPresent: present,
+      requirements: { configEnvVars: [], auth: { kind: 'api-key', envVars: ['A_KEY'] } },
+      administrativelyDisabled: true,
+      isPresent: present,
     });
     expect(admin.state).toBe('disabled');
     expect(admin.missingCredentials).toEqual([]);
@@ -388,7 +394,7 @@ describe('commercial provider records', () => {
   it('PIN: the 9jaLingo provider id is naijalingo, not a typo', () => {
     const p = findCommercialProvider('naijalingo');
     expect(p).toBeDefined();
-    expect(p!.credentialEnvVars).toEqual(['NAIJALINGO_API_KEY', 'NAIJALINGO_BASE_URL']);
+    expect(p!.requirements.auth).toEqual({ kind: 'api-key', envVars: ['NAIJALINGO_API_KEY'] });
     expect(findCommercialProvider('ninjalingo')).toBeUndefined();
   });
 
@@ -479,10 +485,11 @@ describe('a recorded stage travels with the evidence for it', () => {
   });
 
   it('PIN: providers whose smoke has not run stay configured', () => {
-    // Deepgram's smoke still needs a credential nobody has run it with. The
-    // list shrinks as evidence arrives -- that is the point of it -- but a
+    // The list shrinks as evidence arrives -- that is the point of it -- but a
     // provider must never leave it without an observation to leave it for.
-    for (const id of ['deepgram', 'azure', 'naijalingo']) {
+    // Deepgram left on 2026-08-22; azure and naijalingo have no adapter yet,
+    // so there is nothing to run against them.
+    for (const id of ['azure', 'naijalingo']) {
       const found = findCommercialProvider(id);
       expect(found?.liveObservations).toEqual([]);
       expect(found?.integrationStage).toBe('configured');
@@ -497,5 +504,151 @@ describe('a recorded stage travels with the evidence for it', () => {
     // It proves nothing about latency on an ordinary day.
     expect(google?.liveObservations[0]?.sampleCount).toBe(1);
     expect(google?.liveObservations[0]?.capability).toBe('translation');
+  });
+});
+
+describe('authentication requirements are three different things, not one list', () => {
+  const nothingPresent = (): boolean => false;
+  const onlyProject = (name: string): boolean => name === 'GOOGLE_TRANSLATE_PROJECT_ID';
+
+  it('PIN (A): valid ADC does not require GOOGLE_APPLICATION_CREDENTIALS', () => {
+    const google = findCommercialProvider('google-cloud')!;
+    const state = resolveOperationalState({
+      requirements: google.requirements,
+      // The key file is absent, and deliberately so: this deployment
+      // authenticates through gcloud ADC, and Contabo will authenticate
+      // through a metadata server or workload identity. Neither sets it.
+      isPresent: onlyProject,
+      externalAuthResolved: true,
+    });
+    expect(state.state).toBe('enabled');
+    expect(state.missingCredentials).toEqual([]);
+  });
+
+  it('PIN (B): a missing resource project still blocks', () => {
+    const google = findCommercialProvider('google-cloud')!;
+    const state = resolveOperationalState({
+      requirements: google.requirements,
+      isPresent: nothingPresent,
+      externalAuthResolved: true,
+    });
+    // Authentication is fine and there is still nothing to address. The reason
+    // names the configuration rather than blaming the credential.
+    expect(state.state).toBe('disabled');
+    expect(state.missingCredentials).toEqual(['GOOGLE_TRANSLATE_PROJECT_ID']);
+    expect(state.reason).toMatch(/configuration not set/);
+  });
+
+  it('PIN (C): the optional quota project is never required', () => {
+    const google = findCommercialProvider('google-cloud')!;
+    expect(google.requirements.optionalEnvVars).toContain('GOOGLE_CLOUD_QUOTA_PROJECT');
+    // Absent is a valid answer -- "use whatever the credential carries" -- and
+    // must not disable anything or become an empty header downstream.
+    const state = resolveOperationalState({
+      requirements: google.requirements,
+      isPresent: onlyProject,
+      externalAuthResolved: true,
+    });
+    expect(state.state).toBe('enabled');
+  });
+
+  it('PIN (D): GOOGLE_APPLICATION_CREDENTIALS is recorded as one source, not a requirement', () => {
+    const google = findCommercialProvider('google-cloud')!;
+    expect(google.requirements.configEnvVars).toEqual(['GOOGLE_TRANSLATE_PROJECT_ID']);
+    expect(google.requirements.auth.kind).toBe('application-default-credentials');
+    if (google.requirements.auth.kind === 'application-default-credentials') {
+      // Discoverable, so an operator can see what MIGHT supply ADC...
+      expect(google.requirements.auth.possibleSourceEnvVars).toContain(
+        'GOOGLE_APPLICATION_CREDENTIALS',
+      );
+    }
+    // ...and not in configEnvVars, which is the list that actually gates.
+    expect(google.requirements.configEnvVars).not.toContain('GOOGLE_APPLICATION_CREDENTIALS');
+  });
+
+  it('PIN: unverified external identity FAILS CLOSED', () => {
+    const google = findCommercialProvider('google-cloud')!;
+    const unverified = resolveOperationalState({
+      requirements: google.requirements,
+      isPresent: onlyProject,
+    });
+    // Assuming ADC works because no variable contradicts it would route live
+    // traffic to a provider that cannot authenticate, and discover it on
+    // somebody's call.
+    expect(unverified.state).toBe('disabled');
+    expect(unverified.reason).toMatch(/not verified/);
+
+    const failed = resolveOperationalState({
+      requirements: google.requirements,
+      isPresent: onlyProject,
+      externalAuthResolved: false,
+    });
+    expect(failed.state).toBe('disabled');
+    expect(failed.reason).toMatch(/did not resolve/);
+  });
+
+  it('PIN (E): API-key providers keep strict key-presence semantics', () => {
+    for (const id of ['deepgram', 'elevenlabs', 'azure', 'naijalingo']) {
+      const found = findCommercialProvider(id)!;
+      expect(found.requirements.auth.kind).toBe('api-key');
+      const missing = resolveOperationalState({
+        requirements: found.requirements,
+        isPresent: nothingPresent,
+        // Irrelevant for an API key, and must stay irrelevant: an ADC probe
+        // must never excuse a missing key.
+        externalAuthResolved: true,
+      });
+      expect(missing.state, id).toBe('disabled');
+      expect(missing.missingCredentials.length, id).toBeGreaterThan(0);
+
+      const satisfied = resolveOperationalState({
+        requirements: found.requirements,
+        isPresent: () => true,
+      });
+      // And an API-key provider needs NO external-auth probe to be enabled.
+      expect(satisfied.state, id).toBe('enabled');
+    }
+  });
+
+  it('PIN: an optional variable never appears in the gating lists', () => {
+    for (const provider of COMMERCIAL_PROVIDERS) {
+      for (const optional of provider.requirements.optionalEnvVars ?? []) {
+        expect(provider.requirements.configEnvVars, provider.providerId).not.toContain(optional);
+        if (provider.requirements.auth.kind === 'api-key') {
+          expect(provider.requirements.auth.envVars, provider.providerId).not.toContain(optional);
+        }
+      }
+    }
+  });
+
+  it('describedEnvVarNames lists everything an operator should know about', () => {
+    const google = findCommercialProvider('google-cloud')!;
+    expect(describedEnvVarNames(google.requirements)).toEqual([
+      'GOOGLE_APPLICATION_CREDENTIALS',
+      'GOOGLE_CLOUD_QUOTA_PROJECT',
+      'GOOGLE_TRANSLATE_PROJECT_ID',
+    ]);
+  });
+});
+
+describe('Deepgram evidence is recorded per dialect', () => {
+  it('PIN: Deepgram is integrated on real protocol evidence', () => {
+    const deepgram = findCommercialProvider('deepgram')!;
+    expect(deepgram.integrationStage).toBe('integrated');
+    expect(deepgram.liveObservations).toHaveLength(2);
+    expect(deepgram.integrationStage).not.toBe('certified');
+    expect(deepgram.integrationStage).not.toBe('testing');
+  });
+
+  it('PIN: Nova and Flux carry SEPARATE observations', () => {
+    const deepgram = findCommercialProvider('deepgram')!;
+    const models = deepgram.liveObservations.map((o) => o.modelId);
+    // One smoke cannot stand for both: Flux speaks Listen v2 with turn events
+    // and Nova speaks Listen v1 with Results. A single vendor-level record
+    // would average two different products into one claim.
+    expect(new Set(models)).toEqual(new Set(['nova-3', 'flux-general-en']));
+    for (const observation of deepgram.liveObservations) {
+      expect(observation.sampleCount).toBe(1);
+    }
   });
 });

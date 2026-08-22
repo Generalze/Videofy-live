@@ -26,7 +26,19 @@ export const MessageType = {
   STREAM_OPEN: 0x10,
   STREAM_OPEN_ACK: 0x11,
   STREAM_CLOSE: 0x12,
+  /** Adapter -> Videofy. Audio the adapter captured from its endpoint. */
   MEDIA: 0x20,
+  /**
+   * Videofy -> adapter. Translated speech the platform produced and wants
+   * played to the endpoint.
+   *
+   * A SEPARATE TYPE rather than MEDIA read backwards. Inferring direction from
+   * which socket received a frame would make the protocol's meaning depend on
+   * the deployment topology, and the first relay or test harness in the middle
+   * would invert it silently. Each end refuses the direction it should not
+   * receive, by name.
+   */
+  TRANSLATED_MEDIA: 0x21,
   SETTLEMENT: 0x30,
   DISPOSITION: 0x31,
   PING: 0x40,
@@ -159,7 +171,15 @@ export type WireErrorCode =
   | 'payload-too-large'
   | 'invalid-stream-id'
   | 'invalid-media-length'
-  | 'invalid-timestamp';
+  | 'invalid-timestamp'
+  | 'invalid-generation'
+  | 'invalid-sequence'
+  | 'invalid-segment-id'
+  | 'reserved-bits-set'
+  | 'odd-payload-length'
+  | 'invalid-language'
+  /** The right message on the wrong leg of the connection. */
+  | 'wrong-direction';
 
 export class WireProtocolError extends Error {
   constructor(
@@ -184,7 +204,20 @@ export function violationScope(code: WireErrorCode): ProtocolViolationScope {
     // The frame cannot be what it claims, but the channel is still coherent.
     case 'invalid-media-length':
     case 'invalid-timestamp':
+    // A translated-media payload that cannot be parsed is one lost frame of one
+    // sentence. The channel carrying it is still coherent, and dropping a whole
+    // call for a malformed 20 ms is a larger failure than the one that happened.
+    case 'invalid-generation':
+    case 'invalid-sequence':
+    case 'invalid-segment-id':
+    case 'reserved-bits-set':
+    case 'odd-payload-length':
+    case 'invalid-language':
       return 'frame';
+    // A peer sending a message type meant for the other direction is not
+    // confused about one frame; it is speaking the protocol backwards.
+    case 'wrong-direction':
+      return 'connection';
     // Scoped to one stream: the rest of the connection is unaffected.
     case 'invalid-stream-id':
       return 'stream';

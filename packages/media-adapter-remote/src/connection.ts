@@ -32,6 +32,9 @@ import {
   streamOpenAckSchema,
   wireErrorSchema,
   type Disposition,
+  decodeTranslatedMedia,
+  WireProtocolError,
+  type TranslatedMediaPayload,
 } from '@videofy-live/adapter-wire';
 import { OutboundQueue, type OutboundQueueLimits, type QueuedFrame } from './outbound-queue.js';
 import { pcmToBytes } from '@videofy-live/adapter-wire';
@@ -132,6 +135,19 @@ export interface AdapterConnectionDeps {
   readonly reconnectDelayMs?: number;
   readonly idleWithoutPongMs?: number;
   readonly log?: (line: string, detail?: Record<string, unknown>) => void;
+  /**
+   * Where translated speech from Videofy goes.
+   *
+   * Optional: an adapter with no egress -- a recorder, a transcript-only
+   * integration -- simply does not supply one, and the connection then refuses
+   * TRANSLATED_MEDIA rather than accepting audio nothing will play. Silently
+   * dropping it would look identical to a working egress.
+   */
+  readonly onTranslatedMedia?: (
+    /** The ADAPTER's own session reference, not a wire id. */
+    adapterSessionRef: string,
+    payload: TranslatedMediaPayload,
+  ) => void | Promise<void>;
 }
 
 export class AdapterConnection {
@@ -461,6 +477,53 @@ export class AdapterConnection {
         this.log('adapter ingress reported an error', { code: error.code });
         return;
       }
+      case MessageType.TRANSLATED_MEDIA: {
+        if (this.deps.onTranslatedMedia === undefined) {
+          // No egress was wired. Saying so beats accepting audio and dropping
+          // it, which is indistinguishable from an egress that works.
+          this.log('translated media arrived with no egress bound', {
+            streamId: frame.streamId,
+          });
+          return;
+        }
+        // A parse failure here costs ONE 20 ms frame of one sentence. The
+        // connection carrying it is still coherent, and tearing down a call
+        // over a malformed frame is a bigger failure than the frame.
+        let payload: TranslatedMediaPayload;
+        try {
+          payload = decodeTranslatedMedia(frame.payload);
+        } catch (error) {
+          this.log('translated media frame refused', {
+            streamId: frame.streamId,
+            code: error instanceof WireProtocolError ? error.code : 'unknown',
+          });
+          return;
+        }
+        // Resolved to the adapter's own reference HERE, so nothing outside
+        // this file has to know that streams have numeric wire ids -- ids that
+        // are reassigned on reconnect and would be a trap to hold onto.
+        const binding = this.byStreamId.get(frame.streamId);
+        if (binding === undefined || binding.closed) {
+          this.log('translated media for an unknown or closed stream', {
+            streamId: frame.streamId,
+            segmentId: payload.segmentId,
+          });
+          return;
+        }
+        void this.deps.onTranslatedMedia(binding.adapterSessionRef, payload);
+        return;
+      }
+      case MessageType.MEDIA:
+      case MessageType.HELLO:
+      case MessageType.STREAM_OPEN:
+      case MessageType.STREAM_CLOSE:
+        // THE WRONG DIRECTION. These are things an adapter SENDS. Receiving one
+        // means the peer is speaking the protocol backwards, which is not a
+        // confused frame but a confused implementation.
+        this.log('refused a message meant for the other direction', {
+          messageType: frame.messageType,
+        });
+        return;
       default:
         return;
     }

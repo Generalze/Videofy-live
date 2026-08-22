@@ -8,7 +8,28 @@ import {
   resolveSpeakerAudioMixes,
   type GeneratedClipEligibility,
 } from '@videofy-live/call-client-core';
-import { CallGeneratedAudioQueueController, generatedClipId } from '@videofy-live/call-client-core';
+import {
+  CallGeneratedAudioQueueController,
+  generatedClipId,
+  createCallTranslatedAudioController,
+  createWebAudioTranslatedSink,
+  finishedFileAudioAllowed,
+  resolveTranslatedAudioAuthority,
+  TRANSLATED_AUDIO_SAMPLE_RATE,
+  type CallTranslatedAudioController,
+  type TranslatedAudioSocketLike,
+} from '@videofy-live/call-client-core';
+
+/**
+ * Whether this deployment cut the live path over.
+ *
+ * Decides which playback path OWNS translated audio for the call, before
+ * either event arrives. Absent means no progressive frames will ever be sent,
+ * so the finished-file queue is genuinely the only path -- not a guess about
+ * what might turn up, and never a race between the two.
+ */
+const PROGRESSIVE_TRANSLATED_AUDIO =
+  (import.meta.env['VITE_PROGRESSIVE_TRANSLATED_AUDIO'] ?? '') === 'true';
 import { CallRemoteSlotBinder, type CallReceiveTrackMapping } from '@videofy-live/call-client-core';
 import {
   CallRemoteSpeakerAudioController,
@@ -390,6 +411,7 @@ export default function App() {
     setVoiceEnrollmentOpen(false);
   };
   const [audioMode, setAudioMode] = useState<CallAudioMode>('translated');
+  const translatedAudioRef = useRef<CallTranslatedAudioController | null>(null);
   const [originalVolume, setOriginalVolume] = useState(1);
   const [translatedVolume, setTranslatedVolume] = useState(DEFAULT_TRANSLATED_LEVEL);
   const [micMuted, setMicMuted] = useState(false);
@@ -737,12 +759,65 @@ export default function App() {
     );
   }, [callState]);
 
+  /**
+   * Progressive translated audio.
+   *
+   * Beside the clip queue rather than replacing it: the queue plays finished
+   * clips, this plays frames while the sentence is still being synthesised.
+   * `resolveTranslatedAudioAuthority` decides which of them speaks, from
+   * configuration rather than from whichever event arrives first -- a race
+   * would make audible behaviour depend on network timing, so the bug would
+   * reproduce on one machine and not another.
+   *
+   * The rules live in the controller. This effect only owns its LIFETIME:
+   * every accessor below reads a ref, so a volume change or a mode change does
+   * not tear the subscription down and rebuild the AudioContext.
+   */
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (socket === null || !PROGRESSIVE_TRANSLATED_AUDIO) return undefined;
+    const context = new AudioContext({ sampleRate: TRANSLATED_AUDIO_SAMPLE_RATE });
+    const controller = createCallTranslatedAudioController({
+      socket: socket as unknown as TranslatedAudioSocketLike,
+      createSink: () => createWebAudioTranslatedSink({ context }),
+      currentCallId: () => sessionRef.current?.callId ?? null,
+      currentParticipantId: () => sessionRef.current?.participantId ?? null,
+      callState: () => callStateRef.current ?? null,
+      translatedAudible: () => mixRef.current.playGenerated,
+      translatedVolume: () => mixRef.current.translatedVolume,
+      realtimeConfigured: () => PROGRESSIVE_TRANSLATED_AUDIO,
+    });
+    translatedAudioRef.current = controller;
+    controller.attach();
+    return () => {
+      controller.detach();
+      translatedAudioRef.current = null;
+      // The AudioContext is released with the call, not with a re-render.
+      void context.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    // A mode change stops the sentence in progress rather than letting it
+    // finish: the listener has just switched away from translated speech.
+    if (!mix.playGenerated) translatedAudioRef.current?.reset('translated audio disabled');
+  }, [mix.playGenerated]);
+
   useEffect(() => {
     queueRef.current?.setVolume(mix.translatedVolume);
   }, [mix.translatedVolume]);
 
   useEffect(() => {
-    queueRef.current?.setEnabled(mix.playGenerated);
+    // ONE authority. When progressive frames own this session the finished-file
+    // queue is disabled outright, so an utterance cannot be spoken twice --
+    // once as frames and once as a URL, slightly out of step with itself.
+    const authority = resolveTranslatedAudioAuthority({
+      serviceCategory: 'call',
+      mediaMode: 'live',
+      realtimeConfigured: PROGRESSIVE_TRANSLATED_AUDIO,
+      translationEnabled: mix.playGenerated,
+    });
+    queueRef.current?.setEnabled(finishedFileAudioAllowed(authority));
   }, [mix.playGenerated]);
 
   useEffect(() => {

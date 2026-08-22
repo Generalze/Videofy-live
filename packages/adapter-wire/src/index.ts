@@ -69,3 +69,4 @@ export type {
   StreamOpenAck,
   WireError,
 } from './control.js';
+export * from './translated-media.js';

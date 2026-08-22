@@ -92,6 +92,7 @@ const server = createServer(app);
 const gateway = new Gateway(server, config.corsOrigins, {
   mediaIngestUrl: config.mediaIngestUrl,
   realtimeIngressUrl: config.realtimeIngressUrl,
+  livePathProfile: config.livePathProfile,
   mediaIngestPublicUrl: config.mediaIngestPublicUrl,
   internalWebRtcToken: config.internalIngressAuth.token,
   webRtcTranscriptionChunkMs: config.webRtcTranscriptionChunkMs,

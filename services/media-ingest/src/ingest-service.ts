@@ -43,6 +43,7 @@ import {
   capRecentEventsPerLanguage,
 } from './target-language-outputs.js';
 import type { TranscriptEvent } from './transcript-event.js';
+import { planSpeechTargets, type LiveSpeechPlan } from './live-session-host.js';
 
 export function buildPiperVoiceIdsByLanguage(
   voices: IngestConfig['piperVoices'],
@@ -580,22 +581,26 @@ export class IngestService {
   }
 
   /**
-   * What this session wants spoken, or null for captions only.
+   * Every language this session wants SPOKEN, one plan per distinct language.
    *
-   * Null is a real answer, not a failure: a target language listed as
-   * text-only must never reach synthesis, and must not fall back to a default
-   * voice -- which for an English-to-Spanish call would be Spanish words in an
-   * English voice, worse than the silence it replaced.
+   * Plural, and that is the point. The singular version returned the FIRST
+   * non-text-only target, so a conference with Spanish and French listeners
+   * progressively spoke Spanish and silently never spoke French -- while every
+   * component reported success, because nothing was broken. It was simply a
+   * contract that could not express the product.
+   *
+   * An empty list is a real answer, not a failure: captions only.
    */
-  liveSpeechPlanFor(sessionId: string): { targetLanguage: string; voiceId: string } | null {
+  liveSpeechPlansFor(sessionId: string): LiveSpeechPlan[] {
     const session = this.currentSession?.id === sessionId ? this.currentSession : null;
-    if (session === null) return null;
-    const textOnly = new Set(session.generatedAudio?.textOnlyLanguages ?? []);
-    const target = (session.targetLanguages ?? []).find((language) => !textOnly.has(language));
-    if (target === undefined) return null;
-    const voiceId = session.voiceIdsByLanguage?.[target];
-    if (voiceId === undefined) return null;
-    return { targetLanguage: target, voiceId };
+    if (session === null) return [];
+    // The rule itself lives in `planSpeechTargets`, which is pure and pinned.
+    // This method's only job is finding the session.
+    return planSpeechTargets({
+      targetLanguages: session.targetLanguages,
+      textOnlyLanguages: session.generatedAudio?.textOnlyLanguages,
+      voiceIdsByLanguage: session.voiceIdsByLanguage,
+    });
   }
 
   /** A platform transcript from the live path, on its way to the gateway. */

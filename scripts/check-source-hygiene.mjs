@@ -58,7 +58,16 @@ function describe(code) {
   return code === 0x7f ? 'DELETE' : 'control character';
 }
 
-const tracked = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' })
+// `--cached --others --exclude-standard` rather than tracked files alone.
+// The guard checked only what git already knew about, so a BRAND-NEW file
+// containing a NUL passed every gate right up until it was committed -- and was
+// only caught on the next run, with the damage already in history. A guard that
+// clears exactly the change you are about to make is the one that matters.
+const tracked = execFileSync(
+  'git',
+  ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+  { encoding: 'utf8' },
+)
   .split('\u0000')
   .filter((path) => path !== '' && TEXT.test(path));
 

@@ -88,3 +88,4 @@ export {
   tagOf,
 } from './sip/messages.js';
 export type { ParsedSdp, SdpAnswerInput, SdpMedia, SipMessage } from './sip/messages.js';
+export * from './translated-egress.js';

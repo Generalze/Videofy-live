@@ -29,6 +29,20 @@ const EnvVarNameSchema = z
   .string()
   .regex(/^[A-Z][A-Z0-9_]*$/, 'Must be an env var NAME, not a value.');
 
+const ProviderAuthStrategySchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('api-key'), envVars: z.array(EnvVarNameSchema).min(1) }),
+  z.object({
+    kind: z.literal('application-default-credentials'),
+    possibleSourceEnvVars: z.array(EnvVarNameSchema).optional(),
+  }),
+]);
+
+const ProviderRequirementsSchema = z.object({
+  configEnvVars: z.array(EnvVarNameSchema),
+  auth: ProviderAuthStrategySchema,
+  optionalEnvVars: z.array(EnvVarNameSchema).optional(),
+});
+
 /**
  * ONE MODEL, not one vendor.
  *
@@ -81,8 +95,15 @@ export type LiveObservation = z.infer<typeof LiveObservationSchema>;
 export const CommercialProviderSchema = z.object({
   providerId: z.string().min(1),
   displayName: z.string().min(1),
-  /** Names only; the regex exists so a value cannot be pasted here by accident. */
-  credentialEnvVars: z.array(EnvVarNameSchema).min(1),
+  /**
+   * What this provider needs, split by KIND rather than flattened into one
+   * list of things that must all be set.
+   *
+   * The flat list disabled a working Google deployment for lacking
+   * GOOGLE_APPLICATION_CREDENTIALS, which is one ADC source among several and
+   * was deliberately not in use. See `ProviderRequirements`.
+   */
+  requirements: ProviderRequirementsSchema,
   integrationStage: ProviderIntegrationStageSchema,
   /** Vendor-level rollup. SELECTION SHOULD READ THE MODEL RECORD, not this. */
   capabilities: ProviderExecutionCapabilitiesSchema,
@@ -111,14 +132,25 @@ const DEEPGRAM_FLUX_REFERENCE =
   'https://developers.deepgram.com/reference/speech-to-text/listen-flux';
 const ELEVENLABS_MODELS_DOC = 'https://elevenlabs.io/docs/overview/capabilities/text-to-speech';
 const ELEVENLABS_STREAM_DOC = 'https://elevenlabs.io/docs/api-reference/text-to-speech/stream';
+const NAIJALINGO_API_DOC = 'https://www.9jalingo.org/api-documentation';
 const GOOGLE_TRANSLATE_DOC = 'https://docs.cloud.google.com/translate/docs/translate-text';
+const AZURE_TTS_REST_DOC =
+  'https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech';
 
 export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
   {
     providerId: 'deepgram',
     displayName: 'Deepgram',
-    credentialEnvVars: ['DEEPGRAM_API_KEY'],
-    integrationStage: 'configured',
+    requirements: {
+      configEnvVars: [],
+      auth: { kind: 'api-key', envVars: ['DEEPGRAM_API_KEY'] },
+      optionalEnvVars: ['DEEPGRAM_MODEL'],
+    },
+    // `integrated` on the live observations below: both dialects were run
+    // against the real API from the development environment on 2026-08-22 and
+    // spoke the protocols this repository models them as speaking. NOT
+    // `testing` -- no real traffic has crossed them -- and not certified.
+    integrationStage: 'integrated',
     capabilities: {
       transcription: {
         batch: 'yes',
@@ -188,7 +220,34 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
         candidateFor: ['call:live'],
       },
     ],
-    liveObservations: [],
+    liveObservations: [
+      {
+        observedAt: '2026-08-22',
+        environment: 'development',
+        capability: 'transcription',
+        modelId: 'nova-3',
+        sampleCount: 1,
+        summary:
+          'Credential-gated smoke: batch PASS (82-char transcript with words[] ' +
+          'present) and streaming v1 PASS (socket opened, Results frames ' +
+          'received). Existence and PROTOCOL evidence: it proves Nova speaks ' +
+          'Listen v1 as modelled and returns word timings. It says nothing ' +
+          'about accuracy, latency, or behaviour on noisy or accented audio.',
+      },
+      {
+        observedAt: '2026-08-22',
+        environment: 'development',
+        capability: 'transcription',
+        modelId: 'flux-general-en',
+        sampleCount: 1,
+        summary:
+          'Credential-gated smoke: streaming v2 PASS (socket opened, TurnInfo ' +
+          'frames received). Recorded SEPARATELY from nova-3 on purpose: Flux ' +
+          'speaks Listen v2 with turn events and Nova speaks Listen v1 with ' +
+          'Results, and one observation cannot stand for both. No batch ' +
+          'evidence exists for Flux and none can -- it is streaming-only.',
+      },
+    ],
     notes:
       'TWO PROTOCOL DIALECTS, not one vendor API. Nova speaks Listen v1 ' +
       '(Results/is_final/speech_final/UtteranceEnd) and Flux speaks Listen v2 ' +
@@ -200,7 +259,22 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
   {
     providerId: 'google-cloud',
     displayName: 'Google Cloud',
-    credentialEnvVars: ['GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_TRANSLATE_PROJECT_ID'],
+    requirements: {
+      // The RESOURCE project. Required: without it there is nothing to address.
+      configEnvVars: ['GOOGLE_TRANSLATE_PROJECT_ID'],
+      auth: {
+        kind: 'application-default-credentials',
+        // Recorded so an operator can see it, NEVER required. ADC also resolves
+        // from a metadata server, a workload identity, or `gcloud auth
+        // application-default login`, none of which set this. Requiring it
+        // marked a running deployment disabled for lacking a key file it was
+        // deliberately not using -- and would do so again on Contabo.
+        possibleSourceEnvVars: ['GOOGLE_APPLICATION_CREDENTIALS'],
+      },
+      // The QUOTA project override. Absent means "use the credential's own",
+      // which is a valid answer and never a fault.
+      optionalEnvVars: ['GOOGLE_CLOUD_QUOTA_PROJECT'],
+    },
     // `integrated` on the live observation below. C-AI1.1F: the adapter was
     // asking ADC for a bearer token only, which discarded the quota project ADC
     // had already resolved, so `x-goog-user-project` went unsent and Google
@@ -247,7 +321,11 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
   {
     providerId: 'elevenlabs',
     displayName: 'ElevenLabs',
-    credentialEnvVars: ['ELEVENLABS_API_KEY'],
+    requirements: {
+      configEnvVars: [],
+      auth: { kind: 'api-key', envVars: ['ELEVENLABS_API_KEY'] },
+      optionalEnvVars: ['ELEVENLABS_MODEL', 'ELEVENLABS_DEFAULT_VOICE_ID'],
+    },
     // `integrated` on the strength of the live observation below: the adapter
     // was run against the real vendor from the development environment and
     // satisfied the platform contract. NOT `testing` -- it has not carried real
@@ -305,27 +383,96 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
   {
     providerId: 'azure',
     displayName: 'Microsoft Azure',
-    credentialEnvVars: ['AZURE_SPEECH_KEY', 'AZURE_SPEECH_REGION'],
+    requirements: {
+      // The region is configuration, not a secret: it selects an endpoint.
+      configEnvVars: ['AZURE_SPEECH_REGION'],
+      auth: { kind: 'api-key', envVars: ['AZURE_SPEECH_KEY'] },
+    },
     integrationStage: 'configured',
-    capabilities: ALL_UNVERIFIED,
-    capabilityEvidence: 'unverified',
-    models: [],
+    capabilities: {
+      // Read, not assumed. The rest of the matrix stays unverified because the
+      // rest of the API has not been read to the same standard.
+      tts: { completeAudio: 'yes', streamingAudio: 'yes' },
+      transcription: UNVERIFIED_TRANSCRIPTION,
+      translation: UNVERIFIED_TRANSLATION,
+    },
+    capabilityEvidence:
+      `${AZURE_TTS_REST_DOC} (POST https://{region}.tts.speech.microsoft.com/` +
+      'cognitiveservices/v1; SSML body; X-Microsoft-OutputFormat lists ' +
+      'raw-16khz-16bit-mono-pcm among the STREAMING formats)',
+    models: [
+      {
+        modelId: 'cognitiveservices-v1',
+        purpose:
+          'Real-time neural synthesis over REST. Comparator and fallback behind ' +
+          'ElevenLabs; emits the engine format directly, so switching is a ' +
+          'configuration change rather than a pipeline change.',
+        capabilities: { tts: { completeAudio: 'yes', streamingAudio: 'yes' } },
+        // Only what the page itself showed: its request sample and voice-list
+        // sample name en-US voices explicitly. Azure supports far more, and the
+        // rest belongs here only once the voices/list endpoint has actually been
+        // read -- a catalogue filled in from reputation is worse than an empty
+        // one, because it is believed.
+        verifiedLanguages: ['en-US'],
+        evidence: AZURE_TTS_REST_DOC,
+        candidateFor: ['call:live', 'programme:live', 'programme:uploaded'],
+      },
+    ],
     liveObservations: [],
-    notes: 'Comparison candidate across all three capabilities. API not yet read.',
+    notes:
+      'STREAMING TTS ONLY, deliberately. Azure real-time speech-to-text is the ' +
+      'Speech SDK WebSocket protocol; the published REST surface is short-audio ' +
+      '(<=60 s) and batch, neither of which is streaming transcription, and ' +
+      'writing a client against an unpublished framing would be inventing a ' +
+      'protocol. Azure Translator is a separate service on a different host with ' +
+      'different credentials, unreachable with AZURE_SPEECH_KEY. Both are ' +
+      'PROTOCOL VALIDATION DEFERRED rather than stubbed.',
   },
   {
     providerId: 'naijalingo',
     displayName: '9jaLingo (NaijaLingo)',
-    credentialEnvVars: ['NAIJALINGO_API_KEY', 'NAIJALINGO_BASE_URL'],
+    requirements: {
+      configEnvVars: [],
+      auth: { kind: 'api-key', envVars: ['NAIJALINGO_API_KEY'] },
+      // A base-URL override is useful for a test double or a self-hosted
+      // instance. It is NOT required: the old registry demanded one because
+      // nobody had read the vendor's documentation, which made an unread
+      // endpoint into an operator's problem.
+      optionalEnvVars: ['NAIJALINGO_BASE_URL'],
+    },
     integrationStage: 'configured',
-    capabilities: ALL_UNVERIFIED,
-    capabilityEvidence: 'unverified',
-    models: [],
+    capabilities: {
+      tts: { completeAudio: 'yes', streamingAudio: 'unverified' },
+      transcription: UNVERIFIED_TRANSCRIPTION,
+      translation: UNVERIFIED_TRANSLATION,
+    },
+    capabilityEvidence:
+      `${NAIJALINGO_API_DOC} (POST /v1/audio/speech; input/voice/lang/response_format; ` +
+      'response_format includes pcm; languages ha, ig, yo, pcm). Streaming is ' +
+      'mentioned but its framing is not specified, so it stays unverified.',
+    models: [
+      {
+        modelId: 'audio-speech-v1',
+        purpose:
+          'Nigerian-language synthesis over an OpenAI-compatible speech endpoint. ' +
+          'Specialist, never a general fallback.',
+        capabilities: { tts: { completeAudio: 'yes', streamingAudio: 'unverified' } },
+        verifiedLanguages: ['ha', 'ig', 'yo', 'pcm'],
+        evidence: NAIJALINGO_API_DOC,
+        candidateFor: ['programme:uploaded', 'programme:live'],
+      },
+    ],
     liveObservations: [],
     notes:
-      'Specialist candidate for Nigerian languages. API surface not yet documented ' +
-      'here, so no adapter exists and none is stubbed -- an empty adapter would ' +
-      'imply integration that has not happened.',
+      'Documented (read 2026-08-22): POST /v1/audio/speech with `input`, ' +
+      '`voice`/`speaker`, `lang`/`language` in {ha,ig,yo,pcm}, and ' +
+      '`response_format` including `pcm`. NOT documented on the public page: the ' +
+      'API HOST, the authentication header format, output sample rates, the ' +
+      'streaming framing, and any STT endpoint. Those are PROTOCOL VALIDATION ' +
+      'DEFERRED -- the base URL and auth scheme must be supplied as configuration ' +
+      'and confirmed by a live smoke, and no endpoint has been invented to fill ' +
+      'the gaps. Integration does NOT activate Hausa/Igbo/Yoruba/Pidgin in ' +
+      'product routing; language activation stays demand-led.',
   },
 ];
 

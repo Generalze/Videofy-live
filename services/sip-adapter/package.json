@@ -4,7 +4,7 @@
   "private": true,
   "author": "masterzee001",
   "license": "SEE LICENSE IN ../../LICENSE.md",
-  "description": "SIP/RTP transport adapter LIBRARY: normalizes telephony audio into the shared media-adapter seam. Transport only — no speech, translation, synthesis or language policy. Not a runnable service; runtime composition arrives with the Adapter Ingress Binding in P6.9.",
+  "description": "SIP/RTP transport adapter LIBRARY: normalizes telephony audio into the shared media-adapter seam. Transport only \u2014 no speech, translation, synthesis or language policy. Not a runnable service; runtime composition arrives with the Adapter Ingress Binding in P6.9.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -20,6 +20,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@videofy-live/adapter-wire": "*",
     "@videofy-live/media-adapter-port": "*"
   },
   "devDependencies": {

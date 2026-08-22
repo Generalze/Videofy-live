@@ -25,6 +25,7 @@
 import { createSocket, type Socket } from 'node:dgram';
 import {
   SipCall,
+  TranslatedAudioEgress,
   parseSipMessage,
   serializeSipMessage,
   type SipMessage,
@@ -49,6 +50,8 @@ interface ActiveCall {
   readonly rtp: Socket;
   readonly rtpPort: number;
   readonly remote: { address: string; port: number };
+  /** Translated speech from Videofy, on its way to this call's endpoint. */
+  readonly egress: TranslatedAudioEgress;
 }
 
 /** The user part of a SIP URI: `sip:441234@host` -> `441234`. */
@@ -85,6 +88,22 @@ export class SipRuntime {
       adapterInstanceId: config.adapterInstanceId,
       queueLimits: { maxBytes: 8 * 1024 * 1024, maxFrames: 512, maxAgeMs: 4_000 },
       log: deps.log,
+      // The egress direction. Videofy decided the sentence, the generation and
+      // whether it is still wanted; this end decides only which socket and
+      // which negotiated codec.
+      onTranslatedMedia: (adapterSessionRef, payload) => {
+        const active = this.callForSessionRef(adapterSessionRef);
+        if (active === undefined) {
+          // The call ended between the platform sending and this arriving,
+          // which is ordinary. Saying so beats silence, because the same log
+          // line distinguishes it from egress that was never wired.
+          deps.log('translated media for a call that has ended', {
+            segmentId: payload.segmentId,
+          });
+          return;
+        }
+        active.egress.accept(payload);
+      },
     });
 
     for (const routeRef of new Set(Object.values(config.routesByDialledNumber))) {
@@ -287,7 +306,16 @@ export class SipRuntime {
     rtp.on('message', (datagram) => call.onRtpDatagram(datagram));
     rtp.on('error', (error) => this.deps.log('rtp socket error', { message: error.message }));
 
-    this.calls.set(callId, { call, rtp, rtpPort, remote: from });
+    this.calls.set(callId, {
+      call,
+      rtp,
+      rtpPort,
+      remote: from,
+      egress: new TranslatedAudioEgress({
+        endpoint: call,
+        log: (line, detail) => this.deps.log(line, { ...detail, callId }),
+      }),
+    });
     try {
       await call.onInvite(message);
     } catch (error) {
@@ -326,6 +354,10 @@ export class SipRuntime {
     // Removed from the map FIRST, so a second BYE and a concurrent drain both
     // find nothing rather than racing this teardown.
     this.calls.delete(callId);
+    // Stopped BEFORE the call closes. Synthesis keeps producing for a moment
+    // after a hangup, and a torn-down call being fed is how a runaway sender
+    // happens.
+    active.egress.stop(reason);
     try {
       await active.call.close(reason);
     } catch (error) {
@@ -367,5 +399,19 @@ export class SipRuntime {
   /** Exposed for the acceptance harness; nothing in production reads it. */
   get sessionRefFor(): (callId: string) => string {
     return (callId) => adapterSessionRef(`sc_${callId}`);
+  }
+
+  /**
+   * The call an adapter session reference belongs to.
+   *
+   * Derived from the same function that mints the reference rather than kept in
+   * a second map: two maps of the same relationship drift, and the one that
+   * drifts is always the one nobody tested.
+   */
+  private callForSessionRef(reference: string): ActiveCall | undefined {
+    for (const [callId, active] of this.calls) {
+      if (this.sessionRefFor(callId) === reference) return active;
+    }
+    return undefined;
   }
 }

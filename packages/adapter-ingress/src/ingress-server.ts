@@ -31,6 +31,8 @@ import {
   violationScope,
   type AdapterWireOutcome,
   type StreamOpen,
+  encodeTranslatedMedia,
+  type TranslatedMediaPayload,
 } from '@videofy-live/adapter-wire';
 
 /** One frame the gateway has taken custody of. */
@@ -169,6 +171,17 @@ export class AdapterIngressConnection {
           return;
         case MessageType.MEDIA:
           await this.onMedia(frame.streamId, frame.wireSequence, frame.platformTimestampMs, frame.flags, frame.payload);
+          return;
+        case MessageType.TRANSLATED_MEDIA:
+          // THE WRONG DIRECTION. Videofy sends this; an adapter must not. A
+          // peer sending it is speaking the protocol backwards, which is a
+          // connection-scoped fault rather than one bad frame.
+          this.handleViolation(
+            new WireProtocolError(
+              'wrong-direction',
+              'TRANSLATED_MEDIA travels Videofy -> adapter and must not arrive here.',
+            ),
+          );
           return;
         case MessageType.PONG:
           return;
@@ -367,6 +380,46 @@ export class AdapterIngressConnection {
   private refuseConnection(code: string, detail: string): void {
     this.send(MessageType.ERROR, { code, detail });
     this.close();
+  }
+
+  /**
+   * Send translated speech to this adapter, for one open stream.
+   *
+   * Returns whether the frame was handed to the socket. False is an ordinary
+   * answer -- a closed connection, an unknown stream -- and the caller decides
+   * what to do about it. Throwing would make a hung-up call into an exception
+   * on the delivery path of every other call on the connection.
+   */
+  sendTranslatedMedia(
+    streamId: number,
+    payload: TranslatedMediaPayload,
+    platformTimestampMs: number,
+  ): boolean {
+    if (this.closed) return false;
+    try {
+      this.deps.socket.send(
+        encodeFrame({
+          messageType: MessageType.TRANSLATED_MEDIA,
+          streamId,
+          // The CONNECTION's counter, which is a different thing from the
+          // sequence inside the payload: that one orders a sentence and
+          // survives a reconnect, this one counts frames on this socket.
+          wireSequence: this.nextEgressSequence(),
+          platformTimestampMs,
+          payload: encodeTranslatedMedia(payload),
+        }),
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private egressSequence = 0;
+
+  private nextEgressSequence(): number {
+    this.egressSequence = (this.egressSequence + 1) >>> 0;
+    return this.egressSequence;
   }
 
   private send(messageType: number, body: unknown): void {

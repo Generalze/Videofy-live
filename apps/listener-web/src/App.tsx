@@ -84,6 +84,24 @@ const VIEWER_PLAYBACK_STAGNANT_CHECKS = 4;
 const VIEWER_PLAYBACK_MIN_READY_STATE = 2;
 const VIEWER_FRAME_CAPTURE_INTERVAL_MS = 1_500;
 const VIEWER_FRAME_CAPTURE_WIDTH = 640;
+/**
+ * Whether this deployment cut the live path over.
+ *
+ * Decides which playback path OWNS translated audio, before either event
+ * arrives. Absent means no progressive frames will be sent, so the
+ * finished-file queue is genuinely the only path -- not a race between them.
+ */
+import {
+  createProgrammeTranslatedAudioController,
+  createWebAudioTranslatedSink,
+  TRANSLATED_AUDIO_SAMPLE_RATE,
+  type ProgrammeTranslatedAudioController,
+  type TranslatedAudioSocketLike,
+} from '@videofy-live/call-client-core';
+
+const PROGRESSIVE_TRANSLATED_AUDIO =
+  (import.meta.env['VITE_PROGRESSIVE_TRANSLATED_AUDIO'] ?? '') === 'true';
+
 const VIEWER_SYNC_DELAY_MS = readPositiveIntegerEnv(
   import.meta.env['VITE_VIEWER_SYNC_DELAY_MS'],
   8_000,
@@ -144,6 +162,7 @@ function readPositiveIntegerEnv(value: string | undefined, fallback: number): nu
 
 export default function App(): React.ReactElement {
   const socketRef = useRef<Socket | null>(null);
+  const progressiveAudioRef = useRef<ProgrammeTranslatedAudioController | null>(null);
   const lastOperatorMixPreferencesRef = useRef<AudioMixPreferences | null>(null);
   const listenerSignallingClientRef = useRef<WebRtcSignallingClient | null>(null);
   const listenerTransportRef = useRef<ListenerWebRtcTransportController | null>(null);
@@ -269,9 +288,51 @@ export default function App(): React.ReactElement {
       syncDelayMs: VIEWER_SYNC_DELAY_MS,
     },
   );
+  const mixStateRef = useRef(mixState);
+  mixStateRef.current = mixState;
   const audioQueueRef = useRef(audioQueue);
   const previousProcessingSessionIdRef = useRef<string | null>(null);
   audioQueueRef.current = audioQueue;
+
+  /**
+   * Progressive translated audio for a LIVE programme.
+   *
+   * Beside the finished-file queue, never instead of it: an uploaded programme
+   * genuinely has a complete file, and `resolveTranslatedAudioAuthority` picks
+   * which one speaks from configuration rather than from whichever event wins
+   * the race. A race would make audible behaviour depend on network timing.
+   *
+   * The controller schedules against the SAME synchronized viewer clock the
+   * file queue uses. Progressive means the audio exists before synthesis
+   * finishes, not that it plays the instant the network delivers it -- that
+   * would put the interpreted voice ahead of the speaker on screen.
+   */
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (socket === null || !PROGRESSIVE_TRANSLATED_AUDIO) return undefined;
+    const context = new AudioContext({ sampleRate: TRANSLATED_AUDIO_SAMPLE_RATE });
+    const controller = createProgrammeTranslatedAudioController({
+      socket: socket as unknown as TranslatedAudioSocketLike,
+      createSink: () => createWebAudioTranslatedSink({ context }),
+      clockMs: getSynchronizedListenerClockMs,
+      lateDropToleranceMs: VIEWER_LATE_DROP_TOLERANCE_MS,
+      currentBroadcastId: () => mediaStateRef.current?.streamId ?? null,
+      currentSourceRevision: () => mediaStateRef.current?.sourceRevision ?? null,
+      selectedLanguage: () => targetLanguageRef.current,
+      // An uploaded programme keeps its own synchronised file path.
+      isLiveProgramme: () => mediaStateRef.current?.programmeMediaMode !== 'uploaded-stems',
+      realtimeConfigured: () => PROGRESSIVE_TRANSLATED_AUDIO,
+      translatedAudible: () => !mixStateRef.current.translatedMuted,
+      translatedVolume: () => mixStateRef.current.translatedLevel,
+    });
+    progressiveAudioRef.current = controller;
+    controller.attach();
+    return () => {
+      controller.detach();
+      progressiveAudioRef.current = null;
+      void context.close();
+    };
+  }, [getSynchronizedListenerClockMs]);
 
   const updateSocketDiagnostics = useCallback(
     (event: string, next: Partial<SocketDiagnostics>): void => {

@@ -50,7 +50,10 @@ export type WireFrameInput = Omit<WireFrame, 'flags'> & { readonly flags?: numbe
 
 /** The largest payload this message type may carry. */
 function payloadLimitFor(messageType: number): number {
-  return messageType === MessageType.MEDIA
+  // Translated media is audio and is bounded like audio. Sizing it as a
+  // control payload would let a 64 KiB "frame" of speech through, which is two
+  // full seconds -- a limit that only rejects the absurd does half its job.
+  return messageType === MessageType.MEDIA || messageType === MessageType.TRANSLATED_MEDIA
     ? Limits.MEDIA_PAYLOAD_BYTES
     : Limits.CONTROL_PAYLOAD_BYTES;
 }

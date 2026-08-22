@@ -55,6 +55,7 @@ import type { BackendMediaPeerAudioContext } from './webrtc-media-peer-registry.
 import type { MediaTranscriptionBridgeContext } from './media-transcription-bridge.js';
 import type { CallReceivePeersLike, CallReceivePeerHandlers } from './call-receive-peers.js';
 import { CallTranscriptLog } from './call-transcript-log.js';
+import type { CallTranslatedAudioFramePayload } from '@videofy-live/call-session';
 import { CallPlaybackLedger, generatedClipId } from './call-playback-ledger.js';
 import { CallAcousticRoomObserver } from './call-acoustic-rooms.js';
 import { logger } from './logger.js';
@@ -435,6 +436,20 @@ export class CallRuntime {
   private readonly participants = new Map<string, CallParticipantRuntimeState>();
   /** Keyed by REVISION-SCOPED ingestSessionId; superseded entries are retired. */
   private readonly ingestRegistry = new Map<string, CallIngestRegistryEntry>();
+  /**
+   * Observed by the SIP egress router and the acceptance harness.
+   *
+   * A notification rather than a second delivery path: browser and SIP are
+   * transports chosen AFTER eligibility, not competing routing authorities.
+   */
+  translatedFrameRecipients:
+    | ((
+        callId: string,
+        targetLanguage: string,
+        recipientParticipantIds: readonly string[],
+        payload: CallTranslatedAudioFramePayload,
+      ) => void)
+    | null = null;
   /** Stable publish-peer key -> participant identity, for frame-time resolution. */
   private readonly publishPeerIndex = new Map<string, CallSocketBinding>();
 
@@ -1262,6 +1277,87 @@ export class CallRuntime {
   }
 
   /** Intercept a media-ingest generated-audio-ready event for call sessions. */
+  /**
+   * One frame of progressive translated speech for a call.
+   *
+   * Returns true when this frame belonged to a call -- whether or not anybody
+   * was eligible to hear it -- so the caller knows not to fall through to
+   * programme routing. False means "not a call session", the one case where
+   * another audience should look at it.
+   *
+   * THE INGEST SESSION ID NEVER LEAVES THE SERVER. `ingestRegistry` already
+   * maps it to callId, speaker and the revision pair; sending it to a browser
+   * so the browser could look up what the gateway already knows would relocate
+   * server knowledge into the client and make the next rename of an ingest
+   * session id a frontend breaking change.
+   */
+  interceptTranslatedAudioFrame(frame: {
+    sessionId: string;
+    targetLanguage: string;
+    segmentId: string;
+    generation: number;
+    sequence: number;
+    segmentStartMs: number;
+    final: boolean;
+    pcmBase64: string;
+  }): boolean {
+    if (!isCallIngestSessionId(frame.sessionId)) return false;
+    const entry = this.ingestRegistry.get(frame.sessionId);
+    // A frame for a retired or superseded ingest session. It belonged to a
+    // call; it belongs to no call NOW, which is a different thing from an
+    // unknown session and is why this still returns true.
+    if (!entry) return true;
+
+    // Not an active audio target for this plan. A frame in a language nobody
+    // on this call asked to hear is refused rather than broadcast on the
+    // chance that somebody wants it.
+    // Widen the PLAN rather than assert the wire value into CallLanguage.
+    // The frame's language is untrusted text, and membership in the plan is
+    // precisely the check that earns it any status; casting the input would
+    // assert the conclusion instead of testing it.
+    const activeTargets: readonly string[] = entry.plan.targetLanguages;
+    if (!activeTargets.includes(frame.targetLanguage)) return true;
+
+    // THE ONE ELIGIBILITY AUTHORITY, shared with finished-file delivery. A
+    // second copy here would eventually forget that `normal` mode delivers
+    // nothing, or that a stale revision must not route.
+    const recipients = this.store.translatedAudioRecipients(
+      entry.callId,
+      entry.participantId,
+      frame.targetLanguage,
+      { mediaRevision: entry.plan.mediaRevision, languageRevision: entry.languageRevision },
+    );
+    if (recipients.length === 0) return true;
+
+    const payload: CallTranslatedAudioFramePayload = {
+      callId: entry.callId,
+      speakerParticipantId: entry.participantId,
+      targetLanguage: frame.targetLanguage,
+      mediaRevision: entry.plan.mediaRevision,
+      languageRevision: entry.languageRevision,
+      segmentId: frame.segmentId,
+      generation: frame.generation,
+      sequence: frame.sequence,
+      segmentStartMs: frame.segmentStartMs,
+      final: frame.final,
+      sampleRate: 16000,
+      channelCount: 1,
+      pcmBase64: frame.pcmBase64,
+    };
+    for (const recipientParticipantId of recipients) {
+      // PRIVATE rooms, never a language room. A language room on a call would
+      // deliver one participant's translated voice to every call that happened
+      // to share a language.
+      this.emitToRoom(
+        callParticipantRoom(entry.callId, recipientParticipantId),
+        CALL_EVENTS.TRANSLATED_AUDIO_FRAME,
+        payload,
+      );
+    }
+    this.translatedFrameRecipients?.(entry.callId, frame.targetLanguage, recipients, payload);
+    return true;
+  }
+
   interceptGeneratedAudioEvent(event: GeneratedAudioReadyEvent): boolean {
     if (!isCallIngestSessionId(event.sessionId)) return false;
     const entry = this.ingestRegistry.get(event.sessionId);

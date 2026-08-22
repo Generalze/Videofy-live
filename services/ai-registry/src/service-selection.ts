@@ -77,6 +77,12 @@ export interface EvaluateServiceSelectionInput {
   /** Observed health. Defaults to `unknown`, which does NOT accept traffic. */
   readonly health?: ProviderRuntimeHealth;
   readonly administrativelyDisabled?: boolean;
+  /**
+   * Whether external identity (ADC, workload identity, a metadata server)
+   * actually resolved. Omitted means unverified, which FAILS CLOSED for any
+   * provider that authenticates that way. See `resolveOperationalState`.
+   */
+  readonly externalAuthResolved?: boolean;
   /** Predicate over env var NAMES. No credential value enters this module. */
   readonly isPresent: (envVarName: string) => boolean;
   readonly provider?: CommercialProvider;
@@ -125,10 +131,13 @@ export function evaluateServiceSelection(
 
   // --- operational state: administrative, never evidential -----------------
   const operational = resolveOperationalState({
-    credentialEnvVars: provider.credentialEnvVars,
+    requirements: provider.requirements,
     ...(input.administrativelyDisabled === undefined
       ? {}
       : { administrativelyDisabled: input.administrativelyDisabled }),
+    ...(input.externalAuthResolved === undefined
+      ? {}
+      : { externalAuthResolved: input.externalAuthResolved }),
     isPresent: input.isPresent,
   });
   if (operational.state === 'disabled') {
@@ -249,6 +258,8 @@ export function assertServiceSelectionReady(input: EvaluateServiceSelectionInput
 export function commercialProfileBlockers(input: {
   readonly minimumStage: ProviderIntegrationStage;
   readonly isPresent: (envVarName: string) => boolean;
+  /** See `evaluateServiceSelection`. Omitted fails closed for ADC providers. */
+  readonly externalAuthResolved?: boolean;
 }): readonly string[] {
   const blockers: string[] = [];
   const services: ProviderServiceContext[] = [
@@ -263,6 +274,9 @@ export function commercialProfileBlockers(input: {
           providerId,
           service,
           minimumStage: input.minimumStage,
+          ...(input.externalAuthResolved === undefined
+            ? {}
+            : { externalAuthResolved: input.externalAuthResolved }),
           isPresent: input.isPresent,
         }).eligibleAsPrimary,
     );

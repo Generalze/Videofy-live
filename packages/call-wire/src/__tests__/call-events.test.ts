@@ -22,6 +22,7 @@ const EXPECTED_EVENT_NAMES = {
   STATE: 'call:state',
   CAPTION: 'call:caption',
   GENERATED_AUDIO: 'call:generated-audio',
+  TRANSLATED_AUDIO_FRAME: 'call:translated-audio-frame',
   ERROR: 'call:error',
   SET_MODE: 'call:mode:set',
   SET_AUDIO_MODE: 'call:audio-mode:set',

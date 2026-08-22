@@ -14,6 +14,7 @@
     "typecheck": "npm --prefix ../.. run build -w @videofy-live/shared-types && npm --prefix ../.. run build -w @videofy-live/language-router && tsc --noEmit"
   },
   "dependencies": {
+    "@videofy-live/call-client-core": "*",
     "@videofy-live/design-system": "*",
     "@videofy-live/language-router": "*",
     "@videofy-live/shared-types": "*",

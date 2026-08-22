@@ -160,6 +160,8 @@ declare module '@videofy-live/shared-types' {
 
   export interface MediaStateEvent {
     eventId: string;
+    /** Which revision of the programme source this state describes. */
+    sourceRevision?: number;
     streamId?: string;
     processingSessionId?: string;
     shareableWebRtcSessionId?: string;
@@ -252,8 +254,11 @@ declare module '@videofy-live/shared-types' {
    * produced it.
    */
   export interface TranslatedAudioFramePayload {
-    sessionId: string;
     broadcastId: string;
+    /** Bumps on a source switch; a Viewer rejects frames from an older one. */
+    sourceRevision: number;
+    /** Which language this stream is. Several share a segmentId. */
+    targetLanguage: string;
     segmentId: string;
     generation: number;
     sequence: number;

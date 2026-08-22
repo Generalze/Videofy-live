@@ -654,7 +654,7 @@ if (streamingTranscription !== null) {
       // must not fall back to a default voice speaking the wrong language.
       synthesis: streamingSynthesis,
       mintSegmentId: () => `seg_${crypto.randomUUID()}`,
-      speechPlanFor: (open) => ingest.liveSpeechPlanFor(open.sessionId),
+      speechPlansFor: (open) => ingest.liveSpeechPlansFor(open.sessionId),
       onCaption: (event) => ingest.acceptLiveTranscript(event),
       log: (line, detail) => logger.debug(line, detail ?? {}),
     }),

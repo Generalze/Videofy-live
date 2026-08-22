@@ -1,3 +1,4 @@
+import type { LivePathProfile } from './live-path-policy.js';
 import { ADAPTER_ROUTE_POLICY_PATH_VARIABLE } from './adapter-route-policy.js';
 import { loadRootEnv, readCsv, readPort } from './env.js';
 import {
@@ -8,6 +9,31 @@ import {
 } from '@videofy-live/service-env';
 import { logger } from './logger.js';
 import { resolve } from 'node:path';
+
+const LIVE_PATH_PROFILES: readonly LivePathProfile[] = [
+  'development-demo',
+  'commercial-local',
+  'commercial-cloud',
+  'videofy-native',
+];
+
+/**
+ * Refuses an unknown value rather than defaulting to development.
+ *
+ * A typo in AI_RUNTIME_PROFILE must not silently select the one profile that
+ * permits the batch fallback -- that would turn a misspelling into exactly the
+ * quiet downgrade the policy exists to prevent.
+ */
+function parseLivePathProfile(raw: string | undefined): LivePathProfile {
+  if (raw === undefined || raw === '') return 'development-demo';
+  const found = LIVE_PATH_PROFILES.find((profile) => profile === raw);
+  if (found === undefined) {
+    throw new Error(
+      `AI_RUNTIME_PROFILE must be one of ${LIVE_PATH_PROFILES.join(', ')}; received "${raw}"`,
+    );
+  }
+  return found;
+}
 
 export interface GatewayConfig {
   port: number;
@@ -24,6 +50,15 @@ export interface GatewayConfig {
    * gateway that accepts calls and quietly transcribes none of them.
    */
   realtimeIngressUrl: string | null;
+  /**
+   * Which runtime profile this gateway serves.
+   *
+   * Decides what an ABSENT realtime ingress means: development keeps the
+   * chunker, a commercial call refuses rather than quietly running the batch
+   * path. Read from the same AI_RUNTIME_PROFILE media-ingest reads, so the two
+   * services cannot disagree about which product they are running.
+   */
+  livePathProfile: LivePathProfile;
   mediaIngestPublicUrl: string;
   /**
    * The SAME resolution media-ingest performs, from the same module, so the two
@@ -100,6 +135,7 @@ export function loadConfig(): GatewayConfig {
     ),
     mediaIngestUrl: process.env['MEDIA_INGEST_URL'] ?? 'http://localhost:3002',
     realtimeIngressUrl: process.env['MEDIA_INGEST_REALTIME_INGRESS_URL'] ?? null,
+    livePathProfile: parseLivePathProfile(process.env['AI_RUNTIME_PROFILE']),
     // Resolved through the SAME contract media-ingest uses, so the two can no
     // longer disagree about what a browser will be told. They did, and the
     // disagreement was invisible on the machine that produced it.

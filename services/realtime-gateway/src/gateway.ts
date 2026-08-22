@@ -40,6 +40,7 @@ import { createCallVoiceIdentityVerifier } from './call-voice-identity.js';
 import { EventStore } from './event-store.js';
 import { GeneratedAudioStore } from './generated-audio-store.js';
 import type { IngressTranslatedAudio } from '@videofy-live/media-ingress-wire';
+import type { LivePathProfile } from './live-path-policy.js';
 import { logger } from './logger.js';
 import {
   WebRtcSessionRegistry,
@@ -122,6 +123,14 @@ export class Gateway {
   private readonly translatedAudioListeners = new Set<
     (payload: TranslatedAudioFramePayload) => void
   >();
+  /**
+   * The current source revision per programme processing session.
+   *
+   * Recorded as audio flows so the media state and the translated frames name
+   * the same number. Two sources for one fact would drift, and the one that
+   * drifted would be the one the viewer compares against.
+   */
+  private readonly programmeSourceRevisions = new Map<string, number>();
   private readonly callRuntime: CallRuntime;
   private readonly mediaIngestUrl: string;
   private readonly mediaIngestPublicUrl: string;
@@ -166,6 +175,7 @@ export class Gateway {
       webRtcPartialCaptionIntervalMs?: number;
       /** Set to cut the live path over to the realtime ingress; null keeps the chunker. */
       realtimeIngressUrl?: string | null;
+      livePathProfile?: LivePathProfile;
       callTranscriptLogDir?: string | null;
       vad?: ConstructorParameters<typeof MediaTranscriptionBridge>[0]['vad'];
       /**
@@ -231,6 +241,7 @@ export class Gateway {
       // Explicit, not defaulted: the bridge's own default would enable partials
       // for every embedder, and the gateway is where real call traffic opts in.
       partialIntervalMs: options.webRtcPartialCaptionIntervalMs ?? 0,
+      ...(options.livePathProfile ? { livePathProfile: options.livePathProfile } : {}),
       // THE CUTOVER SWITCH. With a destination, live audio streams as frames
       // and never becomes a WAV file on a disk both services must share.
       ...(options.realtimeIngressUrl
@@ -852,6 +863,9 @@ export class Gateway {
         ...(programmeConfig
           ? {
               streamId: programmeConfig.broadcastId,
+              // The SAME number progressive frames carry, so a viewer can
+              // compare rather than guess.
+              sourceRevision: this.programmeSourceRevisions.get(programmeConfig.sessionId) ?? 1,
               streamStatus: programmeStreamStatus,
               videoSource: 'webrtc' as const,
               ...(programmeConfig.programmeSourceType === 'uploaded-video' &&
@@ -1457,9 +1471,51 @@ export class Gateway {
     context: MediaTranscriptionBridgeContext,
     frame: IngressTranslatedAudio,
   ): void {
+    // Base64 because socket.io payloads are JSON. The samples are the
+    // platform's own little-endian PCM16; no vendor container is involved.
+    const pcmBase64 = Buffer.from(
+      frame.samples.buffer,
+      frame.samples.byteOffset,
+      frame.samples.byteLength,
+    ).toString('base64');
+
+    // A CALL AND A PROGRAMME ARE ROUTED BY DIFFERENT AUTHORITIES, and the split
+    // is here rather than inside either of them.
+    //
+    // A call has private recipients: who may hear a given speaker in a given
+    // language is a decision the call session layer already owns, and a
+    // language room would deliver one participant's translated voice to every
+    // other call sharing that language. A programme has an AUDIENCE that
+    // joined a language on purpose, so a language room is exactly right.
+    if (
+      this.callRuntime?.interceptTranslatedAudioFrame({
+        sessionId: context.sessionId,
+        targetLanguage: frame.targetLanguage,
+        segmentId: frame.segmentId,
+        generation: frame.generation,
+        sequence: frame.sequence,
+        segmentStartMs: frame.segmentStartMs,
+        final: frame.final,
+        pcmBase64,
+      }) === true
+    ) {
+      return;
+    }
+
+    // PROGRAMME. The Viewer is told what it can actually check: which
+    // broadcast, which source revision, which language. It has never seen a
+    // media-ingest processing-session id and must not need one -- that is
+    // server knowledge, and requiring it would make the next internal rename a
+    // frontend breaking change.
+    this.programmeSourceRevisions.set(context.sessionId, context.revision);
+    const programme = this.programmeSessionConfigs.get(context.sessionId);
     const payload: TranslatedAudioFramePayload = {
-      sessionId: context.sessionId,
-      broadcastId: context.broadcastId,
+      broadcastId: programme?.broadcastId ?? context.broadcastId,
+      // A source switch bumps this. Late frames from revision N must not become
+      // audible once N+1 is authoritative, and the Viewer is the only place
+      // that knows which revision it is currently rendering.
+      sourceRevision: context.revision,
+      targetLanguage: frame.targetLanguage,
       segmentId: frame.segmentId,
       generation: frame.generation,
       sequence: frame.sequence,
@@ -1467,17 +1523,13 @@ export class Gateway {
       final: frame.final,
       sampleRate: 16000,
       channelCount: 1,
-      // Base64 because socket.io payloads are JSON. The samples are the
-      // platform's own little-endian PCM16; no vendor container is involved.
-      pcmBase64: Buffer.from(
-        frame.samples.buffer,
-        frame.samples.byteOffset,
-        frame.samples.byteLength,
-      ).toString('base64'),
+      pcmBase64,
     };
     this.translatedAudioListeners.forEach((listener) => listener(payload));
+    // Named from the FRAME, not from the session's first configured target:
+    // one utterance produces a stream per language and they share a socket.
     this.io
-      .to(languageRoom(context.targetLanguage ?? ''))
+      .to(languageRoom(frame.targetLanguage))
       .emit(SOCKET_EVENTS.TRANSLATED_AUDIO_FRAME, payload);
   }
 

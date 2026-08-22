@@ -116,8 +116,11 @@ export interface OperatorProgrammeSessionConfig {
  * client release.
  */
 export interface TranslatedAudioFramePayload {
-  sessionId: string;
   broadcastId: string;
+  /** Bumps on a source switch; a Viewer rejects frames from an older one. */
+  sourceRevision: number;
+  /** Which language this stream is. Several share a segmentId. */
+  targetLanguage: string;
   segmentId: string;
   /** Which synthesis attempt. Higher supersedes lower; platform-owned. */
   generation: number;

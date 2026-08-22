@@ -30,8 +30,18 @@
  * deployment.
  */
 
-/** Bumped only for incompatible change. A mismatch refuses the connection. */
-export const INGRESS_PROTOCOL_VERSION = 1;
+/**
+ * Bumped only for incompatible change. A mismatch refuses the connection.
+ *
+ * VERSION 2 added `targetLanguage` to the translated-audio frame. Version 1
+ * could carry progressive speech for exactly one language per source session,
+ * because a frame had no field naming which language it was -- so a second
+ * pipeline's frames would have been indistinguishable from the first's. The
+ * frame layout changed incompatibly, and the version is what stops a v1 peer's
+ * frames being read as the new shape: a v1 OPEN is refused, so a v1 connection
+ * never reaches the point of sending audio at all.
+ */
+export const INGRESS_PROTOCOL_VERSION = 2;
 
 export const IngressMessageType = {
   /** Client opens one stream on this connection. JSON payload. */
@@ -227,7 +237,7 @@ export interface IngressAudio {
 }
 
 /**
- * 20 bytes, laid out as:
+ * 22 bytes, laid out as:
  *
  *     0        message type
  *     1        flags (bit 0: final)
@@ -235,14 +245,26 @@ export interface IngressAudio {
  *     4..7     generation, u32 big-endian
  *     8..11    sequence, u32 big-endian
  *     12..19   segmentStartMs, f64 big-endian
- *     20..     segmentId utf8, then PCM16 little-endian samples
+ *     20       targetLanguage length in bytes, u8
+ *     21       reserved, must be zero
+ *     22..     segmentId utf8, targetLanguage utf8, PCM16 little-endian samples
  *
- * The f64 at offset 12 occupies bytes 12 THROUGH 19, and the payload starts at
- * 20. Written out because the inbound header had exactly this bug once: a
- * field placed one byte inside the double, frames that still decoded, and a
- * clock that was merely a little wrong.
+ * The f64 at offset 12 occupies bytes 12 THROUGH 19, and the variable-length
+ * section starts at 22. Written out because this header had exactly that bug
+ * once: a field placed one byte inside the double, frames that still decoded,
+ * and a clock that was merely a little wrong.
  */
-export const TRANSLATED_AUDIO_HEADER_BYTES = 20;
+export const TRANSLATED_AUDIO_HEADER_BYTES = 22;
+
+/**
+ * Longest `targetLanguage` this frame will carry.
+ *
+ * A BCP-47 tag that a synthesis target could plausibly use fits easily; 32
+ * bytes is generous for `zh-Hans-CN` and refuses anything that is not a
+ * language tag at all. Bounded before allocation, because a length field read
+ * from a peer is an instruction to allocate.
+ */
+export const MAX_TARGET_LANGUAGE_BYTES = 32;
 
 export const TranslatedAudioFlags = {
   NONE: 0,
@@ -260,6 +282,16 @@ export const TRANSLATED_AUDIO_RESERVED_MASK = ~TranslatedAudioFlags.FINAL & 0xff
  * abandon a superseded attempt without ever learning which vendor spoke.
  */
 export interface IngressTranslatedAudio {
+  /**
+   * WHICH LANGUAGE this audio is in.
+   *
+   * Carried explicitly, never inferred. One utterance is transcribed once and
+   * then translated and synthesised once per DISTINCT active target language,
+   * so several independent frame streams share a `segmentId` and are told apart
+   * only by this. Inferring it from the session, the socket, the sequence or
+   * "the first configured target" is what limited the path to one language.
+   */
+  readonly targetLanguage: string;
   readonly segmentId: string;
   readonly generation: number;
   readonly sequence: number;

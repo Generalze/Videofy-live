@@ -14,6 +14,12 @@ import {
   type MediaTranscriptionChunk,
 } from './media-transcription-chunker.js';
 import { LiveIngressSender } from './live-ingress-sender.js';
+import {
+  requiresOperatorAttention,
+  resolveLivePath,
+  type LivePathDecision,
+  type LivePathProfile,
+} from './live-path-policy.js';
 import type { IngressTranslatedAudio } from '@videofy-live/media-ingress-wire';
 import { logger } from './logger.js';
 
@@ -218,6 +224,15 @@ export interface MediaTranscriptionBridgeOptions {
    * it did, which is what the batch and upload routes still need.
    */
   realtimeIngress?: RealtimeIngressBinding;
+  /**
+   * Which runtime profile this gateway is serving.
+   *
+   * Decides what an absent realtime ingress means: development keeps the
+   * chunker, a commercial call refuses rather than silently running batch.
+   * Defaults to `development-demo`, the only value for which falling back is
+   * unambiguously right.
+   */
+  livePathProfile?: LivePathProfile;
 }
 
 /** Backpressure bookkeeping shared with the chunker's eviction callback. */
@@ -276,6 +291,10 @@ export class MediaTranscriptionBridge {
   private readonly createExternalAudioProcess: (url: string) => ChildProcessWithoutNullStreams;
   /** Present means the live path is cut over; absent keeps the chunker route. */
   private readonly realtimeIngress: RealtimeIngressBinding | null;
+  /** Decides what an ABSENT realtime ingress means. See `live-path-policy`. */
+  private readonly livePathProfile: LivePathProfile;
+  /** Sessions refused by policy, so a repeat frame does not re-log forever. */
+  private readonly refusedSessions = new Set<string>();
   private readonly sessions = new Map<string, MediaTranscriptionSessionState>();
 
   constructor(options: MediaTranscriptionBridgeOptions) {
@@ -286,6 +305,7 @@ export class MediaTranscriptionBridge {
     this.partialIntervalMs = Math.max(0, options.partialIntervalMs ?? 1_500);
     this.vad = options.vad;
     this.realtimeIngress = options.realtimeIngress ?? null;
+    this.livePathProfile = options.livePathProfile ?? 'development-demo';
     this.maxRetries = options.maxRetries ?? 1;
     this.ffmpegPath = options.ffmpegPath ?? process.env['FFMPEG_PATH'] ?? 'ffmpeg';
     this.createExternalAudioProcess =
@@ -334,6 +354,13 @@ export class MediaTranscriptionBridge {
     // straight out as frames and never becomes a WAV file on a shared disk.
     // The chunker path below remains for the batch/upload route, which
     // genuinely wants a finished file.
+    const livePath = this.livePathFor(context);
+    if (livePath.kind === 'refuse') {
+      // FAIL CLOSED. Dropping the frame is the point: a commercial call must
+      // not quietly become a batch pipeline because a URL was left unset.
+      this.noteRefusedLivePath(context, livePath);
+      return;
+    }
     if (this.realtimeIngress !== null) {
       this.pushLive(session, data);
       return;
@@ -583,6 +610,31 @@ export class MediaTranscriptionBridge {
     this.sessions.set(key, state);
     if (this.realtimeIngress !== null) this.startLiveIngress(state);
     return state;
+  }
+
+  /** What this session's live audio should do. Cheap; called per frame. */
+  livePathFor(context: MediaTranscriptionBridgeContext): LivePathDecision {
+    return resolveLivePath({
+      profile: this.livePathProfile,
+      mediaSessionMode: context.mediaSessionMode,
+      realtimeConfigured: this.realtimeIngress !== null,
+    });
+  }
+
+  private noteRefusedLivePath(
+    context: MediaTranscriptionBridgeContext,
+    decision: LivePathDecision,
+  ): void {
+    const key = sessionKey(context);
+    if (this.refusedSessions.has(key)) return;
+    this.refusedSessions.add(key);
+    logger.error('live path refused by policy', {
+      sessionId: context.sessionId,
+      broadcastId: context.broadcastId,
+      mediaSessionMode: context.mediaSessionMode,
+      profile: this.livePathProfile,
+      reason: decision.kind === 'refuse' ? decision.reason : '',
+    });
   }
 
   private startLiveIngress(session: MediaTranscriptionSessionState): void {

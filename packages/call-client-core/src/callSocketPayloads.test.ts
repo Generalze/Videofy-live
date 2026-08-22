@@ -191,6 +191,7 @@ describe('call socket contract', () => {
       STATE: 'call:state',
       CAPTION: 'call:caption',
       GENERATED_AUDIO: 'call:generated-audio',
+      TRANSLATED_AUDIO_FRAME: 'call:translated-audio-frame',
       ERROR: 'call:error',
       // W5: call-global mode change, owner authority only.
       SET_MODE: 'call:mode:set',

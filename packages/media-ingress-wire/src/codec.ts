@@ -34,7 +34,17 @@ import {
   TRANSLATED_AUDIO_HEADER_BYTES,
   TRANSLATED_AUDIO_RESERVED_MASK,
   TranslatedAudioFlags,
+  MAX_TARGET_LANGUAGE_BYTES,
 } from './protocol.js';
+
+/**
+ * A conservative language-tag shape.
+ *
+ * Deliberately narrow: a target language reaches a routing decision and a room
+ * name, so a value carrying anything but letters, digits and hyphens is not a
+ * language tag and is refused rather than sanitised.
+ */
+const LANGUAGE_TAG = /^[A-Za-z0-9-]{1,32}$/;
 
 export type DecodedIngressFrame =
   | { readonly kind: 'open'; readonly open: IngressOpen }
@@ -131,16 +141,23 @@ export function encodeTranslatedAudio(audio: IngressTranslatedAudio): Buffer {
   if (!Number.isInteger(audio.generation) || audio.generation < 0) {
     throw new RangeError(`translated audio generation out of range: ${audio.generation}`);
   }
+  if (!LANGUAGE_TAG.test(audio.targetLanguage)) {
+    throw new RangeError('translated audio targetLanguage is not a language tag');
+  }
   const idBytes = Buffer.from(audio.segmentId, 'utf8');
   if (idBytes.byteLength === 0 || idBytes.byteLength > 0xffff) {
     throw new RangeError('translated audio segmentId must be 1..65535 bytes');
+  }
+  const languageBytes = Buffer.from(audio.targetLanguage, 'utf8');
+  if (languageBytes.byteLength > MAX_TARGET_LANGUAGE_BYTES) {
+    throw new RangeError('translated audio targetLanguage exceeds the protocol limit');
   }
   const payloadBytes = audio.samples.length * 2;
   if (payloadBytes > IngressLimits.AUDIO_PAYLOAD_BYTES) {
     throw new RangeError('translated audio payload exceeds the protocol limit');
   }
   const frame = Buffer.allocUnsafe(
-    TRANSLATED_AUDIO_HEADER_BYTES + idBytes.byteLength + payloadBytes,
+    TRANSLATED_AUDIO_HEADER_BYTES + idBytes.byteLength + languageBytes.byteLength + payloadBytes,
   );
   frame[0] = IngressMessageType.TRANSLATED_AUDIO;
   frame.writeUInt8(audio.final ? TranslatedAudioFlags.FINAL : 0, 1);
@@ -148,8 +165,12 @@ export function encodeTranslatedAudio(audio: IngressTranslatedAudio): Buffer {
   frame.writeUInt32BE(audio.generation, 4);
   frame.writeUInt32BE(audio.sequence, 8);
   frame.writeDoubleBE(audio.segmentStartMs, 12);
+  frame.writeUInt8(languageBytes.byteLength, 20);
+  frame.writeUInt8(0, 21);
   idBytes.copy(frame, TRANSLATED_AUDIO_HEADER_BYTES);
-  const payloadAt = TRANSLATED_AUDIO_HEADER_BYTES + idBytes.byteLength;
+  languageBytes.copy(frame, TRANSLATED_AUDIO_HEADER_BYTES + idBytes.byteLength);
+  const payloadAt =
+    TRANSLATED_AUDIO_HEADER_BYTES + idBytes.byteLength + languageBytes.byteLength;
   for (let index = 0; index < audio.samples.length; index += 1) {
     frame.writeInt16LE(audio.samples[index]!, payloadAt + index * 2);
   }
@@ -233,10 +254,22 @@ export function decodeIngressFrame(buffer: Buffer): IngressDecodeResult {
     if ((flags & TRANSLATED_AUDIO_RESERVED_MASK) !== 0) {
       return refuse('reserved-bits-set', `flags 0x${flags.toString(16)}`);
     }
+    if (buffer.readUInt8(21) !== 0) {
+      return refuse('reserved-bits-set', 'reserved byte 21 is not zero');
+    }
+    // EVERY length is validated against the real buffer BEFORE anything is
+    // allocated. A length field that arrived from a peer is an instruction to
+    // allocate, and acting on it first is how a parser is talked into
+    // reserving memory for audio nobody ever sent.
     const idLength = buffer.readUInt16BE(2);
-    const payloadAt = TRANSLATED_AUDIO_HEADER_BYTES + idLength;
+    const languageLength = buffer.readUInt8(20);
+    if (languageLength === 0 || languageLength > MAX_TARGET_LANGUAGE_BYTES) {
+      return refuse('malformed-frame', `targetLanguage length ${languageLength}`);
+    }
+    const languageAt = TRANSLATED_AUDIO_HEADER_BYTES + idLength;
+    const payloadAt = languageAt + languageLength;
     if (idLength === 0 || buffer.byteLength < payloadAt) {
-      return refuse('malformed-frame', 'translated audio segmentId does not fit');
+      return refuse('malformed-frame', 'translated audio header does not fit its own lengths');
     }
     const payloadBytes = buffer.byteLength - payloadAt;
     if (payloadBytes > IngressLimits.AUDIO_PAYLOAD_BYTES) {
@@ -247,6 +280,12 @@ export function decodeIngressFrame(buffer: Buffer): IngressDecodeResult {
     if (!Number.isFinite(segmentStartMs) || segmentStartMs < 0) {
       return refuse('malformed-frame', 'segmentStartMs is not a usable time');
     }
+    const targetLanguage = buffer.subarray(languageAt, payloadAt).toString('utf8');
+    if (!LANGUAGE_TAG.test(targetLanguage)) {
+      // A target language reaches a routing decision and a room name. Anything
+      // that is not a language tag is refused rather than sanitised into one.
+      return refuse('malformed-frame', 'targetLanguage is not a language tag');
+    }
     const samples = new Int16Array(payloadBytes / 2);
     for (let index = 0; index < samples.length; index += 1) {
       samples[index] = buffer.readInt16LE(payloadAt + index * 2);
@@ -256,7 +295,8 @@ export function decodeIngressFrame(buffer: Buffer): IngressDecodeResult {
       frame: {
         kind: 'translated-audio',
         audio: {
-          segmentId: buffer.subarray(TRANSLATED_AUDIO_HEADER_BYTES, payloadAt).toString('utf8'),
+          targetLanguage,
+          segmentId: buffer.subarray(TRANSLATED_AUDIO_HEADER_BYTES, languageAt).toString('utf8'),
           generation: buffer.readUInt32BE(4),
           sequence: buffer.readUInt32BE(8),
           segmentStartMs,

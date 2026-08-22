@@ -93,9 +93,53 @@ export function healthAcceptsTraffic(health: ProviderRuntimeHealth): boolean {
   return health === 'healthy' || health === 'degraded';
 }
 
+/**
+ * How a provider proves who it is.
+ *
+ * A FLAT LIST OF REQUIRED ENV VARS CANNOT EXPRESS THIS, and pretending it could
+ * is what disabled a perfectly good Google deployment. That model has exactly
+ * one idea -- "these names must all be set" -- and it collapses three genuinely
+ * different things into it:
+ *
+ *   configuration    GOOGLE_TRANSLATE_PROJECT_ID. Names a resource. Required,
+ *                    and its absence really is a broken deployment.
+ *   authentication   an API key, OR Application Default Credentials. ADC
+ *                    resolves from a metadata server, a workload identity, or
+ *                    `gcloud auth application-default login` -- none of which
+ *                    set an environment variable at all.
+ *   optional tuning  GOOGLE_CLOUD_QUOTA_PROJECT. Absent is a valid answer and
+ *                    must never be treated as a fault.
+ *
+ * `GOOGLE_APPLICATION_CREDENTIALS` is ONE ADC source among several. Requiring
+ * it marked a running deployment disabled for lacking a key file it was
+ * deliberately not using, and would do the same on Contabo the moment
+ * authentication came from a metadata server or workload identity.
+ */
+export type ProviderAuthStrategy =
+  | {
+      readonly kind: 'api-key';
+      /** All of these must be present. A missing key really is unusable. */
+      readonly envVars: readonly string[];
+    }
+  | {
+      readonly kind: 'application-default-credentials';
+      /**
+       * Names that COULD supply ADC, recorded so an operator can see them.
+       * Never required: their absence says nothing about whether ADC resolves.
+       */
+      readonly possibleSourceEnvVars?: readonly string[] | undefined;
+    };
+
+export interface ProviderRequirements {
+  /** Resource configuration. Required; absence is a broken deployment. */
+  readonly configEnvVars: readonly string[];
+  readonly auth: ProviderAuthStrategy;
+  /** Named so they are discoverable. Absence is never a fault. */
+  readonly optionalEnvVars?: readonly string[] | undefined;
+}
+
 export interface OperationalStateInput {
-  /** Environment variable NAMES this provider needs. Never their values. */
-  readonly credentialEnvVars: readonly string[];
+  readonly requirements: ProviderRequirements;
   /** Explicit administrative disable, independent of credentials. */
   readonly administrativelyDisabled?: boolean;
   /**
@@ -104,6 +148,17 @@ export interface OperationalStateInput {
    * no credential value can pass through this module even by accident.
    */
   readonly isPresent: (envVarName: string) => boolean;
+  /**
+   * Whether external identity (ADC, workload identity, a metadata server)
+   * actually resolved usable credentials.
+   *
+   * `undefined` means nobody checked, and that FAILS CLOSED: an unverified
+   * external identity is treated as unusable. The alternative -- assuming ADC
+   * works because no environment variable contradicts it -- would route live
+   * traffic to a provider that cannot authenticate, and discover the problem
+   * on somebody's call.
+   */
+  readonly externalAuthResolved?: boolean;
 }
 
 export interface OperationalStateResult {
@@ -125,13 +180,62 @@ export function resolveOperationalState(input: OperationalStateInput): Operation
   if (input.administrativelyDisabled === true) {
     return { state: 'disabled', missingCredentials: [], reason: 'administratively disabled' };
   }
-  const missing = input.credentialEnvVars.filter((name) => !input.isPresent(name));
-  if (missing.length > 0) {
+
+  // Configuration first: a provider with no resource to address cannot work
+  // however well it authenticates, and saying so names the actual problem.
+  const missingConfig = input.requirements.configEnvVars.filter((name) => !input.isPresent(name));
+  if (missingConfig.length > 0) {
     return {
       state: 'disabled',
-      missingCredentials: missing,
-      reason: `credential(s) not set: ${missing.join(', ')}`,
+      missingCredentials: missingConfig,
+      reason: `configuration not set: ${missingConfig.join(', ')}`,
     };
   }
-  return { state: 'enabled', missingCredentials: [], reason: 'credentials present' };
+
+  const auth = input.requirements.auth;
+  if (auth.kind === 'api-key') {
+    const missingKeys = auth.envVars.filter((name) => !input.isPresent(name));
+    if (missingKeys.length > 0) {
+      return {
+        state: 'disabled',
+        missingCredentials: missingKeys,
+        reason: `credential(s) not set: ${missingKeys.join(', ')}`,
+      };
+    }
+    return { state: 'enabled', missingCredentials: [], reason: 'credentials present' };
+  }
+
+  // External identity. `possibleSourceEnvVars` is deliberately NOT consulted:
+  // ADC resolving has nothing to do with whether any particular variable is
+  // set, and checking one would reintroduce the bug this model replaced.
+  if (input.externalAuthResolved !== true) {
+    return {
+      state: 'disabled',
+      missingCredentials: [],
+      reason:
+        input.externalAuthResolved === false
+          ? 'application default credentials did not resolve'
+          : 'application default credentials were not verified',
+    };
+  }
+  return {
+    state: 'enabled',
+    missingCredentials: [],
+    reason: 'application default credentials resolved',
+  };
+}
+
+/**
+ * Every env var name a provider mentions, for documentation and operator tools.
+ *
+ * Deliberately separate from the requirement check: this is the list to PRINT,
+ * not the list to enforce. Conflating the two is what put an optional override
+ * and a mandatory key in the same array in the first place.
+ */
+export function describedEnvVarNames(requirements: ProviderRequirements): string[] {
+  const names = [...requirements.configEnvVars];
+  if (requirements.auth.kind === 'api-key') names.push(...requirements.auth.envVars);
+  else names.push(...(requirements.auth.possibleSourceEnvVars ?? []));
+  names.push(...(requirements.optionalEnvVars ?? []));
+  return [...new Set(names)].sort();
 }

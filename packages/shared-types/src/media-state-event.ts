@@ -104,6 +104,19 @@ export interface MediaStateEvent {
   eventId: string;
   /** Unique stream identifier generated when local media is accepted. */
   streamId?: string;
+  /**
+   * Which revision of the programme SOURCE this state describes.
+   *
+   * Published because a viewer needs it and had no other honest way to get it.
+   * Progressive translated frames carry the revision they were produced under,
+   * and a viewer that could not compare would have to guess -- or be handed the
+   * internal processing-session id, which is server knowledge and would make
+   * the next rename of that id a frontend breaking change.
+   *
+   * A source switch bumps it. Frames from revision N must not become audible
+   * once N+1 is authoritative: the audience is watching a different source.
+   */
+  sourceRevision?: number;
   /** Unique processing-session identifier for the accepted media. */
   processingSessionId?: string;
   /** Authoritative broadcaster/session identifier for listener WebRTC programme media. */

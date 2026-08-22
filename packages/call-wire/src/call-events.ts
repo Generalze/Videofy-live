@@ -43,6 +43,21 @@ export const CALL_EVENTS = {
   STATE: 'call:state',
   CAPTION: 'call:caption',
   GENERATED_AUDIO: 'call:generated-audio',
+  /**
+   * One frame of translated speech, while the sentence is still being made.
+   *
+   * Separate from GENERATED_AUDIO, which announces a FINISHED clip by URL.
+   * Both exist: an uploaded programme really does have a complete file, and a
+   * conversation really does not. A client that understands both needs no flag
+   * to tell them apart, because only one of them ever arrives for a given
+   * deployment.
+   *
+   * Carries CLIENT-DOMAIN identity only. The media-ingest session id, the
+   * adapter reference and the provider are all server knowledge, and putting
+   * any of them here would make the next internal rename a frontend breaking
+   * change.
+   */
+  TRANSLATED_AUDIO_FRAME: 'call:translated-audio-frame',
   ERROR: 'call:error',
   /** W5: call-global mode change; owner authority only. */
   SET_MODE: 'call:mode:set',
