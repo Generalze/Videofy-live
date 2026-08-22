@@ -23,7 +23,12 @@ import {
 } from '../providers/deepgram/transport.js';
 import { DeepgramBatchTranscriptionProvider } from '../providers/deepgram/batch-stt.js';
 import { GoogleTimestampedTranslationProvider } from '../providers/google/translation.js';
-import { ElevenLabsTextToSpeechProvider } from '../providers/elevenlabs/tts.js';
+import {
+  ElevenLabsStreamingSynthesisProvider,
+  ElevenLabsTextToSpeechProvider,
+  Pcm16Decoder,
+} from '../providers/elevenlabs/tts.js';
+import type { SynthesisChunk } from '../streaming-speech-synthesis-provider.js';
 import type { StreamingTranscriptionSignal } from '../streaming-transcription-provider.js';
 
 const dir = mkdtempSync(join(tmpdir(), 'c-ai1c-'));
@@ -334,8 +339,8 @@ describe('ElevenLabs TTS', () => {
     expect(readFileSync(result.audioPath, 'utf8')).toBe('aabbcc');
     const metrics = e.provider.metrics.at(-1)!;
     expect(metrics.chunks).toBe(3);
-    // Recorded so C-AI1.2 can measure what progressive DELIVERY would be worth;
-    // today delivery still waits for the complete file.
+    // The file surface remains correct for uploaded programmes and lip-fit
+    // pacing. Live calls use the streaming surface below instead.
     expect(metrics.timeToFirstChunkMs).not.toBeNull();
   });
 
@@ -541,5 +546,96 @@ describe('Flux packetization stays inside the vendor boundary', () => {
     // The last part-packet is the end of somebody's sentence, not padding.
     expect(r.fake.audioSent()).toHaveLength(1);
     expect(r.fake.audioSent()[0]!.byteLength).toBe(4);
+  });
+});
+
+// --- ElevenLabs streaming surface ------------------------------------------
+
+describe('ElevenLabs streaming synthesis', () => {
+  function streaming(chunks: Uint8Array[], status = 200) {
+    const seen: { url: string }[] = [];
+    const provider = new ElevenLabsStreamingSynthesisProvider({
+      apiKey: 'k', modelId: 'eleven_flash_v2_5',
+      voiceIds: { 'videofy-es': 'vendor-voice-1' }, defaultVoiceId: 'vendor-default',
+      fetchImpl: (async (url: string) => {
+        seen.push({ url: String(url) });
+        if (status !== 200) return new Response('bad', { status });
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            for (const chunk of chunks) controller.enqueue(chunk);
+            controller.close();
+          },
+        }), { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    return { provider, seen };
+  }
+
+  async function run(provider: ElevenLabsStreamingSynthesisProvider, signal?: AbortSignal) {
+    const got: SynthesisChunk[] = [];
+    const errors: Error[] = [];
+    const result = await provider.synthesize({
+      text: 'hola mundo', targetLanguage: 'es', voiceId: 'videofy-es',
+      onChunk: (chunk) => got.push(chunk),
+      onError: (error) => errors.push(error),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    return { got, errors, result };
+  }
+
+  it('PIN: a sample split across two chunks survives the boundary', async () => {
+    // 0x0102 and 0x0304, little-endian, cut between the two bytes of the first.
+    const e = streaming([Uint8Array.from([0x02]), Uint8Array.from([0x01, 0x04, 0x03])]);
+    const r = await run(e.provider);
+    // Dropping the odd byte would pair the low half of each sample with the
+    // high half of the next, and the rest of the sentence would decode as
+    // loud noise rather than speech.
+    expect(r.got.flatMap((c) => Array.from(c.samples))).toEqual([0x0102, 0x0304]);
+    expect(r.result.samples).toBe(2);
+  });
+
+  it('PIN: decoding is little-endian by declaration, not by host luck', () => {
+    const decoder = new Pcm16Decoder();
+    expect(Array.from(decoder.push(Uint8Array.from([0x00, 0x01])))).toEqual([256]);
+    expect(decoder.hasPartialSample).toBe(false);
+    decoder.push(Uint8Array.from([0x07]));
+    expect(decoder.hasPartialSample).toBe(true);
+  });
+
+  it('PIN: a caller abort stops synthesis and reports it, without throwing', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const e = streaming([Uint8Array.from([1, 0, 2, 0])]);
+    // A superseded sentence must stop costing money and bandwidth at once.
+    const r = await run(e.provider, controller.signal);
+    expect(r.result.aborted).toBe(true);
+    expect(r.got).toHaveLength(0);
+  });
+
+  it('PIN: zero bytes is an error, not silent silence', async () => {
+    const e = streaming([]);
+    await expect(run(e.provider)).rejects.toMatchObject({ code: 'tts-failed' });
+  });
+
+  it('PIN: a vendor error is an error rather than an empty sentence', async () => {
+    const e = streaming([], 502);
+    await expect(run(e.provider)).rejects.toMatchObject({ code: 'tts-failed' });
+  });
+
+  it('PIN: chunks carry audio and nothing that could name it', async () => {
+    const e = streaming([Uint8Array.from([1, 0, 2, 0])]);
+    const r = await run(e.provider);
+    // A synthesis adapter that could set a segment id, generation or sequence
+    // would be a vendor deciding what Videofy calls its own audio.
+    expect(Object.keys(r.got[0]!)).toEqual(['samples']);
+  });
+
+  it('uses the streaming endpoint, the engine format, and the mapped voice', async () => {
+    const e = streaming([Uint8Array.from([1, 0])]);
+    await run(e.provider);
+    expect(e.seen[0]!.url).toContain('/stream');
+    expect(e.seen[0]!.url).toContain('output_format=pcm_16000');
+    expect(e.seen[0]!.url).toContain('vendor-voice-1');
+    expect(e.provider.name).toBe('elevenlabs-streaming:eleven_flash_v2_5');
   });
 });

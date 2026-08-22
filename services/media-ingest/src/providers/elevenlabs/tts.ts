@@ -20,13 +20,16 @@
  * we have no incremental text. Using it would be complexity bought for a
  * problem we do not have.
  *
- * WHAT THIS DOES NOT YET IMPROVE, stated plainly. Audio reaches a listener as a
- * URL served by the generated-audio route, which sets `Content-Length` from the
- * finished file's size. So streaming here lowers the time to a COMPLETE FILE --
- * real, and worth having -- but perceived end-to-end latency does not drop
- * until delivery itself becomes progressive. That is a delivery-architecture
- * change and it is not in this wave. `timeToFirstChunkMs` is recorded so
- * C-AI1.2 can measure what the change would actually be worth.
+ * TWO SURFACES, ONE VENDOR. `ElevenLabsTextToSpeechProvider` writes a finished
+ * file and remains correct for uploaded programmes, lip-fit pacing and
+ * personal-voice synthesis, where the pipeline genuinely wants a file.
+ * `ElevenLabsStreamingSynthesisProvider` hands audio onward as it arrives, for
+ * live calls, where waiting for a complete file is waiting for the end of a
+ * sentence before starting to say its beginning.
+ *
+ * C-AI1.1C recorded honestly that streaming here lowered time-to-complete-file
+ * and changed nothing a caller could hear, because delivery required a finished
+ * file. C-AI1.1D removed that requirement, so the second surface exists now.
  *
  * `pcm_16000` is requested because it is the engine's own format: 16 kHz mono
  * signed 16-bit. No resample, no transcode, no quality loss on the way in.
@@ -34,6 +37,11 @@
 import { createWriteStream } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { MediaIngestError } from '../../ingest-error.js';
+import type {
+  StreamingSpeechSynthesisProvider,
+  StreamingSynthesisOptions,
+  StreamingSynthesisResult,
+} from '../../streaming-speech-synthesis-provider.js';
 import type {
   TextToSpeechProvider,
   TextToSpeechProviderInput,
@@ -60,6 +68,46 @@ export interface ElevenLabsSynthesisMetrics {
   readonly totalMs: number;
   readonly bytes: number;
   readonly chunks: number;
+}
+
+/**
+ * Vendor bytes to engine samples, carrying a split sample across chunks.
+ *
+ * A chunk boundary lands wherever the network put it, which will eventually be
+ * between the two bytes of one 16-bit sample. Dropping that odd byte would
+ * shift every subsequent sample by one byte -- the low half of each sample
+ * pairing with the high half of the next -- and the remainder of the sentence
+ * would decode as loud noise. It survives as a carry instead.
+ */
+export class Pcm16Decoder {
+  private carry: number | null = null;
+
+  push(bytes: Uint8Array): Int16Array {
+    let source = bytes;
+    if (this.carry !== null) {
+      const joined = new Uint8Array(bytes.byteLength + 1);
+      joined[0] = this.carry;
+      joined.set(bytes, 1);
+      source = joined;
+      this.carry = null;
+    }
+    const usable = source.byteLength - (source.byteLength % 2);
+    if (usable < source.byteLength) this.carry = source[source.byteLength - 1] ?? null;
+    if (usable === 0) return new Int16Array(0);
+    const view = new DataView(source.buffer, source.byteOffset, usable);
+    const samples = new Int16Array(usable / 2);
+    // Explicit little-endian: pcm_16000 is documented as such, and relying on
+    // the host's endianness would make the audio correct only by coincidence.
+    for (let index = 0; index < samples.length; index += 1) {
+      samples[index] = view.getInt16(index * 2, true);
+    }
+    return samples;
+  }
+
+  /** True when a half sample was left over, which means truncated audio. */
+  get hasPartialSample(): boolean {
+    return this.carry !== null;
+  }
 }
 
 export class ElevenLabsTextToSpeechProvider implements TextToSpeechProvider {
@@ -183,5 +231,111 @@ export class ElevenLabsTextToSpeechProvider implements TextToSpeechProvider {
       providerLatencyMs: totalMs,
       ...(vendorVoice === this.config.voiceIds[input.voiceId] ? {} : { effectiveVoiceId: input.voiceId }),
     };
+  }
+}
+
+/**
+ * The live-call surface: audio handed onward as it arrives.
+ *
+ * Emits nothing but samples. It cannot name a segment, number a frame, or
+ * declare that a sentence finished being spoken -- `TranslatedAudioFramer`
+ * does all three on the platform side of the seam, so those meanings stay the
+ * same when the next TTS vendor arrives with different chunking.
+ */
+export class ElevenLabsStreamingSynthesisProvider implements StreamingSpeechSynthesisProvider {
+  readonly name: string;
+
+  constructor(private readonly config: ElevenLabsTtsConfig) {
+    this.name = `elevenlabs-streaming:${config.modelId}`;
+  }
+
+  async synthesize(options: StreamingSynthesisOptions): Promise<StreamingSynthesisResult> {
+    const vendorVoice = this.config.voiceIds[options.voiceId] ?? this.config.defaultVoiceId;
+    const base = this.config.baseUrl ?? 'https://api.elevenlabs.io';
+    const url = `${base}/v1/text-to-speech/${encodeURIComponent(vendorVoice)}/stream?output_format=pcm_16000`;
+
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), this.config.timeoutMs ?? 30_000);
+    // A superseded sentence must stop costing money and bandwidth immediately;
+    // on a call it is also competing for the same bounded queue as the sentence
+    // that replaced it.
+    const onCallerAbort = (): void => abort.abort();
+    options.signal?.addEventListener('abort', onCallerAbort, { once: true });
+
+    const started = Date.now();
+    let timeToFirstChunkMs: number | null = null;
+    let samples = 0;
+
+    try {
+      let response: Response;
+      try {
+        response = await (this.config.fetchImpl ?? fetch)(url, {
+          method: 'POST',
+          headers: {
+            'xi-api-key': this.config.apiKey,
+            'content-type': 'application/json',
+            accept: 'audio/pcm',
+          },
+          body: JSON.stringify({ text: options.text, model_id: this.config.modelId }),
+          signal: abort.signal,
+        });
+      } catch (error) {
+        if (options.signal?.aborted === true) {
+          return { samples: 0, timeToFirstChunkMs: null, totalMs: Date.now() - started, aborted: true };
+        }
+        throw new MediaIngestError(
+          `ElevenLabs request failed: ${error instanceof Error ? error.message : 'unknown'}`,
+          'tts-failed',
+          502,
+        );
+      }
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        throw new MediaIngestError(
+          `ElevenLabs returned ${response.status}: ${body.slice(0, 200)}`,
+          'tts-failed',
+          502,
+        );
+      }
+      if (response.body === null) {
+        throw new MediaIngestError('ElevenLabs returned no audio stream.', 'tts-failed', 502);
+      }
+
+      const decoder = new Pcm16Decoder();
+      const reader = response.body.getReader();
+      for (;;) {
+        if (options.signal?.aborted === true) {
+          await reader.cancel('superseded').catch(() => {});
+          return { samples, timeToFirstChunkMs, totalMs: Date.now() - started, aborted: true };
+        }
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value === undefined) continue;
+        const decoded = decoder.push(value);
+        if (decoded.length === 0) continue;
+        if (timeToFirstChunkMs === null) timeToFirstChunkMs = Date.now() - started;
+        samples += decoded.length;
+        options.onChunk({ samples: decoded });
+      }
+
+      if (samples === 0) {
+        // Silence would be served as valid audio and a listener would hear
+        // nothing with nobody knowing why.
+        throw new MediaIngestError('ElevenLabs returned no audio bytes.', 'tts-failed', 502);
+      }
+    } finally {
+      clearTimeout(timer);
+      options.signal?.removeEventListener('abort', onCallerAbort);
+    }
+
+    const totalMs = Date.now() - started;
+    this.config.log?.('elevenlabs streaming synthesis', {
+      model: this.config.modelId,
+      timeToFirstChunkMs,
+      totalMs,
+      samples,
+    });
+    return { samples, timeToFirstChunkMs, totalMs, aborted: false };
   }
 }
