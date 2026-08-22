@@ -18,6 +18,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ $EUID -ne 0 ]]; then echo "run with sudo" >&2; exit 1; fi
 
+# Who owns the things a deploy has to WRITE. Handing these to root locks the
+# deploying account out of its own next deploy; handing them to the service user
+# would let a compromised service rewrite its own code and its own pages.
+DEPLOY_OWNER="${DEPLOY_OWNER:-${SUDO_USER:-root}}"
+
 # --- service account: no login, no home, no shell -------------------------
 if ! id -u videofy >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin videofy
@@ -26,7 +31,8 @@ fi
 
 install -d -o videofy -g videofy -m 0750 "$STATE_DIR" "$UPLOAD_DIR" \
   "$UPLOAD_DIR/webrtc-staging" "$UPLOAD_DIR/audio-chunks" "$STATE_DIR/call-transcripts"
-install -d -o root -g root -m 0755 "$WWW_DIR"
+# Written by the deployer (build-apps.sh runs unprivileged), read by Caddy.
+install -d -o "$DEPLOY_OWNER" -g root -m 0755 "$WWW_DIR"
 # Caddy runs as its own user and must be able to WRITE here, not merely
 # reach it. Owned by root, this fails at startup with a permission error
 # that names the log file rather than the ownership.
@@ -111,9 +117,9 @@ echo "caddy config validated"
 # deploys. Handing it to root:videofy locks the deploying account out of its own
 # next deploy; handing it to the service user would let a compromised service
 # rewrite its own code. So: owned by the deployer, group-readable by the service.
-DEPLOY_OWNER="${DEPLOY_OWNER:-${SUDO_USER:-root}}"
 chown -R "$DEPLOY_OWNER:videofy" "$APP_DIR"
 chmod -R g-w,o-rwx "$APP_DIR"
-echo "app tree owned by $DEPLOY_OWNER, readable by videofy"
+chown -R "$DEPLOY_OWNER:root" "$WWW_DIR"
+echo "app tree and web root owned by $DEPLOY_OWNER"
 
 echo "install complete. Enable with: systemctl enable --now videofy-media-ingest videofy-gateway videofy-account caddy"
