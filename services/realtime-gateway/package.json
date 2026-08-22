@@ -28,6 +28,7 @@
     "@videofy-live/language-router": "*",
     "@videofy-live/media-adapter-port": "*",
     "@videofy-live/media-contracts": "*",
+    "@videofy-live/media-ingress-wire": "*",
     "@videofy-live/service-env": "*",
     "@videofy-live/shared-types": "*",
     "express": "^4.19.2",
