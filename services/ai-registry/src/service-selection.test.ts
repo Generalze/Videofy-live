@@ -14,6 +14,7 @@ import {
   commercialProfileBlockers,
   evaluateServiceSelection,
   executionPolicyFor,
+  findCommercialModel,
   findCommercialProvider,
   healthAcceptsTraffic,
   resolveOperationalState,
@@ -342,6 +343,36 @@ describe('commercial provider records', () => {
     expect(nova.capabilities.transcription!.turnDetection).toBe('no');
     expect(flux.candidateFor).toContain('call:live');
     expect(nova.candidateFor).toContain('programme:uploaded');
+  });
+
+  it('PIN: Flux is streaming-only and is not a candidate for uploads', () => {
+    // A summary page said Flux supported both execution modes; the Flux
+    // documentation describes no pre-recorded path. Recording `batch: yes` here
+    // would let an uploaded programme be routed to a model that cannot serve
+    // it, and the failure would look like an empty transcript rather than a
+    // configuration error.
+    const flux = findCommercialModel('deepgram', 'flux-general-en')!;
+    expect(flux.capabilities.transcription!.batch).toBe('no');
+    expect(flux.capabilities.transcription!.streaming).toBe('yes');
+    expect(flux.candidateFor).not.toContain('programme:uploaded');
+  });
+
+  it('PIN: a model is never a candidate for a context it cannot execute', () => {
+    // The general form of the Flux defect. `programme:uploaded` wants a batch
+    // primary, so claiming candidacy without batch support is a claim the
+    // model cannot honour.
+    for (const provider of COMMERCIAL_PROVIDERS) {
+      for (const model of provider.models) {
+        const transcription = model.capabilities.transcription;
+        if (transcription === undefined) continue;
+        if (model.candidateFor.includes('programme:uploaded')) {
+          expect(transcription.batch, `${provider.providerId}/${model.modelId}`).toBe('yes');
+        }
+        if (model.candidateFor.includes('call:live')) {
+          expect(transcription.streaming, `${provider.providerId}/${model.modelId}`).toBe('yes');
+        }
+      }
+    }
   });
 
   it('PIN: the 9jaLingo provider id is naijalingo, not a typo', () => {

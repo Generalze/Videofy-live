@@ -7,7 +7,7 @@
  * knowledge; this holds the transport, and only this file imports `ws`.
  */
 import { WebSocket } from 'ws';
-import type { DeepgramSocket, DeepgramSocketFactory } from './streaming-stt.js';
+import type { DeepgramSocket, DeepgramSocketFactory } from './transport.js';
 
 export function createDeepgramSocketFactory(): DeepgramSocketFactory {
   return (url, headers, handlers) => {

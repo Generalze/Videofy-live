@@ -13,8 +13,7 @@
  *
  * NOT VERIFIED: the exact pre-recorded response envelope was not read during
  * this pass, so parsing is written defensively and every field is treated as
- * optional. The credential-gated smoke test is what confirms the shape; until
- * it runs, `wordTimestamps` stays `unverified` in the registry.
+ * optional. The credential-gated smoke test is what confirms the shape.
  */
 import { readFile } from 'node:fs/promises';
 import { MediaIngestError } from '../../ingest-error.js';
@@ -41,6 +40,16 @@ export class DeepgramBatchTranscriptionProvider implements TranscriptionProvider
   readonly name: string;
 
   constructor(private readonly config: DeepgramBatchConfig) {
+    // Flux is STREAMING ONLY. The first pass recorded `batch: 'yes'` for it from
+    // a summary page; the Flux documentation describes no pre-recorded path.
+    // Refused at construction so a misconfiguration is a startup error rather
+    // than an uploaded programme that silently transcribes to nothing.
+    if (config.model.startsWith('flux')) {
+      throw new Error(
+        `${config.model} is streaming-only; Deepgram documents no batch path for Flux. ` +
+          `Use a Nova model for uploaded programmes.`,
+      );
+    }
     this.name = `deepgram-batch:${config.model}`;
   }
 

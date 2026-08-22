@@ -31,7 +31,8 @@
     "connect:pack:smoke": "node scripts/connect-pack-smoke.mjs",
     "connect-reference:external-proof": "node scripts/connect-reference-external-proof.mjs",
     "viewer:screenshots": "node scripts/viewer-screenshots.mjs",
-    "p6.9:acceptance": "npm run build && node scripts/p6-9-multiprocess-acceptance.mjs"
+    "p6.9:acceptance": "npm run build && node scripts/p6-9-multiprocess-acceptance.mjs",
+    "c-ai1:smoke": "node scripts/c-ai1-provider-smoke.mjs"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",

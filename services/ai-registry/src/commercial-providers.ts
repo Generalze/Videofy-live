@@ -78,6 +78,9 @@ const DEEPGRAM_STREAM_DOC =
   'https://developers.deepgram.com/reference/speech-to-text-api/listen-streaming';
 const DEEPGRAM_ENDPOINTING_DOC =
   'https://developers.deepgram.com/docs/understand-endpointing-interim-results';
+const DEEPGRAM_FLUX_QUICKSTART = 'https://developers.deepgram.com/docs/flux/quickstart';
+const DEEPGRAM_FLUX_REFERENCE =
+  'https://developers.deepgram.com/reference/speech-to-text/listen-flux';
 const ELEVENLABS_MODELS_DOC = 'https://elevenlabs.io/docs/overview/capabilities/text-to-speech';
 const ELEVENLABS_STREAM_DOC = 'https://elevenlabs.io/docs/api-reference/text-to-speech/stream';
 const GOOGLE_TRANSLATE_DOC = 'https://docs.cloud.google.com/translate/docs/translate-text';
@@ -97,7 +100,7 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
         // Vendor-level rollup: at least one model offers it (Flux). Nova-3
         // does not, which is exactly why selection reads models[].
         turnDetection: 'yes',
-        wordTimestamps: 'unverified',
+        wordTimestamps: 'yes',
       },
     },
     capabilityEvidence:
@@ -118,40 +121,52 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
             endpointing: 'yes',
             // Model-native turn detection is claimed for Flux, not for Nova-3.
             turnDetection: 'no',
-            // Not stated on the pages read. Left unverified rather than
-            // inferred from the vendor's general feature list.
-            wordTimestamps: 'unverified',
+            // v1 Results alternatives carry words[] with start/end/confidence.
+            wordTimestamps: 'yes',
           },
         },
         verifiedLanguages: ['en', 'es'],
-        evidence: `${DEEPGRAM_MODELS_DOC}; ${DEEPGRAM_ENDPOINTING_DOC}`,
+        evidence:
+          `${DEEPGRAM_MODELS_DOC}; ${DEEPGRAM_ENDPOINTING_DOC}; ` +
+          `${DEEPGRAM_STREAM_DOC} (v1 Results words[].start/.end; KeepAlive)`,
         candidateFor: ['programme:live', 'programme:uploaded', 'call:live'],
       },
       {
         modelId: 'flux-general-en',
         purpose:
-          'Vendor-described streaming model with model-integrated end-of-turn ' +
-          'detection, aimed at real-time interactive and turn-based exchanges.',
+          'Turn-based streaming model on Listen v2 with model-native end-of-turn ' +
+          'detection, aimed at real-time interactive exchanges.',
         capabilities: {
           transcription: {
-            batch: 'yes',
+            // STREAMING ONLY. A summary page described Flux as supporting both;
+            // the Flux documentation describes no pre-recorded path, and the
+            // batch adapter now refuses Flux models outright.
+            batch: 'no',
             streaming: 'yes',
             partialResults: 'yes',
             endpointing: 'yes',
             turnDetection: 'yes',
-            wordTimestamps: 'unverified',
+            // TurnInfo carries words[] with `start` and `end` in seconds.
+            wordTimestamps: 'yes',
           },
         },
         verifiedLanguages: ['en'],
-        evidence: `${DEEPGRAM_MODELS_DOC} (flux-general-en; model-integrated end-of-turn detection)`,
+        evidence:
+          `${DEEPGRAM_FLUX_QUICKSTART} (wss://api.deepgram.com/v2/listen; linear16; ` +
+          `sample_rate 16000 supported and recommended; 80 ms chunks recommended; ` +
+          `eot_threshold/eager_eot_threshold/eot_timeout_ms); ` +
+          `${DEEPGRAM_FLUX_REFERENCE} (TurnInfo events StartOfTurn/Update/` +
+          `EagerEndOfTurn/TurnResumed/EndOfTurn; words[].start/.end)`,
         candidateFor: ['call:live'],
       },
     ],
     notes:
-      'Two models with different jobs, recorded separately. `sample_rate` is a ' +
-      'documented parameter but the reference does not enumerate valid values, so ' +
-      '16000 is CONFIGURED rather than assumed and must be confirmed by the ' +
-      'credential-gated smoke test.',
+      'TWO PROTOCOL DIALECTS, not one vendor API. Nova speaks Listen v1 ' +
+      '(Results/is_final/speech_final/UtteranceEnd) and Flux speaks Listen v2 ' +
+      '(TurnInfo turn events). They are implemented separately and neither may ' +
+      'be pointed at the other endpoint. Flux is streaming-only. 16 kHz linear16 ' +
+      'is documented and recommended for Flux; the smoke test still proves OUR ' +
+      'request works rather than merely that the vendor permits it.',
   },
   {
     providerId: 'google-cloud',

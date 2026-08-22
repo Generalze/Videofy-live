@@ -28,6 +28,12 @@
  * fragments and emits the running total, which is exactly the vendor-shaped
  * knowledge that must not leak past the adapter boundary.
  */
+import {
+  SOCKET_OPEN,
+  pcmBytes,
+  type DeepgramSocket,
+  type DeepgramSocketFactory,
+} from './transport.js';
 import type {
   StreamingTranscriptionFrame,
   StreamingTranscriptionOptions,
@@ -35,27 +41,7 @@ import type {
   StreamingTranscriptionSession,
 } from '../../streaming-transcription-provider.js';
 
-/** The subset of a WebSocket this adapter needs. Injectable, so tests need no network. */
-export interface DeepgramSocket {
-  send(data: string | Uint8Array): void;
-  close(): void;
-  readonly readyState: number;
-}
-
-export interface DeepgramSocketHandlers {
-  onOpen(): void;
-  onMessage(data: string): void;
-  onClose(reason: string): void;
-  onError(error: Error): void;
-}
-
-export type DeepgramSocketFactory = (
-  url: string,
-  headers: Record<string, string>,
-  handlers: DeepgramSocketHandlers,
-) => DeepgramSocket;
-
-export interface DeepgramStreamingConfig {
+export interface DeepgramNovaStreamingConfig {
   readonly apiKey: string;
   /** e.g. `nova-3` or `flux-general-en`. Recorded per-model in the registry. */
   readonly model: string;
@@ -68,12 +54,19 @@ export interface DeepgramStreamingConfig {
   readonly log?: (line: string, detail?: Record<string, unknown>) => void;
 }
 
-const OPEN = 1;
-
-export class DeepgramStreamingTranscriptionProvider implements StreamingTranscriptionProvider {
+export class DeepgramNovaStreamingProvider implements StreamingTranscriptionProvider {
   readonly name: string;
 
-  constructor(private readonly config: DeepgramStreamingConfig) {
+  constructor(private readonly config: DeepgramNovaStreamingConfig) {
+    // A Flux model here would connect to /v1 and be parsed with the Nova
+    // vocabulary -- a beautifully tested adapter speaking the wrong protocol,
+    // producing silence that looks like a quiet speaker. Refused loudly.
+    if (config.model.startsWith('flux')) {
+      throw new Error(
+        `${config.model} is a Flux model and speaks Listen v2 (TurnInfo). ` +
+          `Use DeepgramFluxStreamingProvider; /v1/listen will not work for it.`,
+      );
+    }
     // The MODEL is part of the identity. Two Deepgram models are different
     // products with different jobs, and a benchmark that said only "deepgram"
     // would be uncomparable with the next one.
@@ -81,11 +74,11 @@ export class DeepgramStreamingTranscriptionProvider implements StreamingTranscri
   }
 
   async openStream(options: StreamingTranscriptionOptions): Promise<StreamingTranscriptionSession> {
-    return await DeepgramStreamingSession.open(this.config, options, this.name);
+    return await DeepgramNovaSession.open(this.config, options, this.name);
   }
 }
 
-class DeepgramStreamingSession implements StreamingTranscriptionSession {
+class DeepgramNovaSession implements StreamingTranscriptionSession {
   private socket: DeepgramSocket | null = null;
   private closed = false;
   /** Fragments the vendor has already finalized within the current utterance. */
@@ -93,17 +86,17 @@ class DeepgramStreamingSession implements StreamingTranscriptionSession {
   private lastInterim = '';
 
   private constructor(
-    private readonly config: DeepgramStreamingConfig,
+    private readonly config: DeepgramNovaStreamingConfig,
     private readonly options: StreamingTranscriptionOptions,
     private readonly providerName: string,
   ) {}
 
   static async open(
-    config: DeepgramStreamingConfig,
+    config: DeepgramNovaStreamingConfig,
     options: StreamingTranscriptionOptions,
     providerName: string,
-  ): Promise<DeepgramStreamingSession> {
-    const session = new DeepgramStreamingSession(config, options, providerName);
+  ): Promise<DeepgramNovaSession> {
+    const session = new DeepgramNovaSession(config, options, providerName);
     await session.connect();
     return session;
   }
@@ -255,7 +248,7 @@ class DeepgramStreamingSession implements StreamingTranscriptionSession {
   async pushAudio(frame: StreamingTranscriptionFrame): Promise<void> {
     if (this.closed) throw new Error('pushAudio after close');
     const socket = this.socket;
-    if (socket === null || socket.readyState !== OPEN) {
+    if (socket === null || socket.readyState !== SOCKET_OPEN) {
       throw new Error('Deepgram socket is not open');
     }
     if (frame.discontinuity === true) {
@@ -284,29 +277,13 @@ class DeepgramStreamingSession implements StreamingTranscriptionSession {
     this.socket = null;
     if (socket === null) return;
     try {
-      if (socket.readyState === OPEN) socket.send(JSON.stringify({ type: 'CloseStream' }));
+      if (socket.readyState === SOCKET_OPEN) socket.send(JSON.stringify({ type: 'CloseStream' }));
       socket.close();
     } catch {
       /* closing a dead socket is not a failure worth propagating */
     }
     this.config.log?.('deepgram session closed', { provider: this.providerName, reason });
   }
-}
-
-/**
- * Int16 samples to little-endian bytes.
- *
- * Explicit rather than `new Uint8Array(samples.buffer)`, which inherits the
- * HOST's endianness and would silently send byte-swapped audio on a big-endian
- * machine. The same reasoning produced `pcmToBytes` in the adapter wire.
- */
-export function pcmBytes(samples: Int16Array): Uint8Array {
-  const out = new Uint8Array(samples.length * 2);
-  const view = new DataView(out.buffer);
-  for (let index = 0; index < samples.length; index += 1) {
-    view.setInt16(index * 2, samples[index]!, true);
-  }
-  return out;
 }
 
 function toMs(seconds: number | null): number | null {

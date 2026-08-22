@@ -11,12 +11,16 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { DeepgramNovaStreamingProvider } from '../providers/deepgram/nova-streaming-stt.js';
 import {
-  DeepgramStreamingTranscriptionProvider,
+  DeepgramFluxStreamingProvider,
+  FLUX_RECOMMENDED_FRAME_SAMPLES,
+} from '../providers/deepgram/flux-streaming-stt.js';
+import {
   pcmBytes,
   type DeepgramSocket,
   type DeepgramSocketHandlers,
-} from '../providers/deepgram/streaming-stt.js';
+} from '../providers/deepgram/transport.js';
 import { DeepgramBatchTranscriptionProvider } from '../providers/deepgram/batch-stt.js';
 import { GoogleTimestampedTranslationProvider } from '../providers/google/translation.js';
 import { ElevenLabsTextToSpeechProvider } from '../providers/elevenlabs/tts.js';
@@ -54,7 +58,7 @@ function fakeSocket() {
 async function openDeepgram(model = 'nova-3') {
   const fake = fakeSocket();
   const signals: StreamingTranscriptionSignal[] = [];
-  const provider = new DeepgramStreamingTranscriptionProvider({
+  const provider = new DeepgramNovaStreamingProvider({
     apiKey: 'test-key', model, sockets: fake.factory, endpointingMs: 300, utteranceEndMs: 1000,
   });
   const session = await provider.openStream({
@@ -121,9 +125,9 @@ describe('Deepgram streaming: normalization', () => {
 
   it('PIN: the model is part of the provider identity', async () => {
     // A benchmark recorded against "deepgram" would be uncomparable with the
-    // next one, because Flux and Nova-3 are different products.
+    // next one, because Flux and Nova-3 are different products on different
+    // protocols. Flux identity is asserted in its own suite below.
     expect((await openDeepgram('nova-3')).provider.name).toBe('deepgram:nova-3');
-    expect((await openDeepgram('flux-general-en')).provider.name).toBe('deepgram:flux-general-en');
   });
 
   it('PIN: audio is little-endian regardless of host architecture', async () => {
@@ -366,5 +370,176 @@ describe('ElevenLabs TTS', () => {
   it('the model is part of the provider identity', () => {
     const e = eleven(['x']);
     expect(e.provider.name).toBe('elevenlabs:eleven_flash_v2_5');
+  });
+});
+
+// --- the Deepgram protocol split ------------------------------------------
+
+describe('Nova and Flux are different protocols, not one API', () => {
+  const sockets = () => fakeSocket().factory;
+
+  it('PIN: a Flux model cannot be driven through the Nova adapter', () => {
+    // The defect this corrective wave exists for. A generic adapter pointed
+    // Flux at /v1 and parsed it with the Nova vocabulary -- a well-tested
+    // adapter speaking the wrong protocol, producing no transcripts at all,
+    // which on a call looks exactly like a speaker who said nothing.
+    expect(
+      () => new DeepgramNovaStreamingProvider({ apiKey: 'k', model: 'flux-general-en', sockets: sockets() }),
+    ).toThrow(/Listen v2/);
+  });
+
+  it('PIN: a Nova model cannot be driven through the Flux adapter', () => {
+    expect(
+      () => new DeepgramFluxStreamingProvider({ apiKey: 'k', model: 'nova-3', sockets: sockets() }),
+    ).toThrow(/not a Flux model/);
+  });
+
+  it('PIN: Flux is streaming-only and refuses the batch path', () => {
+    expect(
+      () => new DeepgramBatchTranscriptionProvider({ apiKey: 'k', model: 'flux-general-en' }),
+    ).toThrow(/streaming-only/);
+  });
+});
+
+async function openFlux(overrides: Record<string, unknown> = {}) {
+  const fake = fakeSocket();
+  const signals: StreamingTranscriptionSignal[] = [];
+  const provider = new DeepgramFluxStreamingProvider({
+    apiKey: 'test-key', model: 'flux-general-en', sockets: fake.factory, ...overrides,
+  } as never);
+  const session = await provider.openStream({
+    sessionId: 'cs_1', streamId: 'st_1', onSignal: (s) => signals.push(s), onError: () => {},
+  });
+  return { fake, signals, session, provider };
+}
+
+const turn = (event: string, transcript = '', extra: Record<string, unknown> = {}) => ({
+  type: 'TurnInfo', event, transcript, ...extra,
+});
+
+describe('Flux TurnInfo normalization', () => {
+  it('PIN: Flux connects to v2, never v1', async () => {
+    const r = await openFlux();
+    expect(r.fake.url).toContain('/v2/listen');
+    expect(r.fake.url).not.toContain('/v1/listen');
+    const url = new URL(r.fake.url);
+    expect(url.searchParams.get('encoding')).toBe('linear16');
+    expect(url.searchParams.get('sample_rate')).toBe('16000');
+    expect(url.searchParams.get('model')).toBe('flux-general-en');
+  });
+
+  it('PIN: EndOfTurn is a provider observation emitted as a final signal', async () => {
+    const r = await openFlux();
+    r.fake.server(turn('EndOfTurn', 'all done', { audio_window_start: 1, audio_window_end: 2.5, end_of_turn_confidence: 0.88 }));
+    const signal = r.signals.at(-1)!;
+    expect(signal.kind).toBe('final');
+    expect(signal.kind === 'final' && signal.text).toBe('all done');
+    // Vendor timings survive only as observations; the coordinator still owns
+    // whether the Videofy segment is final.
+    expect(signal.kind === 'final' && signal.providerStartMs).toBe(1000);
+    expect(signal.kind === 'final' && signal.providerEndMs).toBe(2500);
+  });
+
+  it('PIN: EagerEndOfTurn is speculative and never a boundary', async () => {
+    const r = await openFlux();
+    r.fake.server(turn('EagerEndOfTurn', 'maybe done'));
+    // A false start here does not waste an API call -- it starts SPEAKING a
+    // translation while the person is still correcting themselves, and spoken
+    // audio cannot be recalled.
+    expect(r.signals.map((s) => s.kind)).toEqual(['partial']);
+  });
+
+  it('PIN: eager end-of-turn is off unless explicitly configured', async () => {
+    const plain = await openFlux();
+    expect(new URL(plain.fake.url).searchParams.get('eager_eot_threshold')).toBeNull();
+    const eager = await openFlux({ eagerEotThreshold: 0.6 });
+    expect(new URL(eager.fake.url).searchParams.get('eager_eot_threshold')).toBe('0.6');
+  });
+
+  it('PIN: StartOfTurn does not open a platform segment', async () => {
+    const r = await openFlux();
+    r.fake.server(turn('StartOfTurn'));
+    // Videofy's VAD owns segment start. Same rule as Nova's SpeechStarted.
+    expect(r.signals).toHaveLength(0);
+  });
+
+  it('TurnResumed continues the turn as a partial', async () => {
+    const r = await openFlux();
+    r.fake.server(turn('EagerEndOfTurn', 'half'));
+    r.fake.server(turn('TurnResumed', 'half and more'));
+    expect(r.signals.map((s) => s.kind)).toEqual(['partial', 'partial']);
+    const last = r.signals.at(-1)!;
+    expect(last.kind === 'partial' && last.text).toBe('half and more');
+  });
+
+  it('PIN: no v2 field escapes the adapter', async () => {
+    const r = await openFlux();
+    r.fake.server(turn('EndOfTurn', 'x', { turn_index: 4, sequence_id: 9, words: [{ word: 'x', start: 0, end: 1 }] }));
+    const keys = Object.keys(r.signals.at(-1)!);
+    for (const leaked of ['event', 'turn_index', 'sequence_id', 'words', 'end_of_turn_confidence']) {
+      expect(keys).not.toContain(leaked);
+    }
+  });
+});
+
+describe('Flux packetization stays inside the vendor boundary', () => {
+  it('PIN: the platform frame size is not reshaped by the vendor', async () => {
+    const r = await openFlux();
+    // Videofy sends 20 ms frames (320 samples at 16 kHz). Flux prefers 80 ms.
+    for (let i = 0; i < 3; i += 1) {
+      await r.session.pushAudio({
+        samples: new Int16Array(320).fill(i + 1), sampleRate: 16000, channelCount: 1,
+        platformTimestampMs: i * 20,
+      });
+    }
+    // 960 samples: not yet a full 1280-sample packet, so nothing has been sent.
+    expect(r.fake.audioSent()).toHaveLength(0);
+    expect(FLUX_RECOMMENDED_FRAME_SAMPLES).toBe(1280);
+
+    await r.session.pushAudio({
+      samples: new Int16Array(320).fill(4), sampleRate: 16000, channelCount: 1, platformTimestampMs: 60,
+    });
+    // 1280 samples: exactly one vendor-sized packet.
+    expect(r.fake.audioSent()).toHaveLength(1);
+    expect(r.fake.audioSent()[0]!.byteLength).toBe(1280 * 2);
+  });
+
+  it('PIN: packetization preserves sample order across platform frames', async () => {
+    const r = await openFlux({ frameSamples: 4 });
+    await r.session.pushAudio({
+      samples: Int16Array.from([1, 2, 3]), sampleRate: 16000, channelCount: 1, platformTimestampMs: 0,
+    });
+    await r.session.pushAudio({
+      samples: Int16Array.from([4, 5, 6, 7, 8]), sampleRate: 16000, channelCount: 1, platformTimestampMs: 20,
+    });
+    const decode = (bytes: Uint8Array) => {
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      return Array.from({ length: bytes.byteLength / 2 }, (_, i) => view.getInt16(i * 2, true));
+    };
+    // Two whole packets, in order, spanning the boundary between platform frames.
+    expect(r.fake.audioSent().map(decode)).toEqual([[1, 2, 3, 4], [5, 6, 7, 8]]);
+  });
+
+  it('PIN: buffering is bounded by one packet', async () => {
+    const r = await openFlux({ frameSamples: 4 });
+    for (let i = 0; i < 10; i += 1) {
+      await r.session.pushAudio({
+        samples: Int16Array.from([1, 2, 3]), sampleRate: 16000, channelCount: 1, platformTimestampMs: i * 20,
+      });
+      // Never accumulates: whole packets leave as soon as they are complete.
+      expect((r.session as unknown as { bufferedSamples: number }).bufferedSamples).toBeLessThan(4);
+    }
+  });
+
+  it('PIN: finish flushes the trailing part-packet', async () => {
+    const r = await openFlux({ frameSamples: 4 });
+    await r.session.pushAudio({
+      samples: Int16Array.from([9, 9]), sampleRate: 16000, channelCount: 1, platformTimestampMs: 0,
+    });
+    expect(r.fake.audioSent()).toHaveLength(0);
+    await r.session.finish();
+    // The last part-packet is the end of somebody's sentence, not padding.
+    expect(r.fake.audioSent()).toHaveLength(1);
+    expect(r.fake.audioSent()[0]!.byteLength).toBe(4);
   });
 });
