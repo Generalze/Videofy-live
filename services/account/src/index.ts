@@ -53,7 +53,17 @@ const accounts = await store.hydrate();
 // eslint-disable-next-line no-console
 console.log(JSON.stringify({ service: 'account', message: 'Accounts restored', accounts }));
 
-app.listen(port, () => {
+// Loopback by default. The account service is reached through the reverse
+// proxy, so binding every interface only widens what can be reached
+// directly if a firewall rule is ever wrong.
+// 127.0.0.1, NOT 'localhost'. On a dual-stack host 'localhost' can
+// resolve to ::1 first, and Node then binds ONLY IPv6 loopback -- every
+// client connecting to 127.0.0.1 gets connection refused while the
+// service looks perfectly healthy in its own logs. Proven on the staging
+// box: `listen(port, 'localhost')` produced a [::1]-only listener.
+const host = process.env['ACCOUNT_HOST'] ?? '127.0.0.1';
+
+app.listen(port, host, () => {
   // eslint-disable-next-line no-console
   console.log(JSON.stringify({ service: 'account', message: 'Account service started', port }));
 });

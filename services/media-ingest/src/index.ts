@@ -44,7 +44,16 @@ setLogLevel(config.logLevel);
 
 const app = express();
 const server = http.createServer(app);
-const uploadDir = resolve(process.cwd(), '../../uploads/media-ingest');
+// Configurable, like every other storage path this service uses.
+//
+// The old value was resolved from the process working directory, which put
+// uploads INSIDE the deployed code tree. A hardened unit refuses to make the
+// code directory writable -- correctly, since a process that can rewrite its
+// own source is one bug away from persisting an attacker -- so the service
+// could not start at all until the path could be moved out.
+const uploadDir = process.env['MEDIA_INGEST_UPLOAD_DIR']
+  ? resolve(process.env['MEDIA_INGEST_UPLOAD_DIR'])
+  : resolve(process.cwd(), '../../uploads/media-ingest');
 mkdirSync(uploadDir, { recursive: true });
 mkdirSync(config.webrtcAudioChunkStagingDir, { recursive: true });
 const upload = multer({
@@ -667,9 +676,10 @@ if (streamingTranscription !== null) {
   });
 }
 
-server.listen(config.port, () => {
+server.listen(config.port, config.host, () => {
   logger.info('Media ingest endpoint started', {
     port: config.port,
+    host: config.host,
     uploadDir,
     // Safe to log, and the question actually being asked when internal calls
     // start returning 403: do these two services hold the SAME token?

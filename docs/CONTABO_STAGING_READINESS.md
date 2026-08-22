@@ -151,3 +151,59 @@ the reverse proxy.
 Staging readiness is a property of the deployment, not evidence about providers.
 No provider is certified by anything in this document, and the external
 validations listed in the C-AI1.1F report remain deferred.
+
+---
+
+## As deployed — Staging #1 (2026-08-22)
+
+Host `c7-eu-01`, Ubuntu 24.04, 8 vCPU / 24 GB / 435 GB. Public name
+`staging.consummate7.com`, publicly trusted certificate issued by Let's Encrypt
+over HTTP-01 while the record is grey-clouded.
+
+### Path map
+
+One origin, because the SPAs and the APIs share a certificate and a socket.
+
+| Path | Upstream | Notes |
+| --- | --- | --- |
+| `/` | static `call-web` | |
+| `/listen/`, `/operator/` | static SPAs | built with a matching Vite `--base` |
+| `/socket.io/*` | realtime-gateway | the WebSocket upgrade |
+| `/health` | realtime-gateway | |
+| `/auth/*` | account | prefix-stripped |
+| `/media/*` | media-ingest | prefix-stripped, `/internal/*` refused |
+| `/internal/*` | **refused, 404** | covers the internal API AND the ingress WS |
+
+`account` and `media-ingest` both define `/sessions`. Without distinct prefixes
+one silently shadows the other, and the symptom surfaces in whichever product
+surface is exercised second.
+
+### What Staging #1 established, and what it did not
+
+Proven against the deployed box: TLS, the WebSocket upgrade, the private-port
+policy (3001/3002/3006 unreachable from the internet), two-participant
+two-language call establishment, roster broadcast, resume-credential reconnect,
+unattended restart after reboot, and graceful SIGTERM.
+
+NOT established: audible translated speech, and no commercial provider was
+called. Providers are unchanged — Deepgram, Google, ElevenLabs and Azure
+`integrated` (Azure on TTS only), 9jaLingo `configured`, nothing certified.
+
+### The commercial profile cannot start yet, and this is deliberate
+
+Setting `AI_RUNTIME_PROFILE=commercial-cloud` makes media-ingest **refuse to
+start**, reporting that no provider is eligible as primary at stage `certified`
+or better. That is fail-closed working exactly as intended, and it is stricter
+than "a credential is missing": the gate is the INTEGRATION STAGE, not the key.
+
+So turning the commercial route on in staging needs two separate things, and
+they are not interchangeable:
+
+1. the owner's vendor credentials on the box, and
+2. a deliberate decision about the certification gate — because certification
+   requires evidence nobody has gathered yet, and every current observation is
+   `sampleCount: 1`.
+
+Running commercial traffic today would mean weakening that gate. That is a
+product decision, not a deployment step, and it should be made explicitly rather
+than discovered while trying to make a staging call work.

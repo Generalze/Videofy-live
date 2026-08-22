@@ -125,7 +125,9 @@ export function loadConfig(): GatewayConfig {
 
   return {
     port: readPort('GATEWAY_PORT', 3001),
-    host: process.env['GATEWAY_HOST'] ?? 'localhost',
+    // See the note above on 127.0.0.1 vs 'localhost': a dual-stack host can
+    // bind ::1 only, refusing every IPv4 loopback client.
+    host: process.env['GATEWAY_HOST'] ?? '127.0.0.1',
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
     // 5175 is the P6.1B call-web app; keep it in the default so native calls
     // work out of the box alongside the listener (5173) and operator (5174).

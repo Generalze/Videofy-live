@@ -1,0 +1,91 @@
+# Videofy Live — staging reverse proxy.
+#
+# ONE site definition serves both states of this deployment. `VIDEOFY_SITE_ADDRESS`
+# decides which:
+#
+#   unset      ->  :80   plain HTTP on every hostname. This is what runs before
+#                        DNS exists, so the routing and the private-port policy
+#                        can be proven without pretending a certificate is real.
+#   a hostname ->  automatic HTTPS via ACME, and WSS with it.
+#
+# The same file in both states. A staging proxy that is rewritten on the day the
+# certificate arrives is a proxy nobody has actually tested.
+{
+	# No admin socket. Nothing here needs runtime reconfiguration, and an open
+	# admin endpoint is a way to reconfigure the edge without touching this file.
+	admin off
+}
+
+{$VIDEOFY_SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	log {
+		output file /var/log/caddy/videofy.log
+		format json
+	}
+
+	# --- REFUSED AT THE EDGE ------------------------------------------------
+	# `/internal/` is the server-only prefix. It covers the internal media API
+	# AND the realtime ingress WebSocket at /internal/media/ingress/v1, which is
+	# how the gateway feeds live audio to media-ingest. Neither may ever be
+	# reachable from a browser, so both are refused here by prefix rather than
+	# by listing paths that a future route could quietly fall outside of.
+	handle /internal/* {
+		respond "not found" 404
+	}
+
+	# --- realtime gateway ---------------------------------------------------
+	# Socket.IO needs the upgrade to pass through untouched; Caddy handles this
+	# natively, so no special websocket header dance is required.
+	handle /socket.io/* {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	handle /health {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	# --- account service ----------------------------------------------------
+	# Prefix-mounted because account and media-ingest BOTH define `/sessions`.
+	# Without distinct prefixes one of them silently shadows the other, and the
+	# symptom appears in whichever product surface is tested second.
+	handle_path /auth/* {
+		reverse_proxy 127.0.0.1:3006
+	}
+
+	# --- media-ingest, browser-facing routes ONLY ---------------------------
+	handle_path /media/* {
+		# handle_path strips the prefix first, so this matcher sees the path the
+		# upstream would receive. Without it, /media/internal/... would arrive at
+		# media-ingest as /internal/... — the deny above would never see it.
+		@internal path /internal/*
+		respond @internal "not found" 404
+
+		reverse_proxy 127.0.0.1:3002 {
+			# Programme uploads are large; the default response timeouts are not
+			# the constraint, but streaming must not be buffered.
+			flush_interval -1
+		}
+	}
+
+	# --- static single-page apps -------------------------------------------
+	handle /listen/* {
+		root * /srv/videofy/www/listener-web
+		uri strip_prefix /listen
+		try_files {path} /index.html
+		file_server
+	}
+
+	handle /operator/* {
+		root * /srv/videofy/www/operator-web
+		uri strip_prefix /operator
+		try_files {path} /index.html
+		file_server
+	}
+
+	handle {
+		root * /srv/videofy/www/call-web
+		try_files {path} /index.html
+		file_server
+	}
+}

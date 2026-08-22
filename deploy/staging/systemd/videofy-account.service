@@ -1,0 +1,42 @@
+[Unit]
+Description=Videofy Live account service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=videofy
+Group=videofy
+WorkingDirectory=/srv/videofy/app/services/account
+# Names come from this file; VALUES never appear in the unit, in the repository,
+# or in journald. 0600 and owned by root: the service user reads it, nobody else.
+EnvironmentFile=/etc/videofy/account.env
+ExecStart=/usr/bin/node dist/index.js
+
+# The services already close their listeners and drain on SIGTERM. systemd's
+# default signal is SIGTERM, so graceful shutdown needs no special handling --
+# only enough time to finish, and a KILL backstop if it does not.
+KillSignal=SIGTERM
+TimeoutStopSec=25
+
+Restart=on-failure
+RestartSec=3
+
+# Least privilege. This process is reachable from the edge (or, for
+# media-ingest, holds every commercial credential), so it gets no more of the
+# filesystem than it needs.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/videofy/state /srv/videofy/uploads
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=videofy-account
+
+[Install]
+WantedBy=multi-user.target

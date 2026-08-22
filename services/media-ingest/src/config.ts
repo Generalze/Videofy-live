@@ -24,6 +24,7 @@ export const DEFAULT_OPUS_MT_LANGUAGE_MODELS =
 export interface IngestConfig {
   aiRuntimeProfile: RuntimeProfile;
   port: number;
+  host: string;
   ingestPublicUrl: string;
   gatewayUrl: string;
   /**
@@ -264,6 +265,17 @@ export function loadConfig(): IngestConfig {
   });
 
   const port = readPort('INGEST_PORT', 3002);
+  // Loopback by DEFAULT, because this process holds every commercial
+  // credential and is the only one that talks to Deepgram, Google and
+  // ElevenLabs. Reaching it from another host is the unusual case and
+  // should require saying so; a firewall rule should not be the only
+  // thing standing between the internet and the key material.
+  // 127.0.0.1, NOT 'localhost'. On a dual-stack host 'localhost' can
+  // resolve to ::1 first, and Node then binds ONLY IPv6 loopback -- every
+  // client connecting to 127.0.0.1 gets connection refused while the
+  // service looks perfectly healthy in its own logs. Proven on the staging
+  // box: `listen(port, 'localhost')` produced a [::1]-only listener.
+  const host = process.env['INGEST_HOST'] ?? '127.0.0.1';
   const publicIngest = resolvePublicIngestUrl(process.env, {
     defaultPort: port,
     serviceName: 'media-ingest',
@@ -273,6 +285,7 @@ export function loadConfig(): IngestConfig {
   return {
     aiRuntimeProfile,
     port,
+    host,
     // THE url browsers are handed for generated audio. Resolved through the one
     // shared contract, because this service silently minting `localhost` while
     // the gateway read a correctly-configured LAN address is precisely how an
