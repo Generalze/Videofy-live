@@ -32,7 +32,7 @@
     "connect-reference:external-proof": "node scripts/connect-reference-external-proof.mjs",
     "viewer:screenshots": "node scripts/viewer-screenshots.mjs",
     "p6.9:acceptance": "npm run build && node scripts/p6-9-multiprocess-acceptance.mjs",
-    "c-ai1:smoke": "node scripts/c-ai1-provider-smoke.mjs",
+    "c-ai1:smoke": "npm run build -w @videofy-live/media-ingest && node scripts/c-ai1-provider-smoke.mjs",
     "c-ai1:realtime-proof": "npm run build && node scripts/c-ai1-1d-realtime-proof.mjs",
     "c-ai1:production-acceptance": "npm run build && node scripts/c-ai1-1e-production-acceptance.mjs",
     "c-ai1:multilingual": "npm run build && node scripts/c-ai1-1f-multilingual-acceptance.mjs"

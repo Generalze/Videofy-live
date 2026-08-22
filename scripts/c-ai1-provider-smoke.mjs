@@ -408,6 +408,95 @@ async function googleTranslate() {
   }
 }
 
+// --- Azure Speech ----------------------------------------------------------
+
+/**
+ * Azure streaming TTS, through the REAL adapter.
+ *
+ * Deliberately not a hand-written fetch that mirrors the adapter. C-AI1.1F
+ * found a Google smoke that passed while the shipped adapter failed, because
+ * the two built their headers separately -- the smoke had quietly become a
+ * test of itself. This imports the built adapter, so a PASS is evidence about
+ * the code that would run in production.
+ *
+ * The REGION is the input, not the portal's endpoint URL. Synthesis lives on
+ * `{region}.tts.speech.microsoft.com`; the `{region}.api.cognitive.microsoft.com`
+ * endpoint shown in the portal is the token/regional host and answers 404 for
+ * a synthesis request.
+ */
+async function azureTts() {
+  const key = env('AZURE_SPEECH_KEY');
+  const region = env('AZURE_SPEECH_REGION');
+  if (key === null || region === null) {
+    return record(
+      'Azure streaming TTS',
+      'SKIP',
+      'AZURE_SPEECH_KEY / AZURE_SPEECH_REGION not set',
+    );
+  }
+
+  let AzureStreamingSynthesisProvider;
+  try {
+    ({ AzureStreamingSynthesisProvider } = await import(
+      '../services/media-ingest/dist/services/media-ingest/src/providers/azure/streaming-tts.js'
+    ));
+  } catch {
+    return record(
+      'Azure streaming TTS',
+      'FAIL',
+      'the built adapter was not found; run `npm run build -w @videofy-live/media-ingest` first',
+    );
+  }
+
+  const provider = new AzureStreamingSynthesisProvider({
+    apiKey: key,
+    region,
+    // The platform's voice id maps to the vendor's HERE, as in production.
+    voiceIds: { 'videofy-es': 'es-ES-ElviraNeural' },
+    defaultVoiceId: 'en-US-JennyNeural',
+  });
+
+  const chunks = [];
+  let firstChunkMs = null;
+  const started = Date.now();
+  try {
+    const result = await provider.synthesize({
+      text: 'Buenas tardes, la reunion comenzara en breve.',
+      targetLanguage: 'es-ES',
+      voiceId: 'videofy-es',
+      onChunk: (chunk) => {
+        if (firstChunkMs === null) firstChunkMs = Date.now() - started;
+        chunks.push(chunk.samples.length);
+      },
+      onError: () => {},
+    });
+
+    // A connection that opened proves nothing. Real samples in the engine
+    // format, arriving in more than one piece, is what "streaming TTS works"
+    // actually means.
+    if (result.samples === 0) {
+      return record('Azure streaming TTS', 'FAIL', 'no audio samples returned');
+    }
+    if (chunks.length < 2) {
+      return record(
+        'Azure streaming TTS',
+        'FAIL',
+        `audio arrived in ${chunks.length} chunk(s); a single chunk is not streaming`,
+      );
+    }
+    const seconds = (result.samples / 16000).toFixed(2);
+    record(
+      'Azure streaming TTS',
+      'PASS',
+      `first chunk ${firstChunkMs} ms; ${chunks.length} chunks; ` +
+        `${result.samples} samples (~${seconds} s of raw-16khz-16bit-mono-pcm)`,
+    );
+  } catch (error) {
+    // The vendor's own words. "HTTP 401" names the problem never.
+    record('Azure streaming TTS', 'FAIL', String(error?.message ?? error).slice(0, 240));
+  }
+}
+
 // --- ElevenLabs ------------------------------------------------------------
 
 async function elevenLabs() {
@@ -488,6 +577,7 @@ async function main() {
     speech,
   });
   await googleTranslate();
+  await azureTts();
   await elevenLabs();
 
   console.log('\n' + '='.repeat(72));

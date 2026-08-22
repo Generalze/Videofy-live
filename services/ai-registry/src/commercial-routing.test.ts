@@ -59,11 +59,22 @@ describe('the first-deployment route', () => {
     expect(tts.ordered[1]?.role).toBe('fallback');
   });
 
-  it('PIN: today, Azure is gated out by its stage, and says so', () => {
+  it('PIN: Azure is now an eligible fallback, on real evidence', () => {
+    // It was gated out until 2026-08-22, when its adapter was actually run
+    // against the service. Evidence arriving is exactly what should move it,
+    // and nothing else should have.
     const tts = route('tts', CALL, { minimumStage: 'integrated' });
-    expect(tts.ordered.map((c) => c.providerId)).toEqual(['elevenlabs']);
-    // No adapter has been run against Azure. Being written is not evidence.
-    expect(tts.refusals.join(' ')).toMatch(/azure: stage 'configured'/);
+    expect(tts.ordered.map((c) => c.providerId)).toEqual(['elevenlabs', 'azure']);
+    expect(tts.ordered[1]?.role).toBe('fallback');
+  });
+
+  it('PIN: a provider with no adapter run against it is still gated out', () => {
+    // 9jaLingo. Its API host and auth header are undocumented, so there is no
+    // request to run -- and no amount of wanting the language coverage makes
+    // that evidence.
+    const tts = route('tts', PROG_UPLOAD, { language: 'yo', minimumStage: 'integrated' });
+    expect(tts.ordered.map((c) => c.providerId)).not.toContain('naijalingo');
+    expect(tts.refusals.join(' ')).toMatch(/naijalingo: stage 'configured'/);
   });
 
   it('PIN: a primary that cannot authenticate is refused, and the reason says so', () => {

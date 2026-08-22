@@ -388,7 +388,13 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
       configEnvVars: ['AZURE_SPEECH_REGION'],
       auth: { kind: 'api-key', envVars: ['AZURE_SPEECH_KEY'] },
     },
-    integrationStage: 'configured',
+    // `integrated` on the live observation below, and on the TTS surface ONLY.
+    // The adapter was run against the real service from the development
+    // environment and returned the engine format directly. Transcription and
+    // translation remain unverified: a TTS smoke is evidence about TTS, and
+    // treating a provider as one indivisible thing is how a vendor gets
+    // credited for a capability nobody exercised.
+    integrationStage: 'integrated',
     capabilities: {
       // Read, not assumed. The rest of the matrix stays unverified because the
       // rest of the API has not been read to the same standard.
@@ -418,7 +424,23 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
         candidateFor: ['call:live', 'programme:live', 'programme:uploaded'],
       },
     ],
-    liveObservations: [],
+    liveObservations: [
+      {
+        observedAt: '2026-08-22',
+        environment: 'development',
+        capability: 'tts',
+        modelId: 'cognitiveservices-v1',
+        sampleCount: 1,
+        summary:
+          'Credential-gated smoke through the REAL adapter (northeurope): PASS. ' +
+          'First chunk 4156 ms, 8 chunks, 56,600 samples (~3.54 s) of ' +
+          'raw-16khz-16bit-mono-pcm -- the engine format, no resample. Proves ' +
+          'the SSML request, the required headers and the streaming PCM surface ' +
+          'work end to end. ONE run: the 4156 ms is an observation, not a ' +
+          'latency distribution, and must not be compared against another ' +
+          'provider on the strength of a single sample each.',
+      },
+    ],
     notes:
       'STREAMING TTS ONLY, deliberately. Azure real-time speech-to-text is the ' +
       'Speech SDK WebSocket protocol; the published REST surface is short-audio ' +

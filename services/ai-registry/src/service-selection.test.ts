@@ -487,13 +487,30 @@ describe('a recorded stage travels with the evidence for it', () => {
   it('PIN: providers whose smoke has not run stay configured', () => {
     // The list shrinks as evidence arrives -- that is the point of it -- but a
     // provider must never leave it without an observation to leave it for.
-    // Deepgram left on 2026-08-22; azure and naijalingo have no adapter yet,
-    // so there is nothing to run against them.
-    for (const id of ['azure', 'naijalingo']) {
+    // Deepgram and Azure left on 2026-08-22. 9jaLingo cannot leave: its API
+    // host and authentication header are undocumented, so there is no request
+    // to run against it -- which is a fact about the vendor's documentation,
+    // not about our effort.
+    for (const id of ['naijalingo']) {
       const found = findCommercialProvider(id);
       expect(found?.liveObservations).toEqual([]);
       expect(found?.integrationStage).toBe('configured');
     }
+  });
+
+  it('PIN: Azure is integrated on TTS evidence ONLY', () => {
+    const azure = findCommercialProvider('azure')!;
+    expect(azure.integrationStage).toBe('integrated');
+    expect(azure.liveObservations).toHaveLength(1);
+    expect(azure.liveObservations[0]?.capability).toBe('tts');
+    expect(azure.liveObservations[0]?.sampleCount).toBe(1);
+
+    // The surfaces the smoke did NOT exercise stay unverified. Treating a
+    // provider as one indivisible thing is how a vendor gets credited for a
+    // capability nobody ran.
+    expect(azure.capabilities.transcription?.streaming).toBe('unverified');
+    expect(azure.capabilities.translation?.requestResponse).toBe('unverified');
+    expect(azure.integrationStage).not.toBe('certified');
   });
 
   it('PIN: Google is integrated on a real run, and still not certified', () => {
