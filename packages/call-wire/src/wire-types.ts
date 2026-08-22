@@ -236,6 +236,15 @@ export interface CallStateWirePayload {
   transcriptDownloadAllowed?: boolean;
   participants: {
     participantId: string;
+    /**
+     * P7.0A: this seat's role IN THIS CONFERENCE, so a client can show
+     * "Chairman" without inferring it from ownerParticipantId -- which was
+     * only ever able to describe one of the four roles.
+     *
+     * Optional so a client built before P7.0A still typechecks against a
+     * gateway that sends it.
+     */
+    conferenceRole?: 'chair' | 'administrator' | 'secretary' | 'participant';
     displayName: string;
     speakLanguage: CallLanguage;
     hearLanguage: CallLanguage;

@@ -69,6 +69,13 @@
 	}
 
 	# --- static single-page apps -------------------------------------------
+	handle /call/* {
+		root * /srv/videofy/www/call-web
+		uri strip_prefix /call
+		try_files {path} /index.html
+		file_server
+	}
+
 	handle /listen/* {
 		root * /srv/videofy/www/listener-web
 		uri strip_prefix /listen
@@ -83,8 +90,9 @@
 		file_server
 	}
 
+	# The ROOT is the C7 ecosystem site, not a product. Videofy lives at /call/.
 	handle {
-		root * /srv/videofy/www/call-web
+		root * /srv/videofy/www/ecosystem-web
 		try_files {path} /index.html
 		file_server
 	}

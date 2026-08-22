@@ -59,6 +59,20 @@ import type { CallTranslatedAudioFramePayload } from '@videofy-live/call-session
 import { CallPlaybackLedger, generatedClipId } from './call-playback-ledger.js';
 import { CallAcousticRoomObserver } from './call-acoustic-rooms.js';
 import { logger } from './logger.js';
+import type { GovernanceAction, GovernanceAuditEvent } from '@videofy-live/conference-authority';
+
+/**
+ * The actions the wire accepts. Listed here so an unrecognised string is
+ * refused before it reaches the store, and so adding an action is a deliberate
+ * edit rather than something a client can invent.
+ */
+const GOVERNANCE_ACTIONS: readonly GovernanceAction[] = [
+  'appoint-administrator',
+  'revoke-administrator',
+  'appoint-secretary',
+  'revoke-secretary',
+  'transfer-chair',
+];
 
 /**
  * P6.1B native call runtime, gateway side. `@videofy-live/call-session` owns
@@ -278,6 +292,15 @@ export interface CallRuntimeDependencies {
    * the correct failure direction for an optional feature.
    */
   verifyVoiceIdentity?: (sessionToken: string) => string | null;
+  /**
+   * P7.0A: a sink for governance audit events.
+   *
+   * Optional, and the journal line above is emitted either way. This is the
+   * seam P7.0B and P7.0C attach to when transcript and recording actions need
+   * the same trail; nothing durable is built for it in this wave, because an
+   * audit store nobody reads is not evidence, it is furniture.
+   */
+  governanceAudit?: (event: GovernanceAuditEvent) => void;
   /** W4. Injectable so tests can drive it with a fake clock. */
   playbackLedger?: CallPlaybackLedger;
   /** W5A. Observation only — it has no consumer, by design. */
@@ -405,6 +428,7 @@ export class CallRuntime {
   private readonly receivePeers: CallReceivePeersLike;
   private readonly disconnectGraceMs: number;
   private readonly verifyVoiceIdentity: ((sessionToken: string) => string | null) | undefined;
+  private readonly governanceAudit: ((event: GovernanceAuditEvent) => void) | undefined;
   private readonly connectAuthority: CallConnectJoinAuthority | undefined;
   private readonly setTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   private readonly clearTimer: (timer: ReturnType<typeof setTimeout>) => void;
@@ -464,6 +488,7 @@ export class CallRuntime {
     this.transcriptLog = dependencies.transcriptLog ?? new CallTranscriptLog(null);
     this.now = dependencies.now ?? (() => Date.now());
     this.verifyVoiceIdentity = dependencies.verifyVoiceIdentity;
+    this.governanceAudit = dependencies.governanceAudit;
     this.connectAuthority = dependencies.connectAuthority;
     this.playbackLedger = dependencies.playbackLedger ?? new CallPlaybackLedger({ nowMs: this.now });
     this.acousticObserver =
@@ -527,6 +552,9 @@ export class CallRuntime {
     });
     this.onGuarded(socket, CALL_EVENTS.SET_TRANSCRIPT_POLICY, (raw, ack) => {
       this.deliverAck(ack, this.handleSetTranscriptPolicy(socket, raw));
+    });
+    this.onGuarded(socket, CALL_EVENTS.GOVERNANCE, (raw, ack) => {
+      this.deliverAck(ack, this.handleGovernance(socket, raw));
     });
     // V1 video mesh signalling: fire-and-forget relays, consistent with ICE.
     this.onGuarded(socket, CALL_EVENTS.VIDEO_OFFER, (raw) =>
@@ -622,6 +650,63 @@ export class CallRuntime {
         toWireCallState(result.snapshot),
       );
     }
+    return { ok: true };
+  }
+
+  /**
+   * P7.0A — appoint, revoke, or transfer the Chair.
+   *
+   * The ACTOR is taken from the socket's server-side binding, never from the
+   * payload. That is the whole security story: a client can ask for an action
+   * against a target, and cannot say who is asking. A payload-supplied actor
+   * would let anybody act as the Chairman by typing their participant id.
+   *
+   * Authority itself is decided by the conference authority package, reached
+   * through the store. Nothing here compares a role.
+   */
+  handleGovernance(socket: CallSocketLike, raw: unknown): { ok: boolean; error?: string } {
+    const binding = this.requireBinding(socket, raw);
+    if (!binding) return { ok: false, error: USER_FACING_ERRORS.notInCall };
+
+    const payload = raw as { action?: unknown; targetParticipantId?: unknown };
+    const action = payload?.action;
+    const targetParticipantId = payload?.targetParticipantId;
+    if (
+      typeof action !== 'string' ||
+      !GOVERNANCE_ACTIONS.includes(action as GovernanceAction) ||
+      typeof targetParticipantId !== 'string' ||
+      targetParticipantId.length === 0
+    ) {
+      return { ok: false, error: 'That governance action is not recognised.' };
+    }
+
+    const result = this.store.applyGovernance({
+      callId: binding.callId,
+      actorParticipantId: binding.participantId,
+      targetParticipantId,
+      action: action as GovernanceAction,
+    });
+    if (!result.ok) {
+      // One refusal message for every reason. Distinguishing "not authorised"
+      // from "no such participant" would let anyone probe the roster and the
+      // role table from outside the conference.
+      return { ok: false, error: 'You cannot make that change to this conference.' };
+    }
+
+    // The audit record is deliberately narrow: who did what to whom, and when.
+    // No display names -- an audit line should not become a second place where
+    // someone's name is stored, and participant ids are what the rest of the
+    // system reasons about.
+    logger.info('Conference governance change', {
+      conferenceId: result.audit.conferenceId,
+      action: result.audit.action,
+      actorParticipantId: result.audit.actorParticipantId,
+      targetParticipantId: result.audit.targetParticipantId,
+      occurredAtIso: result.audit.occurredAtIso,
+    });
+    this.governanceAudit?.(result.audit);
+
+    this.emitToRoom(callRoom(binding.callId), CALL_EVENTS.STATE, toWireCallState(result.snapshot));
     return { ok: true };
   }
 
@@ -786,6 +871,10 @@ export class CallRuntime {
       // seat before — the shared-browser defect, rebuilt on top of real
       // accounts. `null` means "nobody", and the store must hear it said.
       voiceOwnerId: verifiedOwnerId,
+      // P7.0A: the same verified identity, carried as the ACCOUNT rather than
+      // as voice ownership. Two questions, two fields: a change to voice policy
+      // must not quietly move who is allowed to chair a meeting.
+      accountId: verifiedOwnerId,
     });
     if (!result.ok) {
       return { ok: false, code: result.code, error: result.message };
@@ -2531,6 +2620,10 @@ function toWireCallState(snapshot: CallSnapshot): CallStateWirePayload {
     speakLanguage: participant.speakLanguage,
     hearLanguage: participant.hearLanguage,
     joined: participant.connected,
+    // Crosses the wire deliberately. State that lives only in the snapshot is
+    // state no client can act on -- the exact shape of the transcript-policy
+    // defect recorded a few lines below.
+    conferenceRole: participant.conferenceRole,
     ...(participant.subject === undefined ? {} : { subject: participant.subject }),
   }));
   return {

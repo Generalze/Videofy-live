@@ -12,6 +12,14 @@ import {
   type CallSessionId,
   type Participant,
 } from '@videofy-live/participant-contracts';
+import {
+  decideGovernance,
+  ROLE_AFTER_CHAIR_TRANSFER,
+  type ConferenceRole,
+  type GovernanceAction,
+  type GovernanceAuditEvent,
+  type GovernanceRefusal,
+} from '@videofy-live/conference-authority';
 
 /**
  * P6.1B pure call-session core. The gateway hosts this store and owns every
@@ -68,6 +76,15 @@ export interface CallJoinInput {
    * whose voice may be spoken.
    */
   voiceOwnerId?: string | null;
+  /**
+   * P7.0A: the authenticated C7 account behind this join, or null for a guest.
+   *
+   * Deliberately NOT read from `voiceOwnerId`. That field answers "whose voice
+   * may be spoken"; this one answers "who is this person". They happen to be
+   * derived from the same token today, and conflating them would mean a change
+   * to voice policy silently moved who can chair a meeting.
+   */
+  accountId?: string | null;
   /**
    * Partner-supplied stable opaque identity (P6.5 R8) — e.g. customer_8291 —
    * NEVER interpreted by Videofy; 1..128 characters. Stored on the seat and
@@ -276,11 +293,22 @@ export interface CallSnapshot {
    * affordance, not DRM: captions already reached every participant's screen.
    */
   transcriptDownloadAllowed: boolean;
+  /**
+   * P7.0A — legacy. `transcriptDownloadAllowed` is a single call-global switch
+   * held by the owner, which cannot express the model P7.0B needs: per-role
+   * access, Secretary workflows, and Chairman-approved exports. It is kept
+   * exactly as it was so nothing breaks, and deliberately NOT extended.
+   * P7.0B replaces it; until then it must not be widened to grant anybody new
+   * access, because widening it is indistinguishable from a policy decision
+   * nobody made.
+   */
   participants: {
     participantId: string;
     displayName: string;
     speakLanguage: CallLanguage;
     hearLanguage: CallLanguage;
+    /** P7.0A: session-scoped conference role. Never an account property. */
+    conferenceRole: ConferenceRole;
     connected: boolean;
     /** Opaque partner identity (P6.5 R8); present only on seats that joined with one. */
     subject?: string;
@@ -458,6 +486,8 @@ interface CallParticipantState {
    * may be spoken.
    */
   voiceOwnerId?: string;
+  /** P7.0A: authenticated C7 account, or absent for a guest seat. */
+  accountId?: string;
   /**
    * Opaque partner identity (P6.5 R8), never interpreted. Stamped at seat
    * creation, kept across resume, shown in snapshots deliberately.
@@ -466,6 +496,12 @@ interface CallParticipantState {
   captionsEnabled: boolean;
   connected: boolean;
   joinedAtIso: string;
+  /**
+   * P7.0A: this member's role IN THIS CONFERENCE. Session-scoped by
+   * construction -- it lives on the seat, not on the account, so the same
+   * account can be Chairman here and Participant next door.
+   */
+  conferenceRole: ConferenceRole;
 }
 
 interface CallState {
@@ -590,11 +626,15 @@ export class CallSessionStore {
       resumeToken: this.createResumeToken(),
       voiceGender: input.voiceGender,
       ...(input.voiceOwnerId ? { voiceOwnerId: input.voiceOwnerId } : {}),
+      ...(input.accountId ? { accountId: input.accountId } : {}),
       // Stamped once here; resume never reassigns it (R8).
       ...(input.subject === undefined ? {} : { subject: input.subject }),
       captionsEnabled: input.captionsEnabled,
       connected: true,
       joinedAtIso: this.now(),
+      // Everyone starts as a Participant. The creating join is promoted to
+      // Chairman immediately below, once the owner seat is known.
+      conferenceRole: 'participant',
     };
     call.participants.set(participant.participantId, state);
     if (call.ownerParticipantId === '') {
@@ -603,6 +643,11 @@ export class CallSessionStore {
       // (P6.5). The participantId survives resume, so authority survives
       // reconnects without any election.
       call.ownerParticipantId = participant.participantId;
+      // P7.0A: the existing owner concept IS the Chairman, seeded rather than
+      // replaced. A separate governance record initialised somewhere else
+      // would be a second authority on who runs the meeting, and the two would
+      // eventually disagree about a call already in progress.
+      state.conferenceRole = 'chair';
     }
     bumpOtherConnectedParticipants(call, state);
     return this.joinResult(call, state);
@@ -1023,6 +1068,95 @@ export class CallSessionStore {
   }
 
   /**
+   * P7.0A — the inputs the capability resolver needs, assembled in ONE place.
+   *
+   * Callers ask this rather than reading a role off a participant themselves:
+   * a caller that assembled its own input could quietly omit the account or
+   * the membership check, and would then be answering a slightly different
+   * question than everyone else.
+   */
+  conferenceAuthorityInputFor(
+    callId: string,
+    participantId: string,
+  ): { role: ConferenceRole; accountId: string | null; isMember: boolean } {
+    const call = this.calls.get(callId);
+    const state = call?.participants.get(participantId);
+    if (!call || !state) {
+      return { role: 'participant', accountId: null, isMember: false };
+    }
+    return {
+      role: state.conferenceRole,
+      accountId: state.accountId ?? null,
+      isMember: true,
+    };
+  }
+
+  /**
+   * Apply a governance change. The DECISION is made by the authority package;
+   * this only carries it out, and only if it was allowed.
+   *
+   * Atomic for a Chair transfer: both seats move within this synchronous block,
+   * so there is never an instant with two Chairmen or none. An implementation
+   * that awaited between the two writes would have exactly that window, and it
+   * would be reachable by anyone able to make the process pause.
+   */
+  applyGovernance(input: {
+    callId: string;
+    actorParticipantId: string;
+    targetParticipantId: string;
+    action: GovernanceAction;
+  }):
+    | { ok: true; audit: GovernanceAuditEvent; snapshot: CallSnapshot }
+    | { ok: false; reason: GovernanceRefusal | 'unknown-call' | 'unknown-participant' } {
+    const call = this.calls.get(input.callId);
+    if (!call) return { ok: false, reason: 'unknown-call' };
+    const actor = call.participants.get(input.actorParticipantId);
+    if (!actor) return { ok: false, reason: 'unknown-participant' };
+    const target = call.participants.get(input.targetParticipantId);
+
+    const decision = decideGovernance({
+      action: input.action,
+      actor: {
+        role: actor.conferenceRole,
+        accountId: actor.accountId ?? null,
+        isMember: true,
+      },
+      actorParticipantId: input.actorParticipantId,
+      targetParticipantId: input.targetParticipantId,
+      targetRole: target?.conferenceRole ?? null,
+      targetAccountId: target?.accountId ?? null,
+    });
+    if (!decision.ok) return { ok: false, reason: decision.reason };
+    // `decision.ok` implies the target exists; the resolver refuses a null
+    // target role. Narrowed here rather than asserted.
+    if (!target) return { ok: false, reason: 'unknown-target' };
+
+    target.conferenceRole = decision.nextTargetRole;
+    if (decision.chairMovesToTarget) {
+      actor.conferenceRole = ROLE_AFTER_CHAIR_TRANSFER;
+      // The legacy owner pointer moves WITH the Chair. Leaving it behind would
+      // keep the old Chairman's mode and transcript authority alive through a
+      // second, older code path -- the exact split-brain this seeding was meant
+      // to prevent.
+      call.ownerParticipantId = input.targetParticipantId;
+    }
+
+    return {
+      ok: true,
+      audit: {
+        conferenceId: call.callId,
+        action: input.action,
+        actorParticipantId: input.actorParticipantId,
+        actorAccountId: actor.accountId ?? null,
+        targetParticipantId: input.targetParticipantId,
+        targetAccountId: target.accountId ?? null,
+        occurredAtIso: this.now(),
+      },
+      snapshot: buildSnapshot(call),
+    };
+  }
+
+  /**
    * W5.1 — a listener changing their Audio Mode mid-call, AUTHORITATIVELY.
    *
    * Audio Mode is a per-listener preference, but the TTS planner reads it:
@@ -1429,6 +1563,7 @@ function buildSnapshot(call: CallState): CallSnapshot {
       speakLanguage: toCallLanguage(state.participant.sourceLanguage),
       hearLanguage: toCallLanguage(state.participant.preferredLanguage),
       connected: state.connected,
+      conferenceRole: state.conferenceRole,
       ...(state.subject === undefined ? {} : { subject: state.subject }),
     })),
   };

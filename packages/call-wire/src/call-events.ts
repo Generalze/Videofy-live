@@ -65,6 +65,14 @@ export const CALL_EVENTS = {
   SET_AUDIO_MODE: 'call:audio-mode:set',
   /** Owner-only transcript-download policy for the whole call. */
   SET_TRANSCRIPT_POLICY: 'call:transcript-policy:set',
+  /**
+   * P7.0A governance: appoint, revoke, transfer the Chair.
+   *
+   * ONE event carrying an action rather than five events. The authority check
+   * is identical for all of them, and five entry points is five places for one
+   * of them to be wired without it.
+   */
+  GOVERNANCE: 'call:governance',
   /** V1: P2P video mesh signalling, relayed peer-to-peer by the gateway. */
   VIDEO_OFFER: 'call:video:offer',
   VIDEO_ANSWER: 'call:video:answer',

@@ -380,6 +380,9 @@ describe('CallRuntime join and ingest plan handling', () => {
           speakLanguage: 'en',
           hearLanguage: 'en',
           joined: true,
+          // P7.0A: the creating join seeds the Chairman, and the role crosses
+          // the wire so a client can label it without guessing from the owner.
+          conferenceRole: 'chair',
         },
       ],
     });
@@ -1656,5 +1659,61 @@ describe('CallRuntime caption language changes', () => {
 
     expect((ack.mock.calls[0]?.[0] as { ok: boolean }).ok).toBe(false);
     expect(harness.store.snapshot('demo')?.participants[0]?.hearLanguage).toBe('en');
+  });
+});
+
+describe('CallRuntime P7.0A governance', () => {
+  /**
+   * The ACTOR is the socket, never the payload.
+   *
+   * There is deliberately no actor field on this event. If there were, anybody
+   * could type the Chairman's participant id and act as them -- which is the
+   * whole attack, and it needs no cleverness at all.
+   */
+  it('PIN: a non-Chairman socket cannot perform a governance action', async () => {
+    const harness = createHarness();
+    const chairSocket = new FakeSocket('socket-a');
+    const otherSocket = new FakeSocket('socket-b');
+    const chair = await join(harness, chairSocket, { ...JOIN_A });
+    const other = await join(harness, otherSocket, { ...JOIN_B });
+    expect(chair.ok && other.ok).toBe(true);
+    if (!chair.ok || !other.ok) return;
+
+    const ack = vi.fn();
+    await otherSocket.trigger(
+      CALL_EVENTS.GOVERNANCE,
+      {
+        callId: 'demo',
+        action: 'transfer-chair',
+        targetParticipantId: other.participantId,
+        // Ignored by construction: the handler reads the actor from the
+        // socket's server-side binding. Present here precisely to prove that.
+        actorParticipantId: chair.participantId,
+      },
+      ack,
+    );
+    expect(ack).toHaveBeenCalledWith(expect.objectContaining({ ok: false }));
+
+    // And nothing moved.
+    const snapshot = harness.store.snapshot('demo');
+    expect(snapshot?.ownerParticipantId).toBe(chair.participantId);
+    expect(
+      snapshot?.participants.filter((participant) => participant.conferenceRole === 'chair'),
+    ).toHaveLength(1);
+  });
+
+  it('refuses an unrecognised governance action', async () => {
+    const harness = createHarness();
+    const socket = new FakeSocket('socket-a');
+    const chair = await join(harness, socket, { ...JOIN_A });
+    expect(chair.ok).toBe(true);
+
+    const ack = vi.fn();
+    await socket.trigger(
+      CALL_EVENTS.GOVERNANCE,
+      { callId: 'demo', action: 'make-me-king', targetParticipantId: 'participant_1' },
+      ack,
+    );
+    expect(ack).toHaveBeenCalledWith(expect.objectContaining({ ok: false }));
   });
 });

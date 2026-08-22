@@ -200,6 +200,7 @@ describe('call socket contract', () => {
       SET_AUDIO_MODE: 'call:audio-mode:set',
       // Owner-only transcript-download policy.
       SET_TRANSCRIPT_POLICY: 'call:transcript-policy:set',
+      GOVERNANCE: 'call:governance',
       // V1: P2P video mesh signalling, relayed peer-to-peer by the gateway.
       // Video never touches STT/media-ingest.
       VIDEO_OFFER: 'call:video:offer',

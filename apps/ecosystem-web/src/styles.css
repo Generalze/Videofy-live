@@ -1,0 +1,931 @@
+/**
+ * CONSUMMATE 7 — visual system.
+ *
+ * Near-black, dimensional, restrained. The discipline that keeps this from
+ * becoming a wall of white cards: the ecosystem section is ONE lead panel and a
+ * grid of unequal ones, each domain gets its own tone, and depth comes from
+ * layered light rather than from borders on everything.
+ *
+ * Every size that affects layout is fluid (clamp) rather than stepped at
+ * breakpoints, so there is no width at which the page is merely tolerable.
+ */
+
+:root {
+  --ink: #05070c;
+  --ink-2: #0a0d14;
+  --ink-3: #10151f;
+  --line: rgba(160, 180, 220, 0.12);
+  --line-bright: rgba(170, 195, 240, 0.28);
+  --text: #eef2f8;
+  --text-dim: #a7b2c6;
+  --text-faint: #74809a;
+  --accent: #6ea8ff;
+  --accent-warm: #7ee0c2;
+  --amber: #f0c25e;
+
+  --shell: min(1180px, 92vw);
+  --radius: 18px;
+  --radius-lg: 26px;
+
+  --c7-mark-from: #eef2f8;
+  --c7-mark-to: #7d8ba6;
+  --c7-mark-accent: #ffffff;
+
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--text);
+  font-family:
+    'Inter var', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
+    sans-serif;
+  font-size: clamp(15px, 0.55vw + 13.6px, 17px);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  /* The page must never scroll sideways, at any width. */
+  overflow-x: hidden;
+}
+
+.page {
+  position: relative;
+  isolation: isolate;
+}
+
+.shell {
+  width: var(--shell);
+  margin-inline: auto;
+}
+
+img,
+svg {
+  max-width: 100%;
+}
+
+/* ---------- type ---------- */
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  font-weight: 600;
+}
+
+p {
+  margin: 0;
+}
+
+.section-title {
+  font-size: clamp(1.9rem, 3vw + 1rem, 3.1rem);
+}
+
+.section-lede {
+  margin-top: 0.9rem;
+  max-width: 56ch;
+  color: var(--text-dim);
+  font-size: clamp(1rem, 0.5vw + 0.9rem, 1.15rem);
+}
+
+.section-field {
+  margin: 0;
+  font-size: 0.74rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* ---------- identity ---------- */
+
+.c7-wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.c7-wordmark-text {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.34rem;
+  font-size: 0.92rem;
+  letter-spacing: 0.2em;
+  color: var(--text);
+}
+
+.c7-wordmark-text strong {
+  font-weight: 600;
+}
+
+.c7-wordmark-seven {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* ---------- controls ---------- */
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.85rem 1.5rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font: inherit;
+  font-weight: 550;
+  letter-spacing: 0.01em;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    background-color 180ms ease,
+    border-color 180ms ease;
+}
+
+.button-primary {
+  background: linear-gradient(180deg, #f4f7fc 0%, #d8e2f2 100%);
+  color: #08101f;
+}
+
+.button-ghost {
+  border-color: var(--line-bright);
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.button-small {
+  padding: 0.55rem 1.1rem;
+  font-size: 0.9rem;
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--line-bright);
+  color: var(--text);
+}
+
+.button-wide {
+  width: 100%;
+}
+
+.button:hover {
+  transform: translateY(-1px);
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+  transform: none;
+}
+
+.button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button:hover {
+    transform: none;
+  }
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 20;
+  padding: 0.8rem 1.2rem;
+  background: var(--ink-3);
+  color: var(--text);
+  border-radius: 0 0 12px 0;
+}
+
+.skip-link:focus {
+  left: 0;
+}
+
+/* ---------- reveal ---------- */
+
+.reveal {
+  opacity: 0;
+  transform: translateY(18px);
+  transition:
+    opacity 700ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    transform 700ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.reveal-in {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+/* ---------- nav ---------- */
+
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  backdrop-filter: blur(14px);
+  background: color-mix(in srgb, var(--ink) 72%, transparent);
+  border-bottom: 1px solid var(--line);
+}
+
+.nav-shell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-block: 0.9rem;
+}
+
+.nav-brand {
+  text-decoration: none;
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.6rem, 2vw, 1.6rem);
+}
+
+.nav-links a {
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 0.92rem;
+}
+
+.nav-links a:hover {
+  color: var(--text);
+}
+
+/* The two text links are the first thing to go on a narrow screen; the
+   action stays, because it is the reason the nav exists. */
+@media (max-width: 640px) {
+  .nav-links a:not(.button) {
+    display: none;
+  }
+}
+
+/* ---------- hero ---------- */
+
+.hero {
+  position: relative;
+  padding-block: clamp(5rem, 14vh + 3rem, 11rem) clamp(4rem, 9vh, 7rem);
+  overflow: hidden;
+}
+
+/*
+ * Dimensional light rather than a flat gradient: three offset radial pools at
+ * low opacity read as depth, where a single linear wash reads as a background
+ * image.
+ */
+.hero-field {
+  position: absolute;
+  inset: -30% -10% auto -10%;
+  height: 150%;
+  background:
+    radial-gradient(45% 40% at 22% 18%, rgba(110, 168, 255, 0.16), transparent 70%),
+    radial-gradient(38% 42% at 82% 30%, rgba(126, 224, 194, 0.1), transparent 72%),
+    radial-gradient(60% 50% at 50% 88%, rgba(90, 120, 200, 0.12), transparent 76%);
+  filter: blur(8px);
+  pointer-events: none;
+}
+
+.hero-shell {
+  position: relative;
+}
+
+.hero-eyebrow {
+  font-size: 0.78rem;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.hero-title {
+  margin-top: 1.4rem;
+  font-size: clamp(2.7rem, 7.2vw + 0.6rem, 6.4rem);
+  letter-spacing: -0.035em;
+  font-weight: 600;
+}
+
+.hero-title-accent {
+  background: linear-gradient(96deg, #ffffff 0%, #9dbcf0 46%, #7ee0c2 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.hero-lede {
+  margin-top: 1.6rem;
+  max-width: 62ch;
+  font-size: clamp(1.02rem, 0.6vw + 0.92rem, 1.24rem);
+  color: var(--text-dim);
+}
+
+.hero-actions {
+  margin-top: 2.4rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+}
+
+/* ---------- ecosystem ---------- */
+
+.ecosystem {
+  padding-block: clamp(3.5rem, 8vh, 6.5rem);
+}
+
+.domain {
+  position: relative;
+  overflow: hidden;
+  padding: clamp(1.5rem, 2.4vw, 2.3rem);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(168deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012));
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  min-height: 100%;
+}
+
+.domain-glow {
+  position: absolute;
+  inset: -60% -30% auto -30%;
+  height: 130%;
+  pointer-events: none;
+  opacity: 0.65;
+}
+
+.domain-lead {
+  margin-top: clamp(2rem, 4vh, 3rem);
+  padding: clamp(1.8rem, 3.2vw, 3rem);
+}
+
+.domain-flagship .domain-glow {
+  background: radial-gradient(50% 60% at 20% 10%, rgba(110, 168, 255, 0.22), transparent 70%);
+}
+
+.domain-concealed .domain-glow {
+  /* Present, but withheld: the light is there and the detail is not. */
+  background: radial-gradient(46% 60% at 78% 8%, rgba(150, 130, 220, 0.18), transparent 72%);
+}
+
+.domain-emerging .domain-glow {
+  background: radial-gradient(46% 60% at 30% 6%, rgba(126, 224, 194, 0.16), transparent 72%);
+}
+
+.domain-sealed .domain-glow {
+  background: radial-gradient(40% 60% at 60% 4%, rgba(240, 194, 94, 0.09), transparent 74%);
+}
+
+.domain-quiet .domain-glow {
+  background: radial-gradient(40% 60% at 50% 4%, rgba(160, 180, 220, 0.07), transparent 74%);
+}
+
+.domain-head {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.domain-field {
+  font-size: 0.72rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.domain-product {
+  font-size: clamp(1.35rem, 1.6vw + 1rem, 2.1rem);
+  letter-spacing: -0.01em;
+}
+
+.domain-lead .domain-product {
+  font-size: clamp(1.9rem, 3.2vw + 1rem, 3.2rem);
+}
+
+.domain-summary {
+  position: relative;
+  color: var(--text);
+  font-size: clamp(1rem, 0.5vw + 0.9rem, 1.14rem);
+  max-width: 50ch;
+}
+
+.domain-detail {
+  position: relative;
+  color: var(--text-dim);
+  max-width: 52ch;
+  font-size: 0.97rem;
+}
+
+.domain-foot {
+  position: relative;
+  margin-top: auto;
+  padding-top: 0.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.domain-lead .domain-foot {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.domain-link {
+  color: var(--text);
+  text-decoration: none;
+  border-bottom: 1px solid var(--line-bright);
+  padding-bottom: 2px;
+}
+
+/*
+ * Unequal by design. Sentinel and Health take the wider cells, Finance and
+ * Media the narrower ones, which is what stops this reading as a card wall and
+ * also happens to be the correct hierarchy.
+ */
+.domain-grid {
+  margin-top: 1.4rem;
+  display: grid;
+  gap: 1.2rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr));
+}
+
+@media (min-width: 900px) {
+  .domain-grid {
+    grid-template-columns: 1.35fr 1.35fr;
+  }
+
+  .domain-grid > :nth-child(3),
+  .domain-grid > :nth-child(4) {
+    grid-column: span 1;
+  }
+}
+
+/* ---------- status ---------- */
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.42rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid var(--line-bright);
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  align-self: flex-start;
+  white-space: nowrap;
+}
+
+.status-available {
+  color: #b9f4dd;
+  border-color: rgba(126, 224, 194, 0.4);
+  background: rgba(126, 224, 194, 0.08);
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-warm);
+  box-shadow: 0 0 0 4px rgba(126, 224, 194, 0.16);
+}
+
+.status-progress {
+  color: var(--text);
+}
+
+.status-percent {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.status-sep {
+  color: var(--text-faint);
+}
+
+.status-locked {
+  color: var(--amber);
+  border-color: rgba(240, 194, 94, 0.32);
+  background: rgba(240, 194, 94, 0.07);
+}
+
+.status-emerging {
+  color: var(--text-dim);
+}
+
+.rail {
+  position: relative;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.rail-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--rail-to, 0%);
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(110, 168, 255, 0.5), #9dbcf0);
+  transform-origin: left;
+  animation: rail-grow 1100ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+.reveal:not(.reveal-in) .rail-fill {
+  animation: none;
+  width: 0;
+}
+
+@keyframes rail-grow {
+  from {
+    width: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail-fill {
+    animation: none;
+  }
+}
+
+/* ---------- flagship ---------- */
+
+.flagship {
+  position: relative;
+  padding-block: clamp(3.5rem, 9vh, 7rem);
+  border-top: 1px solid var(--line);
+  background:
+    radial-gradient(50% 45% at 15% 0%, rgba(110, 168, 255, 0.1), transparent 70%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 40%);
+}
+
+.flagship-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  max-width: 68ch;
+}
+
+.flagship-name {
+  font-size: clamp(2.1rem, 4.6vw + 0.8rem, 4.2rem);
+  letter-spacing: -0.03em;
+}
+
+.flagship-headline {
+  font-size: clamp(1.2rem, 1.4vw + 1rem, 1.9rem);
+  color: var(--text);
+}
+
+.flagship-concept {
+  color: var(--accent-warm);
+  font-size: clamp(1rem, 0.6vw + 0.9rem, 1.2rem);
+}
+
+.flagship-body {
+  color: var(--text-dim);
+  max-width: 62ch;
+}
+
+.flagship-actions {
+  margin-top: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+}
+
+/* ---------- network figure ---------- */
+
+.network {
+  margin-top: clamp(2.6rem, 6vh, 4.5rem);
+  padding: clamp(1.4rem, 3vw, 2.6rem);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.008));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.network-surfaces {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.7rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+  width: 100%;
+}
+
+.surface {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  text-align: center;
+  font-size: 0.93rem;
+}
+
+/* A planned surface is visibly planned INSIDE the picture, so the figure
+   cannot imply reach the product does not have. */
+.surface-planned {
+  border-style: dashed;
+  color: var(--text-faint);
+  background: transparent;
+}
+
+.surface-tag {
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.network-spine {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  height: 34px;
+}
+
+.spine-line {
+  width: 1px;
+  height: 100%;
+  background: linear-gradient(180deg, transparent, var(--line-bright), transparent);
+}
+
+.network-core {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.85rem 1.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--line-bright);
+  background: linear-gradient(180deg, rgba(110, 168, 255, 0.16), rgba(110, 168, 255, 0.05));
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-align: center;
+}
+
+.network-out {
+  color: var(--text-dim);
+  text-align: center;
+  max-width: 42ch;
+}
+
+/* ---------- capabilities ---------- */
+
+.capability-grid {
+  margin-top: clamp(2.4rem, 5vh, 4rem);
+  display: grid;
+  gap: 1.6rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+}
+
+.capability-group {
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--line-bright);
+}
+
+.capability-heading {
+  font-size: 1.05rem;
+  letter-spacing: 0.02em;
+}
+
+.capability-qualifier {
+  margin-top: 0.4rem;
+  color: var(--text-faint);
+  font-size: 0.88rem;
+}
+
+.capability-list {
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  color: var(--text-dim);
+  font-size: 0.95rem;
+}
+
+.capability-list li {
+  padding-left: 1.1rem;
+  position: relative;
+}
+
+.capability-list li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.62em;
+  width: 5px;
+  height: 1px;
+  background: var(--line-bright);
+}
+
+/* ---------- join ---------- */
+
+.join {
+  padding-block: clamp(3.5rem, 9vh, 7rem);
+  border-top: 1px solid var(--line);
+  background: radial-gradient(60% 60% at 80% 10%, rgba(126, 224, 194, 0.08), transparent 70%);
+}
+
+.join-shell {
+  display: grid;
+  gap: clamp(2rem, 5vw, 4rem);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  align-items: start;
+}
+
+.join-points {
+  margin: 1.6rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  color: var(--text-dim);
+}
+
+.join-points li {
+  padding-left: 1.2rem;
+  position: relative;
+}
+
+.join-points li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.6em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.7;
+}
+
+.join-panel {
+  padding: clamp(1.4rem, 3vw, 2.2rem);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015));
+  backdrop-filter: blur(10px);
+}
+
+.join-tabs {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.3rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.join-tab {
+  flex: 1;
+  padding: 0.6rem 0.8rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.join-tab-on {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.join-form {
+  margin-top: 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.field-label {
+  font-size: 0.82rem;
+  color: var(--text-faint);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.field input {
+  width: 100%;
+  padding: 0.8rem 1rem;
+  border-radius: 12px;
+  border: 1px solid var(--line-bright);
+  background: rgba(6, 9, 15, 0.6);
+  color: var(--text);
+  font: inherit;
+}
+
+.join-error {
+  color: #ffb4b4;
+  font-size: 0.92rem;
+}
+
+.join-done h3 {
+  font-size: 1.5rem;
+}
+
+.join-done p {
+  margin-top: 0.7rem;
+  color: var(--text-dim);
+}
+
+.join-shelf {
+  margin: 1.4rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.join-shelf li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.shelf-muted {
+  color: var(--text-faint);
+}
+
+.shelf-state {
+  font-size: 0.8rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* ---------- footer ---------- */
+
+.footer {
+  padding-block: clamp(2.5rem, 6vh, 4rem);
+  border-top: 1px solid var(--line);
+}
+
+.footer-shell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.2rem;
+}
+
+.footer-note {
+  color: var(--text-faint);
+  font-size: 0.88rem;
+  max-width: 60ch;
+}

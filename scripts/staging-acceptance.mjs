@@ -53,6 +53,35 @@ async function httpChecks() {
     }
   }
 
+  // The Vite --base defect, checked rather than assumed. An app built with the
+  // wrong base serves a perfectly good index.html whose script tag points at a
+  // path that 404s -- so the page loads, blank, and the status check passes.
+  console.log('\nAsset bases');
+  for (const [name, page, prefix] of [
+    ['C7 ecosystem', '/', '/assets/'],
+    ['call-web', '/call/', '/call/assets/'],
+    ['listener-web', '/listen/', '/listen/assets/'],
+    ['operator-web', '/operator/', '/operator/assets/'],
+  ]) {
+    try {
+      const html = await (await fetch(`${base}${page}`)).text();
+      const match = /<script[^>]+src="([^"]+)"/.exec(html);
+      if (match === null) {
+        record(`${name} asset base`, false, 'no script tag found');
+        continue;
+      }
+      const src = match[1];
+      if (!src.startsWith(prefix)) {
+        record(`${name} asset base`, false, `script src ${src} is not under ${prefix}`);
+        continue;
+      }
+      const assetStatus = await status(src);
+      record(`${name} asset base`, assetStatus === 200, `${src} -> HTTP ${assetStatus}`);
+    } catch (error) {
+      record(`${name} asset base`, false, String(error?.message ?? error));
+    }
+  }
+
   console.log('\nRefused at the edge');
   // The internal prefix covers the internal media API AND the realtime ingress
   // WebSocket. The third case is the one worth keeping: without a matcher that

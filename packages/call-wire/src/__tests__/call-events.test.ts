@@ -28,6 +28,7 @@ const EXPECTED_EVENT_NAMES = {
   SET_AUDIO_MODE: 'call:audio-mode:set',
   SET_TRANSCRIPT_POLICY: 'call:transcript-policy:set',
   VIDEO_OFFER: 'call:video:offer',
+  GOVERNANCE: 'call:governance',
   VIDEO_ANSWER: 'call:video:answer',
   VIDEO_ICE: 'call:video:ice',
 } as const;

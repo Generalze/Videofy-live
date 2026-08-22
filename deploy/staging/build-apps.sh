@@ -14,6 +14,7 @@ WWW_DIR="${WWW_DIR:-/srv/videofy/www}"
 
 # Same origin as the page itself. `/` is the socket.io default namespace.
 export VITE_GATEWAY_URL=/
+export VITE_CALL_PATH=/call/       # where the C7 site sends "Launch Live"
 export VITE_ACCOUNT_URL=/auth
 export VITE_INGEST_URL=/media
 export VITE_PROGRESSIVE_TRANSLATED_AUDIO=true
@@ -30,7 +31,9 @@ build_app() {
   echo "  -> $WWW_DIR/$app"
 }
 
-build_app call-web /
+# The C7 ecosystem site owns the root. Videofy is a product within it.
+build_app ecosystem-web /
+build_app call-web /call/
 build_app listener-web /listen/
 build_app operator-web /operator/
 echo "apps staged into $WWW_DIR"

@@ -76,6 +76,8 @@ describe('CallSessionStore.createOrJoin', () => {
         speakLanguage: 'en',
         hearLanguage: 'en',
         connected: true,
+        // P7.0A: the join that CREATES the call seeds the Chairman.
+        conferenceRole: 'chair',
       },
     ]);
     expect(result.ingestPlans).toEqual([
@@ -523,9 +525,20 @@ describe('CallSessionStore snapshots', () => {
       'transcriptDownloadAllowed',
     ]);
     expect(snapshot.participants.map((participant) => Object.keys(participant).sort())).toEqual([
-      ['connected', 'displayName', 'hearLanguage', 'participantId', 'speakLanguage', 'subject'],
+      // `conferenceRole` is a DELIBERATE P7.0A addition to the exact key set:
+      // a session-scoped role is public participant state, and carries none of
+      // the forbidden substrings below.
+      [
+        'conferenceRole',
+        'connected',
+        'displayName',
+        'hearLanguage',
+        'participantId',
+        'speakLanguage',
+        'subject',
+      ],
       // No `subject` key at all for a seat that joined without one.
-      ['connected', 'displayName', 'hearLanguage', 'participantId', 'speakLanguage'],
+      ['conferenceRole', 'connected', 'displayName', 'hearLanguage', 'participantId', 'speakLanguage'],
     ]);
     const serialized = JSON.stringify(snapshot);
     expect(serialized).not.toContain('secret-resume-');
