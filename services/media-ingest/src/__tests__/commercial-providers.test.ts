@@ -23,6 +23,7 @@ import {
 } from '../providers/deepgram/transport.js';
 import { DeepgramBatchTranscriptionProvider } from '../providers/deepgram/batch-stt.js';
 import { GoogleTimestampedTranslationProvider } from '../providers/google/translation.js';
+import type { GoogleTranslationConfig } from '../providers/google/translation.js';
 import {
   ElevenLabsStreamingSynthesisProvider,
   ElevenLabsTextToSpeechProvider,
@@ -256,14 +257,34 @@ describe('Deepgram batch', () => {
 // --- Google translation ----------------------------------------------------
 
 describe('Google translation', () => {
-  function google(status: number, payload: unknown) {
-    const seen: { url: string; body: Record<string, unknown> }[] = [];
+  function google(
+    status: number,
+    payload: unknown,
+    overrides: Partial<GoogleTranslationConfig> = {},
+  ) {
+    const seen: {
+      url: string;
+      body: Record<string, unknown>;
+      headers: Record<string, string>;
+    }[] = [];
     const provider = new GoogleTimestampedTranslationProvider({
-      projectId: 'proj', getAccessToken: async () => 'tok',
+      projectId: 'proj',
+      authorize: async () => ({
+        headers: { authorization: 'Bearer tok', 'x-goog-user-project': 'quota-proj' },
+        quotaProjectId: 'quota-proj',
+      }),
       fetchImpl: (async (url: string, init: RequestInit) => {
-        seen.push({ url: String(url), body: JSON.parse(String(init.body)) });
-        return new Response(JSON.stringify(payload), { status });
+        seen.push({
+          url: String(url),
+          body: JSON.parse(String(init.body)),
+          headers: init.headers as Record<string, string>,
+        });
+        return new Response(
+          typeof payload === 'string' ? payload : JSON.stringify(payload),
+          { status },
+        );
       }) as unknown as typeof fetch,
+      ...overrides,
     });
     return { provider, seen };
   }
@@ -283,6 +304,64 @@ describe('Google translation', () => {
     });
   });
 
+  it('PIN: the quota project reaches the wire as x-goog-user-project', async () => {
+    const g = google(200, { translations: [{ translatedText: 'hola' }] });
+    await g.provider.translate(input);
+    // The whole of C-AI1.1F. Asking ADC for only a token discarded this
+    // header, and Google answered 403 -- a permissions error for a caller
+    // whose permissions were fine.
+    expect(g.seen[0]!.headers['x-goog-user-project']).toBe('quota-proj');
+    expect(g.seen[0]!.headers['authorization']).toBe('Bearer tok');
+  });
+
+  it('PIN: the resource project and the quota project stay separate', async () => {
+    const g = google(200, { translations: [{ translatedText: 'hola' }] }, {
+      projectId: 'resource-project',
+      quotaProjectId: 'billing-project',
+    });
+    await g.provider.translate(input);
+    // A service account in one project calling a resource in another is
+    // ordinary. Collapsing the two would break exactly that case.
+    expect(g.seen[0]!.url).toContain('/v3/projects/resource-project/');
+    expect(g.seen[0]!.url).not.toContain('billing-project');
+    expect(g.seen[0]!.headers['x-goog-user-project']).toBe('billing-project');
+  });
+
+  it('PIN: an explicit quota project overrides the credential', async () => {
+    const g = google(200, { translations: [{ translatedText: 'hola' }] }, {
+      quotaProjectId: 'stated-by-deployment',
+    });
+    await g.provider.translate(input);
+    // A deployment told which project to bill is stating policy; a credential's
+    // quota project is whatever `gcloud` last set on somebody's laptop.
+    expect(g.seen[0]!.headers['x-goog-user-project']).toBe('stated-by-deployment');
+  });
+
+  it('PIN: no quota project sends no header, rather than an empty one', async () => {
+    const g = google(200, { translations: [{ translatedText: 'hola' }] }, {
+      authorize: async () => ({ headers: { authorization: 'Bearer tok' }, quotaProjectId: null }),
+    });
+    await g.provider.translate(input);
+    // An empty `x-goog-user-project` is not "no quota project", it is a
+    // malformed one, and Google rejects it differently -- sending whoever
+    // debugs it to look in entirely the wrong place.
+    expect(g.seen[0]!.headers).not.toHaveProperty('x-goog-user-project');
+  });
+
+  it('PIN: a failure carries Google own words, not just a status code', async () => {
+    const g = google(
+      403,
+      '{"error":{"code":403,"message":"Cloud Translation API has not been used in project 12345 before or it is disabled","status":"PERMISSION_DENIED"}}',
+    );
+    // "HTTP 403" cost a live validation session. The body names the actual
+    // problem every time; the status code names it never.
+    await expect(g.provider.translate(input)).rejects.toMatchObject({
+      code: 'translation-failed',
+    });
+    await expect(g.provider.translate(input)).rejects.toThrow(/PERMISSION_DENIED/);
+    await expect(g.provider.translate(input)).rejects.toThrow(/has not been used in project/);
+  });
+
   it('PIN: a 400 becomes unsupported-language so the composite can reroute', async () => {
     const g = google(400, { error: 'unsupported' });
     // The existing composite learns unsupported PAIRS from this exact code. A
@@ -293,7 +372,8 @@ describe('Google translation', () => {
   it('PIN: the health check does not spend money', async () => {
     let called = 0;
     const provider = new GoogleTimestampedTranslationProvider({
-      projectId: 'p', getAccessToken: async () => 'tok',
+      projectId: 'p',
+      authorize: async () => ({ headers: { authorization: 'Bearer tok' }, quotaProjectId: null }),
       fetchImpl: (async () => { called += 1; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
     });
     const health = await provider.healthCheck();

@@ -15,14 +15,27 @@
  * translation of a growing clause is a thing we might want later; pretending
  * this endpoint provides it would be inventing a capability.
  *
- * CREDENTIALS ARE NOT ACQUIRED HERE. `getAccessToken` is injected. Application
+ * CREDENTIALS ARE NOT ACQUIRED HERE. `authorize` is injected. Application
  * Default Credentials resolves differently in every environment -- a key file
  * locally, a metadata server on a VM, a workload identity in a cluster -- and
  * an adapter that hard-coded one of those would be an adapter that only works
- * on the machine it was written on. The composition layer supplies it in
- * C-AI1.1D; nothing here reads a credential from disk or environment.
+ * on the machine it was written on. Nothing here reads a credential from disk
+ * or environment.
+ *
+ * THE AUTHORIZER RETURNS HEADERS, NOT A TOKEN, and that is the C-AI1.1F fix.
+ * ADC resolves a token AND the project whose quota and billing the call is
+ * attributed to. Asking it only for the token discarded the second, the
+ * `x-goog-user-project` header went unsent, and Google answered 403 -- a
+ * permissions error for a caller whose permissions were fine. See
+ * `./authorization.ts` for why the resource project and the quota project are
+ * two different things.
  */
 import { MediaIngestError } from '../../ingest-error.js';
+import {
+  createAdcAuthorizer,
+  googleRequestHeaders,
+  type GoogleAuthorizer,
+} from './authorization.js';
 import type {
   ProviderHealthCheck,
   TimestampedTranslationProvider,
@@ -31,9 +44,18 @@ import type {
 } from '../../translation-provider.js';
 
 export interface GoogleTranslationConfig {
+  /**
+   * The RESOURCE project: whose Translation resources are addressed. Appears
+   * in the URL. Not necessarily the project that pays -- see `quotaProjectId`.
+   */
   readonly projectId: string;
-  /** Returns a bearer token. Application Default Credentials, resolved upstream. */
-  readonly getAccessToken: () => Promise<string>;
+  /** Application Default Credentials, resolved upstream. Returns headers. */
+  readonly authorize: GoogleAuthorizer;
+  /**
+   * The QUOTA project, when the deployment wants to state it rather than
+   * inherit whatever the credential carries. Wins over the credential's own.
+   */
+  readonly quotaProjectId?: string | null;
   readonly baseUrl?: string;
   readonly timeoutMs?: number;
   /** Cloud Translation location. `global` unless a data-region policy says otherwise. */
@@ -57,11 +79,11 @@ export class GoogleTimestampedTranslationProvider implements TimestampedTranslat
     const timer = setTimeout(() => abort.abort(), this.config.timeoutMs ?? 10_000);
     let response: Response;
     try {
-      const token = await this.config.getAccessToken();
+      const authorization = await this.config.authorize();
       response = await (this.config.fetchImpl ?? fetch)(url, {
         method: 'POST',
         headers: {
-          authorization: `Bearer ${token}`,
+          ...googleRequestHeaders(authorization, this.config.quotaProjectId),
           'content-type': 'application/json',
         },
         body: JSON.stringify({
@@ -91,7 +113,11 @@ export class GoogleTimestampedTranslationProvider implements TimestampedTranslat
       // acts on, so it gets its own code rather than a generic failure.
       const code = response.status === 400 ? 'unsupported-language' : 'translation-failed';
       throw new MediaIngestError(
-        `Google translation returned ${response.status}: ${body.slice(0, 200)}`,
+        // Google's body names the actual problem -- a disabled API, a missing
+        // quota project, the wrong service. A bare status code sends whoever
+        // reads it guessing, which is exactly what happened with the 403 this
+        // wave exists to fix.
+        `Google translation returned ${response.status}: ${body.slice(0, 400)}`,
         code,
         response.status === 400 ? 400 : 502,
       );
@@ -121,7 +147,7 @@ export class GoogleTimestampedTranslationProvider implements TimestampedTranslat
     // Deliberately does NOT translate anything: a health check that spends money
     // on every probe is one that gets disabled, and then nothing is checked.
     try {
-      await this.config.getAccessToken();
+      await this.config.authorize();
       return {
         provider: this.name,
         status: 'ready',
@@ -139,4 +165,35 @@ export class GoogleTimestampedTranslationProvider implements TimestampedTranslat
       };
     }
   }
+}
+
+/**
+ * The documented way to construct this adapter from the environment.
+ *
+ * Exists so the two projects are named in one place rather than being
+ * rediscovered at each call site:
+ *
+ *   GOOGLE_TRANSLATE_PROJECT_ID   the RESOURCE project, required
+ *   GOOGLE_CLOUD_QUOTA_PROJECT    the QUOTA project, optional. Unset means
+ *                                 "use whatever the credential carries", which
+ *                                 is right on a laptop and usually wrong in a
+ *                                 deployment that bills a specific project.
+ *
+ * Returns null rather than throwing when the resource project is absent: a
+ * provider that has not been configured is not an error, it is a provider that
+ * was not selected.
+ */
+export function createGoogleTranslationProviderFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  authorize: GoogleAuthorizer = createAdcAuthorizer({
+    quotaProjectId: env['GOOGLE_CLOUD_QUOTA_PROJECT'] ?? null,
+  }),
+): GoogleTimestampedTranslationProvider | null {
+  const projectId = env['GOOGLE_TRANSLATE_PROJECT_ID'];
+  if (projectId === undefined || projectId === '') return null;
+  return new GoogleTimestampedTranslationProvider({
+    projectId,
+    authorize,
+    quotaProjectId: env['GOOGLE_CLOUD_QUOTA_PROJECT'] ?? null,
+  });
 }

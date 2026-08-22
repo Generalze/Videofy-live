@@ -479,10 +479,23 @@ describe('a recorded stage travels with the evidence for it', () => {
   });
 
   it('PIN: providers whose smoke has not run stay configured', () => {
-    for (const id of ['deepgram', 'google-cloud', 'azure', 'naijalingo']) {
+    // Deepgram's smoke still needs a credential nobody has run it with. The
+    // list shrinks as evidence arrives -- that is the point of it -- but a
+    // provider must never leave it without an observation to leave it for.
+    for (const id of ['deepgram', 'azure', 'naijalingo']) {
       const found = findCommercialProvider(id);
       expect(found?.liveObservations).toEqual([]);
       expect(found?.integrationStage).toBe('configured');
     }
+  });
+
+  it('PIN: Google is integrated on a real run, and still not certified', () => {
+    const google = findCommercialProvider('google-cloud');
+    expect(google?.integrationStage).toBe('integrated');
+    expect(google?.liveObservations).toHaveLength(1);
+    // One en->es translation proves the quota project now reaches the wire.
+    // It proves nothing about latency on an ordinary day.
+    expect(google?.liveObservations[0]?.sampleCount).toBe(1);
+    expect(google?.liveObservations[0]?.capability).toBe('translation');
   });
 });

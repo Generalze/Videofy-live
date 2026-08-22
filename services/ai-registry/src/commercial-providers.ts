@@ -201,7 +201,12 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
     providerId: 'google-cloud',
     displayName: 'Google Cloud',
     credentialEnvVars: ['GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_TRANSLATE_PROJECT_ID'],
-    integrationStage: 'configured',
+    // `integrated` on the live observation below. C-AI1.1F: the adapter was
+    // asking ADC for a bearer token only, which discarded the quota project ADC
+    // had already resolved, so `x-goog-user-project` went unsent and Google
+    // answered 403 -- a permissions error for a caller whose permissions were
+    // fine. Fixed, then run end to end against the real API.
+    integrationStage: 'integrated',
     capabilities: {
       translation: { requestResponse: 'yes', streaming: 'no' },
       transcription: UNVERIFIED_TRANSCRIPTION,
@@ -220,7 +225,21 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
         candidateFor: ['call:live', 'programme:live', 'programme:uploaded'],
       },
     ],
-    liveObservations: [],
+    liveObservations: [
+      {
+        observedAt: '2026-08-22',
+        environment: 'development',
+        capability: 'translation',
+        modelId: 'translate-v3-translateText',
+        sampleCount: 1,
+        summary:
+          'Credential-gated en->es smoke: PASS, via ADC with the quota project ' +
+          'carried as x-goog-user-project. Returned "Buenos dias, la reunion ' +
+          'comenzara en breve." The real adapter was run separately against the ' +
+          'same API and returned the same text in 3352 ms. ONE run: that latency ' +
+          'is an observation, not a distribution, and must not be used to certify.',
+      },
+    ],
     notes:
       'v3 (Advanced) rather than v2 (Basic). No token-streaming translation is ' +
       'offered and none is pretended: MT stays request/response in this wave.',

@@ -323,29 +323,55 @@ async function googleTranslate() {
   // from `gcloud auth application-default login`, a metadata server, or
   // workload identity; demanding a JSON key here would undo the abstraction the
   // adapter preserves.
-  let token = null;
+  //
+  // C-AI1.1F: this used to call `getAccessToken()` and build the Authorization
+  // header by hand, which threw away the quota project ADC had already
+  // resolved. The request went out without `x-goog-user-project` and Google
+  // answered 403 -- while a direct POST carrying the header succeeded. Using
+  // `getRequestHeaders()` is the fix, and it is the same call the real adapter
+  // now makes, so this smoke exercises the corrected path rather than a
+  // parallel one that happens to work.
+  let authorization = null;
   try {
     const { GoogleAuth } = await import('google-auth-library');
     const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
     const client = await auth.getClient();
-    const value = await client.getAccessToken();
-    token = typeof value === 'string' ? value : (value?.token ?? null);
+    const raw = await client.getRequestHeaders();
+    const headers = {};
+    if (typeof raw?.forEach === 'function') {
+      raw.forEach((value, key) => { headers[key.toLowerCase()] = value; });
+    } else {
+      for (const [key, value] of Object.entries(raw ?? {})) headers[key.toLowerCase()] = String(value);
+    }
+    authorization = {
+      headers,
+      quotaProjectId: client.quotaProjectId ?? headers['x-goog-user-project'] ?? null,
+    };
   } catch (error) {
     const message = String(error?.message ?? error);
     if (message.includes('Cannot find') || message.includes('ERR_MODULE_NOT_FOUND')) {
-      return record('Google translate en->es', 'SKIP', 'google-auth-library not installed');
+      return record('Google translate en->es', 'FAIL', 'google-auth-library is a declared dependency and did not load');
     }
-    // An ADC resolution failure is a real, actionable diagnostic.
-    return record('Google translate en->es', 'FAIL', `ADC could not resolve: ${message.slice(0, 100)}`);
+    return record('Google translate en->es', 'FAIL', `ADC could not resolve: ${message.slice(0, 120)}`);
   }
-  if (token === null) return record('Google translate en->es', 'FAIL', 'ADC returned no access token');
+  if (!authorization.headers['authorization']) {
+    return record('Google translate en->es', 'FAIL', 'ADC returned no authorization header');
+  }
+
+  // An explicit override, for the same reason the adapter takes one: a
+  // deployment may need to bill a project the developer credential knows
+  // nothing about.
+  const quotaProject = env('GOOGLE_CLOUD_QUOTA_PROJECT') ?? authorization.quotaProjectId;
+  const headers = { ...authorization.headers, 'content-type': 'application/json' };
+  if (quotaProject) headers['x-goog-user-project'] = quotaProject;
+  else delete headers['x-goog-user-project'];
 
   try {
     const response = await fetch(
       `https://translation.googleapis.com/v3/projects/${encodeURIComponent(project)}/locations/global:translateText`,
       {
         method: 'POST',
-        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        headers,
         body: JSON.stringify({
           contents: ['Good morning, the meeting will begin shortly.'],
           sourceLanguageCode: 'en',
@@ -355,15 +381,30 @@ async function googleTranslate() {
         signal: AbortSignal.timeout(20_000),
       },
     );
-    if (!response.ok) return record('Google translate en->es', 'FAIL', `HTTP ${response.status}`);
+    if (!response.ok) {
+      // Google's body names the actual problem -- a disabled API, a missing
+      // quota project, the wrong service. "HTTP 403" names it never, and cost
+      // a whole validation session to get past.
+      const body = await response.text().catch(() => '');
+      const detail = body.replace(/\s+/g, ' ').slice(0, 300);
+      return record(
+        'Google translate en->es',
+        'FAIL',
+        `HTTP ${response.status}${quotaProject ? '' : ' (no quota project resolved)'}: ${detail}`,
+      );
+    }
     const body = await response.json();
     const text = body?.translations?.[0]?.translatedText;
     if (typeof text !== 'string' || text.trim() === '') {
       return record('Google translate en->es', 'FAIL', 'no translatedText in response');
     }
-    record('Google translate en->es', 'PASS', `${text.length} chars returned`);
+    record(
+      'Google translate en->es',
+      'PASS',
+      `"${text}" (quota project ${quotaProject ?? 'none'})`,
+    );
   } catch (error) {
-    record('Google translate en->es', 'FAIL', String(error).slice(0, 120));
+    record('Google translate en->es', 'FAIL', String(error).slice(0, 160));
   }
 }
 
