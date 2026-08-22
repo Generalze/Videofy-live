@@ -46,6 +46,17 @@ export const IngressMessageType = {
   READY: 0x81,
   /** Server refused something, with a reason. JSON payload. */
   ERROR: 0x82,
+  /**
+   * Translated speech travelling BACK to the gateway, frame by frame.
+   *
+   * The reverse direction exists because translated audio is produced where
+   * the providers are (media-ingest) and played where the listener is (the
+   * gateway). Before this, it crossed as a URL to a finished file, which meant
+   * a listener could not hear the first half of a sentence until the second
+   * half had been synthesised. Sending frames is what makes "progressive"
+   * true for a person rather than for a log line.
+   */
+  TRANSLATED_AUDIO: 0x83,
 } as const;
 
 export type IngressMessageTypeName = keyof typeof IngressMessageType;
@@ -212,6 +223,48 @@ export interface IngressAudio {
    */
   readonly platformTimestampMs: number;
   readonly discontinuity: boolean;
+  readonly samples: Int16Array;
+}
+
+/**
+ * 20 bytes, laid out as:
+ *
+ *     0        message type
+ *     1        flags (bit 0: final)
+ *     2..3     segmentId length in bytes, u16 big-endian
+ *     4..7     generation, u32 big-endian
+ *     8..11    sequence, u32 big-endian
+ *     12..19   segmentStartMs, f64 big-endian
+ *     20..     segmentId utf8, then PCM16 little-endian samples
+ *
+ * The f64 at offset 12 occupies bytes 12 THROUGH 19, and the payload starts at
+ * 20. Written out because the inbound header had exactly this bug once: a
+ * field placed one byte inside the double, frames that still decoded, and a
+ * clock that was merely a little wrong.
+ */
+export const TRANSLATED_AUDIO_HEADER_BYTES = 20;
+
+export const TranslatedAudioFlags = {
+  NONE: 0,
+  /** The last frame of this generation. Nothing further may follow it. */
+  FINAL: 1 << 0,
+} as const;
+
+export const TRANSLATED_AUDIO_RESERVED_MASK = ~TranslatedAudioFlags.FINAL & 0xff;
+
+/**
+ * One frame of translated speech on the wire.
+ *
+ * Carries the PLATFORM's identity -- the same segmentId the transcript used,
+ * and a generation the platform owns -- so the gateway can play it in order and
+ * abandon a superseded attempt without ever learning which vendor spoke.
+ */
+export interface IngressTranslatedAudio {
+  readonly segmentId: string;
+  readonly generation: number;
+  readonly sequence: number;
+  readonly segmentStartMs: number;
+  readonly final: boolean;
   readonly samples: Int16Array;
 }
 

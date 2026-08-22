@@ -29,7 +29,11 @@ import {
   type IngressErrorCode,
   type IngressFinish,
   type IngressOpen,
+  type IngressTranslatedAudio,
   type RealtimeServiceContext,
+  TRANSLATED_AUDIO_HEADER_BYTES,
+  TRANSLATED_AUDIO_RESERVED_MASK,
+  TranslatedAudioFlags,
 } from './protocol.js';
 
 export type DecodedIngressFrame =
@@ -38,7 +42,8 @@ export type DecodedIngressFrame =
   | { readonly kind: 'finish'; readonly finish: IngressFinish }
   | { readonly kind: 'abort'; readonly abort: IngressAbort }
   | { readonly kind: 'ready'; readonly streamId: string }
-  | { readonly kind: 'error'; readonly code: IngressErrorCode; readonly message: string };
+  | { readonly kind: 'error'; readonly code: IngressErrorCode; readonly message: string }
+  | { readonly kind: 'translated-audio'; readonly audio: IngressTranslatedAudio };
 
 export type IngressDecodeResult =
   | { readonly ok: true; readonly frame: DecodedIngressFrame }
@@ -119,6 +124,38 @@ export function encodeAudio(audio: IngressAudio): Buffer {
   return frame;
 }
 
+export function encodeTranslatedAudio(audio: IngressTranslatedAudio): Buffer {
+  if (!Number.isInteger(audio.sequence) || audio.sequence < 0 || audio.sequence > MAX_SEQUENCE) {
+    throw new RangeError(`translated audio sequence out of range: ${audio.sequence}`);
+  }
+  if (!Number.isInteger(audio.generation) || audio.generation < 0) {
+    throw new RangeError(`translated audio generation out of range: ${audio.generation}`);
+  }
+  const idBytes = Buffer.from(audio.segmentId, 'utf8');
+  if (idBytes.byteLength === 0 || idBytes.byteLength > 0xffff) {
+    throw new RangeError('translated audio segmentId must be 1..65535 bytes');
+  }
+  const payloadBytes = audio.samples.length * 2;
+  if (payloadBytes > IngressLimits.AUDIO_PAYLOAD_BYTES) {
+    throw new RangeError('translated audio payload exceeds the protocol limit');
+  }
+  const frame = Buffer.allocUnsafe(
+    TRANSLATED_AUDIO_HEADER_BYTES + idBytes.byteLength + payloadBytes,
+  );
+  frame[0] = IngressMessageType.TRANSLATED_AUDIO;
+  frame.writeUInt8(audio.final ? TranslatedAudioFlags.FINAL : 0, 1);
+  frame.writeUInt16BE(idBytes.byteLength, 2);
+  frame.writeUInt32BE(audio.generation, 4);
+  frame.writeUInt32BE(audio.sequence, 8);
+  frame.writeDoubleBE(audio.segmentStartMs, 12);
+  idBytes.copy(frame, TRANSLATED_AUDIO_HEADER_BYTES);
+  const payloadAt = TRANSLATED_AUDIO_HEADER_BYTES + idBytes.byteLength;
+  for (let index = 0; index < audio.samples.length; index += 1) {
+    frame.writeInt16LE(audio.samples[index]!, payloadAt + index * 2);
+  }
+  return frame;
+}
+
 // --- decoding --------------------------------------------------------------
 
 function decodeControlJson(buffer: Buffer): Record<string, unknown> | null {
@@ -182,6 +219,48 @@ export function decodeIngressFrame(buffer: Buffer): IngressDecodeResult {
           sequence: buffer.readUInt32BE(4),
           platformTimestampMs,
           discontinuity: (flags & IngressFrameFlags.DISCONTINUITY) !== 0,
+          samples,
+        },
+      },
+    };
+  }
+
+  if (type === IngressMessageType.TRANSLATED_AUDIO) {
+    if (buffer.byteLength < TRANSLATED_AUDIO_HEADER_BYTES) {
+      return refuse('malformed-frame', 'translated audio shorter than its header');
+    }
+    const flags = buffer.readUInt8(1);
+    if ((flags & TRANSLATED_AUDIO_RESERVED_MASK) !== 0) {
+      return refuse('reserved-bits-set', `flags 0x${flags.toString(16)}`);
+    }
+    const idLength = buffer.readUInt16BE(2);
+    const payloadAt = TRANSLATED_AUDIO_HEADER_BYTES + idLength;
+    if (idLength === 0 || buffer.byteLength < payloadAt) {
+      return refuse('malformed-frame', 'translated audio segmentId does not fit');
+    }
+    const payloadBytes = buffer.byteLength - payloadAt;
+    if (payloadBytes > IngressLimits.AUDIO_PAYLOAD_BYTES) {
+      return refuse('payload-too-large', `${payloadBytes} bytes`);
+    }
+    if (payloadBytes % 2 !== 0) return refuse('odd-payload-length', `${payloadBytes} bytes`);
+    const segmentStartMs = buffer.readDoubleBE(12);
+    if (!Number.isFinite(segmentStartMs) || segmentStartMs < 0) {
+      return refuse('malformed-frame', 'segmentStartMs is not a usable time');
+    }
+    const samples = new Int16Array(payloadBytes / 2);
+    for (let index = 0; index < samples.length; index += 1) {
+      samples[index] = buffer.readInt16LE(payloadAt + index * 2);
+    }
+    return {
+      ok: true,
+      frame: {
+        kind: 'translated-audio',
+        audio: {
+          segmentId: buffer.subarray(TRANSLATED_AUDIO_HEADER_BYTES, payloadAt).toString('utf8'),
+          generation: buffer.readUInt32BE(4),
+          sequence: buffer.readUInt32BE(8),
+          segmentStartMs,
+          final: (flags & TranslatedAudioFlags.FINAL) !== 0,
           samples,
         },
       },

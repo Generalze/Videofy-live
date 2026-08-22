@@ -15,6 +15,15 @@ export interface GatewayConfig {
   logLevel: string;
   corsOrigins: string[];
   mediaIngestUrl: string;
+  /**
+   * Where live audio streams, when the live path is cut over.
+   *
+   * Null keeps `call/live` and `programme/live` on the chunker route. It is a
+   * URL rather than a boolean because there is nothing to turn on without one:
+   * a flag saying "stream live audio" with no destination would start a
+   * gateway that accepts calls and quietly transcribes none of them.
+   */
+  realtimeIngressUrl: string | null;
   mediaIngestPublicUrl: string;
   /**
    * The SAME resolution media-ingest performs, from the same module, so the two
@@ -90,6 +99,7 @@ export function loadConfig(): GatewayConfig {
       'http://localhost:5173,http://localhost:5174,http://localhost:5175',
     ),
     mediaIngestUrl: process.env['MEDIA_INGEST_URL'] ?? 'http://localhost:3002',
+    realtimeIngressUrl: process.env['MEDIA_INGEST_REALTIME_INGRESS_URL'] ?? null,
     // Resolved through the SAME contract media-ingest uses, so the two can no
     // longer disagree about what a browser will be told. They did, and the
     // disagreement was invisible on the machine that produced it.

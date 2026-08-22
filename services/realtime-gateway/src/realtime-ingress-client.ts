@@ -28,6 +28,7 @@ import {
   encodeOpen,
   decodeIngressFrame,
   type IngressErrorCode,
+  type IngressTranslatedAudio,
   type RealtimeServiceContext,
 } from '@videofy-live/media-ingress-wire';
 
@@ -47,6 +48,15 @@ export interface RealtimeIngressClientOptions {
   /** Beyond this many bytes buffered, audio is dropped rather than queued. */
   readonly maxBufferedBytes?: number;
   readonly openTimeoutMs?: number;
+  /**
+   * Translated speech coming BACK, frame by frame.
+   *
+   * The reason this client is bidirectional at all: audio is produced where
+   * the providers are and played where the listener is. Before this it crossed
+   * as a URL to a finished file, so nobody could hear the first half of a
+   * sentence until the second half had been synthesised.
+   */
+  readonly onTranslatedAudio?: (frame: IngressTranslatedAudio) => void;
   readonly log?: (line: string, detail?: Record<string, unknown>) => void;
   /** Injected for tests; production uses the real `ws` client. */
   readonly createSocket?: (url: string, headers: Record<string, string>) => WebSocket;
@@ -55,6 +65,7 @@ export interface RealtimeIngressClientOptions {
 export interface IngressClientAccounting {
   sent: number;
   droppedForBackpressure: number;
+  translatedFramesIn: number;
   refusals: { code: IngressErrorCode; message: string }[];
 }
 
@@ -68,6 +79,7 @@ export class RealtimeIngressClient {
   readonly accounting: IngressClientAccounting = {
     sent: 0,
     droppedForBackpressure: 0,
+    translatedFramesIn: 0,
     refusals: [],
   };
 
@@ -116,6 +128,11 @@ export class RealtimeIngressClient {
           clearTimeout(timer);
           socket.off('error', settleError);
           resolve();
+          return;
+        }
+        if (decoded.frame.kind === 'translated-audio') {
+          this.accounting.translatedFramesIn += 1;
+          this.options.onTranslatedAudio?.(decoded.frame.audio);
           return;
         }
         if (decoded.frame.kind === 'error') {

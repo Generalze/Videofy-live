@@ -34,6 +34,26 @@ export const SOCKET_EVENTS = {
   INGEST_STATE: 'ingest:state',
   INGEST_TRANSCRIPTION: 'ingest:transcription',
   INGEST_TRANSLATION: 'ingest:translation',
+  /**
+   * A platform transcript event from the LIVE path.
+   *
+   * Its own event rather than reusing `ingest:transcription`, which is keyed by
+   * `chunkId` -- an identity the live path does not have, because there are no
+   * chunks. Forcing one shape to carry both would mean inventing a chunk id for
+   * audio that was never a chunk, and every consumer would then have to know
+   * which ids were real.
+   */
+  INGEST_LIVE_TRANSCRIPT: 'ingest:live-transcript',
+  /**
+   * One frame of translated speech, while the sentence is still being made.
+   *
+   * Replaces, for the live path, the pattern of announcing a URL to a finished
+   * audio file. A client plays these in `sequence` order within a
+   * `(segmentId, generation)` and drops any frame whose generation is older
+   * than the newest it has seen -- which is how a superseded sentence stops
+   * without the client needing to know why it was superseded.
+   */
+  TRANSLATED_AUDIO_FRAME: 'translated-audio:frame',
   INGEST_GENERATED_AUDIO: 'ingest:generated-audio',
   INGEST_HEALTH: 'ingest:health',
   INGEST_START_STREAM: 'ingest:start_stream',
@@ -85,4 +105,28 @@ export interface OperatorProgrammeSessionConfig {
   targetLanguages: string[];
   sourceLanguage: string;
   sourceLanguageMode: SourceLanguageMode;
+}
+
+/**
+ * A frame of translated speech on its way to a listener.
+ *
+ * `pcmBase64` is little-endian PCM16 at 16 kHz mono: the engine's own format,
+ * not a vendor container. Nothing here identifies which synthesiser produced
+ * it, so changing synthesiser stays a configuration change rather than a
+ * client release.
+ */
+export interface TranslatedAudioFramePayload {
+  sessionId: string;
+  broadcastId: string;
+  segmentId: string;
+  /** Which synthesis attempt. Higher supersedes lower; platform-owned. */
+  generation: number;
+  /** Order within (segmentId, generation). Starts at 0 and never repeats. */
+  sequence: number;
+  segmentStartMs: number;
+  /** The last frame of this generation. Nothing further may follow it. */
+  final: boolean;
+  sampleRate: 16000;
+  channelCount: 1;
+  pcmBase64: string;
 }

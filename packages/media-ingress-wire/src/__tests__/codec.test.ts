@@ -18,6 +18,8 @@ import {
   encodeFinish,
   encodeOpen,
   encodeReady,
+  encodeTranslatedAudio,
+  TRANSLATED_AUDIO_HEADER_BYTES,
 } from '../index.js';
 
 function audio(overrides: Partial<Parameters<typeof encodeAudio>[0]> = {}) {
@@ -288,5 +290,72 @@ describe('control frames', () => {
     // 'call' and 'programme' take different execution paths; guessing which
     // one a peer meant would silently put a live call on the batch path.
     expect(decodeIngressFrame(tampered)).toMatchObject({ ok: false, code: 'malformed-frame' });
+  });
+});
+
+describe('translated speech travels back frame by frame', () => {
+  function translated(overrides: Partial<Parameters<typeof encodeTranslatedAudio>[0]> = {}) {
+    return encodeTranslatedAudio({
+      segmentId: 'seg_42',
+      generation: 2,
+      sequence: 5,
+      segmentStartMs: 1_756_000_000_123,
+      final: false,
+      samples: Int16Array.from([1, -2, 32_767]),
+      ...overrides,
+    });
+  }
+
+  it('PIN: platform identity and audio both survive the round trip', () => {
+    const result = decodeIngressFrame(translated({ final: true }));
+    if (!result.ok || result.frame.kind !== 'translated-audio') throw new Error('expected audio');
+    const audio = result.frame.audio;
+    // The gateway plays this in order and can abandon a superseded attempt
+    // without ever learning which vendor spoke.
+    expect(audio.segmentId).toBe('seg_42');
+    expect(audio.generation).toBe(2);
+    expect(audio.sequence).toBe(5);
+    expect(audio.final).toBe(true);
+    expect(audio.segmentStartMs).toBe(1_756_000_000_123);
+    expect(Array.from(audio.samples)).toEqual([1, -2, 32_767]);
+  });
+
+  it('PIN: the final flag does not disturb the segment clock', () => {
+    const plain = decodeIngressFrame(translated({ final: false }));
+    const flagged = decodeIngressFrame(translated({ final: true }));
+    if (!plain.ok || plain.frame.kind !== 'translated-audio') throw new Error('bad');
+    if (!flagged.ok || flagged.frame.kind !== 'translated-audio') throw new Error('bad');
+    // The inbound header had exactly this bug once: a flag one byte inside the
+    // double, frames that still decoded, a clock merely a little wrong.
+    expect(plain.frame.audio.segmentStartMs).toBe(1_756_000_000_123);
+    expect(flagged.frame.audio.segmentStartMs).toBe(1_756_000_000_123);
+    expect(plain.frame.audio.final).toBe(false);
+    expect(flagged.frame.audio.final).toBe(true);
+    expect(TRANSLATED_AUDIO_HEADER_BYTES).toBe(20);
+  });
+
+  it('PIN: a segmentId longer than the frame is refused, not read past', () => {
+    const frame = translated();
+    frame.writeUInt16BE(0xffff, 2);
+    // Trusting a length field against a shorter buffer is how a parser reads
+    // whatever memory happened to follow it.
+    expect(decodeIngressFrame(frame)).toMatchObject({ ok: false, code: 'malformed-frame' });
+  });
+
+  it('PIN: half a sample is refused here too', () => {
+    const frame = Buffer.concat([translated(), Buffer.from([0x01])]);
+    expect(decodeIngressFrame(frame)).toMatchObject({ ok: false, code: 'odd-payload-length' });
+  });
+
+  it('a nameless segment cannot be encoded', () => {
+    expect(() => translated({ segmentId: '' })).toThrow(/segmentId/);
+    expect(() => translated({ sequence: -1 })).toThrow(/sequence/);
+    expect(() => translated({ generation: -1 })).toThrow(/generation/);
+  });
+
+  it('a multi-byte segment id survives, because ids are bytes not characters', () => {
+    const result = decodeIngressFrame(translated({ segmentId: 'segmento_café_✓' }));
+    if (!result.ok || result.frame.kind !== 'translated-audio') throw new Error('bad');
+    expect(result.frame.audio.segmentId).toBe('segmento_café_✓');
   });
 });

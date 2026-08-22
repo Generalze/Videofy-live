@@ -32,6 +32,12 @@ import { registerViewerReadyMediaDeliveryRoute } from './viewer-ready-media-deli
 import { IngestService } from './ingest-service.js';
 import { logger, setLogLevel } from './logger.js';
 import { MediaIngestError } from './ingest-error.js';
+import { attachRealtimeAudioIngress, REALTIME_INGRESS_PATH } from './realtime-ingress-server.js';
+import { createLiveStreamOpener } from './live-session-host.js';
+import {
+  buildStreamingSynthesisProvider,
+  buildStreamingTranscriptionProvider,
+} from './live-provider-wiring.js';
 
 const config = loadConfig();
 setLogLevel(config.logLevel);
@@ -630,6 +636,35 @@ if (config.internalIngressAuth.mustRefuseToStart) {
 }
 if (config.internalIngressAuth.mode === 'insecure-explicit') {
   logger.warn(config.internalIngressAuth.summary);
+}
+
+// THE LIVE PATH. Attached only when a streaming recogniser is configured:
+// without one there is nothing to transcribe a stream WITH, and opening the
+// socket anyway would accept a call's audio and produce no captions while
+// every component reported success.
+const streamingTranscription = buildStreamingTranscriptionProvider(config);
+const streamingSynthesis = buildStreamingSynthesisProvider(config);
+if (streamingTranscription !== null) {
+  attachRealtimeAudioIngress(server, {
+    auth: config.internalIngressAuth,
+    openStream: createLiveStreamOpener({
+      transcription: streamingTranscription,
+      translation: ingest.liveTranslation,
+      // Captions still work without synthesis. A session with no synthesiser
+      // must not fall back to a default voice speaking the wrong language.
+      synthesis: streamingSynthesis,
+      mintSegmentId: () => `seg_${crypto.randomUUID()}`,
+      speechPlanFor: (open) => ingest.liveSpeechPlanFor(open.sessionId),
+      onCaption: (event) => ingest.acceptLiveTranscript(event),
+      log: (line, detail) => logger.debug(line, detail ?? {}),
+    }),
+    log: (line, detail) => logger.warn(line, detail ?? {}),
+  });
+  logger.info('Realtime audio ingress attached', {
+    path: REALTIME_INGRESS_PATH,
+    transcription: streamingTranscription.name,
+    synthesis: streamingSynthesis?.name ?? 'none (captions only)',
+  });
 }
 
 server.listen(config.port, () => {

@@ -33,7 +33,8 @@
     "viewer:screenshots": "node scripts/viewer-screenshots.mjs",
     "p6.9:acceptance": "npm run build && node scripts/p6-9-multiprocess-acceptance.mjs",
     "c-ai1:smoke": "node scripts/c-ai1-provider-smoke.mjs",
-    "c-ai1:realtime-proof": "npm run build && node scripts/c-ai1-1d-realtime-proof.mjs"
+    "c-ai1:realtime-proof": "npm run build && node scripts/c-ai1-1d-realtime-proof.mjs",
+    "c-ai1:production-acceptance": "npm run build && node scripts/c-ai1-1e-production-acceptance.mjs"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",

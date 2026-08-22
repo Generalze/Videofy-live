@@ -13,6 +13,8 @@ import {
   type MediaChunkWallClock,
   type MediaTranscriptionChunk,
 } from './media-transcription-chunker.js';
+import { LiveIngressSender } from './live-ingress-sender.js';
+import type { IngressTranslatedAudio } from '@videofy-live/media-ingress-wire';
 import { logger } from './logger.js';
 
 /**
@@ -45,11 +47,62 @@ import { logger } from './logger.js';
 export type MediaSessionMode = 'programme' | 'live-conversation';
 
 /**
+ * The platform's service context for this session.
+ *
+ * DERIVED FROM THE DECLARED MODE, never from a transport or a session name.
+ * Every producer already declares `mediaSessionMode`, and everything that
+ * reaches this bridge is live by construction: uploaded programmes are
+ * excluded upstream by `shouldUseMediaTranscriptionForProgrammeSource`, and
+ * take the batch path with their complete file.
+ *
+ * Returned as the discriminated context the registry uses, so downstream never
+ * has to infer "this arrived on a socket, so it is probably live" -- the
+ * inference that decided policy by transport before P6.9.
+ */
+export function serviceContextForMode(
+  mode: MediaSessionMode,
+): { serviceCategory: 'call'; mediaMode: 'live' } | { serviceCategory: 'programme'; mediaMode: 'live' } {
+  return mode === 'live-conversation'
+    ? { serviceCategory: 'call', mediaMode: 'live' }
+    : { serviceCategory: 'programme', mediaMode: 'live' };
+}
+
+/**
  * The one place a mode becomes queue behaviour. Adding a producer means
  * declaring its mode, never editing this function.
  */
 function isLiveConversation(context: { mediaSessionMode: MediaSessionMode }): boolean {
   return context.mediaSessionMode === 'live-conversation';
+}
+
+/**
+ * Frames held while a live stream is still being acknowledged.
+ *
+ * 50 frames is about a second at 20 ms. Enough to cover a local handshake
+ * without turning a gateway that cannot reach media-ingest into one that
+ * accumulates every call's audio in memory.
+ */
+const LIVE_INGRESS_PREOPEN_FRAMES = 50;
+
+/**
+ * Where live audio goes, and what comes back.
+ *
+ * Optional on the bridge: when it is absent the chunker path runs exactly as
+ * before, which is what the batch and upload routes still want. Its presence is
+ * the cutover switch, and it is a dependency rather than a flag so a
+ * misconfigured deployment fails at construction instead of at the first call.
+ */
+export interface RealtimeIngressBinding {
+  readonly url: string;
+  readonly token?: string | undefined;
+  readonly onTranslatedAudio?: (
+    context: MediaTranscriptionBridgeContext,
+    frame: IngressTranslatedAudio,
+  ) => void;
+  /** Injected in tests, like `createExternalAudioProcess`; production omits it. */
+  readonly createSender?: (
+    options: Parameters<typeof LiveIngressSender.open>[0],
+  ) => Promise<LiveIngressSender>;
 }
 
 /** Recent chunks per bridge session are remembered for at most this many entries. */
@@ -157,6 +210,14 @@ export interface MediaTranscriptionBridgeOptions {
   client?: MediaTranscriptionSubmissionClient;
   ffmpegPath?: string;
   createExternalAudioProcess?: (url: string) => ChildProcessWithoutNullStreams;
+  /**
+   * Cut the live path over to the realtime ingress.
+   *
+   * When set, `call/live` and `programme/live` audio streams as frames and no
+   * WAV partial is ever written. When absent the chunker path runs exactly as
+   * it did, which is what the batch and upload routes still need.
+   */
+  realtimeIngress?: RealtimeIngressBinding;
 }
 
 /** Backpressure bookkeeping shared with the chunker's eviction callback. */
@@ -168,6 +229,19 @@ interface MediaTranscriptionBackpressureState {
 interface MediaTranscriptionSessionState {
   context: MediaTranscriptionBridgeContext;
   chunker: MediaTranscriptionChunker;
+  /** Live path. Null until the stream is acknowledged, or forever if unused. */
+  liveIngress: LiveIngressSender | null;
+  liveIngressOpening: Promise<void> | null;
+  /**
+   * Audio captured while the stream was still being acknowledged.
+   *
+   * Bounded, and deliberately small: this covers the handful of frames between
+   * the first packet and READY. Growing it would trade a lost half-second at
+   * the very start of a call for unbounded memory on every call that fails to
+   * connect.
+   */
+  liveIngressPending: MediaAudioDataLike[];
+  liveIngressFailure: string | null;
   queue: MediaTranscriptionChunk[];
   /** Recent chunk wall-clock anchors, newest last, bounded to CHUNK_TIMING_HISTORY. */
   chunkTimings: MediaChunkTiming[];
@@ -200,6 +274,8 @@ export class MediaTranscriptionBridge {
   private readonly client: MediaTranscriptionSubmissionClient;
   private readonly ffmpegPath: string;
   private readonly createExternalAudioProcess: (url: string) => ChildProcessWithoutNullStreams;
+  /** Present means the live path is cut over; absent keeps the chunker route. */
+  private readonly realtimeIngress: RealtimeIngressBinding | null;
   private readonly sessions = new Map<string, MediaTranscriptionSessionState>();
 
   constructor(options: MediaTranscriptionBridgeOptions) {
@@ -209,6 +285,7 @@ export class MediaTranscriptionBridge {
     this.maxQueuedBytes = options.maxQueuedBytes;
     this.partialIntervalMs = Math.max(0, options.partialIntervalMs ?? 1_500);
     this.vad = options.vad;
+    this.realtimeIngress = options.realtimeIngress ?? null;
     this.maxRetries = options.maxRetries ?? 1;
     this.ffmpegPath = options.ffmpegPath ?? process.env['FFMPEG_PATH'] ?? 'ffmpeg';
     this.createExternalAudioProcess =
@@ -253,6 +330,14 @@ export class MediaTranscriptionBridge {
       this.startExternalAudio(session);
       return;
     }
+    // THE CUTOVER. When a realtime ingress is configured, live audio goes
+    // straight out as frames and never becomes a WAV file on a shared disk.
+    // The chunker path below remains for the batch/upload route, which
+    // genuinely wants a finished file.
+    if (this.realtimeIngress !== null) {
+      this.pushLive(session, data);
+      return;
+    }
     try {
       this.enqueueChunks(session, session.chunker.pushFrame(data, receivedAtMs));
     } catch (error) {
@@ -287,6 +372,15 @@ export class MediaTranscriptionBridge {
     if (session.externalAudioProcess) {
       session.externalAudioProcess.kill('SIGTERM');
       session.externalAudioProcess = null;
+    }
+    if (this.realtimeIngress !== null) {
+      // FINISH, not abort: the speaker really said this and never withdrew it.
+      // Aborting would silently lose the last sentence of every call.
+      void (session.liveIngressOpening ?? Promise.resolve()).then(() =>
+        session.liveIngress?.finish(reason),
+      );
+      this.maybeStopSession(session);
+      return;
     }
     try {
       this.enqueueChunks(session, session.chunker.flush(true));
@@ -481,9 +575,80 @@ export class MediaTranscriptionBridge {
       externalAudioProcess: null,
       externalAudioRemainder: Buffer.alloc(0),
       externalAudioStderr: '',
+      liveIngress: null,
+      liveIngressOpening: null,
+      liveIngressPending: [],
+      liveIngressFailure: null,
     };
     this.sessions.set(key, state);
+    if (this.realtimeIngress !== null) this.startLiveIngress(state);
     return state;
+  }
+
+  private startLiveIngress(session: MediaTranscriptionSessionState): void {
+    const ingress = this.realtimeIngress;
+    if (ingress === null || session.liveIngressOpening !== null) return;
+    const context = session.context;
+    const openSender = ingress.createSender ?? ((o) => LiveIngressSender.open(o));
+    session.liveIngressOpening = openSender({
+      url: ingress.url,
+      token: ingress.token,
+      sessionId: context.sessionId,
+      streamId: context.broadcastId,
+      context: serviceContextForMode(context.mediaSessionMode),
+      sourceLanguage: context.sourceLanguage,
+      sourceLanguageMode: context.sourceLanguageMode,
+      onTranslatedAudio: (frame) => ingress.onTranslatedAudio?.(context, frame),
+      log: (line, detail) => logger.debug(line, { ...detail, sessionId: context.sessionId }),
+    })
+      .then((sender: LiveIngressSender) => {
+        if (session.closed) {
+          void sender.abort('session closed before the stream opened');
+          return;
+        }
+        session.liveIngress = sender;
+        // Whatever was captured while we were connecting is real audio that
+        // was really spoken. It goes first, in order, before anything new.
+        for (const pending of session.liveIngressPending) sender.pushFrame(pending);
+        session.liveIngressPending = [];
+      })
+      .catch((error: unknown) => {
+        session.liveIngressFailure =
+          error instanceof Error ? error.message : 'live ingress failed to open';
+        session.liveIngressPending = [];
+        logger.error('live ingress failed to open', {
+          sessionId: context.sessionId,
+          broadcastId: context.broadcastId,
+          message: session.liveIngressFailure,
+        });
+      });
+  }
+
+  private pushLive(session: MediaTranscriptionSessionState, data: MediaAudioDataLike): void {
+    if (session.liveIngressFailure !== null) return;
+    const sender = session.liveIngress;
+    if (sender === null) {
+      if (session.liveIngressPending.length < LIVE_INGRESS_PREOPEN_FRAMES) {
+        session.liveIngressPending.push(data);
+      } else if (session.liveIngressPending.length === LIVE_INGRESS_PREOPEN_FRAMES) {
+        // Say so once. A silently truncated start reads as "we captured
+        // everything" to whoever debugs the missing first word later.
+        session.liveIngressPending.push(data);
+        logger.warn('live ingress pre-open buffer full; dropping the oldest captured audio', {
+          sessionId: session.context.sessionId,
+          frames: session.liveIngressPending.length,
+        });
+        session.liveIngressPending.shift();
+      } else {
+        session.liveIngressPending.shift();
+        session.liveIngressPending.push(data);
+      }
+      return;
+    }
+    if (!sender.pushFrame(data)) {
+      session.skippedFrameCount += 1;
+      session.lastSkippedFrameReason = 'live ingress declined the frame';
+    }
   }
 
   /**

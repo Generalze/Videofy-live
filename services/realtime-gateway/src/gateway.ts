@@ -22,6 +22,7 @@ import {
   languageRoom,
   OPERATOR_ROOM,
   SOCKET_EVENTS,
+  type TranslatedAudioFramePayload,
   WEBRTC_BACKEND_MEDIA_PEER_ID,
   WEBRTC_SIGNALLING_LIMITS,
   WORKER_ROOM,
@@ -38,6 +39,7 @@ import {
 import { createCallVoiceIdentityVerifier } from './call-voice-identity.js';
 import { EventStore } from './event-store.js';
 import { GeneratedAudioStore } from './generated-audio-store.js';
+import type { IngressTranslatedAudio } from '@videofy-live/media-ingress-wire';
 import { logger } from './logger.js';
 import {
   WebRtcSessionRegistry,
@@ -117,6 +119,9 @@ export class Gateway {
   private readonly webRtcTranscriptionBridge: MediaTranscriptionBridge;
   private readonly backendMediaPeers: BackendWebRtcMediaPeerRegistry;
   private readonly listenerMediaPeers: BackendWebRtcListenerPeerRegistry;
+  private readonly translatedAudioListeners = new Set<
+    (payload: TranslatedAudioFramePayload) => void
+  >();
   private readonly callRuntime: CallRuntime;
   private readonly mediaIngestUrl: string;
   private readonly mediaIngestPublicUrl: string;
@@ -159,6 +164,8 @@ export class Gateway {
        * without config (tests, embedders) keeps today's emission exactly.
        */
       webRtcPartialCaptionIntervalMs?: number;
+      /** Set to cut the live path over to the realtime ingress; null keeps the chunker. */
+      realtimeIngressUrl?: string | null;
       callTranscriptLogDir?: string | null;
       vad?: ConstructorParameters<typeof MediaTranscriptionBridge>[0]['vad'];
       /**
@@ -224,6 +231,18 @@ export class Gateway {
       // Explicit, not defaulted: the bridge's own default would enable partials
       // for every embedder, and the gateway is where real call traffic opts in.
       partialIntervalMs: options.webRtcPartialCaptionIntervalMs ?? 0,
+      // THE CUTOVER SWITCH. With a destination, live audio streams as frames
+      // and never becomes a WAV file on a disk both services must share.
+      ...(options.realtimeIngressUrl
+        ? {
+            realtimeIngress: {
+              url: options.realtimeIngressUrl,
+              ...(options.internalWebRtcToken ? { token: options.internalWebRtcToken } : {}),
+              onTranslatedAudio: (context, frame) =>
+                this.deliverTranslatedAudioFrame(context, frame),
+            },
+          }
+        : {}),
     });
     this.listenerMediaPeers = new BackendWebRtcListenerPeerRegistry({
       onLocalSignal: (envelope) => this.routeBackendWebRtcSignal(envelope),
@@ -1417,6 +1436,55 @@ export class Gateway {
       const room = audience.kind === 'operator' ? OPERATOR_ROOM : languageRoom(audience.language);
       this.io.to(room).emit(eventName, payload);
     }
+  }
+
+  /**
+   * Translated speech arriving back from media-ingest, on its way to a listener.
+   *
+   * This is the seam the whole progressive-audio effort exists for. What used
+   * to happen here was that a URL to a FINISHED file was emitted, so nobody
+   * could hear the first half of a sentence until the second half had been
+   * synthesised. A frame arrives here while the rest of the sentence is still
+   * being made, and goes straight out.
+   *
+   * Nothing vendor-shaped crosses this line: the frame carries the platform's
+   * segment id, its own generation and sequence, and PCM in the engine format.
+   * A listener could not tell which synthesiser produced it, which is what
+   * makes changing synthesiser a configuration change rather than a client
+   * release.
+   */
+  private deliverTranslatedAudioFrame(
+    context: MediaTranscriptionBridgeContext,
+    frame: IngressTranslatedAudio,
+  ): void {
+    const payload: TranslatedAudioFramePayload = {
+      sessionId: context.sessionId,
+      broadcastId: context.broadcastId,
+      segmentId: frame.segmentId,
+      generation: frame.generation,
+      sequence: frame.sequence,
+      segmentStartMs: frame.segmentStartMs,
+      final: frame.final,
+      sampleRate: 16000,
+      channelCount: 1,
+      // Base64 because socket.io payloads are JSON. The samples are the
+      // platform's own little-endian PCM16; no vendor container is involved.
+      pcmBase64: Buffer.from(
+        frame.samples.buffer,
+        frame.samples.byteOffset,
+        frame.samples.byteLength,
+      ).toString('base64'),
+    };
+    this.translatedAudioListeners.forEach((listener) => listener(payload));
+    this.io
+      .to(languageRoom(context.targetLanguage ?? ''))
+      .emit(SOCKET_EVENTS.TRANSLATED_AUDIO_FRAME, payload);
+  }
+
+  /** Test and adapter seam: observe progressive frames without a socket client. */
+  onTranslatedAudioFrame(listener: (payload: TranslatedAudioFramePayload) => void): () => void {
+    this.translatedAudioListeners.add(listener);
+    return () => this.translatedAudioListeners.delete(listener);
   }
 
   private applyProgrammeSessionConfig(

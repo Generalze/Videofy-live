@@ -46,3 +46,43 @@ export function pcmBytes(samples: Int16Array): Uint8Array {
   }
   return out;
 }
+
+/**
+ * The real socket, for production.
+ *
+ * Deliberately the only place in these adapters that imports `ws`. Everything
+ * else takes a `DeepgramSocketFactory`, which is why the protocol tests run
+ * offline and fail for reasons about our parser rather than about Deepgram's
+ * uptime. This function is the thin part that cannot be tested that way, and
+ * it is kept thin for exactly that reason.
+ */
+export function createDeepgramWebSocketFactory(
+  WebSocketImpl: typeof import('ws').WebSocket,
+): DeepgramSocketFactory {
+  return (url, headers, handlers) => {
+    const socket = new WebSocketImpl(url, { headers });
+    socket.on('open', () => handlers.onOpen());
+    socket.on('message', (data: unknown, isBinary: boolean) => {
+      // Deepgram's control traffic is JSON text. A binary frame here is audio
+      // coming back, which this protocol never does; forwarding it into the
+      // JSON parser would produce a confusing parse error instead of a clear
+      // one about an unexpected frame.
+      if (isBinary) {
+        handlers.onError(new Error('Deepgram sent a binary frame; expected JSON'));
+        return;
+      }
+      handlers.onMessage(String(data));
+    });
+    socket.on('close', (code: number, reason: Buffer) =>
+      handlers.onClose(`${code}: ${reason.toString('utf8').slice(0, 80)}`),
+    );
+    socket.on('error', (error: Error) => handlers.onError(error));
+    return {
+      send: (data) => socket.send(data),
+      close: () => socket.close(),
+      get readyState(): number {
+        return socket.readyState;
+      },
+    };
+  };
+}

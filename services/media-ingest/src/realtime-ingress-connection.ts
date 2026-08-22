@@ -25,9 +25,24 @@ import {
   encodeError,
   encodeReady,
   type IngressAudio,
+  encodeTranslatedAudio,
   type IngressErrorCode,
   type IngressOpen,
+  type IngressTranslatedAudio,
 } from '@videofy-live/media-ingress-wire';
+
+/**
+ * The way back to the gateway, handed to a stream when it opens.
+ *
+ * A handler needs this because translated speech is produced here and played
+ * there. Passing a sender rather than exposing the socket keeps the handler
+ * unable to do anything else with the connection -- it can return audio for
+ * its own stream and nothing more.
+ */
+export interface IngressStreamSender {
+  /** False when the socket is backed up; the caller holds the frame. */
+  sendTranslatedAudio(frame: IngressTranslatedAudio): boolean;
+}
 
 export interface IngressStreamHandler {
   /**
@@ -56,8 +71,12 @@ export interface RealtimeIngressConnectionDeps {
    * the gateway is first-party, but a stream refused for policy reasons should
    * not leak why to a process that failed to be authorised for it.
    */
-  readonly openStream: (open: IngressOpen) => Promise<IngressStreamHandler | null>;
-  readonly send: (frame: Buffer) => void;
+  readonly openStream: (
+    open: IngressOpen,
+    sender: IngressStreamSender,
+  ) => Promise<IngressStreamHandler | null>;
+  /** False when the socket is backed up, so callers can apply backpressure. */
+  readonly send: (frame: Buffer) => boolean;
   readonly close: (reason: string) => void;
   readonly log?: (line: string, detail?: Record<string, unknown>) => void;
 }
@@ -169,7 +188,12 @@ export class RealtimeIngressConnection {
       this.refuse('stream-already-open', this.stream.open.streamId);
       return;
     }
-    const handler = await this.deps.openStream(open);
+    const handler = await this.deps.openStream(open, {
+      sendTranslatedAudio: (frame) => {
+        if (this.closed || this.transportGone) return false;
+        return this.deps.send(encodeTranslatedAudio(frame));
+      },
+    });
     if (handler === null) {
       this.refuse('stream-not-open', 'refused');
       return;

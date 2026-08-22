@@ -33,7 +33,7 @@ function rig(options: { refuse?: boolean } = {}) {
   };
   const connection = new RealtimeIngressConnection({
     openStream: async () => (options.refuse === true ? null : handler),
-    send: (frame) => { sent.push(frame); },
+    send: (frame) => { sent.push(frame); return true; },
     close: (reason) => { closes.push(reason); },
   });
   const codes = (): string[] =>
@@ -141,7 +141,7 @@ describe('sequence tells the receiver what the sender cannot', () => {
         },
         finish: () => {}, abort: () => {}, disconnected: () => {},
       }),
-      send: () => {}, close: () => {},
+      send: () => true, close: () => {},
     });
     connection.handleMessage(OPEN);
     connection.handleMessage(pcm(0, 0));
@@ -240,7 +240,7 @@ describe('a peer that cannot speak the protocol is eventually hung up on', () =>
         onAudio: () => { throw new Error('consumer exploded'); },
         finish: () => {}, abort: () => {}, disconnected: () => {},
       }),
-      send: () => {}, close: () => {},
+      send: () => true, close: () => {},
     });
     connection.handleMessage(OPEN);
     connection.handleMessage(pcm(0, 0));

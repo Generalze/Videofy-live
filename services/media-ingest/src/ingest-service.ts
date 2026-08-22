@@ -42,6 +42,7 @@ import {
   capRecentEvents,
   capRecentEventsPerLanguage,
 } from './target-language-outputs.js';
+import type { TranscriptEvent } from './transcript-event.js';
 
 export function buildPiperVoiceIdsByLanguage(
   voices: IngestConfig['piperVoices'],
@@ -312,6 +313,8 @@ export class IngestService {
   private streamStatus: MediaStateEvent['streamStatus'] = 'created';
   private currentSession: ProcessingSession | null = null;
   private readonly sessions: ProcessingSessionStore;
+  /** The same translation provider the batch path uses. See the constructor. */
+  private readonly liveTranslationProvider: TimestampedTranslationProvider;
 
   /**
    * The standard provider, optionally wrapped.
@@ -350,6 +353,10 @@ export class IngestService {
         },
       });
     const translationProvider = buildTranslationProvider(config);
+    // Held so the LIVE path can use the same instance. A second provider would
+    // mean two model loads, two warm-up costs, and two sets of behaviour to
+    // reason about for one product.
+    this.liveTranslationProvider = translationProvider;
     this.sessions = new ProcessingSessionStore({
       outputBaseDir: config.audioChunkDir,
       webRtcStagingDir: config.webrtcAudioChunkStagingDir,
@@ -558,6 +565,43 @@ export class IngestService {
       transcription: session.transcription.status,
     });
     return session;
+  }
+
+  // --- the live path's seams -------------------------------------------
+  //
+  // Three narrow accessors rather than handing the whole service to the
+  // ingress. What the live path may do here is exactly this: reuse the
+  // translation provider, ask what a session wants spoken, and hand back a
+  // transcript. It cannot reach into session state, and so cannot grow into a
+  // second, divergent copy of the pipeline.
+
+  get liveTranslation(): TimestampedTranslationProvider {
+    return this.liveTranslationProvider;
+  }
+
+  /**
+   * What this session wants spoken, or null for captions only.
+   *
+   * Null is a real answer, not a failure: a target language listed as
+   * text-only must never reach synthesis, and must not fall back to a default
+   * voice -- which for an English-to-Spanish call would be Spanish words in an
+   * English voice, worse than the silence it replaced.
+   */
+  liveSpeechPlanFor(sessionId: string): { targetLanguage: string; voiceId: string } | null {
+    const session = this.currentSession?.id === sessionId ? this.currentSession : null;
+    if (session === null) return null;
+    const textOnly = new Set(session.generatedAudio?.textOnlyLanguages ?? []);
+    const target = (session.targetLanguages ?? []).find((language) => !textOnly.has(language));
+    if (target === undefined) return null;
+    const voiceId = session.voiceIdsByLanguage?.[target];
+    if (voiceId === undefined) return null;
+    return { targetLanguage: target, voiceId };
+  }
+
+  /** A platform transcript from the live path, on its way to the gateway. */
+  acceptLiveTranscript(event: TranscriptEvent): void {
+    if (!this.socket?.connected) return;
+    this.socket.emit(SOCKET_EVENTS.INGEST_LIVE_TRANSCRIPT, event);
   }
 
   stopMicrophoneSession(sessionId: string): ProcessingSession {

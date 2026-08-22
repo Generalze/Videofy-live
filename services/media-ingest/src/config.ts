@@ -40,6 +40,21 @@ export interface IngestConfig {
   audioChunkDir: string;
   webrtcAudioChunkStagingDir: string;
   transcriptionProvider: 'mock' | 'faster-whisper';
+  /**
+   * The live path's recogniser, and the cutover switch.
+   *
+   * `off` leaves `call/live` and `programme/live` on the chunker route exactly
+   * as before. Anything else opens the realtime ingress and streams frames.
+   *
+   * It is a PROVIDER choice rather than a boolean feature flag because the two
+   * cannot be separated: streaming transcription needs a streaming recogniser,
+   * and `faster-whisper` is batch-only. A deployment that turned the live path
+   * on without one would open a socket, forward audio correctly, and transcribe
+   * nothing -- succeeding at every step and producing no captions.
+   */
+  streamingTranscriptionProvider: 'off' | 'mock' | 'deepgram-nova' | 'deepgram-flux';
+  /** Streaming synthesis for the live path. `off` means captions only. */
+  streamingSynthesisProvider: 'off' | 'mock' | 'elevenlabs';
   transcriptionTimeoutMs: number;
   transcriptionSourceLanguage: string;
   fasterWhisperPythonExecutable: string;
@@ -173,6 +188,31 @@ export function loadConfig(): IngestConfig {
       `TRANSCRIPTION_PROVIDER must be "mock" or "faster-whisper"; received "${transcriptionProvider}"`,
     );
   }
+  const streamingTranscriptionProvider =
+    process.env['STREAMING_TRANSCRIPTION_PROVIDER'] ?? 'off';
+  if (
+    !['off', 'mock', 'deepgram-nova', 'deepgram-flux'].includes(streamingTranscriptionProvider)
+  ) {
+    throw new Error(
+      'STREAMING_TRANSCRIPTION_PROVIDER must be "off", "mock", "deepgram-nova" or ' +
+        `"deepgram-flux"; received "${streamingTranscriptionProvider}"`,
+    );
+  }
+  const streamingSynthesisProvider = process.env['STREAMING_SYNTHESIS_PROVIDER'] ?? 'off';
+  if (!['off', 'mock', 'elevenlabs'].includes(streamingSynthesisProvider)) {
+    throw new Error(
+      'STREAMING_SYNTHESIS_PROVIDER must be "off", "mock" or "elevenlabs"; ' +
+        `received "${streamingSynthesisProvider}"`,
+    );
+  }
+  if (streamingSynthesisProvider !== 'off' && streamingTranscriptionProvider === 'off') {
+    // Synthesis has nothing to speak without transcripts. Refusing here beats
+    // a deployment that starts, synthesises nothing, and reports no error.
+    throw new Error(
+      'STREAMING_SYNTHESIS_PROVIDER is set while STREAMING_TRANSCRIPTION_PROVIDER is "off": ' +
+        'the live path would have nothing to translate or speak.',
+    );
+  }
   const fasterWhisperDevice = process.env['FASTER_WHISPER_DEVICE'] ?? 'cpu';
   if (fasterWhisperDevice !== 'cpu' && fasterWhisperDevice !== 'cuda') {
     throw new Error(
@@ -252,6 +292,10 @@ export function loadConfig(): IngestConfig {
       process.env['WEBRTC_AUDIO_CHUNK_STAGING_DIR'] ??
       resolve(process.cwd(), '../../uploads/webrtc-staging'),
     transcriptionProvider,
+    streamingTranscriptionProvider: streamingTranscriptionProvider as
+      IngestConfig['streamingTranscriptionProvider'],
+    streamingSynthesisProvider:
+      streamingSynthesisProvider as IngestConfig['streamingSynthesisProvider'],
     transcriptionTimeoutMs: readPositiveInt('TRANSCRIPTION_TIMEOUT_MS', 30_000),
     transcriptionSourceLanguage: process.env['TRANSCRIPTION_SOURCE_LANGUAGE'] ?? 'en',
     fasterWhisperPythonExecutable: process.env['FASTER_WHISPER_PYTHON'] ?? 'python',

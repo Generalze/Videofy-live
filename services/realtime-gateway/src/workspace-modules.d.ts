@@ -244,6 +244,26 @@ declare module '@videofy-live/shared-types' {
     createdAt: string;
   }
 
+  /**
+   * A frame of translated speech on its way to a listener.
+   *
+   * `pcmBase64` is little-endian PCM16 at 16 kHz mono -- the engine's own
+   * format, not a vendor container -- so nothing here says which synthesiser
+   * produced it.
+   */
+  export interface TranslatedAudioFramePayload {
+    sessionId: string;
+    broadcastId: string;
+    segmentId: string;
+    generation: number;
+    sequence: number;
+    segmentStartMs: number;
+    final: boolean;
+    sampleRate: 16000;
+    channelCount: 1;
+    pcmBase64: string;
+  }
+
   export const SOCKET_EVENTS: {
     readonly TRANSLATION_EVENT: 'translation:event';
     readonly TRANSCRIPTION_EVENT: 'transcription:event';
@@ -264,6 +284,8 @@ declare module '@videofy-live/shared-types' {
     readonly WORKER_RESET_SEQUENCE: 'worker:reset_sequence';
     readonly INGEST_STATE: 'ingest:state';
     readonly INGEST_TRANSCRIPTION: 'ingest:transcription';
+    readonly INGEST_LIVE_TRANSCRIPT: 'ingest:live-transcript';
+    readonly TRANSLATED_AUDIO_FRAME: 'translated-audio:frame';
     readonly INGEST_TRANSLATION: 'ingest:translation';
     readonly INGEST_GENERATED_AUDIO: 'ingest:generated-audio';
     readonly INGEST_HEALTH: 'ingest:health';

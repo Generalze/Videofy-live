@@ -91,10 +91,15 @@ describe('speech boundaries land on the platform clock', () => {
     // because silence was promoted into the voiced counter. An eight-second
     // near-silent stretch then reached the recogniser, which answered it with
     // the highest-prior sentence it knew.
-    const gate = new SpeechActivityGate({ endSilenceMs: 200, minSpeechMs: 300 });
-    const pattern: ('v' | 'q')[] = ['v'];
-    for (let i = 0; i < 25; i += 1) pattern.push('q');
+    // The pause has to sit BETWEEN two voiced frames for this to bite: a
+    // trailing silence is never promoted, so a pattern that ends in quiet
+    // passes whether or not the defect is present.
+    const gate = new SpeechActivityGate({ endSilenceMs: 200, minSpeechMs: 100 });
+    const pattern: ('v' | 'q')[] = ['v', 'q', 'q', 'q', 'q', 'q', 'v'];
+    for (let i = 0; i < 12; i += 1) pattern.push('q');
     const events = drive(gate, pattern);
+    // 40 ms of actual voice inside a 340 ms span. Promoting the 100 ms pause
+    // would make it 140 ms and clear a 100 ms minimum it never earned.
     expect(events.map((e) => e.kind)).toEqual(['speech-start', 'too-quiet-to-be-speech']);
   });
 

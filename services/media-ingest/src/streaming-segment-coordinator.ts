@@ -248,6 +248,26 @@ export class StreamingSegmentCoordinator {
     this.closed = true;
   }
 
+  /**
+   * End without committing. The counterpart of `close`, for ABORT.
+   *
+   * `close` commits whatever is open, which is right when a speaker stopped
+   * talking and wrong when the platform gave up on the stream: a cancelled
+   * utterance that still emitted a final transcript would be translated,
+   * spoken, and shown to somebody who had already been told it was withdrawn.
+   * The distinction the ingress protocol keeps on the wire only means
+   * something if it survives to here.
+   */
+  abandon(reason: string): void {
+    if (this.closed) return;
+    if (this.open !== null) {
+      this.log('segment abandoned without commit', { segmentId: this.open.segmentId, reason });
+      this.open = null;
+    }
+    this.clearTimers();
+    this.closed = true;
+  }
+
   // --- policy ------------------------------------------------------------
 
   private considerBoundary(trigger: CommitTrigger): void {

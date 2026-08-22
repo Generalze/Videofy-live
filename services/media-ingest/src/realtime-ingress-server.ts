@@ -36,11 +36,15 @@ import {
 
 export const REALTIME_INGRESS_PATH = '/internal/media/ingress/v1';
 
+/** Beyond this buffered on the socket, outbound audio is held rather than queued. */
+const DEFAULT_MAX_BUFFERED_BYTES = 1024 * 1024;
+
 export interface RealtimeIngressServerDeps {
   readonly auth: InternalIngressAuthResolution;
   readonly openStream: RealtimeIngressConnectionDeps['openStream'];
   readonly log?: (line: string, detail?: Record<string, unknown>) => void;
   readonly path?: string;
+  readonly maxBufferedBytes?: number;
 }
 
 export interface RealtimeIngressServerHandle {
@@ -92,7 +96,11 @@ export function attachRealtimeAudioIngress(
       const connection = new RealtimeIngressConnection({
         openStream: deps.openStream,
         send: (frame) => {
-          if (ws.readyState === ws.OPEN) ws.send(frame);
+          if (ws.readyState !== ws.OPEN) return false;
+          ws.send(frame);
+          // Reported so translated-audio delivery can hold frames rather than
+          // growing a socket buffer into latency nobody can recover from.
+          return ws.bufferedAmount <= (deps.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES);
         },
         close: (reason) => ws.close(1008, reason.slice(0, 120)),
         ...(deps.log === undefined ? {} : { log: deps.log }),
