@@ -139,7 +139,49 @@ export type IngressErrorCode =
   | 'stream-already-open'
   | 'stream-not-open'
   | 'sequence-replay'
+  | 'uploaded-is-not-realtime'
   | 'internal-failure';
+
+/**
+ * The service contexts a REALTIME stream can legitimately represent.
+ *
+ * The platform's full context has three members -- call/live, programme/live,
+ * programme/uploaded -- and this wire may carry only the first two. An upload
+ * has a complete file before anything starts; pushing it through a live
+ * ingress would mean the batch path could be reached by whichever transport a
+ * caller happened to pick, which is precisely the transport-decides-policy
+ * coupling P6.9 removed.
+ *
+ * Expressed as a union rather than a runtime check so `programme/uploaded`
+ * cannot be written at a call site at all. The decoder refuses it too, because
+ * a peer is not bound by our type system.
+ */
+export type RealtimeServiceContext =
+  | { readonly serviceCategory: 'call'; readonly mediaMode: 'live' }
+  | { readonly serviceCategory: 'programme'; readonly mediaMode: 'live' };
+
+/** The full platform context, as the registry defines it. */
+export interface AnyServiceContext {
+  readonly serviceCategory: 'call' | 'programme';
+  readonly mediaMode: 'live' | 'uploaded';
+}
+
+/**
+ * Narrow a platform service context to one this wire may carry, or refuse.
+ *
+ * Returns null rather than throwing, and null rather than defaulting: a caller
+ * holding an uploaded programme needs to take the batch path, and quietly
+ * treating it as live would put a finished file through a pipeline built for
+ * speech that has not been spoken yet.
+ */
+export function realtimeServiceContext(
+  context: AnyServiceContext,
+): RealtimeServiceContext | null {
+  if (context.mediaMode !== 'live') return null;
+  return context.serviceCategory === 'call'
+    ? { serviceCategory: 'call', mediaMode: 'live' }
+    : { serviceCategory: 'programme', mediaMode: 'live' };
+}
 
 export interface IngressOpen {
   readonly version: number;
@@ -147,8 +189,15 @@ export interface IngressOpen {
   readonly streamId: string;
   readonly sourceLanguage?: string;
   readonly sourceLanguageMode?: 'manual' | 'auto-detect';
-  /** 'call' takes the live path; 'programme' may still take a batch path. */
-  readonly serviceCategory: 'call' | 'programme';
+  /**
+   * The platform's service context, carried rather than inferred.
+   *
+   * `mediaMode` is here even though this wire only ever carries 'live', and
+   * that redundancy is the point: a reader downstream must not have to reason
+   * "this arrived on a WebSocket, so it is probably live". Policy is stated by
+   * whoever owns it -- session creation -- and travels with the stream.
+   */
+  readonly context: RealtimeServiceContext;
 }
 
 export interface IngressAudio {

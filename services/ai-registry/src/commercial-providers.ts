@@ -52,6 +52,32 @@ export const CommercialModelSchema = z.object({
 });
 export type CommercialModel = z.infer<typeof CommercialModelSchema>;
 
+/**
+ * Something we actually SAW, as opposed to something a vendor's page claims.
+ *
+ * Kept apart from `capabilityEvidence` deliberately. A documentation citation
+ * and a live measurement answer different questions -- "what does the vendor
+ * say this does" and "what did it do when we ran it" -- and a record that
+ * blurred them would let a marketing number stand in for a result.
+ *
+ * `sampleCount` exists because a single run is an EXISTENCE PROOF and nothing
+ * more. It shows the adapter speaks the protocol and audio comes back; it says
+ * nothing about how long that takes on a normal day. Recording the count makes
+ * the difference impossible to lose track of later, when the number is quoted
+ * out of context by someone who was not here.
+ */
+export const LiveObservationSchema = z.object({
+  /** ISO date. Vendors change; an observation without a date decays silently. */
+  observedAt: z.string().min(4),
+  environment: z.string().min(1),
+  capability: z.enum(['transcription', 'translation', 'tts']),
+  modelId: z.string().min(1).optional(),
+  summary: z.string().min(1),
+  /** Runs behind this observation. 1 means existence, never a latency claim. */
+  sampleCount: z.number().int().positive(),
+});
+export type LiveObservation = z.infer<typeof LiveObservationSchema>;
+
 export const CommercialProviderSchema = z.object({
   providerId: z.string().min(1),
   displayName: z.string().min(1),
@@ -63,6 +89,8 @@ export const CommercialProviderSchema = z.object({
   capabilityEvidence: z.string().min(1),
   /** Empty until the vendor's API has actually been read. */
   models: z.array(CommercialModelSchema),
+  /** Empty until the adapter has actually been run against the real vendor. */
+  liveObservations: z.array(LiveObservationSchema).default([]),
   notes: z.string().min(1).optional(),
 });
 export type CommercialProvider = z.infer<typeof CommercialProviderSchema>;
@@ -160,6 +188,7 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
         candidateFor: ['call:live'],
       },
     ],
+    liveObservations: [],
     notes:
       'TWO PROTOCOL DIALECTS, not one vendor API. Nova speaks Listen v1 ' +
       '(Results/is_final/speech_final/UtteranceEnd) and Flux speaks Listen v2 ' +
@@ -191,6 +220,7 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
         candidateFor: ['call:live', 'programme:live', 'programme:uploaded'],
       },
     ],
+    liveObservations: [],
     notes:
       'v3 (Advanced) rather than v2 (Basic). No token-streaming translation is ' +
       'offered and none is pretended: MT stays request/response in this wave.',
@@ -199,7 +229,11 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
     providerId: 'elevenlabs',
     displayName: 'ElevenLabs',
     credentialEnvVars: ['ELEVENLABS_API_KEY'],
-    integrationStage: 'configured',
+    // `integrated` on the strength of the live observation below: the adapter
+    // was run against the real vendor from the development environment and
+    // satisfied the platform contract. NOT `testing` -- it has not carried real
+    // traffic -- and emphatically not `certified`.
+    integrationStage: 'integrated',
     capabilities: {
       tts: { completeAudio: 'yes', streamingAudio: 'yes' },
       transcription: UNVERIFIED_TRANSCRIPTION,
@@ -229,6 +263,21 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
         candidateFor: ['programme:uploaded', 'programme:live'],
       },
     ],
+    liveObservations: [
+      {
+        observedAt: '2026-08-22',
+        environment: 'development',
+        capability: 'tts',
+        modelId: 'eleven_flash_v2_5',
+        sampleCount: 1,
+        summary:
+          'Credential-gated streaming smoke: PASS. First chunk 3059 ms, 74 chunks, ' +
+          '83,220 bytes, about 2.60 s of pcm_16000. Proves the streaming surface ' +
+          'works end to end and returns the engine format. ONE run: the 3059 ms is ' +
+          'an observation, not a latency distribution, and must not be quoted as ' +
+          'representative or used to certify.',
+      },
+    ],
     notes:
       'pcm_16000 matches the engine format exactly, so no resample is needed. ' +
       '`optimize_streaming_latency` is documented as DEPRECATED and is deliberately ' +
@@ -242,6 +291,7 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
     capabilities: ALL_UNVERIFIED,
     capabilityEvidence: 'unverified',
     models: [],
+    liveObservations: [],
     notes: 'Comparison candidate across all three capabilities. API not yet read.',
   },
   {
@@ -252,6 +302,7 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
     capabilities: ALL_UNVERIFIED,
     capabilityEvidence: 'unverified',
     models: [],
+    liveObservations: [],
     notes:
       'Specialist candidate for Nigerian languages. API surface not yet documented ' +
       'here, so no adapter exists and none is stubbed -- an empty adapter would ' +
@@ -268,4 +319,44 @@ export function findCommercialModel(
   modelId: string,
 ): CommercialModel | undefined {
   return findCommercialProvider(providerId)?.models.find((model) => model.modelId === modelId);
+}
+
+/**
+ * Reasons a provider's recorded stage is not supported by its recorded evidence.
+ *
+ * Exists because `integrationStage` is a plain field, and a plain field drifts:
+ * somebody advances a vendor while working on it, the evidence never arrives,
+ * and six months later the registry asserts something nobody checked. These
+ * rules make the claim and its justification travel together.
+ *
+ * The two thresholds encode the distinction the ElevenLabs smoke made concrete:
+ *
+ *   integrated  the adapter has actually been RUN against the real vendor.
+ *               Having written an adapter is not evidence that it works.
+ *   certified   more than one run. A single observation is an existence proof;
+ *               certifying on it would turn one lucky measurement into a
+ *               performance claim the product cannot keep.
+ */
+export function stageEvidenceComplaints(provider: CommercialProvider): string[] {
+  const complaints: string[] = [];
+  const stage = provider.integrationStage;
+  const observations = provider.liveObservations;
+  if (stage !== 'configured' && observations.length === 0) {
+    complaints.push(
+      `${provider.providerId} is recorded as '${stage}' with no live observation: ` +
+        'an adapter that has never been run against the vendor is not integrated.',
+    );
+  }
+  if (stage === 'certified' && !observations.some((o) => o.sampleCount > 1)) {
+    complaints.push(
+      `${provider.providerId} is recorded as 'certified' on single-run observations only: ` +
+        'one measurement is an existence proof, not a distribution.',
+    );
+  }
+  return complaints;
+}
+
+/** Every provider, checked. Used by the registry suite so drift cannot survive. */
+export function allStageEvidenceComplaints(): string[] {
+  return COMMERCIAL_PROVIDERS.flatMap((provider) => stageEvidenceComplaints(provider));
 }

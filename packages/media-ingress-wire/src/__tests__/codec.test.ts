@@ -10,6 +10,7 @@ import {
   INGRESS_PROTOCOL_VERSION,
   IngressLimits,
   IngressMessageType,
+  realtimeServiceContext,
   decodeIngressFrame,
   encodeAbort,
   encodeAudio,
@@ -119,7 +120,7 @@ describe('a hostile or confused peer is refused, never obeyed and never fatal', 
   });
 
   it('PIN: a version mismatch refuses the stream rather than guessing', () => {
-    const open = encodeOpen({ sessionId: 's', streamId: 'st', serviceCategory: 'call' });
+    const open = encodeOpen({ sessionId: 's', streamId: 'st', context: { serviceCategory: 'call', mediaMode: 'live' } });
     const body = JSON.parse(open.subarray(1).toString('utf8')) as Record<string, unknown>;
     body['version'] = INGRESS_PROTOCOL_VERSION + 1;
     const tampered = Buffer.concat([
@@ -187,7 +188,7 @@ describe('control frames', () => {
       encodeOpen({
         sessionId: 'cs_1',
         streamId: 'st_1',
-        serviceCategory: 'call',
+        context: { serviceCategory: 'call', mediaMode: 'live' },
         sourceLanguage: 'en',
         sourceLanguageMode: 'manual',
       }),
@@ -196,7 +197,7 @@ describe('control frames', () => {
     expect(result.frame.open).toMatchObject({
       sessionId: 'cs_1',
       streamId: 'st_1',
-      serviceCategory: 'call',
+      context: { serviceCategory: 'call', mediaMode: 'live' },
       sourceLanguage: 'en',
       sourceLanguageMode: 'manual',
       version: INGRESS_PROTOCOL_VERSION,
@@ -223,11 +224,64 @@ describe('control frames', () => {
     });
   });
 
+  it('PIN: an uploaded programme cannot open a realtime stream', () => {
+    const tampered = Buffer.concat([
+      Buffer.from([IngressMessageType.OPEN]),
+      Buffer.from(
+        JSON.stringify({
+          sessionId: 's', streamId: 'st', version: INGRESS_PROTOCOL_VERSION,
+          context: { serviceCategory: 'programme', mediaMode: 'uploaded' },
+        }),
+        'utf8',
+      ),
+    ]);
+    // An upload already has a complete file. Admitting it here would mean the
+    // batch path could be reached by whichever transport a caller picked --
+    // transport deciding policy, which is the coupling P6.9 removed.
+    expect(decodeIngressFrame(tampered)).toMatchObject({
+      ok: false,
+      code: 'uploaded-is-not-realtime',
+    });
+  });
+
+  it('PIN: an absent mediaMode is refused rather than assumed live', () => {
+    const tampered = Buffer.concat([
+      Buffer.from([IngressMessageType.OPEN]),
+      Buffer.from(
+        JSON.stringify({
+          sessionId: 's', streamId: 'st', version: INGRESS_PROTOCOL_VERSION,
+          context: { serviceCategory: 'call' },
+        }),
+        'utf8',
+      ),
+    ]);
+    // "It arrived on a WebSocket, so it is probably live" is exactly the
+    // inference this field exists to make unnecessary.
+    expect(decodeIngressFrame(tampered)).toMatchObject({ ok: false, code: 'malformed-frame' });
+  });
+
+  it('PIN: an uploaded context cannot even be written at a call site', () => {
+    // @ts-expect-error programme/uploaded is not a RealtimeServiceContext.
+    const refused = () => encodeOpen({ sessionId: 's', streamId: 'st', context: { serviceCategory: 'programme', mediaMode: 'uploaded' } });
+    void refused;
+    // And the narrowing helper refuses it at runtime rather than defaulting.
+    expect(realtimeServiceContext({ serviceCategory: 'programme', mediaMode: 'uploaded' })).toBeNull();
+    expect(realtimeServiceContext({ serviceCategory: 'programme', mediaMode: 'live' })).toEqual({
+      serviceCategory: 'programme', mediaMode: 'live',
+    });
+    expect(realtimeServiceContext({ serviceCategory: 'call', mediaMode: 'live' })).toEqual({
+      serviceCategory: 'call', mediaMode: 'live',
+    });
+  });
+
   it('an OPEN without a service category is refused', () => {
     const tampered = Buffer.concat([
       Buffer.from([IngressMessageType.OPEN]),
       Buffer.from(
-        JSON.stringify({ sessionId: 's', streamId: 'st', version: INGRESS_PROTOCOL_VERSION }),
+        JSON.stringify({
+          sessionId: 's', streamId: 'st', version: INGRESS_PROTOCOL_VERSION,
+          context: { serviceCategory: 'nonsense', mediaMode: 'live' },
+        }),
         'utf8',
       ),
     ]);

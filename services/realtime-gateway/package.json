@@ -31,6 +31,7 @@
     "@videofy-live/media-ingress-wire": "*",
     "@videofy-live/service-env": "*",
     "@videofy-live/shared-types": "*",
+    "@videofy-live/speech-activity": "*",
     "express": "^4.19.2",
     "socket.io": "^4.7.5",
     "ws": "^8.18.0",

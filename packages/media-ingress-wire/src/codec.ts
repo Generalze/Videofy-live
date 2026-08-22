@@ -29,6 +29,7 @@ import {
   type IngressErrorCode,
   type IngressFinish,
   type IngressOpen,
+  type RealtimeServiceContext,
 } from './protocol.js';
 
 export type DecodedIngressFrame =
@@ -59,6 +60,11 @@ function encodeControl(type: number, payload: unknown): Buffer {
   return Buffer.concat([Buffer.from([type]), json]);
 }
 
+/**
+ * `context` is typed as `RealtimeServiceContext`, so `programme/uploaded`
+ * cannot be written here at all. The decoder refuses it independently, because
+ * a peer is not bound by our type system.
+ */
 export function encodeOpen(open: Omit<IngressOpen, 'version'>): Buffer {
   return encodeControl(IngressMessageType.OPEN, {
     ...open,
@@ -189,12 +195,27 @@ export function decodeIngressFrame(buffer: Buffer): IngressDecodeResult {
     case IngressMessageType.OPEN: {
       const sessionId = requireString(body['sessionId']);
       const streamId = requireString(body['streamId']);
-      const serviceCategory = body['serviceCategory'];
+      const rawContext = body['context'];
       if (sessionId === null || streamId === null) {
         return refuse('malformed-frame', 'OPEN requires sessionId and streamId');
       }
+      if (typeof rawContext !== 'object' || rawContext === null) {
+        return refuse('malformed-frame', 'OPEN requires a service context');
+      }
+      const { serviceCategory, mediaMode } = rawContext as Record<string, unknown>;
       if (serviceCategory !== 'call' && serviceCategory !== 'programme') {
         return refuse('malformed-frame', 'OPEN requires a known serviceCategory');
+      }
+      if (mediaMode !== 'live' && mediaMode !== 'uploaded') {
+        // Absent is not 'live'. Inferring liveness from the transport is the
+        // coupling this field exists to remove.
+        return refuse('malformed-frame', 'OPEN requires an explicit mediaMode');
+      }
+      if (mediaMode === 'uploaded') {
+        // An upload already has a complete file. Letting it in here would mean
+        // the batch path could be reached by whichever transport a caller
+        // happened to pick.
+        return refuse('uploaded-is-not-realtime', `${serviceCategory}/uploaded`);
       }
       if (body['version'] !== INGRESS_PROTOCOL_VERSION) {
         return refuse(
@@ -212,7 +233,7 @@ export function decodeIngressFrame(buffer: Buffer): IngressDecodeResult {
             version: INGRESS_PROTOCOL_VERSION,
             sessionId,
             streamId,
-            serviceCategory,
+            context: { serviceCategory, mediaMode } as RealtimeServiceContext,
             ...(sourceLanguage === null ? {} : { sourceLanguage }),
             ...(mode === 'manual' || mode === 'auto-detect' ? { sourceLanguageMode: mode } : {}),
           },

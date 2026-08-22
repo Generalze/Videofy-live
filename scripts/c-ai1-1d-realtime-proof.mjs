@@ -91,7 +91,7 @@ const url = `ws://127.0.0.1:${port}${ingest.REALTIME_INGRESS_PATH}`;
     url,
     sessionId: 'cs_1',
     streamId: 'st_unauth',
-    serviceCategory: 'call',
+    context: { serviceCategory: 'call', mediaMode: 'live' },
     openTimeoutMs: 3000,
   });
   let refused = false;
@@ -120,7 +120,7 @@ let bytesOnWire = 0;
     token: TOKEN,
     sessionId: 'cs_1',
     streamId: 'st_1',
-    serviceCategory: 'call',
+    context: { serviceCategory: 'call', mediaMode: 'live' },
     sourceLanguage: 'en',
   });
   await client.open();
@@ -264,7 +264,7 @@ let bytesOnWire = 0;
 {
   endings.length = 0;
   const aborting = new RealtimeIngressClient({
-    url, token: TOKEN, sessionId: 'cs_1', streamId: 'st_abort', serviceCategory: 'call',
+    url, token: TOKEN, sessionId: 'cs_1', streamId: 'st_abort', context: { serviceCategory: 'call', mediaMode: 'live' },
   });
   await aborting.open();
   aborting.sendAudio(new Int16Array(FRAME_SAMPLES), 2_000_000);
@@ -273,7 +273,7 @@ let bytesOnWire = 0;
   await aborting.close();
 
   const dropping = new RealtimeIngressClient({
-    url, token: TOKEN, sessionId: 'cs_1', streamId: 'st_drop', serviceCategory: 'call',
+    url, token: TOKEN, sessionId: 'cs_1', streamId: 'st_drop', context: { serviceCategory: 'call', mediaMode: 'live' },
   });
   await dropping.open();
   dropping.sendAudio(new Int16Array(FRAME_SAMPLES), 3_000_000);
@@ -293,7 +293,7 @@ let bytesOnWire = 0;
 {
   const client = new RealtimeIngressClient({
     url, token: TOKEN, sessionId: 'refuse-me', streamId: 'st_no',
-    serviceCategory: 'call', openTimeoutMs: 1500,
+    context: { serviceCategory: 'call', mediaMode: 'live' }, openTimeoutMs: 1500,
   });
   let refused = false;
   try {

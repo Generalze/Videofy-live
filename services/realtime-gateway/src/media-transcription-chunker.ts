@@ -1,4 +1,16 @@
+import {
+  SPEECH_DEFAULTS,
+  VAD_MIN_VOICED_FRACTION,
+  VAD_POST_ROLL_SAMPLES,
+  frameEnergy,
+} from '@videofy-live/speech-activity';
 import { logger } from './logger.js';
+
+// Re-exported so existing importers and verification scripts keep their single
+// source of truth. The numbers now live in @videofy-live/speech-activity,
+// because media-ingest's live path needs the same judgement for a different
+// job and two copies would drift within one release.
+export { VAD_MIN_VOICED_FRACTION, VAD_POST_ROLL_SAMPLES };
 
 /**
  * One frame of audio as this pipeline accepts it, whatever produced it.
@@ -27,7 +39,7 @@ export const MEDIA_TRANSCRIPTION_SAMPLE_RATE = 16000;
  * the real number instead of re-typing 200 ms into a second file, where it
  * would go stale the first time this one changed.
  */
-export const VAD_POST_ROLL_SAMPLES = Math.round(0.2 * MEDIA_TRANSCRIPTION_SAMPLE_RATE);
+// (VAD_POST_ROLL_SAMPLES now lives in @videofy-live/speech-activity, re-exported above.)
 
 /**
  * The least voice a segment may be made of and still be somebody talking.
@@ -48,7 +60,7 @@ export const VAD_POST_ROLL_SAMPLES = Math.round(0.2 * MEDIA_TRANSCRIPTION_SAMPLE
  * harness must build its cases from THIS number, so that changing it here
  * changes what the harness demands rather than quietly disagreeing with it.
  */
-export const VAD_MIN_VOICED_FRACTION = 0.1;
+// (VAD_MIN_VOICED_FRACTION now lives in @videofy-live/speech-activity, re-exported above.)
 
 function samplesToMs(samples: number): number {
   return Math.round((samples / MEDIA_TRANSCRIPTION_SAMPLE_RATE) * 1000);
@@ -349,16 +361,16 @@ export class MediaTranscriptionChunker {
           enabled: true,
           // Silero is not implemented yet; be honest and use the energy gate.
           mode: 'fallback',
-          speechThreshold: options.vad.speechThreshold ?? 0.012,
+          speechThreshold: options.vad.speechThreshold ?? SPEECH_DEFAULTS.speechThreshold,
           // Kept equal to WEBRTC_VAD_END_SILENCE_MS's default in config.ts, for
           // the same reason minSpeechMs is: one number, one default.
-          endSilenceMs: options.vad.endSilenceMs ?? 700,
+          endSilenceMs: options.vad.endSilenceMs ?? SPEECH_DEFAULTS.endSilenceMs,
           // Kept equal to WEBRTC_VAD_MIN_SPEECH_MS's default in config.ts. Two
           // defaults for one number is how a service acquires folklore: the
           // fallback drifts, nobody notices, and a year later the gate behaves
           // differently depending on which caller built the chunker.
-          minSpeechMs: options.vad.minSpeechMs ?? 150,
-          maxSegmentMs: options.vad.maxSegmentMs ?? 8_000,
+          minSpeechMs: options.vad.minSpeechMs ?? SPEECH_DEFAULTS.minSpeechMs,
+          maxSegmentMs: options.vad.maxSegmentMs ?? SPEECH_DEFAULTS.maxSegmentMs,
         }
       : null;
   }
@@ -1042,12 +1054,4 @@ function joinFrames(frames: Int16Array[], totalSampleCount: number): Int16Array 
   return output;
 }
 
-function frameEnergy(samples: Int16Array): number {
-  if (samples.length === 0) return 0;
-  let total = 0;
-  for (const sample of samples) {
-    const normalized = sample / 32768;
-    total += normalized * normalized;
-  }
-  return Math.sqrt(total / samples.length);
-}
+// (frameEnergy now lives in @videofy-live/speech-activity.)

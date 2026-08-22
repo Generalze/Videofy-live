@@ -43,7 +43,11 @@ function rig(options: { refuse?: boolean } = {}) {
   return { connection, audio, endings, sent, closes, codes };
 }
 
-const OPEN = encodeOpen({ sessionId: 'cs_1', streamId: 'st_1', serviceCategory: 'call' });
+const OPEN = encodeOpen({
+  sessionId: 'cs_1',
+  streamId: 'st_1',
+  context: { serviceCategory: 'call', mediaMode: 'live' },
+});
 
 function pcm(sequence: number, platformTimestampMs: number, discontinuity = false): Buffer {
   return encodeAudio({

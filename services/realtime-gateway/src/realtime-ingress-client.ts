@@ -28,6 +28,7 @@ import {
   encodeOpen,
   decodeIngressFrame,
   type IngressErrorCode,
+  type RealtimeServiceContext,
 } from '@videofy-live/media-ingress-wire';
 
 export interface RealtimeIngressClientOptions {
@@ -35,7 +36,12 @@ export interface RealtimeIngressClientOptions {
   readonly token?: string;
   readonly sessionId: string;
   readonly streamId: string;
-  readonly serviceCategory: 'call' | 'programme';
+  /**
+   * The platform's service context, decided by session creation and carried
+   * here. Typed so `programme/uploaded` cannot be passed: an upload belongs on
+   * the batch path, and this client has no way to express otherwise.
+   */
+  readonly context: RealtimeServiceContext;
   readonly sourceLanguage?: string;
   readonly sourceLanguageMode?: 'manual' | 'auto-detect';
   /** Beyond this many bytes buffered, audio is dropped rather than queued. */
@@ -125,7 +131,7 @@ export class RealtimeIngressClient {
           encodeOpen({
             sessionId: this.options.sessionId,
             streamId: this.options.streamId,
-            serviceCategory: this.options.serviceCategory,
+            context: this.options.context,
             ...(this.options.sourceLanguage === undefined
               ? {}
               : { sourceLanguage: this.options.sourceLanguage }),

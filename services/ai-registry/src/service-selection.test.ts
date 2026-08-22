@@ -22,6 +22,8 @@ import {
   stageAtLeast,
   type CommercialProvider,
   type ProviderServiceContext,
+  allStageEvidenceComplaints,
+  stageEvidenceComplaints,
 } from './index.js';
 
 const CALL: ProviderServiceContext = { serviceCategory: 'call', mediaMode: 'live' };
@@ -42,6 +44,7 @@ function provider(overrides: Partial<CommercialProvider> = {}): CommercialProvid
     },
     capabilityEvidence: 'test fixture',
     models: [],
+    liveObservations: [],
     ...overrides,
   };
 }
@@ -326,9 +329,16 @@ describe('commercial provider records', () => {
 
   it('PIN: nothing is certified, whatever the evidence says', () => {
     // Evidence that a vendor CAN do something is not evidence that it does it
-    // well enough for us. Only C-AI1.2 benchmarks move the stage.
+    // well enough for us. Only C-AI1.2 benchmarks move the stage this far.
+    //
+    // This deliberately no longer asserts `configured` for everything. It did
+    // while nothing had been run, and ElevenLabs has now been run -- freezing
+    // the whole registry at the lowest stage would have made real evidence
+    // unrecordable, which is a worse failure than the drift it guarded against.
+    // What must stay true is the ceiling, not the floor.
     for (const p of COMMERCIAL_PROVIDERS) {
-      expect(p.integrationStage, p.providerId).toBe('configured');
+      expect(p.integrationStage, p.providerId).not.toBe('certified');
+      expect(p.integrationStage, p.providerId).not.toBe('testing');
     }
   });
 
@@ -421,5 +431,58 @@ describe('fail-closed commercial resolution', () => {
     expect(codes).toContain('integration-stage-insufficient');
     expect(codes).toContain('health-not-serving');
     expect(codes).toContain('execution-mode-unverified');
+  });
+});
+
+describe('a recorded stage travels with the evidence for it', () => {
+  it('PIN: the registry as shipped has no stage it cannot justify', () => {
+    // `integrationStage` is a plain field, and plain fields drift: somebody
+    // advances a vendor mid-task, the evidence never lands, and months later
+    // the registry asserts something nobody checked.
+    expect(allStageEvidenceComplaints()).toEqual([]);
+  });
+
+  it('PIN: an adapter that has never been run is not integrated', () => {
+    const complaints = stageEvidenceComplaints(
+      provider({ integrationStage: 'integrated', liveObservations: [] }),
+    );
+    // Having WRITTEN an adapter is not evidence that it works.
+    expect(complaints).toHaveLength(1);
+    expect(complaints[0]).toMatch(/never been run/);
+  });
+
+  it('PIN: one observation cannot certify, however good the number was', () => {
+    const single = {
+      observedAt: '2026-08-22', environment: 'development', capability: 'tts' as const,
+      sampleCount: 1, summary: 'first chunk 3059 ms',
+    };
+    // An existence proof and a latency distribution are different claims, and
+    // the difference is exactly the one a single lucky run erases.
+    expect(
+      stageEvidenceComplaints(provider({ integrationStage: 'certified', liveObservations: [single] })),
+    ).toHaveLength(1);
+    expect(
+      stageEvidenceComplaints(
+        provider({ integrationStage: 'certified', liveObservations: [{ ...single, sampleCount: 40 }] }),
+      ),
+    ).toEqual([]);
+  });
+
+  it('PIN: ElevenLabs is integrated on real evidence and is not certified', () => {
+    const eleven = findCommercialProvider('elevenlabs');
+    expect(eleven?.integrationStage).toBe('integrated');
+    expect(eleven?.liveObservations).toHaveLength(1);
+    expect(eleven?.liveObservations[0]?.sampleCount).toBe(1);
+    // The smoke proves the streaming surface works. It proves nothing about
+    // how long it takes on an ordinary day.
+    expect(eleven?.integrationStage).not.toBe('certified');
+  });
+
+  it('PIN: providers whose smoke has not run stay configured', () => {
+    for (const id of ['deepgram', 'google-cloud', 'azure', 'naijalingo']) {
+      const found = findCommercialProvider(id);
+      expect(found?.liveObservations).toEqual([]);
+      expect(found?.integrationStage).toBe('configured');
+    }
   });
 });
