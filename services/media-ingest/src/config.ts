@@ -1,5 +1,9 @@
 // Repository owner: masterzee001.
-import { parseRuntimeProfile, type RuntimeProfile } from '@videofy-live/ai-registry';
+import {
+  commercialProfileBlockers,
+  parseRuntimeProfile,
+  type RuntimeProfile,
+} from '@videofy-live/ai-registry';
 import { loadRootEnv, readCsv, readPort, readPositiveInt } from './env.js';
 import {
   resolveInternalIngressAuth,
@@ -111,15 +115,54 @@ export interface IngestConfig {
   logLevel: string;
 }
 
+/**
+ * Decide whether this runtime profile may start, USING THE REGISTRY.
+ *
+ * This replaced a blanket `throw` for every profile except `development-demo`.
+ * The old gate was correct in outcome and useless in diagnosis: it said a
+ * commercial profile "cannot start in P6-G0" without saying which capability,
+ * which service, or what would fix it. It also meant the registry -- which has
+ * described fail-closed commercial resolution since P6-G0 -- governed nothing,
+ * because nothing called it.
+ *
+ * `development-demo` behaviour is unchanged and pinned. Commercial profiles are
+ * still refused today, but now BY THE REGISTRY and with the reason attached.
+ */
+function assertRuntimeProfileStartable(profile: RuntimeProfile): void {
+  if (profile === 'development-demo') return;
+
+  if (profile === 'commercial-cloud') {
+    const blockers = commercialProfileBlockers({
+      // Production traffic requires evidence, not merely a written adapter.
+      minimumStage: 'certified',
+      // NAMES only: this predicate reports presence and never returns a value.
+      isPresent: (name) => (process.env[name] ?? '').trim() !== '',
+    });
+    if (blockers.length > 0) {
+      const lines = [
+        'AI_RUNTIME_PROFILE=commercial-cloud cannot start.',
+        'No certified provider is available for:',
+        ...blockers.map((blocker) => `  - ${blocker}`),
+        'Certification is per provider + capability + language route + service category,',
+        'and requires recorded benchmark evidence (C-AI1.2).',
+      ];
+      throw new Error(lines.join('\n'));
+    }
+    return;
+  }
+
+  // commercial-local and videofy-native are outside C-AI1's scope. They are
+  // refused explicitly rather than falling through to an accidental start.
+  throw new Error(
+    `AI_RUNTIME_PROFILE=${profile} cannot start: no certified provider selection ` +
+      `is recorded for this profile. C-AI1 addresses commercial-cloud only.`,
+  );
+}
+
 export function loadConfig(): IngestConfig {
   loadRootEnv();
   const aiRuntimeProfile = parseRuntimeProfile(process.env['AI_RUNTIME_PROFILE']);
-  if (aiRuntimeProfile !== 'development-demo') {
-    throw new Error(
-      `AI_RUNTIME_PROFILE=${aiRuntimeProfile} cannot start in P6-G0: ` +
-        'no complete commercially certified provider selection is configured.',
-    );
-  }
+  assertRuntimeProfileStartable(aiRuntimeProfile);
   const videoSource = process.env['VIDEO_SOURCE'] ?? 'mock';
   if (videoSource !== 'mock' && videoSource !== 'local-file') {
     throw new Error(`VIDEO_SOURCE must be "mock" or "local-file"; received "${videoSource}"`);
