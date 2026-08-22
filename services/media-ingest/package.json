@@ -13,18 +13,20 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@videofy-live/account-tokens": "*",
     "@videofy-live/ai-registry": "*",
+    "@videofy-live/service-env": "*",
     "@videofy-live/shared-types": "*",
     "express": "^4.19.2",
     "multer": "^2.2.0",
     "socket.io-client": "^4.7.5",
-    "@videofy-live/account-tokens": "*",
-    "@videofy-live/service-env": "*"
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/multer": "^2.2.0",
     "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.12",
     "tsx": "^4.17.0",
     "typescript": "^5.5.4",
     "vitest": "^2.1.9"

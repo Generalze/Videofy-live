@@ -47,8 +47,19 @@ export const TranscriptionCapabilitiesSchema = z.object({
   streaming: CapabilityFlagSchema,
   /** Interim hypotheses during an utterance. Required for realtime captions. */
   partialResults: CapabilityFlagSchema,
-  /** Provider detects utterance boundaries itself. */
+  /**
+   * Silence/pause-based detection that a speaker has stopped.
+   *
+   * DELIBERATELY NOT THE SAME AS `turnDetection`. Endpointing answers "has the
+   * audio gone quiet for N milliseconds"; turn detection answers "has this
+   * person finished their turn", using conversational cues a silence timer
+   * cannot see. Collapsing them would let a provider with a pause timer be
+   * scored as equivalent to one with a turn model, which is precisely the
+   * comparison C-AI1.2 exists to make.
+   */
   endpointing: CapabilityFlagSchema,
+  /** Model-native end-of-turn detection, richer than a silence threshold. */
+  turnDetection: CapabilityFlagSchema,
   wordTimestamps: CapabilityFlagSchema,
 });
 export type TranscriptionCapabilities = z.infer<typeof TranscriptionCapabilitiesSchema>;
@@ -88,6 +99,7 @@ export const UNVERIFIED_TRANSCRIPTION: TranscriptionCapabilities = {
   streaming: 'unverified',
   partialResults: 'unverified',
   endpointing: 'unverified',
+  turnDetection: 'unverified',
   wordTimestamps: 'unverified',
 };
 export const UNVERIFIED_TRANSLATION: TranslationCapabilities = {
@@ -155,6 +167,14 @@ export interface ServiceExecutionPolicy {
   readonly fallbackTranscriptionModes: readonly ProviderExecutionMode[];
   /** Partial results needed for realtime captions in this service. */
   readonly requiresPartialResults: boolean;
+  /**
+   * Turn detection is PREFERRED for calls and never required.
+   *
+   * Making it a gate today would exclude otherwise excellent providers before
+   * a single benchmark has been run -- deciding the comparison by reading
+   * product pages, which is the thing certification exists to replace.
+   */
+  readonly prefersTurnDetection: boolean;
   readonly rationale: string;
 }
 
@@ -171,6 +191,7 @@ export const SERVICE_EXECUTION_POLICY: Readonly<Record<string, ServiceExecutionP
     primaryStrength: 'required',
     fallbackTranscriptionModes: ['streaming', 'batch'],
     requiresPartialResults: true,
+    prefersTurnDetection: true,
     rationale:
       'Interactive conversation. Turn-taking breaks when translated output lags, so ' +
       'time-to-first-partial and interruption responsiveness dominate accuracy. A ' +
@@ -182,6 +203,7 @@ export const SERVICE_EXECUTION_POLICY: Readonly<Record<string, ServiceExecutionP
     primaryStrength: 'preferred',
     fallbackTranscriptionModes: ['streaming', 'batch'],
     requiresPartialResults: false,
+    prefersTurnDetection: false,
     rationale:
       'Live interpretation for an audience. Latency matters, but one-way delivery ' +
       'tolerates more stabilisation than two-way conversation, so streaming is ' +
@@ -192,6 +214,7 @@ export const SERVICE_EXECUTION_POLICY: Readonly<Record<string, ServiceExecutionP
     primaryStrength: 'preferred',
     fallbackTranscriptionModes: ['batch', 'streaming'],
     requiresPartialResults: false,
+    prefersTurnDetection: false,
     rationale:
       'Prerecorded media with no listener waiting. Accuracy, context and cost per ' +
       'hour matter more than first-token latency, and batch processing generally ' +

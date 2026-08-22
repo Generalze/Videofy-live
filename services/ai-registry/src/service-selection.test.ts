@@ -40,6 +40,7 @@ function provider(overrides: Partial<CommercialProvider> = {}): CommercialProvid
       transcription: { ...UNVERIFIED_TRANSCRIPTION, batch: 'yes', streaming: 'yes', partialResults: 'yes' },
     },
     capabilityEvidence: 'test fixture',
+    models: [],
     ...overrides,
   };
 }
@@ -290,16 +291,57 @@ describe('credentials', () => {
 });
 
 describe('commercial provider records', () => {
-  it('PIN: every capability cell starts unverified with no evidence', () => {
+  it('PIN: no capability is claimed without a citation', () => {
+    // This replaced a weaker pin that required EVERY cell to stay `unverified`.
+    // That was true only while nothing had been read, and it would have had to
+    // be deleted the moment real evidence arrived -- a test that must be
+    // removed to make progress is not protecting anything.
+    //
+    // The durable property is the implication: a claim requires a source.
     for (const p of COMMERCIAL_PROVIDERS) {
-      expect(p.integrationStage, p.providerId).toBe('configured');
-      expect(p.capabilityEvidence, p.providerId).toBe('unverified');
-      for (const group of [p.capabilities.transcription, p.capabilities.translation, p.capabilities.tts]) {
-        for (const flag of Object.values(group ?? {})) {
-          expect(flag, p.providerId).toBe('unverified');
-        }
+      const groups = [p.capabilities.transcription, p.capabilities.translation, p.capabilities.tts];
+      const claimsSomething = groups.some((group) =>
+        Object.values(group ?? {}).some((flag) => flag !== 'unverified'),
+      );
+      if (claimsSomething) {
+        expect(p.capabilityEvidence, `${p.providerId} claims a capability`).not.toBe('unverified');
+        expect(p.capabilityEvidence.length, p.providerId).toBeGreaterThan(20);
+      } else {
+        expect(p.capabilityEvidence, p.providerId).toBe('unverified');
       }
     }
+  });
+
+  it('PIN: every model record cites the page that justifies it', () => {
+    for (const p of COMMERCIAL_PROVIDERS) {
+      for (const model of p.models) {
+        // A model record exists because someone read something. The URL is how
+        // the next reader checks whether it still says what we recorded.
+        expect(model.evidence, `${p.providerId}/${model.modelId}`).toMatch(/^https?:\/\//);
+        expect(model.verifiedLanguages.length, `${p.providerId}/${model.modelId}`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('PIN: nothing is certified, whatever the evidence says', () => {
+    // Evidence that a vendor CAN do something is not evidence that it does it
+    // well enough for us. Only C-AI1.2 benchmarks move the stage.
+    for (const p of COMMERCIAL_PROVIDERS) {
+      expect(p.integrationStage, p.providerId).toBe('configured');
+    }
+  });
+
+  it('PIN: turn detection is recorded per MODEL, not per vendor', () => {
+    // Deepgram is the case this exists for: Flux has model-native turn
+    // detection and Nova-3 does not. A vendor-level rollup would average two
+    // different products into one claim and then certify the average.
+    const deepgram = findCommercialProvider('deepgram')!;
+    const flux = deepgram.models.find((m) => m.modelId.startsWith('flux'))!;
+    const nova = deepgram.models.find((m) => m.modelId === 'nova-3')!;
+    expect(flux.capabilities.transcription!.turnDetection).toBe('yes');
+    expect(nova.capabilities.transcription!.turnDetection).toBe('no');
+    expect(flux.candidateFor).toContain('call:live');
+    expect(nova.candidateFor).toContain('programme:uploaded');
   });
 
   it('PIN: the 9jaLingo provider id is naijalingo, not a typo', () => {
