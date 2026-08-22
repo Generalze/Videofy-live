@@ -37,7 +37,11 @@ async function status(path) {
 async function httpChecks() {
   console.log('\nEdge routing');
   const cases = [
-    ['call-web served at root', '/', (s) => s === 200],
+    ['C7 ecosystem site served at root', '/', (s) => s === 200],
+    ['call-web served at /call/', '/call/', (s) => s === 200],
+    // A visitor WILL refresh on a sub-path. A single-page app must answer with
+    // itself there, not with a 404 from the file server.
+    ['direct refresh inside /call/ serves the app', '/call/join/ABC123', (s) => s === 200],
     ['listener-web served at /listen/', '/listen/', (s) => s === 200],
     ['operator-web served at /operator/', '/operator/', (s) => s === 200],
     ['gateway health through the proxy', '/health', (s) => s === 200],
