@@ -647,6 +647,47 @@ if (config.internalIngressAuth.mode === 'insecure-explicit') {
   logger.warn(config.internalIngressAuth.summary);
 }
 
+/**
+ * The programme-control routes are UNAUTHENTICATED, and must never reach
+ * production while they are.
+ *
+ * `/microphone/sessions` and `/sessions/:id/*` are the Operator console's
+ * surface: creating a session, pausing, resuming, cancelling, reading a
+ * transcript. None of them authenticates a caller, because the console has no
+ * identity to present -- it has no sign-in at all. Anonymous reach to them is
+ * not an information leak, it is remote control of a live broadcast.
+ *
+ * Deliberately accepted on staging (2026-08-23, owner's call) on the grounds
+ * that no real broadcast runs there. That decision does not extend one inch
+ * further, and "we meant to fix it before production" is not a mechanism. This
+ * is the mechanism: in production the service refuses to start. Two staging
+ * acceptance checks fail on purpose alongside it, so the debt stays visible
+ * rather than resting on somebody's memory.
+ *
+ * Removing this guard is not the fix. The fix is an authenticated Operator
+ * console; when that lands, this block goes with it.
+ */
+const PROGRAMME_ROUTES_ARE_UNAUTHENTICATED = true;
+const deploymentEnvironment = (process.env['C7_ENVIRONMENT'] ?? process.env['NODE_ENV'] ?? '')
+  .trim()
+  .toLowerCase();
+if (PROGRAMME_ROUTES_ARE_UNAUTHENTICATED && deploymentEnvironment === 'production') {
+  logger.error(
+    'Refusing to start: programme control routes are unauthenticated and this is production',
+    {
+      detail:
+        'POST /microphone/sessions and /sessions/:id/{pause,resume,cancel,transcript} accept ' +
+        'anonymous callers. Give the Operator console an identity before deploying here.',
+    },
+  );
+  process.exit(1);
+}
+if (PROGRAMME_ROUTES_ARE_UNAUTHENTICATED) {
+  logger.warn(
+    'Programme control routes accept anonymous callers; accepted for staging only, never production',
+  );
+}
+
 // THE LIVE PATH. Attached only when a streaming recogniser is configured:
 // without one there is nothing to transcribe a stream WITH, and opening the
 // socket anyway would accept a call's audio and produce no captions while
