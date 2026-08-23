@@ -52,6 +52,19 @@ export interface EcosystemDomain {
   readonly detail: string | null;
   /** Drives the card's visual treatment. */
   readonly tone: 'flagship' | 'concealed' | 'emerging' | 'sealed' | 'quiet';
+  /**
+   * The one shipped product inside a domain, called out on the C7 homepage.
+   *
+   * The C7 page names the FAMILY and points at it. The family's own page names
+   * its members, and the product's page explains the product. Explaining a
+   * product on the parent-company homepage is how a parent-company homepage
+   * turns into that product's homepage.
+   */
+  readonly highlight?: {
+    readonly name: string;
+    readonly status: string;
+    readonly lines: readonly string[];
+  };
 }
 
 /**
@@ -69,11 +82,18 @@ export const ECOSYSTEM_DOMAINS: readonly EcosystemDomain[] = [
     id: 'communication',
     canonicalDomain: 1,
     domain: 'Communication & Connection',
-    product: 'VIDEOFY-LIVE',
+    // The FAMILY, not the product. VIDEOFY-LIVE is what shipped inside it.
+    product: 'VIDEOFY',
     status: { kind: 'available', label: 'Available now' },
-    summary: 'Real-time multilingual communication for calls, conferences and live programmes.',
+    summary:
+      'A connected communication and media ecosystem built around removing barriers between people, languages and experiences.',
     detail: null,
     tone: 'flagship',
+    highlight: {
+      name: 'VIDEOFY-LIVE',
+      status: 'Available now',
+      lines: ['Calls', 'Conferences', 'Live programmes', 'Multilingual communication'],
+    },
   },
   {
     id: 'protection',

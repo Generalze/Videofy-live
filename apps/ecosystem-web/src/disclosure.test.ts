@@ -131,10 +131,33 @@ describe('C7 public disclosure', () => {
     }
   });
 
-  it('PIN: only VIDEOFY-LIVE is presented as available', () => {
+  it('PIN: exactly one domain is presented as available, and it is Videofy', () => {
     const available = ECOSYSTEM_DOMAINS.filter((domain) => domain.status.kind === 'available');
     expect(available).toHaveLength(1);
-    expect(available[0]?.product).toBe('VIDEOFY-LIVE');
+    // The C7 page names the FAMILY and points at it; the shipped product inside
+    // it is called out as a highlight rather than explained here.
+    expect(available[0]?.product).toBe('VIDEOFY');
+    expect(available[0]?.highlight?.name).toBe('VIDEOFY-LIVE');
+    expect(available[0]?.highlight?.status).toBe('Available now');
+  });
+
+  it('PIN: the C7 homepage does not explain the product', () => {
+    // The failure mode this guards: the parent-company page slowly acquiring
+    // the product's feature list until it becomes that product's homepage with
+    // a different logo on top. Capability language belongs two layers down.
+    const copy = allCopy();
+    for (const term of [
+      'progressive',
+      'caption',
+      'sip',
+      'rtp',
+      'interpretation mode',
+      'replacement mode',
+      'operator',
+      'uploaded programme',
+    ]) {
+      expect(copy, `C7 homepage copy must not explain "${term}"`).not.toContain(term);
+    }
   });
 });
 

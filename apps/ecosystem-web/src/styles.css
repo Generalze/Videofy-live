@@ -296,7 +296,7 @@ button:focus-visible {
 
 .hero {
   position: relative;
-  padding-block: clamp(5rem, 14vh + 3rem, 11rem) clamp(4rem, 9vh, 7rem);
+  padding-block: clamp(3.5rem, 9vh + 2rem, 7.5rem) clamp(2.5rem, 6vh, 4.5rem);
   overflow: hidden;
 }
 
@@ -330,7 +330,8 @@ button:focus-visible {
 
 .hero-title {
   margin-top: 1.4rem;
-  font-size: clamp(2.7rem, 7.2vw + 0.6rem, 6.4rem);
+  font-size: clamp(2.5rem, 5.4vw + 0.6rem, 5.1rem);
+  text-wrap: balance;
   letter-spacing: -0.035em;
   font-weight: 600;
 }
@@ -359,7 +360,7 @@ button:focus-visible {
 /* ---------- ecosystem ---------- */
 
 .ecosystem {
-  padding-block: clamp(3.5rem, 8vh, 6.5rem);
+  padding-block: clamp(2.5rem, 5vh, 4.5rem) clamp(3rem, 7vh, 5.5rem);
 }
 
 .domain {
@@ -581,176 +582,970 @@ button:focus-visible {
   }
 }
 
-/* ---------- flagship ---------- */
+/* ---------- hero variants ---------- */
 
-.flagship {
-  position: relative;
-  padding-block: clamp(3.5rem, 9vh, 7rem);
-  border-top: 1px solid var(--line);
+/*
+ * The three layers are told apart by LIGHT, not by layout: C7 is cool blue,
+ * Videofy warms toward violet, Videofy-Live is the brightest and most active.
+ * A visitor who lands mid-site should feel which layer they are on before
+ * reading a word.
+ */
+.hero-split {
+  display: grid;
+  gap: clamp(2rem, 5vw, 4rem);
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+}
+
+@media (min-width: 900px) {
+  .hero-split {
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.65fr);
+  }
+}
+
+.hero-copy {
+  min-width: 0;
+}
+
+.hero-sub {
+  margin-top: 1.1rem;
+  font-size: clamp(1.15rem, 1.4vw + 0.9rem, 1.8rem);
+  font-weight: 550;
+  letter-spacing: -0.01em;
+}
+
+.hero-field-videofy {
   background:
-    radial-gradient(50% 45% at 15% 0%, rgba(110, 168, 255, 0.1), transparent 70%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 40%);
+    radial-gradient(44% 42% at 18% 16%, rgba(150, 110, 255, 0.2), transparent 70%),
+    radial-gradient(40% 44% at 84% 26%, rgba(110, 168, 255, 0.16), transparent 72%),
+    radial-gradient(60% 50% at 50% 90%, rgba(120, 90, 220, 0.14), transparent 76%);
 }
 
-.flagship-head {
+.hero-field-live {
+  background:
+    radial-gradient(42% 40% at 16% 14%, rgba(110, 168, 255, 0.22), transparent 70%),
+    radial-gradient(40% 44% at 86% 24%, rgba(126, 224, 194, 0.16), transparent 72%),
+    radial-gradient(64% 52% at 48% 92%, rgba(90, 140, 230, 0.16), transparent 76%);
+}
+
+.hero-videofy .hero-shell,
+.hero-live .hero-shell {
+  max-width: 44rem;
+  margin-inline: auto;
+  text-align: center;
+}
+
+.hero-videofy .hero-actions,
+.hero-live .hero-actions,
+.hero-videofy .vf-pillars {
+  justify-content: center;
+}
+
+.hero-videofy .hero-lede,
+.hero-live .hero-lede {
+  margin-inline: auto;
+}
+
+.hero-title-videofy,
+.hero-title-live {
+  background: linear-gradient(96deg, #ffffff 0%, #b9c9f5 40%, #a98cff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-size: clamp(2.9rem, 9vw + 0.4rem, 7rem);
+}
+
+.hero-title-live {
+  background-image: linear-gradient(96deg, #ffffff 0%, #a9c8ff 45%, #7ee0c2 100%);
+}
+
+.hero-sub-live {
+  margin-top: 1.4rem;
+  line-height: 1.15;
+}
+
+.vf-pillars {
+  margin-top: 1.3rem;
   display: flex;
-  flex-direction: column;
-  gap: 0.85rem;
-  max-width: 68ch;
-}
-
-.flagship-name {
-  font-size: clamp(2.1rem, 4.6vw + 0.8rem, 4.2rem);
-  letter-spacing: -0.03em;
-}
-
-.flagship-headline {
-  font-size: clamp(1.2rem, 1.4vw + 1rem, 1.9rem);
+  flex-wrap: wrap;
+  gap: 0.5rem 1.4rem;
+  font-size: clamp(1.05rem, 1vw + 0.9rem, 1.5rem);
+  font-weight: 550;
   color: var(--text);
 }
 
-.flagship-concept {
-  color: var(--accent-warm);
-  font-size: clamp(1rem, 0.6vw + 0.9rem, 1.2rem);
+.vf-pillars span {
+  position: relative;
 }
 
-.flagship-body {
-  color: var(--text-dim);
-  max-width: 62ch;
+/* ---------- C7 orbit figure ---------- */
+
+.orbit {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  width: min(100%, 460px);
+  margin-inline: auto;
 }
 
-.flagship-actions {
-  margin-top: 1rem;
+.orbit-svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.orbit-ring {
+  fill: none;
+  stroke: var(--line-bright);
+  stroke-width: 1;
+  opacity: 0.55;
+}
+
+.orbit-ring-outer {
+  opacity: 0.22;
+  stroke-dasharray: 3 9;
+}
+
+.orbit-ring-inner {
+  opacity: 0.3;
+}
+
+.orbit-trace {
+  stroke: var(--line-bright);
+  stroke-width: 1;
+  opacity: 0.35;
+}
+
+.orbit-dot {
+  fill: #cfe0ff;
+  filter: drop-shadow(0 0 6px rgba(110, 168, 255, 0.8));
+}
+
+/* Slow, low-amplitude. Movement that suggests a system running, not a loading
+   spinner demanding attention. */
+.orbit-node {
+  animation: orbit-pulse 5.5s ease-in-out infinite;
+  transform-origin: 0 0;
+}
+
+@keyframes orbit-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.orbit-mark {
+  position: absolute;
+  width: 26%;
+  display: grid;
+  place-items: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orbit-node {
+    animation: none;
+    opacity: 0.85;
+  }
+}
+
+/* ---------- flagship highlight on the C7 page ---------- */
+
+.highlight {
+  position: relative;
+  margin-top: 0.5rem;
+  padding: clamp(1rem, 2vw, 1.5rem);
+  border: 1px solid var(--line-bright);
+  border-radius: var(--radius);
+  background: rgba(110, 168, 255, 0.07);
+}
+
+.highlight-head {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.9rem;
+  align-items: center;
+  gap: 0.8rem;
 }
 
-/* ---------- network figure ---------- */
+.highlight-name {
+  font-size: clamp(1.1rem, 1.2vw + 0.9rem, 1.5rem);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
 
-.network {
-  margin-top: clamp(2.6rem, 6vh, 4.5rem);
-  padding: clamp(1.4rem, 3vw, 2.6rem);
-  border: 1px solid var(--line);
+.highlight-lines {
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.4rem;
+  color: var(--text-dim);
+}
+
+.highlight-lines li {
+  position: relative;
+  padding-left: 0.9rem;
+}
+
+.highlight-lines li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.62em;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.highlight-actions {
+  margin-top: 1.3rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+}
+
+.ecosystem-foot {
+  margin-top: 2.4rem;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 0.92rem;
+}
+
+/* ---------- Videofy family ---------- */
+
+.vf-available,
+.vf-upcoming {
+  padding-block: clamp(3rem, 8vh, 6rem);
+}
+
+.vf-upcoming {
+  border-top: 1px solid var(--line);
+}
+
+.vf-lead {
+  position: relative;
+  overflow: hidden;
+  margin-top: clamp(1.6rem, 4vh, 2.6rem);
+  padding: clamp(1.6rem, 3vw, 2.8rem);
+  border: 1px solid var(--line-bright);
   border-radius: var(--radius-lg);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.008));
+  background: linear-gradient(160deg, rgba(169, 140, 255, 0.14), rgba(110, 168, 255, 0.05));
+  display: grid;
+  gap: clamp(1.4rem, 3vw, 2.6rem);
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 860px) {
+  .vf-lead {
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.6fr);
+    align-items: center;
+  }
+}
+
+.vf-card-glow {
+  position: absolute;
+  inset: -60% -30% auto -30%;
+  height: 140%;
+  pointer-events: none;
+  background: radial-gradient(46% 60% at 22% 8%, rgba(169, 140, 255, 0.22), transparent 70%);
+}
+
+.vf-lead-copy {
+  position: relative;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.9rem;
 }
 
-.network-surfaces {
-  list-style: none;
+.vf-lead-name {
+  font-size: clamp(1.7rem, 2.6vw + 1rem, 2.8rem);
+}
+
+.vf-lead-summary {
+  color: var(--text-dim);
+  max-width: 46ch;
+}
+
+.vf-lead-facets {
+  position: relative;
   margin: 0;
   padding: 0;
-  display: grid;
-  gap: 0.7rem;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
-  width: 100%;
-}
-
-.surface {
+  list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 0.28rem;
-  padding: 0.85rem 1rem;
+  gap: 0.6rem;
+}
+
+.vf-lead-facets li {
+  padding: 0.7rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 0.94rem;
+}
+
+.vf-grid {
+  margin-top: 1.6rem;
+  display: grid;
+  gap: 1.1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+}
+
+.vf-card {
+  position: relative;
+  overflow: hidden;
+  padding: clamp(1.2rem, 2vw, 1.7rem);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: linear-gradient(168deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.7rem;
+}
+
+/*
+ * Unshipped members are deliberately QUIETER. Four equally confident cards read
+ * as four products you could buy, whatever the label says.
+ */
+.vf-card-coming-soon,
+.vf-card-in-development {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.vf-card-coming-soon .vf-card-name,
+.vf-card-in-development .vf-card-name {
+  color: var(--text-dim);
+}
+
+.vf-card-in-development .vf-card-glow {
+  background: radial-gradient(46% 60% at 30% 6%, rgba(126, 224, 194, 0.14), transparent 72%);
+}
+
+.vf-card-name {
+  position: relative;
+  font-size: 1.12rem;
+  letter-spacing: 0.02em;
+}
+
+.vf-card-summary {
+  position: relative;
+  color: var(--text-dim);
+  font-size: 0.95rem;
+}
+
+.vf-card-link {
+  position: relative;
+  margin-top: auto;
+  color: var(--text);
+  text-decoration: none;
+  border-bottom: 1px solid var(--line-bright);
+  padding-bottom: 2px;
+  font-size: 0.92rem;
+}
+
+/* ---------- Videofy-Live experiences ---------- */
+
+.experiences {
+  padding-block: clamp(3rem, 8vh, 6rem);
+}
+
+.experience {
+  display: grid;
+  gap: clamp(1.6rem, 4vw, 3.4rem);
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  padding-block: clamp(2rem, 5vh, 3.4rem);
+}
+
+.experience + .experience {
+  border-top: 1px solid var(--line);
+}
+
+@media (min-width: 940px) {
+  .experience {
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+  }
+
+  /* Alternating sides keeps a long page from reading as a list. */
+  .experience-flip .experience-copy {
+    order: 2;
+  }
+}
+
+.experience-title {
+  margin-top: 0.7rem;
+  font-size: clamp(1.5rem, 2.2vw + 1rem, 2.5rem);
+}
+
+.experience-body {
+  margin-top: 1rem;
+  color: var(--text-dim);
+  max-width: 46ch;
+}
+
+/* ---------- staged product surfaces ---------- */
+
+.stage {
+  position: relative;
+  min-width: 0;
+  padding: clamp(0.9rem, 2vw, 1.4rem);
+  border: 1px solid var(--line-bright);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.015));
+  backdrop-filter: blur(8px);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.stage-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.82rem;
+  color: var(--text-faint);
+}
+
+.stage-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: #ffb4b4;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-size: 0.74rem;
+}
+
+.stage-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ff6b6b;
+  animation: live-pulse 2s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.stage-timer,
+.stage-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.stage-body {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.stage-two {
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+}
+
+@media (min-width: 560px) {
+  .stage-two {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+}
+
+.seat {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.7rem 0.85rem;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.03);
-  text-align: center;
-  font-size: 0.93rem;
+  min-width: 0;
 }
 
-/* A planned surface is visibly planned INSIDE the picture, so the figure
-   cannot imply reach the product does not have. */
-.surface-planned {
-  border-style: dashed;
+.seat-speaking {
+  border-color: rgba(126, 224, 194, 0.42);
+  background: rgba(126, 224, 194, 0.08);
+}
+
+.seat-avatar {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #0b1220;
+  background: linear-gradient(150deg, #dfe8fb, #9db4e2);
+}
+
+.seat-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.seat-name {
+  font-weight: 550;
+}
+
+.seat-lang {
+  font-size: 0.8rem;
   color: var(--text-faint);
-  background: transparent;
 }
 
-.surface-tag {
-  font-size: 0.68rem;
+.stage-flow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.stage-flow-label {
+  font-size: 0.7rem;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--text-faint);
 }
 
-.network-spine {
+.wave {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 22px;
+}
+
+.wave span {
+  width: 3px;
+  height: 30%;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #7ee0c2, #6ea8ff);
+}
+
+.wave-live span {
+  animation: wave-bounce 1.1s ease-in-out infinite;
+}
+
+@keyframes wave-bounce {
+  0%,
+  100% {
+    height: 26%;
+  }
+  50% {
+    height: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wave-live span,
+  .stage-live-dot {
+    animation: none;
+  }
+}
+
+.stage-captions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.85rem 1rem;
+  border-radius: 14px;
+  background: rgba(6, 9, 15, 0.55);
+  border: 1px solid var(--line);
+}
+
+.caption-line {
+  font-size: 0.95rem;
+}
+
+.caption-source {
+  color: var(--text-faint);
+}
+
+.caption-target {
+  color: var(--text);
+}
+
+.stage-controls {
+  display: flex;
+  justify-content: center;
+  gap: 0.7rem;
+}
+
+.ctrl {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--line);
+}
+
+.ctrl-end {
+  background: rgba(255, 107, 107, 0.75);
+  border-color: transparent;
+}
+
+.stage-fan {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+
+@media (min-width: 620px) {
+  .stage-fan {
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+    align-items: center;
+  }
+}
+
+.fan-speaker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  align-items: flex-start;
+}
+
+.fan-listeners {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.stage-note {
+  color: var(--text-faint);
+  font-size: 0.88rem;
+  text-align: center;
+}
+
+.programme-surface {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background:
+    radial-gradient(60% 70% at 30% 20%, rgba(110, 168, 255, 0.22), transparent 70%),
+    linear-gradient(160deg, #0d1420, #070a11);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 0.9rem;
+}
+
+.programme-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  align-self: flex-start;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(255, 107, 107, 0.18);
+  color: #ffc9c9;
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.programme-title {
+  font-weight: 550;
+}
+
+.programme-controls {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 600px) {
+  .programme-controls {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+.mode-set {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.mode-set legend {
+  padding: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.mode-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.2rem 0.6rem;
+  align-items: center;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  cursor: default;
+}
+
+.mode-option input {
+  accent-color: var(--accent);
+}
+
+.mode-name {
+  font-size: 0.94rem;
+}
+
+.mode-desc {
+  grid-column: 2;
+  font-size: 0.78rem;
+  color: var(--text-faint);
+}
+
+.lang-set {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.lang-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.lang-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.lang-list li {
+  padding: 0.34rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 0.86rem;
+  color: var(--text-dim);
+}
+
+.lang-on {
+  border-color: rgba(126, 224, 194, 0.45);
+  background: rgba(126, 224, 194, 0.1);
+  color: var(--text);
+}
+
+.lang-note {
+  font-size: 0.8rem;
+  color: var(--text-faint);
+}
+
+/* ---------- uploaded programme flow ---------- */
+
+.uploaded {
+  padding-block: clamp(3rem, 8vh, 6rem);
+  border-top: 1px solid var(--line);
+}
+
+.flow {
+  margin: clamp(1.6rem, 4vh, 2.6rem) 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr));
+}
+
+.flow-step {
+  position: relative;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.flow-index {
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+  color: var(--accent);
+}
+
+.flow-label {
+  font-size: 0.96rem;
+}
+
+/* ---------- convergence ---------- */
+
+.universality {
+  padding-block: clamp(3rem, 8vh, 6rem);
+  border-top: 1px solid var(--line);
+  background: radial-gradient(50% 45% at 20% 0%, rgba(110, 168, 255, 0.1), transparent 70%);
+}
+
+.converge {
+  margin-top: clamp(2rem, 5vh, 3.4rem);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.converge-groups {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  width: 100%;
+}
+
+.converge-group {
+  padding: 1.1rem 1.2rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/*
+ * The reach label sits ABOVE its own group, never in a legend elsewhere. A
+ * legend is the part nobody reads, and "planned" is the word that must not be
+ * missed.
+ */
+.converge-heading {
+  font-size: 0.72rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.converge-in-development {
+  border-style: dashed;
+}
+
+.converge-in-development .converge-heading {
+  color: var(--accent-warm);
+}
+
+.converge-network-expansion {
+  border-style: dashed;
+  background: transparent;
+}
+
+.converge-network-expansion .converge-heading {
+  color: var(--amber);
+}
+
+.converge-network-expansion .converge-list li,
+.converge-in-development .converge-list li {
+  color: var(--text-faint);
+}
+
+.converge-list {
+  margin: 0.9rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  font-size: 0.94rem;
+  color: var(--text-dim);
+}
+
+.converge-spine {
   display: flex;
   justify-content: center;
   width: 100%;
-  height: 34px;
+  height: 30px;
 }
 
-.spine-line {
+.converge-spine span {
   width: 1px;
   height: 100%;
   background: linear-gradient(180deg, transparent, var(--line-bright), transparent);
 }
 
-.network-core {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.7rem;
-  padding: 0.85rem 1.5rem;
+.converge-core {
+  padding: 0.85rem 1.6rem;
   border-radius: 999px;
   border: 1px solid var(--line-bright);
-  background: linear-gradient(180deg, rgba(110, 168, 255, 0.16), rgba(110, 168, 255, 0.05));
+  background: linear-gradient(180deg, rgba(110, 168, 255, 0.18), rgba(110, 168, 255, 0.05));
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.03em;
   text-align: center;
 }
 
-.network-out {
+.converge-out {
   color: var(--text-dim);
   text-align: center;
   max-width: 42ch;
 }
 
-/* ---------- capabilities ---------- */
+/* ---------- truth classification ---------- */
 
-.capability-grid {
-  margin-top: clamp(2.4rem, 5vh, 4rem);
-  display: grid;
-  gap: 1.6rem;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+.truth {
+  padding-block: clamp(3rem, 8vh, 6rem);
+  border-top: 1px solid var(--line);
 }
 
-.capability-group {
-  padding-top: 1.2rem;
+.truth-grid {
+  display: grid;
+  gap: 1.6rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+}
+
+.truth-group {
+  padding-top: 1.1rem;
   border-top: 1px solid var(--line-bright);
 }
 
-.capability-heading {
-  font-size: 1.05rem;
-  letter-spacing: 0.02em;
+.truth-heading {
+  font-size: 1.02rem;
 }
 
-.capability-qualifier {
+.truth-qualifier {
   margin-top: 0.4rem;
   color: var(--text-faint);
-  font-size: 0.88rem;
+  font-size: 0.86rem;
 }
 
-.capability-list {
+.truth-list {
   margin: 1rem 0 0;
   padding: 0;
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.45rem;
   color: var(--text-dim);
-  font-size: 0.95rem;
+  font-size: 0.94rem;
 }
 
-.capability-list li {
-  padding-left: 1.1rem;
+.truth-list li {
   position: relative;
+  padding-left: 1.05rem;
 }
 
-.capability-list li::before {
+.truth-list li::before {
   content: '';
   position: absolute;
   left: 0;
@@ -758,6 +1553,20 @@ button:focus-visible {
   width: 5px;
   height: 1px;
   background: var(--line-bright);
+}
+
+.truth-cta {
+  margin-top: 2.4rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+}
+
+.planned-tag {
+  font-size: 0.68rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--amber);
 }
 
 /* ---------- join ---------- */
@@ -924,8 +1733,161 @@ button:focus-visible {
   gap: 1.2rem;
 }
 
+.footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.3rem;
+}
+
+.footer-links a {
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.footer-links a:hover {
+  color: var(--text);
+}
+
 .footer-note {
   color: var(--text-faint);
   font-size: 0.88rem;
   max-width: 60ch;
+}
+
+/* ---------- sealed and quiet domains ---------- */
+
+/*
+ * Finance and Media were the weakest thing on the page: short text on an empty
+ * panel reads as UNFINISHED, which is the opposite of the intended message.
+ * "Locked" has to look like a decision.
+ *
+ * The fix is a surface rather than more words — a fine diagonal weave behind
+ * the card, so there is visibly something there that is not being shown.
+ */
+.domain-sealed,
+.domain-quiet {
+  min-height: clamp(190px, 24vh, 250px);
+  justify-content: space-between;
+}
+
+.domain-sealed::after,
+.domain-quiet::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(240, 194, 94, 0.07) 0 1px,
+    transparent 1px 11px
+  );
+  mask-image: radial-gradient(70% 80% at 78% 20%, #000 10%, transparent 72%);
+}
+
+.domain-quiet::after {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(170, 195, 240, 0.06) 0 1px,
+    transparent 1px 13px
+  );
+}
+
+/* The concealed domain gets a slow scan instead: present, deliberately not
+   readable. Motion is minimal and stops entirely if asked. */
+.domain-concealed::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(150, 130, 220, 0.14) 45%,
+    transparent 90%
+  );
+  transform: translateY(-100%);
+  animation: sentinel-scan 7s ease-in-out infinite;
+}
+
+@keyframes sentinel-scan {
+  0% {
+    transform: translateY(-100%);
+  }
+  55%,
+  100% {
+    transform: translateY(120%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .domain-concealed::after {
+    animation: none;
+    transform: translateY(30%);
+    opacity: 0.5;
+  }
+}
+
+/* The programme surface needed something to look AT — an empty dark rectangle
+   reads as a broken player rather than a stage. */
+.programme-surface::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 46%;
+  background: linear-gradient(180deg, transparent, rgba(6, 9, 15, 0.85));
+  border-radius: 0 0 16px 16px;
+  pointer-events: none;
+}
+
+.programme-surface > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Keep the convergence columns visually equal even though one holds a single
+   item; ragged heights made the middle group look like a mistake. */
+.converge-group {
+  display: flex;
+  flex-direction: column;
+}
+
+/*
+ * The flagship card ran its content down the left and left the right half
+ * empty at desktop width. Two columns: the family on one side, the shipped
+ * product on the other — which is also the point the card is making.
+ */
+@media (min-width: 900px) {
+  .domain-lead {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+    column-gap: clamp(1.6rem, 3vw, 3rem);
+    align-items: center;
+  }
+
+  .domain-lead .domain-head,
+  .domain-lead .domain-summary {
+    grid-column: 1;
+  }
+
+  .domain-lead .highlight {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    margin-top: 0;
+    align-self: stretch;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .domain-lead .domain-foot {
+    grid-column: 1;
+  }
+}
+
+/* Cards in the grid keep their badge on the baseline regardless of how much
+   copy they carry, so a short one does not look truncated next to a long one. */
+.domain-emerging .domain-detail {
+  margin-bottom: auto;
 }

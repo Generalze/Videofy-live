@@ -38,6 +38,11 @@ async function httpChecks() {
   console.log('\nEdge routing');
   const cases = [
     ['C7 ecosystem site served at root', '/', (s) => s === 200],
+    // Three distinct public layers, all served by the one ecosystem bundle via
+    // the proxy's SPA fallback.
+    ['Videofy family page at /videofy/', '/videofy/', (s) => s === 200],
+    ['Videofy-Live page at /videofy/live/', '/videofy/live/', (s) => s === 200],
+    ['direct refresh at /videofy/live/ serves the app', '/videofy/live', (s) => s === 200],
     ['call-web served at /call/', '/call/', (s) => s === 200],
     // A visitor WILL refresh on a sub-path. A single-page app must answer with
     // itself there, not with a 404 from the file server.
@@ -63,6 +68,11 @@ async function httpChecks() {
   console.log('\nAsset bases');
   for (const [name, page, prefix] of [
     ['C7 ecosystem', '/', '/assets/'],
+    // The deep route must load the SAME bundle from an absolute /assets/ path.
+    // A relative base here would resolve to /videofy/live/assets/... and 404,
+    // which renders a blank page while the HTTP check above still passes.
+    ['Videofy family', '/videofy/', '/assets/'],
+    ['Videofy-Live', '/videofy/live/', '/assets/'],
     ['call-web', '/call/', '/call/assets/'],
     ['listener-web', '/listen/', '/listen/assets/'],
     ['operator-web', '/operator/', '/operator/assets/'],
