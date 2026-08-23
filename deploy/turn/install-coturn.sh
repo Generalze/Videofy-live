@@ -34,8 +34,16 @@ install -d -m 0750 /etc/videofy
 # repository, not in a build argument, and not printed by this script.
 if [ ! -f "$SECRET_FILE" ]; then
   umask 077
+  # TURN_HOST is the ORIGIN ADDRESS, not the site's domain name.
+  #
+  # staging.consummate7.com resolves to Cloudflare, which proxies HTTP and
+  # nothing else -- a client dialling turn:<domain>:3478 reaches a CDN edge
+  # that does not speak TURN, gathers no relay candidate, and silently falls
+  # back to a direct path that cannot be made. Clients must dial the machine
+  # coturn actually runs on. The realm stays the domain: it is an
+  # authentication label, never something anyone connects to.
   printf 'TURN_STATIC_AUTH_SECRET=%s\nTURN_REALM=%s\nTURN_HOST=%s\n' \
-    "$(openssl rand -hex 32)" "$REALM" "$REALM" > "$SECRET_FILE"
+    "$(openssl rand -hex 32)" "$REALM" "$PUBLIC_IP" > "$SECRET_FILE"
 fi
 chmod 0640 "$SECRET_FILE"
 chown root:root "$SECRET_FILE"
