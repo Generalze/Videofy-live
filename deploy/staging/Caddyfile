@@ -86,6 +86,28 @@
 	}
 
 	# --- static single-page apps -------------------------------------------
+	#
+	# CACHING, AND WHY IT IS SPELLED OUT.
+	#
+	# index.html went out with no Cache-Control at all. A response carrying no
+	# freshness information is not "uncached" -- browsers fall back to
+	# heuristic caching off Last-Modified, so the shell was reused for hours
+	# and kept pointing at the PREVIOUS build's hashed bundle. A deploy landed,
+	# the server was correct, and a returning browser went on running the old
+	# app; even a hard refresh only helped until the heuristic re-armed. That is
+	# how a fixed bug keeps being reported.
+	#
+	# So: the shell must be revalidated every single load, and the hashed
+	# assets -- whose names change whenever their contents do -- can be cached
+	# permanently. no-cache does not mean "do not store"; it means "ask first",
+	# which is exactly right for a file whose whole job is naming the current
+	# bundle.
+	@spa_shell path /call/ /call/index.html /listen/ /listen/index.html /operator/ /operator/index.html
+	header @spa_shell Cache-Control "no-cache, must-revalidate"
+
+	@hashed_assets path /call/assets/* /listen/assets/* /operator/assets/*
+	header @hashed_assets Cache-Control "public, max-age=31536000, immutable"
+
 	handle /call/* {
 		root * /srv/videofy/www/call-web
 		uri strip_prefix /call
