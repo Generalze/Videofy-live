@@ -69,6 +69,17 @@ const BY_ROLE: Readonly<Record<ConferenceRole, readonly ConferenceCapability[]>>
     'manageMeetingSettings',
     'viewTranscript',
     'downloadTranscript',
+    // An Administrator may ASK. It may not act, and it may not approve.
+    //
+    // These two are deliberately separated from every other recording
+    // capability: requesting is how somebody without authority raises the
+    // question, and it is the one recording verb that is safe to hold by role
+    // because it changes nothing on its own. Start/stop needs explicit
+    // delegation; approval belongs to the Chairman alone; deletion to nobody
+    // else at all. Collapsing these into one "recording authority" is exactly
+    // the simplification P7.0C cannot survive.
+    'requestRecording',
+    'requestRecordingDownload',
   ],
 
   // The conference RECORDS OFFICER -- deliberately not an Administrator with

@@ -71,7 +71,7 @@ export function JoinC7() {
           </p>
           <ul className="join-points">
             <li>One account across every C7 product</li>
-            <li>Access VIDE0FY-LIVE today</li>
+            <li>Access VIDEOFY-LIVE today</li>
             <li>Early access as new domains open</li>
           </ul>
         </div>
@@ -141,12 +141,12 @@ export function JoinC7() {
             <div className="join-done">
               <h3>You are in.</h3>
               <p>
-                Your C7 account is active. VIDE0FY-LIVE is available now; other domains will appear
+                Your C7 account is active. VIDEOFY-LIVE is available now; other domains will appear
                 here as they open.
               </p>
               <ul className="join-shelf">
                 <li>
-                  <span className="shelf-name">VIDE0FY-LIVE</span>
+                  <span className="shelf-name">VIDEOFY-LIVE</span>
                   <span className="shelf-state">Available</span>
                 </li>
                 <li className="shelf-muted">

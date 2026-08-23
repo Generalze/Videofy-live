@@ -38,9 +38,32 @@ describe('conference capability authority', () => {
     expect(admin.can('approveRecordingRequest')).toBe(false);
     expect(admin.can('approveRecordingDownload')).toBe(false);
     expect(admin.can('deleteRecording')).toBe(false);
-    // Recording arrives only by explicit delegation, never by being an admin.
+    // Acting on a recording arrives only by explicit delegation, never by being
+    // an admin.
     expect(admin.can('startRecording')).toBe(false);
     expect(admin.can('stopRecording')).toBe(false);
+  });
+
+  it('PIN: an Administrator may REQUEST recording, and only request', () => {
+    const admin = resolveConferenceAuthority(member('administrator'));
+
+    // Requesting is the one recording verb safe to hold by role: it changes
+    // nothing by itself, and it is how somebody without authority raises the
+    // question rather than working around it.
+    expect(admin.can('requestRecording')).toBe(true);
+    expect(admin.can('requestRecordingDownload')).toBe(true);
+
+    // Everything that ACTS or DECIDES stays out of reach. If this pin ever
+    // relaxes, "may ask" has silently become "may do".
+    for (const capability of [
+      'startRecording',
+      'stopRecording',
+      'approveRecordingRequest',
+      'approveRecordingDownload',
+      'deleteRecording',
+    ] as const) {
+      expect(admin.can(capability), capability).toBe(false);
+    }
   });
 
   it('PIN: a Secretary is a records officer, not a junior Administrator', () => {

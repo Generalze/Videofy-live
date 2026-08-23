@@ -171,7 +171,7 @@ function NetworkFigure() {
       </div>
       <div className="network-core">
         <C7Mark size={26} decorative />
-        <span className="network-core-name">VIDE0FY-LIVE</span>
+        <span className="network-core-name">VIDEOFY-LIVE</span>
       </div>
       <div className="network-spine" aria-hidden="true">
         <span className="spine-line" />
@@ -217,7 +217,7 @@ function VideofyFlagship() {
       <div className="shell">
         <div className="flagship-head">
           <p className="section-field">Communication &amp; Connection</p>
-          <h2 className="flagship-name">VIDE0FY-LIVE</h2>
+          <h2 className="flagship-name">VIDEOFY-LIVE</h2>
           <p className="flagship-headline">Communication without the language barrier.</p>
           <p className="flagship-concept">One conversation. Different languages. Naturally.</p>
           <p className="flagship-body">
@@ -231,7 +231,7 @@ function VideofyFlagship() {
               Launch Live
             </a>
             <a className="button button-ghost" href="#capabilities">
-              Explore VIDE0FY-LIVE
+              Explore VIDEOFY-LIVE
             </a>
           </div>
         </div>
@@ -273,7 +273,7 @@ export function App() {
           </a>
           <div className="nav-links">
             <a href="#ecosystem">Ecosystem</a>
-            <a href="#videofy">VIDE0FY-LIVE</a>
+            <a href="#videofy">VIDEOFY-LIVE</a>
             <a className="button button-small" href="#join">
               Join C7
             </a>
@@ -326,7 +326,7 @@ export function App() {
         <div className="shell footer-shell">
           <C7Wordmark compact />
           <p className="footer-note">
-            Consummate 7 — connected intelligent systems. VIDE0FY-LIVE is available now; other
+            Consummate 7 — connected intelligent systems. VIDEOFY-LIVE is available now; other
             domains are in development.
           </p>
         </div>

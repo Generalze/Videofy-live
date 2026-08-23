@@ -22,7 +22,7 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.VITE_ACCOUNT_URL': JSON.stringify(
         fromEnv(rootEnv, 'VITE_ACCOUNT_URL', 'http://localhost:3006'),
       ),
-      // Where VIDE0FY-LIVE Call is served. A PATH, not a host, so the bundle
+      // Where VIDEOFY-LIVE Call is served. A PATH, not a host, so the bundle
       // stays correct wherever it is deployed.
       'import.meta.env.VITE_CALL_PATH': JSON.stringify(
         fromEnv(rootEnv, 'VITE_CALL_PATH', '/call/'),

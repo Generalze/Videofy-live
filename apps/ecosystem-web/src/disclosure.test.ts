@@ -29,6 +29,49 @@ describe('C7 public disclosure', () => {
     expect(allCopy()).not.toContain('domain 7');
   });
 
+  it('PIN: canonical domain numbering is fixed, and is NOT the display order', () => {
+    // The architecture: 1 Communication, 2 Protection, 3 Finance,
+    // 4 Health/Safety/Environment, 5 Media. Finance is domain THREE however
+    // late it appears on the page.
+    const canonical = Object.fromEntries(
+      ECOSYSTEM_DOMAINS.map((domain) => [domain.id, domain.canonicalDomain]),
+    );
+    expect(canonical).toEqual({
+      communication: 1,
+      protection: 2,
+      finance: 3,
+      'health-safety-environment': 4,
+      media: 5,
+    });
+  });
+
+  it('PIN: the homepage shows Health before Finance, deliberately', () => {
+    // A presentation decision -- Health is the next domain to emerge publicly
+    // while Finance stays locked. Pinned separately from the numbering above so
+    // that changing one can never quietly redefine the other.
+    expect(ECOSYSTEM_DOMAINS.map((domain) => domain.id)).toEqual([
+      'communication',
+      'protection',
+      'health-safety-environment',
+      'finance',
+      'media',
+    ]);
+
+    const health = ECOSYSTEM_DOMAINS.findIndex((d) => d.id === 'health-safety-environment');
+    const finance = ECOSYSTEM_DOMAINS.findIndex((d) => d.id === 'finance');
+    expect(health).toBeLessThan(finance);
+    // And the two orderings genuinely disagree -- which is the whole point.
+    expect(ECOSYSTEM_DOMAINS[health]?.canonicalDomain).toBeGreaterThan(
+      ECOSYSTEM_DOMAINS[finance]?.canonicalDomain ?? 0,
+    );
+  });
+
+  it('PIN: the brand is spelled with the letter O, never a zero', () => {
+    const everything = JSON.stringify(ECOSYSTEM_DOMAINS) + JSON.stringify(VIDEOFY_CAPABILITIES);
+    expect(everything).not.toContain('VIDE0FY');
+    expect(everything).toContain('VIDEOFY-LIVE');
+  });
+
   it('PIN: Sentinel says exactly the locked words and nothing else', () => {
     const sentinel = ECOSYSTEM_DOMAINS.find((domain) => domain.product === 'SENTINEL-A');
     expect(sentinel).toBeDefined();
@@ -88,14 +131,14 @@ describe('C7 public disclosure', () => {
     }
   });
 
-  it('PIN: only VIDE0FY-LIVE is presented as available', () => {
+  it('PIN: only VIDEOFY-LIVE is presented as available', () => {
     const available = ECOSYSTEM_DOMAINS.filter((domain) => domain.status.kind === 'available');
     expect(available).toHaveLength(1);
-    expect(available[0]?.product).toBe('VIDE0FY-LIVE');
+    expect(available[0]?.product).toBe('VIDEOFY-LIVE');
   });
 });
 
-describe('VIDE0FY-LIVE capability truth', () => {
+describe('VIDEOFY-LIVE capability truth', () => {
   it('PIN: carrier and OEM reach is never presented as shipped', () => {
     const shipped = VIDEOFY_CAPABILITIES.filter((group) => group.heading === 'Working today')
       .flatMap((group) => group.items)

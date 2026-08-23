@@ -28,6 +28,20 @@ export type DomainStatus =
 
 export interface EcosystemDomain {
   readonly id: string;
+  /**
+   * The CANONICAL domain number in the seven-domain architecture.
+   *
+   * Fixed, and deliberately NOT the position in this array. The homepage shows
+   * Health before Finance because Health is the next domain to emerge publicly;
+   * that is a presentation decision and must never be mistaken for the
+   * architecture. Leave the number implicit and somebody eventually reads the
+   * display order as the ontology -- which is how Finance quietly becomes
+   * domain 4 in a document nobody meant to write.
+   *
+   * Canonical: 1 Communication, 2 Protection, 3 Finance, 4 Health/Safety/
+   * Environment, 5 Media, 6 and 7 reserved and internal.
+   */
+  readonly canonicalDomain: 1 | 2 | 3 | 4 | 5;
   /** The DOMAIN — the field of work. Domains are permanent; products are not. */
   readonly domain: string;
   /** The product within it, where one is public. */
@@ -40,11 +54,22 @@ export interface EcosystemDomain {
   readonly tone: 'flagship' | 'concealed' | 'emerging' | 'sealed' | 'quiet';
 }
 
+/**
+ * PUBLIC DISPLAY ORDER, which is intentionally not the canonical order.
+ *
+ *   VIDEOFY-LIVE -> SENTINEL-A -> Health, Safety & Environment ->
+ *   Finance & Markets -> Media & Entertainment
+ *
+ * Health is shown before Finance because it is the next domain to emerge
+ * publicly, while Finance stays locked. Each entry carries its canonical number
+ * so the two orderings can never be confused for one another.
+ */
 export const ECOSYSTEM_DOMAINS: readonly EcosystemDomain[] = [
   {
     id: 'communication',
+    canonicalDomain: 1,
     domain: 'Communication & Connection',
-    product: 'VIDE0FY-LIVE',
+    product: 'VIDEOFY-LIVE',
     status: { kind: 'available', label: 'Available now' },
     summary: 'Real-time multilingual communication for calls, conferences and live programmes.',
     detail: null,
@@ -52,6 +77,7 @@ export const ECOSYSTEM_DOMAINS: readonly EcosystemDomain[] = [
   },
   {
     id: 'protection',
+    canonicalDomain: 2,
     domain: 'Protection & Security',
     product: 'SENTINEL-A',
     status: { kind: 'progress', percent: 56, label: 'In development' },
@@ -63,6 +89,7 @@ export const ECOSYSTEM_DOMAINS: readonly EcosystemDomain[] = [
   },
   {
     id: 'health-safety-environment',
+    canonicalDomain: 4,
     domain: 'Health, Safety & Environment',
     // No product name: none exists authoritatively, and inventing one now would
     // be a naming decision made by a marketing page.
@@ -75,6 +102,7 @@ export const ECOSYSTEM_DOMAINS: readonly EcosystemDomain[] = [
   },
   {
     id: 'finance',
+    canonicalDomain: 3,
     domain: 'Finance & Markets',
     product: null,
     status: { kind: 'locked', label: 'Locked' },
@@ -85,6 +113,7 @@ export const ECOSYSTEM_DOMAINS: readonly EcosystemDomain[] = [
   },
   {
     id: 'media',
+    canonicalDomain: 5,
     domain: 'Media & Entertainment',
     product: null,
     status: { kind: 'emerging', label: 'Emerging' },
@@ -95,7 +124,7 @@ export const ECOSYSTEM_DOMAINS: readonly EcosystemDomain[] = [
 ];
 
 /**
- * VIDE0FY-LIVE capabilities, split by what is TRUE TODAY and what is not.
+ * VIDEOFY-LIVE capabilities, split by what is TRUE TODAY and what is not.
  *
  * The split is the point. "Works in a browser today" and "could one day reach a
  * carrier network" are both honest statements and belong in different columns;
