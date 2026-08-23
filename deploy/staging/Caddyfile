@@ -45,6 +45,13 @@
 		reverse_proxy 127.0.0.1:3001
 	}
 
+	# ICE servers (STUN + a time-limited TURN credential) for call video.
+	# Call video is a peer-to-peer mesh, so the browser must be told how to
+	# traverse NAT before it can connect to another participant.
+	handle /webrtc/* {
+		reverse_proxy 127.0.0.1:3001
+	}
+
 	# --- account service ----------------------------------------------------
 	# Prefix-mounted because account and media-ingest BOTH define `/sessions`.
 	# Without distinct prefixes one of them silently shadows the other, and the

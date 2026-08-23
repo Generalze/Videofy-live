@@ -6,18 +6,79 @@
 
 const MAX_QUEUED_REMOTE_CANDIDATES = 32;
 
+/** Public STUN, used when the host has configured nothing. */
+export const DEFAULT_ICE_SERVERS: readonly RTCIceServer[] = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+];
+
 /**
  * Parses the host's configured ICE server list (call-web passes
- * VITE_WEBRTC_ICE_SERVERS). Anything absent or unparseable is NO servers,
- * never a throw — a bad config must not take down joining.
+ * VITE_WEBRTC_ICE_SERVERS). Never throws — a bad config must not take down
+ * joining.
+ *
+ * ABSENT IS NOT EMPTY. This used to answer "no servers" for unset, malformed
+ * and deliberately-empty alike, and a build whose env var was never set
+ * shipped with no ICE servers at all. Audio survived it — audio is
+ * server-mediated and the server has a public address, so a host candidate
+ * reaches it — but call video is a peer-to-peer mesh, and two browsers each
+ * behind their own NAT have no way to find one another. The result looked
+ * like a video bug: audio fine, camera preview fine, remote video never
+ * arriving.
+ *
+ * So unset or unparseable now means the default STUN list, and only an
+ * explicit empty array means the operator genuinely wants none. STUN alone is
+ * still not enough for symmetric or carrier-grade NAT — that needs TURN,
+ * which is what configuring VITE_WEBRTC_ICE_SERVERS is for.
  */
 export function readIceServers(raw?: string): RTCIceServer[] {
-  if (!raw) return [];
+  if (raw === undefined || raw.trim().length === 0) return [...DEFAULT_ICE_SERVERS];
   try {
     const parsed = JSON.parse(raw) as RTCIceServer[];
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed : [...DEFAULT_ICE_SERVERS];
   } catch {
-    return [];
+    return [...DEFAULT_ICE_SERVERS];
+  }
+}
+
+/**
+ * Asks the gateway which ICE servers to use, falling back to whatever the
+ * build was configured with.
+ *
+ * ASKED AT CALL TIME, NOT BUILD TIME. A relay credential expires, so it
+ * cannot live in a bundle that is compiled once and served for weeks. Fetching
+ * also means the relay can be configured, moved or switched off on the server
+ * without rebuilding and redeploying the browser app -- and a deployment that
+ * forgets the build-time variable no longer silently ships a client with no
+ * ICE servers at all.
+ *
+ * A failure here is not fatal: STUN-only still connects the majority of
+ * calls, and losing video is better than failing to join.
+ */
+export async function fetchIceServers(
+  gatewayUrl: string,
+  options: { fetchImpl?: typeof fetch; fallbackRaw?: string; timeoutMs?: number } = {},
+): Promise<RTCIceServer[]> {
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const fallback = readIceServers(options.fallbackRaw);
+  if (typeof fetchImpl !== 'function') return fallback;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 5000);
+  try {
+    const response = await fetchImpl(`${gatewayUrl.replace(/\/$/, '')}/webrtc/ice`, {
+      signal: controller.signal,
+      cache: 'no-store',
+    });
+    if (!response.ok) return fallback;
+    const payload = (await response.json()) as { iceServers?: unknown };
+    // An empty list from the server is not an answer worth taking: it would
+    // leave this client unable to connect anything but a local network.
+    if (!Array.isArray(payload.iceServers) || payload.iceServers.length === 0) return fallback;
+    return payload.iceServers as RTCIceServer[];
+  } catch {
+    return fallback;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

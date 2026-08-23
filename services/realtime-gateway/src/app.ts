@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { CONNECT_API_BASE_PATH, buildErrorEnvelope } from '@videofy-live/connect-contracts';
 import { ADAPTER_CONTROL_BASE_PATH } from './adapter-control-routes.js';
+import { buildIceServers, readTurnConfig } from './ice-credentials.js';
 import { logger } from './logger.js';
 
 export interface CreateAppOptions {
@@ -42,6 +43,28 @@ export function createApp(options: CreateAppOptions = {}): express.Application {
       status: 'ok',
       service: 'realtime-gateway',
       timestamp: new Date().toISOString(),
+    });
+  });
+
+  /**
+   * The ICE servers a browser needs before it can connect call video.
+   *
+   * This is deliberately open: every participant needs it before a call
+   * exists, so there is no session to authenticate against yet. What it hands
+   * out is a credential that expires on its own, to a relay that refuses to
+   * forward anything to a private address. It is served fresh each time
+   * rather than baked into the bundle at build time -- that is precisely the
+   * mistake that shipped a build with no ICE servers at all and left
+   * peer-to-peer video unable to connect between networks.
+   */
+  app.get('/webrtc/ice', (_req: Request, res: Response) => {
+    const turn = readTurnConfig(process.env);
+    // No caching: the credential inside has an expiry, and a proxy holding
+    // one past it would hand out a credential coturn now rejects.
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      iceServers: buildIceServers(turn, Date.now()),
+      relayConfigured: turn !== null,
     });
   });
 

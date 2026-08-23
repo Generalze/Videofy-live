@@ -103,7 +103,7 @@ import {
   type CallStateSnapshot,
   type MicPermissionState,
 } from '@videofy-live/call-client-core';
-import { CallPeer, readIceServers, stopMediaStreamTracks } from '@videofy-live/call-client-core';
+import { CallPeer, fetchIceServers, stopMediaStreamTracks } from '@videofy-live/call-client-core';
 import { CallScreen, type CallConnectionPhase } from './CallScreen';
 import { HomeScreen, type CallType } from './HomeScreen';
 import { CreateJoinScreen, type CallJoinIntent } from './CreateJoinScreen';
@@ -917,6 +917,15 @@ export default function App() {
     establishInFlightRef.current = true;
     peerStatesRef.current = { publish: 'new', receive: 'new' };
 
+    // Resolved once per rebuild and shared by all three peers below, so the
+    // audio pair and the video mesh cannot end up on different ICE
+    // configurations. Asked of the gateway rather than read from the bundle:
+    // a relay credential expires, and a build-time value that nobody set is
+    // how this shipped with no ICE servers at all.
+    const iceServers = await fetchIceServers(readGatewayUrl(import.meta.env['VITE_GATEWAY_URL']), {
+      fallbackRaw: import.meta.env['VITE_WEBRTC_ICE_SERVERS'],
+    });
+
     // Rebuilds always close the previous peers first so a reconnect can never
     // leave a duplicate audio path behind.
     publishPeerRef.current?.close();
@@ -929,7 +938,7 @@ export default function App() {
     const publish = new CallPeer({
       direction: 'publish',
       stream: mic,
-      iceServers: readIceServers(import.meta.env['VITE_WEBRTC_ICE_SERVERS']),
+      iceServers,
       onConnectionStateChange: (state) => {
         peerStatesRef.current.publish = state;
       },
@@ -949,7 +958,7 @@ export default function App() {
 
     const receive = new CallPeer({
       direction: 'receive',
-      iceServers: readIceServers(import.meta.env['VITE_WEBRTC_ICE_SERVERS']),
+      iceServers,
       onConnectionStateChange: (state) => {
         peerStatesRef.current.receive = state;
       },
@@ -979,7 +988,7 @@ export default function App() {
       const mesh = new CallVideoMesh({
         callId: active.callId,
         selfParticipantId: active.participantId,
-        iceServers: readIceServers(import.meta.env['VITE_WEBRTC_ICE_SERVERS']),
+        iceServers,
         sendOffer: (payload) => socket.emit(CALL_EVENTS.VIDEO_OFFER, payload),
         sendAnswer: (payload) => socket.emit(CALL_EVENTS.VIDEO_ANSWER, payload),
         sendIce: (payload) => socket.emit(CALL_EVENTS.VIDEO_ICE, payload),

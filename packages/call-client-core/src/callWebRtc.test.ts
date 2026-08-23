@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { CallPeer, stopMediaStreamTracks, type StoppableMediaStream } from './callWebRtc';
+import {
+  CallPeer,
+  readIceServers,
+  stopMediaStreamTracks,
+  type StoppableMediaStream,
+} from './callWebRtc';
 import { CALL_REMOTE_SLOT_COUNT } from './callTypes';
 
 function fakeStream(trackCount: number, options: { throwAt?: number } = {}) {
@@ -121,5 +126,42 @@ describe('receive peer offers a transceiver per conference slot', () => {
     });
 
     expect(peer.transceivers).toHaveLength(0);
+  });
+});
+
+describe('readIceServers', () => {
+  it('PIN: an unset value yields working STUN, not silence', () => {
+    // The regression this exists for: call video is a peer-to-peer mesh, so a
+    // build with no ICE servers cannot connect two people on different
+    // networks at all. Audio kept working (server-mediated, public address),
+    // which disguised a configuration gap as a video defect.
+    expect(readIceServers(undefined).length).toBeGreaterThan(0);
+    expect(readIceServers('').length).toBeGreaterThan(0);
+    expect(readIceServers('   ').length).toBeGreaterThan(0);
+  });
+
+  it('PIN: unparseable configuration falls back rather than shipping nothing', () => {
+    expect(readIceServers('{not json').length).toBeGreaterThan(0);
+    expect(readIceServers('"a string"').length).toBeGreaterThan(0);
+  });
+
+  it('honours an explicit empty array — absent is not the same as empty', () => {
+    // Only this spelling means "I really want no ICE servers".
+    expect(readIceServers('[]')).toEqual([]);
+  });
+
+  it('uses the configured servers when they are given', () => {
+    const configured = JSON.stringify([
+      { urls: ['turn:turn.example.test:3478'], username: 'u', credential: 'c' },
+    ]);
+    expect(readIceServers(configured)).toEqual([
+      { urls: ['turn:turn.example.test:3478'], username: 'u', credential: 'c' },
+    ]);
+  });
+
+  it('never hands back the shared default for a caller to mutate', () => {
+    const first = readIceServers(undefined);
+    first.push({ urls: ['stun:injected.test'] });
+    expect(readIceServers(undefined)).not.toContainEqual({ urls: ['stun:injected.test'] });
   });
 });
