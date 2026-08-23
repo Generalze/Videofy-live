@@ -592,7 +592,19 @@ export class IngestService {
    * An empty list is a real answer, not a failure: captions only.
    */
   liveSpeechPlansFor(sessionId: string): LiveSpeechPlan[] {
-    const session = this.currentSession?.id === sessionId ? this.currentSession : null;
+    /**
+     * Looked up BY ID, not taken from `currentSession`.
+     *
+     * `currentSession` is whichever session last changed state -- a single
+     * slot, meaningful for the programme path where one stream is being
+     * processed. A call has one session PER PARTICIPANT, so at most one of
+     * them could ever match, and the other silently got no speech plans: no
+     * translation pipeline was built for it, nothing was synthesised, and the
+     * caller heard their partner's original voice with no translated audio at
+     * all. Captions still worked, because they travel a different path, which
+     * is what made this look like a synthesis problem rather than a lookup.
+     */
+    const session = this.sessions.get(sessionId);
     if (session === null) return [];
     // The rule itself lives in `planSpeechTargets`, which is pure and pinned.
     // This method's only job is finding the session.
