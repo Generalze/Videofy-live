@@ -7,7 +7,7 @@
  * tests pin the one question that would have caught it.
  */
 import { describe, expect, it } from 'vitest';
-import { describeLiveEngine } from '../live-provider-wiring.js';
+import { describeLiveEngine, readLiveProviderEnv } from '../live-provider-wiring.js';
 
 const REAL = {
   streamingTranscriptionProvider: 'deepgram-flux',
@@ -65,5 +65,41 @@ describe('describeLiveEngine', () => {
     expect(engine.transcription).toBe('deepgram-flux');
     expect(engine.synthesis).toBe('elevenlabs');
     expect(engine.translation).toBe('opus-mt');
+  });
+});
+
+/**
+ * Reading provider configuration from the environment.
+ *
+ * Deployment templates declare every supported variable and leave the values
+ * blank, so an empty string is the normal state of an unconfigured box rather
+ * than a deliberate choice.
+ */
+describe('readLiveProviderEnv', () => {
+  it('PIN: an empty value is ABSENT, so defaults apply', () => {
+    // DEEPGRAM_MODEL="" survived `?? 'flux-general-en'` — which only replaces
+    // null and undefined — reached the provider as a model named "", and
+    // crash-looped media-ingest 18 times with `" is not a Flux model"`.
+    const env = readLiveProviderEnv({
+      DEEPGRAM_MODEL: '',
+      DEEPGRAM_API_KEY: '',
+      ELEVENLABS_DEFAULT_VOICE_ID: '',
+    } as NodeJS.ProcessEnv);
+    expect(env.deepgramModel).toBeUndefined();
+    expect(env.deepgramApiKey).toBeUndefined();
+    expect(env.elevenLabsVoiceId).toBeUndefined();
+  });
+
+  it('PIN: whitespace is absent too', () => {
+    // Invisible in a file that cannot be printed, identical in effect.
+    const env = readLiveProviderEnv({ DEEPGRAM_MODEL: '   ' } as NodeJS.ProcessEnv);
+    expect(env.deepgramModel).toBeUndefined();
+  });
+
+  it('keeps real values, trimmed', () => {
+    const env = readLiveProviderEnv({
+      DEEPGRAM_MODEL: ' flux-general-en ',
+    } as NodeJS.ProcessEnv);
+    expect(env.deepgramModel).toBe('flux-general-en');
   });
 });

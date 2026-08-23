@@ -21,8 +21,9 @@
   .\deploy\staging\set-provider-credentials.ps1 -Server c7-eu-01
 #>
 param(
-  # Your SSH alias for the Contabo box.
-  [string]$Server = 'c7-eu-01'
+  # Your SSH alias for the Contabo box. c7-admin is the administrative
+  # account; credentials should be written by it rather than by a service user.
+  [string]$Server = 'c7-admin'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -97,8 +98,21 @@ chown root:root "`$ENV_FILE"
 chmod 640 "`$ENV_FILE"
 
 systemctl restart videofy-media-ingest videofy-gateway
-sleep 6
-systemctl is-active videofy-media-ingest videofy-gateway
+
+# Wait for the port, do not guess at a duration. A fixed sleep reported a
+# connection refused against a service that was still starting, which reads as
+# a failed deploy; and if it never comes up, the crash-loop is the finding.
+for attempt in `$(seq 1 30); do
+  curl -fsS -o /dev/null http://127.0.0.1:3002/health && break
+  sleep 1
+done
+
+systemctl is-active videofy-media-ingest videofy-gateway || true
+if ! systemctl is-active --quiet videofy-media-ingest; then
+  echo '--- media-ingest did NOT start; last errors ---'
+  journalctl -u videofy-media-ingest --no-pager -n 40 | grep -iE 'error|refus|throw' | tail -6
+  exit 1
+fi
 
 echo '--- translation engine ---'
 curl -fsS http://127.0.0.1:3002/health | python3 -c "
@@ -122,10 +136,31 @@ if pairs:
 Write-Host ''
 Write-Host 'Sending...' -ForegroundColor DarkGray
 $remote | ssh $Server 'sudo bash -s'
+$sshExit = $LASTEXITCODE
 
-# Drop the plaintext copies as soon as they are no longer needed.
+# Drop the plaintext copies as soon as they are no longer needed, whether or
+# not the send worked.
 $deepgramKey = $null; $elevenKey = $null; $lines = $null; $payload = $null
 [GC]::Collect()
 
 Write-Host ''
-Write-Host 'Done. If "real" is still False, the line above names what is missing.' -ForegroundColor DarkGray
+if ($sshExit -ne 0) {
+  # Two different failures, and saying the wrong one costs real time.
+  #
+  # It first printed "Done." after an unresolved hostname, when genuinely
+  # nothing had been sent. The correction then over-claimed the opposite --
+  # "Nothing was written" -- after a run whose credentials HAD been written and
+  # whose services HAD restarted, and only the closing health check failed. So
+  # this refuses to guess: the output above says which happened.
+  Write-Host "ssh to '$Server' exited $sshExit." -ForegroundColor Red
+  Write-Host ''
+  Write-Host 'Read the output above before re-running:' -ForegroundColor DarkGray
+  Write-Host '  - could not resolve host / permission denied -> nothing was written; fix -Server and re-run.' -ForegroundColor DarkGray
+  Write-Host '  - systemctl output appeared -> the credentials WERE written and the services restarted;' -ForegroundColor DarkGray
+  Write-Host '    only the health check failed. Re-running is safe (it replaces rather than appends).' -ForegroundColor DarkGray
+  Write-Host ''
+  Write-Host 'Check the service directly with:' -ForegroundColor DarkGray
+  Write-Host "  ssh $Server 'systemctl is-active videofy-media-ingest; curl -s http://127.0.0.1:3002/health'" -ForegroundColor DarkGray
+  exit 1
+}
+Write-Host 'Sent. If "real" is still False, the block above names what is missing.' -ForegroundColor DarkGray

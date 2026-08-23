@@ -42,14 +42,30 @@ export interface LiveProviderEnv {
   readonly elevenLabsVoiceId?: string | undefined;
 }
 
+/**
+ * EMPTY IS ABSENT.
+ *
+ * A deployment template declares every variable it supports and leaves the
+ * values blank, so `DEEPGRAM_MODEL=` is the NORMAL state of an unconfigured
+ * box -- not a deliberate choice of the empty-string model. Read raw, it
+ * survives `?? 'flux-general-en'` (which only replaces null and undefined),
+ * reaches the provider as a model named "", and crash-loops the service with
+ * `" is not a Flux model"`. Whitespace does the same, and is harder to see in
+ * a file nobody can print.
+ */
+function optional(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
 export function readLiveProviderEnv(env: NodeJS.ProcessEnv = process.env): LiveProviderEnv {
   // NAMES only. No secret is ever written to a log line, a doc, or a default.
   return {
-    deepgramApiKey: env['DEEPGRAM_API_KEY'],
-    deepgramModel: env['DEEPGRAM_MODEL'],
-    elevenLabsApiKey: env['ELEVENLABS_API_KEY'],
-    elevenLabsModel: env['ELEVENLABS_MODEL'],
-    elevenLabsVoiceId: env['ELEVENLABS_DEFAULT_VOICE_ID'],
+    deepgramApiKey: optional(env['DEEPGRAM_API_KEY']),
+    deepgramModel: optional(env['DEEPGRAM_MODEL']),
+    elevenLabsApiKey: optional(env['ELEVENLABS_API_KEY']),
+    elevenLabsModel: optional(env['ELEVENLABS_MODEL']),
+    elevenLabsVoiceId: optional(env['ELEVENLABS_DEFAULT_VOICE_ID']),
   };
 }
 
