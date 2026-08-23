@@ -19,6 +19,16 @@ export VITE_ACCOUNT_URL=/auth
 export VITE_INGEST_URL=/media
 export VITE_PROGRESSIVE_TRANSLATED_AUDIO=true
 
+# ICE servers for the BROWSER side, as JSON -- the client parses this with
+# JSON.parse and returns [] on any failure, so a comma-separated list is
+# silently identical to setting nothing at all.
+#
+# Public STUN only. A browser behind carrier NAT needs a reflexive
+# candidate; without one it offers a private address and the server has
+# nowhere to send audio. TURN is a separate decision (see the readiness
+# doc) and is required for networks that block UDP outright.
+export VITE_WEBRTC_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]}]'
+
 build_app() {
   local app="$1" base="$2"
   echo "--- $app (base $base) ---"
