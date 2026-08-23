@@ -92,7 +92,16 @@ while IFS= read -r line; do
   key="`${line%%=*}"
   sed -i "/^`${key}=/d" "`$ENV_FILE"
 done < "`$TMP"
+
+# A file whose last line has no newline swallows the first appended line onto
+# it: TRANSLATION_PROVIDER=opus-mt became
+# `TRANSLATION_PROVIDER=opus-mtOPUS_MT_PYTHON=...` and the service refused to
+# start. Guarantee the terminator on BOTH sides before joining them.
+[ -s "`$ENV_FILE" ] && [ -n "`$(tail -c1 "`$ENV_FILE")" ] && printf '
+' >> "`$ENV_FILE"
 cat "`$TMP" >> "`$ENV_FILE"
+[ -n "`$(tail -c1 "`$ENV_FILE")" ] && printf '
+' >> "`$ENV_FILE"
 
 chown root:root "`$ENV_FILE"
 chmod 640 "`$ENV_FILE"
