@@ -10,16 +10,83 @@ import type { CallType } from '@videofy-live/call-client-core';
 
 export type { CallType };
 
+/**
+ * The call this person just stepped out of, when there is one.
+ *
+ * Leaving a call returns you here, and until now the call you were in a second
+ * ago left no trace — getting back meant retyping its code from memory. It is
+ * offered only after a voluntary leave: a call the chairman ended is gone, and
+ * a "rejoin" that silently created a new call under the old code would look
+ * like the meeting had reopened.
+ */
+export interface RejoinOffer {
+  readonly callId: string;
+  readonly callType: CallType;
+  readonly displayName: string;
+}
+
 export interface HomeScreenProps {
   onChooseType: (type: CallType) => void;
+  rejoinOffer?: RejoinOffer | null;
+  onRejoin?: (offer: RejoinOffer) => void;
+  onDismissRejoin?: () => void;
+  /**
+   * Why the call surface went away, when somebody else ended it. Landing back
+   * here with no explanation reads as a crash.
+   */
+  endedNote?: string | null;
+  onDismissEndedNote?: () => void;
 }
 
 export function HomeScreen(props: HomeScreenProps) {
+  const offer = props.rejoinOffer ?? null;
   return (
     <main className="home-screen">
       <p className="home-eyebrow">Real-time translated calls</p>
       <h1 className="home-title">Videofy Live</h1>
       <p className="home-lede">Talk to anyone, in any language.</p>
+
+      {props.endedNote ? (
+        <div className="home-ended-note" role="status">
+          <span>{props.endedNote}</span>
+          {props.onDismissEndedNote ? (
+            <button
+              type="button"
+              className="home-rejoin-dismiss"
+              onClick={props.onDismissEndedNote}
+            >
+              Dismiss
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {offer && props.onRejoin ? (
+        <div className="home-rejoin" role="status">
+          <div className="home-rejoin-text">
+            <span className="home-rejoin-label">You left</span>
+            <span className="home-rejoin-code">{offer.callId}</span>
+          </div>
+          <div className="home-rejoin-actions">
+            <button
+              type="button"
+              className="home-rejoin-button"
+              onClick={() => props.onRejoin?.(offer)}
+            >
+              Rejoin call
+            </button>
+            {props.onDismissRejoin ? (
+              <button
+                type="button"
+                className="home-rejoin-dismiss"
+                onClick={props.onDismissRejoin}
+              >
+                Dismiss
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       <div className="home-choices">
         <button

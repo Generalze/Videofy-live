@@ -137,6 +137,23 @@ export interface CallLeavePayload {
   participantId: string;
 }
 
+/** Ending the call for everyone — distinct from leaving your own seat. */
+export interface CallEndPayload {
+  callId: string;
+  participantId: string;
+}
+
+/**
+ * Told to everyone still in the call the moment it is ended, before their
+ * transports go away — otherwise the silence is indistinguishable from a
+ * network failure and the app sits on "reconnecting" forever.
+ */
+export interface CallEndedPayload {
+  callId: string;
+  endedByParticipantId: string;
+  endedByDisplayName: string;
+}
+
 /** A reader changing the language they read captions in, mid-call. */
 export interface CallCaptionLanguagePayload {
   callId: string;

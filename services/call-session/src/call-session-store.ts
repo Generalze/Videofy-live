@@ -251,6 +251,14 @@ export type CallEndResult =
     }
   | { ok: false; reason: 'unknown-call' };
 
+/**
+ * `endCallByParticipant` outcome: the same ending, asked for by somebody in
+ * the call rather than by project authority, so it can be refused.
+ */
+export type CallParticipantEndResult =
+  | (CallEndResult & { ok: true })
+  | { ok: false; reason: 'unknown-call' | 'unknown-participant' | 'not-owner' };
+
 export interface CallJoinResult {
   ok: true;
   participantId: string;
@@ -730,6 +738,29 @@ export class CallSessionStore {
     );
     this.calls.delete(callId);
     return { ok: true, snapshot, retiredIngestSessionIds };
+  }
+
+  /**
+   * Somebody in the call ending it for everyone — distinct from leave(), which
+   * only surrenders one seat.
+   *
+   * WHO MAY. In a conference the chairman and nobody else: ending a meeting is
+   * an authority over other people's participation, and a control that would
+   * be refused must not be offered. In a personal call either party may, which
+   * is not a weaker rule but the same one — with two seats, one person leaving
+   * already ends the call, so refusing the button would deny an action its
+   * holder can take anyway by walking out.
+   */
+  endCallByParticipant(callId: string, participantId: string): CallParticipantEndResult {
+    const call = this.calls.get(callId);
+    if (!call) return { ok: false, reason: 'unknown-call' };
+    if (!call.participants.has(participantId)) {
+      return { ok: false, reason: 'unknown-participant' };
+    }
+    if (call.callType !== 'personal' && participantId !== call.ownerParticipantId) {
+      return { ok: false, reason: 'not-owner' };
+    }
+    return this.endCall(callId) as CallParticipantEndResult;
   }
 
   /** Keeps the participant's identity and revisions so a resume can reclaim them. */

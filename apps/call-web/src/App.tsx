@@ -95,6 +95,7 @@ import {
   type CallMode,
   type CallSetModeAck,
   type CallSetModePayload,
+  type CallEndedPayload,
   type CallVideoIcePayload,
   type CallVideoSdpPayload,
   type CallLanguage,
@@ -105,7 +106,7 @@ import {
 } from '@videofy-live/call-client-core';
 import { CallPeer, fetchIceServers, stopMediaStreamTracks } from '@videofy-live/call-client-core';
 import { CallScreen, type CallConnectionPhase } from './CallScreen';
-import { HomeScreen, type CallType } from './HomeScreen';
+import { HomeScreen, type CallType, type RejoinOffer } from './HomeScreen';
 import { CreateJoinScreen, type CallJoinIntent } from './CreateJoinScreen';
 import {
   CallCameraPreviewController,
@@ -167,6 +168,19 @@ export default function App() {
     callCodeFromLocation(window.location.search) ? 'join' : 'create',
   );
   const [callType, setCallType] = useState<CallType>('conference');
+  // Read inside handleLeave, which runs from a socket/DOM callback that closed
+  // over an older render -- a stale callType there would offer to rejoin the
+  // wrong kind of call.
+  const callTypeRef = useRef<CallType>(callType);
+  callTypeRef.current = callType;
+  /**
+   * The call this person just stepped out of, offered back to them on the home
+   * screen. Cleared when a call is ENDED rather than left, because there is
+   * nothing left to rejoin.
+   */
+  const [rejoinOffer, setRejoinOffer] = useState<RejoinOffer | null>(null);
+  /** Why the call surface disappeared, when it was somebody else's doing. */
+  const [endedNote, setEndedNote] = useState<string | null>(null);
   /** W5: the mode chosen in the entry flow. Authority after join is the SNAPSHOT. */
   const [callModeChoice, setCallModeChoice] = useState<CallMode>('translated');
   const callIntentRef = useRef<{ callType: CallType; callMode: CallMode }>({
@@ -1160,6 +1174,25 @@ export default function App() {
     socket.on(CALL_EVENTS.VIDEO_ICE, (payload: CallVideoIcePayload) => {
       void meshRef.current?.handleIce(payload.participantId, payload);
     });
+    /**
+     * The call was ended for everyone.
+     *
+     * Without this the only signal reaching the browser is its media going
+     * quiet, which is indistinguishable from a network problem -- so the app
+     * would sit on "reconnecting", and the resume logic would keep trying to
+     * reclaim a seat in a call that no longer exists. Named, because "the call
+     * ended" and "Zoe ended the call" are different things to be told.
+     */
+    socket.on(CALL_EVENTS.ENDED, (payload: CallEndedPayload) => {
+      const endedByMe = payload?.endedByParticipantId === sessionRef.current?.participantId;
+      clearResumeSession(defaultResumeStorage());
+      setRejoinOffer(null);
+      teardownRuntime(true);
+      if (!endedByMe) {
+        const who = payload?.endedByDisplayName?.trim();
+        setEndedNote(who ? `${who} ended the call.` : 'The call was ended.');
+      }
+    });
     return socket;
   };
 
@@ -1317,10 +1350,39 @@ export default function App() {
     const active = sessionRef.current;
     if (socket && active) {
       socket.emit(CALL_EVENTS.LEAVE, buildCallLeavePayload(active.callId, active.participantId));
+      // Leaving lands on the home screen, which until now kept no trace of the
+      // call you were in a second ago -- getting back meant remembering its
+      // code. The offer is recorded BEFORE teardown, which clears the session.
+      setRejoinOffer({
+        callId: active.callId,
+        callType: callTypeRef.current,
+        displayName: form.displayName,
+      });
     }
     // An explicit leave surrenders the seat: the resume entry must not
     // outlive it.
     clearResumeSession(defaultResumeStorage());
+    teardownRuntime(true);
+  };
+
+  /**
+   * Ending the call for everyone, which is a different act from leaving it.
+   *
+   * No rejoin is offered afterwards: the call is gone, and a rejoin that
+   * quietly created a new one under the same code would look like the meeting
+   * had reopened. The gateway decides authority; this only asks.
+   */
+  const handleEndCall = (): void => {
+    const socket = socketRef.current;
+    const active = sessionRef.current;
+    if (socket && active) {
+      socket.emit(CALL_EVENTS.END, {
+        callId: active.callId,
+        participantId: active.participantId,
+      });
+    }
+    clearResumeSession(defaultResumeStorage());
+    setRejoinOffer(null);
     teardownRuntime(true);
   };
 
@@ -1524,9 +1586,27 @@ export default function App() {
       {screen === 'home' ? (
         <HomeScreen
           onChooseType={(type) => {
+            setEndedNote(null);
             setCallType(type);
             setScreen('createjoin');
           }}
+          endedNote={endedNote}
+          onDismissEndedNote={() => setEndedNote(null)}
+          rejoinOffer={rejoinOffer}
+          onRejoin={(offer) => {
+            setCallType(offer.callType);
+            setJoinIntent('join');
+            setForm((current) => ({
+              ...current,
+              callId: offer.callId,
+              displayName: offer.displayName,
+            }));
+            // Straight to pre-join rather than straight into the call: the
+            // microphone and camera choices are made there, and rejoining
+            // should not seize either without being asked.
+            setScreen('prejoin');
+          }}
+          onDismissRejoin={() => setRejoinOffer(null)}
         />
       ) : null}
       {screen === 'createjoin' ? (
@@ -1603,6 +1683,7 @@ export default function App() {
           onTranslatedVolumeChange={setTranslatedVolume}
           onEnableAudio={handleEnableAudio}
           onLeave={handleLeave}
+          onEndCall={handleEndCall}
         />
       ) : null}
       {screen === 'prejoin' ? (

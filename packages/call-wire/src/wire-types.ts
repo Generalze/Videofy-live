@@ -101,6 +101,31 @@ export interface CallLeavePayload {
   participantId: string;
 }
 
+/** call:end — ending the call for everyone, not just surrendering a seat. */
+export interface CallEndPayload {
+  callId: string;
+  participantId: string;
+}
+
+export type CallEndAck =
+  | { ok: true }
+  | {
+      ok: false;
+      error: 'not-owner' | 'unknown-call' | 'unknown-participant';
+    };
+
+/**
+ * call:ended — told to everyone still in the call, before their transports go
+ * away, so the app can say the call was ended rather than showing the silence
+ * as a connection problem.
+ */
+export interface CallEndedPayload {
+  callId: string;
+  /** Who ended it, so the surface can name them rather than say "someone". */
+  endedByParticipantId: string;
+  endedByDisplayName: string;
+}
+
 /** A reader changing the language they read captions in, mid-call. */
 export interface CallCaptionLanguagePayload {
   callId: string;

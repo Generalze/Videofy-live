@@ -13,6 +13,20 @@
 export const CALL_EVENTS = {
   JOIN: 'call:join',
   LEAVE: 'call:leave',
+  /**
+   * Ending the call for EVERYONE, as opposed to LEAVE, which surrenders only
+   * the sender's own seat. Two events because they are two different acts: a
+   * participant stepping out of a meeting that continues without them, and a
+   * chairman closing the meeting.
+   */
+  END: 'call:end',
+  /**
+   * Broadcast to every participant the instant a call is ended, before the
+   * transports are torn down. Without it the only signal reaching a browser is
+   * its media going quiet, which is indistinguishable from a network failure —
+   * so the app would show "reconnecting" for a call that no longer exists.
+   */
+  ENDED: 'call:ended',
   PUBLISH_OFFER: 'call:publish:offer',
   PUBLISH_ICE: 'call:publish:ice',
   RECEIVE_OFFER: 'call:receive:offer',

@@ -621,3 +621,78 @@ describe('CallSessionStore subject identity (R8)', () => {
     expect(store.hasConnectedSubject('call-1', 'customer_8291')).toBe(true);
   });
 });
+
+/**
+ * Ending a call for everyone, asked for from inside the call.
+ *
+ * Distinct from leave(), which surrenders one seat and lets the call carry on,
+ * and from endCall(), which is project authority and answers to nobody in the
+ * room.
+ */
+describe('endCallByParticipant', () => {
+  it('lets the chairman end a conference for everyone', () => {
+    const store = new CallSessionStore();
+    const chairman = mustJoin(store, { callType: 'conference', displayName: 'Zoe' });
+    mustJoin(store, { callType: 'conference', displayName: 'Carlos' });
+
+    const result = store.endCallByParticipant('call-1', chairman.participantId);
+    expect(result.ok).toBe(true);
+    // The call is gone for everybody, not just for the person who ended it.
+    expect(store.snapshot('call-1')).toBeNull();
+  });
+
+  it('PIN: an ordinary participant cannot end a conference', () => {
+    // Ending a meeting is authority over other people's participation. A
+    // control that would be refused must not be offered, so the surface asks
+    // this question before it renders the button.
+    const store = new CallSessionStore();
+    mustJoin(store, { callType: 'conference', displayName: 'Zoe' });
+    const guest = mustJoin(store, { callType: 'conference', displayName: 'Carlos' });
+
+    const result = store.endCallByParticipant('call-1', guest.participantId);
+    expect(result).toEqual({ ok: false, reason: 'not-owner' });
+    // Refused means nothing happened — the call is still there for everyone.
+    expect(store.snapshot('call-1')).not.toBeNull();
+  });
+
+  it('lets either party end a personal call', () => {
+    // With two seats, one person leaving already ends the call. Refusing the
+    // button would deny an action its holder can take anyway by walking out.
+    const store = new CallSessionStore();
+    mustJoin(store, { callType: 'personal', displayName: 'Zoe' });
+    const other = mustJoin(store, { callType: 'personal', displayName: 'Carlos' });
+
+    expect(store.endCallByParticipant('call-1', other.participantId).ok).toBe(true);
+    expect(store.snapshot('call-1')).toBeNull();
+  });
+
+  it('PIN: a stranger to the call cannot end it', () => {
+    const store = new CallSessionStore();
+    mustJoin(store, { callType: 'conference', displayName: 'Zoe' });
+
+    expect(store.endCallByParticipant('call-1', 'participant_not_here')).toEqual({
+      ok: false,
+      reason: 'unknown-participant',
+    });
+    expect(store.snapshot('call-1')).not.toBeNull();
+  });
+
+  it('refuses a call that does not exist', () => {
+    const store = new CallSessionStore();
+    expect(store.endCallByParticipant('no-such-call', 'participant_1')).toEqual({
+      ok: false,
+      reason: 'unknown-call',
+    });
+  });
+
+  it('retires every seat’s work order, not just the ender’s', () => {
+    // A session left registered after the call is gone is one a later reap
+    // would try to act on.
+    const store = new CallSessionStore();
+    const chairman = mustJoin(store, { callType: 'conference', displayName: 'Zoe' });
+    mustJoin(store, { callType: 'conference', displayName: 'Carlos' });
+
+    const result = store.endCallByParticipant('call-1', chairman.participantId);
+    expect(result.ok && result.retiredIngestSessionIds.length).toBe(2);
+  });
+});

@@ -174,6 +174,8 @@ describe('call socket contract', () => {
     expect(CALL_EVENTS).toEqual({
       JOIN: 'call:join',
       LEAVE: 'call:leave',
+      END: 'call:end',
+      ENDED: 'call:ended',
       PUBLISH_OFFER: 'call:publish:offer',
       PUBLISH_ICE: 'call:publish:ice',
       RECEIVE_OFFER: 'call:receive:offer',

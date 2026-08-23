@@ -30,6 +30,7 @@ import {
   CallVideoSdpPayloadSchema,
   type CallJoinAck,
   type CallSdpAck,
+  type CallEndAck,
   type CallSetModeAck,
   type CallStateWirePayload,
   type CallVideoIcePayload,
@@ -532,6 +533,9 @@ export class CallRuntime {
     });
     this.onGuarded(socket, CALL_EVENTS.LEAVE, (raw, ack) => {
       this.deliverAck(ack, this.handleLeave(socket, raw));
+    });
+    this.onGuarded(socket, CALL_EVENTS.END, (raw, ack) => {
+      this.deliverAck(ack, this.handleEndCall(socket, raw));
     });
     this.onGuarded(socket, CALL_EVENTS.PUBLISH_OFFER, async (raw, ack) => {
       this.deliverAck(ack, await this.handlePublishOffer(socket, raw));
@@ -1045,6 +1049,48 @@ export class CallRuntime {
     const binding = this.requireBinding(socket, raw);
     if (!binding) return { ok: false };
     return this.finalizeLeave(binding.callId, binding.participantId, socket, 'participant left the call');
+  }
+
+  /**
+   * Ending the call for everyone.
+   *
+   * The store decides who may, exactly as it does for call mode — this handler
+   * only carries out the transport half. The order matters: ENDED is broadcast
+   * BEFORE teardown, because teardown detaches the very sockets that need to
+   * hear it. Announce first, then dismantle.
+   */
+  handleEndCall(socket: CallSocketLike, raw: unknown): CallEndAck {
+    const binding = this.requireBinding(socket, raw);
+    if (!binding) return { ok: false, error: 'unknown-participant' };
+
+    const snapshotBefore = this.store.snapshot(binding.callId);
+    const endedByDisplayName =
+      snapshotBefore?.participants.find((p) => p.participantId === binding.participantId)
+        ?.displayName ?? '';
+
+    const result = this.store.endCallByParticipant(binding.callId, binding.participantId);
+    if (!result.ok) return { ok: false, error: result.reason };
+
+    logger.info('Call ended by participant', {
+      callId: binding.callId,
+      participantId: binding.participantId,
+    });
+    this.emitToRoom(callRoom(binding.callId), CALL_EVENTS.ENDED, {
+      callId: binding.callId,
+      endedByParticipantId: binding.participantId,
+      endedByDisplayName,
+    });
+    for (const ingestSessionId of result.retiredIngestSessionIds) {
+      this.retireIngestEntry(ingestSessionId, 'call ended by participant');
+    }
+    this.transcriptLog.append({
+      kind: 'leave',
+      callId: binding.callId,
+      participantId: binding.participantId,
+      reason: 'call ended by participant',
+    });
+    this.teardownCall(binding.callId, 'call ended by participant');
+    return { ok: true };
   }
 
   /** Socket-level disconnect: keep the seat for resume, stop all transport, arm the reaper. */

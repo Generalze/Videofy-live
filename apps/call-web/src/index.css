@@ -104,6 +104,79 @@ select {
   max-width: 36ch;
 }
 
+/* ── Returning from a call ──────────────────────────────────────────────────
+   Leaving drops you back here, so this is where the call you just left is
+   still reachable and where an ending you did not choose gets explained.
+   Both sit ABOVE the two big choices: they are about the call that just
+   happened, and starting a new one is the alternative, not the default. */
+
+.home-rejoin,
+.home-ended-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--vf-space-3);
+  width: 100%;
+  max-width: 28rem;
+  margin-top: var(--vf-space-5);
+  padding: var(--vf-space-3) var(--vf-space-4);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-subtle);
+  border-radius: var(--vf-radius-lg);
+  background: var(--vf-surface-2);
+  color: var(--vf-text-secondary);
+  text-align: left;
+}
+
+.home-rejoin-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.home-rejoin-label {
+  font-size: var(--vf-font-size-sm);
+  color: var(--vf-text-muted);
+}
+
+.home-rejoin-code {
+  font-weight: var(--vf-font-weight-semibold);
+  color: var(--vf-text-primary);
+  /* Call codes are read aloud and typed by hand; never let one be clipped. */
+  overflow-wrap: anywhere;
+}
+
+.home-rejoin-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-space-2);
+}
+
+.home-rejoin-button {
+  min-height: var(--vf-tap-target-min);
+  padding: 0 var(--vf-space-4);
+  border: none;
+  border-radius: var(--vf-radius-md);
+  background: var(--vf-violet-600);
+  color: var(--vf-ink-0);
+  font-weight: var(--vf-font-weight-semibold);
+  cursor: pointer;
+}
+
+.home-rejoin-button:hover:enabled {
+  background: var(--vf-violet-500);
+}
+
+.home-rejoin-dismiss {
+  min-height: var(--vf-tap-target-min);
+  padding: 0 var(--vf-space-3);
+  border: var(--vf-border-width-hairline) solid var(--vf-border-subtle);
+  border-radius: var(--vf-radius-md);
+  background: transparent;
+  color: var(--vf-text-secondary);
+  cursor: pointer;
+}
+
 .home-choices,
 .createjoin-choices,
 .mode-choices {

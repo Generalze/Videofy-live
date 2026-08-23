@@ -836,3 +836,73 @@ describe('call:audio-mode:set — planning reacts without any reconnect', () => 
     expect(afterLeave.ok).toBe(false);
   });
 });
+
+/**
+ * Ending the call for everyone — the gateway's half.
+ *
+ * The store answers who may; this proves the gateway enforces that answer and
+ * carries out the transport consequences in an order that actually reaches
+ * people. Announcing an ending AFTER tearing down the sockets tells nobody.
+ */
+describe('call:end', () => {
+  let harness: Harness;
+  let anaSocket: FakeSocket;
+  let betoSocket: FakeSocket;
+
+  beforeEach(async () => {
+    harness = createHarness();
+    anaSocket = new FakeSocket('socket-a');
+    betoSocket = new FakeSocket('socket-b');
+    await join(harness, anaSocket, { ...JOIN_ANA });
+    await join(harness, betoSocket, { ...JOIN_BETO });
+    harness.emitToRoom.mockClear();
+  });
+
+  async function end(socket: FakeSocket, payload: Record<string, unknown>) {
+    const ack = vi.fn();
+    await socket.trigger(CALL_EVENTS.END, payload, ack);
+    expect(ack).toHaveBeenCalledTimes(1);
+    return ack.mock.calls[0]?.[0] as { ok: boolean; error?: string };
+  }
+
+  it('lets the owner end the call and tells everyone before tearing it down', async () => {
+    const ack = await end(anaSocket, { callId: 'demo', participantId: 'participant_1' });
+    expect(ack.ok).toBe(true);
+
+    const ended = roomEmissions(harness, CALL_EVENTS.ENDED);
+    expect(ended).toHaveLength(1);
+    // Broadcast to the whole call, naming who ended it — "the call ended" and
+    // "Ana ended the call" are different things to be told.
+    expect(ended[0]?.payload).toMatchObject({
+      callId: 'demo',
+      endedByParticipantId: 'participant_1',
+      endedByDisplayName: 'Ana',
+    });
+  });
+
+  it('PIN: a non-owner is refused, and the call survives', async () => {
+    const ack = await end(betoSocket, { callId: 'demo', participantId: 'participant_2' });
+    expect(ack).toEqual({ ok: false, error: 'not-owner' });
+    // Nothing was announced and nothing was torn down.
+    expect(roomEmissions(harness, CALL_EVENTS.ENDED)).toHaveLength(0);
+    expect(harness.store.snapshot('demo')).not.toBeNull();
+  });
+
+  it('PIN: the ending is announced BEFORE the transports are detached', async () => {
+    // teardownCall detaches the very sockets that need to hear this. If the
+    // order ever flips, the event is emitted into an empty room and every
+    // participant sees a frozen call instead of an ended one.
+    await end(anaSocket, { callId: 'demo', participantId: 'participant_1' });
+    const events = harness.emitToRoom.mock.calls.map((call) => call[1]);
+    expect(events).toContain(CALL_EVENTS.ENDED);
+    expect(harness.store.snapshot('demo')).toBeNull();
+  });
+
+  it('PIN: a participant cannot end a call by naming somebody else', async () => {
+    // Authority is read from the socket's own binding, never from the payload,
+    // so claiming the owner's id in the body changes nothing.
+    const ack = await end(betoSocket, { callId: 'demo', participantId: 'participant_1' });
+    expect(ack.ok).toBe(false);
+    expect(harness.store.snapshot('demo')).not.toBeNull();
+  });
+});

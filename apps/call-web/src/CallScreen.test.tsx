@@ -732,3 +732,39 @@ describe('transcript download policy (18 Aug)', () => {
     );
   });
 });
+
+/**
+ * Ending a call versus leaving it.
+ *
+ * Two different acts: stepping out of a meeting that carries on without you,
+ * and closing the meeting. The surface must not blur them, and must never
+ * offer an ending the gateway would refuse.
+ */
+describe('CallScreen ending controls', () => {
+  it('offers a personal call a single End call button', () => {
+    // With two seats there is no meaningful difference between leaving and
+    // ending, so the one button says what actually happens.
+    const html = render({ callType: 'personal', onEndCall: vi.fn() });
+    expect(html).toContain('End call');
+    expect(html).not.toContain('>Leave<');
+  });
+
+  it('offers a conference chairman both Leave and End for everyone', () => {
+    const html = render({ callType: 'conference', isOwner: true, onEndCall: vi.fn() });
+    expect(html).toContain('Leave');
+    expect(html).toContain('End for everyone');
+  });
+
+  it('PIN: an ordinary conference participant is offered no way to end the call', () => {
+    // The gateway refuses this from a non-owner, and a control that would be
+    // refused must not look available — not even disabled.
+    const html = render({ callType: 'conference', isOwner: false, onEndCall: vi.fn() });
+    expect(html).toContain('Leave');
+    expect(html).not.toContain('End for everyone');
+  });
+
+  it('PIN: without an end handler nothing claims the call can be ended', () => {
+    const html = render({ callType: 'conference', isOwner: true });
+    expect(html).not.toContain('End for everyone');
+  });
+});

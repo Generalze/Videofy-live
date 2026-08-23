@@ -102,6 +102,11 @@ export interface CallScreenProps {
   onTranslatedVolumeChange: (value: number) => void;
   onEnableAudio: () => void;
   onLeave: () => void;
+  /**
+   * Ends the call for everyone. Absent when this participant may not — the
+   * button is then not rendered at all rather than rendered disabled.
+   */
+  onEndCall?: () => void;
 }
 
 export function CallScreen(props: CallScreenProps) {
@@ -392,9 +397,43 @@ export function CallScreen(props: CallScreenProps) {
             Audio
           </button>
 
-          <button type="button" className="control-button is-danger" onClick={props.onLeave}>
-            Leave
-          </button>
+          {/*
+            Leaving and ending are two different acts, so they are two
+            different buttons.
+
+            In a personal call there is only one sensible action: with two
+            seats, stepping out ends the conversation either way, so the single
+            button says what actually happens.
+
+            In a conference everyone can Leave, and the chairman additionally
+            can close the meeting for everyone. The end control is offered ONLY
+            to the chairman — the gateway would refuse it from anyone else, and
+            a control that would be refused must not look available.
+          */}
+          {props.callType === 'personal' ? (
+            <button
+              type="button"
+              className="control-button is-danger"
+              onClick={props.onEndCall ?? props.onLeave}
+            >
+              End call
+            </button>
+          ) : (
+            <>
+              <button type="button" className="control-button is-danger" onClick={props.onLeave}>
+                Leave
+              </button>
+              {props.isOwner && props.onEndCall ? (
+                <button
+                  type="button"
+                  className="control-button is-danger"
+                  onClick={props.onEndCall}
+                >
+                  End for everyone
+                </button>
+              ) : null}
+            </>
+          )}
         </div>
 
         {/*

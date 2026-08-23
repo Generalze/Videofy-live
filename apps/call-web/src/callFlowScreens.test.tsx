@@ -96,3 +96,53 @@ describe('CallModeScreen', () => {
     expect(render()).toContain('Back');
   });
 });
+
+/**
+ * Getting back into a call you just left.
+ *
+ * Leaving returns you to this screen, which used to keep no trace of the call
+ * you were in a second ago — rejoining meant remembering its code and typing
+ * it again.
+ */
+describe('HomeScreen rejoin', () => {
+  const offer = { callId: 'calm-river-42', callType: 'conference' as CallType, displayName: 'Zoe' };
+
+  it('shows the call you left, by name, with a way back in', () => {
+    const html = renderToStaticMarkup(
+      <HomeScreen onChooseType={vi.fn()} rejoinOffer={offer} onRejoin={vi.fn()} />,
+    );
+    expect(html).toContain('Rejoin call');
+    // The code is shown, not just implied: it is what the person reads out to
+    // whoever is still waiting in the call.
+    expect(html).toContain('calm-river-42');
+  });
+
+  it('PIN: offers nothing to rejoin when there is no such call', () => {
+    // A stale rejoin button sends somebody into a call that is over, or
+    // silently creates a new one under a dead code.
+    const html = renderToStaticMarkup(<HomeScreen onChooseType={vi.fn()} rejoinOffer={null} />);
+    expect(html).not.toContain('Rejoin call');
+  });
+
+  it('PIN: never offers a rejoin it cannot carry out', () => {
+    const html = renderToStaticMarkup(<HomeScreen onChooseType={vi.fn()} rejoinOffer={offer} />);
+    expect(html).not.toContain('Rejoin call');
+  });
+
+  it('explains an ending somebody else chose', () => {
+    // Landing back here with no explanation reads as a crash.
+    const html = renderToStaticMarkup(
+      <HomeScreen onChooseType={vi.fn()} endedNote="Zoe ended the call." />,
+    );
+    expect(html).toContain('Zoe ended the call.');
+  });
+
+  it('still offers both products alongside the rejoin', () => {
+    // Rejoining is the likely intent, not the only one.
+    const html = renderToStaticMarkup(
+      <HomeScreen onChooseType={vi.fn()} rejoinOffer={offer} onRejoin={vi.fn()} />,
+    );
+    expect(html).toContain('Personal Call');
+    expect(html).toContain('Conference');
+  });
+});
