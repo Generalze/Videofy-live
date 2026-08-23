@@ -768,3 +768,29 @@ describe('CallScreen ending controls', () => {
     expect(html).not.toContain('End for everyone');
   });
 });
+
+/**
+ * A deployment with no translation engine must not claim to be translating.
+ *
+ * Staging ran mock providers for weeks: the mode chip read TRANSLATED, the
+ * participant tile read "Hearing translated voice", and the result was
+ * silence. Nothing in the product ever said the engine was absent.
+ */
+describe('CallScreen translated audio honesty', () => {
+  const suppressed = {
+    remoteSpeakers: [
+      { speakerParticipantId: 'p2', muted: false, volume: 1, originalSuppressed: true },
+    ],
+  };
+
+  it('says the original is suppressed because a translated voice is coming', () => {
+    const html = render({ ...suppressed, translatedAudioUnavailable: false });
+    expect(html).toContain('Hearing translated voice');
+  });
+
+  it('PIN: never promises a translated voice the server cannot produce', () => {
+    const html = render({ ...suppressed, translatedAudioUnavailable: true });
+    expect(html).not.toContain('Hearing translated voice');
+    expect(html).toContain('Translated audio unavailable');
+  });
+});

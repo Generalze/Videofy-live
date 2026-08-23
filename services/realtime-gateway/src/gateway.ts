@@ -133,6 +133,15 @@ export class Gateway {
   private readonly programmeSourceRevisions = new Map<string, number>();
   private readonly callRuntime: CallRuntime;
   private readonly mediaIngestUrl: string;
+  /**
+   * Whether media-ingest can genuinely translate speech.
+   *
+   * Starts TRUE so a probe that has not finished, or that fails, never tells
+   * anybody their engine is missing when it may be fine. Claiming a fault that
+   * does not exist is its own defect; the honest default is silence until the
+   * answer is known.
+   */
+  private translationEngineReal = true;
   private readonly mediaIngestPublicUrl: string;
   private readonly clients = new Map<string, ClientState>();
   private readonly programmeSessionConfigs = new Map<string, OperatorProgrammeSessionConfig>();
@@ -333,6 +342,11 @@ export class Gateway {
         ...(options.internalWebRtcToken ? { internalAuthToken: options.internalWebRtcToken } : {}),
       }),
       transcriptionBridge: this.webRtcTranscriptionBridge,
+      // media-ingest owns the providers, so it owns this answer. Cached from
+      // its /health rather than re-asked per join: providers are chosen at ITS
+      // startup and cannot change while it runs, and a call must not wait on
+      // an HTTP round trip to learn what the deployment already knows.
+      translationEngineReal: () => this.translationEngineReal,
       createMediaPeers: (handlers) => new BackendWebRtcMediaPeerRegistry(handlers),
       createReceivePeers: (handlers) => new CallReceivePeerManager(handlers),
       transcriptLog: new CallTranscriptLog(options.callTranscriptLogDir ?? null),
@@ -369,6 +383,36 @@ export class Gateway {
 
     this.io.on('connection', (socket: Socket) => this.handleConnection(socket));
     logger.info('Gateway socket server initialised');
+    void this.probeTranslationEngine();
+  }
+
+  /**
+   * Ask media-ingest whether it can actually translate speech.
+   *
+   * Fire-and-forget at startup: nothing waits on it, and a failure leaves the
+   * optimistic default in place. The point is not to gate anything -- it is so
+   * a participant in a translated call on an engine-less deployment is TOLD,
+   * instead of being shown "hearing translated voice" over silence.
+   */
+  private async probeTranslationEngine(): Promise<void> {
+    try {
+      const response = await fetch(`${this.mediaIngestUrl.replace(/\/$/, '')}/health`);
+      const payload = (await response.json()) as {
+        translationEngine?: { real?: unknown; stubbed?: unknown };
+      };
+      // Only an explicit `false` counts. An older media-ingest that does not
+      // report the field must not be read as broken.
+      if (payload.translationEngine?.real === false) {
+        this.translationEngineReal = false;
+        logger.warn('media-ingest reports no real translation engine', {
+          stubbed: payload.translationEngine.stubbed,
+        });
+      }
+    } catch (error) {
+      logger.warn('Could not ask media-ingest about its translation engine', {
+        message: error instanceof Error ? error.message : 'unknown failure',
+      });
+    }
   }
 
   /**

@@ -268,6 +268,12 @@ export interface CallTranscriptionBridgeLike {
 
 export interface CallRuntimeDependencies {
   store: CallSessionStore;
+  /**
+   * Whether this deployment can genuinely translate speech. Absent means "do
+   * not claim either way" -- the participant is told nothing, exactly as
+   * before. Answered by media-ingest, which owns the providers.
+   */
+  translationEngineReal?: () => boolean;
   emitToRoom(room: string, event: string, payload: unknown): void;
   ingestControl: CallIngestControlClient;
   transcriptionBridge: CallTranscriptionBridgeLike;
@@ -412,6 +418,11 @@ const USER_FACING_ERRORS = {
   publish: 'Your microphone could not be connected. Please try again.',
   receive: 'The other caller’s audio could not be connected. Please try again.',
   captions: 'Live captions and translated audio are temporarily unavailable.',
+  // Not "temporarily": nothing is going to start working on its own. This
+  // deployment has no translation engine, and saying otherwise sends somebody
+  // to look for a fault in their microphone.
+  translationEngine:
+    'Translated audio is not available on this server. You will hear each other’s original voices.',
 } as const;
 
 /** Guard-level failure shape (review finding 9): identical for ack and call:error. */
@@ -422,6 +433,7 @@ const INTERNAL_ERROR = {
 
 export class CallRuntime {
   private readonly store: CallSessionStore;
+  private readonly translationEngineReal?: (() => boolean) | undefined;
   private readonly emitToRoom: CallRuntimeDependencies['emitToRoom'];
   private readonly ingestControl: CallIngestControlClient;
   private readonly transcriptionBridge: CallTranscriptionBridgeLike;
@@ -480,6 +492,7 @@ export class CallRuntime {
 
   constructor(dependencies: CallRuntimeDependencies) {
     this.store = dependencies.store;
+    this.translationEngineReal = dependencies.translationEngineReal;
     this.emitToRoom = dependencies.emitToRoom;
     this.ingestControl = dependencies.ingestControl;
     this.transcriptionBridge = dependencies.transcriptionBridge;
@@ -1031,6 +1044,23 @@ export class CallRuntime {
     });
 
     await this.applyIngestPlans(callId, result.snapshot, result.ingestPlans);
+
+    /**
+     * Say so when this deployment cannot translate.
+     *
+     * A translated call whose engine is mocked looks identical to a working
+     * one: the mode chip reads TRANSLATED, the surface says "hearing
+     * translated voice", and the result is silence. Told privately to the
+     * participant who just joined -- it is a property of the deployment, not
+     * of anyone's conduct, and broadcasting it to the room would repeat it
+     * once per person for no gain.
+     */
+    if (result.snapshot.callMode === 'translated' && this.translationEngineReal?.() === false) {
+      this.emitToRoom(callParticipantRoom(callId, participantId), CALL_EVENTS.ERROR, {
+        code: 'translation-engine-unavailable',
+        message: USER_FACING_ERRORS.translationEngine,
+      });
+    }
 
     // resumeToken travels ONLY in this private ack, never in call:state/logs.
     return {

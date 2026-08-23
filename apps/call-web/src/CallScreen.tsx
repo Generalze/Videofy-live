@@ -191,6 +191,7 @@ export function CallScreen(props: CallScreenProps) {
               key={participant.participantId}
               participant={participant}
               speaking={participant.participantId === speakingParticipantId}
+              translatedAudioUnavailable={props.translatedAudioUnavailable}
               videoStream={props.remoteVideoStreams?.get(participant.participantId) ?? null}
               featured={participant.participantId === featuredId}
               onToggleFeatured={() =>
@@ -564,6 +565,11 @@ function ParticipantTile(props: {
     modeGain?: number;
     originalSuppressed?: boolean;
   };
+  /**
+   * The deployment has no translation engine, so the tile must not promise a
+   * translated voice it will never hear.
+   */
+  translatedAudioUnavailable?: boolean;
   /** Null/absent = audio-only participant; the avatar is the clean placeholder. */
   videoStream?: MediaStream | null;
   /** Spotlighted by a click; the stage lays this tile out large. */
@@ -685,9 +691,16 @@ function ParticipantTile(props: {
               The state calm-tide-33 lacked: the fr listener's controls governed
               originals the mode had silenced, moved freely, and did nothing.
               Controls that do nothing must say why.
+
+              And it must not claim a translated voice that cannot exist. On a
+              deployment with no translation engine this tile said "Hearing
+              translated voice" over silence, which sends somebody looking for
+              a fault in their own microphone.
             */
             <span className="participant-audio-pending" role="status">
-              Hearing translated voice
+              {props.translatedAudioUnavailable
+                ? 'Translated audio unavailable on this server'
+                : 'Hearing translated voice'}
             </span>
           ) : interpretationReduced(audio.modeGain) ? (
             /*

@@ -37,6 +37,7 @@ import { createLiveStreamOpener } from './live-session-host.js';
 import {
   buildStreamingSynthesisProvider,
   buildStreamingTranscriptionProvider,
+  describeLiveEngine,
 } from './live-provider-wiring.js';
 
 const config = loadConfig();
@@ -181,6 +182,20 @@ app.get('/health', (_req, res) => {
     status: connected ? 'ok' : 'degraded',
     service: 'media-ingest',
     gatewayConnected: connected,
+    /**
+     * Whether this deployment can translate speech at all.
+     *
+     * Reported unconditionally, including when it is fine. An operator asking
+     * "why is there no translated audio" should get the answer here rather
+     * than by reading five environment variables on a box they may not have.
+     */
+    translationEngine: {
+      real: liveEngine.real,
+      transcription: liveEngine.transcription,
+      synthesis: liveEngine.synthesis,
+      translation: liveEngine.translation,
+      ...(liveEngine.stubbed.length > 0 ? { stubbed: liveEngine.stubbed } : {}),
+    },
     ...(unavailablePairs.length > 0 ? { unavailableTranslationPairs: unavailablePairs } : {}),
     ...(strandedVoiceCleanups > 0 ? { strandedVoiceCleanups } : {}),
     timestamp: new Date().toISOString(),
@@ -694,6 +709,31 @@ if (PROGRAMME_ROUTES_ARE_UNAUTHENTICATED) {
 // every component reported success.
 const streamingTranscription = buildStreamingTranscriptionProvider(config);
 const streamingSynthesis = buildStreamingSynthesisProvider(config);
+
+/**
+ * Say plainly whether this deployment can translate speech at all.
+ *
+ * Mock providers open sessions, answer healthily and produce nothing. Staging
+ * ran that way while the call surface told people they were "hearing
+ * translated voice", because no component ever stated the obvious. It does now,
+ * at the loudest moment available -- startup -- and on /health for anything
+ * that checks later.
+ */
+const liveEngine = describeLiveEngine(config);
+if (!liveEngine.real) {
+  logger.warn('Translation engine is NOT real; calls cannot produce translated audio', {
+    transcription: liveEngine.transcription,
+    synthesis: liveEngine.synthesis,
+    translation: liveEngine.translation,
+    stubbed: liveEngine.stubbed,
+  });
+} else {
+  logger.info('Translation engine ready', {
+    transcription: liveEngine.transcription,
+    synthesis: liveEngine.synthesis,
+    translation: liveEngine.translation,
+  });
+}
 if (streamingTranscription !== null) {
   attachRealtimeAudioIngress(server, {
     auth: config.internalIngressAuth,

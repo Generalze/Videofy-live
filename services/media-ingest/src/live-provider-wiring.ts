@@ -119,3 +119,60 @@ export function buildStreamingSynthesisProvider(
     }
   }
 }
+
+/** What is actually behind a live call's translation, in words an operator can act on. */
+export interface LiveEngineDescription {
+  readonly transcription: string;
+  readonly synthesis: string;
+  readonly translation: string;
+  /**
+   * True only when speech genuinely becomes recognised text, translated text
+   * and spoken audio. Anything mocked or switched off makes this false.
+   */
+  readonly real: boolean;
+  /** Empty when `real`. Otherwise what is standing in for a real provider. */
+  readonly stubbed: readonly string[];
+}
+
+/**
+ * Whether this deployment can actually translate speech.
+ *
+ * The mock providers exist for tests and local work, and they are convincing
+ * from the outside: sessions open, health is green, no error is logged
+ * anywhere. A staging box configured this way accepted audio for weeks while
+ * the call surface said "Hearing translated voice" and produced silence. The
+ * providers were not broken -- there simply were none, and nothing in the
+ * running system ever said so.
+ *
+ * So the truth is computed in one place and reported in three: the startup
+ * log, /health, and (through the gateway) the participants themselves. A
+ * product that cannot translate must say so rather than present silence as
+ * translation.
+ */
+export function describeLiveEngine(
+  config: Pick<
+    IngestConfig,
+    'streamingTranscriptionProvider' | 'streamingSynthesisProvider' | 'translationProvider'
+  >,
+): LiveEngineDescription {
+  const transcription = config.streamingTranscriptionProvider;
+  const synthesis = config.streamingSynthesisProvider;
+  const translation = config.translationProvider;
+
+  const stubbed: string[] = [];
+  if (transcription === 'mock' || transcription === 'off') {
+    stubbed.push(`speech recognition (${transcription})`);
+  }
+  if (synthesis === 'mock' || synthesis === 'off') {
+    stubbed.push(`speech synthesis (${synthesis})`);
+  }
+  if (translation === 'mock') stubbed.push('translation (mock)');
+
+  return {
+    transcription,
+    synthesis,
+    translation,
+    real: stubbed.length === 0,
+    stubbed,
+  };
+}

@@ -1149,6 +1149,12 @@ export default function App() {
     });
     socket.on(CALL_EVENTS.ERROR, (event: CallErrorEvent) => {
       setStatusNote(event?.message ?? 'Something went wrong with the call.');
+      // A deployment with no translation engine is not a transient fault, and
+      // the status line alone lets the surface go on claiming "hearing
+      // translated voice" over silence. This is the state that says otherwise.
+      if (event?.code === 'translation-engine-unavailable') {
+        setTranslatedAudioUnavailable(true);
+      }
     });
     socket.on(CALL_EVENTS.PUBLISH_ICE, (payload: CallIcePayload) => {
       void publishPeerRef.current?.addRemoteCandidate(payload?.candidate);
