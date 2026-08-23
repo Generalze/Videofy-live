@@ -75,3 +75,21 @@ export {
   type StepUpEvidence,
   type StepUpOperation,
 } from './mfa.js';
+export {
+  DELIVERY_TIMEOUT_MS,
+  createResendProvider,
+  createTermiiProvider,
+  verificationLink,
+  type FetchLike,
+  type ResendConfig,
+  type TermiiConfig,
+} from './delivery-adapters.js';
+export {
+  ProviderConfigurationError,
+  createEmailProvider,
+  createPhoneProvider,
+  describeProvider,
+  type EmailProviderEnv,
+  type PhoneProviderEnv,
+  type ProviderStatus,
+} from './provider-selection.js';

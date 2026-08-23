@@ -20,9 +20,10 @@ import { registerOrganizationRoutes } from './organization-routes.js';
 import { VerificationService } from './verification.js';
 import {
   assertIdentityProviderAllowed,
-  assertProviderAllowed,
+  createEmailProvider,
+  createPhoneProvider,
   createSyntheticIdentityProvider,
-  createSyntheticProvider,
+  describeProvider,
   readEnvironment,
 } from '@videofy-live/account-trust';
 
@@ -46,12 +47,31 @@ const secret = requireSessionSecret(process.env['VIDEOFY_AUTH_SECRET'], 'VIDEOFY
  * implements the same interface and this is the only place that changes.
  */
 const environment = readEnvironment(process.env['C7_ENVIRONMENT']);
-const emailProvider = createSyntheticProvider('email');
-const phoneProvider = createSyntheticProvider('phone');
+
+/*
+ * Provider selection throws on anything ambiguous: an unrecognised name, a
+ * missing credential, or synthetic in production. Every one of those would
+ * otherwise end the same way -- a system that believes it verified somebody.
+ */
+const emailProvider = createEmailProvider(process.env, environment);
+const phoneProvider = createPhoneProvider(process.env, environment);
+
+// Identity stays synthetic deliberately: real KYC waits on a chosen provider
+// AND approved legal/policy content, and is refused in production until then.
 const identityProvider = createSyntheticIdentityProvider();
-assertProviderAllowed(emailProvider, environment, 'email');
-assertProviderAllowed(phoneProvider, environment, 'phone');
 assertIdentityProviderAllowed(identityProvider, environment);
+
+// eslint-disable-next-line no-console
+console.log(
+  JSON.stringify({
+    service: 'account',
+    message: 'Verification providers selected',
+    environment,
+    email: describeProvider('email', emailProvider),
+    phone: describeProvider('phone', phoneProvider),
+    identity: { provider: identityProvider.name, synthetic: identityProvider.synthetic },
+  }),
+);
 
 /*
  * The secret the identity provider signs its callbacks with.

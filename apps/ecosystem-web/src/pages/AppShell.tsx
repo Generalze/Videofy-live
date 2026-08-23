@@ -13,6 +13,7 @@
  */
 import { useEffect, useState } from 'react';
 import { internalLink, type Route } from '../router';
+import { VerificationPanel } from '../VerificationPanel';
 
 const ACCOUNT_URL = (
   (import.meta.env['VITE_ACCOUNT_URL'] as string | undefined) ?? 'http://localhost:3006'
@@ -112,32 +113,6 @@ function SeatPanel({ seats }: { readonly seats: NonNullable<OrganizationDetail['
   );
 }
 
-const CHANNEL_LABEL: Record<VerificationState, string> = {
-  unverified: 'Not started',
-  pending: 'In progress',
-  verified: 'Verified',
-  failed: 'Needs another try',
-  expired: 'Expired',
-};
-
-function ChannelRow({
-  name,
-  description,
-  state,
-}: {
-  readonly name: string;
-  readonly description: string;
-  readonly state: VerificationState;
-}) {
-  return (
-    <li className={`channel channel-${state}`}>
-      <span className="channel-name">{name}</span>
-      <span className="channel-desc">{description}</span>
-      <span className="channel-state">{CHANNEL_LABEL[state]}</span>
-    </li>
-  );
-}
-
 function SignedOut({ navigate }: { readonly navigate: (route: Route, hash?: string) => void }) {
   return (
     <section className="app-gate">
@@ -170,6 +145,7 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
   const [me, setMe] = useState<Bootstrap | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [organization, setOrganization] = useState<OrganizationDetail | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     const token = storedToken();
@@ -200,7 +176,7 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshKey]);
 
   const current = me?.workspaces.find((workspace) => workspace.workspaceId === selected) ?? null;
 
@@ -368,23 +344,16 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
             <p className="section-lede">
               Your account exists. These three steps establish that it belongs to you.
             </p>
-            <ul className="channel-list">
-              <ChannelRow
-                name="Email"
-                description="Confirm the address you signed up with"
-                state={me.trust.email}
-              />
-              <ChannelRow
-                name="Phone"
-                description="Confirm a number we can reach you on"
-                state={me.trust.phone}
-              />
-              <ChannelRow
-                name="Identity"
-                description="A short check with our verification partner"
-                state={me.trust.identity}
-              />
-            </ul>
+            <VerificationPanel
+              token={storedToken() ?? ''}
+              email={me.email}
+              emailState={me.trust.email}
+              phoneState={me.trust.phone}
+              identityState={me.trust.identity}
+              // Re-read from the server after every step. The client never
+              // decides it has become verified; it asks again.
+              onChanged={() => setRefreshKey((key) => key + 1)}
+            />
             <p className="app-note">
               Until this is complete you can manage your account and security, and explore C7. You
               cannot yet host calls, create conferences or create an organization.

@@ -217,6 +217,45 @@ function joinCall(socket, payload) {
 }
 
 async function socketChecks() {
+  // --- operator / programme authorization -------------------------------
+  //
+  // The question is not whether the SPA shell is served -- it may be -- but
+  // whether an anonymous caller can reach privileged programme data or perform
+  // operator mutations.
+  console.log('\nOperator and programme authorization');
+  try {
+    const shell = await status('/operator/');
+    record('operator shell is served', shell === 200, `HTTP ${shell}`);
+
+    // Auth must be checked BEFORE existence. A 404 for a well-formed but
+    // non-existent id means there is no authentication layer at all, and the
+    // only thing protecting a live programme is knowing its session id.
+    const fake = 'ps_00000000-0000-0000-0000-000000000000';
+    const pause = await status(`/media/sessions/${fake}/pause`);
+    record(
+      'programme control demands authentication before existence',
+      pause === 401 || pause === 403,
+      `POST pause -> HTTP ${pause} (expected 401/403, got existence-check)`,
+    );
+
+    // The duplicate-rejection path must not hand an anonymous caller a live
+    // session id, stream id and processing state.
+    const duplicate = await fetch(`${base}/media/microphone/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    const text = await duplicate.text();
+    const leaks = /"(id|streamId)"\s*:\s*"(ps_|stream_)/.test(text);
+    record(
+      'anonymous session creation does not disclose an active session',
+      !leaks,
+      leaks ? 'response carried a live session id / streamId' : 'no session disclosed',
+    );
+  } catch (error) {
+    record('operator authorization probes', false, String(error?.message ?? error));
+  }
+
   console.log('\nRealtime transport');
   let speaker;
   try {

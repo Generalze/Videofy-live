@@ -92,6 +92,16 @@ describe('public routing', () => {
     }
   });
 
+  it('PIN: a cache-busting query parameter changes nothing about the page', () => {
+    // Owners re-share links to force a crawler to re-fetch. That must be a
+    // cache concern only -- a query string that altered routing or content
+    // would mean the preview shows something the real URL does not.
+    expect(routeFromPath('/')).toBe('c7');
+    expect(routeFromPath('/videofy/')).toBe('videofy');
+    // Routing reads the PATH; the query never reaches it.
+    expect(routeFromPath('/videofy/live/')).toBe('videofy-live');
+  });
+
   it('every public route has a path entry', () => {
     expect(ROUTE_PATHS.c7).toBe('/');
     expect(ROUTE_PATHS.videofy).toBe('/videofy/');
