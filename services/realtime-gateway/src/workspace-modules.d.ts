@@ -85,6 +85,18 @@ declare module '@videofy-live/shared-types' {
     status: TranscriptionStatus;
     error?: string;
     createdAt: string;
+    /**
+     * Streaming captions: `false` marks an interim result for an utterance
+     * still being spoken; ABSENT means final.
+     *
+     * These three drifted out of this hand-maintained shim while the real
+     * package carried them, so the gateway compiled against a contract the
+     * rest of the system had moved past.
+     */
+    isFinal?: false;
+    partialSequence?: number;
+    sourceLanguageRevision?: number;
+    providerLatencyMs?: number | null;
   }
 
   export type TimestampedTranslationStatus =

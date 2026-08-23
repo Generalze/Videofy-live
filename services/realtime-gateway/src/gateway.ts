@@ -41,6 +41,10 @@ import { EventStore } from './event-store.js';
 import { GeneratedAudioStore } from './generated-audio-store.js';
 import type { IngressTranslatedAudio } from '@videofy-live/media-ingress-wire';
 import type { LivePathProfile } from './live-path-policy.js';
+import {
+  LiveTranscriptAdapter,
+  isLiveTranscriptEvent,
+} from './live-transcript-adapter.js';
 import { logger } from './logger.js';
 import {
   WebRtcSessionRegistry,
@@ -142,6 +146,8 @@ export class Gateway {
    * answer is known.
    */
   private translationEngineReal = true;
+  /** Gives every revision of one spoken utterance a single caption identity. */
+  private readonly liveTranscripts = new LiveTranscriptAdapter();
   private readonly mediaIngestPublicUrl: string;
   private readonly clients = new Map<string, ClientState>();
   private readonly programmeSessionConfigs = new Map<string, OperatorProgrammeSessionConfig>();
@@ -937,6 +943,36 @@ export class Gateway {
       this.io.emit(SOCKET_EVENTS.MEDIA_STATE, enriched);
       this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
       logger.debug('Media state broadcast', { streamStatus: enriched.streamStatus });
+    });
+
+    /**
+     * The REALTIME caption path.
+     *
+     * media-ingest's live pipeline recognises speech, commits a segment and
+     * emits it here. Nothing subscribed to this event, so on a translated call
+     * the recogniser worked, segments committed, and every word was dropped
+     * between the two services -- which reads from outside as a broken
+     * translation engine.
+     *
+     * Converted into the batch path's shape and routed through the SAME
+     * interception, so delivery, dedup and language settling have one
+     * implementation rather than two that drift.
+     */
+    socket.on(SOCKET_EVENTS.INGEST_LIVE_TRANSCRIPT, (raw: unknown) => {
+      if (!isLiveTranscriptEvent(raw)) {
+        logger.warn('Ingest sent a malformed live transcript', { socketId: socket.id });
+        return;
+      }
+      const event = this.liveTranscripts.toTranscriptionEvent(raw);
+      // Null means the segment carried no words. Committing an empty caption
+      // would put a blank line on everybody's screen.
+      if (!event) return;
+      if (this.callRuntime.interceptTranscriptionEvent(event)) return;
+      // Not a call: the live path is call-only today, so anything else is a
+      // session id that does not belong here rather than programme audio.
+      logger.debug('Live transcript for a non-call session; ignored', {
+        sessionId: event.sessionId,
+      });
     });
 
     socket.on(SOCKET_EVENTS.INGEST_TRANSCRIPTION, (raw: unknown) => {
