@@ -14,7 +14,17 @@ import { resolve } from 'node:path';
 import { requireSessionSecret } from '@videofy-live/account-tokens';
 import { AccountStore } from './account-store.js';
 import { createFileAccountRecords } from './account-records.js';
-import { registerAccountRoutes } from './routes.js';
+import { createCallerResolver, registerAccountRoutes } from './routes.js';
+import { OrganizationStore } from './organization-store.js';
+import { registerOrganizationRoutes } from './organization-routes.js';
+import { VerificationService } from './verification.js';
+import {
+  assertIdentityProviderAllowed,
+  assertProviderAllowed,
+  createSyntheticIdentityProvider,
+  createSyntheticProvider,
+  readEnvironment,
+} from '@videofy-live/account-trust';
 
 const port = Number(process.env['ACCOUNT_PORT'] ?? 3006);
 
@@ -23,8 +33,50 @@ const port = Number(process.env['ACCOUNT_PORT'] ?? 3006);
 // every deployment in the world shares.
 const secret = requireSessionSecret(process.env['VIDEOFY_AUTH_SECRET'], 'VIDEOFY_AUTH_SECRET');
 
+/**
+ * Verification delivery.
+ *
+ * FAIL CLOSED: `assertProviderAllowed` throws at startup if a synthetic
+ * provider is configured while the environment is production. Deliberately a
+ * boot-time refusal rather than a check at send time -- discovering it on the
+ * first real signup means the service already started, already looked healthy,
+ * and already told somebody their account was created.
+ *
+ * There is no real email or SMS vendor wired yet. When one is chosen it
+ * implements the same interface and this is the only place that changes.
+ */
+const environment = readEnvironment(process.env['C7_ENVIRONMENT']);
+const emailProvider = createSyntheticProvider('email');
+const phoneProvider = createSyntheticProvider('phone');
+const identityProvider = createSyntheticIdentityProvider();
+assertProviderAllowed(emailProvider, environment, 'email');
+assertProviderAllowed(phoneProvider, environment, 'phone');
+assertIdentityProviderAllowed(identityProvider, environment);
+
+/*
+ * The secret the identity provider signs its callbacks with.
+ *
+ * Absent, the callback route refuses everything rather than accepting unsigned
+ * results -- an unauthenticated endpoint that can mark accounts verified is the
+ * entire attack this design exists to prevent.
+ */
+const identityCallbackSecret = process.env['C7_IDENTITY_CALLBACK_SECRET'];
+
 const app = express();
-app.use(express.json({ limit: '16kb' }));
+/*
+ * The raw body is captured because the identity callback's signature covers the
+ * exact bytes the provider sent. Re-serialising a parsed object produces
+ * different bytes -- different key order, different spacing -- and a signature
+ * that can never match.
+ */
+app.use(
+  express.json({
+    limit: '16kb',
+    verify: (req, _res, buffer) => {
+      (req as unknown as { rawBody: string }).rawBody = buffer.toString('utf8');
+    },
+  }),
+);
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -45,7 +97,42 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: 'account', timestamp: new Date().toISOString() });
 });
 
-registerAccountRoutes(app, { store, secret });
+const organizations = new OrganizationStore();
+
+registerAccountRoutes(app, {
+  store,
+  secret,
+  organizations,
+  verification: new VerificationService({
+    store,
+    emailProvider,
+    phoneProvider,
+    identityProvider,
+    ...(identityCallbackSecret ? { identityCallbackSecret } : {}),
+    // Event names and channels only. A verification log must never become a
+    // record of which addresses exist, nor a place a token can be recovered.
+    onEvent: (event, detail) => {
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify({ service: 'account', event, ...detail }));
+    },
+  }),
+});
+
+registerOrganizationRoutes(app, {
+  store,
+  organizations,
+  // The SAME caller resolver the account routes use. Two ways of deciding who
+  // is calling is two chances to disagree, and the disagreement is a bypass.
+  callerAccountId: createCallerResolver({
+    store,
+    secret,
+    nowSeconds: () => Math.floor(Date.now() / 1000),
+  }),
+  onEvent: (event, detail) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', event, ...detail }));
+  },
+});
 
 const accounts = await store.hydrate();
 // A count, never an address. A log of who has an account is a record of who

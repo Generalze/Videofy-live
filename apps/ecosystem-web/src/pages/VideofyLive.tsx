@@ -12,10 +12,12 @@
 import { Reveal } from '../components';
 import {
   COMMUNICATION_SURFACES,
+  LANGUAGE_ROLLOUT_NOTE,
   LISTENING_MODES,
   LIVE_EXPERIENCES,
   SURFACE_REACH_LABEL,
   UPLOADED_PROGRAMME_FLOW,
+  VALIDATED_LANGUAGES,
   type SurfaceReach,
 } from '../videofy';
 import { VIDEOFY_CAPABILITIES } from '../domains';
@@ -92,10 +94,13 @@ function CallDemo() {
 }
 
 function ConferenceDemo() {
+  // Spanish only. A row of five flags makes a better screenshot and is a claim
+  // that five languages work in production today -- the kind of claim a visitor
+  // tests by picking one.
   const listeners = [
-    { initials: 'JD', name: 'Jonas', language: 'French' },
-    { initials: 'RK', name: 'Rina', language: 'Portuguese' },
-    { initials: 'TB', name: 'Tobi', language: 'Yoruba' },
+    { initials: 'JD', name: 'Jonas', language: 'Spanish' },
+    { initials: 'RK', name: 'Rina', language: 'Spanish' },
+    { initials: 'TB', name: 'Tobi', language: 'English' },
   ];
   return (
     <div className="stage stage-conference">
@@ -124,7 +129,7 @@ function ConferenceDemo() {
           ))}
         </ul>
       </div>
-      <p className="stage-note">One spoken source, delivered in each participant’s language.</p>
+      <p className="stage-note">One spoken source, delivered in each participant’s selected supported language.</p>
     </div>
   );
 }
@@ -137,7 +142,7 @@ function ProgrammeDemo() {
           <span className="stage-live-dot" />
           Live
         </span>
-        <span className="programme-title">Global Summit — Opening Keynote</span>
+        <span className="programme-title">Sample programme — Opening session</span>
         <SpeechWave />
       </div>
       <div className="programme-controls">
@@ -154,13 +159,15 @@ function ProgrammeDemo() {
         <div className="lang-set">
           <span className="lang-label">Listen in</span>
           <ul className="lang-list">
-            {['English', 'Spanish', 'French', 'Portuguese', 'Yoruba'].map((language, index) => (
+            {VALIDATED_LANGUAGES.map((language, index) => (
               <li key={language} className={index === 1 ? 'lang-on' : undefined}>
                 {language}
               </li>
             ))}
           </ul>
-          <span className="lang-note">Captions available alongside any mode.</span>
+          <span className="lang-note">
+            Captions available alongside any mode. {LANGUAGE_ROLLOUT_NOTE}
+          </span>
         </div>
       </div>
     </div>
@@ -200,7 +207,7 @@ function ConvergenceFigure() {
       <div className="converge-spine" aria-hidden="true">
         <span />
       </div>
-      <p className="converge-out">People understanding each other, in their own language</p>
+      <p className="converge-out">People understanding each other, in a language they can follow</p>
     </Reveal>
   );
 }
@@ -247,6 +254,7 @@ export function VideofyLive() {
                 <p className="experience-body">{experience.body}</p>
               </div>
               <div className="experience-stage">
+                <p className="demo-label">Product demo — sample experience</p>
                 {experience.id === 'call' ? <CallDemo /> : null}
                 {experience.id === 'conference' ? <ConferenceDemo /> : null}
                 {experience.id === 'programme' ? <ProgrammeDemo /> : null}

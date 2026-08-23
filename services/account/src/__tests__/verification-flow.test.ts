@@ -1,0 +1,188 @@
+/**
+ * A0a — the email and phone verification FLOW.
+ *
+ * Exercises the service the routes call, with a provider that captures what
+ * would have been delivered. The token never leaves that capture: if it ever
+ * appeared in a response or a record, these tests would be the place it showed.
+ */
+import { describe, expect, it } from 'vitest';
+import { AccountStore } from '../account-store.js';
+import { VerificationService, normalisePhone } from '../verification.js';
+import {
+  EMAIL_POLICY,
+  PHONE_POLICY,
+  createSyntheticProvider,
+  type VerificationMessage,
+} from '@videofy-live/account-trust';
+
+async function harness() {
+  const store = new AccountStore();
+  const delivered: VerificationMessage[] = [];
+  const provider = createSyntheticProvider('email', (message) => delivered.push(message));
+  const phoneProvider = createSyntheticProvider('phone', (message) => delivered.push(message));
+
+  let nowMs = 1_700_000_000_000;
+  const verification = new VerificationService({
+    store,
+    emailProvider: provider,
+    phoneProvider,
+    nowMs: () => nowMs,
+  });
+
+  const registration = await store.register({
+    email: 'zoe@example.com',
+    password: 'a-long-enough-passphrase-42',
+  });
+  if (!registration.ok) throw new Error('registration failed');
+
+  return {
+    store,
+    verification,
+    delivered,
+    accountId: registration.account.accountId,
+    advance: (ms: number) => {
+      nowMs += ms;
+    },
+  };
+}
+
+describe('email verification', () => {
+  it('moves the account to pending, then verified', async () => {
+    const { store, verification, delivered, accountId } = await harness();
+    expect(store.trustStateOf(accountId)).toBe('registered');
+
+    const requested = await verification.requestEmailVerification(accountId);
+    expect(requested.ok).toBe(true);
+    expect(store.trustStateOf(accountId)).toBe('verification_pending');
+    expect(delivered).toHaveLength(1);
+
+    const confirmed = await verification.confirmEmail(accountId, delivered[0]!.token);
+    expect(confirmed.ok).toBe(true);
+    expect(store.trustOf(accountId).email).toBe('verified');
+    // Still not `verified` overall: phone and identity remain outstanding.
+    expect(store.trustStateOf(accountId)).toBe('verification_required');
+  });
+
+  it('PIN: the plaintext token is never stored on the account', async () => {
+    const { store, verification, delivered, accountId } = await harness();
+    await verification.requestEmailVerification(accountId);
+    const record = store.get(accountId);
+    expect(JSON.stringify(record)).not.toContain(delivered[0]!.token);
+    expect(record?.emailChallenge?.tokenHash).toBeTruthy();
+  });
+
+  it('PIN: a wrong token is COUNTED, and the count survives', async () => {
+    const { store, verification, accountId } = await harness();
+    await verification.requestEmailVerification(accountId);
+
+    await verification.confirmEmail(accountId, 'not-the-token');
+    expect(store.get(accountId)?.emailChallenge?.attempts).toBe(1);
+
+    await verification.confirmEmail(accountId, 'still-not-the-token');
+    expect(store.get(accountId)?.emailChallenge?.attempts).toBe(2);
+  });
+
+  it('PIN: a used link cannot be replayed', async () => {
+    const { verification, delivered, accountId } = await harness();
+    await verification.requestEmailVerification(accountId);
+    const token = delivered[0]!.token;
+
+    expect((await verification.confirmEmail(accountId, token)).ok).toBe(true);
+    const replay = await verification.confirmEmail(accountId, token);
+    expect(replay.ok).toBe(false);
+  });
+
+  it('PIN: an expired link is refused', async () => {
+    const { verification, delivered, accountId, advance } = await harness();
+    await verification.requestEmailVerification(accountId);
+    advance(EMAIL_POLICY.ttlMs + 1);
+    const late = await verification.confirmEmail(accountId, delivered[0]!.token);
+    expect(late.ok).toBe(false);
+  });
+
+  it('throttles resend, then allows it', async () => {
+    const { verification, accountId, advance } = await harness();
+    await verification.requestEmailVerification(accountId);
+
+    const tooSoon = await verification.requestEmailVerification(accountId);
+    expect(tooSoon.ok).toBe(false);
+    if (!tooSoon.ok) expect(tooSoon.reason).toBe('throttled');
+
+    advance(EMAIL_POLICY.resendCooldownMs);
+    expect((await verification.requestEmailVerification(accountId)).ok).toBe(true);
+  });
+
+  it('refuses to re-verify an address that is already verified', async () => {
+    const { verification, delivered, accountId, advance } = await harness();
+    await verification.requestEmailVerification(accountId);
+    await verification.confirmEmail(accountId, delivered[0]!.token);
+
+    advance(EMAIL_POLICY.resendCooldownMs);
+    const again = await verification.requestEmailVerification(accountId);
+    expect(again.ok).toBe(false);
+    if (!again.ok) expect(again.reason).toBe('already-verified');
+  });
+});
+
+describe('phone verification', () => {
+  it('normalises to E.164, and refuses anything that is not dialable', () => {
+    expect(normalisePhone('+234 800 000 0000')).toBe('+2348000000000');
+    expect(normalisePhone('+1 (555) 010-9999')).toBe('+15550109999');
+    expect(normalisePhone('08000000000')).toBeNull();
+    expect(normalisePhone('not a number')).toBeNull();
+    expect(normalisePhone('+0123')).toBeNull();
+  });
+
+  it('verifies a code and records the number', async () => {
+    const { store, verification, delivered, accountId } = await harness();
+    const requested = await verification.requestPhoneVerification(accountId, '+2348000000000');
+    expect(requested.ok).toBe(true);
+
+    const code = delivered[0]!.token;
+    expect(code).toMatch(/^\d{6}$/);
+
+    const confirmed = await verification.confirmPhone(accountId, code);
+    expect(confirmed.ok).toBe(true);
+    expect(store.trustOf(accountId).phone).toBe('verified');
+    expect(store.get(accountId)?.phoneNumber).toBe('+2348000000000');
+  });
+
+  it('PIN: guessing is bounded by the attempt cap', async () => {
+    const { verification, accountId } = await harness();
+    await verification.requestPhoneVerification(accountId, '+2348000000000');
+
+    for (let attempt = 0; attempt < PHONE_POLICY.maxAttempts; attempt += 1) {
+      expect((await verification.confirmPhone(accountId, '000000')).ok).toBe(false);
+    }
+    const blocked = await verification.confirmPhone(accountId, '000000');
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) expect(blocked.reason).toBe('too-many-attempts');
+  });
+
+  it('refuses a number that is not in international format', async () => {
+    const { verification, accountId } = await harness();
+    const outcome = await verification.requestPhoneVerification(accountId, '08000000000');
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.reason).toBe('invalid-target');
+  });
+});
+
+describe('all three channels', () => {
+  it('reaches `verified` only when identity completes too', async () => {
+    const { store, verification, delivered, accountId, advance } = await harness();
+
+    await verification.requestEmailVerification(accountId);
+    await verification.confirmEmail(accountId, delivered[0]!.token);
+    advance(1000);
+    await verification.requestPhoneVerification(accountId, '+2348000000000');
+    await verification.confirmPhone(accountId, delivered[1]!.token);
+
+    // Email and phone done; identity is what the KYC stage (A0b) completes.
+    expect(store.trustStateOf(accountId)).toBe('verification_required');
+    expect(verification.status(accountId)).toMatchObject({
+      email: 'verified',
+      phone: 'verified',
+      identity: 'unverified',
+    });
+  });
+});

@@ -87,21 +87,39 @@ export const LIVE_EXPERIENCES: readonly LiveExperience[] = [
     // begins before the sentence is finished, and does NOT replace the speaker
     // instantaneously. Claiming otherwise sets an expectation the product will
     // be judged against on first use.
-    body: 'Talk naturally while Videofy progressively interprets the conversation into each participant’s selected language.',
+    body: 'Talk naturally while Videofy progressively interprets the conversation into each participant’s selected supported language.',
   },
   {
     id: 'conference',
     eyebrow: 'Conferences',
-    title: 'One speaker. Everyone listening in their own language.',
-    body: 'One person speaks, and each participant receives the conversation in the language they chose — from a single spoken source.',
+    // "their own language" promises universal availability. What is true is
+    // that each listener picks from the languages that are supported.
+    title: 'One speaker. Each listener in the language they choose.',
+    body: 'One person speaks, and each participant receives the conversation in their selected supported language — from a single spoken source.',
   },
   {
     id: 'programme',
     eyebrow: 'Live programmes',
     title: 'An audience, each choosing how they listen.',
-    body: 'A live source interpreted into multiple languages, with the audience choosing the language and how they want to hear it.',
+    body: 'A live source interpreted for the audience, with each viewer choosing a supported language and how they want to hear it.',
   },
 ];
+
+/**
+ * LANGUAGE ROLLOUT TRUTH.
+ *
+ * English is the baseline source; Spanish is the first validated target. The
+ * architecture is general, but a demo screen showing five languages is a claim
+ * that five languages are operationally available today, and it is the kind of
+ * claim a visitor tests by trying one.
+ *
+ * Additional languages are activated as they are validated. Anything added here
+ * is an assertion that it works in production.
+ */
+export const VALIDATED_LANGUAGES: readonly string[] = ['English', 'Spanish'];
+
+export const LANGUAGE_ROLLOUT_NOTE =
+  'Additional languages are activated as they are validated.';
 
 /** The listening modes a viewer actually chooses between. Real product terms. */
 export const LISTENING_MODES: readonly { name: string; description: string }[] = [
@@ -147,6 +165,6 @@ export const UPLOADED_PROGRAMME_FLOW: readonly string[] = [
   'An uploaded programme',
   'Understood as speech',
   'Translated',
-  'Spoken in each language',
-  'Heard in the language the listener chose',
+  'Spoken in the target language',
+  'Heard in the supported language the listener chose',
 ];

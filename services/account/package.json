@@ -7,17 +7,19 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "npm --prefix ../.. run build -w @videofy-live/workspace-authority && npm --prefix ../.. run build -w @videofy-live/account-trust && tsc",
     "start": "node dist/index.js",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "test": "npm --prefix ../.. run build -w @videofy-live/workspace-authority && npm --prefix ../.. run build -w @videofy-live/account-trust && vitest run",
+    "typecheck": "npm --prefix ../.. run build -w @videofy-live/workspace-authority && npm --prefix ../.. run build -w @videofy-live/account-trust && tsc --noEmit",
     "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
   },
   "dependencies": {
     "@videofy-live/account-tokens": "*",
     "@videofy-live/participant-contracts": "*",
     "express": "^4.19.2",
-    "@videofy-live/service-env": "*"
+    "@videofy-live/service-env": "*",
+    "@videofy-live/account-trust": "*",
+    "@videofy-live/workspace-authority": "*"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

@@ -192,13 +192,3 @@ export const VIDEOFY_CAPABILITIES: readonly CapabilityGroup[] = [
     ],
   },
 ];
-
-/** The environments the platform is designed to span, for the network figure. */
-export const VIDEOFY_SURFACES: readonly { label: string; live: boolean }[] = [
-  { label: 'Browser', live: true },
-  { label: 'Conference', live: true },
-  { label: 'Live programme', live: true },
-  { label: 'SIP / IP phone', live: true },
-  { label: 'Mobile', live: false },
-  { label: 'Carrier network', live: false },
-];

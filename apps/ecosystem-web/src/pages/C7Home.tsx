@@ -7,59 +7,10 @@
  * stops being a parent-company page and becomes a product page with a logo on
  * top.
  */
-import { C7Mark } from '../C7Mark';
+import { C7OrbitHero } from '../C7OrbitHero';
 import { ECOSYSTEM_DOMAINS, type EcosystemDomain } from '../domains';
 import { internalLink, type Route } from '../router';
 import { Reveal, StatusBadge, ProgressRail } from '../components';
-
-/**
- * The ecosystem figure: domains held in orbit around the mark.
- *
- * Pure SVG and CSS. A convergence of named systems, drawn small enough to be
- * a texture rather than an infographic — the hero is not the place to explain
- * the architecture, only to suggest that there is one.
- */
-function EcosystemFigure() {
-  const nodes = [
-    { angle: -90, label: 'Communication' },
-    { angle: -18, label: 'Protection' },
-    { angle: 54, label: 'Health & Safety' },
-    { angle: 126, label: 'Finance' },
-    { angle: 198, label: 'Media' },
-  ];
-  const radius = 120;
-
-  return (
-    <div className="orbit" aria-hidden="true">
-      <svg viewBox="-170 -170 340 340" className="orbit-svg" focusable="false">
-        <defs>
-          <radialGradient id="orbit-core">
-            <stop offset="0%" stopColor="rgba(110,168,255,0.35)" />
-            <stop offset="100%" stopColor="rgba(110,168,255,0)" />
-          </radialGradient>
-        </defs>
-        <circle r="150" className="orbit-ring orbit-ring-outer" />
-        <circle r={radius} className="orbit-ring" />
-        <circle r="74" className="orbit-ring orbit-ring-inner" />
-        <circle r="96" fill="url(#orbit-core)" />
-        {nodes.map((node, index) => {
-          const radians = (node.angle * Math.PI) / 180;
-          const x = Math.cos(radians) * radius;
-          const y = Math.sin(radians) * radius;
-          return (
-            <g key={node.label} className="orbit-node" style={{ animationDelay: `${index * 0.45}s` }}>
-              <line x1="0" y1="0" x2={x} y2={y} className="orbit-trace" />
-              <circle cx={x} cy={y} r="6" className="orbit-dot" />
-            </g>
-          );
-        })}
-      </svg>
-      <span className="orbit-mark">
-        <C7Mark size="100%" decorative />
-      </span>
-    </div>
-  );
-}
 
 function DomainCard({
   domain,
@@ -147,7 +98,7 @@ export function C7Home({ navigate }: { readonly navigate: (route: Route) => void
               </a>
             </div>
           </div>
-          <EcosystemFigure />
+          <C7OrbitHero />
         </div>
       </header>
 

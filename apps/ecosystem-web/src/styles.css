@@ -330,7 +330,7 @@ button:focus-visible {
 
 .hero-title {
   margin-top: 1.4rem;
-  font-size: clamp(2.5rem, 5.4vw + 0.6rem, 5.1rem);
+  font-size: clamp(2.2rem, 3.1vw + 0.7rem, 3.6rem);
   text-wrap: balance;
   letter-spacing: -0.035em;
   font-weight: 600;
@@ -599,7 +599,7 @@ button:focus-visible {
 
 @media (min-width: 900px) {
   .hero-split {
-    grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.65fr);
+    grid-template-columns: minmax(0, 0.98fr) minmax(0, 1.02fr);
   }
 }
 
@@ -678,78 +678,100 @@ button:focus-visible {
   position: relative;
 }
 
-/* ---------- C7 orbit figure ---------- */
+/* ---------- approved C7 hero visual ---------- */
 
-.orbit {
+.orbit-hero {
   position: relative;
-  display: grid;
-  place-items: center;
-  aspect-ratio: 1;
-  width: min(100%, 460px);
+  width: min(100%, 880px);
   margin-inline: auto;
 }
 
-.orbit-svg {
+.orbit-hero-svg {
   width: 100%;
-  height: 100%;
+  height: auto;
   overflow: visible;
+  /* The glow belongs to the artwork, not the layout, so it is allowed to
+     bleed past the box without pushing anything. */
+  filter: drop-shadow(0 30px 90px rgba(80, 120, 230, 0.34));
 }
 
-.orbit-ring {
+.orbit-path {
   fill: none;
-  stroke: var(--line-bright);
+  stroke: rgba(150, 190, 255, 0.2);
   stroke-width: 1;
-  opacity: 0.55;
 }
 
-.orbit-ring-outer {
-  opacity: 0.22;
-  stroke-dasharray: 3 9;
+.orbit-path-far {
+  stroke: rgba(150, 190, 255, 0.1);
+  stroke-dasharray: 2 10;
 }
 
-.orbit-ring-inner {
-  opacity: 0.3;
+.orbit-path-near {
+  stroke: rgba(180, 210, 255, 0.26);
 }
 
-.orbit-trace {
-  stroke: var(--line-bright);
+.orbit-link {
+  stroke: rgba(150, 190, 255, 0.16);
   stroke-width: 1;
-  opacity: 0.35;
 }
 
-.orbit-dot {
-  fill: #cfe0ff;
-  filter: drop-shadow(0 0 6px rgba(110, 168, 255, 0.8));
+.orbit-chip-fill {
+  fill: rgba(9, 13, 22, 0.92);
 }
 
-/* Slow, low-amplitude. Movement that suggests a system running, not a loading
-   spinner demanding attention. */
+.orbit-chip {
+  fill: none;
+  stroke-width: 1.6;
+  opacity: 0.85;
+}
+
+/* Slow and low-amplitude. A system quietly running, not a spinner asking for
+   attention. */
 .orbit-node {
-  animation: orbit-pulse 5.5s ease-in-out infinite;
-  transform-origin: 0 0;
+  animation: orbit-breathe 6.5s ease-in-out infinite;
 }
 
-@keyframes orbit-pulse {
+.orbit-rim {
+  animation: rim-breathe 7.5s ease-in-out infinite;
+}
+
+@keyframes orbit-breathe {
   0%,
   100% {
-    opacity: 0.55;
+    opacity: 0.82;
   }
   50% {
     opacity: 1;
   }
 }
 
-.orbit-mark {
-  position: absolute;
-  width: 26%;
-  display: grid;
-  place-items: center;
+@keyframes rim-breathe {
+  0%,
+  100% {
+    opacity: 0.9;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .orbit-node {
+  .orbit-node,
+  .orbit-rim {
     animation: none;
-    opacity: 0.85;
+    opacity: 0.95;
+  }
+}
+
+/*
+ * Mobile recomposition, not a squash. The visual moves BENEATH the copy and
+ * keeps its focal area — the core and its rim — rather than being scaled into
+ * a decorative icon beside the text.
+ */
+@media (max-width: 899px) {
+  .orbit-hero {
+    width: min(100%, 460px);
+    margin-top: clamp(1.5rem, 5vh, 3rem);
   }
 }
 
@@ -1890,4 +1912,287 @@ button:focus-visible {
    copy they carry, so a short one does not look truncated next to a long one. */
 .domain-emerging .domain-detail {
   margin-bottom: auto;
+}
+
+/* ---------- not found ---------- */
+
+.notfound {
+  padding-block: clamp(4rem, 14vh, 9rem);
+}
+
+.notfound-title {
+  margin-top: 1.2rem;
+  font-size: clamp(2.3rem, 5vw + 1rem, 4.4rem);
+  letter-spacing: -0.03em;
+}
+
+.notfound-links {
+  margin: clamp(2rem, 5vh, 3rem) 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+}
+
+.notfound-links a {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 1.1rem 1.2rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.03);
+  text-decoration: none;
+  color: var(--text);
+}
+
+.notfound-links a:hover {
+  border-color: var(--line-bright);
+}
+
+.notfound-link-name {
+  font-weight: 550;
+}
+
+.notfound-link-desc {
+  font-size: 0.9rem;
+  color: var(--text-faint);
+}
+
+/* A staged demonstration must say so, on the demo itself rather than in a
+   caption somewhere below it. */
+.demo-label {
+  margin-bottom: 0.6rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* ---------- registered shell ---------- */
+
+/*
+ * A different job from the public pages, so a different character: operational
+ * rather than cinematic. No full-bleed artwork, no scroll theatre — somebody
+ * here is trying to get something done.
+ */
+.app,
+.app-gate {
+  padding-block: clamp(2.5rem, 7vh, 5rem);
+  min-height: 60vh;
+}
+
+.app-gate-shell {
+  max-width: 44rem;
+}
+
+.app-title {
+  margin-top: 0.6rem;
+  font-size: clamp(1.7rem, 2.6vw + 1rem, 2.6rem);
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+}
+
+.app-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.4rem;
+  padding-bottom: 1.6rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.app-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.app-workspace-label {
+  font-size: 0.7rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.app-workspace-select {
+  padding: 0.55rem 0.9rem;
+  border-radius: 12px;
+  border: 1px solid var(--line-bright);
+  background: rgba(6, 9, 15, 0.6);
+  color: var(--text);
+  font: inherit;
+}
+
+.app-notice {
+  margin-top: 1.8rem;
+  padding: 1.2rem 1.4rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-bright);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.app-notice-restricted {
+  border-color: rgba(240, 194, 94, 0.4);
+  background: rgba(240, 194, 94, 0.07);
+}
+
+.app-notice-title {
+  font-size: 1.15rem;
+  margin-bottom: 0.5rem;
+}
+
+.app-grid {
+  margin-top: 1.8rem;
+  display: grid;
+  gap: 1.1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+}
+
+.app-card {
+  padding: clamp(1.2rem, 2vw, 1.8rem);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: linear-gradient(168deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.012));
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+@media (min-width: 900px) {
+  .app-card-lead {
+    grid-column: span 2;
+  }
+}
+
+.app-card-title {
+  font-size: 1.3rem;
+}
+
+.app-card-body {
+  color: var(--text-dim);
+}
+
+/* An honest empty state. Inventing activity to fill a panel is how a dashboard
+   starts lying on its first day. */
+.app-empty {
+  color: var(--text-faint);
+  font-size: 0.94rem;
+}
+
+.app-verify {
+  margin-top: 1.8rem;
+  padding: clamp(1.3rem, 2.4vw, 2rem);
+  border: 1px solid var(--line-bright);
+  border-radius: var(--radius-lg);
+  background: rgba(110, 168, 255, 0.06);
+}
+
+.channel-list {
+  margin: 1.6rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.channel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.2rem 1rem;
+  padding: 0.9rem 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(6, 9, 15, 0.4);
+  align-items: center;
+}
+
+.channel-name {
+  font-weight: 550;
+}
+
+.channel-desc {
+  grid-column: 1;
+  font-size: 0.86rem;
+  color: var(--text-faint);
+}
+
+.channel-state {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  font-size: 0.76rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.channel-verified {
+  border-color: rgba(126, 224, 194, 0.35);
+}
+
+.channel-verified .channel-state {
+  color: var(--accent-warm);
+}
+
+.channel-pending .channel-state {
+  color: var(--accent);
+}
+
+.channel-failed .channel-state,
+.channel-expired .channel-state {
+  color: var(--amber);
+}
+
+.app-note {
+  margin-top: 1.4rem;
+  color: var(--text-faint);
+  font-size: 0.92rem;
+  max-width: 62ch;
+}
+
+/* ---------- organization workspace ---------- */
+
+.app-card-warn {
+  border-color: rgba(240, 194, 94, 0.42);
+  background: rgba(240, 194, 94, 0.06);
+}
+
+.seat-headline {
+  font-size: clamp(1.4rem, 1.6vw + 1rem, 1.9rem);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.seat-breakdown {
+  margin: 0.4rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.seat-breakdown li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-dim);
+  font-size: 0.94rem;
+}
+
+.seat-breakdown li:last-child {
+  border-bottom: 0;
+  color: var(--text);
+}
+
+.seat-breakdown li span:last-child {
+  font-variant-numeric: tabular-nums;
+  font-weight: 550;
 }

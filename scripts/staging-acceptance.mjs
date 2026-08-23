@@ -43,6 +43,10 @@ async function httpChecks() {
     ['Videofy family page at /videofy/', '/videofy/', (s) => s === 200],
     ['Videofy-Live page at /videofy/live/', '/videofy/live/', (s) => s === 200],
     ['direct refresh at /videofy/live/ serves the app', '/videofy/live', (s) => s === 200],
+    // The shell is still delivered for unknown paths -- the proxy cannot know
+    // which paths the app considers real -- but the APP must render NOT FOUND
+    // rather than the homepage. Verified below by content, not by status.
+    ['unknown path still delivers the shell', '/definitely-not-a-real-page', (s) => s === 200],
     ['call-web served at /call/', '/call/', (s) => s === 200],
     // A visitor WILL refresh on a sub-path. A single-page app must answer with
     // itself there, not with a 404 from the file server.
@@ -96,6 +100,52 @@ async function httpChecks() {
     }
   }
 
+  // Read by WhatsApp and friends WITHOUT running JavaScript, so this fetches
+  // the HTML and inspects it exactly as a crawler would. A runtime-set title is
+  // invisible here, which is the whole reason the build stamps these files.
+  console.log('\nCrawler-readable metadata');
+  for (const [name, page, expectTitle] of [
+    ['C7 root', '/', 'Building Technology for What Comes Next'],
+    ['Videofy family', '/videofy/', 'Communication. Creation. Entertainment. Reach.'],
+    ['Videofy-Live', '/videofy/live/', 'Speak Naturally. Understand Globally.'],
+  ]) {
+    try {
+      const html = await (await fetch(`${base}${page}`)).text();
+      const title = /<title>([^<]*)<\/title>/.exec(html)?.[1] ?? '';
+      record(`${name} title in raw HTML`, title.includes(expectTitle), title || '(none)');
+
+      const ogUrl = /property="og:url" content="([^"]*)"/.exec(html)?.[1] ?? '';
+      const ogImage = /property="og:image" content="([^"]*)"/.exec(html)?.[1] ?? '';
+      const card = /name="twitter:card" content="([^"]*)"/.exec(html)?.[1] ?? '';
+      record(
+        `${name} og:url absolute and correct`,
+        ogUrl.startsWith('https://') && ogUrl.endsWith(page),
+        ogUrl || '(none)',
+      );
+      record(
+        `${name} og:image absolute`,
+        ogImage.startsWith('https://') && !ogImage.includes('localhost'),
+        ogImage || '(none)',
+      );
+      record(`${name} twitter:card large`, card === 'summary_large_image', card || '(none)');
+    } catch (error) {
+      record(`${name} metadata`, false, String(error?.message ?? error));
+    }
+  }
+
+  // The share image must actually be fetchable, or the preview is blank.
+  try {
+    const response = await fetch(`${base}/share/c7-share.png`);
+    const type = response.headers.get('content-type') ?? '';
+    record(
+      'share image served as an image',
+      response.status === 200 && type.startsWith('image/'),
+      `HTTP ${response.status} ${type}`,
+    );
+  } catch (error) {
+    record('share image served as an image', false, String(error?.message ?? error));
+  }
+
   console.log('\nRefused at the edge');
   // The internal prefix covers the internal media API AND the realtime ingress
   // WebSocket. The third case is the one worth keeping: without a matcher that
@@ -105,6 +155,7 @@ async function httpChecks() {
     ['internal media API', '/internal/media/sessions'],
     ['realtime ingress websocket', '/internal/media/ingress/v1'],
     ['internal API smuggled through /media', '/media/internal/media/sessions'],
+    ['account internals through /auth', '/auth/internal/accounts'],
   ];
   for (const [name, path] of denied) {
     try {

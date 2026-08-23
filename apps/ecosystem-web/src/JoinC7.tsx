@@ -53,6 +53,15 @@ export function JoinC7() {
       }
       setSession(body);
       setPassword('');
+      // Kept so the registered shell can bootstrap. localStorage is readable by
+      // any script on this origin, which is why the token is short-lived and
+      // why `sign out everywhere` invalidates it server-side rather than
+      // relying on the browser having forgotten it.
+      try {
+        if (typeof body.token === 'string') window.localStorage.setItem('c7.session', body.token);
+      } catch {
+        /* storage unavailable; the session simply does not persist */
+      }
     } catch {
       setError('Could not reach C7 right now.');
     } finally {
@@ -139,19 +148,29 @@ export function JoinC7() {
             </>
           ) : (
             <div className="join-done">
-              <h3>You are in.</h3>
+              {/*
+                Registration creates an IDENTITY. It does not create trust, and
+                it does not entitle anybody to a product. Saying "you are in"
+                after a password is set teaches people that the verification
+                step which follows is optional paperwork.
+              */}
+              <h3>C7 account created.</h3>
               <p>
-                Your C7 account is active. VIDEOFY-LIVE is available now; other domains will appear
-                here as they open.
+                Complete verification to activate C7 products. We will confirm your email, then
+                your phone, then your identity.
               </p>
               <ul className="join-shelf">
                 <li>
-                  <span className="shelf-name">VIDEOFY-LIVE</span>
-                  <span className="shelf-state">Available</span>
+                  <span className="shelf-name">Email</span>
+                  <span className="shelf-state">Verification required</span>
                 </li>
                 <li className="shelf-muted">
-                  <span className="shelf-name">Early access</span>
-                  <span className="shelf-state">Nothing yet</span>
+                  <span className="shelf-name">Phone</span>
+                  <span className="shelf-state">Pending</span>
+                </li>
+                <li className="shelf-muted">
+                  <span className="shelf-name">Identity</span>
+                  <span className="shelf-state">Pending</span>
                 </li>
               </ul>
             </div>

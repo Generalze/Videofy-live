@@ -43,6 +43,17 @@ build_app() {
 
 # The C7 ecosystem site owns the root. Videofy is a product within it.
 build_app ecosystem-web /
+
+# Crawler-readable metadata per public route. WhatsApp and friends read the
+# HTML without running JavaScript, so a client-side title is invisible to them.
+# The origin is supplied here rather than compiled into the app: og:url and
+# og:image must be absolute, and a hostname in the source follows the code
+# everywhere it is ever deployed.
+PUBLIC_ORIGIN="${PUBLIC_ORIGIN:-https://staging.consummate7.com}"
+node scripts/generate-route-html.mjs "apps/ecosystem-web/dist-staging" "$PUBLIC_ORIGIN"
+rm -rf "${WWW_DIR:?}/ecosystem-web"
+mkdir -p "$WWW_DIR/ecosystem-web"
+cp -r apps/ecosystem-web/dist-staging/. "$WWW_DIR/ecosystem-web/"
 build_app call-web /call/
 build_app listener-web /listen/
 build_app operator-web /operator/

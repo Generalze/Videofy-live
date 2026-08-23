@@ -18,6 +18,15 @@
  */
 import { createAccountId, type AccountId } from '@videofy-live/participant-contracts';
 import {
+  INITIAL_TRUST,
+  readTrust,
+  resolveTrustState,
+  type AccountTrust,
+  type AccountTrustState,
+  type ChallengeRecord,
+  type IdentityCase,
+} from '@videofy-live/account-trust';
+import {
   describePasswordRejection,
   hashPassword,
   needsRehash,
@@ -47,6 +56,45 @@ export interface AccountRecord {
   readonly tokenVersion: number;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /**
+   * C7 trust, as COMPONENTS.
+   *
+   * Deliberately not a `verified` boolean. One flag cannot tell a confirmed
+   * email apart from a matched identity document, cannot express a person whose
+   * phone is done while their identity check is in review, and cannot be
+   * revoked for one reason without discarding the others. It is also the field
+   * that eventually gets set from a request body.
+   *
+   * Optional so records written before this existed still load; `readTrust`
+   * turns anything missing or unrecognised into the SAFE value.
+   */
+  readonly trust?: AccountTrust;
+  /**
+   * The outstanding verification challenge per channel.
+   *
+   * Stored WITH the account rather than in memory, so restarting the service
+   * does not silently invalidate every link and code already sent. It holds a
+   * hash, never a token, so the record is useless to anyone who reads it.
+   */
+  readonly emailChallenge?: ChallengeRecord | null;
+  readonly phoneChallenge?: ChallengeRecord | null;
+  /** Set only once a phone number has been verified for this account. */
+  readonly phoneNumber?: string;
+  /**
+   * The identity check, as a REFERENCE and an outcome.
+   *
+   * Never a document. What is kept here would be useless to anyone who stole
+   * it: a case id, a provider handle, a status, a jurisdiction, timestamps.
+   */
+  readonly identityCase?: IdentityCase | null;
+  /**
+   * Provider callback event ids already applied.
+   *
+   * At-least-once delivery is normal, so the same event WILL arrive twice.
+   * Bounded, because this list would otherwise grow forever on an account that
+   * re-verifies; the age check refuses anything old enough to have fallen off.
+   */
+  readonly seenCallbackEvents?: readonly string[];
 }
 
 export interface AccountRecordPort {
@@ -135,6 +183,113 @@ export class AccountStore {
     return this.byId.size;
   }
 
+  /**
+   * The account's trust, normalised.
+   *
+   * Everything asks HERE rather than reading `record.trust` directly, so a
+   * legacy record with no trust field and a corrupted one with a nonsense value
+   * are both answered the same safe way.
+   */
+  trustOf(accountId: string): AccountTrust {
+    const record = this.byId.get(accountId);
+    return readTrust(record?.trust);
+  }
+
+  /**
+   * Persist a challenge, or clear it by passing null.
+   *
+   * Internal: the verification flow owns this, and no route reaches it.
+   */
+  async setChallenge(
+    accountId: string,
+    channel: 'email' | 'phone',
+    challenge: ChallengeRecord | null,
+  ): Promise<AccountRecord | null> {
+    const existing = this.byId.get(accountId);
+    if (!existing) return null;
+    const updated: AccountRecord = {
+      ...existing,
+      ...(channel === 'email' ? { emailChallenge: challenge } : { phoneChallenge: challenge }),
+      updatedAt: new Date(this.now()).toISOString(),
+    };
+    this.byId.set(accountId, updated);
+    await this.persist();
+    return updated;
+  }
+
+  /** Persist the identity case, or clear it. Internal to the verification flow. */
+  async setIdentityCase(
+    accountId: string,
+    identityCase: IdentityCase | null,
+  ): Promise<AccountRecord | null> {
+    const existing = this.byId.get(accountId);
+    if (!existing) return null;
+    const updated: AccountRecord = {
+      ...existing,
+      identityCase,
+      updatedAt: new Date(this.now()).toISOString(),
+    };
+    this.byId.set(accountId, updated);
+    await this.persist();
+    return updated;
+  }
+
+  /** Find the account a provider callback belongs to. */
+  findByProviderReference(providerReference: string): AccountRecord | null {
+    for (const record of this.byId.values()) {
+      if (record.identityCase?.providerReference === providerReference) return record;
+    }
+    return null;
+  }
+
+  /** Remember an applied callback event id, keeping the list bounded. */
+  async rememberCallbackEvent(accountId: string, eventId: string): Promise<void> {
+    const existing = this.byId.get(accountId);
+    if (!existing) return;
+    const seen = [...(existing.seenCallbackEvents ?? []), eventId].slice(-64);
+    this.byId.set(accountId, { ...existing, seenCallbackEvents: seen });
+    await this.persist();
+  }
+
+  /** Record a verified phone number once its challenge has been satisfied. */
+  async setPhoneNumber(accountId: string, phoneNumber: string): Promise<AccountRecord | null> {
+    const existing = this.byId.get(accountId);
+    if (!existing) return null;
+    const updated: AccountRecord = {
+      ...existing,
+      phoneNumber,
+      updatedAt: new Date(this.now()).toISOString(),
+    };
+    this.byId.set(accountId, updated);
+    await this.persist();
+    return updated;
+  }
+
+  /** The derived overall state. There is no setter, because there is no field. */
+  trustStateOf(accountId: string): AccountTrustState {
+    return resolveTrustState(this.trustOf(accountId));
+  }
+
+  /**
+   * Replace an account's trust components.
+   *
+   * Internal to the service: reached only from verification flows that have
+   * already checked a token or a provider signature. No route hands a caller a
+   * way into this.
+   */
+  async setTrust(accountId: string, trust: AccountTrust): Promise<AccountRecord | null> {
+    const existing = this.byId.get(accountId);
+    if (!existing) return null;
+    const updated: AccountRecord = {
+      ...existing,
+      trust,
+      updatedAt: new Date(this.now()).toISOString(),
+    };
+    this.byId.set(accountId, updated);
+    await this.persist();
+    return updated;
+  }
+
   get(accountId: string): AccountRecord | null {
     return this.byId.get(accountId) ?? null;
   }
@@ -175,6 +330,10 @@ export class AccountStore {
       tokenVersion: 1,
       createdAt: timestamp,
       updatedAt: timestamp,
+      // Registration creates an IDENTITY and nothing else. Every channel starts
+      // unverified, so the derived state is `registered` -- not `verified`, and
+      // not entitled to any product.
+      trust: INITIAL_TRUST,
     };
     this.byId.set(account.accountId, account);
     this.byEmail.set(email, account.accountId);

@@ -50,6 +50,16 @@
 	# Without distinct prefixes one of them silently shadows the other, and the
 	# symptom appears in whichever product surface is tested second.
 	handle_path /auth/* {
+		# `handle_path` strips the prefix first, so this matcher sees the path the
+		# account service would receive. Without it, /auth/internal/... arrives
+		# upstream as /internal/... and the top-level deny never sees it.
+		#
+		# Provider callbacks are deliberately NOT under /internal: they are
+		# machine-to-machine and must be reachable from the vendor's network.
+		# They are authenticated by signature, not by being hard to find.
+		@authInternal path /internal/*
+		respond @authInternal "not found" 404
+
 		reverse_proxy 127.0.0.1:3006
 	}
 
@@ -91,9 +101,15 @@
 	}
 
 	# The ROOT is the C7 ecosystem site, not a product. Videofy lives at /call/.
+	# The ROOT is the C7 ecosystem site, not a product. Videofy lives at /call/.
+	#
+	# `{path}/index.html` is tried BEFORE the shell fallback, so /videofy/ and
+	# /videofy/live/ serve their own generated files with their own Open Graph
+	# tags. Without that line every route falls back to the root shell and every
+	# shared link previews as the homepage.
 	handle {
 		root * /srv/videofy/www/ecosystem-web
-		try_files {path} /index.html
+		try_files {path} {path}/index.html /index.html
 		file_server
 	}
 }

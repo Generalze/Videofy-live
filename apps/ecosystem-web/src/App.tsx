@@ -15,13 +15,17 @@ import { JoinC7 } from './JoinC7';
 import { C7Home } from './pages/C7Home';
 import { VideofyFamily } from './pages/VideofyFamily';
 import { VideofyLive } from './pages/VideofyLive';
+import { AppShell } from './pages/AppShell';
+import { NotFound } from './pages/NotFound';
 import { internalLink, useRoute, type Route } from './router';
 
 /** The tab title should say which of the three pages you are on. */
 const TITLES: Readonly<Record<Route, string>> = {
-  c7: 'Consummate 7 — Building technology for what comes next.',
+  c7: 'Consummate 7 — Building Technology for What Comes Next',
   videofy: 'Videofy — Communication. Creation. Entertainment. Reach.',
-  'videofy-live': 'Videofy-Live — Speak naturally. Understand globally.',
+  'videofy-live': 'VIDEOFY-LIVE — Speak Naturally. Understand Globally.',
+  app: 'Your C7 account',
+  'not-found': 'Page not found — Consummate 7',
 };
 
 function Nav({ route, navigate }: { readonly route: Route; readonly navigate: (r: Route) => void }) {
@@ -46,7 +50,7 @@ function Nav({ route, navigate }: { readonly route: Route; readonly navigate: (r
               )}
             </>
           )}
-          <a className="button button-small" {...internalLink('c7', navigate)} href="/#join">
+          <a className="button button-small" {...internalLink('c7', navigate, '#join')}>
             Join C7
           </a>
         </div>
@@ -74,10 +78,13 @@ export function App() {
         {route === 'c7' ? <C7Home navigate={navigate} /> : null}
         {route === 'videofy' ? <VideofyFamily navigate={navigate} /> : null}
         {route === 'videofy-live' ? <VideofyLive /> : null}
+        {route === 'app' ? <AppShell navigate={navigate} /> : null}
+        {route === 'not-found' ? <NotFound navigate={navigate} /> : null}
 
-        {/* Registration lives at the end of every page: somebody who has just
-            understood what this is should not have to navigate to act on it. */}
-        <JoinC7 />
+        {/* Registration lives at the end of every REAL page. A not-found page
+            is not a place to ask somebody to sign up; they were looking for
+            something else and did not find it. */}
+        {route === 'not-found' || route === 'app' ? null : <JoinC7 />}
       </main>
 
       <footer className="footer">

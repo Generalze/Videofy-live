@@ -141,8 +141,11 @@ describe('three-layer routing', () => {
     expect(routeFromPath('/videofy/live/')).not.toBe('videofy');
   });
 
-  it('falls back to the C7 page for anything unrecognised', () => {
-    expect(routeFromPath('/nonsense')).toBe('c7');
-    expect(routeFromPath('/videofyx')).toBe('c7');
+  it('PIN: an unrecognised path is NOT FOUND, not the homepage', () => {
+    // This previously asserted the opposite. Silently rendering the homepage
+    // for every wrong address tells a visitor their typo worked and tells a
+    // crawler that unlimited URLs are real pages with identical content.
+    expect(routeFromPath('/nonsense')).toBe('not-found');
+    expect(routeFromPath('/videofyx')).toBe('not-found');
   });
 });
