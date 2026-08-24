@@ -557,13 +557,7 @@ button:focus-visible {
   gap: 0.9rem;
 }
 
-.domain-lead .domain-foot {
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 1rem;
-}
+
 
 .domain-link {
   color: var(--text);
@@ -2046,43 +2040,12 @@ button:focus-visible {
 }
 
 /*
- * The flagship card ran its content down the left and left the right half
- * empty at desktop width. Two columns: the family on one side, the shipped
- * product on the other — which is also the point the card is making.
+ * The flagship's two-column desktop treatment is gone with the panel it was
+ * built for. It split the card into "family" and "shipped product" columns;
+ * with the product panel moved to the Videofy page, that grid left every
+ * flagship word crammed into half a card while its neighbours used the whole
+ * one -- a card that looked broken rather than featured.
  */
-@media (min-width: 900px) {
-  .domain-lead {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
-    column-gap: clamp(1.6rem, 3vw, 3rem);
-    align-items: center;
-  }
-
-  .domain-lead .domain-head,
-  .domain-lead .domain-summary {
-    grid-column: 1;
-  }
-
-  .domain-lead .highlight {
-    grid-column: 2;
-    grid-row: 1 / span 3;
-    margin-top: 0;
-    align-self: stretch;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-  }
-
-  .domain-lead .domain-foot {
-    grid-column: 1;
-  }
-}
-
-/* Cards in the grid keep their badge on the baseline regardless of how much
-   copy they carry, so a short one does not look truncated next to a long one. */
-.domain-emerging .domain-detail {
-  margin-bottom: auto;
-}
 
 /* ---------- not found ---------- */
 

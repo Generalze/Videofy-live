@@ -20,12 +20,10 @@ function DomainCard({
   readonly domain: EcosystemDomain;
   readonly navigate: (route: Route) => void;
 }) {
-  const isFlagship = domain.tone === 'flagship';
   return (
-    <Reveal
-      as="article"
-      className={`domain domain-${domain.tone}${isFlagship ? ' domain-lead' : ''}`}
-    >
+    // Every card is the same card. The flagship's distinction is its status,
+    // not a different shape.
+    <Reveal as="article" className={`domain domain-${domain.tone}`}>
       <div className="domain-glow" aria-hidden="true" />
       <DomainArt domainId={domain.id} />
       <header className="domain-head">
