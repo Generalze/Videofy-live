@@ -40,6 +40,34 @@ export interface LiveProviderEnv {
   readonly elevenLabsApiKey?: string | undefined;
   readonly elevenLabsModel?: string | undefined;
   readonly elevenLabsVoiceId?: string | undefined;
+  /** `platformVoiceId=vendorVoiceId,...` — see parseVoiceIdMap. */
+  readonly elevenLabsVoiceIds?: string | undefined;
+}
+
+/**
+ * The platform's voice ids mapped to the vendor's.
+ *
+ * Without this every platform voice fell through to a single default, so a
+ * speaker who chose a female translated voice was spoken by whichever one
+ * voice the deployment had configured -- and every participant in every
+ * language shared it. The choice was computed correctly all the way to the
+ * vendor boundary and discarded there.
+ *
+ * Parsed leniently on purpose: a malformed pair is skipped rather than taking
+ * the service down, because the consequence is one voice falling back to the
+ * default rather than a call that cannot happen.
+ */
+export function parseVoiceIdMap(raw: string | undefined): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const pair of (raw ?? '').split(',')) {
+    const index = pair.indexOf('=');
+    if (index <= 0) continue;
+    const platform = pair.slice(0, index).trim();
+    const vendor = pair.slice(index + 1).trim();
+    if (platform.length === 0 || vendor.length === 0) continue;
+    map[platform] = vendor;
+  }
+  return map;
 }
 
 /**
@@ -66,6 +94,7 @@ export function readLiveProviderEnv(env: NodeJS.ProcessEnv = process.env): LiveP
     elevenLabsApiKey: optional(env['ELEVENLABS_API_KEY']),
     elevenLabsModel: optional(env['ELEVENLABS_MODEL']),
     elevenLabsVoiceId: optional(env['ELEVENLABS_DEFAULT_VOICE_ID']),
+    elevenLabsVoiceIds: optional(env['ELEVENLABS_VOICE_IDS']),
   };
 }
 
@@ -128,7 +157,11 @@ export function buildStreamingSynthesisProvider(
         // The platform's voice ids map to the vendor's HERE. A vendor id
         // reaching a session config would make the vendor's catalogue into
         // Videofy's voice identity.
-        voiceIds: {},
+        //
+        // Empty means every voice becomes defaultVoiceId, which silently
+        // discards the speaker's male/female choice and gives every
+        // participant the same voice in every language.
+        voiceIds: parseVoiceIdMap(env.elevenLabsVoiceIds),
         defaultVoiceId: voiceId,
       };
       return new ElevenLabsStreamingSynthesisProvider(eleven);

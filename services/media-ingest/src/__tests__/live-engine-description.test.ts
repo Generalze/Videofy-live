@@ -7,7 +7,11 @@
  * tests pin the one question that would have caught it.
  */
 import { describe, expect, it } from 'vitest';
-import { describeLiveEngine, readLiveProviderEnv } from '../live-provider-wiring.js';
+import {
+  describeLiveEngine,
+  parseVoiceIdMap,
+  readLiveProviderEnv,
+} from '../live-provider-wiring.js';
 
 const REAL = {
   streamingTranscriptionProvider: 'deepgram-flux',
@@ -101,5 +105,47 @@ describe('readLiveProviderEnv', () => {
       DEEPGRAM_MODEL: ' flux-general-en ',
     } as NodeJS.ProcessEnv);
     expect(env.deepgramModel).toBe('flux-general-en');
+  });
+});
+
+/**
+ * Mapping the platform's voices onto the vendor's.
+ *
+ * With no map, every platform voice fell through to one default: a speaker who
+ * chose a female translated voice was spoken by whichever single voice the
+ * deployment had, and every participant in every language shared it. The
+ * choice was computed correctly all the way to the vendor boundary and thrown
+ * away there.
+ */
+describe('parseVoiceIdMap', () => {
+  it('maps each platform voice to its vendor voice', () => {
+    const map = parseVoiceIdMap('en_US-hfc_female-medium=abc123,fr_FR-siwis-medium=def456');
+    expect(map).toEqual({
+      'en_US-hfc_female-medium': 'abc123',
+      'fr_FR-siwis-medium': 'def456',
+    });
+  });
+
+  it('tolerates spacing around the pairs', () => {
+    expect(parseVoiceIdMap(' a = 1 , b = 2 ')).toEqual({ a: '1', b: '2' });
+  });
+
+  it('PIN: a malformed pair is skipped, never fatal', () => {
+    // The cost of a bad pair is one voice falling back to the default. The
+    // cost of throwing is a deployment that cannot take calls at all.
+    expect(parseVoiceIdMap('good=1,broken,=2,alsogood=3,x=')).toEqual({
+      good: '1',
+      alsogood: '3',
+    });
+  });
+
+  it('answers empty for nothing configured, which keeps the old behaviour', () => {
+    expect(parseVoiceIdMap(undefined)).toEqual({});
+    expect(parseVoiceIdMap('')).toEqual({});
+  });
+
+  it('keeps a vendor id that contains no equals sign intact', () => {
+    // Vendor ids are opaque; only the FIRST '=' separates the pair.
+    expect(parseVoiceIdMap('plat=ven=dor')).toEqual({ plat: 'ven=dor' });
   });
 });
