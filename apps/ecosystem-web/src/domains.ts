@@ -85,8 +85,10 @@ export const ECOSYSTEM_DOMAINS: readonly EcosystemDomain[] = [
     // The FAMILY, not the product. VIDEOFY-LIVE is what shipped inside it.
     product: 'VIDEOFY',
     status: { kind: 'available', label: 'Available now' },
-    summary:
-      'A connected communication and media ecosystem built around removing barriers between people, languages and experiences.',
+    // One line. At a fifth of the row's width a paragraph becomes a column of
+    // two-word lines, and the showboard's card carries the NAME and its status,
+    // not an explanation. The explaining is the Videofy page's job.
+    summary: 'Removing the barriers between people, languages and experiences.',
     detail: null,
     tone: 'flagship',
     highlight: {
@@ -116,8 +118,10 @@ export const ECOSYSTEM_DOMAINS: readonly EcosystemDomain[] = [
     product: null,
     status: { kind: 'progress', percent: 20, label: 'Early development' },
     summary: 'Building intelligence for safer everyday decisions.',
-    detail:
-      'A new C7 platform focused on helping people better understand risks across health, safety, products and their environment.',
+    // The longer description belonged to a wide card. Sentinel keeps its
+    // detail because that copy is locked and the showboard prints it; this one
+    // was ours to shorten.
+    detail: null,
     tone: 'emerging',
   },
   {

@@ -616,8 +616,14 @@ button:focus-visible {
  */
 .domain-art {
   position: relative;
-  margin: -0.2rem -0.2rem 1rem;
-  aspect-ratio: 16 / 10;
+  margin: -0.2rem -0.2rem 0.8rem;
+  /*
+   * Shallower than it was. The showboard's row is one compact band the eye
+   * takes in at once; a taller frame turned five cards into five columns you
+   * had to scroll through, which loses the "one ecosystem" reading the row
+   * exists to give.
+   */
+  aspect-ratio: 16 / 9;
   border-radius: 14px;
   overflow: hidden;
   background: linear-gradient(180deg, rgba(18, 26, 44, 0.9), rgba(8, 12, 22, 0.95));
@@ -642,6 +648,40 @@ button:focus-visible {
 .domain-number {
   color: var(--accent);
   font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Copy is CLAMPED, not trimmed at the source.
+ *
+ * The card shows the opening lines and the page keeps the whole sentence, so
+ * the text stays honest for a screen reader and for anyone who widens the
+ * window. Cutting the strings instead would have made the shorter copy the
+ * only copy.
+ */
+.domain-summary {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
+.domain-detail {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+
+.domain-field {
+  /* Two lines at most: a five-word category should not push the name down a
+     card and out of line with its neighbours. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
 }
 
 /* The one way through to the Videofy family page from its card. */
