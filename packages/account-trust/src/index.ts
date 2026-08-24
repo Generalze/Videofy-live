@@ -55,6 +55,28 @@ export {
   type ProviderCallback,
 } from './identity-verification.js';
 export {
+  ABUSE_POLICIES,
+  abuseKey,
+  createMemoryAbuseLimiter,
+  type AbuseDecision,
+  type AbuseKeyKind,
+  type AbuseLimiterPort,
+  type AbusePolicy,
+  type AbuseSurface,
+} from './rate-limit.js';
+export {
+  ALERTABLE,
+  FORBIDDEN_EVENT_FIELDS,
+  containsForbiddenField,
+  newCorrelationId,
+  securityEvent,
+  targetDigest,
+  type SecurityEvent,
+  type SecurityEventKind,
+  type SecurityEventSink,
+  type SecurityReasonCode,
+} from './security-events.js';
+export {
   PASSWORD_RESET_POLICY,
   beginPasswordReset,
   completePasswordReset,
