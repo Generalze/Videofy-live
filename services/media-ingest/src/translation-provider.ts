@@ -820,8 +820,37 @@ function parseNllb200Result(raw: unknown): string {
   return raw['translatedText'];
 }
 
+/**
+ * Set by the provider so a classified failure can still be traced.
+ *
+ * The classifier below maps a worker failure onto one of a handful of stable
+ * messages, and `combined.includes('model')` is broad enough to swallow almost
+ * anything: a real fault was reported as "OPUS-MT model is unavailable in the
+ * configured local cache" while the model loaded perfectly by hand, as the
+ * service user, in every configuration. Hours went into the wrong hypothesis
+ * because the only evidence was the classifier's verdict. The raw text is now
+ * emitted once, at debug, before any interpretation of it.
+ */
+let logOpusMtRaw: ((line: string, detail: Record<string, unknown>) => void) | null = null;
+
+export function setOpusMtDiagnosticLogger(
+  log: (line: string, detail: Record<string, unknown>) => void,
+): void {
+  logOpusMtRaw = log;
+}
+
 function classifyOpusMtError(error: unknown): MediaIngestError {
   if (error instanceof MediaIngestError) return error;
+  {
+    const raw = error as { code?: unknown; signal?: unknown; stderr?: unknown; message?: unknown };
+    logOpusMtRaw?.('OPUS-MT worker failed (raw, before classification)', {
+      name: (error as { name?: unknown })?.name ?? null,
+      code: raw.code ?? null,
+      signal: raw.signal ?? null,
+      message: typeof raw.message === 'string' ? raw.message.slice(0, 400) : null,
+      stderr: typeof raw.stderr === 'string' ? raw.stderr.slice(-800) : null,
+    });
+  }
   if (error instanceof PythonWorkerError && error.kind === 'queue-overflow') {
     return new MediaIngestError(
       'OPUS-MT translation concurrency limit reached.',

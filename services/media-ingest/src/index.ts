@@ -32,6 +32,7 @@ import { registerViewerReadyMediaDeliveryRoute } from './viewer-ready-media-deli
 import { IngestService } from './ingest-service.js';
 import { logger, setLogLevel } from './logger.js';
 import { MediaIngestError } from './ingest-error.js';
+import { setOpusMtDiagnosticLogger } from './translation-provider.js';
 import { attachRealtimeAudioIngress, REALTIME_INGRESS_PATH } from './realtime-ingress-server.js';
 import { createLiveStreamOpener } from './live-session-host.js';
 import {
@@ -42,6 +43,10 @@ import {
 
 const config = loadConfig();
 setLogLevel(config.logLevel);
+// The OPUS-MT error classifier collapses every worker failure onto a handful
+// of stable messages. Keep the raw text reachable, or a real fault is only
+// ever visible as somebody's guess about what it meant.
+setOpusMtDiagnosticLogger((line, detail) => logger.debug(line, detail));
 
 const app = express();
 const server = http.createServer(app);
