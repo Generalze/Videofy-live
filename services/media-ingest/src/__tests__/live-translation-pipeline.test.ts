@@ -252,7 +252,7 @@ describe('confidence floor on synthesis', () => {
   it('PIN: a low-confidence final is NOT spoken', async () => {
     const { pipeline, delivered } = rig({ minSpokenConfidence: 0.6 });
     const spoken = await pipeline.onTranscriptEvent(
-      transcript({ provider: { name: 'mock', isFinal: true, confidence: 0.31 } }),
+      transcript({ provider: { name: 'mock', confidence: 0.31 } }),
     );
     expect(spoken).toBeNull();
     expect(delivered).toHaveLength(0);
@@ -261,7 +261,7 @@ describe('confidence floor on synthesis', () => {
   it('speaks a confident final exactly as before', async () => {
     const { pipeline, delivered } = rig({ minSpokenConfidence: 0.6 });
     const spoken = await pipeline.onTranscriptEvent(
-      transcript({ provider: { name: 'mock', isFinal: true, confidence: 0.94 } }),
+      transcript({ provider: { name: 'mock', confidence: 0.94 } }),
     );
     expect(spoken).not.toBeNull();
     expect(delivered.length).toBeGreaterThan(0);
@@ -292,7 +292,7 @@ describe('confidence floor on synthesis', () => {
       },
     });
     await pipeline.onTranscriptEvent(
-      transcript({ provider: { name: 'mock', isFinal: true, confidence: 0.2 } }),
+      transcript({ provider: { name: 'mock', confidence: 0.2 } }),
     );
     // Nothing was synthesised, and nothing here claims the caption was
     // suppressed: captions travel a different path entirely.
