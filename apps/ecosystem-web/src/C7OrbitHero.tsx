@@ -53,7 +53,7 @@ const SATELLITES: readonly SatelliteNode[] = [
 const CX = 400;
 const CY = 320;
 /** Applied to the monogram's own 40x32 artboard. */
-const MARK_SCALE = 1.42;
+const MARK_SCALE = 1.66;
 
 /**
  * NESTED AND COPLANAR, not a crossing cage.
@@ -266,12 +266,12 @@ export function C7OrbitHero() {
           what makes the C7 read as floating above it rather than embedded in
           it.
         */}
-        <ellipse cx={CX} cy={CY + 34} rx="168" ry="60" fill="rgba(3,6,14,0.94)" filter="url(#c7-blur-sm)" />
+        <ellipse cx={CX} cy={CY + 62} rx="176" ry="48" fill="rgba(4,8,18,0.82)" filter="url(#c7-blur-sm)" />
         <ellipse
           cx={CX}
-          cy={CY + 34}
-          rx="168"
-          ry="60"
+          cy={CY + 62}
+          rx="176"
+          ry="48"
           fill="none"
           stroke="rgba(150,200,255,0.22)"
           strokeWidth="1.2"
@@ -301,7 +301,7 @@ export function C7OrbitHero() {
         />
 
         {/* the luminous C7 core */}
-        <ellipse cx={CX} cy={CY} rx="76" ry="36" fill="rgba(160,200,255,0.26)" filter="url(#c7-blur-sm)" />
+        <ellipse cx={CX} cy={CY} rx="86" ry="40" fill="rgba(175,215,255,0.32)" filter="url(#c7-blur-sm)" />
         {/*
           Centred on the GLYPH's own bounding box, not on a guessed offset.
           The artwork spans x 25.7-65.3 and y 17.6-50 in its own coordinates,
