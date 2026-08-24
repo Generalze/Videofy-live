@@ -86,15 +86,23 @@ export function C7Home({ navigate }: { readonly navigate: (route: Route) => void
               <span className="hero-title-accent">Seven domains. One ecosystem.</span>
             </p>
             <p className="hero-lede">
-              Intelligent systems created to connect people, protect what matters and expand what
-              technology can do in everyday life.
+              C7 unites intelligent systems across seven critical domains to solve real-world
+              challenges and unlock new possibilities.
             </p>
             <div className="hero-actions">
               <a className="button button-primary" href="#ecosystem">
-                Explore the ecosystem
+                Explore the Ecosystem
               </a>
-              <a className="button button-ghost" href="#join">
-                Join C7
+              {/*
+                The artwork's second action is a play control with no label. It
+                still needs an accessible name -- an icon-only link that
+                announces itself as "link" tells a screen-reader user nothing
+                about where it goes.
+              */}
+              <a className="button-play" href="#ecosystem" aria-label="Watch the C7 introduction">
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                  <path d="M9.5 7.6v8.8L17 12z" fill="currentColor" />
+                </svg>
               </a>
             </div>
           </div>

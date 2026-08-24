@@ -39,6 +39,13 @@ function Nav({ route, navigate }: { readonly route: Route; readonly navigate: (r
           {route === 'c7' ? (
             <>
               <a href="#ecosystem">Ecosystem</a>
+              {/*
+                The showboard's nav also lists About and News. They are NOT here
+                because those pages do not exist: a nav item that goes nowhere
+                is worse than an absent one, and a stub page saying "coming
+                soon" is a promise this site has not made.
+              */}
+              <a href="#ecosystem">Domains</a>
               <a {...internalLink('videofy', navigate)}>Videofy</a>
             </>
           ) : (
@@ -50,8 +57,11 @@ function Nav({ route, navigate }: { readonly route: Route; readonly navigate: (r
               )}
             </>
           )}
-          <a className="button button-small" {...internalLink('c7', navigate, '#join')}>
-            Join C7
+          <a
+            className="button button-small button-outline"
+            {...internalLink('c7', navigate, '#join')}
+          >
+            Join the Ecosystem
           </a>
         </div>
       </div>

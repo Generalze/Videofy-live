@@ -161,8 +161,66 @@ p {
 }
 
 .button-primary {
-  background: linear-gradient(180deg, #f4f7fc 0%, #d8e2f2 100%);
-  color: #08101f;
+  /* The showboard's primary action is a BLUE gradient, not a white pill: it
+     belongs to the same violet-blue-cyan ramp as the orbital rim, so the eye
+     reads the button and the hero visual as one system. */
+  background: linear-gradient(135deg, #3b6dff 0%, #2f4fe0 55%, #5b3fd6 100%);
+  color: #ffffff;
+  box-shadow:
+    0 10px 30px -12px rgba(59, 109, 255, 0.75),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.button-primary:hover {
+  background: linear-gradient(135deg, #4b7bff 0%, #3a5bf0 55%, #6a4ae6 100%);
+}
+
+/* The header's "Join the Ecosystem": cyan hairline, transparent fill. */
+.button-outline {
+  background: transparent;
+  border-color: rgba(56, 208, 240, 0.55);
+  color: #9fe8fb;
+}
+
+.button-outline:hover {
+  border-color: rgba(56, 208, 240, 0.9);
+  background: rgba(34, 211, 238, 0.08);
+}
+
+/*
+ * The hero's second action: a play control with no label.
+ *
+ * Sized to the tap-target minimum rather than to the glyph. An icon-only
+ * control that is merely as big as its icon is the commonest reason a button
+ * is hard to hit on a phone.
+ */
+.button-play {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 999px;
+  border: 1px solid var(--line-bright);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  text-decoration: none;
+  flex: none;
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    background-color 180ms ease;
+}
+
+.button-play svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.button-play:hover {
+  border-color: rgba(56, 208, 240, 0.8);
+  background: rgba(34, 211, 238, 0.1);
+  transform: translateY(-1px);
 }
 
 .button-ghost {
