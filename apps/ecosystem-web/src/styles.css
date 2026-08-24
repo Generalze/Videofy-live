@@ -616,7 +616,16 @@ button:focus-visible {
  */
 .domain-art {
   position: relative;
-  margin: -0.2rem -0.2rem 0.8rem;
+  /*
+   * EDGE TO EDGE across the top of the card, not an inset panel.
+   *
+   * Pulled out by the card's own padding so the scene meets the border on
+   * three sides, exactly as the reference does. Inset, it read as a thumbnail
+   * dropped into a card; full-bleed, the card reads as a window onto the
+   * domain.
+   */
+  margin: calc(-1 * clamp(1rem, 5cqw, 1.6rem)) calc(-1 * clamp(1rem, 5cqw, 1.6rem)) 0.9rem;
+  border-radius: calc(var(--radius-lg) - 1px) calc(var(--radius-lg) - 1px) 0 0;
   /*
    * Shallower than it was. The showboard's row is one compact band the eye
    * takes in at once; a taller frame turned five cards into five columns you
@@ -624,7 +633,6 @@ button:focus-visible {
    * exists to give.
    */
   aspect-ratio: 16 / 9;
-  border-radius: 14px;
   overflow: hidden;
   background: linear-gradient(180deg, rgba(18, 26, 44, 0.9), rgba(8, 12, 22, 0.95));
 }
@@ -648,6 +656,31 @@ button:focus-visible {
 .domain-number {
   color: var(--accent);
   font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Each card carries its scene's colour in the border and a matching wash at
+ * the top. Neutral hairlines all round made five distinct domains read as one
+ * repeated component.
+ */
+.domain-flagship {
+  border-color: rgba(110, 168, 255, 0.34);
+}
+
+.domain-concealed {
+  border-color: rgba(130, 170, 255, 0.3);
+}
+
+.domain-emerging {
+  border-color: rgba(110, 224, 170, 0.34);
+}
+
+.domain-sealed {
+  border-color: rgba(150, 170, 210, 0.24);
+}
+
+.domain-quiet {
+  border-color: rgba(180, 130, 255, 0.32);
 }
 
 /*
