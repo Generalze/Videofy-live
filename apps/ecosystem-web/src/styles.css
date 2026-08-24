@@ -659,6 +659,11 @@ button:focus-visible {
  * only copy.
  */
 .domain-summary {
+  /* Sized to the card, like the name. The showboard's card text is small and
+     dense; at body size five cards became a 500px-tall band that no longer
+     read as one row. */
+  font-size: clamp(0.82rem, 6.2cqw, 0.95rem);
+  line-height: 1.5;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -667,14 +672,17 @@ button:focus-visible {
 }
 
 .domain-detail {
+  font-size: clamp(0.78rem, 5.8cqw, 0.9rem);
+  line-height: 1.5;
   display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
   overflow: hidden;
 }
 
 .domain-field {
+  font-size: clamp(0.66rem, 4.6cqw, 0.74rem);
   /* Two lines at most: a five-word category should not push the name down a
      card and out of line with its neighbours. */
   display: -webkit-box;
