@@ -151,7 +151,10 @@ export function totpEnrolmentUri(input: {
  * process that grows in their absence (a human deciding somebody sounds
  * genuine) is a far weaker second factor than the one it replaces.
  */
-export function createRecoveryCodes(count = 10): {
+export function createRecoveryCodes(
+  secret: string,
+  count = 10,
+): {
   codes: readonly string[];
   hashes: readonly string[];
 } {
@@ -162,18 +165,53 @@ export function createRecoveryCodes(count = 10): {
     );
     codes.push(halves.join('-'));
   }
-  return { codes, hashes: codes.map(hashRecoveryCode) };
+  return { codes, hashes: codes.map((code) => hashRecoveryCode(code, secret)) };
 }
 
-export function hashRecoveryCode(code: string): string {
-  return createHmac('sha256', 'c7-recovery').update(code.trim(), 'utf8').digest('hex');
+/**
+ * The minimum length that makes the pepper worth having.
+ *
+ * Not a cryptographic threshold so much as a refusal to accept a placeholder:
+ * `"secret"` or `"changeme"` in an env file would satisfy a mere non-empty
+ * check and leave the codes exactly as exposed as the constant this replaced.
+ */
+export const RECOVERY_PEPPER_MIN_LENGTH = 32;
+
+/**
+ * Hash a recovery code under a deployment-held PEPPER.
+ *
+ * WHY A PEPPER AND NOT A BARE HASH. A recovery code is short and numeric —
+ * about 33 bits of entropy. Hashed with a fast digest under a key that lives in
+ * the source tree, a stolen enrolment table is an offline brute-force of a
+ * space a GPU clears in minutes, and the second factor is gone without anyone
+ * touching the running system. The pepper moves the secret OUT of the artefact
+ * that gets stolen alongside the database: dumping the table is then not enough.
+ *
+ * It is deliberately NOT a per-code salt. A salt defeats precomputation across
+ * accounts but not a targeted offline attack on one account, which is the
+ * threat here; the pepper defeats both, provided it is not stored with the data
+ * it protects.
+ *
+ * REFUSES rather than defaults. A missing pepper silently falling back to a
+ * constant is precisely the state this function was written to remove, and it
+ * would look identical from the outside.
+ */
+export function hashRecoveryCode(code: string, secret: string): string {
+  if (typeof secret !== 'string' || secret.trim().length < RECOVERY_PEPPER_MIN_LENGTH) {
+    throw new Error(
+      `recovery code pepper must be at least ${RECOVERY_PEPPER_MIN_LENGTH} characters; ` +
+        'set it from deployment configuration and never from a literal in the tree',
+    );
+  }
+  return createHmac('sha256', secret).update(code.trim(), 'utf8').digest('hex');
 }
 
 export function consumeRecoveryCode(
   enrolment: MfaEnrolment,
   presented: string,
+  secret: string,
 ): { ok: true; next: MfaEnrolment } | { ok: false } {
-  const hash = hashRecoveryCode(presented);
+  const hash = hashRecoveryCode(presented, secret);
   const index = enrolment.recoveryCodeHashes.indexOf(hash);
   if (index === -1) return { ok: false };
   // Single use: the hash is removed, not merely counted, so the same code can

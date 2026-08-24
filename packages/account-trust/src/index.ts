@@ -55,7 +55,29 @@ export {
   type ProviderCallback,
 } from './identity-verification.js';
 export {
+  PASSWORD_RESET_POLICY,
+  beginPasswordReset,
+  completePasswordReset,
+  revokeSessions,
+  type RecoveryAcknowledgement,
+  type RecoveryEffect,
+  type RecoveryRequest,
+  type ResetCompletion,
+  type SessionRevocation,
+  type SessionRevocationReason,
+} from './account-recovery.js';
+export {
+  acceptedVersionOf,
+  consentSatisfied,
+  outstandingConsents,
+  recordConsent,
+  type ConsentRecord,
+  type PolicyRequirement,
+  type PolicyType,
+} from './consent.js';
+export {
   INITIAL_MFA,
+  RECOVERY_PEPPER_MIN_LENGTH,
   STEP_UP_FRESHNESS_MS,
   TOTP_DIGITS,
   TOTP_DRIFT_STEPS,

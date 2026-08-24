@@ -22,9 +22,15 @@ import {
 } from './index.js';
 
 const NOW = 1_700_000_000_000;
+/**
+ * A test pepper. Real deployments read this from configuration; the length is
+ * what the module enforces, so a short placeholder here would fail the guard
+ * rather than the behaviour under test.
+ */
+const PEPPER = 'test-pepper-0123456789abcdef0123456789abcdef';
 
 function enrolment(over: Partial<MfaEnrolment> = {}): MfaEnrolment {
-  const { hashes } = createRecoveryCodes(3);
+  const { hashes } = createRecoveryCodes(PEPPER, 3);
   return {
     method: 'totp',
     state: 'active',
@@ -91,32 +97,32 @@ describe('TOTP', () => {
 
 describe('recovery codes', () => {
   it('PIN: only hashes are retained', () => {
-    const { codes, hashes } = createRecoveryCodes(5);
+    const { codes, hashes } = createRecoveryCodes(PEPPER, 5);
     expect(codes).toHaveLength(5);
     for (const code of codes) {
-      expect(hashes).toContain(hashRecoveryCode(code));
+      expect(hashes).toContain(hashRecoveryCode(code, PEPPER));
       // The code itself must not be recoverable from what is stored.
       expect(hashes.join(' ')).not.toContain(code);
     }
   });
 
   it('PIN: a recovery code is single use', () => {
-    const { codes, hashes } = createRecoveryCodes(3);
+    const { codes, hashes } = createRecoveryCodes(PEPPER, 3);
     const active = enrolment({ recoveryCodeHashes: hashes });
 
-    const first = consumeRecoveryCode(active, codes[0]!);
+    const first = consumeRecoveryCode(active, codes[0]!, PEPPER);
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect(first.next.recoveryCodeHashes).toHaveLength(2);
     expect(first.next.recoveryCodesUsed).toBe(1);
 
     // Removed, not merely counted, so it can never be presented again.
-    const replay = consumeRecoveryCode(first.next, codes[0]!);
+    const replay = consumeRecoveryCode(first.next, codes[0]!, PEPPER);
     expect(replay.ok).toBe(false);
   });
 
   it('refuses an unknown code', () => {
-    expect(consumeRecoveryCode(enrolment(), '00000-00000').ok).toBe(false);
+    expect(consumeRecoveryCode(enrolment(), '00000-00000', PEPPER).ok).toBe(false);
   });
 });
 
@@ -190,5 +196,23 @@ describe('step-up authentication', () => {
         operation,
       ).toBe(true);
     }
+  });
+});
+
+/*
+ * The defect this replaced: a pepper committed to the tree protects nothing,
+ * because whoever obtained the table obtained the key with it.
+ */
+describe('recovery code pepper', () => {
+  it('refuses to hash without a pepper of real length', () => {
+    expect(() => hashRecoveryCode('00000-00000', '')).toThrow(/at least/);
+    expect(() => hashRecoveryCode('00000-00000', 'changeme')).toThrow(/at least/);
+  });
+
+  it('produces different hashes under different peppers', () => {
+    const other = 'another-pepper-fedcba9876543210fedcba98765432';
+    expect(hashRecoveryCode('12345-67890', PEPPER)).not.toBe(
+      hashRecoveryCode('12345-67890', other),
+    );
   });
 });
