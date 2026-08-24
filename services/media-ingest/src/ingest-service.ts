@@ -544,6 +544,11 @@ export class IngestService {
       // translate" look identical from a participant's seat.
       targetLanguages: session.targetLanguages,
       willTranslate: session.targetLanguages.length > 0,
+      // A target with no voice is skipped by planSpeechTargets, so targets
+      // alone do not mean anything will be spoken. Names only, never a
+      // participant's personal voice material.
+      voicedLanguages: Object.keys(session.voiceIdsByLanguage ?? {}),
+      textOnlyLanguages: session.generatedAudio?.textOnlyLanguages ?? [],
     });
     return session;
   }

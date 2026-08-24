@@ -143,6 +143,22 @@ export class LiveSessionHost implements IngressStreamHandler {
   ): Promise<LiveSessionHost> {
     const plans = deps.synthesis === null ? [] : deps.speechPlansFor(open);
     const synthesis = deps.synthesis;
+    /**
+     * How many languages this stream will actually be SPOKEN in.
+     *
+     * Zero is a legitimate state (captions-only) and an invisible failure. A
+     * target language with no voice id is skipped silently by
+     * planSpeechTargets, so a call could arrive with correct target languages,
+     * commit every segment, and still build no translation pipeline at all --
+     * which from a participant's seat is captions with silence, identical to
+     * broken synthesis.
+     */
+    deps.log?.('live speech plans resolved', {
+      sessionId: open.sessionId,
+      synthesisConfigured: deps.synthesis !== null,
+      planCount: plans.length,
+      languages: plans.map((plan) => plan.targetLanguage),
+    });
     const speech = new Map<string, LiveTranslationPipeline>();
 
     for (const plan of plans) {
