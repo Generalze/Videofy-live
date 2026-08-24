@@ -52,6 +52,8 @@ const SATELLITES: readonly SatelliteNode[] = [
 
 const CX = 400;
 const CY = 320;
+/** Applied to the monogram's own 40x32 artboard. */
+const MARK_SCALE = 1.78;
 
 /** rx, ry and tilt. The differing tilts are the whole trick. */
 const ORBITS = [
@@ -260,7 +262,14 @@ export function C7OrbitHero() {
 
         {/* the luminous C7 core */}
         <ellipse cx={CX} cy={CY} rx="104" ry="50" fill="rgba(150,190,255,0.22)" filter="url(#c7-blur-sm)" />
-        <g transform={`translate(${CX - 56} ${CY - 56}) scale(1.78)`}>
+        {/*
+          Centred on the GLYPH's own bounding box, not on a guessed offset.
+          The artwork spans x 25.7-65.3 and y 17.6-50 in its own coordinates,
+          so its centre is (45.5, 33.8); translating by half the viewport
+          instead left the monogram sitting ~25px right of the lens, which
+          reads as a mistake even to someone who never saw the reference.
+        */}
+        <g transform={`translate(${CX - 45.5 * MARK_SCALE} ${CY - 33.8 * MARK_SCALE}) scale(${MARK_SCALE})`}>
           <path
             d="M45.5 17.6 A19.8 19.8 0 1 0 45.5 46.4"
             fill="none"
