@@ -77,6 +77,16 @@ PY
 chown -R "$SERVICE_USER:$SERVICE_USER" "$CACHE"
 
 echo "--- pointing media-ingest at them ---"
+# HF_HOME IS NOT OPTIONAL, and cache_dir does not cover it. transformers also
+# touches ~/.cache/huggingface/token, and the service user's home is not
+# writable -- so every translation failed with a PermissionError that the error
+# classifier reported as "model is unavailable in the configured local cache".
+# The model was fine. Every manual test passed BECAUSE the tests set HF_HOME
+# and the service did not, which is how four hypotheses were tested and
+# discarded against evidence that could not fail.
+#
+# HF_HUB_OFFLINE stops any hub lookup at call time: the models are already here
+# and downloads are disabled, so a lookup can only add latency or fail.
 # Replace rather than append, for the same reason the credential script does:
 # a second definition of a key lets the older one win depending on read order.
 # Never append onto an unterminated last line: doing so once produced
@@ -90,7 +100,7 @@ for line in \
   "OPUS_MT_PYTHON=$VENV/bin/python" \
   "OPUS_MT_MODEL_CACHE_DIR=$CACHE" \
   "OPUS_MT_ALLOW_MODEL_DOWNLOAD=false" \
-  "AI_PYTHON_EXECUTABLE=$VENV/bin/python"
+  "AI_PYTHON_EXECUTABLE=$VENV/bin/python"   "HF_HOME=$CACHE"   "HF_HUB_OFFLINE=1"
 do
   key="${line%%=*}"
   sed -i "/^${key}=/d" "$ENV_FILE"
