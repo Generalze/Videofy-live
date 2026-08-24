@@ -22,6 +22,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   accountSeats,
   applyContractedSeatChange,
+  isLegalOrganizationTransition,
   maySeatOneMore,
   reservesSeat,
   type Invitation,
@@ -401,16 +402,32 @@ export class OrganizationStore {
     return updated;
   }
 
-  /** Move an organization through its KYB lifecycle. Server-side only. */
-  setState(organizationId: string, state: Organization['state']): Organization | null {
+  /**
+   * Move an organization through its lifecycle. Server-side only.
+   *
+   * GUARDED BY THE TRANSITION TABLE. This previously accepted any state from
+   * any state, which meant one mistaken call could move a closed organization
+   * back to verified and nothing would notice -- and every audit statement
+   * about that organization would quietly become conditional. An illegal move
+   * is now refused rather than silently applied.
+   */
+  setState(
+    organizationId: string,
+    state: Organization['state'],
+  ):
+    | { ok: true; organization: Organization }
+    | { ok: false; reason: 'unknown-organization' | 'illegal-transition' } {
     const organization = this.organizations.get(organizationId);
-    if (!organization) return null;
+    if (!organization) return { ok: false, reason: 'unknown-organization' };
+    if (!isLegalOrganizationTransition(organization.state, state)) {
+      return { ok: false, reason: 'illegal-transition' };
+    }
     const updated: Organization = {
       ...organization,
       state,
       updatedAt: new Date(this.now()).toISOString(),
     };
     this.organizations.set(organizationId, updated);
-    return updated;
+    return { ok: true, organization: updated };
   }
 }

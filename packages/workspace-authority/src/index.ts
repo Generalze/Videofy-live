@@ -21,7 +21,10 @@ export {
 export { DEFAULT_RETURN_TO, isSafeReturnTo, safeReturnTo } from './safe-return.js';
 export {
   accountSeats,
+  INACTIVE_ORGANIZATION_STATES,
+  TERMINAL_ORGANIZATION_STATES,
   applyContractedSeatChange,
+  isLegalOrganizationTransition,
   hasVerifiedDomain,
   maySeatOneMore,
   presentationFor,

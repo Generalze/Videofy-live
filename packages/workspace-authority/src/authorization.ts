@@ -18,6 +18,10 @@
  */
 import { resolveTrustState, trustCapabilities, type AccountTrust } from '@videofy-live/account-trust';
 import type { OrganizationMembership, OrganizationRole, OrganizationState } from './workspace.js';
+import {
+  INACTIVE_ORGANIZATION_STATES,
+  TERMINAL_ORGANIZATION_STATES,
+} from './organization.js';
 
 export type Capability =
   // workspace
@@ -167,7 +171,14 @@ export function authorize(
   if (membership === null || !membership.active) return deny('not-a-member');
 
   const organizationState = context.organizationState ?? 'draft';
-  if (organizationState === 'suspended' || organizationState === 'rejected') {
+  // A CLOSED organization is not viewable. Every other inactive state leaves a
+  // read-only window so members can see what happened and an owner can act on
+  // it; closure is the one where there is nothing left to show and continuing
+  // to serve it would contradict the record saying it ended.
+  if (TERMINAL_ORGANIZATION_STATES.has(organizationState)) {
+    return deny('organization-not-active');
+  }
+  if (INACTIVE_ORGANIZATION_STATES.has(organizationState)) {
     return capability === 'organization.view' ? ALLOW : deny('organization-not-active');
   }
   if (organizationState !== 'verified' && capability !== 'organization.view') {

@@ -30,6 +30,24 @@ export const ORGANIZATION_ROLE_LABELS: Readonly<Record<OrganizationRole, string>
  * Organization lifecycle, mirroring the account trust vocabulary on purpose:
  * an organization is verified or not for the same kinds of reasons a person is.
  */
+/**
+ * The life of an organization, including its end.
+ *
+ * THE CLOSURE STATES ARE NOT DECORATION. "Delete the organization" sounds like
+ * one action and is at least four: memberships end, entitlements stop, owned
+ * resources are dealt with, and audit records are retained because a
+ * disappearing organization is exactly what somebody covering their tracks
+ * would want. Modelling closure as a PROCESS rather than a row deletion is what
+ * makes each of those separable and reversible up to the point it should not be.
+ *
+ *  - `closure_pending` -- closure requested and reversible. Nothing is
+ *    destroyed; the organization stops being usable.
+ *  - `archived` -- retained, inert, restorable. The state for an organization
+ *    that stopped paying rather than one that did something wrong.
+ *  - `closed` -- terminal. Records that must be retained are retained; nothing
+ *    transitions out, because a closed organization coming back to life would
+ *    make every audit statement about it conditional.
+ */
 export type OrganizationState =
   | 'draft'
   | 'verification_required'
@@ -38,7 +56,10 @@ export type OrganizationState =
   | 'verified'
   | 'restricted'
   | 'rejected'
-  | 'suspended';
+  | 'suspended'
+  | 'closure_pending'
+  | 'archived'
+  | 'closed';
 
 export interface Workspace {
   readonly workspaceId: string;
