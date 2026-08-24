@@ -29,6 +29,14 @@
  * speaking, however long it ran.
  */
 
+import { SILERO_SPEECH_THRESHOLD, type SpeechProbabilityDetector } from './silero.js';
+export {
+  SILERO_SPEECH_THRESHOLD,
+  SILERO_WINDOW_SAMPLES,
+  SileroSpeechDetector,
+  type SpeechProbabilityDetector,
+} from './silero.js';
+
 export const SPEECH_SAMPLE_RATE = 16000;
 
 /**
@@ -127,6 +135,24 @@ export interface SpeechActivityOptions {
    * the test and restores the pure energy gate.
    */
   readonly voicingThreshold?: number;
+  /**
+   * A learned speech detector, when one is available.
+   *
+   * Given one, it DECIDES: it answers the question the energy and periodicity
+   * tests only approximate, and it is the only one of the three that rejects a
+   * steady tone or music. Absent, the gate keeps those two.
+   */
+  readonly detector?: SpeechProbabilityDetector | undefined;
+  /**
+   * Builds this gate's OWN detector.
+   *
+   * Preferred over passing an instance: a detector carries recurrent state for
+   * one stream, and sharing one across concurrent speakers judges each against
+   * the other's audio.
+   */
+  readonly createDetector?: (() => SpeechProbabilityDetector) | undefined;
+  /** Probability at or above which the detector calls a frame speech. */
+  readonly detectorThreshold?: number;
   readonly endSilenceMs?: number;
   readonly minSpeechMs?: number;
   readonly maxSegmentMs?: number;
@@ -168,6 +194,8 @@ export class SpeechActivityGate {
   private readonly minSpeechMs: number;
   private readonly maxSegmentMs: number;
   private readonly voicingThreshold: number;
+  private readonly detector: SpeechProbabilityDetector | undefined;
+  private readonly detectorThreshold: number;
 
   private open = false;
   private startedAtMs = 0;
@@ -185,6 +213,8 @@ export class SpeechActivityGate {
     // Zero disables the periodicity test, restoring the pure energy gate for
     // anyone who needs the previous behaviour exactly.
     this.voicingThreshold = options.voicingThreshold ?? VOICING_THRESHOLD;
+    this.detector = options.detector ?? options.createDetector?.();
+    this.detectorThreshold = options.detectorThreshold ?? SILERO_SPEECH_THRESHOLD;
   }
 
   get isSpeaking(): boolean {
@@ -202,12 +232,27 @@ export class SpeechActivityGate {
   push(samples: Int16Array, platformTimestampMs: number): SpeechActivityEvent[] {
     const events: SpeechActivityEvent[] = [];
     const frameMs = (samples.length / SPEECH_SAMPLE_RATE) * 1000;
-    // BOTH: loud enough AND periodic. Either alone opens a segment for
-    // something that is not speech -- loudness for a door, periodicity for a
-    // hum too quiet to matter.
-    const voiced =
-      frameEnergy(samples) >= this.speechThreshold &&
-      (this.voicingThreshold <= 0 || voicingStrength(samples) >= this.voicingThreshold);
+    /*
+     * A learned detector answers this outright; without one, the frame must be
+     * loud AND periodic. Either of those alone opens a segment for something
+     * that is not speech -- loudness for a door, periodicity for a hum -- and
+     * neither rejects music, which is why the detector wins when present.
+     *
+     * Energy is still required alongside it. Silero is scored on speech, not
+     * on level, and a whisper of leakage from another room can score highly
+     * while being nobody in this call talking.
+     */
+    let voiced: boolean;
+    if (this.detector !== undefined) {
+      this.detector.push(samples);
+      voiced =
+        frameEnergy(samples) >= this.speechThreshold &&
+        this.detector.probability >= this.detectorThreshold;
+    } else {
+      voiced =
+        frameEnergy(samples) >= this.speechThreshold &&
+        (this.voicingThreshold <= 0 || voicingStrength(samples) >= this.voicingThreshold);
+    }
 
     if (voiced) {
       if (!this.open) {

@@ -118,3 +118,63 @@ describe('SpeechActivityGate with voicing', () => {
     expect(events.some((e) => e.kind === 'speech-start')).toBe(true);
   });
 });
+
+/**
+ * The gate with a learned detector.
+ *
+ * Silero itself is exercised against real audio by
+ * scripts/check-silero.mjs; these pin how the GATE uses whatever detector it
+ * is given, without loading a 2 MB model into a unit test.
+ */
+describe('SpeechActivityGate with a learned detector', () => {
+  function detectorAt(probability: number) {
+    return { push: () => {}, probability, reset: () => {} };
+  }
+
+  const loudVoice = voice(12000);
+
+  it('PIN: the detector can veto audio the energy gate would have passed', () => {
+    // Music, a tone, a television in the room: loud, periodic, not speech.
+    const gate = new SpeechActivityGate({ detector: detectorAt(0.02) });
+    const events = [];
+    for (let i = 0; i < 10; i += 1) events.push(...gate.push(loudVoice, i * 30));
+    expect(events.some((e) => e.kind === 'speech-start')).toBe(false);
+  });
+
+  it('opens when the detector is confident and the audio is loud enough', () => {
+    const gate = new SpeechActivityGate({ detector: detectorAt(0.97) });
+    const events = [];
+    for (let i = 0; i < 10; i += 1) events.push(...gate.push(loudVoice, i * 30));
+    expect(events.some((e) => e.kind === 'speech-start')).toBe(true);
+  });
+
+  it('PIN: still requires energy, so leakage from another room is not speech', () => {
+    // Silero scores speech, not level. A neighbouring conversation bleeding
+    // into the mic can score highly while being nobody in THIS call talking.
+    const gate = new SpeechActivityGate({ detector: detectorAt(0.99) });
+    const events = [];
+    for (let i = 0; i < 10; i += 1) events.push(...gate.push(voice(60), i * 30));
+    expect(events.some((e) => e.kind === 'speech-start')).toBe(false);
+  });
+
+  it('builds its OWN detector from a factory, so streams never share state', () => {
+    // Silero carries recurrent state per conversation; one instance shared
+    // across concurrent speakers judges each against the other's audio.
+    const built: number[] = [];
+    const gateA = new SpeechActivityGate({
+      createDetector: () => {
+        built.push(1);
+        return detectorAt(0.9);
+      },
+    });
+    const gateB = new SpeechActivityGate({
+      createDetector: () => {
+        built.push(1);
+        return detectorAt(0.9);
+      },
+    });
+    void gateA;
+    void gateB;
+    expect(built).toHaveLength(2);
+  });
+});

@@ -36,6 +36,10 @@ import { setOpusMtDiagnosticLogger } from './translation-provider.js';
 import { attachRealtimeAudioIngress, REALTIME_INGRESS_PATH } from './realtime-ingress-server.js';
 import { createLiveStreamOpener } from './live-session-host.js';
 import {
+  SileroSpeechDetector,
+  type SpeechProbabilityDetector,
+} from '@videofy-live/speech-activity';
+import {
   buildStreamingSynthesisProvider,
   buildStreamingTranscriptionProvider,
   describeLiveEngine,
@@ -739,6 +743,37 @@ if (!liveEngine.real) {
     translation: liveEngine.translation,
   });
 }
+/**
+ * The learned voice detector, when the model is on this machine.
+ *
+ * Loaded ONCE and shared: the model is stateless and expensive to load, while
+ * each stream gets its own detector because the recurrent state describes one
+ * conversation.
+ *
+ * A missing or unloadable model is NOT fatal. Calls fall back to the energy
+ * and periodicity gate, which is weaker -- it admits tones and music -- but
+ * present. Refusing to start over a VAD would trade "some noise gets through"
+ * for "nobody can call", which is the wrong way round. It is logged at warn
+ * either way, because a deployment running the weaker gate should know it.
+ */
+const sileroModelPath = process.env['SILERO_VAD_MODEL_PATH']?.trim();
+let createSpeechDetector: (() => SpeechProbabilityDetector) | null = null;
+if (sileroModelPath) {
+  try {
+    createSpeechDetector = await SileroSpeechDetector.factory(sileroModelPath);
+    logger.info('Silero VAD loaded', { model: sileroModelPath });
+  } catch (error) {
+    logger.warn('Silero VAD unavailable; falling back to the energy/periodicity gate', {
+      model: sileroModelPath,
+      message: error instanceof Error ? error.message : 'unknown failure',
+    });
+  }
+} else {
+  logger.warn(
+    'SILERO_VAD_MODEL_PATH is not set; using the energy/periodicity gate, which admits tones and music',
+  );
+}
+
 if (streamingTranscription !== null) {
   attachRealtimeAudioIngress(server, {
     auth: config.internalIngressAuth,
@@ -750,6 +785,9 @@ if (streamingTranscription !== null) {
       synthesis: streamingSynthesis,
       mintSegmentId: () => `seg_${crypto.randomUUID()}`,
       speechPlansFor: (open) => ingest.liveSpeechPlansFor(open.sessionId),
+      ...(createSpeechDetector === null
+        ? {}
+        : { speech: { createDetector: createSpeechDetector } }),
       onCaption: (event) => ingest.acceptLiveTranscript(event),
       log: (line, detail) => logger.debug(line, detail ?? {}),
     }),

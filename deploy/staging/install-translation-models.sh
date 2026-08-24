@@ -76,6 +76,25 @@ PY
 # The service reads these as the user below, not as root.
 chown -R "$SERVICE_USER:$SERVICE_USER" "$CACHE"
 
+echo "--- silero VAD model ---"
+# The learned voice detector. Without it the gate falls back to energy and
+# periodicity, which admits tones and music -- and a recogniser handed music
+# returns WORDS for it.
+SILERO="$CACHE/silero_vad.onnx"
+if [ ! -s "$SILERO" ]; then
+  curl -fsSL -o "$SILERO"     "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
+fi
+# ~2.2 MB. A truncated download loads and scores everything as silence, which
+# is far worse than no model at all, so the size is checked rather than assumed.
+SILERO_BYTES=$(stat -c%s "$SILERO" 2>/dev/null || echo 0)
+if [ "$SILERO_BYTES" -lt 1000000 ]; then
+  echo "  FAIL silero model is $SILERO_BYTES bytes; expected ~2.2 MB"
+  rm -f "$SILERO"
+  exit 1
+fi
+echo "  ok  silero_vad.onnx ($SILERO_BYTES bytes)"
+chown "$SERVICE_USER:$SERVICE_USER" "$SILERO"
+
 echo "--- pointing media-ingest at them ---"
 # HF_HOME IS NOT OPTIONAL, and cache_dir does not cover it. transformers also
 # touches ~/.cache/huggingface/token, and the service user's home is not
@@ -100,7 +119,7 @@ for line in \
   "OPUS_MT_PYTHON=$VENV/bin/python" \
   "OPUS_MT_MODEL_CACHE_DIR=$CACHE" \
   "OPUS_MT_ALLOW_MODEL_DOWNLOAD=false" \
-  "AI_PYTHON_EXECUTABLE=$VENV/bin/python"   "HF_HOME=$CACHE"   "HF_HUB_OFFLINE=1"
+  "AI_PYTHON_EXECUTABLE=$VENV/bin/python"   "HF_HOME=$CACHE"   "HF_HUB_OFFLINE=1" \n  "SILERO_VAD_MODEL_PATH=$CACHE/silero_vad.onnx"
 do
   key="${line%%=*}"
   sed -i "/^${key}=/d" "$ENV_FILE"
