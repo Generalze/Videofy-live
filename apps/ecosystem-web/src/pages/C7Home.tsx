@@ -43,34 +43,22 @@ function DomainCard({
       <p className="domain-summary">{domain.summary}</p>
       {domain.detail === null ? null : <p className="domain-detail">{domain.detail}</p>}
 
-      {domain.highlight === undefined ? null : (
-        <div className="highlight">
-          <div className="highlight-head">
-            <span className="highlight-name">{domain.highlight.name}</span>
-            <span className="status status-available">
-              <span className="status-dot" aria-hidden="true" />
-              {domain.highlight.status}
-            </span>
-          </div>
-          <ul className="highlight-lines">
-            {domain.highlight.lines.map((line) => (
-              <li key={line}>{line}</li>
-            ))}
-          </ul>
-          <div className="highlight-actions">
-            <a className="button button-primary button-small" {...internalLink('videofy', navigate)}>
-              Explore Videofy
-            </a>
-            <a className="button button-ghost button-small" href="/call/">
-              Launch Videofy Live
-            </a>
-          </div>
-        </div>
-      )}
-
+      {/*
+        The showboard's first card is VIDEOFY and a status badge -- not a panel
+        of its own listing products and actions. Those belong to the Videofy
+        family page, which is what this card points at; naming them here made
+        the C7 homepage explain a product instead of introducing a domain, and
+        at a fifth of the row's width it could not fit regardless.
+      */}
       <footer className="domain-foot">
-        {domain.highlight === undefined ? <StatusBadge status={domain.status} /> : null}
+        <StatusBadge status={domain.status} />
         {domain.status.kind === 'progress' ? <ProgressRail percent={domain.status.percent} /> : null}
+        {domain.highlight === undefined ? null : (
+          <a className="domain-link" {...internalLink('videofy', navigate)}>
+            Explore {domain.highlight.name.split('-')[0]}
+            <span aria-hidden="true"> →</span>
+          </a>
+        )}
       </footer>
     </Reveal>
   );

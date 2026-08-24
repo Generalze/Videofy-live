@@ -557,19 +557,87 @@ button:focus-visible {
 .domain-grid {
   margin-top: 1.4rem;
   display: grid;
-  gap: 1.2rem;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr));
+  gap: 1rem;
+  /*
+   * FIVE ACROSS at desktop, as the showboard lays them out: five fields of
+   * work of equal standing. Stepped down explicitly rather than by auto-fit,
+   * because auto-fit at five columns produces a 4+1 orphan at the widths in
+   * between -- one card alone on a second row, which reads as a mistake.
+   */
+  grid-template-columns: 1fr;
 }
 
-@media (min-width: 900px) {
+@media (min-width: 620px) {
   .domain-grid {
-    grid-template-columns: 1.35fr 1.35fr;
+    grid-template-columns: repeat(2, 1fr);
   }
+}
 
-  .domain-grid > :nth-child(3),
-  .domain-grid > :nth-child(4) {
-    grid-column: span 1;
+@media (min-width: 1000px) {
+  .domain-grid {
+    grid-template-columns: repeat(3, 1fr);
   }
+}
+
+@media (min-width: 1240px) {
+  .domain-grid {
+    grid-template-columns: repeat(5, 1fr);
+    gap: 0.9rem;
+  }
+}
+
+/* ---------- domain artwork ---------- */
+
+/*
+ * The illustrative scene behind each card.
+ *
+ * A fixed aspect rather than a fixed height: the cards sit in a five-column
+ * grid that narrows steeply, and a fixed height turns the art into a letterbox
+ * at one width and a stamp at another. `slice` keeps the scene filling its
+ * frame at every one.
+ */
+.domain-art {
+  position: relative;
+  margin: -0.2rem -0.2rem 1rem;
+  aspect-ratio: 16 / 10;
+  border-radius: 14px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(18, 26, 44, 0.9), rgba(8, 12, 22, 0.95));
+}
+
+.domain-art svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Grounds the art into the card instead of ending on a hard edge. */
+.domain-art::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 0;
+  height: 42%;
+  background: linear-gradient(180deg, transparent, rgba(7, 11, 22, 0.92));
+  pointer-events: none;
+}
+
+.domain-number {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The one way through to the Videofy family page from its card. */
+.domain-link {
+  margin-top: 0.7rem;
+  color: var(--accent);
+  font-size: 0.92rem;
+  font-weight: 550;
+  text-decoration: none;
+  align-self: flex-start;
+}
+
+.domain-link:hover {
+  text-decoration: underline;
 }
 
 /* ---------- status ---------- */
