@@ -444,14 +444,27 @@ button:focus-visible {
 .domain {
   position: relative;
   overflow: hidden;
-  padding: clamp(1.5rem, 2.4vw, 2.3rem);
+  /* So .domain-product can size itself in `cqw` against THIS card. */
+  container-type: inline-size;
+  /* Padding scales with the card, not the viewport: at five across a
+     viewport-based pad left almost no room for the words. */
+  padding: clamp(1rem, 5cqw, 1.6rem);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: linear-gradient(168deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012));
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.75rem;
   min-height: 100%;
+}
+
+/* The status sits at the bottom of every card, so the row reads as one band
+   of badges rather than as five differently-placed labels. */
+.domain-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
 }
 
 .domain-glow {
@@ -462,10 +475,15 @@ button:focus-visible {
   opacity: 0.65;
 }
 
-.domain-lead {
-  margin-top: clamp(2rem, 4vh, 3rem);
-  padding: clamp(1.8rem, 3.2vw, 3rem);
-}
+/*
+ * No longer a banner of its own.
+ *
+ * The flagship used to sit above the grid with its own margin and padding.
+ * Inside a five-column row those pushed it out of line with its neighbours --
+ * it started lower and its artwork rendered smaller, which looked like a bug
+ * rather than emphasis. Videofy is distinguished by being AVAILABLE, and its
+ * badge says so.
+ */
 
 .domain-flagship .domain-glow {
   background: radial-gradient(50% 60% at 20% 10%, rgba(110, 168, 255, 0.22), transparent 70%);
@@ -503,12 +521,17 @@ button:focus-visible {
 }
 
 .domain-product {
-  font-size: clamp(1.35rem, 1.6vw + 1rem, 2.1rem);
+  /*
+   * Sized to the COLUMN, not the viewport. At five across, a viewport-relative
+   * size overflowed its card and clipped VIDEOFY to "VIDEOF" -- the one word on
+   * the page that must never be wrong. `cqw` measures the card itself, so the
+   * name fits whatever the row is doing.
+   */
+  font-size: clamp(1.15rem, 11cqw, 2.1rem);
   letter-spacing: -0.01em;
-}
-
-.domain-lead .domain-product {
-  font-size: clamp(1.9rem, 3.2vw + 1rem, 3.2rem);
+  /* A long product name breaks rather than escaping its card. */
+  overflow-wrap: anywhere;
+  hyphens: auto;
 }
 
 .domain-summary {
@@ -557,6 +580,7 @@ button:focus-visible {
 .domain-grid {
   margin-top: 1.4rem;
   display: grid;
+  align-items: stretch;
   gap: 1rem;
   /*
    * FIVE ACROSS at desktop, as the showboard lays them out: five fields of
