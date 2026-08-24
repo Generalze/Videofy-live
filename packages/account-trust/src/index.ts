@@ -55,6 +55,16 @@ export {
   type ProviderCallback,
 } from './identity-verification.js';
 export {
+  beginIdentityChange,
+  completeIdentityChange,
+  type IdentityChangeCompletion,
+  type IdentityChangeEffects,
+  type IdentityChangeRefusal,
+  type IdentityChangeStart,
+  type IdentityChannel,
+  type PendingIdentityChange,
+} from './identity-change.js';
+export {
   ABUSE_POLICIES,
   abuseKey,
   createMemoryAbuseLimiter,
