@@ -436,10 +436,16 @@ describe('caption layout never displaces the controls', () => {
 });
 
 describe('mode-suppressed speaker controls', () => {
-  it('marks a translated speaker inert WITH the reason, distinct from unresolved', () => {
-    // calm-tide-33: the fr listener's controls governed originals the mode had
-    // silenced, moved freely, and did nothing. Controls that do nothing must
-    // say why.
+  it('says the original is suppressed, and keeps the controls LIVE', () => {
+    // calm-tide-33 disabled these, because they governed originals the mode had
+    // silenced: controls that do nothing must say why. That reasoning was
+    // right, and its premise is now gone -- they govern the TRANSLATED voice,
+    // which is the audio this listener actually hears from this person.
+    //
+    // Leaving them disabled left a translated call with no way to mute or turn
+    // down ONE participant; the only live control was a single slider for
+    // everyone at once. The tile still says the original is suppressed, because
+    // that remains true and explains what the controls now act on.
     const html = render({
       participants: [
         participant({ participantId: 'p1', displayName: 'Alice' }),
@@ -454,7 +460,19 @@ describe('mode-suppressed speaker controls', () => {
     expect(html).toContain('is-suppressed');
     expect(html).toContain('Hearing translated voice');
     expect(html).not.toContain('Audio connecting');
-    expect(html).toMatch(/<button[^>]*class="participant-mute"[^>]*disabled/);
+    // PIN: operable. A disabled control here is the defect, not the contract.
+    //
+    // Sliced to this tile's own controls rather than matched across the whole
+    // document: the global "Their voice" slider in the audio drawer stays
+    // disabled, correctly, because it governs the original voice the mode has
+    // genuinely silenced. A document-wide regex finds that one and reports the
+    // tile as broken.
+    const controls = html.slice(
+      html.indexOf('participant-audio-controls'),
+      html.indexOf('participant-audio-pending'),
+    );
+    expect(controls).toContain('participant-mute');
+    expect(controls).not.toContain('disabled');
   });
 
   it('leaves an unsuppressed speaker fully operable', () => {

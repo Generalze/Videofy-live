@@ -74,7 +74,7 @@ export interface TranslatedAudioSubscriptionOptions {
    * effect on the next 20 ms instead of at the end of the sentence.
    */
   readonly isAudible: (frame: ProgressiveTranslatedAudioFrame) => boolean;
-  readonly volume?: () => number;
+  readonly volume?: (frame: ProgressiveTranslatedAudioFrame) => number;
   /**
    * The session this subscription belongs to.
    *

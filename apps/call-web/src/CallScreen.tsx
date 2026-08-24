@@ -659,7 +659,15 @@ function ParticipantTile(props: {
             type="button"
             className="participant-mute"
             aria-pressed={audio ? audio.muted : false}
-            disabled={!audio || audio.originalSuppressed}
+            /*
+              Enabled while the original is suppressed, because these controls
+              now govern the TRANSLATED voice -- the audio this listener is
+              actually hearing from this person. They used to be disabled here,
+              which left a translated call with no way to mute or turn down one
+              participant: the only live control was a single slider for
+              everyone at once.
+            */
+            disabled={!audio}
             onClick={() =>
               audio && props.onMutedChange?.(audio.speakerParticipantId, !audio.muted)
             }
@@ -675,7 +683,7 @@ function ParticipantTile(props: {
               max={1}
               step={0.05}
               value={audio ? audio.volume : 1}
-              disabled={!audio || audio.originalSuppressed}
+              disabled={!audio}
               onChange={(event) =>
                 audio &&
                 props.onVolumeChange?.(audio.speakerParticipantId, Number(event.target.value))

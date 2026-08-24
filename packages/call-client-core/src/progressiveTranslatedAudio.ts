@@ -105,7 +105,15 @@ export interface ProgressiveTranslatedAudioOptions {
    */
   readonly isAudible: (frame: ProgressiveTranslatedAudioFrame) => boolean;
   /** Listener volume, 0..1, multiplied into the sink gain. */
-  readonly volume?: () => number;
+  /**
+   * Gain for THIS frame, 0..1.
+   *
+   * Given the frame rather than nothing, because a listener's controls are
+   * per-participant: in a translated call the original voices are suppressed,
+   * so a mute or a volume that could only act on all speakers at once left
+   * somebody with no way to turn down one person.
+   */
+  readonly volume?: (frame: ProgressiveTranslatedAudioFrame) => number;
   readonly onDisposition?: (
     disposition: TranslatedFrameDisposition,
     frame: ProgressiveTranslatedAudioFrame,
@@ -243,7 +251,7 @@ export class ProgressiveTranslatedAudioPlayer {
       return this.settle('dropped-inaudible', frame);
     }
 
-    const volume = this.options.volume?.() ?? 1;
+    const volume = this.options.volume?.(frame) ?? 1;
     const gain = Math.max(0, Math.min(1, volume));
     if (gain === 0) return this.settle('dropped-inaudible', frame);
 

@@ -449,6 +449,12 @@ export default function App() {
   const slotBinderRef = useRef<CallRemoteSlotBinder | null>(null);
   const speakerAudioRef = useRef<CallRemoteSpeakerAudioController | null>(null);
   const [remoteSpeakers, setRemoteSpeakers] = useState<readonly RemoteSpeakerAudio[]>([]);
+  /**
+   * Read from the translated-audio controller, which runs per FRAME and must
+   * not be torn down and rebuilt every time somebody moves a slider.
+   */
+  const remoteSpeakersRef = useRef<readonly RemoteSpeakerAudio[]>(remoteSpeakers);
+  remoteSpeakersRef.current = remoteSpeakers;
   const runtimeFormRef = useRef<CallJoinFormState>(createInitialCallJoinForm());
   const resumeInFlightRef = useRef(false);
   const resumeRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -817,6 +823,25 @@ export default function App() {
       callState: () => callStateRef.current ?? null,
       translatedAudible: () => mixRef.current.playGenerated,
       translatedVolume: () => mixRef.current.translatedVolume,
+      /**
+       * ONE control per person, governing whatever you actually hear from
+       * them.
+       *
+       * These are the same per-participant preferences that govern the
+       * original voices. In a translated call the originals are suppressed, so
+       * without this the mute and volume on somebody's tile controlled audio
+       * nobody could hear -- and the only live control was a single slider for
+       * everyone at once. Local, like the original-voice controls: muting
+       * somebody for yourself never mutes them for the room.
+       */
+      speakerMuted: (speakerParticipantId) =>
+        remoteSpeakersRef.current.find(
+          (speaker) => speaker.speakerParticipantId === speakerParticipantId,
+        )?.muted ?? false,
+      speakerVolume: (speakerParticipantId) =>
+        remoteSpeakersRef.current.find(
+          (speaker) => speaker.speakerParticipantId === speakerParticipantId,
+        )?.volume ?? 1,
       realtimeConfigured: () => PROGRESSIVE_TRANSLATED_AUDIO,
     });
     translatedAudioRef.current = controller;

@@ -54,6 +54,8 @@ export type CallFrameRefusal =
   | 'speaker-unknown'
   | 'language-not-mine'
   | 'translation-disabled'
+  /** This listener muted this speaker, for themselves only. */
+  | 'speaker-muted'
   | 'not-progressive-authority';
 
 export interface CallTranslatedAudioControllerDeps {
@@ -67,6 +69,21 @@ export interface CallTranslatedAudioControllerDeps {
   /** May translated speech be heard right now? From the existing mix policy. */
   readonly translatedAudible: () => boolean;
   readonly translatedVolume: () => number;
+  /**
+   * This listener's own controls for ONE speaker.
+   *
+   * In a translated call the original voices are suppressed, so the per-
+   * participant mute and volume governed audio nobody could hear and were
+   * disabled. The only live control was a single translated-voice slider for
+   * everyone at once, which meant there was no way to turn one person down --
+   * the ordinary thing to want on a call.
+   *
+   * Local only, exactly like the original-voice controls: nothing here is sent
+   * to the gateway, and muting somebody for yourself must never mute them for
+   * the room.
+   */
+  readonly speakerMuted?: ((speakerParticipantId: string) => boolean) | undefined;
+  readonly speakerVolume?: ((speakerParticipantId: string) => number) | undefined;
   /** Whether this deployment cut the live path over. */
   readonly realtimeConfigured: () => boolean;
   readonly onRefused?: (reason: CallFrameRefusal, frame: CallTranslatedAudioFrameEvent) => void;
@@ -122,6 +139,12 @@ export function createCallTranslatedAudioController(
     // `normal` turns the translation engine off for the whole call.
     if (snapshot?.callMode === 'normal') return refuse('translation-disabled', frame);
 
+    // This listener muted this speaker. Refused per frame, so unmuting takes
+    // effect on the next 20 ms rather than at the end of the sentence.
+    if (deps.speakerMuted?.(frame.speakerParticipantId) === true) {
+      return refuse('speaker-muted', frame);
+    }
+
     const authority = resolveTranslatedAudioAuthority({
       serviceCategory: 'call',
       mediaMode: 'live',
@@ -157,7 +180,16 @@ export function createCallTranslatedAudioController(
         // 20 ms rather than at the end of the sentence. The adapter carried
         // every field the guard needs, so nothing here is reconstructed.
         isAudible: (frame) => acceptable(frame as PlayableCallFrame),
-        volume: deps.translatedVolume,
+        // The listener's translated-voice level, scaled by what they set for
+        // THIS speaker. Multiplied rather than overridden: the global slider
+        // still means "how loud translated speech is", and the per-speaker one
+        // is a trim within it.
+        volume: (frame) => {
+          const overall = deps.translatedVolume();
+          const speakerId = (frame as PlayableCallFrame).speakerParticipantId;
+          const perSpeaker = deps.speakerVolume?.(speakerId) ?? 1;
+          return overall * perSpeaker;
+        },
         sessionId: () => deps.currentCallId(),
         onError: (reason) => {
           // A malformed payload is a protocol problem, NOT an autoplay refusal.
