@@ -63,7 +63,13 @@ if ([string]::IsNullOrWhiteSpace($translation)) { $translation = 'opus-mt' }
 # The exact names the code reads. Selectors travel with the credentials so the
 # server can never end up holding a key it is not configured to use.
 $lines = @(
-  "STREAMING_TRANSCRIPTION_PROVIDER=deepgram-flux",
+  # nova-3, NOT flux. Flux is English-only, so a French or Spanish speaker was
+  # simply never recognised -- their partner got captions and silence while the
+  # English side worked perfectly, which reads as a broken translator rather
+  # than a monolingual recogniser. Nova takes a `language` per session, which
+  # is what a translated call needs.
+  "STREAMING_TRANSCRIPTION_PROVIDER=deepgram-nova",
+  "DEEPGRAM_MODEL=nova-3",
   "DEEPGRAM_API_KEY=$deepgramKey",
   "STREAMING_SYNTHESIS_PROVIDER=elevenlabs",
   "ELEVENLABS_API_KEY=$elevenKey",
