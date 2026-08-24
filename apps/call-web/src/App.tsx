@@ -789,7 +789,25 @@ export default function App() {
    */
   useEffect(() => {
     const socket = socketRef.current;
-    if (socket === null || !PROGRESSIVE_TRANSLATED_AUDIO) return undefined;
+    /**
+     * KEYED ON THE SESSION, not on mount.
+     *
+     * This ran once with `[]`, and at mount there is no socket -- it is created
+     * when somebody joins a call. So the guard below returned immediately, the
+     * controller was never built, and nothing ever subscribed to
+     * `call:translated-audio-frame`. Refs do not trigger renders, so the effect
+     * had no second chance.
+     *
+     * The whole server pipeline was working: speech recognised, translated,
+     * synthesised, and 92 frames delivered to the participant. They arrived at
+     * a browser with nobody listening, which is indistinguishable from a mute
+     * button nobody can find.
+     *
+     * `session` is set exactly when a call becomes active and cleared on
+     * teardown, which is the lifetime the AudioContext below should have
+     * anyway.
+     */
+    if (session === null || socket === null || !PROGRESSIVE_TRANSLATED_AUDIO) return undefined;
     const context = new AudioContext({ sampleRate: TRANSLATED_AUDIO_SAMPLE_RATE });
     const controller = createCallTranslatedAudioController({
       socket: socket as unknown as TranslatedAudioSocketLike,
@@ -809,7 +827,7 @@ export default function App() {
       // The AudioContext is released with the call, not with a re-render.
       void context.close();
     };
-  }, []);
+  }, [session]);
 
   useEffect(() => {
     // A mode change stops the sentence in progress rather than letting it
