@@ -284,8 +284,39 @@ export class CallVideoMesh {
     pc.ontrack = (event) => {
       // Mesh peers carry video only; call audio stays on its own transports.
       if (!this.live(entry) || event.track.kind !== 'video') return;
-      const stream = event.streams[0] ?? new MediaStream([event.track]);
-      this.options.onRemoteStream(participantId, stream);
+      const track = event.track;
+      const stream = event.streams[0] ?? new MediaStream([track]);
+
+      /**
+       * CAMERA OFF MUST CLEAR THE TILE.
+       *
+       * Turning a camera off stops frames; it does not remove the track. A
+       * <video> element holds the LAST frame it was given, so the other side
+       * went on showing a frozen still of somebody who believed they had gone
+       * dark. That is not just wrong, it is the wrong way round: the person
+       * looks present when they have chosen not to be.
+       *
+       * The mute event is the signal for it, and it was documented here as
+       * driving the placeholder while nothing actually listened for it. Now it
+       * does: muted publishes null and the tile falls back to the avatar,
+       * unmute publishes the stream again. No server state, no renegotiation --
+       * the browser already knows.
+       */
+      const publish = (): void => {
+        if (!this.live(entry)) return;
+        this.options.onRemoteStream(participantId, track.muted ? null : stream);
+      };
+      // Guarded: a track without addEventListener still delivers video, and
+      // taking the whole mesh down over a missing placeholder would trade a
+      // frozen tile for no call at all.
+      if (typeof track.addEventListener === 'function') {
+        track.addEventListener('mute', publish);
+        track.addEventListener('unmute', publish);
+        track.addEventListener('ended', () => {
+          if (this.live(entry)) this.options.onRemoteStream(participantId, null);
+        });
+      }
+      publish();
     };
     pc.onnegotiationneeded = () => {
       void this.negotiate(entry);

@@ -752,6 +752,17 @@ select {
   padding: var(--vf-space-1) var(--vf-space-3);
 }
 
+/* A translated call with nobody to translate for. Informational, not an
+   error: the call is working exactly as configured. */
+.call-no-translation {
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid rgba(240, 194, 94, 0.4);
+  background: rgba(240, 194, 94, 0.1);
+  color: #f4d79a;
+  font-size: 0.82rem;
+}
+
 .translated-audio-unavailable {
   color: var(--vf-status-warn-text);
   font-size: var(--vf-font-size-xs);

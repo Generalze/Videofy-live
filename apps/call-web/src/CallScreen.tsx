@@ -146,6 +146,30 @@ export function CallScreen(props: CallScreenProps) {
   );
   const speakingParticipantId = activeSpeakerId(props.captions);
 
+  /**
+   * A TRANSLATED call with nothing to translate.
+   *
+   * When everyone present speaks and reads the same language there is no work
+   * for the engine, so people hear each other's real voices -- which is
+   * correct, and indistinguishable from the engine being broken. It happened
+   * for real: one participant joined in French, rejoined later in English, and
+   * their partner spent the call wondering why they were hearing untranslated
+   * French. Nothing on screen said the call had stopped translating.
+   *
+   * Said plainly here, where it can be acted on, instead of leaving somebody
+   * to infer it from silence.
+   */
+  const joinedOthers = others.filter((participant) => participant.joined);
+  const nothingToTranslate =
+    callMode === 'translated' &&
+    joinedOthers.length > 0 &&
+    self !== undefined &&
+    joinedOthers.every(
+      (participant) =>
+        participant.speakLanguage === self.hearLanguage &&
+        self.speakLanguage === participant.hearLanguage,
+    );
+
   return (
     <main className="call-screen">
       <header className="call-header">
@@ -167,6 +191,12 @@ export function CallScreen(props: CallScreenProps) {
           {!props.playbackBlocked && props.translatedAudioUnavailable ? (
             <span className="translated-audio-unavailable" role="alert">
               Translated audio unavailable
+            </span>
+          ) : null}
+          {nothingToTranslate ? (
+            <span className="call-no-translation" role="status">
+              Nothing to translate — everyone here is on{' '}
+              {languageLabel(self?.hearLanguage ?? 'en')}
             </span>
           ) : null}
         </div>

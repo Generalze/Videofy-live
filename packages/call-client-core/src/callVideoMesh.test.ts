@@ -611,3 +611,59 @@ describe('construction', () => {
     ).toThrow(/does not support live call video/);
   });
 });
+
+
+/**
+ * A camera that is off must look off.
+ *
+ * Turning a camera off stops frames; it does not remove the track, and a
+ * <video> element holds the last frame it was given. The other side went on
+ * showing a frozen still of somebody who believed they had gone dark -- the
+ * wrong way round: they look present when they have chosen not to be.
+ */
+describe('remote camera off', () => {
+  /** A track that can be muted, as a real MediaStreamTrack can. */
+  function mutableTrack() {
+    const listeners = new Map<string, (() => void)[]>();
+    return {
+      kind: 'video',
+      muted: false,
+      addEventListener(name: string, handler: () => void) {
+        listeners.set(name, [...(listeners.get(name) ?? []), handler]);
+      },
+      fire(name: string) {
+        for (const handler of listeners.get(name) ?? []) handler();
+      },
+    };
+  }
+
+  it('PIN: clears the tile when the remote camera goes off, and restores it', () => {
+    const h = createHarness('a');
+    h.mesh.syncParticipants(['b']);
+    const pc = mustPeer(h.peers, 'b');
+    const track = mutableTrack();
+    const stream = { id: 'remote-stream' };
+
+    pc.ontrack?.({ track, streams: [stream] } as never);
+    expect(h.remoteStreams.at(-1)?.stream).toBe(stream);
+
+    track.muted = true;
+    track.fire('mute');
+    // Null, so the tile falls back to the avatar instead of a frozen frame.
+    expect(h.remoteStreams.at(-1)?.stream).toBeNull();
+
+    track.muted = false;
+    track.fire('unmute');
+    expect(h.remoteStreams.at(-1)?.stream).toBe(stream);
+  });
+
+  it('PIN: clears the tile when the remote track ends', () => {
+    const h = createHarness('a');
+    h.mesh.syncParticipants(['b']);
+    const pc = mustPeer(h.peers, 'b');
+    const track = mutableTrack();
+    pc.ontrack?.({ track, streams: [{ id: 's' }] } as never);
+    track.fire('ended');
+    expect(h.remoteStreams.at(-1)?.stream).toBeNull();
+  });
+});
