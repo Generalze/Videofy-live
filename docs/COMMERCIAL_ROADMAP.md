@@ -54,19 +54,25 @@ Stated plainly, because every plan built on a flattering baseline fails at the s
 | **No production domain** | staging only |
 | **Language claims exceed reality** | French/Portuguese/Yoruba/Igbo/Hausa not actually selectable in the apps |
 | **No native mobile** | Browser only |
+| **No abuse reporting, and no trust & safety controls at all** | Nothing tells a listener the voice is machine-translated; there is no way to report a call and nothing to review it with |
 
 ---
 
 ## The critical path to a first paying customer
 
-Phases 1–4 in order. Nothing in 5–7 is on the critical path, however attractive.
+Phases 1–5 in order. Nothing in 6–8 is on the critical path, however attractive.
 
 ```
-1. Durability  ->  2. Security close-out  ->  3. Legal & trust  ->  4. Commercial mechanics
-   (data survives)   (nothing anonymous)      (a lawyer can say yes)  (money can change hands)
+1. Durability  ->  2. Security close-out  ->  3. Trust & Safety  ->  4. Legal & trust  ->  5. Commercial
+   (data survives)   (nothing anonymous)      (not a fraud tool)     (a lawyer says yes)   (money moves)
 ```
 
 Everything else is growth, and growth before this line is building on sand.
+
+**Why Trust & Safety is on this path and not in a later phase.** The platform removes the
+language barrier that currently limits who a fraudster can target. That is the product
+working as designed, and it is also the abuse case. It is the first question a journalist
+or a regulator will ask, and the answer has to already exist.
 
 ---
 
@@ -120,50 +126,166 @@ two of them are open holes rather than missing features.
 
 ---
 
-## Phase 3 — Legal and trust
+## Phase 3 — Trust and safety
 
-**Why third.** A business buyer's legal review will stop the sale, and several items have
-long external lead times — start them early even though they gate later.
+**Why third, and on the critical path.** Real-time translation removes the barrier that
+limits a fraudster's target pool: it lets somebody run a romance or business-payment scam
+in a language they do not speak. This is the owner's stated top risk, and it is correct.
 
-| Work | Notes |
+**Why KYC is the wrong instrument for it.** Organised fraudsters buy identity documents,
+so document verification filters out casual abuse and lets through precisely the people it
+was bought to stop. It also verifies who *signed up*, not what they *do* — a verified
+account defrauds just as effectively, now carrying a trust signal the platform granted it.
+The useful signal is behavioural.
+
+### 3.1 Disclosure — the strongest control, and the cheapest
+
+A persistent, unmissable indicator, rendered **in the listener's own language**, that the
+voice they are hearing is an automated translation and that the speaker is not speaking
+their language. Spoken once at call start and visible for the duration.
+
+This attacks the mechanism of harm rather than the identity of the actor. A scam depends on
+the victim believing the voice is a person speaking to them; a victim who has been told
+otherwise has largely been inoculated. It requires no vendor, carries no legal exposure,
+and it is the answer to "did you warn people?".
+
+Not a settings toggle. Not dismissible.
+
+### 3.2 Reporting, evidence and review
+
+The agreed design, stated precisely so it is not re-litigated later:
+
+| Rule | Detail |
 |---|---|
-| Terms of Service, Privacy Policy, Acceptable Use, DPA | Real content, professionally reviewed. The consent module is ready to version them |
-| Eligibility / age / minor-consent policy | Required before general launch. Do not invent a minimum age in code |
-| Choose and integrate a **real KYC/KYB provider** | Identity is synthetic and refused in production. Provider-neutral boundary already exists |
-| Domain verification (distinct from KYB) | DNS challenge or approved business-email proof. A claimed domain is not an owned domain |
-| Data residency decision | EU-hosted VPS with Nigerian users: GDPR **and** NDPR both apply. Decide and document where data lives |
-| Subprocessor disclosure | Deepgram, ElevenLabs, Cloudflare, Contabo, plus the payment and KYC vendors |
-| Data export, deletion, retention | §117 seam. Deletion must not break audit integrity or legal hold |
-| Recording and transcript policy | Consent to record varies by jurisdiction and is a product decision with legal teeth |
+| Reporting | One tap, from inside the call |
+| Audio retention trigger | **A report, and nothing else.** No call is retained by default |
+| How retroactive capture works | A fixed-length **memory-only rolling buffer**, continuously overwritten and never written to disk. A report is what persists it |
+| Why a buffer is required | By the time somebody taps report, the harmful audio has already happened. Recording *from* the tap captures the fraudster going quiet |
+| Review | Every report is reviewed by a person. No report is closed automatically |
+| Suspension during review | **Permitted, but gated on credibility** — reporter history, corroboration, account age. See the risk below |
+| Appeal | The reported account is notified and may appeal within a defined window (default 7 days, configurable) |
+| No appeal within the window | The complainant's account is taken to stand |
+| What that unappealed outcome may do | Move the account to a **reversible** state — restricted or suspended. Never an irreversible deletion or permanent ban |
+| Appeal after the window | Still openable. The window sets the default, not the ceiling |
+
+**The weaponisation risk, and why suspension is gated.** If a single report suspends an
+account, reporting becomes a denial-of-service tool — against honest users, against
+competitors, and against victims whom a fraudster wants silenced. Credibility weighting is
+what stops the safety system from becoming the attack.
+
+**Why the default outcome stays reversible.** A notice that lands in a spam folder must not
+end an account permanently. Under GDPR Article 22 an automated decision with significant
+effect carries a right to human review, and a permanent ban by default judgement is exactly
+the decision that right exists for.
+
+**Buffer privacy obligations.** A rolling buffer is still processing, even though nothing is
+stored. It must be disclosed in the privacy policy, fixed in length, memory-resident, and
+provably destroyed when a call ends without a report.
+
+### 3.3 Behavioural controls
+
+Mostly already built and wired into nothing — see branch `c7/security-lifecycle-addendum`.
+
+| Control | Where it already lives |
+|---|---|
+| Call, signup and invite velocity | `security-events.ts`, `rate-limit.ts` |
+| Escalation without ejecting anybody | `trust-model.ts` — `risk: step_up_required / restricted / suspended` |
+| Human review and appeal | §115 review/appeal seam |
+| Shared IP / device / payment-instrument clustering | To build |
+
+Plus three product-level rules:
+
+- **New-account reach limits.** A day-old account may not call many strangers. Reach is
+  earned over time, which costs a fraudster the one thing they cannot buy cheaply.
+- **Payment instrument as a reach gate.** A verified card is a stronger identity signal
+  than a document: it is traceable, chargeback-able, and fraudsters burn them. Requiring one
+  for outbound reach to strangers filters more real fraud than document KYC.
+- **Victim-side provenance.** Show the callee what is known: account age, whether it is
+  verified, whether they have spoken before.
 
 **Exit criteria**
-- A prospective customer's legal review can be answered from documents that exist.
-- Production KYC is unblocked because policy content exists and a vendor is live.
+- Translation disclosure present in every call, in the listener's language, undismissable.
+- A report can be filed in one tap and reaches a human, with a stated response time.
+- Retention demonstrably occurs only on report, and the buffer is destroyed otherwise.
+- A weaponised-report scenario is tested: mass false reports do not suspend a good account.
 
 ---
 
-## Phase 4 — Commercial mechanics
+## Phase 4 — Legal and trust
 
-**Why fourth.** Everything above must be true before money changes hands. Pricing is the
-owner's decision and is deliberately not proposed here.
+**Rewritten.** Document KYC is **off** the critical path — see Phase 3 for why it is a weak
+control against the actual threat. What moves up are the checks that are cheap, lawful to
+run in-house, and effective against impersonation.
+
+### What to build, in order
+
+| Work | Who does it | Notes |
+|---|---|---|
+| **DNS domain verification** | **In-house** | Highest value per unit of effort for B2B. Proving control of `company.com` is what actually stops impersonation. No legal exposure |
+| Payment-instrument verification | The PSP, as a side effect | Stronger identity signal than a document |
+| Business-registry lookup | In-house where public | CAC in Nigeria, Companies House in the UK |
+| Email + phone verification | **Already built** | |
+| Document / biometric KYC | Vendor, later | Only when a specific requirement forces it |
+
+### Legal content — still required, still gating
+
+| Work | Notes |
+|---|---|
+| Terms, Privacy Policy, Acceptable Use, DPA | Professionally reviewed. The consent module already versions them |
+| **Privacy policy must cover the rolling audio buffer** | New, from Phase 3. Processing without storage is still processing |
+| Eligibility / age / minor-consent policy | Required before general launch. Do not invent a minimum age in code |
+| Automated-decision disclosure | GDPR Art 22: suspension and restriction decisions need a stated human-review right |
+| Data residency decision | EU-hosted VPS with Nigerian users means GDPR **and** NDPR both apply |
+| Subprocessor disclosure | Deepgram, ElevenLabs, Cloudflare, Contabo, plus payment and any KYC vendor |
+| Data export, deletion, retention | §117 seam. Deletion must not break audit integrity or legal hold |
+| Law-enforcement response process | Once abuse evidence is retained, requests for it will follow. Decide the process before the first one arrives |
+
+**A Nigeria-specific constraint.** NIN verification runs through NIMC and BVN through
+NIBSS, and access to both is **licensed**. Direct querying generally requires being a
+licensed agent or going through an approved aggregator. This is a legal constraint rather
+than a technical one, and it is the thing most likely to defeat a do-it-yourself document
+check in Nigeria. Confirm with a Nigerian lawyer before assuming any route is open.
+
+**Exit criteria**
+- A prospective customer's legal review can be answered from documents that exist.
+- Domain verification is live and is the basis of any "verified organization" presentation.
+
+---
+
+## Phase 5 — Commercial mechanics
+
+**Why here.** Everything above must be true before money changes hands. Pricing is the
+owner's decision and is deliberately not proposed.
+
+**Charging for your own software is ordinary merchant activity.** Custom enterprise
+pricing, invoices, bank transfer and annual contracts are all unregulated. The regulatory
+line is crossed by *how money moves*, not by how much is charged or how bespoke the deal.
+
+| Stays unregulated | Crosses into regulated territory |
+|---|---|
+| Self-serve tiers via a PSP (the PSP is the regulated party; you are the merchant) | Holding or transmitting funds for others — money transmission |
+| Custom enterprise contracts, invoicing, bank transfer | Processing payments *for* customers so they can bill *their* customers |
+| Prepaid credits that are non-transferable, service-only and not cash-refundable | Transferable or cash-refundable credit, which begins to look like e-money |
+| Ordinary net-30 invoice terms | Credit arrangements that function as lending |
 
 | Work | Notes |
 |---|---|
 | **Pricing and packaging** | Owner's call. `corporate` / `enterprise` exist as identifiers with no prices attached, deliberately |
-| Payment rail | Card/international plus a Nigerian rail (Paystack or Flutterwave). Likely both |
-| Subscription and entitlement binding | Contracted seats must follow billing truth; the over-capacity state already exists to absorb downgrades without ejecting members |
-| Invoicing, tax/VAT, receipts | Jurisdiction-dependent |
-| Dunning and failed payment | What happens to a live call when a card fails? Decide deliberately |
+| Payment rail | A card/international rail plus a Nigerian one (Paystack or Flutterwave). Likely both |
+| Subscription and entitlement binding | Contracted seats follow billing truth; the over-capacity state already absorbs downgrades without ejecting members |
+| Enterprise invoicing | Custom terms, purchase orders, annual commitments |
+| Tax and VAT | Jurisdiction-dependent |
+| Dunning and failed payment | What happens to a call in progress when a card fails? Decide deliberately |
 | Trial policy | Length, limits, and what happens at expiry |
-| Self-serve signup to paid | The conversion path end to end |
 
 **Exit criteria**
 - A customer signs up, pays, and their entitlement changes automatically.
+- An enterprise customer can be invoiced on custom terms without bespoke engineering.
 - A downgrade, a failed payment and a cancellation each behave as specified.
 
 ---
 
-## Phase 5 — Reliability and scale
+## Phase 6 — Reliability and scale
 
 Not on the critical path to the first customer; squarely on the path to the tenth, and to
 any SLA commitment.
@@ -183,7 +305,7 @@ any SLA commitment.
 
 ---
 
-## Phase 6 — Product completion
+## Phase 7 — Product completion
 
 What customers will ask for once they can buy.
 
@@ -196,10 +318,11 @@ What customers will ask for once they can buy.
 | SIP / PSTN reach | Adapter work exists (P6.8/P6.9); carrier relationships are the long lead |
 | Third-party integrations | Zoom and LiveKit/KingsConference adapters are designed with validation externally deferred |
 | Accessibility and performance close-out | Partially complete |
+| Trust & safety tooling maturity | Reviewer console, case management, bulk actions. Phase 3 ships the controls; this makes them efficient to operate |
 
 ---
 
-## Phase 7 — Go to market
+## Phase 8 — Go to market
 
 | Work | Notes |
 |---|---|
@@ -223,7 +346,12 @@ What customers will ask for once they can buy.
 | CPU-only translation caps concurrency far below expectation | High | Phase 5 measurement, early |
 | KYC vendor lead time blocks launch | Medium | Start Phase 3 vendor selection during Phase 1 |
 | GDPR **and** NDPR both apply | Medium | Decide residency early; it constrains hosting |
-| Single VPS is a single point of failure | Medium | Phase 5 |
+| Single VPS is a single point of failure | Medium | Phase 6 |
+| **Platform used to defraud people in a language the fraudster does not speak** | **Critical** | Phase 3: disclosure, reach limits, report-and-review |
+| Reporting weaponised to suspend honest accounts | High | Credibility-gated suspension; reversible outcomes only |
+| Unappealed default judgement bans somebody who never saw the notice | High | Reversible states only; appeals remain openable after the window |
+| Rolling audio buffer treated as "not processing" because nothing is stored | Medium | Disclose it; fix its length; prove destruction |
+| Retained abuse evidence attracts law-enforcement requests | Medium | Define the response process before the first request |
 
 ---
 
@@ -231,9 +359,11 @@ What customers will ask for once they can buy.
 
 1. **Phase 1, item 2** — persist organizations. It is the single highest-severity item in
    this document and the cheapest to fix now rather than after there is customer data.
-2. **In parallel, start the long poles**: KYC vendor selection and legal drafting both
-   have external lead times and gate Phase 3.
-3. **Measure cost per translated minute** before any pricing conversation. Unit economics
+2. **Ship translation disclosure.** It is small, needs no vendor, and is the single
+   strongest control against the abuse case. There is no reason for it to wait for a phase.
+3. **In parallel, start the long poles**: legal drafting has an external lead time and
+   gates Phase 4. KYC vendor selection no longer does — it is off the critical path.
+4. **Measure cost per translated minute** before any pricing conversation. Unit economics
    decided after pricing is a decision made twice.
 
 Phase 2 wiring is already scoped: branch `c7/security-lifecycle-addendum` holds the
