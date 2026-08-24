@@ -47,6 +47,60 @@ export function frameEnergy(samples: Int16Array): number {
   return Math.sqrt(total / samples.length);
 }
 
+/**
+ * Is this frame PERIODIC at a human pitch?
+ *
+ * Energy alone cannot tell a voice from a door. Speech is voiced: the vocal
+ * folds repeat at roughly 80-350 Hz, which at 16 kHz is a lag of 45-200
+ * samples. A cough, a keyboard, a chair and broadband room noise carry plenty
+ * of energy and no such period, so a gate built on loudness alone opens for
+ * all of them -- and the recogniser downstream, handed noise, obligingly
+ * returns WORDS for it.
+ *
+ * Normalised autocorrelation, which is the cheapest honest test: no FFT, no
+ * model, no dependency, a few thousand multiply-adds per frame.
+ *
+ * WHAT THIS DOES NOT CATCH. A steady tone is periodic and will pass; so will
+ * music. Unvoiced consonants (s, f, sh) are aperiodic and fail on their own,
+ * which is why the caller requires a voiced FRACTION over a span rather than
+ * every frame -- nobody says "sss" alone for 150 ms. A learned detector
+ * (Silero) is better than this at both ends; this is what can be had without
+ * shipping a model.
+ */
+export function voicingStrength(samples: Int16Array): number {
+  const minLag = 45;
+  const maxLag = 200;
+  if (samples.length <= maxLag + 1) return 0;
+
+  let energy = 0;
+  for (const sample of samples) energy += sample * sample;
+  if (energy === 0) return 0;
+
+  let best = 0;
+  for (let lag = minLag; lag <= maxLag; lag += 1) {
+    let correlation = 0;
+    for (let index = 0; index + lag < samples.length; index += 1) {
+      correlation += samples[index]! * samples[index + lag]!;
+    }
+    // Normalised by the frame's own energy, so the answer is "how periodic",
+    // not "how loud" -- the whole point of testing this separately.
+    const normalized = correlation / energy;
+    if (normalized > best) best = normalized;
+  }
+  return best;
+}
+
+/**
+ * The least periodicity a frame may have and still count as voice.
+ *
+ * Measured against the alternative rather than chosen in the abstract: room
+ * noise and keyboards sit near zero, a spoken vowel sits well above 0.4. The
+ * value is deliberately nearer the noise floor than the speech floor, because
+ * clipping the start of somebody's sentence is a worse failure than admitting
+ * an occasional bump -- the voiced-fraction rule above still has to be met.
+ */
+export const VOICING_THRESHOLD = 0.3;
+
 export const SPEECH_DEFAULTS = {
   speechThreshold: 0.012,
   endSilenceMs: 700,
@@ -68,6 +122,11 @@ export const VAD_POST_ROLL_SAMPLES = Math.round(0.2 * SPEECH_SAMPLE_RATE);
 
 export interface SpeechActivityOptions {
   readonly speechThreshold?: number;
+  /**
+   * Least periodicity a frame may have and still count as voice. 0 disables
+   * the test and restores the pure energy gate.
+   */
+  readonly voicingThreshold?: number;
   readonly endSilenceMs?: number;
   readonly minSpeechMs?: number;
   readonly maxSegmentMs?: number;
@@ -108,6 +167,7 @@ export class SpeechActivityGate {
   private readonly endSilenceMs: number;
   private readonly minSpeechMs: number;
   private readonly maxSegmentMs: number;
+  private readonly voicingThreshold: number;
 
   private open = false;
   private startedAtMs = 0;
@@ -122,6 +182,9 @@ export class SpeechActivityGate {
     this.endSilenceMs = options.endSilenceMs ?? SPEECH_DEFAULTS.endSilenceMs;
     this.minSpeechMs = options.minSpeechMs ?? SPEECH_DEFAULTS.minSpeechMs;
     this.maxSegmentMs = options.maxSegmentMs ?? SPEECH_DEFAULTS.maxSegmentMs;
+    // Zero disables the periodicity test, restoring the pure energy gate for
+    // anyone who needs the previous behaviour exactly.
+    this.voicingThreshold = options.voicingThreshold ?? VOICING_THRESHOLD;
   }
 
   get isSpeaking(): boolean {
@@ -139,7 +202,12 @@ export class SpeechActivityGate {
   push(samples: Int16Array, platformTimestampMs: number): SpeechActivityEvent[] {
     const events: SpeechActivityEvent[] = [];
     const frameMs = (samples.length / SPEECH_SAMPLE_RATE) * 1000;
-    const voiced = frameEnergy(samples) >= this.speechThreshold;
+    // BOTH: loud enough AND periodic. Either alone opens a segment for
+    // something that is not speech -- loudness for a door, periodicity for a
+    // hum too quiet to matter.
+    const voiced =
+      frameEnergy(samples) >= this.speechThreshold &&
+      (this.voicingThreshold <= 0 || voicingStrength(samples) >= this.voicingThreshold);
 
     if (voiced) {
       if (!this.open) {

@@ -57,14 +57,26 @@ describe('energy is measured, not guessed', () => {
     expect(frameEnergy(click)).toBeGreaterThan(SPEECH_DEFAULTS.speechThreshold);
   });
 
-  it('PIN: a click is rejected by duration and fraction, not by energy', () => {
+  it('PIN: a click never opens an utterance at all', () => {
     const gate = new SpeechActivityGate({ endSilenceMs: 200, minSpeechMs: 150 });
     const click = new Int16Array(FRAME);
     click[0] = 32_000;
     const events = [...gate.push(click, 1000)];
     for (let i = 1; i <= 20; i += 1) events.push(...gate.push(quietFrame(), 1000 + i * FRAME_MS));
-    // It opens an utterance -- and then never becomes one.
-    expect(events.map((e) => e.kind)).toEqual(['speech-start', 'too-quiet-to-be-speech']);
+
+    /*
+     * This case used to expect ['speech-start', 'too-quiet-to-be-speech']: the
+     * click opened an utterance and was disqualified later, by duration and
+     * voiced fraction. That was the honest description of an energy-only gate,
+     * and it is exactly the pathway that turns noise into words -- the segment
+     * exists while it is open, so whatever the recogniser returns for that
+     * audio has somewhere to attach.
+     *
+     * A click is aperiodic, so it no longer crosses the gate. Rejected at the
+     * door rather than evicted afterwards.
+     */
+    expect(events).toEqual([]);
+    expect(gate.isSpeaking).toBe(false);
   });
 });
 
