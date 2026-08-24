@@ -537,6 +537,13 @@ export class IngestService {
       streamId: session.streamId,
       sourceKind: session.sourceKind,
       revision: session.webrtcTranscriptionBridge?.revision,
+      // WHAT THIS SESSION IS FOR. A session with no target languages produces
+      // captions and nothing else -- correctly, since there is nobody to
+      // translate for. That state is indistinguishable from broken synthesis
+      // unless it is stated here: "no translated audio" and "nothing to
+      // translate" look identical from a participant's seat.
+      targetLanguages: session.targetLanguages,
+      willTranslate: session.targetLanguages.length > 0,
     });
     return session;
   }
