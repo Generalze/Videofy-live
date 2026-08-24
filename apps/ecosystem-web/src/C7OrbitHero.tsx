@@ -167,8 +167,8 @@ export function C7OrbitHero() {
             <stop offset="100%" stopColor="rgba(124,168,255,0.05)" />
           </linearGradient>
           <radialGradient id="c7-bloom">
-            <stop offset="0%" stopColor="rgba(170,215,255,0.62)" />
-            <stop offset="34%" stopColor="rgba(126,110,240,0.28)" />
+            <stop offset="0%" stopColor="rgba(196,230,255,0.78)" />
+            <stop offset="34%" stopColor="rgba(136,120,248,0.34)" />
             <stop offset="100%" stopColor="rgba(8,11,20,0)" />
           </radialGradient>
           <radialGradient id="c7-field">
@@ -218,7 +218,7 @@ export function C7OrbitHero() {
 
         {/* the bloom behind the lens, which is what makes it read as energy
             rather than as a drawn outline */}
-        <ellipse cx={CX} cy={CY} rx="255" ry="165" fill="url(#c7-bloom)" />
+        <ellipse cx={CX} cy={CY} rx="286" ry="184" fill="url(#c7-bloom)" />
         <ellipse
           cx={CX}
           cy={CY}
@@ -259,7 +259,7 @@ export function C7OrbitHero() {
         />
 
         {/* the luminous C7 core */}
-        <ellipse cx={CX} cy={CY} rx="92" ry="44" fill="rgba(130,165,255,0.16)" filter="url(#c7-blur-sm)" />
+        <ellipse cx={CX} cy={CY} rx="104" ry="50" fill="rgba(150,190,255,0.22)" filter="url(#c7-blur-sm)" />
         <g transform={`translate(${CX - 56} ${CY - 56}) scale(1.78)`}>
           <path
             d="M45.5 17.6 A19.8 19.8 0 1 0 45.5 46.4"

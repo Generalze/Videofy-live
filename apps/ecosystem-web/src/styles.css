@@ -175,18 +175,6 @@ p {
   background: linear-gradient(135deg, #4b7bff 0%, #3a5bf0 55%, #6a4ae6 100%);
 }
 
-/* The header's "Join the Ecosystem": cyan hairline, transparent fill. */
-.button-outline {
-  background: transparent;
-  border-color: rgba(56, 208, 240, 0.55);
-  color: #9fe8fb;
-}
-
-.button-outline:hover {
-  border-color: rgba(56, 208, 240, 0.9);
-  background: rgba(34, 211, 238, 0.08);
-}
-
 /*
  * The hero's second action: a play control with no label.
  *
@@ -235,6 +223,25 @@ p {
   background: rgba(255, 255, 255, 0.06);
   border-color: var(--line-bright);
   color: var(--text);
+}
+
+/*
+ * The header's "Join the Ecosystem": cyan hairline, transparent fill.
+ *
+ * MUST come after .button-small. Both set border-color at the same
+ * specificity, so source order decides -- declared earlier it silently lost
+ * and the pill rendered grey, which is the one property that makes it read as
+ * the reference's CTA rather than a default button.
+ */
+.button-outline {
+  background: transparent;
+  border-color: rgba(56, 208, 240, 0.55);
+  color: #9fe8fb;
+}
+
+.button-outline:hover {
+  border-color: rgba(56, 208, 240, 0.9);
+  background: rgba(34, 211, 238, 0.08);
 }
 
 .button-wide {
@@ -395,7 +402,10 @@ button:focus-visible {
 }
 
 .hero-title-accent {
-  background: linear-gradient(96deg, #ffffff 0%, #9dbcf0 46%, #7ee0c2 100%);
+  /* Cyan from the first character. Starting at white made the opening words
+     indistinguishable from the headline above them, which is not what the
+     showboard does: the whole line is the accent. */
+  background: linear-gradient(96deg, #67d3f5 0%, #7fd4ff 40%, #7ee0c2 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
