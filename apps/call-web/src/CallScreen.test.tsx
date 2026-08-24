@@ -812,3 +812,73 @@ describe('CallScreen translated audio honesty', () => {
     expect(html).toContain('Translated audio unavailable');
   });
 });
+
+/**
+ * The translation disclosure.
+ *
+ * An anti-deception control, so the tests that matter most are the ones about
+ * when it must NOT appear. A notice shown on calls where nothing is translated
+ * is a notice people learn to ignore, and then it is absent in the one call
+ * where somebody is being defrauded.
+ */
+describe('translation disclosure', () => {
+  it('appears when a remote speaker will be translated into this listener language', () => {
+    const html = render();
+    expect(html).toContain('call-translation-disclosure');
+    expect(html).toContain('Automated translation');
+  });
+
+  it('is written in the listener language, not the speaker language', () => {
+    const html = render({
+      participants: [
+        participant({ participantId: 'p1', speakLanguage: 'fr', hearLanguage: 'fr' }),
+        participant({ participantId: 'p2', speakLanguage: 'en', hearLanguage: 'en' }),
+      ],
+    });
+    expect(html).toContain('Traduction automatique');
+    expect(html).toContain('lang="fr"');
+  });
+
+  /* Nothing is being translated, so there is nothing to warn about. */
+  it('is absent when everybody shares a language', () => {
+    const html = render({
+      participants: [
+        participant({ participantId: 'p1', speakLanguage: 'en', hearLanguage: 'en' }),
+        participant({ participantId: 'p2', speakLanguage: 'en', hearLanguage: 'en' }),
+      ],
+    });
+    expect(html).not.toContain('call-translation-disclosure');
+  });
+
+  /* Warning somebody sitting alone teaches them to dismiss it before it matters. */
+  it('is absent before anybody else has joined', () => {
+    const html = render({
+      participants: [participant({ participantId: 'p1', speakLanguage: 'en', hearLanguage: 'en' })],
+    });
+    expect(html).not.toContain('call-translation-disclosure');
+  });
+
+  it('is absent for a participant who has not joined yet', () => {
+    const html = render({
+      participants: [
+        participant({ participantId: 'p1', speakLanguage: 'en', hearLanguage: 'en' }),
+        participant({ participantId: 'p2', speakLanguage: 'fr', hearLanguage: 'fr', joined: false }),
+      ],
+    });
+    expect(html).not.toContain('call-translation-disclosure');
+  });
+
+  /* In a normal call the engine is off and no generated voice is delivered. */
+  it('is absent in a normal call', () => {
+    const html = render({ callMode: 'normal' });
+    expect(html).not.toContain('call-translation-disclosure');
+  });
+
+  /* There is no preference that turns it off, so there is no control to render. */
+  it('offers no way to dismiss it', () => {
+    const html = render();
+    const start = html.indexOf('call-translation-disclosure');
+    const segment = html.slice(start, start + 400);
+    expect(segment).not.toContain('<button');
+  });
+});

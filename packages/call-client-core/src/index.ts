@@ -26,3 +26,4 @@ export * from './programmeProgressiveScheduler';
 export * from './translatedAudioAuthority';
 export * from './callTranslatedAudioController';
 export * from './programmeTranslatedAudioController';
+export * from './translationDisclosure';

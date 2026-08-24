@@ -1883,3 +1883,37 @@ select {
 .transcript-policy input {
   accent-color: var(--color-brand);
 }
+
+/* ── Translation disclosure ──
+ *
+ * The anti-deception notice. Full width and high contrast on purpose: it is
+ * read by somebody who may be in the middle of being defrauded, and every
+ * pixel of restraint here is spent against them.
+ *
+ * No dismiss control exists, so none is styled. It is amber rather than red --
+ * translation is a normal state of this product, not an error, and a red bar
+ * on every legitimate cross-language call would be dismissed as noise within a
+ * day, which is the failure this notice cannot afford.
+ */
+.call-translation-disclosure {
+  margin: 0;
+  padding: 0.6rem 1rem;
+  border-top: 1px solid rgba(240, 194, 94, 0.35);
+  border-bottom: 1px solid rgba(240, 194, 94, 0.35);
+  background: rgba(240, 194, 94, 0.14);
+  color: #f6dda8;
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: center;
+  /* Wraps rather than truncates: a warning cut off at the ellipsis is not a
+     warning, and these strings are longer in French and Spanish. */
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-contrast: more) {
+  .call-translation-disclosure {
+    background: #3a2c07;
+    color: #ffe9bd;
+  }
+}

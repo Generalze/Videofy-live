@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { CallCaptionEntry } from '@videofy-live/call-client-core';
 import { CALL_AUDIO_MODES, CALL_LANGUAGES, languageLabel } from './callFormState';
-import { downloadTranscript } from '@videofy-live/call-client-core';
+import { downloadTranscript, translationDisclosureFor } from '@videofy-live/call-client-core';
 import type {
   CallAudioMode,
   CallLanguage,
@@ -170,6 +170,20 @@ export function CallScreen(props: CallScreenProps) {
         self.speakLanguage === participant.hearLanguage,
     );
 
+  /*
+   * Whether at least one person here will be TRANSLATED into this listener's
+   * language -- which is exactly when the disclosure must appear.
+   *
+   * Not the negation of `nothingToTranslate`: that is false before anybody
+   * else has joined, and a warning shown to somebody sitting alone in an empty
+   * call is a warning they learn to dismiss before it ever matters.
+   */
+  const translationDisclosed =
+    callMode === 'translated' &&
+    self !== undefined &&
+    joinedOthers.some((participant) => participant.speakLanguage !== self.hearLanguage);
+  const disclosure = translationDisclosureFor(self?.hearLanguage ?? 'en');
+
   return (
     <main className="call-screen">
       <header className="call-header">
@@ -201,6 +215,24 @@ export function CallScreen(props: CallScreenProps) {
           ) : null}
         </div>
       </header>
+
+      {/*
+        * The anti-deception notice.
+        *
+        * Deliberately its own bar rather than another chip in the status line:
+        * this is the one piece of text on the screen whose entire purpose is to
+        * be read by somebody who is being lied to. There is no dismiss control
+        * and no preference that turns it off.
+        *
+        * `lang` is set so a screen reader pronounces French with a French
+        * voice; without it the warning is read out as gibberish to precisely
+        * the person least able to fall back on the visual.
+        */}
+      {translationDisclosed ? (
+        <p className="call-translation-disclosure" role="note" lang={disclosure.locale}>
+          {disclosure.banner}
+        </p>
+      ) : null}
 
       <section
         className={[

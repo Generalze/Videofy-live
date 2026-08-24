@@ -6,6 +6,8 @@ import {
   generatedClipEligibility,
   resolveCallAudioMix,
   resolveSpeakerAudioMixes,
+  speakDisclosure,
+  translationDisclosureFor,
   type GeneratedClipEligibility,
 } from '@videofy-live/call-client-core';
 import {
@@ -598,6 +600,35 @@ export default function App() {
    * when no generated voice will replace them.
    */
   const activeCallMode: CallMode = callState?.callMode ?? 'translated';
+
+  /**
+   * Say the translation disclosure aloud, once per call and language.
+   *
+   * WHY SPOKEN AND NOT ONLY SHOWN. Somebody being defrauded on a phone held to
+   * their ear is not looking at the screen. The banner is the guarantee; this
+   * is the part that actually reaches them.
+   *
+   * KEYED ON LANGUAGE, not merely on the call. If the listener switches the
+   * language they hear mid-call, the earlier announcement was in a language
+   * they have just told us they do not want -- so it is said again, in the new
+   * one. Announcing once per call would leave them with a warning they cannot
+   * read.
+   *
+   * Best effort: speech synthesis may be unavailable, blocked before a user
+   * gesture, or have no voice for the locale. None of that may break the call
+   * and none of it suppresses the banner.
+   */
+  const disclosureSpokenFor = useRef<string | null>(null);
+  useEffect(() => {
+    const callId = session?.callId ?? null;
+    if (callId === null || activeCallMode !== 'translated' || !remoteTranslationExpected) {
+      return;
+    }
+    const key = `${callId}:${selfHearLanguage}`;
+    if (disclosureSpokenFor.current === key) return;
+    disclosureSpokenFor.current = key;
+    speakDisclosure(translationDisclosureFor(selfHearLanguage));
+  }, [session?.callId, activeCallMode, remoteTranslationExpected, selfHearLanguage]);
   const effectiveAudioMode: CallAudioMode =
     activeCallMode === 'normal' ? 'original' : audioMode;
 
