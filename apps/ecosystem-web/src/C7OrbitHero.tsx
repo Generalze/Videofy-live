@@ -30,7 +30,7 @@ interface SatelliteNode {
   /** Angle on the ellipse, degrees, 0 = right, measured clockwise. */
   readonly angle: number;
   /** Which orbit it rides, so the six do not sit on one perfect ring. */
-  readonly orbit: 0 | 1 | 2;
+  readonly orbit: 0 | 1 | 2 | 3 | 4;
   readonly radius: number;
   readonly tone: string;
   readonly glyph: 'person' | 'group' | 'shield-heart' | 'heart' | 'chart' | 'camera';
@@ -42,44 +42,63 @@ interface SatelliteNode {
  * diagram; this reads as a system.
  */
 const SATELLITES: readonly SatelliteNode[] = [
-  { angle: -90, orbit: 1, radius: 30, tone: '#7fd4ff', glyph: 'person' },
-  { angle: -158, orbit: 0, radius: 29, tone: '#9bb8ff', glyph: 'group' },
-  { angle: -32, orbit: 0, radius: 29, tone: '#6ee7d0', glyph: 'shield-heart' },
-  { angle: 26, orbit: 0, radius: 26, tone: '#ff9db4', glyph: 'heart' },
-  { angle: 152, orbit: 0, radius: 27, tone: '#e6ecff', glyph: 'chart' },
-  { angle: 90, orbit: 1, radius: 28, tone: '#8fb6ff', glyph: 'camera' },
+  { angle: -84, orbit: 1, radius: 36, tone: '#8ad8ff', glyph: 'person' },
+  { angle: -156, orbit: 0, radius: 35, tone: '#a9c4ff', glyph: 'group' },
+  { angle: -26, orbit: 0, radius: 35, tone: '#6ee7d0', glyph: 'shield-heart' },
+  { angle: 22, orbit: 0, radius: 33, tone: '#ff9db4', glyph: 'heart' },
+  { angle: 158, orbit: 0, radius: 34, tone: '#cfe0ff', glyph: 'chart' },
+  { angle: 92, orbit: 1, radius: 34, tone: '#8fb6ff', glyph: 'camera' },
 ];
 
 const CX = 400;
 const CY = 320;
 /** Applied to the monogram's own 40x32 artboard. */
-const MARK_SCALE = 1.78;
+const MARK_SCALE = 1.42;
 
-/** rx, ry and tilt. The differing tilts are the whole trick. */
+/**
+ * NESTED AND COPLANAR, not a crossing cage.
+ *
+ * An earlier pass tilted three rings against each other to suggest a sphere.
+ * The artwork does the opposite: five concentric ellipses sharing one shallow
+ * tilt, like a system seen almost edge-on. Crossing them produced a busy
+ * knot where the reference has calm, receding rings.
+ */
 const ORBITS = [
-  { rx: 300, ry: 168, rotate: -7 },
-  { rx: 246, ry: 205, rotate: 15 },
-  { rx: 208, ry: 132, rotate: -3 },
+  { rx: 316, ry: 150 },
+  { rx: 268, ry: 126 },
+  { rx: 220, ry: 102 },
+  { rx: 172, ry: 78 },
+  { rx: 126, ry: 56 },
 ] as const;
 
-function position(node: SatelliteNode) {
-  const orbit = ORBITS[node.orbit];
-  const radians = (node.angle * Math.PI) / 180;
-  const tilt = (orbit.rotate * Math.PI) / 180;
-  const x = Math.cos(radians) * orbit.rx;
-  const y = Math.sin(radians) * orbit.ry;
-  // Rotated with the ring it rides, or the badges float off their own orbit.
+/** Bright motes riding the paths, as in the artwork. angle in degrees. */
+const MOTES: readonly { readonly orbit: number; readonly angle: number }[] = [
+  { orbit: 0, angle: 196 },
+  { orbit: 1, angle: 12 },
+  { orbit: 1, angle: 205 },
+  { orbit: 2, angle: 168 },
+  { orbit: 2, angle: -18 },
+  { orbit: 3, angle: 186 },
+];
+
+function pointOn(orbitIndex: number, angleDegrees: number) {
+  const orbit = ORBITS[orbitIndex] ?? ORBITS[0]!;
+  const radians = (angleDegrees * Math.PI) / 180;
   return {
-    x: CX + x * Math.cos(tilt) - y * Math.sin(tilt),
-    y: CY + x * Math.sin(tilt) + y * Math.cos(tilt),
+    x: CX + Math.cos(radians) * orbit.rx,
+    y: CY + Math.sin(radians) * orbit.ry,
   };
 }
 
 function Glyph({ glyph }: { readonly glyph: SatelliteNode['glyph'] }) {
+  /*
+    SOLID, not hairline. The artwork's badge icons are filled shapes; drawn as
+    thin outlines they vanish at hero scale and the badges read as empty rings.
+  */
   const stroke = {
-    fill: 'none',
+    fill: 'currentColor',
     stroke: 'currentColor',
-    strokeWidth: 1.5,
+    strokeWidth: 1.4,
     strokeLinecap: 'round',
     strokeLinejoin: 'round',
   } as const;
@@ -210,58 +229,79 @@ export function C7OrbitHero() {
             cy={CY}
             rx={orbit.rx}
             ry={orbit.ry}
-            transform={`rotate(${orbit.rotate} ${CX} ${CY})`}
             fill="none"
             stroke="url(#c7-orbit-stroke)"
-            strokeWidth={index === 1 ? 1.5 : 1.1}
+            strokeWidth={1.1}
             className="orbit-path"
           />
         ))}
 
+        {/* motes riding the paths */}
+        {MOTES.map((mote, index) => {
+          const { x, y } = pointOn(mote.orbit, mote.angle);
+          return (
+            <circle key={`mote-${index}`} cx={x} cy={y} r="2.2" fill="rgba(190,230,255,0.9)" />
+          );
+        })}
+
         {/* the bloom behind the lens, which is what makes it read as energy
             rather than as a drawn outline */}
-        <ellipse cx={CX} cy={CY} rx="286" ry="184" fill="url(#c7-bloom)" />
+        <ellipse cx={CX} cy={CY} rx="250" ry="150" fill="url(#c7-bloom)" />
         <ellipse
           cx={CX}
           cy={CY}
-          rx="152"
-          ry="64"
+          rx="104"
+          ry="46"
           fill="none"
           stroke="url(#c7-rim-soft)"
-          strokeWidth="30"
+          strokeWidth="26"
           filter="url(#c7-blur-lg)"
           opacity="0.8"
         />
 
-        {/* shadow under the lens */}
-        <ellipse cx={CX} cy={CY + 52} rx="160" ry="40" fill="rgba(2,4,9,0.92)" filter="url(#c7-blur-sm)" />
+        {/*
+          A PLINTH below, a bright RING above.
+          The artwork is not one lens: a wide dark disc sits under the mark
+          like a base, and the luminous ring is smaller and higher, which is
+          what makes the C7 read as floating above it rather than embedded in
+          it.
+        */}
+        <ellipse cx={CX} cy={CY + 34} rx="168" ry="60" fill="rgba(3,6,14,0.94)" filter="url(#c7-blur-sm)" />
+        <ellipse
+          cx={CX}
+          cy={CY + 34}
+          rx="168"
+          ry="60"
+          fill="none"
+          stroke="rgba(150,200,255,0.22)"
+          strokeWidth="1.2"
+        />
 
-        {/* the lens: dark well, blurred rim, then the crisp rim on top */}
-        <ellipse cx={CX} cy={CY} rx="152" ry="64" fill="url(#c7-core-fill)" />
+        <ellipse cx={CX} cy={CY} rx="104" ry="46" fill="url(#c7-core-fill)" />
         <ellipse
           cx={CX}
           cy={CY}
-          rx="152"
-          ry="64"
+          rx="104"
+          ry="46"
           fill="none"
           stroke="url(#c7-rim)"
-          strokeWidth="12"
+          strokeWidth="14"
           filter="url(#c7-blur-sm)"
-          opacity="0.92"
+          opacity="0.95"
         />
         <ellipse
           cx={CX}
           cy={CY}
-          rx="152"
-          ry="64"
+          rx="104"
+          ry="46"
           fill="none"
           stroke="url(#c7-rim)"
-          strokeWidth="4.5"
+          strokeWidth="4"
           className="orbit-rim"
         />
 
         {/* the luminous C7 core */}
-        <ellipse cx={CX} cy={CY} rx="104" ry="50" fill="rgba(150,190,255,0.22)" filter="url(#c7-blur-sm)" />
+        <ellipse cx={CX} cy={CY} rx="76" ry="36" fill="rgba(160,200,255,0.26)" filter="url(#c7-blur-sm)" />
         {/*
           Centred on the GLYPH's own bounding box, not on a guessed offset.
           The artwork spans x 25.7-65.3 and y 17.6-50 in its own coordinates,
@@ -289,7 +329,7 @@ export function C7OrbitHero() {
 
         {/* six satellites, uneven on purpose */}
         {SATELLITES.map((node, index) => {
-          const { x, y } = position(node);
+          const { x, y } = pointOn(node.orbit, node.angle);
           return (
             <g
               key={`${node.glyph}-${index}`}

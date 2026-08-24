@@ -11,9 +11,14 @@
  */
 
 :root {
-  --ink: #05070c;
-  --ink-2: #0a0d14;
-  --ink-3: #10151f;
+  /*
+   * NAVY, not neutral black. The showboard's ground is a deep blue: against a
+   * neutral near-black the violet-blue-cyan ramp reads as coloured light on
+   * grey, and the page loses the "one system" feeling the hero is built on.
+   */
+  --ink: #070b16;
+  --ink-2: #0b1020;
+  --ink-3: #121a2c;
   --line: rgba(160, 180, 220, 0.12);
   --line-bright: rgba(170, 195, 240, 0.28);
   --text: #eef2f8;
@@ -374,10 +379,15 @@ button:focus-visible {
   position: absolute;
   inset: -30% -10% auto -10%;
   height: 150%;
+  /*
+   * Blue and violet only. A teal wash sat here and cast the corners green,
+   * which is the single thing that made the page look unlike the reference at
+   * a glance -- long before any individual element was wrong.
+   */
   background:
-    radial-gradient(45% 40% at 22% 18%, rgba(110, 168, 255, 0.16), transparent 70%),
-    radial-gradient(38% 42% at 82% 30%, rgba(126, 224, 194, 0.1), transparent 72%),
-    radial-gradient(60% 50% at 50% 88%, rgba(90, 120, 200, 0.12), transparent 76%);
+    radial-gradient(48% 42% at 20% 14%, rgba(96, 150, 255, 0.18), transparent 70%),
+    radial-gradient(46% 46% at 78% 34%, rgba(120, 110, 245, 0.16), transparent 72%),
+    radial-gradient(64% 52% at 52% 92%, rgba(70, 104, 200, 0.14), transparent 76%);
   filter: blur(8px);
   pointer-events: none;
 }

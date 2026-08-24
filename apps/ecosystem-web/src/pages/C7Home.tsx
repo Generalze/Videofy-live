@@ -9,6 +9,7 @@
  */
 import { C7OrbitHero } from '../C7OrbitHero';
 import { ECOSYSTEM_DOMAINS, type EcosystemDomain } from '../domains';
+import { DomainArt } from '../DomainArt';
 import { internalLink, type Route } from '../router';
 import { Reveal, StatusBadge, ProgressRail } from '../components';
 
@@ -26,8 +27,17 @@ function DomainCard({
       className={`domain domain-${domain.tone}${isFlagship ? ' domain-lead' : ''}`}
     >
       <div className="domain-glow" aria-hidden="true" />
+      <DomainArt domainId={domain.id} />
       <header className="domain-head">
-        <p className="domain-field">{domain.domain}</p>
+        {/*
+          The CANONICAL domain number, not the position in the row. The
+          showboard numbers each card, and the number belongs to the
+          architecture: read off the display order instead and Finance quietly
+          becomes domain 4 in a document nobody meant to write.
+        */}
+        <p className="domain-field">
+          <span className="domain-number">{domain.canonicalDomain}.</span> {domain.domain}
+        </p>
         {domain.product === null ? null : <h3 className="domain-product">{domain.product}</h3>}
       </header>
       <p className="domain-summary">{domain.summary}</p>
@@ -118,15 +128,20 @@ export function C7Home({ navigate }: { readonly navigate: (route: Route) => void
             being built in order.
           </p>
 
-          {flagship === undefined ? null : <DomainCard domain={flagship} navigate={navigate} />}
-
+          {/*
+            ONE ROW OF FIVE, as the showboard lays them out. The flagship used
+            to get a wide banner of its own above a grid of the rest, which
+            made the ecosystem read as "Videofy, plus some others" rather than
+            as five fields of work of equal standing. Videofy is distinguished
+            by being AVAILABLE, which its status badge already says.
+          */}
           <div className="domain-grid">
-            {others.map((domain) => (
+            {ECOSYSTEM_DOMAINS.map((domain) => (
               <DomainCard key={domain.id} domain={domain} navigate={navigate} />
             ))}
           </div>
 
-          <p className="ecosystem-foot">More domains are being prepared.</p>
+          <p className="ecosystem-foot">More domains coming. Infinite possibilities.</p>
         </div>
       </section>
     </>
