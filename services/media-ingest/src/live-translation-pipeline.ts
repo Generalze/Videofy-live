@@ -38,6 +38,14 @@ export interface LiveTranslationPipelineDeps {
   readonly sourceLanguage: string;
   readonly targetLanguage: string;
   readonly voiceId: string;
+  /**
+   * Below this recogniser confidence a segment is captioned but never SPOKEN.
+   *
+   * A floor, not a filter: the words still reach the transcript. What is
+   * withheld is the synthesised voice, because a spoken sentence carries no
+   * hedge and a listener cannot tell an invented one from a heard one.
+   */
+  readonly minSpokenConfidence: number;
   readonly translation: TimestampedTranslationProvider;
   readonly synthesis: StreamingSpeechSynthesisProvider;
   /** Where a frame goes once it is ordered and still wanted. */
@@ -96,6 +104,38 @@ export class LiveTranslationPipeline {
    */
   async onTranscriptEvent(event: TranscriptEvent): Promise<SpokenSegmentRecord | null> {
     if (event.kind !== 'final') return null;
+
+    /**
+     * A RECOGNISER THAT IS NOT SURE MUST NOT BE GIVEN A VOICE.
+     *
+     * Deepgram scores every result, and that score was carried all the way
+     * here and never once consulted: a transcript the recogniser itself rated
+     * 0.3 was translated and spoken with exactly the authority of one it rated
+     * 0.98. With an energy-gate VAD upstream — which passes a cough, a door or
+     * a keyboard as "speech" — that is a machine that manufactures sentences
+     * out of noise and puts them in somebody's mouth.
+     *
+     * Captions survive this because text can be marked uncertain. SPEECH
+     * cannot: a synthesised voice carries no hedge, and on a business call the
+     * listener has no way to know a sentence was invented. So the floor
+     * governs SYNTHESIS only. The words still reach the transcript, where they
+     * can be read, doubted and corrected.
+     *
+     * Absent confidence is NOT treated as low: some providers omit it, and
+     * silently muting every one of them would be a worse failure than the one
+     * this prevents.
+     */
+    const confidence = event.provider?.confidence;
+    if (typeof confidence === 'number' && confidence < this.deps.minSpokenConfidence) {
+      this.deps.log?.('below the confidence floor; captioned but NOT spoken', {
+        segmentId: event.segmentId,
+        targetLanguage: this.deps.targetLanguage,
+        confidence,
+        floor: this.deps.minSpokenConfidence,
+      });
+      return null;
+    }
+
     if (event.text.trim() === '') {
       // A final with no words is a segment the recogniser heard nothing in.
       // Synthesising it would produce a pause the speaker never took.

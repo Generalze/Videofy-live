@@ -72,6 +72,16 @@ export interface LiveSpeechPlan {
  *                     than given a default one, which for Spanish words would
  *                     be an English voice -- worse than the silence.
  */
+/**
+ * 0.6 is deliberately cautious for a first setting.
+ *
+ * Deepgram's own scores sit high on clean speech, so a genuine sentence
+ * clears this comfortably; what it stops is the 0.2-0.4 band an energy gate
+ * produces from coughs, doors and keyboards. Tune it with real calls rather
+ * than by argument -- the log line names the value it refused and by how much.
+ */
+export const DEFAULT_MIN_SPOKEN_CONFIDENCE = 0.6;
+
 export function planSpeechTargets(input: {
   readonly targetLanguages?: readonly string[] | undefined;
   readonly textOnlyLanguages?: readonly string[] | undefined;
@@ -111,6 +121,11 @@ export interface LiveSessionHostDeps {
    * configured is left out rather than given a default one, which for Spanish
    * words would be an English voice -- worse than the silence it replaced.
    */
+  /**
+   * Recogniser confidence below which a segment is captioned but not spoken.
+   * See LiveTranslationPipelineDeps.minSpokenConfidence.
+   */
+  readonly minSpokenConfidence?: number | undefined;
   readonly speechPlansFor: (open: IngressOpen) => readonly LiveSpeechPlan[];
   readonly onCaption?: (event: TranscriptEvent) => void;
   readonly onSpoken?: (
@@ -171,6 +186,7 @@ export class LiveSessionHost implements IngressStreamHandler {
         sourceLanguage: open.sourceLanguage ?? 'auto',
         targetLanguage: plan.targetLanguage,
         voiceId: plan.voiceId,
+        minSpokenConfidence: deps.minSpokenConfidence ?? DEFAULT_MIN_SPOKEN_CONFIDENCE,
         translation: deps.translation,
         synthesis,
         // Straight back down the same socket the audio came up. The LANGUAGE

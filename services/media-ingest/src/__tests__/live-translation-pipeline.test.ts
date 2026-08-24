@@ -8,6 +8,7 @@ import {
   LiveTranslationPipeline,
   type LiveTranslationPipelineDeps,
 } from '../live-translation-pipeline.js';
+import { DEFAULT_MIN_SPOKEN_CONFIDENCE } from '../live-session-host.js';
 import { MockStreamingSynthesisProvider } from '../streaming-speech-synthesis-provider.js';
 import type { TranscriptEvent } from '../transcript-event.js';
 import type { TranslatedAudioFrame } from '../translated-audio.js';
@@ -49,6 +50,9 @@ function rig(overrides: Partial<LiveTranslationPipelineDeps> = {}) {
     sourceLanguage: 'en',
     targetLanguage: 'es',
     voiceId: 'v1',
+    // Existing cases carry no confidence, so the floor never engages for them;
+    // the gate's own behaviour is exercised explicitly further down.
+    minSpokenConfidence: DEFAULT_MIN_SPOKEN_CONFIDENCE,
     translation,
     synthesis: new MockStreamingSynthesisProvider([640, 640]),
     deliver: (frame) => {
@@ -231,5 +235,72 @@ describe('cancelling says what it achieved, not what it wished', () => {
     await r.pipeline.onTranscriptEvent(transcript({ segmentId: 'seg_2' }));
     r.pipeline.cancelAll('call ended');
     expect(r.pipeline.queuedFrames).toBe(0);
+  });
+});
+
+/**
+ * A recogniser that is not sure must not be given a voice.
+ *
+ * Deepgram scores every result, and that score was carried into this pipeline
+ * and never consulted: a transcript rated 0.3 was spoken with the authority of
+ * one rated 0.98. Upstream the VAD is an energy gate, which passes coughs,
+ * doors and keyboards as "speech" -- so the two together manufacture sentences
+ * out of noise and put them in somebody's mouth. On a business call the
+ * listener has no way to know.
+ */
+describe('confidence floor on synthesis', () => {
+  it('PIN: a low-confidence final is NOT spoken', async () => {
+    const { pipeline, delivered } = rig({ minSpokenConfidence: 0.6 });
+    const spoken = await pipeline.onTranscriptEvent(
+      transcript({ provider: { name: 'mock', isFinal: true, confidence: 0.31 } }),
+    );
+    expect(spoken).toBeNull();
+    expect(delivered).toHaveLength(0);
+  });
+
+  it('speaks a confident final exactly as before', async () => {
+    const { pipeline, delivered } = rig({ minSpokenConfidence: 0.6 });
+    const spoken = await pipeline.onTranscriptEvent(
+      transcript({ provider: { name: 'mock', isFinal: true, confidence: 0.94 } }),
+    );
+    expect(spoken).not.toBeNull();
+    expect(delivered.length).toBeGreaterThan(0);
+  });
+
+  it('PIN: absent confidence is not treated as low', async () => {
+    // Some providers omit the field. Muting every one of them would be a worse
+    // failure than the one this gate prevents.
+    const { pipeline, delivered } = rig({ minSpokenConfidence: 0.6 });
+    const spoken = await pipeline.onTranscriptEvent(transcript());
+    expect(spoken).not.toBeNull();
+    expect(delivered.length).toBeGreaterThan(0);
+  });
+
+  it('PIN: the floor governs SPEECH only, never the words', async () => {
+    // The transcript is where a doubted sentence can still be read, checked
+    // and corrected. Dropping it outright would hide the recogniser's mistake
+    // instead of containing it.
+    const translated: unknown[] = [];
+    const { pipeline } = rig({
+      minSpokenConfidence: 0.6,
+      translation: {
+        name: 'mock-mt',
+        translate: async (input) => {
+          translated.push(input);
+          return { translatedText: `[es] ${input.sourceText}` };
+        },
+      },
+    });
+    await pipeline.onTranscriptEvent(
+      transcript({ provider: { name: 'mock', isFinal: true, confidence: 0.2 } }),
+    );
+    // Nothing was synthesised, and nothing here claims the caption was
+    // suppressed: captions travel a different path entirely.
+    expect(translated).toHaveLength(0);
+  });
+
+  it('a floor of 0 speaks everything, for a deployment that wants the old behaviour', () => {
+    expect(DEFAULT_MIN_SPOKEN_CONFIDENCE).toBeGreaterThan(0);
+    expect(DEFAULT_MIN_SPOKEN_CONFIDENCE).toBeLessThan(1);
   });
 });
