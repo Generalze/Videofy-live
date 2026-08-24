@@ -61,7 +61,10 @@ function Nav({ route, navigate }: { readonly route: Route; readonly navigate: (r
             className="button button-small button-outline"
             {...internalLink('c7', navigate, '#join')}
           >
-            Join the Ecosystem
+            {/* One name for one thing: the contract calls this Join C7 in
+                Section 22, and two labels for one destination is exactly the
+                incoherence to avoid. The showboard cyan outline is kept. */}
+            Join C7
           </a>
         </div>
       </div>

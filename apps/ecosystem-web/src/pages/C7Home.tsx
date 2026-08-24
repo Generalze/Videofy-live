@@ -81,24 +81,32 @@ export function C7Home({ navigate }: { readonly navigate: (route: Route) => void
             <p className="hero-sub">
               <span className="hero-title-accent">Seven domains. One ecosystem.</span>
             </p>
+            {/*
+              LOCKED COPY (contract Section 5), verbatim.
+
+              An earlier pass took this wording off the showboard image. That
+              was a category error: the showboard is the VISUAL source of truth
+              -- composition, geometry, lighting -- and the contract is the copy
+              source of truth. Its lede is also the better line: the showboard's
+              says "seven critical domains" directly beneath a sub-headline that
+              already reads "Seven domains. One ecosystem."
+            */}
             <p className="hero-lede">
-              C7 unites intelligent systems across seven critical domains to solve real-world
-              challenges and unlock new possibilities.
+              Intelligent systems created to connect people, protect what matters and expand what
+              technology can do in everyday life.
             </p>
             <div className="hero-actions">
               <a className="button button-primary" href="#ecosystem">
-                Explore the Ecosystem
+                Explore the ecosystem
               </a>
               {/*
-                The artwork's second action is a play control with no label. It
-                still needs an accessible name -- an icon-only link that
-                announces itself as "link" tells a screen-reader user nothing
-                about where it goes.
+                The showboard also draws a play control. It is not here, because
+                there is no film: it pointed at #ecosystem and played nothing,
+                which is a button that lies about what it does. It returns the
+                day there is something to watch.
               */}
-              <a className="button-play" href="#ecosystem" aria-label="Watch the C7 introduction">
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                  <path d="M9.5 7.6v8.8L17 12z" fill="currentColor" />
-                </svg>
+              <a className="button button-ghost" {...internalLink('c7', navigate, '#join')}>
+                Join C7
               </a>
             </div>
           </div>
