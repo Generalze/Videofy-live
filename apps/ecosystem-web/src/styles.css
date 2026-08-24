@@ -242,6 +242,16 @@ p {
   background: transparent;
   border-color: rgba(56, 208, 240, 0.55);
   color: #9fe8fb;
+  /* Two lines of "Join the Ecosystem" crowded the logo at 390px. Found by
+     capturing a true phone viewport rather than by reading the CSS. */
+  white-space: nowrap;
+}
+
+@media (max-width: 460px) {
+  .button-outline {
+    padding: 0.45rem 0.75rem;
+    font-size: 0.8rem;
+  }
 }
 
 .button-outline:hover {
