@@ -36,7 +36,10 @@ export type AbuseSurface =
   | 'verification.phoneRequest'
   | 'verification.phoneVerify'
   | 'organization.create'
-  | 'organization.invite';
+  | 'organization.invite'
+  | 'contact.search'
+  | 'contact.request'
+  | 'contact.invite';
 
 /** What the key is derived from. Combined by the caller into one string. */
 export type AbuseKeyKind = 'account' | 'ip' | 'session' | 'target';
@@ -75,6 +78,15 @@ export const ABUSE_POLICIES: Readonly<Record<AbuseSurface, AbusePolicy>> = {
   'verification.phoneVerify': { capacity: 5, refillMs: 15 * 60 * 1000, challengeable: false },
   'organization.create': { capacity: 3, refillMs: 24 * 60 * 60 * 1000, challengeable: true },
   'organization.invite': { capacity: 50, refillMs: 60 * 60 * 1000, challengeable: true },
+  /*
+   * Exact-match lookup is still enumerable given a list of plausible addresses,
+   * and a corporate address list is easy to guess -- so the search surface is
+   * limited even though it reveals only confirmation, never discovery.
+   */
+  'contact.search': { capacity: 20, refillMs: 60 * 60 * 1000, challengeable: true },
+  'contact.request': { capacity: 20, refillMs: 24 * 60 * 60 * 1000, challengeable: true },
+  // Minting invites is how a compromised account would try to buy reach.
+  'contact.invite': { capacity: 20, refillMs: 24 * 60 * 60 * 1000, challengeable: true },
 };
 
 export type AbuseDecision =

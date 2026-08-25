@@ -117,11 +117,66 @@ Rules, each of which exists because of a specific abuse:
 - **Blocking is permanent** until reversed by the blocker, and blocks both calls
   and messages.
 
-### 2.3 What a contact grants
+### 2.3 Discovery — who can find you at all
+
+Two modes. **Discoverable** is not the same as listed, and neither mode ever
+produces a browsable directory.
+
+| Mode | Found by | Notes |
+|---|---|---|
+| **Discoverable** | Exact verified address only | The default |
+| **Private** | Nobody. Not by address, not by name | Reachable only by invite link |
+
+Rules that hold in **both** modes, because a directory is a harvesting target
+whatever the individual settings say:
+
+- **Search is exact-match only.** You must already know the whole address.
+  There is no partial match, no name lookup, no "people you may know", and no
+  endpoint that returns more than one result. Anything that lets an address be
+  *discovered* rather than *confirmed* is a directory with extra steps.
+- **A private account returns the same answer as an address that does not
+  exist.** Not "this person is private" — that confirms they exist, which is
+  the fact private mode is protecting. Identical response, identical timing.
+- **Search is rate limited** on the `contact.search` surface. Exact-match
+  lookup is still enumerable given a list of plausible addresses and enough
+  attempts, and a corporate address list is easy to guess.
+
+### 2.4 Private contact invite links
+
+The only route to a private account, and a legitimate route to any account.
+
+- **Single use.** Consumed on acceptance, and never valid again. This is what
+  stops a link becoming a broadcast handle: a link that works twice works a
+  thousand times once somebody forwards it.
+- **Expiring**, with a short default.
+- **Revocable** before use, without affecting contacts already made.
+- **Bound to the issuer.** It adds *that* person and nobody else.
+- **Rate limited** to issue, so a compromised account cannot mint thousands.
+
+The landing page shows the issuer's display name before acceptance, because
+somebody must know who they are adding. That is a deliberate trade: whoever
+holds the link learns who issued it. Acceptable, since the issuer chose to send
+it — but it means a leaked link discloses its issuer, and the honest mitigation
+is that it expires and dies on first use rather than any pretence of secrecy.
+
+**Accepting an invite creates the contact directly.** No pending request: the
+issuer already expressed consent by minting the link, and the accepter expresses
+it by using it. Both sides agreed, so there is nothing left to approve.
+
+Mechanically this is the same shape as an email verification challenge —
+high-entropy token, hashed at rest, expiring, single-use, attempt-capped — and
+it reuses `verification-token.ts` rather than growing a second implementation of
+properties that are easy to get subtly wrong once.
+
+### 2.5 What a contact grants
 
 Being a contact grants exactly two things: they may ring you, and they may
 message you. It grants no access to your organizations, your presence history,
-or anything else.
+your other contacts, or anything else.
+
+**Contacts are never transitive.** There is no mutual-contacts list, no "friends
+of friends", and no path by which being in someone's contacts exposes you to
+anybody in theirs.
 
 ---
 
@@ -146,17 +201,44 @@ What this needs that does not exist:
 
 ### 3.2 Conference — rooms and invite links
 
-Unchanged in spirit: create a room, share the link, anyone with it can join.
-The controls that make this safe are what stop it becoming the fraud bypass:
+Create a room, share the link, anyone with it can join. The controls that make
+this safe are what stop it becoming the fraud bypass:
 
 - **Links expire**, and the default is short.
 - **The host can require a lobby** — arrivals wait until admitted. Default on
   for rooms opened to people outside your contacts.
 - **Links are revocable** without destroying the room.
-- **The room shows who is present**, always, with no invisible participants.
 - **The translation disclosure applies** — already shipped.
 
-A conference is a deliberate act of opening a door. It should feel like one.
+### 3.3 A conference is not a directory
+
+The hole this closes: a conference link is open by design, so if the room
+exposes who is in it, anyone can join, read the roster, and contact everybody —
+the contact gate bypassed without ever being broken. Harvesting would be easier
+than attending.
+
+So identity in a room is **session-scoped**:
+
+- Participants see a **display name only**. No address, no handle, no profile,
+  no organization, no "member since". The name is what a call needs to work and
+  is the whole of what is shown.
+- **There is no add-contact affordance in a room.** Not greyed out — absent.
+  A roster with an add button beside every row *is* the directory this section
+  exists to prevent.
+- **The roster is not exportable**, and no API returns a room's membership to a
+  participant in a form worth scraping.
+- **The host may hide the roster entirely.** Attendees then see only whoever is
+  currently speaking, which is the right default for a room opened to the
+  public. The host always sees everyone — somebody has to be accountable for
+  who is in the room.
+- **Hidden is never invisible.** A hidden roster conceals attendees *from each
+  other*; it never allows a participant nobody can see. The host's view is
+  complete, and being in a room is always disclosed to the host.
+
+**Meeting someone legitimately** — the case this must not destroy — is handled
+by mutual opt-in: both people tap connect, and only when both have done so does
+either learn the other's handle. One-sided interest reveals nothing to anybody,
+so the room can never be mined by a participant who taps every row.
 
 ---
 
@@ -257,9 +339,9 @@ Ordered by dependency, not by appeal.
 
 | Step | Work | Depends on |
 |---|---|---|
-| 1 | **Contacts**: handle, request/accept, block, rate limits | Database |
+| 1 | **Contacts**: handle, request/accept, block, rate limits, discovery modes, single-use invite links | Database |
 | 2 | **Personal call gating**: `personal` requires a mutual contact | Contacts |
-| 3 | **Conference controls**: link expiry, lobby, revocation | — |
+| 3 | **Conference controls**: link expiry, lobby, revocation, session-scoped identity, hideable roster | — |
 | 4 | **Presence and push**: ringing when the app is closed | Contacts |
 | 5 | **Messaging**: conversations, text translation, originals | Database, contacts |
 | 6 | **Interface**: three-tab shape | 1–5 |
@@ -280,5 +362,9 @@ These are the owner's, and each changes the build:
 3. **Read receipts and last-seen** — default on, off, or per-user?
 4. **Group messaging**, or one-to-one first? Recommend one-to-one; groups
    multiply the translation matrix and every moderation question.
-5. **Retention** — how long is a conversation kept, and who can delete it?
+5. **Is private mode the default?** Private by default is the stronger privacy
+   position and makes the product harder to start using, because nobody can be
+   found without an exchange of links. Discoverable by default is the
+   conventional choice and quietly opts people into being findable.
+6. **Retention** — how long is a conversation kept, and who can delete it?
    Legal input required before the schema is written.

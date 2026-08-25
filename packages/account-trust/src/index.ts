@@ -65,6 +65,20 @@ export {
   type PendingIdentityChange,
 } from './identity-change.js';
 export {
+  CONTACT_INVITE_POLICY,
+  contactInviteUsable,
+  issueContactInvite,
+  redeemContactInvite,
+  revokeContactInvite,
+  searchContact,
+  type ContactInvite,
+  type ContactInviteRedemption,
+  type ContactInviteRefusal,
+  type ContactSearchInput,
+  type ContactSearchResult,
+  type DiscoveryMode,
+} from './contact-invite.js';
+export {
   ABUSE_POLICIES,
   abuseKey,
   createMemoryAbuseLimiter,
