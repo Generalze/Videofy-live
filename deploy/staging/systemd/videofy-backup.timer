@@ -1,0 +1,15 @@
+[Unit]
+Description=Nightly backup of the C7 account database
+
+[Timer]
+# 03:12 rather than 03:00. Everything in the world runs on the hour, and a
+# backup that competes with every other cron job on the machine takes longer
+# and is likelier to be the one that fails.
+OnCalendar=*-*-* 03:12:00 UTC
+# A machine that was off at 03:12 still gets its backup when it comes back,
+# rather than silently skipping a day.
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

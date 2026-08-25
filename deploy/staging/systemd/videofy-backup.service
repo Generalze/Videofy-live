@@ -1,0 +1,17 @@
+[Unit]
+Description=Back up the C7 account database
+# Pointless if the database is not running, and the failure would be noise.
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+# Reads DATABASE_URL itself from /etc/videofy/account.env. Deliberately NOT an
+# EnvironmentFile here: systemd would then hold the password in its own unit
+# state, visible to `systemctl show`, which is a second place for it to leak.
+ExecStart=/usr/local/bin/backup-database.sh
+User=root
+Nice=10
+# Dumping competes with the service for disk. Being polite about it means a
+# backup never makes a call sound worse.
+IOSchedulingClass=idle
