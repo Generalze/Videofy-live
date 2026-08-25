@@ -228,3 +228,102 @@ describe('two programmes on one gateway', () => {
     expect(directory.map((channel) => channel.channelId)).toContain(alice.channelId);
   });
 });
+
+describe('a private programme', () => {
+  let server: Server;
+  let baseUrl: string;
+  let clients: Socket[];
+
+  beforeEach(async () => {
+    server = createServer(createApp());
+    new Gateway(server, ['http://localhost:5173'], {
+      operator: { authSecret: OPERATOR_SECRET, channelSalt: 'private-test' },
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    clients = [];
+  });
+
+  afterEach(async () => {
+    for (const client of clients) client.disconnect();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  function connect(role: string, accountId?: string): Socket {
+    const socket = connectClient(baseUrl, {
+      query: { role },
+      ...(accountId ? { auth: { token: tokenFor(accountId) } } : {}),
+      transports: ['websocket'],
+      forceNew: true,
+    });
+    clients.push(socket);
+    return socket;
+  }
+
+  /** An operator on their own channel, made private with a code. */
+  async function privateChannel(code: string): Promise<{ socket: Socket; channelId: string }> {
+    const socket = connect('operator', ALICE);
+    const assigned = await new Promise<{ channelId: string }>((resolve) => {
+      socket.on(SOCKET_EVENTS.CHANNEL_ASSIGNED, resolve);
+    });
+    socket.emit(SOCKET_EVENTS.JOIN_CHANNEL, { channelId: 'own' });
+    await new Promise<void>((resolve) => {
+      socket.once(SOCKET_EVENTS.CHANNEL_ASSIGNED, () => resolve());
+    });
+    socket.emit(SOCKET_EVENTS.OPERATOR_CHANNEL_SETTINGS, {
+      displayName: 'Invitation Only',
+      visibility: 'private',
+      code,
+    });
+    const confirmed = await new Promise<{ hasCode?: boolean }>((resolve) => {
+      socket.once(SOCKET_EVENTS.CHANNEL_ASSIGNED, resolve);
+    });
+    expect(confirmed.hasCode).toBe(true);
+    return { socket, channelId: assigned.channelId };
+  }
+
+  it('admits a listener holding the code', async () => {
+    const channel = await privateChannel('let-me-in-please');
+    const listener = connect('listener');
+    const errors: unknown[] = [];
+    listener.on(SOCKET_EVENTS.ERROR, (error: unknown) => errors.push(error));
+
+    listener.emit(SOCKET_EVENTS.JOIN_CHANNEL, {
+      channelId: channel.channelId,
+      code: 'let-me-in-please',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(errors).toEqual([]);
+  });
+
+  it('refuses a listener with the link but no code', async () => {
+    const channel = await privateChannel('let-me-in-please');
+    const listener = connect('listener');
+    const errors: { message: string }[] = [];
+    listener.on(SOCKET_EVENTS.ERROR, (error: { message: string }) => errors.push(error));
+
+    listener.emit(SOCKET_EVENTS.JOIN_CHANNEL, { channelId: channel.channelId });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(errors[0]?.message).toContain('private');
+  });
+
+  it('refuses a listener with the wrong code', async () => {
+    const channel = await privateChannel('let-me-in-please');
+    const listener = connect('listener');
+    const errors: { message: string }[] = [];
+    listener.on(SOCKET_EVENTS.ERROR, (error: { message: string }) => errors.push(error));
+
+    listener.emit(SOCKET_EVENTS.JOIN_CHANNEL, { channelId: channel.channelId, code: 'guessing' });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(errors[0]?.message).toContain('private');
+  });
+
+  it('keeps a private channel out of the public directory', async () => {
+    const channel = await privateChannel('let-me-in-please');
+    const listener = connect('listener');
+    const directory = await new Promise<readonly ChannelSummary[]>((resolve) => {
+      listener.on(SOCKET_EVENTS.CHANNEL_DIRECTORY, resolve);
+    });
+    expect(directory.map((entry) => entry.channelId)).not.toContain(channel.channelId);
+  });
+});

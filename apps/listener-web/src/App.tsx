@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { io, Socket } from 'socket.io-client';
 import type {
   AudioMixPreferences,
+  ChannelSummary,
   GeneratedAudioReadyEvent,
   MediaStateEvent,
   TimestampedTranslationEvent,
@@ -15,6 +16,14 @@ import {
   WebRtcSignallingClient,
 } from '@videofy-live/shared-types';
 import styles from './App.module.css';
+import { ChannelDirectory } from './ChannelDirectory';
+import {
+  buildJoinPayload,
+  readChannelFromLocation,
+  urlWithoutCode,
+  viewerStage,
+  type ChannelSelection,
+} from './channelSelection';
 import {
   createInitialListenerWebRtcTransportSnapshot,
   ListenerWebRtcTransportController,
@@ -161,6 +170,20 @@ function readPositiveIntegerEnv(value: string | undefined, fallback: number): nu
 }
 
 export default function App(): React.ReactElement {
+  /*
+   * WHICH PROGRAMME THIS PAGE IS. Read once from the URL: a channel has its own
+   * viewer page, and reloading it must come back to the same programme. With no
+   * channel in the URL this is the front page and shows the directory instead.
+   */
+  const [channelSelection, setChannelSelection] = useState<ChannelSelection>(() =>
+    readChannelFromLocation(window.location.pathname, window.location.search),
+  );
+  const [channelDirectory, setChannelDirectory] = useState<readonly ChannelSummary[]>([]);
+  const [channelCodeInput, setChannelCodeInput] = useState('');
+  const [channelRefused, setChannelRefused] = useState(false);
+  const [channelJoined, setChannelJoined] = useState(false);
+  const channelSelectionRef = useRef(channelSelection);
+  channelSelectionRef.current = channelSelection;
   const socketRef = useRef<Socket | null>(null);
   const progressiveAudioRef = useRef<ProgrammeTranslatedAudioController | null>(null);
   const lastOperatorMixPreferencesRef = useRef<AudioMixPreferences | null>(null);
@@ -802,6 +825,19 @@ export default function App(): React.ReactElement {
         lastConnectError: 'none',
         disconnectReason: 'none',
       });
+      /*
+       * CHANNEL BEFORE LANGUAGE. The language rooms are scoped to the channel,
+       * so joining a language first would put this viewer in the default
+       * channel's room and then move them, and any frame in between would be
+       * the wrong programme's audio.
+       */
+      const selection = channelSelectionRef.current;
+      if (selection.channelId !== null) {
+        socket.emit(
+          SOCKET_EVENTS.JOIN_CHANNEL,
+          buildJoinPayload(selection, targetLanguageRef.current),
+        );
+      }
       joinCurrentListenerLanguage(socket, () => targetLanguageRef.current);
       const signallingClient = listenerSignallingClientRef.current;
       const signallingSnapshot = signallingClient?.getSnapshot();
@@ -824,6 +860,23 @@ export default function App(): React.ReactElement {
               error instanceof Error ? error.message : 'Programme media reconnection failed.';
             setVideoPlaybackError(message);
           });
+      }
+    });
+
+    socket.on(SOCKET_EVENTS.CHANNEL_DIRECTORY, (entries: readonly ChannelSummary[]) => {
+      setChannelDirectory(entries);
+    });
+
+    socket.on(SOCKET_EVENTS.ERROR, (error: { message?: string }) => {
+      /*
+       * A refusal to enter a private programme is the one error this page can
+       * act on -- it turns into a prompt for the code. Everything else the
+       * gateway refuses is left to the handlers that already report it, rather
+       * than swallowed into a code box that would make no sense.
+       */
+      if (typeof error?.message === 'string' && error.message.includes('private')) {
+        setChannelRefused(true);
+        setChannelJoined(false);
       }
     });
 
@@ -1421,8 +1474,63 @@ export default function App(): React.ReactElement {
     usesMockVideoFeed: shouldUseMockVideoFeed(mediaState?.videoSource),
   });
 
+  const stage = viewerStage({
+    selection: channelSelection,
+    refusedCode: channelRefused,
+    joined: channelJoined,
+  });
+
+  /*
+   * Take the code out of the address bar once it has been used. It stays in the
+   * link that was shared -- that is the point of the link -- but it should not
+   * sit in this browser's history, in the referrer of every outbound link, or
+   * in a screenshot of the window.
+   */
+  useEffect(() => {
+    if (!channelSelection.codeFromUrl) return;
+    window.history.replaceState(
+      null,
+      '',
+      urlWithoutCode(window.location.pathname, window.location.search),
+    );
+    setChannelSelection((current) => ({ ...current, codeFromUrl: false }));
+  }, [channelSelection.codeFromUrl]);
+
+  const handleChannelCodeSubmit = (): void => {
+    const code = channelCodeInput.trim();
+    if (code.length === 0) return;
+    const next = { ...channelSelection, code };
+    setChannelSelection(next);
+    setChannelRefused(false);
+    socketRef.current?.emit(
+      SOCKET_EVENTS.JOIN_CHANNEL,
+      buildJoinPayload(next, targetLanguageRef.current),
+    );
+  };
+
+  const handleChooseChannel = (channelId: string): void => {
+    const next = { channelId, code: null, codeFromUrl: false };
+    setChannelSelection(next);
+    setChannelRefused(false);
+    setChannelJoined(true);
+    window.history.pushState(null, '', `/c/${encodeURIComponent(channelId)}`);
+    socketRef.current?.emit(
+      SOCKET_EVENTS.JOIN_CHANNEL,
+      buildJoinPayload(next, targetLanguageRef.current),
+    );
+  };
+
   return (
     <div className={styles.root}>
+      <ChannelDirectory
+        stage={stage}
+        channels={channelDirectory}
+        channelId={channelSelection.channelId}
+        codeInput={channelCodeInput}
+        onCodeInputChange={setChannelCodeInput}
+        onSubmitCode={handleChannelCodeSubmit}
+        onChooseChannel={handleChooseChannel}
+      />
       <header className={styles.header}>
         <div className={styles.brand}>
           <span className={styles.brandIcon}>▶</span>

@@ -12,7 +12,7 @@
  * broadcasting. That keeps the state transitions testable without a server, and
  * it is why the gateway can adopt it a call site at a time.
  */
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import {
   DEFAULT_CHANNEL_ID,
   type ChannelSummary,
@@ -55,6 +55,15 @@ interface ChannelState {
   visibility: ChannelVisibility;
   mediaState: MediaStateEvent | null;
   audio: AudioMixPreferences;
+  /**
+   * The join code, as a digest.
+   *
+   * Held hashed rather than plain so that a heap dump, a crash report or an
+   * accidental log of channel state cannot hand somebody entry to a private
+   * programme. Null means no code has been set, which for a private channel
+   * means nobody can join -- see mayJoin.
+   */
+  accessCodeHash: string | null;
   /** Sessions currently feeding this channel. */
   readonly sessionIds: Set<string>;
 }
@@ -112,6 +121,7 @@ export class ProgrammeChannels {
       visibility: 'public',
       mediaState: null,
       audio: { ...this.defaultAudio },
+      accessCodeHash: null,
       sessionIds: new Set(),
     };
     this.channels.set(channelId, created);
@@ -143,6 +153,62 @@ export class ProgrammeChannels {
 
   setVisibility(channelId: string, visibility: ChannelVisibility): void {
     this.ensure(channelId).visibility = visibility;
+  }
+
+  /** Set or clear the join code for a private channel. */
+  setAccessCode(channelId: string, code: string | null): void {
+    const channel = this.ensure(channelId);
+    channel.accessCodeHash = code === null || code.length === 0 ? null : this.hashCode(code);
+  }
+
+  /** Whether a channel has a code set, without revealing anything about it. */
+  hasAccessCode(channelId: string): boolean {
+    return this.channels.get(channelId)?.accessCodeHash !== null;
+  }
+
+  /**
+   * Whether a listener holding this code may join.
+   *
+   * PUBLIC AND UNLISTED ARE OPEN. The difference between them is discovery, not
+   * access: an unlisted channel is missing from the directory, and that is all.
+   *
+   * PRIVATE WITH NO CODE SET REFUSES EVERYBODY. The alternative -- treating a
+   * missing code as "no code required" -- means an operator who selects private
+   * and has not yet set a code is broadcasting openly while their screen says
+   * private. A channel that refuses its own owner is a visible, fixable
+   * problem; one that silently admits the public is not.
+   */
+  mayJoin(channelId: string, code?: string | undefined): boolean {
+    const channel = this.channels.get(channelId);
+    if (!channel || channel.visibility !== 'private') return true;
+    if (channel.accessCodeHash === null) return false;
+    if (typeof code !== 'string' || code.length === 0) return false;
+    return this.codesMatch(channel.accessCodeHash, this.hashCode(code));
+  }
+
+  private hashCode(code: string): string {
+    /*
+     * Salted with a fixed domain string rather than per channel. The salt here
+     * separates this digest from every other sha256 in the process; it is not
+     * a password hash and must not be mistaken for one, which is why the code
+     * is short-lived, operator-rotatable, and never the only thing protecting
+     * anything that matters.
+     */
+    return createHash('sha256').update(`videofy channel code\u0000${code}`, 'utf8').digest('hex');
+  }
+
+  /**
+   * Compare two digests without leaking where they differ.
+   *
+   * Both sides are fixed-length hex of the same digest, so the lengths always
+   * match and timingSafeEqual cannot throw. A plain === would return early on
+   * the first differing character and let somebody recover a code one
+   * character at a time.
+   */
+  private codesMatch(left: string, right: string): boolean {
+    const a = Buffer.from(left, 'hex');
+    const b = Buffer.from(right, 'hex');
+    return a.length === b.length && timingSafeEqual(a, b);
   }
 
   bindSession(sessionId: string, channelId: string): void {
@@ -186,6 +252,8 @@ export class ProgrammeChannels {
    */
   directory(): readonly ChannelSummary[] {
     return [...this.channels.values()]
+      // Only public. Unlisted and private are both absent from discovery; they
+      // differ in whether the link alone is enough to get in.
       .filter((channel) => channel.visibility === 'public')
       .map((channel) => ({
         channelId: channel.channelId,

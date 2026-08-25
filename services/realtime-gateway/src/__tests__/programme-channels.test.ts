@@ -182,3 +182,68 @@ describe('sessions', () => {
     expect(() => new ProgrammeChannels().releaseSession('ghost')).not.toThrow();
   });
 });
+
+describe('private channels', () => {
+  /* Public and unlisted differ in DISCOVERY, not in access. */
+  it('lets anybody join a public channel with no code', () => {
+    const channels = new ProgrammeChannels();
+    channels.claim('open', ALICE);
+    expect(channels.mayJoin('open')).toBe(true);
+  });
+
+  it('lets anybody holding the link join an unlisted channel', () => {
+    const channels = new ProgrammeChannels();
+    channels.setVisibility('hidden', 'unlisted');
+    expect(channels.mayJoin('hidden')).toBe(true);
+  });
+
+  it('admits a private channel only with the right code', () => {
+    const channels = new ProgrammeChannels();
+    channels.setVisibility('vip', 'private');
+    channels.setAccessCode('vip', 'correct-horse');
+
+    expect(channels.mayJoin('vip', 'correct-horse')).toBe(true);
+    expect(channels.mayJoin('vip', 'wrong-horse')).toBe(false);
+    expect(channels.mayJoin('vip')).toBe(false);
+    expect(channels.mayJoin('vip', '')).toBe(false);
+  });
+
+  /*
+   * REFUSES EVERYBODY rather than admitting everybody. An operator who has
+   * selected private and not yet set a code must not be broadcasting openly
+   * while their screen says private.
+   */
+  it('refuses a private channel that has no code set', () => {
+    const channels = new ProgrammeChannels();
+    channels.setVisibility('vip', 'private');
+    expect(channels.mayJoin('vip', 'anything')).toBe(false);
+    expect(channels.mayJoin('vip')).toBe(false);
+  });
+
+  it('reopens a channel when the code is cleared and it goes public', () => {
+    const channels = new ProgrammeChannels();
+    channels.setVisibility('vip', 'private');
+    channels.setAccessCode('vip', 'secret-code');
+    channels.setVisibility('vip', 'public');
+    expect(channels.mayJoin('vip')).toBe(true);
+  });
+
+  it('does not keep the code where it could be read back', () => {
+    const channels = new ProgrammeChannels();
+    channels.setVisibility('vip', 'private');
+    channels.setAccessCode('vip', 'correct-horse');
+
+    expect(JSON.stringify(channels)).not.toContain('correct-horse');
+    expect(channels.hasAccessCode('vip')).toBe(true);
+  });
+
+  it('keeps private and unlisted channels out of the directory', () => {
+    const channels = new ProgrammeChannels();
+    channels.claim('open', ALICE, 'Open');
+    channels.claim('vip', BOB, 'VIP');
+    channels.setVisibility('vip', 'private');
+    channels.setAccessCode('vip', 'secret-code');
+
+    expect(channels.directory().map((channel) => channel.channelId)).toEqual(['open']);
+  });
+});

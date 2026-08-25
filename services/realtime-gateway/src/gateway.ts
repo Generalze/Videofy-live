@@ -23,6 +23,7 @@ import {
   channelListenerRoom,
   channelOperatorRoom,
   channelRoom,
+  type ChannelVisibility,
 } from './programme-channels.js';
 import {
   INGEST_ROOM,
@@ -739,6 +740,23 @@ export class Gateway {
         return;
       }
 
+      /*
+       * THE LOCK ON A PRIVATE CHANNEL. Checked before any room is joined or
+       * left, so a refused listener is not moved off the channel they were
+       * already on -- a failed attempt to enter a private programme must not
+       * cost somebody the one they were already watching.
+       */
+      if (!this.channels.mayJoin(request.channelId, request.code)) {
+        logger.warn('Listener refused a private channel', {
+          socketId: socket.id,
+          channelId: request.channelId,
+        });
+        socket.emit(SOCKET_EVENTS.ERROR, {
+          message: 'This programme is private. Check the link and code you were given.',
+        });
+        return;
+      }
+
       if (state.channelId !== request.channelId) {
         void socket.leave(channelListenerRoom(state.channelId));
         if (state.targetLanguage) {
@@ -838,8 +856,61 @@ export class Gateway {
     return !isTerminalMediaState(state.streamStatus) || Boolean(state.programmeMediaUrl);
   }
 
+  /**
+   * A channel settings change, from a client that may have sent anything.
+   *
+   * Every field is optional and an absent field means "leave it alone", which
+   * is what lets the console change visibility without resending a join code
+   * it does not have. `code: null` is the distinct, deliberate way to clear one.
+   */
+  private parseChannelSettings(
+    raw: unknown,
+  ): { displayName?: string; visibility?: ChannelVisibility; code?: string | null } | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const candidate = raw as { displayName?: unknown; visibility?: unknown; code?: unknown };
+    const settings: { displayName?: string; visibility?: ChannelVisibility; code?: string | null } =
+      {};
+
+    if (candidate.displayName !== undefined) {
+      if (typeof candidate.displayName !== 'string') return null;
+      const trimmed = candidate.displayName.trim();
+      if (trimmed.length === 0 || trimmed.length > 80) return null;
+      settings.displayName = trimmed;
+    }
+
+    if (candidate.visibility !== undefined) {
+      if (
+        candidate.visibility !== 'public' &&
+        candidate.visibility !== 'unlisted' &&
+        candidate.visibility !== 'private'
+      ) {
+        return null;
+      }
+      settings.visibility = candidate.visibility;
+    }
+
+    if (candidate.code !== undefined) {
+      if (candidate.code === null) {
+        settings.code = null;
+      } else {
+        /*
+         * Long enough not to be guessed in a few thousand tries. A four-digit
+         * code on a channel anybody can reach by link is a formality, and this
+         * is the only thing standing in front of a private programme.
+         */
+        if (typeof candidate.code !== 'string') return null;
+        if (candidate.code.length < 6 || candidate.code.length > 64) return null;
+        settings.code = candidate.code;
+      }
+    }
+
+    return settings;
+  }
+
   /** A channel join request, from a client that may have sent anything. */
-  private parseChannelJoin(raw: unknown): { channelId: string; targetLanguage?: string } | null {
+  private parseChannelJoin(
+    raw: unknown,
+  ): { channelId: string; targetLanguage?: string; code?: string } | null {
     if (raw === null || raw === undefined) return null;
     const candidate =
       typeof raw === 'string'
@@ -856,12 +927,24 @@ export class Gateway {
       return null;
     }
 
+    const rawCode = (candidate as { code?: unknown }).code;
+    /*
+     * A wrong-shaped code is dropped rather than refused here, so that the
+     * single refusal below covers "no code", "wrong code" and "malformed
+     * code" identically. Telling them apart tells somebody guessing which
+     * half they got right.
+     */
+    const code =
+      typeof rawCode === 'string' && rawCode.length > 0 && rawCode.length <= 64
+        ? { code: rawCode }
+        : {};
+
     const targetLanguage = (candidate as { targetLanguage?: unknown }).targetLanguage;
-    if (targetLanguage === undefined) return { channelId };
+    if (targetLanguage === undefined) return { channelId, ...code };
     if (targetLanguage !== ORIGINAL_LANGUAGE_CHANNEL) {
       if (typeof targetLanguage !== 'string' || targetLanguage.length < 2) return null;
     }
-    return { channelId, targetLanguage: targetLanguage as string };
+    return { channelId, targetLanguage: targetLanguage as string, ...code };
   }
 
   private handleWebRtcSocket(socket: Socket, role: 'broadcaster' | 'listener' | 'server'): void {
@@ -1094,6 +1177,59 @@ export class Gateway {
       });
       this.broadcastChannelDirectory();
       logger.info('Operator moved channel', { socketId: socket.id, channelId: requested });
+    });
+
+    /*
+     * NAMING AND GATING A CHANNEL: how a programme becomes public, unlisted or
+     * private.
+     *
+     * Applied to the channel the operator is CURRENTLY ON, and only if they
+     * own it. Taking a channel id from the payload instead would let an
+     * authenticated operator make somebody else's public programme private,
+     * which is a denial of service dressed as a settings change.
+     */
+    socket.on(SOCKET_EVENTS.OPERATOR_CHANNEL_SETTINGS, (raw: unknown) => {
+      const settings = this.parseChannelSettings(raw);
+      const accountId = this.operatorAccounts.get(socket.id);
+      if (!settings || accountId === undefined) {
+        socket.emit(SOCKET_EVENTS.ERROR, { message: 'Invalid channel settings' });
+        return;
+      }
+
+      const channelId = this.operatorChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID;
+      if (channelId === DEFAULT_CHANNEL_ID || !this.channels.mayOperate(channelId, accountId)) {
+        socket.emit(SOCKET_EVENTS.ERROR, {
+          message: 'Move to your own channel before changing its settings.',
+        });
+        return;
+      }
+
+      if (settings.displayName !== undefined) {
+        this.channels.claim(channelId, accountId, settings.displayName);
+      }
+      if (settings.visibility !== undefined) {
+        this.channels.setVisibility(channelId, settings.visibility);
+      }
+      if (settings.code !== undefined) {
+        this.channels.setAccessCode(channelId, settings.code);
+      }
+
+      socket.emit(SOCKET_EVENTS.CHANNEL_ASSIGNED, {
+        channelId: this.operatorOwnChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID,
+        active: channelId,
+        /*
+         * Whether a code is SET, never the code. The operator's own client
+         * already has whatever they just typed; echoing it back would put a
+         * live join code into logs and transcripts for no gain.
+         */
+        hasCode: this.channels.hasAccessCode(channelId),
+      });
+      this.broadcastChannelDirectory();
+      logger.info('Operator updated channel settings', {
+        socketId: socket.id,
+        channelId,
+        visibility: settings.visibility,
+      });
     });
 
     socket.on(SOCKET_EVENTS.OPERATOR_AUDIO_MODE_PREFERENCES, (raw: unknown) => {

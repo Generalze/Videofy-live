@@ -31,6 +31,8 @@ export const SOCKET_EVENTS = {
    * same deploy.
    */
   JOIN_CHANNEL: 'join:channel',
+  /** An operator setting their channel name, visibility and join code. */
+  OPERATOR_CHANNEL_SETTINGS: 'operator:channel-settings',
   /** The gateway telling an operator which channel is theirs, and which they are on. */
   CHANNEL_ASSIGNED: 'channel:assigned',
   /** The channels currently broadcasting, for a listener to choose from. */
@@ -109,14 +111,17 @@ export function languageRoom(targetLanguage: string): string {
 export const DEFAULT_CHANNEL_ID = 'main';
 
 /**
- * Whether a channel appears in the directory.
+ * Who can reach a channel.
  *
- * NOT whether it is reachable. An unlisted channel is still joinable by anybody
- * holding its id -- it is a doorbell without a sign, not a lock. Calling it
- * "private" would promise something this does not deliver, and somebody would
- * eventually build on that promise.
+ *   public   - listed in the directory, open to anybody.
+ *   unlisted - not listed, but joinable by anybody holding the link. A doorbell
+ *              without a sign, not a lock.
+ *   private  - not listed, and the link alone is not enough: a join code must
+ *              be presented too. This is the only one of the three that is an
+ *              access control, which is why the other two are not called
+ *              private -- somebody would eventually build on that promise.
  */
-export type ChannelVisibility = 'public' | 'unlisted';
+export type ChannelVisibility = 'public' | 'unlisted' | 'private';
 
 /** What a listener is given when choosing where to listen. */
 export interface ChannelSummary {

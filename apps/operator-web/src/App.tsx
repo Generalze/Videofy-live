@@ -11,6 +11,13 @@ import type {
 } from '@videofy-live/shared-types';
 import { SOCKET_EVENTS, WebRtcSignallingClient } from '@videofy-live/shared-types';
 import styles from './App.module.css';
+import { ChannelSettingsPanel } from './ChannelSettingsPanel';
+import {
+  browserRandomBytes,
+  generateJoinCode,
+  toSettingsPayload,
+  type ChannelSettingsDraft,
+} from './channelSettings';
 import { BroadcasterCapturePanel } from './BroadcasterCapturePanel';
 import { BroadcasterSignallingPanel } from './BroadcasterSignallingPanel';
 import { BroadcasterWebRtcTransportPanel } from './BroadcasterWebRtcTransportPanel';
@@ -67,6 +74,12 @@ import {
 
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
 const INGEST_URL = import.meta.env['VITE_INGEST_URL'] ?? 'http://localhost:3002';
+/*
+ * Where the VIEWER app is served, which is not where this console is served.
+ * Defaulting to the current origin would hand out links into the operator
+ * console -- the one place an audience must never be sent.
+ */
+const VIEWER_ORIGIN = import.meta.env['VITE_VIEWER_ORIGIN'] ?? 'http://localhost:5173';
 const PROGRAMME_MEDIA_READY_TIMEOUT_MS = 20_000;
 
 const SOURCE_LANGUAGE_OPTIONS = [
@@ -166,6 +179,25 @@ function mapMicrophoneStatus(capture: MicrophoneCaptureMetadata): BrowserMicroph
 }
 
 export default function App(): React.ReactElement {
+  /*
+   * THIS OPERATOR'S CHANNEL. `ownChannelId` is what the gateway derived for
+   * this account and never changes; `activeChannelId` is where their programme
+   * is actually going, which stays on the shared default channel until they
+   * choose to move.
+   */
+  const [ownChannelId, setOwnChannelId] = useState<string | null>(null);
+  const [activeChannelId, setActiveChannelId] = useState<string>('main');
+  const [channelHasCode, setChannelHasCode] = useState(false);
+  /*
+   * The code this session generated, kept only in memory. The gateway reports
+   * that a code EXISTS and never what it is, so after a reload this is null and
+   * the console says plainly that it can no longer build a link carrying it.
+   */
+  const [channelCodeInHand, setChannelCodeInHand] = useState<string | null>(null);
+  const [channelDraft, setChannelDraft] = useState<ChannelSettingsDraft>({
+    displayName: '',
+    visibility: 'public',
+  });
   const socketRef = useRef<Socket | null>(null);
   const broadcasterSocketRef = useRef<Socket | null>(null);
   const [connected, setConnected] = useState(false);
@@ -287,6 +319,16 @@ export default function App(): React.ReactElement {
     if (socketRef.current) return;
     const socket = io(GATEWAY_URL, createOperatorSocketOptions());
     socketRef.current = socket;
+
+    socket.on(SOCKET_EVENTS.CHANNEL_ASSIGNED, (assignment: {
+      channelId: string;
+      active: string;
+      hasCode?: boolean;
+    }) => {
+      setOwnChannelId(assignment.channelId);
+      setActiveChannelId(assignment.active);
+      if (assignment.hasCode !== undefined) setChannelHasCode(assignment.hasCode);
+    });
 
     socket.on(SOCKET_EVENTS.CONNECTED, () => {
       setConnected(true);
@@ -1044,9 +1086,47 @@ export default function App(): React.ReactElement {
     [sessionTargetLanguage, targetLanguages],
   );
 
+  const handleMoveToOwnChannel = (): void => {
+    socketRef.current?.emit(SOCKET_EVENTS.JOIN_CHANNEL, { channelId: 'own' });
+  };
+
+  const handleGenerateChannelCode = (): void => {
+    const code = generateJoinCode(browserRandomBytes);
+    setChannelCodeInHand(code);
+    setChannelDraft((current) => ({ ...current, code }));
+  };
+
+  const handleSaveChannelSettings = (): void => {
+    socketRef.current?.emit(
+      SOCKET_EVENTS.OPERATOR_CHANNEL_SETTINGS,
+      toSettingsPayload(channelDraft),
+    );
+    /*
+     * The draft stops carrying the code once it is sent. An unchanged draft
+     * must not resend a live join code every time the operator renames the
+     * channel -- what is in hand for building a link is tracked separately.
+     */
+    setChannelDraft((current) => {
+      const { code: _sent, ...rest } = current;
+      return rest;
+    });
+  };
+
   return (
     <div className={styles.root}>
       <aside className={styles.sidebar}>
+        <ChannelSettingsPanel
+          ownChannelId={ownChannelId}
+          activeChannelId={activeChannelId}
+          draft={channelDraft}
+          hasExistingCode={channelHasCode}
+          codeInHand={channelCodeInHand}
+          viewerOrigin={VIEWER_ORIGIN}
+          onDraftChange={setChannelDraft}
+          onGenerateCode={handleGenerateChannelCode}
+          onSave={handleSaveChannelSettings}
+          onMoveToOwnChannel={handleMoveToOwnChannel}
+        />
         <div className={styles.brand}>
           <span className={styles.brandIcon}>▶</span>
           <div>
