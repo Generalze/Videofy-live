@@ -19,7 +19,13 @@ import {
 } from '@videofy-live/account-tokens';
 import type { AccountRecord, AccountStore } from './account-store.js';
 import type { VerificationService } from './verification.js';
-import { resolveTrustState, type AccountTrust } from '@videofy-live/account-trust';
+import {
+  outstandingConsents,
+  resolveTrustState,
+  type AccountTrust,
+  type PolicyRequirement,
+} from '@videofy-live/account-trust';
+import type { PasswordResetService } from './password-reset.js';
 import {
   entitlementForPackage,
   grantedCapabilities,
@@ -42,6 +48,17 @@ export interface AccountRouteDependencies {
   readonly nowSeconds?: () => number;
   /** Absent in tests that only exercise sign-in; the routes then 404. */
   readonly verification?: VerificationService;
+  /** Absent until an email provider exists; the reset routes then 404. */
+  readonly passwordReset?: PasswordResetService;
+  /**
+   * Policy versions this deployment requires.
+   *
+   * EMPTY MEANS NOTHING IS REQUIRED, and that is the honest default: consent
+   * cannot be demanded until approved policy CONTENT exists to consent to.
+   * Configuring a version before the document is written would collect
+   * agreement to nothing, which is worse than collecting none.
+   */
+  readonly requiredPolicies?: readonly PolicyRequirement[];
 }
 
 interface Body {
@@ -422,6 +439,110 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
    * is allowed, because every protected action is authorized again at the point
    * it happens. Hiding a button is courtesy, not security.
    */
+  if (deps.passwordReset) {
+    const passwordReset = deps.passwordReset;
+
+    /*
+     * UNAUTHENTICATED, and deliberately incurious about who is asking.
+     *
+     * Always 202 with the same body. An unknown address, a throttled one and a
+     * real one are indistinguishable, because this endpoint is otherwise a
+     * "does this person have an account here" oracle that anybody may query as
+     * often as they like.
+     */
+    app.post('/accounts/password-reset', (req, res) => {
+      const email = (req.body as { email?: unknown } | undefined)?.email;
+      if (typeof email !== 'string' || email.length === 0 || email.length > 320) {
+        // Even a malformed address gets the same answer. Rejecting only the
+        // invalid ones tells a caller which strings are addresses we would
+        // look up, which is a smaller oracle but an oracle.
+        res.status(202).json({ status: 'accepted' });
+        return;
+      }
+      void passwordReset
+        .request(email)
+        .then(() => res.status(202).json({ status: 'accepted' }))
+        .catch(() => res.status(202).json({ status: 'accepted' }));
+    });
+
+    app.post('/accounts/password-reset/complete', (req, res) => {
+      const body = req.body as { email?: unknown; token?: unknown; password?: unknown } | undefined;
+      if (
+        typeof body?.email !== 'string' ||
+        typeof body.token !== 'string' ||
+        typeof body.password !== 'string' ||
+        body.token.length === 0 ||
+        body.token.length > 512
+      ) {
+        res.status(400).json({ error: 'That reset link is not valid or has expired.' });
+        return;
+      }
+      void passwordReset
+        .complete({ email: body.email, token: body.token, password: body.password })
+        .then((outcome) => {
+          if (outcome.ok) {
+            // No session is issued. Somebody who has just reset a password
+            // should sign in with it -- and if this was an attacker completing
+            // a reset, handing them a live session here would be the last step
+            // of the takeover.
+            res.status(200).json({ reset: true });
+            return;
+          }
+          if (outcome.reason === 'weak-password') {
+            res.status(400).json({ error: 'Choose a longer password.' });
+            return;
+          }
+          // ONE message for expired, wrong, already-used and unknown account.
+          res.status(400).json({ error: 'That reset link is not valid or has expired.' });
+        })
+        .catch(() => res.status(500).json({ error: 'The reset could not be completed.' }));
+    });
+  }
+
+  /** Record acceptance of a policy version. Authenticated: consent is personal. */
+  app.post('/accounts/consents', (req, res) => {
+    const caller = callerAccountId(req);
+    if (caller === null) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    const body = req.body as { policyType?: unknown; policyVersion?: unknown } | undefined;
+    const required = deps.requiredPolicies ?? [];
+    const match = required.find(
+      (requirement) =>
+        requirement.policyType === body?.policyType &&
+        requirement.requiredVersion === body?.policyVersion,
+    );
+    if (!match) {
+      /*
+       * Only a CURRENTLY REQUIRED version may be accepted. Without this the
+       * endpoint accepts any string as a policy version, and an account could
+       * hold a consent record for a document that was never published -- which
+       * looks exactly like valid evidence until somebody asks to see the
+       * document.
+       */
+      res.status(400).json({ error: 'That is not a policy version currently in force.' });
+      return;
+    }
+    void deps.store
+      .acceptPolicy(caller.accountId, match.policyType, match.requiredVersion)
+      .then((updated) => {
+        if (!updated) {
+          res.status(401).json({ error: 'Sign in to continue.' });
+          return;
+        }
+        res.status(200).json({
+          accepted: { policyType: match.policyType, policyVersion: match.requiredVersion },
+          outstanding: outstandingConsents({
+            required: deps.requiredPolicies ?? [],
+            held: updated.consents ?? [],
+            accountId: caller.accountId,
+          }),
+        });
+      })
+      .catch(() => res.status(500).json({ error: 'That could not be recorded.' }));
+  });
+
   app.get('/me', (req, res) => {
     const caller = callerAccountId(req);
     if (caller === null) {
@@ -443,6 +564,16 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
     res.status(200).json({
       accountId: caller.accountId,
       email: account.email,
+      /*
+       * What this person still has to accept. Derived, never stored: publishing
+       * a new policy version re-opens consent by itself, with no migration and
+       * no backfill, because nothing was ever collapsed into a boolean.
+       */
+      outstandingConsents: outstandingConsents({
+        required: deps.requiredPolicies ?? [],
+        held: account.consents ?? [],
+        accountId: caller.accountId,
+      }),
       trust: {
         state: resolveTrustState(trust),
         email: trust.email,

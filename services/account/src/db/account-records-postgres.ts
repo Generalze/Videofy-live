@@ -49,6 +49,8 @@ interface AccountRow {
   phone_number: string | null;
   identity_case: unknown;
   seen_callback_events: unknown;
+  password_reset_challenge: unknown;
+  consents: unknown;
 }
 
 /**
@@ -82,6 +84,7 @@ function toRecord(row: AccountRow): AccountRecord {
   const phoneChallenge = optional(row.phone_challenge);
   const phoneNumber = optional(row.phone_number);
   const identityCase = optional(row.identity_case);
+  const passwordResetChallenge = optional(row.password_reset_challenge);
 
   return {
     accountId: row.account_id,
@@ -105,6 +108,19 @@ function toRecord(row: AccountRow): AccountRecord {
     ...(identityCase.present
       ? { identityCase: identityCase.value as NonNullable<AccountRecord['identityCase']> }
       : {}),
+    ...(passwordResetChallenge.present
+      ? {
+          passwordResetChallenge: passwordResetChallenge.value as NonNullable<
+            AccountRecord['passwordResetChallenge']
+          >,
+        }
+      : {}),
+    // Always a list, like seenCallbackEvents: "has accepted nothing" is an
+    // empty list rather than an absence, and outstanding consent is derived by
+    // comparing held against required.
+    consents: Array.isArray(row.consents)
+      ? (row.consents as NonNullable<AccountRecord['consents']>)
+      : [],
     // Always a list. "No events yet" is an empty list, not an absence, which is
     // why the column is NOT NULL with a default rather than nullable.
     seenCallbackEvents: Array.isArray(row.seen_callback_events)
@@ -130,8 +146,9 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
         `INSERT INTO accounts (
            account_id, email, password_hash, token_version, voice_gender,
            created_at, updated_at, trust, email_challenge, phone_challenge,
-           phone_number, identity_case, seen_callback_events
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+           phone_number, identity_case, seen_callback_events,
+           password_reset_challenge, consents
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
          ON CONFLICT (account_id) DO UPDATE SET
            email                = EXCLUDED.email,
            password_hash        = EXCLUDED.password_hash,
@@ -143,7 +160,9 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
            phone_challenge      = EXCLUDED.phone_challenge,
            phone_number         = EXCLUDED.phone_number,
            identity_case        = EXCLUDED.identity_case,
-           seen_callback_events = EXCLUDED.seen_callback_events`,
+           seen_callback_events = EXCLUDED.seen_callback_events,
+           password_reset_challenge = EXCLUDED.password_reset_challenge,
+           consents                 = EXCLUDED.consents`,
         [
           record.accountId,
           record.email,
@@ -160,6 +179,8 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
           record.phoneNumber ?? null,
           record.identityCase ?? null,
           JSON.stringify(record.seenCallbackEvents ?? []),
+          record.passwordResetChallenge ?? null,
+          JSON.stringify(record.consents ?? []),
         ],
       );
 }
@@ -175,7 +196,8 @@ export function createPostgresAccountRecords(pool: Pool): AccountRecordPort {
       const { rows } = await pool.query<AccountRow>(
         `SELECT account_id, email, password_hash, token_version, voice_gender,
                 created_at, updated_at, trust, email_challenge, phone_challenge,
-                phone_number, identity_case, seen_callback_events
+                phone_number, identity_case, seen_callback_events,
+                password_reset_challenge, consents
            FROM accounts
           ORDER BY created_at, account_id`,
       );

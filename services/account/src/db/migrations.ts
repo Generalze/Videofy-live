@@ -166,5 +166,33 @@ const ORGANIZATIONS: Migration = {
   `,
 };
 
+/**
+ * 003 -- password reset, and versioned policy consent.
+ *
+ * Both are columns on `accounts` rather than tables of their own. The reset
+ * challenge is at most ONE per account and dies within fifteen minutes; a table
+ * would buy a join and a cleanup job for a value that is nearly always null.
+ *
+ * Consent is a LIST and is kept as jsonb for now, with a caveat worth writing
+ * down: the moment somebody has to answer "who has accepted v2.1 of the privacy
+ * policy" across all accounts, this becomes a table. That is a real question a
+ * regulator asks, so this is a decision with an expiry date rather than a
+ * permanent one.
+ */
+const RESET_AND_CONSENT: Migration = {
+  name: '003_reset_and_consent',
+  sql: `
+    ALTER TABLE accounts
+      -- Hashed, expiring, single-use. Null for the overwhelming majority of
+      -- accounts at any moment, which is why it is not a table.
+      ADD COLUMN IF NOT EXISTS password_reset_challenge jsonb,
+      -- NOT NULL with a default: "has accepted nothing" is an empty list, not
+      -- an absence. The distinction matters because outstanding consent is
+      -- DERIVED by comparing held against required, and a null would have to be
+      -- special-cased at every comparison.
+      ADD COLUMN IF NOT EXISTS consents jsonb NOT NULL DEFAULT '[]'::jsonb;
+  `,
+};
+
 /** Applied in this order. Append only. */
-export const MIGRATIONS: readonly Migration[] = [ACCOUNTS, ORGANIZATIONS];
+export const MIGRATIONS: readonly Migration[] = [ACCOUNTS, ORGANIZATIONS, RESET_AND_CONSENT];

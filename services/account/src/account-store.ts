@@ -20,11 +20,14 @@ import { createAccountId, type AccountId } from '@videofy-live/participant-contr
 import {
   INITIAL_TRUST,
   readTrust,
+  recordConsent,
   resolveTrustState,
   type AccountTrust,
   type AccountTrustState,
   type ChallengeRecord,
+  type ConsentRecord,
   type IdentityCase,
+  type PolicyType,
 } from '@videofy-live/account-trust';
 import {
   describePasswordRejection,
@@ -95,6 +98,24 @@ export interface AccountRecord {
    * re-verifies; the age check refuses anything old enough to have fallen off.
    */
   readonly seenCallbackEvents?: readonly string[];
+  /**
+   * The outstanding password reset, if any.
+   *
+   * A SEPARATE FIELD from emailChallenge, deliberately. They are different
+   * grants with different lifetimes: one proves you can read an address, the
+   * other replaces the credential to an account. Sharing a field would let a
+   * verification token complete a reset, and the wrong-target check in
+   * verifyChallenge would not catch it because the target is the same address.
+   */
+  readonly passwordResetChallenge?: ChallengeRecord | null;
+  /**
+   * Policy acceptances, as versioned facts.
+   *
+   * Never a boolean. A stored `acceptedTerms: true` records that somebody once
+   * agreed to something and loses which document and when -- the only two
+   * details ever asked for afterwards.
+   */
+  readonly consents?: readonly ConsentRecord[];
 }
 
 export interface AccountRecordPort {
@@ -355,6 +376,89 @@ export class AccountStore {
     this.byId.set(accountId, updated);
     await this.persist(updated);
     return updated;
+  }
+
+  /** Find an account by its normalised address, or null. */
+  findByEmail(email: string): AccountRecord | null {
+    const accountId = this.byEmail.get(normaliseEmail(email));
+    return accountId ? (this.byId.get(accountId) ?? null) : null;
+  }
+
+  /** Persist or clear the outstanding password reset. */
+  async setPasswordResetChallenge(
+    accountId: string,
+    challenge: ChallengeRecord | null,
+  ): Promise<AccountRecord | null> {
+    return this.withMutationLock<AccountRecord | null>(accountId, async (current) => {
+      if (!current) return { record: null, result: null };
+      const updated: AccountRecord = {
+        ...current,
+        passwordResetChallenge: challenge,
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      return { record: updated, result: updated };
+    });
+  }
+
+  /**
+   * Replace the password and end every existing session, in ONE step.
+   *
+   * The three writes belong together and are done under the account lock
+   * against a fresh read. Somebody resetting a password is frequently somebody
+   * who believes they are compromised: setting the new hash while leaving the
+   * old sessions alive means the attacker keeps their access and can no longer
+   * be locked out, which inverts the whole point. Clearing the challenge in the
+   * same step is what makes the reset single-use even if the same link is
+   * opened twice.
+   */
+  async completePasswordReset(
+    accountId: string,
+    password: string,
+  ): Promise<AccountRecord | null> {
+    // Hashing is expensive and does not depend on current record state, so it
+    // happens outside the critical section -- the same shape as the rehash on
+    // sign-in.
+    const passwordHash = await hashPassword(password);
+    return this.withMutationLock<AccountRecord | null>(accountId, async (current) => {
+      if (!current) return { record: null, result: null };
+      const updated: AccountRecord = {
+        ...current,
+        passwordHash,
+        tokenVersion: current.tokenVersion + 1,
+        passwordResetChallenge: null,
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      return { record: updated, result: updated };
+    });
+  }
+
+  /** Record one policy acceptance, keeping every superseded version. */
+  async acceptPolicy(
+    accountId: string,
+    policyType: PolicyType,
+    policyVersion: string,
+  ): Promise<AccountRecord | null> {
+    return this.withMutationLock<AccountRecord | null>(accountId, async (current) => {
+      if (!current) return { record: null, result: null };
+      const held = recordConsent({
+        held: current.consents ?? [],
+        accountId,
+        policyType,
+        policyVersion,
+        nowMs: this.now(),
+      });
+      const updated: AccountRecord = {
+        ...current,
+        consents: held,
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      return { record: updated, result: updated };
+    });
+  }
+
+  /** What this account has accepted. Always a list. */
+  consentsOf(accountId: string): readonly ConsentRecord[] {
+    return this.byId.get(accountId)?.consents ?? [];
   }
 
   /** The derived overall state. There is no setter, because there is no field. */

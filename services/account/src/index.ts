@@ -27,6 +27,8 @@ import { CORRELATION_HEADER, correlationMiddleware } from './request-context.js'
 import { OrganizationStore } from './organization-store.js';
 import { registerOrganizationRoutes } from './organization-routes.js';
 import { VerificationService } from './verification.js';
+import { PasswordResetService } from './password-reset.js';
+import { rejectPassword } from './password.js';
 import {
   assertIdentityProviderAllowed,
   createEmailProvider,
@@ -34,6 +36,7 @@ import {
   createSyntheticIdentityProvider,
   describeProvider,
   readEnvironment,
+  type PolicyRequirement,
 } from '@videofy-live/account-trust';
 
 const port = Number(process.env['ACCOUNT_PORT'] ?? 3006);
@@ -207,10 +210,47 @@ console.log(
   JSON.stringify({ service: 'account', message: 'Organizations restored', ...restored }),
 );
 
+/*
+ * Required policy versions, from configuration.
+ *
+ * EMPTY BY DEFAULT and honestly so: consent cannot be demanded until approved
+ * policy CONTENT exists to consent to. Setting a version before the document is
+ * written would collect agreement to nothing, which is worse than collecting
+ * none -- it produces records that look like evidence and are not.
+ *
+ * Format: "terms-of-service:2026-01-15,privacy-policy:2026-01-15"
+ */
+const requiredPolicies = (process.env['C7_REQUIRED_POLICIES'] ?? '')
+  .split(',')
+  .map((entry) => entry.trim())
+  .filter((entry) => entry.length > 0)
+  .map((entry) => {
+    const [policyType, requiredVersion] = entry.split(':');
+    if (!policyType || !requiredVersion) {
+      // A malformed entry must not silently become "nothing required". Refusing
+      // at boot is the only moment somebody is looking.
+      throw new Error(
+        `C7_REQUIRED_POLICIES entry "${entry}" is not policyType:version. ` +
+          'A malformed entry would silently require nothing.',
+      );
+    }
+    return { policyType, requiredVersion } as PolicyRequirement;
+  });
+
 registerAccountRoutes(app, {
   store,
   secret,
   organizations,
+  passwordReset: new PasswordResetService({
+    store,
+    emailProvider,
+    rejectPassword,
+    onEvent: (event, detail) => {
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify({ service: 'account', message: event, ...detail }));
+    },
+  }),
+  requiredPolicies,
   verification: new VerificationService({
     store,
     emailProvider,
