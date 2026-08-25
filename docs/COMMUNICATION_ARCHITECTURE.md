@@ -341,31 +341,61 @@ Consequences that follow, and are correct rather than incidental:
 No new capability is added to the authority model until group messaging is
 actually built. Declaring one now would be another entry wired into nothing.
 
-### 4.5 Retention is optional, within limits
+### 4.5 Retention: a personal setting, never a company one
 
-The owner chooses the policy. What the choice cannot do is dissolve obligations
-that were never the individual's to waive.
+**Optional retention belongs to individual accounts. Organizations do not get
+it at all.**
 
-| Setting | Behaviour |
-|---|---|
-| **Keep** | Retained until deleted |
-| **Auto-delete after N days** | Rolling window, per conversation |
-| **Minimal** | Delivered and rendered, not retained beyond delivery |
+| Account | Retention | How data is removed |
+|---|---|---|
+| **Individual / private** | Chosen: keep, auto-delete after N days, or minimal | The policy removes it |
+| **Organization** | **Always retained.** No auto-delete, no minimal | Only by an explicit deletion act |
 
-Three rules bound it:
+**Why a company may not set a retention policy.** A policy is a standing
+instruction that destroys records quietly, on a schedule, with nobody deciding
+anything on the day it happens. On a business conversation that is
+indistinguishable from spoliation — and it is worse than useless as a defence,
+because "our system was configured to delete it" is an admission that the
+configuration was chosen. A deletion **act** is different in kind: somebody
+decides, on a date, and is accountable for it.
 
-1. **An organization owns the policy for its own conversations.** Otherwise a
-   departing member could destroy company records by flipping a personal switch,
-   and the organization would discover it during the dispute that needed them.
-2. **Retention never deletes what retention does not own**: audit events,
-   evidence already captured by an abuse report, and anything under legal hold.
-   An abuse report takes a SNAPSHOT at the moment it is filed, and that snapshot
-   outlives the conversation's retention policy — exactly as the call rolling
-   buffer does. Without this, "minimal" would be the setting every abuser picks.
-3. **Optional means the policy is chosen, not that the obligation vanishes.**
-   The lawful-basis and retention questions in the road map still have to be
-   answered before the schema is written; this section decides the product
-   behaviour, not the legal position.
+So for an organization, removal is an act, and it is bounded:
+
+- **Only the governing C7 account may perform it** — the organization Owner.
+  Not an administrator, not a billing administrator, not the member who happens
+  to be in the conversation. This is the same authority line the model already
+  draws: `organization.delete` is owner-only in the role table, and ownership is
+  protected by the last-owner rule and atomic transfer.
+- **It requires step-up**, like every other act that destroys or transfers
+  something durable. `organization.delete` is already in `StepUpOperation`.
+- **It is audited** — who, when, what scope — and that audit record is not
+  itself deletable.
+- **A member cannot remove company records.** Not by leaving, not by deleting
+  their own copy, not by any personal setting. Their retention choice governs
+  their own one-to-one conversations and nothing else.
+
+**Recommended, not yet decided**: give organization deletion a grace period
+before it is irreversible, in the shape `closure_pending` already uses for
+organizations. A destructive company-wide act performed at 2am by somebody with
+a compromised session should have a window in which it can be noticed and
+stopped.
+
+### 4.5.1 What retention and deletion never touch
+
+For both account kinds, and regardless of any setting or any act:
+
+- **Audit events.** The record that something happened outlives the thing.
+- **Evidence captured by an abuse report.** A report takes a SNAPSHOT at the
+  moment it is filed, and that snapshot survives the conversation's retention
+  policy and any later deletion — exactly as the call rolling buffer does.
+  Without this, "minimal" is the setting every abuser would pick, and deletion
+  would be the move every abuser would make on being reported.
+- **Anything under legal hold.**
+
+**Optional means the policy is chosen, not that the obligation vanishes.** The
+lawful-basis and retention-period questions in the road map still have to be
+answered before the schema is written; this section decides product behaviour,
+not the legal position.
 
 ### 4.6 Read receipts and last seen
 
@@ -438,8 +468,8 @@ Ordered by dependency, not by appeal.
 | 2 | **Personal call gating**: `personal` requires a mutual contact | Contacts |
 | 3 | **Conference controls**: link expiry, lobby, revocation, session-scoped identity, hideable roster | — |
 | 4 | **Presence and push**: ringing when the app is closed | Contacts |
-| 5 | **Messaging**: one-to-one conversations, text translation, originals, retention policy, receipts | Database, contacts |
-| 5b | **Organization groups**: conversations scoped to a company | Messaging, organizations |
+| 5 | **Messaging**: one-to-one conversations, text translation, originals, personal retention setting, reciprocal receipts | Database, contacts |
+| 5b | **Organization groups**: conversations scoped to a company, always retained, owner-only deletion | Messaging, organizations |
 | 6 | **Interface**: three-tab shape | 1–5 |
 
 Steps 1, 2 and 5 all sit behind the database. **Step 3 does not** — conference
@@ -459,13 +489,12 @@ All resolved by the owner on 2026-08-25.
 | 3 | Read receipts and last seen? | **Available, and reciprocal** (§4.6) |
 | 4 | Groups or one-to-one? | **One-to-one first. Groups are an organization capability** — verified to need no new authority concept (§4.4) |
 | 5 | Private or discoverable by default? | **Private by default** (§2.3) |
-| 6 | Retention? | **Optional, within three limits** (§4.5) |
+| 6 | Retention? | **Optional for individuals only.** Organizations always retain; removal is an owner-only, step-up, audited deletion ACT (§4.5) |
 
 ### What still needs an answer from outside this document
 
 - **Lawful basis and retention periods** — a legal question, and it gates the
   messaging schema rather than following it.
 - **Recording and transcript consent**, which varies by jurisdiction.
-- **Whether "minimal" retention is offered to organizations at all**, or only to
-  personal accounts. A company that cannot produce its own records has a
-  compliance problem the product should not hand it by default.
+- **Whether organization deletion gets a grace period** before it is
+  irreversible, in the shape `closure_pending` already uses (§4.5).
