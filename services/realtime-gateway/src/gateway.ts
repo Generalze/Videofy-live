@@ -17,6 +17,14 @@ import type {
   WebRtcIncomingSignallingEnvelope,
 } from '@videofy-live/shared-types';
 import {
+  DEFAULT_CHANNEL_ID,
+  ProgrammeChannels,
+  channelIdForAccount,
+  channelListenerRoom,
+  channelOperatorRoom,
+  channelRoom,
+} from './programme-channels.js';
+import {
   INGEST_ROOM,
   createShareableWebRtcSessionId,
   languageRoom,
@@ -93,6 +101,8 @@ interface ClientState {
   socketId: string;
   connectedAt: string;
   targetLanguage: string | undefined;
+  /** The channel this client is listening to. Defaults for clients that predate channels. */
+  channelId: string;
   signallingWindowStartedAt: number;
   signallingMessageCount: number;
 }
@@ -165,13 +175,41 @@ export class Gateway {
   private readonly operatorAccounts = new Map<string, string>();
   private readonly activeWorkers = new Set<string>();
   private readonly activeIngestClients = new Set<string>();
-  private latestProgrammeMediaState: MediaStateEvent | null = null;
-  private audioModePreferences: AudioMixPreferences = {
-    mode: 'interpretation',
-    originalVolume: 0.2,
-    translatedVolume: 1,
-    subtitlesEnabled: true,
-  };
+  /**
+   * One programme per channel.
+   *
+   * The gateway used to hold a single programme state, so a second operator
+   * overwrote the first mid-broadcast. State now lives here, keyed by channel.
+   */
+  private readonly channels = new ProgrammeChannels();
+  /** Which channel each operator socket is running, for routing and teardown. */
+  private readonly operatorChannels = new Map<string, string>();
+  /** The channel each operator MAY move to: derived from their account, theirs alone. */
+  private readonly operatorOwnChannels = new Map<string, string>();
+  private readonly channelSalt: string;
+
+  /*
+   * THE DEFAULT CHANNEL, UNDER THE OLD NAME.
+   *
+   * Every call site that predates channels reads and writes the default channel
+   * through this accessor, which is what lets channels land without rewriting
+   * them all in one change. Channel-aware paths address this.channels directly.
+   */
+  private get latestProgrammeMediaState(): MediaStateEvent | null {
+    return this.channels.mediaState(DEFAULT_CHANNEL_ID);
+  }
+
+  private set latestProgrammeMediaState(state: MediaStateEvent | null) {
+    this.channels.setMediaState(DEFAULT_CHANNEL_ID, state);
+  }
+  /** The default channel's audio preferences, under the old name. See latestProgrammeMediaState. */
+  private get audioModePreferences(): AudioMixPreferences {
+    return this.channels.audio(DEFAULT_CHANNEL_ID);
+  }
+
+  private set audioModePreferences(preferences: AudioMixPreferences) {
+    this.channels.setAudio(DEFAULT_CHANNEL_ID, preferences);
+  }
   private listenerCount = 0;
 
   // ---- P6.5 Connect control plane (FE3) --------------------------------
@@ -226,9 +264,19 @@ export class Gateway {
         authSecret?: string | undefined;
         requireEntitlement?: boolean;
         hasEntitlement?: (accountId: string) => boolean;
+        /**
+         * Per-deployment salt for deriving channel ids from account ids.
+         *
+         * Stable across restarts, or listener links to a channel stop
+         * resolving. Not a secret -- it stops an account id being recoverable
+         * from a channel id that appears in URLs, which is what DP-171 asks
+         * for -- so a fixed default is honest rather than a false assurance.
+         */
+        channelSalt?: string | undefined;
       };
     } = {},
   ) {
+    this.channelSalt = options.operator?.channelSalt ?? 'videofy-live-channel';
     this.operatorAuthority = createOperatorAuthority({
       secret: options.operator?.authSecret,
       ...(options.operator?.requireEntitlement === undefined
@@ -524,6 +572,7 @@ export class Gateway {
       socketId: socket.id,
       connectedAt: new Date().toISOString(),
       targetLanguage: undefined,
+      channelId: DEFAULT_CHANNEL_ID,
       signallingWindowStartedAt: Date.now(),
       signallingMessageCount: 0,
     };
@@ -563,6 +612,35 @@ export class Gateway {
         }
         void socket.join(OPERATOR_ROOM);
         this.operatorAccounts.set(socket.id, admission.accountId);
+        /*
+         * THE OPERATOR'S OWN CHANNEL. Derived from the account, so it is the
+         * same channel every time they connect and nothing has to be
+         * provisioned. Claiming is idempotent, which is what makes a
+         * reconnect mid-programme resume rather than collide.
+         *
+         * They stay in OPERATOR_ROOM as well: service status and other
+         * gateway-wide operator traffic is not per-programme, and removing
+         * them from it would silence those without meaning to.
+         */
+        const operatorChannelId = channelIdForAccount(admission.accountId, this.channelSalt);
+        this.operatorOwnChannels.set(socket.id, operatorChannelId);
+        /*
+         * OPT IN, DO NOT ASSUME. An operator publishes to the DEFAULT channel
+         * until they ask for their own.
+         *
+         * Moving them automatically would have been the obvious thing and is
+         * wrong: every listener client that predates channels is on the
+         * default channel, so an automatic move publishes each operator's
+         * programme somewhere none of their audience is listening. The
+         * personalised channel is a thing an operator chooses, and the choice
+         * is what makes it safe to ship before every client understands it.
+         */
+        this.operatorChannels.set(socket.id, DEFAULT_CHANNEL_ID);
+        void socket.join(channelOperatorRoom(DEFAULT_CHANNEL_ID));
+        socket.emit(SOCKET_EVENTS.CHANNEL_ASSIGNED, {
+          channelId: operatorChannelId,
+          active: DEFAULT_CHANNEL_ID,
+        });
         this.handleOperatorSocket(socket);
         // The accountId is logged; nothing identifying is. It is an opaque id,
         // and it is the thing an incident would need.
@@ -602,6 +680,13 @@ export class Gateway {
 
     socket.on('disconnect', () => {
       this.operatorAccounts.delete(socket.id);
+      /*
+       * The claim OUTLIVES the socket. An operator who drops mid-programme
+       * still owns their channel when they reconnect -- releasing it here
+       * would hand a live programme to whoever connected next.
+       */
+      this.operatorChannels.delete(socket.id);
+      this.operatorOwnChannels.delete(socket.id);
       this.handleDisconnect(socket);
     });
   }
@@ -619,7 +704,15 @@ export class Gateway {
 
   private handleListenerSocket(socket: Socket, state: ClientState): void {
     this.handleWebRtcSocket(socket, 'listener');
-    socket.emit(SOCKET_EVENTS.AUDIO_MODE_PREFERENCES, this.audioModePreferences);
+    /*
+     * Every listener sits in a channel room, including the ones that never ask
+     * for a channel. Programme traffic used to be a global broadcast, so with
+     * two programmes running each listener would receive both and show
+     * whichever arrived last.
+     */
+    void socket.join(channelListenerRoom(state.channelId));
+    socket.emit(SOCKET_EVENTS.CHANNEL_DIRECTORY, this.channels.directory());
+    socket.emit(SOCKET_EVENTS.AUDIO_MODE_PREFERENCES, this.channels.audio(state.channelId));
     if (
       this.latestProgrammeMediaState &&
       (!isTerminalMediaState(this.latestProgrammeMediaState.streamStatus) ||
@@ -631,6 +724,54 @@ export class Gateway {
       });
     }
 
+    /*
+     * CHOOSING A PROGRAMME, which before this was not a choice: there was one
+     * programme and every listener was on it.
+     *
+     * JOIN_LANGUAGE still works and means "this language on the default
+     * channel", so clients that predate channels keep working and can be
+     * migrated one at a time rather than all on the same deploy.
+     */
+    socket.on(SOCKET_EVENTS.JOIN_CHANNEL, (raw: unknown) => {
+      const request = this.parseChannelJoin(raw);
+      if (!request) {
+        socket.emit(SOCKET_EVENTS.ERROR, { message: 'Invalid channel' });
+        return;
+      }
+
+      if (state.channelId !== request.channelId) {
+        void socket.leave(channelListenerRoom(state.channelId));
+        if (state.targetLanguage) {
+          void socket.leave(channelRoom(state.channelId, state.targetLanguage));
+        }
+        state.channelId = request.channelId;
+        void socket.join(channelListenerRoom(request.channelId));
+      }
+
+      if (request.targetLanguage !== undefined) {
+        this.joinLanguage(socket, state, request.targetLanguage);
+      }
+
+      /*
+       * The new channel's programme, sent to this socket alone. A listener
+       * switching channels needs the state of the one they arrived at, and
+       * broadcasting it would tell every other listener about a programme
+       * they did not ask for.
+       */
+      const programme = this.channels.mediaState(request.channelId);
+      if (programme && this.isDeliverableProgramme(programme)) {
+        socket.emit(SOCKET_EVENTS.MEDIA_STATE, {
+          ...programme,
+          connectedListeners: this.listenerCount,
+        });
+      }
+      socket.emit(SOCKET_EVENTS.AUDIO_MODE_PREFERENCES, this.channels.audio(request.channelId));
+      logger.debug('Listener joined channel', {
+        socketId: socket.id,
+        channelId: request.channelId,
+      });
+    });
+
     socket.on(SOCKET_EVENTS.JOIN_LANGUAGE, (targetLanguage: unknown) => {
       if (
         targetLanguage !== ORIGINAL_LANGUAGE_CHANNEL &&
@@ -639,28 +780,88 @@ export class Gateway {
         socket.emit(SOCKET_EVENTS.ERROR, { message: 'Invalid targetLanguage' });
         return;
       }
-      if (state.targetLanguage) {
-        void socket.leave(languageRoom(state.targetLanguage));
-      }
-      state.targetLanguage = targetLanguage;
-      void socket.join(languageRoom(targetLanguage));
-      const activeSessionId = this.latestProgrammeMediaState?.processingSessionId;
-      if (activeSessionId) {
-        for (const event of this.generatedAudioStore.getSnapshot(activeSessionId, targetLanguage)) {
-          socket.emit(SOCKET_EVENTS.GENERATED_AUDIO_READY, event);
-        }
-      }
-      logger.debug('Listener joined language room', { socketId: socket.id, targetLanguage });
+      this.joinLanguage(socket, state, targetLanguage);
     });
 
     socket.on(SOCKET_EVENTS.LEAVE_LANGUAGE, (targetLanguage: unknown) => {
       if (typeof targetLanguage === 'string') {
         void socket.leave(languageRoom(targetLanguage));
+        void socket.leave(channelRoom(state.channelId, targetLanguage));
         if (state.targetLanguage === targetLanguage) {
           state.targetLanguage = undefined;
         }
       }
     });
+  }
+
+  /**
+   * Join a language, on whichever channel this listener is on.
+   *
+   * Shared by JOIN_LANGUAGE and JOIN_CHANNEL so the two cannot drift: a
+   * listener who switches channel and language in one message must end up in
+   * exactly the rooms a listener who sent two messages would.
+   *
+   * The listener joins BOTH the channel-scoped room and the bare language
+   * room. The bare room is what every existing publisher still emits to, so
+   * dropping it here would silence the default channel; channel-scoped
+   * publishing replaces it a call site at a time.
+   */
+  private joinLanguage(socket: Socket, state: ClientState, targetLanguage: string): void {
+    if (state.targetLanguage) {
+      void socket.leave(languageRoom(state.targetLanguage));
+      void socket.leave(channelRoom(state.channelId, state.targetLanguage));
+    }
+    state.targetLanguage = targetLanguage;
+    void socket.join(languageRoom(targetLanguage));
+    void socket.join(channelRoom(state.channelId, targetLanguage));
+
+    const activeSessionId = this.channels.mediaState(state.channelId)?.processingSessionId;
+    if (activeSessionId) {
+      for (const event of this.generatedAudioStore.getSnapshot(activeSessionId, targetLanguage)) {
+        socket.emit(SOCKET_EVENTS.GENERATED_AUDIO_READY, event);
+      }
+    }
+    logger.debug('Listener joined language room', {
+      socketId: socket.id,
+      targetLanguage,
+      channelId: state.channelId,
+    });
+  }
+
+  /**
+   * Whether a programme is worth sending to somebody who just arrived.
+   *
+   * A finished programme with a recording still is; a finished one with
+   * nothing to play is not.
+   */
+  private isDeliverableProgramme(state: MediaStateEvent): boolean {
+    return !isTerminalMediaState(state.streamStatus) || Boolean(state.programmeMediaUrl);
+  }
+
+  /** A channel join request, from a client that may have sent anything. */
+  private parseChannelJoin(raw: unknown): { channelId: string; targetLanguage?: string } | null {
+    if (raw === null || raw === undefined) return null;
+    const candidate =
+      typeof raw === 'string'
+        ? { channelId: raw }
+        : (raw as { channelId?: unknown; targetLanguage?: unknown });
+
+    const channelId = candidate.channelId;
+    /*
+     * Ids are matched against a strict shape rather than sanitised. A channel
+     * id becomes a room name, and a room name assembled from arbitrary client
+     * text is how one listener ends up in another programme's room.
+     */
+    if (typeof channelId !== 'string' || !/^[a-z0-9][a-z0-9-]{0,63}$/i.test(channelId)) {
+      return null;
+    }
+
+    const targetLanguage = (candidate as { targetLanguage?: unknown }).targetLanguage;
+    if (targetLanguage === undefined) return { channelId };
+    if (targetLanguage !== ORIGINAL_LANGUAGE_CHANNEL) {
+      if (typeof targetLanguage !== 'string' || targetLanguage.length < 2) return null;
+    }
+    return { channelId, targetLanguage: targetLanguage as string };
   }
 
   private handleWebRtcSocket(socket: Socket, role: 'broadcaster' | 'listener' | 'server'): void {
@@ -843,6 +1044,58 @@ export class Gateway {
   private handleOperatorSocket(socket: Socket): void {
     this.emitServiceSnapshot(socket);
 
+    /*
+     * MOVING TO A CHANNEL, which is how one deployment runs more than one
+     * programme at a time.
+     *
+     * Checked against ownership rather than trusted: the id arrives from a
+     * client, and without the check an authenticated operator could publish
+     * into a channel somebody else's audience is listening to.
+     */
+    socket.on(SOCKET_EVENTS.JOIN_CHANNEL, (raw: unknown) => {
+      const request = this.parseChannelJoin(raw);
+      const accountId = this.operatorAccounts.get(socket.id);
+      if (!request || accountId === undefined) {
+        socket.emit(SOCKET_EVENTS.ERROR, { message: 'Invalid channel' });
+        return;
+      }
+
+      const requested =
+        request.channelId === 'own'
+          ? (this.operatorOwnChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID)
+          : request.channelId;
+
+      if (!this.channels.mayOperate(requested, accountId)) {
+        logger.warn('Operator refused a channel they do not own', {
+          socketId: socket.id,
+          channelId: requested,
+        });
+        socket.emit(SOCKET_EVENTS.ERROR, { message: 'That channel belongs to another account.' });
+        return;
+      }
+
+      const previous = this.operatorChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID;
+      if (previous !== requested) {
+        void socket.leave(channelOperatorRoom(previous));
+        void socket.join(channelOperatorRoom(requested));
+      }
+      /*
+       * Claiming only on the move, not at connect. Claiming at connect would
+       * put an idle channel in the listener directory for every operator who
+       * ever signed in.
+       */
+      if (requested !== DEFAULT_CHANNEL_ID) {
+        this.channels.claim(requested, accountId);
+      }
+      this.operatorChannels.set(socket.id, requested);
+      socket.emit(SOCKET_EVENTS.CHANNEL_ASSIGNED, {
+        channelId: this.operatorOwnChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID,
+        active: requested,
+      });
+      this.broadcastChannelDirectory();
+      logger.info('Operator moved channel', { socketId: socket.id, channelId: requested });
+    });
+
     socket.on(SOCKET_EVENTS.OPERATOR_AUDIO_MODE_PREFERENCES, (raw: unknown) => {
       const preferences = this.parseAudioModePreferences(raw);
       if (!preferences) {
@@ -850,8 +1103,16 @@ export class Gateway {
         return;
       }
 
-      this.audioModePreferences = preferences;
-      this.io.to('listeners').emit(SOCKET_EVENTS.AUDIO_MODE_PREFERENCES, preferences);
+      /*
+       * Scoped to the operator's own channel. This used to be one global
+       * setting, so an operator changing audio mode changed it for every
+       * listener of every programme.
+       */
+      const channelId = this.operatorChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID;
+      this.channels.setAudio(channelId, preferences);
+      this.io
+        .to(channelListenerRoom(channelId))
+        .emit(SOCKET_EVENTS.AUDIO_MODE_PREFERENCES, preferences);
       logger.info('Operator audio mode preferences updated', {
         originalVolume: preferences.originalVolume,
         translatedVolume: preferences.translatedVolume,
@@ -861,6 +1122,27 @@ export class Gateway {
 
     socket.on(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, (raw: unknown) => {
       const config = this.parseProgrammeSessionConfig(raw);
+      /*
+       * A session already running on somebody else's channel is not this
+       * operator's to reconfigure. Without this an authenticated operator
+       * could still retarget a stranger's live programme by naming its
+       * session id -- which is most of the door the authentication gate was
+       * meant to close.
+       */
+      if (config) {
+        const ownChannel = this.operatorChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID;
+        const boundChannel = this.channels.channelForSession(config.sessionId);
+        if (boundChannel !== ownChannel && boundChannel !== DEFAULT_CHANNEL_ID) {
+          logger.warn('Operator refused a session on another channel', {
+            socketId: socket.id,
+            sessionId: config.sessionId,
+          });
+          socket.emit(SOCKET_EVENTS.ERROR, {
+            message: 'That programme belongs to another channel.',
+          });
+          return;
+        }
+      }
       if (!config) {
         socket.emit(SOCKET_EVENTS.ERROR, { message: 'Invalid programme session configuration' });
         return;
@@ -880,7 +1162,15 @@ export class Gateway {
         sourceLanguage: config.sourceLanguage,
         sourceLanguageMode: config.sourceLanguageMode,
       });
-      this.broadcastProgrammeSessionConfig(config);
+      /*
+       * BIND THE SESSION TO THE CHANNEL that configured it. Everything
+       * downstream -- media state, translated audio, teardown -- finds its
+       * channel by session id, because that is the only identifier the ingest
+       * and worker paths carry.
+       */
+      const channelId = this.operatorChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID;
+      this.channels.bindSession(config.sessionId, channelId);
+      this.broadcastProgrammeSessionConfig(config, channelId);
     });
 
     socket.on(SOCKET_EVENTS.OPERATOR_CONTROL, (raw: unknown) => {
@@ -999,14 +1289,25 @@ export class Gateway {
           : {}),
         connectedListeners: this.listenerCount,
       };
+      /*
+       * The channel is found by session id, which is the only identifier this
+       * path carries. An unbound session resolves to the default channel, so
+       * ingest that predates channels behaves exactly as it did.
+       */
+      const ingestChannelId = this.channels.channelForSession(
+        enriched.processingSessionId ?? programmeConfig?.sessionId ?? '',
+      );
       if (programmeConfig && !isTerminalMediaState(enriched.streamStatus)) {
-        this.latestProgrammeMediaState = enriched;
+        this.channels.setMediaState(ingestChannelId, enriched);
       }
       if (programmeConfig && isTerminalMediaState(enriched.streamStatus)) {
-        this.latestProgrammeMediaState = enriched.programmeMediaUrl ? enriched : null;
+        this.channels.setMediaState(
+          ingestChannelId,
+          enriched.programmeMediaUrl ? enriched : null,
+        );
       }
 
-      this.io.emit(SOCKET_EVENTS.MEDIA_STATE, enriched);
+      this.publishMediaState(ingestChannelId, enriched);
       this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
       logger.debug('Media state broadcast', { streamStatus: enriched.streamStatus });
     });
@@ -1082,6 +1383,7 @@ export class Gateway {
         selectLegacyProgrammeAudiences({ kind: 'timestamped-translation', event }),
         SOCKET_EVENTS.TIMESTAMPED_TRANSLATION_EVENT,
         event,
+        this.channels.channelForSession(event.sessionId),
       );
       logger.info('Timestamped translation event broadcast', {
         sessionId: event.sessionId,
@@ -1577,6 +1879,7 @@ export class Gateway {
         selectLegacyProgrammeAudiences({ kind: 'generated-audio-ready', event }),
         SOCKET_EVENTS.GENERATED_AUDIO_READY,
         event,
+        this.channels.channelForSession(event.sessionId),
       );
       logger.info('Generated audio ready event broadcast', {
         sessionId: event.sessionId,
@@ -1587,13 +1890,35 @@ export class Gateway {
     }
   }
 
+  /**
+   * @param channelId - The channel this event belongs to, when it can be known.
+   *
+   * OMITTED MEANS UNSCOPED, and that is a real limitation rather than a
+   * default. TimestampedTranslationEvent and GeneratedAudioReadyEvent carry a
+   * sessionId, so their channel is resolvable; TranslationEvent does not, and
+   * one of its two callers is an EventStore readiness callback with no session
+   * in scope at all.
+   *
+   * Those unscoped events go to the bare language room, which is what they did
+   * before channels existed: every listener of that language receives them,
+   * across channels. Routing them to the default channel instead would be
+   * worse than the leak -- listeners on any other channel would silently
+   * receive no captions. Closing this needs a sessionId on TranslationEvent,
+   * which is a shared-types change and a separate piece of work.
+   */
   private emitToLegacyProgrammeAudiences(
     audiences: readonly LegacyProgrammeAudience[],
     eventName: string,
     payload: unknown,
+    channelId?: string,
   ): void {
     for (const audience of audiences) {
-      const room = audience.kind === 'operator' ? OPERATOR_ROOM : languageRoom(audience.language);
+      const room =
+        audience.kind === 'operator'
+          ? OPERATOR_ROOM
+          : channelId === undefined
+            ? languageRoom(audience.language)
+            : channelRoom(channelId, audience.language);
       this.io.to(room).emit(eventName, payload);
     }
   }
@@ -1674,8 +1999,14 @@ export class Gateway {
     this.translatedAudioListeners.forEach((listener) => listener(payload));
     // Named from the FRAME, not from the session's first configured target:
     // one utterance produces a stream per language and they share a socket.
+    /*
+     * Scoped to the channel this session belongs to. A bare language room
+     * holds every listener of that language across every programme, so two
+     * programmes translating into French would have been mixed into one
+     * another's audio.
+     */
     this.io
-      .to(languageRoom(frame.targetLanguage))
+      .to(channelRoom(this.channels.channelForSession(context.sessionId), frame.targetLanguage))
       .emit(SOCKET_EVENTS.TRANSLATED_AUDIO_FRAME, payload);
   }
 
@@ -1708,12 +2039,15 @@ export class Gateway {
     };
   }
 
-  private broadcastProgrammeSessionConfig(config: OperatorProgrammeSessionConfig): void {
+  private broadcastProgrammeSessionConfig(
+    config: OperatorProgrammeSessionConfig,
+    channelId: string = DEFAULT_CHANNEL_ID,
+  ): void {
     const shareableWebRtcSessionId = createShareableWebRtcSessionId(
       config.broadcastId,
       config.sessionId,
     );
-    const retained = this.latestProgrammeMediaState;
+    const retained = this.channels.mediaState(channelId);
     const videoTimestampMs =
       retained && retained.processingSessionId === config.sessionId
         ? retained.videoTimestampMs
@@ -1731,8 +2065,36 @@ export class Gateway {
       connectedListeners: this.listenerCount,
       createdAt: new Date().toISOString(),
     };
-    this.latestProgrammeMediaState = state;
-    this.io.emit(SOCKET_EVENTS.MEDIA_STATE, state);
+    this.channels.setMediaState(channelId, state);
+    this.publishMediaState(channelId, state);
+  }
+
+  /**
+   * Send a programme's state to the people it concerns.
+   *
+   * This used to be `io.emit`, which reached every connected socket. With one
+   * programme that was merely wasteful; with two it is wrong, because each
+   * listener would receive both programmes and display whichever landed last.
+   *
+   * Operators keep receiving every programme's state: the console shows what
+   * is on air across the deployment, and OPERATOR_ROOM is already restricted
+   * to authenticated operators.
+   */
+  /**
+   * Tell listeners what is on air.
+   *
+   * Sent to listeners only. Operators have their own view of the deployment
+   * and do not choose a channel from this list.
+   */
+  private broadcastChannelDirectory(): void {
+    this.io.to('listeners').emit(SOCKET_EVENTS.CHANNEL_DIRECTORY, this.channels.directory());
+  }
+
+  private publishMediaState(channelId: string, state: MediaStateEvent): void {
+    this.io
+      .to(channelListenerRoom(channelId))
+      .to(OPERATOR_ROOM)
+      .emit(SOCKET_EVENTS.MEDIA_STATE, state);
   }
 
   private sourceMediaUrl(sessionId: string): string {

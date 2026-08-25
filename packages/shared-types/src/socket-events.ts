@@ -22,6 +22,19 @@ export const SOCKET_EVENTS = {
 
   // Client → server
   JOIN_LANGUAGE: 'join:language',
+  /**
+   * Join one channel in one language.
+   *
+   * Supersedes JOIN_LANGUAGE, which keeps working and is treated as "the
+   * default channel, in this language" -- so existing clients continue
+   * unchanged and can be migrated one at a time rather than all at once on the
+   * same deploy.
+   */
+  JOIN_CHANNEL: 'join:channel',
+  /** The gateway telling an operator which channel is theirs, and which they are on. */
+  CHANNEL_ASSIGNED: 'channel:assigned',
+  /** The channels currently broadcasting, for a listener to choose from. */
+  CHANNEL_DIRECTORY: 'channel:directory',
   LEAVE_LANGUAGE: 'leave:language',
 
   // Speech worker → gateway
@@ -87,6 +100,32 @@ export function languageRoom(targetLanguage: string): string {
 }
 
 /** Room for operator dashboard connections. */
+/**
+ * The channel every existing client is already on.
+ *
+ * Clients that predate channels send no channel and are treated as being here,
+ * which is what lets channels ship without a coordinated client release.
+ */
+export const DEFAULT_CHANNEL_ID = 'main';
+
+/**
+ * Whether a channel appears in the directory.
+ *
+ * NOT whether it is reachable. An unlisted channel is still joinable by anybody
+ * holding its id -- it is a doorbell without a sign, not a lock. Calling it
+ * "private" would promise something this does not deliver, and somebody would
+ * eventually build on that promise.
+ */
+export type ChannelVisibility = 'public' | 'unlisted';
+
+/** What a listener is given when choosing where to listen. */
+export interface ChannelSummary {
+  readonly channelId: string;
+  readonly displayName: string;
+  readonly live: boolean;
+  readonly visibility: ChannelVisibility;
+}
+
 export const OPERATOR_ROOM = 'operators';
 
 /** Room for media-ingest connections. */
