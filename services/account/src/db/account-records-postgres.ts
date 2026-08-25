@@ -51,6 +51,10 @@ interface AccountRow {
   seen_callback_events: unknown;
   password_reset_challenge: unknown;
   consents: unknown;
+  mfa: unknown;
+  /** bigint -> string, like the invitation timestamps. See that note. */
+  step_up_at_ms: string | null;
+  step_up_method: string | null;
 }
 
 /**
@@ -85,6 +89,9 @@ function toRecord(row: AccountRow): AccountRecord {
   const phoneNumber = optional(row.phone_number);
   const identityCase = optional(row.identity_case);
   const passwordResetChallenge = optional(row.password_reset_challenge);
+  const mfa = optional(row.mfa);
+  const stepUpAtMs = optional(row.step_up_at_ms);
+  const stepUpMethod = optional(row.step_up_method);
 
   return {
     accountId: row.account_id,
@@ -121,6 +128,12 @@ function toRecord(row: AccountRow): AccountRecord {
     consents: Array.isArray(row.consents)
       ? (row.consents as NonNullable<AccountRecord['consents']>)
       : [],
+    ...(mfa.present ? { mfa: mfa.value as NonNullable<AccountRecord['mfa']> } : {}),
+    // Converted deliberately: node-postgres returns bigint as a string, and
+    // comparing a string against nowMs is the coercion bug that only shows up
+    // on the boundaries nobody tests.
+    ...(stepUpAtMs.present ? { stepUpAtMs: Number(stepUpAtMs.value) } : {}),
+    ...(stepUpMethod.present ? { stepUpMethod: stepUpMethod.value } : {}),
     // Always a list. "No events yet" is an empty list, not an absence, which is
     // why the column is NOT NULL with a default rather than nullable.
     seenCallbackEvents: Array.isArray(row.seen_callback_events)
@@ -147,8 +160,8 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
            account_id, email, password_hash, token_version, voice_gender,
            created_at, updated_at, trust, email_challenge, phone_challenge,
            phone_number, identity_case, seen_callback_events,
-           password_reset_challenge, consents
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+           password_reset_challenge, consents, mfa, step_up_at_ms, step_up_method
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
          ON CONFLICT (account_id) DO UPDATE SET
            email                = EXCLUDED.email,
            password_hash        = EXCLUDED.password_hash,
@@ -162,7 +175,10 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
            identity_case        = EXCLUDED.identity_case,
            seen_callback_events = EXCLUDED.seen_callback_events,
            password_reset_challenge = EXCLUDED.password_reset_challenge,
-           consents                 = EXCLUDED.consents`,
+           consents                 = EXCLUDED.consents,
+           mfa                      = EXCLUDED.mfa,
+           step_up_at_ms            = EXCLUDED.step_up_at_ms,
+           step_up_method           = EXCLUDED.step_up_method`,
         [
           record.accountId,
           record.email,
@@ -181,6 +197,9 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
           JSON.stringify(record.seenCallbackEvents ?? []),
           record.passwordResetChallenge ?? null,
           JSON.stringify(record.consents ?? []),
+          record.mfa ?? null,
+          record.stepUpAtMs ?? null,
+          record.stepUpMethod ?? null,
         ],
       );
 }
@@ -197,7 +216,7 @@ export function createPostgresAccountRecords(pool: Pool): AccountRecordPort {
         `SELECT account_id, email, password_hash, token_version, voice_gender,
                 created_at, updated_at, trust, email_challenge, phone_challenge,
                 phone_number, identity_case, seen_callback_events,
-                password_reset_challenge, consents
+                password_reset_challenge, consents, mfa, step_up_at_ms, step_up_method
            FROM accounts
           ORDER BY created_at, account_id`,
       );

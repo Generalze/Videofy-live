@@ -194,5 +194,39 @@ const RESET_AND_CONSENT: Migration = {
   `,
 };
 
+/**
+ * 004 -- MFA enrolment and the step-up grant.
+ *
+ * The enrolment's `secret` field holds a SEALED ENVELOPE, not a secret: the
+ * TOTP secret is encrypted with AES-256-GCM before it reaches this column, so a
+ * stolen database yields no working second factors. The column is jsonb like
+ * the rest of the nested state, and its contents are opaque without the
+ * deployment keyring.
+ *
+ * THE STEP-UP GRANT IS A TIMESTAMP, NOT A TOKEN, and it lives server-side
+ * rather than in the session token. A claim inside a signed token cannot be
+ * revoked before it expires, so a step-up obtained a minute before an account
+ * was suspended would keep working; a row can be cleared the instant anything
+ * changes. It also avoids editing the token payload, which every other service
+ * verifies and would have to be redeployed to understand.
+ */
+const MFA_AND_STEP_UP: Migration = {
+  name: '004_mfa_and_step_up',
+  sql: `
+    ALTER TABLE accounts
+      ADD COLUMN IF NOT EXISTS mfa jsonb,
+      -- When a second factor was last satisfied, and by what. Null means never,
+      -- which is distinct from "long ago" -- one is an account that has never
+      -- stepped up, the other is a stale grant, and the refusals differ.
+      ADD COLUMN IF NOT EXISTS step_up_at_ms bigint,
+      ADD COLUMN IF NOT EXISTS step_up_method text;
+  `,
+};
+
 /** Applied in this order. Append only. */
-export const MIGRATIONS: readonly Migration[] = [ACCOUNTS, ORGANIZATIONS, RESET_AND_CONSENT];
+export const MIGRATIONS: readonly Migration[] = [
+  ACCOUNTS,
+  ORGANIZATIONS,
+  RESET_AND_CONSENT,
+  MFA_AND_STEP_UP,
+];

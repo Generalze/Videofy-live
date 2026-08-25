@@ -20,14 +20,18 @@ import {
 import type { AccountRecord, AccountStore } from './account-store.js';
 import type { VerificationService } from './verification.js';
 import {
+  STEP_UP_FRESHNESS_MS,
   abuseKey,
   outstandingConsents,
   resolveTrustState,
+  satisfiesStepUp,
   type AccountTrust,
   type PolicyRequirement,
+  type StepUpOperation,
 } from '@videofy-live/account-trust';
 import type { PasswordResetService } from './password-reset.js';
 import { clientIpOf } from './client-ip.js';
+import type { MfaService } from './mfa-service.js';
 import { recordSecurity } from './security-log.js';
 import { correlationIdOf } from './request-context.js';
 import type {
@@ -78,6 +82,8 @@ export interface AccountRouteDependencies {
   /** Salt for hashing addresses in security events. */
   readonly targetSalt?: string;
   readonly nowMs?: () => number;
+  /** Absent until a keyring is configured; the MFA routes then 404. */
+  readonly mfa?: MfaService;
 }
 
 interface Body {
@@ -667,6 +673,199 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       })
       .catch(() => res.status(500).json({ error: 'That could not be recorded.' }));
   });
+
+  if (deps.mfa) {
+    const mfa = deps.mfa;
+
+    /**
+     * Demand a fresh second factor.
+     *
+     * satisfiesStepUp decides, not this file: it knows that MFA must be ACTIVE,
+     * that evidence must exist, and how old is too old. Duplicating any of that
+     * here would be a second opinion that eventually disagrees with the first.
+     */
+    const requireStepUp = (
+      res: express.Response,
+      caller: Caller,
+      operation: StepUpOperation,
+    ): boolean => {
+      const decision = satisfiesStepUp({
+        operation,
+        mfaState: mfa.stateOf(caller.accountId),
+        evidence: deps.store.stepUpEvidenceOf(caller.accountId),
+        nowMs: nowMs(),
+      });
+      if (decision.ok) return false;
+
+      if (deps.security) {
+        recordSecurity(deps.security, {
+          kind: 'stepUp.required',
+          correlationId: correlationIdOf(res),
+          atMs: nowMs(),
+          accountId: caller.accountId,
+          reasonCode: decision.reason,
+        });
+      }
+      // 403 rather than 401: they ARE authenticated. A 401 sends a client to
+      // the sign-in screen, which fixes nothing and loses whatever they were
+      // part-way through doing.
+      res
+        .status(403)
+        .json({ error: 'Confirm your second factor to continue.', reason: decision.reason });
+      return true;
+    };
+
+    /** Begin enrolment. Returns the secret ONCE, inside the otpauth URI. */
+    app.post('/accounts/mfa', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      void mfa
+        .begin(caller.accountId, caller.record.email)
+        .then((outcome) => {
+          if (!outcome.ok) {
+            res.status(409).json({ error: 'A second factor is already set up.' });
+            return;
+          }
+          /*
+           * The ONLY response that ever carries the secret or the recovery
+           * codes. Nothing re-reads them: losing them means disabling the
+           * factor and enrolling again, which is a deliberate act requiring
+           * step-up -- rather than an endpoint that hands a bearer credential
+           * to anybody holding a session.
+           */
+          res
+            .status(201)
+            .json({ otpauthUri: outcome.otpauthUri, recoveryCodes: outcome.recoveryCodes });
+        })
+        .catch(() => res.status(500).json({ error: 'Enrolment could not be started.' }));
+    });
+
+    /** Confirm enrolment with a live code, proving the authenticator holds it. */
+    app.post('/accounts/mfa/confirm', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const code = (req.body as { code?: unknown } | undefined)?.code;
+      if (typeof code !== 'string' || code.length === 0 || code.length > 16) {
+        res.status(400).json({ error: 'That code is not valid.' });
+        return;
+      }
+      void mfa
+        .confirm(caller.accountId, code)
+        .then((outcome) => {
+          if (!outcome.ok) {
+            res.status(400).json({ error: 'That code is not valid.' });
+            return;
+          }
+          if (deps.security) {
+            recordSecurity(deps.security, {
+              kind: 'mfa.enrolled',
+              correlationId: correlationIdOf(res),
+              atMs: nowMs(),
+              accountId: caller.accountId,
+            });
+          }
+          res.status(200).json({ enrolled: true });
+        })
+        .catch(() => res.status(500).json({ error: 'Enrolment could not be confirmed.' }));
+    });
+
+    /**
+     * Satisfy a step-up.
+     *
+     * Accepts a TOTP code OR a recovery code, because somebody who has lost
+     * their authenticator still has to reach the operation that turns it off.
+     * Without that, a lost phone is a permanently unusable account and the
+     * support process that grows in its place is a far weaker second factor
+     * than the one it replaced.
+     */
+    app.post('/accounts/step-up', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      // Reuses the OTP-verify surface deliberately: this is a guess at a
+      // six-digit secret, and its cap is what makes six digits acceptable at
+      // all. That surface is never challengeable.
+      if (refusedForAbuse(req, res, 'verification.phoneVerify', { account: caller.accountId })) {
+        return;
+      }
+      const body = req.body as { code?: unknown; recoveryCode?: unknown } | undefined;
+
+      const grant = async (): Promise<'totp' | 'recovery-code' | null> => {
+        if (typeof body?.code === 'string' && mfa.verify(caller.accountId, body.code)) {
+          return 'totp';
+        }
+        if (
+          typeof body?.recoveryCode === 'string' &&
+          (await mfa.consumeRecovery(caller.accountId, body.recoveryCode))
+        ) {
+          return 'recovery-code';
+        }
+        return null;
+      };
+
+      void grant()
+        .then(async (method) => {
+          if (method === null) {
+            if (deps.security) {
+              recordSecurity(deps.security, {
+                kind: 'mfa.challengeFailed',
+                correlationId: correlationIdOf(res),
+                atMs: nowMs(),
+                accountId: caller.accountId,
+              });
+            }
+            res.status(400).json({ error: 'That code is not valid.' });
+            return;
+          }
+          await deps.store.grantStepUp(caller.accountId, method);
+          if (deps.security) {
+            recordSecurity(deps.security, {
+              kind: 'stepUp.satisfied',
+              correlationId: correlationIdOf(res),
+              atMs: nowMs(),
+              accountId: caller.accountId,
+            });
+          }
+          // No token comes back. The grant lives server-side precisely so it
+          // can be revoked the instant anything changes; handing out a bearer
+          // value would undo exactly that.
+          res.status(200).json({ steppedUp: true, freshForMs: STEP_UP_FRESHNESS_MS });
+        })
+        .catch(() => res.status(500).json({ error: 'That could not be confirmed.' }));
+    });
+
+    /** Turn the factor off. Requires a fresh step-up, which it declares itself. */
+    app.delete('/accounts/mfa', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      if (requireStepUp(res, caller, 'account.disableMfa')) return;
+      void mfa
+        .disable(caller.accountId)
+        .then(() => {
+          if (deps.security) {
+            recordSecurity(deps.security, {
+              kind: 'mfa.disabled',
+              correlationId: correlationIdOf(res),
+              atMs: nowMs(),
+              accountId: caller.accountId,
+            });
+          }
+          res.status(200).json({ enrolled: false });
+        })
+        .catch(() => res.status(500).json({ error: 'That could not be changed.' }));
+    });
+  }
 
   app.get('/me', (req, res) => {
     const caller = callerAccountId(req);

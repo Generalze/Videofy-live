@@ -27,7 +27,9 @@ import {
   type ChallengeRecord,
   type ConsentRecord,
   type IdentityCase,
+  type MfaEnrolment,
   type PolicyType,
+  type StepUpEvidence,
 } from '@videofy-live/account-trust';
 import {
   describePasswordRejection,
@@ -116,6 +118,24 @@ export interface AccountRecord {
    * details ever asked for afterwards.
    */
   readonly consents?: readonly ConsentRecord[];
+  /**
+   * The second factor, with its secret SEALED.
+   *
+   * `mfa.secret` is an encrypted envelope, never the TOTP secret itself. That
+   * is what makes the comment in mfa.ts -- "the storage boundary encrypts it"
+   * -- true rather than aspirational.
+   */
+  readonly mfa?: MfaEnrolment | null;
+  /**
+   * When a second factor was last satisfied, and by what.
+   *
+   * Server-side rather than a token claim, so it can be cleared the instant
+   * anything changes. A claim inside a signed token survives until it expires,
+   * which means a step-up obtained a minute before an account was suspended
+   * would keep working.
+   */
+  readonly stepUpAtMs?: number | null;
+  readonly stepUpMethod?: string | null;
 }
 
 export interface AccountRecordPort {
@@ -454,6 +474,58 @@ export class AccountStore {
       };
       return { record: updated, result: updated };
     });
+  }
+
+  /** Store or clear the MFA enrolment. */
+  async setMfa(accountId: string, mfa: MfaEnrolment | null): Promise<AccountRecord | null> {
+    return this.withMutationLock<AccountRecord | null>(accountId, async (current) => {
+      if (!current) return { record: null, result: null };
+      const updated: AccountRecord = {
+        ...current,
+        mfa,
+        // Disabling the factor also clears any grant it produced. Otherwise
+        // somebody who stepped up and then removed MFA would keep a live
+        // step-up for its full freshness window with no second factor behind it.
+        ...(mfa === null ? { stepUpAtMs: null, stepUpMethod: null } : {}),
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      return { record: updated, result: updated };
+    });
+  }
+
+  /** Record that a second factor was just satisfied. */
+  async grantStepUp(
+    accountId: string,
+    method: 'totp' | 'recovery-code',
+  ): Promise<AccountRecord | null> {
+    return this.withMutationLock<AccountRecord | null>(accountId, async (current) => {
+      if (!current) return { record: null, result: null };
+      const updated: AccountRecord = {
+        ...current,
+        stepUpAtMs: this.now(),
+        stepUpMethod: method,
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      return { record: updated, result: updated };
+    });
+  }
+
+  /**
+   * The step-up evidence for this account, in the shape satisfiesStepUp wants.
+   *
+   * Freshness is decided by satisfiesStepUp, not here: one place decides how
+   * old is too old, and this only reports what is stored.
+   */
+  stepUpEvidenceOf(accountId: string): StepUpEvidence {
+    const record = this.byId.get(accountId);
+    const method = record?.stepUpMethod;
+    return {
+      verifiedAtMs: record?.stepUpAtMs ?? null,
+      method:
+        method === 'totp' || method === 'recovery-code' || method === 'password'
+          ? method
+          : null,
+    };
   }
 
   /** What this account has accepted. Always a list. */

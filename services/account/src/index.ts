@@ -29,6 +29,7 @@ import { registerOrganizationRoutes } from './organization-routes.js';
 import { VerificationService } from './verification.js';
 import { PasswordResetService } from './password-reset.js';
 import { createSecurityLog } from './security-log.js';
+import { MfaService, readMfaKeyring } from './mfa-service.js';
 import { rejectPassword } from './password.js';
 import {
   assertIdentityProviderAllowed,
@@ -36,6 +37,7 @@ import {
   createPhoneProvider,
   createSyntheticIdentityProvider,
   describeProvider,
+  RECOVERY_PEPPER_MIN_LENGTH,
   createMemoryAbuseLimiter,
   readEnvironment,
   type PolicyRequirement,
@@ -269,12 +271,48 @@ if (targetSalt !== undefined && targetSalt.trim().length < 16) {
 
 const security = createSecurityLog(targetSalt ? { targetSalt } : {});
 
+/*
+ * MFA, which exists only if a keyring and a recovery pepper are BOTH configured.
+ *
+ * Half-configured resolves to ABSENT rather than to a partly-working factor.
+ * Enrolling somebody against a keyring that cannot be rotated, or storing
+ * recovery hashes under a pepper that was never set, produces an account whose
+ * second factor is unusable in a way nobody discovers until they need it.
+ *
+ * Absent means the routes 404. That is honest -- the feature is not configured
+ * -- and it is safe, because nothing else depends on MFA existing.
+ */
+const mfaKeyring = readMfaKeyring(process.env['C7_MFA_KEYRING']);
+const recoveryPepper = process.env['C7_MFA_RECOVERY_PEPPER']?.trim();
+if (mfaKeyring && (!recoveryPepper || recoveryPepper.length < RECOVERY_PEPPER_MIN_LENGTH)) {
+  throw new Error(
+    `C7_MFA_KEYRING is set but C7_MFA_RECOVERY_PEPPER is missing or shorter than ` +
+      `${RECOVERY_PEPPER_MIN_LENGTH} characters. Recovery codes carry about 33 bits of ` +
+      'entropy: hashed without a real pepper, a stolen table is an offline brute force.',
+  );
+}
+const mfa =
+  mfaKeyring && recoveryPepper
+    ? new MfaService({ store, keyring: mfaKeyring, recoveryPepper })
+    : undefined;
+
+// eslint-disable-next-line no-console
+console.log(
+  JSON.stringify({
+    service: 'account',
+    message: 'Second factor',
+    configured: mfa !== undefined,
+    ...(mfaKeyring ? { keys: mfaKeyring.keyIds.length, currentKey: mfaKeyring.currentKeyId } : {}),
+  }),
+);
+
 registerAccountRoutes(app, {
   store,
   secret,
   organizations,
   abuse,
   security,
+  ...(mfa ? { mfa } : {}),
   ...(targetSalt ? { targetSalt } : {}),
   passwordReset: new PasswordResetService({
     store,
