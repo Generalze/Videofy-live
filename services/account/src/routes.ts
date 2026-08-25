@@ -17,9 +17,9 @@ import {
   SESSION_LIFETIME_SECONDS,
   verifySessionToken,
 } from '@videofy-live/account-tokens';
-import type { AccountStore } from './account-store.js';
+import type { AccountRecord, AccountStore } from './account-store.js';
 import type { VerificationService } from './verification.js';
-import { resolveTrustState } from '@videofy-live/account-trust';
+import { resolveTrustState, type AccountTrust } from '@videofy-live/account-trust';
 import {
   entitlementForPackage,
   grantedCapabilities,
@@ -71,12 +71,40 @@ function credentials(body: unknown): { email: string; password: string } | null 
  * deciding who is calling is two chances to disagree, and the disagreement
  * would be an authentication bypass.
  */
+/**
+ * Who is making this request, and what is already known about them.
+ *
+ * WHY AN OBJECT AND NOT AN ACCOUNT ID. The resolver has just verified a token
+ * and loaded the record to check its version, so every fact here is already in
+ * hand. Returning only the id threw that away and left each route to fetch the
+ * same record again — and, more importantly, left nowhere to put the things
+ * that are about to need somewhere: whether a second factor is enrolled, when
+ * it was last satisfied, and which policy versions this account has accepted.
+ *
+ * Widening it is deliberately done ONCE, before those features exist, because
+ * every route reads a caller and threading a new parameter through all of them
+ * per feature is how a codebase acquires four ways of asking the same question.
+ */
+export interface Caller {
+  readonly accountId: string;
+  /**
+   * The record, as loaded during verification.
+   *
+   * A snapshot, not a live handle: a route that mutates the account must go
+   * through the store and re-read, or it will write back a stale copy of every
+   * field it did not intend to touch.
+   */
+  readonly record: AccountRecord;
+  /** Trust components, normalised — never read `record.trust` directly. */
+  readonly trust: AccountTrust;
+}
+
 export function createCallerResolver(deps: {
   store: AccountStore;
   secret: Buffer;
   nowSeconds: () => number;
 }) {
-  return (req: express.Request): string | null => {
+  return (req: express.Request): Caller | null => {
     const token = bearerToken(req.header('authorization'));
     if (!token) return null;
     const verified = verifySessionToken({
@@ -86,8 +114,15 @@ export function createCallerResolver(deps: {
     });
     if (!verified.ok) return null;
     const account = deps.store.get(verified.claims.accountId);
+    // The version check is what makes "sign out everywhere" and a password
+    // reset actually end existing sessions, rather than merely issuing a new
+    // token alongside the ones an attacker already holds.
     if (!account || account.tokenVersion !== verified.claims.version) return null;
-    return account.accountId;
+    return {
+      accountId: account.accountId,
+      record: account,
+      trust: deps.store.trustOf(account.accountId),
+    };
   };
 }
 
@@ -222,22 +257,22 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
 
     /** Where the registered shell learns what still needs doing. */
     app.get('/verification', (req, res) => {
-      const accountId = callerAccountId(req);
-      if (accountId === null) {
+      const caller = callerAccountId(req);
+      if (caller === null) {
         res.status(401).json({ error: 'Sign in to continue.' });
         return;
       }
-      res.status(200).json(verification.status(accountId));
+      res.status(200).json(verification.status(caller.accountId));
     });
 
     app.post('/verification/email', (req, res) => {
-      const accountId = callerAccountId(req);
-      if (accountId === null) {
+      const caller = callerAccountId(req);
+      if (caller === null) {
         res.status(401).json({ error: 'Sign in to continue.' });
         return;
       }
       void verification
-        .requestEmailVerification(accountId)
+        .requestEmailVerification(caller.accountId)
         .then((outcome) => {
           if (outcome.ok) {
             // Deliberately no token in the response. Returning one would turn
@@ -262,8 +297,8 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
     });
 
     app.post('/verification/email/confirm', (req, res) => {
-      const accountId = callerAccountId(req);
-      if (accountId === null) {
+      const caller = callerAccountId(req);
+      if (caller === null) {
         res.status(401).json({ error: 'Sign in to continue.' });
         return;
       }
@@ -273,7 +308,7 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
         return;
       }
       void verification
-        .confirmEmail(accountId, token)
+        .confirmEmail(caller.accountId, token)
         .then((outcome) => {
           if (outcome.ok) {
             res.status(200).json({ verified: true, state: outcome.state });
@@ -288,8 +323,8 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
     });
 
     app.post('/verification/phone', (req, res) => {
-      const accountId = callerAccountId(req);
-      if (accountId === null) {
+      const caller = callerAccountId(req);
+      if (caller === null) {
         res.status(401).json({ error: 'Sign in to continue.' });
         return;
       }
@@ -299,7 +334,7 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
         return;
       }
       void verification
-        .requestPhoneVerification(accountId, phone)
+        .requestPhoneVerification(caller.accountId, phone)
         .then((outcome) => {
           if (outcome.ok) {
             res.status(202).json({ sent: true, expiresAtMs: outcome.expiresAtMs });
@@ -325,13 +360,13 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
     });
 
     app.post('/verification/identity', (req, res) => {
-      const accountId = callerAccountId(req);
-      if (accountId === null) {
+      const caller = callerAccountId(req);
+      if (caller === null) {
         res.status(401).json({ error: 'Sign in to continue.' });
         return;
       }
       void verification
-        .startIdentityVerification(accountId)
+        .startIdentityVerification(caller.accountId)
         .then((outcome) => {
           if (outcome.ok) {
             // A redirect to the provider's hosted flow. C7 never sees the
@@ -356,8 +391,8 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
     });
 
     app.post('/verification/phone/confirm', (req, res) => {
-      const accountId = callerAccountId(req);
-      if (accountId === null) {
+      const caller = callerAccountId(req);
+      if (caller === null) {
         res.status(401).json({ error: 'Sign in to continue.' });
         return;
       }
@@ -367,7 +402,7 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
         return;
       }
       void verification
-        .confirmPhone(accountId, code)
+        .confirmPhone(caller.accountId, code)
         .then((outcome) => {
           if (outcome.ok) {
             res.status(200).json({ verified: true, state: outcome.state });
@@ -388,26 +423,25 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
    * it happens. Hiding a button is courtesy, not security.
    */
   app.get('/me', (req, res) => {
-    const accountId = callerAccountId(req);
-    if (accountId === null) {
+    const caller = callerAccountId(req);
+    if (caller === null) {
       res.status(401).json({ error: 'Sign in to continue.' });
       return;
     }
-    const account = deps.store.get(accountId);
-    if (!account) {
-      res.status(401).json({ error: 'Sign in to continue.' });
-      return;
-    }
-    const trust = deps.store.trustOf(accountId);
+    // Both already in hand from the resolver, which loaded the record to check
+    // its token version. Fetching them again was the duplication that widening
+    // the caller exists to remove.
+    const account = caller.record;
+    const trust = caller.trust;
     const capabilities = [
-      ...grantedCapabilities({ accountId, trust, workspaceKind: 'personal' }),
+      ...grantedCapabilities({ accountId: caller.accountId, trust, workspaceKind: 'personal' }),
     ];
     const personalEntitlement = entitlementForPackage({
-      workspaceId: personalWorkspaceId(accountId),
+      workspaceId: personalWorkspaceId(caller.accountId),
       packageId: 'personal',
     });
     res.status(200).json({
-      accountId,
+      accountId: caller.accountId,
       email: account.email,
       trust: {
         state: resolveTrustState(trust),
@@ -419,7 +453,7 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       },
       workspaces: [
         {
-          workspaceId: personalWorkspaceId(accountId),
+          workspaceId: personalWorkspaceId(caller.accountId),
           kind: 'personal',
           displayName: 'Personal',
           // A personal workspace gets calls. Conferences and programmes belong
@@ -434,7 +468,7 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
         // ONLY organizations the server confirms membership in. A switcher
         // populated from anything else is a way to ask for access you do not
         // have, and be shown the option.
-        ...(deps.organizations?.organizationsFor(accountId) ?? []).map((organization) => ({
+        ...(deps.organizations?.organizationsFor(caller.accountId) ?? []).map((organization) => ({
           workspaceId: organizationWorkspaceId(organization.organizationId),
           kind: 'organization' as const,
           displayName: organization.displayName,

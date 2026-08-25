@@ -21,13 +21,18 @@
 import type express from 'express';
 import { authorize, type Capability } from '@videofy-live/workspace-authority';
 import type { AccountStore } from './account-store.js';
+import type { Caller } from './routes.js';
 import type { OrganizationStore } from './organization-store.js';
 
 export interface OrganizationRouteDependencies {
   readonly store: AccountStore;
   readonly organizations: OrganizationStore;
-  /** Resolves the caller from the request, or null. Shared with the account routes. */
-  readonly callerAccountId: (req: express.Request) => string | null;
+  /**
+   * Resolves the caller from the request, or null. Shared with the account
+   * routes, so both surfaces answer "who is this" the same way and neither can
+   * drift into trusting something the other would refuse.
+   */
+  readonly callerAccountId: (req: express.Request) => Caller | null;
   readonly onEvent?: (event: string, detail: Record<string, string | number>) => void;
 }
 
@@ -54,8 +59,9 @@ export function registerOrganizationRoutes(
    * failure path and cannot accidentally continue on a partial result.
    */
   const contextFor = (req: express.Request, organizationId: string) => {
-    const accountId = deps.callerAccountId(req);
-    if (accountId === null) return null;
+    const caller = deps.callerAccountId(req);
+    if (caller === null) return null;
+    const accountId = caller.accountId;
     const organization = deps.organizations.get(organizationId);
     if (!organization) return null;
     return {
@@ -90,13 +96,13 @@ export function registerOrganizationRoutes(
 
   /** Create an organization. Requires a fully verified individual. */
   app.post('/organizations', (req, res) => {
-    const accountId = deps.callerAccountId(req);
-    if (accountId === null) {
+    const caller = deps.callerAccountId(req);
+    if (caller === null) {
       res.status(401).json({ error: 'Sign in to continue.' });
       return;
     }
     const decision = authorize(
-      { accountId, trust: deps.store.trustOf(accountId), workspaceKind: 'personal' },
+      { accountId: caller.accountId, trust: caller.trust, workspaceKind: 'personal' },
       'organization.create',
     );
     if (!decision.ok) {
@@ -129,7 +135,7 @@ export function registerOrganizationRoutes(
       displayName,
       packageId,
       contractedSeats,
-      createdByAccountId: accountId,
+      createdByAccountId: caller.accountId,
     });
     deps.onEvent?.('organization.created', { packageId });
     res.status(201).json({
@@ -145,13 +151,13 @@ export function registerOrganizationRoutes(
 
   /** The organizations this account is actually a member of. */
   app.get('/organizations', (req, res) => {
-    const accountId = deps.callerAccountId(req);
-    if (accountId === null) {
+    const caller = deps.callerAccountId(req);
+    if (caller === null) {
       res.status(401).json({ error: 'Sign in to continue.' });
       return;
     }
     // Built from memberships, never from a list the client asked for.
-    res.status(200).json({ organizations: deps.organizations.organizationsFor(accountId) });
+    res.status(200).json({ organizations: deps.organizations.organizationsFor(caller.accountId) });
   });
 
   app.get('/organizations/:organizationId', (req, res) => {
