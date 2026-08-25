@@ -18,6 +18,10 @@ import { createFileAccountRecords } from './account-records.js';
 import { assertDatabaseReachable, createDatabasePool, requireDatabaseUrl } from './db/pool.js';
 import { migrate } from './db/migrate.js';
 import { createPostgresAccountRecords } from './db/account-records-postgres.js';
+import {
+  createEphemeralOrganizationRecords,
+  createPostgresOrganizationRecords,
+} from './db/organization-records-postgres.js';
 import { createCallerResolver, registerAccountRoutes } from './routes.js';
 import { CORRELATION_HEADER, correlationMiddleware } from './request-context.js';
 import { OrganizationStore } from './organization-store.js';
@@ -185,7 +189,23 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: 'account', timestamp: new Date().toISOString() });
 });
 
-const organizations = new OrganizationStore();
+/*
+ * Organizations get the same store as accounts, or the same ephemeral default.
+ *
+ * Until this line existed, organizations had NO persistence whatsoever -- three
+ * in-memory Maps, destroyed by every restart and every deploy.
+ */
+const organizations = new OrganizationStore(
+  () => Date.now(),
+  databasePool
+    ? createPostgresOrganizationRecords(databasePool)
+    : createEphemeralOrganizationRecords(),
+);
+const restored = await organizations.hydrate();
+// eslint-disable-next-line no-console
+console.log(
+  JSON.stringify({ service: 'account', message: 'Organizations restored', ...restored }),
+);
 
 registerAccountRoutes(app, {
   store,

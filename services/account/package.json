@@ -11,7 +11,8 @@
     "start": "node dist/index.js",
     "test": "npm --prefix ../.. run build -w @videofy-live/workspace-authority && npm --prefix ../.. run build -w @videofy-live/account-trust && vitest run",
     "typecheck": "npm --prefix ../.. run build -w @videofy-live/workspace-authority && npm --prefix ../.. run build -w @videofy-live/account-trust && tsc --noEmit",
-    "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
+    "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "import-accounts": "tsx src/db/import-accounts.ts"
   },
   "dependencies": {
     "@videofy-live/account-tokens": "*",

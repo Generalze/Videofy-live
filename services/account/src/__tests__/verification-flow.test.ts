@@ -167,7 +167,7 @@ describe('phone verification', () => {
   });
 });
 
-describe('all three channels', () => {
+describe('all three channels', async () => {
   it('reaches `verified` only when identity completes too', async () => {
     const { store, verification, delivered, accountId, advance } = await harness();
 

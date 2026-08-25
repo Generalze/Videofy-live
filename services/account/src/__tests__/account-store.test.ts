@@ -58,7 +58,7 @@ describe('registration', () => {
   it('treats an email as the same address whatever the casing or spacing', async () => {
     // Otherwise two accounts exist for one person, and the second one silently
     // has no voice.
-    const accounts = store();
+    const accounts = await store();
     await accounts.register({ email: EMAIL, password: PASSWORD });
 
     const duplicate = await accounts.register({ email: '  ZOE@Example.COM ', password: PASSWORD });
@@ -99,7 +99,7 @@ describe('registration', () => {
 describe('sign-in does not reveal who has an account', () => {
   it('answers identically for an unknown email and a wrong password', async () => {
     // The property that stops this endpoint being a membership oracle.
-    const accounts = store();
+    const accounts = await store();
     await accounts.register({ email: EMAIL, password: PASSWORD });
 
     const unknown = await accounts.authenticate({
@@ -115,7 +115,7 @@ describe('sign-in does not reveal who has an account', () => {
   it('does the same work for an unknown email as for a known one', async () => {
     // Returning early on an unknown address would make it measurably faster,
     // which discloses exactly what the identical message hides.
-    const accounts = store();
+    const accounts = await store();
     await accounts.register({ email: EMAIL, password: PASSWORD });
 
     const startKnown = process.hrtime.bigint();
@@ -132,7 +132,7 @@ describe('sign-in does not reveal who has an account', () => {
   });
 
   it('accepts the right password', async () => {
-    const accounts = store();
+    const accounts = await store();
     const created = await accounts.register({ email: EMAIL, password: PASSWORD });
 
     const result = await accounts.authenticate({ email: '  Zoe@Example.com ', password: PASSWORD });
@@ -165,7 +165,7 @@ describe('brute force is slowed down', () => {
   });
 
   it('forgets failures once the right password arrives', async () => {
-    const accounts = store();
+    const accounts = await store();
     await accounts.register({ email: EMAIL, password: PASSWORD });
     for (let attempt = 0; attempt < 9; attempt += 1) {
       await accounts.authenticate({ email: EMAIL, password: 'wrong password here' });
@@ -183,7 +183,7 @@ describe('brute force is slowed down', () => {
 
 describe('sign out everywhere', () => {
   it('bumps the token generation, which is what invalidates issued tokens', async () => {
-    const accounts = store();
+    const accounts = await store();
     const created = await accounts.register({ email: EMAIL, password: PASSWORD });
     if (!created.ok) throw new Error('registration failed');
 
@@ -260,7 +260,7 @@ describe('password hashing', () => {
 });
 
 describe('normaliseEmail', () => {
-  it('is the single definition of "the same address"', () => {
+  it('is the single definition of "the same address"', async () => {
     expect(normaliseEmail('  ZOE@Example.COM ')).toBe(EMAIL);
   });
 });

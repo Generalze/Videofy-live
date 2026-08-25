@@ -434,7 +434,7 @@ describe('F — organization and seats', () => {
 
     const organizationId = String(created.body['organizationId']);
     // Staging-only KYB transition, server-side.
-    organizations.setState(organizationId, 'verified');
+    await organizations.setState(organizationId, 'verified');
 
     const overview = await api('GET', `/organizations/${organizationId}`, token);
     expect(overview.status).toBe(200);
@@ -475,7 +475,7 @@ describe('G — foreign organization', () => {
         })
       ).body['organizationId'],
     );
-    organizations.setState(orgB, 'verified');
+    await organizations.setState(orgB, 'verified');
 
     for (const [method, path, body] of [
       ['GET', `/organizations/${orgB}`, undefined],
@@ -497,7 +497,7 @@ describe('G — foreign organization', () => {
   });
 });
 
-describe('H — sign out', () => {
+describe('H — sign out', async () => {
   it('PIN: after sign-out everywhere, the session exposes nothing', async () => {
     const { token } = await fullyVerified('signout@example.com', '+2348000008888');
 

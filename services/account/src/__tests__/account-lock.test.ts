@@ -206,7 +206,7 @@ describe('account lock', () => {
     });
   });
 
-  describe('completion', () => {
+  describe('completion', async () => {
     it('the lock releases so a long sequence completes', async () => {
       const records = memoryRecords();
       const accounts = store(records);

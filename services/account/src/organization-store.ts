@@ -56,6 +56,11 @@ export type OrganizationFailure =
   | 'last-owner'
   | 'unknown-member';
 
+import {
+  createEphemeralOrganizationRecords,
+  type OrganizationRecordPort,
+} from './db/organization-records-postgres.js';
+
 export class OrganizationStore {
   private readonly organizations = new Map<string, Organization>();
   private readonly memberships = new Map<string, Map<string, OrganizationMembership>>();
@@ -70,7 +75,89 @@ export class OrganizationStore {
    */
   private readonly locks = new Map<string, Promise<unknown>>();
 
-  constructor(private readonly now: () => number = () => Date.now()) {}
+  /**
+   * Where this survives a restart.
+   *
+   * Defaults to ephemeral so every existing test constructs a store exactly as
+   * before. That default is also what production must never run: an
+   * organization that vanishes on deploy was the highest-severity item in this
+   * repository, and the composition root chooses the real port explicitly.
+   */
+  constructor(
+    private readonly now: () => number = () => Date.now(),
+    private readonly records: OrganizationRecordPort = createEphemeralOrganizationRecords(),
+  ) {}
+
+  /**
+   * Fill the in-memory index from the store, once, at boot.
+   *
+   * Memberships and invitations are grouped back under their organization as
+   * they load. The database holds them flat -- one row per membership -- and
+   * this is the only place that shape difference exists, which is where it
+   * belongs.
+   */
+  async hydrate(): Promise<{ organizations: number; memberships: number; invitations: number }> {
+    const loaded = await this.records.load();
+    for (const organization of loaded.organizations) {
+      this.organizations.set(organization.organizationId, organization);
+      if (!this.memberships.has(organization.organizationId)) {
+        this.memberships.set(organization.organizationId, new Map());
+      }
+      if (!this.invitations.has(organization.organizationId)) {
+        this.invitations.set(organization.organizationId, []);
+      }
+    }
+    for (const membership of loaded.memberships) {
+      const members = this.memberships.get(membership.organizationId) ?? new Map();
+      members.set(membership.accountId, membership);
+      this.memberships.set(membership.organizationId, members);
+    }
+    for (const invitation of loaded.invitations) {
+      this.invitations.set(invitation.organizationId, [
+        ...(this.invitations.get(invitation.organizationId) ?? []),
+        invitation,
+      ]);
+    }
+    return {
+      organizations: loaded.organizations.length,
+      memberships: loaded.memberships.length,
+      invitations: loaded.invitations.length,
+    };
+  }
+
+  /*
+   * The three write-through helpers.
+   *
+   * Every mutation goes through one of these rather than touching the Map and
+   * the port separately at fifteen call sites. One place to get wrong is worth
+   * more than fifteen places to remember.
+   */
+  private async putOrganization(organization: Organization): Promise<Organization> {
+    this.organizations.set(organization.organizationId, organization);
+    await this.records.upsertOrganization(organization);
+    return organization;
+  }
+
+  private async putMembership(membership: OrganizationMembership): Promise<void> {
+    const members = this.memberships.get(membership.organizationId) ?? new Map();
+    members.set(membership.accountId, membership);
+    this.memberships.set(membership.organizationId, members);
+    await this.records.upsertMembership(membership);
+  }
+
+  private async putInvitation(invitation: Invitation): Promise<void> {
+    const existing = this.invitationsOf(invitation.organizationId);
+    const known = existing.some((entry) => entry.invitationId === invitation.invitationId);
+    this.invitations.set(
+      invitation.organizationId,
+      known
+        ? existing.map((entry) =>
+            entry.invitationId === invitation.invitationId ? invitation : entry,
+          )
+        : [...existing, invitation],
+    );
+    await this.records.upsertInvitation(invitation);
+  }
 
   private withLock<T>(organizationId: string, work: () => Promise<T>): Promise<T> {
     const previous = this.locks.get(organizationId) ?? Promise.resolve();
@@ -87,13 +174,13 @@ export class OrganizationStore {
     return next;
   }
 
-  create(input: {
+  async create(input: {
     legalName: string;
     displayName: string;
     packageId: PackageId;
     contractedSeats: number;
     createdByAccountId: string;
-  }): Organization {
+  }): Promise<Organization> {
     const timestamp = new Date(this.now()).toISOString();
     const organizationId = `org_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
     const organization: Organization = {
@@ -110,19 +197,20 @@ export class OrganizationStore {
       updatedAt: timestamp,
       verifiedDomains: [],
     };
-    this.organizations.set(organizationId, organization);
+    this.memberships.set(organizationId, new Map());
+    this.invitations.set(organizationId, []);
+    // The organization row must exist before the membership row that references
+    // it, or the foreign key refuses the write.
+    await this.putOrganization(organization);
 
     // The creator is the first Owner, seated immediately.
-    const members = new Map<string, OrganizationMembership>();
-    members.set(input.createdByAccountId, {
+    await this.putMembership({
       organizationId,
       accountId: input.createdByAccountId,
       role: 'organization-owner',
       active: true,
       joinedAt: timestamp,
     });
-    this.memberships.set(organizationId, members);
-    this.invitations.set(organizationId, []);
     return organization;
   }
 
@@ -238,6 +326,33 @@ export class OrganizationStore {
         expiresAtMs: nowMs + INVITATION_TTL_MS,
         acceptedByAccountId: null,
       };
+      /*
+       * The DATABASE takes the seat, not this process.
+       *
+       * The in-memory check above has already refused the obvious cases and is
+       * correct while one instance is running. It cannot be correct across two:
+       * both would count the same world, both would see a seat free, and both
+       * would allocate it. The reservation below locks the organization row, so
+       * the second transaction counts a world that includes the first one's
+       * write.
+       *
+       * The invitation is written INSIDE that transaction, which is what makes
+       * the count and the write one decision rather than two.
+       */
+      const reserved = await this.records.reserveSeatForInvitation(invitation, nowMs);
+      if (!reserved.ok) {
+        // The database disagreed with the in-memory count. That is either two
+        // instances running, or drift -- and either way the durable answer wins.
+        return {
+          ok: false as const,
+          reason:
+            reserved.reason === 'over-capacity'
+              ? ('over-capacity' as const)
+              : ('no-seats-available' as const),
+        };
+      }
+      // Only now does the in-memory index learn about it, so a refused
+      // reservation cannot leave a phantom invitation holding a seat locally.
       this.invitations.set(input.organizationId, [
         ...this.invitationsOf(input.organizationId),
         invitation,
@@ -246,13 +361,8 @@ export class OrganizationStore {
     });
   }
 
-  private replaceInvitation(organizationId: string, next: Invitation): void {
-    this.invitations.set(
-      organizationId,
-      this.invitationsOf(organizationId).map((invitation) =>
-        invitation.invitationId === next.invitationId ? next : invitation,
-      ),
-    );
+  private replaceInvitation(_organizationId: string, next: Invitation): Promise<void> {
+    return this.putInvitation(next);
   }
 
   /**
@@ -279,7 +389,7 @@ export class OrganizationStore {
       }
       const nowMs = this.now();
       if (invitation.expiresAtMs <= nowMs) {
-        this.replaceInvitation(input.organizationId, { ...invitation, status: 'expired' });
+        await this.replaceInvitation(input.organizationId, { ...invitation, status: 'expired' });
         return { ok: false as const, reason: 'invitation-expired' as const };
       }
       if (hashToken(input.token) !== invitation.tokenHash) {
@@ -301,11 +411,10 @@ export class OrganizationStore {
         active: true,
         joinedAt: new Date(nowMs).toISOString(),
       };
-      members.set(input.accountId, membership);
-      this.memberships.set(input.organizationId, members);
+      await this.putMembership(membership);
       // Accepting converts a reservation into a seat; the invitation stops
       // reserving so the two are never counted at once.
-      this.replaceInvitation(input.organizationId, {
+      await this.replaceInvitation(input.organizationId, {
         ...invitation,
         status: 'accepted',
         acceptedByAccountId: input.accountId,
@@ -321,7 +430,7 @@ export class OrganizationStore {
         (candidate) => candidate.invitationId === invitationId,
       );
       if (!invitation || invitation.status !== 'pending') return false;
-      this.replaceInvitation(organizationId, { ...invitation, status: 'cancelled' });
+      await this.replaceInvitation(organizationId, { ...invitation, status: 'cancelled' });
       return true;
     });
   }
@@ -332,7 +441,7 @@ export class OrganizationStore {
         (candidate) => candidate.invitationId === invitationId,
       );
       if (!invitation || invitation.status !== 'pending') return false;
-      this.replaceInvitation(organizationId, { ...invitation, status: 'declined' });
+      await this.replaceInvitation(organizationId, { ...invitation, status: 'declined' });
       return true;
     });
   }
@@ -356,7 +465,7 @@ export class OrganizationStore {
       if (member.role === 'organization-owner' && this.activeOwnerCount(organizationId) <= 1) {
         return { ok: false as const, reason: 'last-owner' as const };
       }
-      members.set(accountId, { ...member, active: false });
+      await this.putMembership({ ...member, active: false });
       return { ok: true as const };
     });
   }
@@ -387,19 +496,23 @@ export class OrganizationStore {
       }
       if (!to?.active) return { ok: false as const, reason: 'unknown-member' as const };
 
-      members.set(toAccountId, { ...to, role: 'organization-owner' });
-      members.set(fromAccountId, { ...from, role: 'organization-admin' });
+      /*
+       * Both writes, then both persisted, still inside the one critical
+       * section -- so there is never an instant with two owners or none, in
+       * memory or on disk.
+       */
+      await this.putMembership({ ...to, role: 'organization-owner' });
+      await this.putMembership({ ...from, role: 'organization-admin' });
       return { ok: true as const };
     });
   }
 
   /** Change the contracted seat count. Never removes anybody. */
-  setContractedSeats(organizationId: string, seats: number): Organization | null {
+  async setContractedSeats(organizationId: string, seats: number): Promise<Organization | null> {
     const organization = this.organizations.get(organizationId);
     if (!organization) return null;
     const updated = applyContractedSeatChange(organization, seats);
-    this.organizations.set(organizationId, updated);
-    return updated;
+    return this.putOrganization(updated);
   }
 
   /**
@@ -411,12 +524,13 @@ export class OrganizationStore {
    * about that organization would quietly become conditional. An illegal move
    * is now refused rather than silently applied.
    */
-  setState(
+  async setState(
     organizationId: string,
     state: Organization['state'],
-  ):
+  ): Promise<
     | { ok: true; organization: Organization }
-    | { ok: false; reason: 'unknown-organization' | 'illegal-transition' } {
+    | { ok: false; reason: 'unknown-organization' | 'illegal-transition' }
+  > {
     const organization = this.organizations.get(organizationId);
     if (!organization) return { ok: false, reason: 'unknown-organization' };
     if (!isLegalOrganizationTransition(organization.state, state)) {
@@ -427,7 +541,7 @@ export class OrganizationStore {
       state,
       updatedAt: new Date(this.now()).toISOString(),
     };
-    this.organizations.set(organizationId, updated);
+    await this.putOrganization(updated);
     return { ok: true, organization: updated };
   }
 }

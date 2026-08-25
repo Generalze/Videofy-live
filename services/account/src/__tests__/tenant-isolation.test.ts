@@ -101,22 +101,22 @@ beforeAll(async () => {
   tokenOutsider = outsider.token;
   accountBId = b.accountId;
 
-  const createdA = organizations.create({
+  const createdA = await organizations.create({
     legalName: 'Org A Ltd',
     displayName: 'Org A',
     packageId: 'corporate',
     contractedSeats: 5,
     createdByAccountId: a.accountId,
   });
-  const createdB = organizations.create({
+  const createdB = await organizations.create({
     legalName: 'Org B Ltd',
     displayName: 'Org B',
     packageId: 'corporate',
     contractedSeats: 5,
     createdByAccountId: b.accountId,
   });
-  organizations.setState(createdA.organizationId, 'verified');
-  organizations.setState(createdB.organizationId, 'verified');
+  await organizations.setState(createdA.organizationId, 'verified');
+  await organizations.setState(createdB.organizationId, 'verified');
   orgA = createdA.organizationId;
   orgB = createdB.organizationId;
 });
@@ -295,17 +295,17 @@ describe('unverified accounts', () => {
   });
 });
 
-describe('seat exhaustion over HTTP', () => {
+describe('seat exhaustion over HTTP', async () => {
   it('refuses the invitation that would exceed the contracted seats', async () => {
     const owner = await verifiedAccount(harness.accounts, 'tiny-owner@example.com');
-    const tiny = harness.organizations.create({
+    const tiny = await harness.organizations.create({
       legalName: 'Tiny Ltd',
       displayName: 'Tiny',
       packageId: 'corporate',
       contractedSeats: 2,
       createdByAccountId: owner.accountId,
     });
-    harness.organizations.setState(tiny.organizationId, 'verified');
+    await harness.organizations.setState(tiny.organizationId, 'verified');
 
     const first = await request(
       'POST',
@@ -330,14 +330,14 @@ describe('seat exhaustion over HTTP', () => {
 
   it('PIN: an invitation response never carries the token', async () => {
     const owner = await verifiedAccount(harness.accounts, 'token-check@example.com');
-    const organization = harness.organizations.create({
+    const organization = await harness.organizations.create({
       legalName: 'Token Check Ltd',
       displayName: 'Token Check',
       packageId: 'corporate',
       contractedSeats: 5,
       createdByAccountId: owner.accountId,
     });
-    harness.organizations.setState(organization.organizationId, 'verified');
+    await harness.organizations.setState(organization.organizationId, 'verified');
 
     const response = await request(
       'POST',

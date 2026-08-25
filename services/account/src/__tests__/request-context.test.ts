@@ -139,7 +139,7 @@ describe('the resolved caller', () => {
     expect(resolverFor(app.store)(requestWith(null))).toBeNull();
   });
 
-  it('refuses a garbage token', () => {
+  it('refuses a garbage token', async () => {
     expect(resolverFor(app.store)(requestWith('not-a-token'))).toBeNull();
   });
 

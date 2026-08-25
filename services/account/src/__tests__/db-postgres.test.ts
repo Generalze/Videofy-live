@@ -22,6 +22,8 @@ import {
   importAccountsOnce,
 } from '../db/account-records-postgres.js';
 import type { AccountRecord } from '../account-store.js';
+import { OrganizationStore } from '../organization-store.js';
+import { createPostgresOrganizationRecords } from '../db/organization-records-postgres.js';
 
 describe('the connection string', () => {
   it('is required, because there is no in-memory fallback', () => {
@@ -231,7 +233,7 @@ withDatabase('against a real database', () => {
     });
   });
 
-  describe('importing the old file store', () => {
+  describe('importing the old file store', async () => {
     it('imports into an empty table', async () => {
       const outcome = await importAccountsOnce(pool, [base]);
       expect(outcome).toEqual({ imported: 1 });
@@ -264,5 +266,151 @@ withDatabase('against a real database', () => {
       const { rows } = await pool.query('SELECT count(*)::int AS n FROM accounts');
       expect(rows[0]?.n).toBe(0);
     });
+  });
+});
+
+/*
+ * Organizations, and the seat reservation that is the point of putting them in
+ * a database at all.
+ */
+const withDatabaseOrgs = DATABASE_URL ? describe : describe.skip;
+
+withDatabaseOrgs('organizations against a real database', () => {
+  let pool: Pool;
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: DATABASE_URL });
+    await migrate(pool);
+  });
+
+  afterAll(async () => {
+    await pool.end();
+  });
+
+  beforeEach(async () => {
+    // Cascades to memberships and invitations through the foreign keys.
+    await pool.query('TRUNCATE organizations CASCADE');
+  });
+
+  async function seatedStore(seats: number) {
+    const store = new OrganizationStore(
+      () => Date.now(),
+      createPostgresOrganizationRecords(pool),
+    );
+    const organization = await store.create({
+      legalName: 'Tech Advance Concept Ltd',
+      displayName: 'Tech Advance Concept',
+      packageId: 'corporate',
+      contractedSeats: seats,
+      createdByAccountId: 'account_owner',
+    });
+    await store.setState(organization.organizationId, 'verified');
+    return { store, organizationId: organization.organizationId };
+  }
+
+  it('survives a restart, which it never did before', async () => {
+    const { organizationId } = await seatedStore(3);
+
+    // A completely fresh store, as after a deploy. Previously this found
+    // nothing, because organizations lived only in a Map.
+    const rebuilt = new OrganizationStore(() => Date.now(), createPostgresOrganizationRecords(pool));
+    const counts = await rebuilt.hydrate();
+
+    expect(counts.organizations).toBe(1);
+    expect(counts.memberships).toBe(1);
+    expect(rebuilt.get(organizationId)?.displayName).toBe('Tech Advance Concept');
+    expect(rebuilt.membershipOf(organizationId, 'account_owner')?.role).toBe('organization-owner');
+  });
+
+  it('restores a pending invitation, so its seat is still held after a restart', async () => {
+    const { store, organizationId } = await seatedStore(3);
+    await store.invite({
+      organizationId,
+      email: 'newcomer@example.com',
+      role: 'member',
+      invitedByAccountId: 'account_owner',
+    });
+
+    const rebuilt = new OrganizationStore(() => Date.now(), createPostgresOrganizationRecords(pool));
+    await rebuilt.hydrate();
+
+    expect(rebuilt.invitationsOf(organizationId)).toHaveLength(1);
+    // The seat the invitation reserves must survive too, or a restart quietly
+    // hands out seats twice.
+    expect(rebuilt.seats(organizationId)?.allocated).toBe(2);
+  });
+
+  /*
+   * THE TEST THIS WHOLE STEP EXISTS FOR.
+   *
+   * Two stores are two service instances. The per-organization promise chain
+   * each one holds serialises its OWN work and knows nothing about the other's,
+   * so before the database took the seat both would count one free seat and
+   * both would allocate it. The row lock is what makes the second transaction
+   * count a world containing the first one's write.
+   */
+  it('lets only one of two concurrent instances take the last seat', async () => {
+    const { store: first, organizationId } = await seatedStore(2); // owner + 1
+
+    const second = new OrganizationStore(() => Date.now(), createPostgresOrganizationRecords(pool));
+    await second.hydrate();
+
+    const [a, b] = await Promise.all([
+      first.invite({
+        organizationId,
+        email: 'one@example.com',
+        role: 'member',
+        invitedByAccountId: 'account_owner',
+      }),
+      second.invite({
+        organizationId,
+        email: 'two@example.com',
+        role: 'member',
+        invitedByAccountId: 'account_owner',
+      }),
+    ]);
+
+    const succeeded = [a, b].filter((outcome) => outcome.ok);
+    expect(succeeded).toHaveLength(1);
+
+    // And the database agrees: exactly one invitation exists.
+    const { rows } = await pool.query<{ n: string }>(
+      'SELECT count(*) AS n FROM organization_invitations WHERE organization_id = $1',
+      [organizationId],
+    );
+    expect(Number(rows[0]?.n)).toBe(1);
+  });
+
+  it('refuses an invitation when the database says the seats are gone', async () => {
+    const { store, organizationId } = await seatedStore(1); // owner only
+
+    const outcome = await store.invite({
+      organizationId,
+      email: 'nobody@example.com',
+      role: 'member',
+      invitedByAccountId: 'account_owner',
+    });
+
+    expect(outcome.ok).toBe(false);
+    const { rows } = await pool.query<{ n: string }>(
+      'SELECT count(*) AS n FROM organization_invitations',
+    );
+    expect(Number(rows[0]?.n)).toBe(0);
+  });
+
+  it('persists a role change through an ownership transfer', async () => {
+    const { store, organizationId } = await seatedStore(3);
+    await store.invite({
+      organizationId,
+      email: 'heir@example.com',
+      role: 'organization-admin',
+      invitedByAccountId: 'account_owner',
+    });
+    const invitation = store.invitationsOf(organizationId)[0];
+    expect(invitation).toBeDefined();
+
+    const rebuilt = new OrganizationStore(() => Date.now(), createPostgresOrganizationRecords(pool));
+    await rebuilt.hydrate();
+    expect(rebuilt.invitationsOf(organizationId)[0]?.role).toBe('organization-admin');
   });
 });

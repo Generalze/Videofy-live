@@ -95,7 +95,7 @@ export function registerOrganizationRoutes(
   };
 
   /** Create an organization. Requires a fully verified individual. */
-  app.post('/organizations', (req, res) => {
+  app.post('/organizations', async (req, res) => {
     const caller = deps.callerAccountId(req);
     if (caller === null) {
       res.status(401).json({ error: 'Sign in to continue.' });
@@ -130,7 +130,7 @@ export function registerOrganizationRoutes(
       return;
     }
 
-    const organization = deps.organizations.create({
+    const organization = await deps.organizations.create({
       legalName,
       displayName,
       packageId,

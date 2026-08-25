@@ -124,7 +124,7 @@ describe('signing in', () => {
   });
 });
 
-describe('the current session', () => {
+describe('the current session', async () => {
   let h: Harness;
   let token: string;
   beforeEach(async () => {

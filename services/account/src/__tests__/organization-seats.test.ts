@@ -9,22 +9,22 @@ import { describe, expect, it } from 'vitest';
 import { OrganizationStore } from '../organization-store.js';
 import { accountSeats, maySeatOneMore, presentationFor } from '@videofy-live/workspace-authority';
 
-function store(seats = 3) {
+async function store(seats = 3) {
   const organizations = new OrganizationStore();
-  const organization = organizations.create({
+  const organization = await organizations.create({
     legalName: 'Tech Advance Concept Ltd',
     displayName: 'Tech Advance Concept',
     packageId: 'corporate',
     contractedSeats: seats,
     createdByAccountId: 'account_owner',
   });
-  organizations.setState(organization.organizationId, 'verified');
+  await organizations.setState(organization.organizationId, 'verified');
   return { organizations, organizationId: organization.organizationId };
 }
 
 describe('seat accounting', () => {
-  it('counts the creator as a seat immediately', () => {
-    const { organizations, organizationId } = store(3);
+  it('counts the creator as a seat immediately', async () => {
+    const { organizations, organizationId } = await store(3);
     expect(organizations.seats(organizationId)).toMatchObject({
       contracted: 3,
       activeMembers: 1,
@@ -35,7 +35,7 @@ describe('seat accounting', () => {
   });
 
   it('PIN: a pending invitation RESERVES a seat', async () => {
-    const { organizations, organizationId } = store(3);
+    const { organizations, organizationId } = await store(3);
     await organizations.invite({
       organizationId,
       email: 'a@example.com',
@@ -53,7 +53,7 @@ describe('seat accounting', () => {
   });
 
   it('releases the seat when an invitation is cancelled or declined', async () => {
-    const { organizations, organizationId } = store(3);
+    const { organizations, organizationId } = await store(3);
     const invited = await organizations.invite({
       organizationId,
       email: 'a@example.com',
@@ -67,10 +67,10 @@ describe('seat accounting', () => {
     expect(organizations.seats(organizationId)?.available).toBe(2);
   });
 
-  it('an expired invitation stops reserving without anybody touching it', () => {
+  it('an expired invitation stops reserving without anybody touching it', async () => {
     let clock = 1_000_000;
     const organizations = new OrganizationStore(() => clock);
-    const organization = organizations.create({
+    const organization = await organizations.create({
       legalName: 'L',
       displayName: 'D',
       packageId: 'corporate',
@@ -92,7 +92,7 @@ describe('seat accounting', () => {
   });
 
   it('accepting converts a reservation into a seat, never both', async () => {
-    const { organizations, organizationId } = store(3);
+    const { organizations, organizationId } = await store(3);
     const invited = await organizations.invite({
       organizationId,
       email: 'a@example.com',
@@ -116,7 +116,7 @@ describe('seat accounting', () => {
 
 describe('the final seat', () => {
   it('PIN: two simultaneous invitations cannot both take the last seat', async () => {
-    const { organizations, organizationId } = store(2); // owner + exactly one
+    const { organizations, organizationId } = await store(2); // owner + exactly one
     expect(organizations.seats(organizationId)?.available).toBe(1);
 
     // Fired together, with no await between them: this is the interleaving that
@@ -147,7 +147,7 @@ describe('the final seat', () => {
   });
 
   it('PIN: ten concurrent invitations against three seats admit exactly three', async () => {
-    const { organizations, organizationId } = store(4); // owner + three
+    const { organizations, organizationId } = await store(4); // owner + three
     const attempts = Array.from({ length: 10 }, (_unused, index) =>
       organizations.invite({
         organizationId,
@@ -168,7 +168,7 @@ describe('the final seat', () => {
 
 describe('invitation recipient binding', () => {
   it('PIN: a forwarded invitation cannot be used by somebody else', async () => {
-    const { organizations, organizationId } = store(3);
+    const { organizations, organizationId } = await store(3);
     const invited = await organizations.invite({
       organizationId,
       email: 'alice@company.example',
@@ -199,7 +199,7 @@ describe('invitation recipient binding', () => {
   });
 
   it('PIN: the invitation token is never stored in plaintext', async () => {
-    const { organizations, organizationId } = store(3);
+    const { organizations, organizationId } = await store(3);
     const invited = await organizations.invite({
       organizationId,
       email: 'a@example.com',
@@ -211,7 +211,7 @@ describe('invitation recipient binding', () => {
   });
 
   it('refuses a wrong token, and refuses reuse', async () => {
-    const { organizations, organizationId } = store(3);
+    const { organizations, organizationId } = await store(3);
     const invited = await organizations.invite({
       organizationId,
       email: 'a@example.com',
@@ -248,7 +248,7 @@ describe('invitation recipient binding', () => {
   });
 
   it('refuses a duplicate pending invitation for the same address', async () => {
-    const { organizations, organizationId } = store(5);
+    const { organizations, organizationId } = await store(5);
     await organizations.invite({
       organizationId,
       email: 'a@example.com',
@@ -268,7 +268,7 @@ describe('invitation recipient binding', () => {
 
 describe('offboarding and ownership', () => {
   it('removing a member releases the seat and keeps the account', async () => {
-    const { organizations, organizationId } = store(3);
+    const { organizations, organizationId } = await store(3);
     const invited = await organizations.invite({
       organizationId,
       email: 'a@example.com',
@@ -293,7 +293,7 @@ describe('offboarding and ownership', () => {
   });
 
   it('PIN: the last Owner cannot be removed', async () => {
-    const { organizations, organizationId } = store(3);
+    const { organizations, organizationId } = await store(3);
     // An organization nobody can administer cannot be recovered from inside.
     const attempt = await organizations.removeMember(organizationId, 'account_owner');
     expect(attempt.ok).toBe(false);
@@ -301,7 +301,7 @@ describe('offboarding and ownership', () => {
   });
 
   it('PIN: ownership transfer leaves exactly one Owner', async () => {
-    const { organizations, organizationId } = store(3);
+    const { organizations, organizationId } = await store(3);
     const invited = await organizations.invite({
       organizationId,
       email: 'next@example.com',
@@ -337,7 +337,7 @@ describe('offboarding and ownership', () => {
 
 describe('package downgrade', () => {
   it('PIN: a downgrade never removes people — it goes OVER CAPACITY', async () => {
-    const { organizations, organizationId } = store(4);
+    const { organizations, organizationId } = await store(4);
     for (const name of ['a', 'b', 'c']) {
       const invited = await organizations.invite({
         organizationId,
@@ -356,7 +356,7 @@ describe('package downgrade', () => {
     }
     expect(organizations.seats(organizationId)?.allocated).toBe(4);
 
-    organizations.setContractedSeats(organizationId, 2);
+    await organizations.setContractedSeats(organizationId, 2);
     const seats = organizations.seats(organizationId);
     // Choosing who to eject is a decision with consequences for real employees.
     // A billing change is not consent to make it.
@@ -377,9 +377,9 @@ describe('package downgrade', () => {
 });
 
 describe('organization impersonation', () => {
-  it('PIN: typing a famous name does not make an organization verified', () => {
+  it('PIN: typing a famous name does not make an organization verified', async () => {
     const organizations = new OrganizationStore();
-    const impostor = organizations.create({
+    const impostor = await organizations.create({
       legalName: 'Microsoft Corporation',
       displayName: 'Microsoft',
       packageId: 'enterprise',
@@ -397,7 +397,7 @@ describe('organization impersonation', () => {
 });
 
 describe('seat arithmetic in isolation', () => {
-  it('never reports negative availability', () => {
+  it('never reports negative availability', async () => {
     const seats = accountSeats({
       contractedSeats: 2,
       activeMemberCount: 5,
