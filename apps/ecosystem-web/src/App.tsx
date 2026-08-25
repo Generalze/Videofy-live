@@ -9,15 +9,16 @@
  * page REFUSES to say: the C7 page does not explain the product, and the family
  * page does not either.
  */
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { C7Wordmark } from './C7Mark';
 import { JoinC7 } from './JoinC7';
 import { C7Home } from './pages/C7Home';
 import { VideofyFamily } from './pages/VideofyFamily';
 import { VideofyLive } from './pages/VideofyLive';
 import { AppShell } from './pages/AppShell';
+import { VerifyEmail, isVerifyEmailPath } from './pages/VerifyEmail';
 import { NotFound } from './pages/NotFound';
-import { internalLink, useRoute, type Route } from './router';
+import { ROUTE_PATHS, internalLink, useRoute, type Route } from './router';
 
 /** The tab title should say which of the three pages you are on. */
 const TITLES: Readonly<Record<Route, string>> = {
@@ -74,6 +75,16 @@ function Nav({ route, navigate }: { readonly route: Route; readonly navigate: (r
 
 export function App() {
   const [route, navigate] = useRoute();
+  /*
+   * Captured ONCE, from the URL this page was opened with.
+   *
+   * Read on every render it would flip to false the moment the token is
+   * cleared from the address bar, unmounting the page mid-request and leaving
+   * somebody staring at a shell that never says whether it worked.
+   */
+  const [verifyingEmail, setVerifyingEmail] = useState(
+    () => typeof window !== 'undefined' && isVerifyEmailPath(window.location.pathname),
+  );
 
   useEffect(() => {
     document.title = TITLES[route];
@@ -91,7 +102,25 @@ export function App() {
         {route === 'c7' ? <C7Home navigate={navigate} /> : null}
         {route === 'videofy' ? <VideofyFamily navigate={navigate} /> : null}
         {route === 'videofy-live' ? <VideofyLive /> : null}
-        {route === 'app' ? <AppShell navigate={navigate} /> : null}
+        {/*
+          * The verification landing is handled BEFORE the shell.
+          *
+          * Not inside AppShell: an early return there would sit after its
+          * hooks, and returning early from a component whose hooks have
+          * already run changes the hook order between renders. Here it is a
+          * plain branch on the route, which is what it actually is.
+          */}
+        {route === 'app' && verifyingEmail ? (
+          <VerifyEmail
+            onDone={() => {
+              // Leave /app/verify-email/ so a refresh does not replay a
+              // consumed token and report a working link as broken.
+              window.history.replaceState({}, '', ROUTE_PATHS.app);
+              setVerifyingEmail(false);
+            }}
+          />
+        ) : null}
+        {route === 'app' && !verifyingEmail ? <AppShell navigate={navigate} /> : null}
         {route === 'not-found' ? <NotFound navigate={navigate} /> : null}
 
         {/* Registration lives at the end of every REAL page. A not-found page
