@@ -55,7 +55,7 @@ whom*, which is the only distinction that matters for abuse.
 |---|---|---|---|
 | **Personal call** | A saved contact, both ways | Direct dial — it rings | Built (`callType: 'personal'`) |
 | **Conference** | Anyone with the room link | Invite link | Built (`callType: 'conference'`) |
-| **Messaging** | A saved contact | Delivered to the conversation | **Not built** |
+| **Messaging** | A saved contact, or an organization group | Delivered to the conversation | **Not built** |
 | **Programme** | Operator | Public or channel link | Built |
 
 `CallType = 'personal' | 'conference'` already exists in
@@ -289,10 +289,20 @@ Text translation needs no speech recognition and no synthesis — the two
 expensive, latency-bound, per-minute-billed stages. It is `opus-mt` alone, which
 already runs locally on the box.
 
-**Messaging may well be the better commercial product**: near-zero marginal
-cost, no realtime constraint, asynchronous across time zones, and it produces a
-durable searchable record that businesses actually want. It deserves weighing on
-its own merits rather than being treated as a feature of the call product.
+**Messaging is a first-class product, not a feature of calling.** Near-zero
+marginal cost, no realtime constraint, asynchronous across time zones, and it
+produces the durable searchable record businesses actually want.
+
+It lives in the **Communication & Connection** domain and is reached through the
+same C7 account — one identity, as everywhere else.
+
+**Separable later, which is a constraint on it TODAY.** The decision to keep the
+option of splitting messaging into its own product is only real if it is built
+behind a clean boundary from the start: its own package and its own service
+seam, sharing identity, translation and push through interfaces rather than
+through reach-ins. A boundary retrofitted after the fact is a rewrite, and
+"we can separate it later" is the sentence that most often turns out to be
+false.
 
 ### 4.3 What it needs
 
@@ -302,7 +312,73 @@ its own merits rather than being treated as a feature of the call product.
   moderation and storage problem, and "just add files" is how that arrives
   unexamined
 - Push, shared with call ringing
-- Retention policy, which is a legal question before it is a technical one
+
+### 4.4 One to one, and groups for organizations
+
+**One-to-one first**, between mutual contacts.
+
+**Groups are an organization capability**, not a personal one. This was checked
+against the existing model rather than assumed, and it fits without a single new
+authority concept:
+
+| A group needs | Already provided by |
+|---|---|
+| Who is in it | `OrganizationMembership` — organizationId, accountId, active |
+| Who may manage it | `OrganizationRole` and the existing role table |
+| Not leaking across tenants | The tenant-isolation invariant |
+| Who may be added at all | Seat accounting and invitations |
+
+Consequences that follow, and are correct rather than incidental:
+
+- **A group belongs to the organization, not to whoever created it.** When the
+  creator leaves, the group survives and the records stay with the company.
+- **Leaving an organization removes you from its groups.** Offboarding already
+  writes an audit event; group removal rides on the same act rather than being
+  a separate thing somebody must remember to do.
+- **A personal account has no groups.** One-to-one only. Groups arrive with an
+  organization, which is also where the obligation to retain a record arrives.
+
+No new capability is added to the authority model until group messaging is
+actually built. Declaring one now would be another entry wired into nothing.
+
+### 4.5 Retention is optional, within limits
+
+The owner chooses the policy. What the choice cannot do is dissolve obligations
+that were never the individual's to waive.
+
+| Setting | Behaviour |
+|---|---|
+| **Keep** | Retained until deleted |
+| **Auto-delete after N days** | Rolling window, per conversation |
+| **Minimal** | Delivered and rendered, not retained beyond delivery |
+
+Three rules bound it:
+
+1. **An organization owns the policy for its own conversations.** Otherwise a
+   departing member could destroy company records by flipping a personal switch,
+   and the organization would discover it during the dispute that needed them.
+2. **Retention never deletes what retention does not own**: audit events,
+   evidence already captured by an abuse report, and anything under legal hold.
+   An abuse report takes a SNAPSHOT at the moment it is filed, and that snapshot
+   outlives the conversation's retention policy — exactly as the call rolling
+   buffer does. Without this, "minimal" would be the setting every abuser picks.
+3. **Optional means the policy is chosen, not that the obligation vanishes.**
+   The lawful-basis and retention questions in the road map still have to be
+   answered before the schema is written; this section decides the product
+   behaviour, not the legal position.
+
+### 4.6 Read receipts and last seen
+
+Both are available, and both are **reciprocal**: turn off sending read receipts
+and you stop seeing other people's.
+
+The symmetry is the whole point. Without it the setting becomes a way to observe
+without being observed, which is the version people rightly resent — and the
+asymmetry would be discovered and complained about rather than noticed and
+accepted.
+
+Organization conversations may have these fixed by policy, since "was this read"
+is an operational fact for a company in a way it is not between two friends.
 
 ---
 
@@ -335,10 +411,13 @@ screen is how a person opens a door believing they made a phone call.
 ### 5.2 What must NOT be copied
 
 - No padlock, no "end-to-end encrypted" (§0.1)
-- No read receipts by default — decide deliberately, they are a privacy choice
-- No "last seen" without a setting, for the same reason
 - No status/stories. It is scope with its own moderation burden and no relation
   to the translation idea
+- No contact list built from the device address book. It is the single largest
+  source of accidental disclosure in messaging apps, and it would contradict
+  private-by-default within one screen of onboarding
+- Read receipts and last seen ARE adopted, but reciprocally (§4.6), which is
+  the part usually copied badly
 
 ### 5.3 What must be added that WhatsApp has no equivalent for
 
@@ -359,7 +438,8 @@ Ordered by dependency, not by appeal.
 | 2 | **Personal call gating**: `personal` requires a mutual contact | Contacts |
 | 3 | **Conference controls**: link expiry, lobby, revocation, session-scoped identity, hideable roster | — |
 | 4 | **Presence and push**: ringing when the app is closed | Contacts |
-| 5 | **Messaging**: conversations, text translation, originals | Database, contacts |
+| 5 | **Messaging**: one-to-one conversations, text translation, originals, retention policy, receipts | Database, contacts |
+| 5b | **Organization groups**: conversations scoped to a company | Messaging, organizations |
 | 6 | **Interface**: three-tab shape | 1–5 |
 
 Steps 1, 2 and 5 all sit behind the database. **Step 3 does not** — conference
@@ -368,15 +448,24 @@ gate from being trivially bypassed.
 
 ---
 
-## 7. Open decisions
+## 7. Settled decisions
 
-These are the owner's, and each changes the build:
+All resolved by the owner on 2026-08-25.
 
-1. **Does messaging get equal billing with calling, or is it a feature of it?**
-   §4.2 argues it may be the stronger product.
-2. **Attachments in v1?** Recommend no.
-3. **Read receipts and last-seen** — default on, off, or per-user?
-4. **Group messaging**, or one-to-one first? Recommend one-to-one; groups
-   multiply the translation matrix and every moderation question.
-5. **Retention** — how long is a conversation kept, and who can delete it?
-   Legal input required before the schema is written.
+| # | Question | Decision |
+|---|---|---|
+| 1 | Messaging: product or feature? | **First-class product**, in Communication, on the C7 account. Separable later, so built behind a clean boundary from the start (§4.2) |
+| 2 | Attachments in v1? | **No.** Images and documents carry their own moderation, storage and scanning burden, and "just add files" is how that arrives unexamined |
+| 3 | Read receipts and last seen? | **Available, and reciprocal** (§4.6) |
+| 4 | Groups or one-to-one? | **One-to-one first. Groups are an organization capability** — verified to need no new authority concept (§4.4) |
+| 5 | Private or discoverable by default? | **Private by default** (§2.3) |
+| 6 | Retention? | **Optional, within three limits** (§4.5) |
+
+### What still needs an answer from outside this document
+
+- **Lawful basis and retention periods** — a legal question, and it gates the
+  messaging schema rather than following it.
+- **Recording and transcript consent**, which varies by jurisdiction.
+- **Whether "minimal" retention is offered to organizations at all**, or only to
+  personal accounts. A company that cannot produce its own records has a
+  compliance problem the product should not hand it by default.
