@@ -136,4 +136,32 @@ describe('events', () => {
       expect(FORBIDDEN_EVENT_FIELDS).toContain(field);
     }
   });
+
+  /*
+   * DP-170 is a LOCKED position and names these explicitly. Communications
+   * content is treated as high-sensitivity whether or not it is legally
+   * special category, because a message may reveal health, religion, politics
+   * or trade secrets without the platform having asked for any of it.
+   */
+  it('forbids every category DP-170 names', () => {
+    for (const field of [
+      'message',
+      'transcript',
+      'translation',
+      'audio',
+      'video',
+      'attachment',
+      'authorization',
+      'apiKey',
+      'cookie',
+      'cardNumber',
+    ]) {
+      expect(FORBIDDEN_EVENT_FIELDS).toContain(field);
+    }
+  });
+
+  it('catches communications content nested inside an event', () => {
+    expect(containsForbiddenField({ kind: 'x', transcript: 'what was said' })).toBe('transcript');
+    expect(containsForbiddenField({ kind: 'x', nested: { audio: 'bytes' } })).toBe('audio');
+  });
 });

@@ -183,21 +183,60 @@ export function securityEvent(input: Omit<SecurityEvent, 'alert'>): SecurityEven
  * Exported so the test can assert it, and so a future contributor adding a
  * field to SecurityEvent trips a red test rather than a review comment they
  * might not get.
+ *
+ * TRACKS DP-170 in docs/privacy/DATA_PROTECTION_POSITIONS.md, which is a LOCKED
+ * position: the logging layer must reject message bodies, transcript and
+ * translation text, call audio and video bytes, attachment contents, auth
+ * tokens, passwords, provider API secrets, payment credentials and raw
+ * cookie/session secrets. This list is the executable form of that rule, and
+ * the generic bags at the end -- payload, details, body -- are included because
+ * they are where every one of the others eventually arrives.
  */
 export const FORBIDDEN_EVENT_FIELDS: readonly string[] = [
+  // Credentials
   'password',
   'passwordHash',
   'token',
   'tokenHash',
+  'accessToken',
+  'refreshToken',
+  'authorization',
+  'bearer',
   'otp',
   'code',
   'secret',
   'recoveryCode',
   'mfaSecret',
+  'apiKey',
+  'apiSecret',
+  'cookie',
+  // Communications CONTENT. DP-040 treats this as high-sensitivity regardless
+  // of whether it is legally special category, because a message may reveal
+  // health, religion, politics, finances or trade secrets without the platform
+  // ever having asked for any of it.
+  'message',
+  'messageBody',
+  'content',
+  'transcript',
+  'transcriptText',
+  'translation',
+  'translationText',
+  'audio',
+  'video',
+  'media',
+  'samples',
+  'attachment',
+  // Identity and payment
   'email',
   'phone',
   'phoneNumber',
   'document',
+  'card',
+  'cardNumber',
+  'cvv',
+  'pan',
+  'iban',
+  // Generic bags, which is where everything above eventually arrives
   'payload',
   'details',
   'body',
