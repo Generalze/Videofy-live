@@ -2,7 +2,7 @@
 
 **Document:** `docs/privacy/DATA_PROTECTION_POSITIONS.md`
 **Status:** CANONICAL — Privacy / Legal Engineering Baseline
-**Version:** 1.2
+**Version:** 1.3
 **Position date:** 25 August 2026
 **Applies to:** Videofy-Live web, mobile, realtime gateway, messaging, conferencing, translation/transcription, generated audio, storage, analytics, support tooling, and all subprocessors.
 **Jurisdictions considered:** Nigeria (Nigeria Data Protection Act 2023 and NDPC GAID 2025), European Union / EEA (GDPR), United Kingdom (UK GDPR, Data Protection Act 2018 as amended, including Data (Use and Access) Act 2025 changes in force by 19 June 2026).
@@ -20,6 +20,7 @@
 | Version | Date | Change |
 |---|---|---|
 | 1.0 | 25 Aug 2026 | Counsel-approved engineering baseline. |
+| 1.3 | 25 Aug 2026 | DP-055 replaced with the counsel ruling: voice cloning is RETAINED as an approved feature, opt-in per user, with twelve locked controls, a lifecycle, and the synchronous-revoke invariant. Overrules the engineering proposal to disable it. |
 | 1.2 | 25 Aug 2026 | Adds the pointer to `WHAT_APPLIES_NOW.md` and stages the companion documents. Scoping only: changes WHEN obligations are met, never whether. |
 | 1.1 | 25 Aug 2026 | Additive only. Adds DP-055 (personal voice synthesis, which v1.0 neither authorised nor prohibited while it was already built), DP-051A (abuse-evidence snapshot, to stop DP-051 being read as prohibiting a victim-protection control), DP-071A (the individual/organization retention split already decided), and §29 (implementation status, recording facts verified in code so they are not re-litigated or rebuilt). **No obligation in v1.0 has been removed, narrowed or weakened.** |
 
@@ -140,7 +141,7 @@ Videofy SHALL maintain a versioned lawful-basis matrix. A single bundled "consen
 | Billing | Contract + legal obligations | Keep financial records separate from communications content. |
 | Optional transcription | User-requested feature; additional consent/transparency where required | No silent activation. |
 | Optional translation | User-requested feature; additional consent/transparency where required | No silent provider expansion. |
-| **Personal voice synthesis (DP-055)** | **Explicit, separable consent** | Never bundled into terms acceptance. See DP-055. |
+| **Voice cloning (DP-055)** | **Explicit, separable, revocable consent** | Opt-in per user. Never bundled into terms acceptance or translation. |
 | Recording | Separate affirmative activation and participant notice/consent analysis | Default OFF. |
 | **Abuse-evidence snapshot (DP-051A)** | **Legitimate interests, with a written LIA** | Narrower than recording; conditions in DP-051A. |
 | Marketing email/SMS | Separate marketing basis | Do not bundle with service acceptance. |
@@ -222,24 +223,130 @@ Privacy and correctness favour missing attribution over false attribution.
 
 Local mute/volume preferences SHALL remain local unless a future feature requires synchronisation. They SHALL NOT be sent to the gateway merely for convenience.
 
-### DP-055 — Personal voice synthesis — CONDITIONALLY APPROVED (added 1.1)
+### DP-055 — Consensual Synthetic Voice / Voice Cloning — LOCKED
 
-> **Why this exists.** v1.0 prohibited voice **recognition** (DP-052) and said nothing about voice **synthesis**, which is already built and shipped: a `voice-clone` provider capability, a `personalVoice` output path, and an enrolment flow that records versioned consent before any audio is captured. Silence is the dangerous state — it invites either shipping something unauthorised, or a later reading of Red Line 3 that removes a working feature. It is therefore addressed explicitly.
+> **Ruling, 25 Aug 2026.** An engineering draft proposed disabling voice cloning
+> to shorten the DPIA. That conflated two decisions and is overruled. Voice
+> cloning is a deliberate Videofy-Live capability. The NDP Act s.28 anticipates
+> high-risk innovative processing being managed through a DPIA — describe the
+> processing, test necessity and proportionality, assess risk, state safeguards
+> — rather than abandoned. **The feature is designed so the DPIA can approve it.
+> The existing implementation and its tests are NOT to be removed for
+> simplification.**
 
-**The distinction that matters.** A voiceprint used to decide *who is speaking* is biometric processing for unique identification and remains PROHIBITED under DP-052. A voice model used to *speak a translation in the speaker's own voice* is synthesis: it is not compared against anybody, it identifies no one, and it answers no question about identity. Only the second is authorised here.
+Videofy-Live may offer synthetic voice cloning as an optional user feature.
 
-Permitted subject to ALL of the following:
+Voice cloning is **disabled by default** and requires separate, affirmative,
+informed and revocable consent. It SHALL NOT be activated because a user
+accepted the Terms or enabled translation.
 
-1. **Explicit, separable consent**, captured BEFORE any audio is recorded, never bundled into terms acceptance, and refusable without losing the ability to use calls. Consent to have a voice modelled is not consent to use the product.
-2. **Versioned consent text**, so a stored profile records which wording it was granted under.
-3. **Never used for identification.** No matching, no comparison, no verification, no attribution. DP-052 continues to govern.
-4. **Withdrawal deletes the model**, not merely its use.
-5. **Deletion propagates to the provider.** Closing an account or withdrawing consent SHALL delete the voice model at the synthesis provider as well as locally. Retaining a voice model after erasure is the specific failure this clause exists to prevent, and it must be TESTED end to end rather than assumed from reading code.
-6. **Not training data.** DP-061 and DP-160 apply without exception: no provider may use enrolment audio or the derived model for training, tuning or product improvement.
-7. **Disclosed to the other party.** Anyone hearing a synthesised voice is told it is machine-generated, in their own language (see §29, already implemented).
-8. **DPIA entry required** before production, and a **Class C** review before any use beyond speaking that person's own translated words.
+A clone may only be created for the **authenticated user's own voice** under
+approved ownership/liveness controls.
 
-**Still PROHIBITED**, for the avoidance of doubt: modelling a voice from audio captured without that person's own explicit consent; synthesising a voice to impersonate anyone other than the enrolled speaker; retaining a model after withdrawal.
+Voice-cloning data SHALL NOT be used for speaker identification, authentication,
+advertising, profiling or general model training.
+
+Withdrawal immediately disables future synthesis and initiates deletion of
+source samples and the derived voice model from Videofy and all applicable
+processors. Videofy SHALL maintain provider-side deletion capability and record
+deletion completion.
+
+**Previously generated communication artefacts remain subject to their own
+communication-content lawful basis and retention rules; withdrawal does not
+automatically invalidate processing lawfully completed before withdrawal.**
+
+Any expansion into third-party voice cloning, biometric identification,
+authentication by voice, emotion inference, or training use requires a new
+**Class C** privacy review and DPIA amendment.
+
+#### The statutory boundary
+
+Under the NDP Act, biometric data is data resulting from technical processing
+that allows or confirms the **unique identification** of a person, and it is
+sensitive personal data when used for that purpose. A model created only to
+synthesise a consenting user's own voice does not automatically meet that
+definition — it is compared against nobody and answers no question about
+identity.
+
+Videofy nonetheless protects it **as if it were highly sensitive**, because it
+is derived from a person's distinctive voice and carries substantial
+impersonation risk. The controls below are not conditional on the statutory
+definition being triggered.
+
+Two functions are kept permanently separate:
+
+```text
+VOICE SYNTHESIS      user identity -> approved model -> generated voice   PERMITTED with consent
+VOICE IDENTIFICATION unknown voice -> model comparison -> identify person PROHIBITED (DP-052)
+```
+
+#### The twelve locked controls
+
+| # | Control | Requirement |
+|---|---|---|
+| 1 | Default state | OFF for every user until they enrol |
+| 2 | Separate consent | A dedicated "Create and use my AI voice" consent. Never buried in Terms |
+| 3 | Clear purpose | State that recordings create a reusable synthetic voice model for translated/generated speech |
+| 4 | Own voice only | A user may enrol their own verified voice. Never a celebrity, colleague, spouse or uploaded third party |
+| 5 | Anti-impersonation | Authenticated account plus a fresh microphone capture with a randomised challenge phrase or equivalent liveness proof |
+| 6 | Source samples | Retain enrolment recordings only as long as technically required to create and verify the model, then delete |
+| 7 | Provider training | Contractually and technically prohibited for samples, model and generated speech |
+| 8 | Model isolation | Bound to one verified user. No other account may invoke it |
+| 9 | Withdrawal | One clear "Delete my AI voice" control. No support ticket for ordinary deletion, and withdrawal as easy as granting |
+| 10 | Provider deletion | Withdrawal propagates to the external provider, not merely to Videofy's pointer |
+| 11 | Deletion verification | The provider's deletion result is stored as an audit event. **Never retain the deleted model itself as proof** |
+| 12 | Synthetic disclosure | Participants are told translated/generated speech is in use |
+
+#### Lifecycle
+
+```text
+NOT_ENROLLED -> CONSENT_PRESENTED -> CONSENT_GRANTED -> VOICE_CAPTURE
+             -> IDENTITY/LIVENESS -> PROVIDER_SUBMISSION -> MODEL_CREATING
+             -> MODEL_READY -> ACTIVE
+                                 |
+                                 +-- regenerate: old model deleted
+                                 |
+                                 +-- withdraw -> REVOKED -> DELETION_PENDING
+                                                 -> provider deletion -> DELETED
+```
+
+**Invariant: `REVOKED` takes effect SYNCHRONOUSLY; `DELETED` may be
+asynchronous.** The instant the user presses delete, Videofy refuses any new
+synthesis request, even though provider deletion may take minutes or hours.
+Without that split there is a window in which a withdrawn voice can still be
+generated, and it is exactly the window somebody would exploit.
+
+#### Withdrawal has three different consequences
+
+Confusing these is what makes deletion messy.
+
+| What | On withdrawal |
+|---|---|
+| **Enrolment recordings** — the raw samples | **DELETE.** Short-lived anyway |
+| **Derived voice model** — the reusable clone | **REVOKE immediately, then DELETE** from every controlled store and the provider |
+| **Audio already generated and sent** | **Ordinary message retention rules.** NOT the clone consent |
+
+The third is the one that matters architecturally. A message sent yesterday in a
+cloned voice — "I'll be there by 5pm" — does not become unlawful because consent
+was withdrawn today, and Videofy is not required to reach into every
+conversation and erase it. It lives under the message lifecycle, and the user
+may delete it there like any other message.
+
+#### Records
+
+```text
+VoiceConsent  { userId, purpose: "VOICE_CLONING", noticeVersion, grantedAt, withdrawnAt }
+VoiceProfile  { userId, provider, providerModelRef, state, createdAt,
+                revokedAt, deletionRequestedAt, providerDeletedAt }
+```
+
+The consent receipt SURVIVES deletion as minimal accountability evidence — who
+consented, to which notice version, when, when withdrawn, when provider deletion
+was confirmed. That is accountability data. **The cloned voice itself is never
+retained as proof of anything.**
+
+Consent must be affirmative: never silence, never a pre-ticked box, and the
+controller bears the burden of demonstrating it was given.
 
 ---
 
@@ -575,7 +682,7 @@ Production release is blocked when any applicable item below is unresolved:
 - content may leak into logs/analytics;
 - recording enabled without required controls;
 - **abuse-evidence buffer deployed without the DP-051A conditions met**;
-- **personal voice synthesis deployed without the DP-055 conditions met, including proven deletion at the provider**;
+- **voice cloning deployed without the twelve DP-055 controls met, including proven provider-side deletion and the synchronous-revoke invariant**;
 - provider contract permits private-content training;
 - data-subject deletion cannot propagate to controlled derivatives;
 - security incident/breach process absent;

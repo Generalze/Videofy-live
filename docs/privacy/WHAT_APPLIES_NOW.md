@@ -42,23 +42,24 @@ it is one contractual item, not a programme.
 
 **Decision needed:** launch markets. Nigeria-only is dramatically cheaper.
 
-### 2. Turn voice cloning off until it earns its cost
+### 2. Voice cloning: OFF PER USER, not off as a product
 
-Personal voice synthesis is the most legally expensive thing in the product,
-per unit of value delivered:
+**Corrected on counsel's ruling.** An earlier draft of this page recommended
+feature-flagging voice cloning out of the product to shorten the DPIA. That
+conflated two different decisions, and it was wrong.
 
-- it is the only feature where a **third party holds a derived model of a
-  person's voice**, rather than transient content;
-- it needs its own explicit, separable consent;
-- deletion has to be **proven at the provider**, not assumed;
-- it is the single largest section of any DPIA;
-- any use beyond speaking that person's own words is a **Class C** change.
+Voice cloning is a deliberate Videofy-Live capability and a differentiator. The
+NDP Act anticipates high-risk innovative processing being managed through a
+DPIA rather than abandoned — s.28 asks for the processing to be described,
+tested for necessity and proportionality, and given safeguards. **The feature is
+designed so the DPIA can approve it, not removed so the DPIA is shorter.**
 
-Nobody is using it. It was built ahead of demand.
+The approved position is **disabled by default for every user**, activated only
+through a dedicated enrolment and consent flow. It must never switch on because
+somebody accepted the Terms or turned on translation.
 
-**Feature-flag it off and DP-055 stops applying entirely.** The code stays,
-the tests stay, and switching it on later is a decision with a review attached
-rather than a rewrite.
+See DP-055 in the positions document for the locked controls. The implementation
+and its tests stay.
 
 ### 3. Do not build the abuse-recording buffer yet
 
@@ -93,7 +94,8 @@ Already built, cost nothing to maintain, and each prevents a real harm:
 Not before the next commit. Before a person who is not you has an account.
 
 1. **Nigerian DPIA.** Required, and a filing. **It shrinks a great deal if the
-   decisions above are taken** — no voice cloning, no recording, one market.
+   decisions above are taken** — one market, no recording buffer, and voice
+   cloning scoped to consented self-enrolment rather than open-ended cloning.
 2. **Privacy notice and terms** that describe what the product actually does.
 3. **Subprocessor DPAs** — five vendors, mostly clicking accept.
 4. **Provider training off**, in writing.
