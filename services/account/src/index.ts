@@ -28,6 +28,7 @@ import { OrganizationStore } from './organization-store.js';
 import { registerOrganizationRoutes } from './organization-routes.js';
 import { VerificationService } from './verification.js';
 import { PasswordResetService } from './password-reset.js';
+import { createSecurityLog } from './security-log.js';
 import { rejectPassword } from './password.js';
 import {
   assertIdentityProviderAllowed,
@@ -35,6 +36,7 @@ import {
   createPhoneProvider,
   createSyntheticIdentityProvider,
   describeProvider,
+  createMemoryAbuseLimiter,
   readEnvironment,
   type PolicyRequirement,
 } from '@videofy-live/account-trust';
@@ -237,10 +239,43 @@ const requiredPolicies = (process.env['C7_REQUIRED_POLICIES'] ?? '')
     return { policyType, requiredVersion } as PolicyRequirement;
   });
 
+/*
+ * The abuse limiter, and an honest note about what it is.
+ *
+ * IN MEMORY, so behind more than one instance an attacker gets the limit
+ * multiplied by the instance count. This deployment runs one instance, which
+ * makes it correct today and makes it the first thing to replace when that
+ * stops being true -- the port exists so the replacement is a different
+ * implementation rather than a different call site.
+ */
+const abuse = createMemoryAbuseLimiter();
+
+/*
+ * Salt for hashing addresses in security events, so velocity per address is
+ * countable without the address being retained.
+ *
+ * ABSENT MEANS ADDRESSES ARE OMITTED, never logged in the clear as a fallback.
+ * A log of who signs up is a record of who uses this product, and it is read by
+ * far more people than can read the database.
+ */
+const targetSalt = process.env['C7_SECURITY_TARGET_SALT'];
+if (targetSalt !== undefined && targetSalt.trim().length < 16) {
+  throw new Error(
+    'C7_SECURITY_TARGET_SALT must be at least 16 characters, or unset. ' +
+      'A short salt on a digest of an email address is reversible by anybody ' +
+      'holding a list of email addresses, which is everybody.',
+  );
+}
+
+const security = createSecurityLog(targetSalt ? { targetSalt } : {});
+
 registerAccountRoutes(app, {
   store,
   secret,
   organizations,
+  abuse,
+  security,
+  ...(targetSalt ? { targetSalt } : {}),
   passwordReset: new PasswordResetService({
     store,
     emailProvider,

@@ -20,12 +20,21 @@ import {
 import type { AccountRecord, AccountStore } from './account-store.js';
 import type { VerificationService } from './verification.js';
 import {
+  abuseKey,
   outstandingConsents,
   resolveTrustState,
   type AccountTrust,
   type PolicyRequirement,
 } from '@videofy-live/account-trust';
 import type { PasswordResetService } from './password-reset.js';
+import { clientIpOf } from './client-ip.js';
+import { recordSecurity } from './security-log.js';
+import { correlationIdOf } from './request-context.js';
+import type {
+  AbuseLimiterPort,
+  AbuseSurface,
+  SecurityEventSink,
+} from '@videofy-live/account-trust';
 import {
   entitlementForPackage,
   grantedCapabilities,
@@ -59,6 +68,16 @@ export interface AccountRouteDependencies {
    * agreement to nothing, which is worse than collecting none.
    */
   readonly requiredPolicies?: readonly PolicyRequirement[];
+  /**
+   * Abuse limiting. Absent means UNLIMITED, and the composition root always
+   * supplies one -- optional here only so the many tests that exercise a single
+   * route are not each obliged to construct a limiter.
+   */
+  readonly abuse?: AbuseLimiterPort;
+  readonly security?: SecurityEventSink;
+  /** Salt for hashing addresses in security events. */
+  readonly targetSalt?: string;
+  readonly nowMs?: () => number;
 }
 
 interface Body {
@@ -145,6 +164,80 @@ export function createCallerResolver(deps: {
 
 export function registerAccountRoutes(app: express.Express, deps: AccountRouteDependencies): void {
   const nowSeconds = deps.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
+  const nowMs = deps.nowMs ?? (() => Date.now());
+
+  /**
+   * One guard for every limited surface.
+   *
+   * KEYED ON WHAT THE REQUEST ACTUALLY CARRIES. Where a caller is
+   * authenticated the account is the honest key -- an attacker who rotates
+   * addresses is still one account. Where they are not, the address is all
+   * there is, and `abuseKey` refuses a key built from nothing rather than
+   * inventing a shared bucket that would put the whole internet in one queue.
+   *
+   * Returns true when the request was REFUSED and a response has been sent, so
+   * a call site is one line and cannot forget to stop.
+   */
+  const refusedForAbuse = (
+    req: express.Request,
+    res: express.Response,
+    surface: AbuseSurface,
+    parts: { account?: string | null | undefined; target?: string | null | undefined },
+  ): boolean => {
+    if (!deps.abuse) return false;
+    const ip = clientIpOf(req);
+    let key: string;
+    try {
+      /*
+       * THE KEY MUST NOT CONTAIN ANYTHING THE CALLER CHOOSES PER REQUEST.
+       *
+       * This originally included the submitted address, and the tests showed
+       * the limit never firing: registration varies the address every attempt,
+       * so every attempt got its own bucket. A key an attacker can change for
+       * free is not a limit, it is bookkeeping.
+       *
+       * So: the ACCOUNT when the caller is authenticated -- an attacker who
+       * rotates addresses is still one account -- and otherwise the source
+       * address, which costs something to change. `parts.target` is carried
+       * only for the security event, never for the key.
+       */
+      key = abuseKey(parts.account ? { account: parts.account } : { ip });
+    } catch {
+      // Nothing identifying at all. Rather than share one bucket, this is
+      // allowed through: an unkeyable request is a bug in the caller, and
+      // failing closed here would take the whole surface down for everybody.
+      return false;
+    }
+
+    const decision = deps.abuse.consume({ surface, key, nowMs: nowMs() });
+    if (decision.ok) return false;
+
+    if (deps.security) {
+      recordSecurity(deps.security, {
+        kind: decision.reason === 'challenge-required' ? 'abuse.challengeRequired' : 'abuse.rateLimited',
+        correlationId: correlationIdOf(res),
+        atMs: nowMs(),
+        ...(parts.account ? { accountId: parts.account } : {}),
+        ...(parts.target ? { target: parts.target } : {}),
+        ...(deps.targetSalt ? { salt: deps.targetSalt } : {}),
+        ...(ip ? { sourceIp: ip } : {}),
+      });
+    }
+
+    // Retry-After in SECONDS, and rounded up: rounding down tells a caller to
+    // retry a moment before the bucket has refilled, which produces a second
+    // refusal and looks like the limit is broken.
+    res.setHeader('Retry-After', String(Math.ceil(decision.retryAfterMs / 1000)));
+    res.status(429).json({
+      error:
+        decision.reason === 'challenge-required'
+          ? 'Too many attempts. Wait a moment and try again.'
+          : 'Too many attempts. Wait a moment and try again.',
+      retryAfterMs: decision.retryAfterMs,
+    });
+    return true;
+  };
+
 
   const session = (
     accountId: string,
@@ -165,6 +258,11 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
   });
 
   app.post('/accounts', (req, res) => {
+    // Keyed on the address as well as the source: creating many accounts from
+    // one address and one account from many addresses are different abuses,
+    // and the address is the one an attacker cannot rotate for free.
+    const attempted = credentials(req.body);
+    if (refusedForAbuse(req, res, 'account.create', { target: attempted?.email ?? null })) return;
     const input = credentials(req.body);
     if (!input) {
       res.status(400).json({ error: 'Enter an email address and a password.' });
@@ -193,6 +291,14 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
   });
 
   app.post('/sessions', (req, res) => {
+    /*
+     * The existing account-level lockout in AccountStore slows a brute force
+     * against ONE account. This limits the other shape: one attacker trying one
+     * password against many accounts, which never trips a per-account counter.
+     */
+    const attempt = credentials(req.body);
+    if (refusedForAbuse(req, res, 'account.authenticate', { target: attempt?.email ?? null }))
+      return;
     const input = credentials(req.body);
     if (!input) {
       res.status(400).json({ error: 'Enter your email address and password.' });
@@ -284,6 +390,10 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
 
     app.post('/verification/email', (req, res) => {
       const caller = callerAccountId(req);
+      // Each send costs a third party's delivery fee, to an address the
+      // requester does not have to own.
+      if (refusedForAbuse(req, res, 'verification.emailResend', { account: caller?.accountId }))
+        return;
       if (caller === null) {
         res.status(401).json({ error: 'Sign in to continue.' });
         return;
@@ -341,6 +451,8 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
 
     app.post('/verification/phone', (req, res) => {
       const caller = callerAccountId(req);
+      if (refusedForAbuse(req, res, 'verification.phoneRequest', { account: caller?.accountId }))
+        return;
       if (caller === null) {
         res.status(401).json({ error: 'Sign in to continue.' });
         return;
@@ -452,6 +564,19 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
      */
     app.post('/accounts/password-reset', (req, res) => {
       const email = (req.body as { email?: unknown } | undefined)?.email;
+      /*
+       * Refused with 429 rather than the usual 202. That IS a difference an
+       * attacker can observe -- but only after they have already made enough
+       * requests to trip the limit, by which point they have told us far more
+       * than the response tells them. The alternative, silently swallowing
+       * everything past the limit, gives a flood no back-pressure at all.
+       */
+      if (
+        refusedForAbuse(req, res, 'account.passwordReset', {
+          target: typeof email === 'string' ? email : null,
+        })
+      )
+        return;
       if (typeof email !== 'string' || email.length === 0 || email.length > 320) {
         // Even a malformed address gets the same answer. Rejecting only the
         // invalid ones tells a caller which strings are addresses we would
