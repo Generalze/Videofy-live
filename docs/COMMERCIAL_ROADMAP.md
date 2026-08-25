@@ -42,15 +42,15 @@ Stated plainly, because every plan built on a flattering baseline fails at the s
 
 | Gap | Consequence |
 |---|---|
-| **`OrganizationStore` has no persistence at all** — three in-memory `Map`s | Every organization, membership and invitation is destroyed on restart or deploy |
-| **No database anywhere in the repo** | Accounts persist to a JSON file; nothing else persists |
+| ~~`OrganizationStore` has no persistence~~ | **FIXED 2026-08-25.** PostgreSQL 16 on staging; organizations, memberships and invitations survive a restart |
+| ~~No database anywhere in the repo~~ | **FIXED.** Plain `pg`, forward-only migrations, row-oriented ports. Staging runs `C7_ACCOUNT_STORE=postgres` |
 | **Operator console is anonymous** | Programme control has no authentication; blocked from production only by a boot guard |
 | **Six security modules are wired into nothing** | Consent, recovery, MFA, step-up, rate limits, security events, identity change exist with tests and protect nothing |
 | **Identity verification is synthetic** | Refused in production by design. No KYC/KYB vendor chosen |
 | **No legal content** | No terms, privacy policy, DPA, acceptable use or eligibility policy |
 | **No billing of any kind** | No pricing, no payment rail, no subscription, no invoicing |
 | **Single instance only** | In-memory rate limits and media state; no horizontal scale path |
-| **No backup or restore** | Never demonstrated, for either store |
+| **Backups are local-only** | Nightly `pg_dump` + a **proven** restore (verified into a scratch database on 2026-08-25). No off-box copy yet, so a lost machine is still a lost database |
 | **No production domain** | staging only |
 | **Language claims exceed reality** | French/Portuguese/Yoruba/Igbo/Hausa not actually selectable in the apps |
 | **No native mobile** | Browser only |
