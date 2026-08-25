@@ -30,6 +30,8 @@ import {
   type MfaEnrolment,
   type PolicyType,
   type StepUpEvidence,
+  type PendingIdentityChange,
+  type IdentityChangeEffects,
 } from '@videofy-live/account-trust';
 import {
   describePasswordRejection,
@@ -136,6 +138,15 @@ export interface AccountRecord {
    */
   readonly stepUpAtMs?: number | null;
   readonly stepUpMethod?: string | null;
+  /**
+   * A change of verified email or phone, authorised but not yet applied.
+   *
+   * SEPARATE from `email` and `phoneNumber` for its whole life. The old address
+   * stays authoritative until the new one has been proven, so that a mistyped
+   * address cannot lock somebody out and an unopened confirmation cannot hand
+   * an attacker the account.
+   */
+  readonly pendingIdentityChange?: PendingIdentityChange | null;
 }
 
 export interface AccountRecordPort {
@@ -210,6 +221,11 @@ interface FailureState {
   count: number;
   until: number;
 }
+
+/** The outcome of applying a proven identity change. */
+export type IdentityChangeApplication =
+  | { readonly ok: true; readonly record: AccountRecord }
+  | { readonly ok: false; readonly reason: 'not-found' | 'taken' };
 
 export class AccountStore {
   private readonly byId = new Map<string, AccountRecord>();
@@ -450,6 +466,101 @@ export class AccountStore {
       };
       return { record: updated, result: updated };
     });
+  }
+
+  /**
+   * Hold a change that has been authorised but not yet proven.
+   *
+   * Written to its own field, never to `email` or `phoneNumber`. See the note
+   * on the record field: the old address stays authoritative until the new one
+   * is confirmed, which is what stops a typo locking somebody out and stops an
+   * unopened confirmation handing over the account.
+   */
+  async setPendingIdentityChange(
+    accountId: string,
+    pending: PendingIdentityChange | null,
+  ): Promise<AccountRecord | null> {
+    return this.withMutationLock<AccountRecord | null>(accountId, async (current) => {
+      if (!current) return { record: null, result: null };
+      const updated: AccountRecord = {
+        ...current,
+        pendingIdentityChange: pending,
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      return { record: updated, result: updated };
+    });
+  }
+
+  /**
+   * Apply a proven identity change, in ONE step.
+   *
+   * Every one of these writes belongs to the same decision and none of them is
+   * safe to land without the others:
+   *
+   *   - the address is replaced, and the pending change is cleared, so the
+   *     same confirmation cannot be replayed;
+   *   - sessions are revoked when the recovery path moved, because a change of
+   *     email is exactly when to end an attacker's access rather than the
+   *     moment to leave it running;
+   *   - the step-up grant is consumed, so one re-authentication buys one
+   *     sensitive operation and not a window of them;
+   *   - an identity check is reopened for review, because a verification of
+   *     contact details that have since changed is a verification of facts
+   *     that no longer hold.
+   *
+   * EMAIL UNIQUENESS IS RE-CHECKED HERE, inside the lock and with no await
+   * between the check and the write. Checked only at the start of the flow it
+   * would be a time-of-check/time-of-use gap wide enough for two accounts to
+   * claim one address -- the same shape as the one register() closes.
+   */
+  async applyIdentityChange(
+    accountId: string,
+    effects: IdentityChangeEffects,
+  ): Promise<IdentityChangeApplication> {
+    const outcome = await this.withMutationLock<IdentityChangeApplication>(accountId, async (current) => {
+      if (!current) {
+        return { record: null, result: { ok: false as const, reason: 'not-found' as const } };
+      }
+
+      if (effects.channel === 'email') {
+        const holder = this.findByEmail(effects.nextTarget);
+        if (holder && holder.accountId !== accountId) {
+          return { record: null, result: { ok: false as const, reason: 'taken' as const } };
+        }
+      }
+
+      const nowMs = this.now();
+      const identityCase =
+        effects.requiresIdentityReview && current.identityCase
+          ? {
+              ...current.identityCase,
+              reviewOpenedAtMs: current.identityCase.reviewOpenedAtMs ?? nowMs,
+              updatedAtMs: nowMs,
+            }
+          : current.identityCase;
+
+      const updated: AccountRecord = {
+        ...current,
+        ...(effects.channel === 'email'
+          ? { email: effects.nextTarget }
+          : { phoneNumber: effects.nextTarget }),
+        pendingIdentityChange: null,
+        tokenVersion: effects.revokeSessions ? current.tokenVersion + 1 : current.tokenVersion,
+        // Consumed either way. The grant paid for THIS change.
+        stepUpAtMs: null,
+        stepUpMethod: null,
+        ...(identityCase === undefined ? {} : { identityCase }),
+        updatedAt: new Date(nowMs).toISOString(),
+      };
+      return { record: updated, result: { ok: true as const, record: updated } };
+    });
+    /*
+     * withMutationLock is typed `T | null` although its body always returns the
+     * mutation's result. Treated as not-found rather than asserted away: if that
+     * signature is ever narrowed this line simply becomes dead, whereas a `!`
+     * would become a crash.
+     */
+    return outcome ?? { ok: false, reason: 'not-found' };
   }
 
   /** Record one policy acceptance, keeping every superseded version. */

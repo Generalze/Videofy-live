@@ -22,6 +22,7 @@ import {
   createEphemeralOrganizationRecords,
   createPostgresOrganizationRecords,
 } from './db/organization-records-postgres.js';
+import { IdentityChangeService } from './identity-change-service.js';
 import { createCallerResolver, registerAccountRoutes } from './routes.js';
 import { CORRELATION_HEADER, correlationMiddleware } from './request-context.js';
 import { OrganizationStore } from './organization-store.js';
@@ -313,6 +314,25 @@ registerAccountRoutes(app, {
   abuse,
   security,
   ...(mfa ? { mfa } : {}),
+  /*
+   * Changing a verified address needs a second factor to step up against, so
+   * this is wired only when MFA is. Offered without it, the flow would demand a
+   * step-up that no account could ever satisfy -- an endpoint that exists and
+   * always refuses, which reads as a bug rather than as the deliberate absence
+   * of a prerequisite.
+   */
+  ...(mfa
+    ? {
+        identityChange: new IdentityChangeService({
+          store,
+          emailProvider,
+          phoneProvider,
+          mfa,
+          security,
+          ...(targetSalt ? { targetSalt } : {}),
+        }),
+      }
+    : {}),
   ...(targetSalt ? { targetSalt } : {}),
   passwordReset: new PasswordResetService({
     store,

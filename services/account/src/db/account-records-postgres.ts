@@ -55,6 +55,7 @@ interface AccountRow {
   /** bigint -> string, like the invitation timestamps. See that note. */
   step_up_at_ms: string | null;
   step_up_method: string | null;
+  pending_identity_change: unknown;
 }
 
 /**
@@ -89,6 +90,7 @@ function toRecord(row: AccountRow): AccountRecord {
   const phoneNumber = optional(row.phone_number);
   const identityCase = optional(row.identity_case);
   const passwordResetChallenge = optional(row.password_reset_challenge);
+  const pendingIdentityChange = optional(row.pending_identity_change);
   const mfa = optional(row.mfa);
   const stepUpAtMs = optional(row.step_up_at_ms);
   const stepUpMethod = optional(row.step_up_method);
@@ -114,6 +116,13 @@ function toRecord(row: AccountRow): AccountRecord {
     ...(phoneNumber.present ? { phoneNumber: phoneNumber.value } : {}),
     ...(identityCase.present
       ? { identityCase: identityCase.value as NonNullable<AccountRecord['identityCase']> }
+      : {}),
+    ...(pendingIdentityChange.present
+      ? {
+          pendingIdentityChange: pendingIdentityChange.value as NonNullable<
+            AccountRecord['pendingIdentityChange']
+          >,
+        }
       : {}),
     ...(passwordResetChallenge.present
       ? {
@@ -160,8 +169,9 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
            account_id, email, password_hash, token_version, voice_gender,
            created_at, updated_at, trust, email_challenge, phone_challenge,
            phone_number, identity_case, seen_callback_events,
-           password_reset_challenge, consents, mfa, step_up_at_ms, step_up_method
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+           password_reset_challenge, consents, mfa, step_up_at_ms, step_up_method,
+           pending_identity_change
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
          ON CONFLICT (account_id) DO UPDATE SET
            email                = EXCLUDED.email,
            password_hash        = EXCLUDED.password_hash,
@@ -178,7 +188,8 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
            consents                 = EXCLUDED.consents,
            mfa                      = EXCLUDED.mfa,
            step_up_at_ms            = EXCLUDED.step_up_at_ms,
-           step_up_method           = EXCLUDED.step_up_method`,
+           step_up_method           = EXCLUDED.step_up_method,
+           pending_identity_change  = EXCLUDED.pending_identity_change`,
         [
           record.accountId,
           record.email,
@@ -200,6 +211,7 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
           record.mfa ?? null,
           record.stepUpAtMs ?? null,
           record.stepUpMethod ?? null,
+          record.pendingIdentityChange ?? null,
         ],
       );
 }

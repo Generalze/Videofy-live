@@ -32,6 +32,7 @@ import {
 import type { PasswordResetService } from './password-reset.js';
 import { clientIpOf } from './client-ip.js';
 import type { MfaService } from './mfa-service.js';
+import type { IdentityChangeService } from './identity-change-service.js';
 import { recordSecurity } from './security-log.js';
 import { correlationIdOf } from './request-context.js';
 import type {
@@ -84,6 +85,14 @@ export interface AccountRouteDependencies {
   readonly nowMs?: () => number;
   /** Absent until a keyring is configured; the MFA routes then 404. */
   readonly mfa?: MfaService;
+  /**
+   * Absent until delivery providers exist; the identity-change routes then 404.
+   *
+   * A 404 rather than a permissive fallback: an endpoint that changes the
+   * address password reset is sent to must not exist in a half-configured
+   * deployment.
+   */
+  readonly identityChange?: IdentityChangeService;
 }
 
 interface Body {
@@ -864,6 +873,128 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
           res.status(200).json({ enrolled: false });
         })
         .catch(() => res.status(500).json({ error: 'That could not be changed.' }));
+    });
+  }
+
+  const identityChange = deps.identityChange;
+  if (identityChange) {
+    /**
+     * Begin changing a verified email or phone number.
+     *
+     * WHY THIS IS NOT A PROFILE EDIT. A verified address is the thing password
+     * reset is sent to. Treated as an ordinary field update, an attacker
+     * holding a live session and nothing else could point recovery at an
+     * address they control and own the account permanently.
+     *
+     * Step-up is required BEFORE anything is sent, so a stolen session cannot
+     * even cause a message to be delivered to an attacker-chosen address.
+     */
+    app.post('/accounts/identity-change', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      // Each attempt costs a delivery fee to an address the requester does not
+      // have to own -- the same exposure the verification resend surface has.
+      if (refusedForAbuse(req, res, 'verification.emailResend', { account: caller.accountId })) {
+        return;
+      }
+
+      const body = req.body as { channel?: unknown; target?: unknown } | undefined;
+      const channel = body?.channel;
+      if (channel !== 'email' && channel !== 'phone') {
+        res.status(400).json({ error: 'Choose email or phone.' });
+        return;
+      }
+      if (typeof body?.target !== 'string' || body.target.length === 0 || body.target.length > 320) {
+        res.status(400).json({ error: 'That address is not valid.' });
+        return;
+      }
+
+      void identityChange
+        .begin(caller.accountId, channel, body.target, correlationIdOf(res))
+        .then((outcome) => {
+          if (outcome.ok) {
+            // No token in the response. Returning one would let a stolen
+            // session complete the change without ever reading the message.
+            res.status(202).json({ sent: true, expiresAtMs: outcome.expiresAtMs });
+            return;
+          }
+          if (outcome.reason === 'step-up-required') {
+            res.status(403).json({
+              error: 'Confirm your second factor before changing this.',
+              stepUpRequired: true,
+            });
+            return;
+          }
+          if (outcome.reason === 'unchanged') {
+            res.status(409).json({ error: 'That is already your address.' });
+            return;
+          }
+          if (outcome.reason === 'delivery-failed') {
+            res.status(502).json({ error: 'The message could not be sent. Try again shortly.' });
+            return;
+          }
+          /*
+           * ONE ANSWER for an invalid address and for one already registered to
+           * somebody else. Telling them apart turns this endpoint into a way to
+           * ask whether a given person has an account.
+           */
+          res.status(400).json({ error: 'That address cannot be used.' });
+        })
+        .catch(() => res.status(500).json({ error: 'That change could not be started.' }));
+    });
+
+    /**
+     * Complete the change with the token sent to the NEW address.
+     *
+     * The old address stays authoritative right up to this call, and is warned
+     * immediately after it -- that warning is the only message in the whole
+     * sequence that reaches somebody who has not been compromised.
+     */
+    app.post('/accounts/identity-change/confirm', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      // A six-digit phone code is guessable without a cap on attempts. This is
+      // the same surface the OTP check uses, and it is never challengeable.
+      if (refusedForAbuse(req, res, 'verification.phoneVerify', { account: caller.accountId })) {
+        return;
+      }
+
+      const token = (req.body as { token?: unknown } | undefined)?.token;
+      if (typeof token !== 'string' || token.length === 0 || token.length > 512) {
+        res.status(400).json({ error: 'That confirmation is not valid.' });
+        return;
+      }
+
+      void identityChange
+        .confirm(caller.accountId, token, correlationIdOf(res))
+        .then((outcome) => {
+          if (outcome.ok) {
+            res.status(200).json({
+              changed: true,
+              channel: outcome.channel,
+              /*
+               * Announced, because it is about to happen to the caller. An
+               * email change revokes every session including this one, and a
+               * client that is not told simply appears to break.
+               */
+              sessionsRevoked: outcome.sessionsRevoked,
+            });
+            return;
+          }
+          if (outcome.reason === 'no-pending-change') {
+            res.status(409).json({ error: 'There is no change waiting to be confirmed.' });
+            return;
+          }
+          // One message for expired, wrong, replayed and already-taken alike.
+          res.status(400).json({ error: 'That confirmation is not valid or has expired.' });
+        })
+        .catch(() => res.status(500).json({ error: 'That change could not be completed.' }));
     });
   }
 

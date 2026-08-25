@@ -22,6 +22,26 @@ export interface VerificationMessage {
   readonly expiresAtMs: number;
 }
 
+/**
+ * A warning to an address that is being REPLACED.
+ *
+ * Carries no token, and that is the point. This message is not a step in a
+ * flow -- there is nothing here for the recipient to confirm, and nothing an
+ * attacker gains by intercepting it. It exists so that a takeover cannot be
+ * silent: it is the only message in the whole identity-change sequence that
+ * reaches somebody who has NOT been compromised.
+ *
+ * The replacement address is deliberately absent. Somebody who has just had
+ * their account stolen should not have the attacker's address handed to them
+ * by us, and a support conversation is the right place for that detail.
+ */
+export interface IdentityChangeNotice {
+  readonly channel: 'email' | 'phone';
+  /** The OLD address, the one losing control. */
+  readonly target: string;
+  readonly changedAtMs: number;
+}
+
 export interface DeliveryResult {
   readonly delivered: boolean;
   /** Vendor reference, where one exists, for support and reconciliation. */
@@ -34,6 +54,16 @@ export interface VerificationDeliveryProvider {
   readonly name: string;
   readonly synthetic: boolean;
   send(message: VerificationMessage): Promise<DeliveryResult>;
+  /**
+   * Warn an address that it has been replaced.
+   *
+   * REQUIRED, not optional. An optional method here would be silently absent
+   * on some provider one day, and the failure mode is that a takeover stops
+   * being loud -- which is the single thing this message exists to prevent.
+   * A provider that genuinely cannot notify should say so by returning
+   * `delivered: false`, which is visible, rather than by not implementing it.
+   */
+  notify(notice: IdentityChangeNotice): Promise<DeliveryResult>;
 }
 
 /**
@@ -45,12 +75,17 @@ export interface VerificationDeliveryProvider {
 export function createSyntheticProvider(
   channel: 'email' | 'phone',
   sink?: (message: VerificationMessage) => void,
+  noticeSink?: (notice: IdentityChangeNotice) => void,
 ): VerificationDeliveryProvider {
   return {
     name: `synthetic-${channel}`,
     synthetic: true,
     async send(message) {
       sink?.(message);
+      return { delivered: true, reference: null, synthetic: true };
+    },
+    async notify(notice) {
+      noticeSink?.(notice);
       return { delivered: true, reference: null, synthetic: true };
     },
   };

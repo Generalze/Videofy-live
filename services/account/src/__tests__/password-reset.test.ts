@@ -50,6 +50,11 @@ async function harness(): Promise<Harness> {
       sent.push({ target: message.target, token: message.token });
       return { delivered: true, reference: 'test', synthetic: true };
     },
+    // Password reset never warns an old address; present because the interface
+    // requires it, and required there so no provider can silently lack it.
+    async notify() {
+      return { delivered: true, reference: 'test', synthetic: true };
+    },
   };
 
   const app = express();

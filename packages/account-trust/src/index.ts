@@ -34,6 +34,7 @@ export {
   readEnvironment,
   type DeliveryEnvironment,
   type DeliveryResult,
+  type IdentityChangeNotice,
   type VerificationDeliveryProvider,
   type VerificationMessage,
 } from './providers.js';

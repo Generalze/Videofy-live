@@ -223,10 +223,32 @@ const MFA_AND_STEP_UP: Migration = {
   `,
 };
 
+/**
+ * A change of verified email or phone that has been authorised but NOT applied.
+ *
+ * ITS OWN COLUMN, never the live address field. The moment a pending change is
+ * written into `email`, something downstream reads it as authoritative -- and
+ * the whole security property of this flow is that the old address stays
+ * authoritative until the instant it is superseded. Replacing first would lock
+ * somebody out of their own account the moment they mistyped, and would hand an
+ * attacker the change even when the confirmation was never opened.
+ *
+ * Holds a challenge whose token is a HASH, so the row is useless to anyone who
+ * reads it, exactly like the other challenge columns.
+ */
+const PENDING_IDENTITY_CHANGE: Migration = {
+  name: '005_pending_identity_change',
+  sql: `
+    ALTER TABLE accounts
+      ADD COLUMN IF NOT EXISTS pending_identity_change jsonb;
+  `,
+};
+
 /** Applied in this order. Append only. */
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
   ORGANIZATIONS,
   RESET_AND_CONSENT,
   MFA_AND_STEP_UP,
+  PENDING_IDENTITY_CHANGE,
 ];
