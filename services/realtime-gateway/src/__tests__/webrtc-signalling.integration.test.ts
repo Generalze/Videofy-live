@@ -16,7 +16,25 @@ import {
 } from '@videofy-live/shared-types';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../app.js';
+import { issueSessionToken, requireSessionSecret } from '@videofy-live/account-tokens';
 import { Gateway } from '../gateway.js';
+
+/*
+ * The gateway authenticates operators now, so this harness presents a real token
+ * exactly as a real client does.
+ *
+ * Supplying a secret rather than leaving the gateway unconfigured is deliberate:
+ * unconfigured REFUSES every operator, so a test that passed by leaving the gate
+ * open would be asserting the absence of the control it exists to protect.
+ */
+const OPERATOR_SECRET = 'z'.repeat(48);
+const OPERATOR_TOKEN = issueSessionToken({
+  secret: requireSessionSecret(OPERATOR_SECRET, 'TEST_OPERATOR_SECRET'),
+  accountId: 'acct_a1b2c3d4e5f60718',
+  version: 1,
+  nowSeconds: Math.floor(Date.now() / 1000),
+});
+
 
 const now = '2026-07-27T00:00:00.000Z';
 type IncomingMessageType = WebRtcIncomingSignallingEnvelope['type'];
@@ -127,7 +145,9 @@ describe('gateway WebRTC signalling integration', () => {
 
   beforeEach(async () => {
     server = createServer(createApp());
-    gateway = new Gateway(server, ['http://localhost:5173', 'http://localhost:5174']);
+    gateway = new Gateway(server, ['http://localhost:5173', 'http://localhost:5174'], {
+      operator: { authSecret: OPERATOR_SECRET },
+    });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${address.port}`;
@@ -142,6 +162,9 @@ describe('gateway WebRTC signalling integration', () => {
   function client(role: string): Socket {
     const socket = connectClient(baseUrl, {
       query: { role },
+      // Only the operator role is authenticated; every other role connects
+      // exactly as before.
+      ...(role === 'operator' ? { auth: { token: OPERATOR_TOKEN } } : {}),
       transports: ['websocket', 'polling'],
       forceNew: true,
       reconnection: false,

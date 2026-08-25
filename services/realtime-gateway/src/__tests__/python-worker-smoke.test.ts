@@ -8,6 +8,24 @@ import { io as connectClient, type Socket } from 'socket.io-client';
 import type { TranslationEvent } from '@videofy-live/shared-types';
 import { SOCKET_EVENTS } from '@videofy-live/shared-types';
 import { afterEach, describe, expect, it } from 'vitest';
+import { issueSessionToken, requireSessionSecret } from '@videofy-live/account-tokens';
+
+/*
+ * This smoke test spawns the REAL gateway process, so the operator secret has
+ * to reach it the way it reaches production -- through the environment -- and
+ * the operator client has to present a token signed with the same one.
+ *
+ * Leaving it unset would make the gateway refuse every operator, which is the
+ * correct behaviour for an unconfigured privileged surface and would simply
+ * fail this test for the right reason.
+ */
+const OPERATOR_SECRET = 'z'.repeat(48);
+const OPERATOR_TOKEN = issueSessionToken({
+  secret: requireSessionSecret(OPERATOR_SECRET, 'TEST_OPERATOR_SECRET'),
+  accountId: 'acct_a1b2c3d4e5f60718',
+  version: 1,
+  nowSeconds: Math.floor(Date.now() / 1000),
+});
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const gatewayDir = resolve(testDir, '../..');
@@ -38,6 +56,13 @@ describe('Python worker to Node gateway smoke', () => {
         GATEWAY_PORT: String(gatewayPort),
         CORS_ORIGINS: 'http://127.0.0.1',
         LOG_LEVEL: 'error',
+        VIDEOFY_AUTH_SECRET: OPERATOR_SECRET,
+        // The gateway refuses to start without this: unset, its internal media
+        // API would accept audio from anyone who can reach the port. That guard
+        // predates the operator work and is unrelated to it -- the smoke test
+        // simply never satisfied it, so the process died before /health existed
+        // and the failure read as a timeout rather than as a refusal.
+        INTERNAL_WEBRTC_TOKEN: 'f'.repeat(64),
       },
       stdio: 'pipe',
     });
@@ -100,6 +125,8 @@ describe('Python worker to Node gateway smoke', () => {
   function connect(role: string, gatewayUrl: string): Socket {
     const socket = connectClient(gatewayUrl, {
       query: { role },
+      // Only the operator role is authenticated.
+      ...(role === 'operator' ? { auth: { token: OPERATOR_TOKEN } } : {}),
       transports: ['websocket', 'polling'],
       forceNew: true,
       reconnectionDelay: 50,

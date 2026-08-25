@@ -114,6 +114,26 @@ const gateway = new Gateway(server, config.corsOrigins, {
     authSecret: config.connectAuthSecret,
     projectsPath: config.connectProjectsPath,
   },
+  operator: {
+    // The SAME secret the account service signs sessions with. A separate
+    // secret here would mean a token minted at sign-in did not verify at the
+    // gateway, and the symptom is an operator who cannot connect for reasons
+    // nothing explains.
+    authSecret: process.env['VIDEOFY_AUTH_SECRET'],
+    /*
+     * OPEN, BUT NOT ANONYMOUS.
+     *
+     * Any verified C7 account may operate a programme today. That is a
+     * deliberate product decision taken while there is nothing to subscribe
+     * to, not an oversight -- and it is NOT a bypass of authentication: a
+     * caller with no valid session token is refused either way.
+     *
+     * When pricing exists this becomes true and takes an entitlement check,
+     * which is a one-line change here rather than a rewrite, because the
+     * accountId is already resolved.
+     */
+    requireEntitlement: false,
+  },
 });
 
 /**

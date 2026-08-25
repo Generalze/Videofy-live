@@ -77,6 +77,7 @@ import {
   type ConnectCallFacade,
   type ConnectProjectRegistry,
 } from '@videofy-live/connect-control';
+import { createOperatorAuthority, type OperatorAuthority } from './operator-authority.js';
 import { CallRuntime, CALL_PARTICIPANT_ROLE } from './call-runtime.js';
 import { CallReceivePeerManager } from './call-receive-peers.js';
 import { CallTranscriptLog } from './call-transcript-log.js';
@@ -151,6 +152,17 @@ export class Gateway {
   private readonly mediaIngestPublicUrl: string;
   private readonly clients = new Map<string, ClientState>();
   private readonly programmeSessionConfigs = new Map<string, OperatorProgrammeSessionConfig>();
+  /**
+   * Which account each operator socket belongs to.
+   *
+   * Not used to scope anything yet -- the gateway holds ONE programme state, so
+   * two operators would overwrite each other rather than run two programmes.
+   * It is recorded because it is exactly what per-operator channels will key
+   * on, and because an audit of who changed a live programme is worth having
+   * before there is an incident rather than after.
+   */
+  private readonly operatorAuthority: OperatorAuthority;
+  private readonly operatorAccounts = new Map<string, string>();
   private readonly activeWorkers = new Set<string>();
   private readonly activeIngestClients = new Set<string>();
   private latestProgrammeMediaState: MediaStateEvent | null = null;
@@ -201,8 +213,31 @@ export class Gateway {
         authSecret?: string | null;
         projectsPath?: string | null;
       };
+      /**
+       * Who may operate a programme.
+       *
+       * Omitted -- tests, embedders -- means the operator role is refused
+       * outright rather than admitted, because the fallback for an
+       * unconfigured privileged surface has to be CLOSED. A test that wants an
+       * operator supplies a secret and a token, which is the same thing a real
+       * client does.
+       */
+      operator?: {
+        authSecret?: string | undefined;
+        requireEntitlement?: boolean;
+        hasEntitlement?: (accountId: string) => boolean;
+      };
     } = {},
   ) {
+    this.operatorAuthority = createOperatorAuthority({
+      secret: options.operator?.authSecret,
+      ...(options.operator?.requireEntitlement === undefined
+        ? {}
+        : { requireEntitlement: options.operator.requireEntitlement }),
+      ...(options.operator?.hasEntitlement
+        ? { hasEntitlement: options.operator.hasEntitlement }
+        : {}),
+    });
     // P6.5: Connect state comes FIRST — a malformed registry must fail the
     // gateway at startup (R12), before any socket machinery exists to serve.
     const connectOptions = options.connect;
@@ -504,11 +539,39 @@ export class Gateway {
           listenerCount: this.listenerCount,
         });
         break;
-      case 'operator':
+      case 'operator': {
+        /*
+         * THE ONLY ROLE THAT IS AUTHENTICATED HERE, and the reason is that it
+         * is the only one that CONTROLS a live programme going out to an
+         * audience. A listener joins and receives; an operator starts, stops,
+         * retargets and mutes. Until now the difference between them was a
+         * query parameter that anybody could type.
+         *
+         * Refused BEFORE joining the operator room, so a rejected socket never
+         * receives an operator broadcast on its way out.
+         */
+        const admission = this.operatorAuthority.admit(socket);
+        if (!admission.ok) {
+          logger.warn('Operator refused', { socketId: socket.id, reason: admission.reason });
+          socket.emit(SOCKET_EVENTS.ERROR, {
+            // One message for every refusal. Distinguishing "no token" from
+            // "bad token" tells somebody probing which half they got right.
+            message: 'Sign in to a C7 account with programme access to operate.',
+          });
+          socket.disconnect(true);
+          return;
+        }
         void socket.join(OPERATOR_ROOM);
+        this.operatorAccounts.set(socket.id, admission.accountId);
         this.handleOperatorSocket(socket);
-        logger.info('Operator connected', { socketId: socket.id });
+        // The accountId is logged; nothing identifying is. It is an opaque id,
+        // and it is the thing an incident would need.
+        logger.info('Operator connected', {
+          socketId: socket.id,
+          accountId: admission.accountId,
+        });
         break;
+      }
       case 'worker':
         void socket.join(WORKER_ROOM);
         this.activeWorkers.add(socket.id);
@@ -537,7 +600,10 @@ export class Gateway {
         break;
     }
 
-    socket.on('disconnect', () => this.handleDisconnect(socket));
+    socket.on('disconnect', () => {
+      this.operatorAccounts.delete(socket.id);
+      this.handleDisconnect(socket);
+    });
   }
 
   private resolveRole(socket: Socket): ClientRole {
