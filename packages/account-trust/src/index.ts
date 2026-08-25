@@ -146,6 +146,18 @@ export {
   type StepUpOperation,
 } from './mfa.js';
 export {
+  ENVELOPE_VERSION,
+  SECRET_KEY_BYTES,
+  createKeyring,
+  open,
+  seal,
+  type Keyring,
+  type KeyringEntryInput,
+  type OpenFailureReason,
+  type OpenResult,
+  type SealedSecret,
+} from './secret-box.js';
+export {
   DELIVERY_TIMEOUT_MS,
   createResendProvider,
   createTermiiProvider,

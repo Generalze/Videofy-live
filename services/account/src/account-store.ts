@@ -164,6 +164,29 @@ export class AccountStore {
   private readonly failures = new Map<string, FailureState>();
   private writing: Promise<void> = Promise.resolve();
 
+  /**
+   * One promise chain per account.
+   *
+   * Serialises multi-step account mutations (e.g. MFA enrolment, verified email
+   * change) so a check and its write cannot be interleaved with another
+   * operation's. Keyed per account so two different accounts never wait on
+   * each other.
+   *
+   * IT DOES FIX AN EXISTING BUG, contrary to what this comment first claimed.
+   * The claim was that every mutation here is a synchronous read-modify-write
+   * with no await in between. Most are. `authenticate` is not: it reads the
+   * record, awaits two scrypt calls to verify and re-hash the password, and
+   * then wrote back an object spread from the record it had read beforehand.
+   * A `signOutEverywhere` landing in that window had its tokenVersion bump
+   * silently reverted, so an attacker's tokens became valid again while the
+   * account holder was told they were locked out. That path now goes through
+   * this lock and re-reads inside it.
+   *
+   * It is also what the coming multi-step flows need -- MFA enrolment and
+   * verified email change both span an await between read and write.
+   */
+  private readonly accountLocks = new Map<string, Promise<unknown>>();
+
   constructor(
     private readonly records: AccountRecordPort = createEphemeralAccountRecords(),
     private readonly now: () => number = () => Date.now(),
@@ -181,6 +204,57 @@ export class AccountStore {
       this.byEmail.set(record.email, record.accountId);
     }
     return this.byId.size;
+  }
+
+  private withAccountLock<T>(accountId: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.accountLocks.get(accountId) ?? Promise.resolve();
+    // The chain must not break on a rejection, or one failed operation would
+    // wedge every later one for that account.
+    const next = previous.then(work, work);
+    const settled: Promise<void> = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.accountLocks.set(accountId, settled);
+    /*
+     * Drop the entry once nothing is queued behind it, or this map grows by one
+     * permanently-resolved promise for every account that ever signs in and is
+     * never reclaimed for the life of the process.
+     *
+     * The compare before the delete is what makes it safe: if another operation
+     * chained on in the meantime, the map holds ITS promise, not this one, and
+     * removing that would hand the next caller a fresh chain and break the
+     * serialisation this exists to provide.
+     */
+    void settled.then(() => {
+      if (this.accountLocks.get(accountId) === settled) this.accountLocks.delete(accountId);
+    });
+    return next;
+  }
+
+  /**
+   * Run a mutation under the account's critical section.
+   *
+   * This serialises multi-step flows so a read and its write cannot be
+   * interleaved with another operation. Only same-account work serialises;
+   * different accounts run concurrently.
+   *
+   * Internal: called only by multi-step flows that span an await between
+   * reading a record and writing it back.
+   */
+  async withMutationLock<T>(
+    accountId: string,
+    mutation: (record: AccountRecord | null) => Promise<{ record: AccountRecord | null; result: T }>,
+  ): Promise<T | null> {
+    return this.withAccountLock(accountId, async () => {
+      const record = this.byId.get(accountId) ?? null;
+      const { record: updated, result } = await mutation(record);
+      if (updated) {
+        this.byId.set(accountId, updated);
+        await this.persist();
+      }
+      return result;
+    });
   }
 
   /**
@@ -335,6 +409,28 @@ export class AccountStore {
       // not entitled to any product.
       trust: INITIAL_TRUST,
     };
+    /*
+     * RE-CHECKED after the await, immediately before the write.
+     *
+     * The check above happens before `hashPassword`, which takes tens of
+     * milliseconds. Two registrations for the same address can both pass it,
+     * both hash, and both write -- leaving two records in `byId` for one email
+     * while `byEmail` points at only one of them. The orphan is unreachable by
+     * sign-in and invisible to its owner, and the invariant the first check
+     * exists to enforce is broken silently.
+     *
+     * The per-account lock cannot help here: there is no account id to key on
+     * until after the race has already happened. What closes it is that this
+     * re-check and the two writes below contain no await between them, so they
+     * are one atomic section on a single-threaded runtime.
+     */
+    if (this.byEmail.has(email)) {
+      return {
+        ok: false,
+        reason: 'already-exists',
+        message: 'An account already exists for that email address.',
+      };
+    }
     this.byId.set(account.accountId, account);
     this.byEmail.set(email, account.accountId);
     await this.persist();
@@ -369,14 +465,41 @@ export class AccountStore {
     // upgraded on the next successful sign-in — the one moment the plaintext
     // is legitimately in hand.
     if (needsRehash(account.passwordHash)) {
-      const upgraded: AccountRecord = {
-        ...account,
-        passwordHash: await hashPassword(input.password),
-        updatedAt: new Date(this.now()).toISOString(),
-      };
-      this.byId.set(account.accountId, upgraded);
-      await this.persist();
-      return { ok: true, account: upgraded };
+      /*
+       * THE EXPENSIVE PART HAPPENS OUTSIDE THE LOCK, and the write happens
+       * inside it against a FRESH read.
+       *
+       * This branch used to spread `...account` -- the record as it was before
+       * two scrypt calls, tens of milliseconds each -- straight back into the
+       * map. Anything that changed the account in that window was silently
+       * reverted, and the case that matters is not a lost field: a person
+       * reacting to a compromise presses sign out everywhere, tokenVersion is
+       * bumped, and the stale write puts the OLD version back. Every token the
+       * attacker holds starts working again while the screen says they are
+       * locked out.
+       *
+       * Hashing does not depend on current record state, so it stays outside
+       * the critical section and sign-ins do not serialise on it. Only the
+       * read-modify-write is held, and it applies the new hash onto whatever
+       * the record is NOW rather than onto a remembered copy.
+       */
+      const rehashed = await hashPassword(input.password);
+      const upgraded = await this.withMutationLock<AccountRecord | null>(
+        account.accountId,
+        async (current) => {
+          if (!current) return { record: null, result: null };
+          const next: AccountRecord = {
+            ...current,
+            passwordHash: rehashed,
+            updatedAt: new Date(this.now()).toISOString(),
+          };
+          return { record: next, result: next };
+        },
+      );
+      // A null here means the account vanished mid-sign-in (closed, or removed
+      // by an administrator). The credential was still correct, so the caller
+      // is told what it verified rather than being handed a fabricated record.
+      return { ok: true, account: upgraded ?? account };
     }
     return { ok: true, account };
   }
