@@ -13,6 +13,8 @@ export const AudioFormatSchema = z.enum(['mp3', 'ogg', 'wav', 'webm']).nullable(
 
 export const TranslationEventSchema = z.object({
   eventId: z.string().min(1),
+  /* Optional: see the note on TranslationEvent.sessionId for what absence means. */
+  sessionId: z.string().min(1).optional(),
   sequence: z.number().int().positive(),
   sourceLanguage: z.string().min(2).max(10),
   targetLanguage: z.string().min(2).max(10),

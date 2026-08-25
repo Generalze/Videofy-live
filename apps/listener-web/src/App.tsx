@@ -913,8 +913,17 @@ export default function App(): React.ReactElement {
       if (!event.final) {
         return;
       }
+      /*
+       * KEYED BY SESSION AS WELL AS LANGUAGE AND SEQUENCE. Two programmes
+       * translating into the same language both number their phrases from one,
+       * so a language:sequence key collides across programmes and one
+       * programme’s source text would appear beneath another’s caption. The
+       * gateway scopes these per channel now; this is the second lock on the
+       * same door, because the cost of being wrong here is showing a viewer
+       * text from a programme they are not watching.
+       */
       phraseSourceBySequenceRef.current.set(
-        `${event.targetLanguage}:${event.sequence}`,
+        `${event.sessionId ?? ''}:${event.targetLanguage}:${event.sequence}`,
         event.sourceText,
       );
     });
@@ -962,7 +971,19 @@ export default function App(): React.ReactElement {
         audioQueue.enqueueGenerated(event);
       }
       const sourceText =
-        phraseSourceBySequenceRef.current.get(`${event.targetLanguage}:${event.sequence}`) ?? '';
+        phraseSourceBySequenceRef.current.get(
+          `${event.sessionId}:${event.targetLanguage}:${event.sequence}`,
+        ) ??
+        /*
+         * Fall back to the unscoped key for producers that send no sessionId
+         * -- the mock worker is one. Those events only ever reach the default
+         * channel, so a collision here needs two programmes on the DEFAULT
+         * channel, which is the behaviour that predates channels rather than a
+         * cross-channel leak. Without this the demo path would silently lose
+         * its source-text line.
+         */
+        phraseSourceBySequenceRef.current.get(`:${event.targetLanguage}:${event.sequence}`) ??
+        '';
       const viewingOriginal = isOriginalLanguageSelection(targetLanguageRef.current);
       const entry: ListenerCaptionPhrase = {
         id: captionPhraseId(

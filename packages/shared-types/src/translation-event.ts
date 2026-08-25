@@ -56,6 +56,19 @@ export type AudioMode = 'interpretation' | 'replacement';
 export interface TranslationEvent {
   /** Stable identifier for the live event (e.g. "demo-event"). */
   eventId: string;
+  /**
+   * The media-ingest processing session this phrase belongs to.
+   *
+   * OPTIONAL FOR COMPATIBILITY, and absence has a defined consequence rather
+   * than an undefined one: the gateway can only work out which channel a
+   * phrase belongs to from this field, so an event without it is delivered to
+   * the DEFAULT channel alone. That degrades the supplementary source-text
+   * line on other channels -- which the viewer already renders as empty when
+   * missing -- instead of broadcasting one programme's text to every listener
+   * of that language, including a private programme’s text to somebody who
+   * never had the code.
+   */
+  sessionId?: string;
   /** Monotonically increasing counter used to detect gaps and duplicates. */
   sequence: number;
   /** BCP-47 language tag of the original speech (e.g. "en"). */

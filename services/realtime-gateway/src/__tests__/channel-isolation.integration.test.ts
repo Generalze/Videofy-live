@@ -318,6 +318,54 @@ describe('a private programme', () => {
     expect(errors[0]?.message).toContain('private');
   });
 
+  /*
+   * THE LEAK THIS CLOSES. Translation events went to the bare language room --
+   * every listener of that language across every channel -- so a private
+   * programme’s source text reached viewers who never had the code.
+   */
+  it('does not send a private programme’s phrases to another channel', async () => {
+    const channel = await privateChannel('let-me-in-please');
+    /* Bind the session to the private channel, exactly as running it does. */
+    channel.socket.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+      ...programmeConfig('wrs_private', 'broadcast_private'),
+    });
+    const outsider = connect('listener');
+    const worker = connect('worker');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    outsider.emit(SOCKET_EVENTS.JOIN_LANGUAGE, 'es');
+    const heard: unknown[] = [];
+    outsider.on(SOCKET_EVENTS.TRANSLATION_EVENT, (event: unknown) => heard.push(event));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    worker.emit(SOCKET_EVENTS.WORKER_TRANSLATION, {
+      eventId: 'private-event',
+      sessionId: 'wrs_private',
+      sequence: 1,
+      sourceLanguage: 'en',
+      targetLanguage: 'es',
+      sourceText: 'something confidential',
+      translatedText: 'algo confidencial',
+      audioUrl: null,
+      audioFormat: null,
+      audioDurationMs: null,
+      final: true,
+      videoTimestampMs: 1000,
+      createdAt: new Date().toISOString(),
+      latency: {
+        audioCaptureMs: 0,
+        transcriptionMs: 0,
+        translationMs: 0,
+        speechGenerationMs: 0,
+        deliveryMs: 0,
+        synchronizationOffsetMs: 0,
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(heard).toEqual([]);
+  });
+
   it('keeps a private channel out of the public directory', async () => {
     const channel = await privateChannel('let-me-in-please');
     const listener = connect('listener');

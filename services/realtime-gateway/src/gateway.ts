@@ -1994,10 +1994,18 @@ export class Gateway {
 
   private broadcastTranslationEvents(events: TranslationEvent[]): void {
     for (const readyEvent of events) {
+      /*
+       * Scoped by the session on the event. An event without one resolves to
+       * the default channel, which is the safe direction: a phrase that cannot
+       * be attributed to a channel is delivered narrowly rather than to every
+       * listener of that language -- otherwise a private programme’s source
+       * text reaches somebody who never had the code.
+       */
       this.emitToLegacyProgrammeAudiences(
         selectLegacyProgrammeAudiences({ kind: 'translation', event: readyEvent }),
         SOCKET_EVENTS.TRANSLATION_EVENT,
         readyEvent,
+        this.channels.channelForSession(readyEvent.sessionId ?? ''),
       );
 
       logger.info('Translation event broadcast', {
@@ -2029,18 +2037,18 @@ export class Gateway {
   /**
    * @param channelId - The channel this event belongs to, when it can be known.
    *
-   * OMITTED MEANS UNSCOPED, and that is a real limitation rather than a
-   * default. TimestampedTranslationEvent and GeneratedAudioReadyEvent carry a
-   * sessionId, so their channel is resolvable; TranslationEvent does not, and
-   * one of its two callers is an EventStore readiness callback with no session
-   * in scope at all.
+   * OMITTED MEANS THE BARE LANGUAGE ROOM: every listener of that language,
+   * across every channel. No caller omits it any more, and none should -- the
+   * parameter stays optional only so that adding a new event type cannot
+   * silently acquire the wrong channel by defaulting to one.
    *
-   * Those unscoped events go to the bare language room, which is what they did
-   * before channels existed: every listener of that language receives them,
-   * across channels. Routing them to the default channel instead would be
-   * worse than the leak -- listeners on any other channel would silently
-   * receive no captions. Closing this needs a sessionId on TranslationEvent,
-   * which is a shared-types change and a separate piece of work.
+   * All three programme events now carry a sessionId, so all three resolve.
+   * An event whose session is unknown resolves to the DEFAULT channel, which
+   * is the safe direction: it narrows delivery rather than widening it. The
+   * cost is a supplementary source-text line going missing on other channels,
+   * which the viewer already renders as empty; the alternative was one
+   * programme’s text reaching every listener of that language, including a
+   * private programme’s text reaching somebody who never had the code.
    */
   private emitToLegacyProgrammeAudiences(
     audiences: readonly LegacyProgrammeAudience[],
