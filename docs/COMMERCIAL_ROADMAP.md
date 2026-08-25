@@ -231,7 +231,11 @@ run in-house, and effective against impersonation.
 
 | Work | Notes |
 |---|---|
+| **Nigerian DPIA, filed with the NDPC** | **BLOCK RELEASE.** GAID 2025 names communications software explicitly, so this is a regulator filing rather than an internal document. The longest-lead item on this page |
+| **Subprocessor Register completed** | **BLOCK RELEASE.** Drafted at `docs/privacy/SUBPROCESSOR_REGISTER.md`; only the contractual columns remain, and they need vendor-account access |
+| **Provider training turned off, in writing** | **BLOCK RELEASE.** Deepgram and ElevenLabs. "Provider contract permits private-content training" is an explicit blocker |
 | Terms, Privacy Policy, Acceptable Use, DPA | Professionally reviewed. The consent module already versions them |
+| Age assurance for the locked 18+ posture | DP-090 LOCKS 18+; the enforcement is not built |
 | **Privacy policy must cover the rolling audio buffer** | New, from Phase 3. Processing without storage is still processing |
 | Eligibility / age / minor-consent policy | Required before general launch. Do not invent a minimum age in code |
 | Automated-decision disclosure | GDPR Art 22: suspension and restriction decisions need a stated human-review right |
@@ -239,6 +243,10 @@ run in-house, and effective against impersonation.
 | Subprocessor disclosure | Deepgram, ElevenLabs, Cloudflare, Contabo, plus payment and any KYC vendor |
 | Data export, deletion, retention | §117 seam. Deletion must not break audit integrity or legal hold |
 | Law-enforcement response process | Once abuse evidence is retained, requests for it will follow. Decide the process before the first one arrives |
+
+> **The privacy baseline is `docs/privacy/DATA_PROTECTION_POSITIONS.md` (v1.1), counsel-approved,
+> and it governs this phase.** Its BLOCK RELEASE gates are listed above rather than left implicit.
+> Its §29 records what is already verified as satisfied, so this phase does not re-do finished work.
 
 **A Nigeria-specific constraint.** NIN verification runs through NIMC and BVN through
 NIBSS, and access to both is **licensed**. Direct querying generally requires being a
