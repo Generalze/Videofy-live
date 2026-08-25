@@ -13,7 +13,11 @@ import express from 'express';
 import { resolve } from 'node:path';
 import { requireSessionSecret } from '@videofy-live/account-tokens';
 import { AccountStore } from './account-store.js';
+import type { Pool } from 'pg';
 import { createFileAccountRecords } from './account-records.js';
+import { assertDatabaseReachable, createDatabasePool, requireDatabaseUrl } from './db/pool.js';
+import { migrate } from './db/migrate.js';
+import { createPostgresAccountRecords } from './db/account-records-postgres.js';
 import { createCallerResolver, registerAccountRoutes } from './routes.js';
 import { CORRELATION_HEADER, correlationMiddleware } from './request-context.js';
 import { OrganizationStore } from './organization-store.js';
@@ -124,9 +128,58 @@ app.use((req, res, next) => {
   next();
 });
 
-const store = new AccountStore(
-  createFileAccountRecords(resolve(process.cwd(), '../../voice-enrollment/accounts.json')),
-);
+/*
+ * WHERE ACCOUNTS LIVE, chosen explicitly rather than inferred.
+ *
+ * The same shape as the verification providers above: a named selector, an
+ * unrecognised value refuses to start, and the prototype option is REFUSED in
+ * production. Inferring the store from whether DATABASE_URL happens to be set
+ * would mean a missing variable silently downgrades a production service to a
+ * JSON file, which is exactly the kind of quiet fallback this file exists to
+ * prevent everywhere else.
+ *
+ * `file` is a development prototype. Its own header says so, and it rewrites
+ * every account on every write.
+ */
+const accountStoreKind = (process.env['C7_ACCOUNT_STORE'] ?? 'file').trim().toLowerCase();
+if (accountStoreKind !== 'file' && accountStoreKind !== 'postgres') {
+  throw new Error(
+    `C7_ACCOUNT_STORE="${accountStoreKind}" is not a store. Use "file" or "postgres".`,
+  );
+}
+if (accountStoreKind === 'file' && environment === 'production') {
+  throw new Error(
+    'C7_ACCOUNT_STORE=file is a development prototype and is refused in production. ' +
+      'It keeps password hashes unencrypted in a JSON file and rewrites every account on ' +
+      'every write. Set C7_ACCOUNT_STORE=postgres and DATABASE_URL.',
+  );
+}
+
+let databasePool: Pool | null = null;
+let records;
+if (accountStoreKind === 'postgres') {
+  databasePool = createDatabasePool({
+    connectionString: requireDatabaseUrl(process.env['DATABASE_URL'], 'DATABASE_URL'),
+  });
+  // Creating a pool connects to nothing, so a wrong host or password would stay
+  // invisible until somebody's first sign-in. Prove it now.
+  await assertDatabaseReachable(databasePool);
+  const outcome = await migrate(databasePool);
+  // eslint-disable-next-line no-console
+  console.log(
+    JSON.stringify({
+      service: 'account',
+      message: 'Schema migrations',
+      applied: outcome.applied,
+      alreadyApplied: outcome.alreadyApplied.length,
+    }),
+  );
+  records = createPostgresAccountRecords(databasePool);
+} else {
+  records = createFileAccountRecords(resolve(process.cwd(), '../../voice-enrollment/accounts.json'));
+}
+
+const store = new AccountStore(records);
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: 'account', timestamp: new Date().toISOString() });
@@ -173,7 +226,9 @@ const accounts = await store.hydrate();
 // A count, never an address. A log of who has an account is a record of who
 // uses this product.
 // eslint-disable-next-line no-console
-console.log(JSON.stringify({ service: 'account', message: 'Accounts restored', accounts }));
+console.log(
+  JSON.stringify({ service: 'account', message: 'Accounts restored', accounts, store: accountStoreKind }),
+);
 
 // Loopback by default. The account service is reached through the reverse
 // proxy, so binding every interface only widens what can be reached

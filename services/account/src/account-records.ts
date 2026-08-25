@@ -33,6 +33,17 @@ function isSnapshot(value: unknown): value is Snapshot {
 export function createFileAccountRecords(filePath: string): AccountRecordPort {
   const target = resolve(filePath);
   let queue: Promise<void> = Promise.resolve();
+  /*
+   * What is believed to be on disk, so a single-record upsert does not have to
+   * re-read the file to rewrite it.
+   *
+   * A FILE CANNOT UPDATE ONE ROW. The port became row-oriented because a
+   * database can, and this adapter still rewrites everything -- only its
+   * interface changed. That is the honest cost of keeping a prototype store
+   * working while the real one is built, and it is another reason this is a
+   * prototype: the rewrite is O(accounts) per sign-in.
+   */
+  let snapshot: AccountRecord[] = [];
 
   return {
     async load() {
@@ -56,7 +67,10 @@ export function createFileAccountRecords(filePath: string): AccountRecordPort {
          * Refusing to start is loud, recoverable, and leaves the file intact
          * for somebody to inspect. Starting empty is quiet and unrecoverable.
          */
-        if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
+        if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        snapshot = [];
+        return [];
+      }
         throw new Error(
           `account records at ${target} exist but could not be read: ` +
             `${(error as Error)?.message ?? 'unknown error'}. ` +
@@ -84,15 +98,23 @@ export function createFileAccountRecords(filePath: string): AccountRecordPort {
           `account records at ${target} are not a recognised snapshot. Refusing to start.`,
         );
       }
+      snapshot = [...parsed.accounts];
       return parsed.accounts;
     },
 
-    async save(accounts) {
+    async upsert(record) {
+      const index = snapshot.findIndex((entry) => entry.accountId === record.accountId);
+      if (index === -1) snapshot.push(record);
+      else snapshot[index] = record;
+
+      const pending = [...snapshot];
       const write = queue.then(async () => {
         await mkdir(dirname(target), { recursive: true });
         const temporary = `${target}.${process.pid}.tmp`;
-        const snapshot: Snapshot = { version: 1, accounts: [...accounts] };
-        await writeFile(temporary, JSON.stringify(snapshot), 'utf8');
+        const contents: Snapshot = { version: 1, accounts: pending };
+        // Temp-then-rename: a crash mid-write truncates the temporary file, not
+        // the one holding every account.
+        await writeFile(temporary, JSON.stringify(contents), 'utf8');
         await rename(temporary, target);
       });
       queue = write.catch(() => {});

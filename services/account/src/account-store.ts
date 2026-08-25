@@ -98,12 +98,29 @@ export interface AccountRecord {
 }
 
 export interface AccountRecordPort {
+  /**
+   * Every record, once, at boot.
+   *
+   * The store keeps an in-memory index and this fills it. That is honest at
+   * current scale and is the thing to revisit first when it stops being: it
+   * means startup time grows with the account count, and it means two service
+   * instances would each hold their own copy and drift apart. Durability is
+   * what this port provides; multi-instance correctness is a different change.
+   */
   load(): Promise<readonly AccountRecord[]>;
-  save(records: readonly AccountRecord[]): Promise<void>;
+  /**
+   * Insert or replace ONE record.
+   *
+   * Deliberately not `save(allRecords)`, which is what this was. Rewriting
+   * every account to change one is an artefact of a JSON file being the only
+   * store -- against a database it is a full table rewrite per sign-in, and it
+   * scales by getting slower for everybody every time somebody registers.
+   */
+  upsert(record: AccountRecord): Promise<void>;
 }
 
 export function createEphemeralAccountRecords(): AccountRecordPort {
-  return { load: async () => [], save: async () => {} };
+  return { load: async () => [], upsert: async () => {} };
 }
 
 export type RegistrationResult =
@@ -251,7 +268,7 @@ export class AccountStore {
       const { record: updated, result } = await mutation(record);
       if (updated) {
         this.byId.set(accountId, updated);
-        await this.persist();
+        await this.persist(updated);
       }
       return result;
     });
@@ -287,7 +304,7 @@ export class AccountStore {
       updatedAt: new Date(this.now()).toISOString(),
     };
     this.byId.set(accountId, updated);
-    await this.persist();
+    await this.persist(updated);
     return updated;
   }
 
@@ -304,7 +321,7 @@ export class AccountStore {
       updatedAt: new Date(this.now()).toISOString(),
     };
     this.byId.set(accountId, updated);
-    await this.persist();
+    await this.persist(updated);
     return updated;
   }
 
@@ -321,8 +338,9 @@ export class AccountStore {
     const existing = this.byId.get(accountId);
     if (!existing) return;
     const seen = [...(existing.seenCallbackEvents ?? []), eventId].slice(-64);
-    this.byId.set(accountId, { ...existing, seenCallbackEvents: seen });
-    await this.persist();
+    const updated: AccountRecord = { ...existing, seenCallbackEvents: seen };
+    this.byId.set(accountId, updated);
+    await this.persist(updated);
   }
 
   /** Record a verified phone number once its challenge has been satisfied. */
@@ -335,7 +353,7 @@ export class AccountStore {
       updatedAt: new Date(this.now()).toISOString(),
     };
     this.byId.set(accountId, updated);
-    await this.persist();
+    await this.persist(updated);
     return updated;
   }
 
@@ -360,7 +378,7 @@ export class AccountStore {
       updatedAt: new Date(this.now()).toISOString(),
     };
     this.byId.set(accountId, updated);
-    await this.persist();
+    await this.persist(updated);
     return updated;
   }
 
@@ -433,7 +451,7 @@ export class AccountStore {
     }
     this.byId.set(account.accountId, account);
     this.byEmail.set(email, account.accountId);
-    await this.persist();
+    await this.persist(account);
     return { ok: true, account };
   }
 
@@ -523,7 +541,7 @@ export class AccountStore {
       updatedAt: new Date(this.now()).toISOString(),
     };
     this.byId.set(accountId, updated);
-    await this.persist();
+    await this.persist(updated);
     return updated;
   }
 
@@ -536,7 +554,7 @@ export class AccountStore {
       updatedAt: new Date(this.now()).toISOString(),
     };
     this.byId.set(accountId, updated);
-    await this.persist();
+    await this.persist(updated);
     return updated;
   }
 
@@ -549,8 +567,17 @@ export class AccountStore {
     });
   }
 
-  private async persist(): Promise<void> {
-    const write = this.writing.then(() => this.records.save([...this.byId.values()]));
+  /**
+   * Write one record through to the store.
+   *
+   * Still serialised on `writing`, so two writes cannot land out of order and
+   * leave the durable copy describing a state that never existed. The chain is
+   * global rather than per-account on purpose: it is about ordering writes to
+   * the same backing store, which the per-account lock -- about ordering
+   * read-modify-write sequences -- does not and should not do.
+   */
+  private async persist(record: AccountRecord): Promise<void> {
+    const write = this.writing.then(() => this.records.upsert(record));
     this.writing = write.catch(() => {});
     await write;
   }

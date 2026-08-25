@@ -38,7 +38,7 @@ async function outdatedHash(password: string): Promise<string> {
 }
 
 function seeded(record: AccountRecord): AccountRecordPort {
-  return { load: async () => [record], save: async () => {} };
+  return { load: async () => [record], upsert: async () => {} };
 }
 
 describe('a mutation landing during the rehash', () => {

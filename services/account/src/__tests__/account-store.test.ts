@@ -24,8 +24,14 @@ function memoryRecords(): AccountRecordPort & { rows: unknown[] } {
       return state.rows;
     },
     load: async () => state.rows,
-    save: async (records) => {
-      state.rows = [...records];
+    upsert: async (record: unknown) => {
+      // Mirrors the real port: replace the row if present, append if not.
+      const next = state.rows.filter(
+        (row) => (row as { accountId?: string }).accountId !==
+          (record as { accountId?: string }).accountId,
+      );
+      next.push(record);
+      state.rows = next;
     },
   };
 }

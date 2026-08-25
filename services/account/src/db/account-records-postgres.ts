@@ -1,0 +1,236 @@
+/**
+ * Accounts in PostgreSQL.
+ *
+ * The adapter behind `AccountRecordPort`. It replaces the JSON-file store,
+ * whose own header called itself a development prototype and which had a
+ * failure mode where one unreadable read destroyed every account on the next
+ * write.
+ *
+ * WHAT IS AND IS NOT SOLVED HERE. Durability: an account survives a restart, a
+ * deploy, and a crash mid-write. NOT solved: two service instances would each
+ * hydrate their own in-memory index and drift, because the store still reads
+ * from memory and writes through to here. That is a separate and larger change,
+ * and this file existing must not be taken to mean it has happened.
+ */
+import type { Pool, PoolClient } from 'pg';
+import type { AccountRecord, AccountRecordPort } from '../account-store.js';
+
+/**
+ * Anything that can run a statement: the pool, or one client inside a
+ * transaction.
+ *
+ * This exists because of a bug written and caught in this file: the importer
+ * opened a transaction on a client and then called an adapter that queried the
+ * POOL, which hands out a different connection. Every insert would have landed
+ * outside the transaction it was supposed to be atomic within, and the rollback
+ * on failure would have rolled back nothing. Taking the queryable explicitly
+ * makes that mistake impossible to write.
+ */
+type Queryable = Pick<Pool | PoolClient, 'query'>;
+
+/**
+ * The row as Postgres returns it.
+ *
+ * Written out rather than inferred so that a schema change which does not
+ * match the code fails at the type level here, in one place, rather than as
+ * `undefined` arriving somewhere three calls away.
+ */
+interface AccountRow {
+  account_id: string;
+  email: string;
+  password_hash: string;
+  token_version: number;
+  voice_gender: string | null;
+  created_at: Date;
+  updated_at: Date;
+  trust: unknown;
+  email_challenge: unknown;
+  phone_challenge: unknown;
+  phone_number: string | null;
+  identity_case: unknown;
+  seen_callback_events: unknown;
+}
+
+/**
+ * NULL becomes ABSENT, not null.
+ *
+ * The record type uses optional properties, and several of them are also
+ * explicitly nullable -- `emailChallenge?: ChallengeRecord | null` means the
+ * same thing whether it is missing or null. SQL has only NULL, so a round trip
+ * has to pick one, and picking "absent" reproduces the shape a freshly
+ * registered record actually has. Reading a null back as an explicit `null`
+ * would quietly change the shape of every record that passed through the
+ * database, which is the kind of difference that only shows up in an equality
+ * check somebody wrote months later.
+ */
+function optional<T>(value: T | null | undefined): { present: false } | { present: true; value: T } {
+  return value === null || value === undefined ? { present: false } : { present: true, value };
+}
+
+/*
+ * NonNullable on every cast below is not decoration. The record is declared
+ * with exactOptionalPropertyTypes, so `trust?: AccountTrust` means the key is
+ * either absent or an AccountTrust -- never present-and-undefined. Casting to
+ * the raw property type would readmit undefined and let a NULL column become a
+ * key that exists with nothing behind it, which is the exact distinction the
+ * `optional` helper above is drawing.
+ */
+function toRecord(row: AccountRow): AccountRecord {
+  const voiceGender = optional(row.voice_gender);
+  const trust = optional(row.trust);
+  const emailChallenge = optional(row.email_challenge);
+  const phoneChallenge = optional(row.phone_challenge);
+  const phoneNumber = optional(row.phone_number);
+  const identityCase = optional(row.identity_case);
+
+  return {
+    accountId: row.account_id,
+    email: row.email,
+    passwordHash: row.password_hash,
+    tokenVersion: row.token_version,
+    // Back to the ISO strings the record has always carried. Stored as
+    // timestamptz rather than text so that retention and closure sweeps can
+    // compare dates in SQL instead of pulling every row to filter in memory.
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+    ...(voiceGender.present ? { voiceGender: voiceGender.value as 'male' | 'female' } : {}),
+    ...(trust.present ? { trust: trust.value as NonNullable<AccountRecord['trust']> } : {}),
+    ...(emailChallenge.present
+      ? { emailChallenge: emailChallenge.value as NonNullable<AccountRecord['emailChallenge']> }
+      : {}),
+    ...(phoneChallenge.present
+      ? { phoneChallenge: phoneChallenge.value as NonNullable<AccountRecord['phoneChallenge']> }
+      : {}),
+    ...(phoneNumber.present ? { phoneNumber: phoneNumber.value } : {}),
+    ...(identityCase.present
+      ? { identityCase: identityCase.value as NonNullable<AccountRecord['identityCase']> }
+      : {}),
+    // Always a list. "No events yet" is an empty list, not an absence, which is
+    // why the column is NOT NULL with a default rather than nullable.
+    seenCallbackEvents: Array.isArray(row.seen_callback_events)
+      ? (row.seen_callback_events as string[])
+      : [],
+  };
+}
+
+/** The single definition of how a record becomes a row. */
+async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<void> {
+  /*
+       * ON CONFLICT on the primary key, so this is insert-or-replace in one
+       * statement and one round trip. A read-then-branch would be two, with a
+       * race between them that the per-account lock does not cover across
+       * processes.
+       *
+       * Every column is listed on the UPDATE. Omitting one would leave a stale
+       * value behind on a record the caller believed it had replaced whole,
+       * and that is exactly the class of bug the authenticate() rehash race
+       * turned out to be.
+       */
+      await queryable.query(
+        `INSERT INTO accounts (
+           account_id, email, password_hash, token_version, voice_gender,
+           created_at, updated_at, trust, email_challenge, phone_challenge,
+           phone_number, identity_case, seen_callback_events
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         ON CONFLICT (account_id) DO UPDATE SET
+           email                = EXCLUDED.email,
+           password_hash        = EXCLUDED.password_hash,
+           token_version        = EXCLUDED.token_version,
+           voice_gender         = EXCLUDED.voice_gender,
+           updated_at           = EXCLUDED.updated_at,
+           trust                = EXCLUDED.trust,
+           email_challenge      = EXCLUDED.email_challenge,
+           phone_challenge      = EXCLUDED.phone_challenge,
+           phone_number         = EXCLUDED.phone_number,
+           identity_case        = EXCLUDED.identity_case,
+           seen_callback_events = EXCLUDED.seen_callback_events`,
+        [
+          record.accountId,
+          record.email,
+          record.passwordHash,
+          record.tokenVersion,
+          record.voiceGender ?? null,
+          record.createdAt,
+          record.updatedAt,
+          // Undefined must become SQL NULL explicitly. Passed as undefined, the
+          // driver would treat the parameter as missing rather than null.
+          record.trust ?? null,
+          record.emailChallenge ?? null,
+          record.phoneChallenge ?? null,
+          record.phoneNumber ?? null,
+          record.identityCase ?? null,
+          JSON.stringify(record.seenCallbackEvents ?? []),
+        ],
+      );
+}
+
+export function createPostgresAccountRecords(pool: Pool): AccountRecordPort {
+  return {
+    async load() {
+      /*
+       * Ordered so hydration is deterministic. Two instances, or the same one
+       * twice, build their index in the same sequence -- which matters the day
+       * somebody is comparing two boxes to work out why they disagree.
+       */
+      const { rows } = await pool.query<AccountRow>(
+        `SELECT account_id, email, password_hash, token_version, voice_gender,
+                created_at, updated_at, trust, email_challenge, phone_challenge,
+                phone_number, identity_case, seen_callback_events
+           FROM accounts
+          ORDER BY created_at, account_id`,
+      );
+      return rows.map(toRecord);
+    },
+    upsert: (record) => upsertOn(pool, record),
+  };
+}
+
+/**
+ * Import accounts from the JSON file store, once.
+ *
+ * REFUSES rather than merging if the table already holds anything. A partial or
+ * repeated import is worse than no import: it would silently resurrect accounts
+ * that were closed after the file was written, or overwrite live records with
+ * a stale snapshot, and neither announces itself. Emptiness is the only state
+ * in which this is unambiguous.
+ *
+ * Runs inside ONE transaction, so an import that fails halfway leaves an empty
+ * table rather than an arbitrary prefix of the file that somebody then has to
+ * work out the boundary of.
+ */
+export async function importAccountsOnce(
+  pool: Pool,
+  records: readonly AccountRecord[],
+): Promise<{ imported: number } | { refused: 'table-not-empty'; existing: number }> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query<{ count: string }>('SELECT count(*) FROM accounts');
+    const existing = Number(rows[0]?.count ?? 0);
+    if (existing > 0) {
+      await client.query('ROLLBACK');
+      return { refused: 'table-not-empty', existing };
+    }
+
+    for (const record of records) {
+      // Reuses the same mapping as every other write, so an imported record and
+      // a registered one are byte-identical in the table. A separate INSERT
+      // here would be a second place for the column list to drift.
+      await client.query('SAVEPOINT record');
+      try {
+        await upsertOn(client, record);
+        await client.query('RELEASE SAVEPOINT record');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw new Error(
+          `importing account ${record.accountId} failed; nothing was imported: ` +
+            `${(error as Error)?.message ?? 'unknown error'}`,
+        );
+      }
+    }
+    await client.query('COMMIT');
+    return { imported: records.length };
+  } finally {
+    client.release();
+  }
+}
