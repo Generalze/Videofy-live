@@ -2,11 +2,17 @@
 
 **Document:** `docs/privacy/DATA_PROTECTION_POSITIONS.md`
 **Status:** CANONICAL — Privacy / Legal Engineering Baseline
-**Version:** 1.1
+**Version:** 1.2
 **Position date:** 25 August 2026
 **Applies to:** Videofy-Live web, mobile, realtime gateway, messaging, conferencing, translation/transcription, generated audio, storage, analytics, support tooling, and all subprocessors.
 **Jurisdictions considered:** Nigeria (Nigeria Data Protection Act 2023 and NDPC GAID 2025), European Union / EEA (GDPR), United Kingdom (UK GDPR, Data Protection Act 2018 as amended, including Data (Use and Access) Act 2025 changes in force by 19 June 2026).
 
+> **START WITH `WHAT_APPLIES_NOW.md`.** This document is the baseline for the
+> FINISHED product. Almost none of it bites until there is a first real user, and
+> a large part of it only on EU or UK targeting — which is a decision, not an
+> accident. Read as a to-do list for today it is misleading and demoralising;
+> read as the destination it is correct.
+>
 > **Engineering effect:** This document is a product and engineering control baseline. A feature that conflicts with a **LOCKED**, **PROHIBITED**, or **BLOCK RELEASE** position below must not ship until this document is formally amended after a documented privacy/legal review.
 
 ### Amendment record
@@ -14,6 +20,7 @@
 | Version | Date | Change |
 |---|---|---|
 | 1.0 | 25 Aug 2026 | Counsel-approved engineering baseline. |
+| 1.2 | 25 Aug 2026 | Adds the pointer to `WHAT_APPLIES_NOW.md` and stages the companion documents. Scoping only: changes WHEN obligations are met, never whether. |
 | 1.1 | 25 Aug 2026 | Additive only. Adds DP-055 (personal voice synthesis, which v1.0 neither authorised nor prohibited while it was already built), DP-051A (abuse-evidence snapshot, to stop DP-051 being read as prohibiting a victim-protection control), DP-071A (the individual/organization retention split already decided), and §29 (implementation status, recording facts verified in code so they are not re-litigated or rebuilt). **No obligation in v1.0 has been removed, narrowed or weakened.** |
 
 ---
@@ -623,6 +630,12 @@ docs/privacy/
 ```
 
 No blank template should be represented as completed compliance evidence.
+
+> **Staging note (1.2).** Three of these are enough before first launch:
+> `WHAT_APPLIES_NOW.md`, this document, and `SUBPROCESSOR_REGISTER.md`. The
+> remainder are SECTIONS of the eventual programme, not files that must exist
+> now — creating twelve stubs would itself breach the rule immediately above.
+> They become files when the processing they describe exists.
 
 ---
 
