@@ -15,6 +15,7 @@ import { ChannelSettingsPanel } from './ChannelSettingsPanel';
 import {
   browserRandomBytes,
   generateJoinCode,
+  resolveViewerOrigin,
   toSettingsPayload,
   type ChannelSettingsDraft,
 } from './channelSettings';
@@ -79,7 +80,15 @@ const INGEST_URL = import.meta.env['VITE_INGEST_URL'] ?? 'http://localhost:3002'
  * Defaulting to the current origin would hand out links into the operator
  * console -- the one place an audience must never be sent.
  */
-const VIEWER_ORIGIN = import.meta.env['VITE_VIEWER_ORIGIN'] ?? 'http://localhost:5173';
+/*
+ * Configured as a PATH on staging (/listen) and as a full origin in local
+ * development, where the viewer runs on its own port. resolveViewerOrigin
+ * turns either into the absolute link an operator can actually send somebody.
+ */
+const VIEWER_ORIGIN = resolveViewerOrigin(
+  import.meta.env['VITE_VIEWER_BASE'] ?? 'http://localhost:5173',
+  window.location.origin,
+);
 const PROGRAMME_MEDIA_READY_TIMEOUT_MS = 20_000;
 
 const SOURCE_LANGUAGE_OPTIONS = [

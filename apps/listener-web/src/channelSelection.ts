@@ -39,7 +39,14 @@ const CHANNEL_ID = /^[a-z0-9][a-z0-9-]{0,63}$/i;
 export function readChannelFromLocation(pathname: string, search: string): ChannelSelection {
   const params = new URLSearchParams(search);
 
-  const fromPath = /^\/c\/([^/?#]+)/.exec(pathname)?.[1];
+  /*
+   * MATCHED AS A PATH SEGMENT, NOT AS A PREFIX. Staging serves this app under
+   * /listen, so the browser path is /listen/c/<id> even though the server
+   * strips the prefix before looking for files. Anchoring this to the start of
+   * the path would have worked locally and silently failed everywhere it is
+   * actually deployed.
+   */
+  const fromPath = /(?:^|\/)c\/([^/?#]+)/.exec(pathname)?.[1];
   const fromQuery = params.get('c') ?? params.get('channel');
   const candidate = fromPath ?? fromQuery ?? null;
 
@@ -50,6 +57,19 @@ export function readChannelFromLocation(pathname: string, search: string): Chann
   const code = rawCode !== null && rawCode.length > 0 && rawCode.length <= 64 ? rawCode : null;
 
   return { channelId, code, codeFromUrl: code !== null };
+}
+
+/**
+ * Where this app is mounted, derived from the page it is on.
+ *
+ * Returns '/listen' for '/listen/c/abc' and '' for '/c/abc', so links and
+ * history entries are built relative to wherever the app is actually served
+ * rather than assuming the site root.
+ */
+export function channelBasePath(pathname: string): string {
+  const beforeChannel = /^(.*?)(?:\/)c\/[^/?#]+/.exec(pathname)?.[1];
+  const base = beforeChannel ?? pathname.replace(/\/+$/, '');
+  return base === '/' ? '' : base;
 }
 
 /**

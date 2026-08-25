@@ -12,6 +12,8 @@ interface ChannelDirectoryProps {
   onCodeInputChange: (value: string) => void;
   onSubmitCode: () => void;
   onChooseChannel: (channelId: string) => void;
+  /** Where this app is mounted, so links work under /listen as well as at the root. */
+  basePath: string;
 }
 
 /**
@@ -34,6 +36,7 @@ export function ChannelDirectory({
   onCodeInputChange,
   onSubmitCode,
   onChooseChannel,
+  basePath,
 }: ChannelDirectoryProps): React.ReactElement | null {
   if (stage === 'watching') return null;
 
@@ -108,7 +111,7 @@ export function ChannelDirectory({
               <span id={`channel-state-${channel.channelId}`} className={styles.channelMuted}>
                 {channel.live ? 'Live now' : 'Not broadcasting'}
               </span>
-              <a href={channelViewerUrl('', channel.channelId)}>Open page</a>
+              <a href={channelViewerUrl(basePath, channel.channelId)}>Open page</a>
             </li>
           ))}
         </ul>

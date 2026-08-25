@@ -137,6 +137,25 @@ export function browserRandomBytes(length: number): Uint8Array {
 }
 
 /**
+ * Where the viewer app lives, as an absolute origin.
+ *
+ * THE ONE PLACE A HOSTNAME IS UNAVOIDABLE. Every other URL in these bundles is
+ * relative on purpose, so a bundle stays correct when DNS moves. This one is
+ * copied out of the console and sent to another person, and a relative path is
+ * useless to them.
+ *
+ * So the configuration stays relative -- a PATH like '/listen' -- and the
+ * absolute origin comes from the page at runtime. A value that already looks
+ * absolute is passed through, which is what local development needs, where the
+ * viewer runs on a different port rather than a different path.
+ */
+export function resolveViewerOrigin(configured: string, currentOrigin: string): string {
+  if (/^https?:\/\//i.test(configured)) return configured.replace(/\/$/, '');
+  const path = configured.startsWith('/') ? configured : `/${configured}`;
+  return `${currentOrigin.replace(/\/$/, '')}${path === '/' ? '' : path.replace(/\/$/, '')}`;
+}
+
+/**
  * The link the operator gives out.
  *
  * @param viewerOrigin - Where the viewer app is served, which is not where the

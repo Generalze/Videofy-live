@@ -19,6 +19,7 @@ import styles from './App.module.css';
 import { ChannelDirectory } from './ChannelDirectory';
 import {
   buildJoinPayload,
+  channelBasePath,
   readChannelFromLocation,
   urlWithoutCode,
   viewerStage,
@@ -182,6 +183,11 @@ export default function App(): React.ReactElement {
   const [channelCodeInput, setChannelCodeInput] = useState('');
   const [channelRefused, setChannelRefused] = useState(false);
   const [channelJoined, setChannelJoined] = useState(false);
+  /*
+   * Computed once from the page this app was loaded on. Staging serves it under
+   * /listen, so a link built as /c/<id> would leave the app entirely.
+   */
+  const channelBase = useRef(channelBasePath(window.location.pathname)).current;
   const channelSelectionRef = useRef(channelSelection);
   channelSelectionRef.current = channelSelection;
   const socketRef = useRef<Socket | null>(null);
@@ -1534,7 +1540,7 @@ export default function App(): React.ReactElement {
     setChannelSelection(next);
     setChannelRefused(false);
     setChannelJoined(true);
-    window.history.pushState(null, '', `/c/${encodeURIComponent(channelId)}`);
+    window.history.pushState(null, '', `${channelBase}/c/${encodeURIComponent(channelId)}`);
     socketRef.current?.emit(
       SOCKET_EVENTS.JOIN_CHANNEL,
       buildJoinPayload(next, targetLanguageRef.current),
@@ -1551,6 +1557,7 @@ export default function App(): React.ReactElement {
         onCodeInputChange={setChannelCodeInput}
         onSubmitCode={handleChannelCodeSubmit}
         onChooseChannel={handleChooseChannel}
+        basePath={channelBase}
       />
       <header className={styles.header}>
         <div className={styles.brand}>

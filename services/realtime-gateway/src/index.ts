@@ -89,6 +89,19 @@ const app = createApp({
   connectV1Router: () => gateway.getConnectV1Router(),
 });
 const server = createServer(app);
+/*
+ * Read before the Gateway is built so the warning lands at startup, next to the
+ * other boot diagnostics, rather than the first time an operator connects.
+ */
+const channelIdSalt = process.env['CHANNEL_ID_SALT'];
+if (channelIdSalt === undefined || channelIdSalt.length === 0) {
+  logger.warn(
+    'CHANNEL_ID_SALT is not set; channel ids are derived with the built-in salt. ' +
+      'Links stay stable, but an account id can be mapped to its channel id. ' +
+      'Set it once per deployment and never change it.',
+  );
+}
+
 const gateway = new Gateway(server, config.corsOrigins, {
   mediaIngestUrl: config.mediaIngestUrl,
   realtimeIngressUrl: config.realtimeIngressUrl,
@@ -133,6 +146,22 @@ const gateway = new Gateway(server, config.corsOrigins, {
      * accountId is already resolved.
      */
     requireEntitlement: false,
+    /*
+     * PER-DEPLOYMENT, AND STABLE FOREVER AFTER.
+     *
+     * Channel ids are a digest of the account id under this salt, and they
+     * appear in the links operators hand out. Changing it silently invalidates
+     * every link anybody has ever shared, so it is set once per deployment and
+     * then left alone -- it is not a secret to be rotated.
+     *
+     * Absent, the gateway falls back to a value that is in the source code.
+     * That still works and still keeps links stable; what it does not do is
+     * stop somebody who knows an account id from computing its channel id,
+     * which is the correlation DP-171 asks to prevent. So it warns rather than
+     * failing to boot: refusing to start would take a running deployment down
+     * over a property it has never had.
+     */
+    channelSalt: channelIdSalt,
   },
 });
 

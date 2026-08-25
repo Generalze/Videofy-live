@@ -19,6 +19,12 @@ export VITE_ACCOUNT_URL=/auth
 export VITE_INGEST_URL=/media
 export VITE_PROGRESSIVE_TRANSLATED_AUDIO=true
 
+# Where the VIEWER app is served, as a PATH -- see the note above about
+# hostnames. The operator console turns this into an absolute link at runtime
+# using the origin of the page it is on, because that link gets copied out of
+# the console and sent to somebody, and a relative path is useless to them.
+export VITE_VIEWER_BASE=/listen
+
 # ICE servers for the BROWSER side, as JSON -- the client parses this with
 # JSON.parse and returns [] on any failure, so a comma-separated list is
 # silently identical to setting nothing at all.

@@ -34,6 +34,7 @@ function markup(overrides: Partial<React.ComponentProps<typeof ChannelDirectory>
       onCodeInputChange={() => {}}
       onSubmitCode={() => {}}
       onChooseChannel={() => {}}
+      basePath=""
       {...overrides}
     />,
   );
@@ -59,6 +60,13 @@ describe('the directory', () => {
     expect(markup({ channels: [channel('abc123', 'Live Channel', true)] })).toContain(
       'href="/c/abc123"',
     );
+  });
+
+  /* Staging serves this app under /listen; a root-relative link would leave it. */
+  it('builds links under the path the app is mounted on', () => {
+    expect(
+      markup({ channels: [channel('abc123', 'Live Channel', true)], basePath: '/listen' }),
+    ).toContain('href="/listen/c/abc123"');
   });
 
   /*

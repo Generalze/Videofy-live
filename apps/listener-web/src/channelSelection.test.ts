@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildJoinPayload,
   channelViewerUrl,
+  channelBasePath,
   readChannelFromLocation,
   sortedDirectory,
   urlWithoutCode,
@@ -22,6 +23,15 @@ describe('reading the channel from a link', () => {
 
   it('takes the channel from a query parameter', () => {
     expect(readChannelFromLocation('/', '?c=abc123').channelId).toBe('abc123');
+  });
+
+  /*
+   * DEPLOYED UNDER A PREFIX. Staging serves this app at /listen, so the browser
+   * path is /listen/c/<id>. Anchoring to the start of the path worked locally
+   * and would have failed silently everywhere it is actually served.
+   */
+  it('takes the channel from a path the app is mounted under', () => {
+    expect(readChannelFromLocation('/listen/c/abc123', '').channelId).toBe('abc123');
   });
 
   /* No channel means the front page: the directory of what is on now. */
@@ -201,5 +211,29 @@ describe('what the viewer is shown', () => {
         joined: false,
       }),
     ).toBe('refused');
+  });
+});
+
+describe('where the app is mounted', () => {
+  it('finds the prefix from a channel page', () => {
+    expect(channelBasePath('/listen/c/abc123')).toBe('/listen');
+  });
+
+  it('is empty at the site root', () => {
+    expect(channelBasePath('/c/abc123')).toBe('');
+    expect(channelBasePath('/')).toBe('');
+  });
+
+  it('uses the current path when no channel is in it', () => {
+    expect(channelBasePath('/listen')).toBe('/listen');
+    expect(channelBasePath('/listen/')).toBe('/listen');
+  });
+
+  /* The link built from the base must round-trip back to the same channel. */
+  it('round-trips through the reader under a prefix', () => {
+    const base = channelBasePath('/listen/');
+    const url = channelViewerUrl(base, 'abc123');
+    expect(url).toBe('/listen/c/abc123');
+    expect(readChannelFromLocation(url, '').channelId).toBe('abc123');
   });
 });

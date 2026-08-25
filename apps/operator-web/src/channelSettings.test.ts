@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import {
   canShareCodedLink,
   generateJoinCode,
+  resolveViewerOrigin,
   shareableViewerLink,
   toSettingsPayload,
   validateSettings,
@@ -169,5 +170,35 @@ describe('the words shown next to each choice', () => {
 
   it('says the link is not enough for private', () => {
     expect(VISIBILITY_DESCRIPTIONS.private).toContain('not enough');
+  });
+});
+
+describe('resolving where the viewer app lives', () => {
+  /*
+   * Staging configures a PATH, because these bundles deliberately bake in no
+   * hostname. The absolute origin comes from the page at runtime.
+   */
+  it('turns a configured path into an absolute link on the current origin', () => {
+    expect(resolveViewerOrigin('/listen', 'https://c7.example.com')).toBe(
+      'https://c7.example.com/listen',
+    );
+  });
+
+  /* Local development runs the viewer on its own port, not its own path. */
+  it('passes an absolute origin through unchanged', () => {
+    expect(resolveViewerOrigin('http://localhost:5173', 'http://localhost:5174')).toBe(
+      'http://localhost:5173',
+    );
+  });
+
+  it('handles a viewer served at the site root', () => {
+    expect(resolveViewerOrigin('/', 'https://c7.example.com')).toBe('https://c7.example.com');
+  });
+
+  it('produces a link somebody can actually be sent', () => {
+    const origin = resolveViewerOrigin('/listen', 'https://c7.example.com');
+    expect(shareableViewerLink(origin, 'abc123', 'public', null)).toBe(
+      'https://c7.example.com/listen/c/abc123',
+    );
   });
 });
