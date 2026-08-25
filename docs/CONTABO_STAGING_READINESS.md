@@ -189,6 +189,56 @@ NOT established: audible translated speech, and no commercial provider was
 called. Providers are unchanged — Deepgram, Google, ElevenLabs and Azure
 `integrated` (Azure on TTS only), 9jaLingo `configured`, nothing certified.
 
+## As deployed -- Staging #2 (2026-08-25)
+
+Moved from `eb3639a` to `bdfb87b`, fifteen commits: password reset, consent,
+rate limits, security events, MFA, step-up, operator authentication, and
+programme channels. Rollback point recorded at `/tmp/rollback-point.txt` on the
+box before the fetch.
+
+### Verified against the deployed gateway, not against tests
+
+Eleven checks over a real socket to `127.0.0.1:3001`, minting real session
+tokens for two synthetic accounts:
+
+- an operator presenting nothing is REFUSED -- the hole `?role=operator` left
+- an authenticated account is admitted and told which channel is its own
+- it starts on the shared default channel and moves only when it asks
+- two accounts get two different, opaque channel ids
+- an operator cannot move onto a channel another account owns
+- a private channel refuses a listener with no code, admits one holding it,
+  and is absent from the public directory
+
+Also checked: `/listen/c/<channelId>` serves 200 through the SPA fallback, the
+served shell references the bundle that was just built, and the shell carries
+`no-cache, must-revalidate` so a deployed fix cannot sit behind a cached
+index.html.
+
+### Ownership drift, found the hard way
+
+The checkout would not update: `git merge` failed on `unable to unlink`, and
+the build failed on `EACCES` writing its own `dist`. 455 files and 38
+directories under `/srv/videofy/app`, plus the whole of `/srv/videofy/www`,
+were owned by `root` from earlier deploys run with sudo. `.git/refs/remotes`
+was root-owned too, which is why a normal `git fetch` into a remote ref could
+not create one -- FETCH_HEAD sidesteps it.
+
+The intended pattern is `claude:videofy` on the app tree: owned by the deploy
+user, group-readable by the service user, mode 750/640. Ownership was
+normalised to that. Anyone deploying as root again will reintroduce this.
+
+### What Staging #2 established, and what it did not
+
+Established: the operator console is no longer anonymous ON THE BOX, and
+per-account channels with public, unlisted and private visibility work
+end to end against the deployed service.
+
+NOT established, unchanged from Staging #1: audible translated speech, and no
+commercial provider was called. Nothing here is certified. The channel work
+was exercised through the control plane -- no programme media flowed, so
+per-channel AUDIO isolation is proven by test and by construction, not by a
+listener hearing one programme and not the other on this box.
+
 ### The commercial profile cannot start yet, and this is deliberate
 
 Setting `AI_RUNTIME_PROFILE=commercial-cloud` makes media-ingest **refuse to
