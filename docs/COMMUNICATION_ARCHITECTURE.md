@@ -124,8 +124,24 @@ produces a browsable directory.
 
 | Mode | Found by | Notes |
 |---|---|---|
-| **Discoverable** | Exact verified address only | The default |
-| **Private** | Nobody. Not by address, not by name | Reachable only by invite link |
+| **Private** | Nobody. Not by address, not by name | **The default** — reachable only by invite link |
+| **Discoverable** | Exact verified address only | Opted into, deliberately |
+
+**Private is the default.** Discoverable-by-default is the conventional choice
+and quietly opts people into being findable by anybody who can guess their work
+address. This costs onboarding convenience — a new account cannot be found until
+its owner shares a link — and that cost is paid deliberately.
+
+It is also the value that must win when nothing is stored. Only the exact string
+`discoverable` opts an account in; an absent field, a misspelling, a wrong type
+or a hand-edited record all resolve to private, because the failure that matters
+runs in one direction only. Defaulting the other way would silently expose every
+account whose field failed to read.
+
+**The consequence for the product**: the invite link is the PRIMARY way people
+connect, not a fallback for the private few. Onboarding must put it in front of
+somebody the moment they have an account, because address search will find
+almost nobody by design.
 
 Rules that hold in **both** modes, because a directory is a harvesting target
 whatever the individual settings say:
@@ -362,9 +378,5 @@ These are the owner's, and each changes the build:
 3. **Read receipts and last-seen** — default on, off, or per-user?
 4. **Group messaging**, or one-to-one first? Recommend one-to-one; groups
    multiply the translation matrix and every moderation question.
-5. **Is private mode the default?** Private by default is the stronger privacy
-   position and makes the product harder to start using, because nobody can be
-   found without an exchange of links. Discoverable by default is the
-   conventional choice and quietly opts people into being findable.
-6. **Retention** — how long is a conversation kept, and who can delete it?
+5. **Retention** — how long is a conversation kept, and who can delete it?
    Legal input required before the schema is written.

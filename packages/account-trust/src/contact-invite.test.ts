@@ -9,6 +9,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   CONTACT_INVITE_POLICY,
+  DEFAULT_DISCOVERY_MODE,
+  readDiscoveryMode,
   contactInviteUsable,
   issueContactInvite,
   redeemContactInvite,
@@ -247,5 +249,69 @@ describe('discovery', () => {
     // No count, no list, no partial matches: a directory is the harvesting
     // surface the whole model exists to avoid.
     expect(Object.keys(result).sort()).toEqual(['accountId', 'found']);
+  });
+});
+
+/**
+ * Private by default.
+ *
+ * An owner decision, and the direction of failure is what these pin: an
+ * account must never become findable because a field was missing, misspelt or
+ * hand-edited. Every one of those resolves to private.
+ */
+describe('private by default', () => {
+  it('is the default mode', () => {
+    expect(DEFAULT_DISCOVERY_MODE).toBe('private');
+  });
+
+  it('opts in only on the exact string', () => {
+    expect(readDiscoveryMode('discoverable')).toBe('discoverable');
+  });
+
+  /*
+   * The failure that matters. Defaulting to discoverable would silently expose
+   * every account whose field failed to read.
+   */
+  it('treats absent, misspelt and wrongly-typed values as private', () => {
+    for (const value of [
+      undefined,
+      null,
+      '',
+      'Discoverable',
+      'DISCOVERABLE',
+      ' discoverable ',
+      'public',
+      'private',
+      true,
+      1,
+      {},
+      [],
+    ]) {
+      expect(readDiscoveryMode(value)).toBe('private');
+    }
+  });
+
+  /* A record written before the field existed must not be findable. */
+  it('does not find an account whose mode was never stored', () => {
+    expect(
+      searchContact({ query: 'someone@example.com', matchedAccountId: 'acc_1' }),
+    ).toEqual({ found: false });
+  });
+
+  it('does not find an account whose mode is unrecognised', () => {
+    expect(
+      searchContact({
+        query: 'someone@example.com',
+        matchedAccountId: 'acc_1',
+        matchedMode: 'Discoverable',
+      }),
+    ).toEqual({ found: false });
+  });
+
+  /* Still indistinguishable from an address that was never registered. */
+  it('answers identically for a defaulted account and an unknown address', () => {
+    const defaulted = searchContact({ query: 'a@example.com', matchedAccountId: 'acc_1' });
+    const unknown = searchContact({ query: 'b@example.com', matchedAccountId: null });
+    expect(JSON.stringify(defaulted)).toBe(JSON.stringify(unknown));
   });
 });

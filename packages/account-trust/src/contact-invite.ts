@@ -196,10 +196,46 @@ export function contactInviteUsable(invite: ContactInvite, nowMs: number): boole
  */
 export type DiscoveryMode = 'discoverable' | 'private';
 
+/**
+ * PRIVATE BY DEFAULT. An owner decision, and the safe one either way.
+ *
+ * Discoverable-by-default is the conventional choice and quietly opts people
+ * into being findable by anybody who can guess their work address. Private by
+ * default costs some onboarding convenience -- nobody can be found until they
+ * share a link -- and that cost is paid deliberately.
+ *
+ * It is also the value that must win when nothing is stored. A record written
+ * before this field existed, a corrupted value, or a typo in a migration all
+ * resolve HERE, and the failure that matters is only in one direction:
+ * defaulting to discoverable would silently expose every account whose field
+ * failed to read.
+ */
+export const DEFAULT_DISCOVERY_MODE: DiscoveryMode = 'private';
+
+/**
+ * Read a stored discovery mode.
+ *
+ * Only the exact string `discoverable` opts an account in. Everything else --
+ * absent, misspelt, the wrong type, hand-edited -- is private, for the reason
+ * above. Same shape as `readTrust`: anything unrecognised becomes the safe
+ * value rather than being trusted as written.
+ */
+export function readDiscoveryMode(value: unknown): DiscoveryMode {
+  return value === 'discoverable' ? 'discoverable' : DEFAULT_DISCOVERY_MODE;
+}
+
 export interface ContactSearchInput {
   readonly query: string;
   readonly matchedAccountId: string | null;
-  readonly matchedMode: DiscoveryMode;
+  /**
+   * Deliberately `unknown`, and normalised inside.
+   *
+   * Typed as DiscoveryMode, a caller reading straight from a record could pass
+   * `undefined` for an account that predates the field, and TypeScript would
+   * not stop it at a storage boundary. Normalising here means no call site can
+   * make an account discoverable by omission.
+   */
+  readonly matchedMode?: unknown;
 }
 
 /**
@@ -216,6 +252,8 @@ export type ContactSearchResult =
 
 export function searchContact(input: ContactSearchInput): ContactSearchResult {
   if (input.matchedAccountId === null) return { found: false };
-  if (input.matchedMode === 'private') return { found: false };
+  // Not `=== 'private'`: that would treat an absent or unrecognised mode as
+  // discoverable, which is the one direction this must never fail in.
+  if (readDiscoveryMode(input.matchedMode) !== 'discoverable') return { found: false };
   return { found: true, accountId: input.matchedAccountId };
 }

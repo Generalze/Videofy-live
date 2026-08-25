@@ -66,6 +66,8 @@ export {
 } from './identity-change.js';
 export {
   CONTACT_INVITE_POLICY,
+  DEFAULT_DISCOVERY_MODE,
+  readDiscoveryMode,
   contactInviteUsable,
   issueContactInvite,
   redeemContactInvite,
