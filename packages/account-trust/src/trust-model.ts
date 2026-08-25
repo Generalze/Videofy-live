@@ -122,7 +122,33 @@ const NOTHING: TrustCapabilities = {
 };
 
 /**
- * Deny by default, and grant only from `verified`.
+ * Deny by default, then GRADUATE by which channel actually proved something.
+ *
+ * WHY THIS IS NOT ONE GATE. It used to grant everything from the derived
+ * `verified` state, which requires email AND phone AND identity together. That
+ * read as strict and was in practice a total lockout: identity verification is
+ * synthetic and refused in production, and phone delivery waits on sender-id
+ * registration, so `verified` was unreachable and therefore NOBODY could host
+ * a call. A gate nobody can pass does not protect the product, it replaces it.
+ *
+ * The components exist precisely so they can be spent separately, so they are:
+ *
+ *   email verified   -> use the product. Join and host calls, create an
+ *                       organization, hold a role inside one.
+ *   fully verified   -> activate a commercial product.
+ *
+ * WHY EMAIL IS ENOUGH FOR AN ORGANIZATION ROLE. It looks generous and is not,
+ * because it is not the only gate in front of anything that matters. A newly
+ * created organization sits in `draft` until KYB moves it, and an organization
+ * that is not `verified` grants its members nothing beyond viewing and working
+ * toward verification. The role table then bounds what each member may do. So
+ * email unlocks participation, while the organization's own state still decides
+ * whether that participation can affect anybody.
+ *
+ * WHY COMMERCIAL ACTIVATION KEEPS THE HIGH BAR. It is the one capability tied
+ * to money rather than to use, nothing reaches it today, and leaving it at the
+ * full bar costs nothing now while keeping the right shape for when real
+ * identity verification lands. Deliberately unreachable, not overlooked.
  *
  * A suspended account keeps `canAccessApp` so it can still reach verification
  * status, security and support — a person locked out with no way to see why or
@@ -131,28 +157,43 @@ const NOTHING: TrustCapabilities = {
 export function trustCapabilities(trust: AccountTrust): TrustCapabilities {
   const state = resolveTrustState(trust);
 
-  if (state === 'verified' && trust.risk === 'normal') {
-    return {
-      canAccessApp: true,
-      canHostSessions: true,
-      canCreateOrganization: true,
-      canHoldPrivilegedRole: true,
-      canActivateProducts: true,
-    };
-  }
-
-  // Verified but flagged: the account is real, and something about the current
-  // session or recent behaviour is not. Reading stays available; anything that
-  // creates durable authority waits for the challenge.
-  if (state === 'verified') {
+  /*
+   * ORDER IS THE POLICY, exactly as in resolveTrustState. Every negative
+   * outcome is answered before any component is consulted, so a verified email
+   * on a suspended account can never buy back a capability the suspension took
+   * away.
+   */
+  if (
+    state === 'suspended' ||
+    state === 'rejected' ||
+    state === 'restricted' ||
+    state === 'under_review'
+  ) {
     return { ...NOTHING, canAccessApp: true };
   }
 
-  if (state === 'rejected' || state === 'suspended') {
+  /*
+   * Risk is about behaviour, and it outranks every component. The account may
+   * be entirely real and something about this session is not; reading stays
+   * available and anything that creates durable authority waits for the
+   * step-up challenge.
+   */
+  if (trust.risk !== 'normal') {
     return { ...NOTHING, canAccessApp: true };
   }
 
-  return { ...NOTHING, canAccessApp: true };
+  const emailVerified = trust.email === 'verified';
+  // Every channel, not merely a truthy summary: `state` is the honest label
+  // shown to a person and is left meaning exactly what it always meant.
+  const fullyVerified = state === 'verified';
+
+  return {
+    canAccessApp: true,
+    canHostSessions: emailVerified,
+    canCreateOrganization: emailVerified,
+    canHoldPrivilegedRole: emailVerified,
+    canActivateProducts: fullyVerified,
+  };
 }
 
 export interface TrustTransition {

@@ -339,3 +339,65 @@ describe('product entitlements', () => {
     expect(entitles(personalPlan, 'conference')).toBe(false);
   });
 });
+
+/**
+ * The graduated trust gate, seen from the surface that enforces it.
+ *
+ * trust-model.ts decides what a set of components grants; this is where that
+ * decision actually stops or allows a request, so the policy is pinned at both
+ * ends. Before graduation this whole block was impossible: every capability
+ * required email AND phone AND identity, and identity is synthetic.
+ */
+describe('a verified email is enough to use the product', () => {
+  const EMAIL_ONLY: AccountTrust = {
+    email: 'verified',
+    phone: 'unverified',
+    identity: 'unverified',
+    risk: 'normal',
+    restriction: 'none',
+  };
+
+  it('hosts a call from a personal workspace', () => {
+    const context: AuthorizationContext = {
+      accountId: 'account_1',
+      trust: EMAIL_ONLY,
+      workspaceKind: 'personal',
+    };
+    expect(can(context, 'session.host')).toBe(true);
+    expect(can(context, 'organization.create')).toBe(true);
+  });
+
+  it('acts inside a verified organization rather than only viewing it', () => {
+    const context = orgContext('organization-admin', { trust: EMAIL_ONLY });
+    expect(can(context, 'organization.view')).toBe(true);
+    // The gate that made organizations unusable for an email-verified member.
+    expect(can(context, 'organization.managePeople')).toBe(true);
+    expect(can(context, 'organization.invite')).toBe(true);
+  });
+
+  /* Money still waits for identity; nothing reaches this today. */
+  it('cannot activate a commercial product', () => {
+    const context: AuthorizationContext = {
+      accountId: 'account_1',
+      trust: EMAIL_ONLY,
+      workspaceKind: 'personal',
+    };
+    expect(can(context, 'product.activate')).toBe(false);
+  });
+
+  /* The organization's own state is the other gate, and it still applies. */
+  it('is still bounded by the organization state', () => {
+    const draft = orgContext('organization-admin', {
+      trust: EMAIL_ONLY,
+      organizationState: 'draft',
+    });
+    expect(can(draft, 'organization.view')).toBe(true);
+    expect(can(draft, 'organization.managePeople')).toBe(false);
+  });
+
+  it('is still bounded by the role', () => {
+    const member = orgContext('member', { trust: EMAIL_ONLY });
+    expect(can(member, 'organization.view')).toBe(true);
+    expect(can(member, 'organization.managePeople')).toBe(false);
+  });
+});

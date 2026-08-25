@@ -302,3 +302,92 @@ describe('delivery providers', () => {
     expect(seen).toEqual(['zoe@example.com']);
   });
 });
+
+/**
+ * The graduated gate.
+ *
+ * These pin a PRODUCT POLICY, not an implementation detail: a verified email
+ * is enough to use the product, and only commercial activation waits for full
+ * identity. The previous single gate required email AND phone AND identity
+ * together, which -- with identity synthetic and phone deferred -- was
+ * unreachable, so nobody could host a call at all.
+ */
+describe('graduated trust capabilities', () => {
+  const EMAIL_ONLY = { ...INITIAL_TRUST, email: 'verified' } as const;
+
+  it('lets a verified email host a call', () => {
+    expect(trustCapabilities(EMAIL_ONLY).canHostSessions).toBe(true);
+  });
+
+  it('lets a verified email create an organization and hold a role in one', () => {
+    const capabilities = trustCapabilities(EMAIL_ONLY);
+    expect(capabilities.canCreateOrganization).toBe(true);
+    // Without this an invited member could do nothing inside an organization
+    // but look at it, which makes organizations unusable rather than careful.
+    expect(capabilities.canHoldPrivilegedRole).toBe(true);
+  });
+
+  /*
+   * The one capability tied to money rather than to use. Deliberately
+   * unreachable until real identity verification lands -- not overlooked.
+   */
+  it('still withholds commercial activation until every channel is verified', () => {
+    expect(trustCapabilities(EMAIL_ONLY).canActivateProducts).toBe(false);
+    expect(
+      trustCapabilities({ ...INITIAL_TRUST, email: 'verified', phone: 'verified' })
+        .canActivateProducts,
+    ).toBe(false);
+    expect(trustCapabilities(VERIFIED).canActivateProducts).toBe(true);
+  });
+
+  /*
+   * EMAIL specifically, not "any channel". A phone-verified account with an
+   * unverified email has not proven the address every recovery path depends on.
+   */
+  it('does not accept a verified phone in place of a verified email', () => {
+    const phoneOnly = trustCapabilities({ ...INITIAL_TRUST, phone: 'verified' });
+    expect(phoneOnly.canHostSessions).toBe(false);
+    expect(phoneOnly.canCreateOrganization).toBe(false);
+  });
+
+  it('grants nothing beyond the shell while the email is merely pending', () => {
+    const pending = trustCapabilities({ ...INITIAL_TRUST, email: 'pending' });
+    expect(pending.canAccessApp).toBe(true);
+    expect(pending.canHostSessions).toBe(false);
+  });
+
+  /*
+   * Order is the policy. A verified email must never buy back a capability a
+   * suspension or a risk signal took away.
+   */
+  it('PIN: a suspension outranks a verified email', () => {
+    const suspended = trustCapabilities({ ...EMAIL_ONLY, restriction: 'suspended' });
+    expect(suspended.canAccessApp).toBe(true);
+    expect(suspended.canHostSessions).toBe(false);
+    expect(suspended.canCreateOrganization).toBe(false);
+    expect(suspended.canHoldPrivilegedRole).toBe(false);
+  });
+
+  it('PIN: a risk signal outranks a verified email', () => {
+    for (const risk of ['step_up_required', 'elevated'] as const) {
+      const flagged = trustCapabilities({ ...EMAIL_ONLY, risk });
+      expect(flagged.canAccessApp).toBe(true);
+      expect(flagged.canHostSessions).toBe(false);
+      expect(flagged.canHoldPrivilegedRole).toBe(false);
+    }
+  });
+
+  it('PIN: review and restriction outrank a verified email', () => {
+    for (const restriction of ['under_review', 'restricted', 'rejected'] as const) {
+      const held = trustCapabilities({ ...EMAIL_ONLY, restriction });
+      expect(held.canAccessApp).toBe(true);
+      expect(held.canHostSessions).toBe(false);
+    }
+  });
+
+  /* The label a person is shown is unchanged; only what they may DO graduated. */
+  it('leaves the derived state meaning exactly what it meant before', () => {
+    expect(resolveTrustState(EMAIL_ONLY)).toBe('verification_required');
+    expect(resolveTrustState(VERIFIED)).toBe('verified');
+  });
+});
