@@ -36,6 +36,9 @@ import { registerTariffRoutes } from './tariff-routes.js';
 import { DeviceStore } from './device-store.js';
 import { createPostgresDeviceRecords } from './db/device-records-postgres.js';
 import { registerDeviceRoutes } from './device-routes.js';
+import { PushDispatcher } from './push/push-dispatcher.js';
+import { registerPushRoutes } from './push-routes.js';
+import { resolveInternalIngressAuth } from '@videofy-live/service-env';
 import { VerificationService } from './verification.js';
 import { PasswordResetService } from './password-reset.js';
 import { createSecurityLog } from './security-log.js';
@@ -497,6 +500,42 @@ registerDeviceRoutes(app, {
     secret,
     nowSeconds: () => Math.floor(Date.now() / 1000),
   }),
+  onEvent: (event, detail) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', event, ...detail }));
+  },
+});
+
+/*
+ * PUSH.
+ *
+ * No provider is configured yet, and the dispatcher says so on every attempt
+ * rather than reporting a delivery that never happened. A deployment that
+ * cannot push looks exactly like one nobody happened to call -- phones simply
+ * do not ring, and every service reports itself healthy. `configured` is the
+ * flag to check, and the boot line below is the one that answers it.
+ */
+const push = new PushDispatcher({
+  devices,
+  providers: [],
+  onEvent: (event, detail) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', event, ...detail }));
+  },
+});
+// eslint-disable-next-line no-console
+console.log(
+  JSON.stringify({
+    service: 'account',
+    message: 'Push dispatcher ready',
+    configured: push.configured,
+    note: push.configured ? undefined : 'No push provider: phones cannot be rung.',
+  }),
+);
+
+registerPushRoutes(app, {
+  push,
+  auth: resolveInternalIngressAuth(process.env),
   onEvent: (event, detail) => {
     // eslint-disable-next-line no-console
     console.log(JSON.stringify({ service: 'account', event, ...detail }));
