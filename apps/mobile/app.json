@@ -26,8 +26,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "SET-BY-EAS-INIT"
+        "projectId": "778ce47d-efbf-47b5-ab34-bab38ada4a88"
       }
-    }
+    },
+    "owner": "consummate7s-team"
   }
 }
