@@ -20,6 +20,7 @@
  * person between apps in a way a random value does not.
  */
 import * as SecureStore from 'expo-secure-store';
+import { randomId } from './randomId';
 
 const DEVICE_ID_KEY = 'videofy.deviceId.v1';
 
@@ -32,7 +33,14 @@ type Storage = Pick<typeof SecureStore, 'getItemAsync' | 'setItemAsync'>;
 
 export function createDeviceIdentity(
   storage: Storage = SecureStore,
-  makeId: () => string = () => `dev_${globalThis.crypto.randomUUID()}`,
+  /*
+   * NOT `globalThis.crypto.randomUUID()`. That is a browser API: Hermes has no
+   * Web Crypto and React Native does not polyfill it, so `crypto` is undefined
+   * and the call threw inside a promise -- surfacing as an unhandled rejection
+   * with no stack into our own code. `randomId` picks the best source the
+   * runtime actually has.
+   */
+  makeId: () => string = () => randomId('dev_'),
 ): DeviceIdentity {
   /*
    * Cached in memory AND guarded by a promise, because two callers on startup
