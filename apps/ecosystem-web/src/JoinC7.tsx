@@ -23,6 +23,13 @@ type Mode = 'create' | 'signin' | 'reset';
 interface SessionResult {
   readonly accountId?: string;
   readonly token?: string;
+  /*
+   * Returned by the account service so the call form can start somebody on the
+   * voice they chose at sign-up instead of defaulting everybody to the same
+   * one. Declared here because it is passed straight through to the session the
+   * call app reads -- dropping it silently would be a preference quietly lost.
+   */
+  readonly voiceGender?: 'male' | 'female';
 }
 
 /**
@@ -108,7 +115,36 @@ export function JoinC7() {
       // why `sign out everywhere` invalidates it server-side rather than
       // relying on the browser having forgotten it.
       try {
-        if (typeof body.token === 'string') window.localStorage.setItem('c7.session', body.token);
+        if (typeof body.token === 'string') {
+          window.localStorage.setItem('c7.session', body.token);
+          /*
+           * WRITTEN AGAIN, UNDER THE KEY AND SHAPE THE CALL APP READS.
+           *
+           * Signing in here never reached /call/, and the reason was two
+           * correct implementations disagreeing about a string: this app stored
+           * a bare token under `c7.session`, while call-web reads
+           * `videofy-account:session` and expects `{accountId, token,
+           * voiceGender?}`. So `readAccountSession` returned null, no
+           * sessionToken went into the join payload, and the gateway refused
+           * the host -- which surfaced to the person as "finish verifying your
+           * account", pointing at an account that was already verified.
+           *
+           * Both keys are written rather than one migrated, because this app
+           * reads `c7.session` in two other places and changing all of them at
+           * once is a bigger edit than the bug warrants. The proper fix is to
+           * lift call-web's `accountSession.ts` into a shared package so there
+           * is ONE definition of where a browser session lives; that is a
+           * follow-up, and it is recorded here so it is not rediscovered.
+           */
+          window.localStorage.setItem(
+            'videofy-account:session',
+            JSON.stringify({
+              accountId: body.accountId,
+              token: body.token,
+              ...(body.voiceGender ? { voiceGender: body.voiceGender } : {}),
+            }),
+          );
+        }
       } catch {
         /* storage unavailable; the session simply does not persist */
       }
