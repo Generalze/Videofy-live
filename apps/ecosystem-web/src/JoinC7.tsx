@@ -25,6 +25,30 @@ interface SessionResult {
   readonly token?: string;
 }
 
+/**
+ * What each mode sends to the account service.
+ *
+ * EXTRACTED SO THE SEAM IS TESTABLE. Registration was impossible for everybody
+ * because this object was built inline as `{ email, password }` while the form
+ * above it collected a C7 username, explained what it was for, and bound it to
+ * state. `POST /accounts` requires the username and answers "Choose a C7
+ * username." without it -- which reads as a complaint about the field the person
+ * has just filled in, so the natural response is to keep editing a value that
+ * was never the problem. Both halves were correct; nothing joined them.
+ *
+ * Sign-in deliberately does NOT carry one. An account is identified by its
+ * address, and accepting a username there would be a second way to name the
+ * same person for no benefit.
+ */
+export function joinRequestBody(
+  mode: 'create' | 'signin',
+  email: string,
+  password: string,
+  username: string,
+): Record<string, string> {
+  return mode === 'create' ? { email, password, username } : { email, password };
+}
+
 export function JoinC7() {
   const [mode, setMode] = useState<Mode>('create');
   const [email, setEmail] = useState('');
@@ -67,7 +91,7 @@ export function JoinC7() {
       const response = await fetch(`${ACCOUNT_URL}/${mode === 'create' ? 'accounts' : 'sessions'}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify(joinRequestBody(mode, email, password, username)),
       });
       const body = (await response.json().catch(() => ({}))) as SessionResult & { error?: string };
       if (!response.ok) {
