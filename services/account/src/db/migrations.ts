@@ -288,6 +288,53 @@ const USERNAME_AND_PROFILE: Migration = {
   `,
 };
 
+/**
+ * The contact graph, and the links that are the only way into a private account.
+ *
+ * WHY DURABILITY IS A SECURITY PROPERTY HERE. This graph is what gates personal
+ * calls and messages -- a stranger cannot ring you because you are not contacts.
+ * Held only in memory it empties on every deploy, and an empty graph does not
+ * fail closed: it loses every connection people made and quietly discards the
+ * consent each one represented.
+ *
+ * THE PAIR IS THE PRIMARY KEY, in the fixed order the store sorts ids into. The
+ * database then enforces what the store intends: two rows describing one
+ * relationship cannot exist to disagree about who blocked whom.
+ *
+ * An invite stores its CHALLENGE, which holds a token hash. The plaintext token
+ * is in exactly one place -- the link the issuer copied -- and never in a
+ * column, so somebody reading this table has no link they can use.
+ */
+const CONTACTS: Migration = {
+  name: '007_contacts',
+  sql: `
+    CREATE TABLE IF NOT EXISTS contacts (
+      low_account_id  text   NOT NULL,
+      high_account_id text   NOT NULL,
+      state           text   NOT NULL,
+      requested_by    text   NOT NULL,
+      blocked_by      text,
+      requested_at_ms bigint NOT NULL,
+      updated_at_ms   bigint NOT NULL,
+      PRIMARY KEY (low_account_id, high_account_id)
+    );
+
+    -- Either side may be the one asking, so both columns are searched.
+    CREATE INDEX IF NOT EXISTS contacts_low_idx  ON contacts (low_account_id);
+    CREATE INDEX IF NOT EXISTS contacts_high_idx ON contacts (high_account_id);
+
+    CREATE TABLE IF NOT EXISTS contact_invites (
+      invite_id         text  PRIMARY KEY,
+      issuer_account_id text  NOT NULL,
+      challenge         jsonb NOT NULL,
+      revoked_at_ms     bigint
+    );
+
+    CREATE INDEX IF NOT EXISTS contact_invites_issuer_idx
+      ON contact_invites (issuer_account_id);
+  `,
+};
+
 /** Applied in this order. Append only. */
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
@@ -296,4 +343,5 @@ export const MIGRATIONS: readonly Migration[] = [
   MFA_AND_STEP_UP,
   PENDING_IDENTITY_CHANGE,
   USERNAME_AND_PROFILE,
+  CONTACTS,
 ];

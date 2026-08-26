@@ -25,7 +25,8 @@ import {
 import { IdentityChangeService } from './identity-change-service.js';
 import { createCallerResolver, registerAccountRoutes } from './routes.js';
 import { CORRELATION_HEADER, correlationMiddleware } from './request-context.js';
-import { ContactStore } from './contact-store.js';
+import { ContactStore, createEphemeralContactRecords } from './contact-store.js';
+import { createPostgresContactRecords } from './db/contact-records-postgres.js';
 import { OrganizationStore } from './organization-store.js';
 import { registerOrganizationRoutes } from './organization-routes.js';
 import { VerificationService } from './verification.js';
@@ -311,12 +312,29 @@ console.log(
 /*
  * The contact graph.
  *
- * EPHEMERAL FOR NOW, and that is a stated gap rather than a default nobody
- * noticed: contacts vanish on restart until migration 007 and the durable port
- * land. A contact list that empties on deploy silently reopens every personal
- * call it was gating, so this must not reach a deployment people rely on.
+ * DURABLE WHEN A DATABASE IS CONFIGURED, and the reason is a security property
+ * rather than convenience: this graph is what gates personal calls and
+ * messages. Held only in memory it empties on every deploy, and an empty graph
+ * does not fail closed -- it loses every connection people made and discards
+ * the consent each one represented.
+ *
+ * Ephemeral remains the fallback for a deployment with no database, which is
+ * what tests and a bare local run want, and what production must never be.
  */
-const contacts = new ContactStore();
+const contacts = new ContactStore(
+  () => Date.now(),
+  databasePool ? createPostgresContactRecords(databasePool) : createEphemeralContactRecords(),
+);
+const restoredContacts = await contacts.hydrate();
+// eslint-disable-next-line no-console
+console.log(
+  JSON.stringify({
+    service: 'account',
+    message: 'Contacts restored',
+    contacts: restoredContacts,
+    store: databasePool ? 'postgres' : 'ephemeral',
+  }),
+);
 
 registerAccountRoutes(app, {
   store,

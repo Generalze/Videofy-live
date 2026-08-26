@@ -6,7 +6,8 @@
  * two decisions about the same relationship cannot interleave.
  */
 import { describe, expect, it } from 'vitest';
-import { ContactStore } from '../contact-store.js';
+import { ContactStore, type ContactRecordPort } from '../contact-store.js';
+import type { ContactEdge, ContactInvite } from '@videofy-live/account-trust';
 
 const ALICE = 'acct_aaaa000000000001';
 const BOB = 'acct_bbbb000000000002';
@@ -147,5 +148,121 @@ describe('removing and unblocking', () => {
   it('treats removing a relationship that never existed as done', async () => {
     const store = new ContactStore();
     expect((await store.remove(ALICE, CAROL)).ok).toBe(true);
+  });
+});
+
+/*
+ * SURVIVING A RESTART, which for this store is a security property rather than
+ * a convenience. The contact graph is what gates personal calls and messages;
+ * an empty one does not fail closed, it loses every connection people made and
+ * discards the consent each represented.
+ *
+ * Tested against a recording port rather than a real database, so the thing
+ * being proven is that the STORE writes what it would need to read back -- the
+ * Postgres adapter's own SQL is exercised on the box.
+ */
+describe('surviving a restart', () => {
+  function recordingPort() {
+    const edges = new Map<string, ContactEdge>();
+    const invites = new Map<string, ContactInvite>();
+    const port: ContactRecordPort = {
+      async load() {
+        return [...edges.values()];
+      },
+      async upsert(edge) {
+        edges.set(`${edge.lowAccountId}|${edge.highAccountId}`, edge);
+      },
+      async remove(low, high) {
+        edges.delete(`${low}|${high}`);
+      },
+      async loadInvites() {
+        return [...invites.values()];
+      },
+      async upsertInvite(invite) {
+        invites.set(invite.inviteId, invite);
+      },
+    };
+    return { port, edges, invites };
+  }
+
+  it('restores an accepted contact, so a call it gated stays gated', async () => {
+    const { port } = recordingPort();
+    const before = new ContactStore(() => Date.now(), port);
+    await before.request(ALICE, BOB);
+    await before.accept(BOB, ALICE);
+
+    const after = new ContactStore(() => Date.now(), port);
+    await after.hydrate();
+
+    expect(after.mayReach(ALICE, BOB)).toBe(true);
+    expect(after.contactsOf(ALICE)).toHaveLength(1);
+  });
+
+  /* A block that did not survive a deploy would silently un-block somebody. */
+  it('restores a block', async () => {
+    const { port } = recordingPort();
+    const before = new ContactStore(() => Date.now(), port);
+    await before.block(BOB, ALICE);
+
+    const after = new ContactStore(() => Date.now(), port);
+    await after.hydrate();
+
+    expect(after.mayReach(ALICE, BOB)).toBe(false);
+    expect(after.edgeBetween(ALICE, BOB)?.blockedBy).toBe(BOB);
+  });
+
+  it('does not resurrect a removed contact', async () => {
+    const { port } = recordingPort();
+    const before = new ContactStore(() => Date.now(), port);
+    await before.request(ALICE, BOB);
+    await before.accept(BOB, ALICE);
+    await before.remove(ALICE, BOB);
+
+    const after = new ContactStore(() => Date.now(), port);
+    await after.hydrate();
+
+    expect(after.edgeBetween(ALICE, BOB)).toBeNull();
+  });
+
+  /*
+   * A SPENT INVITE MUST STAY SPENT. If invites did not survive, a restart would
+   * turn every link ever issued back into a working one -- which is the exact
+   * opposite of single use, and worse than never having persisted them.
+   */
+  it('keeps a spent invite spent across a restart', async () => {
+    const { port } = recordingPort();
+    const before = new ContactStore(() => Date.now(), port);
+    const issued = await before.issueInvite(ALICE);
+    const first = await before.redeemInvite(issued.invite.inviteId, issued.token, BOB);
+    expect(first.ok).toBe(true);
+
+    const after = new ContactStore(() => Date.now(), port);
+    await after.hydrate();
+
+    const replay = await after.redeemInvite(issued.invite.inviteId, issued.token, CAROL);
+    expect(replay.ok).toBe(false);
+    expect(after.mayReach(ALICE, CAROL)).toBe(false);
+  });
+
+  it('keeps a revoked invite revoked across a restart', async () => {
+    const { port } = recordingPort();
+    const before = new ContactStore(() => Date.now(), port);
+    const issued = await before.issueInvite(ALICE);
+    await before.revokeInvite(issued.invite.inviteId, ALICE);
+
+    const after = new ContactStore(() => Date.now(), port);
+    await after.hydrate();
+
+    const redeemed = await after.redeemInvite(issued.invite.inviteId, issued.token, BOB);
+    expect(redeemed.ok).toBe(false);
+  });
+
+  /* The plaintext token exists only in the link somebody copied. */
+  it('never writes the token to the port', async () => {
+    const { port, invites } = recordingPort();
+    const store = new ContactStore(() => Date.now(), port);
+    const issued = await store.issueInvite(ALICE);
+
+    expect(JSON.stringify([...invites.values()])).not.toContain(issued.token);
   });
 });
