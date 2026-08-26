@@ -16,6 +16,7 @@ import {
   EMAIL_POLICY,
   PHONE_POLICY,
   createSyntheticProvider,
+  createSyntheticIdentityProvider,
   type VerificationMessage,
 } from '@videofy-live/account-trust';
 
@@ -324,5 +325,143 @@ describe('registering over HTTP', () => {
     } finally {
       await new Promise<void>((r) => server.close(() => r()));
     }
+  });
+});
+
+/*
+ * A CHANNEL THAT CANNOT DELIVER MUST NOT REPORT A SEND.
+ *
+ * The synthetic provider reports every send as delivered, which is right for a
+ * test double and a lie when somebody is waiting for a code. On staging that
+ * produced a "Send code" button that answered "code sent" forever while no SMS
+ * existed, and an identity check stuck "in progress" permanently because the
+ * synthetic provider opens a case no callback will ever close.
+ */
+describe('honest deliverability', () => {
+  it('reports a synthetic email channel as undeliverable', async () => {
+    const harnessed = await harness();
+    expect(harnessed.verification.deliverabilityOf('email')).toBe('synthetic');
+  });
+
+  it('reports a real provider as deliverable', async () => {
+    const store = new AccountStore();
+    const real = {
+      name: 'real',
+      synthetic: false,
+      async send() {
+        return { delivered: true, reference: 'x', synthetic: false };
+      },
+      async notify() {
+        return { delivered: true, reference: 'x', synthetic: false };
+      },
+    };
+    const verification = new VerificationService({
+      store,
+      emailProvider: real,
+      phoneProvider: real,
+    });
+    expect(verification.deliverabilityOf('email')).toBe('real');
+    expect(verification.deliverabilityOf('phone')).toBe('real');
+  });
+
+  /*
+   * ABSENT and SYNTHETIC are different states and are reported differently: one
+   * deployment never configured identity, another configured a stub. Both
+   * refuse, and neither should open a case.
+   */
+  it('separates an absent identity provider from a synthetic one', async () => {
+    const store = new AccountStore();
+    const provider = createSyntheticProvider('email');
+    const withoutIdentity = new VerificationService({
+      store,
+      emailProvider: provider,
+      phoneProvider: provider,
+    });
+    expect(withoutIdentity.identityDeliverability()).toBe('absent');
+  });
+});
+
+/*
+ * AN ABANDONED IDENTITY CHECK MUST NOT STRAND THE ACCOUNT.
+ *
+ * "One open case at a time" refused forever: somebody who started a check and
+ * closed the tab was locked out of identity verification permanently, and the
+ * console told them a check was already in progress while offering nothing to
+ * do about it. Zoe hit exactly this on staging. It is not a synthetic-provider
+ * problem -- a real provider's abandoned session strands an account the same
+ * way.
+ */
+describe('a stale identity check', () => {
+  async function identityHarness() {
+    const store = new AccountStore();
+    let nowMs = 1_700_000_000_000;
+    const provider = createSyntheticProvider('email');
+    const verification = new VerificationService({
+      store,
+      emailProvider: provider,
+      phoneProvider: provider,
+      identityProvider: createSyntheticIdentityProvider(),
+      nowMs: () => nowMs,
+    });
+    const registration = await store.register({
+      email: 'kyc@example.com',
+      password: 'a-long-enough-passphrase-42',
+    });
+    if (!registration.ok) throw new Error('registration failed');
+    return {
+      verification,
+      accountId: registration.account.accountId,
+      advance: (ms: number) => {
+        nowMs += ms;
+      },
+    };
+  }
+
+  it('blocks a second check while the first is still live', async () => {
+    const h = await identityHarness();
+    expect((await h.verification.startIdentityVerification(h.accountId)).ok).toBe(true);
+
+    const second = await h.verification.startIdentityVerification(h.accountId);
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.reason).toBe('in-progress');
+  });
+
+  it('still blocks it most of a day later, so a real check is not interrupted', async () => {
+    const h = await identityHarness();
+    await h.verification.startIdentityVerification(h.accountId);
+    h.advance(23 * 60 * 60 * 1000);
+
+    const second = await h.verification.startIdentityVerification(h.accountId);
+    expect(second.ok).toBe(false);
+  });
+
+  /* THE FIX: after a day, an unfinished check is abandoned, not sacred. */
+  it('lets a new check supersede one that was never finished', async () => {
+    const h = await identityHarness();
+    await h.verification.startIdentityVerification(h.accountId);
+    h.advance(25 * 60 * 60 * 1000);
+
+    const second = await h.verification.startIdentityVerification(h.accountId);
+    expect(second.ok).toBe(true);
+  });
+
+  /*
+   * The superseded case must not be able to win a later race. Callbacks match
+   * on providerReference, so a new check must carry a NEW one.
+   */
+  it('gives the superseding check its own provider reference', async () => {
+    const h = await identityHarness();
+    const first = await h.verification.startIdentityVerification(h.accountId);
+    h.advance(25 * 60 * 60 * 1000);
+    const second = await h.verification.startIdentityVerification(h.accountId);
+
+    if (first.ok && second.ok) {
+      expect(second.session.providerReference).not.toBe(first.session.providerReference);
+    }
+  });
+
+  it('reports a synthetic identity provider as unable to conclude', async () => {
+    const h = await identityHarness();
+    expect(h.verification.identityDeliverability()).toBe('synthetic');
   });
 });

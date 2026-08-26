@@ -444,7 +444,18 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
             // Deliberately no token in the response. Returning one would turn
             // this endpoint into a way to verify an address without ever
             // receiving the message sent to it.
-            res.status(202).json({ sent: true, expiresAtMs: outcome.expiresAtMs });
+            res.status(202).json({
+              sent: true,
+              expiresAtMs: outcome.expiresAtMs,
+              /*
+               * Whether anything actually left the building. A synthetic
+               * provider reports every send as delivered, so without this the
+               * client shows "check your inbox" for a message that was never
+               * sent -- which is precisely how a registration on staging came
+               * to sit waiting for an email that did not exist.
+               */
+              ...(outcome.synthetic ? { deliverable: false as const } : {}),
+            });
             return;
           }
           if (outcome.reason === 'throttled') {
@@ -505,7 +516,11 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
         .requestPhoneVerification(caller.accountId, phone)
         .then((outcome) => {
           if (outcome.ok) {
-            res.status(202).json({ sent: true, expiresAtMs: outcome.expiresAtMs });
+            res.status(202).json({
+              sent: true,
+              expiresAtMs: outcome.expiresAtMs,
+              ...(outcome.synthetic ? { deliverable: false as const } : {}),
+            });
             return;
           }
           if (outcome.reason === 'throttled') {
@@ -542,6 +557,16 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
             res.status(200).json({
               redirectUrl: outcome.session.redirectUrl,
               expiresAtMs: outcome.session.expiresAtMs,
+              /*
+               * Whether this check can actually conclude. A synthetic provider
+               * hands back a redirect no callback will ever follow up, so the
+               * console must say so rather than showing a check that looks
+               * live. Sent only when the answer is no, so a real deployment
+               * never carries the field and an older client keeps working.
+               */
+              ...(verification.identityDeliverability() === 'real'
+                ? {}
+                : { deliverable: false as const }),
             });
             return;
           }

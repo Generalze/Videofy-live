@@ -34,8 +34,21 @@ async function post(path: string, token: string, body?: unknown) {
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  const payload = (await response.json().catch(() => ({}))) as { error?: string };
-  return { ok: response.ok, status: response.status, error: payload.error };
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    deliverable?: boolean;
+  };
+  return {
+    ok: response.ok,
+    status: response.status,
+    error: payload.error,
+    /*
+     * Absent means deliverable. The server sends this flag only to say NO, so a
+     * client that predates it keeps working and a channel that genuinely
+     * delivers never carries the extra field.
+     */
+    deliverable: payload.deliverable !== false,
+  };
 }
 
 function EmailStep({ token, email, state, onChanged }: {
@@ -59,7 +72,23 @@ function EmailStep({ token, email, state, onChanged }: {
     setFeedback({ kind: 'working' });
     const result = await post('/verification/email', token);
     if (result.ok) {
-      setFeedback({ kind: 'sent', message: 'Check your inbox. The link can be used once.' });
+      /*
+       * NOT "temporarily", and not "check your inbox". This deployment has no
+       * email provider, so nothing is going to arrive and nothing is going to
+       * start working on its own -- the same wording rule the call runtime uses
+       * for a missing translation engine. Telling somebody to check an inbox
+       * sends them to look for a fault at their end.
+       */
+      setFeedback(
+        result.deliverable
+          ? { kind: 'sent', message: 'Check your inbox. The link can be used once.' }
+          : {
+              kind: 'error',
+              message:
+                'Email is not configured on this server, so no message was sent. ' +
+                'Nothing is wrong with your address.',
+            },
+      );
       onChanged();
       return;
     }
@@ -123,6 +152,17 @@ function PhoneStep({ token, state, onChanged }: {
     setFeedback({ kind: 'working' });
     const result = await post('/verification/phone', token, { phone });
     if (result.ok) {
+      if (!result.deliverable) {
+        // Staying on the number step on purpose: moving to "enter the code"
+        // asks somebody to type a code that was never sent.
+        setFeedback({
+          kind: 'error',
+          message:
+            'SMS is not configured on this server, so no code was sent. ' +
+            'Nothing is wrong with your number.',
+        });
+        return;
+      }
       setStage('enter-code');
       setFeedback({ kind: 'sent', message: 'Code sent. It expires shortly.' });
       onChanged();

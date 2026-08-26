@@ -65,6 +65,15 @@ export function normalisePhone(input: string): string | null {
   return PHONE_PATTERN.test(compact) ? compact : null;
 }
 
+/**
+ * How long an unfinished identity check blocks a new one.
+ *
+ * Long enough that somebody genuinely mid-check is not interrupted -- these
+ * flows involve finding a document and a well-lit room -- and short enough that
+ * an abandoned one does not strand the account until support intervenes.
+ */
+const IDENTITY_CASE_STALE_MS = 24 * 60 * 60 * 1000;
+
 export class VerificationService {
   private readonly nowMs: () => number;
 
@@ -201,6 +210,25 @@ export class VerificationService {
    * provider, which is exactly what keeping a reference instead of a document
    * is meant to avoid.
    */
+  /**
+   * Whether a channel can actually deliver on this deployment.
+   *
+   * A synthetic provider reports every send as delivered and delivers nothing,
+   * which is the correct behaviour for a test double and a lie when a person is
+   * waiting for a code. Surfaced so the caller can say so instead of showing a
+   * success it cannot honour.
+   */
+  deliverabilityOf(channel: 'email' | 'phone'): 'real' | 'synthetic' {
+    const provider = channel === 'email' ? this.deps.emailProvider : this.deps.phoneProvider;
+    return provider.synthetic ? 'synthetic' : 'real';
+  }
+
+  /** Whether identity checks can actually complete here. */
+  identityDeliverability(): 'real' | 'synthetic' | 'absent' {
+    if (!this.deps.identityProvider) return 'absent';
+    return this.deps.identityProvider.synthetic ? 'synthetic' : 'real';
+  }
+
   async startIdentityVerification(
     accountId: string,
   ): Promise<
@@ -216,14 +244,33 @@ export class VerificationService {
     const trust = readTrust(account.trust);
     if (trust.identity === 'verified') return { ok: false, reason: 'already-verified' };
 
-    // One open case at a time. Two live cases means two callbacks racing to
-    // decide the same account, and whichever lands last wins by accident.
+    const nowMs = this.nowMs();
+
+    /*
+     * One open case at a time -- two live cases means two callbacks racing to
+     * decide the same account, and whichever lands last wins by accident.
+     *
+     * BUT ONLY WHILE IT IS STILL LIVE. Without the staleness test this refused
+     * forever: anybody who started a check and closed the tab was locked out of
+     * identity verification permanently, with the console reporting "an
+     * identity check is already in progress" and offering nothing to do about
+     * it. That is not a synthetic-provider problem -- a real provider's
+     * abandoned session strands an account exactly the same way.
+     *
+     * Superseding is safe because a callback is matched by providerReference:
+     * the stale case's reference is no longer the one on the account, so a late
+     * answer for it finds nothing to update rather than racing the new check.
+     */
     const current = account.identityCase;
-    if (current && (current.status === 'created' || current.status === 'submitted' || current.status === 'processing')) {
+    const isOpen =
+      current &&
+      (current.status === 'created' ||
+        current.status === 'submitted' ||
+        current.status === 'processing');
+    if (current && isOpen && nowMs - current.createdAtMs < IDENTITY_CASE_STALE_MS) {
       return { ok: false, reason: 'in-progress' };
     }
 
-    const nowMs = this.nowMs();
     const caseId = `idcase_${accountId}_${nowMs.toString(36)}`;
     const session = await provider.createVerificationSession({ accountId, reference: caseId, nowMs });
 
