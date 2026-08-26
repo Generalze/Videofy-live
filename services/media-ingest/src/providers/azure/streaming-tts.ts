@@ -137,7 +137,21 @@ export class AzureStreamingSynthesisProvider implements StreamingSpeechSynthesis
         throw new MediaIngestError(
           // The body carries the actual complaint. A bare status hid a missing
           // quota header from us for a whole validation session once already.
-          `Azure speech returned ${response.status}: ${body.slice(0, 400)}`,
+          //
+          // EXCEPT ON A REJECTED VOICE, where Azure sends status 400 and
+          // nothing else -- no body, no explanatory header, `server:
+          // istio-envoy` and that is the whole response. Repeating the empty
+          // string back is not a diagnosis, so name the cause the wire refuses
+          // to: a voice the region does not host. Azure's own portal offers
+          // voices it will then reject here, which is how
+          // `en-US-Ava:DragonHDLatestNeural` reached northeurope, where zero
+          // DragonHD voices exist, and failed every request identically.
+          response.status === 400 && body.length === 0
+            ? `Azure speech rejected voice "${voice}" in region ${this.config.region} ` +
+              '(400, empty body -- Azure sends no reason). The usual cause is a voice ' +
+              'the region does not host: check it against ' +
+              `https://${this.config.region}.tts.speech.microsoft.com/cognitiveservices/voices/list`
+            : `Azure speech returned ${response.status}: ${body.slice(0, 400)}`,
           'tts-failed',
           502,
         );
