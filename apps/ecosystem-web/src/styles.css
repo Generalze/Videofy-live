@@ -2342,6 +2342,24 @@ button:focus-visible {
   gap: 0.35rem;
 }
 
+/*
+ * Set apart from the workspace picker rather than styled like it. Sign out is
+ * the one control on this header that cannot be undone by clicking again, and a
+ * destructive action that looks like a dropdown gets pressed by accident.
+ */
+.app-signout {
+  margin-top: 0.5rem;
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.14));
+  color: var(--text-faint);
+}
+
+.app-signout:hover {
+  color: var(--text-strong, #fff);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
 .app-workspace-label {
   font-size: 0.7rem;
   letter-spacing: 0.18em;

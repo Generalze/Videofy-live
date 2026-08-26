@@ -72,6 +72,43 @@ function storedToken(): string | null {
   }
 }
 
+/**
+ * Sign out of this browser.
+ *
+ * LOCAL FIRST, AND UNCONDITIONALLY. The server is told so the session is
+ * revoked everywhere, but that is best effort: somebody who taps sign out on a
+ * flaky connection must end up signed out HERE regardless. A sign-out that can
+ * fail is a sign-out people stop trusting.
+ *
+ * BOTH KEYS, because a browser session currently lives under two of them --
+ * `c7.session` for this app and `videofy-account:session` for the call app.
+ * Clearing one would leave the other signed in, which is worse than not
+ * clearing at all: the person believes they have left and the call app still
+ * holds their credential. Unifying the two is the recorded follow-up; until
+ * then, anything that clears one MUST clear both.
+ */
+async function signOut(accountUrl: string, token: string | null): Promise<void> {
+  try {
+    window.localStorage.removeItem('c7.session');
+    window.localStorage.removeItem('videofy-account:session');
+  } catch {
+    /* storage unavailable; there was nothing persisted to clear */
+  }
+
+  if (token !== null) {
+    try {
+      await fetch(`${accountUrl}/sessions`, {
+        method: 'DELETE',
+        headers: { authorization: `Bearer ${token}` },
+      });
+    } catch {
+      // Already signed out locally. The server session ages out on its own.
+    }
+  }
+
+  window.location.assign('/');
+}
+
 const ROLE_LABEL: Record<string, string> = {
   'organization-owner': 'Owner',
   'organization-admin': 'Administrator',
@@ -263,6 +300,13 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
                 </option>
               ))}
             </select>
+            <button
+              className="button button-small app-signout"
+              type="button"
+              onClick={() => void signOut(ACCOUNT_URL, storedToken())}
+            >
+              Sign out
+            </button>
           </div>
         </header>
 
