@@ -1976,6 +1976,43 @@ button:focus-visible {
 }
 
 /* A button that reads as a link, because it navigates rather than submits. */
+/* Identity, laid out as separate blocks because the two fields ARE separate. */
+.profile-block {
+  padding: 1rem 0;
+  border-top: 1px solid rgba(160, 180, 220, 0.12);
+}
+
+.profile-block:first-of-type {
+  border-top: 0;
+  padding-top: 0.5rem;
+}
+
+.profile-label {
+  margin: 0 0 0.5rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--c7-text-muted, #8d9ab4);
+  font-weight: 600;
+}
+
+.profile-value {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 0.5rem;
+}
+
+.profile-value code {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #ffffff;
+  background: rgba(160, 180, 220, 0.1);
+  padding: 0.3rem 0.6rem;
+  border-radius: 6px;
+  user-select: all;
+}
+
 /* A field whose prefix is part of the interface, not part of what you type. */
 .field-prefixed {
   display: flex;

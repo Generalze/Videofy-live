@@ -256,3 +256,67 @@ describe('finding somebody by username', () => {
     expect((await call('GET', '/accounts/lookup?username=zoemeak')).status).toBe(401);
   });
 });
+
+describe('what the shell is told about you', () => {
+  /*
+   * The two fields arrive apart, and stay apart. Collapsing them into one
+   * object with one label is the first step back toward treating a display
+   * name as an identity, which is the belief the split exists to remove.
+   */
+  it('reports the handle and the display name separately', async () => {
+    const account = await registered('zoe@example.com');
+    await call('POST', '/accounts/username', { username: 'zoemeak' }, account.token);
+    await call('POST', '/accounts/display-name', { displayName: 'Zoe Meak' }, account.token);
+
+    const me = (await (await call('GET', '/me', undefined, account.token)).json()) as {
+      profile: { username: string; displayName: string; discoverable: boolean };
+    };
+
+    expect(me.profile.username).toBe('c7zoemeak');
+    expect(me.profile.displayName).toBe('Zoe Meak');
+  });
+
+  /* Private by default: nobody has to opt out of being findable. */
+  it('reports a new account as not discoverable', async () => {
+    const account = await registered('zoe@example.com');
+    const me = (await (await call('GET', '/me', undefined, account.token)).json()) as {
+      profile: { discoverable: boolean };
+    };
+
+    expect(me.profile.discoverable).toBe(false);
+  });
+
+  it('reports the resolved answer, not the stored string', async () => {
+    const account = await registered('zoe@example.com');
+    // Anything that is not exactly 'discoverable' must resolve to private --
+    // including a value a future version might write that this one does not
+    // understand.
+    await app.store.setDiscoveryMode(account.accountId, 'contacts-only');
+
+    const me = (await (await call('GET', '/me', undefined, account.token)).json()) as {
+      profile: { discoverable: boolean };
+    };
+    expect(me.profile.discoverable).toBe(false);
+  });
+
+  it('turns discovery on and off through its own endpoint', async () => {
+    const account = await registered('zoe@example.com');
+
+    const on = await call('POST', '/accounts/discovery', { discoverable: true }, account.token);
+    expect(await on.json()).toEqual({ discoverable: true });
+
+    const off = await call('POST', '/accounts/discovery', { discoverable: false }, account.token);
+    expect(await off.json()).toEqual({ discoverable: false });
+  });
+
+  it('refuses anything that is not a plain yes or no', async () => {
+    const account = await registered('zoe@example.com');
+    const response = await call(
+      'POST',
+      '/accounts/discovery',
+      { discoverable: 'yes' },
+      account.token,
+    );
+    expect(response.status).toBe(400);
+  });
+});

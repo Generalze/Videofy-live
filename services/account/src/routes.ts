@@ -1162,6 +1162,41 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
   });
 
   /**
+   * Choose whether your handle can be found at all.
+   *
+   * OFF IS THE DEFAULT and stays the default: this endpoint is how somebody
+   * opts IN, and turning it back off is always available. The stored value is
+   * read through readDiscoveryMode everywhere, so anything that is not exactly
+   * 'discoverable' -- including a value written by a future version this one
+   * does not understand -- resolves to private.
+   */
+  app.post('/accounts/discovery', (req, res) => {
+    const caller = callerAccountId(req);
+    if (caller === null) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    const requested = (req.body as { discoverable?: unknown } | undefined)?.discoverable;
+    if (typeof requested !== 'boolean') {
+      res.status(400).json({ error: 'Choose whether people can find you by username.' });
+      return;
+    }
+
+    void deps.store
+      .setDiscoveryMode(caller.accountId, requested ? 'discoverable' : 'private')
+      .then((record) => {
+        if (!record) {
+          res.status(401).json({ error: 'Sign in to continue.' });
+          return;
+        }
+        res
+          .status(200)
+          .json({ discoverable: readDiscoveryMode(record.discoveryMode) === 'discoverable' });
+      })
+      .catch(() => res.status(500).json({ error: 'That setting could not be saved.' }));
+  });
+
+  /**
    * Find somebody by username, in order to add them.
    *
    * PRIVATE BY DEFAULT, which is the whole reason this endpoint is careful. An
@@ -1235,6 +1270,22 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
     res.status(200).json({
       accountId: caller.accountId,
       email: account.email,
+      /*
+       * The two identity fields, kept apart here as everywhere else. `username`
+       * is what people add you by; `displayName` is what they see in a call and
+       * resolves to nobody. Sending them as one object would be the first step
+       * back toward treating them as one thing.
+       */
+      profile: {
+        username: account.username ?? null,
+        displayName: account.displayName ?? null,
+        /*
+         * Reported as the resolved answer, not the raw stored string. A client
+         * deciding for itself what counts as discoverable is a second
+         * implementation of a privacy rule.
+         */
+        discoverable: readDiscoveryMode(account.discoveryMode) === 'discoverable',
+      },
       /*
        * What this person still has to accept. Derived, never stored: publishing
        * a new policy version re-opens consent by itself, with no migration and

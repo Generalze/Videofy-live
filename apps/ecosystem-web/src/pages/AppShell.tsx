@@ -13,6 +13,7 @@
  */
 import { useEffect, useState } from 'react';
 import { internalLink, type Route } from '../router';
+import { ProfilePanel, type Profile } from '../ProfilePanel';
 import { VerificationPanel } from '../VerificationPanel';
 
 const ACCOUNT_URL = (
@@ -58,6 +59,8 @@ interface Bootstrap {
   };
   readonly workspaces: readonly WorkspaceSummary[];
   readonly capabilities: readonly string[];
+  /** The handle people add you by, and the name they see. Kept apart. */
+  readonly profile: Profile;
 }
 
 /** The token the sign-in flow stored. Absent means "not signed in here". */
@@ -360,6 +363,17 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
             </p>
           </div>
         )}
+
+        {/*
+          * Shown whatever the verification state is. Your identity is not a
+          * reward for finishing verification -- it is the thing you arrive
+          * wanting to see, and the handle is what you hand out to be added.
+          */}
+        <ProfilePanel
+          token={storedToken() ?? ''}
+          profile={me.profile}
+          onChanged={() => setRefreshKey((key) => key + 1)}
+        />
       </div>
     </section>
   );
