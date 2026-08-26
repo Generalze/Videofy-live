@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Videofy Live",
-    "slug": "videofy-live",
+    "slug": "consummate7",
     "version": "0.1.0",
     "orientation": "portrait",
     "scheme": "videofy",
@@ -29,6 +29,6 @@
         "projectId": "778ce47d-efbf-47b5-ab34-bab38ada4a88"
       }
     },
-    "owner": "consummate7s-team"
+    "owner": "consummate7"
   }
 }
