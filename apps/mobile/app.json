@@ -22,7 +22,8 @@
     },
     "plugins": [
       "expo-dev-client",
-      "expo-notifications"
+      "expo-notifications",
+      "@config-plugins/react-native-webrtc"
     ],
     "extra": {
       "eas": {
