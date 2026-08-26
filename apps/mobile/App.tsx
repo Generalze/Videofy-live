@@ -1,201 +1,141 @@
 /** @author masterzee001 */
 /**
- * The first screen, and deliberately a diagnostic one.
+ * The app, and the single place that knows who is signed in.
  *
- * WHAT IT PROVES, AND WHAT IT REFUSES TO FAKE. Before any of the product
- * exists, one question is worth answering on a real phone: can this device be
- * reached? Three of the four layers involved can be checked without an account,
- * and this checks them. The fourth -- binding a push token to an account -- is
- * authenticated, and there is no sign-in yet.
+ * ONE SOURCE OF TRUTH. Routing is derived from `AuthSessionManager`'s state and
+ * from nothing else -- no screen navigates on success, no component keeps its
+ * own idea of whether somebody is signed in. Two answers to that question is how
+ * a signed-out app keeps showing signed-in content.
  *
- * The shortcut would be to carry a real session token in an `EXPO_PUBLIC_`
- * variable so the button appears to work. That variable is compiled into the
- * bundle in plain text and readable by anyone who unpacks the APK, so it would
- * publish a live credential to every install. The shortcut is therefore not
- * offered anywhere in this app, and the screen says plainly what is still
- * unproven instead of pretending otherwise.
+ * THE SERVICES ARE BUILT ONCE, at module scope, because they own things that
+ * must not be duplicated: a device id minted on first use, a rotation
+ * subscription, an in-flight sign-in guard. Rebuilding them on a re-render would
+ * quietly produce two of each.
  *
- * NO TOKEN IS EVER DISPLAYED. Only whether one was issued, and its length. A
- * token on screen is a token in a screenshot.
+ * ROTATION IS TIED TO THE SESSION, started when signed in and stopped when
+ * signed out. A listener outliving the account it was started for would
+ * re-register this phone against a session that no longer exists.
+ *
+ * WHAT REPLACED THE PRE-AUTH DIAGNOSTIC. This screen used to run three
+ * unauthenticated probes -- reachable, permitted, token issued -- because there
+ * was no sign-in and the honest thing was to prove what could be proven. That
+ * checkpoint passed on a real device and is frozen at 395d379. Those three
+ * conditions are now preconditions of registering, and each still surfaces by
+ * name when registration fails, so nothing was lost by removing the screen that
+ * checked them separately.
  */
 import { StatusBar } from 'expo-status-bar';
 /*
  * React 19 removed the GLOBAL JSX namespace, so `JSX.Element` no longer
  * resolves without an import. It is exported from 'react' instead.
  */
-import { useCallback, useState, type JSX } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { pendingProbes, runDiagnostics, type Probe } from './src/pushDiagnostics';
+import { useCallback, useEffect, useState, type JSX } from 'react';
+import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
+import { AuthSessionManager, type AuthState } from './src/auth/authSessionManager';
+import { createSecureSessionStore } from './src/auth/secureSessionStore';
+import { createDeviceIdentity } from './src/push/deviceIdentity';
+import { createPushTokenService } from './src/push/pushTokenService';
+import { DeviceRegistrationService } from './src/push/deviceRegistrationService';
+import { SignInScreen } from './src/screens/SignInScreen';
+import { HomeScreen } from './src/screens/HomeScreen';
 
-/** Where the account service lives for this build. Not a secret. */
+/** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
 const ACCOUNT_BASE_URL =
   process.env['EXPO_PUBLIC_ACCOUNT_URL'] ?? 'https://staging.consummate7.com/auth';
 
-/*
- * Four marks, not two. A declined permission and a broken build must not look
- * alike: one is a choice being respected, the other is something to go and fix.
- */
-const MARK: Record<Probe['state'], string> = {
-  pending: '·',
-  pass: '✓',
-  denied: '—',
-  skipped: '·',
-  fail: '✗',
-};
+const auth = new AuthSessionManager({
+  accountBaseUrl: ACCOUNT_BASE_URL,
+  store: createSecureSessionStore(),
+});
 
-/*
- * Colour by state, as an explicit map rather than `styles[probe.state]`.
- *
- * Indexing the stylesheet by state name looked neat and was wrong: a state
- * called `pending` collided with the `pending` SECTION style further down, so
- * the mark inherited `marginTop` and `borderTopWidth` from a container. Nothing
- * errors, nothing warns; a tick just draws in the wrong place. Two namespaces
- * that happen to share a word should never be joined by a lookup.
- */
-const MARK_COLOR: Record<Probe['state'], string> = {
-  pending: '#5d6874',
-  pass: '#3ec9c0',
-  // Amber, not red: a choice, not a defect.
-  denied: '#d9a441',
-  skipped: '#5d6874',
-  fail: '#e06c5b',
+const devices = new DeviceRegistrationService({
+  // The narrow capability, bound once. This is the only route from push code to
+  // an authenticated request, and it cannot reach the credential behind it.
+  authorizedFetch: (path, init) => auth.authorizedFetch(path, init),
+  identity: createDeviceIdentity(),
+  pushTokens: createPushTokenService(),
+  platform: Platform.OS === 'ios' ? 'ios' : Platform.OS === 'android' ? 'android' : 'web',
+  label: Platform.OS === 'ios' ? 'iPhone' : 'Android phone',
+});
+
+/** Why somebody is at the sign-in screen, when it was not their choice. */
+const NOTICE: Partial<Record<string, string>> = {
+  expired: 'Your session expired. Sign in again to continue.',
+  revoked: 'You were signed out. Sign in again to continue.',
 };
 
 export default function App(): JSX.Element {
-  const [busy, setBusy] = useState(false);
-  const [probes, setProbes] = useState<readonly Probe[]>(pendingProbes());
-  const [ran, setRan] = useState(false);
+  const [state, setState] = useState<AuthState>(auth.current());
 
-  const run = useCallback(async () => {
-    setBusy(true);
-    try {
-      setProbes(await runDiagnostics({ accountBaseUrl: ACCOUNT_BASE_URL }));
-      setRan(true);
-    } finally {
-      setBusy(false);
-    }
+  useEffect(() => {
+    /*
+     * Subscribed BEFORE restoring, or the state change restore produces lands
+     * before anything is listening and the first render never updates.
+     */
+    const manager = auth as unknown as { onState?: ((s: AuthState) => void) | undefined };
+    manager.onState = setState;
+    void auth.restore();
+    return () => {
+      manager.onState = undefined;
+    };
   }, []);
 
   /*
-   * `denied` and `skipped` do not count as failures -- nothing is broken, so the
-   * screen must not claim anything is.
+   * Rotation follows the SESSION, not the component. Stopped on unmount too, so
+   * a backgrounded app does not leave a listener behind.
    */
-  const anyFailed = probes.some((probe) => probe.state === 'fail');
-  const permissionDeclined = probes.some((probe) => probe.state === 'denied');
-  const healthy = ran && !anyFailed;
+  useEffect(() => {
+    if (state.status !== 'signed-in') {
+      devices.stopWatchingForRotation();
+      return;
+    }
+    devices.startWatchingForRotation();
+    return () => devices.stopWatchingForRotation();
+  }, [state.status]);
+
+  const signIn = useCallback((email: string, password: string) => auth.signIn(email, password), []);
+  const register = useCallback(() => devices.register(), []);
+  const signOut = useCallback(async () => {
+    // Stopped FIRST: a rotation arriving during sign-out must not race the
+    // clearing of the session it would otherwise register against.
+    devices.stopWatchingForRotation();
+    await auth.signOut();
+  }, []);
+
+  if (state.status === 'starting' || state.status === 'validating') {
+    return (
+      <View style={styles.centre}>
+        <StatusBar style="light" />
+        <ActivityIndicator color="#3ec9c0" size="large" />
+        <Text style={styles.waiting}>Checking your session</Text>
+      </View>
+    );
+  }
+
+  if (state.status === 'signed-in') {
+    return (
+      <>
+        <StatusBar style="light" />
+        <HomeScreen accountId={state.accountId} onRegister={register} onSignOut={signOut} />
+      </>
+    );
+  }
 
   return (
-    <ScrollView contentContainerStyle={styles.screen}>
+    <>
       <StatusBar style="light" />
-      <Text style={styles.brand}>CONSUMMATE 7</Text>
-      <Text style={styles.title}>Videofy Live</Text>
-      <Text style={styles.lede}>Before anything else: can this phone be reached?</Text>
-
-      <View style={styles.probes}>
-        {probes.map((probe) => (
-          <View key={probe.id} style={styles.probe}>
-            <Text style={[styles.mark, { color: MARK_COLOR[probe.state] }]}>{MARK[probe.state]}</Text>
-            <View style={styles.probeText}>
-              <Text style={styles.probeLabel}>{probe.label}</Text>
-              {probe.detail !== '' && <Text style={styles.probeDetail}>{probe.detail}</Text>}
-            </View>
-          </View>
-        ))}
-      </View>
-
-      <Pressable
-        style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
-        onPress={run}
-        disabled={busy}
-        accessibilityRole="button"
-      >
-        {busy ? (
-          <ActivityIndicator color="#0b0f14" />
-        ) : (
-          <Text style={styles.buttonLabel}>{ran ? 'Run again' : 'Run checks'}</Text>
-        )}
-      </Pressable>
-
-      {healthy && (
-        <View style={styles.note}>
-          <Text style={styles.noteTitle}>
-            {permissionDeclined ? 'Nothing is broken' : 'Everything reachable'}
-          </Text>
-          <Text style={styles.noteBody}>
-            {permissionDeclined
-              ? 'Network, TLS, routing and the native build are all working. Notifications were declined, which is a choice and not a fault - allow them in Android settings when you want calls to ring.'
-              : 'Network, TLS, routing, the native build, notification permission and FCM all work on this device.'}
-          </Text>
-        </View>
-      )}
-
-      {/*
-        Stated permanently, not only after a run. Somebody opening this build
-        should be able to see what it does NOT yet do without pressing anything.
-      */}
-      <View style={styles.pending}>
-        <Text style={styles.pendingTitle}>Not proven yet: registering this device</Text>
-        <Text style={styles.noteBody}>
-          Binding a push token to an account is authenticated, and sign-in does not exist in
-          this build. It is deliberately not faked with a token compiled into the app.
-          Sign-in and secure session storage are the next piece of work.
-        </Text>
-      </View>
-    </ScrollView>
+      <SignInScreen onSignIn={signIn} notice={NOTICE[state.reason ?? '']} />
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: {
-    flexGrow: 1,
+  centre: {
+    flex: 1,
     backgroundColor: '#0b0f14',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 24,
-    paddingVertical: 56,
-    gap: 12,
+    gap: 16,
   },
-  brand: { color: '#3ec9c0', fontSize: 12, letterSpacing: 3, fontWeight: '600' },
-  title: { color: '#e4ebf1', fontSize: 32, fontWeight: '700' },
-  lede: { color: '#8d99a6', fontSize: 15, textAlign: 'center', marginBottom: 12 },
-
-  probes: { width: '100%', gap: 10, marginBottom: 20 },
-  probe: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
-  mark: { fontSize: 18, width: 20, textAlign: 'center', fontWeight: '700' },
-  pending: {
-    marginTop: 24,
-    width: '100%',
-    borderTopWidth: 1,
-    borderTopColor: '#273039',
-    paddingTop: 16,
-    gap: 6,
-  },
-  probeText: { flex: 1, gap: 2 },
-  probeLabel: { color: '#e4ebf1', fontSize: 15 },
-  probeDetail: { color: '#5d6874', fontSize: 12, fontFamily: 'monospace' },
-
-  button: {
-    backgroundColor: '#3ec9c0',
-    paddingVertical: 14,
-    paddingHorizontal: 28,
-    borderRadius: 10,
-    minWidth: 220,
-    alignItems: 'center',
-  },
-  buttonPressed: { opacity: 0.75 },
-  buttonLabel: { color: '#0b0f14', fontSize: 16, fontWeight: '600' },
-
-  note: {
-    marginTop: 20,
-    width: '100%',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#10312f',
-    backgroundColor: '#101d1c',
-    padding: 16,
-    gap: 6,
-  },
-  noteTitle: { color: '#e4ebf1', fontSize: 16, fontWeight: '600' },
-  noteBody: { color: '#8d99a6', fontSize: 13, lineHeight: 19 },
-  pendingTitle: { color: '#d9a441', fontSize: 14, fontWeight: '600' },
+  waiting: { color: '#5d6874', fontSize: 14 },
 });
