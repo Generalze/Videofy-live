@@ -21,6 +21,11 @@ import {
 import { AzureStreamingSynthesisProvider } from './providers/azure/streaming-tts.js';
 import { createFallbackSpeechSynthesisProvider } from './fallback-speech-synthesis-provider.js';
 import {
+  NAIJALINGO_LANGUAGES,
+  NaijaLingoStreamingSynthesisProvider,
+} from './providers/naijalingo/streaming-tts.js';
+import { createLanguageRoutedSynthesisProvider } from './language-routed-synthesis-provider.js';
+import {
   ElevenLabsStreamingSynthesisProvider,
   type ElevenLabsTtsConfig,
 } from './providers/elevenlabs/tts.js';
@@ -39,6 +44,14 @@ import type { IngestConfig } from './config.js';
 export interface LiveProviderEnv {
   readonly deepgramApiKey?: string | undefined;
   readonly deepgramModel?: string | undefined;
+  readonly naijaLingoBaseUrl?: string | undefined;
+  readonly naijaLingoApiKey?: string | undefined;
+  readonly naijaLingoSampleRate?: string | undefined;
+  readonly naijaLingoDefaultVoice?: string | undefined;
+  readonly naijaLingoAuthHeader?: string | undefined;
+  readonly naijaLingoAuthScheme?: string | undefined;
+  readonly naijaLingoModel?: string | undefined;
+  readonly naijaLingoVoiceIds?: string | undefined;
   readonly azureSpeechKey?: string | undefined;
   readonly azureSpeechRegion?: string | undefined;
   readonly azureVoiceIds?: string | undefined;
@@ -97,6 +110,14 @@ export function readLiveProviderEnv(env: NodeJS.ProcessEnv = process.env): LiveP
   return {
     deepgramApiKey: optional(env['DEEPGRAM_API_KEY']),
     deepgramModel: optional(env['DEEPGRAM_MODEL']),
+    naijaLingoBaseUrl: optional(env['NAIJALINGO_BASE_URL']),
+    naijaLingoApiKey: optional(env['NAIJALINGO_API_KEY']),
+    naijaLingoSampleRate: optional(env['NAIJALINGO_SAMPLE_RATE']),
+    naijaLingoDefaultVoice: optional(env['NAIJALINGO_DEFAULT_VOICE']),
+    naijaLingoAuthHeader: optional(env['NAIJALINGO_AUTH_HEADER']),
+    naijaLingoAuthScheme: optional(env['NAIJALINGO_AUTH_SCHEME']),
+    naijaLingoModel: optional(env['NAIJALINGO_MODEL']),
+    naijaLingoVoiceIds: optional(env['NAIJALINGO_VOICE_IDS']),
     azureSpeechKey: optional(env['AZURE_SPEECH_KEY']),
     azureSpeechRegion: optional(env['AZURE_SPEECH_REGION']),
     azureVoiceIds: optional(env['AZURE_VOICE_IDS']),
@@ -149,6 +170,130 @@ export function buildStreamingTranscriptionProvider(
 export function buildStreamingSynthesisProvider(
   config: Pick<IngestConfig, 'streamingSynthesisProvider'>,
   env: LiveProviderEnv = readLiveProviderEnv(),
+): StreamingSpeechSynthesisProvider | null {
+  const general = buildGeneralSynthesis(config, env);
+  if (general === null) return null;
+  return withNigerianSpecialist(general, env);
+}
+
+/**
+ * Hausa, Igbo, Yoruba and Nigerian Pidgin go to the specialist; everything else
+ * carries on exactly as before.
+ *
+ * WHY THIS WRAPS RATHER THAN JOINS THE SWITCH. The general vendors are chosen
+ * for coverage across ninety languages, and the specialist covers four. Adding
+ * it as another `case` would make it a whole-deployment choice and force a
+ * deployment to pick between good Yoruba and good everything-else. Routing is
+ * per language, so both are true at once.
+ *
+ * TWO PLACES NOW STATE THIS RULE, and that is worth knowing about.
+ * `ai-registry`'s `resolveCommercialRoute` already puts 9jaLingo ahead of the
+ * primary for exactly these languages -- correctly, and with better refusal
+ * reporting than this has. Nothing in the live path calls it: it is a planning
+ * module no service consumes, which is why the specialist it routes to was
+ * never reached. Unifying them means giving media-ingest a dependency on the
+ * registry service, which is a larger change than this one and should be made
+ * deliberately rather than as a side effect. Until then, a change to the
+ * language list belongs in BOTH files.
+ *
+ * THE SPECIALIST HAS THE GENERAL CHAIN BEHIND IT, which is the same call as
+ * crediting a downgraded premium user rather than failing them: if 9jaLingo is
+ * down, a listener hearing imperfect Yoruba is better served than a listener
+ * hearing nothing. The fall-through is logged, so a specialist that has quietly
+ * stopped answering does not stay hidden behind audio that still plays.
+ */
+function withNigerianSpecialist(
+  general: StreamingSpeechSynthesisProvider,
+  env: LiveProviderEnv,
+): StreamingSpeechSynthesisProvider {
+  const baseUrl = env.naijaLingoBaseUrl;
+  const apiKey = env.naijaLingoApiKey;
+
+  if (baseUrl === undefined || apiKey === undefined) {
+    /*
+     * ON THE RECORD, BUT NOT AN ALARM, and the level is the decision.
+     *
+     * These languages ARE served worse than the rest -- a listening test on
+     * 2026-08-26 confirmed both general vendors mispronounce them while
+     * returning 200 -- so saying nothing would hide a real limitation. But
+     * running without a specialist is now a deliberate commercial choice
+     * (9jaLingo answered in 7-11s against 270ms, and exhausted its plan quota
+     * after three sentences), and warning every boot about a settled decision
+     * is how teams learn to scroll past warnings that matter. Stated once, as
+     * fact, at info.
+     */
+    // eslint-disable-next-line no-console
+    console.log(
+      JSON.stringify({
+        service: 'media-ingest',
+        message:
+          'No Nigerian-language specialist configured; ha/ig/yo/pcm are served by the general vendor and are known to be mispronounced.',
+        languages: NAIJALINGO_LANGUAGES,
+      }),
+    );
+    return general;
+  }
+
+  const specialist = new NaijaLingoStreamingSynthesisProvider({
+    baseUrl,
+    apiKey,
+    sampleRate: Number(env.naijaLingoSampleRate),
+    defaultVoice: requireCredential(env.naijaLingoDefaultVoice, 'NAIJALINGO_DEFAULT_VOICE', 'naijalingo'),
+    authHeaderName: env.naijaLingoAuthHeader,
+    authScheme: env.naijaLingoAuthScheme,
+    model: env.naijaLingoModel,
+    voiceIds: parseVoiceIdMap(env.naijaLingoVoiceIds),
+  });
+
+  /*
+   * Warmed at wiring time, not at first use. The capacity behind this vendor
+   * scales to zero and takes minutes to come back, so the first Nigerian-
+   * language sentence after an idle period would otherwise be served by the
+   * general vendor that mispronounces it. Nothing waits on this.
+   */
+  specialist.warmUp();
+
+  const specialistChain = createFallbackSpeechSynthesisProvider({
+    providers: [specialist, general],
+    onObservation: (observation) => {
+      // eslint-disable-next-line no-console
+      console.log(
+        JSON.stringify({
+          service: 'media-ingest',
+          message: 'Nigerian-language synthesis served',
+          servedBy: observation.servedBy,
+          fellThrough: observation.fellThrough,
+          timeToFirstChunkMs: observation.timeToFirstChunkMs,
+        }),
+      );
+    },
+  });
+
+  const routes = new Map<string, StreamingSpeechSynthesisProvider>(
+    NAIJALINGO_LANGUAGES.map((language) => [language, specialistChain]),
+  );
+
+  return createLanguageRoutedSynthesisProvider({
+    routes,
+    fallback: general,
+    onRoute: (observation) => {
+      if (observation.matchedLanguage === null) return;
+      // eslint-disable-next-line no-console
+      console.log(
+        JSON.stringify({
+          service: 'media-ingest',
+          message: 'Routed to language specialist',
+          language: observation.matchedLanguage,
+          servedBy: observation.servedBy,
+        }),
+      );
+    },
+  });
+}
+
+function buildGeneralSynthesis(
+  config: Pick<IngestConfig, 'streamingSynthesisProvider'>,
+  env: LiveProviderEnv,
 ): StreamingSpeechSynthesisProvider | null {
   switch (config.streamingSynthesisProvider) {
     case 'off':
