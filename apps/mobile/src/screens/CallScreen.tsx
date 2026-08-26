@@ -64,15 +64,16 @@ const PEER_WORDS: Record<string, string> = {
 
 export interface CallScreenProps {
   readonly callId: string;
-  readonly participantId: string;
   readonly displayName: string;
+  /** Null is valid: it means this client can JOIN but not CREATE a call. */
+  readonly sessionToken: string | null;
   readonly onLeave: () => void;
 }
 
 export function CallScreen({
   callId,
-  participantId,
   displayName,
+  sessionToken,
   onLeave,
 }: CallScreenProps): JSX.Element {
   const connection = useRef<CallConnection | null>(null);
@@ -87,8 +88,8 @@ export function CallScreen({
     const call = new CallConnection({
       gatewayUrl: GATEWAY_URL,
       callId,
-      participantId,
       displayName,
+      sessionToken,
       iceServers: iceServers(),
       onRemoteStream: (id, stream: RemoteStream) =>
         setRemotes((current) => ({
@@ -111,7 +112,23 @@ export function CallScreen({
         const local = await call.openLocalMedia();
         if (!live) return;
         setLocalUrl(local.toURL());
-        await call.join();
+
+        /*
+         * THE ACK IS READ, and this is the whole reason the call screen has a
+         * failure state. A refused join used to leave this sitting on "waiting
+         * for someone to join" forever, which is indistinguishable from an
+         * empty call and sends somebody looking for a person who was never
+         * able to be there.
+         */
+        const ack = await call.join();
+        if (!live) return;
+        if (!ack.ok) {
+          setError(
+            ack.code === 'host-not-authorized'
+              ? 'Verify your email before starting a call. You can still join a call somebody invites you to.'
+              : (ack.error ?? 'The call service refused this call.'),
+          );
+        }
       } catch (thrown) {
         if (live) {
           setError(
@@ -135,7 +152,7 @@ export function CallScreen({
       call.leave();
       connection.current = null;
     };
-  }, [callId, participantId, displayName]);
+  }, [callId, displayName, sessionToken]);
 
   const toggleCamera = useCallback(() => {
     setCameraOn((on) => {

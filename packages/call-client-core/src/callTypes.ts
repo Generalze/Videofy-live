@@ -254,6 +254,20 @@ export type CallJoinFailureCode =
   | 'invalid-input'
   | 'call-full'
   | 'duplicate-display-name'
+  /*
+   * THE THREE BELOW WERE MISSING, and the gateway has been sending them all
+   * along. `call-runtime.ts` returns `host-not-authorized` when an unverified
+   * account tries to CREATE a call, and the other two when a requested
+   * capability is unavailable -- but a client typed against this union could not
+   * match on any of them, so the one refusal a person most needs explained
+   * ("verify your email first") fell through to a generic message.
+   *
+   * A type that under-describes the wire is worse than no type: it reads as a
+   * complete list and quietly makes the real cases unreachable.
+   */
+  | 'host-not-authorized'
+  | 'call-captions-unavailable'
+  | 'translation-engine-unavailable'
   | 'internal';
 
 export type CallJoinAck =

@@ -138,14 +138,12 @@ export default function App(): JSX.Element {
           <StatusBar style="light" />
           <CallScreen
             callId={activeCall}
-            /*
-             * The account id doubles as the participant id. It is already
-             * unique, already known to the gateway, and inventing a second
-             * identity for the same person in the same call is how two views of
-             * who is present come to disagree.
-             */
-            participantId={state.accountId}
             displayName={state.accountId}
+            /*
+             * The gateway assigns the participant id from this token; a client
+             * that could name an account could name somebody else's.
+             */
+            sessionToken={auth.callSessionToken()}
             onLeave={() => setActiveCall(null)}
           />
         </>

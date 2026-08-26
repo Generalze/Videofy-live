@@ -317,6 +317,27 @@ export class AuthSessionManager {
   }
 
   /**
+   * The raw session token, for the ONE protocol that needs it in a payload.
+   *
+   * THIS IS A DELIBERATE EXCEPTION and is named so it can be found. Everything
+   * else asks for an authenticated REQUEST via `authorizedFetch`, and that
+   * remains the rule -- a caller that can hold the token can copy it somewhere
+   * less careful.
+   *
+   * The call gateway is different in kind, not in convenience: `call:join`
+   * carries `sessionToken` INSIDE a Socket.IO payload, because the gateway
+   * derives the account from it and refuses to let a client name an account
+   * itself. There is no header to attach it to, so there is nothing for
+   * `authorizedFetch` to wrap.
+   *
+   * Returns null when signed out, which is a legitimate call state: joining an
+   * existing call needs no session, only CREATING one does.
+   */
+  callSessionToken(): string | null {
+    return this.session?.token ?? null;
+  }
+
+  /**
    * Perform a request as the signed-in account.
    *
    * THE TOKEN IS NEVER RETURNED, only used. This is what keeps ownership in one

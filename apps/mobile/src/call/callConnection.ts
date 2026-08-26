@@ -41,6 +41,9 @@ import { io, type Socket } from 'socket.io-client';
 import { CALL_EVENTS } from '@videofy-live/call-wire';
 import {
   CallVideoMesh,
+  buildCallJoinPayload,
+  createInitialCallJoinForm,
+  type CallJoinAck,
   type CallVideoIcePayload,
   type CallVideoSdpPayload,
 } from '@videofy-live/call-client-core';
@@ -51,8 +54,21 @@ export type RemoteStream = { toURL(): string } | null;
 export interface CallConnectionOptions {
   readonly gatewayUrl: string;
   readonly callId: string;
-  readonly participantId: string;
   readonly displayName: string;
+  /**
+   * The signed session token, or null.
+   *
+   * REQUIRED TO CREATE A CALL. The gateway checks `session.host` before the
+   * store is touched, and an unsigned join that would create a call is refused
+   * with `host-not-authorized`. Joining a call that already exists does not
+   * need one -- which is exactly the product rule: verified accounts start
+   * calls, anybody can be invited into one.
+   *
+   * There is deliberately no participantId here. The gateway derives it from
+   * this token, because a client that could name an account could name
+   * somebody else's.
+   */
+  readonly sessionToken: string | null;
   /**
    * ICE servers. WITHOUT THESE A CALL WORKS ON ONE WI-FI AND NOWHERE ELSE.
    *
@@ -76,6 +92,8 @@ export class CallConnection {
   private socket: Socket | null = null;
   private mesh: CallVideoMesh | null = null;
   private local: { toURL(): string; getTracks(): { stop(): void }[] } | null = null;
+  /** Assigned by the gateway on a successful join, never invented locally. */
+  private participantId: string | null = null;
 
   constructor(options: CallConnectionOptions) {
     this.options = options;
@@ -97,7 +115,16 @@ export class CallConnection {
     return stream;
   }
 
-  async join(): Promise<void> {
+  /**
+   * Join, and report what the gateway actually said.
+   *
+   * THE RESULT COMES BACK IN AN ACK, not an event. `socket.emit(JOIN, payload)`
+   * without a callback sends the request and discards the answer -- which is
+   * what this did at first, and the symptom was a call screen sitting on
+   * "waiting for someone to join" while the gateway had already refused the
+   * join outright. A silent refusal is indistinguishable from an empty call.
+   */
+  async join(): Promise<CallJoinAck> {
     const local = await this.openLocalMedia();
 
     const socket = io(this.options.gatewayUrl, {
@@ -107,9 +134,50 @@ export class CallConnection {
     });
     this.socket = socket;
 
+    const form = {
+      ...createInitialCallJoinForm(),
+      displayName: this.options.displayName,
+      callCode: this.options.callId,
+    };
+
+    const ack = await new Promise<CallJoinAck>((resolve) => {
+      const timer = setTimeout(
+        () => resolve({ ok: false, error: 'The call service did not respond.' }),
+        15_000,
+      );
+      socket.emit(
+        CALL_EVENTS.JOIN,
+        buildCallJoinPayload(form, undefined, this.options.sessionToken),
+        (error: unknown, reply?: CallJoinAck) => {
+          clearTimeout(timer);
+          resolve(
+            error
+              ? { ok: false, error: 'The call service did not respond.' }
+              : (reply ?? { ok: false, error: 'The call service gave an unexpected reply.' }),
+          );
+        },
+      );
+    });
+
+    if (!ack.ok) {
+      // Nothing is wired up for a refused join: no mesh, no listeners, and the
+      // socket is closed rather than left holding a connection to a call this
+      // client is not in.
+      socket.disconnect();
+      this.socket = null;
+      return ack;
+    }
+
+    /*
+     * THE GATEWAY ASSIGNS THE PARTICIPANT ID, and it arrives here. Using a
+     * locally invented one would make every peer negotiate against a name the
+     * other side has never heard of.
+     */
+    this.participantId = ack.participantId;
+
     const mesh = new CallVideoMesh({
       callId: this.options.callId,
-      selfParticipantId: this.options.participantId,
+      selfParticipantId: ack.participantId,
       ...(this.options.iceServers === undefined
         ? {}
         : { iceServers: this.options.iceServers as RTCIceServer[] }),
@@ -130,10 +198,9 @@ export class CallConnection {
     mesh.setLocalStream(local as unknown as MediaStream);
 
     /*
-     * The SENDER is in the payload, not in a separate argument: the gateway
-     * relays the object the sender built, and `participantId` on it is whoever
-     * sent it. Passing the target by mistake would make every peer negotiate
-     * with itself.
+     * The SENDER is in the payload, not a separate argument: the gateway relays
+     * the object the sender built, and `participantId` on it is whoever sent it.
+     * Passing the target by mistake would make every peer negotiate with itself.
      */
     socket.on(CALL_EVENTS.VIDEO_OFFER, (payload: CallVideoSdpPayload) => {
       void mesh.handleOffer(payload.participantId, payload);
@@ -153,7 +220,7 @@ export class CallConnection {
     socket.on(CALL_EVENTS.STATE, (payload: CallStatePayload) => {
       const remotes = (payload?.participants ?? [])
         .map((entry) => String(entry?.participantId ?? ''))
-        .filter((id) => id.length > 0 && id !== this.options.participantId);
+        .filter((id) => id.length > 0 && id !== this.participantId);
       mesh.syncParticipants(remotes);
     });
 
@@ -162,11 +229,7 @@ export class CallConnection {
     );
     socket.on('connect_error', () => this.options.onError('Could not reach the call service.'));
 
-    socket.emit(CALL_EVENTS.JOIN, {
-      callId: this.options.callId,
-      participantId: this.options.participantId,
-      displayName: this.options.displayName,
-    });
+    return ack;
   }
 
   setCameraEnabled(enabled: boolean): void {
@@ -183,16 +246,19 @@ export class CallConnection {
    */
   leave(): void {
     try {
-      this.socket?.emit(CALL_EVENTS.LEAVE, {
-        callId: this.options.callId,
-        participantId: this.options.participantId,
-      });
+      if (this.participantId !== null) {
+        this.socket?.emit(CALL_EVENTS.LEAVE, {
+          callId: this.options.callId,
+          participantId: this.participantId,
+        });
+      }
     } catch {
       // Best effort; the gateway times a participant out regardless.
     }
 
     this.mesh?.dispose();
     this.mesh = null;
+    this.participantId = null;
     this.socket?.disconnect();
     this.socket = null;
 
