@@ -39,6 +39,7 @@ import {
   DISPLAY_NAME_REFUSAL_MESSAGES,
   USERNAME_REFUSAL_MESSAGES,
 } from '@videofy-live/account-trust';
+import type { ContactStore } from './contact-store.js';
 import type { IdentityChangeService } from './identity-change-service.js';
 import { recordSecurity } from './security-log.js';
 import { correlationIdOf } from './request-context.js';
@@ -100,6 +101,8 @@ export interface AccountRouteDependencies {
    * deployment.
    */
   readonly identityChange?: IdentityChangeService;
+  /** Absent means the contact routes 404 rather than pretending to have a graph. */
+  readonly contacts?: ContactStore;
 }
 
 interface Body {
@@ -120,6 +123,19 @@ function credentials(body: unknown): { email: string; password: string } | null 
   const candidate = (body ?? {}) as Body;
   if (typeof candidate.email !== 'string' || typeof candidate.password !== 'string') return null;
   return { email: candidate.email, password: candidate.password };
+}
+
+/**
+ * An account id from a request body, or null.
+ *
+ * Shape-checked rather than trusted: these ids address a person, and a caller
+ * that can put arbitrary text here is a caller that can probe what the store
+ * does with it.
+ */
+function parseAccountIdBody(body: unknown): string | null {
+  const candidate = (body as { accountId?: unknown } | undefined)?.accountId;
+  if (typeof candidate !== 'string') return null;
+  return /^acct_[0-9a-f]{16}$/.test(candidate) ? candidate : null;
 }
 
 /**
@@ -1216,7 +1232,12 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       res.status(401).json({ error: 'Sign in to continue.' });
       return;
     }
-    if (refusedForAbuse(req, res, 'account.authenticate', { account: caller.accountId })) return;
+    /*
+     * `contact.search`, not the sign-in surface. Searching for people and
+     * guessing passwords are different abuses with different shapes, and
+     * sharing a budget means a burst of one silently spends the other's.
+     */
+    if (refusedForAbuse(req, res, 'contact.search', { account: caller.accountId })) return;
 
     const requested = req.query['username'];
     if (typeof requested !== 'string') {
@@ -1248,6 +1269,206 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       displayName: holder.displayName ?? null,
     });
   });
+
+  const contacts = deps.contacts;
+  if (contacts) {
+    /**
+     * Who you can reach, and who is waiting on you.
+     *
+     * Names come from the ACCOUNT RECORD at read time rather than being copied
+     * onto the edge when it was made. A display name people can change would
+     * otherwise be frozen at the moment somebody added them, and the stale copy
+     * is what a stranger would be recognised by.
+     */
+    app.get('/contacts', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+
+      const describe = (otherAccountId: string) => {
+        const other = deps.store.get(otherAccountId);
+        return {
+          accountId: otherAccountId,
+          username: other?.username ?? null,
+          displayName: other?.displayName ?? null,
+        };
+      };
+
+      res.status(200).json({
+        contacts: contacts
+          .contactsOf(caller.accountId)
+          .map((edge) => describe(contacts.other(edge, caller.accountId))),
+        /*
+         * Only requests somebody else sent. A request you sent is not something
+         * you can act on, and listing it as answerable invites a client to
+         * offer accepting your own.
+         */
+        requests: contacts.pendingFor(caller.accountId).map((edge) => ({
+          ...describe(edge.requestedBy),
+          requestedAtMs: edge.requestedAtMs,
+        })),
+        sent: contacts
+          .sentBy(caller.accountId)
+          .map((edge) => describe(contacts.other(edge, caller.accountId))),
+      });
+    });
+
+    /**
+     * Ask somebody to be a contact, by username.
+     *
+     * PRIVATE ACCOUNTS ARE UNREACHABLE HERE, and answer exactly as a username
+     * nobody holds. That is the point of private mode: an account that has not
+     * opted into being found must not be findable by trying, and a different
+     * answer for "exists but private" would make it findable by trying.
+     *
+     * The route to a private account is an invite they issued, which is consent
+     * given in advance rather than requested after the fact.
+     */
+    app.post('/contacts/request', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      if (refusedForAbuse(req, res, 'contact.request', { account: caller.accountId })) return;
+
+      const requested = (req.body as { username?: unknown } | undefined)?.username;
+      if (typeof requested !== 'string') {
+        res.status(404).json({ found: false });
+        return;
+      }
+      const shape = checkUsernameShape(requested);
+      if (!shape.ok) {
+        res.status(404).json({ found: false });
+        return;
+      }
+
+      const target = deps.store.findByUsernameKey(shape.key);
+      if (!target || readDiscoveryMode(target.discoveryMode) !== 'discoverable') {
+        res.status(404).json({ found: false });
+        return;
+      }
+
+      void contacts
+        .request(caller.accountId, target.accountId)
+        .then((outcome) => {
+          /*
+           * A BLOCKED SENDER IS ANSWERED LIKE A SUCCESS. If they were told,
+           * blocking becomes detectable, and a detectable block is a signal
+           * rather than a protection -- somebody would learn exactly who has
+           * shut them out and could act on it elsewhere.
+           *
+           * `already-requested` is answered the same way for the same reason it
+           * is not an error: nothing changed, and saying so distinguishes
+           * "waiting on them" from "they never saw it".
+           */
+          if (outcome.ok || outcome.reason === 'blocked' || outcome.reason === 'already-requested') {
+            res.status(202).json({ requested: true });
+            return;
+          }
+          if (outcome.reason === 'already-contacts') {
+            res.status(409).json({ error: 'You are already contacts.' });
+            return;
+          }
+          res.status(400).json({ error: 'That request could not be sent.' });
+        })
+        .catch(() => res.status(500).json({ error: 'That request could not be sent.' }));
+    });
+
+    /** Accept a request somebody sent you. Only the recipient may. */
+    app.post('/contacts/accept', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const other = parseAccountIdBody(req.body);
+      if (other === null) {
+        res.status(400).json({ error: 'That request could not be accepted.' });
+        return;
+      }
+
+      void contacts
+        .accept(caller.accountId, other)
+        .then((outcome) => {
+          if (outcome.ok) {
+            res.status(200).json({ accepted: true });
+            return;
+          }
+          // One answer for every refusal. Distinguishing "no such request" from
+          // "not yours to accept" tells a caller which account ids have pending
+          // requests, which is the graph being read by guessing.
+          res.status(400).json({ error: 'That request could not be accepted.' });
+        })
+        .catch(() => res.status(500).json({ error: 'That request could not be accepted.' }));
+    });
+
+    /**
+     * Block somebody.
+     *
+     * Available with no prior relationship: nobody should have to receive a
+     * request before they are allowed to refuse receiving one.
+     */
+    app.post('/contacts/block', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const other = parseAccountIdBody(req.body);
+      if (other === null) {
+        res.status(400).json({ error: 'That block could not be applied.' });
+        return;
+      }
+
+      void contacts
+        .block(caller.accountId, other)
+        .then((outcome) => {
+          if (outcome.ok) {
+            res.status(200).json({ blocked: true });
+            return;
+          }
+          res.status(400).json({ error: 'That block could not be applied.' });
+        })
+        .catch(() => res.status(500).json({ error: 'That block could not be applied.' }));
+    });
+
+    /**
+     * Remove a contact, or lift a block you applied.
+     *
+     * ONE ENDPOINT FOR BOTH because both end in the same state: no
+     * relationship. Lifting a block does NOT restore the contact they used to
+     * be -- somebody who blocked a contact and later relents has not thereby
+     * agreed to resume, and reinstating them would decide that for them.
+     */
+    app.post('/contacts/remove', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const other = parseAccountIdBody(req.body);
+      if (other === null) {
+        res.status(400).json({ error: 'That could not be removed.' });
+        return;
+      }
+
+      void contacts
+        .remove(caller.accountId, other)
+        .then((outcome) => {
+          if (outcome.ok) {
+            res.status(200).json({ removed: true });
+            return;
+          }
+          // The blocked party trying to lift their own block lands here, and is
+          // told nothing about why.
+          res.status(400).json({ error: 'That could not be removed.' });
+        })
+        .catch(() => res.status(500).json({ error: 'That could not be removed.' }));
+    });
+  }
 
   app.get('/me', (req, res) => {
     const caller = callerAccountId(req);

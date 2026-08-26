@@ -25,6 +25,7 @@ import {
 import { IdentityChangeService } from './identity-change-service.js';
 import { createCallerResolver, registerAccountRoutes } from './routes.js';
 import { CORRELATION_HEADER, correlationMiddleware } from './request-context.js';
+import { ContactStore } from './contact-store.js';
 import { OrganizationStore } from './organization-store.js';
 import { registerOrganizationRoutes } from './organization-routes.js';
 import { VerificationService } from './verification.js';
@@ -307,8 +308,19 @@ console.log(
   }),
 );
 
+/*
+ * The contact graph.
+ *
+ * EPHEMERAL FOR NOW, and that is a stated gap rather than a default nobody
+ * noticed: contacts vanish on restart until migration 007 and the durable port
+ * land. A contact list that empties on deploy silently reopens every personal
+ * call it was gating, so this must not reach a deployment people rely on.
+ */
+const contacts = new ContactStore();
+
 registerAccountRoutes(app, {
   store,
+  contacts,
   secret,
   organizations,
   abuse,
