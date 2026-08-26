@@ -1377,6 +1377,141 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
         .catch(() => res.status(500).json({ error: 'That request could not be sent.' }));
     });
 
+    /**
+     * Mint an invite link.
+     *
+     * THE ONLY ROUTE TO A PRIVATE ACCOUNT, which is what every account is by
+     * default. Somebody who has not opted into being findable cannot be
+     * requested by username at all, so a link they issue is how they choose to
+     * be reachable -- consent given in advance rather than asked for afterwards.
+     *
+     * THE TOKEN IS RETURNED ONCE AND NEVER AGAIN. It is not stored in plaintext,
+     * so it cannot be re-read later even by its issuer: a link recoverable from
+     * storage would be a standing key to somebody's contact list. The issuer
+     * copies it now or mints another.
+     */
+    app.post('/contacts/invites', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      if (refusedForAbuse(req, res, 'contact.invite', { account: caller.accountId })) return;
+
+      void contacts
+        .issueInvite(caller.accountId)
+        .then((issued) => {
+          res.status(201).json({
+            inviteId: issued.invite.inviteId,
+            /* Shown once. See above. */
+            token: issued.token,
+            expiresAtMs: issued.invite.challenge.expiresAtMs,
+          });
+        })
+        .catch(() => res.status(500).json({ error: 'That link could not be created.' }));
+    });
+
+    /** The issuer's own live links, without their tokens. */
+    app.get('/contacts/invites', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+
+      res.status(200).json({
+        invites: contacts.invitesOf(caller.accountId).map((invite) => ({
+          inviteId: invite.inviteId,
+          expiresAtMs: invite.challenge.expiresAtMs,
+          usable: contacts.usable(invite),
+          revoked: invite.revokedAtMs !== null,
+          /*
+           * No token, ever. This endpoint exists so somebody can see which of
+           * their links are still live and withdraw one -- not to recover a
+           * link they failed to copy.
+           */
+        })),
+      });
+    });
+
+    /** Withdraw an unused link. Contacts already made through it are untouched. */
+    app.post('/contacts/invites/revoke', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const inviteId = (req.body as { inviteId?: unknown } | undefined)?.inviteId;
+      if (typeof inviteId !== 'string' || inviteId.length === 0 || inviteId.length > 128) {
+        res.status(400).json({ error: 'That link could not be withdrawn.' });
+        return;
+      }
+
+      void contacts
+        .revokeInvite(inviteId, caller.accountId)
+        .then((outcome) => {
+          // A missing invite and somebody else's answer identically, so this
+          // cannot be used to discover which invite ids exist.
+          if (!outcome.ok) {
+            res.status(400).json({ error: 'That link could not be withdrawn.' });
+            return;
+          }
+          res.status(200).json({ revoked: true });
+        })
+        .catch(() => res.status(500).json({ error: 'That link could not be withdrawn.' }));
+    });
+
+    /**
+     * Redeem a link, becoming contacts directly.
+     *
+     * NO PENDING REQUEST FOLLOWS. The issuer consented by minting it and the
+     * redeemer consented by using it, so there is nothing left to approve.
+     *
+     * ONE ANSWER FOR EVERY REFUSAL -- expired, revoked, already used, wrong
+     * token, unknown id, and blocked all read the same. Telling them apart
+     * tells somebody holding a guessed link which part they got right, and
+     * "already used" in particular would confirm that a real link existed.
+     */
+    app.post('/contacts/invites/redeem', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      if (refusedForAbuse(req, res, 'contact.request', { account: caller.accountId })) return;
+
+      const body = req.body as { inviteId?: unknown; token?: unknown } | undefined;
+      if (
+        typeof body?.inviteId !== 'string' ||
+        typeof body.token !== 'string' ||
+        body.inviteId.length === 0 ||
+        body.token.length === 0 ||
+        body.token.length > 512
+      ) {
+        res.status(400).json({ error: 'That invite link is not valid or has expired.' });
+        return;
+      }
+
+      void contacts
+        .redeemInvite(body.inviteId, body.token, caller.accountId)
+        .then((outcome) => {
+          if (!outcome.ok) {
+            res.status(400).json({ error: 'That invite link is not valid or has expired.' });
+            return;
+          }
+          const issuer = deps.store.get(outcome.issuerAccountId);
+          res.status(200).json({
+            connected: true,
+            contact: {
+              accountId: outcome.issuerAccountId,
+              username: issuer?.username ?? null,
+              displayName: issuer?.displayName ?? null,
+            },
+          });
+        })
+        .catch(() => res.status(500).json({ error: 'That invite could not be redeemed.' }));
+    });
+
     /** Accept a request somebody sent you. Only the recipient may. */
     app.post('/contacts/accept', (req, res) => {
       const caller = callerAccountId(req);

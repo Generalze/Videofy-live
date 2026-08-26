@@ -15,15 +15,22 @@
  * empties on deploy would silently reopen every personal call the graph was
  * gating. The composition root chooses the durable port explicitly.
  */
+import { randomUUID } from 'node:crypto';
 import {
   acceptContact,
   blockContact,
+  contactInviteUsable,
   contactPair,
+  issueContactInvite,
+  redeemContactInvite,
+  revokeContactInvite,
   mayReach,
   otherParty,
   requestContact,
   unblockContact,
   type ContactEdge,
+  type ContactInvite,
+  type ContactInviteRefusal,
   type ContactOutcome,
   type ContactRefusal,
 } from '@videofy-live/account-trust';
@@ -33,6 +40,12 @@ export interface ContactRecordPort {
   load(): Promise<readonly ContactEdge[]>;
   upsert(edge: ContactEdge): Promise<void>;
   remove(lowAccountId: string, highAccountId: string): Promise<void>;
+  /**
+   * Invites, which persist for the same reason challenges do: a restart must
+   * not silently invalidate every link somebody has already sent out.
+   */
+  loadInvites(): Promise<readonly ContactInvite[]>;
+  upsertInvite(invite: ContactInvite): Promise<void>;
 }
 
 export function createEphemeralContactRecords(): ContactRecordPort {
@@ -42,6 +55,10 @@ export function createEphemeralContactRecords(): ContactRecordPort {
     },
     async upsert() {},
     async remove() {},
+    async loadInvites() {
+      return [];
+    },
+    async upsertInvite() {},
   };
 }
 
@@ -65,6 +82,10 @@ export class ContactStore {
    * matters: A accepting while B blocks must not interleave.
    */
   private readonly locks = new Map<string, Promise<unknown>>();
+  /** Invites by id. The plaintext token is never here -- only its hash, on the challenge. */
+  private readonly invites = new Map<string, ContactInvite>();
+  /** One chain per invite, so two people redeeming the same link cannot both win. */
+  private readonly inviteLocks = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly now: () => number = () => Date.now(),
@@ -75,6 +96,9 @@ export class ContactStore {
     const loaded = await this.records.load();
     for (const edge of loaded) {
       this.edges.set(edgeKey(edge.lowAccountId, edge.highAccountId), edge);
+    }
+    for (const invite of await this.records.loadInvites()) {
+      this.invites.set(invite.inviteId, invite);
     }
     return this.edges.size;
   }
@@ -223,6 +247,134 @@ export class ContactStore {
       await this.records.remove(low, high);
       return { edge: null, result: { ok: true as const } };
     });
+  }
+
+  /**
+   * Mint an invite link.
+   *
+   * THE ONLY ROUTE TO A PRIVATE ACCOUNT, which is the default. Somebody who has
+   * not opted into being findable cannot be requested by username, so a link
+   * they issue themselves is how they choose to be reachable -- consent given in
+   * advance rather than asked for after the fact.
+   *
+   * The plaintext token is returned ONCE and never stored: what is kept is its
+   * hash, on the challenge. A link that could be re-read from storage would be a
+   * standing key to somebody's contact list.
+   */
+  async issueInvite(issuerAccountId: string): Promise<{ invite: ContactInvite; token: string }> {
+    const issued = issueContactInvite({
+      inviteId: `inv_${randomUUID()}`,
+      issuerAccountId,
+      nowMs: this.now(),
+    });
+    this.invites.set(issued.invite.inviteId, issued.invite);
+    await this.records.upsertInvite(issued.invite);
+    return issued;
+  }
+
+  /** Withdraw an unused invite. Contacts already made through it are untouched. */
+  async revokeInvite(
+    inviteId: string,
+    issuerAccountId: string,
+  ): Promise<{ ok: boolean }> {
+    const invite = this.invites.get(inviteId);
+    /*
+     * A missing invite and somebody else's invite answer identically. Otherwise
+     * this endpoint reports whether an invite id exists, which is a thing an
+     * attacker holding a guessed id would like to know.
+     */
+    if (!invite || invite.issuerAccountId !== issuerAccountId) return { ok: false };
+
+    const revoked = revokeContactInvite(invite, this.now());
+    this.invites.set(inviteId, revoked);
+    await this.records.upsertInvite(revoked);
+    return { ok: true };
+  }
+
+  /** An issuer's own invites, for showing which links are still live. */
+  invitesOf(issuerAccountId: string): readonly ContactInvite[] {
+    return [...this.invites.values()].filter(
+      (invite) => invite.issuerAccountId === issuerAccountId,
+    );
+  }
+
+  usable(invite: ContactInvite): boolean {
+    return contactInviteUsable(invite, this.now());
+  }
+
+  /**
+   * Redeem an invite, becoming contacts directly.
+   *
+   * NO PENDING REQUEST FOLLOWS. The issuer consented by minting the link and the
+   * redeemer consented by using it, so there is nothing left for either to
+   * approve -- an invite that still needed accepting would be a worse version of
+   * an ordinary contact request.
+   *
+   * UNDER THE INVITE'S OWN LOCK, because single use is the whole design: two
+   * people opening the same link at once must not both get in. The consumed
+   * marker is written before the edge, so a crash between them leaves a spent
+   * invite rather than a reusable one.
+   */
+  async redeemInvite(
+    inviteId: string,
+    token: string,
+    redeemerAccountId: string,
+  ): Promise<{ ok: true; issuerAccountId: string } | { ok: false; reason: ContactInviteRefusal }> {
+    const previous = this.inviteLocks.get(inviteId) ?? Promise.resolve();
+
+    const next = previous.then(async () => {
+      const invite = this.invites.get(inviteId);
+      // A missing invite is answered as a wrong one: an id that does not exist
+      // and a token that does not match are the same non-answer.
+      if (!invite) return { ok: false as const, reason: 'wrong-invite' as const };
+
+      const outcome = redeemContactInvite({
+        invite,
+        token,
+        redeemerAccountId,
+        nowMs: this.now(),
+      });
+
+      // Written on EVERY path, because a failed attempt must still be counted --
+      // that counter is what bounds guessing at a link.
+      this.invites.set(inviteId, outcome.invite);
+      await this.records.upsertInvite(outcome.invite);
+
+      if (!outcome.ok) return { ok: false as const, reason: outcome.reason };
+
+      const { low, high } = contactPair(outcome.issuerAccountId, outcome.redeemerAccountId);
+      const nowMs = this.now();
+      const edge: ContactEdge = {
+        lowAccountId: low,
+        highAccountId: high,
+        state: 'accepted',
+        requestedBy: outcome.issuerAccountId,
+        blockedBy: null,
+        requestedAtMs: nowMs,
+        updatedAtMs: nowMs,
+      };
+
+      /*
+       * A BLOCK SURVIVES AN INVITE. Somebody who blocked a person and later
+       * hands out a general-purpose link has not thereby unblocked them, and a
+       * link that quietly overrides a block is a way around one.
+       */
+      const existing = this.edges.get(edgeKey(low, high)) ?? null;
+      if (existing?.state === 'blocked') {
+        return { ok: false as const, reason: 'mismatch' as const };
+      }
+
+      this.edges.set(edgeKey(low, high), edge);
+      await this.records.upsert(edge);
+      return { ok: true as const, issuerAccountId: outcome.issuerAccountId };
+    });
+
+    const settled = next.catch(() => undefined);
+    this.inviteLocks.set(inviteId, settled);
+    void settled.then(() => {
+      if (this.inviteLocks.get(inviteId) === settled) this.inviteLocks.delete(inviteId);
+    });
+    return next;
   }
 
   /** The other party in an edge, for a caller that has one side. */
