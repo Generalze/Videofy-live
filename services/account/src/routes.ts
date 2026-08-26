@@ -292,6 +292,30 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
           res.status(result.reason === 'already-exists' ? 409 : 400).json({ error: result.message });
           return;
         }
+        /*
+         * SEND THE VERIFICATION EMAIL. On the SERVER, because registration is
+         * the only moment we know an account was just created and nobody has
+         * proven the address yet.
+         *
+         * This used to be nobody's job. Registration created the account and
+         * returned a session; the verification endpoint existed and waited to
+         * be called; and no client called it. Both halves worked and the thing
+         * they were meant to add up to -- somebody receiving an email -- never
+         * happened. Leaving it to the client means every future client has to
+         * remember, and the one that forgets fails exactly this quietly.
+         *
+         * NOT AWAITED, and failure does not change the response. The account
+         * exists and the session is valid whatever the provider does; a
+         * delivery outage must not turn a successful registration into a 500
+         * and an account the person cannot sign in to. If it fails there is a
+         * resend endpoint, which is the designed path for a bounce anyway.
+         */
+        if (deps.verification) {
+          void deps.verification
+            .requestEmailVerification(result.account.accountId)
+            .catch(() => undefined);
+        }
+
         // Signed up and signed in. Making somebody immediately repeat their
         // password to get a session serves nothing but ceremony.
         res.status(201).json(

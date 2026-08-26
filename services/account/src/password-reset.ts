@@ -89,6 +89,13 @@ export class PasswordResetService {
         target: started.effect.challenge.target,
         token: started.effect.token,
         expiresAtMs: started.effect.challenge.expiresAtMs,
+        /*
+         * Without this the provider had no way to tell a reset from a
+         * verification, so it sent the verification email: wrong subject,
+         * wrong words, and a link to the verification page -- which refuses a
+         * reset token, because the two live in deliberately separate fields.
+         */
+        purpose: 'password-reset',
       })
       .catch(() => ({ delivered: false, reference: null, synthetic: false }));
 

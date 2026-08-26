@@ -5,8 +5,12 @@
  * would have been delivered. The token never leaves that capture: if it ever
  * appeared in a response or a record, these tests would be the place it showed.
  */
+import express from 'express';
+import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
+import { requireSessionSecret } from '@videofy-live/account-tokens';
 import { AccountStore } from '../account-store.js';
+import { registerAccountRoutes } from '../routes.js';
 import { VerificationService, normalisePhone } from '../verification.js';
 import {
   EMAIL_POLICY,
@@ -184,5 +188,141 @@ describe('all three channels', async () => {
       phone: 'verified',
       identity: 'unverified',
     });
+  });
+});
+
+/*
+ * REGISTRATION MUST ACTUALLY SEND THE EMAIL.
+ *
+ * This is tested over HTTP rather than against the service, because the defect
+ * it pins lived exactly at that boundary: registration created the account and
+ * returned a session, the verification endpoint sat waiting to be called, and
+ * nothing called it. Both halves passed their own tests. Somebody registering
+ * on staging received nothing, and the account record showed no challenge had
+ * ever been issued -- proof the provider was never even reached.
+ */
+describe('registering over HTTP', () => {
+  async function routeHarness() {
+    const store = new AccountStore();
+    const delivered: VerificationMessage[] = [];
+    const emailProvider = createSyntheticProvider('email', (message) => delivered.push(message));
+    const phoneProvider = createSyntheticProvider('phone', (message) => delivered.push(message));
+
+    const app = express();
+    app.use(express.json());
+    registerAccountRoutes(app, {
+      store,
+      secret: requireSessionSecret('z'.repeat(48), 'TEST_SECRET'),
+      verification: new VerificationService({ store, emailProvider, phoneProvider }),
+    });
+    const server = app.listen(0);
+    await new Promise<void>((r) => server.once('listening', r));
+    const { port } = server.address() as AddressInfo;
+
+    return {
+      url: `http://127.0.0.1:${port}`,
+      store,
+      delivered,
+      close: () => new Promise<void>((r) => server.close(() => r())),
+    };
+  }
+
+  it('sends a verification email when an account is created', async () => {
+    const harnessed = await routeHarness();
+    try {
+      const response = await fetch(`${harnessed.url}/accounts`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'new@example.com', password: 'a-long-enough-passphrase-42' }),
+      });
+
+      expect(response.status).toBe(201);
+      // Delivery is fired without being awaited, so the assertion waits for it
+      // rather than racing it.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(harnessed.delivered.map((message) => message.target)).toEqual(['new@example.com']);
+    } finally {
+      await harnessed.close();
+    }
+  });
+
+  it('records the challenge against the account, so a confirmation can match it', async () => {
+    const harnessed = await routeHarness();
+    try {
+      const response = await fetch(`${harnessed.url}/accounts`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'new@example.com', password: 'a-long-enough-passphrase-42' }),
+      });
+      const { accountId } = (await response.json()) as { accountId: string };
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(harnessed.store.get(accountId)?.emailChallenge ?? null).not.toBeNull();
+    } finally {
+      await harnessed.close();
+    }
+  });
+
+  /* The token belongs in the message and nowhere else. */
+  it('does not return the token in the registration response', async () => {
+    const harnessed = await routeHarness();
+    try {
+      const response = await fetch(`${harnessed.url}/accounts`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'new@example.com', password: 'a-long-enough-passphrase-42' }),
+      });
+      const body = JSON.stringify(await response.json());
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(body).not.toContain(harnessed.delivered[0]!.token);
+    } finally {
+      await harnessed.close();
+    }
+  });
+
+  /*
+   * A delivery outage must not turn a successful registration into a failure.
+   * The account exists and the session is valid; the resend endpoint is the
+   * designed path back.
+   */
+  it('still creates the account when delivery fails', async () => {
+    const store = new AccountStore();
+    const failing = {
+      name: 'failing',
+      synthetic: true,
+      async send() {
+        return { delivered: false, reference: null, synthetic: true };
+      },
+      async notify() {
+        return { delivered: false, reference: null, synthetic: true };
+      },
+    };
+    const app = express();
+    app.use(express.json());
+    registerAccountRoutes(app, {
+      store,
+      secret: requireSessionSecret('z'.repeat(48), 'TEST_SECRET'),
+      verification: new VerificationService({
+        store,
+        emailProvider: failing,
+        phoneProvider: failing,
+      }),
+    });
+    const server = app.listen(0);
+    await new Promise<void>((r) => server.once('listening', r));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/accounts`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'new@example.com', password: 'a-long-enough-passphrase-42' }),
+      });
+      expect(response.status).toBe(201);
+      expect(store.findByEmail('new@example.com')).not.toBeNull();
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
   });
 });

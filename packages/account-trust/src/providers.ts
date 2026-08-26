@@ -14,12 +14,29 @@
 
 export type DeliveryEnvironment = 'development' | 'staging' | 'production';
 
+/**
+ * What a token-carrying message is FOR.
+ *
+ * REQUIRED, and required is the whole point. Every one of these carries a
+ * token to an address and differs only in what it says and where it lands --
+ * which is exactly why they were indistinguishable to the provider, and why
+ * password reset spent its life sending an email headed "Verify your email
+ * address" with a link to the verification page. That link could never work:
+ * a reset token lives in a different field from a verification token, on
+ * purpose, so the verification page would refuse it.
+ *
+ * Making this a required field means a new kind of message cannot be added
+ * without saying which it is, and cannot silently inherit another's copy.
+ */
+export type MessagePurpose = 'verify-email' | 'password-reset' | 'confirm-new-address';
+
 export interface VerificationMessage {
   readonly channel: 'email' | 'phone';
   readonly target: string;
   /** The plaintext token. Delivered, never stored, never logged. */
   readonly token: string;
   readonly expiresAtMs: number;
+  readonly purpose: MessagePurpose;
 }
 
 /**

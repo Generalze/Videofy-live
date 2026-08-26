@@ -1956,6 +1956,43 @@ button:focus-visible {
   font-size: 0.92rem;
 }
 
+/* The same red as a join error, for the reset form which lives on its own page. */
+.field-error {
+  color: #ffb4b4;
+  font-size: 0.92rem;
+  margin: 0;
+}
+
+/* A quiet acknowledgement, not an alarm: asking for a reset is routine. */
+.join-note {
+  color: var(--c7-text-muted, #aab5c9);
+  font-size: 0.92rem;
+  line-height: 1.6;
+  margin: 0 0 1rem;
+  padding: 0.75rem 0.9rem;
+  border-left: 2px solid rgba(160, 180, 220, 0.35);
+  background: rgba(160, 180, 220, 0.06);
+  border-radius: 0 6px 6px 0;
+}
+
+/* A button that reads as a link, because it navigates rather than submits. */
+.join-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--c7-text-muted, #aab5c9);
+  font: inherit;
+  font-size: 0.9rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.join-link:hover {
+  color: #ffffff;
+}
+
 .join-done h3 {
   font-size: 1.5rem;
 }

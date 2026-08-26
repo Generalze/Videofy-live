@@ -16,6 +16,7 @@ import { C7Home } from './pages/C7Home';
 import { VideofyFamily } from './pages/VideofyFamily';
 import { VideofyLive } from './pages/VideofyLive';
 import { AppShell } from './pages/AppShell';
+import { ResetPassword, isResetPasswordPath } from './pages/ResetPassword';
 import { VerifyEmail, isVerifyEmailPath } from './pages/VerifyEmail';
 import { NotFound } from './pages/NotFound';
 import { ROUTE_PATHS, internalLink, useRoute, type Route } from './router';
@@ -85,6 +86,15 @@ export function App() {
   const [verifyingEmail, setVerifyingEmail] = useState(
     () => typeof window !== 'undefined' && isVerifyEmailPath(window.location.pathname),
   );
+  /*
+   * The reset landing, handled beside the verification one and for the same
+   * reason: an early return inside AppShell would sit after its hooks, and
+   * returning early from a component whose hooks have already run changes the
+   * hook order between renders.
+   */
+  const [resettingPassword, setResettingPassword] = useState(
+    () => typeof window !== 'undefined' && isResetPasswordPath(window.location.pathname),
+  );
 
   useEffect(() => {
     document.title = TITLES[route];
@@ -110,7 +120,7 @@ export function App() {
           * already run changes the hook order between renders. Here it is a
           * plain branch on the route, which is what it actually is.
           */}
-        {route === 'app' && verifyingEmail ? (
+        {route === 'app' && verifyingEmail && !resettingPassword ? (
           <VerifyEmail
             onDone={() => {
               // Leave /app/verify-email/ so a refresh does not replay a
@@ -120,7 +130,19 @@ export function App() {
             }}
           />
         ) : null}
-        {route === 'app' && !verifyingEmail ? <AppShell navigate={navigate} /> : null}
+        {route === 'app' && resettingPassword ? (
+          <ResetPassword
+            onDone={() => {
+              // Leave /app/reset-password/ so a refresh cannot replay a
+              // consumed token and report a working link as broken.
+              window.history.replaceState({}, '', ROUTE_PATHS.app);
+              setResettingPassword(false);
+            }}
+          />
+        ) : null}
+        {route === 'app' && !verifyingEmail && !resettingPassword ? (
+          <AppShell navigate={navigate} />
+        ) : null}
         {route === 'not-found' ? <NotFound navigate={navigate} /> : null}
 
         {/* Registration lives at the end of every REAL page. A not-found page

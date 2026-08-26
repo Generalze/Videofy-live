@@ -18,7 +18,7 @@ const ACCOUNT_URL = (
   (import.meta.env['VITE_ACCOUNT_URL'] as string | undefined) ?? 'http://localhost:3006'
 ).replace(/\/$/, '');
 
-type Mode = 'create' | 'signin';
+type Mode = 'create' | 'signin' | 'reset';
 
 interface SessionResult {
   readonly accountId?: string;
@@ -32,12 +32,31 @@ export function JoinC7() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [session, setSession] = useState<SessionResult | null>(null);
+  /** Set once a reset has been asked for. Never says whether the address existed. */
+  const [resetAsked, setResetAsked] = useState(false);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError(null);
     try {
+      /*
+       * A RESET NEVER REPORTS WHETHER THE ADDRESS EXISTS. The server answers
+       * 202 to everything for that reason, and this shows the same
+       * acknowledgement whatever comes back -- including an error. Anything
+       * else turns the form into a "does this person have an account here"
+       * oracle that anybody can query as often as they like.
+       */
+      if (mode === 'reset') {
+        await fetch(`${ACCOUNT_URL}/accounts/password-reset`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ email }),
+        }).catch(() => undefined);
+        setResetAsked(true);
+        return;
+      }
+
       const response = await fetch(`${ACCOUNT_URL}/${mode === 'create' ? 'accounts' : 'sessions'}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -104,8 +123,10 @@ export function JoinC7() {
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={mode === 'signin'}
-                  className={mode === 'signin' ? 'join-tab join-tab-on' : 'join-tab'}
+                  aria-selected={mode === 'signin' || mode === 'reset'}
+                  className={
+                    mode === 'signin' || mode === 'reset' ? 'join-tab join-tab-on' : 'join-tab'
+                  }
                   onClick={() => {
                     setMode('signin');
                     setError(null);
@@ -114,6 +135,13 @@ export function JoinC7() {
                   Sign in
                 </button>
               </div>
+
+              {resetAsked ? (
+                <p className="join-note" role="status">
+                  If that address has a C7 account, a link to choose a new password is on its way.
+                  It expires shortly and can be used once.
+                </p>
+              ) : null}
 
               <form className="join-form" onSubmit={submit}>
                 <label className="field">
@@ -126,24 +154,63 @@ export function JoinC7() {
                     onChange={(event) => setEmail(event.target.value)}
                   />
                 </label>
-                <label className="field">
-                  <span className="field-label">Password</span>
-                  <input
-                    type="password"
-                    autoComplete={mode === 'create' ? 'new-password' : 'current-password'}
-                    required
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                  />
-                </label>
+                {/* No password field when asking for a reset: the whole reason
+                    somebody is here is that they do not have one that works. */}
+                {mode === 'reset' ? null : (
+                  <label className="field">
+                    <span className="field-label">Password</span>
+                    <input
+                      type="password"
+                      autoComplete={mode === 'create' ? 'new-password' : 'current-password'}
+                      required
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                    />
+                  </label>
+                )}
                 {error === null ? null : (
                   <p className="join-error" role="alert">
                     {error}
                   </p>
                 )}
                 <button className="button button-primary button-wide" type="submit" disabled={busy}>
-                  {busy ? 'Working…' : mode === 'create' ? 'Create C7 account' : 'Sign in'}
+                  {busy
+                    ? 'Working…'
+                    : mode === 'create'
+                      ? 'Create C7 account'
+                      : mode === 'reset'
+                        ? 'Email me a reset link'
+                        : 'Sign in'}
                 </button>
+
+                {/* Offered from sign-in, where somebody discovers they need it,
+                    and offering the way back so the link is not a dead end. */}
+                {mode === 'signin' ? (
+                  <button
+                    type="button"
+                    className="join-link"
+                    onClick={() => {
+                      setMode('reset');
+                      setError(null);
+                      setResetAsked(false);
+                    }}
+                  >
+                    Forgot your password?
+                  </button>
+                ) : null}
+                {mode === 'reset' ? (
+                  <button
+                    type="button"
+                    className="join-link"
+                    onClick={() => {
+                      setMode('signin');
+                      setError(null);
+                      setResetAsked(false);
+                    }}
+                  >
+                    Back to sign in
+                  </button>
+                ) : null}
               </form>
             </>
           ) : (

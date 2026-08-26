@@ -13,6 +13,8 @@
  * blames the wrong system.
  */
 import { randomUUID } from 'node:crypto';
+import { renderBrandedEmail } from './email-layout.js';
+import type { MessagePurpose } from './providers.js';
 import type {
   DeliveryResult,
   VerificationDeliveryProvider,
@@ -81,41 +83,120 @@ export interface ResendConfig {
  * from a Host header is a host-injection bug that mails an attacker's domain to
  * a real user's inbox, with the token attached.
  */
-export function verificationLink(publicOrigin: string, token: string): string {
+/**
+ * Where a token can actually be redeemed.
+ *
+ * ONE PATH PER PURPOSE, because the pages are not interchangeable: a reset
+ * token lives in a different field from a verification token and the
+ * verification page would refuse it. Sending every token to the same page is
+ * how password reset came to mail out a link that could never work.
+ */
+const REDEMPTION_PATHS: Record<MessagePurpose, string> = {
+  'verify-email': '/app/verify-email/',
+  'password-reset': '/app/reset-password/',
+  'confirm-new-address': '/app/confirm-email-change/',
+};
+
+export function verificationLink(
+  publicOrigin: string,
+  token: string,
+  purpose: MessagePurpose = 'verify-email',
+): string {
   const origin = publicOrigin.replace(/\/+$/, '');
-  return `${origin}/app/verify-email/?token=${encodeURIComponent(token)}`;
+  return `${origin}${REDEMPTION_PATHS[purpose]}?token=${encodeURIComponent(token)}`;
 }
 
-function emailBody(link: string, expiresAtMs: number): { html: string; text: string } {
+/** The words for each purpose. Kept together so no two can drift apart. */
+const COPY: Record<
+  MessagePurpose,
+  { subject: string; heading: string; intro: string; action: string; textIntro: string }
+> = {
+  'verify-email': {
+    subject: 'Verify your email address',
+    heading: 'Verify your email address',
+    intro:
+      'Confirm this address to activate your Consummate 7 account and start hosting live translated video.',
+    action: 'Verify email address',
+    textIntro: 'Confirm this address to activate your Consummate 7 account:',
+  },
+  'password-reset': {
+    subject: 'Reset your C7 password',
+    heading: 'Reset your password',
+    intro:
+      'Choose a new password for your Consummate 7 account. Your current password stays in place until you finish.',
+    action: 'Choose a new password',
+    textIntro: 'Choose a new password for your Consummate 7 account:',
+  },
+  'confirm-new-address': {
+    subject: 'Confirm your new email address',
+    heading: 'Confirm your new email address',
+    intro:
+      'Confirm this address to finish moving your Consummate 7 account to it. Your current address keeps working until you do.',
+    action: 'Confirm this address',
+    textIntro: 'Confirm this address to finish moving your Consummate 7 account to it:',
+  },
+};
+
+/**
+ * What to tell somebody who did NOT ask for this.
+ *
+ * Written per purpose because the right advice differs. A stray verification
+ * means nothing happened. A stray password reset means somebody else is
+ * entering this address, which is worth knowing and worth acting on -- and
+ * the first thing that person needs to hear is that their password still
+ * works, so they do not panic into changing it from a link in an email.
+ */
+const IGNORE_LINE: Record<MessagePurpose, string> = {
+  'verify-email':
+    'If you did not create a C7 account, you can ignore this message. Nothing will be activated and no further email will be sent.',
+  'password-reset':
+    'If you did not ask to reset your password, you can ignore this message -- your password has not changed. If these keep arriving, somebody may be entering your address, and it is worth signing in and reviewing your account.',
+  'confirm-new-address':
+    'If you did not ask to change the email address on your account, ignore this message -- your address has not changed. Contact support using details you already have.',
+};
+
+function emailBody(
+  link: string,
+  expiresAtMs: number,
+  purpose: MessagePurpose,
+): { html: string; text: string } {
   const minutes = Math.max(1, Math.round((expiresAtMs - Date.now()) / 60000));
+  const copy = COPY[purpose];
+
+  /*
+   * The person who did NOT ask for this is the one the last line is written
+   * for, and what they should do differs by purpose. For a verification there
+   * is nothing to do. For a password reset there is: it means somebody else
+   * typed their address, and the account is worth checking on.
+   */
+  const ignoreLine = IGNORE_LINE[purpose];
+
   const text = [
-    'Verify your email address',
+    copy.heading,
     '',
-    'Confirm this address to activate your Consummate 7 account:',
+    copy.textIntro,
     link,
     '',
     `This link expires in about ${minutes} minutes and can be used once.`,
     '',
-    'If you did not create a C7 account, you can ignore this message.',
+    ...ignoreLine.split(' -- ').join('\n').split('\n'),
     '',
     'Consummate 7',
   ].join('\n');
 
-  // Deliberately plain. No account details, no name, no organization: a
-  // verification email is read by whoever controls that inbox, and at this
-  // point nobody has proven that is the right person.
-  const html = `<!doctype html><html><body style="margin:0;background:#05070c;padding:32px 16px;font-family:Segoe UI,Helvetica,Arial,sans-serif;color:#eef2f8">
-  <div style="max-width:520px;margin:0 auto;background:#0b0f18;border:1px solid rgba(160,180,220,.14);border-radius:16px;padding:28px">
-    <p style="margin:0 0 22px;font-size:12px;letter-spacing:.28em;text-transform:uppercase;color:#8d9ab4">Consummate 7</p>
-    <h1 style="margin:0 0 14px;font-size:23px;font-weight:600;color:#ffffff">Verify your email address</h1>
-    <p style="margin:0 0 22px;font-size:15px;line-height:1.6;color:#aab5c9">Confirm this address to activate your C7 account.</p>
-    <p style="margin:0 0 24px"><a href="${link}" style="display:inline-block;background:#eef2f8;color:#08101f;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:999px">Verify email address</a></p>
-    <p style="margin:0 0 8px;font-size:13px;color:#74809a">Or paste this link into your browser:</p>
-    <p style="margin:0 0 22px;font-size:13px;word-break:break-all;color:#9bb8ff">${link}</p>
-    <p style="margin:0 0 8px;font-size:13px;color:#74809a">This link expires in about ${minutes} minutes and can be used once.</p>
-    <p style="margin:0;font-size:13px;color:#74809a">If you did not create a C7 account, you can ignore this message.</p>
-  </div>
-</body></html>`;
+  const html = renderBrandedEmail({
+    preheader: `${copy.heading}. This link expires in about ${minutes} minutes.`,
+    heading: copy.heading,
+    intro: copy.intro,
+    action: { label: copy.action, href: link },
+    notes: [
+      // Repeated in full: the button fails for somebody reading in plain text,
+      // and a link you can see is a link you can check before following.
+      `Or paste this link into your browser:<br><span style="color:#9bb8ff;word-break:break-all">${link}</span>`,
+      `This link expires in about ${minutes} minutes and can be used once.`,
+      ignoreLine.replace(' -- ', ' &mdash; '),
+    ],
+  });
 
   return { html, text };
 }
@@ -123,10 +204,10 @@ function emailBody(link: string, expiresAtMs: number): { html: string; text: str
 /**
  * The message sent to an address that has just been replaced.
  *
- * NO LINK AND NO TOKEN. There is nothing here to click, which means there is
- * nothing here to phish: a warning that trains people to click is a warning
- * that an attacker can imitate. The one instruction is to contact support,
- * through a route the recipient already knows.
+ * NO LINK AND NO BUTTON, which is why it is the one message here with no
+ * action. There is nothing to click, so there is nothing to imitate: a warning
+ * that trains people to click is a warning an attacker can copy. The one
+ * instruction is to reach support through a route the recipient already has.
  *
  * The new address is not named. Somebody who has just had their account stolen
  * should not be handed the attacker's address by us.
@@ -135,9 +216,9 @@ function changeNoticeBody(changedAtMs: number): { html: string; text: string } {
   const when = new Date(changedAtMs).toISOString();
 
   const text = [
-    'The email address on your C7 account was changed.',
+    'Your email address was changed',
     '',
-    `When: ${when}`,
+    `The email address on your Consummate 7 account was changed on ${when}.`,
     '',
     'If you made this change, nothing else is needed.',
     '',
@@ -148,16 +229,16 @@ function changeNoticeBody(changedAtMs: number): { html: string; text: string } {
     'Consummate 7',
   ].join('\n');
 
-  const html = `<!doctype html><html><body style="margin:0;background:#05070c;padding:32px 16px;font-family:Segoe UI,Helvetica,Arial,sans-serif;color:#eef2f8">
-  <div style="max-width:520px;margin:0 auto;background:#0b0f18;border:1px solid rgba(160,180,220,.14);border-radius:16px;padding:28px">
-    <p style="margin:0 0 22px;font-size:12px;letter-spacing:.28em;text-transform:uppercase;color:#8d9ab4">Consummate 7</p>
-    <h1 style="margin:0 0 14px;font-size:23px;font-weight:600;color:#ffffff">Your email address was changed</h1>
-    <p style="margin:0 0 22px;font-size:15px;line-height:1.6;color:#aab5c9">The email address on your C7 account was changed on ${when}.</p>
-    <p style="margin:0 0 22px;font-size:15px;line-height:1.6;color:#aab5c9">If you made this change, nothing else is needed.</p>
-    <p style="margin:0 0 8px;font-size:14px;line-height:1.6;color:#f0b8b8">If you did <strong>not</strong> make this change, contact support immediately using the contact details you already have for Consummate 7.</p>
-    <p style="margin:0;font-size:13px;color:#74809a">Do not reply to this message, and do not follow links sent to you about it.</p>
-  </div>
-</body></html>`;
+  const html = renderBrandedEmail({
+    preheader: 'The email address on your C7 account was changed. If this was not you, contact support.',
+    heading: 'Your email address was changed',
+    intro: `The email address on your Consummate 7 account was changed on ${when}. If you made this change, nothing else is needed.`,
+    tone: 'alert',
+    notes: [
+      'If you did <strong style="color:#f0b8b8">not</strong> make this change, contact support immediately using the contact details you already have for Consummate 7.',
+      'Do not reply to this message, and do not follow links sent to you about it.',
+    ],
+  });
 
   return { html, text };
 }
@@ -170,8 +251,8 @@ export function createResendProvider(config: ResendConfig): VerificationDelivery
     name: 'resend',
     synthetic: false,
     async send(message: VerificationMessage): Promise<DeliveryResult> {
-      const link = verificationLink(config.publicOrigin, message.token);
-      const { html, text } = emailBody(link, message.expiresAtMs);
+      const link = verificationLink(config.publicOrigin, message.token, message.purpose);
+      const { html, text } = emailBody(link, message.expiresAtMs, message.purpose);
 
       const response = await postJson(
         fetchImpl,
@@ -185,7 +266,7 @@ export function createResendProvider(config: ResendConfig): VerificationDelivery
         {
           from: config.from,
           to: message.target,
-          subject: 'Verify your email address',
+          subject: COPY[message.purpose].subject,
           html,
           text,
         },
@@ -285,7 +366,12 @@ export function createTermiiProvider(config: TermiiConfig): VerificationDelivery
           api_key: config.apiKey,
           to: message.target,
           from: config.senderId,
-          sms: `${message.token} is your Consummate 7 verification code. It expires shortly. If you did not request it, ignore this message.`,
+          // Named, because "your verification code" on a password reset is how
+          // somebody talks themselves into reading out a code that resets their
+          // own account.
+          sms: `${message.token} is your Consummate 7 ${
+            message.purpose === 'password-reset' ? 'password reset' : 'verification'
+          } code. It expires shortly. If you did not request it, ignore this message.`,
           type: 'plain',
           channel: config.channel ?? 'generic',
         },

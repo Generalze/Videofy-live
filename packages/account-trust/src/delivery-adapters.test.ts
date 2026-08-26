@@ -6,6 +6,7 @@
  * — most importantly — that nothing reports success when the vendor did not
  * accept the send.
  */
+import type { VerificationMessage } from './providers.js';
 import { describe, expect, it, vi } from 'vitest';
 import {
   ProviderConfigurationError,
@@ -18,11 +19,12 @@ import {
   type FetchLike,
 } from './index.js';
 
-const MESSAGE = {
-  channel: 'email' as const,
+const MESSAGE: VerificationMessage = {
+  channel: 'email',
   target: 'zoe@example.com',
   token: 'a-very-secret-token-value',
   expiresAtMs: Date.now() + 30 * 60 * 1000,
+  purpose: 'verify-email',
 };
 
 function transport(
@@ -143,11 +145,12 @@ describe('Resend adapter', () => {
 });
 
 describe('Termii adapter', () => {
-  const OTP = {
-    channel: 'phone' as const,
+  const OTP: VerificationMessage = {
+    channel: 'phone',
     target: '+2348000000000',
     token: '482915',
     expiresAtMs: Date.now() + 10 * 60 * 1000,
+    purpose: 'verify-email',
   };
 
   function termii(response: { ok: boolean; status: number; body: string }) {
@@ -298,5 +301,65 @@ describe('provider selection', () => {
     expect(status.implementation).toBe('integrated');
     expect(status.validation).toBe('external-validation-deferred');
     expect(JSON.stringify(status)).not.toContain('certified');
+  });
+});
+
+/*
+ * ONE MESSAGE PER PURPOSE.
+ *
+ * Every one of these carries a token to an address and differs only in what it
+ * says and where it lands -- which is precisely why they were once
+ * indistinguishable to the provider. Password reset spent its life sending an
+ * email headed "Verify your email address" pointing at the verification page,
+ * a link that could never work: a reset token lives in a different field, on
+ * purpose, so that page refuses it.
+ */
+describe('purpose decides the message', () => {
+  function sentFor(purpose: VerificationMessage['purpose']) {
+    const { fetchImpl, calls } = transport({ ok: true, status: 200, body: '{"id":"m"}' });
+    const provider = createResendProvider({
+      apiKey: 're_test',
+      from: 'C7 <verify@consummate7.com>',
+      publicOrigin: 'https://staging.consummate7.com',
+      fetchImpl,
+    });
+    return provider.send({ ...MESSAGE, purpose }).then(() => JSON.parse(calls[0]!.body));
+  }
+
+  it('sends a reset that is not headed as a verification', async () => {
+    const sent = await sentFor('password-reset');
+    expect(sent.subject).toBe('Reset your C7 password');
+    expect(sent.subject).not.toContain('Verify');
+    expect(sent.html).toContain('Reset your password');
+  });
+
+  /* THE DEAD LINK. A reset token sent to the verification page is refused. */
+  it('points a reset at the reset page, not the verification page', async () => {
+    const sent = await sentFor('password-reset');
+    expect(sent.html).toContain('/app/reset-password/?token=');
+    expect(sent.html).not.toContain('/app/verify-email/');
+    expect(sent.text).toContain('/app/reset-password/?token=');
+  });
+
+  it('still sends a verification to the verification page', async () => {
+    const sent = await sentFor('verify-email');
+    expect(sent.subject).toBe('Verify your email address');
+    expect(sent.html).toContain('/app/verify-email/?token=');
+  });
+
+  it('sends an address change to its own page', async () => {
+    const sent = await sentFor('confirm-new-address');
+    expect(sent.subject).toBe('Confirm your new email address');
+    expect(sent.html).toContain('/app/confirm-email-change/?token=');
+  });
+
+  /*
+   * Somebody who did not ask for a reset has something to act on -- it means
+   * another person is entering their address. Somebody who did not ask for a
+   * verification does not.
+   */
+  it('tells a reset recipient their password has not changed', async () => {
+    const sent = await sentFor('password-reset');
+    expect(sent.text).toContain('your password has not changed');
   });
 });

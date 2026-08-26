@@ -154,6 +154,7 @@ export class IdentityChangeService {
         target,
         token: start.token,
         expiresAtMs: start.pending.challenge.expiresAtMs,
+        purpose: 'confirm-new-address',
       })
       .catch(() => ({ delivered: false, reference: null, synthetic: provider.synthetic }));
 

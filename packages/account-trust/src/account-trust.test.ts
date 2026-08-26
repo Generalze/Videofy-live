@@ -296,8 +296,7 @@ describe('delivery providers', () => {
       channel: 'email',
       target: 'zoe@example.com',
       token: 'abc',
-      expiresAtMs: 1,
-    });
+      expiresAtMs: 1, purpose: 'verify-email' });
     expect(result.synthetic).toBe(true);
     expect(seen).toEqual(['zoe@example.com']);
   });

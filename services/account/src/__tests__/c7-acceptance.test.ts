@@ -132,7 +132,14 @@ describe('A — registration', () => {
     expect(me.body['accountId']).toBe(accountId);
 
     const trust = me.body['trust'] as Record<string, unknown>;
-    expect(trust['state']).toBe('registered');
+    /*
+     * PENDING, not merely registered: creating an account now sends the
+     * verification email, so by the time this responds a challenge is
+     * outstanding. That is the accurate description of the account -- what
+     * matters, and what the next line pins, is that it is still NOT verified
+     * and carries no product authority.
+     */
+    expect(trust['state']).toBe('verification_pending');
     expect(trust['state']).not.toBe('verified');
 
     // No product authority whatsoever.
@@ -164,28 +171,31 @@ describe('A — registration', () => {
 
 describe('B — email verification', () => {
   it('runs the full lifecycle and refuses every misuse', async () => {
-    const { accountId, token } = await signUp('email-flow@example.com');
     const before = outbox.length;
+    const { accountId, token } = await signUp('email-flow@example.com');
 
-    const requested = await api('POST', '/verification/email', token);
-    expect(requested.status).toBe(202);
-
-    // The adapter was invoked, with the right recipient.
+    /*
+     * THE LIFECYCLE NOW STARTS AT REGISTRATION. Creating the account sends the
+     * email; nothing has to ask for it. This test used to request one itself,
+     * which passed while the thing it was standing in for -- somebody actually
+     * receiving a message after signing up -- did not happen at all.
+     */
     expect(outbox.length).toBe(before + 1);
     const message = outbox[outbox.length - 1]!;
     expect(message.channel).toBe('email');
     expect(message.target).toBe('email-flow@example.com');
     expect(message.expiresAtMs).toBeGreaterThan(clock);
 
-    // The token is NOT in the HTTP response.
-    expect(requested.raw).not.toContain(message.token);
-
     // Wrong token refused.
     expect((await api('POST', '/verification/email/confirm', token, { token: 'wrong' })).status).toBe(
       400,
     );
 
-    // Resend is throttled.
+    /*
+     * An immediate resend is throttled, BECAUSE registration already sent one.
+     * Correct, and worth pinning: the client must read this as "one is already
+     * on its way", not as an error.
+     */
     expect((await api('POST', '/verification/email', token)).status).toBe(429);
 
     // The right token verifies.

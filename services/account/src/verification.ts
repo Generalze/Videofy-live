@@ -108,7 +108,7 @@ export class VerificationService {
     await this.deps.store.setChallenge(accountId, channel, record);
 
     const delivery = await provider
-      .send({ channel, target, token, expiresAtMs: record.expiresAtMs })
+      .send({ channel, target, token, expiresAtMs: record.expiresAtMs, purpose: 'verify-email' })
       .catch(() => ({ delivered: false, reference: null, synthetic: provider.synthetic }));
 
     if (!delivery.delivered) {
