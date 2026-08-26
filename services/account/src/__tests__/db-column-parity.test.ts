@@ -110,3 +110,59 @@ describe('contacts', () => {
     expect(written.filter((column) => !read.includes(column))).toEqual([]);
   });
 });
+
+/**
+ * The tariff port cannot have the accounts bug, because both statements
+ * interpolate ONE `COLUMNS` constant -- there is no second list to drift from.
+ * So this checks the two seams that constant still has: the table it claims to
+ * describe, and the placeholders it is bound against.
+ */
+describe('billing tariffs', () => {
+  const sql = source('tariff-records-postgres.ts');
+
+  /** The shared constant, which both the SELECT and the INSERT interpolate. */
+  function sharedColumns(): string[] {
+    const match = /const COLUMNS =\s*([\s\S]*?);/u.exec(sql);
+    if (match === null) throw new Error('no COLUMNS constant found');
+    return splitColumns(match[1]!.replace(/['`\n]/g, ' '));
+  }
+
+  /** Columns the migration actually creates. */
+  function migrationColumns(): string[] {
+    const migrations = readFileSync(join(here, '..', 'db', 'migrations.ts'), 'utf8');
+    const start = migrations.indexOf('CREATE TABLE IF NOT EXISTS billing_tariffs (');
+    if (start < 0) throw new Error('billing_tariffs is not created by any migration');
+    const open = migrations.indexOf('(', start);
+    const close = migrations.indexOf(');', open);
+    return migrations
+      .slice(open + 1, close)
+      .split('\n')
+      .map((line) => line.trim().replace(/--.*$/u, '').trim())
+      .map((line) => /^([a-z_]+)\s+(integer|bigint|text|jsonb)/u.exec(line)?.[1] ?? '')
+      .filter((name) => name.length > 0);
+  }
+
+  it('names only columns the table has', () => {
+    const declared = migrationColumns();
+    expect(sharedColumns().filter((column) => !declared.includes(column))).toEqual([]);
+  });
+
+  /*
+   * The other direction. A column added to the migration and forgotten here is
+   * exactly the accounts bug -- written by nothing, read by nothing, and
+   * invisible until someone needs the value.
+   */
+  it('reads every column the table has', () => {
+    const used = sharedColumns();
+    expect(migrationColumns().filter((column) => !used.includes(column))).toEqual([]);
+  });
+
+  /*
+   * A column list and a VALUES list of different lengths is a runtime error on
+   * the first publish, which is a poor place to find out.
+   */
+  it('binds exactly one placeholder per column', () => {
+    const placeholders = [...sql.matchAll(/\$(\d+)/gu)].map((match) => Number(match[1]));
+    expect(Math.max(...placeholders)).toBe(sharedColumns().length);
+  });
+});

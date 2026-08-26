@@ -29,6 +29,10 @@ import { ContactStore, createEphemeralContactRecords } from './contact-store.js'
 import { createPostgresContactRecords } from './db/contact-records-postgres.js';
 import { OrganizationStore } from './organization-store.js';
 import { registerOrganizationRoutes } from './organization-routes.js';
+import { parseOperatorAllowlist } from '@videofy-live/billing-tariff';
+import { TariffStore, createInMemoryTariffPort } from './tariff-store.js';
+import { createPostgresTariffPort } from './db/tariff-records-postgres.js';
+import { registerTariffRoutes } from './tariff-routes.js';
 import { VerificationService } from './verification.js';
 import { PasswordResetService } from './password-reset.js';
 import { createSecurityLog } from './security-log.js';
@@ -394,6 +398,65 @@ registerOrganizationRoutes(app, {
   organizations,
   // The SAME caller resolver the account routes use. Two ways of deciding who
   // is calling is two chances to disagree, and the disagreement is a bypass.
+  callerAccountId: createCallerResolver({
+    store,
+    secret,
+    nowSeconds: () => Math.floor(Date.now() / 1000),
+  }),
+  onEvent: (event, detail) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', event, ...detail }));
+  },
+});
+
+/*
+ * PLATFORM PRICING.
+ *
+ * The allowlist is read ONCE, here, from the deployment. Empty is the safe
+ * state and the default: with no operators configured nobody can change a
+ * price, which costs an inconvenience, where the opposite default would hand
+ * the price list to anyone holding a session.
+ *
+ * Note which store this uses. Without a database the tariff lives in memory and
+ * is lost on restart -- acceptable for a local run, and the reason the seeded
+ * default exists, but it means a price set on an ephemeral deployment does not
+ * survive a deploy. The log below says which one is in force rather than
+ * leaving that to be discovered.
+ */
+const platformOperators = parseOperatorAllowlist(process.env['PLATFORM_OPERATOR_ACCOUNT_IDS']);
+const tariffs = new TariffStore({
+  port: databasePool ? createPostgresTariffPort(databasePool) : createInMemoryTariffPort(),
+});
+const seededTariff = await tariffs.seedDefault(process.env['BILLING_CURRENCY'] ?? 'USD');
+// eslint-disable-next-line no-console
+console.log(
+  JSON.stringify({
+    service: 'account',
+    message: 'Tariff ready',
+    store: databasePool ? 'postgres' : 'ephemeral',
+    seeded: seededTariff !== null,
+    version: seededTariff?.version ?? (await tariffs.current())?.version ?? null,
+    // A COUNT, not the ids. Naming the people who can change prices in a log
+    // line is a list of who to compromise.
+    platformOperators: platformOperators.size,
+  }),
+);
+if (platformOperators.size === 0) {
+  // eslint-disable-next-line no-console
+  console.log(
+    JSON.stringify({
+      service: 'account',
+      level: 'warn',
+      message:
+        'No platform operators configured; nobody can change pricing. Set PLATFORM_OPERATOR_ACCOUNT_IDS.',
+    }),
+  );
+}
+
+registerTariffRoutes(app, {
+  tariffs,
+  platformOperators,
+  // The SAME caller resolver as every other surface, for the same reason.
   callerAccountId: createCallerResolver({
     store,
     secret,

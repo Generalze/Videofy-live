@@ -335,6 +335,60 @@ const CONTACTS: Migration = {
   `,
 };
 
+/**
+ * 008 -- the platform tariff.
+ *
+ * APPEND-ONLY, AND THE DATABASE ENFORCES IT. Every other table here is state
+ * that changes; this one is history that must not. A charge raised last week is
+ * only explicable if the tariff it was raised under still says what it said
+ * then, so "changing the price" inserts a new version and the old rows stay
+ * exactly as published.
+ *
+ * The trigger is the point. Application-level append-only is a convention that
+ * survives until someone writes a well-meaning UPDATE in a migration or a
+ * console session; a rule in the database is the thing that still holds at
+ * three in the morning. Deliberately no ON CONFLICT DO UPDATE anywhere: a
+ * repeated version is a bug worth hearing about, not a silent overwrite of a
+ * price somebody was charged under.
+ *
+ * `grades` is jsonb for the same reason trust components are: it is read as a
+ * whole, nothing queries inside it, and the set of grades is a product decision
+ * that should not need a migration to revisit.
+ */
+const BILLING_TARIFF: Migration = {
+  name: '008_billing_tariff',
+  sql: `
+    CREATE TABLE IF NOT EXISTS billing_tariffs (
+      version           integer PRIMARY KEY,
+      effective_from_ms bigint  NOT NULL,
+      currency          text    NOT NULL,
+      grades            jsonb   NOT NULL,
+      published_by      text    NOT NULL,
+      published_at_ms   bigint  NOT NULL,
+      note              text
+    );
+
+    -- "Which tariff was in force at time T" is the only query that matters for
+    -- explaining a past charge, and it is the one an audit runs most.
+    CREATE INDEX IF NOT EXISTS billing_tariffs_effective_idx
+      ON billing_tariffs (effective_from_ms DESC);
+
+    CREATE OR REPLACE FUNCTION billing_tariffs_are_append_only()
+    RETURNS trigger AS $$
+    BEGIN
+      RAISE EXCEPTION
+        'billing_tariffs is append-only: publish a new version instead of %',
+        TG_OP;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    DROP TRIGGER IF EXISTS billing_tariffs_no_rewrite ON billing_tariffs;
+    CREATE TRIGGER billing_tariffs_no_rewrite
+      BEFORE UPDATE OR DELETE ON billing_tariffs
+      FOR EACH ROW EXECUTE FUNCTION billing_tariffs_are_append_only();
+  `,
+};
+
 /** Applied in this order. Append only. */
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
@@ -344,4 +398,5 @@ export const MIGRATIONS: readonly Migration[] = [
   PENDING_IDENTITY_CHANGE,
   USERNAME_AND_PROFILE,
   CONTACTS,
+  BILLING_TARIFF,
 ];
