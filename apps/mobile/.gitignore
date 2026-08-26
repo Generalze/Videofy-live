@@ -1,0 +1,10 @@
+node_modules/
+.expo/
+dist/
+android/
+ios/
+
+# NOT a secret -- google-services.json ships inside every APK, and its API key
+# is restricted to this package name and signing certificate. It is committed
+# on purpose so a build does not depend on a file only one machine has. The
+# ADMIN SDK key is the opposite and lives outside this repository entirely.

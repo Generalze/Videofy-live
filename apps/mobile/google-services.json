@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "692573915541",
+    "project_id": "consummate-7",
+    "storage_bucket": "consummate-7.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:692573915541:android:101f99afb3ca006b7c4e9c",
+        "android_client_info": {
+          "package_name": "com.consummate7.videofy"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAvVY7IHECqNcGS6w1eOCax0gW4ssdHboM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

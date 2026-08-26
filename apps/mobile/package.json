@@ -1,0 +1,33 @@
+{
+  "name": "@videofy-live/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "author": "masterzee001",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "description": "Videofy Live for Android. Expo development builds, because this product needs native WebRTC and push and cannot run in Expo Go.",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "android": "expo run:android",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@videofy-live/call-client-core": "*",
+    "@videofy-live/call-wire": "*",
+    "@videofy-live/shared-types": "*",
+    "expo": "~57.0.16",
+    "expo-dev-client": "~57.0.3",
+    "expo-notifications": "~0.34.0",
+    "expo-secure-store": "~15.0.7",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-native": "0.86.2",
+    "socket.io-client": "^4.7.5"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  }
+}
