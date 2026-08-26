@@ -38,6 +38,7 @@ import { createPostgresDeviceRecords } from './db/device-records-postgres.js';
 import { registerDeviceRoutes } from './device-routes.js';
 import { PushDispatcher } from './push/push-dispatcher.js';
 import { registerPushRoutes } from './push-routes.js';
+import { createFcmProviderFromEnv } from './push/fcm-provider.js';
 import { resolveInternalIngressAuth } from '@videofy-live/service-env';
 import { VerificationService } from './verification.js';
 import { PasswordResetService } from './password-reset.js';
@@ -515,9 +516,19 @@ registerDeviceRoutes(app, {
  * do not ring, and every service reports itself healthy. `configured` is the
  * flag to check, and the boot line below is the one that answers it.
  */
+/*
+ * FCM covers Android and web. iOS ringing needs a direct APNs provider with
+ * PushKit -- FCM cannot send a VoIP push -- so an iPhone will show as an
+ * unreachable platform in the dispatch summary until that is added, rather than
+ * silently failing to ring.
+ */
+const pushProviders = [createFcmProviderFromEnv(process.env)].filter(
+  (provider): provider is NonNullable<typeof provider> => provider !== null,
+);
+
 const push = new PushDispatcher({
   devices,
-  providers: [],
+  providers: pushProviders,
   onEvent: (event, detail) => {
     // eslint-disable-next-line no-console
     console.log(JSON.stringify({ service: 'account', event, ...detail }));
@@ -529,6 +540,7 @@ console.log(
     service: 'account',
     message: 'Push dispatcher ready',
     configured: push.configured,
+    providers: pushProviders.map((provider) => provider.name),
     note: push.configured ? undefined : 'No push provider: phones cannot be rung.',
   }),
 );
