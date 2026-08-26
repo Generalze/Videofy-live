@@ -13,6 +13,7 @@ import {
 } from './adapter-route-policy.js';
 import { createApp } from './app.js';
 import { loadConfig } from './config.js';
+import { createCallHostAuthority } from './call-host-authority.js';
 import { Gateway } from './gateway.js';
 import { logger, setLogLevel } from './logger.js';
 
@@ -126,6 +127,16 @@ const gateway = new Gateway(server, config.corsOrigins, {
   connect: {
     authSecret: config.connectAuthSecret,
     projectsPath: config.connectProjectsPath,
+  },
+  /*
+   * Who may START a call. Joining one is untouched: a guest invited to a call
+   * has no C7 account and should not need one.
+   */
+  call: {
+    authorizeHost: createCallHostAuthority({
+      secret: process.env['VIDEOFY_AUTH_SECRET'],
+      accountServiceUrl: process.env['ACCOUNT_SERVICE_URL'],
+    }),
   },
   operator: {
     // The SAME secret the account service signs sessions with. A separate

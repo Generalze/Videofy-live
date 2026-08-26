@@ -146,6 +146,7 @@ describe('gateway WebRTC signalling integration', () => {
   beforeEach(async () => {
     server = createServer(createApp());
     gateway = new Gateway(server, ['http://localhost:5173', 'http://localhost:5174'], {
+    call: { authorizeHost: async () => true },
       operator: { authSecret: OPERATOR_SECRET },
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

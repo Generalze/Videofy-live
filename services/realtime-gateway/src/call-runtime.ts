@@ -300,6 +300,21 @@ export interface CallRuntimeDependencies {
    */
   verifyVoiceIdentity?: (sessionToken: string) => string | null;
   /**
+   * Whether this caller may START a call.
+   *
+   * ABSENT MEANS REFUSED, the same way the operator gate treats a missing
+   * secret: the fallback for a privileged surface has to be closed. This exists
+   * because the account shell has been telling people "you cannot yet host
+   * calls" while nothing anywhere enforced it -- the capability was computed
+   * and consulted nowhere, so the restriction was a sentence rather than a
+   * control.
+   *
+   * JOINING is deliberately NOT gated by this. A guest invited to a call has
+   * no C7 account and should not need one; what needed an owner was the
+   * decision to originate a call in the first place.
+   */
+  authorizeCallHost?: (sessionToken: string | null) => Promise<boolean>;
+  /**
    * P7.0A: a sink for governance audit events.
    *
    * Optional, and the journal line above is emitted either way. This is the
@@ -414,6 +429,14 @@ interface CallIngestRegistryEntry {
 
 const USER_FACING_ERRORS = {
   join: 'This call could not be joined right now.',
+  /*
+   * Says what to DO, and says it is about starting rather than joining --
+   * somebody invited to a call who sees "verify your account" would reasonably
+   * think they had been refused entry. It names no check: which verification
+   * is outstanding belongs in the account shell, not on a call socket.
+   */
+  hostNotAuthorized:
+    'Finish verifying your C7 account to start a call. You can still join a call somebody invites you to.',
   notInCall: 'You are not part of this call.',
   publish: 'Your microphone could not be connected. Please try again.',
   receive: 'The other caller’s audio could not be connected. Please try again.',
@@ -441,6 +464,9 @@ export class CallRuntime {
   private readonly receivePeers: CallReceivePeersLike;
   private readonly disconnectGraceMs: number;
   private readonly verifyVoiceIdentity: ((sessionToken: string) => string | null) | undefined;
+  private readonly authorizeCallHost:
+    | ((sessionToken: string | null) => Promise<boolean>)
+    | undefined;
   private readonly governanceAudit: ((event: GovernanceAuditEvent) => void) | undefined;
   private readonly connectAuthority: CallConnectJoinAuthority | undefined;
   private readonly setTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
@@ -502,6 +528,7 @@ export class CallRuntime {
     this.transcriptLog = dependencies.transcriptLog ?? new CallTranscriptLog(null);
     this.now = dependencies.now ?? (() => Date.now());
     this.verifyVoiceIdentity = dependencies.verifyVoiceIdentity;
+    this.authorizeCallHost = dependencies.authorizeCallHost;
     this.governanceAudit = dependencies.governanceAudit;
     this.connectAuthority = dependencies.connectAuthority;
     this.playbackLedger = dependencies.playbackLedger ?? new CallPlaybackLedger({ nowMs: this.now });
@@ -869,6 +896,37 @@ export class CallRuntime {
       !isResumeAttempt
     ) {
       return { ok: false, code: 'invalid-input', error: USER_FACING_ERRORS.join };
+    }
+
+    /*
+     * STARTING A CALL IS THE GATED ACT, and this is the moment it happens: the
+     * store creates a call when a join names one that does not exist, so a join
+     * to an unknown id IS the host action.
+     *
+     * Checked here rather than in the store because the store is deliberately
+     * pure -- it knows about seats and revisions, not about C7 accounts. And
+     * checked BEFORE the store is touched, so a refused host never leaves a
+     * half-created call behind for the next person to walk into.
+     *
+     * A resume is exempt: it rejoins a seat in a call that already exists, and
+     * its credential is the private resumeToken the store verifies.
+     */
+    if (
+      typeof requestedCallId === 'string' &&
+      !isResumeAttempt &&
+      this.store.snapshot(requestedCallId) === null
+    ) {
+      const mayHost = this.authorizeCallHost
+        ? await this.authorizeCallHost(typeof sessionToken === 'string' ? sessionToken : null)
+        : false;
+      if (!mayHost) {
+        logger.info('Call host refused', { callId: requestedCallId });
+        return {
+          ok: false,
+          code: 'host-not-authorized',
+          error: USER_FACING_ERRORS.hostNotAuthorized,
+        };
+      }
     }
 
     const verifiedOwnerId =

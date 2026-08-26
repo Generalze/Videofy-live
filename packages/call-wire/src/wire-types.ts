@@ -351,6 +351,16 @@ export type CallJoinFailureCode =
   | 'invalid-input'
   | 'call-full'
   | 'duplicate-display-name'
+  /**
+   * Starting a call requires a verified C7 account; joining one does not.
+   *
+   * Distinct from 'invalid-input' so a client can send somebody to finish
+   * verification instead of showing them a generic failure. It says only that
+   * authority was missing -- never which check failed, because the account
+   * shell is where that belongs and a call socket is a poor place to enumerate
+   * somebody's verification state.
+   */
+  | 'host-not-authorized'
   | 'internal';
 
 export type CallJoinAck =

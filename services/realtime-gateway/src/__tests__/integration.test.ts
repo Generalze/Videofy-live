@@ -164,6 +164,7 @@ describe('gateway Socket.IO integration', () => {
   beforeEach(async () => {
     server = createServer(createApp());
     gateway = new Gateway(server, ['http://localhost:5173', 'http://localhost:5174'], {
+    call: { authorizeHost: async () => true },
       operator: { authSecret: OPERATOR_SECRET },
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -759,6 +760,7 @@ describe('gateway public media ingest URL', () => {
   it('builds listener-facing programme media URLs from the public ingest URL', async () => {
     const server = createServer(createApp());
     new Gateway(server, ['http://localhost:5173'], {
+    call: { authorizeHost: async () => true },
       mediaIngestUrl: 'http://internal-ingest:3002',
       mediaIngestPublicUrl: 'https://media.example.com',
       operator: { authSecret: OPERATOR_SECRET },

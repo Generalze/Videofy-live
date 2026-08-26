@@ -261,6 +261,10 @@ export class Gateway {
        * operator supplies a secret and a token, which is the same thing a real
        * client does.
        */
+      /** Call-level authority. Omitted means no account may start a call. */
+      call?: {
+        authorizeHost?: (sessionToken: string | null) => Promise<boolean>;
+      };
       operator?: {
         authSecret?: string | undefined;
         requireEntitlement?: boolean;
@@ -447,6 +451,13 @@ export class Gateway {
       ...(callVoiceIdentityVerifier
         ? { verifyVoiceIdentity: callVoiceIdentityVerifier }
         : {}),
+      /*
+       * Who may START a call. Passed through when the composition root supplies
+       * one; absent, CallRuntime refuses every host, which is the fail-closed
+       * default a bare Gateway (tests, embedders) should have -- the same shape
+       * as connectAuthority directly below.
+       */
+      ...(options.call?.authorizeHost ? { authorizeCallHost: options.call.authorizeHost } : {}),
       // P6.5: the synchronous connect-join gate (jti claim, verify, project,
       // origin, live-registry). Always constructed — with a missing secret or
       // registry it refuses every connect join, which is the fail-closed

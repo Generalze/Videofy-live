@@ -149,6 +149,13 @@ function createHarness() {
   const timers: FakeTimer[] = [];
   let timerSerial = 0;
   const runtime = new CallRuntime({
+      /*
+       * These exercise call MECHANICS, not the host gate. CallRuntime refuses
+       * every host when no authorizer is supplied -- the fail-closed default --
+       * so a harness that omitted one would be testing the gate by accident and
+       * reporting it as a broken call.
+       */
+      authorizeCallHost: async () => true,
     store,
     emitToRoom,
     ingestControl,

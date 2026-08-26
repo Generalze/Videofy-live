@@ -210,6 +210,13 @@ function createHarness(options: { registerLiveCalls?: boolean } = {}) {
     nowSeconds: () => NOW_SECONDS,
   });
   const runtime = new CallRuntime({
+      /*
+       * These exercise call MECHANICS, not the host gate. CallRuntime refuses
+       * every host when no authorizer is supplied -- the fail-closed default --
+       * so a harness that omitted one would be testing the gate by accident and
+       * reporting it as a broken call.
+       */
+      authorizeCallHost: async () => true,
     store,
     emitToRoom,
     ingestControl,
@@ -694,6 +701,7 @@ describe('end-to-end: /v1 create → mint → socket join → authority mode cha
     const app = createApp({ connectV1Router: () => gateway.getConnectV1Router() });
     server = createServer(app);
     gateway = new Gateway(server, ['http://localhost:5175'], {
+    call: { authorizeHost: async () => true },
       connect: { authSecret: SECRET_STRING, projectsPath: registryPath },
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

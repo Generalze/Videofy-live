@@ -55,6 +55,7 @@ describe('two programmes on one gateway', () => {
   beforeEach(async () => {
     server = createServer(createApp());
     new Gateway(server, ['http://localhost:5173', 'http://localhost:5174'], {
+    call: { authorizeHost: async () => true },
       operator: { authSecret: OPERATOR_SECRET, channelSalt: 'isolation-test' },
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -237,6 +238,7 @@ describe('a private programme', () => {
   beforeEach(async () => {
     server = createServer(createApp());
     new Gateway(server, ['http://localhost:5173'], {
+    call: { authorizeHost: async () => true },
       operator: { authSecret: OPERATOR_SECRET, channelSalt: 'private-test' },
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

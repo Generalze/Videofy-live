@@ -52,7 +52,9 @@ describe('gateway call_ session id reservation', () => {
 
   beforeEach(async () => {
     server = createServer(createApp());
-    new Gateway(server, ['http://localhost:5173']);
+    new Gateway(server, ['http://localhost:5173'], {
+    call: { authorizeHost: async () => true },
+    });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address() as AddressInfo;
     baseUrl = `http://127.0.0.1:${address.port}`;

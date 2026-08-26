@@ -110,7 +110,10 @@ interface FakeChunkTiming {
   submittedAtMs: number | null;
 }
 
-function createHarness(verifyVoiceIdentity?: (token: string) => string | null) {
+function createHarness(
+  verifyVoiceIdentity?: (token: string) => string | null,
+  authorizeCallHost?: (sessionToken: string | null) => Promise<boolean>,
+) {
   let tokenSerial = 0;
   const store = new CallSessionStore({
     now: () => '2026-08-14T00:00:00.000Z',
@@ -193,6 +196,13 @@ function createHarness(verifyVoiceIdentity?: (token: string) => string | null) {
   let mediaHandlers: CallMediaPeerHandlers | null = null;
   let receiveHandlers: CallReceivePeerHandlers | null = null;
   const runtime = new CallRuntime({
+      /*
+       * These exercise call MECHANICS, not the host gate. CallRuntime refuses
+       * every host when no authorizer is supplied -- the fail-closed default --
+       * so a harness that omitted one would be testing the gate by accident and
+       * reporting it as a broken call.
+       */
+      authorizeCallHost: authorizeCallHost ?? (async () => true),
     store,
     emitToRoom,
     ingestControl,
@@ -1715,5 +1725,85 @@ describe('CallRuntime P7.0A governance', () => {
       ack,
     );
     expect(ack).toHaveBeenCalledWith(expect.objectContaining({ ok: false }));
+  });
+});
+
+/*
+ * WHO MAY START A CALL.
+ *
+ * The account shell has been telling people "You cannot yet host calls" while
+ * nothing enforced it: `session.host` was computed and consulted nowhere along
+ * the call path, so anybody who reached the call app could originate one. Given
+ * the gate exists because of people using video to approach strangers, an
+ * unenforced version reads as a safeguard while being decoration.
+ */
+describe('starting a call requires authority', () => {
+  it('refuses a caller the authorizer rejects', async () => {
+    const harness = createHarness(undefined, async () => false);
+    const ack = await join(harness, new FakeSocket('sock-1'), { ...JOIN_A, callId: 'new-call' });
+
+    expect(ack.ok).toBe(false);
+    if (!ack.ok) expect(ack.code).toBe('host-not-authorized');
+  });
+
+  /* Refused before the store is touched, so nobody walks into a half-made call. */
+  it('leaves no call behind when a host is refused', async () => {
+    const harness = createHarness(undefined, async () => false);
+    await join(harness, new FakeSocket('sock-1'), { ...JOIN_A, callId: 'new-call' });
+
+    expect(harness.store.snapshot('new-call')).toBeNull();
+  });
+
+  it('admits a caller the authorizer accepts', async () => {
+    const harness = createHarness(undefined, async () => true);
+    const ack = await join(harness, new FakeSocket('sock-1'), { ...JOIN_A, callId: 'new-call' });
+
+    expect(ack.ok).toBe(true);
+  });
+
+  /*
+   * THE GUEST CASE, and the reason this gates STARTING rather than joining.
+   * Somebody invited to a call has no C7 account and must not need one.
+   */
+  it('lets an unauthorized guest join a call that already exists', async () => {
+    // One runtime, one policy: yes for the host's token, no for anybody else.
+    const harness = createHarness(undefined, async (token) => token === 'host-token');
+
+    const hostAck = await join(harness, new FakeSocket('host'), {
+      ...JOIN_A,
+      callId: 'shared-call',
+      sessionToken: 'host-token',
+    });
+    expect(hostAck.ok).toBe(true);
+
+    const guestAck = await join(harness, new FakeSocket('guest'), {
+      ...JOIN_B,
+      callId: 'shared-call',
+    });
+    expect(guestAck.ok).toBe(true);
+  });
+
+  /*
+   * FAIL CLOSED. A policy that refuses everybody is how a deployment which
+   * never configured one behaves, and it must refuse rather than fall open --
+   * the rule the operator gate follows when its secret is missing.
+   */
+  it('refuses every host when the authorizer says no to all', async () => {
+    const harness = createHarness(undefined, async () => false);
+    const ack = await join(harness, new FakeSocket('sock-x'), { ...JOIN_A, callId: 'new-call' });
+
+    expect(ack.ok).toBe(false);
+    if (!ack.ok) expect(ack.code).toBe('host-not-authorized');
+  });
+
+  it('says what to do, and does not say which check failed', async () => {
+    const harness = createHarness(undefined, async () => false);
+    const ack = await join(harness, new FakeSocket('sock-1'), { ...JOIN_A, callId: 'new-call' });
+
+    if (!ack.ok) {
+      expect(ack.error).toContain('join a call somebody invites you to');
+      expect(ack.error.toLowerCase()).not.toContain('capability');
+      expect(ack.error.toLowerCase()).not.toContain('session.host');
+    }
   });
 });
