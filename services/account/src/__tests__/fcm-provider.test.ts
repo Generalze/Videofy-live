@@ -221,3 +221,37 @@ describe('building one from a deployment', () => {
     expect(provider?.name).toBe('fcm');
   });
 });
+
+describe('saying why, not just that', () => {
+  /*
+   * The first live 403 reported `fcm 403 PERMISSION_DENIED` and nothing else,
+   * which cost a separate diagnostic script to discover that FCM had named the
+   * exact missing permission all along. Keeping the message is the difference
+   * between a log line somebody can act on and one they cannot.
+   */
+  it('carries the message FCM sent, not only the status', async () => {
+    const { provider } = providerWith(
+      () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              status: 'PERMISSION_DENIED',
+              message: "Permission 'cloudmessaging.messages.create' denied on resource",
+            },
+          }),
+          { status: 403 },
+        ),
+    );
+    const result = await provider.send(TARGET, RING);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('cloudmessaging.messages.create');
+  });
+
+  it('still works when there is no message field', async () => {
+    const { provider } = providerWith(
+      () => new Response(JSON.stringify({ error: { status: 'UNAVAILABLE' } }), { status: 503 }),
+    );
+    const result = await provider.send(TARGET, RING);
+    if (!result.ok) expect(result.reason).toBe('fcm 503 UNAVAILABLE');
+  });
+});

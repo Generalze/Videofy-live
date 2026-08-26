@@ -187,8 +187,22 @@ export class FcmPushProvider implements PushProvider {
 
     const text = await response.text().catch(() => '');
     let status = '';
+    let detail = '';
     try {
-      status = (JSON.parse(text) as FcmErrorBody).error?.status ?? '';
+      const parsed = (JSON.parse(text) as FcmErrorBody).error;
+      status = parsed?.status ?? '';
+      /*
+       * THE MESSAGE IS KEPT, not just the status, and that is a correction.
+       * The first live 403 from this provider reported only
+       * `fcm 403 PERMISSION_DENIED`, which is true and useless -- it took a
+       * separate diagnostic script to learn that the actual answer was
+       * `Permission 'cloudmessaging.messages.create' denied`, naming the exact
+       * missing permission. FCM says why; discarding that repeats the Azure
+       * empty-400 problem while the vendor is being helpful. Truncated because
+       * it reaches logs, and safe to keep because FCM never echoes the token
+       * back in an error.
+       */
+      detail = parsed?.message ?? '';
     } catch {
       // A non-JSON body from a gateway or proxy. Fall through on the HTTP code.
     }
@@ -204,7 +218,9 @@ export class FcmPushProvider implements PushProvider {
       ok: false,
       permanent,
       // The token is NOT included: this string reaches logs.
-      reason: `fcm ${response.status}${status === '' ? '' : ` ${status}`}`,
+      reason:
+        `fcm ${response.status}${status === '' ? '' : ` ${status}`}` +
+        (detail === '' ? '' : `: ${detail.slice(0, 300)}`),
     };
   }
 }

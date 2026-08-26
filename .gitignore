@@ -247,3 +247,14 @@ connect-reference-rooms.json
 
 # Staging SPA build output (deploy/staging/build-apps.sh)
 dist-staging/
+
+# Service-account keys and other provider credentials.
+#
+# A Firebase admin SDK JSON carries a PRIVATE KEY. One `git add -A` puts it in
+# history permanently, and history cannot be un-published once pushed -- the
+# only remedy at that point is rotating the key at the provider. Ignored here as
+# defence in depth; the file itself belongs OUTSIDE the repository.
+firebase/
+*-firebase-adminsdk-*.json
+*service-account*.json
+*.p8
