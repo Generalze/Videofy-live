@@ -55,7 +55,13 @@ export interface IngestConfig {
    */
   streamingTranscriptionProvider: 'off' | 'mock' | 'deepgram-nova' | 'deepgram-flux';
   /** Streaming synthesis for the live path. `off` means captions only. */
-  streamingSynthesisProvider: 'off' | 'mock' | 'elevenlabs';
+  /**
+   * `chain` is elevenlabs then azure, in that order, with the second used
+   * only when the first produced nothing at all. Synthesis failing is the
+   * one pipeline failure a listener experiences as SILENCE rather than as
+   * degraded output, which is why it is the stage that gets a fallback.
+   */
+  streamingSynthesisProvider: 'off' | 'mock' | 'elevenlabs' | 'azure' | 'chain';
   transcriptionTimeoutMs: number;
   transcriptionSourceLanguage: string;
   fasterWhisperPythonExecutable: string;
@@ -200,7 +206,7 @@ export function loadConfig(): IngestConfig {
     );
   }
   const streamingSynthesisProvider = process.env['STREAMING_SYNTHESIS_PROVIDER'] ?? 'off';
-  if (!['off', 'mock', 'elevenlabs'].includes(streamingSynthesisProvider)) {
+  if (!['off', 'mock', 'elevenlabs', 'azure', 'chain'].includes(streamingSynthesisProvider)) {
     throw new Error(
       'STREAMING_SYNTHESIS_PROVIDER must be "off", "mock" or "elevenlabs"; ' +
         `received "${streamingSynthesisProvider}"`,

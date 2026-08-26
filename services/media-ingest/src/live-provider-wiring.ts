@@ -18,6 +18,8 @@ import {
   DeepgramFluxStreamingProvider,
   type DeepgramFluxStreamingConfig,
 } from './providers/deepgram/flux-streaming-stt.js';
+import { AzureStreamingSynthesisProvider } from './providers/azure/streaming-tts.js';
+import { createFallbackSpeechSynthesisProvider } from './fallback-speech-synthesis-provider.js';
 import {
   ElevenLabsStreamingSynthesisProvider,
   type ElevenLabsTtsConfig,
@@ -37,6 +39,10 @@ import type { IngestConfig } from './config.js';
 export interface LiveProviderEnv {
   readonly deepgramApiKey?: string | undefined;
   readonly deepgramModel?: string | undefined;
+  readonly azureSpeechKey?: string | undefined;
+  readonly azureSpeechRegion?: string | undefined;
+  readonly azureVoiceIds?: string | undefined;
+  readonly azureDefaultVoiceId?: string | undefined;
   readonly elevenLabsApiKey?: string | undefined;
   readonly elevenLabsModel?: string | undefined;
   readonly elevenLabsVoiceId?: string | undefined;
@@ -91,6 +97,10 @@ export function readLiveProviderEnv(env: NodeJS.ProcessEnv = process.env): LiveP
   return {
     deepgramApiKey: optional(env['DEEPGRAM_API_KEY']),
     deepgramModel: optional(env['DEEPGRAM_MODEL']),
+    azureSpeechKey: optional(env['AZURE_SPEECH_KEY']),
+    azureSpeechRegion: optional(env['AZURE_SPEECH_REGION']),
+    azureVoiceIds: optional(env['AZURE_VOICE_IDS']),
+    azureDefaultVoiceId: optional(env['AZURE_DEFAULT_VOICE_ID']),
     elevenLabsApiKey: optional(env['ELEVENLABS_API_KEY']),
     elevenLabsModel: optional(env['ELEVENLABS_MODEL']),
     elevenLabsVoiceId: optional(env['ELEVENLABS_DEFAULT_VOICE_ID']),
@@ -145,28 +155,73 @@ export function buildStreamingSynthesisProvider(
       return null;
     case 'mock':
       return new MockStreamingSynthesisProvider();
-    case 'elevenlabs': {
-      const voiceId = requireCredential(
-        env.elevenLabsVoiceId,
-        'ELEVENLABS_DEFAULT_VOICE_ID',
-        'elevenlabs',
-      );
-      const eleven: ElevenLabsTtsConfig = {
-        apiKey: requireCredential(env.elevenLabsApiKey, 'ELEVENLABS_API_KEY', 'elevenlabs'),
-        modelId: env.elevenLabsModel ?? 'eleven_flash_v2_5',
-        // The platform's voice ids map to the vendor's HERE. A vendor id
-        // reaching a session config would make the vendor's catalogue into
-        // Videofy's voice identity.
-        //
-        // Empty means every voice becomes defaultVoiceId, which silently
-        // discards the speaker's male/female choice and gives every
-        // participant the same voice in every language.
-        voiceIds: parseVoiceIdMap(env.elevenLabsVoiceIds),
-        defaultVoiceId: voiceId,
-      };
-      return new ElevenLabsStreamingSynthesisProvider(eleven);
-    }
+    case 'azure':
+      return buildAzureSynthesis(env);
+    /*
+     * ELEVENLABS FIRST, AZURE BEHIND IT. The order is a cost and latency
+     * decision the deployment can revisit by swapping this list -- what it must
+     * not become is a silent preference expressed in five places.
+     */
+    case 'chain':
+      return createFallbackSpeechSynthesisProvider({
+        providers: [buildElevenLabsSynthesis(env), buildAzureSynthesis(env)],
+        onObservation: (observation) => {
+          /*
+           * Logged EVERY time, not only on failure. A chain that works hides an
+           * outage -- the listener hears audio either way, so a primary that has
+           * quietly stopped answering is invisible until the bill or the latency
+           * changes.
+           */
+          // eslint-disable-next-line no-console
+          console.log(
+            JSON.stringify({
+              service: 'media-ingest',
+              message: 'Synthesis served',
+              servedBy: observation.servedBy,
+              fellThrough: observation.fellThrough,
+              timeToFirstChunkMs: observation.timeToFirstChunkMs,
+            }),
+          );
+        },
+      });
+    case 'elevenlabs':
+      return buildElevenLabsSynthesis(env);
   }
+}
+
+function buildAzureSynthesis(env: LiveProviderEnv): StreamingSpeechSynthesisProvider {
+  return new AzureStreamingSynthesisProvider({
+    apiKey: requireCredential(env.azureSpeechKey, 'AZURE_SPEECH_KEY', 'azure'),
+    region: requireCredential(env.azureSpeechRegion, 'AZURE_SPEECH_REGION', 'azure'),
+    voiceIds: parseVoiceIdMap(env.azureVoiceIds),
+    defaultVoiceId: requireCredential(
+      env.azureDefaultVoiceId,
+      'AZURE_DEFAULT_VOICE_ID',
+      'azure',
+    ),
+  });
+}
+
+function buildElevenLabsSynthesis(env: LiveProviderEnv): StreamingSpeechSynthesisProvider {
+  const voiceId = requireCredential(
+    env.elevenLabsVoiceId,
+    'ELEVENLABS_DEFAULT_VOICE_ID',
+    'elevenlabs',
+  );
+  const eleven: ElevenLabsTtsConfig = {
+    apiKey: requireCredential(env.elevenLabsApiKey, 'ELEVENLABS_API_KEY', 'elevenlabs'),
+    modelId: env.elevenLabsModel ?? 'eleven_flash_v2_5',
+    // The platform's voice ids map to the vendor's HERE. A vendor id reaching a
+    // session config would make the vendor's catalogue into Videofy's voice
+    // identity.
+    //
+    // Empty means every voice becomes defaultVoiceId, which silently discards
+    // the speaker's male/female choice and gives every participant the same
+    // voice in every language.
+    voiceIds: parseVoiceIdMap(env.elevenLabsVoiceIds),
+    defaultVoiceId: voiceId,
+  };
+  return new ElevenLabsStreamingSynthesisProvider(eleven);
 }
 
 /** What is actually behind a live call's translation, in words an operator can act on. */
