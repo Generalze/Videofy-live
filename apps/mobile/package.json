@@ -13,6 +13,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@videofy-live/account-trust": "*",
     "@videofy-live/call-client-core": "*",
     "@videofy-live/call-wire": "*",
     "@videofy-live/shared-types": "*",

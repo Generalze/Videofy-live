@@ -37,6 +37,7 @@ import { createDeviceIdentity } from './src/push/deviceIdentity';
 import { createPushTokenService } from './src/push/pushTokenService';
 import { DeviceRegistrationService } from './src/push/deviceRegistrationService';
 import { SignInScreen } from './src/screens/SignInScreen';
+import { SignUpScreen } from './src/screens/SignUpScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
 
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
@@ -66,6 +67,13 @@ const NOTICE: Partial<Record<string, string>> = {
 
 export default function App(): JSX.Element {
   const [state, setState] = useState<AuthState>(auth.current());
+  /*
+   * Which signed-out screen to show. Deliberately NOT part of `AuthState`: the
+   * session manager answers "is somebody signed in", and whether a person is
+   * currently looking at sign-in or sign-up is a view concern that must not be
+   * able to influence that answer.
+   */
+  const [wantsAccount, setWantsAccount] = useState(false);
 
   useEffect(() => {
     /*
@@ -94,6 +102,10 @@ export default function App(): JSX.Element {
   }, [state.status]);
 
   const signIn = useCallback((email: string, password: string) => auth.signIn(email, password), []);
+  const signUp = useCallback(
+    (email: string, password: string, username: string) => auth.signUp(email, password, username),
+    [],
+  );
   const register = useCallback(() => devices.register(), []);
   const signOut = useCallback(async () => {
     // Stopped FIRST: a rotation arriving during sign-out must not race the
@@ -121,10 +133,23 @@ export default function App(): JSX.Element {
     );
   }
 
+  if (wantsAccount) {
+    return (
+      <>
+        <StatusBar style="light" />
+        <SignUpScreen onSignUp={signUp} onBackToSignIn={() => setWantsAccount(false)} />
+      </>
+    );
+  }
+
   return (
     <>
       <StatusBar style="light" />
-      <SignInScreen onSignIn={signIn} notice={NOTICE[state.reason ?? '']} />
+      <SignInScreen
+        onSignIn={signIn}
+        onCreateAccount={() => setWantsAccount(true)}
+        notice={NOTICE[state.reason ?? '']}
+      />
     </>
   );
 }

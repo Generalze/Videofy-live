@@ -40,6 +40,18 @@ export type AuthState =
  */
 export type SignedOutReason = 'never-signed-in' | 'signed-out' | 'expired' | 'revoked';
 
+export interface SignUpResult {
+  readonly ok: boolean;
+  /**
+   * `taken` covers BOTH a used email address and a used username, and merging
+   * them is deliberate. Separating them would let anybody discover which
+   * addresses and which handles are registered by trying them -- the same
+   * account-existence oracle sign-in refuses to be, arriving through the
+   * registration door instead.
+   */
+  readonly reason?: 'taken' | 'invalid' | 'rate-limited' | 'network' | 'server';
+}
+
 export interface SignInResult {
   readonly ok: boolean;
   /**
@@ -161,6 +173,47 @@ export class AuthSessionManager {
     return this.state;
   }
 
+  /**
+   * Create an account and take the session it returns.
+   *
+   * `POST /accounts` answers 201 with the same body as sign-in, so a new
+   * account is signed in immediately. Everything else matches sign-in exactly:
+   * nothing is persisted on failure, concurrent attempts join rather than race,
+   * and the password is never stored.
+   */
+  async signUp(email: string, password: string, username: string): Promise<SignUpResult> {
+    if (this.inFlight !== null) {
+      // Joins whatever is already running rather than starting a second
+      // account creation, which the server would answer with a conflict.
+      const joined = await this.inFlight;
+      return joined.ok ? { ok: true } : { ok: false, reason: 'server' };
+    }
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}/accounts`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email, password, username }),
+      });
+    } catch {
+      return { ok: false, reason: 'network' };
+    }
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        reason: response.status === 409 ? 'taken'
+          : response.status === 429 ? 'rate-limited'
+          : response.status === 400 ? 'invalid'
+          : 'server',
+      };
+    }
+
+    const stored = await this.storeSessionFrom(response);
+    return stored ? { ok: true } : { ok: false, reason: 'server' };
+  }
+
   async signIn(email: string, password: string): Promise<SignInResult> {
     // Concurrent taps join the first attempt rather than starting a second.
     if (this.inFlight !== null) return this.inFlight;
@@ -200,23 +253,30 @@ export class AuthSessionManager {
       };
     }
 
+    return (await this.storeSessionFrom(response)) ? { ok: true } : { ok: false, reason: 'server' };
+  }
+
+  /**
+   * Take a session out of a response and become signed in, or refuse.
+   *
+   * Shared by sign-in and sign-up because both are handed the identical body,
+   * and because the refusal below must be identical too: a success status that
+   * does not carry a usable session is a SERVER problem, and storing the
+   * fragments would turn it into a client problem on the next launch.
+   */
+  private async storeSessionFrom(response: Response): Promise<boolean> {
     let body: SessionResponse;
     try {
       body = (await response.json()) as SessionResponse;
     } catch {
-      return { ok: false, reason: 'server' };
+      return false;
     }
 
     const accountId = typeof body.accountId === 'string' ? body.accountId : '';
     const token = typeof body.token === 'string' ? body.token : '';
     const expiresInSeconds =
       typeof body.expiresInSeconds === 'number' ? body.expiresInSeconds : 0;
-
-    // A 200 that does not carry a usable session is a server problem, and
-    // storing the fragments would turn it into a client problem later.
-    if (accountId === '' || token === '' || expiresInSeconds <= 0) {
-      return { ok: false, reason: 'server' };
-    }
+    if (accountId === '' || token === '' || expiresInSeconds <= 0) return false;
 
     const session: StoredSession = {
       accountId,
@@ -227,7 +287,7 @@ export class AuthSessionManager {
     await this.store.write(session);
     this.session = session;
     this.set({ status: 'signed-in', accountId });
-    return { ok: true };
+    return true;
   }
 
   /**

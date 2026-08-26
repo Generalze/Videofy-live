@@ -395,3 +395,75 @@ describe('the credential never escapes', () => {
     expect(fake.value).not.toContain('correct horse');
   });
 });
+
+describe('creating an account', () => {
+  const created = () =>
+    new Response(
+      JSON.stringify({ accountId: 'acct_new', token: TOKEN, expiresInSeconds: 43_200 }),
+      { status: 201 },
+    );
+
+  /* 201 carries a session, so a new account is signed in without a second prompt. */
+  it('signs in immediately on success', async () => {
+    const { auth, fake } = manager({ fetchImpl: (async () => created()) as unknown as typeof fetch });
+
+    expect((await auth.signUp('a@example.com', 'pw', 'c7zoe')).ok).toBe(true);
+    expect(auth.current().status).toBe('signed-in');
+    expect(fake.calls.set).toBe(1);
+  });
+
+  it('sends the username, which the server requires', async () => {
+    let body: Record<string, unknown> = {};
+    const { auth } = manager({
+      fetchImpl: (async (_u: unknown, init: unknown) => {
+        body = JSON.parse(String((init as RequestInit).body)) as Record<string, unknown>;
+        return created();
+      }) as unknown as typeof fetch,
+    });
+
+    await auth.signUp('a@example.com', 'pw', 'c7zoe');
+    expect(body['username']).toBe('c7zoe');
+  });
+
+  /*
+   * A used address and a used username are ONE answer. Separating them would
+   * let anybody discover which addresses and handles are registered by trying
+   * them -- the account-existence oracle sign-in refuses to be, arriving through
+   * the registration door instead.
+   */
+  it('does not say whether it was the email or the username', async () => {
+    const { auth } = manager({
+      fetchImpl: (async () => new Response('{}', { status: 409 })) as unknown as typeof fetch,
+    });
+
+    const result = await auth.signUp('a@example.com', 'pw', 'c7zoe');
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('taken');
+  });
+
+  it('persists nothing when creation fails', async () => {
+    const { auth, fake } = manager({
+      fetchImpl: (async () => new Response('{}', { status: 409 })) as unknown as typeof fetch,
+    });
+
+    await auth.signUp('a@example.com', 'pw', 'c7zoe');
+    expect(fake.value).toBeNull();
+    expect(auth.current().status).not.toBe('signed-in');
+  });
+
+  it('persists nothing when a 201 carries no usable session', async () => {
+    const { auth, fake } = manager({
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ accountId: 'acct_new' }), { status: 201 })) as unknown as typeof fetch,
+    });
+
+    expect((await auth.signUp('a@example.com', 'pw', 'c7zoe')).ok).toBe(false);
+    expect(fake.value).toBeNull();
+  });
+
+  it('never stores the password', async () => {
+    const { auth, fake } = manager({ fetchImpl: (async () => created()) as unknown as typeof fetch });
+    await auth.signUp('a@example.com', 'correct horse battery staple', 'c7zoe');
+    expect(fake.value).not.toContain('correct horse');
+  });
+});

@@ -43,11 +43,12 @@ const MESSAGE: Record<NonNullable<SignInResult['reason']>, string> = {
 
 export interface SignInScreenProps {
   readonly onSignIn: (email: string, password: string) => Promise<SignInResult>;
+  readonly onCreateAccount: () => void;
   /** Shown when a session ended by itself rather than by choice. */
   readonly notice?: string | undefined;
 }
 
-export function SignInScreen({ onSignIn, notice }: SignInScreenProps): JSX.Element {
+export function SignInScreen({ onSignIn, onCreateAccount, notice }: SignInScreenProps): JSX.Element {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -150,6 +151,10 @@ export function SignInScreen({ onSignIn, notice }: SignInScreenProps): JSX.Eleme
           )}
         </Pressable>
 
+        <Pressable onPress={onCreateAccount} style={styles.link} accessibilityRole="button">
+          <Text style={styles.linkLabel}>Create a C7 account</Text>
+        </Pressable>
+
         <Text style={styles.footnote}>
           Sessions last 12 hours. You will be asked to sign in again after that.
         </Text>
@@ -215,5 +220,7 @@ const styles = StyleSheet.create({
   buttonPressed: { opacity: 0.75 },
   buttonLabel: { color: '#0b0f14', fontSize: 16, fontWeight: '600' },
 
-  footnote: { color: '#5d6874', fontSize: 12, marginTop: 18, textAlign: 'center' },
+  link: { marginTop: 20, alignItems: 'center', paddingVertical: 8 },
+  linkLabel: { color: '#3ec9c0', fontSize: 14 },
+  footnote: { color: '#5d6874', fontSize: 12, marginTop: 12, textAlign: 'center' },
 });
