@@ -2347,17 +2347,38 @@ button:focus-visible {
  * the one control on this header that cannot be undone by clicking again, and a
  * destructive action that looks like a dropdown gets pressed by accident.
  */
+/*
+ * VISIBLE, having first been too subtle to find. Transparent background and
+ * faint text on a dark header made this effectively invisible -- it was
+ * rendering, in the right place, and simply could not be seen. A control nobody
+ * can find is the same as a control that does not exist, which is what this was
+ * added to fix in the first place.
+ *
+ * Still set apart from the workspace picker: sign out is the one thing on this
+ * header that cannot be undone by clicking again, so it should not look like a
+ * dropdown. Distinct, not loud.
+ */
 .app-signout {
-  margin-top: 0.5rem;
+  margin-top: 0.6rem;
   align-self: flex-start;
-  background: transparent;
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.14));
-  color: var(--text-faint);
+  padding: 0.45rem 0.9rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 8px;
+  color: #e8ecf1;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .app-signout:hover {
-  color: var(--text-strong, #fff);
-  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.42);
+}
+
+.app-signout:focus-visible {
+  outline: 2px solid #7c5cff;
+  outline-offset: 2px;
 }
 
 .app-workspace-label {
