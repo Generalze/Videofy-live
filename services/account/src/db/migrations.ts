@@ -389,6 +389,41 @@ const BILLING_TARIFF: Migration = {
   `,
 };
 
+/**
+ * 009 -- devices a person can be reached on.
+ *
+ * A UNIQUE INDEX ON THE TOKEN, and it is the point of this table. A push token
+ * belongs to an INSTALL, not to a person: a shared or resold phone hands the
+ * same token to whoever signs in next. Two rows holding one token would leave
+ * the PROVIDER deciding which account a notification reaches, which is to say
+ * nobody decided -- and the visible symptom is somebody's calls and message
+ * previews arriving on a stranger's lock screen. The application reassigns on
+ * registration; this constraint is what makes that true rather than intended.
+ *
+ * The token is a credential and is stored like one: never logged, never in a
+ * list response, and only read by the code that sends a push.
+ */
+const DEVICES: Migration = {
+  name: '009_devices',
+  sql: `
+    CREATE TABLE IF NOT EXISTS devices (
+      device_id        text   PRIMARY KEY,
+      account_id       text   NOT NULL,
+      platform         text   NOT NULL,
+      push_token       text   NOT NULL,
+      label            text   NOT NULL,
+      registered_at_ms bigint NOT NULL,
+      last_seen_at_ms  bigint NOT NULL
+    );
+
+    -- "every device for this account" is the only read on the hot path.
+    CREATE INDEX IF NOT EXISTS devices_account_idx ON devices (account_id);
+
+    -- One token, one device row. See the note above.
+    CREATE UNIQUE INDEX IF NOT EXISTS devices_push_token_key ON devices (push_token);
+  `,
+};
+
 /** Applied in this order. Append only. */
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
@@ -399,4 +434,5 @@ export const MIGRATIONS: readonly Migration[] = [
   USERNAME_AND_PROFILE,
   CONTACTS,
   BILLING_TARIFF,
+  DEVICES,
 ];

@@ -33,6 +33,9 @@ import { parseOperatorAllowlist } from '@videofy-live/billing-tariff';
 import { TariffStore, createInMemoryTariffPort } from './tariff-store.js';
 import { createPostgresTariffPort } from './db/tariff-records-postgres.js';
 import { registerTariffRoutes } from './tariff-routes.js';
+import { DeviceStore } from './device-store.js';
+import { createPostgresDeviceRecords } from './db/device-records-postgres.js';
+import { registerDeviceRoutes } from './device-routes.js';
 import { VerificationService } from './verification.js';
 import { PasswordResetService } from './password-reset.js';
 import { createSecurityLog } from './security-log.js';
@@ -457,6 +460,38 @@ registerTariffRoutes(app, {
   tariffs,
   platformOperators,
   // The SAME caller resolver as every other surface, for the same reason.
+  callerAccountId: createCallerResolver({
+    store,
+    secret,
+    nowSeconds: () => Math.floor(Date.now() / 1000),
+  }),
+  onEvent: (event, detail) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', event, ...detail }));
+  },
+});
+
+/*
+ * DEVICES. Without this a phone cannot ring: the app is backgrounded, the
+ * screen is off, and a push notification addressed to a provider token is the
+ * only way to reach it.
+ */
+const devices = new DeviceStore(
+  databasePool ? { port: createPostgresDeviceRecords(databasePool) } : {},
+);
+const restoredDevices = await devices.hydrate();
+// eslint-disable-next-line no-console
+console.log(
+  JSON.stringify({
+    service: 'account',
+    message: 'Devices restored',
+    devices: restoredDevices,
+    store: databasePool ? 'postgres' : 'ephemeral',
+  }),
+);
+
+registerDeviceRoutes(app, {
+  devices,
   callerAccountId: createCallerResolver({
     store,
     secret,

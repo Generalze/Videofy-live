@@ -166,3 +166,50 @@ describe('billing tariffs', () => {
     expect(Math.max(...placeholders)).toBe(sharedColumns().length);
   });
 });
+
+/** Same one-list guarantee as the tariff port; same two seams left to check. */
+describe('devices', () => {
+  const sql = source('device-records-postgres.ts');
+
+  function sharedColumns(): string[] {
+    const match = /const COLUMNS =\s*([\s\S]*?);/u.exec(sql);
+    if (match === null) throw new Error('no COLUMNS constant found');
+    return splitColumns(match[1]!.replace(/['`\n]/g, ' '));
+  }
+
+  function migrationColumns(): string[] {
+    const migrations = readFileSync(join(here, '..', 'db', 'migrations.ts'), 'utf8');
+    const start = migrations.indexOf('CREATE TABLE IF NOT EXISTS devices (');
+    if (start < 0) throw new Error('devices is not created by any migration');
+    const open = migrations.indexOf('(', start);
+    const close = migrations.indexOf(');', open);
+    return migrations
+      .slice(open + 1, close)
+      .split('\n')
+      .map((line) => line.trim().replace(/--.*$/u, '').trim())
+      .map((line) => /^([a-z_]+)\s+(integer|bigint|text|jsonb)/u.exec(line)?.[1] ?? '')
+      .filter((name) => name.length > 0);
+  }
+
+  /* Guard against a vacuous pass: empty lists would satisfy both filters. */
+  it('actually found columns to compare', () => {
+    expect(sharedColumns().length).toBeGreaterThan(0);
+    expect(migrationColumns().length).toBeGreaterThan(0);
+  });
+
+  it('names only columns the table has', () => {
+    const declared = migrationColumns();
+    expect(sharedColumns().filter((column) => !declared.includes(column))).toEqual([]);
+  });
+
+  it('reads every column the table has', () => {
+    const used = sharedColumns();
+    expect(migrationColumns().filter((column) => !used.includes(column))).toEqual([]);
+  });
+
+  it('binds exactly one placeholder per column on insert', () => {
+    const insert = sql.slice(sql.indexOf('INSERT INTO devices'), sql.indexOf('ON CONFLICT'));
+    const placeholders = [...insert.matchAll(/\$(\d+)/gu)].map((match) => Number(match[1]));
+    expect(Math.max(...placeholders)).toBe(sharedColumns().length);
+  });
+});
