@@ -31,7 +31,35 @@ import { pendingProbes, runDiagnostics, type Probe } from './src/pushDiagnostics
 const ACCOUNT_BASE_URL =
   process.env['EXPO_PUBLIC_ACCOUNT_URL'] ?? 'https://staging.consummate7.com/auth';
 
-const MARK: Record<Probe['state'], string> = { pending: '·', pass: '✓', fail: '✗' };
+/*
+ * Four marks, not two. A declined permission and a broken build must not look
+ * alike: one is a choice being respected, the other is something to go and fix.
+ */
+const MARK: Record<Probe['state'], string> = {
+  pending: '·',
+  pass: '✓',
+  denied: '—',
+  skipped: '·',
+  fail: '✗',
+};
+
+/*
+ * Colour by state, as an explicit map rather than `styles[probe.state]`.
+ *
+ * Indexing the stylesheet by state name looked neat and was wrong: a state
+ * called `pending` collided with the `pending` SECTION style further down, so
+ * the mark inherited `marginTop` and `borderTopWidth` from a container. Nothing
+ * errors, nothing warns; a tick just draws in the wrong place. Two namespaces
+ * that happen to share a word should never be joined by a lookup.
+ */
+const MARK_COLOR: Record<Probe['state'], string> = {
+  pending: '#5d6874',
+  pass: '#3ec9c0',
+  // Amber, not red: a choice, not a defect.
+  denied: '#d9a441',
+  skipped: '#5d6874',
+  fail: '#e06c5b',
+};
 
 export default function App(): JSX.Element {
   const [busy, setBusy] = useState(false);
@@ -48,7 +76,13 @@ export default function App(): JSX.Element {
     }
   }, []);
 
-  const allPassed = ran && probes.every((probe) => probe.state === 'pass');
+  /*
+   * `denied` and `skipped` do not count as failures -- nothing is broken, so the
+   * screen must not claim anything is.
+   */
+  const anyFailed = probes.some((probe) => probe.state === 'fail');
+  const permissionDeclined = probes.some((probe) => probe.state === 'denied');
+  const healthy = ran && !anyFailed;
 
   return (
     <ScrollView contentContainerStyle={styles.screen}>
@@ -60,7 +94,7 @@ export default function App(): JSX.Element {
       <View style={styles.probes}>
         {probes.map((probe) => (
           <View key={probe.id} style={styles.probe}>
-            <Text style={[styles.mark, styles[probe.state]]}>{MARK[probe.state]}</Text>
+            <Text style={[styles.mark, { color: MARK_COLOR[probe.state] }]}>{MARK[probe.state]}</Text>
             <View style={styles.probeText}>
               <Text style={styles.probeLabel}>{probe.label}</Text>
               {probe.detail !== '' && <Text style={styles.probeDetail}>{probe.detail}</Text>}
@@ -82,12 +116,15 @@ export default function App(): JSX.Element {
         )}
       </Pressable>
 
-      {allPassed && (
+      {healthy && (
         <View style={styles.note}>
-          <Text style={styles.noteTitle}>Everything reachable</Text>
+          <Text style={styles.noteTitle}>
+            {permissionDeclined ? 'Nothing is broken' : 'Everything reachable'}
+          </Text>
           <Text style={styles.noteBody}>
-            Network, TLS, routing, notification permission and Firebase all work on this
-            device.
+            {permissionDeclined
+              ? 'Network, TLS, routing and the native build are all working. Notifications were declined, which is a choice and not a fault - allow them in Android settings when you want calls to ring.'
+              : 'Network, TLS, routing, the native build, notification permission and FCM all work on this device.'}
           </Text>
         </View>
       )}
@@ -133,8 +170,6 @@ const styles = StyleSheet.create({
     paddingTop: 16,
     gap: 6,
   },
-  pass: { color: '#3ec9c0' },
-  fail: { color: '#d9a441' },
   probeText: { flex: 1, gap: 2 },
   probeLabel: { color: '#e4ebf1', fontSize: 15 },
   probeDetail: { color: '#5d6874', fontSize: 12, fontFamily: 'monospace' },

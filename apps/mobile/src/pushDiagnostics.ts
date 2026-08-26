@@ -29,7 +29,20 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
-export type ProbeState = 'pending' | 'pass' | 'fail';
+/**
+ * DENIED AND SKIPPED ARE NOT FAILURES, and separating them is the point.
+ *
+ * A person declining notifications is Android working correctly and a choice
+ * being respected -- reporting it as a failure tells whoever is holding the
+ * phone that the build is broken when it is not, and sends somebody looking for
+ * a bug that does not exist. `skipped` is the same argument one step along: a
+ * token cannot be requested without permission, so not attempting it is a
+ * consequence, not a fault.
+ *
+ * `fail` is reserved for things that are actually wrong: unreachable server,
+ * missing google-services.json, a native module that did not link.
+ */
+export type ProbeState = 'pending' | 'pass' | 'denied' | 'skipped' | 'fail';
 
 export interface Probe {
   readonly id: 'reachable' | 'permission' | 'token';
@@ -42,7 +55,7 @@ export interface Probe {
 const PENDING: readonly Probe[] = [
   { id: 'reachable', label: 'Account service reachable', state: 'pending', detail: '' },
   { id: 'permission', label: 'Notification permission', state: 'pending', detail: '' },
-  { id: 'token', label: 'Firebase push token', state: 'pending', detail: '' },
+  { id: 'token', label: 'FCM device token', state: 'pending', detail: '' },
 ];
 
 export function pendingProbes(): readonly Probe[] {
@@ -78,8 +91,9 @@ async function checkPermission(): Promise<Probe> {
     : {
         id: 'permission',
         label: 'Notification permission',
-        state: 'fail',
-        detail: 'denied - calls cannot ring until this is allowed in Android settings',
+        state: 'denied',
+        // A choice, reported as one.
+        detail: 'declined - calls will not ring until this is allowed in Android settings',
       };
 }
 
@@ -95,16 +109,16 @@ async function checkToken(): Promise<Probe> {
     return token.length > 0
       ? {
           id: 'token',
-          label: 'Firebase push token',
+          label: 'FCM device token',
           state: 'pass',
           // A LENGTH, never the value.
           detail: `issued (${token.length} chars)`,
         }
-      : { id: 'token', label: 'Firebase push token', state: 'fail', detail: 'empty token' };
+      : { id: 'token', label: 'FCM device token', state: 'fail', detail: 'empty token' };
   } catch (error) {
     return {
       id: 'token',
-      label: 'Firebase push token',
+      label: 'FCM device token',
       state: 'fail',
       detail: error instanceof Error ? error.message : 'no token',
     };
@@ -142,8 +156,8 @@ export async function runDiagnostics(options: DiagnosticsOptions): Promise<reado
       ? await checkToken()
       : ({
           id: 'token',
-          label: 'Firebase push token',
-          state: 'fail',
+          label: 'FCM device token',
+          state: 'skipped',
           detail: 'not attempted - permission was declined',
         } as const);
 
