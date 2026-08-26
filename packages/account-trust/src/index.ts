@@ -192,3 +192,18 @@ export {
   type UsernameCheck,
   type UsernameRefusal,
 } from './username.js';
+
+export {
+  acceptContact,
+  blockContact,
+  contactPair,
+  mayReach,
+  otherParty,
+  requestContact,
+  unblockContact,
+  type ContactEdge,
+  type ContactOutcome,
+  type ContactRefusal,
+  type ContactRequestView,
+  type ContactState,
+} from './contacts.js';
