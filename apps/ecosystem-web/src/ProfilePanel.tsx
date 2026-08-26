@@ -45,6 +45,8 @@ async function post(path: string, token: string, body: unknown) {
 export function ProfilePanel({ token, profile, onChanged }: Props) {
   const [displayName, setDisplayName] = useState(profile.displayName ?? '');
   const [nameFeedback, setNameFeedback] = useState<Feedback>({ kind: 'idle' });
+  const [claim, setClaim] = useState('');
+  const [claimFeedback, setClaimFeedback] = useState<Feedback>({ kind: 'idle' });
   const [discoveryFeedback, setDiscoveryFeedback] = useState<Feedback>({ kind: 'idle' });
   const [copied, setCopied] = useState(false);
 
@@ -58,6 +60,29 @@ export function ProfilePanel({ token, profile, onChanged }: Props) {
       return;
     }
     setNameFeedback({ kind: 'error', message: result.error ?? 'That name could not be saved.' });
+  }
+
+  /*
+   * Claiming a handle for an account that has none.
+   *
+   * Registration requires one now, so most accounts arrive with it -- but an
+   * account created before that rule, or restored from a backup that predates
+   * it, would otherwise be permanently unaddressable with no way to fix it
+   * from the interface. A read-only field would have hidden that.
+   */
+  async function claimUsername(event: React.FormEvent) {
+    event.preventDefault();
+    setClaimFeedback({ kind: 'working' });
+    const result = await post('/accounts/username', token, { username: claim });
+    if (result.ok) {
+      setClaimFeedback({ kind: 'idle' });
+      onChanged();
+      return;
+    }
+    setClaimFeedback({
+      kind: 'error',
+      message: result.error ?? 'That username could not be saved.',
+    });
   }
 
   async function setDiscoverable(next: boolean) {
@@ -93,14 +118,47 @@ export function ProfilePanel({ token, profile, onChanged }: Props) {
 
       <div className="profile-block">
         <h3 className="profile-label">Username</h3>
-        <p className="profile-value">
-          <code>{profile.username ?? 'Not set'}</code>
-          {profile.username ? (
+        {profile.username ? (
+          <p className="profile-value">
+            <code>{profile.username}</code>
             <button type="button" className="join-link" onClick={copyHandle}>
               {copied ? 'Copied' : 'Copy'}
             </button>
-          ) : null}
-        </p>
+          </p>
+        ) : (
+          <form className="join-form" onSubmit={claimUsername}>
+            <p className="join-note" role="status">
+              You do not have a username yet, so nobody can add you. Choose one now.
+            </p>
+            <label className="field">
+              <span className="field-label">Choose your username</span>
+              <span className="field-prefixed">
+                <span className="field-prefix" aria-hidden="true">c7</span>
+                <input
+                  name="username"
+                  autoComplete="username"
+                  required
+                  spellCheck={false}
+                  placeholder="yourname"
+                  value={claim}
+                  onChange={(event) => setClaim(event.target.value)}
+                />
+              </span>
+            </label>
+            {claimFeedback.message ? (
+              <p className="join-error" role="alert">
+                {claimFeedback.message}
+              </p>
+            ) : null}
+            <button
+              className="button button-primary"
+              type="submit"
+              disabled={claimFeedback.kind === 'working' || claim.trim().length === 0}
+            >
+              {claimFeedback.kind === 'working' ? 'Claiming…' : 'Claim username'}
+            </button>
+          </form>
+        )}
         {/*
           * Stated where the decision is made, not buried in terms. Somebody
           * about to hand this out should know it is the durable one and that
