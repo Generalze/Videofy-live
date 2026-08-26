@@ -13,6 +13,7 @@ import {
   contactPair,
   mayReach,
   otherParty,
+  isBillable,
   requestContact,
   unblockContact,
   type ContactEdge,
@@ -234,5 +235,32 @@ describe('who may ring and message', () => {
   /* A stranger is the default, and the default is no. */
   it('is false for two accounts that have never met', () => {
     expect(mayReach(null)).toBe(false);
+  });
+});
+
+describe('what a channel costs', () => {
+  /*
+   * Zoe's ruling: normal mode is free on every channel -- text, voice note and
+   * call alike -- and credit is consumed only when something is actually
+   * translated. The charge is for the TRANSLATION, not for the conversation.
+   */
+  it('charges nothing in normal mode', () => {
+    expect(isBillable('normal')).toBe(false);
+  });
+
+  it('charges in translation mode', () => {
+    expect(isBillable('translated')).toBe(true);
+  });
+
+  /*
+   * Asked in one place so the three channels cannot drift into charging
+   * differently for the same work -- and so a free path cannot quietly become
+   * a charged one in only one of them.
+   */
+  it('answers the same question for every channel', () => {
+    const forText = isBillable('normal');
+    const forVoiceNote = isBillable('normal');
+    const forCall = isBillable('normal');
+    expect([forText, forVoiceNote, forCall]).toEqual([false, false, false]);
   });
 });

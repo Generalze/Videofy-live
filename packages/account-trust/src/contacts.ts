@@ -1,10 +1,16 @@
 /**
  * The contact graph: who may ring you and who may message you.
  *
- * WHAT BEING A CONTACT GRANTS, exhaustively: they may ring you, and they may
- * message you. Not your organizations, not your presence, not your other
- * contacts. A permission that quietly widens is how a contact list becomes a
- * profile somebody can mine.
+ * WHAT BEING A CONTACT GRANTS, exhaustively: they may ring you, message you, and
+ * send you a voice note. Not your organizations, not your presence, not your
+ * other contacts. A permission that quietly widens is how a contact list becomes
+ * a profile somebody can mine.
+ *
+ * A VOICE NOTE IS A MESSAGE THAT HAPPENS TO CARRY AUDIO, and is granted by the
+ * same permission for the reason the list above is exhaustive: three channels
+ * governed by one rule cannot disagree about who is blocked. Anything that
+ * reaches somebody's device unbidden belongs behind this gate, whatever it is
+ * made of.
  *
  * ONE ROW PER RELATIONSHIP, not one per direction. Two rows describing one
  * relationship can disagree -- A thinks you are contacts, B thinks they blocked
@@ -201,6 +207,27 @@ export function unblockContact(input: {
  */
 export function mayReach(edge: ContactEdge | null): boolean {
   return edge?.state === 'accepted';
+}
+
+/**
+ * Whether a channel costs anything to use.
+ *
+ * NORMAL MODE IS FREE, ALWAYS. Text, voice notes and calls carry no charge when
+ * nothing is translated -- the charge is for the TRANSLATION, not for the
+ * conversation. That is the honest place for it: translation is the thing that
+ * calls a paid provider, and it is the only thing whose cost varies with use.
+ *
+ * WHICH MEANS THE METER BELONGS AT THE TRANSLATION BOUNDARY, not here and not in
+ * the messaging layer. Metered where the provider is actually invoked, a free
+ * path cannot secretly cost and a charged path cannot have failed to translate.
+ * Metered anywhere else, the two drift, and the direction they drift is
+ * somebody being charged for a translation they never received.
+ *
+ * Exported as a named question rather than left implicit so that the messaging
+ * and call paths ask it in the same words.
+ */
+export function isBillable(mode: 'normal' | 'translated'): boolean {
+  return mode === 'translated';
 }
 
 /**
