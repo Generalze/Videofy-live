@@ -56,6 +56,10 @@ interface AccountRow {
   step_up_at_ms: string | null;
   step_up_method: string | null;
   pending_identity_change: unknown;
+  username: string | null;
+  username_key: string | null;
+  display_name: string | null;
+  discovery_mode: string | null;
 }
 
 /**
@@ -117,6 +121,10 @@ function toRecord(row: AccountRow): AccountRecord {
     ...(identityCase.present
       ? { identityCase: identityCase.value as NonNullable<AccountRecord['identityCase']> }
       : {}),
+    ...(row.username === null ? {} : { username: row.username }),
+    ...(row.username_key === null ? {} : { usernameKey: row.username_key }),
+    ...(row.display_name === null ? {} : { displayName: row.display_name }),
+    ...(row.discovery_mode === null ? {} : { discoveryMode: row.discovery_mode }),
     ...(pendingIdentityChange.present
       ? {
           pendingIdentityChange: pendingIdentityChange.value as NonNullable<
@@ -170,8 +178,9 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
            created_at, updated_at, trust, email_challenge, phone_challenge,
            phone_number, identity_case, seen_callback_events,
            password_reset_challenge, consents, mfa, step_up_at_ms, step_up_method,
-           pending_identity_change
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+           pending_identity_change, username, username_key, display_name,
+           discovery_mode
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
          ON CONFLICT (account_id) DO UPDATE SET
            email                = EXCLUDED.email,
            password_hash        = EXCLUDED.password_hash,
@@ -189,7 +198,11 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
            mfa                      = EXCLUDED.mfa,
            step_up_at_ms            = EXCLUDED.step_up_at_ms,
            step_up_method           = EXCLUDED.step_up_method,
-           pending_identity_change  = EXCLUDED.pending_identity_change`,
+           pending_identity_change  = EXCLUDED.pending_identity_change,
+           username                 = EXCLUDED.username,
+           username_key             = EXCLUDED.username_key,
+           display_name             = EXCLUDED.display_name,
+           discovery_mode           = EXCLUDED.discovery_mode`,
         [
           record.accountId,
           record.email,
@@ -212,6 +225,10 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
           record.stepUpAtMs ?? null,
           record.stepUpMethod ?? null,
           record.pendingIdentityChange ?? null,
+          record.username ?? null,
+          record.usernameKey ?? null,
+          record.displayName ?? null,
+          record.discoveryMode ?? null,
         ],
       );
 }

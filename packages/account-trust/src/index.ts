@@ -177,3 +177,18 @@ export {
   type PhoneProviderEnv,
   type ProviderStatus,
 } from './provider-selection.js';
+
+export {
+  checkDisplayName,
+  checkUsernameShape,
+  usernameKey,
+  DISPLAY_NAME_MAX_LENGTH,
+  DISPLAY_NAME_REFUSAL_MESSAGES,
+  USERNAME_MAX_LENGTH,
+  USERNAME_MIN_LENGTH,
+  USERNAME_REFUSAL_MESSAGES,
+  type DisplayNameCheck,
+  type DisplayNameRefusal,
+  type UsernameCheck,
+  type UsernameRefusal,
+} from './username.js';

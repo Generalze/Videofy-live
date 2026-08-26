@@ -244,6 +244,50 @@ const PENDING_IDENTITY_CHANGE: Migration = {
   `,
 };
 
+/**
+ * The C7 username, the name shown in calls, and the graveyard between them.
+ *
+ * THREE COLUMNS AND A TABLE, and the shapes carry the rules:
+ *
+ * `username` is what a person typed; `username_key` is its skeleton, with
+ * separators removed and confusables folded, and the UNIQUE INDEX is on the
+ * KEY. That is what makes `zoemeak` and `z0emeak` one claim rather than two
+ * accounts nobody can tell apart. Nullable, and Postgres allows many NULLs in a
+ * unique index -- so an account that has not chosen one does not collide with
+ * every other account that has not either.
+ *
+ * `display_name` carries no constraint at all beyond its type, because it is a
+ * label rather than an identity. Nobody is ever found by it.
+ *
+ * `released_usernames` is the never-reuse rule. A freed handle is a ready-made
+ * impersonation of whoever held it, so releasing one records it forever. The
+ * account id is kept so the ORIGINAL holder can take their own name back -- that
+ * carries no impersonation risk, and refusing it would punish the one person
+ * the rule is not aimed at.
+ */
+const USERNAME_AND_PROFILE: Migration = {
+  name: '006_username_and_profile',
+  sql: `
+    ALTER TABLE accounts
+      ADD COLUMN IF NOT EXISTS username text,
+      ADD COLUMN IF NOT EXISTS username_key text,
+      ADD COLUMN IF NOT EXISTS display_name text,
+      -- Private unless it says otherwise. Read through readDiscoveryMode,
+      -- which treats anything that is not exactly 'discoverable' as private,
+      -- so a null, a typo and a future value all fail the safe way.
+      ADD COLUMN IF NOT EXISTS discovery_mode text;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS accounts_username_key_unique
+      ON accounts (username_key);
+
+    CREATE TABLE IF NOT EXISTS released_usernames (
+      username_key text PRIMARY KEY,
+      account_id   text NOT NULL,
+      released_at  timestamptz NOT NULL DEFAULT now()
+    );
+  `,
+};
+
 /** Applied in this order. Append only. */
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
@@ -251,4 +295,5 @@ export const MIGRATIONS: readonly Migration[] = [
   RESET_AND_CONSENT,
   MFA_AND_STEP_UP,
   PENDING_IDENTITY_CHANGE,
+  USERNAME_AND_PROFILE,
 ];

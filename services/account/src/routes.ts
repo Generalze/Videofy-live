@@ -32,6 +32,13 @@ import {
 import type { PasswordResetService } from './password-reset.js';
 import { clientIpOf } from './client-ip.js';
 import type { MfaService } from './mfa-service.js';
+import {
+  checkDisplayName,
+  checkUsernameShape,
+  readDiscoveryMode,
+  DISPLAY_NAME_REFUSAL_MESSAGES,
+  USERNAME_REFUSAL_MESSAGES,
+} from '@videofy-live/account-trust';
 import type { IdentityChangeService } from './identity-change-service.js';
 import { recordSecurity } from './security-log.js';
 import { correlationIdOf } from './request-context.js';
@@ -1046,6 +1053,137 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
         .catch(() => res.status(500).json({ error: 'That change could not be completed.' }));
     });
   }
+
+  /**
+   * Claim the handle people add you by.
+   *
+   * Separate from the display name below, and the separation is the control:
+   * if people were added by the name shown in calls, a fraudster sets theirs to
+   * match somebody trusted and gets added by mistake.
+   */
+  app.post('/accounts/username', (req, res) => {
+    const caller = callerAccountId(req);
+    if (caller === null) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    // Claiming is cheap to attempt and its refusals are informative, so the
+    // rate it can be attempted at is what stops it becoming a way to map which
+    // handles exist.
+    if (refusedForAbuse(req, res, 'account.create', { account: caller.accountId })) return;
+
+    const requested = (req.body as { username?: unknown } | undefined)?.username;
+    if (typeof requested !== 'string') {
+      res.status(400).json({ error: USERNAME_REFUSAL_MESSAGES['bad-shape'] });
+      return;
+    }
+    const shape = checkUsernameShape(requested);
+    if (!shape.ok) {
+      res.status(400).json({ error: USERNAME_REFUSAL_MESSAGES[shape.reason] });
+      return;
+    }
+
+    void deps.store
+      .claimUsername(caller.accountId, shape.username, shape.key)
+      .then((claim) => {
+        if (claim.ok) {
+          res.status(200).json({ username: claim.record.username });
+          return;
+        }
+        if (claim.reason === 'unknown-account') {
+          res.status(401).json({ error: 'Sign in to continue.' });
+          return;
+        }
+        // 409 for both: taken and previously-used are the same answer to the
+        // person choosing, and distinguishing them would confirm that a
+        // particular handle once belonged to somebody.
+        res.status(409).json({ error: USERNAME_REFUSAL_MESSAGES[claim.reason] });
+      })
+      .catch(() => res.status(500).json({ error: 'That username could not be saved.' }));
+  });
+
+  /** Set the label shown in calls. Not an identity; nobody is found by it. */
+  app.post('/accounts/display-name', (req, res) => {
+    const caller = callerAccountId(req);
+    if (caller === null) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    const requested = (req.body as { displayName?: unknown } | undefined)?.displayName;
+    if (typeof requested !== 'string') {
+      res.status(400).json({ error: DISPLAY_NAME_REFUSAL_MESSAGES.empty });
+      return;
+    }
+    const checked = checkDisplayName(requested);
+    if (!checked.ok) {
+      res.status(400).json({ error: DISPLAY_NAME_REFUSAL_MESSAGES[checked.reason] });
+      return;
+    }
+
+    void deps.store
+      .setDisplayName(caller.accountId, checked.displayName)
+      .then((record) => {
+        if (!record) {
+          res.status(401).json({ error: 'Sign in to continue.' });
+          return;
+        }
+        res.status(200).json({ displayName: record.displayName });
+      })
+      .catch(() => res.status(500).json({ error: 'That name could not be saved.' }));
+  });
+
+  /**
+   * Find somebody by username, in order to add them.
+   *
+   * PRIVATE BY DEFAULT, which is the whole reason this endpoint is careful. An
+   * account that has not opted into being discoverable is not findable here at
+   * all -- not "found but hidden", not a different error: the same answer as a
+   * username nobody holds. Anything else makes this a way to ask whether a
+   * given person has a C7 account, which is exactly what private mode exists to
+   * withhold, and a fraudster mapping who is reachable is the first step of the
+   * thing the contact gate is for.
+   *
+   * Signed in only. An endpoint that resolves handles to people should not be
+   * available to whoever finds the URL.
+   */
+  app.get('/accounts/lookup', (req, res) => {
+    const caller = callerAccountId(req);
+    if (caller === null) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    if (refusedForAbuse(req, res, 'account.authenticate', { account: caller.accountId })) return;
+
+    const requested = req.query['username'];
+    if (typeof requested !== 'string') {
+      res.status(400).json({ error: 'Enter a username to look up.' });
+      return;
+    }
+    const shape = checkUsernameShape(requested);
+    if (!shape.ok) {
+      // Same answer as not-found. A shape refusal here would tell a caller
+      // which strings are worth trying.
+      res.status(404).json({ found: false });
+      return;
+    }
+
+    const holder = deps.store.findByUsernameKey(shape.key);
+    if (!holder || readDiscoveryMode(holder.discoveryMode) !== 'discoverable') {
+      res.status(404).json({ found: false });
+      return;
+    }
+
+    /*
+     * The username is echoed back in ITS spelling, not the caller's. Somebody
+     * who typed `z0emeak` should see `zoemeak` and be able to tell they have
+     * found the person they meant rather than a lookalike.
+     */
+    res.status(200).json({
+      found: true,
+      username: holder.username,
+      displayName: holder.displayName ?? null,
+    });
+  });
 
   app.get('/me', (req, res) => {
     const caller = callerAccountId(req);

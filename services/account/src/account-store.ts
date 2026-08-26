@@ -147,6 +147,26 @@ export interface AccountRecord {
    * an attacker the account.
    */
   readonly pendingIdentityChange?: PendingIdentityChange | null;
+  /**
+   * The handle somebody is ADDED by. Unique on its key, never on its spelling.
+   *
+   * Separate from displayName because a display name is free text: if people
+   * were added by it, a fraudster sets theirs to match somebody trusted and
+   * gets added by mistake.
+   */
+  readonly username?: string;
+  /** The folded form the uniqueness index is on. See packages/account-trust/username.ts. */
+  readonly usernameKey?: string;
+  /** The label shown in calls and rosters. Resolves to nobody. */
+  readonly displayName?: string;
+  /**
+   * Whether this account can be found by username at all.
+   *
+   * PRIVATE BY DEFAULT, and read through readDiscoveryMode so anything that
+   * is not exactly 'discoverable' -- a null, a typo, a value from a future
+   * version -- resolves to private rather than to findable.
+   */
+  readonly discoveryMode?: string;
 }
 
 export interface AccountRecordPort {
@@ -222,6 +242,11 @@ interface FailureState {
   until: number;
 }
 
+/** The outcome of claiming a username. */
+export type UsernameClaim =
+  | { readonly ok: true; readonly record: AccountRecord }
+  | { readonly ok: false; readonly reason: 'unknown-account' | 'taken' | 'previously-used' };
+
 /** The outcome of applying a proven identity change. */
 export type IdentityChangeApplication =
   | { readonly ok: true; readonly record: AccountRecord }
@@ -260,6 +285,14 @@ export class AccountStore {
    * verified email change both span an await between read and write.
    */
   private readonly accountLocks = new Map<string, Promise<unknown>>();
+  /**
+   * Every username ever released, and the account that held it.
+   *
+   * In memory alongside the account index, which is honest at current scale and
+   * is the thing to revisit with it: this is durable in Postgres and rebuilt at
+   * boot, exactly like the account index above.
+   */
+  private readonly releasedUsernames = new Map<string, string>();
 
   constructor(
     private readonly records: AccountRecordPort = createEphemeralAccountRecords(),
@@ -561,6 +594,122 @@ export class AccountStore {
      * would become a crash.
      */
     return outcome ?? { ok: false, reason: 'not-found' };
+  }
+
+  /**
+   * The account holding a username, matched on its folded key.
+   *
+   * Looked up by KEY, never by spelling, so `zoemeak` and `z0emeak` find the
+   * same person rather than one finding nobody.
+   */
+  findByUsernameKey(key: string): AccountRecord | null {
+    for (const record of this.byId.values()) {
+      if (record.usernameKey === key) return record;
+    }
+    return null;
+  }
+
+  /** Whether a key was ever released, and by whom. */
+  releasedUsernameHolder(key: string): string | null {
+    return this.releasedUsernames.get(key) ?? null;
+  }
+
+  /**
+   * Claim a username.
+   *
+   * THE UNIQUENESS CHECK IS INSIDE THE LOCK AND HAS NO AWAIT BEFORE THE WRITE.
+   * Checked outside it, two requests naming the same handle both pass and both
+   * write, and the loser only discovers it when somebody adds the wrong person
+   * -- the same time-of-check gap register() already closes.
+   *
+   * NEVER REUSED, with one exception. A released handle is a ready-made
+   * impersonation of whoever held it, so it stays claimed forever -- except by
+   * the account that held it, which carries no impersonation risk and would
+   * otherwise punish the one person the rule is not aimed at.
+   */
+  async claimUsername(
+    accountId: string,
+    username: string,
+    key: string,
+  ): Promise<UsernameClaim> {
+    const outcome = await this.withMutationLock<UsernameClaim>(accountId, async (current) => {
+      if (!current) {
+        return { record: null, result: { ok: false as const, reason: 'unknown-account' as const } };
+      }
+      if (current.usernameKey === key) {
+        // Same claim, possibly a different spelling. Idempotent rather than a
+        // refusal: a retried request must not report a conflict with itself.
+        const updated: AccountRecord = {
+          ...current,
+          username,
+          updatedAt: new Date(this.now()).toISOString(),
+        };
+        return { record: updated, result: { ok: true as const, record: updated } };
+      }
+
+      const holder = this.findByUsernameKey(key);
+      if (holder && holder.accountId !== accountId) {
+        return { record: null, result: { ok: false as const, reason: 'taken' as const } };
+      }
+
+      const previouslyHeldBy = this.releasedUsernames.get(key);
+      if (previouslyHeldBy !== undefined && previouslyHeldBy !== accountId) {
+        return {
+          record: null,
+          result: { ok: false as const, reason: 'previously-used' as const },
+        };
+      }
+
+      /*
+       * The OLD key is released in the same step. Done separately it could be
+       * skipped by a crash between the two writes, leaving a handle that is
+       * held by nobody and claimable by anybody -- which is precisely the
+       * impersonation the never-reuse rule exists to stop.
+       */
+      if (current.usernameKey) this.releasedUsernames.set(current.usernameKey, accountId);
+      this.releasedUsernames.delete(key);
+
+      const updated: AccountRecord = {
+        ...current,
+        username,
+        usernameKey: key,
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      return { record: updated, result: { ok: true as const, record: updated } };
+    });
+    return outcome ?? { ok: false, reason: 'unknown-account' };
+  }
+
+  /**
+   * Opt into, or out of, being findable by username.
+   *
+   * Stored as given and read through readDiscoveryMode, which treats anything
+   * that is not exactly 'discoverable' as private -- so a null, a typo and a
+   * value from a future version all fail toward not being found.
+   */
+  async setDiscoveryMode(accountId: string, mode: string): Promise<AccountRecord | null> {
+    return this.withMutationLock<AccountRecord | null>(accountId, async (current) => {
+      if (!current) return { record: null, result: null };
+      const updated: AccountRecord = {
+        ...current,
+        discoveryMode: mode,
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      return { record: updated, result: updated };
+    });
+  }
+
+  /** Set the label shown in calls. Carries no uniqueness and resolves to nobody. */
+  async setDisplayName(accountId: string, displayName: string): Promise<AccountRecord | null> {
+    return this.withMutationLock<AccountRecord | null>(accountId, async (current) => {
+      if (!current) return { record: null, result: null };
+      const updated: AccountRecord = {
+        ...current,
+        displayName,
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      return { record: updated, result: updated };
+    });
   }
 
   /** Record one policy acceptance, keeping every superseded version. */
