@@ -397,7 +397,17 @@ export type CallSetModeAck =
   | { ok: true; state: CallStateWirePayload }
   | {
       ok: false;
-      error: 'not-owner' | 'unknown-call' | 'unknown-participant' | 'invalid-mode';
+      /**
+       * `mode-locked`: the call has started, and nobody switches the mode after
+       * that -- not a participant, not the owner. Both sides consented to the
+       * mode they answered, and translation sends their speech to a provider
+       * and charges them; a mid-call change would collect that consent for one
+       * thing and deliver another. To change it, start another call.
+       *
+       * Reported rather than the endpoint being removed, so a client that still
+       * asks is told no instead of believing the mode changed.
+       */
+      error: 'not-owner' | 'unknown-call' | 'unknown-participant' | 'invalid-mode' | 'mode-locked';
     };
 
 /** caption-language / audio-mode / transcript-policy acks. */

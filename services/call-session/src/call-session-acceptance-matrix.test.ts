@@ -220,7 +220,7 @@ describe('four-person deterministic conference matrix', () => {
     const store = new CallSessionStore();
     const seats = matrixConference(store);
 
-    const toNormal = store.setCallMode(CALL, seats.a, 'normal');
+    const toNormal = store.setCallModeByAuthority(CALL, 'normal');
     expect(toNormal.ok).toBe(true);
     if (!toNormal.ok) return;
     // Sessions are REPLACED with STT-only work orders: the transcript
@@ -266,7 +266,7 @@ describe('four-person deterministic conference matrix', () => {
       expect((delivery.payload as { translatedText: string | null }).translatedText).toBeNull();
     }
 
-    const back = store.setCallMode(CALL, seats.a, 'translated');
+    const back = store.setCallModeByAuthority(CALL, 'translated');
     expect(back.ok).toBe(true);
     if (!back.ok) return;
     const restored = back.ingestPlans.find((plan) => plan.ingestSessionId.includes(seats.a));
@@ -275,12 +275,26 @@ describe('four-person deterministic conference matrix', () => {
     expect(sorted(Object.keys(restored!.voiceIdsByLanguage))).toEqual(['es', 'fr']);
   });
 
-  it('only the owner can flip the mode, and a non-owner attempt changes nothing', () => {
+  /*
+   * NOBODY flips the mode once the call has started -- not a participant, not
+   * even the owner. Both sides consented to the mode they answered; a mid-call
+   * change would collect that consent for one thing and deliver another, and
+   * the reliable way to exploit it would be to start every call in normal mode
+   * and flip it after everyone joined.
+   */
+  it('refuses a mode change from a non-owner and from the owner alike', () => {
     const store = new CallSessionStore();
     const seats = matrixConference(store);
 
-    const refused = store.setCallMode(CALL, seats.b, 'normal');
-    expect(refused).toMatchObject({ ok: false, reason: 'not-owner' });
+    expect(store.setCallMode(CALL, seats.b, 'normal')).toMatchObject({
+      ok: false,
+      reason: 'not-owner',
+    });
+    expect(store.setCallMode(CALL, seats.a, 'normal')).toMatchObject({
+      ok: false,
+      reason: 'mode-locked',
+    });
+
     expect(store.snapshot(CALL)?.callMode).toBe('translated');
     expect(planFor(store, seats.a)).toBeDefined();
   });

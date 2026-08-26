@@ -217,7 +217,10 @@ export type CallModeChangeResult =
       /** EMPTY when the mode is now 'normal': the engine is off, all sessions retire. */
       ingestPlans: CallIngestPlan[];
     }
-  | { ok: false; reason: 'not-owner' | 'unknown-call' | 'unknown-participant' | 'invalid-mode' };
+  | {
+      ok: false;
+      reason: 'not-owner' | 'unknown-call' | 'unknown-participant' | 'invalid-mode' | 'mode-locked';
+    };
 
 /** `preregisterCall` input (P6.5 FE1): type and mode are fixed before any join. */
 export interface CallPreregisterInput {
@@ -1249,6 +1252,24 @@ export class CallSessionStore {
    * `translated` returns a full set of fresh plans through the same path a
    * join uses.
    */
+  /**
+   * A participant asking to change the mode. Always refused.
+   *
+   * THE MODE IS FIXED WHEN THE CALL STARTS. Owner ruling: "once call has started
+   * theres no switching if they want to switch they have to start another call."
+   *
+   * That is not only a product preference, it closes a hole. Translation sends
+   * both people's speech to a provider and charges both sides, so it is
+   * disclosed and consented to when the call is answered. If the mode could be
+   * changed afterwards, every one of those consents could be obtained for a
+   * normal call and then quietly converted -- and the reliable way to do that
+   * would be to start every call in normal mode and flip it once connected.
+   *
+   * The refusal is kept as a REFUSAL rather than removing the endpoint, so an
+   * older client that still sends it is told no rather than silently believing
+   * the mode changed. Preregistration and project authority still fix the mode
+   * BEFORE anybody joins, which is a different thing and stays available.
+   */
   setCallMode(callId: string, participantId: string, mode: CallMode): CallModeChangeResult {
     if (mode !== 'normal' && mode !== 'translated') {
       return { ok: false, reason: 'invalid-mode' };
@@ -1260,7 +1281,13 @@ export class CallSessionStore {
     if (participantId !== call.ownerParticipantId) {
       return { ok: false, reason: 'not-owner' };
     }
-    return applyCallMode(call, mode);
+
+    /*
+     * Checked AFTER the ownership check on purpose. A non-owner learns they are
+     * not the owner, which they already knew; they do not additionally learn
+     * whether the mode would otherwise have been changeable.
+     */
+    return { ok: false, reason: 'mode-locked' };
   }
 
   /**

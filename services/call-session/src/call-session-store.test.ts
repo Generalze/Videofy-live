@@ -1018,13 +1018,23 @@ describe('W5 call mode and owner authority', () => {
       ok: false,
       reason: 'not-owner',
     });
-    expect(store.setCallMode('call-1', 'participant_99', 'normal')).toEqual({
+    expect(store.setCallMode('call-1', 'participant_missing', 'normal')).toEqual({
       ok: false,
       reason: 'unknown-participant',
     });
     expect(store.setCallMode('ghost-call', zoe.participantId, 'normal')).toEqual({
       ok: false,
       reason: 'unknown-call',
+    });
+    /*
+     * The owner reaches the lock, and only the owner does. Checked in this
+     * order on purpose: a non-owner learns they are not the owner, which they
+     * already knew, and does not additionally learn whether the mode would
+     * otherwise have been changeable.
+     */
+    expect(store.setCallMode('call-1', zoe.participantId, 'normal')).toEqual({
+      ok: false,
+      reason: 'mode-locked',
     });
     expect(store.setCallMode('call-1', zoe.participantId, 'loud' as CallMode)).toEqual({
       ok: false,
@@ -1039,7 +1049,7 @@ describe('W5 call mode and owner authority', () => {
     const store = new CallSessionStore();
     const { zoe, carlos } = translatedPair(store);
 
-    const result = store.setCallMode('call-1', zoe.participantId, 'translated');
+    const result = store.setCallModeByAuthority('call-1', 'translated');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.changed).toBe(false);
@@ -1057,7 +1067,7 @@ describe('W5 call mode and owner authority', () => {
     const { zoe, carlos } = translatedPair(store);
     const zoeRevisionBefore = planRevision(store, 'call-1', zoe.participantId);
 
-    const result = store.setCallMode('call-1', zoe.participantId, 'normal');
+    const result = store.setCallModeByAuthority('call-1', 'normal');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.changed).toBe(true);
@@ -1129,8 +1139,8 @@ describe('W5 call mode and owner authority', () => {
     const store = new CallSessionStore();
     const { zoe, carlos } = translatedPair(store);
 
-    store.setCallMode('call-1', zoe.participantId, 'normal');
-    const restored = store.setCallMode('call-1', zoe.participantId, 'translated');
+    store.setCallModeByAuthority('call-1', 'normal');
+    const restored = store.setCallModeByAuthority('call-1', 'translated');
     expect(restored.ok).toBe(true);
     if (!restored.ok) return;
     expect(restored.changed).toBe(true);
@@ -1155,7 +1165,7 @@ describe('W5 call mode and owner authority', () => {
     if (!resumed.ok) return;
     expect(resumed.snapshot.ownerParticipantId).toBe(zoe.participantId);
 
-    const result = store.setCallMode('call-1', zoe.participantId, 'normal');
+    const result = store.setCallModeByAuthority('call-1', 'normal');
     expect(result).toMatchObject({ ok: true, changed: true });
   });
 

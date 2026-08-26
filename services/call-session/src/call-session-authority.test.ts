@@ -147,14 +147,22 @@ describe('CallSessionStore.preregisterCall', () => {
     expect(creator.snapshot.callMode).toBe('normal');
     expect(creator.snapshot.ownerParticipantId).toBe(creator.participantId);
 
-    // Ownership is real: the first join can switch the mode, a later one cannot.
+    /*
+     * Ownership is still real and still checked FIRST -- a non-owner is told
+     * they are not the owner, and learns nothing further. The owner is then
+     * told the mode is locked, because once a call has started nobody switches
+     * it: both sides consented to the mode they answered, and a mid-call change
+     * would collect that consent for one thing and deliver another.
+     */
     const second = mustJoin(store, { displayName: 'Carlos' });
     expect(store.setCallMode('call-1', second.participantId, 'translated')).toEqual({
       ok: false,
       reason: 'not-owner',
     });
-    const byOwner = store.setCallMode('call-1', creator.participantId, 'translated');
-    expect(byOwner.ok && byOwner.changed).toBe(true);
+    expect(store.setCallMode('call-1', creator.participantId, 'translated')).toEqual({
+      ok: false,
+      reason: 'mode-locked',
+    });
   });
 
   it('still refuses out-of-vocabulary type/mode on the join even though they are ignored', () => {
@@ -232,6 +240,7 @@ describe('CallSessionStore.preregisterCall', () => {
     const store = new CallSessionStore();
     store.preregisterCall('call-1', { callType: 'personal', callMode: 'normal' });
 
+    // Nobody has joined, so there is no participant to be the owner.
     expect(store.setCallMode('call-1', 'participant_1', 'translated')).toEqual({
       ok: false,
       reason: 'unknown-participant',
@@ -271,11 +280,11 @@ describe('CallSessionStore.setCallModeByAuthority', () => {
     const { zoe } = translatedPair(ownerStore);
     translatedPair(authorityStore);
 
-    const ownerOff = ownerStore.setCallMode('call-1', zoe.participantId, 'normal');
+    const ownerOff = ownerStore.setCallModeByAuthority('call-1', 'normal');
     const authorityOff = authorityStore.setCallModeByAuthority('call-1', 'normal');
     expect(authorityOff).toEqual(ownerOff);
 
-    const ownerOn = ownerStore.setCallMode('call-1', zoe.participantId, 'translated');
+    const ownerOn = ownerStore.setCallModeByAuthority('call-1', 'translated');
     const authorityOn = authorityStore.setCallModeByAuthority('call-1', 'translated');
     expect(authorityOn).toEqual(ownerOn);
 

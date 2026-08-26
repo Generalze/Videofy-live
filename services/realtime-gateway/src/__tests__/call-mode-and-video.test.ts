@@ -256,89 +256,41 @@ describe('call:mode:set — owner authority', () => {
     });
   });
 
-  it('lets the owner turn the engine off: sessions retire, state is re-broadcast', async () => {
+  /*
+   * NOBODY SWITCHES THE MODE ONCE THE CALL HAS STARTED -- not a participant,
+   * and not the owner either. Owner ruling: "once call has started theres no
+   * switching if they want to switch they have to start another call."
+   *
+   * These four tests used to exercise the engine going off and on mid-call:
+   * sessions retiring, stragglers being swallowed, revisions bumping on the way
+   * back. That behaviour still exists and is still tested -- in the store, and
+   * through the project-authority path which sets the mode BEFORE anybody
+   * joins. What is gone is any way for somebody already in the call to trigger
+   * it, which is the point: both sides consented to the mode they answered,
+   * translation sends their speech to a provider and charges them, and a
+   * mid-call change would collect that consent for one thing and deliver
+   * another.
+   */
+  it('refuses the owner turning the engine off, and changes nothing', async () => {
     const ack = await setMode(anaSocket, {
       callId: 'demo',
       participantId: 'participant_1',
       mode: 'normal',
     });
 
-    expect(ack).toMatchObject({ ok: true, state: { callMode: 'normal' } });
-    const states = roomEmissions(harness, CALL_EVENTS.STATE);
-    expect(states).toHaveLength(1);
-    expect(states[0]?.room).toBe('call:demo');
-    expect(states[0]?.payload).toMatchObject({ callMode: 'normal' });
-
-    // Every ingest session for the call retires: stopped by its old id, then
-    // deleted from media-ingest, with nothing left in the registry.
-    expect(harness.ingestControl.stopSession).toHaveBeenCalledWith('call_demo_participant_1_r2');
-    expect(harness.ingestControl.stopSession).toHaveBeenCalledWith('call_demo_participant_2_r1');
-    await flushAsync();
-    expect(harness.ingestControl.deleteSession).toHaveBeenCalledWith('call_demo_participant_1_r2');
-    expect(harness.ingestControl.deleteSession).toHaveBeenCalledWith('call_demo_participant_2_r1');
-    expect(harness.runtime.getDiagnostics().ingestSessionCount).toBe(0);
-  });
-
-  it('swallows a straggler ingest event after the switch to normal', async () => {
-    await setMode(anaSocket, { callId: 'demo', participantId: 'participant_1', mode: 'normal' });
-    harness.emitToRoom.mockClear();
-
-    // The session id died with the mode change: the event is intercepted (it
-    // must never reach programme rooms) and delivers nothing.
-    const intercepted = harness.runtime.interceptTimestampedTranslationEvent({
-      sessionId: 'call_demo_participant_1_r2',
-      streamId: 'callcast_demo_participant_1_r2',
-      segmentId: 'segment-1',
-      sequence: 1,
-      sourceLanguage: 'en',
-      targetLanguage: 'es',
-      sourceText: 'hello',
-      translatedText: 'hola',
-      startMs: 0,
-      endMs: 1_000,
-      status: 'translated',
-      latency: { queuedMs: 1, providerMs: 2, totalMs: 3 },
-      createdAt: '2026-08-18T00:00:00.000Z',
-    });
-    expect(intercepted).toBe(true);
-    expect(roomEmissions(harness, CALL_EVENTS.CAPTION)).toHaveLength(0);
-  });
-
-  it('rebuilds every session at bumped revisions when the owner turns the engine back on', async () => {
-    await setMode(anaSocket, { callId: 'demo', participantId: 'participant_1', mode: 'normal' });
-    harness.ingestControl.createSession.mockClear();
-
-    const ack = await setMode(anaSocket, {
-      callId: 'demo',
-      participantId: 'participant_1',
-      mode: 'translated',
-    });
-
-    expect(ack).toMatchObject({ ok: true, state: { callMode: 'translated' } });
-    // Ana r2 → r3 (off) → r4 (on); Beto r1 → r2 → r3.
-    expect(harness.ingestControl.createSession).toHaveBeenCalledTimes(2);
-    expect(harness.ingestControl.createSession).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionId: 'call_demo_participant_1_r4', targetLanguages: ['es'] }),
-    );
-    expect(harness.ingestControl.createSession).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionId: 'call_demo_participant_2_r3', targetLanguages: ['en'] }),
-    );
-  });
-
-  it('acks a no-op without re-broadcasting state or touching sessions', async () => {
-    harness.ingestControl.stopSession.mockClear();
-    harness.ingestControl.createSession.mockClear();
-
-    const ack = await setMode(anaSocket, {
-      callId: 'demo',
-      participantId: 'participant_1',
-      mode: 'translated',
-    });
-
-    expect(ack).toMatchObject({ ok: true, state: { callMode: 'translated' } });
+    expect(ack).toMatchObject({ ok: false, error: 'mode-locked' });
     expect(roomEmissions(harness, CALL_EVENTS.STATE)).toHaveLength(0);
-    expect(harness.ingestControl.stopSession).not.toHaveBeenCalled();
-    expect(harness.ingestControl.createSession).not.toHaveBeenCalled();
+    expect(harness.store.snapshot('demo')?.callMode).toBe('translated');
+  });
+
+  it('refuses even a no-op, because the answer is about the lock and not the value', async () => {
+    const ack = await setMode(anaSocket, {
+      callId: 'demo',
+      participantId: 'participant_1',
+      mode: 'translated',
+    });
+
+    expect(ack).toMatchObject({ ok: false, error: 'mode-locked' });
   });
 
   it('refuses a non-owner by name and changes nothing', async () => {
@@ -373,7 +325,7 @@ describe('call:mode:set — owner authority', () => {
     ).toEqual({ ok: false, error: 'invalid-mode' });
   });
 
-  it('keeps the owner’s authority across resume', async () => {
+  it('keeps the owner’s identity across resume, and the lock with it', async () => {
     harness.runtime.handleSocketDisconnect('socket-a');
     const resumed = new FakeSocket('socket-a2');
     const ack = await join(harness, resumed, {
@@ -388,7 +340,13 @@ describe('call:mode:set — owner authority', () => {
       participantId: 'participant_1',
       mode: 'normal',
     });
-    expect(modeAck).toMatchObject({ ok: true, state: { callMode: 'normal' } });
+    /*
+     * Still recognised as the owner across the resume -- the refusal is the
+     * LOCK, not 'not-owner'. That distinction is the thing worth keeping from
+     * the original test: ownership survives a reconnect, and it is the mode
+     * that is fixed rather than the identity that was lost.
+     */
+    expect(modeAck).toMatchObject({ ok: false, error: 'mode-locked' });
   });
 });
 
