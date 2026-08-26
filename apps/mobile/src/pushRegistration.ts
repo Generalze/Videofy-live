@@ -59,7 +59,14 @@ async function deviceId(): Promise<string> {
 export interface RegisterPushOptions {
   /** Base URL of the account service, as the app reaches it. */
   readonly accountBaseUrl: string;
-  /** The signed-in session token. Registration is per account, always. */
+  /**
+   * The signed-in session token, from DEVICE SECURE STORAGE.
+   *
+   * Never from an `EXPO_PUBLIC_` variable, and never from a build-time
+   * constant: those are compiled into the bundle in plain text, so a real
+   * credential there is published to every install. This parameter exists to be
+   * filled by a sign-in flow, which is why nothing in this app calls it yet.
+   */
   readonly sessionToken: string;
   /** What the person sees in their own device list. Never the token. */
   readonly label?: string;
