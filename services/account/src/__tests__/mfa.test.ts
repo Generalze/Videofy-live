@@ -83,7 +83,7 @@ async function call(method: string, path: string, body?: unknown, token?: string
 }
 
 async function registered(): Promise<{ token: string; accountId: string }> {
-  const response = await call('POST', '/accounts', { email: EMAIL, password: PASSWORD });
+  const response = await call('POST', '/accounts', { email: EMAIL, password: PASSWORD, username: 'u823a63e180' });
   return (await response.json()) as { token: string; accountId: string };
 }
 

@@ -21,6 +21,12 @@
  * glance, which is exactly the situation the rule exists to prevent.
  */
 
+/**
+ * Lengths of the part a person CHOOSES, not of the whole handle.
+ *
+ * Counting the prefix would let `c7a` through on a technicality: two of its
+ * three characters are the same on every account, so it distinguishes nobody.
+ */
 export const USERNAME_MIN_LENGTH = 3;
 export const USERNAME_MAX_LENGTH = 30;
 
@@ -32,7 +38,27 @@ export const USERNAME_MAX_LENGTH = 30;
  * start with a letter, so a username can never be mistaken for an id, a phone
  * number or an account reference.
  */
-const USERNAME_SHAPE = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/;
+const USERNAME_SHAPE = /^c7[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/;
+
+/**
+ * Every C7 handle begins with `c7`, and the interface supplies it.
+ *
+ * The prefix carries no uniqueness -- it is the same on every account -- and
+ * that is not what it is for. It makes a handle RECOGNISABLE away from C7: an
+ * "add me" that does not start with c7 is definitionally not a C7 handle, which
+ * is a thing somebody can check before trusting it.
+ *
+ * Accepted with or without, so pasting `c7zoemeak` and typing `zoemeak` into a
+ * field already showing the prefix both work. Nobody should be able to lose an
+ * account to having typed the prefix twice.
+ */
+export const USERNAME_PREFIX = 'c7';
+
+/** The part a person actually chooses, with the prefix removed if present. */
+export function usernameLocalPart(input: string): string {
+  const lowered = input.trim().toLowerCase();
+  return lowered.startsWith(USERNAME_PREFIX) ? lowered.slice(USERNAME_PREFIX.length) : lowered;
+}
 
 /**
  * Characters that read as each other at a glance, mapped to one form.
@@ -144,19 +170,25 @@ export type UsernameCheck =
  * invalid name never costs a lookup.
  */
 export function checkUsernameShape(input: string): UsernameCheck {
-  const username = input.trim().toLowerCase();
+  const local = usernameLocalPart(input);
+  const username = `${USERNAME_PREFIX}${local}`;
 
-  if (username.length < USERNAME_MIN_LENGTH) return { ok: false, reason: 'too-short' };
-  if (username.length > USERNAME_MAX_LENGTH) return { ok: false, reason: 'too-long' };
+  if (local.length < USERNAME_MIN_LENGTH) return { ok: false, reason: 'too-short' };
+  if (local.length > USERNAME_MAX_LENGTH) return { ok: false, reason: 'too-long' };
   if (!USERNAME_SHAPE.test(username)) return { ok: false, reason: 'bad-shape' };
 
-  const key = usernameKey(username);
+  /*
+   * Reserved names are matched on the CHOSEN part, so `c7admin` is refused. The
+   * prefix is on every handle and would otherwise make every reserved word
+   * look unlike the reserved word it is.
+   */
+  const localKey = usernameKey(local);
   // Re-checked after folding: a name whose separators are most of its content
   // passes the shape test and folds to almost nothing.
-  if (key.length < USERNAME_MIN_LENGTH) return { ok: false, reason: 'too-short' };
-  if (RESERVED.has(key)) return { ok: false, reason: 'reserved' };
+  if (localKey.length < USERNAME_MIN_LENGTH) return { ok: false, reason: 'too-short' };
+  if (RESERVED.has(localKey)) return { ok: false, reason: 'reserved' };
 
-  return { ok: true, username, key };
+  return { ok: true, username, key: usernameKey(username) };
 }
 
 /** What a person is told, in words that say what to do about it. */

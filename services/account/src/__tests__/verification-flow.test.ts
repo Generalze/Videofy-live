@@ -36,8 +36,7 @@ async function harness() {
 
   const registration = await store.register({
     email: 'zoe@example.com',
-    password: 'a-long-enough-passphrase-42',
-  });
+    password: 'a-long-enough-passphrase-42', username: 'u653b933e63' });
   if (!registration.ok) throw new Error('registration failed');
 
   return {
@@ -234,7 +233,7 @@ describe('registering over HTTP', () => {
       const response = await fetch(`${harnessed.url}/accounts`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: 'new@example.com', password: 'a-long-enough-passphrase-42' }),
+        body: JSON.stringify({ email: 'new@example.com', password: 'a-long-enough-passphrase-42', username: 'uee49581776' }),
       });
 
       expect(response.status).toBe(201);
@@ -253,7 +252,7 @@ describe('registering over HTTP', () => {
       const response = await fetch(`${harnessed.url}/accounts`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: 'new@example.com', password: 'a-long-enough-passphrase-42' }),
+        body: JSON.stringify({ email: 'new@example.com', password: 'a-long-enough-passphrase-42', username: 'ue3998f5a48' }),
       });
       const { accountId } = (await response.json()) as { accountId: string };
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -271,7 +270,7 @@ describe('registering over HTTP', () => {
       const response = await fetch(`${harnessed.url}/accounts`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: 'new@example.com', password: 'a-long-enough-passphrase-42' }),
+        body: JSON.stringify({ email: 'new@example.com', password: 'a-long-enough-passphrase-42', username: 'ub04f1cdf03' }),
       });
       const body = JSON.stringify(await response.json());
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -318,7 +317,7 @@ describe('registering over HTTP', () => {
       const response = await fetch(`http://127.0.0.1:${port}/accounts`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: 'new@example.com', password: 'a-long-enough-passphrase-42' }),
+        body: JSON.stringify({ email: 'new@example.com', password: 'a-long-enough-passphrase-42', username: 'u8199765788' }),
       });
       expect(response.status).toBe(201);
       expect(store.findByEmail('new@example.com')).not.toBeNull();
@@ -405,8 +404,7 @@ describe('a stale identity check', () => {
     });
     const registration = await store.register({
       email: 'kyc@example.com',
-      password: 'a-long-enough-passphrase-42',
-    });
+      password: 'a-long-enough-passphrase-42', username: 'u7039402b8f' });
     if (!registration.ok) throw new Error('registration failed');
     return {
       verification,

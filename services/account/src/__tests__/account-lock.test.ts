@@ -43,7 +43,7 @@ describe('account lock', () => {
       const accounts = store(records);
 
       // Register an account.
-      const result = await accounts.register({ email: EMAIL, password: PASSWORD });
+      const result = await accounts.register({ email: EMAIL, password: PASSWORD, username: 'u6beb6bb6d2' });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
 
@@ -101,8 +101,8 @@ describe('account lock', () => {
       const accounts = store(records);
 
       // Register two accounts.
-      const result1 = await accounts.register({ email: 'alice@example.com', password: PASSWORD });
-      const result2 = await accounts.register({ email: 'bob@example.com', password: PASSWORD });
+      const result1 = await accounts.register({ email: 'alice@example.com', password: PASSWORD, username: 'ued628ef3a5' });
+      const result2 = await accounts.register({ email: 'bob@example.com', password: PASSWORD, username: 'uc27c61dd15' });
       expect(result1.ok && result2.ok).toBe(true);
       if (!result1.ok || !result2.ok) return;
 
@@ -158,7 +158,7 @@ describe('account lock', () => {
       const accounts = store(records);
 
       // Register an account.
-      const result = await accounts.register({ email: EMAIL, password: PASSWORD });
+      const result = await accounts.register({ email: EMAIL, password: PASSWORD, username: 'ucfb7753d45' });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
 
@@ -212,7 +212,7 @@ describe('account lock', () => {
       const accounts = store(records);
 
       // Register an account.
-      const result = await accounts.register({ email: EMAIL, password: PASSWORD });
+      const result = await accounts.register({ email: EMAIL, password: PASSWORD, username: 'uc340246db1' });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
 

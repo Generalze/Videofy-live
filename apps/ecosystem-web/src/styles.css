@@ -1976,6 +1976,40 @@ button:focus-visible {
 }
 
 /* A button that reads as a link, because it navigates rather than submits. */
+/* A field whose prefix is part of the interface, not part of what you type. */
+.field-prefixed {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid rgba(160, 180, 220, 0.22);
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(10, 14, 22, 0.6);
+}
+
+.field-prefix {
+  display: flex;
+  align-items: center;
+  padding: 0 0.1rem 0 0.75rem;
+  color: var(--c7-text-muted, #aab5c9);
+  font-weight: 600;
+  user-select: none;
+}
+
+.field-prefixed input {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  padding-left: 0;
+}
+
+.field-hint {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--c7-text-muted, #8d9ab4);
+}
+
 .join-link {
   background: none;
   border: 0;

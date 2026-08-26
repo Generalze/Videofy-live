@@ -53,7 +53,7 @@ async function register(): Promise<string> {
   const response = await fetch(`${app.url}/accounts`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email: EMAIL, password: PASSWORD }),
+    body: JSON.stringify({ email: EMAIL, password: PASSWORD, username: 'u445fc5312f' }),
   });
   const body = (await response.json()) as { token: string };
   return body.token;

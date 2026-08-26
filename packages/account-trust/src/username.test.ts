@@ -19,7 +19,7 @@ describe('what a username may look like', () => {
   it('accepts an ordinary handle', () => {
     const checked = checkUsernameShape('zoemeak');
     expect(checked.ok).toBe(true);
-    if (checked.ok) expect(checked.username).toBe('zoemeak');
+    if (checked.ok) expect(checked.username).toBe('c7zoemeak');
   });
 
   it('accepts dots and underscores between words', () => {
@@ -31,7 +31,7 @@ describe('what a username may look like', () => {
   it('lowercases rather than refusing a capital', () => {
     const checked = checkUsernameShape('ZoeMeak');
     expect(checked.ok).toBe(true);
-    if (checked.ok) expect(checked.username).toBe('zoemeak');
+    if (checked.ok) expect(checked.username).toBe('c7zoemeak');
   });
 
   it('refuses one that does not start with a letter', () => {
@@ -165,5 +165,48 @@ describe('the display name, which is a label and not an identity', () => {
    */
   it('allows a display name that copies another username, because it proves nothing', () => {
     expect(checkDisplayName('zoemeak').ok).toBe(true);
+  });
+});
+
+describe('the c7 prefix', () => {
+  /*
+   * Supplied, not typed. The prefix is the same on every account so it
+   * distinguishes nobody -- what it does is make a handle recognisable away
+   * from C7: an "add me" that does not start with c7 is definitionally not a
+   * C7 handle, and that is something a person can check before trusting it.
+   */
+  it('adds the prefix to a bare choice', () => {
+    const checked = checkUsernameShape('zoemeak');
+    expect(checked.ok).toBe(true);
+    if (checked.ok) expect(checked.username).toBe('c7zoemeak');
+  });
+
+  it('accepts a handle that already carries it, without doubling it', () => {
+    const checked = checkUsernameShape('c7zoemeak');
+    expect(checked.ok).toBe(true);
+    if (checked.ok) expect(checked.username).toBe('c7zoemeak');
+  });
+
+  it('treats the typed and pasted forms as the same claim', () => {
+    const typed = checkUsernameShape('zoemeak');
+    const pasted = checkUsernameShape('c7zoemeak');
+    if (typed.ok && pasted.ok) expect(typed.key).toBe(pasted.key);
+  });
+
+  /*
+   * The length bound is on the part somebody CHOOSES. Counting the prefix would
+   * let `c7a` through, and two of its three characters are on every account.
+   */
+  it('measures the chosen part, not the prefix', () => {
+    expect(checkUsernameShape('ab').ok).toBe(false);
+    expect(checkUsernameShape('c7ab').ok).toBe(false);
+    expect(checkUsernameShape('abc').ok).toBe(true);
+  });
+
+  /* Reserved names are matched on the chosen part, prefix or not. */
+  it('still refuses a reserved name behind the prefix', () => {
+    expect(checkUsernameShape('c7admin').ok).toBe(false);
+    expect(checkUsernameShape('admin').ok).toBe(false);
+    expect(checkUsernameShape('c7supp0rt').ok).toBe(false);
   });
 });

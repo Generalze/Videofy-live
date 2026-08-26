@@ -197,7 +197,7 @@ export function createEphemeralAccountRecords(): AccountRecordPort {
 
 export type RegistrationResult =
   | { readonly ok: true; readonly account: AccountRecord }
-  | { readonly ok: false; readonly reason: 'invalid-email' | 'weak-password' | 'already-exists'; readonly message: string };
+  | { readonly ok: false; readonly reason: 'invalid-email' | 'weak-password' | 'already-exists' | 'username-taken' | 'username-previously-used'; readonly message: string };
 
 export type AuthenticationResult =
   | { readonly ok: true; readonly account: AccountRecord }
@@ -699,6 +699,30 @@ export class AccountStore {
     });
   }
 
+  /**
+   * Why a handle is unavailable, or null when it is free.
+   *
+   * ONE implementation, used by registration and by a later change. Two
+   * implementations of "is this handle free" is two chances to disagree, and
+   * the disagreement is an account somebody else can be mistaken for.
+   *
+   * @param forAccountId - The account asking. Its own current handle and its
+   * own released handles do not block it.
+   */
+  private usernameConflict(
+    key: string,
+    forAccountId: string | null,
+  ): 'username-taken' | 'username-previously-used' | null {
+    const holder = this.findByUsernameKey(key);
+    if (holder && holder.accountId !== forAccountId) return 'username-taken';
+
+    const previouslyHeldBy = this.releasedUsernames.get(key);
+    if (previouslyHeldBy !== undefined && previouslyHeldBy !== forAccountId) {
+      return 'username-previously-used';
+    }
+    return null;
+  }
+
   /** Set the label shown in calls. Carries no uniqueness and resolves to nobody. */
   async setDisplayName(accountId: string, displayName: string): Promise<AccountRecord | null> {
     return this.withMutationLock<AccountRecord | null>(accountId, async (current) => {
@@ -822,10 +846,22 @@ export class AccountStore {
     return this.byId.get(accountId) ?? null;
   }
 
+  /**
+   * Create an account, and claim its handle in the same atomic section.
+   *
+   * WHY THE HANDLE IS CHOSEN HERE rather than afterwards. Left until later,
+   * people forget, and an account with no handle cannot be added by anybody --
+   * it exists and is unreachable. Auto-assigning instead is worse under the
+   * never-reuse rule: the first thing somebody does with a handle they did not
+   * choose is change it, and that burns the original forever.
+   */
   async register(input: {
     email: string;
     password: string;
     voiceGender?: AccountVoiceGender;
+    /** The handle, already shape-checked. Both halves or neither. */
+    username?: string;
+    usernameKey?: string;
   }): Promise<RegistrationResult> {
     const email = normaliseEmail(input.email);
     if (email.length === 0 || email.length > MAX_EMAIL_LENGTH || !EMAIL_PATTERN.test(email)) {
@@ -846,10 +882,23 @@ export class AccountStore {
       };
     }
 
+    /*
+     * Checked before the hash, like the email above, so an obviously taken
+     * handle does not cost tens of milliseconds of scrypt. Re-checked with it
+     * below, because this check is separated from the write by that hash.
+     */
+    if (input.usernameKey !== undefined) {
+      const conflict = this.usernameConflict(input.usernameKey, null);
+      if (conflict) return { ok: false, reason: conflict, message: 'That username is not available.' };
+    }
+
     const timestamp = new Date(this.now()).toISOString();
     const account: AccountRecord = {
       accountId: createAccountId(this.newAccountSuffix),
       email,
+      ...(input.username !== undefined && input.usernameKey !== undefined
+        ? { username: input.username, usernameKey: input.usernameKey }
+        : {}),
       // Only ever one of the two values, and only when explicitly chosen.
       ...(input.voiceGender === 'male' || input.voiceGender === 'female'
         ? { voiceGender: input.voiceGender }
@@ -884,6 +933,17 @@ export class AccountStore {
         reason: 'already-exists',
         message: 'An account already exists for that email address.',
       };
+    }
+    /*
+     * The handle is re-checked in the SAME no-await section as the email, for
+     * the same reason: two registrations naming one handle can both pass the
+     * early check, both hash, and both write. Two accounts sharing a handle is
+     * precisely the impersonation the whole design exists to prevent, so it
+     * cannot be allowed to happen even once.
+     */
+    if (input.usernameKey !== undefined) {
+      const conflict = this.usernameConflict(input.usernameKey, null);
+      if (conflict) return { ok: false, reason: conflict, message: 'That username is not available.' };
     }
     this.byId.set(account.accountId, account);
     this.byEmail.set(email, account.accountId);

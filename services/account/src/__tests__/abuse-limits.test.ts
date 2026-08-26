@@ -79,8 +79,7 @@ describe('limits over HTTP', () => {
     }
     const refused = await post('/accounts', {
       email: 'one-too-many@example.com',
-      password: 'a long enough passphrase',
-    });
+      password: 'a long enough passphrase', username: 'u2c61d83780' });
 
     expect(refused.status).toBe(429);
     expect(refused.headers.get('retry-after')).toBeTruthy();
@@ -101,8 +100,7 @@ describe('limits over HTTP', () => {
     }
     const refused = await post('/accounts', {
       email: 'again@example.com',
-      password: 'a long enough passphrase',
-    });
+      password: 'a long enough passphrase', username: 'ud010ccabe5' });
     expect(Number(refused.headers.get('retry-after'))).toBeGreaterThan(0);
   });
 
@@ -117,15 +115,13 @@ describe('limits over HTTP', () => {
     }
     const exhausted = await first('/accounts', {
       email: 'blocked@example.com',
-      password: 'a long enough passphrase',
-    });
+      password: 'a long enough passphrase', username: 'uff426a0455' });
     expect(exhausted.status).toBe(429);
 
     const second = request({ 'cf-connecting-ip': '203.0.113.21' });
     const unaffected = await second('/accounts', {
       email: 'fine@example.com',
-      password: 'a long enough passphrase',
-    });
+      password: 'a long enough passphrase', username: 'u47f62f426a' });
     expect(unaffected.status).not.toBe(429);
   });
 

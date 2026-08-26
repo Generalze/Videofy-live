@@ -60,7 +60,7 @@ describe('signing up', () => {
   afterEach(async () => h.close());
 
   it('creates the account and signs the person in, in one step', async () => {
-    const result = await send(h, 'POST', '/accounts', { email: EMAIL, password: PASSWORD });
+    const result = await send(h, 'POST', '/accounts', { email: EMAIL, password: PASSWORD, username: 'ucc18528777' });
 
     expect(result.status).toBe(201);
     expect(String(result.json['accountId']).startsWith('acct_')).toBe(true);
@@ -73,22 +73,22 @@ describe('signing up', () => {
   });
 
   it('never returns the password or its hash', async () => {
-    const result = await send(h, 'POST', '/accounts', { email: EMAIL, password: PASSWORD });
+    const result = await send(h, 'POST', '/accounts', { email: EMAIL, password: PASSWORD, username: 'u70a4550cf1' });
 
     expect(JSON.stringify(result.json)).not.toContain(PASSWORD);
     expect(JSON.stringify(result.json)).not.toContain('scrypt');
   });
 
   it('refuses a duplicate address distinctly, because uniqueness cannot be hidden', async () => {
-    await send(h, 'POST', '/accounts', { email: EMAIL, password: PASSWORD });
+    await send(h, 'POST', '/accounts', { email: EMAIL, password: PASSWORD, username: 'u58a82ac714' });
 
-    const again = await send(h, 'POST', '/accounts', { email: EMAIL, password: PASSWORD });
+    const again = await send(h, 'POST', '/accounts', { email: EMAIL, password: PASSWORD, username: 'uc443fde681' });
 
     expect(again.status).toBe(409);
   });
 
   it('refuses a missing or non-string field rather than coercing it', async () => {
-    for (const body of [{}, { email: EMAIL }, { email: 1, password: PASSWORD }, null]) {
+    for (const body of [{}, { email: EMAIL }, { email: 1, password: PASSWORD, username: 'uaaec3b7c07' }, null]) {
       expect((await send(h, 'POST', '/accounts', body)).status).toBe(400);
     }
   });
@@ -98,12 +98,12 @@ describe('signing in', () => {
   let h: Harness;
   beforeEach(async () => {
     h = await harness();
-    await send(h, 'POST', '/accounts', { email: EMAIL, password: PASSWORD });
+    await send(h, 'POST', '/accounts', { email: EMAIL, password: PASSWORD, username: 'u685739c60c' });
   });
   afterEach(async () => h.close());
 
   it('issues a token for the right password', async () => {
-    const result = await send(h, 'POST', '/sessions', { email: EMAIL, password: PASSWORD });
+    const result = await send(h, 'POST', '/sessions', { email: EMAIL, password: PASSWORD, username: 'u0a1068c421' });
 
     expect(result.status).toBe(200);
     expect(typeof result.json['token']).toBe('string');
@@ -112,11 +112,10 @@ describe('signing in', () => {
   it('answers identically for a wrong password and an unknown address', async () => {
     // The endpoint an attacker would enumerate with. It must not become a way
     // to discover who has an account.
-    const wrong = await send(h, 'POST', '/sessions', { email: EMAIL, password: 'nope nope nope' });
+    const wrong = await send(h, 'POST', '/sessions', { email: EMAIL, password: 'nope nope nope', username: 'uf2e6f43e64' });
     const unknown = await send(h, 'POST', '/sessions', {
       email: 'nobody@example.com',
-      password: 'nope nope nope',
-    });
+      password: 'nope nope nope', username: 'ue22cf78478' });
 
     expect(wrong.status).toBe(unknown.status);
     expect(wrong.json).toEqual(unknown.json);
@@ -129,7 +128,7 @@ describe('the current session', async () => {
   let token: string;
   beforeEach(async () => {
     h = await harness();
-    const created = await send(h, 'POST', '/accounts', { email: EMAIL, password: PASSWORD });
+    const created = await send(h, 'POST', '/accounts', { email: EMAIL, password: PASSWORD, username: 'u81d5069d44' });
     token = String(created.json['token']);
   });
   afterEach(async () => h.close());

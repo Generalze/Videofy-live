@@ -29,8 +29,7 @@ async function harness() {
   });
   const registration = await store.register({
     email: 'zoe@example.com',
-    password: 'a-long-enough-passphrase-42',
-  });
+    password: 'a-long-enough-passphrase-42', username: 'ue9bc4dcf05' });
   if (!registration.ok) throw new Error('registration failed');
 
   return {

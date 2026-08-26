@@ -20,6 +20,7 @@ import { createCallerResolver, registerAccountRoutes } from '../routes.js';
 import { registerOrganizationRoutes } from '../organization-routes.js';
 import { VerificationService } from '../verification.js';
 import {
+
   EMAIL_POLICY,
   PHONE_POLICY,
   createSyntheticIdentityProvider,
@@ -27,6 +28,19 @@ import {
   signCallback,
   type VerificationMessage,
 } from '@videofy-live/account-trust';
+
+/**
+ * A handle derived from the address, for tests only.
+ *
+ * Registration requires one now, and it must be unique per account. Deriving it
+ * from the email keeps each test's accounts distinct without every call site
+ * having to invent one -- and folds out the characters a handle may not carry.
+ */
+function handleFor(email: string): string {
+  const local = email.split('@')[0] ?? 'user';
+  const cleaned = local.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  return `u${cleaned || 'user'}`;
+}
 
 const SECRET = Buffer.alloc(32, 11);
 const CALLBACK_SECRET = 'acceptance-identity-callback-secret';
@@ -68,6 +82,7 @@ async function signUp(email: string): Promise<{ accountId: string; token: string
   const created = await api('POST', '/accounts', null, {
     email,
     password: 'a-long-enough-passphrase-42',
+    username: handleFor(email),
   });
   expect(created.status).toBe(201);
   return {
@@ -162,8 +177,7 @@ describe('A — registration', () => {
   it('PIN: signup never returns a verification token', async () => {
     const created = await api('POST', '/accounts', null, {
       email: 'no-token@example.com',
-      password: 'a-long-enough-passphrase-42',
-    });
+      password: 'a-long-enough-passphrase-42', username: 'u3e13ad208e' });
     expect(Object.keys(created.body)).not.toContain('verificationToken');
     expect(outbox.every((message) => !created.raw.includes(message.token))).toBe(true);
   });

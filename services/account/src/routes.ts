@@ -290,13 +290,42 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       res.status(400).json({ error: 'Enter an email address and a password.' });
       return;
     }
+
+    /*
+     * THE HANDLE IS CHOSEN HERE, not afterwards.
+     *
+     * Left until later people forget, and an account with no handle exists but
+     * cannot be added by anybody. Auto-assigning one instead is worse under the
+     * never-reuse rule: the first thing somebody does with a handle they did
+     * not pick is change it, and that burns the original forever.
+     */
+    const requestedUsername = (req.body as { username?: unknown } | undefined)?.username;
+    if (typeof requestedUsername !== 'string') {
+      res.status(400).json({ error: 'Choose a C7 username.' });
+      return;
+    }
+    const shape = checkUsernameShape(requestedUsername);
+    if (!shape.ok) {
+      res.status(400).json({ error: USERNAME_REFUSAL_MESSAGES[shape.reason] });
+      return;
+    }
+
     void deps.store
-      .register({ ...input, ...(voiceGenderOf(req.body) ? { voiceGender: voiceGenderOf(req.body)! } : {}) })
+      .register({
+        ...input,
+        username: shape.username,
+        usernameKey: shape.key,
+        ...(voiceGenderOf(req.body) ? { voiceGender: voiceGenderOf(req.body)! } : {}),
+      })
       .then((result) => {
         if (!result.ok) {
-          // 409 for a taken address, 400 for anything the caller can fix by
-          // typing something else.
-          res.status(result.reason === 'already-exists' ? 409 : 400).json({ error: result.message });
+          // 409 for anything already claimed -- an address or a handle -- and
+          // 400 for what the caller can fix by typing something else.
+          const conflict =
+            result.reason === 'already-exists' ||
+            result.reason === 'username-taken' ||
+            result.reason === 'username-previously-used';
+          res.status(conflict ? 409 : 400).json({ error: result.message });
           return;
         }
         /*

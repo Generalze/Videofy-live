@@ -118,7 +118,9 @@ async function call(method: string, path: string, body?: unknown, token?: string
 }
 
 async function registered(email = EMAIL): Promise<{ token: string; accountId: string }> {
-  const response = await call('POST', '/accounts', { email, password: PASSWORD });
+  // Registration requires a handle now, derived here so each account is distinct.
+  const handle = `u${email.split('@')[0]?.replace(/[^a-z0-9]/gi, '').toLowerCase() ?? 'user'}`;
+  const response = await call('POST', '/accounts', { email, password: PASSWORD, username: handle });
   return (await response.json()) as { token: string; accountId: string };
 }
 

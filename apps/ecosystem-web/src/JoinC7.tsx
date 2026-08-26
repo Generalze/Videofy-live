@@ -29,6 +29,13 @@ export function JoinC7() {
   const [mode, setMode] = useState<Mode>('create');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  /*
+   * CHOSEN AT REGISTRATION, not afterwards. Left until later people forget, and
+   * an account with no handle exists but cannot be added by anybody. The `c7`
+   * prefix is supplied by the field rather than typed, so it can never be
+   * forgotten, doubled or mistyped.
+   */
+  const [username, setUsername] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [session, setSession] = useState<SessionResult | null>(null);
@@ -154,6 +161,29 @@ export function JoinC7() {
                     onChange={(event) => setEmail(event.target.value)}
                   />
                 </label>
+                {mode === 'create' ? (
+                  <label className="field">
+                    <span className="field-label">C7 username</span>
+                    <span className="field-prefixed">
+                      <span className="field-prefix" aria-hidden="true">c7</span>
+                      <input
+                        name="username"
+                        autoComplete="username"
+                        required
+                        inputMode="text"
+                        spellCheck={false}
+                        placeholder="yourname"
+                        value={username}
+                        onChange={(event) => setUsername(event.target.value)}
+                      />
+                    </span>
+                    <span className="field-hint">
+                      This is how people add you. Your name in calls is separate and you can change
+                      it any time — this one you cannot give up and take back later.
+                    </span>
+                  </label>
+                ) : null}
+
                 {/* No password field when asking for a reset: the whole reason
                     somebody is here is that they do not have one that works. */}
                 {mode === 'reset' ? null : (

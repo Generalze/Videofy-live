@@ -58,7 +58,14 @@ async function call(method: string, path: string, body?: unknown, token?: string
 }
 
 async function registered(email: string): Promise<{ token: string; accountId: string }> {
-  const response = await call('POST', '/accounts', { email, password: PASSWORD });
+  // Registration claims a handle now, so each account here starts with a
+  // distinct one that the tests below then change.
+  const seed = email.split('@')[0]?.replace(/[^a-z0-9]/gi, '').toLowerCase() ?? 'user';
+  const response = await call('POST', '/accounts', {
+    email,
+    password: PASSWORD,
+    username: `start${seed}`,
+  });
   return (await response.json()) as { token: string; accountId: string };
 }
 
@@ -68,7 +75,7 @@ describe('claiming a username', () => {
     const response = await call('POST', '/accounts/username', { username: 'zoemeak' }, account.token);
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ username: 'zoemeak' });
+    expect(await response.json()).toEqual({ username: 'c7zoemeak' });
   });
 
   it('refuses a second account the same handle', async () => {
@@ -227,7 +234,7 @@ describe('finding somebody by username', () => {
 
     const response = await call('GET', '/accounts/lookup?username=zoemeak', undefined, seeker.token);
     expect(response.status).toBe(200);
-    expect((await response.json()) as { username: string }).toMatchObject({ username: 'zoemeak' });
+    expect((await response.json()) as { username: string }).toMatchObject({ username: 'c7zoemeak' });
   });
 
   /*
@@ -242,7 +249,7 @@ describe('finding somebody by username', () => {
     await app.store.setDiscoveryMode(holder.accountId, 'discoverable');
 
     const response = await call('GET', '/accounts/lookup?username=z0emeak', undefined, seeker.token);
-    expect((await response.json()) as { username: string }).toMatchObject({ username: 'zoemeak' });
+    expect((await response.json()) as { username: string }).toMatchObject({ username: 'c7zoemeak' });
   });
 
   it('requires signing in to resolve a handle to a person', async () => {

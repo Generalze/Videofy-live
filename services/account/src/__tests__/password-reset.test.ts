@@ -96,7 +96,7 @@ async function post(path: string, body: unknown, token?: string) {
 }
 
 async function register(): Promise<string> {
-  const response = await post('/accounts', { email: EMAIL, password: PASSWORD });
+  const response = await post('/accounts', { email: EMAIL, password: PASSWORD, username: 'u7fe1c6ac91' });
   return ((await response.json()) as { token: string }).token;
 }
 
@@ -167,19 +167,18 @@ describe('completing a reset', () => {
     const response = await post('/accounts/password-reset/complete', {
       email: EMAIL,
       token,
-      password: NEW_PASSWORD,
-    });
+      password: NEW_PASSWORD, username: 'u33184be560' });
     expect(response.status).toBe(200);
 
-    const signIn = await post('/sessions', { email: EMAIL, password: NEW_PASSWORD });
+    const signIn = await post('/sessions', { email: EMAIL, password: NEW_PASSWORD, username: 'u155e87e652' });
     expect(signIn.status).toBe(200);
   });
 
   it('makes the old password stop working', async () => {
     const token = await requested();
-    await post('/accounts/password-reset/complete', { email: EMAIL, token, password: NEW_PASSWORD });
+    await post('/accounts/password-reset/complete', { email: EMAIL, token, password: NEW_PASSWORD, username: 'u21b9bc1ef6' });
 
-    const old = await post('/sessions', { email: EMAIL, password: PASSWORD });
+    const old = await post('/sessions', { email: EMAIL, password: PASSWORD, username: 'u93af811332' });
     expect(old.status).toBe(401);
   });
 
@@ -192,7 +191,7 @@ describe('completing a reset', () => {
     await register();
     await post('/accounts/password-reset', { email: EMAIL });
     const token = app.sent[0]!.token;
-    const beforeReset = (await (await post('/sessions', { email: EMAIL, password: PASSWORD })).json()) as {
+    const beforeReset = (await (await post('/sessions', { email: EMAIL, password: PASSWORD, username: 'u5ac3fbd524' })).json()) as {
       token: string;
     };
 
@@ -202,7 +201,7 @@ describe('completing a reset', () => {
     });
     expect(worksBefore.status).toBe(200);
 
-    await post('/accounts/password-reset/complete', { email: EMAIL, token, password: NEW_PASSWORD });
+    await post('/accounts/password-reset/complete', { email: EMAIL, token, password: NEW_PASSWORD, username: 'u764da666b1' });
 
     const worksAfter = await fetch(`${app.url}/me`, {
       headers: { authorization: `Bearer ${beforeReset.token}` },
@@ -215,19 +214,17 @@ describe('completing a reset', () => {
     const response = await post('/accounts/password-reset/complete', {
       email: EMAIL,
       token,
-      password: NEW_PASSWORD,
-    });
+      password: NEW_PASSWORD, username: 'u705f35d1fa' });
     expect(await response.text()).not.toContain('"token"');
   });
 
   it('refuses the same link twice', async () => {
     const token = await requested();
-    await post('/accounts/password-reset/complete', { email: EMAIL, token, password: NEW_PASSWORD });
+    await post('/accounts/password-reset/complete', { email: EMAIL, token, password: NEW_PASSWORD, username: 'u5a3e031572' });
     const replay = await post('/accounts/password-reset/complete', {
       email: EMAIL,
       token,
-      password: 'yet another passphrase here',
-    });
+      password: 'yet another passphrase here', username: 'ub4281b86d8' });
     expect(replay.status).toBe(400);
   });
 
@@ -236,8 +233,7 @@ describe('completing a reset', () => {
     const response = await post('/accounts/password-reset/complete', {
       email: EMAIL,
       token: 'not-the-token',
-      password: NEW_PASSWORD,
-    });
+      password: NEW_PASSWORD, username: 'u6767dc1703' });
     expect(response.status).toBe(400);
   });
 
@@ -250,13 +246,11 @@ describe('completing a reset', () => {
     const wrongToken = await post('/accounts/password-reset/complete', {
       email: EMAIL,
       token: 'wrong',
-      password: NEW_PASSWORD,
-    });
+      password: NEW_PASSWORD, username: 'u83e035b9b5' });
     const unknownAccount = await post('/accounts/password-reset/complete', {
       email: 'nobody@example.com',
       token: 'wrong',
-      password: NEW_PASSWORD,
-    });
+      password: NEW_PASSWORD, username: 'ue53f9ba9ae' });
 
     expect(await wrongToken.text()).toBe(await unknownAccount.text());
   });
@@ -266,8 +260,7 @@ describe('completing a reset', () => {
     const response = await post('/accounts/password-reset/complete', {
       email: EMAIL,
       token,
-      password: 'short',
-    });
+      password: 'short', username: 'u300734c3f5' });
     expect(response.status).toBe(400);
   });
 });

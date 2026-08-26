@@ -262,8 +262,7 @@ describe('unverified accounts', () => {
   it('PIN: an unverified account cannot create an organization', async () => {
     const created = await harness.accounts.register({
       email: 'fresh@example.com',
-      password: 'a-long-enough-passphrase-42',
-    });
+      password: 'a-long-enough-passphrase-42', username: 'ua0a0e034e8' });
     if (!created.ok) throw new Error('registration failed');
     const token = issueSessionToken({
       secret: SECRET,

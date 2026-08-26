@@ -38,7 +38,7 @@ function memoryRecords(): AccountRecordPort & { rows: unknown[] } {
 
 describe('registration', () => {
   it('creates an account whose id is a real account id', async () => {
-    const result = await store().register({ email: EMAIL, password: PASSWORD });
+    const result = await store().register({ email: EMAIL, password: PASSWORD, username: 'u85e778e886' });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -47,7 +47,7 @@ describe('registration', () => {
   });
 
   it('never stores the password', async () => {
-    const result = await store().register({ email: EMAIL, password: PASSWORD });
+    const result = await store().register({ email: EMAIL, password: PASSWORD, username: 'uaf141515a6' });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -59,9 +59,9 @@ describe('registration', () => {
     // Otherwise two accounts exist for one person, and the second one silently
     // has no voice.
     const accounts = await store();
-    await accounts.register({ email: EMAIL, password: PASSWORD });
+    await accounts.register({ email: EMAIL, password: PASSWORD, username: 'uced5914009' });
 
-    const duplicate = await accounts.register({ email: '  ZOE@Example.COM ', password: PASSWORD });
+    const duplicate = await accounts.register({ email: '  ZOE@Example.COM ', password: PASSWORD, username: 'ucf6e6230bc' });
 
     expect(duplicate.ok).toBe(false);
     if (duplicate.ok) return;
@@ -69,7 +69,7 @@ describe('registration', () => {
   });
 
   it('refuses a password shorter than the floor, and says why usefully', async () => {
-    const result = await store().register({ email: EMAIL, password: 'short' });
+    const result = await store().register({ email: EMAIL, password: 'short', username: 'u06b0cf1024' });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -82,8 +82,7 @@ describe('registration', () => {
   it('refuses a password that is just the email address', async () => {
     const result = await store().register({
       email: 'a-very-long-address@example.com',
-      password: 'A-Very-Long-Address@Example.com',
-    });
+      password: 'A-Very-Long-Address@Example.com', username: 'u6198033ba7' });
 
     expect(result.ok).toBe(false);
   });
@@ -100,12 +99,11 @@ describe('sign-in does not reveal who has an account', () => {
   it('answers identically for an unknown email and a wrong password', async () => {
     // The property that stops this endpoint being a membership oracle.
     const accounts = await store();
-    await accounts.register({ email: EMAIL, password: PASSWORD });
+    await accounts.register({ email: EMAIL, password: PASSWORD, username: 'u8a46bb4499' });
 
     const unknown = await accounts.authenticate({
       email: 'nobody@example.com',
-      password: PASSWORD,
-    });
+      password: PASSWORD });
     const wrong = await accounts.authenticate({ email: EMAIL, password: 'wrong password here' });
 
     expect(unknown).toEqual(wrong);
@@ -116,7 +114,7 @@ describe('sign-in does not reveal who has an account', () => {
     // Returning early on an unknown address would make it measurably faster,
     // which discloses exactly what the identical message hides.
     const accounts = await store();
-    await accounts.register({ email: EMAIL, password: PASSWORD });
+    await accounts.register({ email: EMAIL, password: PASSWORD, username: 'u241d431eb7' });
 
     const startKnown = process.hrtime.bigint();
     await accounts.authenticate({ email: EMAIL, password: 'wrong password here' });
@@ -133,7 +131,7 @@ describe('sign-in does not reveal who has an account', () => {
 
   it('accepts the right password', async () => {
     const accounts = await store();
-    const created = await accounts.register({ email: EMAIL, password: PASSWORD });
+    const created = await accounts.register({ email: EMAIL, password: PASSWORD, username: 'ue0062152ed' });
 
     const result = await accounts.authenticate({ email: '  Zoe@Example.com ', password: PASSWORD });
 
@@ -147,7 +145,7 @@ describe('brute force is slowed down', () => {
   it('stops answering after repeated failures, then recovers', async () => {
     let clock = 1_760_000_000_000;
     const accounts = store(undefined, () => clock);
-    await accounts.register({ email: EMAIL, password: PASSWORD });
+    await accounts.register({ email: EMAIL, password: PASSWORD, username: 'u2fb17e3185' });
 
     for (let attempt = 0; attempt < 10; attempt += 1) {
       await accounts.authenticate({ email: EMAIL, password: 'wrong password here' });
@@ -166,7 +164,7 @@ describe('brute force is slowed down', () => {
 
   it('forgets failures once the right password arrives', async () => {
     const accounts = await store();
-    await accounts.register({ email: EMAIL, password: PASSWORD });
+    await accounts.register({ email: EMAIL, password: PASSWORD, username: 'ua6fd0f8021' });
     for (let attempt = 0; attempt < 9; attempt += 1) {
       await accounts.authenticate({ email: EMAIL, password: 'wrong password here' });
     }
@@ -184,7 +182,7 @@ describe('brute force is slowed down', () => {
 describe('sign out everywhere', () => {
   it('bumps the token generation, which is what invalidates issued tokens', async () => {
     const accounts = await store();
-    const created = await accounts.register({ email: EMAIL, password: PASSWORD });
+    const created = await accounts.register({ email: EMAIL, password: PASSWORD, username: 'u3f36c89bdb' });
     if (!created.ok) throw new Error('registration failed');
 
     const after = await accounts.signOutEverywhere(created.account.accountId);
@@ -197,7 +195,7 @@ describe('accounts survive a restart', () => {
   it('can still sign in after the store is rebuilt from records', async () => {
     const records = memoryRecords();
     const first = store(records);
-    await first.register({ email: EMAIL, password: PASSWORD });
+    await first.register({ email: EMAIL, password: PASSWORD, username: 'uc46ef16811' });
 
     const second = store(records);
     await second.hydrate();

@@ -12,8 +12,7 @@ async function registered() {
   const store = new AccountStore();
   const result = await store.register({
     email: 'zoe@example.com',
-    password: 'a-long-enough-passphrase-42',
-  });
+    password: 'a-long-enough-passphrase-42', username: 'u69927617a7' });
   if (!result.ok) throw new Error(`registration failed: ${result.message}`);
   return { store, account: result.account };
 }
@@ -31,8 +30,7 @@ describe('A0a: registration creates identity, not trust', () => {
     const store = new AccountStore();
     const result = await store.register({
       email: 'legacy@example.com',
-      password: 'a-long-enough-passphrase-42',
-    });
+      password: 'a-long-enough-passphrase-42', username: 'uf94aef23fe' });
     if (!result.ok) return;
     const stripped = { ...result.account };
     delete (stripped as { trust?: unknown }).trust;
