@@ -39,6 +39,7 @@ import { DeviceRegistrationService } from './src/push/deviceRegistrationService'
 import { SignInScreen } from './src/screens/SignInScreen';
 import { SignUpScreen } from './src/screens/SignUpScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
+import { CallScreen } from './src/screens/CallScreen';
 
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
 const ACCOUNT_BASE_URL =
@@ -74,6 +75,12 @@ export default function App(): JSX.Element {
    * able to influence that answer.
    */
   const [wantsAccount, setWantsAccount] = useState(false);
+  /*
+   * The call in progress, if any. A view concern like `wantsAccount`, and
+   * deliberately not part of `AuthState`: being in a call must not be able to
+   * influence whether somebody is signed in.
+   */
+  const [activeCall, setActiveCall] = useState<string | null>(null);
 
   useEffect(() => {
     /*
@@ -125,10 +132,34 @@ export default function App(): JSX.Element {
   }
 
   if (state.status === 'signed-in') {
+    if (activeCall !== null) {
+      return (
+        <>
+          <StatusBar style="light" />
+          <CallScreen
+            callId={activeCall}
+            /*
+             * The account id doubles as the participant id. It is already
+             * unique, already known to the gateway, and inventing a second
+             * identity for the same person in the same call is how two views of
+             * who is present come to disagree.
+             */
+            participantId={state.accountId}
+            displayName={state.accountId}
+            onLeave={() => setActiveCall(null)}
+          />
+        </>
+      );
+    }
     return (
       <>
         <StatusBar style="light" />
-        <HomeScreen accountId={state.accountId} onRegister={register} onSignOut={signOut} />
+        <HomeScreen
+          accountId={state.accountId}
+          onRegister={register}
+          onSignOut={signOut}
+          onCall={setActiveCall}
+        />
       </>
     );
   }
