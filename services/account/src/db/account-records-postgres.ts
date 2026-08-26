@@ -242,10 +242,21 @@ export function createPostgresAccountRecords(pool: Pool): AccountRecordPort {
        * somebody is comparing two boxes to work out why they disagree.
        */
       const { rows } = await pool.query<AccountRow>(
+        /*
+         * EVERY COLUMN THE UPSERT WRITES. A column added to the insert and not
+         * to this list is written on every save and silently dropped on every
+         * restart -- which is how `username`, `display_name`, `discovery_mode`
+         * and `pending_identity_change` came to persist perfectly and vanish
+         * the moment the service came back. `contact-records-postgres.ts` has
+         * the same shape; a test now compares the two lists so this cannot
+         * happen again quietly.
+         */
         `SELECT account_id, email, password_hash, token_version, voice_gender,
                 created_at, updated_at, trust, email_challenge, phone_challenge,
                 phone_number, identity_case, seen_callback_events,
-                password_reset_challenge, consents, mfa, step_up_at_ms, step_up_method
+                password_reset_challenge, consents, mfa, step_up_at_ms, step_up_method,
+                pending_identity_change, username, username_key, display_name,
+                discovery_mode
            FROM accounts
           ORDER BY created_at, account_id`,
       );
