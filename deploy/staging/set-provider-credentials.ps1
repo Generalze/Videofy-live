@@ -54,11 +54,36 @@ $elevenVoice = Read-Host  'ELEVENLABS_DEFAULT_VOICE_ID (from your ElevenLabs voi
 if ([string]::IsNullOrWhiteSpace($deepgramKey) -or
     [string]::IsNullOrWhiteSpace($elevenKey) -or
     [string]::IsNullOrWhiteSpace($elevenVoice)) {
-  throw 'All three values are required. Nothing was sent.'
+  throw 'The first three values are required. Nothing was sent.'
+}
+
+# AZURE IS OPTIONAL, and skipping it is a real choice rather than a mistake.
+#
+# It exists to stand behind ElevenLabs: synthesis is the one pipeline stage
+# whose failure a listener hears as SILENCE rather than as degraded output, so
+# it is the stage worth having a second vendor for. Without these, the chain has
+# nothing behind it and the deployment stays single-vendor -- which works, and
+# goes quiet when that vendor does.
+Write-Host ''
+Write-Host 'Azure speech (optional): the fallback behind ElevenLabs.' -ForegroundColor DarkGray
+Write-Host 'Press Enter at the first prompt to skip and stay single-vendor.' -ForegroundColor DarkGray
+$azureKey    = Read-Secret 'AZURE_SPEECH_KEY        (leave blank to skip)'
+$azureRegion = ''
+$azureVoice  = ''
+if (-not [string]::IsNullOrWhiteSpace($azureKey)) {
+  # Not a secret: it selects the endpoint host. Named here so it is one value
+  # rather than a guess repeated in three places.
+  $azureRegion = Read-Host 'AZURE_SPEECH_REGION     (e.g. northeurope)'
+  $azureVoice  = Read-Host 'AZURE_DEFAULT_VOICE_ID  (e.g. es-ES-ElviraNeural)'
+  if ([string]::IsNullOrWhiteSpace($azureRegion) -or [string]::IsNullOrWhiteSpace($azureVoice)) {
+    throw 'An Azure key needs a region and a default voice. Nothing was sent.'
+  }
 }
 
 $translation = Read-Host 'TRANSLATION_PROVIDER [opus-mt]'
 if ([string]::IsNullOrWhiteSpace($translation)) { $translation = 'opus-mt' }
+
+$synthesisProvider = if ([string]::IsNullOrWhiteSpace($azureKey)) { 'elevenlabs' } else { 'chain' }
 
 # The exact names the code reads. Selectors travel with the credentials so the
 # server can never end up holding a key it is not configured to use.
@@ -71,9 +96,15 @@ $lines = @(
   "STREAMING_TRANSCRIPTION_PROVIDER=deepgram-nova",
   "DEEPGRAM_MODEL=nova-3",
   "DEEPGRAM_API_KEY=$deepgramKey",
-  "STREAMING_SYNTHESIS_PROVIDER=elevenlabs",
+  # `chain` is ElevenLabs with Azure behind it; plain `elevenlabs` when no Azure
+  # key was given. Chosen HERE, beside the credentials, so the server can never
+  # be told to use a fallback it has no key for.
+  "STREAMING_SYNTHESIS_PROVIDER=$synthesisProvider",
   "ELEVENLABS_API_KEY=$elevenKey",
   "ELEVENLABS_DEFAULT_VOICE_ID=$elevenVoice",
+  "AZURE_SPEECH_KEY=$azureKey",
+  "AZURE_SPEECH_REGION=$azureRegion",
+  "AZURE_DEFAULT_VOICE_ID=$azureVoice",
   "TRANSLATION_PROVIDER=$translation"
 ) -join "`n"
 
