@@ -8,3 +8,7 @@ ios/
 # is restricted to this package name and signing certificate. It is committed
 # on purpose so a build does not depend on a file only one machine has. The
 # ADMIN SDK key is the opposite and lives outside this repository entirely.
+
+# .env may hold a session token. .env.example is the committed template.
+.env
+.env.local

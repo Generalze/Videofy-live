@@ -22,13 +22,7 @@
     },
     "plugins": [
       "expo-dev-client",
-      [
-        "expo-notifications",
-        {
-          "icon": "./assets/notification-icon.png",
-          "color": "#0b6e6e"
-        }
-      ]
+      "expo-notifications"
     ],
     "extra": {
       "eas": {

@@ -18,7 +18,11 @@
  * screenshot, and anyone holding one can push to this device.
  */
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useState } from 'react';
+/*
+ * React 19 removed the GLOBAL JSX namespace, so `JSX.Element` no longer
+ * resolves without an import. It is exported from 'react' instead.
+ */
+import { useCallback, useState, type JSX } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { registerForPush, type RegistrationOutcome } from './src/pushRegistration';
 
