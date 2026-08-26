@@ -47,11 +47,18 @@ config.resolver.nodeModulesPaths = [
 config.resolver.unstable_enableSymlinks = true;
 
 /*
- * Shared packages ship compiled `.js` with `.d.ts` beside them, so Metro must
- * be willing to resolve a bare directory import to its `main`. Left off, an
- * import of `@videofy-live/call-client-core` fails while the identical import
- * works in the web app, which is a confusing hour.
+ * HIERARCHICAL LOOKUP STAYS ON, and turning it off cost a debugging round.
+ *
+ * `disableHierarchicalLookup` is offered in a lot of monorepo recipes and it is
+ * wrong here. It stops Metro walking into NESTED node_modules, so resolution is
+ * limited to exactly the directories listed above -- and npm does not put
+ * everything there. `expo` ships `expo-modules-core` inside its own
+ * `node_modules` whenever a version conflict prevents hoisting, and with the
+ * flag set Metro reported it "could not be found within the project", naming
+ * only the two paths it had been restricted to.
+ *
+ * `nodeModulesPaths` ADDS places to look. It does not need anything switched
+ * off to work, and switching that off removes the fallback npm relies on.
  */
-config.resolver.disableHierarchicalLookup = true;
 
 module.exports = config;
