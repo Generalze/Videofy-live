@@ -133,7 +133,10 @@ function AppInner(): JSX.Element {
    */
   const [callName, setCallName] = useState<string | null>(null);
   /** The account's default language; the language their calls enter with. */
-  const [callLanguage, setCallLanguage] = useState<'en' | 'es' | 'fr' | undefined>(undefined);
+  const [callLanguages, setCallLanguages] = useState<{
+    speak?: 'en' | 'es' | 'fr';
+    hear?: 'en' | 'es' | 'fr';
+  }>({});
   const handledColdStart = useRef(false);
 
   useEffect(() => {
@@ -203,7 +206,12 @@ function AppInner(): JSX.Element {
     void api.me().then((result) => {
       if (result.ok) {
         setCallName(result.value.displayName ?? result.value.username);
-        setCallLanguage(result.value.defaultLanguage ?? undefined);
+        const speak = result.value.spokenLanguage ?? result.value.defaultLanguage;
+        const hear = result.value.listeningLanguage ?? result.value.defaultLanguage;
+        setCallLanguages({
+          ...(speak == null ? {} : { speak }),
+          ...(hear == null ? {} : { hear }),
+        });
       }
     });
     return () => devices.stopWatchingForRotation();
@@ -261,7 +269,8 @@ function AppInner(): JSX.Element {
         <CallScreen
           callId={activeCall.callId}
           displayName={callName ?? state.accountId}
-          {...(callLanguage === undefined ? {} : { defaultLanguage: callLanguage })}
+          {...(callLanguages.speak === undefined ? {} : { speakLanguage: callLanguages.speak })}
+          {...(callLanguages.hear === undefined ? {} : { hearLanguage: callLanguages.hear })}
           sessionToken={auth.callSessionToken()}
           ringName={
             ringPerson === undefined

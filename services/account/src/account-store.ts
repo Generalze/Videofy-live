@@ -62,6 +62,16 @@ export interface AccountRecord {
   readonly accountId: AccountId;
   readonly voiceGender?: AccountVoiceGender;
   readonly defaultLanguage?: AccountDefaultLanguage;
+  /**
+   * Language is THREE independent facts (external review, adopted
+   * 2026-08-28): what someone SPEAKS and what they PREFER TO HEAR are
+   * different questions -- the call layer has kept them apart since P6.4,
+   * and the account layer now agrees. `defaultLanguage` remains the
+   * PRIMARY: the onboarding answer that seeds both, and the fallback when a
+   * finer fact is unset. A UI language joins only when any UI is localized.
+   */
+  readonly spokenLanguage?: AccountDefaultLanguage;
+  readonly listeningLanguage?: AccountDefaultLanguage;
   /** Normalised: lowercased and trimmed. The stored form IS the lookup key. */
   readonly email: string;
   readonly passwordHash: string;
@@ -732,7 +742,10 @@ export class AccountStore {
     return null;
   }
 
-  /** The language this person's calls enter with. See AccountDefaultLanguage. */
+  /**
+   * The PRIMARY language: the onboarding gesture. Seeds speak and hear
+   * together; refinements go through setLanguages.
+   */
   async setDefaultLanguage(
     accountId: string,
     defaultLanguage: AccountDefaultLanguage,
@@ -742,6 +755,32 @@ export class AccountStore {
       const updated: AccountRecord = {
         ...current,
         defaultLanguage,
+        spokenLanguage: defaultLanguage,
+        listeningLanguage: defaultLanguage,
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      return { record: updated, result: updated };
+    });
+  }
+
+  /** Refine one language fact without touching the others. */
+  async setLanguages(
+    accountId: string,
+    languages: {
+      readonly spokenLanguage?: AccountDefaultLanguage;
+      readonly listeningLanguage?: AccountDefaultLanguage;
+    },
+  ): Promise<AccountRecord | null> {
+    return this.withMutationLock<AccountRecord | null>(accountId, async (current) => {
+      if (!current) return { record: null, result: null };
+      const updated: AccountRecord = {
+        ...current,
+        ...(languages.spokenLanguage === undefined
+          ? {}
+          : { spokenLanguage: languages.spokenLanguage }),
+        ...(languages.listeningLanguage === undefined
+          ? {}
+          : { listeningLanguage: languages.listeningLanguage }),
         updatedAt: new Date(this.now()).toISOString(),
       };
       return { record: updated, result: updated };

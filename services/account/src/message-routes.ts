@@ -191,8 +191,13 @@ export function registerMessageRoutes(
     const conversationMode = await deps.conversationModes.get(pair.low, pair.high);
     let rendering: { translatedBody: string; translatedLanguage: string } | undefined;
     if (conversationMode?.mode === 'translated') {
-      const sourceLanguage = deps.store.get(resolved.caller.accountId)?.defaultLanguage ?? 'en';
-      const targetLanguage = deps.store.get(resolved.targetId)?.defaultLanguage ?? null;
+      const sender = deps.store.get(resolved.caller.accountId);
+      const recipient = deps.store.get(resolved.targetId);
+      // The finer facts, with primary as the fallback: source is what the
+      // sender SPEAKS (writes), target is what the reader PREFERS TO HEAR.
+      const sourceLanguage = sender?.spokenLanguage ?? sender?.defaultLanguage ?? 'en';
+      const targetLanguage =
+        recipient?.listeningLanguage ?? recipient?.defaultLanguage ?? null;
       if (targetLanguage !== null && targetLanguage !== sourceLanguage) {
         const translated = await deps.translator.translate({
           sourceLanguage,

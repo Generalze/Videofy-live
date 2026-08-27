@@ -39,6 +39,17 @@ export const VISIBILITY_DESCRIPTIONS: Record<ChannelVisibility, string> = {
 };
 
 /**
+ * What the operator SEES. "Private" alone oversells a bearer link -- anyone
+ * it is forwarded to gets in -- so the label says the mechanism out loud
+ * (external review, adopted 2026-08-28). The wire value stays 'private'.
+ */
+export const VISIBILITY_LABELS: Record<ChannelVisibility, string> = {
+  public: 'Public',
+  private: 'Private · Link-only',
+  locked: 'Locked',
+};
+
+/**
  * Check a draft before sending it.
  *
  * A LOCKED CHANNEL WITH NO CODE IS THE ONE THAT MATTERS. The gateway refuses

@@ -564,14 +564,29 @@ describe('CallRuntime join and ingest plan handling', () => {
     expect(delivered).toEqual([1, 1]);
   });
 
-  it('never puts a voice owner or a session token in anything the room can see', async () => {
+  it('never puts a token in anything the room can see; identity crosses as accountId only', async () => {
+    /*
+     * REVISED PIN (2026-08-28). The original banned 'acct_' outright, from
+     * the era when account identity existed only as private voice-owner
+     * state. The product now DELIBERATELY publishes the seat's verified
+     * accountId in call:state -- it is what lets tiles show the person's
+     * face and name, the founder's prominence ruling -- so the pin narrows
+     * to what must actually stay private: the session token, the resume
+     * token, and the voiceOwnerId FIELD (voice policy must never be
+     * readable off the wire even though it holds the same value).
+     */
     const verified = createHarness(() => 'acct_aaaaaaaaaaaaaaaa');
     await join(verified, new FakeSocket('socket-a'), { ...JOIN_A, sessionToken: 'ana-token' });
     await join(verified, new FakeSocket('socket-b'), { ...JOIN_B });
 
     const emitted = JSON.stringify(verified.emitToRoom.mock.calls);
-    expect(emitted).not.toContain('acct_');
     expect(emitted).not.toContain('ana-token');
+    expect(emitted).not.toContain('sessionToken');
+    expect(emitted).not.toContain('resumeToken');
+    expect(emitted).not.toContain('voiceOwnerId');
+    // And the deliberate disclosure is pinned too: the verified seat's
+    // account travels, the anonymous seat's does not.
+    expect(emitted).toContain('"accountId":"acct_aaaaaaaaaaaaaaaa"');
   });
 
   it('runs a same-language pair STT-only: empty targets, no voices, no synthetic language (W5)', async () => {

@@ -503,6 +503,27 @@ const CONVERSATION_MODES: Migration = {
   `,
 };
 
+/**
+ * Language becomes three facts (external review, adopted 2026-08-28): what
+ * you speak and what you prefer to hear are different questions. The
+ * existing default_language stays as the PRIMARY that seeds both.
+ */
+const LANGUAGE_FACTS: Migration = {
+  name: '013_language_facts',
+  sql: `
+    ALTER TABLE accounts
+      ADD COLUMN IF NOT EXISTS spoken_language text
+        CHECK (spoken_language IN ('en', 'es', 'fr')),
+      ADD COLUMN IF NOT EXISTS listening_language text
+        CHECK (listening_language IN ('en', 'es', 'fr'));
+
+    UPDATE accounts
+       SET spoken_language    = COALESCE(spoken_language, default_language),
+           listening_language = COALESCE(listening_language, default_language)
+     WHERE default_language IS NOT NULL;
+  `,
+};
+
 /** Applied in this order. Append only. */
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
@@ -517,4 +538,5 @@ export const MIGRATIONS: readonly Migration[] = [
   MESSAGES,
   DEFAULT_LANGUAGE,
   CONVERSATION_MODES,
+  LANGUAGE_FACTS,
 ];

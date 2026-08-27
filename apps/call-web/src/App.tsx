@@ -301,17 +301,31 @@ export default function App() {
     let cancelled = false;
     void fetch(`${readAccountUrl()}/me`, { headers: { authorization: `Bearer ${token}` } })
       .then(async (response) => (response.ok ? response.json() : null))
-      .then((body: { profile?: { defaultLanguage?: string | null } } | null) => {
-        if (cancelled || body === null) return;
-        const language = body.profile?.defaultLanguage;
-        if (language === 'en' || language === 'es' || language === 'fr') {
-          setForm((current) => ({
-            ...current,
-            speakLanguage: language,
-            hearLanguage: language,
-          }));
-        }
-      })
+      .then(
+        (
+          body: {
+            profile?: {
+              defaultLanguage?: string | null;
+              spokenLanguage?: string | null;
+              listeningLanguage?: string | null;
+            };
+          } | null,
+        ) => {
+          if (cancelled || body === null) return;
+          const valid = (value: unknown): value is 'en' | 'es' | 'fr' =>
+            value === 'en' || value === 'es' || value === 'fr';
+          const primary = body.profile?.defaultLanguage;
+          const speak = body.profile?.spokenLanguage ?? primary;
+          const hear = body.profile?.listeningLanguage ?? primary;
+          if (valid(speak) || valid(hear)) {
+            setForm((current) => ({
+              ...current,
+              ...(valid(speak) ? { speakLanguage: speak } : {}),
+              ...(valid(hear) ? { hearLanguage: hear } : {}),
+            }));
+          }
+        },
+      )
       .catch(() => undefined);
     return () => {
       cancelled = true;

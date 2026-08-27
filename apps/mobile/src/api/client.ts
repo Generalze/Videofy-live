@@ -64,6 +64,8 @@ export interface Profile {
   readonly username: string | null;
   readonly displayName: string | null;
   readonly defaultLanguage?: 'en' | 'es' | 'fr' | null;
+  readonly spokenLanguage?: 'en' | 'es' | 'fr' | null;
+  readonly listeningLanguage?: 'en' | 'es' | 'fr' | null;
   readonly official?: boolean;
 }
 
@@ -166,6 +168,10 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
         json({ mode }),
         (body) => body as { mode: 'normal' | 'translated' },
       ),
+    setLanguages: (languages: {
+      spokenLanguage?: 'en' | 'es' | 'fr';
+      listeningLanguage?: 'en' | 'es' | 'fr';
+    }) => request(authorizedFetch, '/accounts/languages', json(languages), () => undefined),
     setDefaultLanguage: (defaultLanguage: 'en' | 'es' | 'fr') =>
       request(authorizedFetch, '/accounts/default-language', json({ defaultLanguage }), () => undefined),
     markRead: (accountId: string) =>
@@ -195,6 +201,8 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
             username?: string | null;
             displayName?: string | null;
             defaultLanguage?: 'en' | 'es' | 'fr' | null;
+            spokenLanguage?: 'en' | 'es' | 'fr' | null;
+            listeningLanguage?: 'en' | 'es' | 'fr' | null;
             official?: boolean;
           };
         };
@@ -204,6 +212,8 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
           username: raw.profile?.username ?? null,
           displayName: raw.profile?.displayName ?? null,
           defaultLanguage: raw.profile?.defaultLanguage ?? null,
+          spokenLanguage: raw.profile?.spokenLanguage ?? null,
+          listeningLanguage: raw.profile?.listeningLanguage ?? null,
           official: raw.profile?.official ?? false,
         } satisfies Profile;
       }),

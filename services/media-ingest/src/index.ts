@@ -298,18 +298,41 @@ app.post('/internal/text-translation', async (req, res) => {
     return;
   }
   try {
-    const result = await ingest.liveTranslation.translate({
-      sessionId: 'internal-text',
-      streamId: 'internal-text',
-      segmentId: 'internal-text',
-      sequence: 0,
-      startMs: 0,
-      endMs: 0,
-      sourceLanguage,
-      targetLanguage,
-      sourceText,
-    });
-    res.json({ translatedText: result.translatedText, providerName: result.providerName ?? null });
+    /*
+     * ONE SENTENCE PER PROVIDER CALL. The live path always feeds opus-mt a
+     * single utterance, and fed a two-sentence message it kept only the
+     * first (observed on staging: the second sentence of a chat message
+     * silently vanished). Messages are split on sentence boundaries,
+     * translated in order, and rejoined -- a partial provider failure keeps
+     * whatever DID translate plus the original for the rest, because a
+     * message must never lose words to a vendor.
+     */
+    const sentences = sourceText.match(/[^.!?…]+[.!?…]*\s*/gu) ?? [sourceText];
+    const bounded = sentences.length > 24 ? [sourceText] : sentences;
+    const pieces: string[] = [];
+    let providerName: string | null = null;
+    for (let index = 0; index < bounded.length; index += 1) {
+      const piece = bounded[index]!.trim();
+      if (piece.length === 0) continue;
+      try {
+        const result = await ingest.liveTranslation.translate({
+          sessionId: 'internal-text',
+          streamId: 'internal-text',
+          segmentId: `internal-text-${index}`,
+          sequence: index,
+          startMs: 0,
+          endMs: 0,
+          sourceLanguage,
+          targetLanguage,
+          sourceText: piece,
+        });
+        pieces.push(result.translatedText.trim() || piece);
+        providerName = result.providerName ?? providerName;
+      } catch {
+        pieces.push(piece);
+      }
+    }
+    res.json({ translatedText: pieces.join(' '), providerName });
   } catch (error) {
     logger.warn('Internal text translation failed', {
       sourceLanguage,

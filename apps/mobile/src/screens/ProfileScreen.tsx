@@ -137,8 +137,7 @@ export function ProfileScreen({
               </View>
             </View>
             {pictureNotice !== null && <Text style={styles.pictureNotice}>{pictureNotice}</Text>}
-            <Text style={styles.label}>Default language</Text>
-            <Text style={styles.hint}>The language your calls enter with.</Text>
+            <Text style={styles.label}>I speak</Text>
             <View style={styles.languageRow}>
               {(
                 [
@@ -146,30 +145,54 @@ export function ProfileScreen({
                   ['es', 'Spanish'],
                   ['fr', 'French'],
                 ] as const
-              ).map(([code, label]) => (
-                <Pressable
-                  key={code}
-                  accessibilityRole="button"
-                  style={[
-                    styles.languageChip,
-                    profile.defaultLanguage === code && styles.languageChipOn,
-                  ]}
-                  onPress={() => {
-                    void api.setDefaultLanguage(code).then((result) => {
-                      if (result.ok) void load();
-                    });
-                  }}
-                >
-                  <Text
-                    style={[
-                      styles.languageChipLabel,
-                      profile.defaultLanguage === code && styles.languageChipLabelOn,
-                    ]}
+              ).map(([code, label]) => {
+                const active = (profile.spokenLanguage ?? profile.defaultLanguage) === code;
+                return (
+                  <Pressable
+                    key={code}
+                    accessibilityRole="button"
+                    style={[styles.languageChip, active && styles.languageChipOn]}
+                    onPress={() => {
+                      void api.setLanguages({ spokenLanguage: code }).then((result) => {
+                        if (result.ok) void load();
+                      });
+                    }}
                   >
-                    {label}
-                  </Text>
-                </Pressable>
-              ))}
+                    <Text style={[styles.languageChipLabel, active && styles.languageChipLabelOn]}>
+                      {label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text style={styles.label}>I prefer to hear</Text>
+            <Text style={styles.hint}>Calls and translated messages follow these.</Text>
+            <View style={styles.languageRow}>
+              {(
+                [
+                  ['en', 'English'],
+                  ['es', 'Spanish'],
+                  ['fr', 'French'],
+                ] as const
+              ).map(([code, label]) => {
+                const active = (profile.listeningLanguage ?? profile.defaultLanguage) === code;
+                return (
+                  <Pressable
+                    key={code}
+                    accessibilityRole="button"
+                    style={[styles.languageChip, active && styles.languageChipOn]}
+                    onPress={() => {
+                      void api.setLanguages({ listeningLanguage: code }).then((result) => {
+                        if (result.ok) void load();
+                      });
+                    }}
+                  >
+                    <Text style={[styles.languageChipLabel, active && styles.languageChipLabelOn]}>
+                      {label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             </View>
             <Text style={styles.label}>Name shown in calls</Text>
             <View style={styles.nameRow}>

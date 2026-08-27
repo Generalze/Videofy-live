@@ -94,6 +94,8 @@ describe('request shapes', () => {
       username: 'c7a',
       displayName: 'A',
       defaultLanguage: null,
+      spokenLanguage: null,
+      listeningLanguage: null,
       official: false,
     });
   });

@@ -1212,6 +1212,46 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
   });
 
   /**
+   * Refine the finer language facts independently: the language you SPEAK
+   * and the language you PREFER TO HEAR. The primary route above seeds both;
+   * this one never touches the primary.
+   */
+  app.post('/accounts/languages', (req, res) => {
+    const caller = callerAccountId(req);
+    if (caller === null) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    const body = (req.body ?? {}) as { spokenLanguage?: unknown; listeningLanguage?: unknown };
+    const valid = (value: unknown): value is 'en' | 'es' | 'fr' =>
+      value === 'en' || value === 'es' || value === 'fr';
+    if (
+      (body.spokenLanguage !== undefined && !valid(body.spokenLanguage)) ||
+      (body.listeningLanguage !== undefined && !valid(body.listeningLanguage)) ||
+      (body.spokenLanguage === undefined && body.listeningLanguage === undefined)
+    ) {
+      res.status(400).json({ error: 'Pick one of the supported languages.' });
+      return;
+    }
+    void deps.store
+      .setLanguages(caller.accountId, {
+        ...(valid(body.spokenLanguage) ? { spokenLanguage: body.spokenLanguage } : {}),
+        ...(valid(body.listeningLanguage) ? { listeningLanguage: body.listeningLanguage } : {}),
+      })
+      .then((record) => {
+        if (!record) {
+          res.status(401).json({ error: 'Sign in to continue.' });
+          return;
+        }
+        res.status(200).json({
+          spokenLanguage: record.spokenLanguage ?? null,
+          listeningLanguage: record.listeningLanguage ?? null,
+        });
+      })
+      .catch(() => res.status(500).json({ error: 'That could not be saved.' }));
+  });
+
+  /**
    * Choose whether your handle can be found at all.
    *
    * OFF IS THE DEFAULT and stays the default: this endpoint is how somebody
@@ -1671,6 +1711,8 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
         username: account.username ?? null,
         displayName: account.displayName ?? null,
         defaultLanguage: account.defaultLanguage ?? null,
+        spokenLanguage: account.spokenLanguage ?? account.defaultLanguage ?? null,
+        listeningLanguage: account.listeningLanguage ?? account.defaultLanguage ?? null,
         /** The platform's own badge; env-granted, never client-settable. */
         official: deps.officialAccounts?.has(caller.accountId) ?? false,
         /*

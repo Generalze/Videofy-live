@@ -66,8 +66,10 @@ const PEER_WORDS: Record<string, string> = {
 export interface CallScreenProps {
   readonly callId: string;
   readonly displayName: string;
-  /** The account's default language: the language this call enters with. */
-  readonly defaultLanguage?: 'en' | 'es' | 'fr';
+  /** The language this account speaks; the call enters with it. */
+  readonly speakLanguage?: 'en' | 'es' | 'fr';
+  /** The language this account prefers to hear. */
+  readonly hearLanguage?: 'en' | 'es' | 'fr';
   /** Null is valid: it means this client can JOIN but not CREATE a call. */
   readonly sessionToken: string | null;
   /**
@@ -84,7 +86,8 @@ export interface CallScreenProps {
 export function CallScreen({
   callId,
   displayName,
-  defaultLanguage,
+  speakLanguage,
+  hearLanguage,
   sessionToken,
   ringName,
   onRing,
@@ -123,7 +126,8 @@ export function CallScreen({
       gatewayUrl: GATEWAY_URL,
       callId,
       displayName,
-      ...(defaultLanguage === undefined ? {} : { defaultLanguage }),
+      ...(speakLanguage === undefined ? {} : { speakLanguage }),
+      ...(hearLanguage === undefined ? {} : { hearLanguage }),
       sessionToken,
       // Left unset so the connection fetches from the gateway, which is the
       // only source that can mint TURN credentials that expire.

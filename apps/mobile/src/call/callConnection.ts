@@ -66,12 +66,10 @@ export interface CallConnectionOptions {
   readonly gatewayUrl: string;
   readonly callId: string;
   readonly displayName: string;
-  /**
-   * The language this account's calls enter with (their profile default).
-   * Preloads BOTH speak and hear on the join form; absent keeps the form's
-   * own default.
-   */
-  readonly defaultLanguage?: 'en' | 'es' | 'fr';
+  /** The language this account SPEAKS; preloads the join form. */
+  readonly speakLanguage?: 'en' | 'es' | 'fr';
+  /** The language this account PREFERS TO HEAR; preloads the join form. */
+  readonly hearLanguage?: 'en' | 'es' | 'fr';
   /**
    * The signed session token, or null.
    *
@@ -231,12 +229,12 @@ export class CallConnection {
 
     const form = {
       ...createInitialCallJoinForm(),
-      ...(this.options.defaultLanguage === undefined
+      ...(this.options.speakLanguage === undefined
         ? {}
-        : {
-            speakLanguage: this.options.defaultLanguage,
-            hearLanguage: this.options.defaultLanguage,
-          }),
+        : { speakLanguage: this.options.speakLanguage }),
+      ...(this.options.hearLanguage === undefined
+        ? {}
+        : { hearLanguage: this.options.hearLanguage }),
       displayName: this.options.displayName,
       callCode: this.options.callId,
     };

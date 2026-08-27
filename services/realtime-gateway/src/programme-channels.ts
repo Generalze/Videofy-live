@@ -12,7 +12,7 @@
  * broadcasting. That keeps the state transitions testable without a server, and
  * it is why the gateway can adopt it a call site at a time.
  */
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import {
   DEFAULT_CHANNEL_ID,
   type ChannelSummary,
@@ -64,6 +64,7 @@ interface ChannelState {
    * means nobody can join -- see mayJoin.
    */
   accessCodeHash: string | null;
+  accessCodeSalt: string | null;
   /** Sessions currently feeding this channel. */
   readonly sessionIds: Set<string>;
 }
@@ -122,6 +123,7 @@ export class ProgrammeChannels {
       mediaState: null,
       audio: { ...this.defaultAudio },
       accessCodeHash: null,
+      accessCodeSalt: null,
       sessionIds: new Set(),
     };
     this.channels.set(channelId, created);
@@ -155,10 +157,17 @@ export class ProgrammeChannels {
     this.ensure(channelId).visibility = visibility;
   }
 
-  /** Set or clear the join code for a private channel. */
+  /** Set or clear the join code for a locked channel. */
   setAccessCode(channelId: string, code: string | null): void {
     const channel = this.ensure(channelId);
-    channel.accessCodeHash = code === null || code.length === 0 ? null : this.hashCode(code);
+    if (code === null || code.length === 0) {
+      channel.accessCodeHash = null;
+      channel.accessCodeSalt = null;
+      return;
+    }
+    // A fresh salt per set: rotating the code rotates everything.
+    channel.accessCodeSalt = randomBytes(16).toString('hex');
+    channel.accessCodeHash = this.hashCode(code, channel.accessCodeSalt);
   }
 
   /** Whether a channel has a code set, without revealing anything about it. */
@@ -178,23 +187,54 @@ export class ProgrammeChannels {
    * private. A channel that refuses its own owner is a visible, fixable
    * problem; one that silently admits the public is not.
    */
-  mayJoin(channelId: string, code?: string | undefined): boolean {
+  mayJoin(channelId: string, code?: string | undefined, clientKey?: string): boolean {
     const channel = this.channels.get(channelId);
     if (!channel || channel.visibility !== 'locked') return true;
-    if (channel.accessCodeHash === null) return false;
+    if (channel.accessCodeHash === null || channel.accessCodeSalt === null) return false;
     if (typeof code !== 'string' || code.length === 0) return false;
-    return this.codesMatch(channel.accessCodeHash, this.hashCode(code));
+    /*
+     * GUESSING IS RATE-LIMITED (external review, adopted 2026-08-28).
+     * Constant-time comparison stops timing leakage; it does nothing against
+     * somebody simply trying 000000..999999. Five wrong answers from one
+     * client against one channel buys a one-minute lockout; a correct answer
+     * clears the slate. Keyed per client so one guesser cannot lock a
+     * channel's real audience out.
+     */
+    const attemptKey = `${channelId}\u0000${clientKey ?? 'anonymous'}`;
+    const now = Date.now();
+    const attempt = this.codeAttempts.get(attemptKey);
+    if (attempt !== undefined && attempt.lockedUntilMs > now) return false;
+
+    const admitted = this.codesMatch(
+      channel.accessCodeHash,
+      this.hashCode(code, channel.accessCodeSalt),
+    );
+    if (admitted) {
+      this.codeAttempts.delete(attemptKey);
+      return true;
+    }
+    const failures = (attempt?.failures ?? 0) + 1;
+    this.codeAttempts.set(attemptKey, {
+      failures,
+      lockedUntilMs: failures >= 5 ? now + 60_000 : 0,
+    });
+    if (this.codeAttempts.size > 10_000) this.codeAttempts.clear();
+    return false;
   }
 
-  private hashCode(code: string): string {
+  /** Guess-cost accounting for locked channels; see mayJoin. */
+  private readonly codeAttempts = new Map<string, { failures: number; lockedUntilMs: number }>();
+
+  private hashCode(code: string, salt: string): string {
     /*
-     * Salted with a fixed domain string rather than per channel. The salt here
-     * separates this digest from every other sha256 in the process; it is not
-     * a password hash and must not be mistaken for one, which is why the code
-     * is short-lived, operator-rotatable, and never the only thing protecting
-     * anything that matters.
+     * scrypt with a per-channel salt (external review, adopted 2026-08-28).
+     * Join codes are short, human-typable secrets: a fast digest of a
+     * six-digit code is enumerable offline in milliseconds if it ever leaks,
+     * so the hash must be slow by construction. N=16384 keeps a legitimate
+     * check under ~50ms while pricing a million guesses out of casual reach
+     * -- and the rate limiter in mayJoin prices ONLINE guessing separately.
      */
-    return createHash('sha256').update(`videofy channel code\u0000${code}`, 'utf8').digest('hex');
+    return scryptSync(code, `videofy channel code\u0000${salt}`, 32, { N: 16384 }).toString('hex');
   }
 
   /**

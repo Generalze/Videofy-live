@@ -4,7 +4,7 @@ import {
   canShareCodedLink,
   shareableViewerLink,
   validateSettings,
-  VISIBILITY_DESCRIPTIONS,
+  VISIBILITY_DESCRIPTIONS, VISIBILITY_LABELS,
   type ChannelSettingsDraft,
 } from './channelSettings';
 import styles from './App.module.css';
@@ -101,7 +101,7 @@ export function ChannelSettingsPanel({
                   onChange={() => onDraftChange({ ...draft, visibility })}
                 />
                 <label htmlFor={`visibility-${visibility}`}>
-                  {visibility}
+                  {VISIBILITY_LABELS[visibility]}
                   <span> — {VISIBILITY_DESCRIPTIONS[visibility]}</span>
                 </label>
               </div>

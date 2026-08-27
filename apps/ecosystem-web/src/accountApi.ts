@@ -174,6 +174,10 @@ export function createAccountApi(accountUrl: string, token: string) {
         json({ mode }),
         (body) => body as { mode: 'normal' | 'translated' },
       ),
+    setLanguages: (languages: {
+      spokenLanguage?: 'en' | 'es' | 'fr';
+      listeningLanguage?: 'en' | 'es' | 'fr';
+    }) => request(accountUrl, token, '/accounts/languages', json(languages), () => undefined),
     setDefaultLanguage: (defaultLanguage: 'en' | 'es' | 'fr') =>
       request(accountUrl, token, '/accounts/default-language', json({ defaultLanguage }), () => undefined),
     markRead: (accountId: string) =>
