@@ -26,6 +26,8 @@ interface MessageRow {
   sender_id: string;
   kind: string;
   body: string | null;
+  translated_body: string | null;
+  translated_language: string | null;
   media_path: string | null;
   media_duration_ms: number | null;
   /** bigint arrives as a STRING from node-postgres. Converted deliberately. */
@@ -34,7 +36,7 @@ interface MessageRow {
 }
 
 const COLUMNS =
-  'message_id, low_account_id, high_account_id, sender_id, kind, body, media_path, media_duration_ms, created_at_ms, read_at_ms';
+  'message_id, low_account_id, high_account_id, sender_id, kind, body, translated_body, translated_language, media_path, media_duration_ms, created_at_ms, read_at_ms';
 
 function toRecord(row: MessageRow): MessageRecord {
   return {
@@ -44,6 +46,8 @@ function toRecord(row: MessageRow): MessageRecord {
     senderId: row.sender_id,
     kind: row.kind as MessageKind,
     body: row.body,
+    translatedBody: row.translated_body,
+    translatedLanguage: row.translated_language,
     mediaPath: row.media_path,
     mediaDurationMs: row.media_duration_ms,
     createdAtMs: Number(row.created_at_ms),
@@ -55,7 +59,7 @@ export function createPostgresMessageRecords(pool: Pool): MessageRecordPort {
   return {
     async append(record) {
       await pool.query(
-        `INSERT INTO messages (${COLUMNS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        `INSERT INTO messages (${COLUMNS}) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
         [
           record.messageId,
           record.lowAccountId,
@@ -63,6 +67,8 @@ export function createPostgresMessageRecords(pool: Pool): MessageRecordPort {
           record.senderId,
           record.kind,
           record.body,
+          record.translatedBody ?? null,
+          record.translatedLanguage ?? null,
           record.mediaPath,
           record.mediaDurationMs,
           record.createdAtMs,

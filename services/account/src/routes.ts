@@ -57,6 +57,13 @@ import {
 
 export interface AccountRouteDependencies {
   readonly store: AccountStore;
+  /**
+   * Accounts that carry the official C7 badge -- the platform's own voice.
+   * Env-driven and read-only at runtime, like the platform-operator
+   * allowlist: a badge that any code path could grant is a badge that will
+   * eventually be granted by a bug. Empty set means nobody is official.
+   */
+  readonly officialAccounts?: ReadonlySet<string>;
   /** Present once organizations exist; the shell renders without it. */
   readonly organizations?: {
     organizationsFor(accountId: string): readonly {
@@ -1178,6 +1185,33 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
   });
 
   /**
+   * The language this person's calls enter with. Speak and hear both preload
+   * from it on the join screen; either can still be changed per call.
+   */
+  app.post('/accounts/default-language', (req, res) => {
+    const caller = callerAccountId(req);
+    if (caller === null) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    const requested = (req.body as { defaultLanguage?: unknown } | undefined)?.defaultLanguage;
+    if (requested !== 'en' && requested !== 'es' && requested !== 'fr') {
+      res.status(400).json({ error: 'Pick one of the supported languages.' });
+      return;
+    }
+    void deps.store
+      .setDefaultLanguage(caller.accountId, requested)
+      .then((record) => {
+        if (!record) {
+          res.status(401).json({ error: 'Sign in to continue.' });
+          return;
+        }
+        res.status(200).json({ defaultLanguage: record.defaultLanguage ?? null });
+      })
+      .catch(() => res.status(500).json({ error: 'That could not be saved.' }));
+  });
+
+  /**
    * Choose whether your handle can be found at all.
    *
    * OFF IS THE DEFAULT and stays the default: this endpoint is how somebody
@@ -1293,6 +1327,7 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
           accountId: otherAccountId,
           username: other?.username ?? null,
           displayName: other?.displayName ?? null,
+          official: deps.officialAccounts?.has(otherAccountId) ?? false,
         };
       };
 
@@ -1635,6 +1670,9 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       profile: {
         username: account.username ?? null,
         displayName: account.displayName ?? null,
+        defaultLanguage: account.defaultLanguage ?? null,
+        /** The platform's own badge; env-granted, never client-settable. */
+        official: deps.officialAccounts?.has(caller.accountId) ?? false,
         /*
          * Reported as the resolved answer, not the raw stored string. A client
          * deciding for itself what counts as discoverable is a second

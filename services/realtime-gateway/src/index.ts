@@ -145,18 +145,32 @@ const gateway = new Gateway(server, config.corsOrigins, {
     // nothing explains.
     authSecret: process.env['VIDEOFY_AUTH_SECRET'],
     /*
-     * OPEN, BUT NOT ANONYMOUS.
+     * BROADCASTING IS GRANTED, NOT AMBIENT.
      *
-     * Any verified C7 account may operate a programme today. That is a
-     * deliberate product decision taken while there is nothing to subscribe
-     * to, not an oversight -- and it is NOT a bypass of authentication: a
-     * caller with no valid session token is refused either way.
-     *
-     * When pricing exists this becomes true and takes an entitlement check,
-     * which is a one-line change here rather than a rewrite, because the
-     * accountId is already resolved.
+     * The founder's ruling (2026-08-27): the operator console must not be
+     * open to every C7 account. Until pricing carries the grant, the
+     * population is an env allowlist -- the same fail-closed pattern the
+     * billing tariff uses for platform operators. Unset or empty means
+     * NOBODY can operate, which is the honest default for a broadcast
+     * surface: a deployment that forgets the variable notices in minutes;
+     * one that silently opens to everybody notices in a headline.
      */
-    requireEntitlement: false,
+    requireEntitlement: true,
+    hasEntitlement: (() => {
+      const raw = process.env['OPERATOR_CONSOLE_ACCOUNT_IDS'] ?? '';
+      const allowed = new Set(
+        raw
+          .split(',')
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0),
+      );
+      if (allowed.size === 0) {
+        logger.warn(
+          'OPERATOR_CONSOLE_ACCOUNT_IDS is not set: the operator console refuses every account.',
+        );
+      }
+      return (accountId: string) => allowed.has(accountId);
+    })(),
     /*
      * PER-DEPLOYMENT, AND STABLE FOREVER AFTER.
      *

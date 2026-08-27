@@ -323,6 +323,8 @@ export interface CallSnapshot {
     connected: boolean;
     /** Opaque partner identity (P6.5 R8); present only on seats that joined with one. */
     subject?: string;
+    /** Verified C7 account for this seat, when signed in. Server-derived. */
+    accountId?: string;
   }[];
 }
 
@@ -1623,6 +1625,7 @@ function buildSnapshot(call: CallState): CallSnapshot {
       connected: state.connected,
       conferenceRole: state.conferenceRole,
       ...(state.subject === undefined ? {} : { subject: state.subject }),
+      ...(state.accountId ? { accountId: state.accountId } : {}),
     })),
   };
 }

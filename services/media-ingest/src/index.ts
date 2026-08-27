@@ -273,6 +273,53 @@ app.post('/microphone/sessions/:sessionId/stop', (req, res) => {
   }
 });
 
+/**
+ * Plain text, translated -- the messaging path's seam into the translation
+ * engine (founder's ruling 2026-08-27: translated conversations).
+ *
+ * The SAME provider instance the live path speaks through, reached over the
+ * SAME internal token the other /internal routes require. The session-shaped
+ * tracking fields the provider interface carries are meaningless for a chat
+ * message and are filled with a fixed marker rather than invented per call:
+ * they exist for stream diagnostics this path does not produce.
+ */
+app.post('/internal/text-translation', async (req, res) => {
+  if (!assertInternalWebRtcRequest(req, res)) return;
+  const body = (req.body ?? {}) as {
+    sourceLanguage?: unknown;
+    targetLanguage?: unknown;
+    sourceText?: unknown;
+  };
+  const sourceLanguage = typeof body.sourceLanguage === 'string' ? body.sourceLanguage : '';
+  const targetLanguage = typeof body.targetLanguage === 'string' ? body.targetLanguage : '';
+  const sourceText = typeof body.sourceText === 'string' ? body.sourceText : '';
+  if (!sourceLanguage || !targetLanguage || !sourceText || sourceText.length > 8000) {
+    res.status(400).json({ error: 'sourceLanguage, targetLanguage and sourceText are required.' });
+    return;
+  }
+  try {
+    const result = await ingest.liveTranslation.translate({
+      sessionId: 'internal-text',
+      streamId: 'internal-text',
+      segmentId: 'internal-text',
+      sequence: 0,
+      startMs: 0,
+      endMs: 0,
+      sourceLanguage,
+      targetLanguage,
+      sourceText,
+    });
+    res.json({ translatedText: result.translatedText, providerName: result.providerName ?? null });
+  } catch (error) {
+    logger.warn('Internal text translation failed', {
+      sourceLanguage,
+      targetLanguage,
+      message: error instanceof Error ? error.message : 'unknown',
+    });
+    res.status(502).json({ error: 'Translation is unavailable right now.' });
+  }
+});
+
 app.post('/internal/media/sessions', async (req, res) => {
   if (!assertInternalWebRtcRequest(req, res)) return;
   try {

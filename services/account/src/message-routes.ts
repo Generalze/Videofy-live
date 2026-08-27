@@ -27,6 +27,9 @@
  */
 import { randomBytes } from 'node:crypto';
 import type { RingRegistry } from './ring-registry.js';
+import type { ConversationModePort } from './conversation-modes.js';
+import type { TextTranslator } from './translation-client.js';
+import { messagePair } from './message-store.js';
 import { createReadStream } from 'node:fs';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -46,6 +49,12 @@ export interface MessageRouteDependencies {
   readonly mediaDir: string;
   /** Pending rings for browsers, which poll instead of receiving push. */
   readonly rings: RingRegistry;
+  /** See AccountRouteDependencies.officialAccounts. */
+  readonly officialAccounts?: ReadonlySet<string>;
+  /** Which pairs are in translated mode. Absent rows mean normal. */
+  readonly conversationModes: ConversationModePort;
+  /** The line to the translation engine; null resolves to sending the original. */
+  readonly translator: TextTranslator;
   readonly callerAccountId: (req: express.Request) => Caller | null;
   readonly onEvent?: (event: string, detail: Record<string, string | number>) => void;
 }
@@ -61,6 +70,9 @@ function toWire(message: MessageRecord): Record<string, unknown> {
     senderId: message.senderId,
     kind: message.kind,
     body: message.body,
+    // Marked as a translation wherever shown; the original stays revealable.
+    translatedBody: message.translatedBody ?? null,
+    translatedLanguage: message.translatedLanguage ?? null,
     mediaDurationMs: message.mediaDurationMs,
     createdAtMs: message.createdAtMs,
     readAtMs: message.readAtMs,
@@ -138,6 +150,7 @@ export function registerMessageRoutes(
             accountId: summary.partnerId,
             username: partner?.username ?? null,
             displayName: partner?.displayName ?? null,
+            official: deps.officialAccounts?.has(summary.partnerId) ?? false,
           },
           last: toWire(summary.last),
           unread: summary.unread,
@@ -166,7 +179,38 @@ export function registerMessageRoutes(
       res.status(400).json({ error: 'Write a message.' });
       return;
     }
-    const result = await deps.messages.sendText(resolved.caller.accountId, resolved.targetId, body);
+
+    /*
+     * TRANSLATED MODE, RESOLVED AT SEND TIME. The rendering targets the
+     * RECIPIENT's default language; the sender's default names the source.
+     * Missing preferences or matching languages mean nothing to translate,
+     * and a failed translation delivers the original -- a message is never
+     * lost to a vendor outage. The original is stored regardless.
+     */
+    const pair = messagePair(resolved.caller.accountId, resolved.targetId);
+    const conversationMode = await deps.conversationModes.get(pair.low, pair.high);
+    let rendering: { translatedBody: string; translatedLanguage: string } | undefined;
+    if (conversationMode?.mode === 'translated') {
+      const sourceLanguage = deps.store.get(resolved.caller.accountId)?.defaultLanguage ?? 'en';
+      const targetLanguage = deps.store.get(resolved.targetId)?.defaultLanguage ?? null;
+      if (targetLanguage !== null && targetLanguage !== sourceLanguage) {
+        const translated = await deps.translator.translate({
+          sourceLanguage,
+          targetLanguage,
+          sourceText: body.trim().slice(0, 4000),
+        });
+        if (translated !== null) {
+          rendering = { translatedBody: translated, translatedLanguage: targetLanguage };
+        }
+      }
+    }
+
+    const result = await deps.messages.sendText(
+      resolved.caller.accountId,
+      resolved.targetId,
+      body,
+      rendering,
+    );
     if (!result.ok) {
       res.status(400).json({
         error: result.reason === 'empty' ? 'Write a message.' : 'That message is too long.',
@@ -174,8 +218,46 @@ export function registerMessageRoutes(
       return;
     }
     notifyMessage(resolved.targetId, result.message);
-    deps.onEvent?.('message.sent', { kind: 'text' });
+    deps.onEvent?.('message.sent', {
+      kind: 'text',
+      translated: rendering === undefined ? 0 : 1,
+    });
     res.status(201).json({ message: toWire(result.message) });
+  });
+
+  /**
+   * The conversation's translation mode. One flag per pair; either
+   * participant may read or flip it, and the flip changes what happens to
+   * the NEXT message -- nothing retroactive. Billing for translated mode is
+   * deliberately unwired while the text unit is undecided; the response
+   * says so rather than letting silence read as "free forever".
+   */
+  app.get('/messages/with/:accountId/mode', async (req, res) => {
+    const resolved = reachableTarget(req, res);
+    if (resolved === null) return;
+    const pair = messagePair(resolved.caller.accountId, resolved.targetId);
+    const record = await deps.conversationModes.get(pair.low, pair.high);
+    res.json({ mode: record?.mode ?? 'normal', billing: 'free-during-staging' });
+  });
+
+  app.post('/messages/with/:accountId/mode', async (req, res) => {
+    const resolved = reachableTarget(req, res);
+    if (resolved === null) return;
+    const requested = (req.body as { mode?: unknown } | undefined)?.mode;
+    if (requested !== 'normal' && requested !== 'translated') {
+      res.status(400).json({ error: 'Mode is normal or translated.' });
+      return;
+    }
+    const pair = messagePair(resolved.caller.accountId, resolved.targetId);
+    await deps.conversationModes.set({
+      lowAccountId: pair.low,
+      highAccountId: pair.high,
+      mode: requested,
+      setByAccountId: resolved.caller.accountId,
+      updatedAtMs: Date.now(),
+    });
+    deps.onEvent?.('message.mode', { mode: requested });
+    res.json({ mode: requested, billing: 'free-during-staging' });
   });
 
   /*

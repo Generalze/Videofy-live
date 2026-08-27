@@ -24,6 +24,15 @@
  * belongs at the translation boundary (see account-trust's `isBillable`), and
  * nothing here translates. When message translation ships it arrives as a
  * separate, explicitly billable path -- not as a flag quietly added to this one.
+ *
+ * THAT PATH NOW EXISTS (founder's ruling 2026-08-27: translated
+ * conversations). A translated message stores the ORIGINAL in `body` --
+ * never discarded, always revealable -- plus one rendering for the
+ * recipient in `translatedBody`/`translatedLanguage`, marked as a
+ * translation wherever it is shown (COMMUNICATION_ARCHITECTURE.md 4.1).
+ * Billing for it is deliberately NOT wired yet: the meter's unit for text
+ * is a founder decision that has not been made, and free-while-staging is
+ * stated in the product rather than silently assumed.
  */
 import { randomBytes } from 'node:crypto';
 
@@ -35,8 +44,12 @@ export interface MessageRecord {
   readonly highAccountId: string;
   readonly senderId: string;
   readonly kind: MessageKind;
-  /** Present for text. */
+  /** Present for text: ALWAYS the original words as typed. */
   readonly body: string | null;
+  /** A translated rendering for the recipient, when the conversation is in translated mode. */
+  readonly translatedBody?: string | null;
+  /** The language `translatedBody` is in. */
+  readonly translatedLanguage?: string | null;
   /** Present for voice: the server-side media file path. Never a URL. */
   readonly mediaPath: string | null;
   readonly mediaDurationMs: number | null;
@@ -102,7 +115,12 @@ export class MessageStore {
    * question and answering it here would be a second copy that drifts. This
    * store validates only what a message IS, never who may send one.
    */
-  async sendText(senderId: string, recipientId: string, body: string): Promise<SendResult> {
+  async sendText(
+    senderId: string,
+    recipientId: string,
+    body: string,
+    rendering?: { readonly translatedBody: string; readonly translatedLanguage: string },
+  ): Promise<SendResult> {
     const trimmed = body.trim();
     if (trimmed.length === 0) return { ok: false, reason: 'empty' };
     if (trimmed.length > MAX_TEXT_LENGTH) return { ok: false, reason: 'too-long' };
@@ -115,6 +133,12 @@ export class MessageStore {
       senderId,
       kind: 'text',
       body: trimmed,
+      ...(rendering === undefined
+        ? {}
+        : {
+            translatedBody: rendering.translatedBody,
+            translatedLanguage: rendering.translatedLanguage,
+          }),
       mediaPath: null,
       mediaDurationMs: null,
       createdAtMs: this.now(),

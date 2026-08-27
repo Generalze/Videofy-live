@@ -40,6 +40,11 @@ import { PushDispatcher } from './push/push-dispatcher.js';
 import { registerPushRoutes } from './push-routes.js';
 import { MessageStore, createInMemoryMessagePort } from './message-store.js';
 import { RingRegistry } from './ring-registry.js';
+import {
+  createInMemoryConversationModePort,
+} from './conversation-modes.js';
+import { createPostgresConversationModes } from './db/conversation-modes-postgres.js';
+import { createTextTranslator } from './translation-client.js';
 import { registerAvatarRoutes } from './avatar-routes.js';
 import { createPostgresMessageRecords } from './db/message-records-postgres.js';
 import { registerMessageRoutes } from './message-routes.js';
@@ -367,7 +372,19 @@ console.log(
   }),
 );
 
+/**
+ * The platform's own badge. Env-driven like PLATFORM_OPERATOR_ACCOUNT_IDS:
+ * a badge no route can grant is a badge no bug can grant. Empty = nobody.
+ */
+const officialAccounts: ReadonlySet<string> = new Set(
+  (process.env['OFFICIAL_ACCOUNT_IDS'] ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0),
+);
+
 registerAccountRoutes(app, {
+  officialAccounts,
   store,
   contacts,
   secret,
@@ -590,6 +607,19 @@ registerMessageRoutes(app, {
   push,
   // Ephemeral by design: see the registry's own docstring.
   rings: new RingRegistry(),
+  officialAccounts,
+  conversationModes: databasePool
+    ? createPostgresConversationModes(databasePool)
+    : createInMemoryConversationModePort(),
+  /*
+   * Media-ingest owns the providers; this service holds no vendor keys. An
+   * unset URL or token simply means translated mode delivers originals --
+   * stated in the client as "translation unavailable", never a lost message.
+   */
+  translator: createTextTranslator({
+    mediaIngestUrl: process.env['MEDIA_INGEST_URL'],
+    internalToken: process.env['INTERNAL_WEBRTC_TOKEN'],
+  }),
   mediaDir: process.env['MESSAGE_MEDIA_DIR'] ?? resolve('data', 'message-media'),
   callerAccountId: createCallerResolver({
     store,

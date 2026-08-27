@@ -2759,6 +2759,7 @@ function toWireCallState(snapshot: CallSnapshot): CallStateWirePayload {
     // defect recorded a few lines below.
     conferenceRole: participant.conferenceRole,
     ...(participant.subject === undefined ? {} : { subject: participant.subject }),
+    ...(participant.accountId === undefined ? {} : { accountId: participant.accountId }),
   }));
   return {
     callId: snapshot.callId,

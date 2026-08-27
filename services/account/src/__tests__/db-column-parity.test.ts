@@ -230,12 +230,23 @@ describe('messages', () => {
     if (start < 0) throw new Error('messages is not created by any migration');
     const open = migrations.indexOf('(', start);
     const close = migrations.indexOf(');', open);
-    return migrations
+    const created = migrations
       .slice(open + 1, close)
       .split('\n')
       .map((line) => line.trim().replace(/--.*$/u, '').trim())
       .map((line) => /^([a-z_]+)\s+(integer|bigint|text|jsonb)/u.exec(line)?.[1] ?? '')
       .filter((name) => name.length > 0);
+    /*
+     * Columns added by later append-only migrations: the messages table grew
+     * its translated renderings via ALTER TABLE in 012_conversation_modes,
+     * and a parity check that reads only the CREATE would flag every honest
+     * addition forever.
+     */
+    const altered = [...migrations.matchAll(/ALTER TABLE messages[^;]*;/gu)]
+      .flatMap((statement) => [...statement[0].matchAll(/ADD COLUMN IF NOT EXISTS ([a-z_]+)/gu)])
+      .map((match) => match[1] ?? '')
+      .filter((name) => name.length > 0);
+    return [...created, ...altered];
   }
 
   it('actually found columns to compare', () => {

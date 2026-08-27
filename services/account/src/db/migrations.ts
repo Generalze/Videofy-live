@@ -465,6 +465,44 @@ const MESSAGES: Migration = {
   `,
 };
 
+/**
+ * The language this person's calls enter with. Nullable: "not stated" keeps
+ * the call form's own default rather than this guessing -- same rule as
+ * voice_gender directly above it in the accounts table.
+ */
+const DEFAULT_LANGUAGE: Migration = {
+  name: '011_default_language',
+  sql: `
+    ALTER TABLE accounts
+      ADD COLUMN IF NOT EXISTS default_language text
+        CHECK (default_language IN ('en', 'es', 'fr'));
+  `,
+};
+
+/**
+ * Translated conversations (founder's ruling 2026-08-27). The mode is one
+ * row per pair -- absence means normal, the free default -- and a translated
+ * message stores its rendering BESIDE the original, which is never
+ * discarded. Billing intentionally not wired; see message-store.ts header.
+ */
+const CONVERSATION_MODES: Migration = {
+  name: '012_conversation_modes',
+  sql: `
+    CREATE TABLE IF NOT EXISTS conversation_modes (
+      low_account_id    text   NOT NULL,
+      high_account_id   text   NOT NULL,
+      mode              text   NOT NULL CHECK (mode IN ('normal', 'translated')),
+      set_by_account_id text   NOT NULL,
+      updated_at_ms     bigint NOT NULL,
+      PRIMARY KEY (low_account_id, high_account_id)
+    );
+
+    ALTER TABLE messages
+      ADD COLUMN IF NOT EXISTS translated_body     text,
+      ADD COLUMN IF NOT EXISTS translated_language text;
+  `,
+};
+
 /** Applied in this order. Append only. */
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
@@ -477,4 +515,6 @@ export const MIGRATIONS: readonly Migration[] = [
   BILLING_TARIFF,
   DEVICES,
   MESSAGES,
+  DEFAULT_LANGUAGE,
+  CONVERSATION_MODES,
 ];

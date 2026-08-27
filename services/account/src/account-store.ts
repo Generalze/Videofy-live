@@ -50,9 +50,18 @@ import {
  */
 export type AccountVoiceGender = 'male' | 'female';
 
+/**
+ * The language this person's calls ENTER with -- speak and hear preload on
+ * the join form, both changeable per call. Matches call-client-core's
+ * CallLanguage union; kept as its own type because account and call are
+ * separate bounded contexts that happen to agree today.
+ */
+export type AccountDefaultLanguage = 'en' | 'es' | 'fr';
+
 export interface AccountRecord {
   readonly accountId: AccountId;
   readonly voiceGender?: AccountVoiceGender;
+  readonly defaultLanguage?: AccountDefaultLanguage;
   /** Normalised: lowercased and trimmed. The stored form IS the lookup key. */
   readonly email: string;
   readonly passwordHash: string;
@@ -721,6 +730,22 @@ export class AccountStore {
       return 'username-previously-used';
     }
     return null;
+  }
+
+  /** The language this person's calls enter with. See AccountDefaultLanguage. */
+  async setDefaultLanguage(
+    accountId: string,
+    defaultLanguage: AccountDefaultLanguage,
+  ): Promise<AccountRecord | null> {
+    return this.withMutationLock<AccountRecord | null>(accountId, async (current) => {
+      if (!current) return { record: null, result: null };
+      const updated: AccountRecord = {
+        ...current,
+        defaultLanguage,
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      return { record: updated, result: updated };
+    });
   }
 
   /** Set the label shown in calls. Carries no uniqueness and resolves to nobody. */

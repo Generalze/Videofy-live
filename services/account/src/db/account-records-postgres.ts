@@ -41,6 +41,7 @@ interface AccountRow {
   password_hash: string;
   token_version: number;
   voice_gender: string | null;
+  default_language: string | null;
   created_at: Date;
   updated_at: Date;
   trust: unknown;
@@ -88,6 +89,7 @@ function optional<T>(value: T | null | undefined): { present: false } | { presen
  */
 function toRecord(row: AccountRow): AccountRecord {
   const voiceGender = optional(row.voice_gender);
+  const defaultLanguage = optional(row.default_language);
   const trust = optional(row.trust);
   const emailChallenge = optional(row.email_challenge);
   const phoneChallenge = optional(row.phone_challenge);
@@ -110,6 +112,9 @@ function toRecord(row: AccountRow): AccountRecord {
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
     ...(voiceGender.present ? { voiceGender: voiceGender.value as 'male' | 'female' } : {}),
+    ...(defaultLanguage.present
+      ? { defaultLanguage: defaultLanguage.value as 'en' | 'es' | 'fr' }
+      : {}),
     ...(trust.present ? { trust: trust.value as NonNullable<AccountRecord['trust']> } : {}),
     ...(emailChallenge.present
       ? { emailChallenge: emailChallenge.value as NonNullable<AccountRecord['emailChallenge']> }
@@ -174,18 +179,19 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
        */
       await queryable.query(
         `INSERT INTO accounts (
-           account_id, email, password_hash, token_version, voice_gender,
+           account_id, email, password_hash, token_version, voice_gender, default_language,
            created_at, updated_at, trust, email_challenge, phone_challenge,
            phone_number, identity_case, seen_callback_events,
            password_reset_challenge, consents, mfa, step_up_at_ms, step_up_method,
            pending_identity_change, username, username_key, display_name,
            discovery_mode
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
          ON CONFLICT (account_id) DO UPDATE SET
            email                = EXCLUDED.email,
            password_hash        = EXCLUDED.password_hash,
            token_version        = EXCLUDED.token_version,
            voice_gender         = EXCLUDED.voice_gender,
+           default_language     = EXCLUDED.default_language,
            updated_at           = EXCLUDED.updated_at,
            trust                = EXCLUDED.trust,
            email_challenge      = EXCLUDED.email_challenge,
@@ -209,6 +215,7 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
           record.passwordHash,
           record.tokenVersion,
           record.voiceGender ?? null,
+          record.defaultLanguage ?? null,
           record.createdAt,
           record.updatedAt,
           // Undefined must become SQL NULL explicitly. Passed as undefined, the
@@ -251,7 +258,7 @@ export function createPostgresAccountRecords(pool: Pool): AccountRecordPort {
          * the same shape; a test now compares the two lists so this cannot
          * happen again quietly.
          */
-        `SELECT account_id, email, password_hash, token_version, voice_gender,
+        `SELECT account_id, email, password_hash, token_version, voice_gender, default_language,
                 created_at, updated_at, trust, email_challenge, phone_challenge,
                 phone_number, identity_case, seen_callback_events,
                 password_reset_challenge, consents, mfa, step_up_at_ms, step_up_method,

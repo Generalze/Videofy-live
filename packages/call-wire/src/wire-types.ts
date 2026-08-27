@@ -275,6 +275,13 @@ export interface CallStateWirePayload {
     hearLanguage: CallLanguage;
     joined: boolean;
     /**
+     * The seat's verified C7 account, when they joined signed in. DERIVED
+     * SERVER-SIDE from the session token, never accepted from the client.
+     * Present so tiles can show the person's profile picture; an anonymous
+     * seat has none and renders initials, honestly.
+     */
+    accountId?: string;
+    /**
      * Connect (P6.5): the partner-supplied opaque identity, present only for
      * seats joined through a Connect token. Never interpreted by Videofy.
      */

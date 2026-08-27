@@ -19,6 +19,10 @@ import { ContactStore } from '../contact-store.js';
 import { DeviceStore } from '../device-store.js';
 import { MessageStore, createInMemoryMessagePort } from '../message-store.js';
 import { RingRegistry } from '../ring-registry.js';
+import {
+  createInMemoryConversationModePort,
+  type ConversationModePort,
+} from '../conversation-modes.js';
 import { PushDispatcher, createRecordingPushProvider } from '../push/push-dispatcher.js';
 import { registerMessageRoutes } from '../message-routes.js';
 import type { Caller } from '../routes.js';
@@ -42,6 +46,9 @@ interface Harness {
   provider: ReturnType<typeof createRecordingPushProvider>;
   close: () => Promise<void>;
   as: (accountId: string, path: string, init?: RequestInit) => Promise<Response>;
+  conversationModes: ConversationModePort;
+  setTranslatorAvailable: (value: boolean) => void;
+  store: AccountStore;
 }
 
 async function harness(): Promise<Harness> {
@@ -57,6 +64,8 @@ async function harness(): Promise<Harness> {
   });
 
   const rings = new RingRegistry();
+  const conversationModes = createInMemoryConversationModePort();
+  let translatorAvailable = true;
   const app = express();
   /*
    * Mirrors index.ts: the global identity parser steps aside for the routes
@@ -73,12 +82,19 @@ async function harness(): Promise<Harness> {
     }
     identityJson(req, res, next);
   });
+  const store = new AccountStore();
   registerMessageRoutes(app, {
-    store: new AccountStore(),
+    store,
     contacts,
     messages: new MessageStore({ port: createInMemoryMessagePort() }),
     push: new PushDispatcher({ devices, providers: [provider] }),
     rings,
+    conversationModes,
+    // The fake translator marks its output so a test can tell rendering from original.
+    translator: {
+      translate: async ({ targetLanguage, sourceText }) =>
+        translatorAvailable ? `[${targetLanguage}] ${sourceText}` : null,
+    },
     mediaDir: await mkdtemp(join(tmpdir(), 'msg-media-')),
     callerAccountId: (req) => {
       const id = req.header('x-test-account');
@@ -95,6 +111,11 @@ async function harness(): Promise<Harness> {
     contacts,
     provider,
     rings,
+    conversationModes,
+    setTranslatorAvailable: (value: boolean) => {
+      translatorAvailable = value;
+    },
+    store,
     close: () => new Promise<void>((r) => server.close(() => r())),
     as: (accountId, path, init = {}) =>
       fetch(`${url}${path}`, {
@@ -317,6 +338,89 @@ describe('ringing a contact', () => {
       body: JSON.stringify({}),
     });
     expect(response.status).toBe(404);
+  });
+});
+
+describe('translated conversations', () => {
+  /*
+   * The mode is per pair, flipped by either side, and resolved at SEND time:
+   * the rendering targets the recipient's default language, the original is
+   * stored regardless, and a dead translator delivers the original rather
+   * than losing the message.
+   */
+  async function pairWithLanguages(harnessRef: Harness) {
+    const first = await harnessRef.store.register({
+      email: 'a@t.test',
+      password: 'long-and-sturdy-passphrase-A7',
+    });
+    const second = await harnessRef.store.register({
+      email: 'b@t.test',
+      password: 'long-and-sturdy-passphrase-B7',
+    });
+    if (!first.ok || !second.ok) throw new Error('test accounts failed to register');
+    const a = first.account.accountId;
+    const b = second.account.accountId;
+    await harnessRef.store.setDefaultLanguage(a, 'en');
+    await harnessRef.store.setDefaultLanguage(b, 'es');
+    await befriend(harnessRef.contacts, a, b);
+    return { a, b };
+  }
+
+  it('renders for the recipient language and keeps the original', async () => {
+    app = await harness();
+    const { a, b } = await pairWithLanguages(app);
+    await app.as(a, `/messages/with/${b}/mode`, {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'translated' }),
+    });
+    const sent = (await (
+      await app.as(a, `/messages/with/${b}`, {
+        method: 'POST',
+        body: JSON.stringify({ body: 'hello there' }),
+      })
+    ).json()) as { message: { body: string; translatedBody: string | null; translatedLanguage: string | null } };
+    expect(sent.message.body).toBe('hello there');
+    expect(sent.message.translatedBody).toBe('[es] hello there');
+    expect(sent.message.translatedLanguage).toBe('es');
+  });
+
+  it('a dead translator delivers the original, never a lost message', async () => {
+    app = await harness();
+    const { a, b } = await pairWithLanguages(app);
+    await app.as(a, `/messages/with/${b}/mode`, {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'translated' }),
+    });
+    app.setTranslatorAvailable(false);
+    const sent = (await (
+      await app.as(a, `/messages/with/${b}`, {
+        method: 'POST',
+        body: JSON.stringify({ body: 'still arrives' }),
+      })
+    ).json()) as { message: { body: string; translatedBody: string | null } };
+    expect(sent.message.body).toBe('still arrives');
+    expect(sent.message.translatedBody).toBe(null);
+  });
+
+  it('normal mode never translates and the mode reads back per pair', async () => {
+    app = await harness();
+    const { a, b } = await pairWithLanguages(app);
+    const before = (await (await app.as(b, `/messages/with/${a}/mode`)).json()) as { mode: string };
+    expect(before.mode).toBe('normal');
+    const sent = (await (
+      await app.as(a, `/messages/with/${b}`, {
+        method: 'POST',
+        body: JSON.stringify({ body: 'plain' }),
+      })
+    ).json()) as { message: { translatedBody: string | null } };
+    expect(sent.message.translatedBody).toBe(null);
+    // Either side may flip it; the other side reads the same answer.
+    await app.as(b, `/messages/with/${a}/mode`, {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'translated' }),
+    });
+    const after = (await (await app.as(a, `/messages/with/${b}/mode`)).json()) as { mode: string };
+    expect(after.mode).toBe('translated');
   });
 });
 
