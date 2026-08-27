@@ -180,6 +180,16 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
       }),
     setDisplayName: (displayName: string) =>
       request(authorizedFetch, '/accounts/display-name', json({ displayName }), () => undefined),
+    /** avatar-routes.ts: PUT judges the bytes; DELETE clears. */
+    setAvatar: (image: string) =>
+      request(
+        authorizedFetch,
+        '/profile/avatar',
+        { ...json({ image }), method: 'PUT' },
+        () => undefined,
+      ),
+    removeAvatar: () =>
+      request(authorizedFetch, '/profile/avatar', { method: 'DELETE' }, () => undefined),
     verification: () =>
       request(authorizedFetch, '/verification', undefined, (body) => body as VerificationStatus),
     sendVerificationEmail: () =>

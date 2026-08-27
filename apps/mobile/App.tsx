@@ -38,6 +38,7 @@ import {
 } from './src/push/deviceRegistrationService';
 import { randomId } from './src/push/randomId';
 import { createApi } from './src/api/client';
+import { configureAvatars } from './src/media/AvatarView';
 import type { ContactPerson } from './src/api/client';
 import { SignInScreen } from './src/screens/SignInScreen';
 import { SignUpScreen } from './src/screens/SignUpScreen';
@@ -58,6 +59,19 @@ const auth = new AuthSessionManager({
 });
 
 const authorizedFetch = (path: string, init?: RequestInit) => auth.authorizedFetch(path, init);
+
+/*
+ * Avatars render through RN's Image, which sends the headers it is given; the
+ * provider closure keeps token ownership inside AuthSessionManager, and
+ * sign-out starves it immediately.
+ */
+configureAvatars({
+  baseUrl: ACCOUNT_BASE_URL,
+  headers: () => {
+    const token = auth.callSessionToken();
+    return token === null ? null : { authorization: `Bearer ${token}` };
+  },
+});
 const api = createApi(authorizedFetch);
 
 const devices = new DeviceRegistrationService({
@@ -339,8 +353,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     borderTopWidth: 1,
     borderTopColor: '#161d25',
-    paddingBottom: 22,
-    paddingTop: 8,
+    /*
+     * Clear of the phone's own navigation zone. 22 sat the labels inside the
+     * Android gesture bar; 34 keeps them tappable above it. The precise inset
+     * belongs to safe-area-context, which rides the next native build.
+     */
+    paddingBottom: 34,
+    paddingTop: 10,
     backgroundColor: '#0b0f14',
   },
   tabButton: { flex: 1, alignItems: 'center', paddingVertical: 6 },

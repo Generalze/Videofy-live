@@ -18,7 +18,11 @@
         "android.permission.INTERNET",
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_MICROPHONE"
-      ]
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0b0f14"
+      }
     },
     "plugins": [
       "expo-dev-client",
@@ -30,6 +34,7 @@
         "projectId": "778ce47d-efbf-47b5-ab34-bab38ada4a88"
       }
     },
-    "owner": "consummate7s-team"
+    "owner": "consummate7s-team",
+    "icon": "./assets/icon.png"
   }
 }

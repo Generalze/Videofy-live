@@ -22,6 +22,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { AvatarView } from '../media/AvatarView';
 import type { Api, ContactPerson, ContactsResponse } from '../api/client';
 
 function personName(person: ContactPerson): string {
@@ -146,6 +147,7 @@ export function ContactsScreen({ api, onMessage, onCall }: ContactsScreenProps):
         )}
         {data?.contacts.map((person) => (
           <View key={person.accountId} style={styles.row}>
+            <AvatarView accountId={person.accountId} name={personName(person)} size={40} />
             <View style={styles.rowText}>
               <Text style={styles.name}>{personName(person)}</Text>
               {person.username !== null && <Text style={styles.handle}>{person.username}</Text>}

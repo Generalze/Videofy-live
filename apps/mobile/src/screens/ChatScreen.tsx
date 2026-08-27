@@ -30,6 +30,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { AvatarView } from '../media/AvatarView';
 import {
   AudioModule,
   RecordingPresets,
@@ -186,6 +187,18 @@ export function ChatScreen({
 
   const name = partner.displayName ?? partner.username ?? partner.accountId;
 
+  const timeOf = (atMs: number): string =>
+    new Date(atMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const dayOf = (atMs: number): string => {
+    const day = new Date(atMs);
+    const now = new Date();
+    const startOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const diffDays = Math.round((startOf(now) - startOf(day)) / 86_400_000);
+    if (diffDays === 0) return 'Today';
+    if (diffDays === 1) return 'Yesterday';
+    return day.toDateString().slice(0, 10);
+  };
+
   return (
     <KeyboardAvoidingView
       style={styles.fill}
@@ -195,9 +208,12 @@ export function ChatScreen({
         <Pressable onPress={onBack} accessibilityRole="button" style={styles.headerButton}>
           <Text style={styles.headerAction}>{'‹'} Back</Text>
         </Pressable>
-        <Text style={styles.headerName} numberOfLines={1}>
-          {name}
-        </Text>
+        <View style={styles.headerIdentity}>
+          <AvatarView accountId={partner.accountId} name={name} size={30} />
+          <Text style={styles.headerName} numberOfLines={1}>
+            {name}
+          </Text>
+        </View>
         <Pressable
           onPress={() => onCall(partner)}
           accessibilityRole="button"
@@ -213,9 +229,24 @@ export function ChatScreen({
         data={messages}
         keyExtractor={(message) => message.messageId}
         contentContainerStyle={styles.messages}
-        renderItem={({ item }) => {
+        renderItem={({ item, index }) => {
           const mine = item.senderId === selfId;
+          /*
+           * The list is inverted (newest first), so the OLDER neighbour is at
+           * index + 1. A day chip belongs above the first message of each day
+           * -- the one whose older neighbour is missing or from another day.
+           */
+          const older = messages[index + 1];
+          const firstOfDay =
+            older === undefined ||
+            new Date(older.createdAtMs).toDateString() !== new Date(item.createdAtMs).toDateString();
           return (
+            <View>
+              {firstOfDay ? (
+                <View style={styles.dayChip}>
+                  <Text style={styles.dayChipText}>{dayOf(item.createdAtMs)}</Text>
+                </View>
+              ) : null}
             <View style={[styles.bubble, mine ? styles.mine : styles.theirs]}>
               {item.kind === 'voice' ? (
                 <Pressable
@@ -235,6 +266,16 @@ export function ChatScreen({
               ) : (
                 <Text style={[styles.body, mine && styles.mineText]}>{item.body}</Text>
               )}
+              <View style={styles.metaRow}>
+                <Text style={[styles.metaText, mine && styles.mineMeta]}>{timeOf(item.createdAtMs)}</Text>
+                {mine ? (
+                  /* One tick: the server holds it. Two: they marked it read. */
+                  <Text style={[styles.metaText, mine && styles.mineMeta, item.readAtMs !== null && styles.readTicks]}>
+                    {item.readAtMs !== null ? '✓✓' : '✓'}
+                  </Text>
+                ) : null}
+              </View>
+            </View>
             </View>
           );
         }}
@@ -296,12 +337,32 @@ const styles = StyleSheet.create({
   },
   headerButton: { paddingHorizontal: 8, paddingVertical: 4 },
   headerAction: { color: '#3ec9c0', fontSize: 15, fontWeight: '600' },
-  headerName: { flex: 1, color: '#e4ebf1', fontSize: 17, fontWeight: '600', textAlign: 'center' },
+  headerName: { color: '#e4ebf1', fontSize: 17, fontWeight: '600', flexShrink: 1 },
+  headerIdentity: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  dayChip: {
+    alignSelf: 'center',
+    backgroundColor: '#141a21',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 3,
+    marginVertical: 6,
+  },
+  dayChipText: { color: '#5d6874', fontSize: 11 },
+  metaRow: { flexDirection: 'row', gap: 4, alignSelf: 'flex-end', marginTop: 2 },
+  metaText: { fontSize: 10, color: '#5d6874' },
+  mineMeta: { color: 'rgba(11,15,20,0.55)' },
+  readTicks: { color: '#0b4f4a', fontWeight: '700' },
 
   messages: { paddingHorizontal: 14, paddingVertical: 10, gap: 6 },
   bubble: { maxWidth: '80%', borderRadius: 14, paddingHorizontal: 13, paddingVertical: 9 },
-  mine: { alignSelf: 'flex-end', backgroundColor: '#3ec9c0' },
-  theirs: { alignSelf: 'flex-start', backgroundColor: '#161d25' },
+  mine: { alignSelf: 'flex-end', backgroundColor: '#3ec9c0', borderBottomRightRadius: 4 },
+  theirs: { alignSelf: 'flex-start', backgroundColor: '#161d25', borderBottomLeftRadius: 4 },
   body: { color: '#e4ebf1', fontSize: 15, lineHeight: 20 },
   mineText: { color: '#0b0f14' },
   voiceRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },

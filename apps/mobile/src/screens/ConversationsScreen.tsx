@@ -19,6 +19,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { AvatarView } from '../media/AvatarView';
 import type { Api, ContactPerson, ConversationEntry } from '../api/client';
 import { formatDuration } from '../media/voiceNotes';
 
@@ -99,6 +100,11 @@ export function ConversationsScreen({
           onPress={() => onOpen(item.partner)}
           accessibilityRole="button"
         >
+          <AvatarView
+            accountId={item.partner.accountId}
+            name={personName(item.partner)}
+            size={42}
+          />
           <View style={styles.rowText}>
             <Text style={styles.name}>{personName(item.partner)}</Text>
             <Text

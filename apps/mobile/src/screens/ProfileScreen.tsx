@@ -22,6 +22,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { AvatarView } from '../media/AvatarView';
+import { pickAvatar } from '../media/avatarPicker';
 import type { Api, Profile, VerificationStatus } from '../api/client';
 import type { RegistrationOutcome } from '../push/deviceRegistrationService';
 
@@ -52,6 +54,24 @@ export function ProfileScreen({
   const [draftName, setDraftName] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pictureNotice, setPictureNotice] = useState<string | null>(null);
+  /** Remounts the avatar after upload so the cached image is refetched. */
+  const [avatarEpoch, setAvatarEpoch] = useState(0);
+
+  const changePicture = useCallback(async () => {
+    setPictureNotice(null);
+    const picked = await pickAvatar();
+    if (!picked.ok) {
+      if (picked.reason !== null) setPictureNotice(picked.reason);
+      return;
+    }
+    const result = await api.setAvatar(picked.dataUrl);
+    if (!result.ok) {
+      setPictureNotice(result.error === 'network' ? 'Could not reach C7.' : String(result.error));
+      return;
+    }
+    setAvatarEpoch((epoch) => epoch + 1);
+  }, [api]);
 
   const load = useCallback(async () => {
     const [me, status] = await Promise.all([api.me(), api.verification()]);
@@ -99,8 +119,24 @@ export function ProfileScreen({
           <ActivityIndicator color="#3ec9c0" />
         ) : (
           <>
-            <Text style={styles.identity}>{profile.username ?? profile.accountId}</Text>
-            <Text style={styles.email}>{profile.email}</Text>
+            <View style={styles.avatarRow}>
+              <Pressable onPress={() => void changePicture()} accessibilityRole="button">
+                <AvatarView
+                  key={avatarEpoch}
+                  accountId={profile.accountId}
+                  name={profile.displayName ?? profile.username ?? '?'}
+                  size={64}
+                />
+              </Pressable>
+              <View style={styles.avatarText}>
+                <Text style={styles.identity}>{profile.username ?? profile.accountId}</Text>
+                <Text style={styles.email}>{profile.email}</Text>
+                <Pressable onPress={() => void changePicture()} accessibilityRole="button">
+                  <Text style={styles.avatarAction}>Change picture</Text>
+                </Pressable>
+              </View>
+            </View>
+            {pictureNotice !== null && <Text style={styles.pictureNotice}>{pictureNotice}</Text>}
             <Text style={styles.label}>Name shown in calls</Text>
             <View style={styles.nameRow}>
               <TextInput
@@ -225,6 +261,10 @@ const styles = StyleSheet.create({
   },
   cardTitle: { color: '#e4ebf1', fontSize: 16, fontWeight: '600' },
   identity: { color: '#3ec9c0', fontSize: 20, fontWeight: '700', fontFamily: 'monospace' },
+  avatarRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 8 },
+  avatarText: { flex: 1, gap: 2 },
+  avatarAction: { color: '#3ec9c0', fontSize: 13, fontWeight: '600', marginTop: 4 },
+  pictureNotice: { color: '#d9a441', fontSize: 12, marginBottom: 6 },
   email: { color: '#8d99a6', fontSize: 13 },
   label: { color: '#5d6874', fontSize: 12, marginTop: 6 },
   nameRow: { flexDirection: 'row', gap: 8 },
