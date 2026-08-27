@@ -103,6 +103,12 @@ export default function App(): JSX.Element {
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const [deviceOutcome, setDeviceOutcome] = useState<RegistrationOutcome | null>(null);
   const [emailVerified, setEmailVerified] = useState<boolean | null>(null);
+  /*
+   * The name other people see in a call. The join used to send the ACCOUNT ID
+   * as the display name, so the other side's tile read `acct_1d12f6...` -- an
+   * identifier where a person was promised.
+   */
+  const [callName, setCallName] = useState<string | null>(null);
   const handledColdStart = useRef(false);
 
   useEffect(() => {
@@ -169,6 +175,9 @@ export default function App(): JSX.Element {
     void api.verification().then((result) => {
       if (result.ok) setEmailVerified(result.value.email === 'verified');
     });
+    void api.me().then((result) => {
+      if (result.ok) setCallName(result.value.displayName ?? result.value.username);
+    });
     return () => devices.stopWatchingForRotation();
   }, [state.status]);
 
@@ -223,7 +232,7 @@ export default function App(): JSX.Element {
         <StatusBar style="light" />
         <CallScreen
           callId={activeCall.callId}
-          displayName={state.accountId}
+          displayName={callName ?? state.accountId}
           sessionToken={auth.callSessionToken()}
           ringName={
             ringPerson === undefined

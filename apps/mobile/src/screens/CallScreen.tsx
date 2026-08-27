@@ -98,7 +98,11 @@ export function CallScreen({
    * here" from "somebody is here and the media has not connected" -- and those
    * have completely different fixes.
    */
-  const [others, setOthers] = useState(0);
+  const [roster, setRoster] = useState<
+    readonly { participantId: string; displayName: string }[]
+  >([]);
+  const others = roster.length;
+  const [muted, setMuted] = useState(false);
   /*
    * null until the fetch resolves. The old banner read a build-time env value
    * and so reported "no ICE servers" even when the gateway was serving TURN
@@ -129,8 +133,8 @@ export function CallScreen({
           ...current,
           [id]: { url: current[id]?.url ?? null, state },
         })),
-      onParticipants: (count) => {
-        if (live) setOthers(count);
+      onRoster: (list) => {
+        if (live) setRoster(list);
       },
       onIceServers: (count) => {
         if (live) setIceCount(count);
@@ -199,6 +203,13 @@ export function CallScreen({
     });
   }, []);
 
+  const toggleMute = useCallback(() => {
+    setMuted((wasMuted) => {
+      connection.current?.setMicrophoneEnabled(wasMuted);
+      return !wasMuted;
+    });
+  }, []);
+
   const tiles = Object.entries(remotes);
   const noIce = iceCount === 0;
 
@@ -258,19 +269,23 @@ export function CallScreen({
 
         {tiles.map(([id, tile]) => (
           <View key={id} style={styles.tile}>
-            {tile.url !== null && tile.state === 'connected' ? (
+            {/*
+              VIDEO RENDERS THE MOMENT A STREAM EXISTS. It was gated on the
+              peer state string reaching 'connected', so a platform whose state
+              events lag or differ hid a stream that was already playing --
+              which on a real phone read as "video didn't show". The stream is
+              the truth; the state word is an overlay for when there is none.
+            */}
+            {tile.url !== null ? (
               <RTCView streamURL={tile.url} style={styles.video} objectFit="cover" />
             ) : (
               <View style={[styles.video, styles.videoPlaceholder]}>
-                {/*
-                  In words, not just an empty rectangle. A black tile cannot
-                  distinguish "still connecting" from "connected with the camera
-                  off" from "already left".
-                */}
                 <Text style={styles.muted}>{PEER_WORDS[tile.state] ?? tile.state}</Text>
               </View>
             )}
-            <Text style={styles.tileLabel}>{id}</Text>
+            <Text style={styles.tileLabel}>
+              {roster.find((person) => person.participantId === id)?.displayName ?? id}
+            </Text>
           </View>
         ))}
       </ScrollView>
@@ -290,6 +305,17 @@ export function CallScreen({
       <View style={styles.controls}>
         <Text style={styles.mode}>Normal mode - no translation in this build</Text>
         <View style={styles.buttons}>
+          <Pressable
+            style={({ pressed }) => [
+              styles.control,
+              muted && styles.controlActive,
+              pressed && styles.pressed,
+            ]}
+            onPress={toggleMute}
+            accessibilityRole="button"
+          >
+            <Text style={styles.controlLabel}>{muted ? 'Unmute' : 'Mute'}</Text>
+          </Pressable>
           <Pressable
             style={({ pressed }) => [styles.control, pressed && styles.pressed]}
             onPress={toggleCamera}
@@ -377,4 +403,5 @@ const styles = StyleSheet.create({
   leave: { backgroundColor: '#3a1d18', borderColor: '#4a2620' },
   leaveLabel: { color: '#e06c5b', fontSize: 15, fontWeight: '600' },
   pressed: { opacity: 0.75 },
+  controlActive: { backgroundColor: '#3a2a12', borderColor: '#d9a441' },
 });
