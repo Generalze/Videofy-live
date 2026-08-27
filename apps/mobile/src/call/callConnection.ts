@@ -49,6 +49,9 @@ import {
   type CallVideoSdpPayload,
 } from '@videofy-live/call-client-core';
 
+/** Long enough for a cold gateway, short enough that nobody stares at a spinner. */
+const ACK_TIMEOUT_MS = 15_000;
+
 /** What the mesh hands back for a tile. Kept loose: RN streams are not DOM ones. */
 export type RemoteStream = { toURL(): string } | null;
 
@@ -157,23 +160,35 @@ export class CallConnection {
       callCode: this.options.callId,
     };
 
+    /*
+     * `.timeout()` IS WHAT MAKES THE CALLBACK TWO-ARGUMENT, and omitting it
+     * produced the most misleading bug of the lot.
+     *
+     * Socket.IO passes a plain ack as ONE argument: `ack(payload)`. Written as
+     * `(error, reply) => ...` without `.timeout()`, the SUCCESSFUL ack arrives
+     * as `error`, is truthy, and the join is reported as "the call service did
+     * not respond" -- while the gateway has in fact accepted it. The other side
+     * saw a participant appear and immediately vanish, because this client then
+     * disconnected a socket that had joined perfectly.
+     *
+     * With `.timeout()` the signature becomes `(error, reply)` and `error` is
+     * set only on an actual timeout, which is also how call-web does it. The
+     * hand-rolled timer is gone with it: Socket.IO owns that now.
+     */
     const ack = await new Promise<CallJoinAck>((resolve) => {
-      const timer = setTimeout(
-        () => resolve({ ok: false, error: 'The call service did not respond.' }),
-        15_000,
-      );
-      socket.emit(
-        CALL_EVENTS.JOIN,
-        buildCallJoinPayload(form, undefined, this.options.sessionToken),
-        (error: unknown, reply?: CallJoinAck) => {
-          clearTimeout(timer);
-          resolve(
-            error
-              ? { ok: false, error: 'The call service did not respond.' }
-              : (reply ?? { ok: false, error: 'The call service gave an unexpected reply.' }),
-          );
-        },
-      );
+      socket
+        .timeout(ACK_TIMEOUT_MS)
+        .emit(
+          CALL_EVENTS.JOIN,
+          buildCallJoinPayload(form, undefined, this.options.sessionToken),
+          (error: unknown, reply?: CallJoinAck) => {
+            resolve(
+              error
+                ? { ok: false, error: 'The call service did not respond.' }
+                : (reply ?? { ok: false, error: 'The call service gave an unexpected reply.' }),
+            );
+          },
+        );
     });
 
     if (!ack.ok) {
