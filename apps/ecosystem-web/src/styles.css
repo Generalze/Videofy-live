@@ -2375,6 +2375,73 @@ button:focus-visible {
   text-decoration: underline;
 }
 
+/* The shell's rooms. Pills, not a second nav bar: they select within one
+   page and must not compete with the site navigation above them. */
+.app-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin: 1.2rem 0 1.6rem;
+  flex-wrap: wrap;
+}
+
+.app-tab {
+  position: relative;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 0.5rem 1.1rem;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.app-tab:hover {
+  color: var(--text-strong, #fff);
+  border-color: rgba(255, 255, 255, 0.34);
+}
+
+.app-tab-active {
+  background: rgba(94, 234, 212, 0.12);
+  border-color: rgba(94, 234, 212, 0.5);
+  color: var(--text-strong, #fff);
+}
+
+.app-tab-dot {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.55rem;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #d9a441;
+}
+
+.app-inline-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: #5eead4;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* The page-end band for the signed-in: one sentence, one door. */
+.signedin-band {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 3rem 0;
+}
+
+.signedin-band-shell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
 .app-signout {
   margin-top: 0.6rem;
   align-self: flex-start;

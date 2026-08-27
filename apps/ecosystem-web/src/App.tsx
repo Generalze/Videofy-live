@@ -191,7 +191,24 @@ export function App() {
         {/* Registration lives at the end of every REAL page. A not-found page
             is not a place to ask somebody to sign up; they were looking for
             something else and did not find it. */}
-        {route === 'not-found' || route === 'app' ? null : <JoinC7 />}
+        {/*
+          THE JOIN FORM IS FOR PEOPLE WHO HAVE NOT JOINED. Offering "Create C7
+          account" to somebody already signed in reads as the site forgetting
+          them -- and it sat at the foot of every marketing page. Signed in,
+          the page ends with the door to their dashboard instead.
+        */}
+        {route === 'not-found' || route === 'app' ? null : authed ? (
+          <section className="signedin-band">
+            <div className="shell signedin-band-shell">
+              <p className="section-lede">You are signed in.</p>
+              <a className="button button-primary" {...internalLink('app', navigate)}>
+                Open your dashboard
+              </a>
+            </div>
+          </section>
+        ) : (
+          <JoinC7 />
+        )}
       </main>
 
       <footer className="footer">
