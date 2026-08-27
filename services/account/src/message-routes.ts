@@ -207,6 +207,20 @@ export function registerMessageRoutes(
         if (translated !== null) {
           rendering = { translatedBody: translated, translatedLanguage: targetLanguage };
         }
+        // The failure mode is DELIVER THE ORIGINAL, never a lost message --
+        // but a translator that quietly nulls is undiagnosable in the field,
+        // so the outcome is an event either way. Languages only; never text.
+        deps.onEvent?.('message.translate', {
+          source: sourceLanguage,
+          target: targetLanguage,
+          ok: translated === null ? 0 : 1,
+        });
+      } else {
+        deps.onEvent?.('message.translate', {
+          source: sourceLanguage,
+          target: targetLanguage ?? 'unset',
+          ok: -1,
+        });
       }
     }
 
