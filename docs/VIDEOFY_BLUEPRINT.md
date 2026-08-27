@@ -1,184 +1,365 @@
-*Consummate 7 · Videofy Live*
-
 # Videofy Blueprint
 
-The flow of the web app and the mobile app, the streaming
-logic that gives viewers a coherent programme, and the access model for
-channels — what shipped tonight, what I recommend next, and the four rulings
-only you can make.
+*Consummate 7 · Videofy Live — canonical product and architecture rulings.*
+*Prepared 27 Aug 2026 · revised 28 Aug 2026 after the external competitive
+review. This document is the source of truth; the styled artifact page is its
+twin. Everything marked LIVE was verified by machine probes on staging before
+being written here.*
 
-## 1 · Where the platform stands tonight
+---
 
-Everything below the line is **live on staging** as of this
-document:
+## 0 · Product principles (locked)
 
-> **Shipped tonight —** translated conversations
-(per-chat Translate toggle, renderings marked, original always revealable, real
-opus-mt verified end-to-end: “The broadcast starts in ten minutes” →
-“La transmisión comienza en diez minutos”); voice notes fixed (two independent
-server bugs — a body-size parser that silently capped every upload at 16kb, and
-a write-protected media directory); account **default language**
-(profile choice, calls enter with it on web and phone); faces and real
-names on call tiles; the **official C7 badge** mechanism;
-the **operator console gated** to granted accounts; channel tiers
-renamed to your model (*public / private / locked*) and the
-stale-LIVE bug fixed so ending a broadcast actually turns the channel off.
+These are canonical. Code that contradicts them is wrong, not the principles.
 
-## 2 · Web app — the hub-and-rooms flow
+> **Videofy Live is language-native communication, not communication with
+> translation bolted on.**
 
-The rule that keeps the web coherent: marketing pages sell, the
-dashboard operates, and nothing operational is reachable without a
-session. Signed-out visitors see products and one door (Join C7).
-Signed-in people land in *My C7* and never see sign-up surfaces
-again.
+> **Original expression is authoritative; translation is a derived
+> rendering.** Marked as a translation wherever shown, revealable everywhere,
+> never silently overwriting the original, never lost to a vendor failure.
 
-```
-Signed out   /            → product story, samples, Join C7
-             /videofy/live → product page, CTA = Join C7 to start calls
+> **Calls optimize for interaction. Programmes optimize for coherence.**
+> WebRTC where immediacy matters; the coherent programme clock where the
+> audience does.
 
-Signed in    /app/        → My C7 hub
-             ├─ Overview      start/join a call · programme cards · activity
-             ├─ Messages      threads · Translate toggle · voice notes
-             ├─ Contacts      requests → contacts → sent · Call / Message
-             ├─ Profile       picture · name · language · devices
-             └─ Verification  trust state, one place only
+> **People speak in their language; listeners receive in theirs.**
 
-Products     /call/       joins with your session (name, language, face)
-             /listen/     channel directory + invite links
-             /operator/   granted accounts only
-```
+> **African languages are qualification problems, not afterthoughts.**
 
-### Recommendations (next passes)
+> **Standard translation drives network growth; premium voice and broadcast
+> capability drive monetization.**
 
-- **The hub earns a live rail.** Overview's “Recent activity” card
-should show real rows — missed rings, unread counts, your channel's live state —
-before anything else is added to the page.
-- **Calls should start from people, not codes.** The Contacts tab
-already carries Call; the Overview “Start a call” tile should offer your
-contacts first and “conference with a code” second. Codes are for conferences —
-your ruling, now the visible hierarchy.
-- **One design system.** The dashboard, call page, listener and
-operator console share tokens (ink #e4ebf1, ground #0b0f14, teal #3ec9c0,
-amber for warnings) but not yet one stylesheet. I recommend a
-*packages/c7-style* with the tokens and the five shared shapes (card,
-pill, badge, row, bubble) so “neat” stops being a per-app fight.
+> **Speak naturally. Be understood everywhere.**
 
-## 3 · Mobile app — one thing at a time
+---
 
-The phone keeps its rule: **tabs are places, overlays are moments.**
-A call covers everything; a chat covers the tab bar; nothing else stacks.
+## 1 · The five locked rulings (28 Aug 2026)
+
+### 1.1 Text-translation billing — LOCKED
+
+**Standard text translation is included, with fair use.** No character-level
+charging is ever exposed to ordinary users. Exact characters are metered
+internally — for cost understanding, abuse prevention, and later
+enterprise/premium pricing. The fair-use ceiling is deliberately undefined
+during staging; usage is collected first. Clients state "free during staging"
+rather than letting silence read as "free forever".
+
+### 1.2 Language model — LOCKED
+
+Language is three independent account facts, seeded by one **Primary** at
+onboarding:
+
+- `spoken_language` — what this person speaks (writes).
+- `listening_language` — what this person prefers to hear (read).
+- `default_language` — the Primary; the seed and the fallback.
+
+**Precedence is locked** so no later code invents another interpretation:
 
 ```
-Tabs      Chats · Contacts · Call · Profile   (now clear of the system bar)
-Overlays  Call  >  Chat  >  tabs
-Push      ring → call screen · message → that chat  (cold start included)
+CALL speaking:    per-call override → spoken_language → primary
+CALL listening:   per-call override → listening_language → primary
+
+MESSAGE source:   sender.spoken_language → sender.primary
+MESSAGE target:   reader.listening_language → reader.primary
+
+source == target        → deliver original, no translation work
+translation fails/unavailable → deliver original, report the rendering
+                          unavailable, NEVER lose the message
 ```
 
-### Recommendations
+Observability doctrine (already live): every translation decision emits
+languages and outcome — **never message text**.
 
-- **Incoming call screen.** A ring today lands as a notification;
-answering deserves a full-screen accept/decline surface with the caller's face
-— the native moment people judge a calls app by.
-- **Chats is home.** Empty-state Chats should surface “find your
-people” (Contacts) and “start a call” directly, so a fresh install is never a
-blank page.
-- **Profile is identity.** Picture, name, language and devices are
-there now; verification state should join it so the phone can explain why a
-call cannot start.
+A UI language joins this model only when any UI is localized; a column
+nothing reads is a lie. (LIVE: store, migration 013, routes, both profile
+UIs, both call clients, message path.)
 
-## 4 · Streaming — the coherent-delay programme
+### 1.3 Coherent broadcast — LOCKED, with the timeline rule
 
-Your ruling is the right architecture: **a broadcast is not a call.**
-A viewer does not need the last two seconds; they need picture, original
-audio, translated voice and captions that *agree with each other*. The
-platform buys that with a fixed, disclosed delay.
+The programme delay is an **end-to-end glass-to-glass SLO**, not a server
+sleep: **~45 seconds target, operating range ~30–60s**, with a **90s
+Broadcast Quality mode** for premium voices and hard languages. Every stage
+(STT, MT, TTS, alignment, packaging, CDN/player) is measured at P50/P95/P99
+against an airtime deadline; translated assets must be ready **≥ 6 seconds
+before scheduled airtime**, or the session's next programme selects a longer
+delay.
+
+**The timeline rule (locked):** the delay is a property of the programme's
+timeline, selected before broadcast from measured readiness
+(30 / 45 / 60 / 90).
 
 ```
-Broadcaster ──► ingest ──► coherence buffer (60–120s, your ruling)
-                                    │ transcribe → translate → synthesize
-                                    │ align every asset to video timestamps
-                                    ▼
-Viewer  ◄── one synchronized programme clock at T+delay:
-         video + original audio + translated voice + captions
+During a programme:
+  delay MAY increase gradually if required
+  delay MUST NOT suddenly decrease
 ```
 
-- **Why it works:** today translated speech chases the video and
-loses (measured: video 7.5s behind audio at the jitter buffer). With a
-coherence buffer, translation has tens of seconds of headroom — every segment
-arrives *before* its air time, and lip-drift becomes an alignment choice
-rather than a race.
-- **Delivery:** the buffered programme becomes an HLS ladder
-(the segmenter the upload path already has) — real quality levels for viewers,
-CPU-friendly for the box, and the per-viewer WebRTC re-encode disappears from
-the programme path entirely. WebRTC stays where immediacy matters: calls, and
-an operator-only true-live preview.
-- **Ordering:** phase 1 aligns translated audio and captions to
-the delayed clock (server buffers, single output); phase 2 adds the HLS ladder
-and quality selection; phase 3 adds DVR (“from the start”) and the recording
-becoming a replayable programme automatically.
-- **Estimate:** phase 1 ≈ 1–2 days, phase 2 ≈ 2–3 days, phase 3
-≈ 1 day — each independently shippable and each measurable by the programme
-probe before you ever have to listen for yourself.
+A viewer at T+45 must never be jumped forward over programme they haven't
+seen. Adaptive means *choose the lowest safe delay and defend it* — not
+*move the viewer around the timeline*.
 
-## 5 · Channels — who can watch, in three words
+### 1.4 Voice system — LOCKED as three levels
 
+```
+STANDARD VOICE     platform synthetic voice, no enrollment
+LIVE VOICE MATCH   ephemeral similarity, when provider-supported;
+                   no persistent clone
+MY C7 VOICE        persistent personal voice: explicit enrollment,
+                   explicit consent, user-controlled deletion,
+                   provider-side deletion
+```
 
-| Tier | Listed? | Who gets in |
-|---|---|---|
-| Public | In the directory | Anyone who knows the channel |
-| Private | No | Anyone holding your invite link |
-| Locked | No | Code required — typed, or carried by an access link |
+Never collapsed into a single "voice cloning" toggle. Legal boundary,
+retained: synthesis using a person's own chosen/enrolled voice ✓;
+identifying an unknown person by their voice ✗.
 
-All three are live (codes hashed, compared constant-time). On/off is
-the broadcast itself: Start Interpretation turns the channel live,
-End turns it off — and since tonight, off actually means off (the directory bug
-that kept channels “LIVE” forever is fixed). Every operator account owns one
-stable channel; the operator console is now **granted, not
-ambient** — accounts on the grant list (you hold it) can operate,
-everyone else is refused at the socket.
+### 1.5 Operator model — LOCKED
 
-## 6 · Identity — language, face, badge
+Environment grant list (`OPERATOR_CONSOLE_ACCOUNT_IDS`, fail-closed) is
+acceptable **only while every operator is a controlled internal account**.
+Before the first external broadcaster:
 
-- **Default language** is an account fact: chosen once in Profile
-(web or phone), and every call enters speaking and hearing it. The join screen
-still allows per-call changes — the default is a preload, not a cage.
-- **Face and name** now follow you into calls: tiles show the
-profile picture (or honest initials) with the name at reading size — the same
-prominence as the samples on the description page.
-- **The official C7 badge** exists as a mechanism no code path can
-grant — an environment list only you control. Contacts, conversations and
-/me all carry it; the teal “C7” chip renders wherever the name does.
+```
+APPLICATION → PENDING → APPROVED/REJECTED → OperatorGrant
+(channelId, accountId, role, grantedBy, grantedAt, revokedAt) — auditable,
+revocable, no deployment required to grant or revoke.
+```
 
-## 7 · The rulings only you can make
+---
 
-> **Ruling needed** — **The text-translation unit.** Calls bill in seconds; text has no
-seconds. Recommendation: 1 unit per 100 characters translated, standard
-grade (opus-mt is self-hosted — cost is compute, not vendor fees).
-Messaging stays visibly “free during staging” until you rule.
+## 2 · Where the platform stands (all LIVE on staging)
 
-> **Ruling needed** — **Which account is the official C7.** The badge and the master
-developer role want a dedicated account (not your personal ones). Create it,
-tell me the username, and I add it to the badge and operator grants.
+- **Translated conversations**: per-pair Translate toggle (either side flips
+  it; the flip affects the next message, nothing retroactive), renderings
+  marked, original always revealable, multi-sentence messages translate
+  whole (opus-mt is fed one sentence per call — it silently dropped the
+  second sentence otherwise). Verified: *"Una prueba más. Dos oraciones esta
+  vez."*
+- **Voice notes** work at real sizes — two independent server bugs fixed: the
+  global 16kb body parser consumed every upload before the route-scoped 6mb
+  parser ran (Express mount order), and the media directory was
+  write-protected under the unit sandbox.
+- **Language facts** (§1.2) end to end.
+- **Faces and real names on call tiles**, web and phone: the seat's verified
+  `accountId` crosses the wire (server-derived, never client-supplied) and
+  renders the profile picture with honest initials as fallback. The
+  room-visibility privacy pin was *revised, not deleted*: session tokens,
+  resume tokens and the voiceOwnerId field never cross; the deliberate
+  accountId disclosure is itself pinned.
+- **Official C7 badge** mechanism: `OFFICIAL_ACCOUNT_IDS` env — a badge no
+  route can grant is a badge no bug can grant. Surfaced on /me, contacts,
+  conversation partners. **Badge is identity, never authority** — identity
+  claims, operator grants, verification and platform roles remain separate
+  concepts.
+- **Operator console gated** (§1.5).
+- **Channels**: public / private / locked live, with scrypt-hashed
+  per-channel-salted codes, per-client five-strikes/60s guess lockout, and
+  the stale-LIVE bug fixed (ending a broadcast clears the session's own
+  channel state — off actually means off).
 
-> **Ruling needed** — **The coherence delay.** 60, 90 or 120 seconds as the platform
-default (my recommendation: 90 — comfortable headroom for premium voices, still
-“tonight” for the audience). Shown to viewers honestly as “≈90s behind live”.
+---
 
-> **Ruling needed** — **Operator grants beyond you.** Today the console grant list is
-your two accounts. When outside broadcasters join, the grant should become a
-product step (apply → approve) rather than an environment edit — say when.
+## 3 · Web app — the hub-and-rooms flow
 
-## 8 · Known refinements, honestly listed
+**Marketing pages sell; the dashboard operates. Nothing *privileged* is
+reachable without an authenticated account — but every media participant
+receives a scoped session.** Public programmes are watchable with no account
+(and already are, today). Invited call guests join without registering.
+Creators and operators must hold accounts; viewers need not.
 
-- opus-mt kept only the first sentence of a two-sentence message in one
-staging test — the text route should split on sentence boundaries and rejoin.
-Small fix, queued.
-- Web↔phone A/V sync inside *calls* is good; the programme path's cure
-is section 4, not more tuning of the live race.
-- Nigerian languages (yo/ha/ig/pcm) remain premium-routed and vendor-blocked
-pending a better provider — unchanged from your earlier ruling.
-- The next APK (building now) carries: real safe-area insets, the image
-picker, the C7 icon, and self-naming audio errors.
+```
+Signed out   /             product story, samples, Join C7
+             /videofy/live product page → Join C7 to start calls
+             /listen/      public programmes, NO account required
 
-*Prepared 27 Aug 2026 · everything in §1 verified by machine
-probes on staging before being written here.*
+Signed in    /app/         My C7 hub
+             ├─ Overview     start/join call · programme cards · activity
+             ├─ Messages     threads · Translate toggle · voice notes
+             ├─ Contacts     requests → contacts → sent · Call / Message
+             ├─ Profile      picture · name · languages · devices
+             └─ Verification trust state, one place only
+
+Products     /call/        joins with your session (name, languages, face)
+             /operator/    granted accounts only
+```
+
+Next passes (post-integration): a real activity rail on Overview;
+contacts-first call hierarchy (person → invite link → group → conference
+code, codes as infrastructure not the main human model); one shared design
+system (`packages/c7-style`: tokens + card/pill/badge/row/bubble).
+
+---
+
+## 4 · Mobile app — one thing at a time
+
+**Tabs are places, overlays are moments.** Call > Chat > tabs; nothing else
+stacks. Push routes: ring → call screen, message → that chat, cold-start
+included.
+
+Next passes: a genuinely native incoming-call surface — on Android via the
+Telecom framework (self-managed ConnectionService, full-screen intent
+permissions handled correctly), not merely a React Native screen on a push;
+Chats empty-state that leads somewhere; verification state on Profile.
+
+---
+
+## 5 · Streaming — the coherent programme
+
+Architecture (design locked, build next after integration):
+
+```
+Broadcaster → ingest → coherence pipeline (delay per §1.3)
+                        ├ transcribe → translate → synthesize
+                        └ align every asset to capture timestamps
+            → HLS: ONE video ladder + per-language audio renditions
+                   + WebVTT caption renditions (never one video copy
+                   per language)
+            → viewer joins the programme clock at T+delay;
+              preferred listening language selects the rendition
+```
+
+**Deadline-miss doctrine (locked):** the programme clock never moves
+backward, and nobody stalls because one language is late.
+
+```
+ON LANGUAGE TRACK DEADLINE MISS
+  video, original audio, other languages, ready captions: continue
+  the late track: marked temporarily unavailable → original-audio
+  fallback → recovery at next segment boundary
+  logged: programme_translation_deadline_miss
+          {language, segment, provider, latency, fallback}   ← core SLO
+```
+
+**LIVE is a session, not a flag**: `BroadcastSession`
+(SCHEDULED/STARTING/LIVE/ENDING/ENDED/FAILED) with heartbeat/lease becomes
+the source of truth — a channel is live iff an authoritative LIVE session
+exists. This also carries schedule, DVR ("start from beginning"),
+automatic replay of every generated language track, and programme history.
+
+Phases: (1) delayed-coherent single output; (2) HLS ladder + renditions +
+quality selection; (3) DVR + automatic replay. Each independently shippable
+and machine-measurable by the programme probe.
+
+---
+
+## 6 · Channels — who can watch
+
+| Tier | Display | Listed? | Who gets in |
+|---|---|---|---|
+| public | Public | Yes | Anyone who knows the channel |
+| private | **Private · Link-only** | No | Anyone holding the invite link |
+| locked | Locked | No | Code required — typed, or carried by access grant |
+
+A bearer link is never sold as plain "Private". A future **Members** tier
+(authenticated memberships/organisations) is its own tier — never forced
+into Locked.
+
+**Access links (design locked, build next):** a link that bypasses typing
+the code is a **revocable signed grant** — `{channelId, grantId,
+scope=VIEW, expiresAt, nonce}` server-backed — never `?code=482914`.
+Revoking a grant kills that link without rotating the channel code, so a
+broadcaster can invite VIPs, staff, media, subscribers and sponsors on
+separately revocable invitations.
+
+On/off is the broadcast itself: Start Interpretation → live; End → off
+(and off means off).
+
+---
+
+## 7 · Programme Vocabulary — a broadcast-quality feature
+
+Not merely an STT keyword list. A term influences the whole chain:
+
+```
+ProgrammeTerm {
+  canonicalText            "Bola Ahmed Tinubu"
+  sourceLanguage
+  sttAliases               ["Tinubu", "President Tinubu"]
+  pronunciationHint?
+  doNotTranslate?          true for names like "Abeokuta"
+  translations? { fr, es, yo, ha, ig, ... }   e.g. yo: "Bọ́lá Ahmed Tinúbú"
+}
+        ↓ STT (keyword boosting — Deepgram supports this natively)
+        ↓ translation (canonical renderings / do-not-translate)
+        ↓ TTS (pronunciation)
+```
+
+Operators load vocabulary before going live. In Nigeria this will move
+perceived quality more than switching models.
+
+---
+
+## 8 · Nigerian languages — qualification-blocked, not vendor-blocked
+
+Providers now exist (9jaLingo advertises yo/ha/ig/pcm TTS+streaming+cloning;
+Azure lists yo/ha/ig text; ElevenLabs lists ha/ig TTS and yo/ha/ig STT).
+Vendor claims — including 9jaLingo's <300ms first-chunk — are **benchmarked,
+never believed**; our own earlier measurement of 9jaLingo (latency, quota)
+is also re-run, not assumed still true.
+
+**Qualification pipeline:** provider exists → quality benchmark → latency
+benchmark → accent/dialect benchmark → privacy/DPA → deletion & voice-clone
+controls → cost/concurrency → PRODUCTION APPROVAL. Routing then becomes
+empirical per language, and that routing layer is proprietary value.
+
+**The corpus is controlled, not scraped** — first qualification round:
+
+- 5–10 speakers per language (Yoruba, Hausa, Igbo, Nigerian Pidgin),
+  mixed genders, ages, regions/accents.
+- Each speaker records: 20 ordinary sentences · 10 names/places ·
+  10 numbers/dates/money · 10 fast conversational · 10 slang ·
+  5 long sentences · 5 code-switched. Noise variants added separately.
+- ≈ 70 utterances × 8 speakers × 4 languages ≈ **2,240 utterances**.
+- Every speaker signs a simple recorded-data consent/release: recordings are
+  for **Videofy language-provider testing**, not general AI model training.
+- Measured: STT WER, meaning preservation, proper-name accuracy,
+  tone/diacritic handling, TTS naturalness, first-audio latency, full
+  latency, voice similarity, provider failure rate.
+
+*The speakers are the one input only the founder's community can provide.*
+
+---
+
+## 9 · Identity — language, face, badge
+
+- Languages per §1.2; the join screen still allows per-call changes — the
+  account facts are a preload, not a cage.
+- Faces and names follow people into calls at reading prominence.
+- The official badge renders as the teal **C7** chip wherever the name does,
+  and grants nothing (§2).
+
+---
+
+## 10 · Release governance (28 Aug ruling)
+
+`p7/billing-tariff-and-language-routing` is no longer a feature branch; it
+is the **Videofy integration / release-candidate branch**, and is treated as
+such:
+
+1. This document pass is the branch's next commit. ✔
+2. Architecture additions on this branch are frozen.
+3. The complete repository gate runs: builds, typecheck, hygiene, build
+   order, all workspace tests, instrumentation checks, deployment smoke
+   probes.
+4. The staging acceptance matrix runs; items that require physical devices
+   or human ears are listed as HUMAN, not silently skipped.
+5. The integration PR to `main` is created and held.
+6. `main` gains protection: PR required, required CI, no force pushes.
+7. The branch is reviewed as an integration release, not line-by-line.
+8. The passing head is tagged as the release candidate; only then is it
+   merged.
+9. The coherent-programme/HLS work is cut from the clean post-merge base.
+
+---
+
+## 11 · Standing refinements ledger
+
+- "Translation unavailable" should be *visible* to the reader when a
+  rendering was expected and the original was delivered instead (post-merge
+  client polish; the server event already fires).
+- Web↔phone A/V sync inside calls is good; the programme path's cure is §5.
+- The operator console's status pills must never again say "Live" while the
+  pipeline is dead — the programme probe is the standing guard.
+- Fair-use ceilings for included text translation: defined after staging
+  usage data exists (§1.1).
