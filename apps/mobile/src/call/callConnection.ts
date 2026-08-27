@@ -42,6 +42,7 @@ import { CALL_EVENTS } from '@videofy-live/call-wire';
 import {
   CallVideoMesh,
   buildCallJoinPayload,
+  createCallSocketOptions,
   createInitialCallJoinForm,
   type CallJoinAck,
   type CallVideoIcePayload,
@@ -127,8 +128,24 @@ export class CallConnection {
   async join(): Promise<CallJoinAck> {
     const local = await this.openLocalMedia();
 
+    /*
+     * `createCallSocketOptions` CARRIES `role: 'call-participant'` IN THE
+     * HANDSHAKE QUERY, and omitting it is why this silently did nothing.
+     *
+     * The gateway decides which handlers a socket gets from that role. Without
+     * it the connection is treated as a LISTENER, no call handlers are
+     * registered, and `call:join` is received by nobody -- no error, no refusal,
+     * no ack, just silence until the client's own timeout. The log said
+     * "Listener connected" and then "disconnected, role: listener" fifteen
+     * seconds later, which is the shape of a client that connected perfectly
+     * and was never in the conversation it thought it was having.
+     *
+     * The shared package has always known this. Building the options by hand
+     * meant re-deriving a contract that was already written down, and getting
+     * it wrong in the one field with no visible failure.
+     */
     const socket = io(this.options.gatewayUrl, {
-      transports: ['websocket'],
+      ...createCallSocketOptions(),
       // A phone changes network constantly; reconnecting is the normal case.
       reconnection: true,
     });
