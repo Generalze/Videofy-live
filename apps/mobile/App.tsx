@@ -1,45 +1,52 @@
 /** @author masterzee001 */
 /**
- * The app, and the single place that knows who is signed in.
+ * The app: chats, contacts, calls and a profile, behind one session.
  *
- * ONE SOURCE OF TRUTH. Routing is derived from `AuthSessionManager`'s state and
- * from nothing else -- no screen navigates on success, no component keeps its
- * own idea of whether somebody is signed in. Two answers to that question is how
- * a signed-out app keeps showing signed-in content.
+ * ONE SOURCE OF TRUTH ABOUT WHO IS SIGNED IN. Routing derives from
+ * `AuthSessionManager` state; tabs, the open chat and the active call are view
+ * state layered on top, and none of them can influence whether somebody is
+ * signed in. Overlays win over tabs: an active call covers everything, an open
+ * chat covers the tab bar, because a phone screen is one thing at a time.
  *
- * THE SERVICES ARE BUILT ONCE, at module scope, because they own things that
- * must not be duplicated: a device id minted on first use, a rotation
- * subscription, an in-flight sign-in guard. Rebuilding them on a re-render would
- * quietly produce two of each.
+ * NOTIFICATIONS ARE ROUTES. A ring notification carries a callId and lands in
+ * the call screen; a message notification carries the sender and lands in that
+ * chat. Both are handled for the three lives of a notification: foreground
+ * (listener), background tap (response listener), and cold start (the initial
+ * response, read once). The payload is DATA -- the discreet message push
+ * carries no words, so there is nothing to display until the app fetches.
  *
- * ROTATION IS TIED TO THE SESSION, started when signed in and stopped when
- * signed out. A listener outliving the account it was started for would
- * re-register this phone against a session that no longer exists.
- *
- * WHAT REPLACED THE PRE-AUTH DIAGNOSTIC. This screen used to run three
- * unauthenticated probes -- reachable, permitted, token issued -- because there
- * was no sign-in and the honest thing was to prove what could be proven. That
- * checkpoint passed on a real device and is frozen at 395d379. Those three
- * conditions are now preconditions of registering, and each still surfaces by
- * name when registration fails, so nothing was lost by removing the screen that
- * checked them separately.
+ * THE DEVICE REGISTERS ITSELF. Binding this phone to the account is not a
+ * feature somebody should have to find a button for; it happens on every
+ * signed-in start, the outcome is reported on the profile screen, and the
+ * rotation listener keeps the token current for as long as the session lives.
  */
 import { StatusBar } from 'expo-status-bar';
+import * as Notifications from 'expo-notifications';
 /*
  * React 19 removed the GLOBAL JSX namespace, so `JSX.Element` no longer
  * resolves without an import. It is exported from 'react' instead.
  */
-import { useCallback, useEffect, useState, type JSX } from 'react';
-import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { AuthSessionManager, type AuthState } from './src/auth/authSessionManager';
 import { createSecureSessionStore } from './src/auth/secureSessionStore';
 import { createDeviceIdentity } from './src/push/deviceIdentity';
 import { createPushTokenService } from './src/push/pushTokenService';
-import { DeviceRegistrationService } from './src/push/deviceRegistrationService';
+import {
+  DeviceRegistrationService,
+  type RegistrationOutcome,
+} from './src/push/deviceRegistrationService';
+import { randomId } from './src/push/randomId';
+import { createApi } from './src/api/client';
+import type { ContactPerson } from './src/api/client';
 import { SignInScreen } from './src/screens/SignInScreen';
 import { SignUpScreen } from './src/screens/SignUpScreen';
-import { HomeScreen } from './src/screens/HomeScreen';
 import { CallScreen } from './src/screens/CallScreen';
+import { CallHomeScreen } from './src/screens/CallHomeScreen';
+import { ChatScreen } from './src/screens/ChatScreen';
+import { ContactsScreen } from './src/screens/ContactsScreen';
+import { ConversationsScreen } from './src/screens/ConversationsScreen';
+import { ProfileScreen } from './src/screens/ProfileScreen';
 
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
 const ACCOUNT_BASE_URL =
@@ -50,43 +57,55 @@ const auth = new AuthSessionManager({
   store: createSecureSessionStore(),
 });
 
+const authorizedFetch = (path: string, init?: RequestInit) => auth.authorizedFetch(path, init);
+const api = createApi(authorizedFetch);
+
 const devices = new DeviceRegistrationService({
-  // The narrow capability, bound once. This is the only route from push code to
-  // an authenticated request, and it cannot reach the credential behind it.
-  authorizedFetch: (path, init) => auth.authorizedFetch(path, init),
+  authorizedFetch,
   identity: createDeviceIdentity(),
   pushTokens: createPushTokenService(),
   platform: Platform.OS === 'ios' ? 'ios' : Platform.OS === 'android' ? 'android' : 'web',
   label: Platform.OS === 'ios' ? 'iPhone' : 'Android phone',
 });
 
-/** Why somebody is at the sign-in screen, when it was not their choice. */
+/*
+ * Foreground notifications still show. Without a handler Android suppresses
+ * them while the app is open, and a ring that arrives mid-scroll would be a
+ * ring nobody saw.
+ */
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
+
 const NOTICE: Partial<Record<string, string>> = {
   expired: 'Your session expired. Sign in again to continue.',
   revoked: 'You were signed out. Sign in again to continue.',
 };
 
+type Tab = 'chats' | 'contacts' | 'call' | 'profile';
+
+interface ActiveCall {
+  readonly callId: string;
+  /** Present when this call should ring a contact once joined. */
+  readonly ring?: ContactPerson;
+}
+
 export default function App(): JSX.Element {
   const [state, setState] = useState<AuthState>(auth.current());
-  /*
-   * Which signed-out screen to show. Deliberately NOT part of `AuthState`: the
-   * session manager answers "is somebody signed in", and whether a person is
-   * currently looking at sign-in or sign-up is a view concern that must not be
-   * able to influence that answer.
-   */
   const [wantsAccount, setWantsAccount] = useState(false);
-  /*
-   * The call in progress, if any. A view concern like `wantsAccount`, and
-   * deliberately not part of `AuthState`: being in a call must not be able to
-   * influence whether somebody is signed in.
-   */
-  const [activeCall, setActiveCall] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>('chats');
+  const [chatWith, setChatWith] = useState<ContactPerson | null>(null);
+  const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
+  const [deviceOutcome, setDeviceOutcome] = useState<RegistrationOutcome | null>(null);
+  const [emailVerified, setEmailVerified] = useState<boolean | null>(null);
+  const handledColdStart = useRef(false);
 
   useEffect(() => {
-    /*
-     * Subscribed BEFORE restoring, or the state change restore produces lands
-     * before anything is listening and the first render never updates.
-     */
     const manager = auth as unknown as { onState?: ((s: AuthState) => void) | undefined };
     manager.onState = setState;
     void auth.restore();
@@ -95,16 +114,61 @@ export default function App(): JSX.Element {
     };
   }, []);
 
-  /*
-   * Rotation follows the SESSION, not the component. Stopped on unmount too, so
-   * a backgrounded app does not leave a listener behind.
-   */
+  /** Open the chat with an account id, resolving the person when possible. */
+  const openChatWithAccount = useCallback(async (accountId: string) => {
+    const contacts = await api.contacts();
+    const person = contacts.ok
+      ? (contacts.value.contacts.find((c) => c.accountId === accountId) ?? null)
+      : null;
+    setChatWith(person ?? { accountId, username: null, displayName: null });
+    setTab('chats');
+  }, []);
+
+  const routeNotification = useCallback(
+    (data: Record<string, unknown>) => {
+      const kind = String(data['kind'] ?? '');
+      if (kind === 'call' && typeof data['callId'] === 'string') {
+        setActiveCall({ callId: data['callId'] });
+      } else if (kind === 'message' && typeof data['fromAccountId'] === 'string') {
+        void openChatWithAccount(data['fromAccountId']);
+      }
+    },
+    [openChatWithAccount],
+  );
+
+  /* Taps on notifications: background, and -- exactly once -- cold start. */
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      routeNotification(
+        (response.notification.request.content.data ?? {}) as Record<string, unknown>,
+      );
+    });
+    if (!handledColdStart.current) {
+      handledColdStart.current = true;
+      void Notifications.getLastNotificationResponseAsync().then((response) => {
+        if (response !== null) {
+          routeNotification(
+            (response.notification.request.content.data ?? {}) as Record<string, unknown>,
+          );
+        }
+      });
+    }
+    return () => subscription.remove();
+  }, [routeNotification]);
+
+  /* The session drives registration, rotation, and the verification banner. */
   useEffect(() => {
     if (state.status !== 'signed-in') {
       devices.stopWatchingForRotation();
+      setDeviceOutcome(null);
+      setEmailVerified(null);
       return;
     }
+    void devices.register().then(setDeviceOutcome);
     devices.startWatchingForRotation();
+    void api.verification().then((result) => {
+      if (result.ok) setEmailVerified(result.value.email === 'verified');
+    });
     return () => devices.stopWatchingForRotation();
   }, [state.status]);
 
@@ -113,12 +177,15 @@ export default function App(): JSX.Element {
     (email: string, password: string, username: string) => auth.signUp(email, password, username),
     [],
   );
-  const register = useCallback(() => devices.register(), []);
   const signOut = useCallback(async () => {
-    // Stopped FIRST: a rotation arriving during sign-out must not race the
-    // clearing of the session it would otherwise register against.
     devices.stopWatchingForRotation();
+    setChatWith(null);
+    setActiveCall(null);
     await auth.signOut();
+  }, []);
+
+  const callContact = useCallback((person: ContactPerson) => {
+    setActiveCall({ callId: `ring-${randomId('').slice(0, 8)}`, ring: person });
   }, []);
 
   if (state.status === 'starting' || state.status === 'validating') {
@@ -131,55 +198,120 @@ export default function App(): JSX.Element {
     );
   }
 
-  if (state.status === 'signed-in') {
-    if (activeCall !== null) {
-      return (
-        <>
-          <StatusBar style="light" />
-          <CallScreen
-            callId={activeCall}
-            displayName={state.accountId}
-            /*
-             * The gateway assigns the participant id from this token; a client
-             * that could name an account could name somebody else's.
-             */
-            sessionToken={auth.callSessionToken()}
-            onLeave={() => setActiveCall(null)}
-          />
-        </>
-      );
-    }
-    return (
+  if (state.status !== 'signed-in') {
+    return wantsAccount ? (
       <>
         <StatusBar style="light" />
-        <HomeScreen
-          accountId={state.accountId}
-          onRegister={register}
-          onSignOut={signOut}
-          onCall={setActiveCall}
+        <SignUpScreen onSignUp={signUp} onBackToSignIn={() => setWantsAccount(false)} />
+      </>
+    ) : (
+      <>
+        <StatusBar style="light" />
+        <SignInScreen
+          onSignIn={signIn}
+          onCreateAccount={() => setWantsAccount(true)}
+          notice={NOTICE[state.reason ?? '']}
         />
       </>
     );
   }
 
-  if (wantsAccount) {
+  if (activeCall !== null) {
+    const ringPerson = activeCall.ring;
     return (
       <>
         <StatusBar style="light" />
-        <SignUpScreen onSignUp={signUp} onBackToSignIn={() => setWantsAccount(false)} />
+        <CallScreen
+          callId={activeCall.callId}
+          displayName={state.accountId}
+          sessionToken={auth.callSessionToken()}
+          ringName={
+            ringPerson === undefined
+              ? undefined
+              : (ringPerson.displayName ?? ringPerson.username ?? ringPerson.accountId)
+          }
+          onRing={
+            ringPerson === undefined
+              ? undefined
+              : async (callId) => {
+                  const result = await api.ring(ringPerson.accountId, callId);
+                  return result.ok ? result.value.reachedDevices : null;
+                }
+          }
+          onLeave={() => setActiveCall(null)}
+        />
+      </>
+    );
+  }
+
+  if (chatWith !== null) {
+    return (
+      <>
+        <StatusBar style="light" />
+        <ChatScreen
+          api={api}
+          authorizedFetch={authorizedFetch}
+          selfId={state.accountId}
+          partner={chatWith}
+          onBack={() => setChatWith(null)}
+          onCall={callContact}
+        />
       </>
     );
   }
 
   return (
-    <>
+    <View style={styles.shell}>
       <StatusBar style="light" />
-      <SignInScreen
-        onSignIn={signIn}
-        onCreateAccount={() => setWantsAccount(true)}
-        notice={NOTICE[state.reason ?? '']}
-      />
-    </>
+      <View style={styles.tabContent}>
+        {tab === 'chats' && (
+          <ConversationsScreen
+            api={api}
+            selfId={state.accountId}
+            onOpen={setChatWith}
+            onFindContacts={() => setTab('contacts')}
+          />
+        )}
+        {tab === 'contacts' && (
+          <ContactsScreen api={api} onMessage={setChatWith} onCall={callContact} />
+        )}
+        {tab === 'call' && (
+          <CallHomeScreen
+            emailVerified={emailVerified}
+            onJoin={(callId) => setActiveCall({ callId })}
+          />
+        )}
+        {tab === 'profile' && (
+          <ProfileScreen
+            api={api}
+            deviceOutcome={deviceOutcome}
+            onRetryDevice={async () => {
+              setDeviceOutcome(await devices.register());
+            }}
+            onSignOut={signOut}
+          />
+        )}
+      </View>
+      <View style={styles.tabBar}>
+        {(
+          [
+            ['chats', 'Chats'],
+            ['contacts', 'Contacts'],
+            ['call', 'Call'],
+            ['profile', 'Profile'],
+          ] as const
+        ).map(([key, label]) => (
+          <Pressable
+            key={key}
+            onPress={() => setTab(key)}
+            accessibilityRole="button"
+            style={styles.tabButton}
+          >
+            <Text style={[styles.tabLabel, tab === key && styles.tabActive]}>{label}</Text>
+          </Pressable>
+        ))}
+      </View>
+    </View>
   );
 }
 
@@ -192,4 +324,17 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   waiting: { color: '#5d6874', fontSize: 14 },
+  shell: { flex: 1, backgroundColor: '#0b0f14', paddingTop: 40 },
+  tabContent: { flex: 1 },
+  tabBar: {
+    flexDirection: 'row',
+    borderTopWidth: 1,
+    borderTopColor: '#161d25',
+    paddingBottom: 22,
+    paddingTop: 8,
+    backgroundColor: '#0b0f14',
+  },
+  tabButton: { flex: 1, alignItems: 'center', paddingVertical: 6 },
+  tabLabel: { color: '#5d6874', fontSize: 13, fontWeight: '600' },
+  tabActive: { color: '#3ec9c0' },
 });

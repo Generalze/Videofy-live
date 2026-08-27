@@ -67,6 +67,14 @@ export interface CallScreenProps {
   readonly displayName: string;
   /** Null is valid: it means this client can JOIN but not CREATE a call. */
   readonly sessionToken: string | null;
+  /**
+   * When set, ring this contact AFTER the join succeeds. Order is the
+   * contract: only a verified account may CREATE a call, so the caller joins
+   * first (becoming the host) and rings second -- ring-then-join would race
+   * the callee into being the creator.
+   */
+  readonly ringName?: string | undefined;
+  readonly onRing?: ((callId: string) => Promise<number | null>) | undefined;
   readonly onLeave: () => void;
 }
 
@@ -74,6 +82,8 @@ export function CallScreen({
   callId,
   displayName,
   sessionToken,
+  ringName,
+  onRing,
   onLeave,
 }: CallScreenProps): JSX.Element {
   const connection = useRef<CallConnection | null>(null);
@@ -96,6 +106,8 @@ export function CallScreen({
    * call's actual capability.
    */
   const [iceCount, setIceCount] = useState<number | null>(null);
+  /** null: not ringing anybody. -1: ring failed. >=0: phones reached. */
+  const [rang, setRang] = useState<number | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -144,6 +156,10 @@ export function CallScreen({
          */
         const ack = await call.join();
         if (!live) return;
+        if (ack.ok && onRing !== undefined) {
+          const reached = await onRing(callId);
+          if (live) setRang(reached ?? -1);
+        }
         if (!ack.ok) {
           setError(
             ack.code === 'host-not-authorized'
@@ -207,6 +223,18 @@ export function CallScreen({
             <Text style={styles.warnText}>
               No ICE servers configured. This call can only connect between devices on the same
               network.
+            </Text>
+          </View>
+        )}
+
+        {ringName !== undefined && rang !== null && tiles.length === 0 && (
+          <View style={styles.centreBlock}>
+            <Text style={styles.muted}>
+              {rang > 0
+                ? `Ringing ${ringName}...`
+                : rang === 0
+                  ? `${ringName} has no registered phone, so nothing will ring. Share the code instead.`
+                  : `${ringName} could not be rung. Share the code instead.`}
             </Text>
           </View>
         )}
