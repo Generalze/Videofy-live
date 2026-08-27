@@ -38,6 +38,9 @@ import { createPostgresDeviceRecords } from './db/device-records-postgres.js';
 import { registerDeviceRoutes } from './device-routes.js';
 import { PushDispatcher } from './push/push-dispatcher.js';
 import { registerPushRoutes } from './push-routes.js';
+import { MessageStore, createInMemoryMessagePort } from './message-store.js';
+import { createPostgresMessageRecords } from './db/message-records-postgres.js';
+import { registerMessageRoutes } from './message-routes.js';
 import { createFcmProviderFromEnv } from './push/fcm-provider.js';
 import { resolveInternalIngressAuth } from '@videofy-live/service-env';
 import { VerificationService } from './verification.js';
@@ -553,6 +556,40 @@ registerPushRoutes(app, {
     console.log(JSON.stringify({ service: 'account', event, ...detail }));
   },
 });
+
+/*
+ * MESSAGING. Lives here because its permission model IS the contact graph and
+ * its delivery IS the push dispatcher -- both already in this process. Recorded
+ * as a deliberate seam: if message traffic outgrows identity traffic, the
+ * store and routes lift out together.
+ */
+const messages = new MessageStore({
+  port: databasePool ? createPostgresMessageRecords(databasePool) : createInMemoryMessagePort(),
+});
+registerMessageRoutes(app, {
+  store,
+  contacts,
+  messages,
+  push,
+  mediaDir: process.env['MESSAGE_MEDIA_DIR'] ?? resolve('data', 'message-media'),
+  callerAccountId: createCallerResolver({
+    store,
+    secret,
+    nowSeconds: () => Math.floor(Date.now() / 1000),
+  }),
+  onEvent: (event, detail) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', event, ...detail }));
+  },
+});
+// eslint-disable-next-line no-console
+console.log(
+  JSON.stringify({
+    service: 'account',
+    message: 'Messaging ready',
+    store: databasePool ? 'postgres' : 'ephemeral',
+  }),
+);
 
 const accounts = await store.hydrate();
 // A count, never an address. A log of who has an account is a record of who

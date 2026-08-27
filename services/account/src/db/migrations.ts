@@ -424,6 +424,47 @@ const DEVICES: Migration = {
   `,
 };
 
+/**
+ * 010 -- messages between contacts.
+ *
+ * The pair columns mirror the contacts table exactly, because a conversation
+ * IS the relationship: messages are keyed by the same sorted (low, high) pair
+ * as the contact edge that authorises them. There is no conversations table --
+ * a conversation with no messages is nothing, and one with messages is fully
+ * described by them.
+ *
+ * `media_path` is a server-side file path, never a URL: voice audio is served
+ * only through an authenticated route that checks the caller is a participant.
+ * The two indexes serve the only two hot reads -- a conversation page, and the
+ * unread count per pair.
+ */
+const MESSAGES: Migration = {
+  name: '010_messages',
+  sql: `
+    CREATE TABLE IF NOT EXISTS messages (
+      message_id        text    PRIMARY KEY,
+      low_account_id    text    NOT NULL,
+      high_account_id   text    NOT NULL,
+      sender_id         text    NOT NULL,
+      kind              text    NOT NULL,
+      body              text,
+      media_path        text,
+      media_duration_ms integer,
+      created_at_ms     bigint  NOT NULL,
+      read_at_ms        bigint
+    );
+
+    CREATE INDEX IF NOT EXISTS messages_pair_time_idx
+      ON messages (low_account_id, high_account_id, created_at_ms DESC);
+
+    -- Unread lookups filter on the pair plus null read_at_ms; partial index
+    -- keeps it small since read messages are the overwhelming majority.
+    CREATE INDEX IF NOT EXISTS messages_unread_idx
+      ON messages (low_account_id, high_account_id)
+      WHERE read_at_ms IS NULL;
+  `,
+};
+
 /** Applied in this order. Append only. */
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
@@ -435,4 +476,5 @@ export const MIGRATIONS: readonly Migration[] = [
   CONTACTS,
   BILLING_TARIFF,
   DEVICES,
+  MESSAGES,
 ];
