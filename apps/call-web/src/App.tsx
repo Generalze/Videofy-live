@@ -210,6 +210,18 @@ export default function App() {
   const [audioOutputs, setAudioOutputs] = useState<CallAudioOutputDevice[]>([]);
   const [audioOutputId, setAudioOutputId] = useState<string | null>(null);
   /** W7: last-known peer transport states, for resume-time health checks. */
+  /**
+   * Voice-leg diagnostics, rendered in the call header. Field debugging of
+   * "call connected but no audio" burned a day because the page could not say
+   * WHICH link was broken: the receive transport, the slot binding, or the
+   * element playback. Each is now named. `remoteVoiceHeard` is the element's
+   * own verdict (the `playing` event), never an expectation.
+   */
+  const [voiceLegs, setVoiceLegs] = useState<{
+    publish: RTCPeerConnectionState;
+    receive: RTCPeerConnectionState;
+  }>({ publish: 'new', receive: 'new' });
+  const [remoteVoiceHeard, setRemoteVoiceHeard] = useState(false);
   const peerStatesRef = useRef<{ publish: RTCPeerConnectionState; receive: RTCPeerConnectionState }>(
     { publish: 'new', receive: 'new' },
   );
@@ -528,8 +540,10 @@ export default function App() {
       // W4 Path B, re-sourced. The single anonymous remote element it used to
       // come from is gone; this covers EVERY speaker instead of whichever
       // stream happened to land on the shared one.
-      onRemoteOriginalAudibleChange: (audible) =>
-        reportPlaybackRef.current('remote-original', audible ? 'start' : 'end', null),
+      onRemoteOriginalAudibleChange: (audible) => {
+        setRemoteVoiceHeard(audible);
+        reportPlaybackRef.current('remote-original', audible ? 'start' : 'end', null);
+      },
     });
     // The binder decides WHO; the controller decides how it is heard. Keeping
     // them apart is what lets attribution fail closed without silencing
@@ -954,6 +968,22 @@ export default function App() {
    * Both paths are unlocked because they are separate elements: the remote
    * WebRTC stream and the generated clips have their own permissions.
    */
+  /*
+   * While playback is blocked, ANY click on the page is a usable gesture.
+   * The "Enable audio" button stays (it names the problem), but a person who
+   * clicks anything else -- mute, a speaker chip, the transcript -- has just
+   * handed the browser the same permission, and wasting it keeps the call
+   * silent for no reason. Field case: a two-device call where the remote
+   * element was created seconds after the join click and its play() was
+   * refused; the fix must not depend on the person noticing a small chip.
+   */
+  useEffect(() => {
+    if (!playbackBlocked) return;
+    const retry = (): void => handleEnableAudioRef.current();
+    document.addEventListener('click', retry);
+    return () => document.removeEventListener('click', retry);
+  }, [playbackBlocked]);
+
   const handleEnableAudio = (): void => {
     // Unlocks BOTH playback families in the one gesture: the translated-clip
     // player and every per-speaker original element. They are separate media
@@ -964,6 +994,9 @@ export default function App() {
       setPlaybackBlocked(queueRef.current?.getState().status === 'blocked');
     });
   };
+
+  const handleEnableAudioRef = useRef(handleEnableAudio);
+  handleEnableAudioRef.current = handleEnableAudio;
 
   const ensureMicStream = async (): Promise<MediaStream> => {
     const existing = micStreamRef.current;
@@ -1029,6 +1062,7 @@ export default function App() {
       iceServers,
       onConnectionStateChange: (state) => {
         peerStatesRef.current.publish = state;
+        setVoiceLegs((current) => ({ ...current, publish: state }));
       },
       sendOffer: (sdp) =>
         emitSdpOffer(
@@ -1049,6 +1083,7 @@ export default function App() {
       iceServers,
       onConnectionStateChange: (state) => {
         peerStatesRef.current.receive = state;
+        setVoiceLegs((current) => ({ ...current, receive: state }));
       },
       sendOffer: (sdp) =>
         emitSdpOffer(
@@ -1744,6 +1779,8 @@ export default function App() {
           phase={phase}
           statusNote={statusNote}
           playbackBlocked={playbackBlocked}
+          voiceLegs={voiceLegs}
+          remoteVoiceHeard={remoteVoiceHeard}
           translatedAudioUnavailable={translatedAudioUnavailable}
           remoteSpeakers={remoteSpeakers}
           onSpeakerMutedChange={(id, muted) => speakerAudioRef.current?.setMuted(id, muted)}

@@ -123,7 +123,7 @@ export interface CallPeerOptions {
    * speakers cannot be controlled separately. Both are emitted so the existing
    * two-party path is untouched.
    */
-  onRemoteTrack?: (mid: string | null, track: MediaStreamTrack, stream: MediaStream) => void;
+  onRemoteTrack?: (mid: string | null, track: MediaStreamTrack, stream: MediaStream | null) => void;
   /**
    * How many remote speakers this receive peer must be able to carry.
    *
@@ -181,12 +181,22 @@ export class CallPeer {
       }
       this.peer.ontrack = (event) => {
         if (this.closed || event.track.kind !== 'audio') return;
-        const stream = event.streams[0] ?? new MediaStream([event.track]);
+        /*
+         * Hermes has no global MediaStream, and the gateway's backend peer adds
+         * BARE tracks, so on the phone `event.streams` is empty and the old
+         * unconditional `new MediaStream(...)` threw a ReferenceError inside
+         * react-native-webrtc's event dispatch — once per remote slot. The
+         * wrapper is cosmetic (every consumer keys off mid + track), so where
+         * the platform cannot build one, null is passed rather than a crash.
+         */
+        const stream =
+          event.streams[0] ??
+          (typeof MediaStream === 'undefined' ? null : new MediaStream([event.track]));
         // mid comes from the transceiver, never from parsing SDP. Null when the
         // browser cannot say, in which case the binder leaves it unresolved
         // rather than guessing whose voice it is.
         this.options.onRemoteTrack?.(event.transceiver?.mid ?? null, event.track, stream);
-        this.options.onRemoteStream?.(stream);
+        if (stream !== null) this.options.onRemoteStream?.(stream);
       };
     }
   }

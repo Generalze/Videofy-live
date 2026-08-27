@@ -285,7 +285,9 @@ export class CallVideoMesh {
       // Mesh peers carry video only; call audio stays on its own transports.
       if (!this.live(entry) || event.track.kind !== 'video') return;
       const track = event.track;
-      const stream = event.streams[0] ?? new MediaStream([track]);
+      // Same Hermes guard as the audio peer: no global MediaStream there.
+      const stream =
+        event.streams[0] ?? (typeof MediaStream === 'undefined' ? null : new MediaStream([track]));
 
       /**
        * CAMERA OFF MUST CLEAR THE TILE.

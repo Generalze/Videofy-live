@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type JSX } from 'react';
 import type { CallCaptionEntry } from '@videofy-live/call-client-core';
 import { CALL_AUDIO_MODES, CALL_LANGUAGES, languageLabel } from './callFormState';
 import { downloadTranscript, translationDisclosureFor } from '@videofy-live/call-client-core';
@@ -63,6 +63,10 @@ export interface CallScreenProps {
    * it is the ONLY state that offers "Enable audio".
    */
   playbackBlocked: boolean;
+  /** Transport truth for the two voice legs, so silence can name its link. */
+  voiceLegs?: { publish: RTCPeerConnectionState; receive: RTCPeerConnectionState };
+  /** The element's own `playing` verdict for any remote original. */
+  remoteVoiceHeard?: boolean;
   /**
    * Translated audio could not be fetched or decoded. A tap cannot fix it, so
    * offering one would be a button that does nothing — which is worse than
@@ -202,6 +206,7 @@ export function CallScreen(props: CallScreenProps) {
               Enable audio
             </button>
           ) : null}
+          {voiceDiagnostic(props)}
           {!props.playbackBlocked && props.translatedAudioUnavailable ? (
             <span className="translated-audio-unavailable" role="alert">
               Translated audio unavailable
@@ -837,4 +842,34 @@ function statusText(phase: CallConnectionPhase, note: string | null): string {
     default:
       return 'Connecting…';
   }
+}
+
+/**
+ * One line that names the broken link when a call is silent.
+ *
+ * Rendered ONLY when something is actually wrong: a dead voice leg, or a bound
+ * remote speaker whose element never reached `playing`. A healthy call shows
+ * nothing -- this is a debugging surface, not decoration. The wording names the
+ * link, because "no audio" without a link name costs a day of guessing.
+ */
+function voiceDiagnostic(props: CallScreenProps): JSX.Element | null {
+  const legs = props.voiceLegs;
+  if (!legs) return null;
+  const dead = (state: RTCPeerConnectionState): boolean =>
+    state === 'failed' || state === 'disconnected' || state === 'closed';
+  const boundSpeakers = props.remoteSpeakers?.length ?? 0;
+  const audibleExpected = (props.remoteSpeakers ?? []).some(
+    (speaker) => !speaker.muted && !speaker.originalSuppressed && speaker.volume > 0,
+  );
+  const unheard = audibleExpected && props.remoteVoiceHeard === false && !props.playbackBlocked;
+  if (!dead(legs.publish) && !dead(legs.receive) && !unheard) return null;
+  const parts: string[] = [];
+  if (dead(legs.publish)) parts.push(`your voice link is ${legs.publish}`);
+  if (dead(legs.receive)) parts.push(`their voice link is ${legs.receive}`);
+  if (unheard) parts.push(`${boundSpeakers} voice${boundSpeakers === 1 ? '' : 's'} connected but not playing`);
+  return (
+    <span className="voice-diagnostic" role="status">
+      {parts.join(' · ')}
+    </span>
+  );
 }
