@@ -23,6 +23,7 @@ import { BroadcasterCapturePanel } from './BroadcasterCapturePanel';
 import { BroadcasterSignallingPanel } from './BroadcasterSignallingPanel';
 import { BroadcasterWebRtcTransportPanel } from './BroadcasterWebRtcTransportPanel';
 import { ProgrammeSourcePanel } from './ProgrammeSourcePanel';
+import { ProgrammeRecorder, downloadRecording, type ProgrammeRecorderSnapshot } from './programmeRecorder';
 import {
   BroadcasterCaptureController,
   createInitialBroadcasterCaptureSnapshot,
@@ -752,6 +753,34 @@ export default function App(): React.ReactElement {
     targetLanguages,
   ]);
 
+  /**
+   * Programme recording: the operator's own copy of what they broadcast.
+   * Client-side MediaRecorder over the SOURCE stream; see programmeRecorder.
+   */
+  const [recording, setRecording] = useState<ProgrammeRecorderSnapshot>({
+    state: 'idle',
+    startedAtMs: null,
+    error: null,
+  });
+  const recorderRef = useRef<ProgrammeRecorder | null>(null);
+  if (recorderRef.current === null) recorderRef.current = new ProgrammeRecorder(setRecording);
+
+  const handleToggleRecording = useCallback(async (): Promise<void> => {
+    const recorder = recorderRef.current;
+    if (!recorder) return;
+    if (recorder.getSnapshot().state === 'recording') {
+      const blob = await recorder.stop();
+      if (blob) downloadRecording(blob, 'videofy-programme');
+      return;
+    }
+    const stream = programmeSourceManagerRef.current?.getStream();
+    if (!stream) {
+      setMediaError('Start the programme source before recording.');
+      return;
+    }
+    recorder.start(stream);
+  }, []);
+
   const handleStartInterpretation = useCallback(async (): Promise<void> => {
     const source = programmeSourceManagerRef.current?.getSnapshot() ?? programmeSource;
     if (source.sourceType === 'none') {
@@ -1391,6 +1420,13 @@ export default function App(): React.ReactElement {
                   </button>
                   <button
                     type="button"
+                    className={styles.secondaryAction}
+                    onClick={() => void handleToggleRecording()}
+                  >
+                    {recording.state === 'recording' ? 'Stop recording & download' : 'Record'}
+                  </button>
+                  <button
+                    type="button"
                     className={styles.dangerAction}
                     onClick={() => void handleStopProgrammeSource()}
                   >
@@ -1426,6 +1462,11 @@ export default function App(): React.ReactElement {
               )}
             </div>
           </div>
+          {recording.error !== null && (
+            <p className={styles.readinessWarningBanner} role="status">
+              {recording.error}
+            </p>
+          )}
           {workflowSummary.actionableWarning && (
             <p className={styles.readinessWarningBanner} role="status">
               {workflowSummary.actionableWarning}
