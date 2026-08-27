@@ -26,6 +26,7 @@
  * urgency 'high' carries the second.
  */
 import { randomBytes } from 'node:crypto';
+import type { RingRegistry } from './ring-registry.js';
 import { createReadStream } from 'node:fs';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -43,6 +44,8 @@ export interface MessageRouteDependencies {
   readonly push: PushDispatcher;
   /** Where voice-note audio lives. Created on first use. */
   readonly mediaDir: string;
+  /** Pending rings for browsers, which poll instead of receiving push. */
+  readonly rings: RingRegistry;
   readonly callerAccountId: (req: express.Request) => Caller | null;
   readonly onEvent?: (event: string, detail: Record<string, string | number>) => void;
 }
@@ -300,6 +303,14 @@ export function registerMessageRoutes(
       collapseId: callId,
     });
 
+    // The browser half of the ring: phones got a push above, laptops poll.
+    deps.rings.note(resolved.targetId, {
+      callId,
+      fromAccountId: resolved.caller.accountId,
+      fromName: senderName(resolved.caller.accountId),
+      atMs: Date.now(),
+    });
+
     deps.onEvent?.('contact.ring', { delivered: summary.delivered, attempted: summary.attempted });
     /*
      * `reachedDevices: 0` is a real answer the caller should see: it means the
@@ -307,5 +318,39 @@ export function registerMessageRoutes(
      * stop waiting rather than sit in an empty call.
      */
     res.json({ callId, reachedDevices: summary.delivered });
+  });
+
+  /**
+   * Who is calling me right now. Polled by the web dashboard; a phone never
+   * needs this because its ring arrives as a push. Contact authority was
+   * enforced when the ring was sent -- only reachable contacts could note one
+   * -- so possession of the session is the whole check here.
+   */
+  app.get('/rings', (req, res) => {
+    const caller = deps.callerAccountId(req);
+    if (caller === null) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    const rings = deps.rings.pendingFor(caller.accountId, Date.now());
+    res.json({
+      rings: rings.map((ring) => ({
+        callId: ring.callId,
+        fromAccountId: ring.fromAccountId,
+        fromName: ring.fromName,
+        atMs: ring.atMs,
+      })),
+    });
+  });
+
+  /** Joining and declining both dismiss; either way the banner must go. */
+  app.post('/rings/:callId/dismiss', (req, res) => {
+    const caller = deps.callerAccountId(req);
+    if (caller === null) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    deps.rings.dismiss(caller.accountId, String(req.params['callId'] ?? ''));
+    res.json({ dismissed: true });
   });
 }

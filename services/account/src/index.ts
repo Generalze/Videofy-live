@@ -39,6 +39,8 @@ import { registerDeviceRoutes } from './device-routes.js';
 import { PushDispatcher } from './push/push-dispatcher.js';
 import { registerPushRoutes } from './push-routes.js';
 import { MessageStore, createInMemoryMessagePort } from './message-store.js';
+import { RingRegistry } from './ring-registry.js';
+import { registerAvatarRoutes } from './avatar-routes.js';
 import { createPostgresMessageRecords } from './db/message-records-postgres.js';
 import { registerMessageRoutes } from './message-routes.js';
 import { createFcmProviderFromEnv } from './push/fcm-provider.js';
@@ -571,6 +573,8 @@ registerMessageRoutes(app, {
   contacts,
   messages,
   push,
+  // Ephemeral by design: see the registry's own docstring.
+  rings: new RingRegistry(),
   mediaDir: process.env['MESSAGE_MEDIA_DIR'] ?? resolve('data', 'message-media'),
   callerAccountId: createCallerResolver({
     store,
@@ -581,6 +585,16 @@ registerMessageRoutes(app, {
     // eslint-disable-next-line no-console
     console.log(JSON.stringify({ service: 'account', event, ...detail }));
   },
+});
+
+/* Profile pictures. Same caller resolver, own directory. */
+registerAvatarRoutes(app, {
+  avatarDir: process.env['AVATAR_MEDIA_DIR'] ?? resolve('data', 'avatars'),
+  callerAccountId: createCallerResolver({
+    store,
+    secret,
+    nowSeconds: () => Math.floor(Date.now() / 1000),
+  }),
 });
 // eslint-disable-next-line no-console
 console.log(

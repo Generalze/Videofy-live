@@ -18,6 +18,7 @@ import { AccountStore } from '../account-store.js';
 import { ContactStore } from '../contact-store.js';
 import { DeviceStore } from '../device-store.js';
 import { MessageStore, createInMemoryMessagePort } from '../message-store.js';
+import { RingRegistry } from '../ring-registry.js';
 import { PushDispatcher, createRecordingPushProvider } from '../push/push-dispatcher.js';
 import { registerMessageRoutes } from '../message-routes.js';
 import type { Caller } from '../routes.js';
@@ -35,6 +36,7 @@ function caller(accountId: string): Caller {
 }
 
 interface Harness {
+  rings: RingRegistry;
   url: string;
   contacts: ContactStore;
   provider: ReturnType<typeof createRecordingPushProvider>;
@@ -54,6 +56,7 @@ async function harness(): Promise<Harness> {
     pushToken: 'tok_b',
   });
 
+  const rings = new RingRegistry();
   const app = express();
   app.use(express.json({ limit: '16kb' }));
   registerMessageRoutes(app, {
@@ -61,6 +64,7 @@ async function harness(): Promise<Harness> {
     contacts,
     messages: new MessageStore({ port: createInMemoryMessagePort() }),
     push: new PushDispatcher({ devices, providers: [provider] }),
+    rings,
     mediaDir: await mkdtemp(join(tmpdir(), 'msg-media-')),
     callerAccountId: (req) => {
       const id = req.header('x-test-account');
@@ -76,6 +80,7 @@ async function harness(): Promise<Harness> {
     url,
     contacts,
     provider,
+    rings,
     close: () => new Promise<void>((r) => server.close(() => r())),
     as: (accountId, path, init = {}) =>
       fetch(`${url}${path}`, {
@@ -285,5 +290,51 @@ describe('ringing a contact', () => {
       body: JSON.stringify({}),
     });
     expect(response.status).toBe(404);
+  });
+});
+
+describe('rings for the browser', () => {
+  /* Phones get a push; a laptop polls. The same ring must serve both. */
+  it('lists a pending ring for the target and nobody else', async () => {
+    app = await harness();
+    await befriend(app.contacts, 'acct_a', 'acct_b');
+    const rang = (await (
+      await app.as('acct_a', '/contacts/acct_b/ring', { method: 'POST', body: JSON.stringify({}) })
+    ).json()) as { callId: string };
+
+    const forTarget = (await (await app.as('acct_b', '/rings')).json()) as {
+      rings: { callId: string; fromAccountId: string; fromName: string }[];
+    };
+    expect(forTarget.rings.map((r) => r.callId)).toEqual([rang.callId]);
+    expect(forTarget.rings[0]?.fromAccountId).toBe('acct_a');
+
+    // The caller polling their own rings sees nothing: they are not being rung.
+    const forCaller = (await (await app.as('acct_a', '/rings')).json()) as { rings: unknown[] };
+    expect(forCaller.rings).toEqual([]);
+  });
+
+  it('dismiss clears the ring; declining and answering look identical', async () => {
+    app = await harness();
+    await befriend(app.contacts, 'acct_a', 'acct_b');
+    const rang = (await (
+      await app.as('acct_a', '/contacts/acct_b/ring', { method: 'POST', body: JSON.stringify({}) })
+    ).json()) as { callId: string };
+    await app.as('acct_b', `/rings/${rang.callId}/dismiss`, { method: 'POST', body: '{}' });
+    const after = (await (await app.as('acct_b', '/rings')).json()) as { rings: unknown[] };
+    expect(after.rings).toEqual([]);
+  });
+
+  it('expires a stale ring instead of ringing forever', async () => {
+    // Registry-level: the TTL is the registry's own rule, tested without clocks.
+    const rings = new RingRegistry(1000);
+    rings.note('acct_b', { callId: 'ring-x', fromAccountId: 'acct_a', fromName: 'A', atMs: 0 });
+    expect(rings.pendingFor('acct_b', 999).length).toBe(1);
+    expect(rings.pendingFor('acct_b', 1001).length).toBe(0);
+  });
+
+  it('refuses the unauthenticated poll', async () => {
+    app = await harness();
+    const response = await fetch(`${app.url}/rings`);
+    expect(response.status).toBe(401);
   });
 });
