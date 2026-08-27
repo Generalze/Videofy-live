@@ -2442,6 +2442,162 @@ button:focus-visible {
   flex-wrap: wrap;
 }
 
+/* Contacts and messaging on the dashboard. Rows and bubbles reuse the card
+   language; nothing here invents a second design system. */
+.app-contacts {
+  display: grid;
+  gap: 1rem;
+}
+
+.contact-add-row,
+.messages-composer {
+  display: flex;
+  gap: 0.6rem;
+}
+
+.contact-input {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  padding: 0.55rem 0.9rem;
+  color: inherit;
+  font: inherit;
+}
+
+.contact-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.contact-row:last-child {
+  border-bottom: none;
+}
+
+.contact-name {
+  font-weight: 600;
+}
+
+.contact-handle {
+  color: var(--text-faint);
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+}
+
+.contact-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.contact-pending {
+  color: var(--text-faint);
+  font-style: italic;
+  font-size: 0.85rem;
+}
+
+.contact-notice {
+  color: #d9a441;
+  font-size: 0.85rem;
+  margin: 0.4rem 0 0;
+}
+
+.app-messages {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+@media (max-width: 720px) {
+  .app-messages {
+    grid-template-columns: 1fr;
+  }
+}
+
+.messages-list,
+.messages-thread {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 1rem;
+}
+
+.messages-item {
+  position: relative;
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 0.6rem 0.3rem;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.messages-item-active {
+  background: rgba(94, 234, 212, 0.08);
+  border-radius: 8px;
+}
+
+.messages-preview {
+  display: block;
+  color: var(--text-faint);
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.messages-unread {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.4rem;
+  background: #5eead4;
+  color: #06251f;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+}
+
+.messages-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-height: 420px;
+  overflow-y: auto;
+  padding: 0.4rem 0;
+}
+
+.bubble {
+  max-width: 75%;
+  padding: 0.5rem 0.85rem;
+  border-radius: 14px;
+  line-height: 1.45;
+}
+
+.bubble-mine {
+  align-self: flex-end;
+  background: rgba(94, 234, 212, 0.16);
+}
+
+.bubble-theirs {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.messages-footnote {
+  color: var(--text-faint);
+  font-size: 0.78rem;
+  margin: 0.7rem 0 0;
+}
+
 .app-signout {
   margin-top: 0.6rem;
   align-self: flex-start;

@@ -16,6 +16,9 @@ import { internalLink, type Route } from '../router';
 import { ProfilePanel, type Profile } from '../ProfilePanel';
 import { VerificationPanel } from '../VerificationPanel';
 import { clearSessionKeys } from '../session';
+import { ContactsPanel } from '../ContactsPanel';
+import { MessagesPanel } from '../MessagesPanel';
+import type { ContactPerson } from '../accountApi';
 
 const ACCOUNT_URL = (
   (import.meta.env['VITE_ACCOUNT_URL'] as string | undefined) ?? 'http://localhost:3006'
@@ -153,7 +156,11 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
    * what signing in is FOR; profile and verification are places you go, not
    * things that ambush you.
    */
-  const [view, setView] = useState<'overview' | 'profile' | 'verification'>('overview');
+  const [view, setView] = useState<
+    'overview' | 'contacts' | 'messages' | 'profile' | 'verification'
+  >('overview');
+  /** Set when Contacts says "Message": Messages opens on that thread. */
+  const [chatPartner, setChatPartner] = useState<ContactPerson | null>(null);
   const [me, setMe] = useState<Bootstrap | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [organization, setOrganization] = useState<OrganizationDetail | null>(null);
@@ -316,6 +323,8 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
           {(
             [
               ['overview', 'Overview'],
+              ['messages', 'Messages'],
+              ['contacts', 'Contacts'],
               ['profile', 'Profile'],
               ['verification', 'Verification'],
             ] as const
@@ -432,6 +441,26 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
               </article>
             </div>
           )
+        ) : null}
+
+        {view === 'contacts' ? (
+          <ContactsPanel
+            accountUrl={ACCOUNT_URL}
+            token={storedToken() ?? ''}
+            onMessage={(person) => {
+              setChatPartner(person);
+              setView('messages');
+            }}
+          />
+        ) : null}
+
+        {view === 'messages' ? (
+          <MessagesPanel
+            accountUrl={ACCOUNT_URL}
+            token={storedToken() ?? ''}
+            selfId={me.accountId}
+            initialPartner={chatPartner}
+          />
         ) : null}
 
         {view === 'profile' ? (
