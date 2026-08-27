@@ -82,6 +82,13 @@ export function CallScreen({
   const [error, setError] = useState<string | null>(null);
   const [cameraOn, setCameraOn] = useState(true);
   const [joining, setJoining] = useState(true);
+  /*
+   * What the GATEWAY says is in the call, which is not the same as what the
+   * mesh has connected. A black screen cannot distinguish "nobody else is
+   * here" from "somebody is here and the media has not connected" -- and those
+   * have completely different fixes.
+   */
+  const [others, setOthers] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -101,6 +108,9 @@ export function CallScreen({
           ...current,
           [id]: { url: current[id]?.url ?? null, state },
         })),
+      onParticipants: (count) => {
+        if (live) setOthers(count);
+      },
       onError: (message) => {
         if (live) setError(message);
       },
@@ -191,8 +201,18 @@ export function CallScreen({
 
         {tiles.length === 0 && !joining && (
           <View style={styles.centreBlock}>
-            <Text style={styles.muted}>Waiting for someone else to join</Text>
+            <Text style={styles.muted}>
+              {others === 0
+                ? 'Waiting for someone else to join'
+                : `${others} other${others === 1 ? '' : 's'} in this call - connecting media`}
+            </Text>
             <Text style={styles.code}>{callId}</Text>
+            {others > 0 && (
+              <Text style={styles.hint}>
+                They are in the call. If this does not clear, the two devices cannot reach each
+                other directly - which is what ICE servers are for.
+              </Text>
+            )}
           </View>
         )}
 
@@ -256,6 +276,7 @@ const styles = StyleSheet.create({
   centreBlock: { alignItems: 'center', gap: 12, paddingVertical: 40 },
   muted: { color: '#8d99a6', fontSize: 14 },
   code: { color: '#3ec9c0', fontSize: 22, fontFamily: 'monospace', letterSpacing: 2 },
+  hint: { color: '#5d6874', fontSize: 12, textAlign: 'center', lineHeight: 18, paddingHorizontal: 20 },
 
   tile: { gap: 6 },
   video: { width: '100%', aspectRatio: 3 / 4, borderRadius: 12, backgroundColor: '#141a21' },

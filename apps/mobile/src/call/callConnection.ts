@@ -45,6 +45,7 @@ import {
   createCallSocketOptions,
   createInitialCallJoinForm,
   type CallJoinAck,
+  type CallStateSnapshot,
   type CallVideoIcePayload,
   type CallVideoSdpPayload,
 } from '@videofy-live/call-client-core';
@@ -84,12 +85,26 @@ export interface CallConnectionOptions {
   readonly onRemoteStream: (participantId: string, stream: RemoteStream) => void;
   readonly onPeerState: (participantId: string, state: string) => void;
   readonly onError: (message: string) => void;
+  /**
+   * How many OTHER joined participants the gateway reports.
+   *
+   * Surfaced because "nobody else is here" and "somebody is here and the media
+   * has not connected" are different problems with different fixes, and a black
+   * screen cannot tell them apart.
+   */
+  readonly onParticipants?: (count: number) => void;
 }
 
-/** The gateway's view of who is in the call. Only the ids are needed here. */
-interface CallStatePayload {
-  participants?: { participantId?: unknown }[];
-}
+/**
+ * The gateway's view of who is in the call.
+ *
+ * `CallStateSnapshot` from the shared package is the authority on this shape;
+ * this narrows to the two fields the mesh needs. `joined` is NOT optional to
+ * ignore: a participant who has a seat but has not joined yet is somebody to
+ * negotiate with LATER, and creating a peer for them now produces an offer
+ * nobody answers.
+ */
+type CallStatePayload = CallStateSnapshot;
 
 export class CallConnection {
   private readonly options: CallConnectionOptions;
@@ -251,9 +266,13 @@ export class CallConnection {
      */
     socket.on(CALL_EVENTS.STATE, (payload: CallStatePayload) => {
       const remotes = (payload?.participants ?? [])
-        .map((entry) => String(entry?.participantId ?? ''))
+        // JOINED ONLY, exactly as the web client does. A seat that exists but
+        // has not been taken is not somebody to offer to yet.
+        .filter((participant) => participant.joined)
+        .map((participant) => participant.participantId)
         .filter((id) => id.length > 0 && id !== this.participantId);
       mesh.syncParticipants(remotes);
+      this.options.onParticipants?.(remotes.length);
     });
 
     socket.on(CALL_EVENTS.ERROR, (payload: { message?: string }) =>
