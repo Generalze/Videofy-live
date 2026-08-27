@@ -2444,6 +2444,50 @@ button:focus-visible {
 
 /* Contacts and messaging on the dashboard. Rows and bubbles reuse the card
    language; nothing here invents a second design system. */
+.official-badge {
+  display: inline-block;
+  background: #3ec9c0;
+  color: #06251f;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  border-radius: 5px;
+  padding: 0.1rem 0.32rem;
+  margin-left: 0.4rem;
+  vertical-align: middle;
+}
+
+.mode-toggle {
+  margin-left: auto;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  color: inherit;
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.2rem 0.75rem;
+  cursor: pointer;
+}
+
+.mode-toggle-on {
+  background: rgba(94, 234, 212, 0.16);
+  border-color: rgba(94, 234, 212, 0.6);
+  color: #5eead4;
+}
+
+.bubble-reveal {
+  display: block;
+  background: none;
+  border: none;
+  padding: 0;
+  margin-top: 0.15rem;
+  color: var(--text-faint);
+  font-size: 0.68rem;
+  font-style: italic;
+  cursor: pointer;
+  text-align: right;
+}
+
 .avatar {
   display: inline-flex;
   align-items: center;

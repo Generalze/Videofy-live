@@ -179,6 +179,12 @@ export interface CallParticipantSummary {
   speakLanguage: CallLanguage;
   hearLanguage: CallLanguage;
   joined: boolean;
+  /**
+   * The seat's verified C7 account, when they joined signed in. DERIVED
+   * SERVER-SIDE from the session token, never client-supplied. What lets a
+   * tile show the person's profile picture; anonymous seats have none.
+   */
+  accountId?: string;
 }
 
 /** Sanitized session snapshot; parsed defensively, no engineering internals rendered. */

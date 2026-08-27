@@ -31,6 +31,7 @@ import {
   View,
 } from 'react-native';
 import { AvatarView } from '../media/AvatarView';
+import { useBottomInset } from '../ui/insets';
 import {
   AudioModule,
   RecordingPresets,
@@ -113,12 +114,20 @@ export function ChatScreen({
 
   const startRecording = useCallback(async () => {
     setError(null);
-    const permission = await AudioModule.requestRecordingPermissionsAsync();
-    if (!permission.granted) {
-      setError('Microphone access is needed for voice notes.');
-      return;
-    }
     try {
+      /*
+       * INSIDE the try, deliberately: on a build whose APK predates the
+       * expo-audio native module, this call is the first to hit the missing
+       * binary, and outside a catch it became a silent unhandled rejection
+       * -- 'recording not working' with no diagnostic, on a real phone.
+       */
+      const permission = await AudioModule.requestRecordingPermissionsAsync();
+      if (!permission.granted) {
+        setError('Microphone access is needed for voice notes.');
+        return;
+      }
+      // allowsRecording is an iOS-only field in this expo-audio release; the
+      // Android gate is the RECORD_AUDIO permission requested above.
       await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
       await recorder.prepareToRecordAsync();
       recorder.record();
@@ -126,7 +135,7 @@ export function ChatScreen({
       setRecordSeconds(0);
       setRecording(true);
     } catch {
-      setError('Recording could not start on this device.');
+      setError('Recording is unavailable. If this app was installed a while ago, install the newest build.');
     }
   }, [recorder]);
 
@@ -186,6 +195,31 @@ export function ChatScreen({
   );
 
   const name = partner.displayName ?? partner.username ?? partner.accountId;
+  const bottomInset = useBottomInset();
+  /** Per-conversation translation mode; normal is the free default. */
+  const [mode, setMode] = useState<'normal' | 'translated'>('normal');
+  /** Message ids whose ORIGINAL the reader asked to see. */
+  const [revealed, setRevealed] = useState<ReadonlySet<string>>(new Set());
+
+  useEffect(() => {
+    let cancelled = false;
+    void api.conversationMode(partner.accountId).then((result) => {
+      if (!cancelled && result.ok) setMode(result.value.mode);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, partner.accountId]);
+
+  const toggleMode = useCallback(async () => {
+    const next = mode === 'translated' ? 'normal' : 'translated';
+    setMode(next);
+    const result = await api.setConversationMode(partner.accountId, next);
+    if (!result.ok) {
+      setMode(mode);
+      setError('The mode could not be changed. Try again.');
+    }
+  }, [api, mode, partner.accountId]);
 
   const timeOf = (atMs: number): string =>
     new Date(atMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -214,6 +248,15 @@ export function ChatScreen({
             {name}
           </Text>
         </View>
+        <Pressable
+          onPress={() => void toggleMode()}
+          accessibilityRole="button"
+          style={[styles.modePill, mode === 'translated' && styles.modePillOn]}
+        >
+          <Text style={[styles.modePillLabel, mode === 'translated' && styles.modePillLabelOn]}>
+            {mode === 'translated' ? 'Translating' : 'Translate'}
+          </Text>
+        </Pressable>
         <Pressable
           onPress={() => onCall(partner)}
           accessibilityRole="button"
@@ -264,7 +307,32 @@ export function ChatScreen({
                   </Text>
                 </Pressable>
               ) : (
-                <Text style={[styles.body, mine && styles.mineText]}>{item.body}</Text>
+                <>
+                  <Text style={[styles.body, mine && styles.mineText]}>
+                    {item.translatedBody != null && !revealed.has(item.messageId)
+                      ? item.translatedBody
+                      : item.body}
+                  </Text>
+                  {item.translatedBody != null && (
+                    <Pressable
+                      onPress={() =>
+                        setRevealed((current) => {
+                          const next = new Set(current);
+                          if (next.has(item.messageId)) next.delete(item.messageId);
+                          else next.add(item.messageId);
+                          return next;
+                        })
+                      }
+                      accessibilityRole="button"
+                    >
+                      <Text style={[styles.revealLabel, mine && styles.mineMeta]}>
+                        {revealed.has(item.messageId)
+                          ? 'original · show translation'
+                          : 'translated · show original'}
+                      </Text>
+                    </Pressable>
+                  )}
+                </>
               )}
               <View style={styles.metaRow}>
                 <Text style={[styles.metaText, mine && styles.mineMeta]}>{timeOf(item.createdAtMs)}</Text>
@@ -290,7 +358,9 @@ export function ChatScreen({
       <View style={styles.composer}>
         <Pressable
           onPressIn={() => void startRecording()}
-          onPressOut={() => void stopAndSend()}
+          onPressOut={() => {
+            if (recording) void stopAndSend();
+          }}
           accessibilityRole="button"
           style={[styles.micButton, recording && styles.micActive]}
         >
@@ -318,7 +388,11 @@ export function ChatScreen({
           )}
         </Pressable>
       </View>
-      <Text style={styles.footer}>Normal mode - messages are free and not translated.</Text>
+      <Text style={[styles.footer, { paddingBottom: bottomInset }]}>
+        {mode === 'translated'
+          ? 'Translated mode - messages arrive in each reader’s language. Free during staging.'
+          : 'Normal mode - messages are free and not translated.'}
+      </Text>
     </KeyboardAvoidingView>
   );
 }
@@ -355,6 +429,17 @@ const styles = StyleSheet.create({
   },
   dayChipText: { color: '#5d6874', fontSize: 11 },
   metaRow: { flexDirection: 'row', gap: 4, alignSelf: 'flex-end', marginTop: 2 },
+  modePill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#273039',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  modePillOn: { borderColor: '#3ec9c0', backgroundColor: '#102a28' },
+  modePillLabel: { color: '#8d99a6', fontSize: 12, fontWeight: '600' },
+  modePillLabelOn: { color: '#3ec9c0' },
+  revealLabel: { fontSize: 10, fontStyle: 'italic', color: '#5d6874', marginTop: 2 },
   metaText: { fontSize: 10, color: '#5d6874' },
   mineMeta: { color: 'rgba(11,15,20,0.55)' },
   readTicks: { color: '#0b4f4a', fontWeight: '700' },

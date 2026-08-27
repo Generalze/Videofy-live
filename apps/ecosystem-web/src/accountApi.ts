@@ -13,6 +13,8 @@ export interface ContactPerson {
   readonly accountId: string;
   readonly username: string | null;
   readonly displayName: string | null;
+  /** The platform's own badge. Env-granted server-side; never client-set. */
+  readonly official?: boolean;
 }
 
 export interface ContactsResponse {
@@ -25,7 +27,11 @@ export interface WireMessage {
   readonly messageId: string;
   readonly senderId: string;
   readonly kind: 'text' | 'voice';
+  /** Always the original words as typed. */
   readonly body: string | null;
+  /** Present when the conversation was in translated mode at send time. */
+  readonly translatedBody?: string | null;
+  readonly translatedLanguage?: string | null;
   readonly mediaDurationMs: number | null;
   readonly createdAtMs: number;
   readonly readAtMs: number | null;
@@ -152,6 +158,24 @@ export function createAccountApi(accountUrl: string, token: string) {
       ),
     dismissRing: (callId: string) =>
       request(accountUrl, token, `/rings/${encodeURIComponent(callId)}/dismiss`, json({}), () => undefined),
+    conversationMode: (accountId: string) =>
+      request(
+        accountUrl,
+        token,
+        `/messages/with/${accountId}/mode`,
+        undefined,
+        (body) => body as { mode: 'normal' | 'translated'; billing: string },
+      ),
+    setConversationMode: (accountId: string, mode: 'normal' | 'translated') =>
+      request(
+        accountUrl,
+        token,
+        `/messages/with/${accountId}/mode`,
+        json({ mode }),
+        (body) => body as { mode: 'normal' | 'translated' },
+      ),
+    setDefaultLanguage: (defaultLanguage: 'en' | 'es' | 'fr') =>
+      request(accountUrl, token, '/accounts/default-language', json({ defaultLanguage }), () => undefined),
     markRead: (accountId: string) =>
       request(accountUrl, token, `/messages/with/${accountId}/read`, json({}), () => undefined),
 

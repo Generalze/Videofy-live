@@ -67,6 +67,12 @@ export interface CallConnectionOptions {
   readonly callId: string;
   readonly displayName: string;
   /**
+   * The language this account's calls enter with (their profile default).
+   * Preloads BOTH speak and hear on the join form; absent keeps the form's
+   * own default.
+   */
+  readonly defaultLanguage?: 'en' | 'es' | 'fr';
+  /**
    * The signed session token, or null.
    *
    * REQUIRED TO CREATE A CALL. The gateway checks `session.host` before the
@@ -101,7 +107,12 @@ export interface CallConnectionOptions {
    * they typed at the door.
    */
   readonly onRoster?: (
-    roster: readonly { participantId: string; displayName: string }[],
+    roster: readonly {
+      participantId: string;
+      displayName: string;
+      /** Verified account, when that seat joined signed in. For avatars. */
+      accountId?: string;
+    }[],
   ) => void;
   /** How many ICE servers were actually obtained. Zero is worth showing. */
   readonly onIceServers?: (count: number) => void;
@@ -220,6 +231,12 @@ export class CallConnection {
 
     const form = {
       ...createInitialCallJoinForm(),
+      ...(this.options.defaultLanguage === undefined
+        ? {}
+        : {
+            speakLanguage: this.options.defaultLanguage,
+            hearLanguage: this.options.defaultLanguage,
+          }),
       displayName: this.options.displayName,
       callCode: this.options.callId,
     };
@@ -324,6 +341,9 @@ export class CallConnection {
         joined.map((participant) => ({
           participantId: participant.participantId,
           displayName: participant.displayName,
+          ...((participant as { accountId?: string }).accountId
+            ? { accountId: (participant as { accountId?: string }).accountId }
+            : {}),
         })),
       );
     });

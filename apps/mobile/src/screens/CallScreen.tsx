@@ -27,6 +27,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { AvatarView } from '../media/AvatarView';
 import { RTCView } from 'react-native-webrtc';
 import { CallConnection, type RemoteStream } from '../call/callConnection';
 
@@ -65,6 +66,8 @@ const PEER_WORDS: Record<string, string> = {
 export interface CallScreenProps {
   readonly callId: string;
   readonly displayName: string;
+  /** The account's default language: the language this call enters with. */
+  readonly defaultLanguage?: 'en' | 'es' | 'fr';
   /** Null is valid: it means this client can JOIN but not CREATE a call. */
   readonly sessionToken: string | null;
   /**
@@ -81,6 +84,7 @@ export interface CallScreenProps {
 export function CallScreen({
   callId,
   displayName,
+  defaultLanguage,
   sessionToken,
   ringName,
   onRing,
@@ -99,7 +103,7 @@ export function CallScreen({
    * have completely different fixes.
    */
   const [roster, setRoster] = useState<
-    readonly { participantId: string; displayName: string }[]
+    readonly { participantId: string; displayName: string; accountId?: string }[]
   >([]);
   const others = roster.length;
   const [muted, setMuted] = useState(false);
@@ -119,6 +123,7 @@ export function CallScreen({
       gatewayUrl: GATEWAY_URL,
       callId,
       displayName,
+      ...(defaultLanguage === undefined ? {} : { defaultLanguage }),
       sessionToken,
       // Left unset so the connection fetches from the gateway, which is the
       // only source that can mint TURN credentials that expire.
@@ -283,9 +288,27 @@ export function CallScreen({
                 <Text style={styles.muted}>{PEER_WORDS[tile.state] ?? tile.state}</Text>
               </View>
             )}
-            <Text style={styles.tileLabel}>
-              {roster.find((person) => person.participantId === id)?.displayName ?? id}
-            </Text>
+            {(() => {
+              /*
+               * THE PERSON, PROMINENT. The marketing samples show a face and
+               * a name on every tile; an 11px monospace id under the video was
+               * a debug label wearing a person's seat.
+               */
+              const person = roster.find((entry) => entry.participantId === id);
+              const label = person?.displayName ?? 'Guest';
+              return (
+                <View style={styles.tileIdentity}>
+                  <AvatarView
+                    accountId={person?.accountId ?? id}
+                    name={label}
+                    size={28}
+                  />
+                  <Text style={styles.tileName} numberOfLines={1}>
+                    {label}
+                  </Text>
+                </View>
+              );
+            })()}
           </View>
         ))}
       </ScrollView>
@@ -347,7 +370,14 @@ const styles = StyleSheet.create({
   tile: { gap: 6 },
   video: { width: '100%', aspectRatio: 3 / 4, borderRadius: 12, backgroundColor: '#141a21' },
   videoPlaceholder: { alignItems: 'center', justifyContent: 'center' },
-  tileLabel: { color: '#5d6874', fontSize: 11, fontFamily: 'monospace' },
+  tileIdentity: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 2,
+  },
+  tileName: { color: '#e4ebf1', fontSize: 15, fontWeight: '600', flexShrink: 1 },
 
   selfView: {
     position: 'absolute',

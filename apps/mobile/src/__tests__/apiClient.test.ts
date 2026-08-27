@@ -93,6 +93,8 @@ describe('request shapes', () => {
       email: 'a@example.com',
       username: 'c7a',
       displayName: 'A',
+      defaultLanguage: null,
+      official: false,
     });
   });
 });

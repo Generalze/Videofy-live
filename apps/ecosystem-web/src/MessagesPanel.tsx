@@ -61,6 +61,10 @@ export function MessagesPanel({
   const [draft, setDraft] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
   const [voiceUrls, setVoiceUrls] = useState<Record<string, string>>({});
+  /** The conversation's translation mode; normal is the free default. */
+  const [mode, setMode] = useState<'normal' | 'translated'>('normal');
+  /** Message ids whose ORIGINAL the reader asked to see. */
+  const [revealed, setRevealed] = useState<ReadonlySet<string>>(new Set());
   const voiceUrlsRef = useRef<Record<string, string>>({});
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
@@ -85,7 +89,20 @@ export function MessagesPanel({
       setMessages(result.value);
       void api.markRead(partner.accountId);
     }
+    const modeResult = await api.conversationMode(partner.accountId);
+    if (modeResult.ok) setMode(modeResult.value.mode);
   }, [api, partner]);
+
+  const toggleMode = useCallback(async () => {
+    if (partner === null) return;
+    const next = mode === 'translated' ? 'normal' : 'translated';
+    setMode(next);
+    const result = await api.setConversationMode(partner.accountId, next);
+    if (!result.ok) {
+      setMode(mode);
+      setNotice(result.error);
+    }
+  }, [api, mode, partner]);
 
   useEffect(() => {
     void loadConversations();
@@ -174,6 +191,15 @@ export function MessagesPanel({
             <p className="domain-field thread-head">
               <Avatar api={api} accountId={partner.accountId} name={personName(partner)} size={28} />
               {personName(partner)}
+              {partner.official === true ? <span className="official-badge">C7</span> : null}
+              <button
+                type="button"
+                className={mode === 'translated' ? 'mode-toggle mode-toggle-on' : 'mode-toggle'}
+                onClick={() => void toggleMode()}
+                title="Translated mode renders each message in the reader's language. Free during staging."
+              >
+                {mode === 'translated' ? 'Translating' : 'Translate'}
+              </button>
             </p>
             <div className="messages-scroll">
               {[...messages].reverse().map((message, index, ordered) => {
@@ -201,8 +227,38 @@ export function MessagesPanel({
                             Play voice note ({formatDuration(message.mediaDurationMs)})
                           </button>
                         )
+                      ) : message.translatedBody != null && !revealed.has(message.messageId) ? (
+                        <>
+                          {message.translatedBody}
+                          <button
+                            type="button"
+                            className="bubble-reveal"
+                            onClick={() =>
+                              setRevealed((current) => new Set([...current, message.messageId]))
+                            }
+                          >
+                            translated · show original
+                          </button>
+                        </>
                       ) : (
-                        message.body
+                        <>
+                          {message.body}
+                          {message.translatedBody != null ? (
+                            <button
+                              type="button"
+                              className="bubble-reveal"
+                              onClick={() =>
+                                setRevealed((current) => {
+                                  const next = new Set(current);
+                                  next.delete(message.messageId);
+                                  return next;
+                                })
+                              }
+                            >
+                              original · show translation
+                            </button>
+                          ) : null}
+                        </>
                       )}
                       <span className="bubble-meta">
                         {formatTime(message.createdAtMs)}

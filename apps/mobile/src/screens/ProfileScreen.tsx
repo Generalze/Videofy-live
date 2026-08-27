@@ -137,6 +137,40 @@ export function ProfileScreen({
               </View>
             </View>
             {pictureNotice !== null && <Text style={styles.pictureNotice}>{pictureNotice}</Text>}
+            <Text style={styles.label}>Default language</Text>
+            <Text style={styles.hint}>The language your calls enter with.</Text>
+            <View style={styles.languageRow}>
+              {(
+                [
+                  ['en', 'English'],
+                  ['es', 'Spanish'],
+                  ['fr', 'French'],
+                ] as const
+              ).map(([code, label]) => (
+                <Pressable
+                  key={code}
+                  accessibilityRole="button"
+                  style={[
+                    styles.languageChip,
+                    profile.defaultLanguage === code && styles.languageChipOn,
+                  ]}
+                  onPress={() => {
+                    void api.setDefaultLanguage(code).then((result) => {
+                      if (result.ok) void load();
+                    });
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.languageChipLabel,
+                      profile.defaultLanguage === code && styles.languageChipLabelOn,
+                    ]}
+                  >
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
             <Text style={styles.label}>Name shown in calls</Text>
             <View style={styles.nameRow}>
               <TextInput
@@ -265,6 +299,17 @@ const styles = StyleSheet.create({
   avatarText: { flex: 1, gap: 2 },
   avatarAction: { color: '#3ec9c0', fontSize: 13, fontWeight: '600', marginTop: 4 },
   pictureNotice: { color: '#d9a441', fontSize: 12, marginBottom: 6 },
+  languageRow: { flexDirection: 'row', gap: 8, marginTop: 6, marginBottom: 10 },
+  languageChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#273039',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+  },
+  languageChipOn: { borderColor: '#3ec9c0', backgroundColor: '#102a28' },
+  languageChipLabel: { color: '#8d99a6', fontSize: 13, fontWeight: '600' },
+  languageChipLabelOn: { color: '#3ec9c0' },
   email: { color: '#8d99a6', fontSize: 13 },
   label: { color: '#5d6874', fontSize: 12, marginTop: 6 },
   nameRow: { flexDirection: 'row', gap: 8 },

@@ -40,6 +40,7 @@ import { randomId } from './src/push/randomId';
 import { createApi } from './src/api/client';
 import { configureAvatars } from './src/media/AvatarView';
 import type { ContactPerson } from './src/api/client';
+import { InsetsProvider, useBottomInset } from './src/ui/insets';
 import { SignInScreen } from './src/screens/SignInScreen';
 import { SignUpScreen } from './src/screens/SignUpScreen';
 import { CallScreen } from './src/screens/CallScreen';
@@ -110,6 +111,14 @@ interface ActiveCall {
 }
 
 export default function App(): JSX.Element {
+  return (
+    <InsetsProvider>
+      <AppInner />
+    </InsetsProvider>
+  );
+}
+
+function AppInner(): JSX.Element {
   const [state, setState] = useState<AuthState>(auth.current());
   const [wantsAccount, setWantsAccount] = useState(false);
   const [tab, setTab] = useState<Tab>('chats');
@@ -123,6 +132,8 @@ export default function App(): JSX.Element {
    * identifier where a person was promised.
    */
   const [callName, setCallName] = useState<string | null>(null);
+  /** The account's default language; the language their calls enter with. */
+  const [callLanguage, setCallLanguage] = useState<'en' | 'es' | 'fr' | undefined>(undefined);
   const handledColdStart = useRef(false);
 
   useEffect(() => {
@@ -190,7 +201,10 @@ export default function App(): JSX.Element {
       if (result.ok) setEmailVerified(result.value.email === 'verified');
     });
     void api.me().then((result) => {
-      if (result.ok) setCallName(result.value.displayName ?? result.value.username);
+      if (result.ok) {
+        setCallName(result.value.displayName ?? result.value.username);
+        setCallLanguage(result.value.defaultLanguage ?? undefined);
+      }
     });
     return () => devices.stopWatchingForRotation();
   }, [state.status]);
@@ -247,6 +261,7 @@ export default function App(): JSX.Element {
         <CallScreen
           callId={activeCall.callId}
           displayName={callName ?? state.accountId}
+          {...(callLanguage === undefined ? {} : { defaultLanguage: callLanguage })}
           sessionToken={auth.callSessionToken()}
           ringName={
             ringPerson === undefined
@@ -283,6 +298,7 @@ export default function App(): JSX.Element {
     );
   }
 
+  const bottomInset = useBottomInset();
   return (
     <View style={styles.shell}>
       <StatusBar style="light" />
@@ -315,7 +331,7 @@ export default function App(): JSX.Element {
           />
         )}
       </View>
-      <View style={styles.tabBar}>
+      <View style={[styles.tabBar, { paddingBottom: bottomInset + 8 }]}>
         {(
           [
             ['chats', 'Chats'],
@@ -353,12 +369,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     borderTopWidth: 1,
     borderTopColor: '#161d25',
-    /*
-     * Clear of the phone's own navigation zone. 22 sat the labels inside the
-     * Android gesture bar; 34 keeps them tappable above it. The precise inset
-     * belongs to safe-area-context, which rides the next native build.
-     */
-    paddingBottom: 34,
+    // Bottom padding is measured at render: the phone's own bar plus 8.
     paddingTop: 10,
     backgroundColor: '#0b0f14',
   },

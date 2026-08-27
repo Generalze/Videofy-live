@@ -26,6 +26,7 @@
     },
     "plugins": [
       "expo-dev-client",
+      "expo-audio",
       "expo-notifications",
       "@config-plugins/react-native-webrtc"
     ],

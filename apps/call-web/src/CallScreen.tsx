@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type JSX } from 'react';
 import type { CallCaptionEntry } from '@videofy-live/call-client-core';
 import { CALL_AUDIO_MODES, CALL_LANGUAGES, languageLabel } from './callFormState';
+import { defaultSessionStorage, readAccountSession, readAccountUrl } from './accountSession';
 import { downloadTranscript, translationDisclosureFor } from '@videofy-live/call-client-core';
 import type {
   CallAudioMode,
@@ -693,9 +694,7 @@ function ParticipantTile(props: {
           />
         </button>
       ) : (
-        <span className="participant-avatar" aria-hidden="true">
-          {initials(participant.displayName)}
-        </span>
+        <ParticipantFace participant={participant} />
       )}
       <span className="participant-name">
         <span
@@ -870,6 +869,54 @@ function voiceDiagnostic(props: CallScreenProps): JSX.Element | null {
   return (
     <span className="voice-diagnostic" role="status">
       {parts.join(' · ')}
+    </span>
+  );
+}
+
+/**
+ * The person's face where their video is not: their profile picture when the
+ * seat is a signed-in account, their initials when it is not.
+ *
+ * The avatar route requires a session and an <img src> carries no headers,
+ * so the image is fetched with the viewer's own token into an object URL --
+ * the same pattern the dashboard uses. A viewer without a session (or a
+ * seat without an account) keeps the initials, honestly.
+ */
+function ParticipantFace({
+  participant,
+}: {
+  readonly participant: { readonly displayName: string; readonly accountId?: string };
+}): JSX.Element {
+  const [pictureUrl, setPictureUrl] = useState<string | null>(null);
+  const accountId = participant.accountId;
+  useEffect(() => {
+    if (!accountId) return;
+    const token = readAccountSession(defaultSessionStorage())?.token;
+    if (!token) return;
+    let objectUrl: string | null = null;
+    let cancelled = false;
+    void fetch(`${readAccountUrl()}/avatars/${accountId}`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+      .then(async (response) => (response.ok ? response.blob() : null))
+      .then((blob) => {
+        if (blob === null || cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setPictureUrl(objectUrl);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
+    };
+  }, [accountId]);
+  return (
+    <span className="participant-avatar" aria-hidden="true">
+      {pictureUrl !== null ? (
+        <img className="participant-avatar-image" src={pictureUrl} alt="" />
+      ) : (
+        initials(participant.displayName)
+      )}
     </span>
   );
 }

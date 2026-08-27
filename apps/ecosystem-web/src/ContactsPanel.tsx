@@ -143,6 +143,7 @@ export function ContactsPanel({
             <span className="contact-name">
               <Avatar api={api} accountId={person.accountId} name={personName(person)} size={32} />
               {personName(person)}
+              {person.official === true ? <span className="official-badge">C7</span> : null}
               {person.username !== null ? (
                 <span className="contact-handle"> {person.username}</span>
               ) : null}

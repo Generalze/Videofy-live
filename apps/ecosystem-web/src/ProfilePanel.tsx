@@ -25,6 +25,7 @@ export interface Profile {
   readonly username: string | null;
   readonly displayName: string | null;
   readonly discoverable: boolean;
+  readonly defaultLanguage?: 'en' | 'es' | 'fr' | null;
 }
 
 interface Props {
@@ -152,6 +153,28 @@ export function ProfilePanel({ token, accountId, profile, onChanged }: Props) {
   return (
     <section className="app-card">
       <h2 className="app-card-title">Your C7 identity</h2>
+
+      <div className="profile-block">
+        <h3 className="profile-label">Default language</h3>
+        <p className="profile-hint">The language your calls enter with. You can still change it per call.</p>
+        <select
+          className="contact-input"
+          value={profile.defaultLanguage ?? ''}
+          onChange={(event) => {
+            const value = event.target.value;
+            if (value === 'en' || value === 'es' || value === 'fr') {
+              void api.setDefaultLanguage(value).then(() => onChanged());
+            }
+          }}
+        >
+          <option value="" disabled>
+            Choose a language
+          </option>
+          <option value="en">English</option>
+          <option value="es">Spanish</option>
+          <option value="fr">French</option>
+        </select>
+      </div>
 
       <div className="profile-block">
         <h3 className="profile-label">Picture</h3>

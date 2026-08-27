@@ -35,7 +35,11 @@ export interface WireMessage {
   readonly messageId: string;
   readonly senderId: string;
   readonly kind: 'text' | 'voice';
+  /** Always the original words as typed. */
   readonly body: string | null;
+  /** Present when the conversation was in translated mode at send time. */
+  readonly translatedBody?: string | null;
+  readonly translatedLanguage?: string | null;
   readonly mediaDurationMs: number | null;
   readonly createdAtMs: number;
   readonly readAtMs: number | null;
@@ -59,6 +63,8 @@ export interface Profile {
   readonly email: string;
   readonly username: string | null;
   readonly displayName: string | null;
+  readonly defaultLanguage?: 'en' | 'es' | 'fr' | null;
+  readonly official?: boolean;
 }
 
 /** One failure shape for the whole layer: what happened, and no credential. */
@@ -146,6 +152,22 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
         json({ audioBase64, durationMs }),
         (reply) => (reply as { message: WireMessage }).message,
       ),
+    conversationMode: (accountId: string) =>
+      request(
+        authorizedFetch,
+        `/messages/with/${accountId}/mode`,
+        undefined,
+        (body) => body as { mode: 'normal' | 'translated' },
+      ),
+    setConversationMode: (accountId: string, mode: 'normal' | 'translated') =>
+      request(
+        authorizedFetch,
+        `/messages/with/${accountId}/mode`,
+        json({ mode }),
+        (body) => body as { mode: 'normal' | 'translated' },
+      ),
+    setDefaultLanguage: (defaultLanguage: 'en' | 'es' | 'fr') =>
+      request(authorizedFetch, '/accounts/default-language', json({ defaultLanguage }), () => undefined),
     markRead: (accountId: string) =>
       request(authorizedFetch, `/messages/with/${accountId}/read`, json({}), () => undefined),
 
@@ -169,13 +191,20 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
         const raw = body as {
           accountId: string;
           email: string;
-          profile?: { username?: string | null; displayName?: string | null };
+          profile?: {
+            username?: string | null;
+            displayName?: string | null;
+            defaultLanguage?: 'en' | 'es' | 'fr' | null;
+            official?: boolean;
+          };
         };
         return {
           accountId: raw.accountId,
           email: raw.email,
           username: raw.profile?.username ?? null,
           displayName: raw.profile?.displayName ?? null,
+          defaultLanguage: raw.profile?.defaultLanguage ?? null,
+          official: raw.profile?.official ?? false,
         } satisfies Profile;
       }),
     setDisplayName: (displayName: string) =>

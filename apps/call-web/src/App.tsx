@@ -145,6 +145,7 @@ import {
   readAccountSession,
   writeAccountSession,
   type AccountSession,
+  readAccountUrl,
 } from './accountSession';
 
 const ACK_TIMEOUT_MS = 8_000;
@@ -243,6 +244,7 @@ export default function App() {
   });
   const [inviteCopied, setInviteCopied] = useState(false);
 
+
   const copyInviteLink = useCallback(() => {
     const link = buildInviteLink(
       normalizeCallCode(form.callCode),
@@ -283,6 +285,39 @@ export default function App() {
   const [accountSession, setAccountSession] = useState<AccountSession | null>(() =>
     readAccountSession(defaultSessionStorage()),
   );
+
+  /*
+   * A RESTORED SESSION PRELOADS THE FORM TOO. The voice-gender preload used
+   * to fire only inside the sign-in handler, so a returning visitor with a
+   * stored session got none of their preferences -- and the new account
+   * default language would have repeated that gap. /me is fetched once on
+   * mount; the account's default language becomes the call's opening speak
+   * AND hear, and their chosen voice arrives with it. A signed-out visitor
+   * skips all of it and keeps the form's own defaults.
+   */
+  useEffect(() => {
+    const token = accountSession?.token;
+    if (!token) return;
+    let cancelled = false;
+    void fetch(`${readAccountUrl()}/me`, { headers: { authorization: `Bearer ${token}` } })
+      .then(async (response) => (response.ok ? response.json() : null))
+      .then((body: { profile?: { defaultLanguage?: string | null } } | null) => {
+        if (cancelled || body === null) return;
+        const language = body.profile?.defaultLanguage;
+        if (language === 'en' || language === 'es' || language === 'fr') {
+          setForm((current) => ({
+            ...current,
+            speakLanguage: language,
+            hearLanguage: language,
+          }));
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountSession?.token]);
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
   const enrollmentFlowRef = useRef<VoiceEnrollmentFlow | null>(null);
