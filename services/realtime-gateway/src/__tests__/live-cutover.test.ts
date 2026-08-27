@@ -100,6 +100,24 @@ describe('live audio goes to the ingress, and nowhere near a WAV file', () => {
     expect(r.calls.filter((c) => c.startsWith('submitChunk'))).toHaveLength(0);
   });
 
+  it('PIN: the session record reaches media-ingest before the ingress opens', async () => {
+    // The record is the ONLY carrier of the target languages: the ingress
+    // `open` names none, and media-ingest resolves its speech plans at open.
+    // The lazy create in the chunker path never runs on the live path -- the
+    // staging defect was exactly this create not happening at all, so a live
+    // programme with configured languages planned zero translation pipelines.
+    const r = bridgeWithIngress();
+    const context = callContext({ targetLanguages: ['es'] });
+    r.bridge.handleFrame(context, frame());
+    await new Promise((done) => setTimeout(done, 10));
+    expect(r.calls.filter((c) => c === 'createSession')).toHaveLength(1);
+    // And still exactly once when more audio flows.
+    r.bridge.handleFrame(context, frame());
+    await new Promise((done) => setTimeout(done, 10));
+    expect(r.calls.filter((c) => c === 'createSession')).toHaveLength(1);
+    expect(r.pushed.length).toBe(2);
+  });
+
   it('PIN: audio captured before the stream opened is not lost', async () => {
     const r = bridgeWithIngress();
     const context = callContext();

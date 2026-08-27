@@ -4370,7 +4370,15 @@ export class ProcessingSessionStore {
     return filter;
   }
 
-  private voiceIdForLanguage(session: ProcessingSession, targetLanguage: string): string {
+  /**
+   * Public because the LIVE path resolves voices through the same rule: the
+   * session's own override, then the per-language service map, then the
+   * provider default. The live planner used to consult ONLY the session's
+   * override -- which programme sessions never carry -- so every live target
+   * was "a language with no voice" and was silently skipped: translation
+   * configured, transcription running, and not one translated word spoken.
+   */
+  voiceIdForLanguage(session: ProcessingSession, targetLanguage: string): string {
     return (
       session.voiceIdsByLanguage?.[targetLanguage] ??
       this.textToSpeechVoiceIds.get(targetLanguage) ??

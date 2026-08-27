@@ -618,12 +618,24 @@ export class IngestService {
      */
     const session = this.sessions.get(sessionId);
     if (session === null) return [];
+    /*
+     * Voices resolve through the SAME rule the batch path uses -- session
+     * override, per-language map, provider default -- because the live
+     * providers are multilingual: the default voice speaks Spanish as
+     * Spanish. Consulting only the session's own override map (which
+     * programme sessions never carry) made every target "a language with no
+     * voice", and planSpeechTargets correctly, silently, planned nothing.
+     */
+    const voiceIdsByLanguage: Record<string, string> = {};
+    for (const targetLanguage of session.targetLanguages) {
+      const voiceId = this.sessions.voiceIdForLanguage(session, targetLanguage);
+      if (voiceId) voiceIdsByLanguage[targetLanguage] = voiceId;
+    }
     // The rule itself lives in `planSpeechTargets`, which is pure and pinned.
-    // This method's only job is finding the session.
     return planSpeechTargets({
       targetLanguages: session.targetLanguages,
       textOnlyLanguages: session.generatedAudio?.textOnlyLanguages,
-      voiceIdsByLanguage: session.voiceIdsByLanguage,
+      voiceIdsByLanguage,
     });
   }
 

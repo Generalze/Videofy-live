@@ -642,7 +642,24 @@ export class MediaTranscriptionBridge {
     if (ingress === null || session.liveIngressOpening !== null) return;
     const context = session.context;
     const openSender = ingress.createSender ?? ((o) => LiveIngressSender.open(o));
-    session.liveIngressOpening = openSender({
+    /*
+     * THE SESSION RECORD TRAVELS FIRST. The ingress `open` carries no target
+     * languages; they ride only in the /internal/media/sessions record --
+     * which, on the pure live path, nothing else ever created: the lazy
+     * create in processNext belongs to the batch chunker the live path
+     * replaced. Media-ingest resolved its speech plans at open against a
+     * session that did not exist, planned zero languages, and a fully
+     * configured live programme transcribed perfectly while translating
+     * nothing. Creating the record before the sender opens is what makes the
+     * plan resolution see the operator's languages.
+     */
+    session.liveIngressOpening = (async () => {
+      if (!session.created) {
+        await this.client.createSession(session.context);
+        session.created = true;
+      }
+    })()
+      .then(() => openSender({
       url: ingress.url,
       token: ingress.token,
       sessionId: context.sessionId,
@@ -652,7 +669,7 @@ export class MediaTranscriptionBridge {
       sourceLanguageMode: context.sourceLanguageMode,
       onTranslatedAudio: (frame) => ingress.onTranslatedAudio?.(context, frame),
       log: (line, detail) => logger.debug(line, { ...detail, sessionId: context.sessionId }),
-    })
+    }))
       .then((sender: LiveIngressSender) => {
         if (session.closed) {
           void sender.abort('session closed before the stream opened');
