@@ -274,7 +274,7 @@ describe('a private programme', () => {
     });
     socket.emit(SOCKET_EVENTS.OPERATOR_CHANNEL_SETTINGS, {
       displayName: 'Invitation Only',
-      visibility: 'private',
+      visibility: 'locked',
       code,
     });
     const confirmed = await new Promise<{ hasCode?: boolean }>((resolve) => {
@@ -306,7 +306,7 @@ describe('a private programme', () => {
 
     listener.emit(SOCKET_EVENTS.JOIN_CHANNEL, { channelId: channel.channelId });
     await new Promise((resolve) => setTimeout(resolve, 250));
-    expect(errors[0]?.message).toContain('private');
+    expect(errors[0]?.message).toContain('locked');
   });
 
   it('refuses a listener with the wrong code', async () => {
@@ -317,7 +317,7 @@ describe('a private programme', () => {
 
     listener.emit(SOCKET_EVENTS.JOIN_CHANNEL, { channelId: channel.channelId, code: 'guessing' });
     await new Promise((resolve) => setTimeout(resolve, 250));
-    expect(errors[0]?.message).toContain('private');
+    expect(errors[0]?.message).toContain('locked');
   });
 
   /*
@@ -327,7 +327,7 @@ describe('a private programme', () => {
    */
   it('does not send a private programme’s phrases to another channel', async () => {
     const channel = await privateChannel('let-me-in-please');
-    /* Bind the session to the private channel, exactly as running it does. */
+    /* Bind the session to the locked channel, exactly as running it does. */
     channel.socket.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
       ...programmeConfig('wrs_private', 'broadcast_private'),
     });
@@ -368,7 +368,7 @@ describe('a private programme', () => {
     expect(heard).toEqual([]);
   });
 
-  it('keeps a private channel out of the public directory', async () => {
+  it('keeps a locked channel out of the public directory', async () => {
     const channel = await privateChannel('let-me-in-please');
     const listener = connect('listener');
     const directory = await new Promise<readonly ChannelSummary[]>((resolve) => {

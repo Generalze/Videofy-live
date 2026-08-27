@@ -2,7 +2,7 @@
  * The operator's page for their own channel.
  *
  * The assertions worth having here are the ones about what an operator is told:
- * that they are still on the shared channel, that a private channel with no
+ * that they are still on the shared channel, that a locked channel with no
  * code lets nobody in, and that a link which cannot carry the code says so.
  */
 import React from 'react';
@@ -67,32 +67,32 @@ describe('on your own channel', () => {
   it('asks for a code only when the channel is private', () => {
     expect(markup()).not.toContain('Join code');
     expect(
-      markup({ draft: { displayName: 'Sunday Service', visibility: 'private', code: 'goodcode' } }),
+      markup({ draft: { displayName: 'Sunday Service', visibility: 'locked', code: 'goodcode' } }),
     ).toContain('Join code');
   });
 
   /*
-   * THE ONE THAT MATTERS. A private channel with no code refuses everybody,
+   * THE ONE THAT MATTERS. A locked channel with no code refuses everybody,
    * including its owner, and the console must say so before they go looking
    * for a bug.
    */
-  it('refuses to save a private channel with no code, and says why', () => {
-    const html = markup({ draft: { displayName: 'Sunday Service', visibility: 'private' } });
+  it('refuses to save a locked channel with no code, and says why', () => {
+    const html = markup({ draft: { displayName: 'Sunday Service', visibility: 'locked' } });
     expect(html).toContain('including you');
     expect(html).toContain('disabled');
   });
 
-  it('lets a private channel be saved once it has a code', () => {
+  it('lets a locked channel be saved once it has a code', () => {
     const html = markup({
-      draft: { displayName: 'Sunday Service', visibility: 'private', code: 'GOODCODE99' },
+      draft: { displayName: 'Sunday Service', visibility: 'locked', code: 'GOODCODE99' },
       codeInHand: 'GOODCODE99',
     });
     expect(html).not.toContain('including you');
   });
 
-  it('puts the code in the shareable link for a private channel', () => {
+  it('puts the code in the shareable link for a locked channel', () => {
     const html = markup({
-      draft: { displayName: 'Sunday Service', visibility: 'private', code: 'GOODCODE99' },
+      draft: { displayName: 'Sunday Service', visibility: 'locked', code: 'GOODCODE99' },
       codeInHand: 'GOODCODE99',
     });
     expect(html).toContain('?code=GOODCODE99');
@@ -104,7 +104,7 @@ describe('on your own channel', () => {
    */
   it('warns when it cannot put the code in the link', () => {
     const html = markup({
-      draft: { displayName: 'Sunday Service', visibility: 'private' },
+      draft: { displayName: 'Sunday Service', visibility: 'locked' },
       hasExistingCode: true,
       codeInHand: null,
     });

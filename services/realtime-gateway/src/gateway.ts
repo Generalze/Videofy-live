@@ -763,7 +763,7 @@ export class Gateway {
           channelId: request.channelId,
         });
         socket.emit(SOCKET_EVENTS.ERROR, {
-          message: 'This programme is private. Check the link and code you were given.',
+          message: 'This programme is locked. Check the link and code you were given.',
         });
         return;
       }
@@ -892,8 +892,8 @@ export class Gateway {
     if (candidate.visibility !== undefined) {
       if (
         candidate.visibility !== 'public' &&
-        candidate.visibility !== 'unlisted' &&
-        candidate.visibility !== 'private'
+        candidate.visibility !== 'private' &&
+        candidate.visibility !== 'locked'
       ) {
         return null;
       }
@@ -1113,6 +1113,8 @@ export class Gateway {
     this.programmeSessionConfigs.delete(sessionId);
     this.generatedAudioStore.resetSession(sessionId);
     this.invalidateProgrammeMediaState(sessionId);
+    // After the state is cleared THROUGH the binding, the binding itself goes.
+    this.channels.releaseSession(sessionId);
   }
 
   /**
@@ -1120,7 +1122,17 @@ export class Gateway {
    * uploaded programmes (which retain a playable programmeMediaUrl) replayable.
    */
   private invalidateProgrammeMediaState(sessionId: string): void {
-    const state = this.latestProgrammeMediaState;
+    /*
+     * THE SESSION'S OWN CHANNEL, not the default. This used to read and write
+     * `latestProgrammeMediaState` -- the DEFAULT_CHANNEL_ID accessor -- so a
+     * broadcaster on their own channel could stop, disconnect, even leave for
+     * the day, and their channel kept advertising `live: true` in the public
+     * directory forever: the per-channel state set at config time was never
+     * the state this cleanup touched. The operator's "turn my channel off" is
+     * ending the broadcast; this is what makes ending actually turn it off.
+     */
+    const channelId = this.channels.channelForSession(sessionId);
+    const state = this.channels.mediaState(channelId);
     if (!state) return;
     const referencesSession =
       state.processingSessionId === sessionId ||
@@ -1128,11 +1140,11 @@ export class Gateway {
     if (!referencesSession) return;
     if (state.programmeMediaUrl) {
       if (!isTerminalMediaState(state.streamStatus)) {
-        this.latestProgrammeMediaState = { ...state, streamStatus: 'completed' };
+        this.channels.setMediaState(channelId, { ...state, streamStatus: 'completed' });
       }
       return;
     }
-    this.latestProgrammeMediaState = null;
+    this.channels.setMediaState(channelId, null);
   }
 
   private handleOperatorSocket(socket: Socket): void {
@@ -1191,7 +1203,7 @@ export class Gateway {
     });
 
     /*
-     * NAMING AND GATING A CHANNEL: how a programme becomes public, unlisted or
+     * NAMING AND GATING A CHANNEL: how a programme becomes public, private or
      * private.
      *
      * Applied to the channel the operator is CURRENTLY ON, and only if they

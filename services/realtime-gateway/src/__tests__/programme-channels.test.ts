@@ -120,11 +120,11 @@ describe('who may operate a channel', () => {
 });
 
 describe('the listener directory', () => {
-  it('omits unlisted channels', () => {
+  it('omits private channels', () => {
     const channels = new ProgrammeChannels();
     channels.claim('open', ALICE, 'Open');
     channels.claim('hidden', BOB, 'Hidden');
-    channels.setVisibility('hidden', 'unlisted');
+    channels.setVisibility('hidden', 'private');
 
     expect(channels.directory().map((channel) => channel.channelId)).toEqual(['open']);
   });
@@ -133,9 +133,9 @@ describe('the listener directory', () => {
    * Unlisted is NOT private: the channel remains reachable by anybody holding
    * its id. Asserted so nobody later mistakes it for an access control.
    */
-  it('still permits operating an unlisted channel by id', () => {
+  it('still permits operating an private channel by id', () => {
     const channels = new ProgrammeChannels();
-    channels.setVisibility('hidden', 'unlisted');
+    channels.setVisibility('hidden', 'private');
     expect(channels.mayOperate('hidden', ALICE)).toBe(true);
   });
 
@@ -183,7 +183,7 @@ describe('sessions', () => {
   });
 });
 
-describe('private channels', () => {
+describe('locked channels', () => {
   /* Public and unlisted differ in DISCOVERY, not in access. */
   it('lets anybody join a public channel with no code', () => {
     const channels = new ProgrammeChannels();
@@ -191,15 +191,15 @@ describe('private channels', () => {
     expect(channels.mayJoin('open')).toBe(true);
   });
 
-  it('lets anybody holding the link join an unlisted channel', () => {
+  it('lets anybody holding the link join an private channel', () => {
     const channels = new ProgrammeChannels();
-    channels.setVisibility('hidden', 'unlisted');
+    channels.setVisibility('hidden', 'private');
     expect(channels.mayJoin('hidden')).toBe(true);
   });
 
-  it('admits a private channel only with the right code', () => {
+  it('admits a locked channel only with the right code', () => {
     const channels = new ProgrammeChannels();
-    channels.setVisibility('vip', 'private');
+    channels.setVisibility('vip', 'locked');
     channels.setAccessCode('vip', 'correct-horse');
 
     expect(channels.mayJoin('vip', 'correct-horse')).toBe(true);
@@ -213,16 +213,16 @@ describe('private channels', () => {
    * selected private and not yet set a code must not be broadcasting openly
    * while their screen says private.
    */
-  it('refuses a private channel that has no code set', () => {
+  it('refuses a locked channel that has no code set', () => {
     const channels = new ProgrammeChannels();
-    channels.setVisibility('vip', 'private');
+    channels.setVisibility('vip', 'locked');
     expect(channels.mayJoin('vip', 'anything')).toBe(false);
     expect(channels.mayJoin('vip')).toBe(false);
   });
 
   it('reopens a channel when the code is cleared and it goes public', () => {
     const channels = new ProgrammeChannels();
-    channels.setVisibility('vip', 'private');
+    channels.setVisibility('vip', 'locked');
     channels.setAccessCode('vip', 'secret-code');
     channels.setVisibility('vip', 'public');
     expect(channels.mayJoin('vip')).toBe(true);
@@ -230,18 +230,18 @@ describe('private channels', () => {
 
   it('does not keep the code where it could be read back', () => {
     const channels = new ProgrammeChannels();
-    channels.setVisibility('vip', 'private');
+    channels.setVisibility('vip', 'locked');
     channels.setAccessCode('vip', 'correct-horse');
 
     expect(JSON.stringify(channels)).not.toContain('correct-horse');
     expect(channels.hasAccessCode('vip')).toBe(true);
   });
 
-  it('keeps private and unlisted channels out of the directory', () => {
+  it('keeps private and private channels out of the directory', () => {
     const channels = new ProgrammeChannels();
     channels.claim('open', ALICE, 'Open');
     channels.claim('vip', BOB, 'VIP');
-    channels.setVisibility('vip', 'private');
+    channels.setVisibility('vip', 'locked');
     channels.setAccessCode('vip', 'secret-code');
 
     expect(channels.directory().map((channel) => channel.channelId)).toEqual(['open']);

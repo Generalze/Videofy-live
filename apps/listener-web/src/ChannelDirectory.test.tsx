@@ -70,7 +70,7 @@ describe('the directory', () => {
   });
 
   /*
-   * An empty directory does not mean nothing is on. Private and unlisted
+   * An empty directory does not mean nothing is on. Locked and private
    * programmes are running and are simply not listed, and a viewer holding a
    * link must not be told otherwise.
    */

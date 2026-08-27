@@ -89,7 +89,7 @@ export function ChannelDirectory({
       {listed.length === 0 ? (
         /*
          * Says what is true rather than "no channels found". Private and
-         * unlisted programmes are running and simply are not listed, and a
+         * private programmes are running and simply are not listed, and a
          * viewer holding a link should not be told there is nothing on.
          */
         <p>

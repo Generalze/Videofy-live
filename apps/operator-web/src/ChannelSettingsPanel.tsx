@@ -9,7 +9,7 @@ import {
 } from './channelSettings';
 import styles from './App.module.css';
 
-const VISIBILITIES: readonly ChannelVisibility[] = ['public', 'unlisted', 'private'];
+const VISIBILITIES: readonly ChannelVisibility[] = ['public', 'private', 'locked'];
 
 interface ChannelSettingsPanelProps {
   /** The operator's own channel id, as the gateway derived it. */
@@ -108,7 +108,7 @@ export function ChannelSettingsPanel({
             ))}
           </fieldset>
 
-          {draft.visibility === 'private' ? (
+          {draft.visibility === 'locked' ? (
             <div>
               <label htmlFor="channel-code">Join code</label>
               <input

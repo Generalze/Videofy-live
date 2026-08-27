@@ -77,7 +77,7 @@ export function channelBasePath(pathname: string): string {
  *
  * @param code - Included only for a private programme, where the point of the
  * link is that it carries everything the recipient needs. For a public or
- * unlisted channel there is nothing to carry and adding an empty parameter
+ * private channel there is nothing to carry and adding an empty parameter
  * would only invite somebody to think there was.
  */
 export function channelViewerUrl(origin: string, channelId: string, code?: string | null): string {

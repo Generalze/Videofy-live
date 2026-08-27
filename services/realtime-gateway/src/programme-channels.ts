@@ -170,7 +170,7 @@ export class ProgrammeChannels {
    * Whether a listener holding this code may join.
    *
    * PUBLIC AND UNLISTED ARE OPEN. The difference between them is discovery, not
-   * access: an unlisted channel is missing from the directory, and that is all.
+   * access: a private channel is missing from the directory, and that is all.
    *
    * PRIVATE WITH NO CODE SET REFUSES EVERYBODY. The alternative -- treating a
    * missing code as "no code required" -- means an operator who selects private
@@ -180,7 +180,7 @@ export class ProgrammeChannels {
    */
   mayJoin(channelId: string, code?: string | undefined): boolean {
     const channel = this.channels.get(channelId);
-    if (!channel || channel.visibility !== 'private') return true;
+    if (!channel || channel.visibility !== 'locked') return true;
     if (channel.accessCodeHash === null) return false;
     if (typeof code !== 'string' || code.length === 0) return false;
     return this.codesMatch(channel.accessCodeHash, this.hashCode(code));

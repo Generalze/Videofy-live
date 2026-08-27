@@ -111,17 +111,21 @@ export function languageRoom(targetLanguage: string): string {
 export const DEFAULT_CHANNEL_ID = 'main';
 
 /**
- * Who can reach a channel.
+ * Who can reach a channel. The founder's ruling (2026-08-27) named the tiers:
  *
- *   public   - listed in the directory, open to anybody.
- *   unlisted - not listed, but joinable by anybody holding the link. A doorbell
- *              without a sign, not a lock.
- *   private  - not listed, and the link alone is not enough: a join code must
- *              be presented too. This is the only one of the three that is an
- *              access control, which is why the other two are not called
- *              private -- somebody would eventually build on that promise.
+ *   public  - listed in the directory, open to anybody who knows the channel.
+ *   private - not listed; the operator's invite link is what admits a viewer.
+ *             A doorbell without a sign, not a lock.
+ *   locked  - not listed, and the link alone is not enough: a join code must
+ *             be presented too (or an access link that carries it). This is
+ *             the only tier that is an access CONTROL, which is why the other
+ *             two are not called locked -- somebody would eventually build on
+ *             that promise.
+ *
+ * ('private' was previously spelled 'unlisted' and 'locked' was 'private';
+ * the semantics did not change, only the names people see.)
  */
-export type ChannelVisibility = 'public' | 'unlisted' | 'private';
+export type ChannelVisibility = 'public' | 'private' | 'locked';
 
 /** What a listener is given when choosing where to listen. */
 export interface ChannelSummary {

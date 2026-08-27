@@ -193,7 +193,7 @@ describe('what the viewer is shown', () => {
    * A PROMPT, NOT AN ANSWER. Somebody following a private link without a code
    * is asked for one; they have not done anything wrong yet.
    */
-  it('asks for a code when a private channel refused a viewer who had none', () => {
+  it('asks for a code when a locked channel refused a viewer who had none', () => {
     expect(
       viewerStage({
         selection: { channelId: 'abc', code: null },
