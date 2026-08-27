@@ -2444,6 +2444,67 @@ button:focus-visible {
 
 /* Contacts and messaging on the dashboard. Rows and bubbles reuse the card
    language; nothing here invents a second design system. */
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.92);
+  font-weight: 700;
+  flex: none;
+  vertical-align: middle;
+  margin-right: 0.55rem;
+}
+
+.avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.profile-avatar-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.thread-head {
+  display: flex;
+  align-items: center;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+/* An incoming call outranks whatever tab is open. */
+.ring-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: rgba(94, 234, 212, 0.12);
+  border: 1px solid rgba(94, 234, 212, 0.45);
+  border-radius: 12px;
+  padding: 0.7rem 1rem;
+  margin-bottom: 1rem;
+  animation: ring-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes ring-pulse {
+  0%, 100% { border-color: rgba(94, 234, 212, 0.45); }
+  50% { border-color: rgba(94, 234, 212, 0.9); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ring-banner { animation: none; }
+}
+
 .app-contacts {
   display: grid;
   gap: 1rem;
@@ -2575,22 +2636,49 @@ button:focus-visible {
   padding: 0.4rem 0;
 }
 
+.bubble-row {
+  display: flex;
+  flex-direction: column;
+}
+
 .bubble {
   max-width: 75%;
-  padding: 0.5rem 0.85rem;
-  border-radius: 14px;
+  padding: 0.45rem 0.7rem 0.3rem;
+  border-radius: 12px;
   line-height: 1.45;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.1rem;
+  word-break: break-word;
 }
 
-.bubble-mine {
+.bubble-mine { align-self: flex-end; border-bottom-right-radius: 4px; }
+.bubble-theirs { align-self: flex-start; border-bottom-left-radius: 4px; }
+
+.bubble-meta {
+  font-size: 0.68rem;
+  color: var(--text-faint);
+  display: inline-flex;
+  gap: 0.3rem;
   align-self: flex-end;
-  background: rgba(94, 234, 212, 0.16);
 }
 
-.bubble-theirs {
-  align-self: flex-start;
-  background: rgba(255, 255, 255, 0.06);
+.bubble-ticks { letter-spacing: -0.12em; }
+.bubble-ticks-read { color: #5eead4; }
+
+.messages-day {
+  align-self: center;
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 999px;
+  padding: 0.15rem 0.7rem;
+  margin: 0.4rem 0;
 }
+
+.bubble-mine { background: rgba(94, 234, 212, 0.16); }
+.bubble-theirs { background: rgba(255, 255, 255, 0.06); }
 
 .messages-footnote {
   color: var(--text-faint);

@@ -20,6 +20,22 @@ import {
   type ConversationEntry,
   type WireMessage,
 } from './accountApi';
+import { Avatar } from './Avatar';
+
+function formatTime(atMs: number): string {
+  return new Date(atMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+/** "Today", "Yesterday", or the date -- the separator label between days. */
+function dayLabel(atMs: number, nowMs: number): string {
+  const day = new Date(atMs);
+  const now = new Date(nowMs);
+  const startOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diffDays = Math.round((startOf(now) - startOf(day)) / 86_400_000);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  return day.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+}
 
 function formatDuration(durationMs: number | null): string {
   const total = Math.max(0, Math.round((durationMs ?? 0) / 1000));
@@ -46,6 +62,16 @@ export function MessagesPanel({
   const [notice, setNotice] = useState<string | null>(null);
   const [voiceUrls, setVoiceUrls] = useState<Record<string, string>>({});
   const voiceUrlsRef = useRef<Record<string, string>>({});
+  const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
+  const lastMessageIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const newest = messages[0]?.messageId ?? null;
+    if (newest !== null && newest !== lastMessageIdRef.current) {
+      lastMessageIdRef.current = newest;
+      scrollAnchorRef.current?.scrollIntoView({ block: 'end' });
+    }
+  }, [messages]);
 
   const loadConversations = useCallback(async () => {
     const result = await api.conversations();
@@ -126,7 +152,10 @@ export function MessagesPanel({
             }`}
             onClick={() => setPartner(entry.partner)}
           >
-            <span className="contact-name">{personName(entry.partner)}</span>
+            <span className="contact-name">
+              <Avatar api={api} accountId={entry.partner.accountId} name={personName(entry.partner)} size={32} />
+              {personName(entry.partner)}
+            </span>
             <span className="messages-preview">
               {entry.last.kind === 'voice'
                 ? `Voice note (${formatDuration(entry.last.mediaDurationMs)})`
@@ -142,30 +171,58 @@ export function MessagesPanel({
           <p className="app-empty">Pick a conversation, or message somebody from Contacts.</p>
         ) : (
           <>
-            <p className="domain-field">{personName(partner)}</p>
+            <p className="domain-field thread-head">
+              <Avatar api={api} accountId={partner.accountId} name={personName(partner)} size={28} />
+              {personName(partner)}
+            </p>
             <div className="messages-scroll">
-              {[...messages].reverse().map((message) => (
-                <div
-                  key={message.messageId}
-                  className={`bubble ${message.senderId === selfId ? 'bubble-mine' : 'bubble-theirs'}`}
-                >
-                  {message.kind === 'voice' ? (
-                    voiceUrls[message.messageId] !== undefined ? (
-                      <audio controls src={voiceUrls[message.messageId]} />
-                    ) : (
-                      <button
-                        type="button"
-                        className="button button-small"
-                        onClick={() => void fetchVoice(message.messageId)}
-                      >
-                        Play voice note ({formatDuration(message.mediaDurationMs)})
-                      </button>
-                    )
-                  ) : (
-                    message.body
-                  )}
-                </div>
-              ))}
+              {[...messages].reverse().map((message, index, ordered) => {
+                const mine = message.senderId === selfId;
+                const previous = ordered[index - 1];
+                const newDay =
+                  previous === undefined ||
+                  new Date(previous.createdAtMs).toDateString() !==
+                    new Date(message.createdAtMs).toDateString();
+                return (
+                  <div key={message.messageId} className="bubble-row">
+                    {newDay ? (
+                      <div className="messages-day">{dayLabel(message.createdAtMs, Date.now())}</div>
+                    ) : null}
+                    <div className={`bubble ${mine ? 'bubble-mine' : 'bubble-theirs'}`}>
+                      {message.kind === 'voice' ? (
+                        voiceUrls[message.messageId] !== undefined ? (
+                          <audio controls src={voiceUrls[message.messageId]} />
+                        ) : (
+                          <button
+                            type="button"
+                            className="button button-small"
+                            onClick={() => void fetchVoice(message.messageId)}
+                          >
+                            Play voice note ({formatDuration(message.mediaDurationMs)})
+                          </button>
+                        )
+                      ) : (
+                        message.body
+                      )}
+                      <span className="bubble-meta">
+                        {formatTime(message.createdAtMs)}
+                        {mine ? (
+                          /*
+                           * The tick is a READ claim, not a delivery claim: one
+                           * tick says the server holds it, two say the other
+                           * person's client marked the thread read. Delivery
+                           * receipts would need per-device acks we do not keep.
+                           */
+                          <span className={message.readAtMs !== null ? 'bubble-ticks bubble-ticks-read' : 'bubble-ticks'}>
+                            {message.readAtMs !== null ? '✓✓' : '✓'}
+                          </span>
+                        ) : null}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+              <div ref={scrollAnchorRef} />
             </div>
             {notice !== null ? <p className="contact-notice">{notice}</p> : null}
             <div className="messages-composer">

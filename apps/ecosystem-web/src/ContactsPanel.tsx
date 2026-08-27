@@ -19,15 +19,19 @@ import {
   type ContactsResponse,
   type ContactPerson,
 } from './accountApi';
+import { Avatar } from './Avatar';
 
 export function ContactsPanel({
   accountUrl,
   token,
   onMessage,
+  onCall,
 }: {
   readonly accountUrl: string;
   readonly token: string;
   readonly onMessage: (person: ContactPerson) => void;
+  /** Rings the person and opens the call -- codes are for conferences. */
+  readonly onCall: (person: ContactPerson) => void;
 }) {
   const [api] = useState(() => createAccountApi(accountUrl, token));
   const [data, setData] = useState<ContactsResponse | null>(null);
@@ -100,7 +104,10 @@ export function ContactsPanel({
           <p className="domain-field">Requests for you</p>
           {data.requests.map((person) => (
             <div key={person.accountId} className="contact-row">
-              <span className="contact-name">{personName(person)}</span>
+              <span className="contact-name">
+                <Avatar api={api} accountId={person.accountId} name={personName(person)} size={32} />
+                {personName(person)}
+              </span>
               <span className="contact-actions">
                 <button
                   type="button"
@@ -134,6 +141,7 @@ export function ContactsPanel({
         {data?.contacts.map((person) => (
           <div key={person.accountId} className="contact-row">
             <span className="contact-name">
+              <Avatar api={api} accountId={person.accountId} name={personName(person)} size={32} />
               {personName(person)}
               {person.username !== null ? (
                 <span className="contact-handle"> {person.username}</span>
@@ -143,6 +151,13 @@ export function ContactsPanel({
               <button
                 type="button"
                 className="button button-small button-primary"
+                onClick={() => onCall(person)}
+              >
+                Call
+              </button>
+              <button
+                type="button"
+                className="button button-small"
                 onClick={() => onMessage(person)}
               >
                 Message

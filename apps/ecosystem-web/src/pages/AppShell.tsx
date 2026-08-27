@@ -18,7 +18,7 @@ import { VerificationPanel } from '../VerificationPanel';
 import { clearSessionKeys } from '../session';
 import { ContactsPanel } from '../ContactsPanel';
 import { MessagesPanel } from '../MessagesPanel';
-import type { ContactPerson } from '../accountApi';
+import { createAccountApi, type ContactPerson, type IncomingRing } from '../accountApi';
 
 const ACCOUNT_URL = (
   (import.meta.env['VITE_ACCOUNT_URL'] as string | undefined) ?? 'http://localhost:3006'
@@ -165,6 +165,59 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
   const [selected, setSelected] = useState<string | null>(null);
   const [organization, setOrganization] = useState<OrganizationDetail | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  /**
+   * Incoming rings. The dashboard is a laptop's only ring surface -- there is
+   * no push channel in a browser tab -- so while somebody is signed in here,
+   * the shell polls and a call banner outranks whatever tab is open.
+   */
+  const [incomingRings, setIncomingRings] = useState<readonly IncomingRing[]>([]);
+  const [callNotice, setCallNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (state !== 'ready') return;
+    const token = storedToken();
+    if (token === null) return;
+    const api = createAccountApi(ACCOUNT_URL, token);
+    let cancelled = false;
+    const poll = async (): Promise<void> => {
+      const result = await api.rings();
+      if (!cancelled && result.ok) setIncomingRings(result.value);
+    };
+    void poll();
+    const timer = setInterval(() => void poll(), 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [state]);
+
+  /** Ring them, then open the call. Codes stay for conferences. */
+  const callContact = (person: ContactPerson): void => {
+    const token = storedToken();
+    if (token === null) return;
+    setCallNotice(null);
+    void createAccountApi(ACCOUNT_URL, token)
+      .ring(person.accountId)
+      .then((result) => {
+        if (!result.ok) {
+          setCallNotice(result.error);
+          return;
+        }
+        if (result.value.reachedDevices === 0) {
+          // Their dashboard may still pick it up; the caller should know the
+          // phone will not ring rather than sit waiting in an empty call.
+          setCallNotice('No phone is registered for them — they will only see this if their C7 dashboard is open.');
+        }
+        window.open(`/call/?call=${encodeURIComponent(result.value.callId)}`, '_blank', 'noopener');
+      });
+  };
+
+  const answerRing = (ring: IncomingRing, join: boolean): void => {
+    const token = storedToken();
+    setIncomingRings((current) => current.filter((entry) => entry.callId !== ring.callId));
+    if (token !== null) void createAccountApi(ACCOUNT_URL, token).dismissRing(ring.callId);
+    if (join) window.open(`/call/?call=${encodeURIComponent(ring.callId)}`, '_blank', 'noopener');
+  };
 
   useEffect(() => {
     const token = storedToken();
@@ -277,6 +330,25 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
   return (
     <section className="app">
       <div className="shell">
+        {incomingRings.map((ring) => (
+          <div key={ring.callId} className="ring-banner" role="alert">
+            <span className="ring-banner-text">
+              <strong>{ring.fromName}</strong> is calling you
+            </span>
+            <span className="contact-actions">
+              <button
+                type="button"
+                className="button button-primary button-small"
+                onClick={() => answerRing(ring, true)}
+              >
+                Join call
+              </button>
+              <button type="button" className="button button-small" onClick={() => answerRing(ring, false)}>
+                Dismiss
+              </button>
+            </span>
+          </div>
+        ))}
         <header className="app-head">
           <div>
             <p className="hero-eyebrow">Your C7 account</p>
@@ -451,8 +523,10 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
               setChatPartner(person);
               setView('messages');
             }}
+            onCall={callContact}
           />
         ) : null}
+        {callNotice !== null ? <p className="contact-notice">{callNotice}</p> : null}
 
         {view === 'messages' ? (
           <MessagesPanel
@@ -466,6 +540,7 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
         {view === 'profile' ? (
           <ProfilePanel
             token={storedToken() ?? ''}
+            accountId={me.accountId}
             profile={me.profile}
             onChanged={() => setRefreshKey((key) => key + 1)}
           />

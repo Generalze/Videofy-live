@@ -37,6 +37,13 @@ export interface ConversationEntry {
   readonly unread: number;
 }
 
+export interface IncomingRing {
+  readonly callId: string;
+  readonly fromAccountId: string;
+  readonly fromName: string;
+  readonly atMs: number;
+}
+
 export type ApiResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: string };
@@ -82,6 +89,9 @@ const json = (value: unknown): RequestInit => ({
   body: JSON.stringify(value),
 });
 
+/** Module-level: several panels share one signed-in identity per page. */
+const avatarCache = new Map<string, { url: string | null; atMs: number }>();
+
 export function createAccountApi(accountUrl: string, token: string) {
   return {
     contacts: () =>
@@ -119,8 +129,69 @@ export function createAccountApi(accountUrl: string, token: string) {
         json({ body }),
         (reply) => (reply as { message: WireMessage }).message,
       ),
+    /**
+     * Ring a contact: their phones get a push, their open dashboards a banner.
+     * The server answers with the callId to open and how many phones it
+     * reached -- zero is a real answer the caller should see.
+     */
+    ring: (accountId: string) =>
+      request(
+        accountUrl,
+        token,
+        `/contacts/${accountId}/ring`,
+        json({}),
+        (reply) => reply as { callId: string; reachedDevices: number },
+      ),
+    rings: () =>
+      request(
+        accountUrl,
+        token,
+        '/rings',
+        undefined,
+        (body) => (body as { rings: IncomingRing[] }).rings,
+      ),
+    dismissRing: (callId: string) =>
+      request(accountUrl, token, `/rings/${encodeURIComponent(callId)}/dismiss`, json({}), () => undefined),
     markRead: (accountId: string) =>
       request(accountUrl, token, `/messages/with/${accountId}/read`, json({}), () => undefined),
+
+    /** Drop the cached picture so the next ask refetches (post-upload). */
+    forgetAvatar: (accountId: string): void => {
+      const cached = avatarCache.get(accountId);
+      if (cached?.url) URL.revokeObjectURL(cached.url);
+      avatarCache.delete(accountId);
+    },
+
+    /** The picture travels as a data URL; the server judges the bytes. */
+    setAvatar: (image: string) =>
+      request(accountUrl, token, '/profile/avatar', { ...json({ image }), method: 'PUT' }, () => undefined),
+    removeAvatar: () =>
+      request(accountUrl, token, '/profile/avatar', { method: 'DELETE' }, () => undefined),
+
+    /**
+     * A contact's picture as an object URL, or null when they have none.
+     *
+     * Fetched WITH the auth header -- an <img src> carries none -- and cached
+     * per account for a minute, matching the server's own cache window. The
+     * cache also remembers "no picture", or every poll would re-ask 404s.
+     */
+    avatarUrl: async (accountId: string): Promise<string | null> => {
+      const cached = avatarCache.get(accountId);
+      if (cached !== undefined && Date.now() - cached.atMs < 60_000) return cached.url;
+      let url: string | null = null;
+      try {
+        const response = await fetch(`${accountUrl}/avatars/${accountId}`, {
+          headers: { authorization: `Bearer ${token}` },
+        });
+        if (response.ok) url = URL.createObjectURL(await response.blob());
+      } catch {
+        /* no picture is the honest render for a failed fetch */
+      }
+      const previous = cached?.url;
+      if (previous && previous !== url) URL.revokeObjectURL(previous);
+      avatarCache.set(accountId, { url, atMs: Date.now() });
+      return url;
+    },
 
     /**
      * A voice note's audio, as an object URL a plain <audio> element plays.

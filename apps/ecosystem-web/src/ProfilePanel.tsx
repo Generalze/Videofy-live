@@ -12,7 +12,10 @@
  * does is written next to it, because "username" and "display name" are not
  * words that explain themselves to somebody deciding what to type.
  */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { createAccountApi } from './accountApi';
+import { Avatar } from './Avatar';
+import { downscaleToDataUrl } from './imageDownscale';
 
 const ACCOUNT_URL = (
   (import.meta.env['VITE_ACCOUNT_URL'] as string | undefined) ?? 'http://localhost:3006'
@@ -26,6 +29,7 @@ export interface Profile {
 
 interface Props {
   readonly token: string;
+  readonly accountId: string;
   readonly profile: Profile;
   readonly onChanged: () => void;
 }
@@ -42,13 +46,46 @@ async function post(path: string, token: string, body: unknown) {
   return { ok: response.ok, error: payload.error };
 }
 
-export function ProfilePanel({ token, profile, onChanged }: Props) {
+export function ProfilePanel({ token, accountId, profile, onChanged }: Props) {
   const [displayName, setDisplayName] = useState(profile.displayName ?? '');
   const [nameFeedback, setNameFeedback] = useState<Feedback>({ kind: 'idle' });
   const [claim, setClaim] = useState('');
   const [claimFeedback, setClaimFeedback] = useState<Feedback>({ kind: 'idle' });
   const [discoveryFeedback, setDiscoveryFeedback] = useState<Feedback>({ kind: 'idle' });
   const [copied, setCopied] = useState(false);
+  const [api] = useState(() => createAccountApi(ACCOUNT_URL, token));
+  const [pictureFeedback, setPictureFeedback] = useState<Feedback>({ kind: 'idle' });
+  /** Bumps the Avatar remount after an upload, defeating the minute cache. */
+  const [avatarEpoch, setAvatarEpoch] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  async function pickPicture(file: File | undefined) {
+    if (file === undefined) return;
+    setPictureFeedback({ kind: 'working' });
+    try {
+      // Downscaled HERE: a 12-megapixel photo is a phone-camera default, and
+      // a face at 512px is indistinguishable in a 36px circle.
+      const image = await downscaleToDataUrl(file, 512);
+      const result = await api.setAvatar(image);
+      if (!result.ok) {
+        setPictureFeedback({ kind: 'error', message: result.error });
+        return;
+      }
+      api.forgetAvatar(accountId);
+      setAvatarEpoch((epoch) => epoch + 1);
+      setPictureFeedback({ kind: 'saved', message: 'Saved.' });
+    } catch {
+      setPictureFeedback({ kind: 'error', message: 'That file could not be read as a picture.' });
+    }
+  }
+
+  async function removePicture() {
+    setPictureFeedback({ kind: 'working' });
+    const result = await api.removeAvatar();
+    api.forgetAvatar(accountId);
+    setAvatarEpoch((epoch) => epoch + 1);
+    setPictureFeedback(result.ok ? { kind: 'idle' } : { kind: 'error', message: result.error });
+  }
 
   async function saveDisplayName(event: React.FormEvent) {
     event.preventDefault();
@@ -115,6 +152,37 @@ export function ProfilePanel({ token, profile, onChanged }: Props) {
   return (
     <section className="app-card">
       <h2 className="app-card-title">Your C7 identity</h2>
+
+      <div className="profile-block">
+        <h3 className="profile-label">Picture</h3>
+        <div className="profile-avatar-row">
+          <Avatar key={avatarEpoch} api={api} accountId={accountId} name={profile.displayName ?? profile.username ?? '?'} size={64} />
+          <div className="contact-actions">
+            <button
+              type="button"
+              className="button button-small"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={pictureFeedback.kind === 'working'}
+            >
+              {pictureFeedback.kind === 'working' ? 'Uploading…' : 'Choose picture'}
+            </button>
+            <button type="button" className="button button-small" onClick={() => void removePicture()}>
+              Remove
+            </button>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="visually-hidden"
+            onChange={(event) => void pickPicture(event.target.files?.[0])}
+          />
+        </div>
+        {pictureFeedback.message !== undefined ? (
+          <p className="contact-notice">{pictureFeedback.message}</p>
+        ) : null}
+        <p className="profile-hint">Shown beside your name in calls, contacts and messages.</p>
+      </div>
 
       <div className="profile-block">
         <h3 className="profile-label">Username</h3>
