@@ -22,7 +22,13 @@ export interface TextTranslator {
   }): Promise<string | null>;
 }
 
-const TRANSLATE_TIMEOUT_MS = 8000;
+/*
+ * Generous on purpose: the failure mode is delivering the original, so a
+ * tight timeout only converts slow successes into silent originals -- the
+ * matrix caught exactly that. The sender's request does wait this long in
+ * the worst case; the post-freeze shape is async render-then-update.
+ */
+const TRANSLATE_TIMEOUT_MS = 15_000;
 
 export function createTextTranslator(options: {
   readonly mediaIngestUrl: string | undefined;

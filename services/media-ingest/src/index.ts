@@ -309,30 +309,41 @@ app.post('/internal/text-translation', async (req, res) => {
      */
     const sentences = sourceText.match(/[^.!?…]+[.!?…]*\s*/gu) ?? [sourceText];
     const bounded = sentences.length > 24 ? [sourceText] : sentences;
-    const pieces: string[] = [];
+    /*
+     * CONCURRENT, order preserved by index. Translated sequentially, a
+     * two-sentence chat message stacked two full provider latencies and
+     * flapped across the account client's timeout -- the matrix caught
+     * single sentences passing while pairs failed. The provider owns its own
+     * queue; concurrency here is just not adding our own artificial one.
+     */
     let providerName: string | null = null;
-    for (let index = 0; index < bounded.length; index += 1) {
-      const piece = bounded[index]!.trim();
-      if (piece.length === 0) continue;
-      try {
-        const result = await ingest.liveTranslation.translate({
-          sessionId: 'internal-text',
-          streamId: 'internal-text',
-          segmentId: `internal-text-${index}`,
-          sequence: index,
-          startMs: 0,
-          endMs: 0,
-          sourceLanguage,
-          targetLanguage,
-          sourceText: piece,
-        });
-        pieces.push(result.translatedText.trim() || piece);
-        providerName = result.providerName ?? providerName;
-      } catch {
-        pieces.push(piece);
-      }
-    }
-    res.json({ translatedText: pieces.join(' '), providerName });
+    const pieces = await Promise.all(
+      bounded.map(async (raw, index) => {
+        const piece = raw.trim();
+        if (piece.length === 0) return '';
+        try {
+          const result = await ingest.liveTranslation.translate({
+            sessionId: 'internal-text',
+            streamId: 'internal-text',
+            segmentId: `internal-text-${index}`,
+            sequence: index,
+            startMs: 0,
+            endMs: 0,
+            sourceLanguage,
+            targetLanguage,
+            sourceText: piece,
+          });
+          providerName = result.providerName ?? providerName;
+          return result.translatedText.trim() || piece;
+        } catch {
+          return piece;
+        }
+      }),
+    );
+    res.json({
+      translatedText: pieces.filter((piece) => piece.length > 0).join(' '),
+      providerName,
+    });
   } catch (error) {
     logger.warn('Internal text translation failed', {
       sourceLanguage,
