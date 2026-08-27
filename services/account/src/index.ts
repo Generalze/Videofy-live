@@ -134,18 +134,33 @@ const app = express();
  */
 app.use(correlationMiddleware());
 
-app.use(
-  express.json({
-    limit: '16kb',
-    verify: (req, _res, buffer) => {
-      (req as unknown as { rawBody: string }).rawBody = buffer.toString('utf8');
-    },
-  }),
-);
+/*
+ * MEDIA ROUTES PARSE THEIR OWN BODIES. Express runs parsers in mount order,
+ * so a global json() mounted here consumes the body before any route-scoped
+ * parser ever sees it -- which silently turned the voice-note route's 6mb
+ * limit and the avatar route's 4mb limit into this 16kb one. Every real
+ * voice note and every real picture died as a 413 while the tiny test bodies
+ * passed. The global parser now steps aside for exactly those routes; the
+ * 16kb ceiling stays the rule for every identity endpoint.
+ */
+const OWN_BODY_PARSER = [/^\/messages\/with\/[^/]+\/voice$/, /^\/profile\/avatar$/];
+const identityJson = express.json({
+  limit: '16kb',
+  verify: (req, _res, buffer) => {
+    (req as unknown as { rawBody: string }).rawBody = buffer.toString('utf8');
+  },
+});
+app.use((req, res, next) => {
+  if (OWN_BODY_PARSER.some((route) => route.test(req.path))) {
+    next();
+    return;
+  }
+  identityJson(req, res, next);
+});
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
   // Without this a browser cannot READ the correlation id off the response, so
   // somebody reporting a problem has no id to quote and the whole point of

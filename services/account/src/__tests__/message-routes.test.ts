@@ -58,7 +58,21 @@ async function harness(): Promise<Harness> {
 
   const rings = new RingRegistry();
   const app = express();
-  app.use(express.json({ limit: '16kb' }));
+  /*
+   * Mirrors index.ts: the global identity parser steps aside for the routes
+   * that parse their own bodies. The old harness mounted a bare global 16kb
+   * parser, which is precisely why the production bug -- every real-sized
+   * voice note dying as a 413 before the route's own 6mb parser ran -- never
+   * showed here: the tests all sent tiny bodies.
+   */
+  const identityJson = express.json({ limit: '16kb' });
+  app.use((req, res, next) => {
+    if (/^\/messages\/with\/[^/]+\/voice$/.test(req.path)) {
+      next();
+      return;
+    }
+    identityJson(req, res, next);
+  });
   registerMessageRoutes(app, {
     store: new AccountStore(),
     contacts,
@@ -215,6 +229,19 @@ describe('voice notes', () => {
      */
     expect((await app.as('acct_c', `/messages/media/${message.messageId}`)).status).toBe(404);
     expect((await fetch(`${app.url}/messages/media/${message.messageId}`)).status).toBe(401);
+  });
+
+  it('accepts a real-sized recording: the 6mb route limit, not the 16kb identity limit', async () => {
+    app = await harness();
+    await befriend(app.contacts, 'acct_a', 'acct_b');
+    // ~120kb of audio -- an ordinary few-second voice note. Under the old
+    // parser ordering this died as a 413 before the route ever ran.
+    const audio = Buffer.alloc(120_000, 7).toString('base64');
+    const response = await app.as('acct_a', '/messages/with/acct_b/voice', {
+      method: 'POST',
+      body: JSON.stringify({ audioBase64: audio, durationMs: 4000 }),
+    });
+    expect(response.status).toBe(201);
   });
 
   it('refuses a recording over the duration cap', async () => {
