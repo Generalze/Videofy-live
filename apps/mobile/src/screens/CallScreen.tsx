@@ -34,18 +34,18 @@ import { CallConnection, type RemoteStream } from '../call/callConnection';
 const GATEWAY_URL = process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
 
 /**
- * ICE servers, from the deployment.
+ * An optional local override, normally empty.
  *
- * Absent means direct-connection only: fine on one Wi-Fi, and nothing else. The
- * screen says so rather than letting somebody discover it as a black rectangle
- * on mobile data.
+ * ICE servers come from the gateway at `/webrtc/ice`, because TURN credentials
+ * expire and cannot be shipped in a bundle. This exists only so a developer can
+ * point a build at something else; leaving it unset is the correct state.
  */
-function iceServers(): { urls: string | string[]; username?: string; credential?: string }[] {
+function iceOverride(): { urls: string | string[]; username?: string; credential?: string }[] {
   const raw = process.env['EXPO_PUBLIC_ICE_SERVERS'];
   if (raw === undefined || raw.trim().length === 0) return [];
   try {
     const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as ReturnType<typeof iceServers>) : [];
+    return Array.isArray(parsed) ? (parsed as ReturnType<typeof iceOverride>) : [];
   } catch {
     // Malformed configuration is treated as absent, and the banner below still
     // warns -- silently proceeding as if it were valid would be worse.
@@ -89,6 +89,13 @@ export function CallScreen({
    * have completely different fixes.
    */
   const [others, setOthers] = useState(0);
+  /*
+   * null until the fetch resolves. The old banner read a build-time env value
+   * and so reported "no ICE servers" even when the gateway was serving TURN
+   * perfectly well -- it was describing the app's configuration rather than the
+   * call's actual capability.
+   */
+  const [iceCount, setIceCount] = useState<number | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -97,7 +104,9 @@ export function CallScreen({
       callId,
       displayName,
       sessionToken,
-      iceServers: iceServers(),
+      // Left unset so the connection fetches from the gateway, which is the
+      // only source that can mint TURN credentials that expire.
+      ...(iceOverride().length > 0 ? { iceServers: iceOverride() } : {}),
       onRemoteStream: (id, stream: RemoteStream) =>
         setRemotes((current) => ({
           ...current,
@@ -110,6 +119,9 @@ export function CallScreen({
         })),
       onParticipants: (count) => {
         if (live) setOthers(count);
+      },
+      onIceServers: (count) => {
+        if (live) setIceCount(count);
       },
       onError: (message) => {
         if (live) setError(message);
@@ -172,7 +184,7 @@ export function CallScreen({
   }, []);
 
   const tiles = Object.entries(remotes);
-  const noIce = iceServers().length === 0;
+  const noIce = iceCount === 0;
 
   return (
     <View style={styles.screen}>

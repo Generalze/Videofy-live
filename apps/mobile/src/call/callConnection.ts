@@ -44,6 +44,7 @@ import {
   buildCallJoinPayload,
   createCallSocketOptions,
   createInitialCallJoinForm,
+  fetchIceServers,
   type CallJoinAck,
   type CallStateSnapshot,
   type CallVideoIcePayload,
@@ -75,11 +76,12 @@ export interface CallConnectionOptions {
    */
   readonly sessionToken: string | null;
   /**
-   * ICE servers. WITHOUT THESE A CALL WORKS ON ONE WI-FI AND NOWHERE ELSE.
+   * ICE servers, if a caller wants to override.
    *
-   * Two phones on mobile data need a relay to cross carrier NAT, and the
-   * failure mode is the worst kind: the call connects, reports no error, and
-   * shows a black rectangle. Supplied by the deployment rather than guessed.
+   * NORMALLY LEFT UNSET. The gateway serves them at `/webrtc/ice` with
+   * short-lived TURN credentials minted from a static secret, which is where
+   * the web client gets them and is the only source that can rotate. Baking
+   * them into the app would freeze a credential into every install.
    */
   readonly iceServers?: { urls: string | string[]; username?: string; credential?: string }[];
   readonly onRemoteStream: (participantId: string, stream: RemoteStream) => void;
@@ -93,6 +95,8 @@ export interface CallConnectionOptions {
    * screen cannot tell them apart.
    */
   readonly onParticipants?: (count: number) => void;
+  /** How many ICE servers were actually obtained. Zero is worth showing. */
+  readonly onIceServers?: (count: number) => void;
 }
 
 /**
@@ -143,8 +147,27 @@ export class CallConnection {
    * "waiting for someone to join" while the gateway had already refused the
    * join outright. A silent refusal is indistinguishable from an empty call.
    */
+  /**
+   * The ICE servers this call will use.
+   *
+   * FETCHED, NOT CONFIGURED. `/webrtc/ice` returns STUN plus TURN with
+   * credentials that expire, so they cannot be shipped in a bundle -- and
+   * without TURN a call reaches only devices that can already see each other
+   * directly, which on mobile data is nobody. The shared `fetchIceServers`
+   * falls back rather than throwing, because a call with STUN only is worth
+   * more than no call at all.
+   */
+  private async resolveIceServers(): Promise<RTCIceServer[]> {
+    if (this.options.iceServers !== undefined) {
+      return this.options.iceServers as RTCIceServer[];
+    }
+    return fetchIceServers(this.options.gatewayUrl, { timeoutMs: 5000 });
+  }
+
   async join(): Promise<CallJoinAck> {
     const local = await this.openLocalMedia();
+    const ice = await this.resolveIceServers();
+    this.options.onIceServers?.(ice.length);
 
     /*
      * `createCallSocketOptions` CARRIES `role: 'call-participant'` IN THE
@@ -225,14 +248,10 @@ export class CallConnection {
     const mesh = new CallVideoMesh({
       callId: this.options.callId,
       selfParticipantId: ack.participantId,
-      ...(this.options.iceServers === undefined
-        ? {}
-        : { iceServers: this.options.iceServers as RTCIceServer[] }),
+      iceServers: ice,
       // THE PLATFORM SEAM. Everything else is shared with the web client.
       createPeerConnection: () =>
-        new NativePeerConnection({
-          iceServers: this.options.iceServers ?? [],
-        }) as unknown as RTCPeerConnection,
+        new NativePeerConnection({ iceServers: ice }) as unknown as RTCPeerConnection,
       sendOffer: (payload: CallVideoSdpPayload) => socket.emit(CALL_EVENTS.VIDEO_OFFER, payload),
       sendAnswer: (payload: CallVideoSdpPayload) => socket.emit(CALL_EVENTS.VIDEO_ANSWER, payload),
       sendIce: (payload: CallVideoIcePayload) => socket.emit(CALL_EVENTS.VIDEO_ICE, payload),
