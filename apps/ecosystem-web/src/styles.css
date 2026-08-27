@@ -2358,6 +2358,23 @@ button:focus-visible {
  * header that cannot be undone by clicking again, so it should not look like a
  * dropdown. Distinct, not loud.
  */
+/* The marketing nav's exit. Quieter than "My C7": leaving is always available
+   and never competes with the place people actually want to go. */
+.nav-signout {
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  padding: 0.4rem 0.5rem;
+}
+
+.nav-signout:hover {
+  color: var(--text-strong, #fff);
+  text-decoration: underline;
+}
+
 .app-signout {
   margin-top: 0.6rem;
   align-self: flex-start;

@@ -20,6 +20,11 @@ import { ResetPassword, isResetPasswordPath } from './pages/ResetPassword';
 import { VerifyEmail, isVerifyEmailPath } from './pages/VerifyEmail';
 import { NotFound } from './pages/NotFound';
 import { ROUTE_PATHS, internalLink, useRoute, type Route } from './router';
+import { hasSession, signOutEverywhere } from './session';
+
+const ACCOUNT_URL = (
+  (import.meta.env['VITE_ACCOUNT_URL'] as string | undefined) ?? 'http://localhost:3006'
+).replace(/[/]$/, '');
 
 /** The tab title should say which of the three pages you are on. */
 const TITLES: Readonly<Record<Route, string>> = {
@@ -30,7 +35,15 @@ const TITLES: Readonly<Record<Route, string>> = {
   'not-found': 'Page not found — Consummate 7',
 };
 
-function Nav({ route, navigate }: { readonly route: Route; readonly navigate: (r: Route) => void }) {
+function Nav({
+  route,
+  navigate,
+  authed,
+}: {
+  readonly route: Route;
+  readonly navigate: (r: Route) => void;
+  readonly authed: boolean;
+}) {
   return (
     <nav className="nav" aria-label="Primary">
       <div className="shell nav-shell">
@@ -59,15 +72,37 @@ function Nav({ route, navigate }: { readonly route: Route; readonly navigate: (r
               )}
             </>
           )}
-          <a
-            className="button button-small button-outline"
-            {...internalLink('c7', navigate, '#join')}
-          >
-            {/* One name for one thing: the contract calls this Join C7 in
-                Section 22, and two labels for one destination is exactly the
-                incoherence to avoid. The showboard cyan outline is kept. */}
-            Join C7
-          </a>
+          {/*
+            THE NAV KNOWS WHO IS STANDING THERE. "Join C7" offered to somebody
+            already signed in is the site forgetting them mid-visit -- and it
+            was the only account control on every marketing page, so a
+            signed-in person had a door in and no door onward or out. Signed
+            in, the pair is the dashboard and the exit; signed out, the
+            invitation.
+          */}
+          {authed ? (
+            <>
+              <a className="button button-small button-outline" {...internalLink('app', navigate)}>
+                My C7
+              </a>
+              <button
+                type="button"
+                className="nav-signout"
+                onClick={() => void signOutEverywhere(ACCOUNT_URL)}
+              >
+                Sign out
+              </button>
+            </>
+          ) : (
+            <a
+              className="button button-small button-outline"
+              {...internalLink('c7', navigate, '#join')}
+            >
+              {/* One name for one thing: the contract calls this Join C7 in
+                  Section 22. The showboard cyan outline is kept. */}
+              Join C7
+            </a>
+          )}
         </div>
       </div>
     </nav>
@@ -76,6 +111,14 @@ function Nav({ route, navigate }: { readonly route: Route; readonly navigate: (r
 
 export function App() {
   const [route, navigate] = useRoute();
+  /*
+   * Re-read on every route change: sign-in and sign-out both end in a full
+   * navigation, so this stays truthful without a storage listener.
+   */
+  const [authed, setAuthed] = useState(hasSession);
+  useEffect(() => {
+    setAuthed(hasSession());
+  }, [route]);
   /*
    * Captured ONCE, from the URL this page was opened with.
    *
@@ -106,7 +149,7 @@ export function App() {
         Skip to content
       </a>
 
-      <Nav route={route} navigate={navigate} />
+      <Nav route={route} navigate={navigate} authed={authed} />
 
       <main id="main">
         {route === 'c7' ? <C7Home navigate={navigate} /> : null}

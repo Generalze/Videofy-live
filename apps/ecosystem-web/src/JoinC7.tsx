@@ -148,6 +148,16 @@ export function JoinC7() {
       } catch {
         /* storage unavailable; the session simply does not persist */
       }
+      /*
+       * THE FLOW, FINALLY. Signing in used to leave somebody exactly where
+       * they were -- on a marketing page, session stored, nothing changed on
+       * screen -- and "did that work?" is not a question a login should leave
+       * open. Success lands on the dashboard, which is what the person asked
+       * for by signing in. A full navigation rather than a route change so the
+       * shell boots from the freshly stored session.
+       */
+      window.location.assign('/app/');
+      return;
     } catch {
       setError('Could not reach C7 right now.');
     } finally {

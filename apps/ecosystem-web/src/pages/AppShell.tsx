@@ -15,6 +15,7 @@ import { useEffect, useState } from 'react';
 import { internalLink, type Route } from '../router';
 import { ProfilePanel, type Profile } from '../ProfilePanel';
 import { VerificationPanel } from '../VerificationPanel';
+import { clearSessionKeys } from '../session';
 
 const ACCOUNT_URL = (
   (import.meta.env['VITE_ACCOUNT_URL'] as string | undefined) ?? 'http://localhost:3006'
@@ -190,7 +191,14 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
   useEffect(() => {
     const token = storedToken();
     if (token === null) {
+      /*
+       * THE RESTRICTED AREA RESTRICTS. Arriving here without a session used
+       * to park somebody on a static signed-out page; the coherent answer is
+       * the join flow itself. replace() rather than assign() so Back does not
+       * bounce them straight into the gate again.
+       */
       setState('signed-out');
+      window.location.replace('/#join');
       return;
     }
     let cancelled = false;
@@ -198,7 +206,14 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
       .then(async (response) => {
         if (cancelled) return;
         if (response.status === 401) {
+          /*
+           * A token the server refuses must not linger looking signed-in: the
+           * nav and every product surface read these keys, and a stale one
+           * keeps doors half-open. Clear both, then join the flow.
+           */
+          clearSessionKeys();
           setState('signed-out');
+          window.location.replace('/#join');
           return;
         }
         if (!response.ok) {
