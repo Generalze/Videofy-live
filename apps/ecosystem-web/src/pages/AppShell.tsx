@@ -402,8 +402,16 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
               onChanged={() => setRefreshKey((key) => key + 1)}
             />
             <p className="app-note">
-              Until this is complete you can manage your account and security, and explore C7. You
-              cannot yet host calls, create conferences or create an organization.
+              {/*
+                The REAL rule, per trustCapabilities: email alone unlocks
+                hosting and organizations; phone and identity gate commercial
+                products. The previous copy claimed all three were needed to
+                host a call, which sent verified people hunting for checks that
+                gate nothing they wanted.
+              */}
+              Verifying your email unlocks starting calls, conferences and organizations. Phone
+              and identity checks unlock commercial products. You can already join calls and
+              manage your account.
             </p>
           </div>
         )}
