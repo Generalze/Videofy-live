@@ -82,6 +82,25 @@ async function findExisting(
   return null;
 }
 
+/**
+ * Express 4 does not catch a rejected async handler; the failure becomes an
+ * unhandled rejection and kills the process. Staging proved it: a read-only
+ * avatars directory turned one PUT into a service restart. Every handler
+ * below rides through this wrapper so a filesystem fault is a 500 with a
+ * sentence, never an outage.
+ */
+function guarded(
+  handler: (req: express.Request, res: express.Response) => Promise<void>,
+): (req: express.Request, res: express.Response) => void {
+  return (req, res) => {
+    void handler(req, res).catch(() => {
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'That could not be completed. Try again.' });
+      }
+    });
+  };
+}
+
 export function registerAvatarRoutes(
   app: express.Express,
   deps: AvatarRouteDependencies,
@@ -90,7 +109,7 @@ export function registerAvatarRoutes(
    * Route-scoped parser: a 3MB JSON body (2MB image as base64) must not raise
    * the global 16kb limit that protects every identity endpoint.
    */
-  app.put('/profile/avatar', express.json({ limit: '4mb' }), async (req, res) => {
+  app.put('/profile/avatar', express.json({ limit: '4mb' }), guarded(async (req, res) => {
     const caller = deps.callerAccountId(req);
     if (caller === null) {
       res.status(401).json({ error: 'Sign in to continue.' });
@@ -120,9 +139,9 @@ export function registerAvatarRoutes(
     if (previous !== null) await unlink(previous.path).catch(() => undefined);
     await writeFile(avatarPathFor(deps.avatarDir, caller.accountId, EXTENSION[mime] ?? 'jpg'), bytes);
     res.json({ updated: true });
-  });
+  }));
 
-  app.delete('/profile/avatar', async (req, res) => {
+  app.delete('/profile/avatar', guarded(async (req, res) => {
     const caller = deps.callerAccountId(req);
     if (caller === null) {
       res.status(401).json({ error: 'Sign in to continue.' });
@@ -131,9 +150,9 @@ export function registerAvatarRoutes(
     const existing = await findExisting(deps.avatarDir, caller.accountId);
     if (existing !== null) await unlink(existing.path).catch(() => undefined);
     res.json({ removed: true });
-  });
+  }));
 
-  app.get('/avatars/:accountId', async (req, res) => {
+  app.get('/avatars/:accountId', guarded(async (req, res) => {
     if (deps.callerAccountId(req) === null) {
       res.status(401).json({ error: 'Sign in to continue.' });
       return;
@@ -154,5 +173,5 @@ export function registerAvatarRoutes(
     // A minute of staleness beats re-downloading every contact's face per poll.
     res.setHeader('cache-control', 'private, max-age=60');
     createReadStream(existing.path).pipe(res);
-  });
+  }));
 }
