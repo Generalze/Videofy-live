@@ -148,6 +148,10 @@ describe('simultaneous speakers stay separated', () => {
     expect(fromP1.signatures()).not.toContain(222);
     expect(fromP2.signatures()).not.toContain(111);
     expect(fromP1).not.toBe(fromP2);
+    // Routing proof: the third listener was sent every frame of both talkers,
+    // and a talker is never counted as routed to themselves.
+    expect(h.manager.routedFrames(CALL, 'p3')).toBe(10);
+    expect(h.manager.routedFrames(CALL, 'p1')).toBe(5);
   });
 
   it('keeps four participants separated in both directions', async () => {

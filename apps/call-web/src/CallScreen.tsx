@@ -193,8 +193,19 @@ export function CallScreen(props: CallScreenProps) {
     <main className="call-screen">
       <header className="call-header">
         <h1 className="call-title">
-          {props.callType === 'conference' ? 'Videofy Conference' : 'Videofy Call'} ·{' '}
-          <span>{props.callCode}</span>
+          {/*
+           * A DIRECT (personal) call shows no code: its session id is
+           * internal implementation data, and a code implies something to
+           * share. Codes are the CONFERENCE's concept (founder ruling
+           * 2026-08-28).
+           */}
+          {props.callType === 'conference' ? (
+            <>
+              Videofy Conference · <span>{props.callCode}</span>
+            </>
+          ) : (
+            'Videofy Call'
+          )}
         </h1>
         <div className="call-status" role="status">
           <span className={statusDotClass(props.phase)} aria-hidden="true" />
@@ -288,7 +299,9 @@ export function CallScreen(props: CallScreenProps) {
         {others.length === 0 ? (
           <p className="participant-waiting">
             {/* Capacity-neutral: a conference is not "the other person". */}
-            Waiting for someone to join — share the call code {props.callCode}.
+            {props.callType === 'conference'
+              ? `Waiting for someone to join — share the conference code ${props.callCode}.`
+              : 'Waiting for them to join…'}
           </p>
         ) : null}
       </section>

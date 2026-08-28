@@ -172,6 +172,8 @@ interface CallReceivePeerRecord {
   participantId: string;
   peer: PeerConnectionLike;
   slots: CallReceiveSlot[];
+  /** Frames actually written into a bound slot for this listener. Proof of routing. */
+  routedFrames: number;
   answered: boolean;
   closed: boolean;
   queuedRemoteCandidates: CandidateLike[];
@@ -243,6 +245,7 @@ export class CallReceivePeerManager implements CallReceivePeersLike {
       participantId,
       peer,
       slots,
+      routedFrames: 0,
       answered: false,
       closed: false,
       queuedRemoteCandidates: [],
@@ -322,6 +325,7 @@ export class CallReceivePeerManager implements CallReceivePeersLike {
       }
       try {
         slot.source.onData(data);
+        record.routedFrames += 1;
       } catch (error) {
         logger.warn('Call receive peer audio push failed', {
           callId: record.callId,
@@ -409,6 +413,16 @@ export class CallReceivePeerManager implements CallReceivePeersLike {
     return this.unplaceableSpeakerCount;
   }
 
+  /**
+   * Frames written into THIS listener's bound slots so far -- the routing
+   * proof for a one-way-audio investigation: a caller who "hears nothing"
+   * with a non-zero count here was sent the voice, and the fault is on the
+   * receiving device; zero means the gateway never routed it.
+   */
+  routedFrames(callId: string, participantId: string): number {
+    return this.peers.get(keyFor(callId, participantId))?.routedFrames ?? 0;
+  }
+
   /** How many of a listener's slots the client actually negotiated. */
   negotiatedSlotCount(callId: string, participantId: string): number {
     const record = this.peers.get(keyFor(callId, participantId));
@@ -462,6 +476,15 @@ export class CallReceivePeerManager implements CallReceivePeersLike {
   private closeRecord(record: CallReceivePeerRecord, reason: string): void {
     if (record.closed) return;
     record.closed = true;
+    // Metadata only. The one line that says whether THIS listener was ever
+    // sent anybody's voice -- the B in "callee publish -> gateway -> caller".
+    logger.info('Call receive peer routing summary', {
+      callId: record.callId,
+      participantId: record.participantId,
+      routedFrames: record.routedFrames,
+      boundSpeakers: record.slots.filter((slot) => slot.speakerParticipantId !== null).length,
+      reason,
+    });
     for (const slot of record.slots) {
       try {
         slot.track.stop?.();

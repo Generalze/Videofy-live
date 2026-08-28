@@ -315,6 +315,16 @@ export interface CallRuntimeDependencies {
    */
   authorizeCallHost?: (sessionToken: string | null) => Promise<boolean>;
   /**
+   * DIRECT CALLS inherit the account pair's conversation mode. Resolved at
+   * creation with the caller's session, locked into the session; the
+   * client's own callMode is ignored for a direct call. Absent means every
+   * direct call is a NORMAL call.
+   */
+  resolveDirectCallMode?: (
+    sessionToken: string | null,
+    peerAccountId: string,
+  ) => Promise<'normal' | 'translated' | null>;
+  /**
    * P7.0A: a sink for governance audit events.
    *
    * Optional, and the journal line above is emitted either way. This is the
@@ -467,6 +477,9 @@ export class CallRuntime {
   private readonly authorizeCallHost:
     | ((sessionToken: string | null) => Promise<boolean>)
     | undefined;
+  private readonly resolveDirectCallMode:
+    | ((sessionToken: string | null, peerAccountId: string) => Promise<'normal' | 'translated' | null>)
+    | undefined;
   private readonly governanceAudit: ((event: GovernanceAuditEvent) => void) | undefined;
   private readonly connectAuthority: CallConnectJoinAuthority | undefined;
   private readonly setTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
@@ -529,6 +542,7 @@ export class CallRuntime {
     this.now = dependencies.now ?? (() => Date.now());
     this.verifyVoiceIdentity = dependencies.verifyVoiceIdentity;
     this.authorizeCallHost = dependencies.authorizeCallHost;
+    this.resolveDirectCallMode = dependencies.resolveDirectCallMode;
     this.governanceAudit = dependencies.governanceAudit;
     this.connectAuthority = dependencies.connectAuthority;
     this.playbackLedger = dependencies.playbackLedger ?? new CallPlaybackLedger({ nowMs: this.now });
@@ -939,8 +953,39 @@ export class CallRuntime {
     const voiceIdentityRejected =
       typeof sessionToken === 'string' && sessionToken.length > 0 && verifiedOwnerId === null;
 
+    /*
+     * A DIRECT CALL IS PERSONAL AND ITS MODE IS THE PAIR'S (founder ruling
+     * 2026-08-28). Only at creation -- the store locks callMode afterwards,
+     * and a second joiner naming a peer changes nothing. The client's
+     * callType/callMode are overridden, not trusted: the relationship owns
+     * this answer. The peer id itself never reaches the store.
+     */
+    const { directPeerAccountId, ...joinInput } = clientInput as CallJoinInput & {
+      directPeerAccountId?: unknown;
+    };
+    const creating =
+      typeof requestedCallId === 'string' &&
+      !isResumeAttempt &&
+      this.store.snapshot(requestedCallId) === null;
+    let directOverride: { callType: 'personal'; callMode: 'normal' | 'translated' } | null = null;
+    if (creating && typeof directPeerAccountId === 'string' && directPeerAccountId.length > 0) {
+      const pairMode = this.resolveDirectCallMode
+        ? await this.resolveDirectCallMode(
+            typeof sessionToken === 'string' ? sessionToken : null,
+            directPeerAccountId,
+          )
+        : null;
+      directOverride = { callType: 'personal', callMode: pairMode ?? 'normal' };
+      logger.info('Direct call created', {
+        callId: requestedCallId,
+        callMode: directOverride.callMode,
+        resolved: pairMode !== null,
+      });
+    }
+
     const result = this.store.createOrJoin({
-      ...(clientInput as CallJoinInput),
+      ...joinInput,
+      ...(directOverride ?? {}),
       // Always present, never conditional. Passing the key only when a token
       // verified would let a resume keep whichever account was attached to that
       // seat before — the shared-browser defect, rebuilt on top of real

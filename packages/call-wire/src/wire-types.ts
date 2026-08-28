@@ -71,6 +71,16 @@ export interface CallJoinPayload {
   callType?: CallType;
   callMode?: CallMode;
   /**
+   * DIRECT CALL (founder ruling 2026-08-28): the C7 account this call is
+   * placed TO. Consulted only when this join CREATES the call. Its presence
+   * makes the call `personal`, and the gateway resolves the pair's
+   * conversation mode (normal | translated) from the account service and
+   * LOCKS it into the session -- `callMode` from the client is ignored for
+   * a direct call, because the relationship, not the caller's form, owns
+   * that answer. Never echoed into call:state.
+   */
+  directPeerAccountId?: string;
+  /**
    * Absent means the speaker stated their language and it is final. `auto`
    * treats `speakLanguage` as a starting guess the first utterance may correct.
    */

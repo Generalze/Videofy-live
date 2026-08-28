@@ -46,6 +46,44 @@ export interface CallHostAuthorityOptions {
   readonly fetchImpl?: typeof fetch;
 }
 
+/**
+ * The pair's conversation mode, from the account service, for a DIRECT call.
+ *
+ * Asked with the CALLER's session token against the same route the chat
+ * screens use (`GET /messages/with/:peer/mode`), so the answer is exactly
+ * what both people see in their chat: normal unless they switched it.
+ * Null on any failure -- the caller then gets a NORMAL call, the free
+ * default, never a silently translated (billable) one.
+ */
+export function createDirectCallModeResolver(
+  options: CallHostAuthorityOptions,
+): (sessionToken: string | null, peerAccountId: string) => Promise<'normal' | 'translated' | null> {
+  const accountUrl = options.accountServiceUrl?.replace(/\/+$/, '') ?? null;
+  const timeoutMs = options.timeoutMs ?? 4000;
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  return async function resolveDirectCallMode(sessionToken, peerAccountId) {
+    if (accountUrl === null || typeof sessionToken !== 'string' || sessionToken.length === 0) {
+      return null;
+    }
+    if (!/^acct_[0-9a-f]{16}$/.test(peerAccountId)) return null;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetchImpl(
+        `${accountUrl}/messages/with/${encodeURIComponent(peerAccountId)}/mode`,
+        { headers: { authorization: `Bearer ${sessionToken}` }, signal: controller.signal },
+      );
+      if (!response.ok) return null;
+      const body = (await response.json()) as { mode?: unknown };
+      return body.mode === 'translated' ? 'translated' : body.mode === 'normal' ? 'normal' : null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
 export function createCallHostAuthority(
   options: CallHostAuthorityOptions,
 ): (sessionToken: string | null) => Promise<boolean> {

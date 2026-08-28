@@ -126,6 +126,24 @@ APPLICATION → PENDING → APPROVED/REJECTED → OperatorGrant
 revocable, no deployment required to grant or revoke.
 ```
 
+### 1.6 Direct calls vs conferences — LOCKED (28 Aug, correction wave)
+
+| Area | Ruling |
+|---|---|
+| Direct call | Person-to-person. **No visible codes anywhere.** The session id is internal implementation data. |
+| Conference | The only place human-readable, shareable call codes exist. |
+| Mobile Conf tab | Conference creation/joining only (Start · Join). |
+| Direct-call entry points | Contact → Call, Chat → Call, incoming call. Never a code. |
+| Direct-call mode | Inherits the account pair's Normal/Translated conversation mode. **Resolved server-side at creation with the caller's session, locked into the session; the client's own mode is ignored.** A later chat-mode flip never mutates an active call. |
+| Camera | **OFF at every call start, genuinely off** — the camera is not acquired. Camera on acquires it and attaches the track; camera off stops and releases capture. A denied camera permission never ends an audio call. |
+| Caller status | Call-state authority (join ack → ring dispatch → callee JOINED = answered → receive leg up = connected), **never "does a video tile exist?"** `reachedDevices` proves push dispatch only. |
+| Unreachable contact | Honest: "<name> couldn't be reached." Message/retry offered. No code fallback. |
+| Remove contact | Straightforward Remove with a destructive confirmation; only the confirmed Remove mutates. |
+
+Direct-call state machine: `DIALING → CALLING → ANSWERED → CONNECTING → CONNECTED`, with terminal `DECLINED · MISSED · UNAVAILABLE · FAILED · ENDED`. For the notification-flow build, the callee joining the session **is** ANSWERED.
+
+One-way-audio doctrine: instrument the reverse leg with **metadata only** (participant ids, publish/receive/ICE states, slot bindings, routed-frame counters, inbound packet counters) — never audio or transcripts — and prove which of *callee publish → gateway routing → caller receive/playback* fails before any UI change.
+
 ---
 
 ## 2 · Where the platform stands (all LIVE on staging)
@@ -353,7 +371,48 @@ such:
 
 ---
 
-## 11 · Standing refinements ledger
+## 11 · Next wave (locked spec, NOT yet built): presence and the identity card
+
+Ruled 28 Aug 2026; deliberately queued behind the direct-call correction
+wave. Canonical when built:
+
+**Presence — four visible states, a hint never a permission.**
+`ACTIVE NOW` (foreground + authenticated + recent heartbeat) · `BUSY` (in a
+call or Do Not Disturb — a DND person never looks offline) · `ACTIVE
+RECENTLY` (heartbeat expired recently) · `OFFLINE`. `HIDDEN` (presence
+sharing disabled) is **never distinguishable from OFFLINE** to others. Shown
+as a small dot at the lower-right of the avatar wherever identity appears
+(contacts, chat header, call history, profile preview, conference
+participants): green active · amber busy · grey offline. No exact "last
+seen" by default. Privacy control: Everyone / Contacts only / Nobody.
+Presence never gates a call: an offline contact still receives the push.
+
+**The identity card** — photo · name · `@username` · C7 badge · presence ·
+languages — is the recurring component tying chats, direct calls,
+conferences and channels into one identity. Tapping a picture answers
+"who is this person and what can I do with them?", never exposes settings:
+own picture → profile *preview* (what others see) with Edit profile /
+Change photo; another's → the limited public card with Message / Call (or
+Add contact; nothing when blocked), and an overflow: Share profile · Remove
+contact (confirmed) · Block (distinct, confirmed) · Report.
+
+**Profile tab structure** (five compact sections): Identity (photo, name,
+username, badge, bio) · Language & Voice (primary, I speak, I prefer to
+hear, translated-voice mode, **My C7 Voice** as its own row: Not enrolled /
+Active / Deletion pending) · Availability (active status, DND, presence
+privacy, who can call) · Account & Trust (email/phone verification,
+security, devices, sign out) · Privacy & Preferences (who can
+find/contact/call you, blocked accounts, translation and notification
+preferences).
+
+**Visibility model.** Public: photo, displayName, username, badge, bio, the
+languages the user chooses to show. Contact-visible: presence, call/message
+actions, richer bio. Private, never shown to others: email, security,
+devices, **listening language** (an internal delivery preference — only
+"Speaks …" is public unless the user opts in), voice profile/provider,
+privacy settings, billing, verification reasons, account id, IPs, logins.
+
+## 12 · Standing refinements ledger
 
 - "Translation unavailable" should be *visible* to the reader when a
   rendering was expected and the original was delivered instead (post-merge

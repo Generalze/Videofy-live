@@ -264,6 +264,10 @@ export class Gateway {
       /** Call-level authority. Omitted means no account may start a call. */
       call?: {
         authorizeHost?: (sessionToken: string | null) => Promise<boolean>;
+        resolveDirectMode?: (
+          sessionToken: string | null,
+          peerAccountId: string,
+        ) => Promise<'normal' | 'translated' | null>;
       };
       operator?: {
         authSecret?: string | undefined;
@@ -458,6 +462,9 @@ export class Gateway {
        * as connectAuthority directly below.
        */
       ...(options.call?.authorizeHost ? { authorizeCallHost: options.call.authorizeHost } : {}),
+      ...(options.call?.resolveDirectMode
+        ? { resolveDirectCallMode: options.call.resolveDirectMode }
+        : {}),
       // P6.5: the synchronous connect-join gate (jti claim, verify, project,
       // origin, live-registry). Always constructed — with a missing secret or
       // registry it refuses every connect join, which is the fail-closed

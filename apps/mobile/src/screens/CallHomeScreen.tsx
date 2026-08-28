@@ -1,12 +1,11 @@
 /** @author masterzee001 */
 /**
- * Starting or joining a call by code.
- *
- * Calling a CONTACT lives on the contacts and chat screens, where the person
- * is; this screen is the code path -- for reaching somebody who is not a
- * contact yet, or joining a call from a code read out loud. `normalizeCallCode`
- * is the shared contract that makes a code typed here reach the same call as
- * the same code typed anywhere else.
+ * CONFERENCES ONLY (founder ruling 2026-08-28): start one, or join one by
+ * its code. This is the only place a human-readable call code exists.
+ * Direct calls are person-to-person and start from a contact, a chat or an
+ * incoming call -- never from a code, and never from here. `normalizeCallCode`
+ * is the shared contract that makes a code typed here reach the same
+ * conference as the same code typed anywhere else.
  */
 import { useState, type JSX } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -34,9 +33,9 @@ export function CallHomeScreen({ emailVerified, onJoin }: CallHomeScreenProps): 
   return (
     <ScrollView style={styles.fill} contentContainerStyle={styles.screen}>
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Call by code</Text>
+        <Text style={styles.cardTitle}>Conference</Text>
         <Text style={styles.cardBody}>
-          Share a code with anybody -- they do not need to be a contact to join.
+          Start a conference and share its code, or join one with the code you were given.
         </Text>
         <TextInput
           style={styles.input}
@@ -54,7 +53,7 @@ export function CallHomeScreen({ emailVerified, onJoin }: CallHomeScreenProps): 
             onPress={() => setCode(generateCallCode())}
             accessibilityRole="button"
           >
-            <Text style={styles.buttonLabel}>New code</Text>
+            <Text style={styles.buttonLabel}>Start</Text>
           </Pressable>
           <Pressable
             style={({ pressed }) => [
@@ -67,13 +66,12 @@ export function CallHomeScreen({ emailVerified, onJoin }: CallHomeScreenProps): 
             disabled={normalised.length === 0}
             accessibilityRole="button"
           >
-            <Text style={styles.buttonLabel}>Join call</Text>
+            <Text style={styles.buttonLabel}>Join</Text>
           </Pressable>
         </View>
         {emailVerified === false && (
           <Text style={styles.warn}>
-            Starting a NEW call needs a verified email (see Profile). Joining somebody
-            else&apos;s call works now.
+            Starting a conference needs a verified email (see Profile). Joining one works now.
           </Text>
         )}
       </View>

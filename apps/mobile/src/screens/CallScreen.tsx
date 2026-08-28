@@ -28,6 +28,7 @@ import {
   View,
 } from 'react-native';
 import { AvatarView } from '../media/AvatarView';
+import { directCallPhase, directCallWords } from '../call/callPhase';
 import { RTCView } from 'react-native-webrtc';
 import { CallConnection, type RemoteStream } from '../call/callConnection';
 
@@ -63,8 +64,28 @@ const PEER_WORDS: Record<string, string> = {
   closed: 'left',
 };
 
+/**
+ * A DIRECT call is person-to-person: it carries the peer, its session id is
+ * internal implementation data, and no code is ever shown. A CONFERENCE is
+ * the only kind with a human-readable, shareable code. (Founder ruling
+ * 2026-08-28.) Kept as a union so conference UI cannot leak into a direct
+ * call by accident.
+ */
+export type ActiveCallDescriptor =
+  | {
+      readonly kind: 'direct';
+      /** Internal session id. Never rendered. */
+      readonly callId: string;
+      readonly peer: { readonly accountId: string; readonly name: string };
+    }
+  | {
+      readonly kind: 'conference';
+      /** The shareable conference code. */
+      readonly callId: string;
+    };
+
 export interface CallScreenProps {
-  readonly callId: string;
+  readonly call: ActiveCallDescriptor;
   readonly displayName: string;
   /** The language this account speaks; the call enters with it. */
   readonly speakLanguage?: 'en' | 'es' | 'fr';
@@ -73,32 +94,43 @@ export interface CallScreenProps {
   /** Null is valid: it means this client can JOIN but not CREATE a call. */
   readonly sessionToken: string | null;
   /**
-   * When set, ring this contact AFTER the join succeeds. Order is the
+   * Direct calls only: ring the peer AFTER the join succeeds. Order is the
    * contract: only a verified account may CREATE a call, so the caller joins
    * first (becoming the host) and rings second -- ring-then-join would race
-   * the callee into being the creator.
+   * the callee into being the creator. Absent when answering (the callee
+   * joins an existing session) and for conferences.
    */
-  readonly ringName?: string | undefined;
   readonly onRing?: ((callId: string) => Promise<number | null>) | undefined;
   readonly onLeave: () => void;
 }
 
 export function CallScreen({
-  callId,
+  call,
   displayName,
   speakLanguage,
   hearLanguage,
   sessionToken,
-  ringName,
   onRing,
   onLeave,
 }: CallScreenProps): JSX.Element {
+  const callId = call.callId;
+  const peerName = call.kind === 'direct' ? call.peer.name : null;
   const connection = useRef<CallConnection | null>(null);
+  /** The self-view URL while the camera is on; null is genuinely off. */
   const [localUrl, setLocalUrl] = useState<string | null>(null);
   const [remotes, setRemotes] = useState<Record<string, { url: string | null; state: string }>>({});
   const [error, setError] = useState<string | null>(null);
-  const [cameraOn, setCameraOn] = useState(true);
+  /** OFF at every call start (founder ruling): the camera is not acquired. */
+  const [cameraOn, setCameraOn] = useState(false);
   const [joining, setJoining] = useState(true);
+  const [joined, setJoined] = useState(false);
+  const [joinFailed, setJoinFailed] = useState(false);
+  /** The two voice legs' transport states -- silence can name its link. */
+  const [legs, setLegs] = useState<{ publish: string; receive: string }>({
+    publish: 'new',
+    receive: 'new',
+  });
+  const [voice, setVoice] = useState<{ inboundPackets: number; iceState: string } | null>(null);
   /*
    * What the GATEWAY says is in the call, which is not the same as what the
    * mesh has connected. A black screen cannot distinguish "nobody else is
@@ -122,10 +154,11 @@ export function CallScreen({
 
   useEffect(() => {
     let live = true;
-    const call = new CallConnection({
+    const link = new CallConnection({
       gatewayUrl: GATEWAY_URL,
       callId,
       displayName,
+      ...(call.kind === 'direct' ? { directPeerAccountId: call.peer.accountId } : {}),
       ...(speakLanguage === undefined ? {} : { speakLanguage }),
       ...(hearLanguage === undefined ? {} : { hearLanguage }),
       sessionToken,
@@ -145,6 +178,12 @@ export function CallScreen({
       onRoster: (list) => {
         if (live) setRoster(list);
       },
+      onLegState: (leg, state) => {
+        if (live) setLegs((current) => ({ ...current, [leg]: state }));
+      },
+      onVoiceStats: (stats) => {
+        if (live) setVoice(stats);
+      },
       onIceServers: (count) => {
         if (live) setIceCount(count);
       },
@@ -152,13 +191,13 @@ export function CallScreen({
         if (live) setError(message);
       },
     });
-    connection.current = call;
+    connection.current = link;
 
     void (async () => {
       try {
-        const local = await call.openLocalMedia();
+        // Microphone only. The camera is acquired by the Camera button, never here.
+        await link.openLocalMedia();
         if (!live) return;
-        setLocalUrl(local.toURL());
 
         /*
          * THE ACK IS READ, and this is the whole reason the call screen has a
@@ -167,13 +206,15 @@ export function CallScreen({
          * empty call and sends somebody looking for a person who was never
          * able to be there.
          */
-        const ack = await call.join();
+        const ack = await link.join();
         if (!live) return;
+        if (ack.ok) setJoined(true);
         if (ack.ok && onRing !== undefined) {
           const reached = await onRing(callId);
           if (live) setRang(reached ?? -1);
         }
         if (!ack.ok) {
+          setJoinFailed(true);
           setError(
             ack.code === 'host-not-authorized'
               ? 'Verify your email before starting a call. You can still join a call somebody invites you to.'
@@ -184,7 +225,7 @@ export function CallScreen({
         if (live) {
           setError(
             thrown instanceof Error && /permission|denied/iu.test(thrown.message)
-              ? 'Camera and microphone access is needed for a call.'
+              ? 'Microphone access is needed for a call.'
               : 'Could not start the call.',
           );
         }
@@ -200,17 +241,27 @@ export function CallScreen({
      */
     return () => {
       live = false;
-      call.leave();
+      link.leave();
       connection.current = null;
     };
   }, [callId, displayName, sessionToken]);
 
+  /*
+   * Camera ON acquires the camera (a denied permission leaves the audio
+   * call untouched and says so); camera OFF releases it. The self-view
+   * follows the real stream, not a flag.
+   */
   const toggleCamera = useCallback(() => {
-    setCameraOn((on) => {
-      connection.current?.setCameraEnabled(!on);
-      return !on;
+    const next = !cameraOn;
+    void connection.current?.setCameraEnabled(next).then((stream) => {
+      if (next && stream === null) {
+        setError('Camera access is needed to turn the camera on. The call continues on audio.');
+        return;
+      }
+      setLocalUrl(stream === null ? null : stream.toURL());
+      setCameraOn(next);
     });
-  }, []);
+  }, [cameraOn]);
 
   const toggleMute = useCallback(() => {
     setMuted((wasMuted) => {
@@ -221,6 +272,17 @@ export function CallScreen({
 
   const tiles = Object.entries(remotes);
   const noIce = iceCount === 0;
+  const phase =
+    call.kind === 'direct'
+      ? directCallPhase({
+          joined,
+          joinFailed,
+          rang: onRing === undefined ? 1 : rang,
+          others,
+          receiveState: legs.receive,
+          ended: false,
+        })
+      : null;
 
   return (
     <View style={styles.screen}>
@@ -247,33 +309,44 @@ export function CallScreen({
           </View>
         )}
 
-        {ringName !== undefined && rang !== null && tiles.length === 0 && (
+        {/*
+          DIRECT CALL: the person and the call STATE, never a code. State
+          comes from the join ack, the ring result, the gateway roster and
+          the receive leg -- not from whether a video tile exists.
+        */}
+        {call.kind === 'direct' && phase !== null && !joining && tiles.length === 0 && (
           <View style={styles.centreBlock}>
-            <Text style={styles.muted}>
-              {rang > 0
-                ? `Ringing ${ringName}...`
-                : rang === 0
-                  ? `${ringName} has no registered phone, so nothing will ring. Share the code instead.`
-                  : `${ringName} could not be rung. Share the code instead.`}
-            </Text>
+            <AvatarView accountId={call.peer.accountId} name={call.peer.name} size={84} />
+            <Text style={styles.peerName}>{call.peer.name}</Text>
+            <Text style={styles.muted}>{directCallWords(phase, call.peer.name)}</Text>
+            {phase === 'unavailable' && (
+              <Text style={styles.hint}>You can message them instead, or try again later.</Text>
+            )}
           </View>
         )}
 
-        {tiles.length === 0 && !joining && (
+        {/* CONFERENCE: the code is the whole point -- it is what gets shared. */}
+        {call.kind === 'conference' && tiles.length === 0 && !joining && (
           <View style={styles.centreBlock}>
             <Text style={styles.muted}>
               {others === 0
-                ? 'Waiting for someone else to join'
-                : `${others} other${others === 1 ? '' : 's'} in this call - connecting media`}
+                ? 'Waiting for others to join. Share the conference code:'
+                : `${others} other${others === 1 ? '' : 's'} in this conference - connecting media`}
             </Text>
             <Text style={styles.code}>{callId}</Text>
-            {others > 0 && (
-              <Text style={styles.hint}>
-                They are in the call. If this does not clear, the two devices cannot reach each
-                other directly - which is what ICE servers are for.
-              </Text>
-            )}
           </View>
+        )}
+
+        {/*
+          THE VOICE LEGS, NAMED. Shown only while something is wrong: a dead
+          leg, or a person present whose voice is not arriving. Metadata only.
+        */}
+        {others > 0 && (legs.receive !== 'connected' || (voice !== null && voice.inboundPackets === 0)) && (
+          <Text style={styles.hint}>
+            {`voice — you: ${legs.publish} · them: ${legs.receive}${
+              voice === null ? '' : ` · ${voice.inboundPackets} pkts in · ice ${voice.iceState}`
+            }`}
+          </Text>
         )}
 
         {tiles.map(([id, tile]) => (
@@ -317,20 +390,18 @@ export function CallScreen({
         ))}
       </ScrollView>
 
-      {localUrl !== null && (
+      {cameraOn && localUrl !== null && (
         <View style={styles.selfView}>
-          {cameraOn ? (
-            <RTCView streamURL={localUrl} style={styles.selfVideo} objectFit="cover" mirror />
-          ) : (
-            <View style={[styles.selfVideo, styles.videoPlaceholder]}>
-              <Text style={styles.selfOff}>camera off</Text>
-            </View>
-          )}
+          <RTCView streamURL={localUrl} style={styles.selfVideo} objectFit="cover" mirror />
         </View>
       )}
 
       <View style={styles.controls}>
-        <Text style={styles.mode}>Normal mode - no translation in this build</Text>
+        <Text style={styles.mode}>
+          {call.kind === 'direct'
+            ? 'Direct call — follows your conversation mode with this contact'
+            : 'Conference'}
+        </Text>
         <View style={styles.buttons}>
           <Pressable
             style={({ pressed }) => [
@@ -369,6 +440,7 @@ const styles = StyleSheet.create({
   centreBlock: { alignItems: 'center', gap: 12, paddingVertical: 40 },
   muted: { color: '#8d99a6', fontSize: 14 },
   code: { color: '#3ec9c0', fontSize: 22, fontFamily: 'monospace', letterSpacing: 2 },
+  peerName: { color: '#e4ebf1', fontSize: 22, fontWeight: '700' },
   hint: { color: '#5d6874', fontSize: 12, textAlign: 'center', lineHeight: 18, paddingHorizontal: 20 },
 
   tile: { gap: 6 },

@@ -113,6 +113,10 @@ interface FakeChunkTiming {
 function createHarness(
   verifyVoiceIdentity?: (token: string) => string | null,
   authorizeCallHost?: (sessionToken: string | null) => Promise<boolean>,
+  resolveDirectCallMode?: (
+    sessionToken: string | null,
+    peerAccountId: string,
+  ) => Promise<'normal' | 'translated' | null>,
 ) {
   let tokenSerial = 0;
   const store = new CallSessionStore({
@@ -203,6 +207,7 @@ function createHarness(
        * reporting it as a broken call.
        */
       authorizeCallHost: authorizeCallHost ?? (async () => true),
+      ...(resolveDirectCallMode ? { resolveDirectCallMode } : {}),
     store,
     emitToRoom,
     ingestControl,
@@ -361,6 +366,66 @@ function generatedAudioEvent(
 }
 
 describe('CallRuntime join and ingest plan handling', () => {
+  /*
+   * DIRECT CALLS (founder ruling 2026-08-28): a join that names the peer
+   * account creates a PERSONAL call whose mode is the account pair's
+   * conversation mode, resolved server-side with the caller's session. The
+   * client's own callMode is ignored; a later chat-mode flip does not touch
+   * the active call, because the store locks callMode at creation.
+   */
+  it('a direct call is personal and takes the pair mode, not the client form', async () => {
+    const resolver = vi.fn(async (_token: string | null, peer: string) =>
+      peer === 'acct_00000000000000bb' ? ('translated' as const) : null,
+    );
+    const direct = createHarness(() => 'acct_00000000000000aa', undefined, resolver);
+    const ack = await join(direct, new FakeSocket('socket-a'), {
+      ...JOIN_A,
+      callId: 'ring-abc',
+      callMode: 'normal',
+      callType: 'conference',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+    expect(ack.ok).toBe(true);
+    expect(resolver).toHaveBeenCalledWith('ana-token', 'acct_00000000000000bb');
+    const snapshot = direct.store.snapshot('ring-abc');
+    expect(snapshot?.callType).toBe('personal');
+    expect(snapshot?.callMode).toBe('translated');
+    // The peer id is routing input, never room-visible state.
+    expect(JSON.stringify(direct.emitToRoom.mock.calls)).not.toContain('directPeerAccountId');
+  });
+
+  it('a direct call whose pair mode cannot be resolved is a NORMAL call', async () => {
+    const direct = createHarness(() => 'acct_00000000000000aa', undefined, async () => null);
+    await join(direct, new FakeSocket('socket-a'), {
+      ...JOIN_A,
+      callId: 'ring-def',
+      callMode: 'translated',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+    expect(direct.store.snapshot('ring-def')?.callMode).toBe('normal');
+  });
+
+  it('the second joiner naming a peer changes nothing: mode is locked at creation', async () => {
+    const resolver = vi.fn<() => Promise<'normal' | 'translated' | null>>(async () => 'translated');
+    const direct = createHarness(() => 'acct_00000000000000aa', undefined, resolver);
+    await join(direct, new FakeSocket('socket-a'), {
+      ...JOIN_A,
+      callId: 'ring-ghi',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+    resolver.mockResolvedValue('normal' as const);
+    await join(direct, new FakeSocket('socket-b'), {
+      ...JOIN_B,
+      callId: 'ring-ghi',
+      directPeerAccountId: 'acct_00000000000000aa',
+    });
+    expect(direct.store.snapshot('ring-ghi')?.callMode).toBe('translated');
+    expect(resolver).toHaveBeenCalledTimes(1);
+  });
+
   let harness: Harness;
 
   beforeEach(() => {

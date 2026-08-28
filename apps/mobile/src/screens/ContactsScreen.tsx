@@ -13,15 +13,7 @@
  * through untouched rather than decorating it into an oracle.
  */
 import { useCallback, useEffect, useState, type JSX } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { AvatarView } from '../media/AvatarView';
 import type { Api, ContactPerson, ContactsResponse } from '../api/client';
 
@@ -168,7 +160,23 @@ export function ContactsScreen({ api, onMessage, onCall }: ContactsScreenProps):
                 <Text style={styles.primaryActionLabel}>Call</Text>
               </Pressable>
               <Pressable
-                onPress={() => void act(() => api.removeContact(person.accountId))}
+                onPress={() => {
+                  // Destructive: a straightforward confirmation, and ONLY the
+                  // confirmed Remove performs the mutation (founder ruling).
+                  const name = person.displayName ?? person.username ?? person.accountId;
+                  Alert.alert(
+                    `Remove ${name}?`,
+                    `${name} will be removed from your contacts. You can add each other again later.`,
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Remove',
+                        style: 'destructive',
+                        onPress: () => void act(() => api.removeContact(person.accountId)),
+                      },
+                    ],
+                  );
+                }}
                 accessibilityRole="button"
                 style={styles.quietAction}
               >

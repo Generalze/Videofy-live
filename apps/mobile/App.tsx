@@ -102,13 +102,22 @@ const NOTICE: Partial<Record<string, string>> = {
   revoked: 'You were signed out. Sign in again to continue.',
 };
 
-type Tab = 'chats' | 'contacts' | 'call' | 'profile';
+type Tab = 'chats' | 'contacts' | 'conf' | 'profile';
 
-interface ActiveCall {
-  readonly callId: string;
-  /** Present when this call should ring a contact once joined. */
-  readonly ring?: ContactPerson;
-}
+/**
+ * A call is DIRECT (person-to-person, internal session id, no visible code)
+ * or a CONFERENCE (the only kind with a shareable code). Founder ruling
+ * 2026-08-28. `ring` is set only on the CALLER's side of a direct call: the
+ * callee answers an existing session and rings nobody.
+ */
+type ActiveCall =
+  | {
+      readonly kind: 'direct';
+      readonly callId: string;
+      readonly peer: { readonly accountId: string; readonly name: string };
+      readonly ring: boolean;
+    }
+  | { readonly kind: 'conference'; readonly callId: string };
 
 export default function App(): JSX.Element {
   return (
@@ -170,7 +179,18 @@ function AppInner(): JSX.Element {
     (data: Record<string, unknown>) => {
       const kind = String(data['kind'] ?? '');
       if (kind === 'call' && typeof data['callId'] === 'string') {
-        setActiveCall({ callId: data['callId'] });
+        // Answering: the session exists; the caller is named in the push.
+        const fromAccountId = typeof data['fromAccountId'] === 'string' ? data['fromAccountId'] : '';
+        const fromName =
+          typeof data['fromName'] === 'string' && data['fromName'].length > 0
+            ? data['fromName']
+            : 'Caller';
+        setActiveCall({
+          kind: 'direct',
+          callId: data['callId'],
+          peer: { accountId: fromAccountId, name: fromName },
+          ring: false,
+        });
       } else if (kind === 'message' && typeof data['fromAccountId'] === 'string') {
         void openChatWithAccount(data['fromAccountId']);
       }
@@ -238,7 +258,15 @@ function AppInner(): JSX.Element {
   }, []);
 
   const callContact = useCallback((person: ContactPerson) => {
-    setActiveCall({ callId: `ring-${randomId('').slice(0, 8)}`, ring: person });
+    setActiveCall({
+      kind: 'direct',
+      callId: `ring-${randomId('').slice(0, 8)}`,
+      peer: {
+        accountId: person.accountId,
+        name: person.displayName ?? person.username ?? person.accountId,
+      },
+      ring: true,
+    });
   }, []);
 
   if (state.status === 'starting' || state.status === 'validating') {
@@ -270,26 +298,25 @@ function AppInner(): JSX.Element {
   }
 
   if (activeCall !== null) {
-    const ringPerson = activeCall.ring;
+    const ringPeer = activeCall.kind === 'direct' && activeCall.ring ? activeCall.peer : null;
     return (
       <>
         <StatusBar style="light" />
         <CallScreen
-          callId={activeCall.callId}
+          call={
+            activeCall.kind === 'direct'
+              ? { kind: 'direct', callId: activeCall.callId, peer: activeCall.peer }
+              : { kind: 'conference', callId: activeCall.callId }
+          }
           displayName={callName ?? state.accountId}
           {...(callLanguages.speak === undefined ? {} : { speakLanguage: callLanguages.speak })}
           {...(callLanguages.hear === undefined ? {} : { hearLanguage: callLanguages.hear })}
           sessionToken={auth.callSessionToken()}
-          ringName={
-            ringPerson === undefined
-              ? undefined
-              : (ringPerson.displayName ?? ringPerson.username ?? ringPerson.accountId)
-          }
           onRing={
-            ringPerson === undefined
+            ringPeer === null
               ? undefined
               : async (callId) => {
-                  const result = await api.ring(ringPerson.accountId, callId);
+                  const result = await api.ring(ringPeer.accountId, callId);
                   return result.ok ? result.value.reachedDevices : null;
                 }
           }
@@ -330,10 +357,10 @@ function AppInner(): JSX.Element {
         {tab === 'contacts' && (
           <ContactsScreen api={api} onMessage={setChatWith} onCall={callContact} />
         )}
-        {tab === 'call' && (
+        {tab === 'conf' && (
           <CallHomeScreen
             emailVerified={emailVerified}
-            onJoin={(callId) => setActiveCall({ callId })}
+            onJoin={(callId) => setActiveCall({ kind: 'conference', callId })}
           />
         )}
         {tab === 'profile' && (
@@ -352,7 +379,7 @@ function AppInner(): JSX.Element {
           [
             ['chats', 'Chats'],
             ['contacts', 'Contacts'],
-            ['call', 'Call'],
+            ['conf', 'Conf'],
             ['profile', 'Profile'],
           ] as const
         ).map(([key, label]) => (

@@ -62,10 +62,23 @@ const ACK_TIMEOUT_MS = 15_000;
 /** What the mesh hands back for a tile. Kept loose: RN streams are not DOM ones. */
 export type RemoteStream = { toURL(): string } | null;
 
+/** The subset of react-native-webrtc's MediaStream the connection touches. */
+export interface LocalStream {
+  toURL(): string;
+  getTracks(): { stop(): void }[];
+  getAudioTracks(): { enabled: boolean }[];
+}
+
 export interface CallConnectionOptions {
   readonly gatewayUrl: string;
   readonly callId: string;
   readonly displayName: string;
+  /**
+   * DIRECT CALL: the C7 account this call is placed to. Makes the gateway
+   * create a PERSONAL call whose mode is the account pair's conversation
+   * mode (server-resolved, locked). Absent for conferences.
+   */
+  readonly directPeerAccountId?: string;
   /** The language this account SPEAKS; preloads the join form. */
   readonly speakLanguage?: 'en' | 'es' | 'fr';
   /** The language this account PREFERS TO HEAR; preloads the join form. */
@@ -104,6 +117,19 @@ export interface CallConnectionOptions {
    * because a tile labelled `participant_2` is a person stripped of the name
    * they typed at the door.
    */
+  /**
+   * Transport truth for the two VOICE legs, so silence can name its link:
+   * 'publish' is my microphone to the gateway, 'receive' is everybody
+   * else's voice to me.
+   */
+  readonly onLegState?: (leg: 'publish' | 'receive', state: string) => void;
+  /**
+   * Metadata-only receive diagnostics, sampled every two seconds: how many
+   * audio packets have arrived on the receive leg and the ICE state. Never
+   * audio. A caller who "hears nothing" with packets rising has a playback
+   * fault; with zero packets, a transport or routing fault.
+   */
+  readonly onVoiceStats?: (stats: { inboundPackets: number; iceState: string }) => void;
   readonly onRoster?: (
     roster: readonly {
       participantId: string;
@@ -153,24 +179,55 @@ export class CallConnection {
     this.options = options;
   }
 
-  /** The local camera and microphone, opened once. */
-  async openLocalMedia(): Promise<{ toURL(): string }> {
+  /**
+   * The MICROPHONE, opened once. Never the camera: every call starts camera
+   * OFF (founder ruling 2026-08-28), and "off" means the hardware is not
+   * acquired -- not a black rectangle over a running sensor. The camera is
+   * a separate stream, opened only by `setCameraEnabled(true)`.
+   *
+   * react-native-webrtc's `mediaDevices`, not the browser's. The constraint
+   * shape is identical -- which is what makes the surrounding code portable --
+   * but the implementation is native and the permission prompt is Android's.
+   */
+  async openLocalMedia(): Promise<LocalStream> {
     if (this.local !== null) return this.local;
-    /*
-     * react-native-webrtc's `mediaDevices`, not the browser's. The constraint
-     * shape is identical -- which is what makes the surrounding code portable --
-     * but the implementation is native and the permission prompt is Android's.
-     */
     const stream = (await mediaDevices.getUserMedia({
       audio: true,
-      video: { facingMode: 'user' },
-    })) as unknown as {
-      toURL(): string;
-      getTracks(): { stop(): void }[];
-      getAudioTracks(): { enabled: boolean }[];
-    };
+      video: false,
+    })) as unknown as LocalStream;
     this.local = stream;
     return stream;
+  }
+
+  /** The camera stream while the camera is on; null is genuinely off. */
+  private camera: LocalStream | null = null;
+
+  /**
+   * Camera on: acquire the front camera and hand its track to the mesh (the
+   * first attach negotiates; later ones replace the payload). Camera off:
+   * STOP the capture so the hardware and the privacy indicator release, and
+   * tell the mesh, so the far side's tile falls back to the avatar. A denied
+   * camera permission returns null and the audio call continues untouched.
+   */
+  async setCameraEnabled(enabled: boolean): Promise<LocalStream | null> {
+    if (!enabled) {
+      for (const track of this.camera?.getTracks() ?? []) track.stop();
+      this.camera = null;
+      this.mesh?.setLocalStream(null);
+      return null;
+    }
+    if (this.camera !== null) return this.camera;
+    try {
+      const stream = (await mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: 'user' },
+      })) as unknown as LocalStream;
+      this.camera = stream;
+      this.mesh?.setLocalStream(stream as unknown as MediaStream);
+      return stream;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -259,7 +316,12 @@ export class CallConnection {
         .timeout(ACK_TIMEOUT_MS)
         .emit(
           CALL_EVENTS.JOIN,
-          buildCallJoinPayload(form, undefined, this.options.sessionToken),
+          {
+            ...buildCallJoinPayload(form, undefined, this.options.sessionToken),
+            ...(this.options.directPeerAccountId === undefined
+              ? {}
+              : { directPeerAccountId: this.options.directPeerAccountId }),
+          },
           (error: unknown, reply?: CallJoinAck) => {
             resolve(
               error
@@ -302,7 +364,10 @@ export class CallConnection {
         this.options.onPeerState(participantId, String(state)),
     });
     this.mesh = mesh;
-    mesh.setLocalStream(local as unknown as MediaStream);
+    // Camera is OFF at start: the mesh has no local video until the person
+    // turns it on. `local` is the microphone only, and voice rides the
+    // gateway legs below, not the mesh.
+    void local;
 
     /*
      * The SENDER is in the payload, not a separate argument: the gateway relays
@@ -335,6 +400,24 @@ export class CallConnection {
             participant.participantId !== this.participantId,
         );
       mesh.syncParticipants(joined.map((participant) => participant.participantId));
+      /*
+       * REBUILD THE RECEIVE LEG WHEN SOMEBODY NEW JOINS.
+       *
+       * The field evidence (28 Aug): the gateway received and routed the
+       * callee's voice, yet the CALLER -- always the first joiner -- heard
+       * nothing, while the callee, whose receive peer was negotiated after
+       * the caller already existed, heard everything. The one difference is
+       * a slot bound AFTER negotiation: on this platform a remote audio
+       * track that carried no RTP at negotiation time does not start
+       * playing when RTP begins later. Renegotiating the receive peer once
+       * the newcomer is present makes every slot look exactly like the
+       * working case. The web client binds slots dynamically and needs
+       * nothing; this is the phone's honest equivalent.
+       */
+      const joinedIds = new Set(joined.map((participant) => participant.participantId));
+      const newcomer = [...joinedIds].some((id) => !this.knownParticipants.has(id));
+      this.knownParticipants = joinedIds;
+      if (newcomer && this.receiveReady) void this.rebuildReceiveLeg();
       this.options.onRoster?.(
         joined.map((participant) => ({
           participantId: participant.participantId,
@@ -380,6 +463,7 @@ export class CallConnection {
       direction: 'publish',
       stream: local as unknown as MediaStream,
       createPeerConnection: peerFactory,
+      onConnectionStateChange: (state) => this.options.onLegState?.('publish', String(state)),
       sendOffer: (sdp) => emitSdp(CALL_EVENTS.PUBLISH_OFFER, sdp),
       onLocalIceCandidate: (candidate) =>
         socket.emit(
@@ -389,36 +473,43 @@ export class CallConnection {
     });
     this.publishPeer = publish;
 
-    const receive = new CallPeer({
-      direction: 'receive',
-      createPeerConnection: peerFactory,
-      remoteSlotCount: CALL_REMOTE_SLOT_COUNT,
-      sendOffer: (sdp) => emitSdp(CALL_EVENTS.RECEIVE_OFFER, sdp),
-      onLocalIceCandidate: (candidate) =>
-        socket.emit(
-          CALL_EVENTS.RECEIVE_ICE,
-          buildCallIcePayload(this.options.callId, ack.participantId, candidate),
-        ),
-      /*
-       * No sink to build: react-native-webrtc routes remote audio tracks to
-       * the device output the moment they arrive. The web needs a WebAudio
-       * sink; the phone needs the tracks to exist.
-       */
-    });
+    const buildReceive = (): CallPeer =>
+      new CallPeer({
+        direction: 'receive',
+        createPeerConnection: peerFactory,
+        remoteSlotCount: CALL_REMOTE_SLOT_COUNT,
+        sendOffer: (sdp) => emitSdp(CALL_EVENTS.RECEIVE_OFFER, sdp),
+        onConnectionStateChange: (state) => this.options.onLegState?.('receive', String(state)),
+        onLocalIceCandidate: (candidate) =>
+          socket.emit(
+            CALL_EVENTS.RECEIVE_ICE,
+            buildCallIcePayload(this.options.callId, ack.participantId, candidate),
+          ),
+        /*
+         * No sink to build: react-native-webrtc routes remote audio tracks to
+         * the device output the moment they arrive. The web needs a WebAudio
+         * sink; the phone needs the tracks to exist.
+         */
+      });
+    this.buildReceive = buildReceive;
+    const receive = buildReceive();
     this.receivePeer = receive;
 
     // The gateway trickles its candidates back on the SAME event names it
-    // receives ours on, scoped to this participant's room.
+    // receives ours on, scoped to this participant's room. Receive candidates
+    // go to WHICHEVER receive peer is current, because it can be rebuilt.
     socket.on(CALL_EVENTS.PUBLISH_ICE, (payload: { candidate?: RTCIceCandidateInit | null }) => {
       void publish.addRemoteCandidate(payload?.candidate);
     });
     socket.on(CALL_EVENTS.RECEIVE_ICE, (payload: { candidate?: RTCIceCandidateInit | null }) => {
-      void receive.addRemoteCandidate(payload?.candidate);
+      void this.receivePeer?.addRemoteCandidate(payload?.candidate);
     });
 
     try {
       await publish.connect();
       await receive.connect();
+      this.receiveReady = true;
+      this.startVoiceStats();
     } catch (error) {
       // Voice failing must not tear down a call whose video works: say so and
       // leave the person the choice of continuing on camera alone.
@@ -430,15 +521,55 @@ export class CallConnection {
     return ack;
   }
 
+  private buildReceive: (() => CallPeer) | null = null;
+  private receiveReady = false;
+  private knownParticipants = new Set<string>();
+  private rebuilding = false;
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Close the current receive peer and negotiate a fresh one. See the STATE handler. */
+  private async rebuildReceiveLeg(): Promise<void> {
+    if (this.rebuilding || this.buildReceive === null) return;
+    this.rebuilding = true;
+    try {
+      this.receivePeer?.close();
+      const next = this.buildReceive();
+      this.receivePeer = next;
+      await next.connect();
+    } catch (error) {
+      this.options.onError(
+        error instanceof Error ? error.message : 'Call audio could not be renegotiated.',
+      );
+    } finally {
+      this.rebuilding = false;
+    }
+  }
+
+  /** Every two seconds: inbound audio packets and ICE state. Metadata only. */
+  private startVoiceStats(): void {
+    if (this.statsTimer !== null || this.options.onVoiceStats === undefined) return;
+    this.statsTimer = setInterval(() => {
+      void (async () => {
+        const report = await this.receivePeer?.stats();
+        if (!report) return;
+        let inboundPackets = 0;
+        let iceState = 'unknown';
+        report.forEach((entry: { type?: string; kind?: string; packetsReceived?: number; state?: string }) => {
+          if (entry.type === 'inbound-rtp' && entry.kind === 'audio') {
+            inboundPackets += entry.packetsReceived ?? 0;
+          }
+          if (entry.type === 'transport' && typeof entry.state === 'string') iceState = entry.state;
+        });
+        this.options.onVoiceStats?.({ inboundPackets, iceState });
+      })();
+    }, 2000);
+  }
+
   /** Mute is the LOCAL track disabled -- nothing renegotiates, nothing asks. */
   setMicrophoneEnabled(enabled: boolean): void {
     for (const track of this.local?.getAudioTracks() ?? []) {
       track.enabled = enabled;
     }
-  }
-
-  setCameraEnabled(enabled: boolean): void {
-    this.mesh?.setCameraEnabled(enabled);
   }
 
   /**
@@ -471,6 +602,12 @@ export class CallConnection {
     this.socket?.disconnect();
     this.socket = null;
 
+    if (this.statsTimer !== null) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = null;
+    }
+    for (const track of this.camera?.getTracks() ?? []) track.stop();
+    this.camera = null;
     for (const track of this.local?.getTracks() ?? []) track.stop();
     this.local = null;
   }

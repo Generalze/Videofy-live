@@ -166,7 +166,19 @@ export function ContactsPanel({
               <button
                 type="button"
                 className="button button-small"
-                onClick={() => void act(() => api.removeContact(person.accountId))}
+                onClick={() => {
+                  // Destructive: confirm first; only a confirmed Remove mutates.
+                  const name = personName(person);
+                  if (
+                    window.confirm(
+                      `Remove ${name}?
+
+${name} will be removed from your contacts. You can add each other again later.`,
+                    )
+                  ) {
+                    void act(() => api.removeContact(person.accountId));
+                  }
+                }}
               >
                 Remove
               </button>

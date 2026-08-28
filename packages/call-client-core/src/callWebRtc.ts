@@ -228,6 +228,18 @@ export class CallPeer {
     await this.peer.addIceCandidate(candidate).catch(() => undefined);
   }
 
+  /**
+   * Transport statistics, for diagnostics that name a leg rather than guess.
+   * Null where the platform cannot report; never throws into a call.
+   */
+  async stats(): Promise<RTCStatsReport | null> {
+    try {
+      return await this.peer.getStats();
+    } catch {
+      return null;
+    }
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;
