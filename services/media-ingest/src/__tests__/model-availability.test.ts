@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { checkOpusMtAvailability } from '../model-availability.js';
 
@@ -20,7 +21,15 @@ function fakeFs(paths: Record<string, string | true>) {
   };
 }
 
-const CACHE = 'C:/cache/opus-mt';
+/*
+ * PLATFORM-NEUTRAL ROOT. The resolver builds paths with path.resolve(); a
+ * fixture rooted at a literal 'C:/...' is absolute on Windows and RELATIVE on
+ * Linux, where it silently gains the runner's cwd as a prefix and never
+ * matches the fake filesystem -- the first CI run that ever executed these
+ * tests failed all three for exactly that. Resolving a root-relative path
+ * yields whatever this platform calls absolute, and the resolver agrees.
+ */
+const CACHE = resolve('/cache/opus-mt').replace(/\\/g, '/');
 const REPO = `${CACHE}/models--Helsinki-NLP--opus-mt-es-en`;
 const SNAP = `${REPO}/snapshots/abc123`;
 
