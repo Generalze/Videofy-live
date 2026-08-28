@@ -34,6 +34,14 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
+      # BUILD BEFORE TEST. Workspace tests import sibling packages through
+      # their built dist/ (subpath exports like media-adapter-port/platform);
+      # on a clean runner nothing is built yet, so test-first failed to load
+      # a module that exists. Locally it only ever passed because dist/ was
+      # already there. Build order itself is verified by check-build-order.
+      - name: Build
+        run: npm run build
+
       - name: Run TypeScript tests
         run: npm test
 
@@ -42,9 +50,6 @@ jobs:
 
       - name: Run type-check
         run: npm run typecheck
-
-      - name: Build
-        run: npm run build
 
       - name: Set up Python
         uses: actions/setup-python@v5
