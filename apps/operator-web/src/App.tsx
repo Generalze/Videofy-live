@@ -1145,7 +1145,8 @@ export default function App(): React.ReactElement {
      * channel -- what is in hand for building a link is tracked separately.
      */
     setChannelDraft((current) => {
-      const { code: _sent, ...rest } = current;
+      const rest = { ...current };
+      delete rest.code;
       return rest;
     });
   };
