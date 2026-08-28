@@ -55,7 +55,15 @@ export function ContactsScreen({ api, onMessage, onCall }: ContactsScreenProps):
       setNotice('Request sent.');
       await load();
     } else {
-      setNotice(result.error);
+      // The server answers "not found" for BOTH an unknown username and an
+      // undiscoverable one, on purpose (no probing who is on the platform).
+      // The person adding cannot tell which, so the notice explains the fix
+      // that is in the other person's hands.
+      setNotice(
+        result.status === 404
+          ? `No discoverable account named ${handle}. Ask them to switch on Discoverable in their Profile, then try again.`
+          : result.error,
+      );
     }
     setBusy(false);
   }, [api, busy, load, username]);
