@@ -41,9 +41,16 @@ export function AvatarView({
   accountId,
   name,
   size = 36,
+  version = 0,
 }: {
   readonly accountId: string;
   readonly name: string;
+  /**
+   * Bumped after this person changes their picture. The URL otherwise never
+   * changes, the server allows a minute of caching and the image cache keeps
+   * the old answer -- which on a real phone read as "upload did nothing".
+   */
+  readonly version?: number;
   readonly size?: number;
 }): JSX.Element {
   const [failed, setFailed] = useState(false);
@@ -62,7 +69,10 @@ export function AvatarView({
       </Text>
       {showImage ? (
         <Image
-          source={{ uri: `${config?.baseUrl}/avatars/${accountId}`, headers: headers ?? {} }}
+          source={{
+            uri: `${config?.baseUrl}/avatars/${accountId}${version > 0 ? `?v=${version}` : ''}`,
+            headers: headers ?? {},
+          }}
           style={[StyleSheet.absoluteFill, { borderRadius: size / 2 }]}
           onError={() => setFailed(true)}
         />

@@ -65,12 +65,16 @@ export function ProfileScreen({
       if (picked.reason !== null) setPictureNotice(picked.reason);
       return;
     }
+    // Picking IS the confirmation: the upload starts at once and says so.
+    setPictureNotice('Uploading…');
     const result = await api.setAvatar(picked.dataUrl);
     if (!result.ok) {
       setPictureNotice(result.error === 'network' ? 'Could not reach C7.' : String(result.error));
       return;
     }
+    // A new version forces a fresh fetch past every cache.
     setAvatarEpoch((epoch) => epoch + 1);
+    setPictureNotice('Picture updated.');
   }, [api]);
 
   const load = useCallback(async () => {
@@ -123,6 +127,7 @@ export function ProfileScreen({
               <Pressable onPress={() => void changePicture()} accessibilityRole="button">
                 <AvatarView
                   key={avatarEpoch}
+                  version={avatarEpoch}
                   accountId={profile.accountId}
                   name={profile.displayName ?? profile.username ?? '?'}
                   size={64}
