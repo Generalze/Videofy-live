@@ -51,6 +51,7 @@ import { ConversationsScreen } from './src/screens/ConversationsScreen';
 import { ProfileScreen } from './src/screens/ProfileScreen';
 import { IncomingCallScreen } from './src/screens/IncomingCallScreen';
 import { createDirectCallApi } from './src/call/directCallApi';
+import { foregroundPresentationFor } from './src/push/callNotificationPresentation';
 
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
 const GATEWAY_BASE_URL =
@@ -113,12 +114,13 @@ const devices = new DeviceRegistrationService({
  * ring nobody saw.
  */
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  }),
+  // A call in the FOREGROUND is presented by the incoming-call screen (which
+  // sends the ringing acknowledgement), not by a banner; the OS keeps the
+  // sound. See callNotificationPresentation.ts.
+  handleNotification: async (notification) =>
+    foregroundPresentationFor(
+      (notification.request.content.data ?? null) as Record<string, unknown> | null,
+    ),
 });
 
 const NOTICE: Partial<Record<string, string>> = {
@@ -205,10 +207,13 @@ function AppInner(): JSX.Element {
     setTab('chats');
   }, []);
 
+  const routedCalls = useRef(new Set<string>());
   const routeNotification = useCallback(
     (data: Record<string, unknown>) => {
       const kind = String(data['kind'] ?? '');
       if (kind === 'call' && typeof data['callId'] === 'string') {
+        if (routedCalls.current.has(data['callId'])) return;
+        routedCalls.current.add(data['callId']);
         /*
          * A PUSH IS ONLY A WAKE-UP. The device asks the server whether the
          * call is still live; a stale push (after no answer, decline or hang
@@ -238,8 +243,31 @@ function AppInner(): JSX.Element {
     [openChatWithAccount],
   );
 
-  /* Taps on notifications: background, and -- exactly once -- cold start. */
+  /*
+   * THE THREE LIVES OF A NOTIFICATION, honestly stated (P8 review finding):
+   *
+   *   FOREGROUND  `addNotificationReceivedListener` fires the moment the push
+   *               arrives, so a call is checked with the server, presented
+   *               by the incoming-call screen and ACKNOWLEDGED as ringing
+   *               without anybody tapping anything. This is the only state
+   *               in which JavaScript can prove "device is presenting the
+   *               call" promptly.
+   *   BACKGROUND  Android renders and rings the OS notification itself; no
+   *   / LOCKED    JavaScript runs until the person TAPS it. Only then does
+   *               the response listener route the call, check it with the
+   *               server and acknowledge ringing -- so the caller may read
+   *               "Calling…" while the callee's phone is audibly ringing.
+   *               That gap is real and is NOT papered over here: closing it
+   *               is the native Android call receiver / Telecom wave.
+   *   COLD START  the last response is read exactly once.
+   *
+   * A call id is routed once per life: receipt and tap both fire in the
+   * foreground.
+   */
   useEffect(() => {
+    const received = Notifications.addNotificationReceivedListener((notification) => {
+      routeNotification((notification.request.content.data ?? {}) as Record<string, unknown>);
+    });
     const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
       routeNotification(
         (response.notification.request.content.data ?? {}) as Record<string, unknown>,
@@ -255,7 +283,10 @@ function AppInner(): JSX.Element {
         }
       });
     }
-    return () => subscription.remove();
+    return () => {
+      received.remove();
+      subscription.remove();
+    };
   }, [routeNotification]);
 
   /* The session drives registration, rotation, and the verification banner. */
