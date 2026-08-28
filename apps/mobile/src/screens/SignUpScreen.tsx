@@ -85,7 +85,10 @@ export function SignUpScreen({ onSignUp, onBackToSignIn }: SignUpScreenProps): J
     try {
       const result = await onSignUp(email.trim(), password, username.trim());
       if (!result.ok) {
-        setError(result.reason === undefined ? MESSAGE.server : MESSAGE[result.reason]);
+        // The server's own sentence names the field; the generic word is the fallback.
+        setError(
+          result.message ?? (result.reason === undefined ? MESSAGE.server : MESSAGE[result.reason]),
+        );
       }
     } finally {
       setBusy(false);

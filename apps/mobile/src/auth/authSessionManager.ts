@@ -50,6 +50,13 @@ export interface SignUpResult {
    * registration door instead.
    */
   readonly reason?: 'taken' | 'invalid' | 'rate-limited' | 'network' | 'server';
+  /**
+   * The server's own sentence, when it gave one -- "Use at least 12
+   * characters", "A C7 username starts with c7 and a letter…". A screen that
+   * collapses those into "check the details" sends a person guessing which
+   * of three fields is wrong (founder hit this registering on the phone).
+   */
+  readonly message?: string;
 }
 
 export interface SignInResult {
@@ -201,12 +208,25 @@ export class AuthSessionManager {
     }
 
     if (!response.ok) {
+      let message: string | undefined;
+      try {
+        const body = (await response.json()) as { error?: unknown; retryAfterMs?: unknown };
+        if (typeof body.error === 'string' && body.error.length > 0) message = body.error;
+        if (response.status === 429) {
+          const retryAfter = response.headers.get('retry-after');
+          const minutes = retryAfter ? Math.max(1, Math.ceil(Number(retryAfter) / 60)) : null;
+          message = minutes === null ? message : `Too many attempts. Try again in ${minutes} min.`;
+        }
+      } catch {
+        // No JSON body: the reason word below is all we know.
+      }
       return {
         ok: false,
         reason: response.status === 409 ? 'taken'
           : response.status === 429 ? 'rate-limited'
           : response.status === 400 ? 'invalid'
           : 'server',
+        ...(message === undefined ? {} : { message }),
       };
     }
 
