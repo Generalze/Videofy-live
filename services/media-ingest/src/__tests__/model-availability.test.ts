@@ -112,7 +112,8 @@ describe('checkOpusMtAvailability', () => {
   });
 
   it('trusts an explicit local path over cache resolution', () => {
-    const local = 'D:/models/es-en';
+    // Same platform-neutral rule as CACHE: absolute on every OS the runner is.
+    const local = resolve('/models/es-en').replace(/\\/g, '/');
     const [result] = checkOpusMtAvailability(
       {
         languageModels: [{ ...esToEn, localPath: local }],
