@@ -138,6 +138,14 @@ function AppInner(): JSX.Element {
     hear?: 'en' | 'es' | 'fr';
   }>({});
   const handledColdStart = useRef(false);
+  /*
+   * ABOVE EVERY EARLY RETURN. This hook once sat just before the tab-bar
+   * JSX -- below the signed-out, call and chat returns -- so signing in
+   * changed the number of hooks between renders and React refused the
+   * tree on a real phone. Rules of Hooks: unconditional, top of the
+   * component, always.
+   */
+  const bottomInset = useBottomInset();
 
   useEffect(() => {
     const manager = auth as unknown as { onState?: ((s: AuthState) => void) | undefined };
@@ -307,7 +315,6 @@ function AppInner(): JSX.Element {
     );
   }
 
-  const bottomInset = useBottomInset();
   return (
     <View style={styles.shell}>
       <StatusBar style="light" />
