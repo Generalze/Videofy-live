@@ -183,6 +183,8 @@ describe('call socket contract', () => {
       // P6.4-W2: which remote speaker each receive slot carries. Addressed to
       // the one listener it describes, never broadcast.
       RECEIVE_TRACKS: 'call:receive:tracks',
+      DIRECT_STATE: 'call:direct:state',
+      DIRECT_RING_RESULT: 'call:direct:ring-result',
       SET_CAPTION_LANGUAGE: 'call:caption-language',
       // P6.3 acoustic instrumentation. Both are client-to-gateway REPORTS with
       // no ack and no consequence for routing: one records what the browser

@@ -144,6 +144,26 @@ Direct-call state machine: `DIALING → CALLING → ANSWERED → CONNECTING → 
 
 One-way-audio doctrine: instrument the reverse leg with **metadata only** (participant ids, publish/receive/ICE states, slot bindings, routed-frame counters, inbound packet counters) — never audio or transcripts — and prove which of *callee publish → gateway routing → caller receive/playback* fails before any UI change.
 
+### 1.7 The direct-call telephone — LOCKED (28 Aug, stabilization wave)
+
+**A push is not the call; it only wakes the other device. The server owns
+the call state and both phones reflect it.** `DirectCallLifecycle` in the
+gateway: CALLING (call exists, devices being reached) → RINGING (a device
+*acknowledged* showing the incoming surface — a push being sent is never
+Ringing) → ANSWERED (peer joined) → CONNECTING → CONNECTED (**proven by the
+server: frames routed in both directions**) → RECONNECTING (12s window) →
+NETWORK; and BUSY (one active call per account, decided at creation),
+DECLINED, NO ANSWER (30s window), UNAVAILABLE (ring reached no device),
+ENDED. Broadcast to the room as `call:direct:state`; the callee's device
+asks `GET /calls/direct/:id` before ringing (a stale push is answered
+*expired* and stays silent), acknowledges with `POST …/ringing`, declines
+with `POST …/decline`. The call push is HIGH priority, 30s TTL, carries
+mode/issuedAt/expiresAt, and rings on the app's *Calls* channel. Direct
+calls say **End call**; conferences say **Leave** (host: End conference).
+Camera on is a `replaceTrack` on a video sender negotiated empty at setup
+— instant, no renegotiation. Native Android Telecom/CallStyle is the next
+step for this surface.
+
 ---
 
 ## 2 · Where the platform stands (all LIVE on staging)

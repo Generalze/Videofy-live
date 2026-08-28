@@ -389,6 +389,18 @@ export function registerMessageRoutes(
         ? provided.trim()
         : `ring-${randomBytes(5).toString('hex')}`;
 
+    /*
+     * THE CALL PUSH CLASS (founder ruling 2026-08-28). A push is only the
+     * wake-up: HIGH priority so Doze does not batch it, a 30s lifetime so a
+     * late delivery cannot ring a phone for a call that is already over, and
+     * the pair's mode + expiry as DATA so the device can show "Normal call"
+     * or "Translated call" and refuse to ring past expiry. No body content.
+     * The timing chain starts here: T2 (sent to FCM) -> T3 (FCM answered).
+     */
+    const pair = messagePair(resolved.caller.accountId, resolved.targetId);
+    const pairMode = (await deps.conversationModes.get(pair.low, pair.high))?.mode ?? 'normal';
+    const issuedAtMs = Date.now();
+    const RING_WINDOW_SECONDS = 30;
     const summary = await deps.push.notify(resolved.targetId, {
       kind: 'call',
       privacy: 'visible',
@@ -400,8 +412,18 @@ export function registerMessageRoutes(
         callId,
         fromAccountId: resolved.caller.accountId,
         fromName: senderName(resolved.caller.accountId),
+        mode: pairMode,
+        issuedAt: String(issuedAtMs),
+        expiresAt: String(issuedAtMs + RING_WINDOW_SECONDS * 1000),
       },
       collapseId: callId,
+      ttlSeconds: RING_WINDOW_SECONDS,
+    });
+    deps.onEvent?.('direct_call.push', {
+      attempted: summary.attempted,
+      delivered: summary.delivered,
+      fcmMs: Date.now() - issuedAtMs,
+      mode: pairMode,
     });
 
     // The browser half of the ring: phones got a push above, laptops poll.

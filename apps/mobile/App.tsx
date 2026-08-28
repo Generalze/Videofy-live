@@ -49,6 +49,12 @@ import { ChatScreen } from './src/screens/ChatScreen';
 import { ContactsScreen } from './src/screens/ContactsScreen';
 import { ConversationsScreen } from './src/screens/ConversationsScreen';
 import { ProfileScreen } from './src/screens/ProfileScreen';
+import { IncomingCallScreen } from './src/screens/IncomingCallScreen';
+import { createDirectCallApi } from './src/call/directCallApi';
+
+/** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
+const GATEWAY_BASE_URL =
+  process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
 
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
 const ACCOUNT_BASE_URL =
@@ -74,6 +80,24 @@ configureAvatars({
   },
 });
 const api = createApi(authorizedFetch);
+const directCalls = createDirectCallApi({
+  gatewayUrl: GATEWAY_BASE_URL,
+  sessionToken: () => auth.callSessionToken(),
+});
+
+/*
+ * THE CALLS CHANNEL. Android decides ringtone, vibration and heads-up
+ * behaviour per channel; a call push routed to the default channel is a
+ * quiet banner. This channel rings.
+ */
+void Notifications.setNotificationChannelAsync('calls', {
+  name: 'Calls',
+  importance: Notifications.AndroidImportance.MAX,
+  sound: 'default',
+  vibrationPattern: [0, 400, 200, 400, 200, 400],
+  lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+  bypassDnd: false,
+}).catch(() => undefined);
 
 const devices = new DeviceRegistrationService({
   authorizedFetch,
@@ -133,6 +157,12 @@ function AppInner(): JSX.Element {
   const [tab, setTab] = useState<Tab>('chats');
   const [chatWith, setChatWith] = useState<ContactPerson | null>(null);
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
+  /** An incoming direct call the server confirmed is live. */
+  const [incomingCall, setIncomingCall] = useState<{
+    callId: string;
+    caller: { accountId: string; name: string };
+    mode: 'normal' | 'translated';
+  } | null>(null);
   const [deviceOutcome, setDeviceOutcome] = useState<RegistrationOutcome | null>(null);
   const [emailVerified, setEmailVerified] = useState<boolean | null>(null);
   /*
@@ -179,17 +209,27 @@ function AppInner(): JSX.Element {
     (data: Record<string, unknown>) => {
       const kind = String(data['kind'] ?? '');
       if (kind === 'call' && typeof data['callId'] === 'string') {
-        // Answering: the session exists; the caller is named in the push.
+        /*
+         * A PUSH IS ONLY A WAKE-UP. The device asks the server whether the
+         * call is still live; a stale push (after no answer, decline or hang
+         * up) is answered 'expired' and stays silent. Only a live call shows
+         * the incoming screen -- and showing it is what the ringing
+         * acknowledgement reports, so the caller's "Ringing…" is true.
+         */
+        const callId = data['callId'];
         const fromAccountId = typeof data['fromAccountId'] === 'string' ? data['fromAccountId'] : '';
         const fromName =
           typeof data['fromName'] === 'string' && data['fromName'].length > 0
             ? data['fromName']
             : 'Caller';
-        setActiveCall({
-          kind: 'direct',
-          callId: data['callId'],
-          peer: { accountId: fromAccountId, name: fromName },
-          ring: false,
+        void directCalls.check(callId).then((check) => {
+          if (check === null || !check.ring) return;
+          setIncomingCall({
+            callId,
+            caller: { accountId: check.callerAccountId || fromAccountId, name: check.callerName || fromName },
+            mode: check.mode,
+          });
+          void directCalls.ackRinging(callId);
         });
       } else if (kind === 'message' && typeof data['fromAccountId'] === 'string') {
         void openChatWithAccount(data['fromAccountId']);
@@ -292,6 +332,32 @@ function AppInner(): JSX.Element {
           onSignIn={signIn}
           onCreateAccount={() => setWantsAccount(true)}
           notice={NOTICE[state.reason ?? '']}
+        />
+      </>
+    );
+  }
+
+  if (activeCall === null && incomingCall !== null) {
+    const ringing = incomingCall;
+    return (
+      <>
+        <StatusBar style="light" />
+        <IncomingCallScreen
+          caller={ringing.caller}
+          mode={ringing.mode}
+          onAnswer={() => {
+            setIncomingCall(null);
+            setActiveCall({
+              kind: 'direct',
+              callId: ringing.callId,
+              peer: ringing.caller,
+              ring: false,
+            });
+          }}
+          onDecline={() => {
+            setIncomingCall(null);
+            void directCalls.decline(ringing.callId);
+          }}
         />
       </>
     );

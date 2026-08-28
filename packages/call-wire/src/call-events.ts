@@ -38,6 +38,16 @@ export const CALL_EVENTS = {
    * state for no reason.
    */
   RECEIVE_TRACKS: 'call:receive:tracks',
+  /**
+   * DIRECT CALL LIFECYCLE (founder ruling 2026-08-28): the server-owned
+   * telephone state -- calling, ringing, answered, connecting, connected,
+   * reconnecting, busy, declined, no_answer, unavailable, network, ended --
+   * broadcast to the call room on every transition. Words on screens come
+   * from THIS, never from a push result or a video tile.
+   */
+  DIRECT_STATE: 'call:direct:state',
+  /** The caller reports the account service's ring dispatch (devices reached). */
+  DIRECT_RING_RESULT: 'call:direct:ring-result',
   SET_CAPTION_LANGUAGE: 'call:caption-language',
   /**
    * INTERNAL INSTRUMENTATION — W1: the capture settings the browser actually

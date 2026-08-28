@@ -140,6 +140,8 @@ export interface CallReceivePeersLike {
   syncSpeakers(callId: string, participantIds: readonly string[]): void;
   /** Current bindings for one listener; the mapping the client is sent. */
   trackMapping(callId: string, participantId: string): readonly CallReceiveTrackMapping[];
+  /** Frames routed to this listener so far; the direct-call CONNECTED proof. */
+  routedFrames?(callId: string, participantId: string): number;
   closePeer(callId: string, participantId: string, reason: string): void;
   closeCall(callId: string, reason: string): void;
   count(): number;

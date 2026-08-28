@@ -148,6 +148,11 @@ export class Gateway {
    */
   private readonly programmeSourceRevisions = new Map<string, number>();
   private readonly callRuntime: CallRuntime;
+
+  /** The direct-call telephone, for the HTTP pre-join / ringing / decline routes. */
+  get directCalls(): CallRuntime['directCalls'] {
+    return this.callRuntime.directCalls;
+  }
   private readonly mediaIngestUrl: string;
   /**
    * Whether media-ingest can genuinely translate speech.

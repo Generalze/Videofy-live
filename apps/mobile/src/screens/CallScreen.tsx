@@ -29,6 +29,7 @@ import {
 } from 'react-native';
 import { AvatarView } from '../media/AvatarView';
 import { directCallPhase, directCallWords } from '../call/callPhase';
+import { TERMINAL_DIRECT_STATES, directStateWords } from '../call/directCallApi';
 import { RTCView } from 'react-native-webrtc';
 import { CallConnection, type RemoteStream } from '../call/callConnection';
 
@@ -131,6 +132,9 @@ export function CallScreen({
     receive: 'new',
   });
   const [voice, setVoice] = useState<{ inboundPackets: number; iceState: string } | null>(null);
+  /** The server's word for this direct call, once it has spoken. */
+  const [serverState, setServerState] = useState<string | null>(null);
+  const [cameraStarting, setCameraStarting] = useState(false);
   /*
    * What the GATEWAY says is in the call, which is not the same as what the
    * mesh has connected. A black screen cannot distinguish "nobody else is
@@ -184,6 +188,9 @@ export function CallScreen({
       onVoiceStats: (stats) => {
         if (live) setVoice(stats);
       },
+      onDirectState: (wire) => {
+        if (live) setServerState(wire.state);
+      },
       onIceServers: (count) => {
         if (live) setIceCount(count);
       },
@@ -212,6 +219,9 @@ export function CallScreen({
         if (ack.ok && onRing !== undefined) {
           const reached = await onRing(callId);
           if (live) setRang(reached ?? -1);
+          // The telephone hears the dispatch result: zero devices is
+          // UNAVAILABLE now, not after thirty seconds of "Calling…".
+          link.reportRingResult(reached ?? -1);
         }
         if (!ack.ok) {
           setJoinFailed(true);
@@ -253,7 +263,9 @@ export function CallScreen({
    */
   const toggleCamera = useCallback(() => {
     const next = !cameraOn;
+    if (next) setCameraStarting(true);
     void connection.current?.setCameraEnabled(next).then((stream) => {
+      setCameraStarting(false);
       if (next && stream === null) {
         setError('Camera access is needed to turn the camera on. The call continues on audio.');
         return;
@@ -269,6 +281,15 @@ export function CallScreen({
       return !wasMuted;
     });
   }, []);
+
+  // A terminal telephone state ends the screen after the words are read.
+  useEffect(() => {
+    if (serverState !== null && TERMINAL_DIRECT_STATES.has(serverState)) {
+      const timer = setTimeout(() => onLeave(), 2500);
+      return () => clearTimeout(timer);
+    }
+    return undefined;
+  }, [serverState, onLeave]);
 
   const tiles = Object.entries(remotes);
   const noIce = iceCount === 0;
@@ -318,10 +339,23 @@ export function CallScreen({
           <View style={styles.centreBlock}>
             <AvatarView accountId={call.peer.accountId} name={call.peer.name} size={84} />
             <Text style={styles.peerName}>{call.peer.name}</Text>
-            <Text style={styles.muted}>{directCallWords(phase, call.peer.name)}</Text>
-            {phase === 'unavailable' && (
-              <Text style={styles.hint}>You can message them instead, or try again later.</Text>
+            {/*
+              THE SERVER'S WORD WINS. Until the telephone has spoken, the local
+              phase (join ack, ring dispatch, roster, receive leg) fills in;
+              once call:direct:state arrives it is the only authority.
+            */}
+            <Text style={styles.muted}>
+              {serverState !== null
+                ? directStateWords(serverState, call.peer.name)
+                : directCallWords(phase, call.peer.name)}
+            </Text>
+            {(phase === 'unavailable' ||
+              serverState === 'unavailable' ||
+              serverState === 'no_answer' ||
+              serverState === 'busy') && (
+              <Text style={styles.hint}>You can message them instead, or call again later.</Text>
             )}
+            {cameraStarting && <Text style={styles.hint}>Starting camera…</Text>}
           </View>
         )}
 
@@ -426,7 +460,7 @@ export function CallScreen({
             onPress={onLeave}
             accessibilityRole="button"
           >
-            <Text style={styles.leaveLabel}>Leave</Text>
+            <Text style={styles.leaveLabel}>{call.kind === 'direct' ? 'End call' : 'Leave'}</Text>
           </Pressable>
         </View>
       </View>

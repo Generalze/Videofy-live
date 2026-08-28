@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
+import { requireSessionSecret, verifySessionToken } from '@videofy-live/account-tokens';
 import { CONNECT_API_BASE_PATH, buildErrorEnvelope } from '@videofy-live/connect-contracts';
 import { ADAPTER_CONTROL_BASE_PATH } from './adapter-control-routes.js';
 import { buildIceServers, readTurnConfig } from './ice-credentials.js';
@@ -26,9 +27,94 @@ export interface CreateAppOptions {
    * app is built first. Absent when the deployment runs no transport adapters.
    */
   adapterControlRouter?: () => express.Router;
+  /**
+   * The direct-call lifecycle, lazily (the app is built before the Gateway).
+   * Serves the callee's PRE-JOIN CHECK ("should I ring for this push?"), the
+   * RINGING acknowledgement and DECLINE -- the three things a device must be
+   * able to say before it is in the call's socket room.
+   */
+  directCalls?: () => DirectCallsHttpLike;
+  /** The account session secret, to verify the Bearer token on those routes. */
+  sessionSecret?: string | undefined;
+}
+
+export interface DirectCallsHttpLike {
+  get(callId: string): { state: string; mode: string; callerAccountId: string; callerName: string; peerAccountId: string; expiresAtMs: number } | null;
+  shouldRing(callId: string, accountId: string): 'ring' | 'expired' | 'unknown';
+  ringingAck(callId: string, accountId: string): boolean;
+  decline(callId: string, accountId: string): boolean;
 }
 
 export function createApp(options: CreateAppOptions = {}): express.Application {
+  const directCallRoutes = (app: express.Application): void => {
+    const provider = options.directCalls;
+    let secret: Buffer | null = null;
+    try {
+      secret = requireSessionSecret(options.sessionSecret, 'VIDEOFY_AUTH_SECRET');
+    } catch {
+      secret = null;
+    }
+    if (!provider || secret === null) return;
+    const sessionSecret = secret;
+    const accountOf = (req: Request): string | null => {
+      const header = req.header('authorization') ?? '';
+      const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+      if (token.length === 0) return null;
+      const verified = verifySessionToken({
+        secret: sessionSecret,
+        token,
+        nowSeconds: Math.floor(Date.now() / 1000),
+      });
+      return verified.ok ? verified.claims.accountId : null;
+    };
+    const CALL_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+    /*
+     * THE PRE-JOIN CHECK. A push is only a wake-up; the device asks the
+     * server whether the call is still live before it rings. A stale push
+     * after NO ANSWER / DECLINED / ENDED gets 'expired' and stays silent.
+     * Only the peer of the call is answered at all; everybody else sees the
+     * same 404, so call ids are not probeable.
+     */
+    app.get('/calls/direct/:callId', (req: Request, res: Response) => {
+      const accountId = accountOf(req);
+      if (accountId === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const callId = String(req.params['callId'] ?? '');
+      const lifecycle = provider();
+      const verdict = CALL_ID.test(callId) ? lifecycle.shouldRing(callId, accountId) : 'unknown';
+      const record = lifecycle.get(callId);
+      if (verdict === 'unknown' || record === null || (record.peerAccountId !== accountId && record.callerAccountId !== accountId)) {
+        res.status(404).json({ error: 'No such call.' });
+        return;
+      }
+      res.json({ ring: verdict === 'ring', ...record });
+    });
+
+    app.post('/calls/direct/:callId/ringing', (req: Request, res: Response) => {
+      const accountId = accountOf(req);
+      if (accountId === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const callId = String(req.params['callId'] ?? '');
+      const live = CALL_ID.test(callId) && provider().ringingAck(callId, accountId);
+      res.json({ live });
+    });
+
+    app.post('/calls/direct/:callId/decline', (req: Request, res: Response) => {
+      const accountId = accountOf(req);
+      if (accountId === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const callId = String(req.params['callId'] ?? '');
+      const declined = CALL_ID.test(callId) && provider().decline(callId, accountId);
+      res.json({ declined });
+    });
+  };
   const app = express();
 
   app.use(express.json());
@@ -37,6 +123,8 @@ export function createApp(options: CreateAppOptions = {}): express.Application {
     logger.debug('HTTP request', { method: req.method, path: req.path });
     next();
   });
+
+  directCallRoutes(app);
 
   app.get('/health', (_req: Request, res: Response) => {
     res.json({

@@ -18,6 +18,8 @@ const EXPECTED_EVENT_NAMES = {
   RECEIVE_OFFER: 'call:receive:offer',
   RECEIVE_ICE: 'call:receive:ice',
   RECEIVE_TRACKS: 'call:receive:tracks',
+  DIRECT_STATE: 'call:direct:state',
+  DIRECT_RING_RESULT: 'call:direct:ring-result',
   SET_CAPTION_LANGUAGE: 'call:caption-language',
   CAPTURE_SETTINGS: 'call:capture-settings',
   PLAYBACK: 'call:playback',

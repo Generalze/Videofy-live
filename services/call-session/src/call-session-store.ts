@@ -1317,6 +1317,20 @@ export class CallSessionStore {
    * A disconnected-in-grace seat does not count, so the recovery path — a
    * fresh join while the old seat awaits its reap — stays open.
    */
+  /**
+   * Does this account hold a CONNECTED seat in any call? The direct-call
+   * BUSY answer (founder ruling 2026-08-28: one active call per account) --
+   * decided at creation, before anybody rings, never guessed from presence.
+   */
+  hasConnectedAccount(accountId: string): boolean {
+    for (const call of this.calls.values()) {
+      for (const state of call.participants.values()) {
+        if (state.connected && state.accountId === accountId) return true;
+      }
+    }
+    return false;
+  }
+
   hasConnectedSubject(callId: string, subject: string): boolean {
     const call = this.calls.get(callId);
     if (!call) return false;

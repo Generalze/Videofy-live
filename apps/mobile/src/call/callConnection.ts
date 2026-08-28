@@ -124,6 +124,16 @@ export interface CallConnectionOptions {
    */
   readonly onLegState?: (leg: 'publish' | 'receive', state: string) => void;
   /**
+   * The server-owned direct-call state (call:direct:state). Every word on the
+   * call screen for a direct call comes from here once it arrives.
+   */
+  readonly onDirectState?: (wire: {
+    state: string;
+    mode: 'normal' | 'translated';
+    callerAccountId: string;
+    peerAccountId: string;
+  }) => void;
+  /**
    * Metadata-only receive diagnostics, sampled every two seconds: how many
    * audio packets have arrived on the receive leg and the ICE state. Never
    * audio. A caller who "hears nothing" with packets rising has a playback
@@ -429,6 +439,19 @@ export class CallConnection {
       );
     });
 
+    socket.on(
+      CALL_EVENTS.DIRECT_STATE,
+      (wire: { state?: unknown; mode?: unknown; callerAccountId?: unknown; peerAccountId?: unknown }) => {
+        if (typeof wire?.state !== 'string') return;
+        this.options.onDirectState?.({
+          state: wire.state,
+          mode: wire.mode === 'translated' ? 'translated' : 'normal',
+          callerAccountId: typeof wire.callerAccountId === 'string' ? wire.callerAccountId : '',
+          peerAccountId: typeof wire.peerAccountId === 'string' ? wire.peerAccountId : '',
+        });
+      },
+    );
+
     socket.on(CALL_EVENTS.ERROR, (payload: { message?: string }) =>
       this.options.onError(payload?.message ?? 'The call service refused this call.'),
     );
@@ -563,6 +586,17 @@ export class CallConnection {
         this.options.onVoiceStats?.({ inboundPackets, iceState });
       })();
     }, 2000);
+  }
+
+  /**
+   * Tell the telephone how many devices the ring reached. Zero becomes
+   * UNAVAILABLE at once instead of thirty seconds of "Calling…".
+   */
+  reportRingResult(reachedDevices: number): void {
+    this.socket?.emit(CALL_EVENTS.DIRECT_RING_RESULT, {
+      callId: this.options.callId,
+      reachedDevices,
+    });
   }
 
   /** Mute is the LOCAL track disabled -- nothing renegotiates, nothing asks. */

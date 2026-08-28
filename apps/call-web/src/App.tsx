@@ -1316,6 +1316,30 @@ export default function App() {
     socket.on(CALL_EVENTS.PUBLISH_ICE, (payload: CallIcePayload) => {
       void publishPeerRef.current?.addRemoteCandidate(payload?.candidate);
     });
+    /*
+     * THE TELEPHONE'S WORDS (founder ruling 2026-08-28). For a direct call the
+     * server owns the state -- calling, ringing, connecting, connected, busy,
+     * no answer, network -- and the status line repeats it verbatim instead
+     * of inferring anything from tiles or push results.
+     */
+    socket.on(CALL_EVENTS.DIRECT_STATE, (wire: { state?: unknown; peerAccountId?: unknown }) => {
+      if (typeof wire?.state !== 'string') return;
+      const words: Record<string, string> = {
+        calling: 'Calling…',
+        ringing: 'Ringing…',
+        answered: 'Answered',
+        connecting: 'Connecting…',
+        connected: 'Connected',
+        reconnecting: 'Network issue — reconnecting…',
+        busy: 'They are busy',
+        declined: 'Call declined',
+        no_answer: 'No answer',
+        unavailable: 'They couldn’t be reached',
+        network: 'Call ended because of a network problem',
+        ended: 'Call ended',
+      };
+      setStatusNote(words[wire.state] ?? wire.state);
+    });
     socket.on(
       CALL_EVENTS.RECEIVE_TRACKS,
       (payload: { tracks?: CallReceiveTrackMapping[] } | null) => {

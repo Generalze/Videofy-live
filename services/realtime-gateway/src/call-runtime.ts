@@ -55,6 +55,11 @@ import type { MediaAudioDataLike } from './media-transcription-chunker.js';
 import type { BackendMediaPeerAudioContext } from './webrtc-media-peer-registry.js';
 import type { MediaTranscriptionBridgeContext } from './media-transcription-bridge.js';
 import type { CallReceivePeersLike, CallReceivePeerHandlers } from './call-receive-peers.js';
+import {
+  DirectCallLifecycle,
+  TERMINAL_STATES,
+  type DirectCallWire,
+} from './direct-call-lifecycle.js';
 import { CallTranscriptLog } from './call-transcript-log.js';
 import type { CallTranslatedAudioFramePayload } from '@videofy-live/call-session';
 import { CallPlaybackLedger, generatedClipId } from './call-playback-ledger.js';
@@ -480,6 +485,9 @@ export class CallRuntime {
   private readonly resolveDirectCallMode:
     | ((sessionToken: string | null, peerAccountId: string) => Promise<'normal' | 'translated' | null>)
     | undefined;
+  /** The telephone. See direct-call-lifecycle.ts. */
+  readonly directCalls: DirectCallLifecycle;
+  private readonly directProbes = new Map<string, ReturnType<typeof setInterval>>();
   private readonly governanceAudit: ((event: GovernanceAuditEvent) => void) | undefined;
   private readonly connectAuthority: CallConnectJoinAuthority | undefined;
   private readonly setTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
@@ -543,6 +551,22 @@ export class CallRuntime {
     this.verifyVoiceIdentity = dependencies.verifyVoiceIdentity;
     this.authorizeCallHost = dependencies.authorizeCallHost;
     this.resolveDirectCallMode = dependencies.resolveDirectCallMode;
+    this.directCalls = new DirectCallLifecycle({
+      now: () => this.now(),
+      onState: (wire, previous) => {
+        // Both sides read the same truth; the callee before joining reads it
+        // over HTTP (pre-join check), everybody in the room reads it here.
+        this.emitToRoom(callRoom(wire.callId), CALL_EVENTS.DIRECT_STATE, wire);
+        logger.info('Direct call state', {
+          callId: wire.callId,
+          from: previous,
+          to: wire.state,
+          mode: wire.mode,
+        });
+        if (TERMINAL_STATES.has(wire.state)) this.stopDirectProbe(wire.callId);
+        if (wire.state === 'connecting') this.startDirectProbe(wire);
+      },
+    });
     this.governanceAudit = dependencies.governanceAudit;
     this.connectAuthority = dependencies.connectAuthority;
     this.playbackLedger = dependencies.playbackLedger ?? new CallPlaybackLedger({ nowMs: this.now });
@@ -587,6 +611,19 @@ export class CallRuntime {
     });
     this.onGuarded(socket, CALL_EVENTS.LEAVE, (raw, ack) => {
       this.deliverAck(ack, this.handleLeave(socket, raw));
+    });
+    this.onGuarded(socket, CALL_EVENTS.DIRECT_RING_RESULT, (raw, ack) => {
+      const payload = raw as { callId?: unknown; reachedDevices?: unknown } | null;
+      const binding = this.socketBindings.get(socket.id);
+      if (
+        binding &&
+        typeof payload?.callId === 'string' &&
+        payload.callId === binding.callId &&
+        typeof payload.reachedDevices === 'number'
+      ) {
+        this.directCalls.noteRingDispatch(payload.callId, Math.max(-1, Math.floor(payload.reachedDevices)));
+      }
+      this.deliverAck(ack, { ok: true });
     });
     this.onGuarded(socket, CALL_EVENTS.END, (raw, ack) => {
       this.deliverAck(ack, this.handleEndCall(socket, raw));
@@ -998,6 +1035,22 @@ export class CallRuntime {
     });
     if (!result.ok) {
       return { ok: false, code: result.code, error: result.message };
+    }
+    if (directOverride !== null && typeof directPeerAccountId === 'string' && verifiedOwnerId !== null) {
+      // The telephone starts the moment the call exists. BUSY is asked of
+      // the store -- one connected seat per account, anywhere -- and decided
+      // before anybody is rung.
+      this.directCalls.create({
+        callId: (raw as { callId: string }).callId,
+        callerAccountId: verifiedOwnerId,
+        peerAccountId: directPeerAccountId,
+        callerName: (joinInput as { displayName?: string }).displayName ?? 'Caller',
+        mode: directOverride.callMode,
+        peerBusy: this.store.hasConnectedAccount(directPeerAccountId),
+      });
+    } else if (typeof directPeerAccountId !== 'string' && verifiedOwnerId !== null) {
+      // A join into an EXISTING direct call by the peer: ANSWERED.
+      this.directCalls.peerJoined((raw as { callId: string }).callId, verifiedOwnerId);
     }
     return this.completeJoin(socket, (raw as { callId: string }).callId, result, voiceIdentityRejected);
   }
@@ -2464,6 +2517,49 @@ export class CallRuntime {
     // every revision of this call have been harvested.
     this.appendCallSummary(callId, reason);
     logger.info('Call torn down', { callId, reason });
+    // The telephone hangs up with the session. The record lingers briefly so
+    // a stale push can still be answered 'expired' instead of ringing.
+    this.directCalls.ended(callId);
+    this.stopDirectProbe(callId);
+    setTimeout(() => this.directCalls.forget(callId), 120_000).unref?.();
+  }
+
+  /**
+   * CONNECTED is proven by the server: frames routed in BOTH directions
+   * between the two seats. Sampled once a second while connecting or
+   * connected; a direction going quiet after connection opens the recovery
+   * window (network), and returning frames close it.
+   */
+  private startDirectProbe(wire: DirectCallWire): void {
+    this.stopDirectProbe(wire.callId);
+    let lastCounts: [number, number] = [0, 0];
+    const timer = setInterval(() => {
+      const snapshot = this.store.snapshot(wire.callId);
+      if (!snapshot) return;
+      const caller = snapshot.participants.find((p) => p.accountId === wire.callerAccountId);
+      const peer = snapshot.participants.find((p) => p.accountId === wire.peerAccountId);
+      if (!caller || !peer) return;
+      const counts: [number, number] = [
+        this.receivePeers.routedFrames?.(wire.callId, caller.participantId) ?? 0,
+        this.receivePeers.routedFrames?.(wire.callId, peer.participantId) ?? 0,
+      ];
+      // Two-way means BOTH listeners keep receiving new frames.
+      const twoWay = counts[0] > lastCounts[0] && counts[1] > lastCounts[1];
+      const firstSample = lastCounts[0] === 0 && lastCounts[1] === 0;
+      lastCounts = counts;
+      if (firstSample && !twoWay) return;
+      this.directCalls.noteTwoWayAudio(wire.callId, twoWay);
+    }, 1000);
+    timer.unref?.();
+    this.directProbes.set(wire.callId, timer);
+  }
+
+  private stopDirectProbe(callId: string): void {
+    const timer = this.directProbes.get(callId);
+    if (timer !== undefined) {
+      clearInterval(timer);
+      this.directProbes.delete(callId);
+    }
   }
 
   /**

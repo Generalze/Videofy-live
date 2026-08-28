@@ -63,6 +63,15 @@ export interface PushNotification {
    * missed call.
    */
   readonly collapseId?: string | undefined;
+  /**
+   * How long the provider may hold this for an unreachable device.
+   *
+   * A CALL is worthless after its ringing window (founder ruling
+   * 2026-08-28): a push delivered five minutes late must not suddenly ring a
+   * phone for a call that is already NO ANSWER. FCM's default lifetime is
+   * weeks; a call sets ~30s. Messages leave it unset.
+   */
+  readonly ttlSeconds?: number | undefined;
 }
 
 export interface PushTarget {

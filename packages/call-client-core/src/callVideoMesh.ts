@@ -266,6 +266,21 @@ export class CallVideoMesh {
       seenRemoteCandidates: new Set<string>(),
       closed: false,
     };
+    /*
+     * INSTANT CAMERA (founder ruling 2026-08-28). Every call starts camera
+     * OFF, so there is no local track to add here -- but a video m-line is
+     * negotiated NOW, empty, so that "Camera on" later is a replaceTrack on
+     * an existing sender: the far side sees video within a frame instead of
+     * waiting through a renegotiation. Guarded for platforms and test doubles
+     * that cannot addTransceiver; those fall back to first-attach negotiation.
+     */
+    if (!this.localTrack && typeof pc.addTransceiver === 'function') {
+      try {
+        entry.sender = pc.addTransceiver('video', { direction: 'sendrecv' }).sender;
+      } catch {
+        entry.sender = null;
+      }
+    }
     this.peers.set(participantId, entry);
 
     pc.onicecandidate = (event) => {

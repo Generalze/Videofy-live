@@ -142,6 +142,11 @@ export class FcmPushProvider implements PushProvider {
       android: {
         priority: highPriority ? 'high' : 'normal',
         ...(notification.collapseId === undefined ? {} : { collapse_key: notification.collapseId }),
+        // A call invitation expires with its ringing window; see ttlSeconds.
+        ...(notification.ttlSeconds === undefined ? {} : { ttl: `${notification.ttlSeconds}s` }),
+        // Calls ring on the app's 'calls' channel (ringtone, vibration,
+        // heads-up); everything else stays on the default, quiet channel.
+        ...(notification.kind === 'call' ? { notification: { channel_id: 'calls' } } : {}),
       },
       apns: {
         headers: {
@@ -150,6 +155,13 @@ export class FcmPushProvider implements PushProvider {
           ...(notification.collapseId === undefined
             ? {}
             : { 'apns-collapse-id': notification.collapseId }),
+          ...(notification.ttlSeconds === undefined
+            ? {}
+            : {
+                'apns-expiration': String(
+                  Math.floor(Date.now() / 1000) + notification.ttlSeconds,
+                ),
+              }),
         },
       },
     };
