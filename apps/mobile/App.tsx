@@ -94,7 +94,11 @@ const directCalls = createDirectCallApi({
 void Notifications.setNotificationChannelAsync('calls', {
   name: 'Calls',
   importance: Notifications.AndroidImportance.MAX,
-  sound: 'default',
+  // No `sound`: on Android that field names a BUNDLED file, and naming one
+  // that is not in the APK logs an error at every launch. Left unset, the
+  // channel uses the system's default notification sound at MAX importance.
+  // A real ringtone asset rides the native Telecom wave.
+  enableVibrate: true,
   vibrationPattern: [0, 400, 200, 400, 200, 400],
   lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
   bypassDnd: false,
