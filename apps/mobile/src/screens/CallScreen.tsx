@@ -170,6 +170,20 @@ export function CallScreen({
   /** Frozen at the moment the call ended, so the final duration stays on screen. */
   const [finalElapsedMs, setFinalElapsedMs] = useState<number | null>(null);
 
+  /*
+   * THE VIDEO PATH, STAMPED. "Video did not work" on a phone has four
+   * different causes with four different fixes (no track event, a track
+   * with no stream, a muted track that never unmutes, a peer that never
+   * connects); the screen cannot show which and must not. So the moments
+   * are stamped -- first remote stream, first null, peer states, camera
+   * on -- and reported with the ring timeline. Times and counts only.
+   */
+  const videoStamps = useRef<Record<string, number>>({});
+  const stamp = useCallback((point: string) => {
+    if (videoStamps.current[point] === undefined) videoStamps.current[point] = Date.now();
+    videoStamps.current[`${point}_n`] = (videoStamps.current[`${point}_n`] ?? 0) + 1;
+  }, []);
+
   /** Audio routing: an explicit choice, or null for the camera-driven default. */
   const [chosenRoute, setChosenRoute] = useState<AudioRoute | null>(null);
   const router = useRef(createAudioRouter((audioMode) => setAudioModeAsync(audioMode)));
@@ -194,16 +208,20 @@ export function CallScreen({
       ...(hearLanguage === undefined ? {} : { hearLanguage }),
       sessionToken,
       ...(iceOverride().length > 0 ? { iceServers: iceOverride() } : {}),
-      onRemoteStream: (id, stream: RemoteStream) =>
+      onRemoteStream: (id, stream: RemoteStream) => {
+        stamp(stream === null ? 'video_remote_null' : 'video_remote_stream');
         setRemotes((current) => ({
           ...current,
           [id]: { url: stream === null ? null : stream.toURL(), state: current[id]?.state ?? 'new' },
-        })),
-      onPeerState: (id, state) =>
+        }));
+      },
+      onPeerState: (id, state) => {
+        stamp(`video_peer_${String(state).replace(/[^a-z]/g, '')}`);
         setRemotes((current) => ({
           ...current,
           [id]: { url: current[id]?.url ?? null, state },
-        })),
+        }));
+      },
       onRoster: (list) => {
         if (!live) return;
         setRoster(list);
@@ -290,7 +308,13 @@ export function CallScreen({
       // so the ring's seconds can be attributed (founder targets: <3 s ring,
       // <2 s answer-to-audio).
       if (call.kind === 'direct') {
-        void reportRingTimeline(GATEWAY_URL, sessionToken, callId, videofyCall.timeline(callId), role);
+        void reportRingTimeline(
+          GATEWAY_URL,
+          sessionToken,
+          callId,
+          { ...videofyCall.timeline(callId), ...videoStamps.current },
+          role,
+        );
       }
     };
     // The connection is built once per call; the callbacks read state through setters.
@@ -327,6 +351,7 @@ export function CallScreen({
 
   const toggleCamera = useCallback(() => {
     const next = !cameraOn;
+    stamp(next ? 'video_camera_on' : 'video_camera_off');
     if (next) setCameraStarting(true);
     void connection.current?.setCameraEnabled(next).then((stream) => {
       setCameraStarting(false);
@@ -334,10 +359,11 @@ export function CallScreen({
         setError('Camera access is needed to turn the camera on. The call continues on audio.');
         return;
       }
+      if (next && stream !== null) stamp('video_local_stream');
       setLocalUrl(stream === null ? null : stream.toURL());
       setCameraOn(next);
     });
-  }, [cameraOn]);
+  }, [cameraOn, stamp]);
 
   const toggleMute = useCallback(() => {
     setMuted((wasMuted) => {

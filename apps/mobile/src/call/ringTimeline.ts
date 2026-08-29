@@ -26,7 +26,7 @@ export async function reportRingTimeline(
 ): Promise<boolean> {
   if (sessionToken === null) return false;
   const stamps = Object.fromEntries(Object.entries(timeline).filter(([, v]) => typeof v === 'number'));
-  if (role === 'callee' && Object.keys(stamps).length === 0) return false;
+  if (Object.keys(stamps).length === 0) return false;
   try {
     const response = await fetchImpl(`${gatewayUrl.replace(/\/+$/, '')}/calls/direct/${encodeURIComponent(callId)}/timing`, {
       method: 'POST',

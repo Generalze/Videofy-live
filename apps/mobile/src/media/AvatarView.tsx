@@ -12,7 +12,7 @@
  * A 404 -- no picture -- renders the initial. So does a fetch failure: a
  * broken image glyph in a contact row is a bug report nobody can act on.
  */
-import { useState, type JSX } from 'react';
+import { useEffect, useState, type JSX } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
 
 interface AvatarConfig {
@@ -54,6 +54,21 @@ export function AvatarView({
   readonly size?: number;
 }): JSX.Element {
   const [failed, setFailed] = useState(false);
+  /*
+   * A FAILURE IS NOT FOREVER. A contact with no picture answers 404; the
+   * moment they upload one, every row that had already given up kept showing
+   * the initial until the app restarted -- "the uploaded picture did not
+   * show" on the other phone. A failed fetch is retried after the server's
+   * own cache window, and a changed person or version retries at once.
+   */
+  useEffect(() => {
+    setFailed(false);
+  }, [accountId, version]);
+  useEffect(() => {
+    if (!failed) return undefined;
+    const timer = setTimeout(() => setFailed(false), 60_000);
+    return () => clearTimeout(timer);
+  }, [failed]);
   const headers = config?.headers() ?? null;
   const circle = {
     width: size,

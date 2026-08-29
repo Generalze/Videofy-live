@@ -285,7 +285,20 @@ export class CallVideoMesh {
      */
     if (!this.localTrack && typeof pc.addTransceiver === 'function') {
       try {
-        entry.sender = pc.addTransceiver('video', { direction: 'sendrecv' }).sender;
+        /*
+         * WITH A STREAM, EVEN THOUGH THERE IS NO TRACK. The stream ids on the
+         * sender put an msid on the m-line, so the far side's ontrack carries
+         * a real, platform-native stream (`event.streams[0]`) -- the same
+         * object shape it received when cameras were on at setup, which is
+         * the path proven to render on the phone. Without it the far side
+         * had to build a stream around a bare track, and on the phone that
+         * rendered nothing. `createMediaStream` is the platform seam.
+         */
+        const placeholder = this.options.createMediaStream ? this.options.createMediaStream([]) : null;
+        entry.sender = pc.addTransceiver('video', {
+          direction: 'sendrecv',
+          ...(placeholder ? { streams: [placeholder] } : {}),
+        }).sender;
       } catch {
         entry.sender = null;
       }

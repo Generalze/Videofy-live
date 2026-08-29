@@ -1,11 +1,9 @@
 /** @author masterzee001 */
 /**
- * One conversation: text, voice notes, and a call button.
- *
- * NORMAL MODE, AND THE SCREEN SAYS SO ONCE. Nothing here translates and
- * nothing here charges -- that is the product rule (translation is the billable
- * unit, and it is not in this build), stated in a footer line rather than
- * implied by absence.
+ * One conversation, to canon: the person in the header (picture, name,
+ * handle), the Translate pill and a round Call control; the messages as
+ * bubbles on the C7 ground with day chips and call rows between them; a
+ * composer with a hold-to-record mic, a rounded field and a round send.
  *
  * THE LIST IS INVERTED. Chat reads bottom-up: the newest message sits at the
  * keyboard edge, history loads upward. FlatList's `inverted` gives that for
@@ -15,8 +13,7 @@
  * VOICE NOTES HOLD THE RECORDER, NOT THE TRANSCRIPT. Recording uses
  * expo-audio's hook; the file is read back as base64 and posted through the
  * same JSON path as everything else. Playback fetches through authorizedFetch
- * into a data URI, so the credential never leaves the session layer and the
- * player never needs to know the route is protected.
+ * into a data URI, so the credential never leaves the session layer.
  */
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import {
@@ -44,6 +41,8 @@ import type { Api, ContactPerson, TimelineItem, WireMessage } from '../api/clien
 import { callHistoryWords } from '../call/callHistoryWords';
 import type { AuthorizedFetch } from '../push/deviceRegistrationService';
 import { fetchVoiceNoteAsDataUri, formatDuration } from '../media/voiceNotes';
+import { C7, C7Ground, Chip } from '../ui/c7';
+import { Icon } from '../ui/icons';
 
 const POLL_MS = 3000;
 
@@ -116,19 +115,11 @@ export function ChatScreen({
   const startRecording = useCallback(async () => {
     setError(null);
     try {
-      /*
-       * INSIDE the try, deliberately: on a build whose APK predates the
-       * expo-audio native module, this call is the first to hit the missing
-       * binary, and outside a catch it became a silent unhandled rejection
-       * -- 'recording not working' with no diagnostic, on a real phone.
-       */
       const permission = await AudioModule.requestRecordingPermissionsAsync();
       if (!permission.granted) {
         setError('Microphone access is needed for voice notes.');
         return;
       }
-      // allowsRecording is an iOS-only field in this expo-audio release; the
-      // Android gate is the RECORD_AUDIO permission requested above.
       await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
       await recorder.prepareToRecordAsync();
       recorder.record();
@@ -231,325 +222,314 @@ export function ChatScreen({
     const diffDays = Math.round((startOf(now) - startOf(day)) / 86_400_000);
     if (diffDays === 0) return 'Today';
     if (diffDays === 1) return 'Yesterday';
-    return day.toDateString().slice(0, 10);
+    return day.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
   };
 
-  return (
-    <KeyboardAvoidingView
-      style={styles.fill}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <View style={styles.header}>
-        <Pressable onPress={onBack} accessibilityRole="button" style={styles.headerButton}>
-          <Text style={styles.headerAction}>{'‹'} Back</Text>
-        </Pressable>
-        <View style={styles.headerIdentity}>
-          <AvatarView accountId={partner.accountId} name={name} size={30} />
-          <Text style={styles.headerName} numberOfLines={1}>
-            {name}
-          </Text>
-        </View>
-        <Pressable
-          onPress={() => void toggleMode()}
-          accessibilityRole="button"
-          style={[styles.modePill, mode === 'translated' && styles.modePillOn]}
-        >
-          <Text style={[styles.modePillLabel, mode === 'translated' && styles.modePillLabelOn]}>
-            {mode === 'translated' ? 'Translating' : 'Translate'}
-          </Text>
-        </Pressable>
-        <Pressable
-          onPress={() => onCall(partner)}
-          accessibilityRole="button"
-          style={styles.headerButton}
-        >
-          <Text style={styles.headerAction}>Call</Text>
-        </Pressable>
-      </View>
+  const canSend = draft.trim().length > 0 && !sending;
 
-      <FlatList
-        style={styles.fill}
-        inverted
-        data={messages}
-        keyExtractor={(item) => (item.kind === 'call' ? `call:${item.callId}` : item.messageId)}
-        contentContainerStyle={styles.messages}
-        renderItem={({ item, index }) => {
-          /*
-           * The list is inverted (newest first), so the OLDER neighbour is at
-           * index + 1. A day chip belongs above the first message of each day
-           * -- the one whose older neighbour is missing or from another day.
-           */
-          const older = messages[index + 1];
-          const firstOfDay =
-            older === undefined ||
-            new Date(older.createdAtMs).toDateString() !== new Date(item.createdAtMs).toDateString();
-          if (item.kind === 'call') {
-            // A CALL IN THE TIMELINE: centred, like a phone's log, with the
-            // way back into a call one tap away.
-            const words = callHistoryWords(item);
+  return (
+    <View style={styles.fill}>
+      <C7Ground />
+      <KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <View style={styles.header}>
+          <Pressable onPress={onBack} accessibilityRole="button" accessibilityLabel="Back" hitSlop={8} style={styles.back}>
+            <Icon name="chevron" size={22} color={C7.text} />
+          </Pressable>
+          <AvatarView accountId={partner.accountId} name={name} size={40} />
+          <View style={styles.headerIdentity}>
+            <Text style={styles.headerName} numberOfLines={1}>
+              {name}
+            </Text>
+            {partner.username !== null && (
+              <Text style={styles.headerHandle} numberOfLines={1}>
+                @{partner.username}
+              </Text>
+            )}
+          </View>
+          <Chip label={mode === 'translated' ? 'Translating' : 'Translate'} active={mode === 'translated'} onPress={() => void toggleMode()} />
+          <Pressable onPress={() => onCall(partner)} accessibilityRole="button" accessibilityLabel="Call" style={({ pressed }) => [styles.headerCall, pressed && styles.pressed]}>
+            <Icon name="phone" size={20} color={C7.teal} />
+          </Pressable>
+        </View>
+
+        <FlatList
+          style={styles.fill}
+          inverted
+          data={messages}
+          keyExtractor={(item) => (item.kind === 'call' ? `call:${item.callId}` : item.messageId)}
+          contentContainerStyle={styles.messages}
+          renderItem={({ item, index }) => {
+            /*
+             * The list is inverted (newest first), so the OLDER neighbour is at
+             * index + 1. A day chip belongs above the first message of each day.
+             */
+            const older = messages[index + 1];
+            const firstOfDay =
+              older === undefined ||
+              new Date(older.createdAtMs).toDateString() !== new Date(item.createdAtMs).toDateString();
+            const dayChip = firstOfDay ? (
+              <View style={styles.dayChip}>
+                <Text style={styles.dayChipText}>{dayOf(item.createdAtMs)}</Text>
+              </View>
+            ) : null;
+            if (item.kind === 'call') {
+              const words = callHistoryWords(item);
+              return (
+                <View>
+                  {dayChip}
+                  <View style={styles.callRow}>
+                    <View style={[styles.callIcon, words.missed && styles.callIconMissed]}>
+                      <Icon name={words.missed ? 'phone-missed' : item.direction === 'outgoing' ? 'phone-out' : 'phone-in'} size={18} color={words.missed ? C7.red : C7.teal} />
+                    </View>
+                    <View style={{ flex: 1, gap: 2 }}>
+                      <Text style={[styles.callTitle, words.missed && styles.callMissed]}>{words.title}</Text>
+                      <Text style={styles.callDetail}>
+                        {words.detail === null ? timeOf(item.createdAtMs) : `${words.detail} · ${timeOf(item.createdAtMs)}`}
+                      </Text>
+                    </View>
+                    <Pressable onPress={() => onCall(partner)} accessibilityRole="button" style={({ pressed }) => [styles.callBack, pressed && styles.pressed]}>
+                      <Text style={styles.callBackLabel}>Call back</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              );
+            }
+            const mine = item.senderId === selfId;
+            const showTranslation = item.translatedBody != null && !revealed.has(item.messageId);
             return (
               <View>
-                {firstOfDay ? (
-                  <View style={styles.dayChip}>
-                    <Text style={styles.dayChipText}>{dayOf(item.createdAtMs)}</Text>
+                {dayChip}
+                <View style={[styles.bubbleRow, mine ? styles.bubbleRowMine : styles.bubbleRowTheirs]}>
+                  <View style={[styles.bubble, mine ? styles.mine : styles.theirs]}>
+                    {item.kind === 'voice' ? (
+                      <Pressable onPress={() => void play(item)} accessibilityRole="button" style={styles.voiceRow}>
+                        <View style={[styles.voicePlay, mine && styles.voicePlayMine]}>
+                          {playingId === item.messageId ? (
+                            <ActivityIndicator color={mine ? C7.ground : C7.teal} size="small" />
+                          ) : (
+                            <Text style={[styles.voiceGlyph, mine && styles.mineText]}>▶</Text>
+                          )}
+                        </View>
+                        <View style={styles.voiceBars}>
+                          {[6, 12, 9, 16, 8, 14, 7, 11].map((h, i) => (
+                            <View key={i} style={[styles.voiceBar, { height: h }, mine && styles.voiceBarMine]} />
+                          ))}
+                        </View>
+                        <Text style={[styles.voiceLabel, mine && styles.mineText]}>{formatDuration(item.mediaDurationMs)}</Text>
+                      </Pressable>
+                    ) : (
+                      <>
+                        <Text style={[styles.body, mine && styles.mineText]}>{showTranslation ? item.translatedBody : item.body}</Text>
+                        {item.translatedBody != null && (
+                          <Pressable
+                            onPress={() =>
+                              setRevealed((current) => {
+                                const next = new Set(current);
+                                if (next.has(item.messageId)) next.delete(item.messageId);
+                                else next.add(item.messageId);
+                                return next;
+                              })
+                            }
+                            accessibilityRole="button"
+                            style={styles.translatedTag}
+                          >
+                            <Icon name="translate" size={12} color={mine ? 'rgba(7,11,18,0.7)' : C7.teal} />
+                            <Text style={[styles.revealLabel, mine && styles.mineMeta]}>
+                              {revealed.has(item.messageId) ? 'Original · show translation' : `Translated${item.translatedLanguage ? ` to ${item.translatedLanguage.toUpperCase()}` : ''} · show original`}
+                            </Text>
+                          </Pressable>
+                        )}
+                      </>
+                    )}
+                    <View style={styles.metaRow}>
+                      <Text style={[styles.metaText, mine && styles.mineMeta]}>{timeOf(item.createdAtMs)}</Text>
+                      {mine ? (
+                        <Text style={[styles.metaText, mine && styles.mineMeta, item.readAtMs !== null && styles.readTicks]}>
+                          {item.readAtMs !== null ? '✓✓' : '✓'}
+                        </Text>
+                      ) : null}
+                    </View>
                   </View>
-                ) : null}
-                <View style={styles.callRow}>
-                  <Text style={[styles.callTitle, words.missed && styles.callMissed]}>
-                    {`${item.direction === 'outgoing' ? '↗' : '↙'} ${words.title}`}
-                  </Text>
-                  <Text style={styles.callDetail}>
-                    {words.detail === null ? timeOf(item.createdAtMs) : `${words.detail} · ${timeOf(item.createdAtMs)}`}
-                  </Text>
-                  <Pressable onPress={() => onCall(partner)} accessibilityRole="button">
-                    <Text style={styles.callBack}>Call back</Text>
-                  </Pressable>
                 </View>
               </View>
             );
-          }
-          const mine = item.senderId === selfId;
-          return (
-            <View>
-              {firstOfDay ? (
-                <View style={styles.dayChip}>
-                  <Text style={styles.dayChipText}>{dayOf(item.createdAtMs)}</Text>
-                </View>
-              ) : null}
-            <View style={[styles.bubble, mine ? styles.mine : styles.theirs]}>
-              {item.kind === 'voice' ? (
-                <Pressable
-                  onPress={() => void play(item)}
-                  accessibilityRole="button"
-                  style={styles.voiceRow}
-                >
-                  {playingId === item.messageId ? (
-                    <ActivityIndicator color={mine ? '#0b0f14' : '#3ec9c0'} size="small" />
-                  ) : (
-                    <Text style={[styles.voiceGlyph, mine && styles.mineText]}>{'▶'}</Text>
-                  )}
-                  <Text style={[styles.voiceLabel, mine && styles.mineText]}>
-                    Voice note {formatDuration(item.mediaDurationMs)}
-                  </Text>
-                </Pressable>
-              ) : (
-                <>
-                  <Text style={[styles.body, mine && styles.mineText]}>
-                    {item.translatedBody != null && !revealed.has(item.messageId)
-                      ? item.translatedBody
-                      : item.body}
-                  </Text>
-                  {item.translatedBody != null && (
-                    <Pressable
-                      onPress={() =>
-                        setRevealed((current) => {
-                          const next = new Set(current);
-                          if (next.has(item.messageId)) next.delete(item.messageId);
-                          else next.add(item.messageId);
-                          return next;
-                        })
-                      }
-                      accessibilityRole="button"
-                    >
-                      <Text style={[styles.revealLabel, mine && styles.mineMeta]}>
-                        {revealed.has(item.messageId)
-                          ? 'original · show translation'
-                          : 'translated · show original'}
-                      </Text>
-                    </Pressable>
-                  )}
-                </>
-              )}
-              <View style={styles.metaRow}>
-                <Text style={[styles.metaText, mine && styles.mineMeta]}>{timeOf(item.createdAtMs)}</Text>
-                {mine ? (
-                  /* One tick: the server holds it. Two: they marked it read. */
-                  <Text style={[styles.metaText, mine && styles.mineMeta, item.readAtMs !== null && styles.readTicks]}>
-                    {item.readAtMs !== null ? '✓✓' : '✓'}
-                  </Text>
-                ) : null}
-              </View>
-            </View>
-            </View>
-          );
-        }}
-      />
-
-      {error !== null && (
-        <View style={styles.error}>
-          <Text style={styles.errorText}>{error}</Text>
-        </View>
-      )}
-
-      <View style={styles.composer}>
-        <Pressable
-          onPressIn={() => void startRecording()}
-          onPressOut={() => {
-            if (recording) void stopAndSend();
           }}
-          accessibilityRole="button"
-          style={[styles.micButton, recording && styles.micActive]}
-        >
-          <Text style={styles.micLabel}>{recording ? `${recordSeconds}s` : 'Hold'}</Text>
-        </Pressable>
-        <TextInput
-          style={styles.input}
-          value={draft}
-          onChangeText={setDraft}
-          placeholder={recording ? 'Recording…' : 'Message'}
-          placeholderTextColor="#4a545f"
-          editable={!recording}
-          multiline
         />
-        <Pressable
-          onPress={() => void sendText()}
-          disabled={draft.trim().length === 0 || sending}
-          accessibilityRole="button"
-          style={[styles.sendButton, (draft.trim().length === 0 || sending) && styles.sendDisabled]}
-        >
-          {sending ? (
-            <ActivityIndicator color="#0b0f14" size="small" />
-          ) : (
-            <Text style={styles.sendLabel}>Send</Text>
-          )}
-        </Pressable>
-      </View>
-      <Text style={[styles.footer, { paddingBottom: bottomInset }]}>
-        {mode === 'translated'
-          ? 'Translated mode - messages arrive in each reader’s language. Free during staging.'
-          : 'Normal mode - messages are free and not translated.'}
-      </Text>
-    </KeyboardAvoidingView>
+
+        {error !== null && (
+          <View style={styles.error}>
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        )}
+
+        <View style={styles.composerWrap}>
+          <View style={styles.composer}>
+            <Pressable
+              onPressIn={() => void startRecording()}
+              onPressOut={() => {
+                if (recording) void stopAndSend();
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Hold to record a voice note"
+              style={[styles.roundButton, recording && styles.roundButtonRecording]}
+            >
+              {recording ? <Text style={styles.recordingLabel}>{recordSeconds}s</Text> : <Icon name="mic" size={22} color={C7.text} />}
+            </Pressable>
+            <TextInput
+              style={styles.input}
+              value={draft}
+              onChangeText={setDraft}
+              placeholder={recording ? 'Recording…' : 'Message'}
+              placeholderTextColor={C7.faint}
+              editable={!recording}
+              multiline
+            />
+            <Pressable
+              onPress={() => void sendText()}
+              disabled={!canSend}
+              accessibilityRole="button"
+              accessibilityLabel="Send"
+              style={[styles.roundButton, styles.sendButton, !canSend && styles.sendDisabled]}
+            >
+              {sending ? <ActivityIndicator color={C7.ground} size="small" /> : <Icon name="chevron" size={22} color={C7.ground} strokeWidth={2.2} />}
+            </Pressable>
+          </View>
+          <Text style={[styles.footer, { paddingBottom: bottomInset + 6 }]}>
+            {mode === 'translated'
+              ? 'Translated · messages arrive in each reader’s language'
+              : 'Normal · messages are free and not translated'}
+          </Text>
+        </View>
+      </KeyboardAvoidingView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  fill: { flex: 1, backgroundColor: '#0b0f14' },
+  fill: { flex: 1 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingTop: 48,
+    paddingTop: 50,
     paddingBottom: 12,
     paddingHorizontal: 12,
+    gap: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#161d25',
-    gap: 8,
+    borderBottomColor: C7.panelEdge,
   },
-  headerButton: { paddingHorizontal: 8, paddingVertical: 4 },
-  headerAction: { color: '#3ec9c0', fontSize: 15, fontWeight: '600' },
-  headerName: { color: '#e4ebf1', fontSize: 17, fontWeight: '600', flexShrink: 1 },
-  headerIdentity: {
-    flex: 1,
-    flexDirection: 'row',
+  back: { transform: [{ rotate: '180deg' }], padding: 4 },
+  headerIdentity: { flex: 1, gap: 1 },
+  headerName: { color: C7.text, fontSize: 18, fontWeight: '600', fontFamily: 'serif' },
+  headerHandle: { color: C7.muted, fontSize: 12 },
+  headerCall: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(62,201,192,0.45)',
+    backgroundColor: C7.tealSoft,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
   },
+  pressed: { opacity: 0.7 },
+
+  messages: { paddingHorizontal: 14, paddingVertical: 10, gap: 6 },
   dayChip: {
     alignSelf: 'center',
-    backgroundColor: '#141a21',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1,
+    borderColor: C7.panelEdge,
     borderRadius: 999,
     paddingHorizontal: 12,
     paddingVertical: 3,
-    marginVertical: 6,
+    marginVertical: 8,
   },
-  dayChipText: { color: '#5d6874', fontSize: 11 },
-  callRow: {
-    alignSelf: 'center',
-    alignItems: 'center',
-    gap: 3,
-    marginVertical: 6,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 14,
-    backgroundColor: '#10161d',
-    borderWidth: 1,
-    borderColor: '#1c242d',
-    minWidth: 200,
-  },
-  callTitle: { color: '#c9d3dc', fontSize: 13, fontWeight: '600' },
-  callMissed: { color: '#e06c5b' },
-  callDetail: { color: '#5d6874', fontSize: 11 },
-  callBack: { color: '#3ec9c0', fontSize: 12, fontWeight: '700', marginTop: 4 },
+  dayChipText: { color: C7.muted, fontSize: 11 },
+  bubbleRow: { flexDirection: 'row' },
+  bubbleRowMine: { justifyContent: 'flex-end' },
+  bubbleRowTheirs: { justifyContent: 'flex-start' },
+  bubble: { maxWidth: '82%', borderRadius: 18, paddingHorizontal: 14, paddingVertical: 10, gap: 4 },
+  mine: { backgroundColor: C7.teal, borderBottomRightRadius: 6 },
+  theirs: { backgroundColor: 'rgba(14, 22, 36, 0.9)', borderWidth: 1, borderColor: C7.panelEdge, borderBottomLeftRadius: 6 },
+  body: { color: C7.text, fontSize: 15.5, lineHeight: 21 },
+  mineText: { color: C7.ground },
+  translatedTag: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 2 },
+  revealLabel: { fontSize: 11, color: C7.teal },
   metaRow: { flexDirection: 'row', gap: 4, alignSelf: 'flex-end', marginTop: 2 },
-  modePill: {
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#273039',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-  },
-  modePillOn: { borderColor: '#3ec9c0', backgroundColor: '#102a28' },
-  modePillLabel: { color: '#8d99a6', fontSize: 12, fontWeight: '600' },
-  modePillLabelOn: { color: '#3ec9c0' },
-  revealLabel: { fontSize: 10, fontStyle: 'italic', color: '#5d6874', marginTop: 2 },
-  metaText: { fontSize: 10, color: '#5d6874' },
-  mineMeta: { color: 'rgba(11,15,20,0.55)' },
+  metaText: { fontSize: 10, color: C7.muted },
+  mineMeta: { color: 'rgba(7,11,18,0.6)' },
   readTicks: { color: '#0b4f4a', fontWeight: '700' },
 
-  messages: { paddingHorizontal: 14, paddingVertical: 10, gap: 6 },
-  bubble: { maxWidth: '80%', borderRadius: 14, paddingHorizontal: 13, paddingVertical: 9 },
-  mine: { alignSelf: 'flex-end', backgroundColor: '#3ec9c0', borderBottomRightRadius: 4 },
-  theirs: { alignSelf: 'flex-start', backgroundColor: '#161d25', borderBottomLeftRadius: 4 },
-  body: { color: '#e4ebf1', fontSize: 15, lineHeight: 20 },
-  mineText: { color: '#0b0f14' },
-  voiceRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  voiceGlyph: { color: '#3ec9c0', fontSize: 14 },
-  voiceLabel: { color: '#e4ebf1', fontSize: 14 },
+  voiceRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  voicePlay: { width: 34, height: 34, borderRadius: 17, backgroundColor: C7.tealSoft, alignItems: 'center', justifyContent: 'center' },
+  voicePlayMine: { backgroundColor: 'rgba(7,11,18,0.15)' },
+  voiceGlyph: { color: C7.teal, fontSize: 14 },
+  voiceBars: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  voiceBar: { width: 3, borderRadius: 2, backgroundColor: 'rgba(62,201,192,0.7)' },
+  voiceBarMine: { backgroundColor: 'rgba(7,11,18,0.5)' },
+  voiceLabel: { color: C7.text, fontSize: 13 },
+
+  callRow: {
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginVertical: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 16,
+    backgroundColor: 'rgba(14, 22, 36, 0.9)',
+    borderWidth: 1,
+    borderColor: C7.panelEdge,
+    minWidth: 260,
+  },
+  callIcon: { width: 36, height: 36, borderRadius: 18, backgroundColor: C7.tealSoft, alignItems: 'center', justifyContent: 'center' },
+  callIconMissed: { backgroundColor: 'rgba(224,69,58,0.14)' },
+  callTitle: { color: C7.text, fontSize: 14, fontWeight: '600' },
+  callMissed: { color: C7.red },
+  callDetail: { color: C7.muted, fontSize: 11 },
+  callBack: { borderRadius: 999, borderWidth: 1, borderColor: 'rgba(62,201,192,0.45)', paddingHorizontal: 12, paddingVertical: 6 },
+  callBackLabel: { color: C7.teal, fontSize: 12, fontWeight: '700' },
 
   error: {
     marginHorizontal: 14,
     marginBottom: 6,
-    borderRadius: 8,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: '#4a2620',
-    backgroundColor: '#1d1210',
+    backgroundColor: 'rgba(29,18,16,0.9)',
     padding: 10,
   },
   errorText: { color: '#e06c5b', fontSize: 12 },
 
-  composer: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#161d25',
-  },
-  micButton: {
-    width: 52,
-    height: 44,
-    borderRadius: 10,
-    backgroundColor: '#141a21',
+  composerWrap: { borderTopWidth: 1, borderTopColor: C7.panelEdge, backgroundColor: 'rgba(7,11,18,0.85)' },
+  composer: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, paddingHorizontal: 12, paddingTop: 10 },
+  roundButton: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: 'rgba(255,255,255,0.06)',
     borderWidth: 1,
-    borderColor: '#273039',
+    borderColor: C7.panelEdge,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  micActive: { backgroundColor: '#3a1d18', borderColor: '#e06c5b' },
-  micLabel: { color: '#8d99a6', fontSize: 12, fontWeight: '600' },
+  roundButtonRecording: { backgroundColor: 'rgba(224,69,58,0.2)', borderColor: C7.red },
+  recordingLabel: { color: C7.red, fontSize: 12, fontWeight: '700' },
   input: {
     flex: 1,
-    maxHeight: 110,
-    backgroundColor: '#141a21',
+    maxHeight: 120,
+    minHeight: 46,
+    backgroundColor: 'rgba(255,255,255,0.05)',
     borderWidth: 1,
-    borderColor: '#273039',
-    borderRadius: 10,
-    paddingHorizontal: 13,
-    paddingVertical: 10,
-    color: '#e4ebf1',
-    fontSize: 15,
-  },
-  sendButton: {
-    height: 44,
+    borderColor: C7.panelEdge,
+    borderRadius: 23,
     paddingHorizontal: 16,
-    borderRadius: 10,
-    backgroundColor: '#3ec9c0',
-    alignItems: 'center',
-    justifyContent: 'center',
+    paddingVertical: 12,
+    color: C7.text,
+    fontSize: 15.5,
   },
-  sendDisabled: { backgroundColor: '#1f3a38' },
-  sendLabel: { color: '#0b0f14', fontSize: 15, fontWeight: '700' },
-  footer: { color: '#3a434d', fontSize: 11, textAlign: 'center', paddingVertical: 8 },
+  sendButton: { backgroundColor: C7.teal, borderColor: C7.teal },
+  sendDisabled: { opacity: 0.4 },
+  footer: { color: C7.faint, fontSize: 11, textAlign: 'center', paddingTop: 8 },
 });
