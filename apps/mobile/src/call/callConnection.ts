@@ -147,6 +147,8 @@ export interface CallConnectionOptions {
    * "the socket dropped at zero and the seat was reaped at 120".
    */
   readonly onTransport?: (event: CallTransportEvent) => void;
+  /** The camera path, stage by stage; metadata only. */
+  readonly onVideoDiagnostic?: (event: CallVideoDiagnostic) => void;
   /**
    * Metadata-only receive diagnostics, sampled every two seconds: how many
    * audio packets have arrived on the receive leg and the ICE state. Never
@@ -165,6 +167,21 @@ export interface CallConnectionOptions {
   /** How many ICE servers were actually obtained. Zero is worth showing. */
   readonly onIceServers?: (count: number) => void;
 }
+
+/**
+ * Where the camera path stands, in words the timeline can carry. Each stage
+ * has a different fix: acquisition (permission / hardware), attach
+ * (replaceTrack rejected), outbound (no RTP leaving this phone), remote
+ * (nothing arriving from the other side), render (a stream without a picture).
+ */
+export type CallVideoDiagnostic =
+  | { readonly kind: 'acquired' }
+  | { readonly kind: 'acquisition-failed'; readonly error: string }
+  | { readonly kind: 'attached'; readonly participantId: string; readonly outcome: string }
+  | { readonly kind: 'attach-failed'; readonly participantId: string; readonly error: string }
+  | { readonly kind: 'outbound'; readonly participantId: string; readonly frames: number; readonly bytes: number }
+  | { readonly kind: 'outbound-silent'; readonly participantId: string; readonly rebuilt: boolean }
+  | { readonly kind: 'inbound'; readonly participantId: string; readonly frames: number; readonly bytes: number };
 
 export type CallTransportEvent =
   | { readonly kind: 'socket-lost'; readonly reason: string }
@@ -252,20 +269,70 @@ export class CallConnection {
     if (!enabled) {
       for (const track of this.camera?.getTracks() ?? []) track.stop();
       this.camera = null;
-      this.mesh?.setLocalStream(null);
+      await this.mesh?.setLocalStream(null);
       return null;
     }
     if (this.camera !== null) return this.camera;
+    let stream: LocalStream;
     try {
-      const stream = (await mediaDevices.getUserMedia({
+      stream = (await mediaDevices.getUserMedia({
         audio: false,
         video: { facingMode: 'user' },
       })) as unknown as LocalStream;
-      this.camera = stream;
-      this.mesh?.setLocalStream(stream as unknown as MediaStream);
-      return stream;
-    } catch {
+    } catch (error) {
+      this.options.onVideoDiagnostic?.({ kind: 'acquisition-failed', error: error instanceof Error ? error.message : 'getUserMedia failed' });
       return null;
+    }
+    this.camera = stream;
+    this.options.onVideoDiagnostic?.({ kind: 'acquired' });
+    /*
+     * CAMERA ON IS PROVEN, NOT ASSUMED. getUserMedia succeeding is where the
+     * old code stopped looking; a phone could open its camera, say "Camera
+     * on", and send nothing. Now: the attach is awaited per peer, then the
+     * outbound video counters are watched for two seconds; a peer whose
+     * attach succeeded but whose outbound stays at zero is rebuilt -- that
+     * one video peer only, with the real track attached at creation. Audio
+     * rides the gateway legs and is never touched.
+     */
+    const mesh = this.mesh;
+    if (mesh !== null) {
+      const results = await mesh.setLocalStream(stream as unknown as MediaStream);
+      for (const result of results) {
+        if (result.outcome === 'failed') {
+          this.options.onVideoDiagnostic?.({ kind: 'attach-failed', participantId: result.participantId, error: result.error ?? 'unknown' });
+          mesh.rebuildPeer(result.participantId);
+        } else {
+          this.options.onVideoDiagnostic?.({ kind: 'attached', participantId: result.participantId, outcome: result.outcome });
+        }
+      }
+      void this.watchOutboundVideo(mesh);
+    }
+    return stream;
+  }
+
+  /** Two seconds, four samples: outbound video must move, or the peer is rebuilt once. */
+  private async watchOutboundVideo(mesh: CallVideoMesh): Promise<void> {
+    const rebuilt = new Set<string>();
+    for (let sample = 0; sample < 4; sample += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (this.mesh !== mesh || this.camera === null) return;
+      const stats = await mesh.videoStats();
+      let allMoving = stats.length > 0;
+      for (const row of stats) {
+        this.options.onVideoDiagnostic?.({ kind: 'outbound', participantId: row.participantId, frames: row.outboundFrames, bytes: row.outboundBytes });
+        this.options.onVideoDiagnostic?.({ kind: 'inbound', participantId: row.participantId, frames: row.inboundFrames, bytes: row.inboundBytes });
+        if (row.outboundFrames === 0 && row.outboundBytes === 0) allMoving = false;
+      }
+      if (allMoving) return;
+      if (sample === 3) {
+        for (const row of stats) {
+          if (row.outboundFrames === 0 && row.outboundBytes === 0 && !rebuilt.has(row.participantId)) {
+            rebuilt.add(row.participantId);
+            const done = mesh.rebuildPeer(row.participantId);
+            this.options.onVideoDiagnostic?.({ kind: 'outbound-silent', participantId: row.participantId, rebuilt: done });
+          }
+        }
+      }
     }
   }
 

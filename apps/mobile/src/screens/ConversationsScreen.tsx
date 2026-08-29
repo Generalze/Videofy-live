@@ -50,11 +50,13 @@ export interface ConversationsScreenProps {
   readonly api: Api;
   readonly selfId: string;
   readonly onOpen: (partner: ContactPerson) => void;
+  /** Their picture opens their profile; the row opens the chat. */
+  readonly onOpenPerson: (partner: ContactPerson) => void;
   /** Where to send somebody whose list is empty: their people. */
   readonly onFindContacts: () => void;
 }
 
-export function ConversationsScreen({ api, selfId, onOpen, onFindContacts }: ConversationsScreenProps): JSX.Element {
+export function ConversationsScreen({ api, selfId, onOpen, onOpenPerson, onFindContacts }: ConversationsScreenProps): JSX.Element {
   const [entries, setEntries] = useState<readonly ConversationEntry[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState('');
@@ -147,7 +149,9 @@ export function ConversationsScreen({ api, selfId, onOpen, onFindContacts }: Con
         return (
           <Pressable style={({ pressed }) => pressed && styles.pressed} onPress={() => onOpen(item.partner)} accessibilityRole="button">
             <GlassCard padded={false} style={styles.row}>
-              <AvatarView accountId={item.partner.accountId} name={personName(item.partner)} size={50} />
+              <Pressable onPress={() => onOpenPerson(item.partner)} accessibilityRole="button" accessibilityLabel={`Open ${personName(item.partner)}'s profile`}>
+                <AvatarView accountId={item.partner.accountId} name={personName(item.partner)} size={50} />
+              </Pressable>
               <View style={styles.rowText}>
                 <View style={styles.rowTop}>
                   <Text style={styles.name} numberOfLines={1}>{personName(item.partner)}</Text>

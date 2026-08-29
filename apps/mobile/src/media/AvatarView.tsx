@@ -37,14 +37,20 @@ function hueFor(accountId: string): number {
   return HUES[Math.abs(hash) % HUES.length] ?? 172;
 }
 
+/** What the picture did on this device: ids and outcomes, never bytes. */
+export type AvatarImageState = { readonly state: 'loaded' } | { readonly state: 'failed'; readonly detail: string };
+
 export function AvatarView({
   accountId,
   name,
   size = 36,
   version = 0,
+  onImageState,
 }: {
   readonly accountId: string;
   readonly name: string;
+  /** Load / error from the platform image, for the one screen that shows a diagnosis. */
+  readonly onImageState?: ((state: AvatarImageState) => void) | undefined;
   /**
    * Bumped after this person changes their picture. The URL otherwise never
    * changes, the server allows a minute of caching and the image cache keeps
@@ -89,7 +95,11 @@ export function AvatarView({
             headers: headers ?? {},
           }}
           style={[StyleSheet.absoluteFill, { borderRadius: size / 2 }]}
-          onError={() => setFailed(true)}
+          onLoad={() => onImageState?.({ state: 'loaded' })}
+          onError={(event) => {
+            setFailed(true);
+            onImageState?.({ state: 'failed', detail: String(event.nativeEvent?.error ?? 'image error') });
+          }}
         />
       ) : null}
     </View>

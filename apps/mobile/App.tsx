@@ -54,6 +54,7 @@ import { ContactsScreen } from './src/screens/ContactsScreen';
 import { ConversationsScreen } from './src/screens/ConversationsScreen';
 import { ProfileScreen } from './src/screens/ProfileScreen';
 import { IncomingCallScreen } from './src/screens/IncomingCallScreen';
+import { PersonProfileScreen } from './src/screens/PersonProfileScreen';
 import { createDirectCallApi } from './src/call/directCallApi';
 import { foregroundPresentationFor } from './src/push/callNotificationPresentation';
 import { videofyCall } from './src/native/videofyCall';
@@ -186,6 +187,8 @@ function AppInner(): JSX.Element {
   /** The header's add-person control opens the add card on People. */
   const [addingContact, setAddingContact] = useState(false);
   const [chatWith, setChatWith] = useState<ContactPerson | null>(null);
+  /** Somebody's profile, opened from their picture or name anywhere. */
+  const [viewingPerson, setViewingPerson] = useState<ContactPerson | null>(null);
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   /** An incoming direct call the server confirmed is live. */
   const [incomingCall, setIncomingCall] = useState<{
@@ -303,7 +306,7 @@ function AppInner(): JSX.Element {
    */
   useEffect(() => {
     if (!videofyCall.available || state.status !== 'signed-in') return undefined;
-    const pending = videofyCall.consumePendingAnswer();
+    const pending = videofyCall.consumePendingAnswer(state.accountId);
     if (pending !== null) {
       setIncomingCall(null);
       setActiveCall({ kind: 'direct', callId: pending.callId, peer: { accountId: pending.callerAccountId, name: pending.callerName }, ring: false });
@@ -325,13 +328,14 @@ function AppInner(): JSX.Element {
     };
   }, [state.status]);
 
-  /* The ring credential: the native receiver's key to the gateway, same lifetime as the session. */
+  /* The ring credential: the native receiver's key to the gateway, bound to this account and the session's expiry. */
   useEffect(() => {
     if (!videofyCall.available) return;
     const token = state.status === 'signed-in' ? auth.callSessionToken() : null;
-    if (token === null) videofyCall.clearRingCredential();
-    else videofyCall.setRingCredential(GATEWAY_BASE_URL, token);
-  }, [state.status]);
+    const expiresAt = auth.sessionExpiresAtMs();
+    if (token === null || state.status !== 'signed-in' || expiresAt === null) videofyCall.clearRingCredential();
+    else videofyCall.setRingCredential(GATEWAY_BASE_URL, token, state.accountId, expiresAt);
+  }, [state]);
 
   useEffect(() => {
     const received = Notifications.addNotificationReceivedListener((notification) => {
@@ -390,10 +394,18 @@ function AppInner(): JSX.Element {
     (email: string, password: string, username: string) => auth.signUp(email, password, username),
     [],
   );
+  /*
+   * SIGN-OUT IS ONE TRANSITION, IN ORDER: forget this phone on the account
+   * while the session is still valid (no push can reach a phone nobody is
+   * signed in to), clear everything the native layer holds (credential,
+   * parked Answer, ring), drop the screens, then end the session.
+   */
   const signOut = useCallback(async () => {
-    devices.stopWatchingForRotation();
+    setIncomingCall(null);
     setChatWith(null);
     setActiveCall(null);
+    await devices.unregister();
+    videofyCall.clearRingCredential();
     await auth.signOut();
   }, []);
 
@@ -497,6 +509,29 @@ function AppInner(): JSX.Element {
     );
   }
 
+  if (viewingPerson !== null) {
+    const person = viewingPerson;
+    return (
+      <>
+        <StatusBar style="light" />
+        <PersonProfileScreen
+          api={api}
+          accountId={person.accountId}
+          fallback={person}
+          onBack={() => setViewingPerson(null)}
+          onMessage={(target) => {
+            setViewingPerson(null);
+            setChatWith(target);
+          }}
+          onCall={(target) => {
+            setViewingPerson(null);
+            callContact(target);
+          }}
+        />
+      </>
+    );
+  }
+
   if (chatWith !== null) {
     return (
       <>
@@ -508,6 +543,7 @@ function AppInner(): JSX.Element {
           partner={chatWith}
           onBack={() => setChatWith(null)}
           onCall={callContact}
+          onOpenPerson={setViewingPerson}
         />
       </>
     );
@@ -541,6 +577,7 @@ function AppInner(): JSX.Element {
             api={api}
             selfId={state.accountId}
             onOpen={setChatWith}
+            onOpenPerson={setViewingPerson}
             onFindContacts={() => setTab('people')}
           />
         )}
@@ -549,6 +586,7 @@ function AppInner(): JSX.Element {
             api={api}
             onMessage={setChatWith}
             onCall={callContact}
+            onOpenPerson={setViewingPerson}
             adding={addingContact}
             onAddingChange={setAddingContact}
           />
@@ -563,6 +601,20 @@ function AppInner(): JSX.Element {
         {tab === 'profile' && (
           <ProfileScreen
             api={api}
+            probeAvatar={async (accountId) => {
+              try {
+                const response = await authorizedFetch(`/avatars/${encodeURIComponent(accountId)}`);
+                if (response === null) return null;
+                const blob = await response.blob().catch(() => null);
+                return {
+                  status: response.status,
+                  contentType: response.headers.get('content-type') ?? 'unknown',
+                  bytes: blob?.size ?? Number(response.headers.get('content-length') ?? 0),
+                };
+              } catch {
+                return null;
+              }
+            }}
             deviceOutcome={deviceOutcome}
             onRetryDevice={async () => {
               setDeviceOutcome(await devices.register());

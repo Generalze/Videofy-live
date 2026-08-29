@@ -353,6 +353,13 @@ export class AuthSessionManager {
    * Returns null when signed out, which is a legitimate call state: joining an
    * existing call needs no session, only CREATING one does.
    */
+  /** When the current session stops being valid, in wall-clock ms; null when signed out. */
+  sessionExpiresAtMs(): number | null {
+    const session = this.session;
+    if (session === null) return null;
+    return session.receivedAtMs + session.expiresInSeconds * 1000;
+  }
+
   callSessionToken(): string | null {
     return this.session?.token ?? null;
   }

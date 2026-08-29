@@ -51,8 +51,9 @@ class CallActionReceiver : BroadcastReceiver() {
       IncomingCallService.stop(context, callId, "answered")
       // Tell the gateway the person answered BEFORE the app is up: a cold
       // start must not land on a call already marked no-answer.
-      val gateway = store.gatewayUrl()
-      val token = store.token()
+      val credential = store.credential()
+      val gateway = credential?.gatewayUrl
+      val token = credential?.token
       if (gateway != null && token != null) {
         executor.execute { CallValidator(gateway, token).answering(callId) }
       }
@@ -70,8 +71,9 @@ class CallActionReceiver : BroadcastReceiver() {
       val store = RingStore(context)
       store.mark(callId, "t8_decline_tapped")
       IncomingCallService.stop(context, callId, "declined")
-      val gateway = store.gatewayUrl()
-      val token = store.token()
+      val credential = store.credential()
+      val gateway = credential?.gatewayUrl
+      val token = credential?.token
       if (gateway != null && token != null) {
         executor.execute { CallValidator(gateway, token).decline(callId) }
       }

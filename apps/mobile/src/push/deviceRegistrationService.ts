@@ -86,6 +86,29 @@ export class DeviceRegistrationService {
     return this.submit(acquired.token);
   }
 
+  /**
+   * Forget this phone on the account WHILE THE SESSION IS STILL VALID. Called
+   * before sign-out: after it, the account no longer holds a push token for
+   * this device, so no ring or message can wake a phone nobody is signed in
+   * to. Best effort -- the server also drops dead tokens on its own -- but
+   * the order matters: token first, session second.
+   */
+  async unregister(): Promise<boolean> {
+    this.stopWatchingForRotation();
+    const deviceId = await this.options.identity.get();
+    try {
+      const response = await this.options.authorizedFetch(`/devices/${encodeURIComponent(deviceId)}`, {
+        method: 'DELETE',
+      });
+      const ok = response !== null && (response.status === 204 || response.status === 404);
+      this.options.onEvent?.('device.unregister', { ok: ok ? 1 : 0, status: response?.status ?? 0 });
+      return ok;
+    } catch {
+      this.options.onEvent?.('device.unregister', { ok: 0, status: 0 });
+      return false;
+    }
+  }
+
   private async submit(pushToken: string): Promise<RegistrationOutcome> {
     const deviceId = await this.options.identity.get();
 

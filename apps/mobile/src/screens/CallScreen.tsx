@@ -261,6 +261,17 @@ export function CallScreen({
       onIceServers: (count) => {
         if (live) setIceCount(count);
       },
+      onVideoDiagnostic: (event) => {
+        if (!live) return;
+        stamp(`video_${event.kind.replace(/-/g, '_')}`);
+        if (event.kind === 'outbound' || event.kind === 'inbound') {
+          videoStamps.current[`video_${event.kind}_frames`] = event.frames;
+          videoStamps.current[`video_${event.kind}_bytes`] = event.bytes;
+        }
+        if (event.kind === 'outbound-silent' || event.kind === 'attach-failed' || event.kind === 'acquisition-failed') {
+          setTransportLog((current) => [...current.slice(-4), `${new Date().toLocaleTimeString()} video ${event.kind}`]);
+        }
+      },
       onError: (message) => {
         if (live) setError(message);
       },

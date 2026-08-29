@@ -1401,6 +1401,61 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
      * The route to a private account is an invite they issued, which is consent
      * given in advance rather than requested after the fact.
      */
+    /*
+     * ANOTHER PERSON'S PROFILE, AS THIS VIEWER MAY SEE IT (founder ruling
+     * 29 Aug). The same door as adding them: a stranger who is not
+     * discoverable answers 404 exactly like a nonexistent account, so this
+     * route is not an oracle for who is on the platform. A contact, a
+     * pending request in either direction, or somebody you blocked is
+     * always visible to you. What is shown: the two identity fields, the
+     * platform badge, discoverability, the language they SPEAK (what a call
+     * sounds like) -- never the language they prefer to listen in -- and
+     * the relationship from the viewer's side.
+     */
+    app.get('/profiles/:accountId', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const targetId = String(req.params['accountId'] ?? '');
+      const target = deps.store.get(targetId);
+      const edge = targetId === caller.accountId ? null : contacts.edgeBetween(caller.accountId, targetId);
+      const relationship: 'contact' | 'requested' | 'incoming' | 'blocked' | 'none' =
+        edge === null
+          ? 'none'
+          : edge.state === 'accepted'
+            ? 'contact'
+            : edge.state === 'pending'
+              ? edge.requestedBy === caller.accountId
+                ? 'requested'
+                : 'incoming'
+              : edge.blockedBy === caller.accountId
+                ? 'blocked'
+                : 'none';
+      // Blocked BY them reads as no relationship, and their visibility falls
+      // back to discoverability -- being blocked must not be detectable here.
+      const visible =
+        target !== undefined &&
+        target !== null &&
+        (targetId === caller.accountId ||
+          relationship !== 'none' ||
+          readDiscoveryMode(target.discoveryMode) === 'discoverable');
+      if (!visible) {
+        res.status(404).json({ error: 'Not found.' });
+        return;
+      }
+      res.status(200).json({
+        accountId: targetId,
+        username: target.username ?? null,
+        displayName: target.displayName ?? null,
+        official: deps.officialAccounts?.has(targetId) ?? false,
+        discoverable: readDiscoveryMode(target.discoveryMode) === 'discoverable',
+        spokenLanguage: target.spokenLanguage ?? target.defaultLanguage ?? null,
+        relationship,
+      });
+    });
+
     app.post('/contacts/request', (req, res) => {
       const caller = callerAccountId(req);
       if (caller === null) {

@@ -67,25 +67,32 @@ class IncomingCallService : Service() {
     ringing = callId
 
     ensureChannel(this)
-    // Foreground at once (Android requires it within seconds of start), with
-    // a placeholder that says who is calling; it is replaced after validation.
-    startInForeground(buildNotification(callId, callerId, callerName, mode, validating = true))
+    /*
+     * PREVALIDATION IS SILENT. Android needs a foreground notification within
+     * seconds of the service starting, but nothing may RING until the account
+     * (a bound, unexpired credential) and the server (ring: true) both say so.
+     * So the service stands up on a silent, low-importance channel with no
+     * sound, no vibration and no full-screen intent; the CallStyle ring on
+     * the ringtone channel replaces it only after validation. Before this a
+     * signed-out phone rang for a moment before discovering it had no
+     * credential (founder review, 29 Aug).
+     */
+    startInForeground(buildSilentNotification())
     acquireWakeLock()
 
     val store = RingStore(this)
     executor.execute {
-      val gateway = store.gatewayUrl()
-      val token = store.token()
-      if (gateway == null || token == null) {
-        Log.i(TAG, "no ring credential; cannot validate the call")
+      val credential = store.credential()
+      if (credential == null) {
+        Log.i(TAG, "no bound ring credential; the call is not for this phone")
         handler.post { finish(callId, "no-credential") }
         return@execute
       }
-      val validator = CallValidator(gateway, token)
+      val validator = CallValidator(credential.gatewayUrl, credential.token)
       val verdict = validator.check(callId)
       store.mark(callId, "t5_validated")
       if (verdict == null || !verdict.ring) {
-        if (verdict?.unauthorized == true) store.clearCredential()
+        if (verdict?.unauthorized == true) store.clearAll()
         handler.post { finish(callId, if (verdict == null) "unreachable" else verdict.state) }
         return@execute
       }
@@ -99,7 +106,9 @@ class IncomingCallService : Service() {
       }
       handler.post {
         if (ringing != callId) return@post
+        // Validated: now, and only now, the ring -- CallStyle on the ringtone channel.
         val notification = buildNotification(callId, verdict.callerAccountId.ifBlank { callerId }, callerName, mode, validating = false)
+        notificationManager().cancel(SILENT_NOTIFICATION_ID)
         notificationManager().notify(NOTIFICATION_ID, notification)
         store.mark(callId, "t7_presented")
         startVibration()
@@ -120,6 +129,7 @@ class IncomingCallService : Service() {
     ringing = null
     stopVibration()
     notificationManager().cancel(NOTIFICATION_ID)
+    notificationManager().cancel(SILENT_NOTIFICATION_ID)
     releaseWakeLock()
     stopForeground(STOP_FOREGROUND_REMOVE)
     stopSelf()
@@ -132,6 +142,16 @@ class IncomingCallService : Service() {
       startForeground(NOTIFICATION_ID, notification)
     }
   }
+
+  /** The silent stand-in while the call is checked: no sound, no vibration, no full-screen. */
+  private fun buildSilentNotification(): Notification =
+    NotificationCompat.Builder(this, SILENT_CHANNEL_ID)
+      .setSmallIcon(android.R.drawable.sym_call_incoming)
+      .setContentTitle("Checking a call")
+      .setPriority(NotificationCompat.PRIORITY_LOW)
+      .setSilent(true)
+      .setOngoing(true)
+      .build()
 
   private fun buildNotification(callId: String, callerId: String, callerName: String, mode: String, validating: Boolean): Notification {
     val fullScreen = PendingIntent.getActivity(
@@ -209,13 +229,25 @@ class IncomingCallService : Service() {
     const val EXTRA_EXPIRES_AT = "expiresAt"
     const val EXTRA_REASON = "reason"
     const val CHANNEL_ID = "incoming_calls"
+    const val SILENT_CHANNEL_ID = "call_check"
     const val NOTIFICATION_ID = 7001
+    const val SILENT_NOTIFICATION_ID = 7002
     private const val TAG = "VideofyCall"
 
-    /** The ringtone-class channel: system ringtone, vibration, lock-screen visible. */
+    /** The ringtone-class channel: system ringtone, vibration, lock-screen visible; and the silent check channel. */
     fun ensureChannel(context: Context) {
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
       val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+      if (manager.getNotificationChannel(SILENT_CHANNEL_ID) == null) {
+        manager.createNotificationChannel(
+          NotificationChannel(SILENT_CHANNEL_ID, "Call checks", NotificationManager.IMPORTANCE_LOW).apply {
+            description = "Silent, while an incoming call is verified"
+            setSound(null, null)
+            enableVibration(false)
+            lockscreenVisibility = Notification.VISIBILITY_SECRET
+          },
+        )
+      }
       if (manager.getNotificationChannel(CHANNEL_ID) != null) return
       val channel = NotificationChannel(CHANNEL_ID, "Incoming calls", NotificationManager.IMPORTANCE_HIGH).apply {
         description = "Rings for C7 calls"

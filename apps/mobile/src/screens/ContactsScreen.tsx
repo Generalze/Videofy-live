@@ -27,12 +27,14 @@ export interface ContactsScreenProps {
   readonly api: Api;
   readonly onMessage: (partner: ContactPerson) => void;
   readonly onCall: (partner: ContactPerson) => void;
+  /** Their picture or name opens their profile. */
+  readonly onOpenPerson: (partner: ContactPerson) => void;
   /** Opened by the header's add-person control. */
   readonly adding?: boolean;
   readonly onAddingChange?: (adding: boolean) => void;
 }
 
-export function ContactsScreen({ api, onMessage, onCall, adding = false, onAddingChange }: ContactsScreenProps): JSX.Element {
+export function ContactsScreen({ api, onMessage, onCall, onOpenPerson, adding = false, onAddingChange }: ContactsScreenProps): JSX.Element {
   const [data, setData] = useState<ContactsResponse | null>(null);
   const [username, setUsername] = useState('');
   const [busy, setBusy] = useState(false);
@@ -153,11 +155,13 @@ export function ContactsScreen({ api, onMessage, onCall, adding = false, onAddin
       )}
       {data?.contacts.map((person) => (
         <GlassCard key={person.accountId} padded={false} style={styles.row}>
-          <AvatarView accountId={person.accountId} name={personName(person)} size={54} />
-          <View style={styles.rowText}>
-            <Text style={styles.name} numberOfLines={1}>{personName(person)}</Text>
-            {person.username !== null && <Text style={styles.handle}>@{person.username}</Text>}
-          </View>
+          <Pressable onPress={() => onOpenPerson(person)} accessibilityRole="button" accessibilityLabel={`Open ${personName(person)}'s profile`} style={styles.personTap}>
+            <AvatarView accountId={person.accountId} name={personName(person)} size={54} />
+            <View style={styles.rowText}>
+              <Text style={styles.name} numberOfLines={1}>{personName(person)}</Text>
+              {person.username !== null && <Text style={styles.handle}>@{person.username}</Text>}
+            </View>
+          </Pressable>
           <RoundIconButton label="Message" onPress={() => onMessage(person)}>
             <Icon name="message" size={20} color={C7.text} />
           </RoundIconButton>
@@ -208,6 +212,7 @@ const styles = StyleSheet.create({
   addLabel: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
   notice: { color: C7.amber, fontSize: 12, lineHeight: 17 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12 },
+  personTap: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
   rowText: { flex: 1, gap: 2 },
   name: { color: C7.text, fontSize: 18, fontWeight: '600', fontFamily: 'serif' },
   handle: { color: C7.muted, fontSize: 13 },

@@ -81,6 +81,21 @@ export interface Profile {
   readonly official?: boolean;
 }
 
+/**
+ * Another person, as the server lets THIS viewer see them. Relationship is
+ * from the viewer's side; the language is the one they speak (what a call
+ * sounds like), never the one they prefer to listen in.
+ */
+export interface PersonProfile {
+  readonly accountId: string;
+  readonly username: string | null;
+  readonly displayName: string | null;
+  readonly official: boolean;
+  readonly discoverable: boolean;
+  readonly spokenLanguage: string | null;
+  readonly relationship: 'contact' | 'requested' | 'incoming' | 'blocked' | 'none';
+}
+
 /** One failure shape for the whole layer: what happened, and no credential. */
 export type ApiResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -144,6 +159,13 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
         '/messages/conversations',
         undefined,
         (body) => (body as { conversations: ConversationEntry[] }).conversations,
+      ),
+    profileOf: (accountId: string) =>
+      request(
+        authorizedFetch,
+        `/profiles/${encodeURIComponent(accountId)}`,
+        undefined,
+        (body) => body as PersonProfile,
       ),
     messagesWith: (accountId: string, beforeMs?: number) =>
       request(

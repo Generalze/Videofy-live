@@ -35,13 +35,22 @@ class VideofyCallModule : Module() {
     }
     OnDestroy { if (instance === this@VideofyCallModule) instance = null }
 
-    Function("setRingCredential") { gatewayUrl: String, token: String ->
-      RingStore(context()).setCredential(gatewayUrl, token)
+    // Bound to the account and the session's expiry; see RingStore.
+    Function("setRingCredential") { gatewayUrl: String, token: String, accountId: String, expiresAtMs: Double ->
+      RingStore(context()).setCredential(gatewayUrl, token, accountId, expiresAtMs.toLong())
     }
-    Function("clearRingCredential") { RingStore(context()).clearCredential() }
+    /*
+     * SIGN-OUT, NATIVELY: the credential, any parked Answer, the ring
+     * notification and the foreground service all go at once. A phone
+     * nobody is signed in to has nothing that can ring.
+     */
+    Function("clearRingCredential") {
+      RingStore(context()).clearAll()
+      IncomingCallService.stop(context(), null, "signed-out")
+    }
 
-    Function("consumePendingAction") {
-      RingStore(context()).consumePendingAction()?.let { toBundle(it) }
+    Function("consumePendingAction") { accountId: String ->
+      RingStore(context()).consumePendingAction(accountId)?.let { toBundle(it) }
     }
 
     Function("reportCallEnded") { callId: String ->

@@ -34,6 +34,7 @@ import {
   RecordingPresets,
   setAudioModeAsync,
   useAudioPlayer,
+  useAudioPlayerStatus,
   useAudioRecorder,
 } from 'expo-audio';
 import { File } from 'expo-file-system';
@@ -54,6 +55,8 @@ export interface ChatScreenProps {
   readonly onBack: () => void;
   /** Start a call and ring this contact. The call screen owns the rest. */
   readonly onCall: (partner: ContactPerson) => void;
+  /** Their picture or name opens their profile. */
+  readonly onOpenPerson: (partner: ContactPerson) => void;
 }
 
 export function ChatScreen({
@@ -63,17 +66,30 @@ export function ChatScreen({
   partner,
   onBack,
   onCall,
+  onOpenPerson,
 }: ChatScreenProps): JSX.Element {
   const [messages, setMessages] = useState<readonly TimelineItem[]>([]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /*
+   * VOICE NOTES HAVE THREE STATES, NOT ONE. Hold-to-send meant a slip of the
+   * thumb was a message, and there was no way to listen before sending
+   * (founder review, 29 Aug). Now: RECORDING (Cancel / Stop) -> PREVIEW
+   * (Delete / play, seek, duration / Send) -> sent. Sent notes and the
+   * preview share one player, and the bubble follows the player's REAL
+   * status -- playing, position, duration -- instead of a flag that reset
+   * itself the moment playback began.
+   */
   const [recording, setRecording] = useState(false);
   const [recordSeconds, setRecordSeconds] = useState(0);
-  const [playingId, setPlayingId] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ uri: string; durationMs: number } | null>(null);
+  /** Which note the shared player currently holds: a message id, or 'preview'. */
+  const [loadedNote, setLoadedNote] = useState<string | null>(null);
 
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const player = useAudioPlayer();
+  const playback = useAudioPlayerStatus(player);
   const recordStartedAt = useRef<number>(0);
 
   const load = useCallback(async () => {
@@ -140,51 +156,104 @@ export function ChatScreen({
     return () => clearInterval(timer);
   }, [recording]);
 
-  const stopAndSend = useCallback(async () => {
+  /** Stop: the note goes to PREVIEW, never straight out. */
+  const stopRecording = useCallback(async () => {
     setRecording(false);
     const durationMs = Date.now() - recordStartedAt.current;
     try {
       await recorder.stop();
       const uri = recorder.uri;
       if (uri === null || durationMs < 500) {
-        setError(durationMs < 500 ? 'Hold to record a voice note.' : 'Nothing was recorded.');
+        setError(durationMs < 500 ? 'That was too short to keep.' : 'Nothing was recorded.');
         return;
       }
       if (durationMs > 120_000) {
         setError('Voice notes can be up to two minutes.');
         return;
       }
-      setSending(true);
-      const audioBase64 = await new File(uri).base64();
-      const result = await api.sendVoice(partner.accountId, audioBase64, durationMs);
+      setPreview({ uri, durationMs });
+    } catch {
+      setError('That recording could not be kept.');
+    }
+  }, [recorder]);
+
+  /** Cancel while recording: nothing is kept, nothing is sent. */
+  const cancelRecording = useCallback(async () => {
+    setRecording(false);
+    try {
+      await recorder.stop();
+    } catch {
+      // Nothing to keep either way.
+    }
+  }, [recorder]);
+
+  const discardPreview = useCallback(() => {
+    if (loadedNote === 'preview') {
+      try {
+        player.pause();
+      } catch {
+        // Already stopped.
+      }
+      setLoadedNote(null);
+    }
+    setPreview(null);
+  }, [loadedNote, player]);
+
+  const sendPreview = useCallback(async () => {
+    if (preview === null || sending) return;
+    setSending(true);
+    setError(null);
+    try {
+      const audioBase64 = await new File(preview.uri).base64();
+      const result = await api.sendVoice(partner.accountId, audioBase64, preview.durationMs);
       if (!result.ok) setError(result.error);
-      else await load();
+      else {
+        discardPreview();
+        await load();
+      }
     } catch {
       setError('That voice note could not be sent.');
     } finally {
       setSending(false);
     }
-  }, [api, load, partner.accountId, recorder]);
+  }, [api, discardPreview, load, partner.accountId, preview, sending]);
 
-  const play = useCallback(
-    async (message: WireMessage) => {
-      setPlayingId(message.messageId);
-      const source = await fetchVoiceNoteAsDataUri(authorizedFetch, message.messageId);
-      if (source === null) {
-        setPlayingId(null);
-        setError('That voice note could not be fetched.');
-        return;
-      }
+  /** Load a source into the shared player and play; a second tap pauses/resumes. */
+  const togglePlayback = useCallback(
+    async (noteId: string, source: () => Promise<string | null>) => {
       try {
-        player.replace({ uri: source });
+        if (loadedNote === noteId) {
+          if (playback.playing) player.pause();
+          else player.play();
+          return;
+        }
+        const uri = await source();
+        if (uri === null) {
+          setError('That voice note could not be fetched.');
+          return;
+        }
+        player.replace({ uri });
+        setLoadedNote(noteId);
         player.play();
       } catch {
         setError('Playback failed on this device.');
       }
-      setPlayingId(null);
     },
-    [authorizedFetch, player],
+    [loadedNote, playback.playing, player],
   );
+
+  const seekLoaded = useCallback(
+    (fraction: number) => {
+      if (!playback.isLoaded || playback.duration <= 0) return;
+      void player.seekTo(Math.max(0, Math.min(playback.duration, fraction * playback.duration)));
+    },
+    [playback.duration, playback.isLoaded, player],
+  );
+
+  const clock = (seconds: number): string => {
+    const total = Math.max(0, Math.round(seconds));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+  };
 
   const name = partner.displayName ?? partner.username ?? partner.accountId;
   const bottomInset = useBottomInset();
@@ -235,17 +304,19 @@ export function ChatScreen({
           <Pressable onPress={onBack} accessibilityRole="button" accessibilityLabel="Back" hitSlop={8} style={styles.back}>
             <Icon name="chevron" size={22} color={C7.text} />
           </Pressable>
-          <AvatarView accountId={partner.accountId} name={name} size={40} />
-          <View style={styles.headerIdentity}>
-            <Text style={styles.headerName} numberOfLines={1}>
-              {name}
-            </Text>
-            {partner.username !== null && (
-              <Text style={styles.headerHandle} numberOfLines={1}>
-                @{partner.username}
+          <Pressable onPress={() => onOpenPerson(partner)} accessibilityRole="button" accessibilityLabel={`Open ${name}'s profile`} style={styles.headerPerson}>
+            <AvatarView accountId={partner.accountId} name={name} size={40} />
+            <View style={styles.headerIdentity}>
+              <Text style={styles.headerName} numberOfLines={1}>
+                {name}
               </Text>
-            )}
-          </View>
+              {partner.username !== null && (
+                <Text style={styles.headerHandle} numberOfLines={1}>
+                  @{partner.username}
+                </Text>
+              )}
+            </View>
+          </Pressable>
           <Chip label={mode === 'translated' ? 'Translating' : 'Translate'} active={mode === 'translated'} onPress={() => void toggleMode()} />
           <Pressable onPress={() => onCall(partner)} accessibilityRole="button" accessibilityLabel="Call" style={({ pressed }) => [styles.headerCall, pressed && styles.pressed]}>
             <Icon name="phone" size={20} color={C7.teal} />
@@ -302,21 +373,20 @@ export function ChatScreen({
                 <View style={[styles.bubbleRow, mine ? styles.bubbleRowMine : styles.bubbleRowTheirs]}>
                   <View style={[styles.bubble, mine ? styles.mine : styles.theirs]}>
                     {item.kind === 'voice' ? (
-                      <Pressable onPress={() => void play(item)} accessibilityRole="button" style={styles.voiceRow}>
-                        <View style={[styles.voicePlay, mine && styles.voicePlayMine]}>
-                          {playingId === item.messageId ? (
-                            <ActivityIndicator color={mine ? C7.ground : C7.teal} size="small" />
-                          ) : (
-                            <Text style={[styles.voiceGlyph, mine && styles.mineText]}>▶</Text>
-                          )}
-                        </View>
-                        <View style={styles.voiceBars}>
-                          {[6, 12, 9, 16, 8, 14, 7, 11].map((h, i) => (
-                            <View key={i} style={[styles.voiceBar, { height: h }, mine && styles.voiceBarMine]} />
-                          ))}
-                        </View>
-                        <Text style={[styles.voiceLabel, mine && styles.mineText]}>{formatDuration(item.mediaDurationMs)}</Text>
-                      </Pressable>
+                      <VoiceNoteBubble
+                        mine={mine}
+                        loaded={loadedNote === item.messageId}
+                        playing={loadedNote === item.messageId && playback.playing}
+                        positionSeconds={loadedNote === item.messageId ? playback.currentTime : 0}
+                        durationSeconds={
+                          loadedNote === item.messageId && playback.duration > 0
+                            ? playback.duration
+                            : (item.mediaDurationMs ?? 0) / 1000
+                        }
+                        onToggle={() => void togglePlayback(item.messageId, () => fetchVoiceNoteAsDataUri(authorizedFetch, item.messageId))}
+                        onSeek={seekLoaded}
+                        clock={clock}
+                      />
                     ) : (
                       <>
                         <Text style={[styles.body, mine && styles.mineText]}>{showTranslation ? item.translatedBody : item.body}</Text>
@@ -363,37 +433,70 @@ export function ChatScreen({
         )}
 
         <View style={styles.composerWrap}>
-          <View style={styles.composer}>
-            <Pressable
-              onPressIn={() => void startRecording()}
-              onPressOut={() => {
-                if (recording) void stopAndSend();
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Hold to record a voice note"
-              style={[styles.roundButton, recording && styles.roundButtonRecording]}
-            >
-              {recording ? <Text style={styles.recordingLabel}>{recordSeconds}s</Text> : <Icon name="mic" size={22} color={C7.text} />}
-            </Pressable>
-            <TextInput
-              style={styles.input}
-              value={draft}
-              onChangeText={setDraft}
-              placeholder={recording ? 'Recording…' : 'Message'}
-              placeholderTextColor={C7.faint}
-              editable={!recording}
-              multiline
-            />
-            <Pressable
-              onPress={() => void sendText()}
-              disabled={!canSend}
-              accessibilityRole="button"
-              accessibilityLabel="Send"
-              style={[styles.roundButton, styles.sendButton, !canSend && styles.sendDisabled]}
-            >
-              {sending ? <ActivityIndicator color={C7.ground} size="small" /> : <Icon name="chevron" size={22} color={C7.ground} strokeWidth={2.2} />}
-            </Pressable>
-          </View>
+          {recording ? (
+            <View style={styles.composer}>
+              <Pressable onPress={() => void cancelRecording()} accessibilityRole="button" style={styles.quietAction}>
+                <Text style={styles.quietActionLabel}>Cancel</Text>
+              </Pressable>
+              <View style={styles.recordingMeter}>
+                <View style={styles.recordingDot} />
+                <Text style={styles.recordingText}>Recording · {clock(recordSeconds)}</Text>
+              </View>
+              <Pressable onPress={() => void stopRecording()} accessibilityRole="button" accessibilityLabel="Stop recording" style={[styles.roundButton, styles.stopButton]}>
+                <View style={styles.stopSquare} />
+              </Pressable>
+            </View>
+          ) : preview !== null ? (
+            <View style={styles.composer}>
+              <Pressable onPress={discardPreview} accessibilityRole="button" accessibilityLabel="Delete recording" style={styles.quietAction}>
+                <Text style={[styles.quietActionLabel, { color: C7.red }]}>Delete</Text>
+              </Pressable>
+              <View style={styles.previewBox}>
+                <VoiceNoteBubble
+                  mine={false}
+                  compact
+                  loaded={loadedNote === 'preview'}
+                  playing={loadedNote === 'preview' && playback.playing}
+                  positionSeconds={loadedNote === 'preview' ? playback.currentTime : 0}
+                  durationSeconds={loadedNote === 'preview' && playback.duration > 0 ? playback.duration : preview.durationMs / 1000}
+                  onToggle={() => void togglePlayback('preview', async () => preview.uri)}
+                  onSeek={seekLoaded}
+                  clock={clock}
+                />
+              </View>
+              <Pressable onPress={() => void sendPreview()} disabled={sending} accessibilityRole="button" accessibilityLabel="Send voice note" style={[styles.roundButton, styles.sendButton, sending && styles.sendDisabled]}>
+                {sending ? <ActivityIndicator color={C7.ground} size="small" /> : <Icon name="chevron" size={22} color={C7.ground} strokeWidth={2.2} />}
+              </Pressable>
+            </View>
+          ) : (
+            <View style={styles.composer}>
+              <Pressable
+                onPress={() => void startRecording()}
+                accessibilityRole="button"
+                accessibilityLabel="Record a voice note"
+                style={styles.roundButton}
+              >
+                <Icon name="mic" size={22} color={C7.text} />
+              </Pressable>
+              <TextInput
+                style={styles.input}
+                value={draft}
+                onChangeText={setDraft}
+                placeholder="Message"
+                placeholderTextColor={C7.faint}
+                multiline
+              />
+              <Pressable
+                onPress={() => void sendText()}
+                disabled={!canSend}
+                accessibilityRole="button"
+                accessibilityLabel="Send"
+                style={[styles.roundButton, styles.sendButton, !canSend && styles.sendDisabled]}
+              >
+                {sending ? <ActivityIndicator color={C7.ground} size="small" /> : <Icon name="chevron" size={22} color={C7.ground} strokeWidth={2.2} />}
+              </Pressable>
+            </View>
+          )}
           <Text style={[styles.footer, { paddingBottom: bottomInset + 6 }]}>
             {mode === 'translated'
               ? 'Translated · messages arrive in each reader’s language'
@@ -401,6 +504,66 @@ export function ChatScreen({
           </Text>
         </View>
       </KeyboardAvoidingView>
+    </View>
+  );
+}
+
+/** A voice note with real playback state: play/pause, a seekable bar, position / duration. */
+function VoiceNoteBubble({
+  mine,
+  compact = false,
+  loaded,
+  playing,
+  positionSeconds,
+  durationSeconds,
+  onToggle,
+  onSeek,
+  clock,
+}: {
+  readonly mine: boolean;
+  readonly compact?: boolean;
+  readonly loaded: boolean;
+  readonly playing: boolean;
+  readonly positionSeconds: number;
+  readonly durationSeconds: number;
+  readonly onToggle: () => void;
+  readonly onSeek: (fraction: number) => void;
+  readonly clock: (seconds: number) => string;
+}): JSX.Element {
+  const fraction = durationSeconds > 0 ? Math.min(1, positionSeconds / durationSeconds) : 0;
+  return (
+    <View style={[styles.voiceRow, compact && { gap: 8 }]}>
+      <Pressable onPress={onToggle} accessibilityRole="button" accessibilityLabel={playing ? 'Pause' : 'Play'} style={[styles.voicePlay, mine && styles.voicePlayMine]}>
+        {playing ? (
+          <View style={styles.pauseBars}>
+            <View style={[styles.pauseBar, mine && styles.pauseBarMine]} />
+            <View style={[styles.pauseBar, mine && styles.pauseBarMine]} />
+          </View>
+        ) : (
+          <Text style={[styles.voiceGlyph, mine && styles.mineText]}>▶</Text>
+        )}
+      </Pressable>
+      <View style={{ flex: 1, gap: 4, minWidth: compact ? 120 : 150 }}>
+        <Pressable
+          accessibilityRole="adjustable"
+          accessibilityLabel="Seek"
+          onPress={(event) => {
+            const { locationX } = event.nativeEvent;
+            const width = (event.currentTarget as unknown as { _width?: number })._width;
+            // Width is measured on layout below; before that a tap seeks to the start.
+            onSeek(width && width > 0 ? locationX / width : 0);
+          }}
+          onLayout={(event) => {
+            (event.currentTarget as unknown as { _width?: number })._width = event.nativeEvent.layout.width;
+          }}
+          style={styles.progressTrack}
+        >
+          <View style={[styles.progressFill, mine && styles.progressFillMine, { width: `${Math.round(fraction * 100)}%` }]} />
+        </Pressable>
+        <Text style={[styles.voiceLabel, mine && styles.mineText]}>
+          {loaded ? `${clock(positionSeconds)} / ${clock(durationSeconds)}` : clock(durationSeconds)}
+        </Text>
+      </View>
     </View>
   );
 }
@@ -418,6 +581,7 @@ const styles = StyleSheet.create({
     borderBottomColor: C7.panelEdge,
   },
   back: { transform: [{ rotate: '180deg' }], padding: 4 },
+  headerPerson: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
   headerIdentity: { flex: 1, gap: 1 },
   headerName: { color: C7.text, fontSize: 18, fontWeight: '600', fontFamily: 'serif' },
   headerHandle: { color: C7.muted, fontSize: 12 },
@@ -464,10 +628,21 @@ const styles = StyleSheet.create({
   voicePlay: { width: 34, height: 34, borderRadius: 17, backgroundColor: C7.tealSoft, alignItems: 'center', justifyContent: 'center' },
   voicePlayMine: { backgroundColor: 'rgba(7,11,18,0.15)' },
   voiceGlyph: { color: C7.teal, fontSize: 14 },
-  voiceBars: { flexDirection: 'row', alignItems: 'center', gap: 3 },
-  voiceBar: { width: 3, borderRadius: 2, backgroundColor: 'rgba(62,201,192,0.7)' },
-  voiceBarMine: { backgroundColor: 'rgba(7,11,18,0.5)' },
-  voiceLabel: { color: C7.text, fontSize: 13 },
+  pauseBars: { flexDirection: 'row', gap: 3 },
+  pauseBar: { width: 3, height: 14, borderRadius: 1.5, backgroundColor: C7.teal },
+  pauseBarMine: { backgroundColor: C7.ground },
+  progressTrack: { height: 14, justifyContent: 'center' },
+  progressFill: { height: 4, borderRadius: 2, backgroundColor: C7.teal, minWidth: 4 },
+  progressFillMine: { backgroundColor: 'rgba(7,11,18,0.6)' },
+  voiceLabel: { color: C7.text, fontSize: 12 },
+  recordingMeter: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, minHeight: 46 },
+  recordingDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: C7.red },
+  recordingText: { color: C7.text, fontSize: 15, fontWeight: '600' },
+  stopButton: { backgroundColor: 'rgba(224,69,58,0.18)', borderColor: C7.red },
+  stopSquare: { width: 16, height: 16, borderRadius: 3, backgroundColor: C7.red },
+  previewBox: { flex: 1, backgroundColor: 'rgba(14,22,36,0.9)', borderWidth: 1, borderColor: C7.panelEdge, borderRadius: 18, paddingHorizontal: 12, paddingVertical: 8 },
+  quietAction: { paddingHorizontal: 8, paddingVertical: 12 },
+  quietActionLabel: { color: C7.muted, fontSize: 14, fontWeight: '600' },
 
   callRow: {
     alignSelf: 'center',

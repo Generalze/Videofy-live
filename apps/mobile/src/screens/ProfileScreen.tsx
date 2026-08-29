@@ -43,6 +43,8 @@ function languageName(code: string | null | undefined): string {
 
 export interface ProfileScreenProps {
   readonly api: Api;
+  /** Fetches the picture the way the app would, and reports status / type / size. */
+  readonly probeAvatar: (accountId: string) => Promise<{ status: number; contentType: string; bytes: number } | null>;
   readonly deviceOutcome: RegistrationOutcome | null;
   readonly onRetryDevice: () => Promise<void>;
   readonly onSignOut: () => Promise<void>;
@@ -66,7 +68,7 @@ function Row({ icon, title, subtitle, open, onPress, children }: { readonly icon
   );
 }
 
-export function ProfileScreen({ api, deviceOutcome, onRetryDevice, onSignOut }: ProfileScreenProps): JSX.Element {
+export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, onSignOut }: ProfileScreenProps): JSX.Element {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [verification, setVerification] = useState<VerificationStatus | null>(null);
   const [draftName, setDraftName] = useState('');
@@ -74,6 +76,30 @@ export function ProfileScreen({ api, deviceOutcome, onRetryDevice, onSignOut }: 
   const [busy, setBusy] = useState(false);
   const [pictureNotice, setPictureNotice] = useState<string | null>(null);
   const [avatarEpoch, setAvatarEpoch] = useState(0);
+  /*
+   * THE PICTURE, DIAGNOSED. Staging serves the picture correctly to an
+   * authenticated request (verified 29 Aug: 200 image/jpeg, right byte
+   * counts), so if it does not show, the fault is between the phone's fetch
+   * and the platform image. When the image reports an error, the picture is
+   * fetched the way the app would (status, type, size -- never the bytes)
+   * and the disagreement is written under the picture, so the failing layer
+   * has a name instead of a guess.
+   */
+  const [pictureDiagnosis, setPictureDiagnosis] = useState<string | null>(null);
+  const diagnosePicture = useCallback(
+    (accountId: string, detail: string) => {
+      void probeAvatar(accountId).then((probe) => {
+        if (probe === null) {
+          setPictureDiagnosis(`Image failed (${detail}); the fetch could not run.`);
+          return;
+        }
+        setPictureDiagnosis(
+          `Image failed (${detail}) but the server answered ${probe.status} ${probe.contentType} ${Math.round(probe.bytes / 1024)} KB.`,
+        );
+      });
+    },
+    [probeAvatar],
+  );
   const [open, setOpen] = useState<'languages' | 'name' | 'verification' | 'device' | null>(null);
 
   const changePicture = useCallback(async () => {
@@ -136,7 +162,17 @@ export function ProfileScreen({ api, deviceOutcome, onRetryDevice, onSignOut }: 
         ) : (
           <View style={styles.identityRow}>
             <Pressable onPress={() => void changePicture()} accessibilityRole="button" accessibilityLabel="Change picture" style={styles.avatarRing}>
-              <AvatarView key={avatarEpoch} version={avatarEpoch} accountId={profile.accountId} name={profile.displayName ?? profile.username ?? '?'} size={104} />
+              <AvatarView
+                key={avatarEpoch}
+                version={avatarEpoch}
+                accountId={profile.accountId}
+                name={profile.displayName ?? profile.username ?? '?'}
+                size={104}
+                onImageState={(state) => {
+                  if (state.state === 'loaded') setPictureDiagnosis(null);
+                  else diagnosePicture(profile.accountId, state.detail);
+                }}
+              />
               <View style={styles.avatarEdit}>
                 <Icon name="plus" size={14} color={C7.ground} strokeWidth={2.4} />
               </View>
@@ -149,6 +185,7 @@ export function ProfileScreen({ api, deviceOutcome, onRetryDevice, onSignOut }: 
               </View>
               <Text style={styles.email}>{profile.email}</Text>
               {pictureNotice !== null && <Text style={styles.pictureNotice}>{pictureNotice}</Text>}
+              {pictureDiagnosis !== null && <Text style={styles.pictureNotice}>{pictureDiagnosis}</Text>}
             </View>
           </View>
         )}

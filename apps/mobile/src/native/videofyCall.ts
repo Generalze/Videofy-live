@@ -29,9 +29,9 @@ export interface NativeCallTimeline {
 }
 
 interface NativeModuleShape {
-  setRingCredential(gatewayUrl: string, token: string): void;
+  setRingCredential(gatewayUrl: string, token: string, accountId: string, expiresAtMs: number): void;
   clearRingCredential(): void;
-  consumePendingAction(): (Record<string, unknown> & { action?: string }) | null;
+  consumePendingAction(accountId: string): (Record<string, unknown> & { action?: string }) | null;
   reportCallEnded(callId: string): void;
   reportMediaConnected(callId: string): void;
   timeline(callId: string): Record<string, unknown>;
@@ -56,15 +56,17 @@ export const videofyCall = {
   /** True when this build carries the native layer. */
   available: native !== null,
 
-  setRingCredential(gatewayUrl: string, token: string): void {
-    native?.setRingCredential(gatewayUrl, token);
+  /** Bound to the account and the session's expiry: the receiver rings for nobody else, and for nobody past it. */
+  setRingCredential(gatewayUrl: string, token: string, accountId: string, expiresAtMs: number): void {
+    native?.setRingCredential(gatewayUrl, token, accountId, expiresAtMs);
   },
+  /** Credential, parked actions, ring notification and service -- all of it. */
   clearRingCredential(): void {
     native?.clearRingCredential();
   },
-  /** An Answer tapped while the app was cold; read once. */
-  consumePendingAnswer(): NativeCallDescriptor | null {
-    const pending = native?.consumePendingAction() ?? null;
+  /** An Answer tapped while the app was cold, for THIS account and fresh; read once. */
+  consumePendingAnswer(accountId: string): NativeCallDescriptor | null {
+    const pending = native?.consumePendingAction(accountId) ?? null;
     if (pending === null || pending.action !== 'answer') return null;
     return descriptor(pending);
   },

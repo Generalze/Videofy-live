@@ -58,6 +58,23 @@ export interface CallVideoMeshOptions {
   createMediaStream?: (tracks: MediaStreamTrack[]) => MediaStream;
 }
 
+/** What happened when the local video track was handed to one peer. */
+export interface CallVideoAttachResult {
+  participantId: string;
+  outcome: 'replaced' | 'added' | 'cleared' | 'failed';
+  error?: string;
+}
+
+/** Per-peer video RTP counters, from getStats. Zero outbound after a camera on is the fault. */
+export interface CallVideoPeerStats {
+  participantId: string;
+  connectionState: string;
+  outboundFrames: number;
+  outboundBytes: number;
+  inboundFrames: number;
+  inboundBytes: number;
+}
+
 export interface CallVideoMeshDiagnostics {
   peerCount: number;
   /** Signalling from anyone we do not currently share the call with: dropped, fail closed. */
@@ -107,17 +124,73 @@ export class CallVideoMesh {
    * negotiates; afterwards `replaceTrack` swaps the payload with no
    * renegotiation. A simple on/off toggle is `setCameraEnabled`, not this.
    */
-  setLocalStream(stream: MediaStream | null): void {
-    if (this.disposed) return;
+  /**
+   * Hand the camera to every peer and SAY WHAT HAPPENED. `replaceTrack` used
+   * to be fire-and-forget with its rejection swallowed, so a phone could
+   * open the camera, show "Camera on", and transmit nothing with no error
+   * anywhere (founder review, 29 Aug). Each peer's outcome is returned; the
+   * caller watches the outbound counters and rebuilds a silent peer.
+   */
+  async setLocalStream(stream: MediaStream | null): Promise<CallVideoAttachResult[]> {
+    if (this.disposed) return [];
     this.localStream = stream;
     const track = stream?.getVideoTracks()[0] ?? null;
     if (track) {
       track.enabled = this.cameraEnabled;
     }
     this.localTrack = track;
+    return Promise.all([...this.peers.values()].map((entry) => this.attachLocalTrack(entry)));
+  }
+
+  /**
+   * Video RTP counters per peer, so "camera on" can be PROVEN rather than
+   * assumed: frames/bytes sent on this side, received on the other.
+   */
+  async videoStats(): Promise<CallVideoPeerStats[]> {
+    const out: CallVideoPeerStats[] = [];
     for (const entry of this.peers.values()) {
-      this.attachLocalTrack(entry);
+      if (entry.closed) continue;
+      const row: CallVideoPeerStats = {
+        participantId: entry.participantId,
+        connectionState: String(entry.pc.connectionState ?? 'unknown'),
+        outboundFrames: 0,
+        outboundBytes: 0,
+        inboundFrames: 0,
+        inboundBytes: 0,
+      };
+      try {
+        const report = await entry.pc.getStats();
+        report.forEach((stat: { type?: string; kind?: string; mediaType?: string; framesSent?: number; framesEncoded?: number; bytesSent?: number; framesReceived?: number; framesDecoded?: number; bytesReceived?: number }) => {
+          const kind = stat.kind ?? stat.mediaType;
+          if (kind !== 'video') return;
+          if (stat.type === 'outbound-rtp') {
+            row.outboundFrames += stat.framesSent ?? stat.framesEncoded ?? 0;
+            row.outboundBytes += stat.bytesSent ?? 0;
+          } else if (stat.type === 'inbound-rtp') {
+            row.inboundFrames += stat.framesReceived ?? stat.framesDecoded ?? 0;
+            row.inboundBytes += stat.bytesReceived ?? 0;
+          }
+        });
+      } catch {
+        // A peer that cannot report stats is reported with zeros; the caller decides.
+      }
+      out.push(row);
     }
+    return out;
+  }
+
+  /**
+   * Tear down ONE peer and build it again with the real camera track attached
+   * at creation (the addTrack path, which negotiates). Audio is untouched --
+   * it rides the gateway legs -- so only this peer's video renegotiates.
+   */
+  rebuildPeer(participantId: string): boolean {
+    if (this.disposed) return false;
+    const entry = this.peers.get(participantId);
+    if (!entry) return false;
+    this.closePeer(entry, { notify: true });
+    this.createPeer(participantId);
+    return true;
   }
 
   /**
@@ -304,6 +377,11 @@ export class CallVideoMesh {
       }
     }
     this.peers.set(participantId, entry);
+    // A rebuilt peer, or one created while the camera is already on, takes
+    // the real track now -- the negotiated-from-the-start path.
+    if (this.localTrack && this.localStream) {
+      void this.attachLocalTrack(entry);
+    }
 
     pc.onicecandidate = (event) => {
       if (!this.live(entry)) return;
@@ -370,18 +448,30 @@ export class CallVideoMesh {
     this.attachLocalTrack(entry);
   }
 
-  private attachLocalTrack(entry: MeshPeer): void {
-    if (entry.closed) return;
+  private async attachLocalTrack(entry: MeshPeer): Promise<CallVideoAttachResult> {
+    const participantId = entry.participantId;
+    if (entry.closed) return { participantId, outcome: 'failed', error: 'peer closed' };
     if (entry.sender) {
       // replaceTrack never renegotiates: the m-line stays, only the payload
-      // changes (or stops, when the track is null).
-      void entry.sender.replaceTrack(this.localTrack).catch(() => undefined);
-      return;
+      // changes (or stops, when the track is null). AWAITED: a rejection here
+      // is the difference between video and a camera indicator lying.
+      try {
+        await entry.sender.replaceTrack(this.localTrack);
+        return { participantId, outcome: this.localTrack ? 'replaced' : 'cleared' };
+      } catch (error) {
+        return { participantId, outcome: 'failed', error: error instanceof Error ? error.message : 'replaceTrack rejected' };
+      }
     }
     if (this.localTrack && this.localStream) {
       // First attach negotiates: addTrack fires negotiationneeded.
-      entry.sender = entry.pc.addTrack(this.localTrack, this.localStream);
+      try {
+        entry.sender = entry.pc.addTrack(this.localTrack, this.localStream);
+        return { participantId, outcome: 'added' };
+      } catch (error) {
+        return { participantId, outcome: 'failed', error: error instanceof Error ? error.message : 'addTrack rejected' };
+      }
     }
+    return { participantId, outcome: 'cleared' };
   }
 
   private async negotiate(entry: MeshPeer): Promise<void> {
