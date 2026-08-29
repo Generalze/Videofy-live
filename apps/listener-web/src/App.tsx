@@ -17,6 +17,7 @@ import {
 } from '@videofy-live/shared-types';
 import styles from './App.module.css';
 import { ChannelDirectory } from './ChannelDirectory';
+import { SponsoredSlot } from './SponsoredSlot';
 import {
   buildJoinPayload,
   channelBasePath,
@@ -1732,6 +1733,9 @@ export default function App(): React.ReactElement {
             </div>
           )}
         </section>
+
+        {/* The advert placement: below the player, above the controls, never over either. */}
+        <SponsoredSlot />
 
         <section className={styles.controlsSection} aria-label="Language and audio controls">
           <div className={styles.controlGroup}>
