@@ -297,8 +297,9 @@ export class CallConnection {
 
   async join(): Promise<CallJoinAck> {
     const local = await this.openLocalMedia();
-    const ice = await this.resolveIceServers();
-    this.options.onIceServers?.(ice.length);
+    // Fetched WHILE the socket connects, not before: on a real phone each of
+    // these is a TLS round trip, and the answer-to-audio budget is two seconds.
+    const icePromise = this.resolveIceServers();
 
     /*
      * `createCallSocketOptions` CARRIES `role: 'call-participant'` IN THE
@@ -322,6 +323,8 @@ export class CallConnection {
       reconnection: true,
     });
     this.socket = socket;
+    const ice = await icePromise;
+    this.options.onIceServers?.(ice.length);
 
     const form = {
       ...createInitialCallJoinForm(),

@@ -2611,7 +2611,20 @@ export class CallRuntime {
    */
   private startDirectProbe(wire: DirectCallWire): void {
     this.stopDirectProbe(wire.callId);
+    /*
+     * CONNECTED THE MOMENT BOTH DIRECTIONS HAVE CARRIED A FRAME. The first
+     * version needed two consecutive one-second samples with rising counts
+     * in both directions, so the word "Connected" -- and the timer -- came
+     * one to two seconds after the audio actually flowed (measured 29 Aug:
+     * answer-to-audio 4.8 s on the wire, 2 s of it this probe). Now: any
+     * frames both ways = connected; a stall is a full interval with no new
+     * frames in EITHER direction, checked every 250 ms but judged over a
+     * whole second so a jittery link is not mistaken for a drop.
+     */
     let lastCounts: [number, number] = [0, 0];
+    let lastProgressAtMs = this.now();
+    let everTwoWay = false;
+    const STALL_MS = 1000;
     const timer = setInterval(() => {
       const snapshot = this.store.snapshot(wire.callId);
       if (!snapshot) return;
@@ -2622,13 +2635,20 @@ export class CallRuntime {
         this.receivePeers.routedFrames?.(wire.callId, caller.participantId) ?? 0,
         this.receivePeers.routedFrames?.(wire.callId, peer.participantId) ?? 0,
       ];
-      // Two-way means BOTH listeners keep receiving new frames.
-      const twoWay = counts[0] > lastCounts[0] && counts[1] > lastCounts[1];
-      const firstSample = lastCounts[0] === 0 && lastCounts[1] === 0;
+      const progressed = counts[0] > lastCounts[0] && counts[1] > lastCounts[1];
+      const now = this.now();
+      if (progressed) lastProgressAtMs = now;
       lastCounts = counts;
-      if (firstSample && !twoWay) return;
-      this.directCalls.noteTwoWayAudio(wire.callId, twoWay);
-    }, 1000);
+      if (!everTwoWay) {
+        if (counts[0] > 0 && counts[1] > 0) {
+          everTwoWay = true;
+          this.directCalls.noteTwoWayAudio(wire.callId, true);
+        }
+        return;
+      }
+      if (now - lastProgressAtMs >= STALL_MS) this.directCalls.noteTwoWayAudio(wire.callId, false);
+      else if (progressed) this.directCalls.noteTwoWayAudio(wire.callId, true);
+    }, 250);
     timer.unref?.();
     this.directProbes.set(wire.callId, timer);
   }
