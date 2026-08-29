@@ -18,11 +18,44 @@
 import type { AuthorizedFetch } from '../push/deviceRegistrationService';
 
 /** A person as the contact and messaging routes describe them (routes.ts). */
+/** Presence as the server tells it: only ever given for accepted contacts. */
+export type PresenceState = 'active' | 'busy' | 'away';
+export type Availability = 'auto' | 'busy' | 'away';
+
 export interface ContactPerson {
   readonly accountId: string;
   readonly username: string | null;
   readonly displayName: string | null;
+  /** A verified C7 account. */
+  readonly official?: boolean;
+  /** The language they speak (what a call sounds like); never the one they listen in. */
+  readonly spokenLanguage?: string | null;
+  /** Only present on accepted contacts; absent means "not yours to know". */
+  readonly presence?: PresenceState;
 }
+
+/** GET /contacts/suggestions: people the viewer might know, never anyone already related. */
+export interface SuggestedPerson extends ContactPerson {
+  readonly mutualCount: number;
+  readonly reason: 'mutual-contacts' | 'new-on-c7';
+}
+
+/** PUT /channels/:id/follow, GET /channels/follows. */
+export interface ChannelFollow {
+  readonly channelId: string;
+  /** Push me when this channel goes live ("Interested"). */
+  readonly remind: boolean;
+}
+
+/** GET /me/counts: the numbers on the profile. */
+export interface MeCounts {
+  readonly connections: number;
+  readonly calls: number;
+  readonly following: number;
+  readonly saved: number;
+}
+
+export type ReportReason = 'spam' | 'harassment' | 'hate' | 'sexual' | 'violence' | 'abuse' | 'impersonation' | 'other';
 
 export interface ContactsResponse {
   readonly contacts: readonly ContactPerson[];
@@ -92,6 +125,14 @@ export interface Profile {
   readonly spokenLanguage?: 'en' | 'es' | 'fr' | null;
   readonly listeningLanguage?: 'en' | 'es' | 'fr' | null;
   readonly official?: boolean;
+  /** Whether people can find this account by username (POST /accounts/discovery). */
+  readonly discoverable: boolean;
+  /** Up to 160 characters, shown on the person's profile. */
+  readonly bio: string;
+  /** 'auto' follows the heartbeat; 'busy' / 'away' override it for everyone. */
+  readonly availability: Availability;
+  /** Off = messages and live reminders arrive silently (calls still ring). */
+  readonly notificationsEnabled: boolean;
 }
 
 /**
@@ -107,6 +148,9 @@ export interface PersonProfile {
   readonly discoverable: boolean;
   readonly spokenLanguage: string | null;
   readonly relationship: 'contact' | 'requested' | 'incoming' | 'blocked' | 'none';
+  readonly bio?: string;
+  /** Only when relationship is 'contact'. */
+  readonly presence?: PresenceState;
 }
 
 /** One failure shape for the whole layer: what happened, and no credential. */
@@ -165,6 +209,30 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
     removeContact: (accountId: string) =>
       request(authorizedFetch, '/contacts/remove', json({ accountId }), () => undefined),
 
+    // ---- social (social-routes.ts) -------------------------------------
+    /** People the viewer might know: mutual contacts first, then new on C7. Never anyone already related. */
+    suggestions: () =>
+      request(authorizedFetch, '/contacts/suggestions', undefined, (body) => (body as { suggestions: SuggestedPerson[] }).suggestions),
+    /** I am here (or busy). Sent while the app is in the foreground; 120 s without one reads as away. */
+    heartbeat: (state: 'active' | 'busy') =>
+      request(authorizedFetch, '/presence/heartbeat', json({ state }), () => undefined),
+    /** Presence for accepted contacts only; ids that are not yours are simply absent. */
+    presence: (ids: readonly string[]) =>
+      request(authorizedFetch, `/presence?ids=${encodeURIComponent(ids.join(','))}`, undefined, (body) => (body as { presence: Record<string, PresenceState> }).presence),
+    /** Bio, availability, notifications: PATCH what changed. */
+    updateProfile: (input: { bio?: string; availability?: Availability; notificationsEnabled?: boolean }) =>
+      request(authorizedFetch, '/profile', { ...json(input), method: 'PATCH' }, (body) => body as { bio: string; availability: Availability; notificationsEnabled: boolean }),
+    /** Follow a channel; `remind` = push me when it goes live. Omitting remind keeps the earlier choice. */
+    setFollow: (channelId: string, following: boolean, remind?: boolean) =>
+      request(authorizedFetch, `/channels/${encodeURIComponent(channelId)}/follow`, { ...json({ following, ...(remind === undefined ? {} : { remind }) }), method: 'PUT' }, (body) => body as { following: boolean; remind: boolean }),
+    follows: () =>
+      request(authorizedFetch, '/channels/follows', undefined, (body) => (body as { follows: ChannelFollow[] }).follows),
+    /** Public: how many people follow each channel. */
+    channelInterest: (ids: readonly string[]) =>
+      request(authorizedFetch, `/channels/interest?ids=${encodeURIComponent(ids.join(','))}`, undefined, (body) => (body as { counts: Record<string, number> }).counts),
+    counts: () =>
+      request(authorizedFetch, '/me/counts', undefined, (body) => body as MeCounts),
+
     // ---- messaging (message-routes.ts) ---------------------------------
     conversations: () =>
       request(
@@ -212,6 +280,9 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
       request(authorizedFetch, `/messages/${encodeURIComponent(messageId)}/hide`, { method: 'POST' }, () => undefined),
     unhideMessage: (messageId: string) =>
       request(authorizedFetch, `/messages/${encodeURIComponent(messageId)}/hide`, { method: 'DELETE' }, () => undefined),
+    /** Report a person or one of their messages. Metadata only: ids, a reason, the reporter's words; never the content. */
+    report: (input: { accountId: string; messageId?: string; reason: ReportReason; note?: string }) =>
+      request(authorizedFetch, '/reports', json(input), (reply) => (reply as { reportId: string }).reportId),
     reactToMessage: (messageId: string, emoji: string | null) =>
       request(authorizedFetch, `/messages/${encodeURIComponent(messageId)}/reaction`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ emoji }) }, (reply) => (reply as { reactions: readonly { emoji: string; count: number; mine: boolean }[] }).reactions),
     pinMessage: (messageId: string, pinned: boolean) =>
@@ -272,6 +343,10 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
             spokenLanguage?: 'en' | 'es' | 'fr' | null;
             listeningLanguage?: 'en' | 'es' | 'fr' | null;
             official?: boolean;
+            discoverable?: boolean;
+            bio?: string;
+            availability?: Availability;
+            notificationsEnabled?: boolean;
           };
         };
         return {
@@ -283,10 +358,17 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
           spokenLanguage: raw.profile?.spokenLanguage ?? null,
           listeningLanguage: raw.profile?.listeningLanguage ?? null,
           official: raw.profile?.official ?? false,
+          discoverable: raw.profile?.discoverable === true,
+          bio: raw.profile?.bio ?? '',
+          availability: raw.profile?.availability ?? 'auto',
+          notificationsEnabled: raw.profile?.notificationsEnabled !== false,
         } satisfies Profile;
       }),
     setDisplayName: (displayName: string) =>
       request(authorizedFetch, '/accounts/display-name', json({ displayName }), () => undefined),
+    /** routes.ts POST /accounts/discovery: whether people can find you by username. Off is the default. */
+    setDiscoverable: (discoverable: boolean) =>
+      request(authorizedFetch, '/accounts/discovery', json({ discoverable }), (body) => body as { discoverable: boolean }),
     /** avatar-routes.ts: PUT judges the bytes; DELETE clears. */
     setAvatar: (image: string) =>
       request(

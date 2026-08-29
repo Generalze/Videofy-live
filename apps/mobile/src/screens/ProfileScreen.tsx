@@ -1,34 +1,27 @@
 /** @author masterzee001 */
 /**
  * Profile, to canon: the person first (picture in a teal ring, name,
- * @handle, the C7 badge), then the rows -- Languages & Voice, Devices &
- * Security (this phone's registration), Verification -- and sign out.
+ * @handle, the C7 badge, a line about them), the four counts, then the
+ * rows -- Languages & Voice, Name shown in calls, About me, Availability,
+ * Verification, Notifications (with this phone's registration), Privacy,
+ * My C7 Voice -- the translation offer, and sign out.
  *
- * WHAT THE CANON SHOWS AND THIS BUILD DOES NOT CLAIM: session counts,
- * following, saved, availability, notification and privacy settings,
- * "My C7 Voice" and an upgrade offer. Each of those is a product not yet
- * built; a row that leads nowhere would be worse than no row.
+ * EVERY ROW LEADS SOMEWHERE. Each one reads a real field of GET /me and
+ * writes it back through a real route; the rows themselves live in
+ * profileRows.tsx so this file is the order and the state, not the widgets.
  *
  * THE VERIFICATION ROW SAYS WHAT VERIFICATION ACTUALLY GATES: email alone
  * unlocks hosting; phone and identity gate commercial products.
  */
-import { useCallback, useEffect, useState, type JSX, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type JSX } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { AvatarView } from '../media/AvatarView';
 import { pickAvatar } from '../media/avatarPicker';
-import type { Api, Profile, VerificationStatus } from '../api/client';
+import type { Api, MeCounts, Profile, VerificationStatus } from '../api/client';
 import type { RegistrationOutcome } from '../push/deviceRegistrationService';
 import { C7, Chip, GlassCard } from '../ui/c7';
-import { Icon, type IconName } from '../ui/icons';
-
-const DEVICE_EXPLANATION: Record<Extract<RegistrationOutcome, { ok: false }>['reason'], string> = {
-  'not-signed-in': 'The session ended before the device could be registered.',
-  'permission-denied': 'Notifications are off for this app, so calls cannot ring this phone.',
-  'no-token': 'Firebase did not issue a token for this build.',
-  unauthorized: 'The session was rejected. Sign in again.',
-  rejected: 'The server would not accept this device.',
-  network: 'Could not reach Videofy from this phone.',
-};
+import { Icon } from '../ui/icons';
+import { AboutMeRow, AvailabilityRow, CountsRow, NotificationsRow, PrivacyRow, Row, UpgradeRow, VoiceRow } from './profileRows';
 
 const LANGUAGES = [
   ['en', 'English'],
@@ -48,29 +41,19 @@ export interface ProfileScreenProps {
   readonly deviceOutcome: RegistrationOutcome | null;
   readonly onRetryDevice: () => Promise<void>;
   readonly onSignOut: () => Promise<void>;
+  /** The app lock's unlock preference (appLock.biometricsPreferred), and where a change goes. */
+  readonly biometricsPreferred: boolean;
+  readonly onBiometricsPreferred: (on: boolean) => void;
+  /** The session's bearer token for media-ingest (voice enrolment), read at upload time and never kept. */
+  readonly sessionToken: () => string | null;
 }
 
-function Row({ icon, title, subtitle, open, onPress, children }: { readonly icon: IconName; readonly title: string; readonly subtitle?: string | undefined; readonly open?: boolean; readonly onPress?: () => void; readonly children?: ReactNode }): JSX.Element {
-  return (
-    <GlassCard padded={false} style={styles.rowCard}>
-      <Pressable onPress={onPress} accessibilityRole="button" style={({ pressed }) => [styles.rowHead, pressed && onPress && styles.pressed]}>
-        <View style={styles.rowIcon}>
-          <Icon name={icon} size={22} color={C7.teal} />
-        </View>
-        <View style={{ flex: 1, gap: 2 }}>
-          <Text style={styles.rowTitle}>{title}</Text>
-          {subtitle !== undefined && <Text style={styles.rowSubtitle}>{subtitle}</Text>}
-        </View>
-        {onPress !== undefined && <Icon name="chevron" size={18} color={C7.muted} />}
-      </Pressable>
-      {open && children !== undefined && <View style={styles.rowBody}>{children}</View>}
-    </GlassCard>
-  );
-}
+type OpenRow = 'languages' | 'name' | 'about' | 'availability' | 'verification' | 'notifications' | 'privacy' | 'voice';
 
-export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, onSignOut }: ProfileScreenProps): JSX.Element {
+export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, onSignOut, biometricsPreferred, onBiometricsPreferred, sessionToken }: ProfileScreenProps): JSX.Element {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [verification, setVerification] = useState<VerificationStatus | null>(null);
+  const [counts, setCounts] = useState<MeCounts | null>(null);
   const [draftName, setDraftName] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -100,7 +83,7 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
     },
     [probeAvatar],
   );
-  const [open, setOpen] = useState<'languages' | 'name' | 'verification' | 'device' | null>(null);
+  const [open, setOpen] = useState<OpenRow | null>(null);
 
   const changePicture = useCallback(async () => {
     setPictureNotice(null);
@@ -120,15 +103,20 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
   }, [api]);
 
   const load = useCallback(async () => {
-    const [me, status] = await Promise.all([api.me(), api.verification()]);
+    const [me, status, tally] = await Promise.all([api.me(), api.verification(), api.counts()]);
     if (me.ok) {
       setProfile(me.value);
       setDraftName((current) => (current.length === 0 ? (me.value.displayName ?? '') : current));
     }
     if (status.ok) setVerification(status.value);
+    if (tally.ok) setCounts(tally.value);
   }, [api]);
 
   useEffect(() => {
+    void load();
+  }, [load]);
+
+  const reload = useCallback(() => {
     void load();
   }, [load]);
 
@@ -152,7 +140,7 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
   }, [api]);
 
   const emailVerified = verification?.email === 'verified';
-  const toggle = (key: NonNullable<typeof open>) => () => setOpen((current) => (current === key ? null : key));
+  const toggle = (key: OpenRow) => () => setOpen((current) => (current === key ? null : key));
 
   return (
     <ScrollView style={styles.fill} contentContainerStyle={styles.screen}>
@@ -183,6 +171,7 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
                 <Text style={styles.handle}>@{profile.username ?? profile.accountId}</Text>
                 <Chip label="C7" tone="teal" />
               </View>
+              {profile.bio.trim().length > 0 && <Text style={styles.bio}>{profile.bio.trim()}</Text>}
               <Text style={styles.email}>{profile.email}</Text>
               {pictureNotice !== null && <Text style={styles.pictureNotice}>{pictureNotice}</Text>}
               {pictureDiagnosis !== null && <Text style={styles.pictureNotice}>{pictureDiagnosis}</Text>}
@@ -190,6 +179,8 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
           </View>
         )}
       </GlassCard>
+
+      <CountsRow counts={counts} />
 
       <Row
         icon="translate"
@@ -227,6 +218,10 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
         <Text style={styles.hint}>Your username is how people add you and cannot change. This name is what they see, and can.</Text>
       </Row>
 
+      {profile !== null && <AboutMeRow api={api} bio={profile.bio} onChanged={reload} open={open === 'about'} onToggle={toggle('about')} />}
+
+      {profile !== null && <AvailabilityRow api={api} availability={profile.availability} onChanged={reload} open={open === 'availability'} onToggle={toggle('availability')} />}
+
       <Row
         icon="shield"
         title="Verification"
@@ -260,23 +255,29 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
         )}
       </Row>
 
-      <Row
-        icon="bell"
-        title="Devices & Security"
-        subtitle={deviceOutcome === null ? 'Registering this phone…' : deviceOutcome.ok ? 'This phone can ring for calls and messages' : 'This phone cannot ring yet'}
-        open={open === 'device'}
-        onPress={toggle('device')}
-      >
-        {deviceOutcome !== null && !deviceOutcome.ok && (
-          <>
-            <Text style={styles.warnText}>{DEVICE_EXPLANATION[deviceOutcome.reason]}</Text>
-            <Pressable onPress={() => void onRetryDevice()} accessibilityRole="button" style={[styles.smallButton, styles.selfStart]}>
-              <Text style={styles.smallButtonLabel}>Try again</Text>
-            </Pressable>
-          </>
-        )}
-        {deviceOutcome?.ok === true && <Text style={styles.hint}>Registered. Calls and messages can reach this phone.</Text>}
-      </Row>
+      <NotificationsRow
+        api={api}
+        notificationsEnabled={profile?.notificationsEnabled ?? true}
+        deviceOutcome={deviceOutcome}
+        onRetryDevice={onRetryDevice}
+        onChanged={reload}
+        open={open === 'notifications'}
+        onToggle={toggle('notifications')}
+      />
+
+      <PrivacyRow
+        api={api}
+        discoverable={profile?.discoverable ?? false}
+        biometricsPreferred={biometricsPreferred}
+        onBiometricsPreferred={onBiometricsPreferred}
+        onChanged={reload}
+        open={open === 'privacy'}
+        onToggle={toggle('privacy')}
+      />
+
+      <VoiceRow sessionToken={sessionToken} enrolledLanguage={profile?.spokenLanguage ?? profile?.defaultLanguage ?? 'en'} open={open === 'voice'} onToggle={toggle('voice')} />
+
+      <UpgradeRow />
 
       {notice !== null && <Text style={styles.notice}>{notice}</Text>}
 
@@ -297,18 +298,12 @@ const styles = StyleSheet.create({
   name: { color: C7.text, fontSize: 28, fontWeight: '600', fontFamily: 'serif', letterSpacing: -0.3 },
   handleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   handle: { color: C7.muted, fontSize: 15 },
+  bio: { color: C7.text, fontSize: 14, lineHeight: 20, opacity: 0.9 },
   email: { color: C7.faint, fontSize: 13 },
   pictureNotice: { color: C7.amber, fontSize: 12 },
-  rowCard: { padding: 0 },
-  rowHead: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16 },
-  rowIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: C7.tealSoft, alignItems: 'center', justifyContent: 'center' },
-  rowTitle: { color: C7.text, fontSize: 19, fontWeight: '600', fontFamily: 'serif' },
-  rowSubtitle: { color: C7.muted, fontSize: 13, lineHeight: 18 },
-  rowBody: { paddingHorizontal: 16, paddingBottom: 16, gap: 8, borderTopWidth: 1, borderTopColor: C7.panelEdge, paddingTop: 12 },
   label: { color: C7.faint, fontSize: 12, marginTop: 4 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   hint: { color: C7.muted, fontSize: 13, lineHeight: 19 },
-  warnText: { color: C7.amber, fontSize: 13, lineHeight: 19 },
   nameRow: { flexDirection: 'row', gap: 8 },
   input: { flex: 1, backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: C7.panelEdge, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, color: C7.text, fontSize: 15 },
   smallButton: { paddingHorizontal: 14, borderRadius: 12, backgroundColor: C7.tealDeep, borderWidth: 1, borderColor: 'rgba(62,201,192,0.7)', alignItems: 'center', justifyContent: 'center', minHeight: 40 },

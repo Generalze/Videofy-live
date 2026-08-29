@@ -39,6 +39,13 @@ export type CallType = 'personal' | 'conference';
 export type CallMode = 'normal' | 'translated';
 
 /**
+ * Conference setup (29 Aug): who may enter. `private` = the code alone, as
+ * before; `public` = also listed by GET /calls/public; `restricted` = the
+ * host admits every joiner after themselves (call:knock / call:admit).
+ */
+export type CallPrivacy = 'public' | 'private' | 'restricted';
+
+/**
  * Structural RTCIceCandidateInit for both signalling directions. Structural on
  * purpose: this package compiles without DOM libs, and the gateway's
  * normalized relay shape (null-filled sdpMid/sdpMLineIndex, usernameFragment
@@ -70,6 +77,16 @@ export interface CallJoinPayload {
    */
   callType?: CallType;
   callMode?: CallMode;
+  /**
+   * CONFERENCE SETUP (29 Aug), consulted ONLY when this join CREATES a
+   * conference and ignored otherwise. `title` 1..80 chars after trimming;
+   * `privacy` defaults to 'private'; `targetLanguages` at most 8 codes
+   * matching ^[a-z]{2,3}(-[A-Z]{2})?$ -- the languages the host offers
+   * listeners, echoed on call:state for the client to show.
+   */
+  title?: string;
+  privacy?: CallPrivacy;
+  targetLanguages?: string[];
   /**
    * DIRECT CALL (founder ruling 2026-08-28): the C7 account this call is
    * placed TO. Consulted only when this join CREATES the call. Its presence
@@ -269,6 +286,16 @@ export interface CallStateWirePayload {
   ownerParticipantId: string;
   /** Owner-switchable transcript-download policy; default true. */
   transcriptDownloadAllowed?: boolean;
+  /**
+   * Conference setup (29 Aug). Optional so a client built before this wave
+   * still typechecks. `title` is null for personal calls and untitled rooms;
+   * `knocking` lists the seats waiting for the host in a restricted
+   * conference and is empty everywhere else.
+   */
+  title?: string | null;
+  privacy?: CallPrivacy;
+  targetLanguages?: string[];
+  knocking?: { participantId: string; displayName: string }[];
   participants: {
     participantId: string;
     /**
@@ -410,6 +437,14 @@ export type CallJoinAck =
       resumeToken: string;
       snapshot: CallStateWirePayload;
       /**
+       * 'pending' when this join KNOCKED on a restricted conference: the
+       * joiner is not in the call yet, has no media, and `snapshot` carries
+       * the room's title and setup with an EMPTY roster -- the roster is not
+       * theirs to see until the host says so. The answer arrives as
+       * call:admission on this socket. Absent means joined, as before.
+       */
+      admission?: 'pending';
+      /**
        * Present for direct calls: the telephone's CURRENT state at the moment
        * of this join or resume, so a socket that arrives after a transition
        * already fired is never left holding an old word.
@@ -431,6 +466,38 @@ export type CallJoinAck =
 export interface CallLeaveAck {
   ok: boolean;
 }
+
+/** call:knock -- to the HOST's private room: somebody is waiting. */
+export interface CallKnockEvent {
+  callId: string;
+  participantId: string;
+  displayName: string;
+}
+
+/** call:admit -- the host's answer to a knock. Bound to the host's own seat. */
+export interface CallAdmitPayload {
+  callId: string;
+  participantId: string;
+  /** The knocking seat being answered. */
+  targetParticipantId: string;
+  admit: boolean;
+}
+
+export type CallAdmitAck =
+  | { ok: true }
+  | {
+      ok: false;
+      error: 'unknown-call' | 'unknown-participant' | 'not-owner' | 'not-knocking' | 'invalid-input';
+    };
+
+/**
+ * call:admission -- to the JOINER's private room. Admitted carries the
+ * snapshot they may now see; refused (including the 60 s timeout) is
+ * followed by the gateway disconnecting the socket from the call.
+ */
+export type CallAdmissionEvent =
+  | { callId: string; admitted: true; snapshot: CallStateWirePayload }
+  | { callId: string; admitted: false; reason: 'refused' | 'timeout' };
 
 export interface CallSdpAck {
   ok: boolean;

@@ -48,6 +48,8 @@ export interface CallRecordPort {
   upsert(record: CallRecord): Promise<void>;
   /** Newest first, bounded. */
   forPair(lowAccountId: string, highAccountId: string, limit: number): Promise<readonly CallRecord[]>;
+  /** How many calls this account was party to, either side. For /me/counts. */
+  countForAccount(accountId: string): Promise<number>;
 }
 
 export function createInMemoryCallRecordPort(): CallRecordPort {
@@ -61,6 +63,11 @@ export function createInMemoryCallRecordPort(): CallRecordPort {
         .filter((row) => row.lowAccountId === low && row.highAccountId === high)
         .sort((a, b) => b.endedAtMs - a.endedAtMs)
         .slice(0, limit);
+    },
+    async countForAccount(accountId) {
+      return [...rows.values()].filter(
+        (row) => row.lowAccountId === accountId || row.highAccountId === accountId,
+      ).length;
     },
   };
 }

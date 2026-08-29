@@ -37,11 +37,21 @@ export interface AudioRouter {
   current(): AudioRoute | null;
 }
 
-export function createAudioRouter(setMode: AudioModeSetter): AudioRouter {
+/**
+ * `telecomRoute`, when given, is tried FIRST: while Telecom owns the call
+ * (phase 2) it overrides AudioManager, so the app's own switch would
+ * silently do nothing. A false answer means Telecom does not own this call
+ * and the app's route applies as before.
+ */
+export function createAudioRouter(setMode: AudioModeSetter, telecomRoute?: (speaker: boolean) => boolean): AudioRouter {
   let applied: AudioRoute | null = null;
   return {
     async apply(route) {
       if (applied === route) return true;
+      if (telecomRoute !== undefined && telecomRoute(route === 'speaker')) {
+        applied = route;
+        return true;
+      }
       try {
         await setMode({ shouldRouteThroughEarpiece: route === 'earpiece' });
         applied = route;

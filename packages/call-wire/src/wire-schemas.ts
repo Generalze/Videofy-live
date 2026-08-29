@@ -69,6 +69,15 @@ export const CallCaptionLanguagePayloadSchema = z
  */
 export const CallAudioModePayloadSchema = z.object({ audioMode: z.string() }).passthrough();
 
+/**
+ * call:admit (29 Aug). The host names the knocking seat and answers. The
+ * sender's own binding (callId/participantId) is the runtime's check; the
+ * store decides whether the sender is the owner.
+ */
+export const CallAdmitPayloadSchema = z
+  .object({ targetParticipantId: z.string().min(1), admit: z.boolean() })
+  .passthrough();
+
 /** call:transcript-policy:set. */
 export const CallTranscriptPolicyPayloadSchema = z
   .object({ allowed: z.boolean() })

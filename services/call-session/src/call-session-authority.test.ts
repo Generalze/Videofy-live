@@ -88,6 +88,10 @@ describe('CallSessionStore.preregisterCall', () => {
         // No seats yet, so no authority yet: '' until the first join.
         ownerParticipantId: '',
         transcriptDownloadAllowed: true,
+        title: null,
+        privacy: 'private',
+        targetLanguages: [],
+        knocking: [],
         participants: [],
       },
     });
@@ -229,6 +233,10 @@ describe('CallSessionStore.preregisterCall', () => {
         callMode: 'translated',
         ownerParticipantId: '',
         transcriptDownloadAllowed: true,
+        title: null,
+        privacy: 'private',
+        targetLanguages: [],
+        knocking: [],
         participants: [],
       },
       retiredIngestSessionIds: [],

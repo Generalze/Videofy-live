@@ -634,6 +634,78 @@ const MESSAGE_ACTIONS: Migration = {
   `,
 };
 
+/**
+ * 017 -- what a person says about themselves, and how they want to be reached
+ * (founder directive 2026-08-29). Three columns on the account rather than a
+ * side table: each is one fact per person, read with the record on every
+ * profile view, and never queried across accounts. Presence itself is NOT
+ * here -- it is a heartbeat that a restart honestly forgets -- only the
+ * standing override a person sets over it.
+ */
+const PROFILE_EXTRAS: Migration = {
+  name: '017_profile_extras',
+  sql: `
+    ALTER TABLE accounts
+      ADD COLUMN IF NOT EXISTS availability          text    NOT NULL DEFAULT 'auto'
+        CHECK (availability IN ('auto', 'busy', 'away')),
+      ADD COLUMN IF NOT EXISTS bio                   text
+        CHECK (bio IS NULL OR char_length(bio) <= 160),
+      ADD COLUMN IF NOT EXISTS notifications_enabled boolean NOT NULL DEFAULT true;
+  `,
+};
+
+/**
+ * 018 -- channel follows. A follow is one account's interest in one channel,
+ * with a per-follow reminder flag so "I want to know when they go live" is
+ * a choice and not a consequence of following. The channel itself lives in
+ * the programme service; this table only ever names it, so nothing here can
+ * dangle when a channel is deleted -- the follow simply stops matching.
+ */
+const CHANNEL_FOLLOWS: Migration = {
+  name: '018_channel_follows',
+  sql: `
+    CREATE TABLE IF NOT EXISTS channel_follows (
+      account_id     text    NOT NULL,
+      channel_id     text    NOT NULL,
+      followed_at_ms bigint  NOT NULL,
+      remind         boolean NOT NULL DEFAULT false,
+      PRIMARY KEY (account_id, channel_id)
+    );
+
+    -- "Every follower of this channel" is the live-push fan-out; "how many"
+    -- is the public interest count. Both walk this index.
+    CREATE INDEX IF NOT EXISTS channel_follows_channel_idx ON channel_follows (channel_id);
+  `,
+};
+
+/**
+ * 019 -- reports. Write-only from the product's point of view: a person
+ * files one and nothing public ever reads it back, so there is no row
+ * shape to keep stable for a client. The note is capped so the table cannot
+ * become a place to store arbitrary text; the reason is a closed list so it
+ * can be counted.
+ */
+const REPORTS: Migration = {
+  name: '019_reports',
+  sql: `
+    CREATE TABLE IF NOT EXISTS reports (
+      report_id           text   PRIMARY KEY,
+      reporter_account_id text   NOT NULL,
+      target_account_id   text   NOT NULL,
+      message_id          text,
+      reason              text   NOT NULL
+        CHECK (reason IN ('spam', 'harassment', 'hate', 'sexual', 'violence', 'abuse', 'impersonation', 'other')),
+      note                text   NOT NULL DEFAULT ''
+        CHECK (char_length(note) <= 500),
+      created_at_ms       bigint NOT NULL
+    );
+
+    -- The rate limit is "reports by this person in the last hour".
+    CREATE INDEX IF NOT EXISTS reports_reporter_time_idx
+      ON reports (reporter_account_id, created_at_ms DESC);
+  `,
+};
+
 /** Applied in this order. Append only. */
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
@@ -652,4 +724,7 @@ export const MIGRATIONS: readonly Migration[] = [
   CALL_RECORDS,
   VOICE_NOTE_TRANSLATION,
   MESSAGE_ACTIONS,
+  PROFILE_EXTRAS,
+  CHANNEL_FOLLOWS,
+  REPORTS,
 ];

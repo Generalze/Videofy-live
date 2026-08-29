@@ -89,6 +89,9 @@ export type CallType = 'personal' | 'conference';
  */
 export type CallMode = 'normal' | 'translated';
 
+/** Conference setup (29 Aug): who may enter; mirrors call-wire's CallPrivacy. */
+export type CallPrivacy = 'public' | 'private' | 'restricted';
+
 /** Pre-join microphone preview state (UI only, never sent to the gateway). */
 export type MicPermissionState = 'idle' | 'requesting' | 'granted' | 'denied';
 
@@ -107,6 +110,14 @@ export interface CallJoinPayload {
    */
   callType?: CallType;
   callMode?: CallMode;
+  /**
+   * Conference setup (29 Aug), consulted only by the creating join: a
+   * 1..80 character title, the privacy tier (default private) and up to 8
+   * offered listening languages (`en`, `yo`, `pt-BR`).
+   */
+  title?: string;
+  privacy?: CallPrivacy;
+  targetLanguages?: string[];
   /**
    * Absent means the speaker stated their language and it is final. `auto`
    * treats `speakLanguage` as a starting guess the first utterance may correct.
@@ -200,6 +211,13 @@ export interface CallStateSnapshot {
   ownerParticipantId?: string;
   /** Owner-switchable; default true. Governs the download affordance only. */
   transcriptDownloadAllowed?: boolean;
+  /** Conference setup (29 Aug): null for personal calls and untitled rooms. */
+  title?: string | null;
+  privacy?: CallPrivacy;
+  /** The host's offered listening languages; a menu for the client, empty when none. */
+  targetLanguages?: string[];
+  /** Seats waiting for the host's answer in a restricted conference. */
+  knocking?: { participantId: string; displayName: string }[];
 }
 
 /** Owner-only: whether anyone on the call may download the transcript. */
@@ -297,6 +315,14 @@ export type CallJoinAck =
       participantId: string;
       resumeToken: string;
       snapshot?: CallStateSnapshot;
+      /**
+       * Conference setup (29 Aug): 'pending' when this join KNOCKED on a
+       * restricted conference. The seat exists, has no media, and is not in
+       * the call; `snapshot` carries the title and setup with an empty
+       * roster. The answer arrives as call:admission on this socket. Absent
+       * means joined, as before. Mirrors call-wire's CallJoinAck.
+       */
+      admission?: 'pending';
       /** Direct calls only: the state at the moment of this join or resume. */
       directState?: DirectCallStateSnapshot;
       /**

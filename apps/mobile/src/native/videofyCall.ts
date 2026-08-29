@@ -32,8 +32,11 @@ interface NativeModuleShape {
   setRingCredential(gatewayUrl: string, token: string, accountId: string, expiresAtMs: number): void;
   clearRingCredential(): void;
   consumePendingAction(accountId: string): (Record<string, unknown> & { action?: string }) | null;
+  reportAnswered(callId: string): void;
   reportCallEnded(callId: string): void;
   reportMediaConnected(callId: string): void;
+  reportOutgoingCall(callId: string, peerName: string): boolean;
+  setAudioRoute(callId: string, speaker: boolean): boolean;
   timeline(callId: string): Record<string, unknown>;
   canUseFullScreenIntent(): boolean;
   addListener(event: string, listener: (payload: Record<string, unknown>) => void): EventSubscription;
@@ -70,11 +73,23 @@ export const videofyCall = {
     if (pending === null || pending.action !== 'answer') return null;
     return descriptor(pending);
   },
+  /** Answered on the app's own screen: stop the ring, keep the Telecom call. */
+  reportAnswered(callId: string): void {
+    native?.reportAnswered(callId);
+  },
   reportCallEnded(callId: string): void {
     native?.reportCallEnded(callId);
   },
   reportMediaConnected(callId: string): void {
     native?.reportMediaConnected(callId);
+  },
+  /** The caller's side of Telecom phase 2. True when Telecom owns the call. */
+  reportOutgoingCall(callId: string, peerName: string): boolean {
+    return native?.reportOutgoingCall(callId, peerName) ?? false;
+  },
+  /** Speaker / earpiece through Telecom's Connection. False = not owned; use the app's own route. */
+  setAudioRoute(callId: string, speaker: boolean): boolean {
+    return native?.setAudioRoute(callId, speaker) ?? false;
   },
   timeline(callId: string): NativeCallTimeline {
     const raw = native?.timeline(callId) ?? {};

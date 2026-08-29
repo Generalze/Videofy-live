@@ -35,6 +35,9 @@ const EXPECTED_EVENT_NAMES = {
   GOVERNANCE: 'call:governance',
   VIDEO_ANSWER: 'call:video:answer',
   VIDEO_ICE: 'call:video:ice',
+  KNOCK: 'call:knock',
+  ADMIT: 'call:admit',
+  ADMISSION: 'call:admission',
 } as const;
 
 // Compile-time byte-identity, both directions: a drifted key OR value fails

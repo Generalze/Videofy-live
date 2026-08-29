@@ -448,6 +448,11 @@ describe('CallRuntime join and ingest plan handling', () => {
       ownerParticipantId: 'participant_1',
       // Review fix: the transcript policy now actually crosses the wire.
       transcriptDownloadAllowed: true,
+      // Conference setup (29 Aug): the defaults, on the wire.
+      title: null,
+      privacy: 'private',
+      targetLanguages: [],
+      knocking: [],
       participants: [
         {
           participantId: 'participant_1',

@@ -80,5 +80,12 @@ export function createPostgresCallRecords(pool: Pool): CallRecordPort {
       );
       return (result.rows as Row[]).map(toRecord);
     },
+    async countForAccount(accountId) {
+      const result = await pool.query<{ count: string }>(
+        `SELECT count(*) FROM call_records WHERE low_account_id = $1 OR high_account_id = $1`,
+        [accountId],
+      );
+      return Number(result.rows[0]?.count ?? 0);
+    },
   };
 }

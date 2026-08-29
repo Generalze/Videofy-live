@@ -25,6 +25,7 @@ import {
   channelRoom,
   type ChannelVisibility,
 } from './programme-channels.js';
+import { diffLiveTransitions } from './channel-live-transitions.js';
 import {
   INGEST_ROOM,
   createShareableWebRtcSessionId,
@@ -153,6 +154,11 @@ export class Gateway {
   get directCalls(): CallRuntime['directCalls'] {
     return this.callRuntime.directCalls;
   }
+
+  /** The public conference listing, for GET /calls/public. */
+  listPublicCalls(): ReturnType<CallRuntime['listPublicCalls']> {
+    return this.callRuntime.listPublicCalls();
+  }
   private readonly mediaIngestUrl: string;
   /**
    * Whether media-ingest can genuinely translate speech.
@@ -266,6 +272,12 @@ export class Gateway {
        * operator supplies a secret and a token, which is the same thing a real
        * client does.
        */
+      /**
+       * A channel went live, or stopped. Called on every transition the
+       * public directory shows; the account service fans the live one out
+       * to followers who asked to be told. Omitted means nobody is told.
+       */
+      onChannelLive?: (channelId: string, live: boolean, displayName: string) => Promise<void>;
       /** Call-level authority. Omitted means no account may start a call. */
       call?: {
         authorizeHost?: (sessionToken: string | null) => Promise<boolean>;
@@ -293,6 +305,7 @@ export class Gateway {
       };
     } = {},
   ) {
+    this.channelLiveHook = options.onChannelLive ?? null;
     this.channelSalt = options.operator?.channelSalt ?? 'videofy-live-channel';
     this.operatorAuthority = createOperatorAuthority({
       secret: options.operator?.authSecret,
@@ -2270,7 +2283,36 @@ export class Gateway {
    * and do not choose a channel from this list.
    */
   private broadcastChannelDirectory(): void {
-    this.io.to('listeners').emit(SOCKET_EVENTS.CHANNEL_DIRECTORY, this.channels.directory());
+    const directory = this.channels.directory();
+    this.io.to('listeners').emit(SOCKET_EVENTS.CHANNEL_DIRECTORY, directory);
+    this.reportLiveTransitions(directory);
+  }
+
+  private readonly channelLiveHook: ((channelId: string, live: boolean, displayName: string) => Promise<void>) | null;
+  private readonly lastLiveByChannel = new Map<string, boolean>();
+
+  /**
+   * Followers are told when a channel GOES live, once per transition (see
+   * channel-live-transitions.ts). The hook's failure is logged and never
+   * reaches the broadcast.
+   */
+  private reportLiveTransitions(directory: readonly { channelId: string; live: boolean; displayName: string }[]): void {
+    const hook = this.channelLiveHook;
+    for (const channel of diffLiveTransitions(this.lastLiveByChannel, directory)) {
+      if (hook === null) continue;
+      void hook(channel.channelId, channel.live, channel.displayName).catch((error: unknown) => {
+        console.warn(
+          JSON.stringify({
+            service: 'realtime-gateway',
+            level: 'warn',
+            message: 'channel-live hook failed',
+            channelId: channel.channelId,
+            live: channel.live,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      });
+    }
   }
 
   private publishMediaState(channelId: string, state: MediaStateEvent): void {

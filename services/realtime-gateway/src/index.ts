@@ -75,6 +75,7 @@ const adapterSurface =
 
 const app = createApp({
   directCalls: () => gateway.directCalls,
+  publicCalls: () => gateway.listPublicCalls(),
   sessionSecret: process.env['VIDEOFY_AUTH_SECRET'],
   diagnostics: () => gateway.getWebRtcDiagnostics(),
   ...(adapterSurface === null
@@ -134,6 +135,18 @@ const gateway = new Gateway(server, config.corsOrigins, {
    * Who may START a call. Joining one is untouched: a guest invited to a call
    * has no C7 account and should not need one.
    */
+  // Followers who asked are told when a channel goes live (account fans out the push).
+  onChannelLive: async (channelId, live, displayName) => {
+    const base = process.env['ACCOUNT_SERVICE_URL']?.replace(/\/+$/, '');
+    const token = process.env['INTERNAL_WEBRTC_TOKEN'];
+    if (!base || !token) return;
+    const response = await fetch(`${base}/internal/channels/${encodeURIComponent(channelId)}/live`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-Videofy-Internal-Token': token },
+      body: JSON.stringify({ live, displayName }),
+    });
+    if (!response.ok) throw new Error(`account service answered ${response.status}`);
+  },
   call: {
     authorizeHost: createCallHostAuthority({
       secret: process.env['VIDEOFY_AUTH_SECRET'],

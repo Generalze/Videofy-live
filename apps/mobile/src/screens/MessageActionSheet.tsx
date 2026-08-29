@@ -17,7 +17,7 @@ import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { C7 } from '../ui/c7';
 import { Icon, type IconName } from '../ui/icons';
 
-export type MessageAction = 'reply' | 'copy' | 'forward' | 'share' | 'edit' | 'retract' | 'hide' | 'pin' | 'unpin';
+export type MessageAction = 'reply' | 'copy' | 'forward' | 'share' | 'edit' | 'retract' | 'hide' | 'pin' | 'unpin' | 'report';
 
 const REACTIONS = ['👍', '❤️', '😂', '🙏', '🔥', '👏'] as const;
 
@@ -47,6 +47,7 @@ export function MessageActionSheet({
     { action: 'edit', label: 'Edit', icon: 'gear' },
     { action: 'retract', label: 'Unsend', icon: 'close', danger: true },
     { action: 'hide', label: 'Delete for me', icon: 'close', danger: true },
+    { action: 'report', label: 'Report', icon: 'shield', danger: true },
   ];
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>

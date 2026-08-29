@@ -221,6 +221,12 @@ export function registerMessageRoutes(
         deps.onEvent?.('message.push.muted', { kind: message.kind });
         return;
       }
+      // The recipient's own switch, gated in the same place as a mute and
+      // for the same reason: the message is delivered, only the push is not.
+      if (deps.store.get(recipientId)?.notificationsEnabled === false) {
+        deps.onEvent?.('message.push.disabled', { kind: message.kind });
+        return;
+      }
       await deps.push.notify(recipientId, {
         kind: 'message',
         privacy: 'discreet',

@@ -52,6 +52,12 @@ import { registerAvatarRoutes } from './avatar-routes.js';
 import { createInMemoryCallRecordPort } from './call-records.js';
 import { createPostgresCallRecords } from './db/call-records-postgres.js';
 import { registerCallHistoryRoutes } from './call-history-routes.js';
+import { PresenceRegistry } from './presence.js';
+import { createInMemoryChannelFollowPort } from './channel-follows.js';
+import { createPostgresChannelFollows } from './db/channel-follows-postgres.js';
+import { createInMemoryReportPort } from './reports.js';
+import { createPostgresReports } from './db/reports-postgres.js';
+import { registerSocialRoutes } from './social-routes.js';
 import { createPostgresMessageRecords } from './db/message-records-postgres.js';
 import { registerMessageRoutes } from './message-routes.js';
 import { createFcmProviderFromEnv } from './push/fcm-provider.js';
@@ -389,10 +395,17 @@ const officialAccounts: ReadonlySet<string> = new Set(
     .filter((value) => value.length > 0),
 );
 
+/*
+ * PRESENCE is in memory and stays there: a restart forgets who was around,
+ * which is the truth. The stores beside it are durable when a database is.
+ */
+const presence = new PresenceRegistry();
+
 registerAccountRoutes(app, {
   officialAccounts,
   store,
   contacts,
+  presence,
   secret,
   organizations,
   abuse,
@@ -657,6 +670,33 @@ registerMessageRoutes(app, {
     internalToken: process.env['INTERNAL_WEBRTC_TOKEN'],
   }),
   mediaDir: process.env['MESSAGE_MEDIA_DIR'] ?? resolve('data', 'message-media'),
+  callerAccountId: createCallerResolver({
+    store,
+    secret,
+    nowSeconds: () => Math.floor(Date.now() / 1000),
+  }),
+  onEvent: (event, detail) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', event, ...detail }));
+  },
+});
+
+/*
+ * THE SOCIAL SURFACE: presence, profile extras, suggestions, channel
+ * follows with the live push, reports, counts. Same graph, same push
+ * dispatcher, same internal seam as call history.
+ */
+registerSocialRoutes(app, {
+  store,
+  contacts,
+  presence,
+  follows: databasePool ? createPostgresChannelFollows(databasePool) : createInMemoryChannelFollowPort(),
+  reports: databasePool ? createPostgresReports(databasePool) : createInMemoryReportPort(),
+  push,
+  calls: callRecords,
+  messages,
+  officialAccounts,
+  internalAuth: resolveInternalIngressAuth(process.env),
   callerAccountId: createCallerResolver({
     store,
     secret,

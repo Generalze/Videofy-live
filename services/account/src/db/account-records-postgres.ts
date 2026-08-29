@@ -63,6 +63,9 @@ interface AccountRow {
   username_key: string | null;
   display_name: string | null;
   discovery_mode: string | null;
+  availability: string | null;
+  bio: string | null;
+  notifications_enabled: boolean | null;
 }
 
 /**
@@ -140,6 +143,15 @@ function toRecord(row: AccountRow): AccountRecord {
     ...(row.username_key === null ? {} : { usernameKey: row.username_key }),
     ...(row.display_name === null ? {} : { displayName: row.display_name }),
     ...(row.discovery_mode === null ? {} : { discoveryMode: row.discovery_mode }),
+    // Only the three known values come back; the CHECK constraint guarantees
+    // it, and the cast records that the guarantee lives in the schema.
+    ...(row.availability === null
+      ? {}
+      : { availability: row.availability as NonNullable<AccountRecord['availability']> }),
+    ...(row.bio === null ? {} : { bio: row.bio }),
+    ...(row.notifications_enabled === null
+      ? {}
+      : { notificationsEnabled: row.notifications_enabled }),
     ...(pendingIdentityChange.present
       ? {
           pendingIdentityChange: pendingIdentityChange.value as NonNullable<
@@ -194,8 +206,8 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
            phone_number, identity_case, seen_callback_events,
            password_reset_challenge, consents, mfa, step_up_at_ms, step_up_method,
            pending_identity_change, username, username_key, display_name,
-           discovery_mode
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+           discovery_mode, availability, bio, notifications_enabled
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
          ON CONFLICT (account_id) DO UPDATE SET
            email                = EXCLUDED.email,
            password_hash        = EXCLUDED.password_hash,
@@ -220,7 +232,10 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
            username                 = EXCLUDED.username,
            username_key             = EXCLUDED.username_key,
            display_name             = EXCLUDED.display_name,
-           discovery_mode           = EXCLUDED.discovery_mode`,
+           discovery_mode           = EXCLUDED.discovery_mode,
+           availability             = EXCLUDED.availability,
+           bio                      = EXCLUDED.bio,
+           notifications_enabled    = EXCLUDED.notifications_enabled`,
         [
           record.accountId,
           record.email,
@@ -250,6 +265,12 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
           record.usernameKey ?? null,
           record.displayName ?? null,
           record.discoveryMode ?? null,
+          // NOT NULL with defaults in the schema, so an absent value is
+          // written as the default rather than as NULL -- an old record
+          // saved through here must read back exactly as it behaved.
+          record.availability ?? 'auto',
+          record.bio ?? null,
+          record.notificationsEnabled ?? true,
         ],
       );
 }
@@ -277,7 +298,7 @@ export function createPostgresAccountRecords(pool: Pool): AccountRecordPort {
                 phone_number, identity_case, seen_callback_events,
                 password_reset_challenge, consents, mfa, step_up_at_ms, step_up_method,
                 pending_identity_change, username, username_key, display_name,
-                discovery_mode
+                discovery_mode, availability, bio, notifications_enabled
            FROM accounts
           ORDER BY created_at, account_id`,
       );

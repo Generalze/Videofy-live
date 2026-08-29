@@ -45,5 +45,15 @@
     <receiver
       android:name="com.consummate7.videofy.call.CallActionReceiver"
       android:exported="false" />
+
+    <!-- Telecom phase 2: the self-managed ConnectionService. -->
+    <service
+      android:name="com.consummate7.videofy.call.VideofyConnectionService"
+      android:exported="true"
+      android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+      <intent-filter>
+        <action android:name="android.telecom.ConnectionService" />
+      </intent-filter>
+    </service>
   </application>
 </manifest>

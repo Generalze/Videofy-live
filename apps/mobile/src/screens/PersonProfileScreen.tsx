@@ -7,7 +7,11 @@
  * (GET /profiles/:accountId answers 404 for an undiscoverable stranger,
  * exactly like adding one does), and this screen renders only what came
  * back. The language shown is the one they SPEAK -- what you would hear on
- * a call -- never the one they prefer to listen in.
+ * a call -- never the one they prefer to listen in. Presence arrives only
+ * for an accepted contact, so only a contact ever shows a dot.
+ *
+ * REPORTING IS METADATA. The sheet sends the account id, a reason and the
+ * reporter's own words; never anything the reported person wrote or said.
  *
  * Reached from anywhere a person's picture or name appears.
  */
@@ -15,10 +19,10 @@ import { useCallback, useEffect, useState, type JSX } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { AvatarView } from '../media/AvatarView';
 import type { Api, ContactPerson, PersonProfile } from '../api/client';
-import { C7, C7Ground, Chip, GlassCard, RoundIconButton } from '../ui/c7';
+import { contactShareMessage, languageName, PRESENCE_WORDS } from '../people/people';
+import { C7, C7Ground, Chip, GlassCard, PresenceDot, RoundIconButton } from '../ui/c7';
 import { Icon } from '../ui/icons';
-
-const LANGUAGE_NAMES: Record<string, string> = { en: 'English', es: 'Spanish', fr: 'French' };
+import { ReportSheet, type ReportReason } from './ReportSheet';
 
 const RELATIONSHIP_WORDS: Record<PersonProfile['relationship'], string> = {
   contact: 'In your contacts',
@@ -47,6 +51,7 @@ export function PersonProfileScreen({
   const [profile, setProfile] = useState<PersonProfile | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [reporting, setReporting] = useState(false);
 
   const load = useCallback(async () => {
     const result = await api.profileOf(accountId);
@@ -64,6 +69,7 @@ export function PersonProfileScreen({
     displayName: profile?.displayName ?? fallback?.displayName ?? null,
   };
   const name = person.displayName ?? person.username ?? accountId;
+  const bio = profile?.bio?.trim() ?? '';
 
   const act = useCallback(
     async (action: () => Promise<{ ok: boolean; error?: string }>) => {
@@ -91,15 +97,17 @@ export function PersonProfileScreen({
     ]);
   };
 
-  const report = (): void => {
-    Alert.alert('Report this person', 'Reports go to C7. Tell us what happened by email at safety@consummate7.com and include their username.', [
-      { text: 'OK' },
-    ]);
-  };
+  const submitReport = useCallback(
+    async (reason: ReportReason, details: string): Promise<boolean> => {
+      const result = await api.report({ accountId, reason, ...(details.length === 0 ? {} : { note: details }) });
+      return result.ok;
+    },
+    [accountId, api],
+  );
 
   const share = (): void => {
     if (person.username === null) return;
-    void Share.share({ message: `Add me on C7: @${person.username}` });
+    void Share.share({ message: contactShareMessage(name, person.username) });
   };
 
   return (
@@ -117,12 +125,29 @@ export function PersonProfileScreen({
         <View style={styles.identity}>
           <View style={styles.avatarRing}>
             <AvatarView accountId={accountId} name={name} size={116} />
+            {profile?.presence !== undefined && (
+              <View style={styles.presenceBadge}>
+                <PresenceDot state={profile.presence} size={18} />
+              </View>
+            )}
           </View>
           <Text style={styles.name}>{name}</Text>
           <View style={styles.handleRow}>
             {person.username !== null && <Text style={styles.handle}>@{person.username}</Text>}
             {profile?.official === true && <Chip label="C7" tone="teal" />}
           </View>
+          {bio.length > 0 && <Text style={styles.bio}>{bio}</Text>}
+          {profile?.presence !== undefined && (
+            <View style={styles.presenceRow}>
+              <PresenceDot state={profile.presence} size={8} />
+              <Text style={[styles.presenceWords, profile.presence === 'active' && styles.presenceActive]}>{PRESENCE_WORDS[profile.presence]}</Text>
+            </View>
+          )}
+          {profile !== null && profile.spokenLanguage !== null && (
+            <View style={styles.chips}>
+              <Chip label={`Speaks ${languageName(profile.spokenLanguage)}`} tone="teal" />
+            </View>
+          )}
           {profile === null && notice === null && <ActivityIndicator color={C7.teal} />}
           {profile !== null && (
             <Text style={styles.relationship}>{RELATIONSHIP_WORDS[profile.relationship]}</Text>
@@ -149,10 +174,7 @@ export function PersonProfileScreen({
             {profile.spokenLanguage !== null && (
               <View style={styles.row}>
                 <Icon name="translate" size={20} color={C7.teal} />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.rowTitle}>Speaks {LANGUAGE_NAMES[profile.spokenLanguage] ?? profile.spokenLanguage.toUpperCase()}</Text>
-                  <Text style={styles.rowSub}>What you hear on a call; translated when your conversation is in translated mode.</Text>
-                </View>
+                <Text style={styles.rowSub}>{languageName(profile.spokenLanguage)} is what you hear on a call; translated when your conversation is in translated mode.</Text>
               </View>
             )}
             <View style={styles.row}>
@@ -185,16 +207,18 @@ export function PersonProfileScreen({
             {profile.relationship !== 'blocked' && (
               <Pressable disabled={busy} onPress={block} accessibilityRole="button" style={styles.listRow}>
                 <Icon name="shield" size={20} color={C7.red} />
-                <Text style={[styles.listLabel, { color: C7.red }]}>Block</Text>
+                <Text style={[styles.listLabel, styles.danger]}>Block</Text>
               </Pressable>
             )}
-            <Pressable onPress={report} accessibilityRole="button" style={styles.listRow}>
-              <Icon name="bell" size={20} color={C7.muted} />
-              <Text style={styles.listLabel}>Report</Text>
+            <Pressable onPress={() => setReporting(true)} accessibilityRole="button" style={styles.listRow}>
+              <Icon name="bell" size={20} color={C7.red} />
+              <Text style={[styles.listLabel, styles.danger]}>Report</Text>
             </Pressable>
           </GlassCard>
         )}
       </ScrollView>
+
+      <ReportSheet visible={reporting} subjectName={name} aboutMessage={false} onSubmit={submitReport} onClose={() => setReporting(false)} />
     </View>
   );
 }
@@ -207,15 +231,21 @@ const styles = StyleSheet.create({
   topTitle: { color: C7.text, fontSize: 18, fontWeight: '600', fontFamily: 'serif' },
   identity: { alignItems: 'center', gap: 8 },
   avatarRing: { borderRadius: 70, borderWidth: 2, borderColor: C7.teal, padding: 4 },
+  presenceBadge: { position: 'absolute', right: 6, bottom: 6 },
   name: { color: C7.text, fontSize: 30, fontWeight: '600', fontFamily: 'serif', marginTop: 6, textAlign: 'center' },
   handleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   handle: { color: C7.muted, fontSize: 15 },
+  bio: { color: C7.text, fontSize: 15, lineHeight: 21, textAlign: 'center', paddingHorizontal: 12, opacity: 0.9 },
+  presenceRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  presenceWords: { color: C7.muted, fontSize: 13 },
+  presenceActive: { color: C7.green },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 6 },
   relationship: { color: C7.teal, fontSize: 13 },
   notice: { color: C7.amber, fontSize: 13, textAlign: 'center' },
   actions: { flexDirection: 'row', justifyContent: 'center', gap: 28 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  rowTitle: { color: C7.text, fontSize: 15, fontWeight: '600' },
   rowSub: { color: C7.muted, fontSize: 13, lineHeight: 18, flexShrink: 1 },
   listRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: C7.panelEdge },
   listLabel: { color: C7.text, fontSize: 15 },
+  danger: { color: C7.red },
 });

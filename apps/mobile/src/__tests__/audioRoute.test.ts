@@ -28,6 +28,16 @@ describe('audio route', () => {
     expect(router.current()).toBeNull();
   });
 
+  it('goes through Telecom first while it owns the call, and falls back to the app switch when it does not', async () => {
+    const setMode = vi.fn(async () => {});
+    const owned = createAudioRouter(setMode, () => true);
+    expect(await owned.apply('speaker')).toBe(true);
+    expect(setMode).not.toHaveBeenCalled();
+    const unowned = createAudioRouter(setMode, () => false);
+    expect(await unowned.apply('speaker')).toBe(true);
+    expect(setMode).toHaveBeenCalledWith({ shouldRouteThroughEarpiece: false });
+  });
+
   it('a platform refusal is reported, never thrown into the call', async () => {
     const router = createAudioRouter(async () => {
       throw new Error('no audio manager');

@@ -214,6 +214,71 @@ describe('devices', () => {
   });
 });
 
+/**
+ * The two social tables, and the three account columns 017 added. Same
+ * one-list guarantee; `boolean` joins the column types because both tables
+ * have one, and a regex that did not know the type would silently drop the
+ * column from the comparison -- a vacuous pass wearing a green tick.
+ */
+describe.each([
+  { table: 'channel_follows', file: 'channel-follows-postgres.ts' },
+  { table: 'reports', file: 'reports-postgres.ts' },
+])('$table', ({ table, file }) => {
+  const sql = source(file);
+
+  function sharedColumns(): string[] {
+    const match = /const COLUMNS =\s*([\s\S]*?);/u.exec(sql);
+    if (match === null) throw new Error('no COLUMNS constant found');
+    return splitColumns(match[1]!.replace(/['`\n]/g, ' '));
+  }
+
+  function migrationColumns(): string[] {
+    const migrations = readFileSync(join(here, '..', 'db', 'migrations.ts'), 'utf8');
+    const start = migrations.indexOf(`CREATE TABLE IF NOT EXISTS ${table} (`);
+    if (start < 0) throw new Error(`${table} is not created by any migration`);
+    const open = migrations.indexOf('(', start);
+    const close = migrations.indexOf(');', open);
+    return migrations
+      .slice(open + 1, close)
+      .split('\n')
+      .map((line) => line.trim().replace(/--.*$/u, '').trim())
+      .map((line) => /^([a-z_]+)\s+(integer|bigint|text|jsonb|boolean)/u.exec(line)?.[1] ?? '')
+      .filter((name) => name.length > 0);
+  }
+
+  it('actually found columns to compare', () => {
+    expect(sharedColumns().length).toBeGreaterThan(0);
+    expect(migrationColumns().length).toBeGreaterThan(0);
+  });
+
+  it('names only columns the table has', () => {
+    const declared = migrationColumns();
+    expect(sharedColumns().filter((column) => !declared.includes(column))).toEqual([]);
+  });
+
+  it('reads every column the table has', () => {
+    const used = sharedColumns();
+    expect(migrationColumns().filter((column) => !used.includes(column))).toEqual([]);
+  });
+
+  it('binds exactly one placeholder per column on insert', () => {
+    const insert = sql.slice(sql.indexOf(`INSERT INTO ${table}`), sql.indexOf('ON CONFLICT'));
+    const placeholders = [...insert.matchAll(/\$(\d+)/gu)].map((match) => Number(match[1]));
+    expect(Math.max(...placeholders)).toBe(sharedColumns().length);
+  });
+});
+
+describe('accounts, after 017', () => {
+  const sql = source('account-records-postgres.ts');
+
+  it('writes and reads the profile extras', () => {
+    for (const column of ['availability', 'bio', 'notifications_enabled']) {
+      expect(insertColumns(sql, 'accounts')).toContain(column);
+      expect(selectColumns(sql, 'accounts')).toContain(column);
+    }
+  });
+});
+
 /** Same one-list guarantee as tariffs and devices. */
 describe('messages', () => {
   const sql = source('message-records-postgres.ts');

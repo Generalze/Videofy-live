@@ -134,6 +134,7 @@ async function harness() {
     send,
     timeline,
     contacts,
+    devices,
     provider,
     messages,
     calls,
@@ -493,6 +494,40 @@ describe('mute and archive', () => {
       body: JSON.stringify({ muted: false, archived: true }),
     });
     await app.send('acct_a', 'acct_b', 'third');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(app.provider.sent).toHaveLength(2);
+  });
+
+  /*
+   * The recipient's own notification switch is gated in the SAME place as a
+   * mute, and for the same reason: the message still arrives, only the
+   * push is withheld. The recipient must be a real account here, because
+   * the switch is read off its record.
+   */
+  it('a recipient who switched notifications off gets the message and no push', async () => {
+    app = await harness();
+    const registered = await app.store.register({
+      email: 'quiet@example.com',
+      password: 'correct horse battery staple',
+    });
+    if (!registered.ok) throw new Error('registration failed');
+    const quiet = registered.account.accountId;
+    await app.devices.register({ deviceId: 'dev_q', accountId: quiet, platform: 'android', pushToken: 'tok_q' });
+    await app.contacts.request('acct_a', quiet);
+    await app.contacts.accept(quiet, 'acct_a');
+
+    await app.send('acct_a', quiet, 'first');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(app.provider.sent).toHaveLength(1);
+
+    await app.store.setProfileExtras(quiet, { notificationsEnabled: false });
+    await app.send('acct_a', quiet, 'second');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(app.provider.sent).toHaveLength(1);
+    expect(await app.timeline(quiet, 'acct_a')).toHaveLength(2);
+
+    await app.store.setProfileExtras(quiet, { notificationsEnabled: true });
+    await app.send('acct_a', quiet, 'third');
     await new Promise((r) => setTimeout(r, 10));
     expect(app.provider.sent).toHaveLength(2);
   });

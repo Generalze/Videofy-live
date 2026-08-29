@@ -31,6 +31,27 @@ import { parseAccountId, type AccountId } from '@videofy-live/participant-contra
  */
 export const SESSION_LIFETIME_SECONDS = 12 * 60 * 60;
 
+/**
+ * A DEVICE session: the phone's. Founder ruling 29 Aug 2026: "the mobile
+ * app should not be a 12-hour session; it should be until the user signs
+ * out." So a device session is long (180 days) and RENEWED while the app
+ * is used (`POST /sessions/renew`), which makes it effectively until
+ * sign-out; what bounds a stolen device token is not this lifetime but the
+ * account's token version, which sign-out-everywhere bumps, and the phone
+ * lock (one hour idle, biometric to unlock) in front of it.
+ *
+ * The class travels IN the token (`cls`) so renewal can only ever hand back
+ * the class that was issued: a browser token cannot be renewed into a
+ * device one.
+ */
+export const DEVICE_SESSION_LIFETIME_SECONDS = 180 * 24 * 60 * 60;
+
+export type SessionClass = 'browser' | 'device';
+
+export function sessionLifetimeSeconds(sessionClass: SessionClass): number {
+  return sessionClass === 'device' ? DEVICE_SESSION_LIFETIME_SECONDS : SESSION_LIFETIME_SECONDS;
+}
+
 /** The minimum secret we will operate on. Shorter is not a secret. */
 const MIN_SECRET_LENGTH = 32;
 
@@ -46,6 +67,8 @@ export interface SessionClaims {
    * token issued before — the account service's "sign out everywhere".
    */
   readonly version: number;
+  /** Which class the token was issued as; renewal keeps it. */
+  readonly sessionClass: SessionClass;
 }
 
 export type SessionVerification =
@@ -61,6 +84,7 @@ interface TokenPayload {
   sub?: unknown;
   iat?: unknown;
   exp?: unknown;
+  cls?: unknown;
   ver?: unknown;
 }
 
@@ -100,12 +124,15 @@ export function issueSessionToken(input: {
   readonly version: number;
   readonly nowSeconds: number;
   readonly lifetimeSeconds?: number;
+  readonly sessionClass?: SessionClass;
 }): string {
+  const sessionClass = input.sessionClass ?? 'browser';
   const payload = {
     sub: input.accountId,
     iat: input.nowSeconds,
-    exp: input.nowSeconds + (input.lifetimeSeconds ?? SESSION_LIFETIME_SECONDS),
+    exp: input.nowSeconds + (input.lifetimeSeconds ?? sessionLifetimeSeconds(sessionClass)),
     ver: input.version,
+    ...(sessionClass === 'device' ? { cls: 'device' } : {}),
   };
   const body = base64url(Buffer.from(JSON.stringify(payload), 'utf8'));
   return `${body}.${sign(input.secret, body)}`;
@@ -157,7 +184,8 @@ export function verifySessionToken(input: {
   }
   if (input.nowSeconds >= expiresAt) return { ok: false, reason: 'expired' };
 
-  return { ok: true, claims: { accountId, issuedAt, expiresAt, version } };
+  const sessionClass: SessionClass = payload.cls === 'device' ? 'device' : 'browser';
+  return { ok: true, claims: { accountId, issuedAt, expiresAt, version, sessionClass } };
 }
 
 /** The bearer token in an Authorization header, or null. */

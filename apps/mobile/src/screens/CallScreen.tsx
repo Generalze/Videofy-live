@@ -29,7 +29,7 @@
  * phone is an app watching them.
  */
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { setAudioModeAsync } from 'expo-audio';
 import { RTCView } from 'react-native-webrtc';
 import type { DirectCallStateSnapshot } from '@videofy-live/call-client-core';
@@ -55,6 +55,15 @@ import {
   type CallTransportEvent,
   type RemoteStream,
 } from '../call/callConnection';
+import { Chip } from '../ui/c7';
+import {
+  admissionWords,
+  knockWords,
+  type AdmissionStatus,
+  type ConferenceInfo,
+  type KnockingSeat,
+} from '../conference/admission';
+import { languageLabel, type ConferenceSetup } from '../conference/conferenceSetup';
 
 /** Not a secret; compiled into the bundle like every EXPO_PUBLIC_ value. */
 const GATEWAY_URL = process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
@@ -95,6 +104,14 @@ export type ActiveCallDescriptor =
       readonly kind: 'conference';
       /** The shareable conference code. */
       readonly callId: string;
+      /**
+       * CONFERENCE SETUP (29 Aug): what the host chose on the Start card.
+       * Present only when this phone is STARTING the conference; absent when
+       * joining by code, where the conference itself is authoritative and
+       * the gateway ignores it anyway. Also the title and languages shown
+       * until the gateway's call:state states them.
+       */
+      readonly setup?: ConferenceSetup | undefined;
     };
 
 export interface CallScreenProps {
@@ -158,6 +175,21 @@ export function CallScreen({
   >([]);
 
   /*
+   * RESTRICTED ADMISSION (29 Aug). Host side: who is waiting at the door,
+   * answered one at a time. Joiner side: null until the join ack says
+   * 'pending', then the gateway's answer. `info` is the conference as the
+   * gateway states it -- the host's own setup only until then.
+   */
+  const [knocking, setKnocking] = useState<readonly KnockingSeat[]>([]);
+  const [admission, setAdmission] = useState<AdmissionStatus | null>(null);
+  const [answering, setAnswering] = useState(false);
+  const [info, setInfo] = useState<ConferenceInfo>(() => ({
+    title: call.kind === 'conference' ? (call.setup?.title ?? null) : null,
+    privacy: call.kind === 'conference' ? (call.setup?.privacy ?? null) : null,
+    targetLanguages: call.kind === 'conference' ? (call.setup?.targetLanguages ?? []) : [],
+  }));
+
+  /*
    * THE TELEPHONE. `serverState` is the server's word; `connectedAtMs` is the
    * server-stamped origin of the timer; `clockOffset` is measured once from
    * the first wire so the origin can be ticked on the phone's clock.
@@ -186,7 +218,12 @@ export function CallScreen({
 
   /** Audio routing: an explicit choice, or null for the camera-driven default. */
   const [chosenRoute, setChosenRoute] = useState<AudioRoute | null>(null);
-  const router = useRef(createAudioRouter((audioMode) => setAudioModeAsync(audioMode)));
+  const router = useRef(
+    createAudioRouter(
+      (audioMode) => setAudioModeAsync(audioMode),
+      (speaker) => videofyCall.setAudioRoute(callId, speaker),
+    ),
+  );
 
   const acceptDirectState = useCallback((wire: DirectCallStateSnapshot) => {
     clockOffset.current = observeServerClock(clockOffset.current, wire.updatedAtMs, Date.now());
@@ -204,6 +241,16 @@ export function CallScreen({
       callId,
       displayName,
       ...(call.kind === 'direct' ? { directPeerAccountId: call.peer.accountId } : {}),
+      ...(call.kind === 'conference' && call.setup !== undefined ? { setup: call.setup } : {}),
+      onKnocking: (seats) => {
+        if (live) setKnocking(seats);
+      },
+      onAdmission: (status) => {
+        if (live) setAdmission(status);
+      },
+      onConferenceInfo: (next) => {
+        if (live) setInfo(next);
+      },
       ...(speakLanguage === undefined ? {} : { speakLanguage }),
       ...(hearLanguage === undefined ? {} : { hearLanguage }),
       sessionToken,
@@ -277,6 +324,9 @@ export function CallScreen({
       },
     });
     connection.current = link;
+
+    // The caller's call is Telecom's too (phase 2): audio focus and routing owned by the OS.
+    if (call.kind === 'direct' && onRing !== undefined) videofyCall.reportOutgoingCall(callId, call.peer.name);
 
     void (async () => {
       try {
@@ -355,6 +405,26 @@ export function CallScreen({
     return () => clearTimeout(timer);
   }, [terminal, onLeave]);
 
+  // A refused knock ends the screen the same way: the words, then out.
+  const refused = admission !== null && admission !== 'pending' && admission !== 'admitted';
+  useEffect(() => {
+    if (!refused) return undefined;
+    const timer = setTimeout(() => onLeave(), 2500);
+    return () => clearTimeout(timer);
+  }, [refused, onLeave]);
+
+  /** The host's answer to the first knock; the list moves on when the gateway agrees. */
+  const answerKnock = useCallback((participantId: string, admit: boolean) => {
+    setAnswering(true);
+    const link = connection.current;
+    void (link?.admit(participantId, admit) ?? Promise.resolve({ ok: false as const, error: 'not-in-call' })).then(
+      (result) => {
+        setAnswering(false);
+        if (!result.ok) setError(admit ? 'Could not let them in. Try again.' : 'Could not answer. Try again.');
+      },
+    );
+  }, []);
+
   // Audio route follows the camera unless the person chose.
   useEffect(() => {
     void router.current.apply(resolveRoute(cameraOn, chosenRoute));
@@ -418,6 +488,8 @@ export function CallScreen({
           ? 'Normal call'
           : 'Direct call'
       : 'Conference';
+  const knock = knockWords(knocking);
+  const firstKnock = knocking[0];
 
   return (
     <View style={styles.screen}>
@@ -425,7 +497,47 @@ export function CallScreen({
 
       <View style={styles.top}>
         <C7Mark caption={call.kind === 'direct' ? 'Direct call' : 'Conference'} />
+        {call.kind === 'conference' && info.title !== null && (
+          <Text style={styles.confTitle} numberOfLines={1}>
+            {info.title}
+          </Text>
+        )}
+        {call.kind === 'conference' && info.targetLanguages.length > 0 && (
+          <View style={styles.langRow}>
+            {info.targetLanguages.map((code) => (
+              <Chip key={code} label={languageLabel(code)} tone="teal" />
+            ))}
+          </View>
+        )}
       </View>
+
+      {/* ===== HOST: somebody is at the door of a restricted conference. ===== */}
+      {call.kind === 'conference' && knock !== null && firstKnock !== undefined && (
+        <View style={styles.knockBanner}>
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text style={styles.knockHeadline} numberOfLines={1}>
+              {knock.headline}
+            </Text>
+            {knock.others !== null && <Text style={styles.knockOthers}>{knock.others}</Text>}
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            disabled={answering}
+            onPress={() => answerKnock(firstKnock.participantId, false)}
+            style={({ pressed }) => [styles.knockRefuse, (pressed || answering) && styles.knockPressed]}
+          >
+            <Text style={styles.knockRefuseLabel}>Refuse</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            disabled={answering}
+            onPress={() => answerKnock(firstKnock.participantId, true)}
+            style={({ pressed }) => [styles.knockAdmit, (pressed || answering) && styles.knockPressed]}
+          >
+            <Text style={styles.knockAdmitLabel}>Admit</Text>
+          </Pressable>
+        </View>
+      )}
 
       {/* ===== DIRECT CALL: the person, the state, the timer. ===== */}
       {call.kind === 'direct' && (
@@ -600,6 +712,27 @@ export function CallScreen({
           </View>
         </GlassDock>
       </View>
+
+      {/* ===== JOINER: knocked on a restricted conference; no media until the host says so. ===== */}
+      {call.kind === 'conference' && admission !== null && admission !== 'admitted' && (
+        <View style={styles.admissionOverlay}>
+          {info.title !== null && (
+            <Text style={styles.admissionTitle} numberOfLines={2}>
+              {info.title}
+            </Text>
+          )}
+          {admission === 'pending' && <ActivityIndicator color={CALL_COLORS.teal} size="large" />}
+          <Text style={styles.admissionLine}>{admissionWords(admission)}</Text>
+          {admission === 'pending' && (
+            <>
+              <Text style={styles.hint}>The host sees your name and decides.</Text>
+              <Pressable accessibilityRole="button" onPress={onLeave} style={({ pressed }) => [styles.admissionCancel, pressed && styles.knockPressed]}>
+                <Text style={styles.admissionCancelLabel}>Cancel</Text>
+              </Pressable>
+            </>
+          )}
+        </View>
+      )}
     </View>
   );
 }
@@ -700,4 +833,45 @@ const styles = StyleSheet.create({
 
   dockWrap: { paddingHorizontal: 14 },
   controlsRow: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'flex-start' },
+
+  confTitle: { color: CALL_COLORS.text, fontSize: 20, fontWeight: '600', fontFamily: 'serif', marginTop: 10, letterSpacing: -0.2 },
+  langRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+
+  knockBanner: {
+    marginTop: 12,
+    marginHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(62,201,192,0.4)',
+    backgroundColor: 'rgba(12,28,36,0.92)',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  knockHeadline: { color: CALL_COLORS.text, fontSize: 15, fontWeight: '600' },
+  knockOthers: { color: CALL_COLORS.muted, fontSize: 12 },
+  knockRefuse: { borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)', paddingHorizontal: 14, paddingVertical: 8 },
+  knockRefuseLabel: { color: CALL_COLORS.text, fontSize: 14, fontWeight: '600' },
+  knockAdmit: { borderRadius: 999, backgroundColor: '#128a84', borderWidth: 1, borderColor: 'rgba(62,201,192,0.7)', paddingHorizontal: 16, paddingVertical: 8 },
+  knockAdmitLabel: { color: '#ffffff', fontSize: 14, fontWeight: '600' },
+  knockPressed: { opacity: 0.6 },
+
+  admissionOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: CALL_COLORS.ground,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+    paddingHorizontal: 32,
+  },
+  admissionTitle: { color: CALL_COLORS.text, fontSize: 26, fontWeight: '600', fontFamily: 'serif', textAlign: 'center', letterSpacing: -0.3 },
+  admissionLine: { color: CALL_COLORS.text, fontSize: 18, textAlign: 'center' },
+  admissionCancel: { marginTop: 12, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)', paddingHorizontal: 28, paddingVertical: 12 },
+  admissionCancelLabel: { color: CALL_COLORS.text, fontSize: 16, fontWeight: '600' },
 });

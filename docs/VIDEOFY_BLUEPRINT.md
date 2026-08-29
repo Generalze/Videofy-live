@@ -285,10 +285,33 @@ system (`packages/c7-style`: tokens + card/pill/badge/row/bubble).
 stacks. Push routes: ring → call screen, message → that chat, cold-start
 included.
 
-Next passes: a genuinely native incoming-call surface — on Android via the
-Telecom framework (self-managed ConnectionService, full-screen intent
-permissions handled correctly), not merely a React Native screen on a push;
-Chats empty-state that leads somewhere; verification state on Profile.
+**The phone is a telephone (Telecom phase 2, 29 Aug 2026).** A C7 call is
+a call to Android: a self-managed ConnectionService owns the ring, the
+audio focus and the speaker route (the Speaker control goes through the
+Connection while Telecom owns the call, because Telecom overrides
+AudioManager). Telecom is an upgrade, never a gate: if the phone account
+cannot be registered or Telecom refuses the call, the phase-1 ring
+(CallStyle notification + full-screen activity) rings exactly as before.
+Every Connection ends -- `reportCallEnded` on every exit, and a 75 s
+watchdog on a ring nobody answers -- because an un-ended self-managed
+Connection makes the phone refuse every later call.
+
+**Signed in until sign-out (founder ruling 29 Aug 2026).** The phone signs
+in as `client: 'device'` and gets a 180-day token renewed while the app is
+used (`POST /sessions/renew` hands back the same class; the class travels
+in the token). What bounds a long token on a lost phone is the account's
+token version -- sign-out-everywhere -- and the app lock in front of it:
+one hour without the app on screen, then biometrics (fingerprint / face)
+or the account password. The lock is NEVER in front of a ring or a live
+call; it waits until the call ends. A lock unlocks; it never signs out.
+
+**Everything else on the phone is in the app.** Programmes play inside the
+app (the web viewer under the C7 shell, until HLS renditions give a native
+player); reports are filed from the message or the profile without leaving
+the conversation, metadata only; suggested connections, presence (accepted
+contacts only), "Speaks …", the profile rows the canon shows, conference
+title / privacy / restricted admission / target languages, and chat
+search, jump-to-message, sending / failed bubbles, playback speed.
 
 ---
 

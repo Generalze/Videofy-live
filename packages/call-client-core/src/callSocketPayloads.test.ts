@@ -197,6 +197,9 @@ describe('call socket contract', () => {
       GENERATED_AUDIO: 'call:generated-audio',
       TRANSLATED_AUDIO_FRAME: 'call:translated-audio-frame',
       ERROR: 'call:error',
+      KNOCK: 'call:knock',
+      ADMIT: 'call:admit',
+      ADMISSION: 'call:admission',
       // W5: call-global mode change, owner authority only.
       SET_MODE: 'call:mode:set',
       // W5.1: a listener's own mid-call Audio Mode — planning authority,

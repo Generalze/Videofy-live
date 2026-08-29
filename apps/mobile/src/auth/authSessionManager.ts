@@ -9,21 +9,22 @@
  * session alive for up to twelve hours after somebody revoked it -- which is
  * exactly the window an account recovery is trying to close.
  *
- * NO REFRESH, BECAUSE THE SERVER HAS NONE. `POST /sessions` returns a token
- * with `expiresInSeconds` and there is no refresh endpoint anywhere in the
- * account service. Inventing one here -- a silent re-authentication, a cached
- * password, a long-lived secondary credential -- would be building an
- * authentication protocol the server does not implement, in the client, where
- * it cannot be enforced. When the session ends the person signs in again.
- *
- * (Worth stating plainly: sessions last twelve hours, so that is a daily
- * sign-in on a phone. That is a server-side product decision, and the right
- * place to fix it is the server, not a workaround here.)
+ * A DEVICE SESSION, UNTIL SIGN-OUT (founder ruling 29 Aug 2026). The phone
+ * signs in as `client: 'device'` and receives a 180-day token; while the app
+ * is used it renews (`POST /sessions/renew`, the server hands back the same
+ * class), so the session lasts until the person signs out. No cached
+ * password, no secondary credential: renewal presents the live token and
+ * the server's version check still ends a revoked session on the next
+ * launch. What stands in front of a long token on a lost phone is the app
+ * lock (`appLock.ts`): one hour idle, then biometrics or the password.
  *
  * ONE OWNER OF THE CREDENTIAL. Nothing outside this module reads the token.
  * Callers ask for an authenticated request; they never ask for the secret.
  */
 import type { SecureSessionStore, StoredSession } from './secureSessionStore';
+
+/** Renew once the device session has under thirty days left. */
+const RENEW_WHEN_REMAINING_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type AuthState =
   | { readonly status: 'starting' }
@@ -201,7 +202,7 @@ export class AuthSessionManager {
       response = await this.fetchImpl(`${this.baseUrl}/accounts`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email, password, username }),
+        body: JSON.stringify({ email, password, username, client: 'device' }),
       });
     } catch {
       return { ok: false, reason: 'network' };
@@ -253,7 +254,7 @@ export class AuthSessionManager {
       response = await this.fetchImpl(`${this.baseUrl}/sessions`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, client: 'device' }),
       });
     } catch {
       return { ok: false, reason: 'network' };
@@ -353,6 +354,33 @@ export class AuthSessionManager {
    * Returns null when signed out, which is a legitimate call state: joining an
    * existing call needs no session, only CREATING one does.
    */
+  /**
+   * Renew the device session while it is used, so it lasts until sign-out.
+   *
+   * Called on every foreground. Nothing happens until the token has under
+   * thirty days left, so a phone used daily renews about five times a year
+   * and a phone left in a drawer simply ages out. A refusal is NOT a
+   * sign-out: `GET /sessions/current` on the next launch is the one
+   * authority on that, as ever.
+   */
+  async renewIfNeeded(): Promise<void> {
+    const session = this.session;
+    if (session === null) return;
+    const remainingMs = this.sessionExpiresAtMs()! - this.now();
+    if (remainingMs > RENEW_WHEN_REMAINING_MS) return;
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}/sessions/renew`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${session.token}` },
+      });
+    } catch {
+      return;
+    }
+    if (!response.ok || this.session !== session) return;
+    await this.storeSessionFrom(response);
+  }
+
   /** When the current session stops being valid, in wall-clock ms; null when signed out. */
   sessionExpiresAtMs(): number | null {
     const session = this.session;

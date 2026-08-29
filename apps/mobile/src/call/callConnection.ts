@@ -62,6 +62,20 @@ import {
   type CallVideoSdpPayload,
   type DirectCallStateSnapshot,
 } from '@videofy-live/call-client-core';
+import {
+  mergeKnock,
+  parseAdmission,
+  parseConferenceInfo,
+  parseKnocking,
+  withoutSeat,
+  type AdmissionStatus,
+  type ConferenceInfo,
+  type KnockingSeat,
+} from '../conference/admission';
+import type { ConferenceSetup } from '../conference/conferenceSetup';
+
+/** The gateway refuses a knock nobody answers in 60 s; the phone stops waiting at the same moment. */
+const KNOCK_TIMEOUT_MS = 60_000;
 
 /** Long enough for a cold gateway, short enough that nobody stares at a spinner. */
 const ACK_TIMEOUT_MS = 15_000;
@@ -86,6 +100,13 @@ export interface CallConnectionOptions {
    * mode (server-resolved, locked). Absent for conferences.
    */
   readonly directPeerAccountId?: string;
+  /**
+   * CONFERENCE SETUP (29 Aug): title, who may enter, offered languages.
+   * Sent with the join and consulted by the gateway ONLY when this join
+   * CREATES the conference; joining an existing one by code ignores it,
+   * because the conference itself is authoritative. Absent for direct calls.
+   */
+  readonly setup?: ConferenceSetup;
   /** The language this account SPEAKS; preloads the join form. */
   readonly speakLanguage?: 'en' | 'es' | 'fr';
   /** The language this account PREFERS TO HEAR; preloads the join form. */
@@ -166,6 +187,25 @@ export interface CallConnectionOptions {
   ) => void;
   /** How many ICE servers were actually obtained. Zero is worth showing. */
   readonly onIceServers?: (count: number) => void;
+  /**
+   * HOST SIDE of a restricted conference: the seats waiting at the door,
+   * from `knocking` on every call:state and from call:knock as it lands.
+   * Answered with `admit()`.
+   */
+  readonly onKnocking?: (seats: readonly KnockingSeat[]) => void;
+  /**
+   * JOINER SIDE: the join ack said 'pending' (knocked, no media, not in the
+   * call), then call:admission said in or out. A refusal is followed by the
+   * gateway disconnecting this socket, which is reported here and NOT as a
+   * transport loss.
+   */
+  readonly onAdmission?: (status: AdmissionStatus) => void;
+  /**
+   * Title, privacy and offered languages as the GATEWAY states them -- from
+   * the join ack's snapshot and every call:state. The host's own setup is
+   * what they asked for; this is what the conference is.
+   */
+  readonly onConferenceInfo?: (info: ConferenceInfo) => void;
 }
 
 /**
@@ -201,6 +241,8 @@ export type CallTransportEvent =
 type CallStatePayload = CallStateSnapshot;
 
 export class CallConnection {
+  /** The knocker's own wait ceiling; see the join's pending branch. */
+  private knockTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly options: CallConnectionOptions;
   private socket: Socket | null = null;
   private mesh: CallVideoMesh | null = null;
@@ -430,6 +472,7 @@ export class CallConnection {
             ...(this.options.directPeerAccountId === undefined
               ? {}
               : { directPeerAccountId: this.options.directPeerAccountId }),
+            ...this.setupFields(),
           },
           (error: unknown, reply?: CallJoinAck) => {
             resolve(
@@ -461,10 +504,98 @@ export class CallConnection {
     // The telephone's state at the moment of joining, so the screen never
     // waits for the NEXT transition to learn the current one.
     if (ack.directState !== undefined) this.deliverDirectState(ack.directState);
+    // What the conference IS, as the gateway states it -- title and setup
+    // reach a knocker too, so the waiting screen can say what it waits for.
+    this.deliverConferenceInfo(ack.snapshot);
 
+    /*
+     * RESUME THE SAME SEAT ON RECONNECT. Socket.IO reconnects the transport
+     * by itself; it does not re-join the call. Before this, a phone whose
+     * socket blipped kept a live-looking screen while the gateway had
+     * detached its voice legs and armed the 120-second reaper.
+     *
+     * Registered HERE, before the knock branch below, because a knocking
+     * socket is bound too: it needs the error and admission handlers even
+     * though it has no media yet.
+     */
+    socket.on('disconnect', (reason: string) => {
+      if (reason === 'io client disconnect') return;
+      // A refused knocker is put out by the gateway; that is the answer
+      // already reported, not a transport loss.
+      if (this.dismissed) return;
+      this.options.onTransport?.({ kind: 'socket-lost', reason });
+    });
+    socket.io.on('reconnect', (attempt: number) => {
+      void this.resumeSeat(attempt);
+    });
+
+    socket.on(CALL_EVENTS.ERROR, (payload: { message?: string }) =>
+      this.options.onError(payload?.message ?? 'The call service refused this call.'),
+    );
+    socket.on('connect_error', () => this.options.onError('Could not reach the call service.'));
+
+    /*
+     * RESTRICTED ADMISSION, both sides. The host hears knocks in their
+     * private room; the joiner hears the answer in theirs. Each side only
+     * ever receives its own events, so both handlers can sit on one socket.
+     */
+    socket.on(CALL_EVENTS.KNOCK, (raw: unknown) => {
+      this.knocking = mergeKnock(this.knocking, raw);
+      this.options.onKnocking?.(this.knocking);
+    });
+    socket.on(CALL_EVENTS.ADMISSION, (raw: unknown) => this.handleAdmission(socket, raw, ice, local));
+
+    if (ack.admission === 'pending') {
+      /*
+       * KNOCKED. The seat exists and the socket is bound, but this phone is
+       * not in the call: no mesh, no voice legs, no roster. Everything below
+       * waits for call:admission; leave() still works, which is the one
+       * thing a knocker may do.
+       */
+      this.options.onAdmission?.('pending');
+      /*
+       * NOTHING IS HELD WHILE WAITING. The microphone (and the camera, if
+       * the screen had already turned it on) is released so the privacy
+       * indicator goes dark at the door; admission re-opens the microphone
+       * before the legs negotiate, and the camera control starts from off.
+       */
+      for (const track of local.getTracks()) track.stop();
+      this.local = null;
+      void this.setCameraEnabled(false);
+      /*
+       * A knocker whose socket dropped while waiting gets no answer, ever:
+       * the gateway forgets the knock on disconnect. Mirror its 60 s
+       * timeout here so the overlay resolves to 'Nobody answered' instead
+       * of waiting for a Cancel.
+       */
+      this.knockTimer = setTimeout(() => {
+        this.knockTimer = null;
+        this.options.onAdmission?.({ refused: 'timeout' });
+        void this.leave();
+      }, KNOCK_TIMEOUT_MS);
+      return ack;
+    }
+
+    await this.enterCall(socket, ack.participantId, ice, local, null);
+    return ack;
+  }
+
+  /**
+   * Everything that makes a seated participant part of the call: the video
+   * mesh, membership-driven peer sync, the two voice legs. Run straight
+   * after a join that seated us, or after an admission that did.
+   */
+  private async enterCall(
+    socket: Socket,
+    participantId: string,
+    ice: RTCIceServer[],
+    local: LocalStream,
+    /** The admission's snapshot, applied at once; null when call:state will follow on its own. */
+    snapshot: unknown,
+  ): Promise<void> {
     const mesh = new CallVideoMesh({
       callId: this.options.callId,
-      selfParticipantId: ack.participantId,
+      selfParticipantId: participantId,
       iceServers: ice,
       // THE PLATFORM SEAM. Everything else is shared with the web client.
       createPeerConnection: () =>
@@ -512,7 +643,11 @@ export class CallConnection {
      * peers, so the mesh follows the gateway's view rather than keeping its own
      * -- two views of who is in a call is how a departed peer keeps a tile.
      */
-    socket.on(CALL_EVENTS.STATE, (payload: CallStatePayload) => {
+    const applyState = (payload: CallStatePayload): void => {
+      // The door, for the host: who is waiting. Empty everywhere else.
+      this.knocking = parseKnocking(payload);
+      this.options.onKnocking?.(this.knocking);
+      this.deliverConferenceInfo(payload);
       const joined = (payload?.participants ?? [])
         // JOINED ONLY, exactly as the web client does. A seat that exists but
         // has not been taken is not somebody to offer to yet.
@@ -550,7 +685,10 @@ export class CallConnection {
             : {}),
         })),
       );
-    });
+    };
+    socket.on(CALL_EVENTS.STATE, applyState);
+    // An admitted joiner already holds the roster in the admission itself.
+    if (snapshot !== null && typeof snapshot === 'object') applyState(snapshot as CallStatePayload);
 
     socket.on(CALL_EVENTS.DIRECT_STATE, (wire: unknown) => this.deliverDirectState(wire));
 
@@ -564,25 +702,6 @@ export class CallConnection {
     });
 
     /*
-     * RESUME THE SAME SEAT ON RECONNECT. Socket.IO reconnects the transport
-     * by itself; it does not re-join the call. Before this, a phone whose
-     * socket blipped kept a live-looking screen while the gateway had
-     * detached its voice legs and armed the 120-second reaper.
-     */
-    socket.on('disconnect', (reason: string) => {
-      if (reason === 'io client disconnect') return;
-      this.options.onTransport?.({ kind: 'socket-lost', reason });
-    });
-    socket.io.on('reconnect', (attempt: number) => {
-      void this.resumeSeat(attempt);
-    });
-
-    socket.on(CALL_EVENTS.ERROR, (payload: { message?: string }) =>
-      this.options.onError(payload?.message ?? 'The call service refused this call.'),
-    );
-    socket.on('connect_error', () => this.options.onError('Could not reach the call service.'));
-
-    /*
      * SDP offers are answered through the ACK, exactly like the join --
      * `.timeout()` is what makes the callback two-argument. The lesson was
      * already paid for once tonight.
@@ -593,7 +712,7 @@ export class CallConnection {
           .timeout(ACK_TIMEOUT_MS)
           .emit(
             event,
-            buildCallSdpPayload(this.options.callId, ack.participantId, sdp),
+            buildCallSdpPayload(this.options.callId, participantId, sdp),
             (error: unknown, reply?: CallSdpAck) => {
               if (error || !reply?.ok || typeof reply.sdp !== 'string') {
                 reject(new Error('Call audio could not be negotiated.'));
@@ -617,7 +736,7 @@ export class CallConnection {
         onLocalIceCandidate: (candidate) =>
           socket.emit(
             CALL_EVENTS.PUBLISH_ICE,
-            buildCallIcePayload(this.options.callId, ack.participantId, candidate),
+            buildCallIcePayload(this.options.callId, participantId, candidate),
           ),
       });
     this.buildPublish = buildPublish;
@@ -634,7 +753,7 @@ export class CallConnection {
         onLocalIceCandidate: (candidate) =>
           socket.emit(
             CALL_EVENTS.RECEIVE_ICE,
-            buildCallIcePayload(this.options.callId, ack.participantId, candidate),
+            buildCallIcePayload(this.options.callId, participantId, candidate),
           ),
         /*
          * No sink to build: react-native-webrtc routes remote audio tracks to
@@ -668,8 +787,84 @@ export class CallConnection {
         error instanceof Error ? error.message : 'Call audio could not be negotiated.',
       );
     }
+  }
 
-    return ack;
+  /**
+   * The gateway's answer to this phone's knock. Admitted: the snapshot is
+   * the roster we may now see, and the seat becomes a participant exactly
+   * as a direct join would have -- same socket, same participantId, the
+   * mesh and voice legs built now. Refused (or nobody answered in time):
+   * reported, and the disconnect the gateway follows with is expected.
+   */
+  private handleAdmission(socket: Socket, raw: unknown, ice: RTCIceServer[], local: LocalStream): void {
+    const admission = parseAdmission(raw);
+    if (this.knockTimer !== null) {
+      clearTimeout(this.knockTimer);
+      this.knockTimer = null;
+    }
+    const participantId = this.participantId;
+    if (admission === null || participantId === null) return;
+    if (!admission.admitted) {
+      this.dismissed = true;
+      this.options.onAdmission?.({ refused: admission.reason });
+      return;
+    }
+    // Already seated: a duplicate answer changes nothing.
+    if (this.mesh !== null) return;
+    this.deliverConferenceInfo(admission.snapshot);
+    // Told first, so the waiting screen lifts while the legs negotiate.
+    this.options.onAdmission?.('admitted');
+    // The microphone was released at the door (see the pending branch); open it again.
+    void (this.local === null ? this.openLocalMedia() : Promise.resolve(local)).then(
+      (fresh) => this.enterCall(socket, participantId, ice, fresh, admission.snapshot),
+      () => this.options.onAdmission?.({ refused: 'refused' }),
+    );
+  }
+
+  /** The three setup fields, only when a setup was given; nothing invented otherwise. */
+  private setupFields(): { title?: string; privacy?: ConferenceSetup['privacy']; targetLanguages?: string[] } {
+    const setup = this.options.setup;
+    if (setup === undefined) return {};
+    return {
+      ...(setup.title === undefined ? {} : { title: setup.title }),
+      privacy: setup.privacy,
+      targetLanguages: [...setup.targetLanguages],
+    };
+  }
+
+  private deliverConferenceInfo(raw: unknown): void {
+    if (raw === undefined || raw === null || this.options.onConferenceInfo === undefined) return;
+    this.options.onConferenceInfo(parseConferenceInfo(raw));
+  }
+
+  /**
+   * THE HOST'S ANSWER to a knock. Bound to this phone's own seat, which is
+   * how the gateway knows it is the host speaking; anyone else is refused
+   * with `not-owner`. The waiting list is updated locally on success so the
+   * banner moves on before the next call:state confirms it.
+   */
+  async admit(
+    targetParticipantId: string,
+    admit: boolean,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const socket = this.socket;
+    const participantId = this.participantId;
+    if (socket === null || participantId === null) return { ok: false, error: 'not-in-call' };
+    return new Promise((resolve) => {
+      socket.timeout(5_000).emit(
+        CALL_EVENTS.ADMIT,
+        { callId: this.options.callId, participantId, targetParticipantId, admit },
+        (error: unknown, reply?: { ok?: boolean; error?: unknown }) => {
+          if (error || reply?.ok !== true) {
+            resolve({ ok: false, error: typeof reply?.error === 'string' ? reply.error : 'no-reply' });
+            return;
+          }
+          this.knocking = withoutSeat(this.knocking, targetParticipantId);
+          this.options.onKnocking?.(this.knocking);
+          resolve({ ok: true });
+        },
+      );
+    });
   }
 
   private buildReceive: (() => CallPeer) | null = null;
@@ -707,6 +902,9 @@ export class CallConnection {
     const credentials = this.resumeCredentials;
     const form = this.joinForm;
     if (socket === null || credentials === null || form === null) return;
+    // A knocker is not in the call: there is no seat to resume, only an
+    // answer to wait for (or Cancel).
+    if (this.mesh === null) return;
     this.options.onTransport?.({ kind: 'resuming', attempt });
     const ack = await new Promise<CallJoinAck>((resolve) => {
       socket.timeout(ACK_TIMEOUT_MS).emit(
@@ -716,6 +914,7 @@ export class CallConnection {
           ...(this.options.directPeerAccountId === undefined
             ? {}
             : { directPeerAccountId: this.options.directPeerAccountId }),
+          ...this.setupFields(),
         },
         (error: unknown, reply?: CallJoinAck) => {
           resolve(
@@ -773,6 +972,10 @@ export class CallConnection {
     });
   }
   private knownParticipants = new Set<string>();
+  /** Host side: the seats waiting at the door, as last stated. */
+  private knocking: KnockingSeat[] = [];
+  /** Joiner side: refused, and the gateway's disconnect is the expected end. */
+  private dismissed = false;
   private rebuilding = false;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -860,6 +1063,7 @@ export class CallConnection {
     this.receivePeer = null;
     this.participantId = null;
     this.resumeCredentials = null;
+    this.knocking = [];
     this.socket?.disconnect();
     this.socket = null;
 

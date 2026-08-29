@@ -485,6 +485,11 @@ export class MessageStore {
     return this.viewFor(accountId, inPair);
   }
 
+  /** How many messages this account has pinned, across every conversation. */
+  async savedCount(accountId: string): Promise<number> {
+    return (await this.actions.pinnedMessageIds(accountId)).length;
+  }
+
   settingsWith(accountId: string, partnerId: string): Promise<ConversationSettings> {
     return this.actions.settings(accountId, partnerId);
   }

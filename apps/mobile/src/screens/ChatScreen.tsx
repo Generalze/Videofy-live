@@ -49,6 +49,7 @@ import { fetchTranslatedVoiceNoteAsDataUri, fetchVoiceNoteAsDataUri, formatDurat
 import { C7, C7Ground, Chip } from '../ui/c7';
 import { Icon } from '../ui/icons';
 import { MessageActionSheet, type MessageAction } from './MessageActionSheet';
+import { ReportSheet } from './ReportSheet';
 
 const POLL_MS = 3000;
 
@@ -113,6 +114,14 @@ export function ChatScreen({
   const [preview, setPreview] = useState<{ uri: string; durationMs: number } | null>(null);
   /** Which note the shared player currently holds: a message id, or 'preview'. */
   const [loadedNote, setLoadedNote] = useState<string | null>(null);
+  /** Playback speed for voice notes: 1x, 1.5x, 2x, cycled from the bubble. */
+  const [rate, setRate] = useState<1 | 1.5 | 2>(1);
+  /** The text on its way out, shown as a bubble until the server has it. */
+  const [pendingBody, setPendingBody] = useState<string | null>(null);
+  /** Jump-to-message: the list handle and the bubble briefly lit after the jump. */
+  const listRef = useRef<FlatList<TimelineItem>>(null);
+  const [highlighted, setHighlighted] = useState<string | null>(null);
+  const [reporting, setReporting] = useState<WireMessage | null>(null);
 
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const player = useAudioPlayer();
@@ -161,6 +170,7 @@ export function ChatScreen({
     }
     const replyToMessageId = replyTo?.messageId;
     setReplyTo(null);
+    setPendingBody(body);
     const result = await api.sendText(partner.accountId, body, replyToMessageId);
     if (!result.ok) {
       setFailedSend(replyToMessageId === undefined ? { body } : { body, replyToMessageId });
@@ -169,6 +179,7 @@ export function ChatScreen({
       setFailedSend(null);
       await load();
     }
+    setPendingBody(null);
     setSending(false);
   }, [api, draft, editing, load, partner.accountId, replyTo, sending]);
 
@@ -191,6 +202,9 @@ export function ChatScreen({
     async (message: WireMessage, action: MessageAction) => {
       setSheetFor(null);
       switch (action) {
+        case 'report':
+          setReporting(message);
+          return;
         case 'reply':
           setEditing(null);
           setReplyTo(message);
@@ -300,6 +314,7 @@ export function ChatScreen({
         ...(editable ? (['edit'] as MessageAction[]) : []),
         ...(mine ? (['retract'] as MessageAction[]) : []),
         'hide',
+        ...(mine ? [] : (['report'] as MessageAction[])),
       ];
     },
     [selfId],
@@ -447,6 +462,7 @@ export function ChatScreen({
           return;
         }
         player.replace({ uri });
+        player.playbackRate = rate;
         setLoadedNote(noteId);
         player.play();
       } catch {
@@ -508,6 +524,24 @@ export function ChatScreen({
     return day.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
   };
 
+  /**
+   * Jump to a message from search or pinned: back to the timeline, scroll it
+   * into the middle, light it for a moment. The highlight is by id, not
+   * index, so a message the loaded history does not hold is lit when it does.
+   */
+  const jumpTo = useCallback(
+    (messageId: string) => {
+      setMode2('timeline');
+      setSearchQuery('');
+      setHighlighted(messageId);
+      setTimeout(() => setHighlighted((current) => (current === messageId ? null : current)), 2_500);
+      const index = messages.findIndex((item) => item.kind !== 'call' && item.messageId === messageId);
+      if (index < 0) return;
+      requestAnimationFrame(() => listRef.current?.scrollToIndex({ index, viewPosition: 0.5, animated: true }));
+    },
+    [messages],
+  );
+
   const canSend = draft.trim().length > 0 && !sending;
 
   return (
@@ -534,6 +568,9 @@ export function ChatScreen({
           <Chip label={mode === 'translated' ? 'Translating' : 'Translate'} active={mode === 'translated'} onPress={() => void toggleMode()} />
           <Pressable onPress={() => onCall(partner)} accessibilityRole="button" accessibilityLabel="Call" style={({ pressed }) => [styles.headerCall, pressed && styles.pressed]}>
             <Icon name="phone" size={20} color={C7.teal} />
+          </Pressable>
+          <Pressable onPress={() => { setMenuOpen(false); setMode2(mode2 === 'search' ? 'timeline' : 'search'); }} accessibilityRole="button" accessibilityLabel="Search in conversation" hitSlop={8} style={styles.headerMore}>
+            <Icon name="search" size={20} color={mode2 === 'search' ? C7.teal : C7.muted} />
           </Pressable>
           <Pressable onPress={() => setMenuOpen((open) => !open)} accessibilityRole="button" accessibilityLabel="More" hitSlop={8} style={styles.headerMore}>
             <Icon name="more" size={20} color={C7.muted} />
@@ -579,8 +616,25 @@ export function ChatScreen({
         )}
 
         <FlatList
+          ref={listRef}
           style={styles.fill}
           inverted
+          onScrollToIndexFailed={(info) => {
+            listRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false });
+            setTimeout(() => listRef.current?.scrollToIndex({ index: info.index, viewPosition: 0.5, animated: true }), 250);
+          }}
+          ListHeaderComponent={
+            mode2 === 'timeline' && (pendingBody !== null || failedSend !== null) ? (
+              <View style={[styles.bubbleRow, styles.bubbleRowMine]}>
+                <Pressable onPress={failedSend !== null ? () => void retryFailedSend() : undefined} style={[styles.bubble, styles.mine, failedSend !== null && styles.bubbleFailed]}>
+                  <Text style={[styles.body, styles.mineText]}>{failedSend?.body ?? pendingBody}</Text>
+                  <View style={styles.metaRow}>
+                    <Text style={[styles.metaText, styles.mineMeta]}>{failedSend !== null ? 'Not sent · tap to retry' : 'Sending…'}</Text>
+                  </View>
+                </Pressable>
+              </View>
+            ) : null
+          }
           data={mode2 === 'search' ? (searchResults ?? []) : mode2 === 'pinned' ? (pinnedList ?? []) : messages}
           keyExtractor={(item) => (item.kind === 'call' ? `call:${item.callId}` : item.messageId)}
           contentContainerStyle={styles.messages}
@@ -631,7 +685,12 @@ export function ChatScreen({
               <View>
                 {dayChip}
                 <View style={[styles.bubbleRow, mine ? styles.bubbleRowMine : styles.bubbleRowTheirs]}>
-                  <Pressable onLongPress={() => setSheetFor(item)} delayLongPress={280} style={[styles.bubble, mine ? styles.mine : styles.theirs, retracted && styles.retracted]}>
+                  <Pressable
+                    onPress={mode2 !== 'timeline' ? () => jumpTo(item.messageId) : undefined}
+                    onLongPress={() => setSheetFor(item)}
+                    delayLongPress={280}
+                    style={[styles.bubble, mine ? styles.mine : styles.theirs, retracted && styles.retracted, highlighted === item.messageId && styles.bubbleHighlight]}
+                  >
                     {item.replyTo != null && (
                       <View style={[styles.quote, mine && styles.quoteMine]}>
                         <Text style={[styles.quoteWho, mine && styles.mineMeta]}>{item.replyTo.senderId === selfId ? 'You' : name}</Text>
@@ -670,6 +729,12 @@ export function ChatScreen({
                           }
                           onSeek={seekLoaded}
                           clock={clock}
+                          rate={rate}
+                          onCycleRate={() => {
+                            const next = rate === 1 ? 1.5 : rate === 1.5 ? 2 : 1;
+                            setRate(next);
+                            player.playbackRate = next;
+                          }}
                         />
                         {translatedVoice && !useOriginal && item.translatedBody != null && (
                           <Text style={[styles.voiceTranscript, mine && styles.mineMeta]} numberOfLines={3}>{item.translatedBody}</Text>
@@ -836,6 +901,22 @@ export function ChatScreen({
         </View>
       </KeyboardAvoidingView>
 
+      <ReportSheet
+        visible={reporting !== null}
+        subjectName={name}
+        aboutMessage
+        onSubmit={async (reason, details) => {
+          const target = reporting;
+          const result = await api.report({
+            accountId: partner.accountId,
+            ...(target === null ? {} : { messageId: target.messageId }),
+            reason,
+            ...(details.length > 0 ? { note: details } : {}),
+          });
+          return result.ok;
+        }}
+        onClose={() => setReporting(null)}
+      />
       <MessageActionSheet
         visible={sheetFor !== null}
         actions={sheetFor === null ? [] : actionsFor(sheetFor)}
@@ -876,6 +957,8 @@ function VoiceNoteBubble({
   onToggle,
   onSeek,
   clock,
+  rate = 1,
+  onCycleRate,
 }: {
   readonly mine: boolean;
   readonly compact?: boolean;
@@ -886,6 +969,8 @@ function VoiceNoteBubble({
   readonly onToggle: () => void;
   readonly onSeek: (fraction: number) => void;
   readonly clock: (seconds: number) => string;
+  readonly rate?: 1 | 1.5 | 2;
+  readonly onCycleRate?: (() => void) | undefined;
 }): JSX.Element {
   const fraction = durationSeconds > 0 ? Math.min(1, positionSeconds / durationSeconds) : 0;
   return (
@@ -921,6 +1006,11 @@ function VoiceNoteBubble({
           {loaded ? `${clock(positionSeconds)} / ${clock(durationSeconds)}` : clock(durationSeconds)}
         </Text>
       </View>
+      {loaded && onCycleRate !== undefined && (
+        <Pressable onPress={onCycleRate} accessibilityRole="button" accessibilityLabel={`Playback speed ${rate}x`} style={[styles.rateChip, mine && styles.rateChipMine]}>
+          <Text style={[styles.rateLabel, mine && styles.mineText]}>{rate}×</Text>
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -1005,6 +1095,11 @@ const styles = StyleSheet.create({
   bubbleRowTheirs: { justifyContent: 'flex-start' },
   bubble: { maxWidth: '82%', borderRadius: 18, paddingHorizontal: 14, paddingVertical: 10, gap: 4 },
   mine: { backgroundColor: C7.teal, borderBottomRightRadius: 6 },
+  bubbleFailed: { backgroundColor: 'rgba(224,82,82,0.9)' },
+  bubbleHighlight: { borderWidth: 2, borderColor: C7.amber },
+  rateChip: { borderRadius: 999, borderWidth: 1, borderColor: C7.panelEdge, paddingHorizontal: 8, paddingVertical: 4, marginLeft: 6 },
+  rateChipMine: { borderColor: 'rgba(7,11,18,0.35)' },
+  rateLabel: { color: C7.text, fontSize: 11, fontWeight: '700' },
   theirs: { backgroundColor: 'rgba(14, 22, 36, 0.9)', borderWidth: 1, borderColor: C7.panelEdge, borderBottomLeftRadius: 6 },
   body: { color: C7.text, fontSize: 15.5, lineHeight: 21 },
   mineText: { color: C7.ground },

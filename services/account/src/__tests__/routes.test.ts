@@ -172,3 +172,35 @@ describe('the current session', async () => {
     expect((await send(h, 'DELETE', '/sessions')).status).toBe(204);
   });
 });
+
+describe('device sessions (founder ruling 29 Aug 2026: the phone stays signed in until sign-out)', () => {
+  let h: Harness;
+  beforeEach(async () => {
+    h = await harness();
+    await send(h, 'POST', '/accounts', { email: EMAIL, password: PASSWORD, username: 'udev1234567' });
+  });
+  afterEach(async () => h.close());
+
+  it('a browser sign-in is the twelve-hour session; a device sign-in is 180 days', async () => {
+    const browser = await send(h, 'POST', '/sessions', { email: EMAIL, password: PASSWORD });
+    const device = await send(h, 'POST', '/sessions', { email: EMAIL, password: PASSWORD, client: 'device' });
+    expect(browser.json['expiresInSeconds']).toBe(12 * 60 * 60);
+    expect(device.json['expiresInSeconds']).toBe(180 * 24 * 60 * 60);
+  });
+
+  it('renewal hands back the same class, and only to a session that is still valid', async () => {
+    const device = await send(h, 'POST', '/sessions', { email: EMAIL, password: PASSWORD, client: 'device' });
+    const renewed = await send(h, 'POST', '/sessions/renew', undefined, device.json['token'] as string);
+    expect(renewed.status).toBe(200);
+    expect(renewed.json['expiresInSeconds']).toBe(180 * 24 * 60 * 60);
+    expect(typeof renewed.json['token']).toBe('string');
+
+    const browser = await send(h, 'POST', '/sessions', { email: EMAIL, password: PASSWORD });
+    const browserRenewed = await send(h, 'POST', '/sessions/renew', undefined, browser.json['token'] as string);
+    expect(browserRenewed.json['expiresInSeconds']).toBe(12 * 60 * 60);
+
+    expect((await send(h, 'POST', '/sessions/renew')).status).toBe(401);
+    await send(h, 'DELETE', '/sessions', undefined, device.json['token'] as string);
+    expect((await send(h, 'POST', '/sessions/renew', undefined, device.json['token'] as string)).status).toBe(401);
+  });
+});

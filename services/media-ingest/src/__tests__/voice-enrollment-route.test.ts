@@ -386,3 +386,42 @@ describe('the bytes are the authority, not the header', () => {
     await harness.close();
   });
 });
+
+/** An ISO base-media (MP4/M4A) header: what expo-audio on Android records. */
+const M4A = new Uint8Array([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x4d, 0x34, 0x41, 0x20, 0x00, 0x00, 0x00, 0x00]);
+
+describe("the phone's recording format and the row that reports it", () => {
+  let harness: Harness;
+
+  beforeEach(async () => {
+    harness = await createHarness();
+  });
+  afterEach(async () => harness.close());
+
+  it('accepts AAC-in-MP4 announced as audio/mp4, because Android phones have no Opus encoder', async () => {
+    harness.store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
+    harness.store.grantCallUse('vp1');
+    const response = await post(harness, M4A, { 'content-type': 'audio/mp4' });
+    expect(response.status).toBe(202);
+  });
+
+  it('GET /voice-profiles/mine needs an identity, says "nothing yet" honestly, then reports the newest voice', async () => {
+    const anonymous = await fetch(`${harness.url}/voice-profiles/mine`);
+    expect(anonymous.status).toBe(401);
+
+    const before = await fetch(`${harness.url}/voice-profiles/mine`, { headers: { 'x-videofy-voice-owner': OWNER } });
+    expect(await before.json()).toEqual({ enrolled: false, personalVoiceReady: false });
+
+    harness.store.begin({ voiceProfileId: 'vp1', ownerId: OWNER, consentTextVersion: CONSENT_VERSION });
+    harness.store.grantCallUse('vp1');
+    await post(harness, AUDIO);
+
+    const after = await fetch(`${harness.url}/voice-profiles/mine`, { headers: { 'x-videofy-voice-owner': OWNER } });
+    const body = (await after.json()) as Record<string, unknown>;
+    expect(body['enrolled']).toBe(true);
+    expect(body['voiceProfileId']).toBe('vp1');
+    expect(typeof body['state']).toBe('string');
+    expect(typeof body['personalVoiceReady']).toBe('boolean');
+    expect(JSON.stringify(body)).not.toMatch(/\.wav|\.webm|[A-Za-z]:\\/);
+  });
+});

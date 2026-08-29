@@ -48,6 +48,11 @@ class IncomingCallService : Service() {
 
   override fun onBind(intent: Intent?): IBinder? = null
 
+  override fun onCreate() {
+    super.onCreate()
+    instance = this
+  }
+
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     when (intent?.action) {
       ACTION_RING -> ring(intent)
@@ -106,17 +111,35 @@ class IncomingCallService : Service() {
       }
       handler.post {
         if (ringing != callId) return@post
-        // Validated: now, and only now, the ring -- CallStyle on the ringtone channel.
-        val notification = buildNotification(callId, verdict.callerAccountId.ifBlank { callerId }, callerName, mode, validating = false)
-        notificationManager().cancel(SILENT_NOTIFICATION_ID)
-        notificationManager().notify(NOTIFICATION_ID, notification)
-        store.mark(callId, "t7_presented")
-        startVibration()
-        VideofyCallModule.emitIncoming(callId, verdict.callerAccountId.ifBlank { callerId }, callerName, mode)
-        val remaining = if (expiresAt > 0) expiresAt - System.currentTimeMillis() else 30_000L
-        handler.postDelayed({ if (ringing == callId) finish(callId, "timeout") }, remaining.coerceIn(3_000L, 45_000L))
+        expiresAtFor[callId] = expiresAt
+        val resolvedCallerId = verdict.callerAccountId.ifBlank { callerId }
+        /*
+         * Validated: now, and only now, the ring. Offered to Telecom first
+         * (phase 2): when it accepts, it calls back onShowIncomingCallUi and
+         * the same presentation runs from there; when it declines, the
+         * phase-1 presentation runs directly. Either way the phone rings.
+         */
+        if (!TelecomBridge.offerIncoming(this@IncomingCallService, callId, resolvedCallerId, callerName, mode)) {
+          present(callId, resolvedCallerId, callerName, mode)
+        }
       }
     }
+  }
+
+  private val expiresAtFor = HashMap<String, Long>()
+
+  /** The ring itself: CallStyle on the ringtone channel, vibration, the incoming event, the timeout. */
+  fun present(callId: String, callerId: String, callerName: String, mode: String) {
+    if (ringing != callId) return
+    val notification = buildNotification(callId, callerId, callerName, mode, validating = false)
+    notificationManager().cancel(SILENT_NOTIFICATION_ID)
+    notificationManager().notify(NOTIFICATION_ID, notification)
+    RingStore(this).mark(callId, "t7_presented")
+    startVibration()
+    VideofyCallModule.emitIncoming(callId, callerId, callerName, mode)
+    val expiresAt = expiresAtFor[callId] ?: 0L
+    val remaining = if (expiresAt > 0) expiresAt - System.currentTimeMillis() else 30_000L
+    handler.postDelayed({ if (ringing == callId) finish(callId, "timeout") }, remaining.coerceIn(3_000L, 45_000L))
   }
 
   private fun stopRinging(callId: String?, reason: String) {
@@ -126,6 +149,9 @@ class IncomingCallService : Service() {
 
   private fun finish(callId: String, reason: String) {
     if (reason == "timeout") VideofyCallModule.emitTimeout(callId)
+    // A ring that ends before an answer also ends its Telecom connection.
+    if (reason != "answered") TelecomBridge.end(callId, missed = reason == "timeout")
+    expiresAtFor.remove(callId)
     ringing = null
     stopVibration()
     notificationManager().cancel(NOTIFICATION_ID)
@@ -213,6 +239,7 @@ class IncomingCallService : Service() {
     getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
   override fun onDestroy() {
+    if (instance === this) instance = null
     stopVibration()
     releaseWakeLock()
     executor.shutdown()
@@ -220,6 +247,26 @@ class IncomingCallService : Service() {
   }
 
   companion object {
+    @Volatile private var instance: IncomingCallService? = null
+
+    /** Telecom accepted the call and asks for the UI; the running service presents it. */
+    fun presentValidated(context: Context, callId: String, callerId: String, callerName: String, mode: String) {
+      val service = instance
+      if (service != null) {
+        service.handler.post { service.present(callId, callerId, callerName, mode) }
+      } else {
+        // The service is gone (rare: Telecom answered late); ring via a fresh start.
+        val intent = Intent(context, IncomingCallService::class.java).apply {
+          action = ACTION_RING
+          putExtra(EXTRA_CALL_ID, callId)
+          putExtra(EXTRA_CALLER_ID, callerId)
+          putExtra(EXTRA_CALLER_NAME, callerName)
+          putExtra(EXTRA_MODE, mode)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
+      }
+    }
+
     const val ACTION_RING = "com.consummate7.videofy.call.RING"
     const val ACTION_STOP = "com.consummate7.videofy.call.STOP"
     const val EXTRA_CALL_ID = "callId"

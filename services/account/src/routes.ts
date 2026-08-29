@@ -14,7 +14,8 @@ import type express from 'express';
 import {
   bearerToken,
   issueSessionToken,
-  SESSION_LIFETIME_SECONDS,
+  sessionLifetimeSeconds,
+  type SessionClass,
   verifySessionToken,
 } from '@videofy-live/account-tokens';
 import type { AccountRecord, AccountStore } from './account-store.js';
@@ -40,6 +41,7 @@ import {
   USERNAME_REFUSAL_MESSAGES,
 } from '@videofy-live/account-trust';
 import type { ContactStore } from './contact-store.js';
+import type { PresenceRegistry } from './presence.js';
 import type { IdentityChangeService } from './identity-change-service.js';
 import { recordSecurity } from './security-log.js';
 import { correlationIdOf } from './request-context.js';
@@ -110,6 +112,11 @@ export interface AccountRouteDependencies {
   readonly identityChange?: IdentityChangeService;
   /** Absent means the contact routes 404 rather than pretending to have a graph. */
   readonly contacts?: ContactStore;
+  /**
+   * Presence, shown to accepted contacts only. Absent means the contact
+   * list and profiles simply omit it -- never a made-up 'away'.
+   */
+  readonly presence?: PresenceRegistry;
 }
 
 interface Body {
@@ -130,6 +137,16 @@ function credentials(body: unknown): { email: string; password: string } | null 
   const candidate = (body ?? {}) as Body;
   if (typeof candidate.email !== 'string' || typeof candidate.password !== 'string') return null;
   return { email: candidate.email, password: candidate.password };
+}
+
+/**
+ * Which session class a sign-in asks for. `client: 'device'` is the phone
+ * (a long, renewable session that lasts until sign-out -- founder ruling
+ * 29 Aug 2026); anything else, including nothing, is a browser session.
+ */
+function requestedSessionClass(body: unknown): SessionClass {
+  const candidate = (body ?? {}) as { client?: unknown };
+  return candidate.client === 'device' ? 'device' : 'browser';
 }
 
 /**
@@ -288,6 +305,7 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
     accountId: string,
     version: number,
     voiceGender: 'male' | 'female' | undefined,
+    sessionClass: SessionClass = 'browser',
   ) => ({
     accountId,
     token: issueSessionToken({
@@ -295,8 +313,9 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       accountId,
       version,
       nowSeconds: nowSeconds(),
+      sessionClass,
     }),
-    expiresInSeconds: SESSION_LIFETIME_SECONDS,
+    expiresInSeconds: sessionLifetimeSeconds(sessionClass),
     // Returned so the call form can default to the voice this person chose,
     // instead of everybody starting out sounding female.
     ...(voiceGender ? { voiceGender } : {}),
@@ -382,6 +401,7 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
               result.account.accountId,
               result.account.tokenVersion,
               result.account.voiceGender,
+              requestedSessionClass(req.body),
             ),
           );
       })
@@ -422,10 +442,35 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
             result.account.accountId,
             result.account.tokenVersion,
             result.account.voiceGender,
+            requestedSessionClass(req.body),
           ),
         );
       })
       .catch(() => res.status(500).json({ error: 'You could not be signed in.' }));
+  });
+
+  /**
+   * A fresh token of the SAME class, for a session that is still valid.
+   *
+   * This is what makes a device session last until sign-out: the phone renews
+   * while it is used, and a token that stops being renewed simply ages out.
+   * The class comes from the presented token, never the body, so a browser
+   * token cannot renew itself into a device one. The version check is the
+   * same one `/sessions/current` makes: a revoked session cannot renew.
+   */
+  app.post('/sessions/renew', (req, res) => {
+    const token = bearerToken(req.header('authorization'));
+    const verified = token ? verifySessionToken({ secret: deps.secret, token, nowSeconds: nowSeconds() }) : null;
+    if (!verified?.ok) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    const account = deps.store.get(verified.claims.accountId);
+    if (!account || account.tokenVersion !== verified.claims.version) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    res.status(200).json(session(account.accountId, account.tokenVersion, account.voiceGender, verified.claims.sessionClass));
   });
 
   /**
@@ -1368,13 +1413,28 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
           username: other?.username ?? null,
           displayName: other?.displayName ?? null,
           official: deps.officialAccounts?.has(otherAccountId) ?? false,
+          // The language they SPEAK: what a call with them sounds like.
+          // Public, like the username. Never the listening preference.
+          spokenLanguage: other?.spokenLanguage ?? other?.defaultLanguage ?? null,
+        };
+      };
+      // Presence ONLY on accepted contacts. A pending request is not yet a
+      // relationship that earns knowing whether somebody is around.
+      const presence = deps.presence;
+      const describeContact = (otherAccountId: string) => {
+        const other = deps.store.get(otherAccountId);
+        return {
+          ...describe(otherAccountId),
+          ...(presence && other
+            ? { presence: presence.stateOf(otherAccountId, other.availability) }
+            : {}),
         };
       };
 
       res.status(200).json({
         contacts: contacts
           .contactsOf(caller.accountId)
-          .map((edge) => describe(contacts.other(edge, caller.accountId))),
+          .map((edge) => describeContact(contacts.other(edge, caller.accountId))),
         /*
          * Only requests somebody else sent. A request you sent is not something
          * you can act on, and listing it as answerable invites a client to
@@ -1452,7 +1512,12 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
         official: deps.officialAccounts?.has(targetId) ?? false,
         discoverable: readDiscoveryMode(target.discoveryMode) === 'discoverable',
         spokenLanguage: target.spokenLanguage ?? target.defaultLanguage ?? null,
+        bio: target.bio ?? '',
         relationship,
+        // Presence is a contact's privilege; a stranger's profile has none.
+        ...(relationship === 'contact' && deps.presence
+          ? { presence: deps.presence.stateOf(targetId, target.availability) }
+          : {}),
       });
     });
 
@@ -1776,6 +1841,9 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
          * implementation of a privacy rule.
          */
         discoverable: readDiscoveryMode(account.discoveryMode) === 'discoverable',
+        bio: account.bio ?? '',
+        availability: account.availability ?? 'auto',
+        notificationsEnabled: account.notificationsEnabled !== false,
       },
       /*
        * What this person still has to accept. Derived, never stored: publishing

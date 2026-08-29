@@ -13,9 +13,11 @@ import {
   type CallPreregisterResult,
   type CallSnapshot,
   type CallType,
+  type PublicConferenceListing,
 } from '@videofy-live/call-session';
 import {
   CALL_EVENTS,
+  CallAdmitPayloadSchema,
   CallAudioModePayloadSchema,
   CallBoundPayloadSchema,
   CallCaptionLanguagePayloadSchema,
@@ -29,6 +31,9 @@ import {
   CallVideoIcePayloadSchema,
   CallVideoSdpPayloadSchema,
   type CallJoinAck,
+  type CallAdmitAck,
+  type CallAdmissionEvent,
+  type CallKnockEvent,
   type CallSdpAck,
   type CallEndAck,
   type CallSetModeAck,
@@ -130,6 +135,14 @@ export const CALL_PARTICIPANT_ROLE = 'call-participant';
 /** Seats not resumed within this window are auto-left (design note hardening). */
 export const DEFAULT_CALL_DISCONNECT_GRACE_MS = 120_000;
 
+/**
+ * How long a knock on a restricted conference waits for the host (29 Aug).
+ * A minute: long enough for a host mid-sentence to notice, short enough that
+ * a joiner is not left staring at a spinner for a room nobody is minding.
+ * Expiry is a REFUSAL, not a limbo -- the joiner is told and disconnected.
+ */
+export const CALL_KNOCK_TIMEOUT_MS = 60_000;
+
 export function callRoom(callId: string): string {
   return `call:${callId}`;
 }
@@ -145,6 +158,12 @@ export interface CallSocketLike {
   leave(room: string): void | Promise<void>;
   emit(event: string, payload: unknown): void;
   on(event: string, handler: (...args: never[]) => void): void;
+  /**
+   * Present on real Socket.IO sockets. A refused knocker is disconnected from
+   * the call through this; absent (bare test socket) the bindings are still
+   * released, which is the part that matters for authority.
+   */
+  disconnect?(close?: boolean): void;
   /**
    * P6.5: present on real Socket.IO sockets. The handshake Origin header is
    * what connect-join authorization compares against a project's
@@ -420,6 +439,18 @@ interface CallParticipantRuntimeState {
   reapTimer: ReturnType<typeof setTimeout> | null;
 }
 
+/**
+ * A seat waiting for the host's answer. Held OUTSIDE `participants`: a
+ * knocker has no media, no reaper and no ingest, so none of that machinery
+ * should be able to find them until they are admitted.
+ */
+interface CallKnockRuntimeState {
+  callId: string;
+  participantId: string;
+  socket: CallSocketLike;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 interface CallIngestRegistryEntry {
   callId: string;
   participantId: string;
@@ -493,6 +524,8 @@ export class CallRuntime {
     | undefined;
   /** The telephone. See direct-call-lifecycle.ts. */
   readonly directCalls: DirectCallLifecycle;
+  /** Knocks awaiting the host, keyed by participantKey. */
+  private readonly knocks = new Map<string, CallKnockRuntimeState>();
   private readonly directProbes = new Map<string, ReturnType<typeof setInterval>>();
   private readonly governanceAudit: ((event: GovernanceAuditEvent) => void) | undefined;
   private readonly connectAuthority: CallConnectJoinAuthority | undefined;
@@ -661,6 +694,9 @@ export class CallRuntime {
     });
     this.onGuarded(socket, CALL_EVENTS.SET_TRANSCRIPT_POLICY, (raw, ack) => {
       this.deliverAck(ack, this.handleSetTranscriptPolicy(socket, raw));
+    });
+    this.onGuarded(socket, CALL_EVENTS.ADMIT, async (raw, ack) => {
+      this.deliverAck(ack, await this.handleAdmit(socket, raw));
     });
     this.onGuarded(socket, CALL_EVENTS.GOVERNANCE, (raw, ack) => {
       this.deliverAck(ack, this.handleGovernance(socket, raw));
@@ -1165,6 +1201,9 @@ export class CallRuntime {
     voiceIdentityRejected: boolean,
   ): Promise<CallJoinAck> {
     const participantId = result.participantId;
+    if (result.admission === 'pending') {
+      return this.completeKnock(socket, callId, result);
+    }
 
     const previous = this.socketBindings.get(socket.id);
     if (previous && (previous.callId !== callId || previous.participantId !== participantId)) {
@@ -1264,8 +1303,178 @@ export class CallRuntime {
     };
   }
 
-  handleLeave(socket: CallSocketLike, raw: unknown): { ok: boolean } {
+  /**
+   * RESTRICTED ADMISSION (29 Aug): the store seated this join as knocking.
+   * The socket is bound (so LEAVE and disconnect find the seat) and joins its
+   * OWN private room only -- never the call room, which is where the roster,
+   * captions and audio go. The host hears the knock in their private room;
+   * the ack tells the joiner to wait; a timer refuses them if nobody answers.
+   */
+  private completeKnock(
+    socket: CallSocketLike,
+    callId: string,
+    result: CallJoinResult,
+  ): CallJoinAck {
+    const participantId = result.participantId;
+    const key = participantKey(callId, participantId);
+    this.socketBindings.set(socket.id, { callId, participantId });
+    void socket.join(callParticipantRoom(callId, participantId));
+    const timer = this.setTimer(() => {
+      try {
+        this.expireKnock(callId, participantId);
+      } catch (error) {
+        logger.error('Call knock expiry failed', {
+          callId,
+          participantId,
+          message: error instanceof Error ? error.message : 'unknown knock expiry failure',
+        });
+      }
+    }, CALL_KNOCK_TIMEOUT_MS);
+    this.knocks.set(key, { callId, participantId, socket, timer });
+    logger.info('Call knock', {
+      callId,
+      participantId,
+      hostParticipantId: result.snapshot.ownerParticipantId,
+    });
+    const knocker = result.snapshot.knocking.find((seat) => seat.participantId === participantId);
+    const knock: CallKnockEvent = {
+      callId,
+      participantId,
+      displayName: knocker?.displayName ?? '',
+    };
+    this.emitToRoom(
+      callParticipantRoom(callId, result.snapshot.ownerParticipantId),
+      CALL_EVENTS.KNOCK,
+      knock,
+    );
+    // The room's roster view gains a knocking entry.
+    this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, toWireCallState(result.snapshot));
+    return {
+      ok: true,
+      participantId,
+      resumeToken: result.resumeToken,
+      // Title and setup, so the waiting screen can say what it is waiting
+      // for; the roster is withheld until the host admits them.
+      snapshot: { ...toWireCallState(result.snapshot), participants: [], knocking: [] },
+      admission: 'pending',
+    };
+  }
+
+  /** The host answers a knock. Only the store knows who the host is. */
+  async handleAdmit(socket: CallSocketLike, raw: unknown): Promise<CallAdmitAck> {
     const binding = this.requireBinding(socket, raw);
+    if (!binding) return { ok: false, error: 'unknown-participant' };
+    const parsed = CallAdmitPayloadSchema.safeParse(raw);
+    if (!parsed.success) return { ok: false, error: 'invalid-input' };
+    const { targetParticipantId, admit } = parsed.data;
+    const { callId } = binding;
+    if (!admit) {
+      const refused = this.store.refuseKnock(callId, binding.participantId, targetParticipantId);
+      if (!refused.ok) return { ok: false, error: refused.reason };
+      logger.info('Call knock refused by host', { callId, participantId: targetParticipantId });
+      this.dismissKnocker(callId, targetParticipantId, 'refused');
+      this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, toWireCallState(refused.snapshot));
+      return { ok: true };
+    }
+    const knock = this.knocks.get(participantKey(callId, targetParticipantId));
+    const admitted = this.store.admitKnock(callId, binding.participantId, targetParticipantId);
+    if (!admitted.ok) return { ok: false, error: admitted.reason };
+    if (!admitted.admitted) return { ok: false, error: 'not-knocking' };
+    logger.info('Call knock admitted by host', { callId, participantId: targetParticipantId });
+    if (knock) {
+      this.clearTimer(knock.timer);
+      this.knocks.delete(participantKey(callId, targetParticipantId));
+    }
+    // From here on this IS a join: the same bookkeeping completeJoin does for
+    // a seat that walked straight in, in the same order.
+    this.participants.set(participantKey(callId, targetParticipantId), {
+      callId,
+      participantId: targetParticipantId,
+      socketId: knock?.socket.id ?? null,
+      connected: knock !== undefined,
+      mediaRevision: admitted.mediaRevision,
+      languageRevision: admitted.languageRevision,
+      currentIngestSessionId: null,
+      publishSerial: 0,
+      reapTimer: null,
+    });
+    if (knock) void knock.socket.join(callRoom(callId));
+    const wireSnapshot = toWireCallState(admitted.snapshot);
+    const admission: CallAdmissionEvent = { callId, admitted: true, snapshot: wireSnapshot };
+    this.emitToRoom(
+      callParticipantRoom(callId, targetParticipantId),
+      CALL_EVENTS.ADMISSION,
+      admission,
+    );
+    this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, wireSnapshot);
+    this.statsFor(callId).participantIds.add(targetParticipantId);
+    const joined = admitted.snapshot.participants.find(
+      (participant) => participant.participantId === targetParticipantId,
+    );
+    this.transcriptLog.append({
+      kind: 'join',
+      callId,
+      participantId: targetParticipantId,
+      displayName: joined?.displayName ?? '',
+      speakLanguage: joined?.speakLanguage ?? '',
+      hearLanguage: joined?.hearLanguage ?? '',
+    });
+    await this.applyIngestPlans(callId, admitted.snapshot, admitted.ingestPlans);
+    return { ok: true };
+  }
+
+  /** Nobody answered within the window: refused, exactly as if the host had said no. */
+  private expireKnock(callId: string, participantId: string): void {
+    const withdrawn = this.store.withdrawKnock(callId, participantId);
+    logger.info('Call knock expired', { callId, participantId, removed: withdrawn.removed });
+    this.dismissKnocker(callId, participantId, 'timeout');
+    if (withdrawn.callEnded) {
+      this.teardownCall(callId, 'knock expired on an empty call');
+      return;
+    }
+    const snapshot = this.store.snapshot(callId);
+    if (snapshot) this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, toWireCallState(snapshot));
+  }
+
+  /**
+   * Tell a knocker no and put them out. Bindings are released BEFORE the
+   * socket is disconnected so its disconnect event finds nothing to reap.
+   */
+  private dismissKnocker(
+    callId: string,
+    participantId: string,
+    reason: 'refused' | 'timeout',
+  ): void {
+    const key = participantKey(callId, participantId);
+    const knock = this.knocks.get(key);
+    if (!knock) return;
+    this.clearTimer(knock.timer);
+    this.knocks.delete(key);
+    const admission: CallAdmissionEvent = { callId, admitted: false, reason };
+    this.emitToRoom(callParticipantRoom(callId, participantId), CALL_EVENTS.ADMISSION, admission);
+    this.socketBindings.delete(knock.socket.id);
+    void knock.socket.leave(callParticipantRoom(callId, participantId));
+    knock.socket.disconnect?.(true);
+  }
+
+  /** A knock abandoned by the knocker (socket gone, or LEAVE): no answer owed. */
+  private forgetKnock(callId: string, participantId: string): boolean {
+    const key = participantKey(callId, participantId);
+    const knock = this.knocks.get(key);
+    if (!knock) return false;
+    this.clearTimer(knock.timer);
+    this.knocks.delete(key);
+    return true;
+  }
+
+  /** GET /calls/public: every public conference with someone in it. */
+  listPublicCalls(): PublicConferenceListing[] {
+    return this.store.listPublicConferences();
+  }
+
+  handleLeave(socket: CallSocketLike, raw: unknown): { ok: boolean } {
+    // 'allow': a knocker withdrawing is the one act its binding permits.
+    const binding = this.requireBinding(socket, raw, 'allow');
     if (!binding) return { ok: false };
     return this.finalizeLeave(binding.callId, binding.participantId, socket, 'participant left the call');
   }
@@ -1324,6 +1533,20 @@ export class CallRuntime {
     if (!binding) return;
     this.socketBindings.delete(socketId);
     const { callId, participantId } = binding;
+    if (this.forgetKnock(callId, participantId)) {
+      // A knocker who left before being answered: nothing to keep for resume.
+      const withdrawn = this.store.withdrawKnock(callId, participantId);
+      logger.info('Call knock abandoned', { callId, participantId });
+      if (withdrawn.callEnded) {
+        this.teardownCall(callId, 'knocker left an empty call');
+        return;
+      }
+      const knockSnapshot = this.store.snapshot(callId);
+      if (knockSnapshot) {
+        this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, toWireCallState(knockSnapshot));
+      }
+      return;
+    }
     // Metadata only. This line is how a call that "died at two minutes" is
     // told apart from one that lost its socket at zero and was reaped at 120.
     logger.info('Call socket disconnected; seat kept for resume', {
@@ -2502,6 +2725,9 @@ export class CallRuntime {
     const key = participantKey(callId, participantId);
     const state = this.participants.get(key);
     if (state) this.cancelReap(state);
+    // A knocker may LEAVE too; the store's leave releases the seat and the
+    // timer must not fire a refusal at somebody who already walked away.
+    this.forgetKnock(callId, participantId);
     const snapshotBeforeLeave = this.store.snapshot(callId);
     const result = this.store.leave(callId, participantId);
     this.detachParticipantTransport(callId, participantId, reason);
@@ -2581,6 +2807,10 @@ export class CallRuntime {
   }
 
   private teardownCall(callId: string, reason: string): void {
+    // Whoever was still waiting at the door is told no: the room is gone.
+    for (const knock of [...this.knocks.values()]) {
+      if (knock.callId === callId) this.dismissKnocker(callId, knock.participantId, 'refused');
+    }
     for (const [key, state] of [...this.participants]) {
       if (state.callId !== callId) continue;
       this.cancelReap(state);
@@ -2774,10 +3004,22 @@ export class CallRuntime {
   /**
    * A socket may only signal for the identity it joined with; payloads naming
    * another call/participant are rejected before touching any peer state.
+   *
+   * A KNOCKING seat is bound (so the host's answer can reach it) but is NOT
+   * in the call: until admitted it may neither negotiate a receive peer,
+   * relay video signalling to a seated member, nor touch call state. The
+   * one thing a knocker may do through its binding is LEAVE.
    */
-  private requireBinding(socket: CallSocketLike, raw: unknown): CallSocketBinding | null {
+  private requireBinding(
+    socket: CallSocketLike,
+    raw: unknown,
+    knocking: 'refuse' | 'allow' = 'refuse',
+  ): CallSocketBinding | null {
     const binding = this.socketBindings.get(socket.id);
     if (!binding) return null;
+    if (knocking === 'refuse' && this.store.isKnocking(binding.callId, binding.participantId)) {
+      return null;
+    }
     // The schema checks object-ness only; the id EQUALITY below is this
     // runtime's check, because only the runtime knows the socket's binding.
     const parsed = CallBoundPayloadSchema.safeParse(raw);
@@ -3020,6 +3262,13 @@ function toWireCallState(snapshot: CallSnapshot): CallStateWirePayload {
     // the store snapshot but never crossed the wire, so the owner's toggle
     // was invisible to every client.
     transcriptDownloadAllowed: snapshot.transcriptDownloadAllowed,
+    // Conference setup (29 Aug): all four cross the wire for the same reason
+    // the policy above does -- state a client cannot see is state it cannot
+    // act on.
+    title: snapshot.title,
+    privacy: snapshot.privacy,
+    targetLanguages: [...snapshot.targetLanguages],
+    knocking: snapshot.knocking.map((seat) => ({ ...seat })),
     participants,
   };
 }

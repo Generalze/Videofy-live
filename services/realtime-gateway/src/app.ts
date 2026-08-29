@@ -36,6 +36,19 @@ export interface CreateAppOptions {
   directCalls?: () => DirectCallsHttpLike;
   /** The account session secret, to verify the Bearer token on those routes. */
   sessionSecret?: string | undefined;
+  /**
+   * Conference setup (29 Aug): the public conference listing, lazily for
+   * the same reason as the rest. Absent means the route is not mounted.
+   */
+  publicCalls?: () => PublicCallListing[];
+}
+
+/** One row of GET /calls/public; what a stranger may know before joining. */
+export interface PublicCallListing {
+  callId: string;
+  title: string | null;
+  participantCount: number;
+  createdAtMs: number;
 }
 
 export interface DirectCallsHttpLike {
@@ -173,6 +186,20 @@ export function createApp(options: CreateAppOptions = {}): express.Application {
   });
 
   directCallRoutes(app);
+
+  /*
+   * PUBLIC CONFERENCES. Deliberately unauthenticated: a public room is one a
+   * stranger may find, and the listing carries only what the room itself
+   * would show them on arrival -- title and headcount, never who is inside.
+   * Private and restricted rooms are never in it, so nothing here is probeable.
+   */
+  if (options.publicCalls) {
+    const provide = options.publicCalls;
+    app.get('/calls/public', (_req: Request, res: Response) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ calls: provide() });
+    });
+  }
 
   app.get('/health', (_req: Request, res: Response) => {
     res.json({

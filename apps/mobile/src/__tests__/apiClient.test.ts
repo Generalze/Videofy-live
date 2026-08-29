@@ -97,6 +97,10 @@ describe('request shapes', () => {
       spokenLanguage: null,
       listeningLanguage: null,
       official: false,
+      bio: '',
+      availability: 'auto',
+      notificationsEnabled: true,
+      discoverable: false,
     });
   });
 });

@@ -519,9 +519,16 @@ describe('CallSessionStore snapshots', () => {
       'callId',
       'callMode',
       'callType',
+      // Conference setup (29 Aug): title, privacy, offered languages and the
+      // knocking list are DELIBERATE additions -- all public room state, and
+      // none carries a forbidden substring.
+      'knocking',
       'lifecycleState',
       'ownerParticipantId',
       'participants',
+      'privacy',
+      'targetLanguages',
+      'title',
       'transcriptDownloadAllowed',
     ]);
     expect(snapshot.participants.map((participant) => Object.keys(participant).sort())).toEqual([

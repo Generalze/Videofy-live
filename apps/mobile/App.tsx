@@ -27,7 +27,8 @@ import * as Notifications from 'expo-notifications';
  * resolves without an import. It is exported from 'react' instead.
  */
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import * as SecureStore from 'expo-secure-store';
 import { AuthSessionManager, type AuthState } from './src/auth/authSessionManager';
 import { createSecureSessionStore } from './src/auth/secureSessionStore';
 import { createDeviceIdentity } from './src/push/deviceIdentity';
@@ -39,7 +40,10 @@ import {
 import { randomId } from './src/push/randomId';
 import { createApi } from './src/api/client';
 import { configureAvatars } from './src/media/AvatarView';
-import type { ContactPerson } from './src/api/client';
+import type { ContactPerson, Profile } from './src/api/client';
+import type { ChannelSummary } from './src/api/channelDirectory';
+import type { ConferenceSetup } from './src/conference/conferenceSetup';
+import { rememberConference } from './src/conference/recentConferences';
 import { InsetsProvider, useBottomInset } from './src/ui/insets';
 import { AppHeader } from './src/ui/AppHeader';
 import { C7, C7Ground } from './src/ui/c7';
@@ -55,9 +59,12 @@ import { ConversationsScreen } from './src/screens/ConversationsScreen';
 import { ProfileScreen } from './src/screens/ProfileScreen';
 import { IncomingCallScreen } from './src/screens/IncomingCallScreen';
 import { PersonProfileScreen } from './src/screens/PersonProfileScreen';
+import { ProgrammeViewerScreen } from './src/screens/ProgrammeViewerScreen';
 import { createDirectCallApi } from './src/call/directCallApi';
 import { foregroundPresentationFor } from './src/push/callNotificationPresentation';
 import { videofyCall } from './src/native/videofyCall';
+import { createAppLock } from './src/auth/appLock';
+import { LockScreen } from './src/screens/LockScreen';
 
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
 const GATEWAY_BASE_URL =
@@ -73,6 +80,35 @@ const auth = new AuthSessionManager({
 });
 
 const authorizedFetch = (path: string, init?: RequestInit) => auth.authorizedFetch(path, init);
+
+/** The one-hour lock in front of the until-sign-out session; its stamps live in the secure store. */
+const appLock = createAppLock({
+  read: (key) => SecureStore.getItemAsync(key),
+  write: (key, value) => SecureStore.setItemAsync(key, value),
+  remove: (key) => SecureStore.deleteItemAsync(key),
+});
+
+/**
+ * Prove the password without touching the session: a sign-in whose result
+ * is discarded. 200 = right, 401 = wrong, anything else = could not check.
+ */
+async function unlockWithPassword(password: string): Promise<'ok' | 'wrong' | 'network'> {
+  try {
+    const current = await auth.authorizedFetch('/sessions/current');
+    if (current === null || !current.ok) return 'network';
+    const { email } = (await current.json()) as { email?: string };
+    if (typeof email !== 'string') return 'network';
+    const response = await fetch(`${ACCOUNT_BASE_URL}/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, password, client: 'device' }),
+    });
+    if (response.ok) return 'ok';
+    return response.status === 401 ? 'wrong' : 'network';
+  } catch {
+    return 'network';
+  }
+}
 
 /*
  * Avatars render through RN's Image, which sends the headers it is given; the
@@ -170,7 +206,7 @@ type ActiveCall =
       readonly peer: { readonly accountId: string; readonly name: string };
       readonly ring: boolean;
     }
-  | { readonly kind: 'conference'; readonly callId: string };
+  | { readonly kind: 'conference'; readonly callId: string; readonly setup?: ConferenceSetup };
 
 export default function App(): JSX.Element {
   return (
@@ -197,6 +233,16 @@ function AppInner(): JSX.Element {
     mode: 'normal' | 'translated';
   } | null>(null);
   const [deviceOutcome, setDeviceOutcome] = useState<RegistrationOutcome | null>(null);
+  /** A channel a live-reminder push asked us to open; consumed by the Programmes tab. */
+  const [openChannelId, setOpenChannelId] = useState<string | null>(null);
+  /** The programme being watched, inside the app. */
+  const [viewingChannel, setViewingChannel] = useState<ChannelSummary | null>(null);
+  /** The signed-in person's own profile, for "Share my contact". */
+  const [me, setMe] = useState<Profile | null>(null);
+  /** The app lock: one hour away, then biometrics or the password. Never in front of a call. */
+  const [locked, setLocked] = useState(false);
+  const [lockEmail, setLockEmail] = useState<string | null>(null);
+  const [biometricsPreferred, setBiometricsPreferred] = useState(true);
   const [emailVerified, setEmailVerified] = useState<boolean | null>(null);
   /*
    * The name other people see in a call. The join used to send the ACCOUNT ID
@@ -269,6 +315,12 @@ function AppInner(): JSX.Element {
         });
       } else if (kind === 'message' && typeof data['fromAccountId'] === 'string') {
         void openChatWithAccount(data['fromAccountId']);
+      } else if (kind === 'channel-live' && typeof data['channelId'] === 'string') {
+        // "Interested" delivered: straight to the programme that just went live.
+        setChatWith(null);
+        setViewingPerson(null);
+        setTab('programmes');
+        setOpenChannelId(data['channelId']);
       }
     },
     [openChatWithAccount],
@@ -376,6 +428,7 @@ function AppInner(): JSX.Element {
       if (result.ok) setEmailVerified(result.value.email === 'verified');
     });
     void api.me().then((result) => {
+      if (result.ok) setMe(result.value);
       if (result.ok) {
         setCallName(result.value.displayName ?? result.value.username);
         const speak = result.value.spokenLanguage ?? result.value.defaultLanguage;
@@ -390,6 +443,70 @@ function AppInner(): JSX.Element {
   }, [state.status]);
 
   const signIn = useCallback((email: string, password: string) => auth.signIn(email, password), []);
+
+  /*
+   * PRESENCE. A heartbeat a minute while the app is on screen -- 'busy' in a
+   * call -- and nothing at all in the background, so 120 s of silence reads
+   * as away, which is what it is. Only accepted contacts ever see it.
+   */
+  useEffect(() => {
+    if (state.status !== 'signed-in' || locked) return undefined;
+    let foreground = AppState.currentState === 'active' || AppState.currentState === 'unknown';
+    const beat = (): void => {
+      if (!foreground) return;
+      void api.heartbeat(inCallRef.current ? 'busy' : 'active');
+    };
+    beat();
+    const timer = setInterval(beat, 60_000);
+    const subscription = AppState.addEventListener('change', (next) => {
+      foreground = next === 'active';
+      if (foreground) beat();
+    });
+    return () => {
+      clearInterval(timer);
+      subscription.remove();
+    };
+  }, [state.status, locked]);
+
+  /*
+   * THE LOCK CLOCK. Leaving the foreground stamps the time; returning judges
+   * it (an hour or more away locks, unless a call is up), renews the device
+   * session while it is used, and a cold start is judged by the stamp the
+   * last background left behind.
+   */
+  const inCallRef = useRef(false);
+  inCallRef.current = activeCall !== null || incomingCall !== null;
+  useEffect(() => {
+    if (state.status !== 'signed-in') {
+      setLocked(false);
+      return undefined;
+    }
+    let live = true;
+    const judge = async (): Promise<void> => {
+      const [shouldLock, preferred] = await Promise.all([
+        appLock.returnedToForeground(Date.now(), inCallRef.current),
+        appLock.biometricsPreferred(),
+      ]);
+      if (!live) return;
+      setBiometricsPreferred(preferred);
+      if (shouldLock) setLocked(true);
+      void auth.renewIfNeeded();
+    };
+    void judge();
+    void auth.authorizedFetch('/sessions/current').then(async (response) => {
+      if (response === null || !response.ok || !live) return;
+      const body = (await response.json()) as { email?: string };
+      if (live && typeof body.email === 'string') setLockEmail(body.email);
+    }).catch(() => undefined);
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (next === 'active') void judge();
+      else void appLock.leftForeground(Date.now());
+    });
+    return () => {
+      live = false;
+      subscription.remove();
+    };
+  }, [state.status]);
   const signUp = useCallback(
     (email: string, password: string, username: string) => auth.signUp(email, password, username),
     [],
@@ -404,8 +521,12 @@ function AppInner(): JSX.Element {
     setIncomingCall(null);
     setChatWith(null);
     setActiveCall(null);
+    setViewingChannel(null);
+    setMe(null);
     await devices.unregister();
     videofyCall.clearRingCredential();
+    await appLock.clear();
+    setLocked(false);
     await auth.signOut();
   }, []);
 
@@ -459,7 +580,7 @@ function AppInner(): JSX.Element {
           mode={ringing.mode}
           onAnswer={() => {
             setIncomingCall(null);
-            videofyCall.reportCallEnded(ringing.callId);
+            videofyCall.reportAnswered(ringing.callId);
             setActiveCall({
               kind: 'direct',
               callId: ringing.callId,
@@ -486,7 +607,7 @@ function AppInner(): JSX.Element {
           call={
             activeCall.kind === 'direct'
               ? { kind: 'direct', callId: activeCall.callId, peer: activeCall.peer }
-              : { kind: 'conference', callId: activeCall.callId }
+              : { kind: 'conference', callId: activeCall.callId, ...(activeCall.setup === undefined ? {} : { setup: activeCall.setup }) }
           }
           displayName={callName ?? state.accountId}
           {...(callLanguages.speak === undefined ? {} : { speakLanguage: callLanguages.speak })}
@@ -503,6 +624,41 @@ function AppInner(): JSX.Element {
           onLeave={() => {
             videofyCall.reportCallEnded(activeCall.callId);
             setActiveCall(null);
+          }}
+        />
+      </>
+    );
+  }
+
+  // The lock stands behind the call screens above and in front of everything below.
+  if (locked) {
+    return (
+      <>
+        <StatusBar style="light" />
+        <LockScreen
+          email={lockEmail}
+          biometricsPreferred={biometricsPreferred}
+          onUnlockWithPassword={unlockWithPassword}
+          onUnlocked={() => {
+            setLocked(false);
+            void appLock.unlocked();
+          }}
+          onSignOut={() => void signOut()}
+        />
+      </>
+    );
+  }
+
+  if (viewingChannel !== null) {
+    return (
+      <>
+        <StatusBar style="light" />
+        <ProgrammeViewerScreen
+          channel={viewingChannel}
+          api={api}
+          onBack={() => {
+            setViewingChannel(null);
+            setOpenChannelId(null);
           }}
         />
       </>
@@ -589,18 +745,28 @@ function AppInner(): JSX.Element {
             onOpenPerson={setViewingPerson}
             adding={addingContact}
             onAddingChange={setAddingContact}
+            self={me === null ? null : { username: me.username, displayName: me.displayName }}
           />
         )}
-        {tab === 'programmes' && <ProgrammesScreen />}
+        {tab === 'programmes' && <ProgrammesScreen api={api} onOpen={setViewingChannel} openChannelId={openChannelId} />}
         {tab === 'conf' && (
           <CallHomeScreen
             emailVerified={emailVerified}
-            onJoin={(callId) => setActiveCall({ kind: 'conference', callId })}
+            onJoin={(callId, setup) => {
+              void rememberConference({ callId, role: setup === undefined ? 'joined' : 'started', title: setup?.title ?? null });
+              setActiveCall({ kind: 'conference', callId, ...(setup === undefined ? {} : { setup }) });
+            }}
           />
         )}
         {tab === 'profile' && (
           <ProfileScreen
             api={api}
+            biometricsPreferred={biometricsPreferred}
+            onBiometricsPreferred={(on) => {
+              setBiometricsPreferred(on);
+              void appLock.setBiometricsPreferred(on);
+            }}
+            sessionToken={() => auth.callSessionToken()}
             probeAvatar={async (accountId) => {
               try {
                 const response = await authorizedFetch(`/avatars/${encodeURIComponent(accountId)}`);
