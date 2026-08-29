@@ -36,7 +36,11 @@
  * they are not structurally identical to TypeScript, because react-native-webrtc
  * omits DOM-only members the mesh never touches.
  */
-import { RTCPeerConnection as NativePeerConnection, mediaDevices } from 'react-native-webrtc';
+import {
+  MediaStream as NativeMediaStream,
+  RTCPeerConnection as NativePeerConnection,
+  mediaDevices,
+} from 'react-native-webrtc';
 import { io, type Socket } from 'socket.io-client';
 import { CALL_EVENTS } from '@videofy-live/call-wire';
 import {
@@ -395,6 +399,15 @@ export class CallConnection {
       // THE PLATFORM SEAM. Everything else is shared with the web client.
       createPeerConnection: () =>
         new NativePeerConnection({ iceServers: ice }) as unknown as RTCPeerConnection,
+      /*
+       * A remote camera negotiated EMPTY (every call starts camera off)
+       * arrives as a bare track with no stream. Hermes has no global
+       * MediaStream to wrap it in, so the mesh fell silent and the phone
+       * showed no video after the other side turned their camera on. The
+       * platform's own class is the wrapper.
+       */
+      createMediaStream: (tracks) =>
+        new NativeMediaStream(tracks as never) as unknown as MediaStream,
       sendOffer: (payload: CallVideoSdpPayload) => socket.emit(CALL_EVENTS.VIDEO_OFFER, payload),
       sendAnswer: (payload: CallVideoSdpPayload) => socket.emit(CALL_EVENTS.VIDEO_ANSWER, payload),
       sendIce: (payload: CallVideoIcePayload) => socket.emit(CALL_EVENTS.VIDEO_ICE, payload),

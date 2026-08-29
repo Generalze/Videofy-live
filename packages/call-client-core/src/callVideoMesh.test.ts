@@ -657,6 +657,39 @@ describe('remote camera off', () => {
     expect(h.remoteStreams.at(-1)?.stream).toBe(stream);
   });
 
+  it('PIN: a track negotiated EMPTY arrives with no stream; the injected factory wraps it', () => {
+    // Every call starts camera off, so the far side's first video track has
+    // no msid and `event.streams` is empty. Hermes has no global MediaStream:
+    // without the factory the phone received the track and rendered nothing.
+    const peers = new Map<string, FakePeerConnection>();
+    const remoteStreams: { participantId: string; stream: unknown }[] = [];
+    const wrapped: unknown[] = [];
+    const mesh = new CallVideoMesh({
+      callId: 'call-1',
+      selfParticipantId: 'a',
+      sendOffer: () => undefined,
+      sendAnswer: () => undefined,
+      sendIce: () => undefined,
+      onRemoteStream: (participantId, stream) => remoteStreams.push({ participantId, stream }),
+      onPeerState: () => undefined,
+      createPeerConnection: (remoteParticipantId) => {
+        const pc = new FakePeerConnection(remoteParticipantId);
+        peers.set(remoteParticipantId, pc);
+        return pc as unknown as RTCPeerConnection;
+      },
+      createMediaStream: (tracks) => {
+        const stream = { id: 'wrapped', tracks };
+        wrapped.push(stream);
+        return stream as unknown as MediaStream;
+      },
+    });
+    mesh.syncParticipants(['b']);
+    const track = mutableTrack();
+    mustPeer(peers, 'b').ontrack?.({ track, streams: [] } as never);
+    expect(wrapped).toHaveLength(1);
+    expect(remoteStreams.at(-1)).toEqual({ participantId: 'b', stream: wrapped[0] });
+  });
+
   it('PIN: clears the tile when the remote track ends', () => {
     const h = createHarness('a');
     h.mesh.syncParticipants(['b']);

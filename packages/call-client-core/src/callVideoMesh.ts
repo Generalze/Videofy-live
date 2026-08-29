@@ -47,6 +47,15 @@ export interface CallVideoMeshOptions {
   iceServers?: RTCIceServer[];
   /** Injectable for tests; defaults to RTCPeerConnection with `iceServers`. */
   createPeerConnection?: (remoteParticipantId: string) => RTCPeerConnection;
+  /**
+   * THE SECOND PLATFORM SEAM. A video track negotiated EMPTY (camera off at
+   * setup, `replaceTrack` later) arrives at the far side with no stream
+   * attached -- the offer carried no msid -- so a stream must be built
+   * around the bare track. Browsers have a global `MediaStream`; Hermes
+   * does not, and react-native-webrtc exports its own class. Without this
+   * the phone received every remote video track and rendered none of them.
+   */
+  createMediaStream?: (tracks: MediaStreamTrack[]) => MediaStream;
 }
 
 export interface CallVideoMeshDiagnostics {
@@ -300,9 +309,15 @@ export class CallVideoMesh {
       // Mesh peers carry video only; call audio stays on its own transports.
       if (!this.live(entry) || event.track.kind !== 'video') return;
       const track = event.track;
-      // Same Hermes guard as the audio peer: no global MediaStream there.
+      // No stream on the event means the track was negotiated empty; wrap it
+      // with the platform's own MediaStream (injected), or the global one.
       const stream =
-        event.streams[0] ?? (typeof MediaStream === 'undefined' ? null : new MediaStream([track]));
+        event.streams[0] ??
+        (this.options.createMediaStream
+          ? this.options.createMediaStream([track])
+          : typeof MediaStream === 'undefined'
+            ? null
+            : new MediaStream([track]));
 
       /**
        * CAMERA OFF MUST CLEAR THE TILE.
