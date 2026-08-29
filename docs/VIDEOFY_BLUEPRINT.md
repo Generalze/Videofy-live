@@ -292,42 +292,190 @@ Chats empty-state that leads somewhere; verification state on Profile.
 
 ---
 
-## 5 · Streaming — the coherent programme
+## 5 · Streaming — the Programme Quality Engine (canonical, 29 Aug 2026)
 
-Architecture (design locked, build next after integration):
+**Principle (locked): Videofy uses delay as production time, not waiting
+time.** The objective is not to make the stream late; it is, for every
+captured programme moment, to produce the highest-quality safe rendition
+that can be completed before its fixed airtime. The source is live; the
+runway gives Videofy time to understand it; the airtime deadline forces it
+to finish safely; the audience receives the best coherent rendition in
+their language, and one failing language never disrupts everyone else.
+
+### 5.1 Two clocks
 
 ```
-Broadcaster → ingest → coherence pipeline (delay per §1.3)
-                        ├ transcribe → translate → synthesize
-                        └ align every asset to capture timestamps
-            → HLS: ONE video ladder + per-language audio renditions
-                   + WebVTT caption renditions (never one video copy
-                   per language)
-            → viewer joins the programme clock at T+delay;
-              preferred listening language selects the rendition
+SOURCE CLOCK    what is happening in the studio now
+                = platformTimestampMs, stamped by the gateway on every frame
+                  (already built; media-ingest never substitutes arrival time)
+      │  production runway = the selected delay (§1.3: 30 / 45 / 60 / 90)
+      ▼
+AIRTIME CLOCK   what the audience is watching now
+                = sourceMs + delayMs, SERVER-OWNED on the broadcast session,
+                  monotonic; never moves backward; the delay may only increase,
+                  gradually, applied by holding at a segment boundary
 ```
 
-**Deadline-miss doctrine (locked):** the programme clock never moves
-backward, and nobody stalls because one language is late.
+Every captured segment gets `airtimeMs = segment.startMs + delayMs` and a
+readiness deadline `airtimeMs − 6 000 ms` (the §1.3 margin). Everything
+Videofy wants to improve must finish before that deadline.
+
+### 5.2 The processing path (existing spine, new stages)
+
+```
+LIVE SOURCE → ingest + source clock (built)
+  → speech segmentation: platform-minted segments committed on a stabilised
+    pause — COMPLETE speech units, never word-by-word (built:
+    StreamingSegmentCoordinator; utterance ceiling to be wired per category)
+  → STT with Programme Vocabulary keyterms
+  → transcript quality gate (confidence floor; hallucination / repetition
+    guards, live-wired)
+  → MT with do-not-translate span protection and canonical renderings
+  → translation quality gate: CRITICAL-ENTITY CHECK (numbers, money,
+    percentages, dates, times compared source vs rendition; warn-and-speak
+    default, one margin-gated retry; names and places protected by §7 terms)
+  → TTS (three voice levels, §1.4) with speaking-rate fit 0.95–1.05 chosen
+    BEFORE synthesis; invalid-audio rejection; −19 LUFS / −1.5 TP levelling
+    shared with the upload path
+  → captions (WebVTT)
+  → per-language RENDITION READY
+  → coherence runway: server-held, age-evicted, growable; releases video +
+    original + every ready rendition at airtime through the packager
+  → HLS: ONE video ladder + per-language audio renditions + WebVTT caption
+    renditions (never one video copy per language)
+  → viewer joins the programme clock at airtime
+```
+
+The original programme is authoritative throughout. Translation, captions
+and generated speech are derived renditions; Videofy never rewrites a
+speaker's meaning.
+
+### 5.3 Readiness is per segment, per language
+
+```
+segment_18372  capturedAt 20:15:00  airtimeAt 20:16:30
+  video      READY            original  READY
+  fr         READY  +83 s     yo        READY  +79 s
+  ha         RETRYING  attempt 2  margin +42 s
+  captions   READY  +84 s
+```
+
+Rendition states extend the existing `TargetLanguageOutputStatus`:
+`ready`, `ready-with-warning`, `retrying`, `captions-ready` (= captions +
+continuing original audio), `original-fallback` (the runtime miss),
+`failed`; **`unavailable` keeps its existing meaning — not offered for this
+programme.** RETRYING is legal only while the remaining budget exceeds the
+6 s margin plus that provider's P95 for the language; otherwise the track
+declares its miss at once. A segment is billed once whatever the retries.
+
+**Deadline-miss doctrine (locked, unchanged):** the programme clock never
+moves backward, and nobody stalls because one language is late.
 
 ```
 ON LANGUAGE TRACK DEADLINE MISS
   video, original audio, other languages, ready captions: continue
-  the late track: marked temporarily unavailable → original-audio
-  fallback → recovery at next segment boundary
+  the late track: original-fallback → recovery at next segment boundary
   logged: programme_translation_deadline_miss
           {language, segment, provider, latency, fallback}   ← core SLO
 ```
 
-**LIVE is a session, not a flag**: `BroadcastSession`
-(SCHEDULED/STARTING/LIVE/ENDING/ENDED/FAILED) with heartbeat/lease becomes
-the source of truth — a channel is live iff an authoritative LIVE session
-exists. This also carries schedule, DVR ("start from beginning"),
-automatic replay of every generated language track, and programme history.
+### 5.4 Grades (ruling, 29 Aug)
 
-Phases: (1) delayed-coherent single output; (2) HLS ladder + renditions +
-quality selection; (3) DVR + automatic replay. Each independently shippable
-and machine-measurable by the programme probe.
+Exactly two operator-visible grades, mapped onto the §1.3 ladder and the two
+billing grades:
+
+```
+LIVE MULTILINGUAL   adaptive 30 / 45 / 60 s, default 45 · standard voices
+BROADCAST QUALITY   90 s · premium voices, hard languages, 9jaLingo admissible
+```
+
+Not programme modes: a "REALTIME 5–15 s" tier (cannot meet the 6 s margin;
+sub-15 s is what CALLS are) and an "Editorial Live 2–5 min" tier (outside
+the locked ladder; needs human review before airtime — filed as a separate
+broadcaster product pending a founder ruling). Delay is selected before
+broadcast from measured readiness and DEFENDED; it is never a purchasable
+runway below what was measured.
+
+### 5.5 Preflight, warm-up, hold
+
+- **Preflight** measures each language's live chain (STT → MT → TTS) P95,
+  recommends the lowest safe delay from the ladder, and refuses an unsafe
+  choice by stating what was measured ("Hausa P95 27 s; 30 s is not
+  recommended, use 60 s or longer").
+- **Warm before Go Live** through the REAL live chain per target language;
+  only dead STT or a stubbed engine blocks Go Live — a cold language
+  degrades to original-fallback with a visible marker. Probes are constant
+  text, unmetered, content-free.
+- **Hold never stops the timeline**: the airtime clock keeps ticking and the
+  runway is filled with original / silence / a held frame (phase 1); bumpers
+  and alternate sources come with HLS discontinuities (phase 2). Hold
+  minutes are unbilled.
+
+### 5.6 Control room and viewer
+
+The operator sees SOURCE NOW and PUBLIC OUTPUT, the runway between them,
+and one row per rendition with its margin (`+74 s` = finished 74 seconds
+before airtime). Both clocks and every margin are SERVER-emitted from the
+coherence stage — never derived from a client clock. The viewer sees one
+restrained badge, `● LIVE · Enhanced`, whose disclosure explains the
+production delay; "Enhanced" appears only once the delay is server-declared.
+
+### 5.7 The SLO
+
+Not "how fast did translation finish" but **how much airtime margin did the
+rendition have**, per language, per session: P50/P95/P99 of
+`readyAtMs − airtimeMs`, measured at media-ingest's delivery of the
+segment's final translated frame. A language whose P99 margin approaches
+zero is operating dangerously even though nothing failed — that is the
+signal to lengthen the delay or change provider.
+
+### 5.8 Programme Vocabulary (see §7)
+
+The §7 `ProgrammeTerm` model is the vocabulary; it influences STT keyterms,
+MT span protection and canonical renderings, caption spelling and TTS
+pronunciation — the last honestly per vendor (Azure SSML, ElevenLabs
+dictionaries; 9jaLingo/Piper/MMS declare unsupported). Lower-thirds are not
+a vocabulary feature: per-language burned-in graphics would need
+per-language video, which §5.2 forbids; an overlay rendition is HLS phase-2.
+
+### 5.9 Interaction, replay, audit
+
+- Audience interactions carry `programmeTimestampMs` from the synchronized
+  programme clock, never wall clock; the host sees the audience offset.
+- The runway is EPHEMERAL: encoded segments on local disk, unlinked on
+  eviction. Replay/recording is a broadcast-session attribute with its own
+  billing and speaker-facing disclosure (ruling pending).
+- Operator interventions are forward-only (a re-render lands at the NEXT
+  boundary; aired audio is never replaced), recorded append-only with
+  verified actor, segment, language, action, versions and reason code —
+  never programme content.
+
+### 5.10 Where the code stands (verified 29 Aug 2026)
+
+Built: the source clock end to end; complete-unit segmentation; one
+pipeline per target language with un-awaited fan-out; provider chains with
+vendor fallback; the live confidence floor; levelling and timing fit on the
+upload path. Unbuilt: the airtime clock and server-owned delay (today a
+client build constant the WebRTC listener path cannot exceed by more than a
+few seconds), the runway, the packager, the deadline-miss doctrine,
+vocabulary, the entity check, live loudness/fit, preflight, the readiness
+dashboard, the margin SLO. Governance (§10): this is the first cut from the
+clean post-merge base, on `p9/programme-quality-engine`.
+
+**Phase 1 (≈ 81 developer-days, each slice shippable and probe-measurable):**
+P1.0 unwired seams (utterance ceiling, live translate deadline, `onSpoken`,
+viewer availability) · P1.1 programme timeline (delay on the session,
+airtime, readiness records, deadline-miss, original-fallback) · P1.2 runway
++ HLS packager · P1.3 quality gates + entity check + one retry · P1.4
+Programme Vocabulary v1 · P1.5 live audio production · P1.6 preflight and
+warm · P1.7 control room and viewer badge · P1.8 margin SLO. P1.3–P1.7 run
+in parallel after P1.1. **Phase 2:** language audition (typed text through
+the live chain, free with a cap), interventions with audit trail, hold with
+bumpers/slates, overlap strategy, audience-interaction offset, replay.
+
+**Rulings pending (founder):** Editorial Live as a separate product; replay
+billing and disclosure; audition cap; the two grades mapped to the two
+billing grades (recommended: yes to all four).
 
 ---
 
