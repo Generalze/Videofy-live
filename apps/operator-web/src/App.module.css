@@ -759,10 +759,6 @@
     linear-gradient(135deg, #080a12 0%, #11131d 48%, #090b10 100%);
 }
 
-.sidebar,
-.hiddenLegacySurface {
-  display: none;
-}
 
 .main {
   width: min(1480px, 100%);

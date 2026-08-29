@@ -11,6 +11,11 @@ import type {
 } from '@videofy-live/shared-types';
 import { SOCKET_EVENTS, WebRtcSignallingClient } from '@videofy-live/shared-types';
 import styles from './App.module.css';
+import shell from './ConsoleShell.module.css';
+import { ConsolePage, ConsoleShell } from './ConsoleShell';
+import { useOperatorPage } from './consolePages';
+import { SourceLanguageSelect, StateBadge, TargetLanguageSelect, type LanguageRow } from './LanguageSelect';
+import { NotYetPage } from './pages/NotYetPage';
 import { ChannelSettingsPanel } from './ChannelSettingsPanel';
 import {
   browserRandomBytes,
@@ -92,23 +97,36 @@ const VIEWER_ORIGIN = resolveViewerOrigin(
 );
 const PROGRAMME_MEDIA_READY_TIMEOUT_MS = 20_000;
 
-const SOURCE_LANGUAGE_OPTIONS = [
-  { code: 'en', label: 'English' },
-  { code: 'fr', label: 'French' },
-  { code: 'es', label: 'Spanish' },
-  { code: 'pt', label: 'Portuguese' },
-];
-const LANGUAGE_OPTIONS = [
-  { code: 'es', label: 'Spanish' },
-  { code: 'fr', label: 'French' },
-  { code: 'pt', label: 'Portuguese' },
-  { code: 'ar', label: 'Arabic' },
-  { code: 'ru', label: 'Russian' },
-  { code: 'el', label: 'Greek' },
-  { code: 'yo', label: 'Yoruba' },
-  { code: 'zh', label: 'Chinese (Simplified)' },
-  { code: 'la', label: 'Latin' },
-] as const;
+/*
+ * NO PRESET LANGUAGE LISTS (founder ruling 29 Aug). The operator chooses
+ * from the deployment's target-language catalogue -- built by media-ingest
+ * from the shared catalogue and the capability resolver -- and every row
+ * carries its capability state. Before a session exists the catalogue is
+ * what the last media state carried; until then the search says it is
+ * loading rather than offering a guess.
+ */
+function catalogueRows(
+  catalogue: readonly { language: string; label: string; availability: string; translationAvailable: boolean; textOnly?: boolean; state?: string; nativeName?: string; reason?: string }[] | undefined,
+): readonly LanguageRow[] {
+  if (catalogue === undefined) return [];
+  return catalogue.map((entry) => {
+    const declared = entry.state;
+    const state: LanguageRow['state'] =
+      declared === 'qualified' || declared === 'available' || declared === 'limited' || declared === 'unavailable'
+        ? declared
+        : entry.translationAvailable
+          ? 'available'
+          : 'unavailable';
+    return {
+      code: entry.language,
+      label: entry.label,
+      nativeName: entry.nativeName,
+      state,
+      textOnly: entry.textOnly,
+      reason: entry.reason ?? entry.availability,
+    };
+  });
+}
 
 function createRequestedProgrammeSessionId(): string {
   return `wrs_${crypto.randomUUID()}`;
@@ -141,21 +159,6 @@ function logSocketDiagnostics(event: string, details: SocketDiagnostics): void {
   if (import.meta.env.DEV) {
     console.info('[Videofy Live operator socket]', event, details);
   }
-}
-
-function StatusDot({ ok }: { ok: boolean }): React.ReactElement {
-  return (
-    <span
-      style={{
-        display: 'inline-block',
-        width: 8,
-        height: 8,
-        borderRadius: '50%',
-        background: ok ? 'var(--color-success)' : 'var(--color-error)',
-        marginRight: 6,
-      }}
-    />
-  );
 }
 
 function MetricCard({
@@ -1081,9 +1084,11 @@ export default function App(): React.ReactElement {
     starting: interpretationStarting,
     mediaError,
   });
+  const languageRows = catalogueRows(targetLanguageCatalogue);
   const sourceLanguageLabel =
-    SOURCE_LANGUAGE_OPTIONS.find((languageOption) => languageOption.code === sourceLanguage)?.label ??
-    sourceLanguage.toUpperCase();
+    sourceLanguageMode === 'auto-detect'
+      ? 'Auto-detect'
+      : (languageRows.find((row) => row.code === sourceLanguage)?.label ?? sourceLanguage.toUpperCase());
   const targetLanguageLabel = sessionTargetLanguage.toUpperCase();
   const compactStatusItems = [
     programmeSource.videoDetected ? 'Video live' : 'Video waiting',
@@ -1134,6 +1139,9 @@ export default function App(): React.ReactElement {
     setChannelDraft((current) => ({ ...current, code }));
   };
 
+  const page = useOperatorPage();
+  const viewers = mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0;
+
   const handleSaveChannelSettings = (): void => {
     socketRef.current?.emit(
       SOCKET_EVENTS.OPERATOR_CHANNEL_SETTINGS,
@@ -1151,9 +1159,276 @@ export default function App(): React.ReactElement {
     });
   };
 
+  const services = [
+    { label: 'Realtime Gateway', ok: gatewayOk },
+    { label: 'Media Ingest', ok: ingestOk },
+    ...(shouldShowMockControls(mediaState) ? [{ label: 'Speech Worker', ok: workerOk }] : []),
+  ];
+
+  const liveActions = (
+    <div className={shell.pageActions}>
+      {workflowSummary.status === 'Completed' ? (
+        <button type="button" className={styles.primaryAction} onClick={() => void handleRestartProgrammeSource()}>
+          Restart
+        </button>
+      ) : workflowSummary.canResume ? (
+        <>
+          <button type="button" className={styles.primaryAction} onClick={() => void handleResumeProgrammeSource()}>
+            Resume
+          </button>
+          <button type="button" className={styles.secondaryAction} onClick={() => void handleToggleRecording()}>
+            {recording.state === 'recording' ? 'Stop recording & download' : 'Record'}
+          </button>
+          <button type="button" className={styles.dangerAction} onClick={() => void handleStopProgrammeSource()}>
+            End
+          </button>
+        </>
+      ) : workflowSummary.canPause ? (
+        <>
+          <button type="button" className={styles.primaryAction} onClick={() => void handlePauseProgrammeSource()}>
+            Pause
+          </button>
+          <button type="button" className={styles.secondaryAction} onClick={() => void handleToggleRecording()}>
+            {recording.state === 'recording' ? 'Stop recording & download' : 'Record'}
+          </button>
+          <button type="button" className={styles.dangerAction} onClick={() => void handleStopProgrammeSource()}>
+            End
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          className={styles.primaryAction}
+          onClick={() => void handleStartInterpretation()}
+          disabled={interpretationStarting || !workflowSummary.canStartInterpretation}
+        >
+          {interpretationStarting ? 'Starting...' : 'Go live'}
+        </button>
+      )}
+    </div>
+  );
+
+  const outputCards = (
+    <section className={styles.outputGrid}>
+      <section className={styles.card}>
+        <div className={styles.sectionHeader}>
+          <div>
+            <h2 className={styles.sectionTitle}>Transcript</h2>
+          </div>
+          <span className={styles.statusPill}>{transcription?.status ?? 'waiting'}</span>
+        </div>
+        <div className={styles.progressTrack} aria-label="Transcription progress">
+          <div className={styles.progressFill} style={{ width: `${Math.max(0, Math.min(100, transcription?.progressPct ?? 0))}%` }} />
+        </div>
+        <p className={styles.liveText}>
+          {currentTranscription?.sourceText || currentTranscription?.status || 'Transcript will appear when programme audio is detected.'}
+        </p>
+      </section>
+      <section className={styles.card}>
+        <div className={styles.sectionHeader}>
+          <div>
+            <h2 className={styles.sectionTitle}>Translation</h2>
+          </div>
+          <span className={styles.statusPill}>{timestampedTranslation?.status ?? 'waiting'}</span>
+        </div>
+        <div className={styles.progressTrack} aria-label="Translation progress">
+          <div className={styles.progressFill} style={{ width: `${Math.max(0, Math.min(100, timestampedTranslation?.progressPct ?? 0))}%` }} />
+        </div>
+        <p className={styles.liveText}>
+          {currentTranslation?.translatedText || currentTranslation?.status || 'Translated text will appear after transcription.'}
+        </p>
+      </section>
+      <section className={styles.card}>
+        <div className={styles.sectionHeader}>
+          <div>
+            <h2 className={styles.sectionTitle}>Generated voice</h2>
+          </div>
+          <span className={styles.statusPill}>{generatedAudio?.status ?? 'waiting'}</span>
+        </div>
+        <div className={styles.progressTrack} aria-label="Text-to-speech progress">
+          <div className={styles.progressFill} style={{ width: `${Math.max(0, Math.min(100, generatedAudio?.progressPct ?? 0))}%` }} />
+        </div>
+        <p className={styles.liveText}>
+          {generatedAudioEvents[generatedAudioEvents.length - 1]?.translatedText || generatedAudio?.providerStatus || 'Translated speech will be delivered to viewers after translation.'}
+        </p>
+      </section>
+    </section>
+  );
+
   return (
-    <div className={styles.root}>
-      <aside className={styles.sidebar}>
+    <ConsoleShell
+      page={page}
+      services={services}
+      status={{
+        workflow: workflowSummary.status,
+        viewers,
+        source: sourceLanguageLabel,
+        targets: targetLanguages.length === 0 ? 'no targets' : targetLanguages.map((code) => code.toUpperCase()).join(' · '),
+        warning: recording.error ?? workflowSummary.actionableWarning ?? mediaError ?? null,
+      }}
+    >
+      {/* ---------------- 01 Overview ---------------- */}
+      <ConsolePage id="overview" active={page === 'overview'} kicker="Videofy Live Operator" title="Start interpretation from one programme source." lede="Choose the source, the languages, the voices; check readiness; then go live. Each step has its own page on the left.">
+        {liveActions}
+        <div className={styles.compactStatusStrip}>
+          {compactStatusItems.map((item) => (
+            <span key={item}>{item}</span>
+          ))}
+        </div>
+        {outputCards}
+      </ConsolePage>
+
+      {/* ---------------- 02 Source: ALWAYS MOUNTED (its <video> is the programme for file/URL sources) ---------------- */}
+      <ConsolePage id="source" active={page === 'source'} kicker="Step 1" title="Source" lede="Camera, screen, an uploaded video, a direct stream URL or an RTMP feed. Stays live while you visit other pages.">
+        <ProgrammeSourcePanel
+          source={programmeSource}
+          onRefreshDevices={handleRefreshProgrammeDevices}
+          onSelectCamera={(input, preview) => void handleSelectProgrammeCamera(input, preview)}
+          onSelectScreen={(preview) => void handleSelectProgrammeScreen(preview)}
+          onSelectUploadedVideo={(file, preview) => handleSelectUploadedProgrammeVideo(file, preview)}
+          onSelectDirectStreamUrl={(url, preview) => handleSelectDirectProgrammeUrl(url, preview)}
+          onSelectRtmpSource={(input, preview) => handleSelectRtmpProgrammeSource(input, preview)}
+          onStart={() => void handleStartInterpretation()}
+          onPause={() => void handlePauseProgrammeSource()}
+          onResume={() => void handleResumeProgrammeSource()}
+          onSeek={(ms) => void handleSeekProgrammeSource(ms)}
+          onRestart={() => void handleRestartProgrammeSource()}
+          onStop={() => void handleStopProgrammeSource()}
+          onClear={() => void handleClearProgrammeSource()}
+        />
+        <div className={shell.pageActions}>
+          <button type="button" className={styles.secondaryAction} onClick={() => void handleToggleRecording()}>
+            {recording.state === 'recording' ? 'Stop recording & download' : 'Record the programme'}
+          </button>
+        </div>
+      </ConsolePage>
+
+      {/* ---------------- 03 Languages ---------------- */}
+      <ConsolePage id="languages" active={page === 'languages'} kicker="Step 2" title="Languages" lede="The source language, auto-detected or chosen, and the target languages the audience can pick. The catalogue shows every language this deployment knows; only the ones you add are enabled.">
+        <div className={shell.twoUp}>
+          <section className={styles.card}>
+            <h2 className={styles.cardTitle}>Source language</h2>
+            <SourceLanguageSelect
+              rows={languageRows}
+              value={sourceLanguage}
+              mode={sourceLanguageMode}
+              disabled={Boolean(processingSession)}
+              onChange={(next) => {
+                setSourceLanguage(next.value);
+                setSourceLanguageMode(next.mode);
+              }}
+            />
+            {processingSession?.sourceLanguageControl && (
+              <>
+                <p className={styles.mockNote}>
+                  {`Live source ${processingSession.sourceLanguageControl.activeLanguage.toUpperCase()} · ${processingSession.sourceLanguageControl.status} · rev ${processingSession.sourceLanguageControl.revision}`}
+                </p>
+                <div className={styles.mockButtons}>
+                  <button type="button" className={styles.mockBtn} onClick={() => void handleSourceLanguageAction('confirm')} disabled={sessionCommandRunning}>Confirm</button>
+                  <button type="button" className={styles.mockBtn} onClick={() => void handleSourceLanguageAction('reject')} disabled={sessionCommandRunning}>Reject</button>
+                  <button type="button" className={styles.mockBtn} onClick={() => void handleSourceLanguageAction('override', sourceLanguage)} disabled={sessionCommandRunning}>Override</button>
+                  <button type="button" className={styles.mockBtn} onClick={() => void handleSourceLanguageAction(processingSession.sourceLanguageControl?.locked ? 'unlock' : 'lock')} disabled={sessionCommandRunning}>
+                    {processingSession.sourceLanguageControl.locked ? 'Unlock' : 'Lock'}
+                  </button>
+                </div>
+              </>
+            )}
+          </section>
+          <section className={styles.card}>
+            <h2 className={styles.cardTitle}>Target languages</h2>
+            <TargetLanguageSelect
+              rows={languageRows}
+              selected={targetLanguages}
+              disabled={Boolean(processingSession)}
+              disabledReason="Target languages are fixed while a programme session is running. End the programme to change them."
+              onToggle={handleTargetLanguageToggle}
+            />
+            <p className={shell.note}>
+              States: <StateBadge state="qualified" /> live evidence on this chain · <StateBadge state="available" /> every stage declares it · <StateBadge state="limited" /> beta or partial · <StateBadge state="unavailable" /> a stage has no provider.
+            </p>
+          </section>
+        </div>
+      </ConsolePage>
+
+      {/* ---------------- 04 Audio & Voices ---------------- */}
+      <ConsolePage id="audio" active={page === 'audio'} kicker="Step 3" title="Audio & Voices" lede="How viewers hear the programme: the original under the translation, or replaced by it; the mix; subtitles. Voices are set per language by the deployment's registry.">
+        <div className={shell.twoUp}>
+          <section className={styles.card}>
+            <h2 className={styles.cardTitle}>Mode</h2>
+            <div className={styles.modeToggle} role="group" aria-label="Operator audio mode">
+              <button type="button" className={operatorAudioMode === 'interpretation' ? styles.modeToggleActive : ''} onClick={() => handleOperatorAudioModeChange('interpretation')} aria-pressed={operatorAudioMode === 'interpretation'}>
+                Interpretation
+              </button>
+              <button type="button" className={operatorAudioMode === 'replacement' ? styles.modeToggleActive : ''} onClick={() => handleOperatorAudioModeChange('replacement')} aria-pressed={operatorAudioMode === 'replacement'}>
+                Replacement
+              </button>
+            </div>
+            <p className={shell.note}>
+              {viewers > 0 ? 'Applied to connected viewers at once.' : 'Applied to viewers as they connect; nobody is watching yet.'}
+            </p>
+            <div className={styles.mixControl}>
+              <label className={styles.configLabel}>Original audio {Math.round(originalMix * 100)}%</label>
+              <input type="range" min={0} max={1} step={0.05} value={originalMix} onChange={(e) => handleOriginalMixChange(Number(e.target.value))} className={styles.slider} />
+            </div>
+            <div className={styles.mixControl}>
+              <label className={styles.configLabel}>Translated audio {Math.round(translatedMix * 100)}%</label>
+              <input type="range" min={0} max={1} step={0.05} value={translatedMix} onChange={(e) => handleTranslatedMixChange(Number(e.target.value))} className={styles.slider} />
+            </div>
+            <label className={styles.checkboxRow}>
+              <input type="checkbox" checked={subtitlesEnabled} onChange={(e) => handleSubtitlesEnabledChange(e.target.checked)} />
+              Subtitles enabled
+            </label>
+          </section>
+          <section className={styles.card}>
+            <h2 className={styles.cardTitle}>Voices</h2>
+            <p className={shell.note}>
+              Each target language speaks with the voice the deployment's registry qualifies for it (standard grade: Azure; premium grade: ElevenLabs; Yoruba, Hausa and Igbo through the Nigerian specialist route). Per-programme voice choice arrives with the Programme Quality Engine.
+            </p>
+            <span className={styles.statusPill}>Generated voice · {generatedAudio?.status ?? 'waiting'}</span>
+          </section>
+        </div>
+      </ConsolePage>
+
+      {/* ---------------- 05 Programme Vocabulary ---------------- */}
+      <ConsolePage id="vocabulary" active={page === 'vocabulary'} title="Programme Vocabulary">
+        <NotYetPage
+          title="Names, places and terms the programme will use"
+          what={[
+            'Enter or import the programme\u2019s terminology before going live: names, places, organisations, numbers, pronunciation.',
+            'A term influences recognition (STT keyterms), translation (do-not-translate and canonical renderings), captions and pronunciation.',
+            'Lower-thirds are not a vocabulary feature; localized graphics come as a metadata rendition later.',
+          ]}
+          reference="Videofy Blueprint \u00a77 and \u00a75.8 (Programme Quality Engine, phase 1 slice P1.4)."
+        />
+      </ConsolePage>
+
+      {/* ---------------- 06 Quality / Delay ---------------- */}
+      <ConsolePage id="quality" active={page === 'quality'} title="Quality / Delay">
+        <NotYetPage
+          title="Live Multilingual or Broadcast Quality"
+          what={[
+            'Two grades, one choice: Live Multilingual (30 / 45 / 60 s from measured readiness, standard voices) or Broadcast Quality (90 s, premium voices, hard languages).',
+            'Preflight measures each language\u2019s chain and recommends the lowest safe delay; the delay never decreases during a programme.',
+            'Every language rendition shows its airtime margin while live.',
+          ]}
+          reference="Videofy Blueprint \u00a71.3 and \u00a75.4 (grades), \u00a75.5 (preflight) \u2014 phase 1 slices P1.1, P1.6, P1.7."
+        />
+      </ConsolePage>
+
+      {/* ---------------- 07 Advertising ---------------- */}
+      <ConsolePage id="advertising" active={page === 'advertising'} title="Advertising">
+        <NotYetPage
+          title="The programme\u2019s advert placement"
+          what={[
+            'The apps reserve a first-class Sponsored slot on the programme surface: visually separated, silent, never over the controls.',
+            'This page will hold the creative for that slot and its schedule; until an advertising source exists the apps show the house creative.',
+          ]}
+          reference="Coherent wave directive, 29 Aug 2026 (item 3)."
+        />
+      </ConsolePage>
+
+      {/* ---------------- 08 Access ---------------- */}
+      <ConsolePage id="access" active={page === 'access'} kicker="Step 4" title="Access" lede="Who can watch: public, private by link, or locked with a code; and which channel the programme goes out on.">
         <ChannelSettingsPanel
           ownChannelId={ownChannelId}
           activeChannelId={activeChannelId}
@@ -1166,556 +1441,46 @@ export default function App(): React.ReactElement {
           onSave={handleSaveChannelSettings}
           onMoveToOwnChannel={handleMoveToOwnChannel}
         />
-        <div className={styles.brand}>
-          <span className={styles.brandIcon}>▶</span>
-          <div>
-            <div className={styles.brandName}>Videofy Live</div>
-            <div className={styles.brandRole}>Operator</div>
-          </div>
-        </div>
+      </ConsolePage>
 
-        <section className={styles.sideSection}>
-          <h3 className={styles.sideTitle}>Services</h3>
-          <div className={styles.serviceRow}>
-            <StatusDot ok={gatewayOk} />
-            <span>Realtime Gateway</span>
-          </div>
-          <div className={styles.serviceRow}>
-            <StatusDot ok={ingestOk} />
-            <span>Media Ingest</span>
-          </div>
-          {shouldShowMockControls(mediaState) && (
-            <div className={styles.serviceRow}>
-              <StatusDot ok={workerOk} />
-              <span>Speech Worker</span>
-            </div>
-          )}
-        </section>
-
-        <section className={styles.sideSection}>
-          <h3 className={styles.sideTitle}>Languages</h3>
-          <div className={styles.langConfig}>
-            <label className={styles.configLabel}>Source</label>
-            <select
-              className={styles.configSelect}
-              value={sourceLanguage}
-              onChange={(e) => {
-                setSourceLanguage(e.target.value);
-                setSourceLanguageMode('manual');
-              }}
-            >
-              {SOURCE_LANGUAGE_OPTIONS.map((languageOption) => (
-                <option key={`p5-source-${languageOption.code}`} value={languageOption.code}>
-                  {languageOption.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className={styles.langConfig}>
-            <label className={styles.configLabel}>Detection</label>
-            <select
-              className={styles.configSelect}
-              value={sourceLanguageMode}
-              onChange={(event) =>
-                setSourceLanguageMode(event.target.value as 'manual' | 'auto-detect')
-              }
-            >
-              <option value="manual">Manual</option>
-              <option value="auto-detect">Auto-detect Beta</option>
-            </select>
-          </div>
-          <p className={styles.mockNote}>
-            {processingSession?.sourceLanguageControl
-              ? `Source ${processingSession.sourceLanguageControl.activeLanguage.toUpperCase()} · ${processingSession.sourceLanguageControl.status} · rev ${processingSession.sourceLanguageControl.revision}`
-              : sourceLanguageMode === 'manual'
-                ? `Manual ${sourceLanguage.toUpperCase()}`
-                : 'Auto-detect requires confirmation when confidence is low.'}
-          </p>
-          {processingSession?.sourceLanguageControl && (
-            <div className={styles.mockButtons}>
-              <button
-                type="button"
-                className={styles.mockBtn}
-                onClick={() => void handleSourceLanguageAction('confirm')}
-                disabled={sessionCommandRunning}
-              >
-                Confirm
-              </button>
-              <button
-                type="button"
-                className={styles.mockBtn}
-                onClick={() => void handleSourceLanguageAction('reject')}
-                disabled={sessionCommandRunning}
-              >
-                Reject
-              </button>
-              <button
-                type="button"
-                className={styles.mockBtn}
-                onClick={() => void handleSourceLanguageAction('override', sourceLanguage)}
-                disabled={sessionCommandRunning}
-              >
-                Override
-              </button>
-              <button
-                type="button"
-                className={styles.mockBtn}
-                onClick={() =>
-                  void handleSourceLanguageAction(
-                    processingSession.sourceLanguageControl?.locked ? 'unlock' : 'lock',
-                  )
-                }
-                disabled={sessionCommandRunning}
-              >
-                {processingSession.sourceLanguageControl.locked ? 'Unlock' : 'Lock'}
-              </button>
-            </div>
-          )}
-          <div className={styles.langConfig}>
-            <label className={styles.configLabel}>Target channels</label>
-            <div className={styles.targetLangs}>
-              {LANGUAGE_OPTIONS.map((language) => {
-                const capability = targetLanguageCatalogue?.find(
-                  (candidate) => candidate.language === language.code,
-                );
-                const unavailable = Boolean(capability && !capability.translationAvailable);
-                return (
-                <label
-                  key={language.code}
-                  className={styles.langCheckbox}
-                  title={capability?.availability ?? 'Capability is loading'}
-                >
-                  <input
-                    type="checkbox"
-                    checked={targetLanguages.includes(language.code)}
-                    disabled={unavailable || Boolean(processingSession)}
-                    onChange={(e) =>
-                      handleTargetLanguageToggle(language.code, e.target.checked)
-                    }
-                  />
-                  {language.label}
-                  {capability?.textOnly ? ' - captions only' : ''}
-                  {unavailable ? ' - unavailable' : ''}
-                </label>
-                );
-              })}
-            </div>
-            {targetLanguageCatalogue && (
-              <div className={styles.extractionMeta}>
-                {targetLanguageCatalogue.map((target) => (
-                  <span key={target.language}>
-                    {target.label}: {target.availability}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className={styles.sideSection}>
-          <h3 className={styles.sideTitle}>Preview readiness</h3>
-          <button
-            type="button"
-            className={`${styles.mockBtn} ${styles.actionBtn}`}
-            onClick={applyEnglishSpanishDemoPreset}
-          >
+      {/* ---------------- 09 Preflight ---------------- */}
+      <ConsolePage id="preflight" active={page === 'preflight'} kicker="Step 5" title="Preflight" lede="What is ready and what is not, before anybody is watching. Provider latency measurement and the recommended delay arrive with the Programme Quality Engine.">
+        <div className={shell.pageActions}>
+          <button type="button" className={styles.secondaryAction} onClick={applyEnglishSpanishDemoPreset}>
             EN to ES preset
           </button>
-          <div className={styles.readinessList}>
-            {readinessItems.map((item) => (
-              <div key={item.id} className={styles.readinessItem}>
-                <span
-                  className={`${styles.readinessState} ${
-                    item.state === 'ready'
-                      ? styles.readinessReady
-                      : item.state === 'blocked'
-                        ? styles.readinessBlocked
-                        : styles.readinessWarning
-                  }`}
-                  aria-label={`${item.label} ${item.state}`}
-                />
-                <span>
-                  <strong>{item.label}</strong>
-                  <small>{item.detail}</small>
-                </span>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className={styles.sideSection}>
-          <h3 className={styles.sideTitle}>Mix</h3>
-          <div className={styles.mixControl}>
-            <label className={styles.configLabel}>Original {Math.round(originalMix * 100)}%</label>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={originalMix}
-              onChange={(e) => handleOriginalMixChange(Number(e.target.value))}
-              className={styles.slider}
-            />
-          </div>
-          <div className={styles.mixControl}>
-            <label className={styles.configLabel}>
-              Translated {Math.round(translatedMix * 100)}%
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={translatedMix}
-              onChange={(e) => handleTranslatedMixChange(Number(e.target.value))}
-              className={styles.slider}
-            />
-          </div>
-          <label className={styles.checkboxRow}>
-            <input
-              type="checkbox"
-              checked={subtitlesEnabled}
-              onChange={(e) => handleSubtitlesEnabledChange(e.target.checked)}
-            />
-            Subtitles enabled
-          </label>
-        </section>
-      </aside>
-
-      <main className={styles.main}>
-        <section className={styles.heroConsole} aria-labelledby="operator-session-title">
-          <div className={styles.heroTopline}>
-            <span className={styles.statusPill}>{workflowSummary.status}</span>
-            <span>{mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0} viewers</span>
-            <span>{sourceLanguageLabel}</span>
-            <span>{targetLanguageLabel}</span>
-          </div>
-          <div className={styles.heroGrid}>
-            <div>
-              <p className={styles.kicker}>Videofy Live Operator</p>
-              <h1 id="operator-session-title" className={styles.heroTitle}>
-                Start interpretation from one programme source.
-              </h1>
-              <p className={styles.heroCopy}>
-                Select video, choose languages, then start. Videofy handles signalling,
-                transport, transcription, translation, speech generation, and viewer delivery.
-              </p>
-            </div>
-            <div className={styles.heroActions}>
-              {workflowSummary.status === 'Completed' ? (
-                <button
-                  type="button"
-                  className={styles.primaryAction}
-                  onClick={() => void handleRestartProgrammeSource()}
-                >
-                  Restart
-                </button>
-              ) : workflowSummary.canResume ? (
-                <>
-                  <button
-                    type="button"
-                    className={styles.primaryAction}
-                    onClick={() => void handleResumeProgrammeSource()}
-                  >
-                    Resume
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.secondaryAction}
-                    onClick={() => void handleToggleRecording()}
-                  >
-                    {recording.state === 'recording' ? 'Stop recording & download' : 'Record'}
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.dangerAction}
-                    onClick={() => void handleStopProgrammeSource()}
-                  >
-                    End
-                  </button>
-                </>
-              ) : workflowSummary.canPause ? (
-                <>
-                  <button
-                    type="button"
-                    className={styles.primaryAction}
-                    onClick={() => void handlePauseProgrammeSource()}
-                  >
-                    Pause
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.dangerAction}
-                    onClick={() => void handleStopProgrammeSource()}
-                  >
-                    End
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  className={styles.primaryAction}
-                  onClick={() => void handleStartInterpretation()}
-                  disabled={interpretationStarting || !workflowSummary.canStartInterpretation}
-                >
-                  {interpretationStarting ? 'Starting...' : 'Start Interpretation'}
-                </button>
-              )}
-            </div>
-          </div>
-          {recording.error !== null && (
-            <p className={styles.readinessWarningBanner} role="status">
-              {recording.error}
-            </p>
-          )}
-          {workflowSummary.actionableWarning && (
-            <p className={styles.readinessWarningBanner} role="status">
-              {workflowSummary.actionableWarning}
-            </p>
-          )}
-          <div className={styles.compactStatusStrip}>
-            {compactStatusItems.map((item) => (
-              <span key={item}>{item}</span>
-            ))}
-          </div>
-        </section>
-
-        <section className={styles.workflowGrid}>
-          <ProgrammeSourcePanel
-            source={programmeSource}
-            onRefreshDevices={handleRefreshProgrammeDevices}
-            onSelectCamera={(input, preview) => void handleSelectProgrammeCamera(input, preview)}
-            onSelectScreen={(preview) => void handleSelectProgrammeScreen(preview)}
-            onSelectUploadedVideo={(file, preview) =>
-              handleSelectUploadedProgrammeVideo(file, preview)
-            }
-            onSelectDirectStreamUrl={(url, preview) =>
-              handleSelectDirectProgrammeUrl(url, preview)
-            }
-            onSelectRtmpSource={(input, preview) =>
-              handleSelectRtmpProgrammeSource(input, preview)
-            }
-            onStart={() => void handleStartInterpretation()}
-            onPause={() => void handlePauseProgrammeSource()}
-            onResume={() => void handleResumeProgrammeSource()}
-            onSeek={(ms) => void handleSeekProgrammeSource(ms)}
-            onRestart={() => void handleRestartProgrammeSource()}
-            onStop={() => void handleStopProgrammeSource()}
-            onClear={() => void handleClearProgrammeSource()}
-          />
-
-          <section className={`${styles.card} ${styles.setupCard}`} aria-labelledby="interpretation-setup-title">
-            <div className={styles.sectionHeader}>
-              <div>
-                <p className={styles.kicker}>Step 2</p>
-                <h2 id="interpretation-setup-title" className={styles.sectionTitle}>
-                  Interpretation setup
-                </h2>
-              </div>
-              <button
-                type="button"
-                className={styles.secondaryAction}
-                onClick={applyEnglishSpanishDemoPreset}
-              >
-                EN to ES preset
-              </button>
-            </div>
-            <div className={styles.setupGrid}>
-              <div className={styles.langConfig}>
-                <label className={styles.configLabel}>Source language</label>
-                <select
-                  className={styles.configSelect}
-                  value={sourceLanguage}
-                  onChange={(e) => {
-                    setSourceLanguage(e.target.value);
-                    setSourceLanguageMode('manual');
-                  }}
-                >
-                  {SOURCE_LANGUAGE_OPTIONS.map((languageOption) => (
-                    <option key={`standard-source-${languageOption.code}`} value={languageOption.code}>
-                      {languageOption.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <label className={styles.toggleRow}>
-                <input
-                  type="checkbox"
-                  checked={sourceLanguageMode === 'auto-detect'}
-                  onChange={(event) =>
-                    setSourceLanguageMode(event.target.checked ? 'auto-detect' : 'manual')
-                  }
-                />
-                Auto-detect source
-              </label>
-              <div className={styles.langConfig}>
-                <span className={styles.configLabel}>Viewer languages</span>
-                <div className={styles.targetLangs} aria-label="Viewer language channels">
-                  {LANGUAGE_OPTIONS.map((language) => {
-                    const capability = targetLanguageCatalogue?.find(
-                      (candidate) => candidate.language === language.code,
-                    );
-                    const unavailable = Boolean(
-                      capability && !capability.translationAvailable,
-                    );
-                    return (
-                      <label
-                        key={`standard-target-${language.code}`}
-                        className={styles.langCheckbox}
-                        title={capability?.availability ?? 'Capability is loading'}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={targetLanguages.includes(language.code)}
-                          disabled={unavailable || Boolean(processingSession)}
-                          onChange={(event) =>
-                            handleTargetLanguageToggle(language.code, event.target.checked)
-                          }
-                        />
-                        <span>
-                          {language.label}
-                          {capability?.textOnly ? ' - captions only' : ''}
-                          {unavailable ? ' - unavailable' : ''}
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-              {(mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0) > 0 && (
-                <div className={styles.modeToggle} role="group" aria-label="Operator audio mode">
-                  <button
-                    type="button"
-                    className={operatorAudioMode === 'interpretation' ? styles.modeToggleActive : ''}
-                    onClick={() => handleOperatorAudioModeChange('interpretation')}
-                    aria-pressed={operatorAudioMode === 'interpretation'}
-                  >
-                    Interpretation
-                  </button>
-                  <button
-                    type="button"
-                    className={operatorAudioMode === 'replacement' ? styles.modeToggleActive : ''}
-                    onClick={() => handleOperatorAudioModeChange('replacement')}
-                    aria-pressed={operatorAudioMode === 'replacement'}
-                  >
-                    Replacement
-                  </button>
-                </div>
-              )}
-              <div className={styles.mixControl}>
-                <label className={styles.configLabel}>Original audio {Math.round(originalMix * 100)}%</label>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={originalMix}
-                  onChange={(e) => handleOriginalMixChange(Number(e.target.value))}
-                  className={styles.slider}
-                />
-              </div>
-              <div className={styles.mixControl}>
-                <label className={styles.configLabel}>
-                  Translated audio {Math.round(translatedMix * 100)}%
-                </label>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={translatedMix}
-                  onChange={(e) => handleTranslatedMixChange(Number(e.target.value))}
-                  className={styles.slider}
-                />
-              </div>
-            </div>
-            <div className={styles.readinessListCompact}>
-              {readinessItems.map((item) => (
-                <span key={item.id} className={styles.readinessChip}>
-                  {item.label}: {item.state}
-                </span>
-              ))}
-            </div>
-          </section>
-        </section>
-
-        <section className={styles.outputGrid}>
-          <section className={styles.card}>
-            <div className={styles.sectionHeader}>
-              <div>
-                <p className={styles.kicker}>Step 3</p>
-                <h2 className={styles.sectionTitle}>Transcript</h2>
-              </div>
-              <span className={styles.statusPill}>{transcription?.status ?? 'waiting'}</span>
-            </div>
-            <div className={styles.progressTrack} aria-label="Transcription progress">
-              <div
-                className={styles.progressFill}
-                style={{ width: `${Math.max(0, Math.min(100, transcription?.progressPct ?? 0))}%` }}
+        </div>
+        <div className={styles.readinessList}>
+          {readinessItems.map((item) => (
+            <div key={item.id} className={styles.readinessItem}>
+              <span
+                className={`${styles.readinessState} ${item.state === 'ready' ? styles.readinessReady : item.state === 'blocked' ? styles.readinessBlocked : styles.readinessWarning}`}
+                aria-label={`${item.label} ${item.state}`}
               />
+              <span>
+                <strong>{item.label}</strong>
+                <small>{item.detail}</small>
+              </span>
             </div>
-            <p className={styles.liveText}>
-              {currentTranscription?.sourceText ||
-                currentTranscription?.status ||
-                'Transcript will appear when programme audio is detected.'}
-            </p>
-          </section>
+          ))}
+        </div>
+      </ConsolePage>
 
-          <section className={styles.card}>
-            <div className={styles.sectionHeader}>
-              <div>
-                <p className={styles.kicker}>Step 4</p>
-                <h2 className={styles.sectionTitle}>Translation</h2>
-              </div>
-              <span className={styles.statusPill}>{timestampedTranslation?.status ?? 'waiting'}</span>
-            </div>
-            <div className={styles.progressTrack} aria-label="Translation progress">
-              <div
-                className={styles.progressFill}
-                style={{
-                  width: `${Math.max(0, Math.min(100, timestampedTranslation?.progressPct ?? 0))}%`,
-                }}
-              />
-            </div>
-            <p className={styles.liveText}>
-              {currentTranslation?.translatedText ||
-                currentTranslation?.status ||
-                'Translated text will appear after transcription.'}
-            </p>
-          </section>
-
-          <section className={styles.card}>
-            <div className={styles.sectionHeader}>
-              <div>
-                <p className={styles.kicker}>Step 5</p>
-                <h2 className={styles.sectionTitle}>Generated voice</h2>
-              </div>
-              <span className={styles.statusPill}>{generatedAudio?.status ?? 'waiting'}</span>
-            </div>
-            <div className={styles.progressTrack} aria-label="Text-to-speech progress">
-              <div
-                className={styles.progressFill}
-                style={{ width: `${Math.max(0, Math.min(100, generatedAudio?.progressPct ?? 0))}%` }}
-              />
-            </div>
-            <p className={styles.liveText}>
-              {generatedAudioEvents[generatedAudioEvents.length - 1]?.translatedText ||
-                generatedAudio?.providerStatus ||
-                'Translated speech will be delivered to viewers after translation.'}
-            </p>
-          </section>
-        </section>
-
+      {/* ---------------- 10 Live Control ---------------- */}
+      <ConsolePage id="live" active={page === 'live'} kicker="On air" title="Live Control" lede="The active programme: start, pause, resume, restart, end, record. Readiness margins per language arrive with the Programme Quality Engine.">
+        {liveActions}
+        <div className={styles.compactStatusStrip}>
+          {compactStatusItems.map((item) => (
+            <span key={item}>{item}</span>
+          ))}
+        </div>
+        {outputCards}
         <details className={styles.technicalDiagnostics}>
           <summary>Technical diagnostics</summary>
           <div className={styles.diagnosticsGrid}>
             <BroadcasterSignallingPanel
               signalling={broadcasterSignalling}
-              captureState={
-                programmeSource.sourceType === 'none'
-                  ? broadcasterCapture.status
-                  : programmeSource.status
-              }
+              captureState={programmeSource.sourceType === 'none' ? broadcasterCapture.status : programmeSource.status}
               mediaTransportState={broadcasterTransport.state}
               onCreateSession={() => void handleCreateBroadcasterSession()}
               onCloseSession={() => void handleCloseBroadcasterSession()}
@@ -1733,9 +1498,7 @@ export default function App(): React.ReactElement {
             <BroadcasterWebRtcTransportPanel
               capture={broadcasterCapture}
               programmeSource={programmeSource}
-              signallingSessionReady={Boolean(
-                broadcasterSignalling.connected && broadcasterSignalling.sessionId,
-              )}
+              signallingSessionReady={Boolean(broadcasterSignalling.connected && broadcasterSignalling.sessionId)}
               transport={broadcasterTransport}
               transcriptionBridge={mediaState?.webrtcTranscriptionBridge ?? null}
               onStartTransport={() => void handleStartBroadcasterTransport()}
@@ -1761,37 +1524,18 @@ export default function App(): React.ReactElement {
               )}
               {import.meta.env.DEV && (
                 <dl className={styles.devDiagnosticsGrid} aria-label="Development socket diagnostics">
-                  <div>
-                    <dt>Gateway URL</dt>
-                    <dd>{GATEWAY_URL}</dd>
-                  </div>
-                  <div>
-                    <dt>Connected</dt>
-                    <dd>{socketDiagnostics.connected ? 'true' : 'false'}</dd>
-                  </div>
-                  <div>
-                    <dt>Transport</dt>
-                    <dd>{socketDiagnostics.transport}</dd>
-                  </div>
-                  <div>
-                    <dt>Last connect_error</dt>
-                    <dd>{socketDiagnostics.lastConnectError}</dd>
-                  </div>
-                  <div>
-                    <dt>Reconnect attempts</dt>
-                    <dd>{socketDiagnostics.reconnectAttempts}</dd>
-                  </div>
-                  <div>
-                    <dt>Disconnect reason</dt>
-                    <dd>{socketDiagnostics.disconnectReason}</dd>
-                  </div>
+                  <div><dt>Gateway URL</dt><dd>{GATEWAY_URL}</dd></div>
+                  <div><dt>Connected</dt><dd>{socketDiagnostics.connected ? 'true' : 'false'}</dd></div>
+                  <div><dt>Transport</dt><dd>{socketDiagnostics.transport}</dd></div>
+                  <div><dt>Last connect_error</dt><dd>{socketDiagnostics.lastConnectError}</dd></div>
+                  <div><dt>Reconnect attempts</dt><dd>{socketDiagnostics.reconnectAttempts}</dd></div>
+                  <div><dt>Disconnect reason</dt><dd>{socketDiagnostics.disconnectReason}</dd></div>
                 </dl>
               )}
             </section>
           </div>
         </details>
-
-      </main>
-    </div>
+      </ConsolePage>
+    </ConsoleShell>
   );
 }
