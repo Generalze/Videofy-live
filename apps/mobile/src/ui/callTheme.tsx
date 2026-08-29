@@ -132,12 +132,16 @@ export function GlassDock({ children }: { readonly children: ReactNode }): JSX.E
  */
 export function RoundControl({
   mark,
+  icon,
   label,
   active = false,
   disabled = false,
   onPress,
 }: {
-  readonly mark: string;
+  /** A short text mark; used when no icon is given. */
+  readonly mark?: string;
+  /** The glyph, drawn by the caller in the right colour for `active`. */
+  readonly icon?: ReactNode;
   readonly label: string;
   readonly active?: boolean;
   readonly disabled?: boolean;
@@ -153,28 +157,32 @@ export function RoundControl({
       style={({ pressed }) => [styles.roundWrap, pressed && styles.pressed, disabled && styles.disabled]}
     >
       <View style={[styles.round, active && styles.roundActive]}>
-        <Text style={[styles.roundMark, active && styles.roundMarkActive]}>{mark}</Text>
+        {icon ?? <Text style={[styles.roundMark, active && styles.roundMarkActive]}>{mark ?? ''}</Text>}
       </View>
       <Text style={styles.roundLabel}>{label}</Text>
     </Pressable>
   );
 }
 
-/** The one red button. */
+/** The one red control: a round hang-up in the dock, labelled beneath (canon). */
 export function EndCallButton({
   label,
   onPress,
+  icon,
 }: {
   readonly label: string;
   readonly onPress: () => void;
+  readonly icon?: ReactNode;
 }): JSX.Element {
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
-      style={({ pressed }) => [styles.end, pressed && styles.pressed]}
+      accessibilityLabel={label}
+      style={({ pressed }) => [styles.roundWrap, pressed && styles.pressed]}
     >
-      <Text style={styles.endLabel}>{label}</Text>
+      <View style={[styles.round, styles.end]}>{icon ?? <Text style={styles.endLabel}>End</Text>}</View>
+      <Text style={styles.roundLabel}>{label}</Text>
     </Pressable>
   );
 }
@@ -257,13 +265,8 @@ const styles = StyleSheet.create({
   roundMark: { color: CALL_COLORS.text, fontSize: 12, fontWeight: '800', letterSpacing: 1.5 },
   roundMarkActive: { color: CALL_COLORS.ground },
   roundLabel: { color: CALL_COLORS.muted, fontSize: 12 },
-  end: {
-    backgroundColor: CALL_COLORS.red,
-    borderRadius: 999,
-    paddingVertical: 16,
-    alignItems: 'center',
-  },
-  endLabel: { color: '#ffffff', fontSize: 16, fontWeight: '700', letterSpacing: 0.3 },
+  end: { backgroundColor: CALL_COLORS.red, borderColor: CALL_COLORS.red, width: 68, height: 68, borderRadius: 34 },
+  endLabel: { color: '#ffffff', fontSize: 14, fontWeight: '700', letterSpacing: 0.3 },
   pressed: { opacity: 0.75 },
   disabled: { opacity: 0.4 },
 });

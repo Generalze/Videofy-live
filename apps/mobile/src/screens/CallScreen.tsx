@@ -47,6 +47,7 @@ import {
 import { createAudioRouter, resolveRoute, type AudioRoute } from '../call/audioRoute';
 import { elapsedSinceMs, formatElapsed, observeServerClock } from '../call/callTimer';
 import { TERMINAL_DIRECT_STATES, directStateWords } from '../call/directCallApi';
+import { Icon } from '../ui/icons';
 import {
   CallConnection,
   type CallTransportEvent,
@@ -376,7 +377,7 @@ export function CallScreen({
       <CallBackdrop />
 
       <View style={styles.top}>
-        <C7Mark caption={modeLabel} />
+        <C7Mark caption={call.kind === 'direct' ? 'Direct call' : 'Conference'} />
       </View>
 
       {/* ===== DIRECT CALL: the person, the state, the timer. ===== */}
@@ -404,12 +405,18 @@ export function CallScreen({
                 pulsing={!terminal && elapsedMs === null}
               />
               <Text style={styles.peerName}>{call.peer.name}</Text>
+              <View style={styles.modePill}>
+                <Text style={styles.modePillLabel}>{modeLabel}</Text>
+              </View>
               {elapsedMs !== null && !terminal ? (
                 <>
                   <Text style={styles.timer}>{formatElapsed(elapsedMs)}</Text>
-                  <Text style={[styles.stateLine, serverState === 'reconnecting' && styles.stateWarn]}>
-                    {serverState === 'reconnecting' ? 'Reconnecting…' : 'Connected'}
-                  </Text>
+                  <View style={styles.stateRow}>
+                    <View style={[styles.stateDot, serverState === 'reconnecting' && styles.stateDotWarn]} />
+                    <Text style={[styles.stateLine, styles.stateConnected, serverState === 'reconnecting' && styles.stateWarn]}>
+                      {serverState === 'reconnecting' ? 'Reconnecting…' : 'Connected'}
+                    </Text>
+                  </View>
                 </>
               ) : (
                 <>
@@ -426,6 +433,15 @@ export function CallScreen({
                 <Text style={styles.hint}>You can message them instead, or call again later.</Text>
               )}
               {cameraStarting && <Text style={styles.hint}>Starting camera…</Text>}
+              {!cameraOn && !terminal && (
+                <View style={styles.cameraNotice}>
+                  <Icon name="camera-off" size={26} color={CALL_COLORS.muted} />
+                  <View style={{ gap: 2, flexShrink: 1 }}>
+                    <Text style={styles.cameraNoticeTitle}>Your camera is off</Text>
+                    <Text style={styles.cameraNoticeBody}>This is an audio-only call</Text>
+                  </View>
+                </View>
+              )}
             </View>
           )}
         </View>
@@ -510,17 +526,31 @@ export function CallScreen({
       <View style={[styles.dockWrap, { paddingBottom: bottomInset + 12 }]}>
         <GlassDock>
           <View style={styles.controlsRow}>
-            <RoundControl mark="MIC" label={muted ? 'Unmute' : 'Mute'} active={muted} onPress={toggleMute} />
-            <RoundControl mark="SPK" label="Speaker" active={speakerOn} onPress={toggleSpeaker} />
             <RoundControl
-              mark="CAM"
-              label={cameraOn ? 'Camera off' : 'Camera'}
+              icon={<Icon name={muted ? 'mic-off' : 'mic'} size={26} color={muted ? CALL_COLORS.ground : CALL_COLORS.text} />}
+              label={muted ? 'Unmute' : 'Mute'}
+              active={muted}
+              onPress={toggleMute}
+            />
+            <RoundControl
+              icon={<Icon name="speaker" size={26} color={speakerOn ? CALL_COLORS.ground : CALL_COLORS.text} />}
+              label="Speaker"
+              active={speakerOn}
+              onPress={toggleSpeaker}
+            />
+            <RoundControl
+              icon={<Icon name={cameraOn ? 'camera' : 'camera-off'} size={26} color={cameraOn ? CALL_COLORS.ground : CALL_COLORS.text} />}
+              label={cameraOn ? 'Camera on' : 'Camera off'}
               active={cameraOn}
               disabled={cameraStarting}
               onPress={toggleCamera}
             />
+            <EndCallButton
+              label={call.kind === 'direct' ? 'End call' : 'Leave'}
+              onPress={hangUp}
+              icon={<Icon name="hangup" size={30} color="#ffffff" />}
+            />
           </View>
-          <EndCallButton label={call.kind === 'direct' ? 'End call' : 'Leave'} onPress={hangUp} />
         </GlassDock>
       </View>
     </View>
@@ -532,13 +562,36 @@ const styles = StyleSheet.create({
   top: { paddingTop: 52, paddingHorizontal: 22 },
   stage: { flex: 1, justifyContent: 'center' },
   identity: { alignItems: 'center', gap: 10, paddingHorizontal: 28 },
-  peerName: { color: CALL_COLORS.text, fontSize: 28, fontWeight: '700', marginTop: 6, textAlign: 'center' },
+  peerName: { color: CALL_COLORS.text, fontSize: 34, fontWeight: '600', fontFamily: 'serif', marginTop: 6, textAlign: 'center', letterSpacing: -0.3 },
   stateLine: { color: CALL_COLORS.muted, fontSize: 16, textAlign: 'center' },
+  stateConnected: { color: CALL_COLORS.teal },
   stateWarn: { color: '#d9a441' },
+  stateRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  stateDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: CALL_COLORS.teal },
+  stateDotWarn: { backgroundColor: '#d9a441' },
+  modePill: { borderRadius: 999, borderWidth: 1, borderColor: 'rgba(62,201,192,0.5)', paddingHorizontal: 14, paddingVertical: 5, backgroundColor: 'rgba(62,201,192,0.08)' },
+  modePillLabel: { color: CALL_COLORS.teal, fontSize: 13, fontWeight: '600' },
+  cameraNotice: {
+    marginTop: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    alignSelf: 'stretch',
+    marginHorizontal: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(62,201,192,0.22)',
+    backgroundColor: 'rgba(12,28,36,0.6)',
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+  },
+  cameraNoticeTitle: { color: CALL_COLORS.text, fontSize: 16, fontWeight: '600' },
+  cameraNoticeBody: { color: CALL_COLORS.muted, fontSize: 13 },
   timer: {
     color: CALL_COLORS.text,
-    fontSize: 40,
-    fontWeight: '300',
+    fontSize: 56,
+    fontFamily: 'serif',
+    fontWeight: '400',
     fontVariant: ['tabular-nums'],
     letterSpacing: 1,
     marginTop: 4,
@@ -599,5 +652,5 @@ const styles = StyleSheet.create({
   diag: { color: CALL_COLORS.faint, fontSize: 11, fontFamily: 'monospace' },
 
   dockWrap: { paddingHorizontal: 14 },
-  controlsRow: { flexDirection: 'row', justifyContent: 'space-around' },
+  controlsRow: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'flex-start' },
 });

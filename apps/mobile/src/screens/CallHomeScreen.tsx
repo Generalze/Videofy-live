@@ -1,22 +1,29 @@
 /** @author masterzee001 */
 /**
- * CONFERENCES ONLY (founder ruling 2026-08-28): start one, or join one by
- * its code. This is the only place a human-readable call code exists.
- * Direct calls are person-to-person and start from a contact, a chat or an
- * incoming call -- never from a code, and never from here. `normalizeCallCode`
- * is the shared contract that makes a code typed here reach the same
- * conference as the same code typed anywhere else.
+ * Conference, to canon: start one, or join one by its code.
+ *
+ * CONFERENCES ONLY (founder ruling 2026-08-28): this is the only place a
+ * human-readable call code exists. Direct calls start from a person.
+ * START MEANS START (addendum 2026-08-29): the conference opens at once
+ * with a fresh code, shown on the call screen.
+ *
+ * WHAT THE CANON SHOWS AND THIS BUILD DOES NOT CLAIM: privacy tiers,
+ * target languages and recent conferences. Conferences in this build are
+ * normal mode with no code-gated privacy; a control that did nothing
+ * would be a lie on the screen. The language catalogue lands with the
+ * programme wave and both screens pick it up together.
  */
 import { useState, type JSX } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { normalizeCallCode } from '@videofy-live/call-client-core';
+import { C7, GlassCard, PrimaryButton } from '../ui/c7';
+import { Icon } from '../ui/icons';
 
 const ADJECTIVES = ['amber', 'bright', 'calm', 'clear', 'coral', 'gentle', 'golden', 'quiet'];
 const NOUNS = ['river', 'harbour', 'meadow', 'summit', 'lantern', 'compass', 'orchard', 'beacon'];
 
 function generateCallCode(): string {
-  const pick = (words: readonly string[]): string =>
-    words[Math.floor(Math.random() * words.length)] ?? 'call';
+  const pick = (words: readonly string[]): string => words[Math.floor(Math.random() * words.length)] ?? 'call';
   const digits = String(Math.floor(Math.random() * 90) + 10);
   return `${pick(ADJECTIVES)}-${pick(NOUNS)}-${digits}`;
 }
@@ -32,98 +39,69 @@ export function CallHomeScreen({ emailVerified, onJoin }: CallHomeScreenProps): 
 
   return (
     <ScrollView style={styles.fill} contentContainerStyle={styles.screen}>
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Conference</Text>
-        <Text style={styles.cardBody}>
-          Start a conference now — the code to share appears on the call screen — or join one
-          with the code you were given.
-        </Text>
+      <GlassCard accent style={{ gap: 14 }}>
+        <View style={styles.head}>
+          <View style={styles.orb}>
+            <Icon name="wave" size={26} color={C7.teal} />
+            <View style={styles.orbBadge}>
+              <Icon name="plus" size={12} color={C7.ground} strokeWidth={2.4} />
+            </View>
+          </View>
+          <View style={{ flex: 1, gap: 4 }}>
+            <Text style={styles.title}>Start conference</Text>
+            <Text style={styles.body}>Host a new conference and invite others with its code.</Text>
+          </View>
+        </View>
+        <PrimaryButton
+          label="Start Conference"
+          onPress={() => onJoin(generateCallCode())}
+          leading={<Icon name="camera" size={18} color="#ffffff" />}
+        />
+        {emailVerified === false && (
+          <Text style={styles.warn}>Starting a conference needs a verified email (see Profile). Joining one works now.</Text>
+        )}
+      </GlassCard>
+
+      <GlassCard style={{ gap: 14 }}>
+        <View style={styles.head}>
+          <View style={styles.orb}>
+            <Icon name="people" size={26} color={C7.teal} />
+          </View>
+          <View style={{ flex: 1, gap: 4 }}>
+            <Text style={styles.title}>Join conference</Text>
+            <Text style={styles.body}>Enter a conference code to join instantly.</Text>
+          </View>
+        </View>
         <TextInput
           style={styles.input}
           value={code}
           onChangeText={setCode}
           autoCapitalize="none"
           autoCorrect={false}
-          placeholder="call code"
-          placeholderTextColor="#4a545f"
+          placeholder="Enter conference code"
+          placeholderTextColor={C7.faint}
           onSubmitEditing={() => normalised.length > 0 && onJoin(normalised)}
         />
-        <View style={styles.row}>
-          <Pressable
-            style={({ pressed }) => [styles.button, styles.flex, pressed && styles.pressed]}
-            // START MEANS START (founder addendum 2026-08-29): the conference
-            // opens at once with a fresh code; the code is shown on the call
-            // screen, not typed back into this box.
-            onPress={() => onJoin(generateCallCode())}
-            accessibilityRole="button"
-          >
-            <Text style={styles.buttonLabel}>Start</Text>
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [
-              styles.button,
-              styles.flex,
-              normalised.length === 0 && styles.disabled,
-              pressed && normalised.length > 0 && styles.pressed,
-            ]}
-            onPress={() => onJoin(normalised)}
-            disabled={normalised.length === 0}
-            accessibilityRole="button"
-          >
-            <Text style={styles.buttonLabel}>Join</Text>
-          </Pressable>
-        </View>
-        {emailVerified === false && (
-          <Text style={styles.warn}>
-            Starting a conference needs a verified email (see Profile). Joining one works now.
-          </Text>
-        )}
-      </View>
+        <PrimaryButton label="Join Conference" onPress={() => onJoin(normalised)} disabled={normalised.length === 0} />
+      </GlassCard>
 
       <Text style={styles.footnote}>
-        Calls are normal mode in this build: your camera and voice, no translation. To call a
-        contact directly, use the Call button beside their name.
+        Conferences are normal mode in this build: your camera and voice, no translation. To call a
+        contact directly, use Call beside their name in People.
       </Text>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  fill: { flex: 1, backgroundColor: '#0b0f14' },
-  screen: { padding: 16, gap: 14 },
-  card: {
-    backgroundColor: '#141a21',
-    borderWidth: 1,
-    borderColor: '#273039',
-    borderRadius: 12,
-    padding: 16,
-    gap: 12,
-  },
-  cardTitle: { color: '#e4ebf1', fontSize: 16, fontWeight: '600' },
-  cardBody: { color: '#8d99a6', fontSize: 14, lineHeight: 20 },
-  input: {
-    backgroundColor: '#0b0f14',
-    borderWidth: 1,
-    borderColor: '#273039',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    color: '#e4ebf1',
-    fontSize: 18,
-    fontFamily: 'monospace',
-    letterSpacing: 2,
-  },
-  row: { flexDirection: 'row', gap: 10 },
-  flex: { flex: 1 },
-  button: {
-    backgroundColor: '#3ec9c0',
-    paddingVertical: 13,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  disabled: { backgroundColor: '#1f3a38' },
-  pressed: { opacity: 0.75 },
-  buttonLabel: { color: '#0b0f14', fontSize: 15, fontWeight: '700' },
-  warn: { color: '#d9a441', fontSize: 13, lineHeight: 19 },
-  footnote: { color: '#5d6874', fontSize: 12, lineHeight: 18, paddingHorizontal: 4 },
+  fill: { flex: 1 },
+  screen: { padding: 16, gap: 14, paddingBottom: 40 },
+  head: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  orb: { width: 64, height: 64, borderRadius: 32, backgroundColor: C7.tealSoft, borderWidth: 1, borderColor: 'rgba(62,201,192,0.4)', alignItems: 'center', justifyContent: 'center' },
+  orbBadge: { position: 'absolute', right: -2, bottom: -2, width: 22, height: 22, borderRadius: 11, backgroundColor: C7.teal, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: C7.ground },
+  title: { color: C7.text, fontSize: 24, fontWeight: '600', fontFamily: 'serif', letterSpacing: -0.2 },
+  body: { color: C7.muted, fontSize: 14, lineHeight: 19 },
+  input: { backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: C7.panelEdge, borderRadius: 14, paddingHorizontal: 16, paddingVertical: 13, color: C7.text, fontSize: 17, letterSpacing: 1 },
+  warn: { color: C7.amber, fontSize: 13, lineHeight: 19 },
+  footnote: { color: C7.faint, fontSize: 12, lineHeight: 18, paddingHorizontal: 4 },
 });

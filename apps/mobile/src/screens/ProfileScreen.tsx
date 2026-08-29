@@ -1,31 +1,25 @@
 /** @author masterzee001 */
 /**
- * Who you are here, and what this phone can do about it.
+ * Profile, to canon: the person first (picture in a teal ring, name,
+ * @handle, the C7 badge), then the rows -- Languages & Voice, Devices &
+ * Security (this phone's registration), Verification -- and sign out.
  *
- * THE VERIFICATION CARD SAYS WHAT VERIFICATION ACTUALLY GATES. The app-shell
- * once implied all three checks were needed to host a call; the truth is that
- * EMAIL ALONE unlocks hosting, and phone/identity gate commercial products.
- * Stating the real rule here is cheaper than answering the support question.
+ * WHAT THE CANON SHOWS AND THIS BUILD DOES NOT CLAIM: session counts,
+ * following, saved, availability, notification and privacy settings,
+ * "My C7 Voice" and an upgrade offer. Each of those is a product not yet
+ * built; a row that leads nowhere would be worse than no row.
  *
- * DEVICE REGISTRATION IS AUTOMATIC AND THIS CARD ONLY REPORTS IT. The app
- * registers on every signed-in launch; a manual retry exists for the day the
- * automatic one failed, and the failure reasons keep their names because
- * "could not register" collapses four different fixes into a dead end.
+ * THE VERIFICATION ROW SAYS WHAT VERIFICATION ACTUALLY GATES: email alone
+ * unlocks hosting; phone and identity gate commercial products.
  */
-import { useCallback, useEffect, useState, type JSX } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { useCallback, useEffect, useState, type JSX, type ReactNode } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { AvatarView } from '../media/AvatarView';
 import { pickAvatar } from '../media/avatarPicker';
 import type { Api, Profile, VerificationStatus } from '../api/client';
 import type { RegistrationOutcome } from '../push/deviceRegistrationService';
+import { C7, Chip, GlassCard } from '../ui/c7';
+import { Icon, type IconName } from '../ui/icons';
 
 const DEVICE_EXPLANATION: Record<Extract<RegistrationOutcome, { ok: false }>['reason'], string> = {
   'not-signed-in': 'The session ended before the device could be registered.',
@@ -36,6 +30,17 @@ const DEVICE_EXPLANATION: Record<Extract<RegistrationOutcome, { ok: false }>['re
   network: 'Could not reach Videofy from this phone.',
 };
 
+const LANGUAGES = [
+  ['en', 'English'],
+  ['es', 'Spanish'],
+  ['fr', 'French'],
+] as const;
+
+function languageName(code: string | null | undefined): string {
+  const found = LANGUAGES.find(([c]) => c === code);
+  return found ? found[1] : (code ?? '—');
+}
+
 export interface ProfileScreenProps {
   readonly api: Api;
   readonly deviceOutcome: RegistrationOutcome | null;
@@ -43,20 +48,33 @@ export interface ProfileScreenProps {
   readonly onSignOut: () => Promise<void>;
 }
 
-export function ProfileScreen({
-  api,
-  deviceOutcome,
-  onRetryDevice,
-  onSignOut,
-}: ProfileScreenProps): JSX.Element {
+function Row({ icon, title, subtitle, open, onPress, children }: { readonly icon: IconName; readonly title: string; readonly subtitle?: string | undefined; readonly open?: boolean; readonly onPress?: () => void; readonly children?: ReactNode }): JSX.Element {
+  return (
+    <GlassCard padded={false} style={styles.rowCard}>
+      <Pressable onPress={onPress} accessibilityRole="button" style={({ pressed }) => [styles.rowHead, pressed && onPress && styles.pressed]}>
+        <View style={styles.rowIcon}>
+          <Icon name={icon} size={22} color={C7.teal} />
+        </View>
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text style={styles.rowTitle}>{title}</Text>
+          {subtitle !== undefined && <Text style={styles.rowSubtitle}>{subtitle}</Text>}
+        </View>
+        {onPress !== undefined && <Icon name="chevron" size={18} color={C7.muted} />}
+      </Pressable>
+      {open && children !== undefined && <View style={styles.rowBody}>{children}</View>}
+    </GlassCard>
+  );
+}
+
+export function ProfileScreen({ api, deviceOutcome, onRetryDevice, onSignOut }: ProfileScreenProps): JSX.Element {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [verification, setVerification] = useState<VerificationStatus | null>(null);
   const [draftName, setDraftName] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pictureNotice, setPictureNotice] = useState<string | null>(null);
-  /** Remounts the avatar after upload so the cached image is refetched. */
   const [avatarEpoch, setAvatarEpoch] = useState(0);
+  const [open, setOpen] = useState<'languages' | 'name' | 'verification' | 'device' | null>(null);
 
   const changePicture = useCallback(async () => {
     setPictureNotice(null);
@@ -65,14 +83,12 @@ export function ProfileScreen({
       if (picked.reason !== null) setPictureNotice(picked.reason);
       return;
     }
-    // Picking IS the confirmation: the upload starts at once and says so.
     setPictureNotice('Uploading…');
     const result = await api.setAvatar(picked.dataUrl);
     if (!result.ok) {
       setPictureNotice(result.error === 'network' ? 'Could not reach C7.' : String(result.error));
       return;
     }
-    // A new version forces a fresh fetch past every cache.
     setAvatarEpoch((epoch) => epoch + 1);
     setPictureNotice('Picture updated.');
   }, [api]);
@@ -105,205 +121,129 @@ export function ProfileScreen({
     setBusy(true);
     setNotice(null);
     const result = await api.sendVerificationEmail();
-    setNotice(
-      result.ok
-        ? 'Verification email sent. The link lasts 30 minutes.'
-        : result.error,
-    );
+    setNotice(result.ok ? 'Verification email sent. The link lasts 30 minutes.' : result.error);
     setBusy(false);
   }, [api]);
 
   const emailVerified = verification?.email === 'verified';
+  const toggle = (key: NonNullable<typeof open>) => () => setOpen((current) => (current === key ? null : key));
 
   return (
     <ScrollView style={styles.fill} contentContainerStyle={styles.screen}>
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Your C7 identity</Text>
+      <GlassCard style={styles.identity}>
         {profile === null ? (
-          <ActivityIndicator color="#3ec9c0" />
+          <ActivityIndicator color={C7.teal} />
         ) : (
-          <>
-            <View style={styles.avatarRow}>
-              <Pressable onPress={() => void changePicture()} accessibilityRole="button">
-                <AvatarView
-                  key={avatarEpoch}
-                  version={avatarEpoch}
-                  accountId={profile.accountId}
-                  name={profile.displayName ?? profile.username ?? '?'}
-                  size={64}
-                />
-              </Pressable>
-              <View style={styles.avatarText}>
-                <Text style={styles.identity}>{profile.username ?? profile.accountId}</Text>
-                <Text style={styles.email}>{profile.email}</Text>
-                <Pressable onPress={() => void changePicture()} accessibilityRole="button">
-                  <Text style={styles.avatarAction}>Change picture</Text>
-                </Pressable>
+          <View style={styles.identityRow}>
+            <Pressable onPress={() => void changePicture()} accessibilityRole="button" accessibilityLabel="Change picture" style={styles.avatarRing}>
+              <AvatarView key={avatarEpoch} version={avatarEpoch} accountId={profile.accountId} name={profile.displayName ?? profile.username ?? '?'} size={104} />
+              <View style={styles.avatarEdit}>
+                <Icon name="plus" size={14} color={C7.ground} strokeWidth={2.4} />
               </View>
+            </Pressable>
+            <View style={{ flex: 1, gap: 6 }}>
+              <Text style={styles.name}>{profile.displayName ?? profile.username ?? profile.accountId}</Text>
+              <View style={styles.handleRow}>
+                <Text style={styles.handle}>@{profile.username ?? profile.accountId}</Text>
+                <Chip label="C7" tone="teal" />
+              </View>
+              <Text style={styles.email}>{profile.email}</Text>
+              {pictureNotice !== null && <Text style={styles.pictureNotice}>{pictureNotice}</Text>}
             </View>
-            {pictureNotice !== null && <Text style={styles.pictureNotice}>{pictureNotice}</Text>}
+          </View>
+        )}
+      </GlassCard>
+
+      <Row
+        icon="translate"
+        title="Languages & Voice"
+        subtitle={profile === null ? undefined : `Primary ${languageName(profile.defaultLanguage)} · I speak ${languageName(profile.spokenLanguage ?? profile.defaultLanguage)} · I prefer to hear ${languageName(profile.listeningLanguage ?? profile.defaultLanguage)}`}
+        open={open === 'languages'}
+        onPress={toggle('languages')}
+      >
+        {profile !== null && (
+          <>
             <Text style={styles.label}>I speak</Text>
-            <View style={styles.languageRow}>
-              {(
-                [
-                  ['en', 'English'],
-                  ['es', 'Spanish'],
-                  ['fr', 'French'],
-                ] as const
-              ).map(([code, label]) => {
-                const active = (profile.spokenLanguage ?? profile.defaultLanguage) === code;
-                return (
-                  <Pressable
-                    key={code}
-                    accessibilityRole="button"
-                    style={[styles.languageChip, active && styles.languageChipOn]}
-                    onPress={() => {
-                      void api.setLanguages({ spokenLanguage: code }).then((result) => {
-                        if (result.ok) void load();
-                      });
-                    }}
-                  >
-                    <Text style={[styles.languageChipLabel, active && styles.languageChipLabelOn]}>
-                      {label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
+            <View style={styles.chips}>
+              {LANGUAGES.map(([code, label]) => (
+                <Chip key={code} label={label} active={(profile.spokenLanguage ?? profile.defaultLanguage) === code} onPress={() => void api.setLanguages({ spokenLanguage: code }).then((r) => { if (r.ok) void load(); })} />
+              ))}
             </View>
             <Text style={styles.label}>I prefer to hear</Text>
-            <Text style={styles.hint}>Calls and translated messages follow these.</Text>
-            <View style={styles.languageRow}>
-              {(
-                [
-                  ['en', 'English'],
-                  ['es', 'Spanish'],
-                  ['fr', 'French'],
-                ] as const
-              ).map(([code, label]) => {
-                const active = (profile.listeningLanguage ?? profile.defaultLanguage) === code;
-                return (
-                  <Pressable
-                    key={code}
-                    accessibilityRole="button"
-                    style={[styles.languageChip, active && styles.languageChipOn]}
-                    onPress={() => {
-                      void api.setLanguages({ listeningLanguage: code }).then((result) => {
-                        if (result.ok) void load();
-                      });
-                    }}
-                  >
-                    <Text style={[styles.languageChipLabel, active && styles.languageChipLabelOn]}>
-                      {label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
+            <View style={styles.chips}>
+              {LANGUAGES.map(([code, label]) => (
+                <Chip key={code} label={label} active={(profile.listeningLanguage ?? profile.defaultLanguage) === code} onPress={() => void api.setLanguages({ listeningLanguage: code }).then((r) => { if (r.ok) void load(); })} />
+              ))}
             </View>
-            <Text style={styles.label}>Name shown in calls</Text>
-            <View style={styles.nameRow}>
-              <TextInput
-                style={styles.input}
-                value={draftName}
-                onChangeText={setDraftName}
-                placeholder="Your name"
-                placeholderTextColor="#4a545f"
-                maxLength={40}
-              />
-              <Pressable
-                onPress={() => void saveName()}
-                disabled={busy}
-                accessibilityRole="button"
-                style={[styles.smallButton, busy && styles.disabled]}
-              >
-                <Text style={styles.smallButtonLabel}>Save</Text>
-              </Pressable>
-            </View>
-            <Text style={styles.hint}>
-              Your username is how people add you and cannot change. This name is what they see,
-              and can.
-            </Text>
+            <Text style={styles.hint}>Calls and translated messages follow these. The full language catalogue arrives with the programme wave.</Text>
           </>
         )}
-      </View>
+      </Row>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Verification</Text>
-        {verification === null ? (
-          <ActivityIndicator color="#3ec9c0" />
-        ) : (
+      <Row icon="profile" title="Name shown in calls" subtitle={profile?.displayName ?? 'Not set'} open={open === 'name'} onPress={toggle('name')}>
+        <View style={styles.nameRow}>
+          <TextInput style={styles.input} value={draftName} onChangeText={setDraftName} placeholder="Your name" placeholderTextColor={C7.faint} maxLength={40} />
+          <Pressable onPress={() => void saveName()} disabled={busy} accessibilityRole="button" style={[styles.smallButton, busy && styles.disabled]}>
+            <Text style={styles.smallButtonLabel}>Save</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.hint}>Your username is how people add you and cannot change. This name is what they see, and can.</Text>
+      </Row>
+
+      <Row
+        icon="shield"
+        title="Verification"
+        subtitle={verification === null ? undefined : emailVerified ? 'Email verified · you can start calls' : 'Verify your email to start calls'}
+        open={open === 'verification'}
+        onPress={toggle('verification')}
+      >
+        {verification !== null && (
           <>
-            <View style={styles.checkRow}>
-              <Text style={emailVerified ? styles.checkDone : styles.checkPending}>
-                {emailVerified ? '✓' : '·'}
-              </Text>
-              <Text style={styles.checkLabel}>
-                Email {emailVerified ? 'verified' : `- ${verification.email}`}
-              </Text>
-            </View>
-            <View style={styles.checkRow}>
-              <Text style={verification.phone === 'verified' ? styles.checkDone : styles.checkPending}>
-                {verification.phone === 'verified' ? '✓' : '·'}
-              </Text>
-              <Text style={styles.checkLabel}>Phone - {verification.phone}</Text>
-            </View>
-            <View style={styles.checkRow}>
-              <Text
-                style={verification.identity === 'verified' ? styles.checkDone : styles.checkPending}
-              >
-                {verification.identity === 'verified' ? '✓' : '·'}
-              </Text>
-              <Text style={styles.checkLabel}>Identity - {verification.identity}</Text>
-            </View>
-            {/*
-              The real rule, not the cautious one: email alone unlocks hosting.
-              Phone and identity gate commercial products, nothing else.
-            */}
+            {(
+              [
+                ['Email', verification.email],
+                ['Phone', verification.phone],
+                ['Identity', verification.identity],
+              ] as const
+            ).map(([label, state]) => (
+              <View key={label} style={styles.checkRow}>
+                <Text style={state === 'verified' ? styles.checkDone : styles.checkPending}>{state === 'verified' ? '✓' : '·'}</Text>
+                <Text style={styles.checkLabel}>{label} · {state}</Text>
+              </View>
+            ))}
             <Text style={styles.hint}>
-              {emailVerified
-                ? 'You can start calls. Phone and identity checks unlock commercial products later.'
-                : 'Verify your email to start calls. You can already join calls and message contacts.'}
+              {emailVerified ? 'You can start calls. Phone and identity checks unlock commercial products later.' : 'You can already join calls and message contacts.'}
             </Text>
             {!emailVerified && (
-              <Pressable
-                onPress={() => void sendEmail()}
-                disabled={busy}
-                accessibilityRole="button"
-                style={[styles.smallButton, styles.selfStart, busy && styles.disabled]}
-              >
+              <Pressable onPress={() => void sendEmail()} disabled={busy} accessibilityRole="button" style={[styles.smallButton, styles.selfStart, busy && styles.disabled]}>
                 <Text style={styles.smallButtonLabel}>Send verification email</Text>
               </Pressable>
             )}
           </>
         )}
-      </View>
+      </Row>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>This phone</Text>
-        {deviceOutcome === null && <ActivityIndicator color="#3ec9c0" />}
-        {deviceOutcome?.ok === true && (
-          <Text style={styles.hint}>Registered. Calls and messages can reach this phone.</Text>
-        )}
+      <Row
+        icon="bell"
+        title="Devices & Security"
+        subtitle={deviceOutcome === null ? 'Registering this phone…' : deviceOutcome.ok ? 'This phone can ring for calls and messages' : 'This phone cannot ring yet'}
+        open={open === 'device'}
+        onPress={toggle('device')}
+      >
         {deviceOutcome !== null && !deviceOutcome.ok && (
           <>
             <Text style={styles.warnText}>{DEVICE_EXPLANATION[deviceOutcome.reason]}</Text>
-            <Pressable
-              onPress={() => void onRetryDevice()}
-              accessibilityRole="button"
-              style={[styles.smallButton, styles.selfStart]}
-            >
+            <Pressable onPress={() => void onRetryDevice()} accessibilityRole="button" style={[styles.smallButton, styles.selfStart]}>
               <Text style={styles.smallButtonLabel}>Try again</Text>
             </Pressable>
           </>
         )}
-      </View>
+        {deviceOutcome?.ok === true && <Text style={styles.hint}>Registered. Calls and messages can reach this phone.</Text>}
+      </Row>
 
       {notice !== null && <Text style={styles.notice}>{notice}</Text>}
 
-      <Pressable
-        onPress={() => void onSignOut()}
-        accessibilityRole="button"
-        style={({ pressed }) => [styles.signOut, pressed && styles.pressed]}
-      >
+      <Pressable onPress={() => void onSignOut()} accessibilityRole="button" style={({ pressed }) => [styles.signOut, pressed && styles.pressed]}>
         <Text style={styles.signOutLabel}>Sign out</Text>
       </Pressable>
     </ScrollView>
@@ -311,66 +251,39 @@ export function ProfileScreen({
 }
 
 const styles = StyleSheet.create({
-  fill: { flex: 1, backgroundColor: '#0b0f14' },
-  screen: { padding: 16, gap: 14, paddingBottom: 48 },
-  card: {
-    backgroundColor: '#141a21',
-    borderWidth: 1,
-    borderColor: '#273039',
-    borderRadius: 12,
-    padding: 16,
-    gap: 10,
-  },
-  cardTitle: { color: '#e4ebf1', fontSize: 16, fontWeight: '600' },
-  identity: { color: '#3ec9c0', fontSize: 20, fontWeight: '700', fontFamily: 'monospace' },
-  avatarRow: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 8 },
-  avatarText: { flex: 1, gap: 2 },
-  avatarAction: { color: '#3ec9c0', fontSize: 13, fontWeight: '600', marginTop: 4 },
-  pictureNotice: { color: '#d9a441', fontSize: 12, marginBottom: 6 },
-  languageRow: { flexDirection: 'row', gap: 8, marginTop: 6, marginBottom: 10 },
-  languageChip: {
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#273039',
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-  },
-  languageChipOn: { borderColor: '#3ec9c0', backgroundColor: '#102a28' },
-  languageChipLabel: { color: '#8d99a6', fontSize: 13, fontWeight: '600' },
-  languageChipLabelOn: { color: '#3ec9c0' },
-  email: { color: '#8d99a6', fontSize: 13 },
-  label: { color: '#5d6874', fontSize: 12, marginTop: 6 },
+  fill: { flex: 1 },
+  screen: { padding: 16, gap: 12, paddingBottom: 48 },
+  identity: { padding: 18 },
+  identityRow: { flexDirection: 'row', alignItems: 'center', gap: 18 },
+  avatarRing: { borderRadius: 60, borderWidth: 2, borderColor: C7.teal, padding: 3 },
+  avatarEdit: { position: 'absolute', right: 2, bottom: 2, width: 24, height: 24, borderRadius: 12, backgroundColor: C7.teal, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: C7.ground },
+  name: { color: C7.text, fontSize: 28, fontWeight: '600', fontFamily: 'serif', letterSpacing: -0.3 },
+  handleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  handle: { color: C7.muted, fontSize: 15 },
+  email: { color: C7.faint, fontSize: 13 },
+  pictureNotice: { color: C7.amber, fontSize: 12 },
+  rowCard: { padding: 0 },
+  rowHead: { flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16 },
+  rowIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: C7.tealSoft, alignItems: 'center', justifyContent: 'center' },
+  rowTitle: { color: C7.text, fontSize: 19, fontWeight: '600', fontFamily: 'serif' },
+  rowSubtitle: { color: C7.muted, fontSize: 13, lineHeight: 18 },
+  rowBody: { paddingHorizontal: 16, paddingBottom: 16, gap: 8, borderTopWidth: 1, borderTopColor: C7.panelEdge, paddingTop: 12 },
+  label: { color: C7.faint, fontSize: 12, marginTop: 4 },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  hint: { color: C7.muted, fontSize: 13, lineHeight: 19 },
+  warnText: { color: C7.amber, fontSize: 13, lineHeight: 19 },
   nameRow: { flexDirection: 'row', gap: 8 },
-  input: {
-    flex: 1,
-    backgroundColor: '#0b0f14',
-    borderWidth: 1,
-    borderColor: '#273039',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    color: '#e4ebf1',
-    fontSize: 15,
-  },
-  smallButton: {
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    backgroundColor: '#3ec9c0',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 40,
-  },
+  input: { flex: 1, backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: C7.panelEdge, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, color: C7.text, fontSize: 15 },
+  smallButton: { paddingHorizontal: 14, borderRadius: 12, backgroundColor: C7.tealDeep, borderWidth: 1, borderColor: 'rgba(62,201,192,0.7)', alignItems: 'center', justifyContent: 'center', minHeight: 40 },
   selfStart: { alignSelf: 'flex-start', paddingVertical: 9 },
-  disabled: { backgroundColor: '#1f3a38' },
-  smallButtonLabel: { color: '#0b0f14', fontSize: 13, fontWeight: '700' },
-  hint: { color: '#8d99a6', fontSize: 13, lineHeight: 19 },
-  warnText: { color: '#d9a441', fontSize: 13, lineHeight: 19 },
+  disabled: { opacity: 0.45 },
+  smallButtonLabel: { color: '#ffffff', fontSize: 13, fontWeight: '700' },
   checkRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  checkDone: { color: '#3ec9c0', fontSize: 15, width: 16, fontWeight: '700' },
-  checkPending: { color: '#5d6874', fontSize: 15, width: 16 },
-  checkLabel: { color: '#e4ebf1', fontSize: 14 },
-  notice: { color: '#d9a441', fontSize: 13, textAlign: 'center' },
+  checkDone: { color: C7.teal, fontSize: 15, width: 16, fontWeight: '700' },
+  checkPending: { color: C7.faint, fontSize: 15, width: 16 },
+  checkLabel: { color: C7.text, fontSize: 14 },
+  notice: { color: C7.amber, fontSize: 13, textAlign: 'center' },
   signOut: { alignItems: 'center', paddingVertical: 14 },
   pressed: { opacity: 0.7 },
-  signOutLabel: { color: '#8d99a6', fontSize: 15 },
+  signOutLabel: { color: C7.muted, fontSize: 15 },
 });

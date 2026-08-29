@@ -12,6 +12,7 @@ import { type JSX } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useBottomInset } from '../ui/insets';
 import { AvatarHalo, C7Mark, CALL_COLORS, CallBackdrop } from '../ui/callTheme';
+import { Icon } from '../ui/icons';
 
 export interface IncomingCallScreenProps {
   readonly caller: { readonly accountId: string; readonly name: string };
@@ -46,7 +47,7 @@ export function IncomingCallScreen({
             accessibilityLabel="Decline"
             style={({ pressed }) => [styles.round, styles.decline, pressed && styles.pressed]}
           >
-            <Text style={styles.roundMark}>✕</Text>
+            <Icon name="hangup" size={32} color="#ffffff" />
           </Pressable>
           <Text style={styles.actionLabel}>Decline</Text>
         </View>
@@ -57,7 +58,7 @@ export function IncomingCallScreen({
             accessibilityLabel="Answer"
             style={({ pressed }) => [styles.round, styles.answer, pressed && styles.pressed]}
           >
-            <Text style={styles.roundMark}>✓</Text>
+            <Icon name="phone" size={30} color="#ffffff" />
           </Pressable>
           <Text style={styles.actionLabel}>Answer</Text>
         </View>
@@ -77,7 +78,6 @@ const styles = StyleSheet.create({
   round: { width: 76, height: 76, borderRadius: 38, alignItems: 'center', justifyContent: 'center' },
   decline: { backgroundColor: CALL_COLORS.red },
   answer: { backgroundColor: '#22a06b' },
-  roundMark: { color: '#ffffff', fontSize: 28, fontWeight: '700' },
   actionLabel: { color: CALL_COLORS.muted, fontSize: 13 },
   pressed: { opacity: 0.8 },
 });

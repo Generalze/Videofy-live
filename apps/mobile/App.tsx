@@ -42,6 +42,9 @@ import { configureAvatars } from './src/media/AvatarView';
 import type { ContactPerson } from './src/api/client';
 import { InsetsProvider, useBottomInset } from './src/ui/insets';
 import { AppHeader } from './src/ui/AppHeader';
+import { C7, C7Ground } from './src/ui/c7';
+import { Icon, type IconName } from './src/ui/icons';
+import { ProgrammesScreen } from './src/screens/ProgrammesScreen';
 import { SignInScreen } from './src/screens/SignInScreen';
 import { SignUpScreen } from './src/screens/SignUpScreen';
 import { CallScreen } from './src/screens/CallScreen';
@@ -133,15 +136,24 @@ const NOTICE: Partial<Record<string, string>> = {
   revoked: 'You were signed out. Sign in again to continue.',
 };
 
-type Tab = 'chats' | 'contacts' | 'conf' | 'profile';
+type Tab = 'chats' | 'people' | 'programmes' | 'conf' | 'profile';
 
 /** What the masthead calls each tab. */
 const TAB_TITLES: Record<Tab, string> = {
   chats: 'Chats',
-  contacts: 'Contacts',
+  people: 'People',
+  programmes: 'C7 Streams',
   conf: 'Conference',
   profile: 'Profile',
 };
+
+const TABS: readonly { key: Tab; label: string; icon: IconName }[] = [
+  { key: 'chats', label: 'Chats', icon: 'chat' },
+  { key: 'people', label: 'People', icon: 'people' },
+  { key: 'programmes', label: 'Programmes', icon: 'programmes' },
+  { key: 'conf', label: 'Conference', icon: 'conference' },
+  { key: 'profile', label: 'Profile', icon: 'profile' },
+];
 
 /**
  * A call is DIRECT (person-to-person, internal session id, no visible code)
@@ -170,6 +182,8 @@ function AppInner(): JSX.Element {
   const [state, setState] = useState<AuthState>(auth.current());
   const [wantsAccount, setWantsAccount] = useState(false);
   const [tab, setTab] = useState<Tab>('chats');
+  /** The header's add-person control opens the add card on People. */
+  const [addingContact, setAddingContact] = useState(false);
   const [chatWith, setChatWith] = useState<ContactPerson | null>(null);
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   /** An incoming direct call the server confirmed is live. */
@@ -454,20 +468,45 @@ function AppInner(): JSX.Element {
 
   return (
     <View style={styles.shell}>
+      <C7Ground />
       <StatusBar style="light" />
-      <AppHeader title={TAB_TITLES[tab]} />
+      <AppHeader
+        title={TAB_TITLES[tab]}
+        streamsActive={tab === 'programmes'}
+        onStreams={() => setTab('programmes')}
+        right={
+          tab === 'people' ? (
+            <Pressable
+              onPress={() => setAddingContact(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Add a contact"
+              hitSlop={8}
+              style={styles.headerControl}
+            >
+              <Icon name="add-person" size={20} color={C7.teal} />
+            </Pressable>
+          ) : undefined
+        }
+      />
       <View style={styles.tabContent}>
         {tab === 'chats' && (
           <ConversationsScreen
             api={api}
             selfId={state.accountId}
             onOpen={setChatWith}
-            onFindContacts={() => setTab('contacts')}
+            onFindContacts={() => setTab('people')}
           />
         )}
-        {tab === 'contacts' && (
-          <ContactsScreen api={api} onMessage={setChatWith} onCall={callContact} />
+        {tab === 'people' && (
+          <ContactsScreen
+            api={api}
+            onMessage={setChatWith}
+            onCall={callContact}
+            adding={addingContact}
+            onAddingChange={setAddingContact}
+          />
         )}
+        {tab === 'programmes' && <ProgrammesScreen />}
         {tab === 'conf' && (
           <CallHomeScreen
             emailVerified={emailVerified}
@@ -486,20 +525,15 @@ function AppInner(): JSX.Element {
         )}
       </View>
       <View style={[styles.tabBar, { paddingBottom: bottomInset + 8 }]}>
-        {(
-          [
-            ['chats', 'Chats'],
-            ['contacts', 'Contacts'],
-            ['conf', 'Conf'],
-            ['profile', 'Profile'],
-          ] as const
-        ).map(([key, label]) => (
+        {TABS.map(({ key, label, icon }) => (
           <Pressable
             key={key}
             onPress={() => setTab(key)}
             accessibilityRole="button"
+            accessibilityState={{ selected: tab === key }}
             style={styles.tabButton}
           >
+            <Icon name={icon} size={24} color={tab === key ? C7.teal : C7.muted} />
             <Text style={[styles.tabLabel, tab === key && styles.tabActive]}>{label}</Text>
           </Pressable>
         ))}
@@ -518,17 +552,27 @@ const styles = StyleSheet.create({
   },
   waiting: { color: '#5d6874', fontSize: 14 },
   // The masthead carries the top inset now; the shell starts at the edge.
-  shell: { flex: 1, backgroundColor: '#070c14' },
-  tabContent: { flex: 1, backgroundColor: '#0b0f14' },
+  // The C7 ground paints behind everything; content stays transparent.
+  shell: { flex: 1, backgroundColor: '#070b12' },
+  tabContent: { flex: 1 },
+  headerControl: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    borderColor: 'rgba(62,201,192,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   tabBar: {
     flexDirection: 'row',
     borderTopWidth: 1,
-    borderTopColor: 'rgba(62,201,192,0.14)',
+    borderTopColor: 'rgba(120,200,200,0.12)',
     // Bottom padding is measured at render: the phone's own bar plus 8.
     paddingTop: 10,
-    backgroundColor: '#070c14',
+    backgroundColor: 'rgba(7,11,18,0.92)',
   },
-  tabButton: { flex: 1, alignItems: 'center', paddingVertical: 6, gap: 4 },
-  tabLabel: { color: '#5d6874', fontSize: 13, fontWeight: '600', letterSpacing: 0.2 },
+  tabButton: { flex: 1, alignItems: 'center', paddingVertical: 4, gap: 5 },
+  tabLabel: { color: '#8d99a6', fontSize: 12, fontWeight: '500' },
   tabActive: { color: '#3ec9c0' },
 });

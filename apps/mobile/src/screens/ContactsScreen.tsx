@@ -1,21 +1,23 @@
 /** @author masterzee001 */
 /**
- * The contact graph: who can reach you, and who you have asked.
+ * People, to canon: your contacts with Message and Call beside each, a
+ * quiet menu for the rest, requests that need an answer first, and the
+ * ones still waiting on the other person.
  *
- * REQUESTS TO ANSWER COME FIRST. A request somebody sent you is the only thing
- * on this screen you can act on that affects THEM; everything else is
- * housekeeping. The server already refuses to list your own requests as
- * answerable, so this screen cannot offer accepting yourself.
+ * NO INVENTED PRESENCE. The canon shows "Active now" and "Speaks Yoruba";
+ * presence is the next wave (blueprint §11) and a contact's languages are
+ * not on the contact wire yet. Until they are, nothing here claims them.
  *
- * ADDING IS BY USERNAME AND THE ANSWER IS DELIBERATELY FLAT. A username that
- * does not exist, an account that is private, and a person who has blocked you
- * all answer the same way server-side; this screen passes that sentence
- * through untouched rather than decorating it into an oracle.
+ * ADDING IS BY USERNAME AND THE ANSWER IS DELIBERATELY FLAT. A username
+ * that does not exist, an account that is private, and a person who has
+ * blocked you all answer the same way server-side.
  */
 import { useCallback, useEffect, useState, type JSX } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { AvatarView } from '../media/AvatarView';
 import type { Api, ContactPerson, ContactsResponse } from '../api/client';
+import { C7, GlassCard, PrimaryButton, RoundIconButton, SectionHeading } from '../ui/c7';
+import { Icon } from '../ui/icons';
 
 function personName(person: ContactPerson): string {
   return person.displayName ?? person.username ?? person.accountId;
@@ -25,13 +27,22 @@ export interface ContactsScreenProps {
   readonly api: Api;
   readonly onMessage: (partner: ContactPerson) => void;
   readonly onCall: (partner: ContactPerson) => void;
+  /** Opened by the header's add-person control. */
+  readonly adding?: boolean;
+  readonly onAddingChange?: (adding: boolean) => void;
 }
 
-export function ContactsScreen({ api, onMessage, onCall }: ContactsScreenProps): JSX.Element {
+export function ContactsScreen({ api, onMessage, onCall, adding = false, onAddingChange }: ContactsScreenProps): JSX.Element {
   const [data, setData] = useState<ContactsResponse | null>(null);
   const [username, setUsername] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [showAdd, setShowAdd] = useState(adding);
+
+  useEffect(() => {
+    if (adding) setShowAdd(true);
+  }, [adding]);
 
   const load = useCallback(async () => {
     const result = await api.contacts();
@@ -55,10 +66,6 @@ export function ContactsScreen({ api, onMessage, onCall }: ContactsScreenProps):
       setNotice('Request sent.');
       await load();
     } else {
-      // The server answers "not found" for BOTH an unknown username and an
-      // undiscoverable one, on purpose (no probing who is on the platform).
-      // The person adding cannot tell which, so the notice explains the fix
-      // that is in the other person's hands.
       setNotice(
         result.status === 404
           ? `No discoverable account named ${handle}. Ask them to switch on Discoverable in their Profile, then try again.`
@@ -78,206 +85,139 @@ export function ContactsScreen({ api, onMessage, onCall }: ContactsScreenProps):
     [load],
   );
 
-  return (
-    <ScrollView style={styles.fill} contentContainerStyle={styles.screen}>
-      <View style={styles.addCard}>
-        <Text style={styles.cardTitle}>Add a contact</Text>
-        <View style={styles.addRow}>
-          <TextInput
-            style={styles.input}
-            value={username}
-            onChangeText={setUsername}
-            autoCapitalize="none"
-            autoCorrect={false}
-            placeholder="c7username"
-            placeholderTextColor="#4a545f"
-            onSubmitEditing={() => void add()}
-          />
-          <Pressable
-            onPress={() => void add()}
-            disabled={busy || username.trim().length === 0}
-            accessibilityRole="button"
-            style={[styles.addButton, (busy || username.trim().length === 0) && styles.disabled]}
-          >
-            {busy ? (
-              <ActivityIndicator color="#0b0f14" size="small" />
-            ) : (
-              <Text style={styles.addLabel}>Add</Text>
-            )}
-          </Pressable>
-        </View>
-        {notice !== null && <Text style={styles.notice}>{notice}</Text>}
-      </View>
+  const remove = (person: ContactPerson): void => {
+    const name = personName(person);
+    Alert.alert(`Remove ${name}?`, `${name} will be removed from your contacts. You can add each other again later.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Remove', style: 'destructive', onPress: () => void act(() => api.removeContact(person.accountId)) },
+    ]);
+  };
 
-      {data !== null && data.requests.length > 0 && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Requests for you</Text>
-          {data.requests.map((person) => (
-            <View key={person.accountId} style={styles.row}>
-              <Text style={styles.name}>{personName(person)}</Text>
-              <View style={styles.actions}>
-                <Pressable
-                  onPress={() => void act(() => api.acceptContact(person.accountId))}
-                  accessibilityRole="button"
-                  style={styles.primaryAction}
-                >
-                  <Text style={styles.primaryActionLabel}>Accept</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => void act(() => api.blockContact(person.accountId))}
-                  accessibilityRole="button"
-                  style={styles.quietAction}
-                >
-                  <Text style={styles.quietActionLabel}>Block</Text>
-                </Pressable>
-              </View>
-            </View>
-          ))}
-        </View>
+  return (
+    <ScrollView style={styles.fill} contentContainerStyle={styles.screen} onScrollBeginDrag={() => setMenuFor(null)}>
+      {(showAdd || (data !== null && data.contacts.length === 0)) && (
+        <GlassCard accent style={{ gap: 10 }}>
+          <View style={styles.addHead}>
+            <Icon name="add-person" size={20} color={C7.teal} />
+            <Text style={styles.cardTitle}>Add a contact</Text>
+            {data !== null && data.contacts.length > 0 && (
+              <Pressable onPress={() => { setShowAdd(false); onAddingChange?.(false); }} accessibilityRole="button" hitSlop={8} style={{ marginLeft: 'auto' }}>
+                <Icon name="close" size={16} color={C7.muted} />
+              </Pressable>
+            )}
+          </View>
+          <View style={styles.addRow}>
+            <TextInput
+              style={styles.input}
+              value={username}
+              onChangeText={setUsername}
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder="c7username"
+              placeholderTextColor={C7.faint}
+              onSubmitEditing={() => void add()}
+            />
+            <Pressable onPress={() => void add()} disabled={busy || username.trim().length === 0} accessibilityRole="button" style={[styles.addButton, (busy || username.trim().length === 0) && styles.disabled]}>
+              {busy ? <ActivityIndicator color="#ffffff" size="small" /> : <Text style={styles.addLabel}>Add</Text>}
+            </Pressable>
+          </View>
+          {notice !== null && <Text style={styles.notice}>{notice}</Text>}
+        </GlassCard>
       )}
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Contacts</Text>
-        {data === null && <ActivityIndicator color="#3ec9c0" />}
-        {data !== null && data.contacts.length === 0 && (
-          <Text style={styles.emptyBody}>
-            Nobody yet. Being contacts is what lets you ring, message and send voice notes to each
-            other.
-          </Text>
-        )}
-        {data?.contacts.map((person) => (
-          <View key={person.accountId} style={styles.row}>
-            <AvatarView accountId={person.accountId} name={personName(person)} size={40} />
-            <View style={styles.rowText}>
-              <Text style={styles.name}>{personName(person)}</Text>
-              {person.username !== null && <Text style={styles.handle}>{person.username}</Text>}
-            </View>
-            <View style={styles.actions}>
-              <Pressable
-                onPress={() => onMessage(person)}
-                accessibilityRole="button"
-                style={styles.primaryAction}
-              >
-                <Text style={styles.primaryActionLabel}>Message</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => onCall(person)}
-                accessibilityRole="button"
-                style={styles.primaryAction}
-              >
-                <Text style={styles.primaryActionLabel}>Call</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => {
-                  // Destructive: a straightforward confirmation, and ONLY the
-                  // confirmed Remove performs the mutation (founder ruling).
-                  const name = person.displayName ?? person.username ?? person.accountId;
-                  Alert.alert(
-                    `Remove ${name}?`,
-                    `${name} will be removed from your contacts. You can add each other again later.`,
-                    [
-                      { text: 'Cancel', style: 'cancel' },
-                      {
-                        text: 'Remove',
-                        style: 'destructive',
-                        onPress: () => void act(() => api.removeContact(person.accountId)),
-                      },
-                    ],
-                  );
-                }}
-                accessibilityRole="button"
-                style={styles.quietAction}
-              >
-                <Text style={styles.quietActionLabel}>Remove</Text>
-              </Pressable>
-            </View>
+      {data !== null && data.requests.length > 0 && (
+        <>
+          <SectionHeading title="Requests" subtitle="People who asked to connect with you." />
+          {data.requests.map((person) => (
+            <GlassCard key={person.accountId} padded={false} style={styles.row}>
+              <AvatarView accountId={person.accountId} name={personName(person)} size={48} />
+              <View style={styles.rowText}>
+                <Text style={styles.name}>{personName(person)}</Text>
+                {person.username !== null && <Text style={styles.handle}>@{person.username}</Text>}
+              </View>
+              <View style={styles.requestActions}>
+                <PrimaryButton label="Accept" onPress={() => void act(() => api.acceptContact(person.accountId))} />
+                <Pressable onPress={() => void act(() => api.blockContact(person.accountId))} accessibilityRole="button" style={styles.quiet}>
+                  <Text style={styles.quietLabel}>Block</Text>
+                </Pressable>
+              </View>
+            </GlassCard>
+          ))}
+        </>
+      )}
+
+      <SectionHeading title="Contacts" action={data !== null && data.contacts.length > 0 ? `${data.contacts.length}` : undefined} />
+      {data === null && <ActivityIndicator color={C7.teal} />}
+      {data !== null && data.contacts.length === 0 && (
+        <Text style={styles.emptyBody}>Nobody yet. Being contacts is what lets you ring, message and send voice notes to each other.</Text>
+      )}
+      {data?.contacts.map((person) => (
+        <GlassCard key={person.accountId} padded={false} style={styles.row}>
+          <AvatarView accountId={person.accountId} name={personName(person)} size={54} />
+          <View style={styles.rowText}>
+            <Text style={styles.name} numberOfLines={1}>{personName(person)}</Text>
+            {person.username !== null && <Text style={styles.handle}>@{person.username}</Text>}
           </View>
-        ))}
-      </View>
+          <RoundIconButton label="Message" onPress={() => onMessage(person)}>
+            <Icon name="message" size={20} color={C7.text} />
+          </RoundIconButton>
+          <RoundIconButton label="Call" onPress={() => onCall(person)}>
+            <Icon name="phone" size={20} color={C7.text} />
+          </RoundIconButton>
+          <Pressable onPress={() => setMenuFor(menuFor === person.accountId ? null : person.accountId)} accessibilityRole="button" accessibilityLabel="More" hitSlop={8} style={styles.more}>
+            <Icon name="more" size={20} color={C7.muted} />
+          </Pressable>
+          {menuFor === person.accountId && (
+            <View style={styles.menu}>
+              <Pressable onPress={() => { setMenuFor(null); remove(person); }} accessibilityRole="button" style={styles.menuItem}>
+                <Icon name="close" size={16} color={C7.red} />
+                <Text style={styles.menuDanger}>Remove contact</Text>
+              </Pressable>
+            </View>
+          )}
+        </GlassCard>
+      ))}
 
       {data !== null && data.sent.length > 0 && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Waiting for an answer</Text>
+        <>
+          <SectionHeading title="Waiting for an answer" />
           {data.sent.map((person) => (
-            <View key={person.accountId} style={styles.row}>
-              <Text style={styles.name}>{personName(person)}</Text>
-              <Text style={styles.pending}>requested</Text>
-            </View>
+            <GlassCard key={person.accountId} padded={false} style={styles.row}>
+              <AvatarView accountId={person.accountId} name={personName(person)} size={44} />
+              <View style={styles.rowText}>
+                <Text style={styles.name}>{personName(person)}</Text>
+                <Text style={styles.pending}>Requested · not yet accepted</Text>
+              </View>
+            </GlassCard>
           ))}
-        </View>
+        </>
       )}
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  fill: { flex: 1, backgroundColor: '#0b0f14' },
-  screen: { padding: 16, gap: 18, paddingBottom: 40 },
-
-  addCard: {
-    backgroundColor: '#141a21',
-    borderWidth: 1,
-    borderColor: '#273039',
-    borderRadius: 12,
-    padding: 14,
-    gap: 10,
-  },
-  cardTitle: { color: '#e4ebf1', fontSize: 16, fontWeight: '600' },
+  fill: { flex: 1 },
+  screen: { padding: 16, gap: 12, paddingBottom: 40 },
+  addHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  cardTitle: { color: C7.text, fontSize: 18, fontWeight: '600', fontFamily: 'serif' },
   addRow: { flexDirection: 'row', gap: 8 },
-  input: {
-    flex: 1,
-    backgroundColor: '#0b0f14',
-    borderWidth: 1,
-    borderColor: '#273039',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: '#e4ebf1',
-    fontSize: 15,
-  },
-  addButton: {
-    paddingHorizontal: 18,
-    borderRadius: 10,
-    backgroundColor: '#3ec9c0',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  disabled: { backgroundColor: '#1f3a38' },
-  addLabel: { color: '#0b0f14', fontSize: 15, fontWeight: '700' },
-  notice: { color: '#d9a441', fontSize: 12 },
-
-  section: { gap: 8 },
-  sectionTitle: {
-    color: '#5d6874',
-    fontSize: 12,
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-    fontWeight: '600',
-  },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#161d25',
-  },
-  rowText: { gap: 2, flexShrink: 1 },
-  name: { color: '#e4ebf1', fontSize: 15, fontWeight: '600' },
-  handle: { color: '#5d6874', fontSize: 12, fontFamily: 'monospace' },
-  actions: { flexDirection: 'row', gap: 6 },
-  primaryAction: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 8,
-    backgroundColor: '#10312f',
-    borderWidth: 1,
-    borderColor: '#1f4d49',
-  },
-  primaryActionLabel: { color: '#3ec9c0', fontSize: 13, fontWeight: '600' },
-  quietAction: { paddingHorizontal: 10, paddingVertical: 7 },
-  quietActionLabel: { color: '#5d6874', fontSize: 13 },
-  pending: { color: '#5d6874', fontSize: 12, fontStyle: 'italic' },
-  emptyBody: { color: '#8d99a6', fontSize: 14, lineHeight: 20 },
+  input: { flex: 1, backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: C7.panelEdge, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, color: C7.text, fontSize: 15 },
+  addButton: { paddingHorizontal: 18, borderRadius: 12, backgroundColor: C7.tealDeep, borderWidth: 1, borderColor: 'rgba(62,201,192,0.7)', alignItems: 'center', justifyContent: 'center' },
+  disabled: { opacity: 0.45 },
+  addLabel: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
+  notice: { color: C7.amber, fontSize: 12, lineHeight: 17 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12 },
+  rowText: { flex: 1, gap: 2 },
+  name: { color: C7.text, fontSize: 18, fontWeight: '600', fontFamily: 'serif' },
+  handle: { color: C7.muted, fontSize: 13 },
+  requestActions: { alignItems: 'flex-end', gap: 4 },
+  quiet: { paddingHorizontal: 10, paddingVertical: 6 },
+  quietLabel: { color: C7.muted, fontSize: 13 },
+  more: { padding: 6 },
+  menu: { position: 'absolute', right: 10, top: 56, backgroundColor: '#0e1826', borderWidth: 1, borderColor: C7.panelEdge, borderRadius: 12, padding: 6, zIndex: 10, elevation: 6 },
+  menuItem: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingVertical: 10 },
+  menuDanger: { color: C7.red, fontSize: 14, fontWeight: '600' },
+  pending: { color: C7.muted, fontSize: 12, fontStyle: 'italic' },
+  emptyBody: { color: C7.muted, fontSize: 14, lineHeight: 20 },
 });
