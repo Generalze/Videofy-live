@@ -16,6 +16,7 @@
   "dependencies": {
     "@videofy-live/call-client-core": "*",
     "@videofy-live/design-system": "*",
+    "@videofy-live/language-catalogue": "*",
     "@videofy-live/language-router": "*",
     "@videofy-live/shared-types": "*",
     "react": "^18.3.1",

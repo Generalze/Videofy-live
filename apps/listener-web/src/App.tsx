@@ -66,10 +66,12 @@ import {
   phrasesForLanguage,
   resolveLegacyListenerOutputDecision,
   shouldMergeGeneratedCaption,
+  ORIGINAL_LANGUAGE_SELECTION,
   targetLanguagesForSession,
   viewerLanguageLabel,
   type ListenerCaptionPhrase,
 } from './listenerLanguageSelection';
+import { defaultListenerTargetLanguage } from './listenerDefaults';
 import { resolveViewerStatus } from './viewerStatus';
 import { isDiagnosticsRequested } from './viewerDiagnostics';
 import {
@@ -88,7 +90,6 @@ import {
 } from './listenerMediaState';
 
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
-export const DEFAULT_LISTENER_TARGET_LANGUAGE = 'es';
 const VIEWER_PLAYBACK_WATCHDOG_MS = 1_000;
 const VIEWER_PLAYBACK_STAGNANT_CHECKS = 4;
 const VIEWER_PLAYBACK_MIN_READY_STATE = 2;
@@ -208,9 +209,13 @@ export default function App(): React.ReactElement {
   programmeMediaUrlRef.current = mediaState?.programmeMediaUrl ?? null;
   const [streamStatus, setStreamStatus] = useState<string>('created');
   const [sourceLanguage] = useState('en');
-  const [targetLanguage, setTargetLanguage] = useState(DEFAULT_LISTENER_TARGET_LANGUAGE);
+  // Original until the session names an enabled target (listenerDefaults);
+  // once the viewer picks for themselves the session default never overrides.
+  const [targetLanguage, setTargetLanguage] = useState<string>(ORIGINAL_LANGUAGE_SELECTION);
   const targetLanguageRef = useRef(targetLanguage);
   targetLanguageRef.current = targetLanguage;
+  const viewerChoseLanguageRef = useRef(false);
+  const sessionDefaultAdoptedRef = useRef(false);
   // A LEVEL, default full: the slider is how loud the original is (29 Aug).
   const [originalVolume, setOriginalVolume] = useState(1);
   const [translatedVolume, setTranslatedVolume] = useState(1);
@@ -1180,6 +1185,7 @@ export default function App(): React.ReactElement {
     (event: React.ChangeEvent<HTMLSelectElement>): void => {
       const newLanguage = event.target.value;
       const previousLanguage = targetLanguageRef.current;
+      viewerChoseLanguageRef.current = true;
       targetLanguageRef.current = newLanguage;
       socketRef.current?.emit(SOCKET_EVENTS.LEAVE_LANGUAGE, previousLanguage);
       socketRef.current?.emit(SOCKET_EVENTS.JOIN_LANGUAGE, newLanguage);
@@ -1350,7 +1356,11 @@ export default function App(): React.ReactElement {
   }, []);
 
   const sessionTargetLanguages = useMemo(
-    () => targetLanguagesForSession(mediaState, DEFAULT_LISTENER_TARGET_LANGUAGE),
+    () => targetLanguagesForSession(mediaState),
+    [mediaState],
+  );
+  const sessionDefaultLanguage = useMemo(
+    () => defaultListenerTargetLanguage(mediaState),
     [mediaState],
   );
   const viewerLanguageCatalogue = useMemo(
@@ -1358,6 +1368,7 @@ export default function App(): React.ReactElement {
       mediaState?.targetLanguageCatalogue?.map((capability) => ({
         code: capability.language,
         label: capability.label,
+        ...(capability.nativeName === undefined ? {} : { nativeName: capability.nativeName }),
       })),
     [mediaState?.targetLanguageCatalogue],
   );
@@ -1428,12 +1439,22 @@ export default function App(): React.ReactElement {
   }, [mixState.mode, originalAudioRequired, setMixMode]);
 
   useEffect(() => {
-    if (
-      isOriginalLanguageSelection(targetLanguageRef.current) ||
-      sessionTargetLanguages.includes(targetLanguageRef.current)
-    ) return;
-    const nextLanguage = sessionTargetLanguages[0];
-    if (!nextLanguage) return;
+    let nextLanguage: string | undefined;
+    if (!viewerChoseLanguageRef.current && !sessionDefaultAdoptedRef.current) {
+      // First enabled target from the session, adopted once; a viewer who has
+      // already chosen keeps their choice whatever the session later reports.
+      if (sessionDefaultLanguage === undefined) return;
+      sessionDefaultAdoptedRef.current = true;
+      if (sessionDefaultLanguage === targetLanguageRef.current) return;
+      nextLanguage = sessionDefaultLanguage;
+    } else {
+      if (
+        isOriginalLanguageSelection(targetLanguageRef.current) ||
+        sessionTargetLanguages.includes(targetLanguageRef.current)
+      ) return;
+      nextLanguage = sessionTargetLanguages[0];
+      if (!nextLanguage) return;
+    }
     const previousLanguage = targetLanguageRef.current;
     targetLanguageRef.current = nextLanguage;
     socketRef.current?.emit(SOCKET_EVENTS.LEAVE_LANGUAGE, previousLanguage);
@@ -1450,7 +1471,7 @@ export default function App(): React.ReactElement {
     audioQueue.replayGenerated(
       generatedAudioForLanguage(deliveredAudioRef.current, nextLanguage),
     );
-  }, [audioQueue, sessionTargetLanguages]);
+  }, [audioQueue, sessionDefaultLanguage, sessionTargetLanguages]);
 
   const statusColor = {
     idle: 'var(--color-text-muted)',
@@ -1581,7 +1602,9 @@ export default function App(): React.ReactElement {
           >
             {listenerLanguageOptions.map((language) => (
               <option key={language.code} value={language.code}>
-                {language.label}
+                {language.nativeName !== undefined && language.nativeName !== language.label
+                  ? `${language.label} \u00b7 ${language.nativeName}`
+                  : language.label}
               </option>
             ))}
           </select>

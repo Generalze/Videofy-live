@@ -13,6 +13,7 @@ import {
   resolveLegacyListenerOutputDecision,
   shouldMergeGeneratedCaption,
   viewerLanguageLabel,
+  viewerLanguageNativeName,
 } from './listenerLanguageSelection';
 
 describe('listener language selection', () => {
@@ -176,5 +177,20 @@ describe('viewerLanguageLabel', () => {
 
   it('falls back to the code rather than showing the viewer nothing', () => {
     expect(viewerLanguageLabel('zz')).toBeTruthy();
+  });
+
+  it('names languages from the shared catalogue, endonym included', () => {
+    expect(viewerLanguageLabel('zh')).toBe('Chinese (Mandarin)');
+    expect(viewerLanguageLabel('yo')).toBe('Yoruba');
+    expect(viewerLanguageNativeName('es')).toBe('Español');
+    expect(viewerLanguageNativeName('zz')).toBeUndefined();
+    expect(availableViewerLanguages(['es']).find((item) => item.code === 'es')).toMatchObject({
+      label: 'Spanish',
+      nativeName: 'Español',
+    });
+    // A served endonym wins over the catalogue's, as the served label does.
+    expect(
+      viewerLanguageNativeName('es', [{ code: 'es', label: 'Spanish', nativeName: 'Castellano' }]),
+    ).toBe('Castellano');
   });
 });

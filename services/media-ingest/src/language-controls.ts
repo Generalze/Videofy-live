@@ -5,6 +5,8 @@ import type {
   SourceLanguageMode,
   TargetLanguageCapability,
 } from '@videofy-live/shared-types';
+import { resolveLanguageCapabilities, type LanguageCapability } from '@videofy-live/ai-registry';
+import { LANGUAGE_CATALOGUE } from '@videofy-live/language-catalogue';
 import { MediaIngestError } from './ingest-error.js';
 
 export interface SourceLanguageControlInput {
@@ -137,26 +139,39 @@ export function buildTargetLanguageCatalogue(input: {
   opusMtModelIds?: ReadonlyMap<string, string>;
   voiceIds?: ReadonlyMap<string, string>;
 }): TargetLanguageCapability[] {
-  return TARGET_LANGUAGE_CANDIDATES.map((candidate) => {
+  const chain = new Map(
+    resolveLanguageCapabilities().map((capability) => [capability.code, capability]),
+  );
+  return listTargetLanguages(input).map((candidate) => {
+    const evidence = chain.get(candidate.language);
     const translationAvailable = input.supportedTranslationLanguages.includes(candidate.language);
     const voiceAvailable = input.supportedVoiceLanguages.includes(candidate.language);
     const textOnly = translationAvailable && !voiceAvailable;
+    const experimental = isExperimentalTarget(candidate.language, evidence);
     return {
-      ...candidate,
+      language: candidate.language,
+      label: candidate.label,
+      ...(candidate.nativeName === undefined ? {} : { nativeName: candidate.nativeName }),
+      state: evidence?.state ?? 'unavailable',
+      providers: evidence?.providers ?? {},
+      ...(evidence?.reason === undefined ? {} : { reason: evidence.reason }),
       translationAvailable,
       voiceAvailable,
       textOnly,
+      experimental,
       availability: voiceAvailable
         ? 'voice-available'
         : textOnly
           ? 'text-only'
           : translationAvailable
             ? 'translation-available'
-            : candidate.experimental
+            : experimental
               ? 'experimental'
               : 'unavailable',
       translationModel: input.opusMtModelIds?.get(candidate.language) ?? null,
       voiceId: input.voiceIds?.get(candidate.language) ?? null,
+      license: TARGET_LICENSE_NOTES[candidate.language] ?? DEFAULT_TARGET_LICENSE_NOTE,
+      commercialUse: 'unknown',
     };
   });
 }
@@ -230,76 +245,81 @@ function clampConfidence(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-const TARGET_LANGUAGE_CANDIDATES = [
-  {
-    language: 'en',
-    label: 'English',
-    experimental: false,
-    license:
-      'OPUS-MT (Apache-2.0); current English Piper voices CC-BY-NC-SA-4.0 — development/demo only',
-    commercialUse: 'unknown' as const,
-  },
-  {
-    language: 'yo',
-    label: 'Yoruba',
-    experimental: true,
-    license: 'Model-dependent; validate before partner use',
-    commercialUse: 'unknown' as const,
-  },
-  {
-    language: 'pt',
-    label: 'Portuguese',
-    experimental: true,
-    license: 'OPUS-MT / Piper model-dependent',
-    commercialUse: 'unknown' as const,
-  },
-  {
-    language: 'es',
-    label: 'Spanish',
-    experimental: false,
-    license: 'OPUS-MT / Piper model-dependent',
-    commercialUse: 'unknown' as const,
-  },
-  {
-    language: 'fr',
-    label: 'French',
-    experimental: false,
-    license: 'OPUS-MT / Piper model-dependent',
-    commercialUse: 'unknown' as const,
-  },
-  {
-    language: 'zh',
-    label: 'Chinese (Simplified)',
-    experimental: true,
-    license: 'Translation and voice model-dependent',
-    commercialUse: 'unknown' as const,
-  },
-  {
-    language: 'ar',
-    label: 'Arabic',
-    experimental: true,
-    license: 'OPUS-MT (Apache-2.0/CC) model-dependent; validate before partner use',
-    commercialUse: 'unknown' as const,
-  },
-  {
-    language: 'ru',
-    label: 'Russian',
-    experimental: true,
-    license: 'OPUS-MT / NLLB-200 (CC-BY-NC-4.0) model-dependent; validate before partner use',
-    commercialUse: 'unknown' as const,
-  },
-  {
-    language: 'el',
-    label: 'Greek',
-    experimental: true,
-    license: 'OPUS-MT / NLLB-200 (CC-BY-NC-4.0) model-dependent; validate before partner use',
-    commercialUse: 'unknown' as const,
-  },
-  {
-    language: 'la',
-    label: 'Latin',
-    experimental: true,
-    license: 'Translation and voice model-dependent',
-    commercialUse: 'unknown' as const,
-  },
-] as const;
+/**
+ * Why the catalogue and not a private list: the ten-entry candidate table
+ * that lived here was one of three drifting answers to "which languages can a
+ * programme be translated into" (see ai-registry's resolver header). Every
+ * catalogue language is now emitted so a picker can SHOW a language and refuse
+ * to SELECT it; `availability` stays the deployment's own answer (env CSVs,
+ * opus-mt routes, voice ids) and `state` carries the live chain's evidence.
+ *
+ * Two kinds of target sit outside the catalogue and still appear, after it:
+ * anything this deployment's env enables that the catalogue does not list
+ * (a configured language must never vanish from the picker), and Latin -- a
+ * partner-preview target since P6.1 that a catalogue ranked by living-speaker
+ * reach will never carry. Both are pinned by tests.
+ */
+interface TargetLanguageCandidate {
+  readonly language: string;
+  readonly label: string;
+  readonly nativeName?: string;
+}
+
+const OUTSIDE_CATALOGUE_TARGETS: readonly TargetLanguageCandidate[] = [
+  { language: 'la', label: 'Latin', nativeName: 'Latina' },
+];
+
+function listTargetLanguages(input: {
+  supportedTranslationLanguages: readonly string[];
+  supportedVoiceLanguages: readonly string[];
+}): TargetLanguageCandidate[] {
+  const candidates: TargetLanguageCandidate[] = LANGUAGE_CATALOGUE.map((language) => ({
+    language: language.code,
+    label: language.englishName,
+    nativeName: language.nativeName,
+  }));
+  const seen = new Set(candidates.map((candidate) => candidate.language));
+  for (const extra of OUTSIDE_CATALOGUE_TARGETS) {
+    if (seen.has(extra.language)) continue;
+    seen.add(extra.language);
+    candidates.push(extra);
+  }
+  for (const language of [...input.supportedTranslationLanguages, ...input.supportedVoiceLanguages]) {
+    if (seen.has(language)) continue;
+    seen.add(language);
+    candidates.push({ language, label: language });
+  }
+  return candidates;
+}
+
+/**
+ * `experimental` marks a language a partner may evaluate before this
+ * deployment enables it. The P6.1 preview set keeps its flag (it is what the
+ * partner tests were written against); beyond it, a language the live chain
+ * has at least a vendor claim for is worth a look, and one with no provider
+ * at any stage is plainly unavailable. English, Spanish and French were never
+ * flagged: when unconfigured they are unavailable, not experimental.
+ */
+const NEVER_EXPERIMENTAL: ReadonlySet<string> = new Set(['en', 'es', 'fr']);
+const PREVIEW_EXPERIMENTAL: ReadonlySet<string> = new Set(['yo', 'pt', 'zh', 'ar', 'ru', 'el', 'la']);
+
+function isExperimentalTarget(language: string, evidence: LanguageCapability | undefined): boolean {
+  if (NEVER_EXPERIMENTAL.has(language)) return false;
+  if (PREVIEW_EXPERIMENTAL.has(language)) return true;
+  return evidence !== undefined && evidence.state !== 'unavailable';
+}
+
+const DEFAULT_TARGET_LICENSE_NOTE = 'Translation and voice model-dependent; validate before partner use';
+
+const TARGET_LICENSE_NOTES: Readonly<Record<string, string>> = {
+  en: 'OPUS-MT (Apache-2.0); current English Piper voices CC-BY-NC-SA-4.0 — development/demo only',
+  yo: 'Model-dependent; validate before partner use',
+  pt: 'OPUS-MT / Piper model-dependent',
+  es: 'OPUS-MT / Piper model-dependent',
+  fr: 'OPUS-MT / Piper model-dependent',
+  zh: 'Translation and voice model-dependent',
+  ar: 'OPUS-MT (Apache-2.0/CC) model-dependent; validate before partner use',
+  ru: 'OPUS-MT / NLLB-200 (CC-BY-NC-4.0) model-dependent; validate before partner use',
+  el: 'OPUS-MT / NLLB-200 (CC-BY-NC-4.0) model-dependent; validate before partner use',
+  la: 'Translation and voice model-dependent',
+};

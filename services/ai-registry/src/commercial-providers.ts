@@ -59,6 +59,14 @@ export const CommercialModelSchema = z.object({
   capabilities: ProviderExecutionCapabilitiesSchema,
   /** Languages VERIFIED for this model, not the vendor's total catalogue. */
   verifiedLanguages: z.array(z.string().min(2)),
+  /**
+   * Languages the vendor's page LISTS for this model that nobody here has
+   * exercised. A claim, kept apart from `verifiedLanguages` so a language
+   * copied off a marketing table can never be mistaken for one we checked.
+   * The capability resolver reports these as `limited`, never `available`.
+   * Absent means "nothing beyond the verified list has been read".
+   */
+  claimedLanguages: z.array(z.string().min(2)).optional(),
   /** The documentation reference that justifies the cells above. */
   evidence: z.string().min(1),
   /** Service contexts this is a CANDIDATE for. Candidates, not certifications. */
@@ -86,6 +94,12 @@ export const LiveObservationSchema = z.object({
   environment: z.string().min(1),
   capability: z.enum(['transcription', 'translation', 'tts']),
   modelId: z.string().min(1).optional(),
+  /**
+   * BCP-47 tags the run actually exercised. Absent when the summary does not
+   * say: an observation that cannot name its language is evidence about the
+   * protocol, not about any language, and the resolver treats it that way.
+   */
+  languages: z.array(z.string().min(2)).optional(),
   summary: z.string().min(1),
   /** Runs behind this observation. 1 means existence, never a latency claim. */
   sampleCount: z.number().int().positive(),
@@ -136,6 +150,39 @@ const NAIJALINGO_API_DOC = 'https://www.9jalingo.org/api-documentation';
 const GOOGLE_TRANSLATE_DOC = 'https://docs.cloud.google.com/translate/docs/translate-text';
 const AZURE_TTS_REST_DOC =
   'https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech';
+const AZURE_TTS_LANGUAGES_DOC =
+  'https://learn.microsoft.com/en-us/azure/ai-services/speech-service/language-support?tabs=tts';
+
+/**
+ * ElevenLabs' published language table for Flash v2.5 (32) and Multilingual v2
+ * (29), as base subtags. CLAIMED, not verified: the vendor lists them, and the
+ * Nigerian-language finding of 2026-08-26 is the reason the distinction
+ * exists -- a multilingual voice returns HTTP 200 and plausible audio for a
+ * language it never lists, so "it produced audio" proves nothing about a
+ * language. Filipino is `fil` in the catalogue; the vendor writes "Filipino".
+ */
+const ELEVENLABS_MULTILINGUAL_V2_CLAIMED = [
+  'ja', 'zh', 'de', 'hi', 'fr', 'ko', 'pt', 'it', 'id', 'nl', 'tr', 'fil', 'pl',
+  'sv', 'bg', 'ro', 'ar', 'cs', 'el', 'fi', 'hr', 'ms', 'sk', 'da', 'ta', 'uk',
+  'ru',
+] as const;
+const ELEVENLABS_FLASH_V2_5_CLAIMED = [...ELEVENLABS_MULTILINGUAL_V2_CLAIMED, 'hu', 'no', 'vi'] as const;
+
+/**
+ * Azure neural TTS locales, reduced to base subtags. CLAIMED from the
+ * language-support page; only `en-US` has been read off the REST page's own
+ * samples and run. Norwegian is `nb-NO` at Azure and `no` in the catalogue;
+ * Filipino is `fil-PH` there and `fil` here. Cantonese (`yue`) and Wu (`wuu`)
+ * are omitted: the catalogue keys Chinese as one entry.
+ */
+const AZURE_TTS_CLAIMED = [
+  'af', 'am', 'ar', 'az', 'bg', 'bn', 'bs', 'ca', 'cs', 'cy', 'da', 'de', 'el',
+  'es', 'et', 'eu', 'fa', 'fi', 'fil', 'fr', 'ga', 'gl', 'gu', 'he', 'hi', 'hr',
+  'hu', 'hy', 'id', 'is', 'it', 'ja', 'jv', 'ka', 'kk', 'km', 'kn', 'ko', 'lo',
+  'lt', 'lv', 'mk', 'ml', 'mn', 'mr', 'ms', 'mt', 'my', 'ne', 'nl', 'no', 'pl',
+  'ps', 'pt', 'ro', 'ru', 'si', 'sk', 'sl', 'so', 'sq', 'sr', 'su', 'sv', 'sw',
+  'ta', 'te', 'th', 'tr', 'uk', 'ur', 'uz', 'vi', 'zh', 'zu',
+] as const;
 
 export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
   {
@@ -186,6 +233,10 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
           },
         },
         verifiedLanguages: ['en', 'es'],
+        // The models page lists ten streaming languages for Nova-3. Everything
+        // beyond en/es is a claim until a transcript in that language has been
+        // read; multilingual code-switching is a separate feature not claimed.
+        claimedLanguages: ['fr', 'de', 'hi', 'ru', 'pt', 'ja', 'it', 'nl'],
         evidence:
           `${DEEPGRAM_MODELS_DOC}; ${DEEPGRAM_ENDPOINTING_DOC}; ` +
           `${DEEPGRAM_STREAM_DOC} (v1 Results words[].start/.end; KeepAlive)`,
@@ -226,6 +277,7 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
         environment: 'development',
         capability: 'transcription',
         modelId: 'nova-3',
+        languages: ['en'],
         sampleCount: 1,
         summary:
           'Credential-gated smoke: batch PASS (82-char transcript with words[] ' +
@@ -239,6 +291,7 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
         environment: 'development',
         capability: 'transcription',
         modelId: 'flux-general-en',
+        languages: ['en'],
         sampleCount: 1,
         summary:
           'Credential-gated smoke: streaming v2 PASS (socket opened, TurnInfo ' +
@@ -346,6 +399,7 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
           'languages. Latency-sensitive candidate.',
         capabilities: { tts: { completeAudio: 'yes', streamingAudio: 'yes' } },
         verifiedLanguages: ['en', 'es'],
+        claimedLanguages: [...ELEVENLABS_FLASH_V2_5_CLAIMED],
         evidence: ELEVENLABS_MODELS_DOC,
         candidateFor: ['call:live', 'programme:live'],
       },
@@ -356,6 +410,7 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
           'comparator against Flash.',
         capabilities: { tts: { completeAudio: 'yes', streamingAudio: 'yes' } },
         verifiedLanguages: ['en', 'es'],
+        claimedLanguages: [...ELEVENLABS_MULTILINGUAL_V2_CLAIMED],
         evidence: ELEVENLABS_MODELS_DOC,
         candidateFor: ['programme:uploaded', 'programme:live'],
       },
@@ -420,7 +475,8 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
         // read -- a catalogue filled in from reputation is worse than an empty
         // one, because it is believed.
         verifiedLanguages: ['en-US'],
-        evidence: AZURE_TTS_REST_DOC,
+        claimedLanguages: [...AZURE_TTS_CLAIMED],
+        evidence: `${AZURE_TTS_REST_DOC}; ${AZURE_TTS_LANGUAGES_DOC} (claimed locales only)`,
         candidateFor: ['call:live', 'programme:live', 'programme:uploaded'],
       },
     ],
@@ -430,6 +486,7 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
         environment: 'development',
         capability: 'tts',
         modelId: 'cognitiveservices-v1',
+        languages: ['en-US'],
         sampleCount: 1,
         summary:
           'Credential-gated smoke through the REAL adapter (northeurope): PASS. ' +

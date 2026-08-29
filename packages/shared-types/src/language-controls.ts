@@ -30,9 +30,29 @@ export type TargetLanguageAvailability =
   | 'unavailable'
   | 'experimental';
 
+/**
+ * Evidence grade of the LIVE translation chain for a language, mirrored from
+ * ai-registry's resolver (shared-types cannot depend on a service). The
+ * deployment-level `availability` says what THIS box is configured to do; the
+ * state says how much the vendor chain behind it has been proven.
+ */
+export type TargetLanguageCapabilityState = 'available' | 'qualified' | 'limited' | 'unavailable';
+
+export interface TargetLanguageCapabilityProviders {
+  stt?: string;
+  mt?: string;
+  tts?: string;
+}
+
 export interface TargetLanguageCapability {
   language: string;
   label: string;
+  /** Catalogue endonym; absent for a target that is outside the catalogue. */
+  nativeName?: string;
+  state?: TargetLanguageCapabilityState;
+  providers?: TargetLanguageCapabilityProviders;
+  /** Names the chain stage(s) holding the state below `qualified`. */
+  reason?: string;
   translationAvailable: boolean;
   voiceAvailable: boolean;
   textOnly: boolean;

@@ -4,6 +4,7 @@ import type {
   TextToSpeechSessionMetadata,
   TranslationSessionMetadata,
 } from '@videofy-live/shared-types';
+import { LANGUAGE_CATALOGUE } from '@videofy-live/language-catalogue';
 import { describe, expect, it } from 'vitest';
 import { buildTargetLanguageCatalogue } from '../language-controls.js';
 import {
@@ -20,24 +21,32 @@ describe('target language outputs', () => {
       supportedVoiceLanguages: ['en', 'es'],
     });
 
-    expect(catalogue.map((item) => item.language)).toEqual([
-      'en',
-      'yo',
-      'pt',
-      'es',
-      'fr',
-      'zh',
-      'ar',
-      'ru',
-      'el',
-      'la',
-    ]);
+    // The P6.1 preview set keeps exactly the availability it had before the
+    // catalogue replaced the private candidate list.
+    const pinned: Record<string, TargetLanguageCapability['availability']> = {
+      en: 'voice-available',
+      yo: 'experimental',
+      pt: 'text-only',
+      es: 'voice-available',
+      fr: 'text-only',
+      zh: 'experimental',
+      ar: 'experimental',
+      ru: 'experimental',
+      el: 'experimental',
+      la: 'experimental',
+    };
+    for (const [language, availability] of Object.entries(pinned)) {
+      expect(catalogue.find((item) => item.language === language), language).toMatchObject({
+        availability,
+      });
+    }
     expect(catalogue.find((item) => item.language === 'es')).toMatchObject({
       availability: 'voice-available',
       voiceAvailable: true,
     });
     expect(catalogue.find((item) => item.language === 'en')).toMatchObject({
       label: 'English',
+      nativeName: 'English',
       availability: 'voice-available',
       voiceAvailable: true,
     });
@@ -46,14 +55,6 @@ describe('target language outputs', () => {
       textOnly: true,
     });
     expect(catalogue.find((item) => item.language === 'yo')).toMatchObject({
-      availability: 'experimental',
-      translationAvailable: false,
-    });
-    expect(catalogue.find((item) => item.language === 'ar')).toMatchObject({
-      availability: 'experimental',
-      translationAvailable: false,
-    });
-    expect(catalogue.find((item) => item.language === 'la')).toMatchObject({
       availability: 'experimental',
       translationAvailable: false,
     });
@@ -66,6 +67,61 @@ describe('target language outputs', () => {
       label: 'Greek',
       availability: 'experimental',
       translationAvailable: false,
+    });
+    expect(catalogue.find((item) => item.language === 'la')).toMatchObject({
+      label: 'Latin',
+      availability: 'experimental',
+      translationAvailable: false,
+    });
+  });
+
+  it('lists every catalogue language, unavailable ones included, in catalogue order', () => {
+    const catalogue = buildTargetLanguageCatalogue({
+      supportedTranslationLanguages: ['en', 'es'],
+      supportedVoiceLanguages: ['en'],
+    });
+
+    const catalogueCodes = LANGUAGE_CATALOGUE.map((language) => language.code);
+    expect(catalogue.slice(0, catalogueCodes.length).map((item) => item.language)).toEqual(
+      catalogueCodes,
+    );
+    expect(new Set(catalogue.map((item) => item.language)).size).toBe(catalogue.length);
+
+    // Present but not selectable: nothing on the live chain, nothing configured.
+    const welsh = catalogue.find((item) => item.language === 'cy');
+    expect(welsh).toMatchObject({
+      label: 'Welsh',
+      nativeName: 'Cymraeg',
+      availability: 'unavailable',
+      translationAvailable: false,
+      voiceAvailable: false,
+      experimental: false,
+      state: 'unavailable',
+    });
+    expect(welsh?.reason).toMatch(/No provider/);
+
+    // The resolver's evidence rides alongside the deployment's own answer.
+    expect(catalogue.find((item) => item.language === 'es')).toMatchObject({
+      state: 'available',
+      providers: { stt: 'deepgram', mt: 'opus-mt' },
+    });
+    expect(catalogue.find((item) => item.language === 'de')).toMatchObject({
+      state: 'limited',
+      availability: 'experimental',
+      translationAvailable: false,
+    });
+  });
+
+  it('keeps a language this deployment enables even when the catalogue does not list it', () => {
+    const catalogue = buildTargetLanguageCatalogue({
+      supportedTranslationLanguages: ['tlh'],
+      supportedVoiceLanguages: [],
+    });
+
+    expect(catalogue.find((item) => item.language === 'tlh')).toMatchObject({
+      label: 'tlh',
+      availability: 'text-only',
+      state: 'unavailable',
     });
   });
 

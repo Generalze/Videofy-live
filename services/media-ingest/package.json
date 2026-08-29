@@ -15,6 +15,7 @@
   "dependencies": {
     "@videofy-live/account-tokens": "*",
     "@videofy-live/ai-registry": "*",
+    "@videofy-live/language-catalogue": "*",
     "@videofy-live/media-ingress-wire": "*",
     "@videofy-live/service-env": "*",
     "@videofy-live/shared-types": "*",

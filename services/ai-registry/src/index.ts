@@ -6,3 +6,4 @@ export * from './execution-policy.js';
 export * from './commercial-providers.js';
 export * from './service-selection.js';
 export * from './commercial-routing.js';
+export * from './language-capability-resolver.js';

@@ -3,6 +3,7 @@ import {
   resolveLegacyProgrammeListenerOutputPolicy,
   type LegacyProgrammeListenerOutputDecision,
 } from '@videofy-live/language-router';
+import { lookupLanguage } from '@videofy-live/language-catalogue';
 import type {
   GeneratedAudioReadyEvent,
   MediaStateEvent,
@@ -11,15 +12,6 @@ import type {
   TargetLanguageOutputStatus,
 } from '@videofy-live/shared-types';
 import { phraseFromTimestampedEvent } from './listenerCaptions';
-
-export const VIEWER_LANGUAGE_CATALOGUE = [
-  { code: 'es', label: 'Spanish' },
-  { code: 'fr', label: 'French' },
-  { code: 'pt', label: 'Portuguese' },
-  { code: 'yo', label: 'Yoruba' },
-  { code: 'zh', label: 'Chinese (Simplified)' },
-  { code: 'la', label: 'Latin' },
-] as const;
 
 export const ORIGINAL_LANGUAGE_SELECTION = 'original';
 
@@ -68,6 +60,8 @@ export function phrasesForLanguage(
 export interface ViewerLanguageOption {
   code: string;
   label: string;
+  /** Endonym, when known; the picker shows it beside the English name. */
+  nativeName?: string;
 }
 
 export function availableViewerLanguages(
@@ -79,12 +73,25 @@ export function availableViewerLanguages(
   );
   return [
     ORIGINAL_VIEWER_LANGUAGE,
-    ...uniqueCodes.map((code) => ({
-      code,
-      label: viewerLanguageLabel(code, catalogue),
-    })),
+    ...uniqueCodes.map((code) => {
+      const nativeName = viewerLanguageNativeName(code, catalogue);
+      return {
+        code,
+        label: viewerLanguageLabel(code, catalogue),
+        ...(nativeName === undefined ? {} : { nativeName }),
+      };
+    }),
   ];
 }
+
+/**
+ * Names come from the shared catalogue, the same source the server's own
+ * catalogue labels are built from, so the picker and the operator console
+ * never disagree about what a code is called. A server-supplied label still
+ * wins: a deployment may narrow a name ("Espanol (Latinoamerica)"). Codes the
+ * catalogue does not know fall through to the browser's own display names,
+ * and last of all to the code itself, so a viewer is never shown nothing.
+ */
 
 export function viewerLanguageLabel(
   code: string,
@@ -92,15 +99,22 @@ export function viewerLanguageLabel(
 ): string {
   const catalogueLabel = catalogue?.find((entry) => entry.code === code)?.label;
   if (catalogueLabel) return catalogueLabel;
-  const staticLabel = VIEWER_LANGUAGE_CATALOGUE.find(
-    (entry) => entry.code === code,
-  )?.label;
-  if (staticLabel) return staticLabel;
+  const sharedName = lookupLanguage(code)?.englishName;
+  if (sharedName) return sharedName;
   try {
     return new Intl.DisplayNames(['en'], { type: 'language' }).of(code) ?? code;
   } catch {
     return code;
   }
+}
+
+export function viewerLanguageNativeName(
+  code: string,
+  catalogue?: readonly ViewerLanguageOption[],
+): string | undefined {
+  const served = catalogue?.find((entry) => entry.code === code)?.nativeName;
+  if (served) return served;
+  return lookupLanguage(code)?.nativeName;
 }
 
 export function isOriginalLanguageSelection(language: string): boolean {
@@ -181,11 +195,18 @@ export function describeLanguageOutput(status: TargetLanguageOutputStatus): stri
   }
 }
 
+/**
+ * The session's own target list. There is no built-in fallback language any
+ * more: before the session reports its targets the viewer has only the
+ * original channel, and the first ENABLED target is adopted when it arrives
+ * (see listenerDefaults). A caller that still wants a placeholder passes one.
+ */
 export function targetLanguagesForSession(
   state: MediaStateEvent | null,
-  fallback: string,
+  fallback?: string,
 ): string[] {
-  return state?.translatedLanguages && state.translatedLanguages.length > 0
-    ? state.translatedLanguages
-    : [fallback];
+  if (state?.translatedLanguages && state.translatedLanguages.length > 0) {
+    return state.translatedLanguages;
+  }
+  return fallback === undefined ? [] : [fallback];
 }
