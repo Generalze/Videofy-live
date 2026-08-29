@@ -19,7 +19,9 @@ import {
   type ContactPerson,
   type ConversationEntry,
   type WireMessage,
+  type TimelineItem,
 } from './accountApi';
+import { callHistoryWords } from './callHistoryWords';
 import { Avatar } from './Avatar';
 
 function formatTime(atMs: number): string {
@@ -47,17 +49,20 @@ export function MessagesPanel({
   token,
   selfId,
   initialPartner,
+  onCall,
 }: {
   readonly accountUrl: string;
   readonly token: string;
   readonly selfId: string;
   /** Set when Contacts said "Message" -- opens that thread directly. */
   readonly initialPartner: ContactPerson | null;
+  /** Call this contact (the same path as the Contacts panel's Call button). */
+  readonly onCall?: (person: ContactPerson) => void;
 }) {
   const [api] = useState(() => createAccountApi(accountUrl, token));
   const [conversations, setConversations] = useState<readonly ConversationEntry[] | null>(null);
   const [partner, setPartner] = useState<ContactPerson | null>(initialPartner);
-  const [messages, setMessages] = useState<readonly WireMessage[]>([]);
+  const [messages, setMessages] = useState<readonly TimelineItem[]>([]);
   const [draft, setDraft] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
   const [voiceUrls, setVoiceUrls] = useState<Record<string, string>>({});
@@ -70,7 +75,9 @@ export function MessagesPanel({
   const lastMessageIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    const newest = messages[0]?.messageId ?? null;
+    const first = messages[0];
+    const newest =
+      first === undefined ? null : first.kind === 'call' ? `call:${first.callId}` : first.messageId;
     if (newest !== null && newest !== lastMessageIdRef.current) {
       lastMessageIdRef.current = newest;
       scrollAnchorRef.current?.scrollIntoView({ block: 'end' });
@@ -203,12 +210,45 @@ export function MessagesPanel({
             </p>
             <div className="messages-scroll">
               {[...messages].reverse().map((message, index, ordered) => {
-                const mine = message.senderId === selfId;
                 const previous = ordered[index - 1];
                 const newDay =
                   previous === undefined ||
                   new Date(previous.createdAtMs).toDateString() !==
                     new Date(message.createdAtMs).toDateString();
+                if (message.kind === 'call') {
+                  // A CALL IN THE TIMELINE: centred, like a phone's log.
+                  const words = callHistoryWords(message);
+                  const at = new Date(message.createdAtMs).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  });
+                  return (
+                    <div key={`call:${message.callId}`} className="bubble-row">
+                      {newDay ? (
+                        <div className="messages-day">{dayLabel(message.createdAtMs, Date.now())}</div>
+                      ) : null}
+                      <div className={`call-row${words.missed ? ' call-row-missed' : ''}`}>
+                        <span className="call-row-title">
+                          {message.direction === 'outgoing' ? '↗ ' : '↙ '}
+                          {words.title}
+                        </span>
+                        <span className="call-row-detail">
+                          {words.detail === null ? at : `${words.detail} · ${at}`}
+                        </span>
+                        {onCall !== undefined && partner !== null ? (
+                          <button
+                            type="button"
+                            className="button button-small"
+                            onClick={() => onCall(partner)}
+                          >
+                            Call back
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                }
+                const mine = message.senderId === selfId;
                 return (
                   <div key={message.messageId} className="bubble-row">
                     {newDay ? (

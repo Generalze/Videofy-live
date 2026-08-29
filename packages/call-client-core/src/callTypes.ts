@@ -276,12 +276,29 @@ export type CallJoinFailureCode =
   | 'translation-engine-unavailable'
   | 'internal';
 
+/** The telephone's state for a direct call; see call-wire's DirectCallStateWire. */
+export interface DirectCallStateSnapshot {
+  callId: string;
+  state: string;
+  mode: CallMode;
+  callerAccountId: string;
+  peerAccountId: string;
+  callerName: string;
+  updatedAtMs: number;
+  expiresAtMs: number;
+  answeredAtMs: number | null;
+  connectedAtMs: number | null;
+  endedByAccountId: string | null;
+}
+
 export type CallJoinAck =
   | {
       ok: true;
       participantId: string;
       resumeToken: string;
       snapshot?: CallStateSnapshot;
+      /** Direct calls only: the state at the moment of this join or resume. */
+      directState?: DirectCallStateSnapshot;
       /**
        * Present only when a session token was offered and not accepted. The
        * call joined normally and will use a standard voice.

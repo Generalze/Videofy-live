@@ -41,6 +41,7 @@ import { createApi } from './src/api/client';
 import { configureAvatars } from './src/media/AvatarView';
 import type { ContactPerson } from './src/api/client';
 import { InsetsProvider, useBottomInset } from './src/ui/insets';
+import { AppHeader } from './src/ui/AppHeader';
 import { SignInScreen } from './src/screens/SignInScreen';
 import { SignUpScreen } from './src/screens/SignUpScreen';
 import { CallScreen } from './src/screens/CallScreen';
@@ -133,6 +134,14 @@ const NOTICE: Partial<Record<string, string>> = {
 };
 
 type Tab = 'chats' | 'contacts' | 'conf' | 'profile';
+
+/** What the masthead calls each tab. */
+const TAB_TITLES: Record<Tab, string> = {
+  chats: 'Chats',
+  contacts: 'Contacts',
+  conf: 'Conference',
+  profile: 'Profile',
+};
 
 /**
  * A call is DIRECT (person-to-person, internal session id, no visible code)
@@ -446,6 +455,7 @@ function AppInner(): JSX.Element {
   return (
     <View style={styles.shell}>
       <StatusBar style="light" />
+      <AppHeader title={TAB_TITLES[tab]} />
       <View style={styles.tabContent}>
         {tab === 'chats' && (
           <ConversationsScreen
@@ -507,17 +517,18 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   waiting: { color: '#5d6874', fontSize: 14 },
-  shell: { flex: 1, backgroundColor: '#0b0f14', paddingTop: 40 },
-  tabContent: { flex: 1 },
+  // The masthead carries the top inset now; the shell starts at the edge.
+  shell: { flex: 1, backgroundColor: '#070c14' },
+  tabContent: { flex: 1, backgroundColor: '#0b0f14' },
   tabBar: {
     flexDirection: 'row',
     borderTopWidth: 1,
-    borderTopColor: '#161d25',
+    borderTopColor: 'rgba(62,201,192,0.14)',
     // Bottom padding is measured at render: the phone's own bar plus 8.
     paddingTop: 10,
-    backgroundColor: '#0b0f14',
+    backgroundColor: '#070c14',
   },
-  tabButton: { flex: 1, alignItems: 'center', paddingVertical: 6 },
-  tabLabel: { color: '#5d6874', fontSize: 13, fontWeight: '600' },
+  tabButton: { flex: 1, alignItems: 'center', paddingVertical: 6, gap: 4 },
+  tabLabel: { color: '#5d6874', fontSize: 13, fontWeight: '600', letterSpacing: 0.2 },
   tabActive: { color: '#3ec9c0' },
 });

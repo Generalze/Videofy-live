@@ -144,6 +144,18 @@ const gateway = new Gateway(server, config.corsOrigins, {
       secret: process.env['VIDEOFY_AUTH_SECRET'],
       accountServiceUrl: process.env['ACCOUNT_SERVICE_URL'],
     }),
+    // Every finished direct call becomes history on the account pair.
+    recordDirectCall: async (record) => {
+      const base = process.env['ACCOUNT_SERVICE_URL']?.replace(/\/+$/, '');
+      const token = process.env['INTERNAL_WEBRTC_TOKEN'];
+      if (!base || !token) return;
+      const response = await fetch(`${base}/internal/calls`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-Videofy-Internal-Token': token },
+        body: JSON.stringify(record),
+      });
+      if (!response.ok) throw new Error(`account service answered ${response.status}`);
+    },
   },
   operator: {
     // The SAME secret the account service signs sessions with. A separate

@@ -46,6 +46,9 @@ import {
 import { createPostgresConversationModes } from './db/conversation-modes-postgres.js';
 import { createTextTranslator } from './translation-client.js';
 import { registerAvatarRoutes } from './avatar-routes.js';
+import { createInMemoryCallRecordPort } from './call-records.js';
+import { createPostgresCallRecords } from './db/call-records-postgres.js';
+import { registerCallHistoryRoutes } from './call-history-routes.js';
 import { createPostgresMessageRecords } from './db/message-records-postgres.js';
 import { registerMessageRoutes } from './message-routes.js';
 import { createFcmProviderFromEnv } from './push/fcm-provider.js';
@@ -582,6 +585,24 @@ console.log(
   }),
 );
 
+/*
+ * CALL HISTORY. A finished direct call is part of the account pair's
+ * relationship, like a message; the gateway reports it here over the
+ * internal token and both people read it in their conversation.
+ */
+const callRecords = databasePool
+  ? createPostgresCallRecords(databasePool)
+  : createInMemoryCallRecordPort();
+
+registerCallHistoryRoutes(app, {
+  calls: callRecords,
+  auth: resolveInternalIngressAuth(process.env),
+  onEvent: (event, detail) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', event, ...detail }));
+  },
+});
+
 registerPushRoutes(app, {
   push,
   auth: resolveInternalIngressAuth(process.env),
@@ -600,11 +621,13 @@ registerPushRoutes(app, {
 const messages = new MessageStore({
   port: databasePool ? createPostgresMessageRecords(databasePool) : createInMemoryMessagePort(),
 });
+
 registerMessageRoutes(app, {
   store,
   contacts,
   messages,
   push,
+  calls: callRecords,
   // Ephemeral by design: see the registry's own docstring.
   rings: new RingRegistry(),
   officialAccounts,

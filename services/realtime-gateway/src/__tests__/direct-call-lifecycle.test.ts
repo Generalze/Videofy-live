@@ -126,21 +126,45 @@ describe('DirectCallLifecycle', () => {
     expect(h.lifecycle.get('ring-1')?.state).toBe('network');
   });
 
-  it('ENDED is terminal and cancels every timer', () => {
+  it('ENDED is terminal and cancels every timer; it names who hung up', () => {
     const h = harness();
     h.create();
-    h.lifecycle.ended('ring-1');
+    h.lifecycle.peerJoined('ring-1', 'acct_peer');
+    h.lifecycle.ended('ring-1', 'acct_caller');
     h.fire(RINGING_WINDOW_MS);
     expect(h.lifecycle.get('ring-1')?.state).toBe('ended');
+    expect(h.lifecycle.get('ring-1')?.endedByAccountId).toBe('acct_caller');
     const onState = vi.fn();
     void onState;
+  });
+
+  it('a hang-up before anybody answered is a cancelled ring: NO ANSWER, a missed call', () => {
+    const h = harness();
+    h.create();
+    h.lifecycle.ended('ring-1', 'acct_caller');
+    expect(h.lifecycle.get('ring-1')?.state).toBe('no_answer');
+  });
+
+  it('records the timer origin at the FIRST connection and keeps it across a reconnect', () => {
+    const h = harness();
+    h.create();
+    h.lifecycle.peerJoined('ring-1', 'acct_peer');
+    h.lifecycle.noteTwoWayAudio('ring-1', true);
+    const origin = h.lifecycle.get('ring-1')?.connectedAtMs;
+    expect(origin).not.toBeNull();
+    h.lifecycle.noteTwoWayAudio('ring-1', false);
+    h.lifecycle.noteTwoWayAudio('ring-1', true);
+    expect(h.lifecycle.get('ring-1')?.connectedAtMs).toBe(origin);
   });
 
   it('the wire never carries anything but ids, names, mode, state and times', () => {
     const h = harness();
     const wire = h.create();
     expect(Object.keys(wire).sort()).toEqual(
-      ['callId', 'callerAccountId', 'callerName', 'expiresAtMs', 'mode', 'peerAccountId', 'state', 'updatedAtMs'].sort(),
+      [
+        'callId', 'callerAccountId', 'callerName', 'expiresAtMs', 'mode', 'peerAccountId',
+        'state', 'updatedAtMs', 'answeredAtMs', 'connectedAtMs', 'endedByAccountId',
+      ].sort(),
     );
   });
 });

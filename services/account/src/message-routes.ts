@@ -30,6 +30,7 @@ import type { RingRegistry } from './ring-registry.js';
 import type { ConversationModePort } from './conversation-modes.js';
 import type { TextTranslator } from './translation-client.js';
 import { messagePair } from './message-store.js';
+import { callRecordToWire, type CallRecordPort } from './call-records.js';
 import { createReadStream } from 'node:fs';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -55,6 +56,8 @@ export interface MessageRouteDependencies {
   readonly conversationModes: ConversationModePort;
   /** The line to the translation engine; null resolves to sending the original. */
   readonly translator: TextTranslator;
+  /** Call history for the pair; rendered in the timeline beside messages. */
+  readonly calls?: CallRecordPort;
   readonly callerAccountId: (req: express.Request) => Caller | null;
   readonly onEvent?: (event: string, detail: Record<string, string | number>) => void;
 }
@@ -168,7 +171,26 @@ export function registerMessageRoutes(
       resolved.targetId,
       { beforeMs: Number.isFinite(before) ? before : undefined },
     );
-    res.json({ messages: messages.map(toWire) });
+    /*
+     * CALLS ARE PART OF THE CONVERSATION (founder ruling 2026-08-29): finished
+     * direct calls between these two people ride the same timeline as system
+     * events, newest first like the messages, direction relative to the reader.
+     * The client tells them apart by `kind: 'call'`.
+     */
+    const pair = messagePair(resolved.caller.accountId, resolved.targetId);
+    const calls = deps.calls ? await deps.calls.forPair(pair.low, pair.high, 50) : [];
+    const timeline = [
+      ...messages.map((message) => ({ atMs: message.createdAtMs, item: toWire(message) })),
+      ...calls
+        .filter((record) => !Number.isFinite(before) || record.endedAtMs < before)
+        .map((record) => ({
+          atMs: record.endedAtMs,
+          item: callRecordToWire(record, resolved.caller.accountId),
+        })),
+    ]
+      .sort((a, b) => b.atMs - a.atMs)
+      .map((entry) => entry.item);
+    res.json({ messages: timeline });
   });
 
   app.post('/messages/with/:accountId', async (req, res) => {

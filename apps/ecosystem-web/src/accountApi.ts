@@ -1,4 +1,5 @@
 /** @author masterzee001 */
+import type { WireCallEntry } from './callHistoryWords';
 /**
  * Contacts and messaging, as the account service serves them to a browser.
  *
@@ -36,6 +37,9 @@ export interface WireMessage {
   readonly createdAtMs: number;
   readonly readAtMs: number | null;
 }
+
+/** What `GET /messages/with/:id` returns: messages and finished calls, newest first. */
+export type TimelineItem = WireMessage | WireCallEntry;
 
 export interface ConversationEntry {
   readonly partner: ContactPerson;
@@ -125,7 +129,7 @@ export function createAccountApi(accountUrl: string, token: string) {
         token,
         `/messages/with/${accountId}`,
         undefined,
-        (body) => (body as { messages: WireMessage[] }).messages,
+        (body) => (body as { messages: TimelineItem[] }).messages,
       ),
     sendText: (accountId: string, body: string) =>
       request(

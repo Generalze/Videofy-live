@@ -50,10 +50,13 @@ import {
   createInitialCallJoinForm,
   fetchIceServers,
   type CallJoinAck,
+  type CallJoinFormState,
+  type CallResumeCredentials,
   type CallSdpAck,
   type CallStateSnapshot,
   type CallVideoIcePayload,
   type CallVideoSdpPayload,
+  type DirectCallStateSnapshot,
 } from '@videofy-live/call-client-core';
 
 /** Long enough for a cold gateway, short enough that nobody stares at a spinner. */
@@ -127,12 +130,19 @@ export interface CallConnectionOptions {
    * The server-owned direct-call state (call:direct:state). Every word on the
    * call screen for a direct call comes from here once it arrives.
    */
-  readonly onDirectState?: (wire: {
-    state: string;
-    mode: 'normal' | 'translated';
-    callerAccountId: string;
-    peerAccountId: string;
-  }) => void;
+  readonly onDirectState?: (wire: DirectCallStateSnapshot) => void;
+  /**
+   * The call was ENDED for everybody (call:ended) -- by the other party, or
+   * by this one. Distinct from a participant leaving.
+   */
+  readonly onEnded?: (info: { endedByMe: boolean }) => void;
+  /**
+   * Transport events, metadata only: the socket was lost, a resume of the
+   * SAME seat is being attempted, it succeeded, it failed. This is the
+   * instrumentation that tells "the call died at two minutes" apart from
+   * "the socket dropped at zero and the seat was reaped at 120".
+   */
+  readonly onTransport?: (event: CallTransportEvent) => void;
   /**
    * Metadata-only receive diagnostics, sampled every two seconds: how many
    * audio packets have arrived on the receive leg and the ICE state. Never
@@ -151,6 +161,12 @@ export interface CallConnectionOptions {
   /** How many ICE servers were actually obtained. Zero is worth showing. */
   readonly onIceServers?: (count: number) => void;
 }
+
+export type CallTransportEvent =
+  | { readonly kind: 'socket-lost'; readonly reason: string }
+  | { readonly kind: 'resuming'; readonly attempt: number }
+  | { readonly kind: 'resumed' }
+  | { readonly kind: 'resume-failed'; readonly error: string };
 
 /**
  * The gateway's view of who is in the call.
@@ -184,6 +200,15 @@ export class CallConnection {
    */
   private publishPeer: CallPeer | null = null;
   private receivePeer: CallPeer | null = null;
+  /**
+   * THE SEAT'S CREDENTIAL. A Socket.IO reconnect gives the gateway a new
+   * socket with no binding; without re-joining WITH these, the seat sits
+   * disconnected until the 120-second reaper ends the call. So every
+   * reconnect re-joins as the same participant, and the resume token is
+   * refreshed from each ack.
+   */
+  private resumeCredentials: CallResumeCredentials | null = null;
+  private joinForm: CallJoinFormState | null = null;
 
   constructor(options: CallConnectionOptions) {
     this.options = options;
@@ -357,6 +382,11 @@ export class CallConnection {
      * other side has never heard of.
      */
     this.participantId = ack.participantId;
+    this.resumeCredentials = { participantId: ack.participantId, resumeToken: ack.resumeToken };
+    this.joinForm = form;
+    // The telephone's state at the moment of joining, so the screen never
+    // waits for the NEXT transition to learn the current one.
+    if (ack.directState !== undefined) this.deliverDirectState(ack.directState);
 
     const mesh = new CallVideoMesh({
       callId: this.options.callId,
@@ -439,18 +469,30 @@ export class CallConnection {
       );
     });
 
-    socket.on(
-      CALL_EVENTS.DIRECT_STATE,
-      (wire: { state?: unknown; mode?: unknown; callerAccountId?: unknown; peerAccountId?: unknown }) => {
-        if (typeof wire?.state !== 'string') return;
-        this.options.onDirectState?.({
-          state: wire.state,
-          mode: wire.mode === 'translated' ? 'translated' : 'normal',
-          callerAccountId: typeof wire.callerAccountId === 'string' ? wire.callerAccountId : '',
-          peerAccountId: typeof wire.peerAccountId === 'string' ? wire.peerAccountId : '',
-        });
-      },
-    );
+    socket.on(CALL_EVENTS.DIRECT_STATE, (wire: unknown) => this.deliverDirectState(wire));
+
+    // ENDED is for everybody at once; LEAVE is one seat. A direct call only
+    // ever ends -- the other phone reads "Call ended", never "guest left".
+    socket.on(CALL_EVENTS.ENDED, (payload: { endedByParticipantId?: unknown }) => {
+      this.options.onEnded?.({
+        endedByMe:
+          this.participantId !== null && payload?.endedByParticipantId === this.participantId,
+      });
+    });
+
+    /*
+     * RESUME THE SAME SEAT ON RECONNECT. Socket.IO reconnects the transport
+     * by itself; it does not re-join the call. Before this, a phone whose
+     * socket blipped kept a live-looking screen while the gateway had
+     * detached its voice legs and armed the 120-second reaper.
+     */
+    socket.on('disconnect', (reason: string) => {
+      if (reason === 'io client disconnect') return;
+      this.options.onTransport?.({ kind: 'socket-lost', reason });
+    });
+    socket.io.on('reconnect', (attempt: number) => {
+      void this.resumeSeat(attempt);
+    });
 
     socket.on(CALL_EVENTS.ERROR, (payload: { message?: string }) =>
       this.options.onError(payload?.message ?? 'The call service refused this call.'),
@@ -482,18 +524,21 @@ export class CallConnection {
     const peerFactory = () =>
       new NativePeerConnection({ iceServers: ice }) as unknown as RTCPeerConnection;
 
-    const publish = new CallPeer({
-      direction: 'publish',
-      stream: local as unknown as MediaStream,
-      createPeerConnection: peerFactory,
-      onConnectionStateChange: (state) => this.options.onLegState?.('publish', String(state)),
-      sendOffer: (sdp) => emitSdp(CALL_EVENTS.PUBLISH_OFFER, sdp),
-      onLocalIceCandidate: (candidate) =>
-        socket.emit(
-          CALL_EVENTS.PUBLISH_ICE,
-          buildCallIcePayload(this.options.callId, ack.participantId, candidate),
-        ),
-    });
+    const buildPublish = (): CallPeer =>
+      new CallPeer({
+        direction: 'publish',
+        stream: local as unknown as MediaStream,
+        createPeerConnection: peerFactory,
+        onConnectionStateChange: (state) => this.options.onLegState?.('publish', String(state)),
+        sendOffer: (sdp) => emitSdp(CALL_EVENTS.PUBLISH_OFFER, sdp),
+        onLocalIceCandidate: (candidate) =>
+          socket.emit(
+            CALL_EVENTS.PUBLISH_ICE,
+            buildCallIcePayload(this.options.callId, ack.participantId, candidate),
+          ),
+      });
+    this.buildPublish = buildPublish;
+    const publish = buildPublish();
     this.publishPeer = publish;
 
     const buildReceive = (): CallPeer =>
@@ -522,7 +567,7 @@ export class CallConnection {
     // receives ours on, scoped to this participant's room. Receive candidates
     // go to WHICHEVER receive peer is current, because it can be rebuilt.
     socket.on(CALL_EVENTS.PUBLISH_ICE, (payload: { candidate?: RTCIceCandidateInit | null }) => {
-      void publish.addRemoteCandidate(payload?.candidate);
+      void this.publishPeer?.addRemoteCandidate(payload?.candidate);
     });
     socket.on(CALL_EVENTS.RECEIVE_ICE, (payload: { candidate?: RTCIceCandidateInit | null }) => {
       void this.receivePeer?.addRemoteCandidate(payload?.candidate);
@@ -545,7 +590,105 @@ export class CallConnection {
   }
 
   private buildReceive: (() => CallPeer) | null = null;
+  private buildPublish: (() => CallPeer) | null = null;
   private receiveReady = false;
+
+  /** Normalise whatever the wire carried into the telephone state the screen reads. */
+  private deliverDirectState(wire: unknown): void {
+    const raw = wire as Partial<DirectCallStateSnapshot> | null;
+    if (raw === null || typeof raw !== 'object' || typeof raw.state !== 'string') return;
+    const num = (value: unknown): number | null => (typeof value === 'number' ? value : null);
+    this.options.onDirectState?.({
+      callId: typeof raw.callId === 'string' ? raw.callId : this.options.callId,
+      state: raw.state,
+      mode: raw.mode === 'translated' ? 'translated' : 'normal',
+      callerAccountId: typeof raw.callerAccountId === 'string' ? raw.callerAccountId : '',
+      peerAccountId: typeof raw.peerAccountId === 'string' ? raw.peerAccountId : '',
+      callerName: typeof raw.callerName === 'string' ? raw.callerName : '',
+      updatedAtMs: num(raw.updatedAtMs) ?? Date.now(),
+      expiresAtMs: num(raw.expiresAtMs) ?? 0,
+      answeredAtMs: num(raw.answeredAtMs),
+      connectedAtMs: num(raw.connectedAtMs),
+      endedByAccountId: typeof raw.endedByAccountId === 'string' ? raw.endedByAccountId : null,
+    });
+  }
+
+  /**
+   * Re-join as the SAME participant after a transport reconnect, then
+   * negotiate both voice legs afresh -- the gateway closed its ends of them
+   * when the socket dropped. The video mesh is peer-to-peer and survives a
+   * signalling blip on its own.
+   */
+  private async resumeSeat(attempt: number): Promise<void> {
+    const socket = this.socket;
+    const credentials = this.resumeCredentials;
+    const form = this.joinForm;
+    if (socket === null || credentials === null || form === null) return;
+    this.options.onTransport?.({ kind: 'resuming', attempt });
+    const ack = await new Promise<CallJoinAck>((resolve) => {
+      socket.timeout(ACK_TIMEOUT_MS).emit(
+        CALL_EVENTS.JOIN,
+        {
+          ...buildCallJoinPayload(form, credentials, this.options.sessionToken),
+          ...(this.options.directPeerAccountId === undefined
+            ? {}
+            : { directPeerAccountId: this.options.directPeerAccountId }),
+        },
+        (error: unknown, reply?: CallJoinAck) => {
+          resolve(
+            error
+              ? { ok: false, error: 'The call service did not respond.' }
+              : (reply ?? { ok: false, error: 'The call service gave an unexpected reply.' }),
+          );
+        },
+      );
+    });
+    if (!ack.ok) {
+      this.options.onTransport?.({ kind: 'resume-failed', error: ack.error ?? 'refused' });
+      return;
+    }
+    if (ack.participantId !== credentials.participantId) {
+      // A different seat is a different call as far as the telephone is
+      // concerned; the gateway will treat the old one as abandoned.
+      this.options.onTransport?.({ kind: 'resume-failed', error: 'seat changed' });
+      return;
+    }
+    this.resumeCredentials = { participantId: ack.participantId, resumeToken: ack.resumeToken };
+    if (ack.directState !== undefined) this.deliverDirectState(ack.directState);
+    try {
+      this.publishPeer?.close();
+      const publish = this.buildPublish?.() ?? null;
+      if (publish !== null) {
+        this.publishPeer = publish;
+        await publish.connect();
+      }
+      await this.rebuildReceiveLeg();
+      this.options.onTransport?.({ kind: 'resumed' });
+    } catch (error) {
+      this.options.onTransport?.({
+        kind: 'resume-failed',
+        error: error instanceof Error ? error.message : 'voice could not be renegotiated',
+      });
+    }
+  }
+
+  /**
+   * END THE CALL FOR EVERYBODY. A direct call's red button means "hang up",
+   * not "leave my seat": the gateway ends the session and both phones read
+   * "Call ended" at once. Resolves true when the gateway acknowledged.
+   */
+  async end(): Promise<boolean> {
+    const socket = this.socket;
+    const participantId = this.participantId;
+    if (socket === null || participantId === null) return false;
+    return new Promise((resolve) => {
+      socket.timeout(5_000).emit(
+        CALL_EVENTS.END,
+        { callId: this.options.callId, participantId },
+        (error: unknown, reply?: { ok?: boolean }) => resolve(!error && reply?.ok === true),
+      );
+    });
+  }
   private knownParticipants = new Set<string>();
   private rebuilding = false;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
@@ -633,6 +776,7 @@ export class CallConnection {
     this.receivePeer?.close();
     this.receivePeer = null;
     this.participantId = null;
+    this.resumeCredentials = null;
     this.socket?.disconnect();
     this.socket = null;
 

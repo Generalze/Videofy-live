@@ -40,7 +40,8 @@ import {
   useAudioRecorder,
 } from 'expo-audio';
 import { File } from 'expo-file-system';
-import type { Api, ContactPerson, WireMessage } from '../api/client';
+import type { Api, ContactPerson, TimelineItem, WireMessage } from '../api/client';
+import { callHistoryWords } from '../call/callHistoryWords';
 import type { AuthorizedFetch } from '../push/deviceRegistrationService';
 import { fetchVoiceNoteAsDataUri, formatDuration } from '../media/voiceNotes';
 
@@ -64,7 +65,7 @@ export function ChatScreen({
   onBack,
   onCall,
 }: ChatScreenProps): JSX.Element {
-  const [messages, setMessages] = useState<readonly WireMessage[]>([]);
+  const [messages, setMessages] = useState<readonly TimelineItem[]>([]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -270,10 +271,9 @@ export function ChatScreen({
         style={styles.fill}
         inverted
         data={messages}
-        keyExtractor={(message) => message.messageId}
+        keyExtractor={(item) => (item.kind === 'call' ? `call:${item.callId}` : item.messageId)}
         contentContainerStyle={styles.messages}
         renderItem={({ item, index }) => {
-          const mine = item.senderId === selfId;
           /*
            * The list is inverted (newest first), so the OLDER neighbour is at
            * index + 1. A day chip belongs above the first message of each day
@@ -283,6 +283,32 @@ export function ChatScreen({
           const firstOfDay =
             older === undefined ||
             new Date(older.createdAtMs).toDateString() !== new Date(item.createdAtMs).toDateString();
+          if (item.kind === 'call') {
+            // A CALL IN THE TIMELINE: centred, like a phone's log, with the
+            // way back into a call one tap away.
+            const words = callHistoryWords(item);
+            return (
+              <View>
+                {firstOfDay ? (
+                  <View style={styles.dayChip}>
+                    <Text style={styles.dayChipText}>{dayOf(item.createdAtMs)}</Text>
+                  </View>
+                ) : null}
+                <View style={styles.callRow}>
+                  <Text style={[styles.callTitle, words.missed && styles.callMissed]}>
+                    {`${item.direction === 'outgoing' ? '↗' : '↙'} ${words.title}`}
+                  </Text>
+                  <Text style={styles.callDetail}>
+                    {words.detail === null ? timeOf(item.createdAtMs) : `${words.detail} · ${timeOf(item.createdAtMs)}`}
+                  </Text>
+                  <Pressable onPress={() => onCall(partner)} accessibilityRole="button">
+                    <Text style={styles.callBack}>Call back</Text>
+                  </Pressable>
+                </View>
+              </View>
+            );
+          }
+          const mine = item.senderId === selfId;
           return (
             <View>
               {firstOfDay ? (
@@ -428,6 +454,23 @@ const styles = StyleSheet.create({
     marginVertical: 6,
   },
   dayChipText: { color: '#5d6874', fontSize: 11 },
+  callRow: {
+    alignSelf: 'center',
+    alignItems: 'center',
+    gap: 3,
+    marginVertical: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 14,
+    backgroundColor: '#10161d',
+    borderWidth: 1,
+    borderColor: '#1c242d',
+    minWidth: 200,
+  },
+  callTitle: { color: '#c9d3dc', fontSize: 13, fontWeight: '600' },
+  callMissed: { color: '#e06c5b' },
+  callDetail: { color: '#5d6874', fontSize: 11 },
+  callBack: { color: '#3ec9c0', fontSize: 12, fontWeight: '700', marginTop: 4 },
   metaRow: { flexDirection: 'row', gap: 4, alignSelf: 'flex-end', marginTop: 2 },
   modePill: {
     borderRadius: 999,

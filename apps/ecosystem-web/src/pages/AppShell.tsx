@@ -534,6 +534,7 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
             token={storedToken() ?? ''}
             selfId={me.accountId}
             initialPartner={chatPartner}
+            onCall={callContact}
           />
         ) : null}
 

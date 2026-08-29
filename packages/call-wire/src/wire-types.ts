@@ -380,6 +380,28 @@ export type CallJoinFailureCode =
   | 'host-not-authorized'
   | 'internal';
 
+/**
+ * The server-owned state of a DIRECT (person-to-person) call, as broadcast on
+ * `call:direct:state` and carried in the join ack. Ids, names, mode, state and
+ * times -- never audio, never content. `connectedAtMs` is the authoritative
+ * origin of the call timer: it is set at the FIRST two-way connection and
+ * survives every reconnect, so the clock on both phones agrees and never
+ * restarts.
+ */
+export interface DirectCallStateWire {
+  callId: string;
+  state: string;
+  mode: CallMode;
+  callerAccountId: string;
+  peerAccountId: string;
+  callerName: string;
+  updatedAtMs: number;
+  expiresAtMs: number;
+  answeredAtMs: number | null;
+  connectedAtMs: number | null;
+  endedByAccountId: string | null;
+}
+
 export type CallJoinAck =
   | {
       ok: true;
@@ -387,6 +409,12 @@ export type CallJoinAck =
       /** Private resume credential: only ever in this ack, never in call:state/logs. */
       resumeToken: string;
       snapshot: CallStateWirePayload;
+      /**
+       * Present for direct calls: the telephone's CURRENT state at the moment
+       * of this join or resume, so a socket that arrives after a transition
+       * already fired is never left holding an old word.
+       */
+      directState?: DirectCallStateWire;
       /**
        * Present only when a session token was offered and did not verify. The
        * join itself succeeded — an expired sign-in must not stop somebody

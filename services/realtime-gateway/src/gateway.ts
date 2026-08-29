@@ -273,6 +273,9 @@ export class Gateway {
           sessionToken: string | null,
           peerAccountId: string,
         ) => Promise<'normal' | 'translated' | null>;
+        recordDirectCall?: (
+          record: import('./direct-call-lifecycle.js').DirectCallOutcomeRecord,
+        ) => Promise<void>;
       };
       operator?: {
         authSecret?: string | undefined;
@@ -470,6 +473,7 @@ export class Gateway {
       ...(options.call?.resolveDirectMode
         ? { resolveDirectCallMode: options.call.resolveDirectMode }
         : {}),
+      ...(options.call?.recordDirectCall ? { recordDirectCall: options.call.recordDirectCall } : {}),
       // P6.5: the synchronous connect-join gate (jti claim, verify, project,
       // origin, live-registry). Always constructed — with a missing secret or
       // registry it refuses every connect join, which is the fail-closed

@@ -58,6 +58,7 @@ import type { CallReceivePeersLike, CallReceivePeerHandlers } from './call-recei
 import {
   DirectCallLifecycle,
   TERMINAL_STATES,
+  type DirectCallOutcomeRecord,
   type DirectCallWire,
 } from './direct-call-lifecycle.js';
 import { CallTranscriptLog } from './call-transcript-log.js';
@@ -330,6 +331,11 @@ export interface CallRuntimeDependencies {
     peerAccountId: string,
   ) => Promise<'normal' | 'translated' | null>;
   /**
+   * Call history: every finished direct call is handed to the account service
+   * as a metadata record. Optional; absent means no history is kept.
+   */
+  recordDirectCall?: (record: DirectCallOutcomeRecord) => Promise<void>;
+  /**
    * P7.0A: a sink for governance audit events.
    *
    * Optional, and the journal line above is emitted either way. This is the
@@ -565,6 +571,14 @@ export class CallRuntime {
         });
         if (TERMINAL_STATES.has(wire.state)) this.stopDirectProbe(wire.callId);
         if (wire.state === 'connecting') this.startDirectProbe(wire);
+      },
+      onOutcome: (record) => {
+        void dependencies.recordDirectCall?.(record).catch((error: unknown) => {
+          logger.warn('Direct call record not stored', {
+            callId: record.callId,
+            message: error instanceof Error ? error.message : 'unknown',
+          });
+        });
       },
     });
     this.governanceAudit = dependencies.governanceAudit;
@@ -1048,8 +1062,17 @@ export class CallRuntime {
         mode: directOverride.callMode,
         peerBusy: this.store.hasConnectedAccount(directPeerAccountId),
       });
-    } else if (typeof directPeerAccountId !== 'string' && verifiedOwnerId !== null) {
-      // A join into an EXISTING direct call by the peer: ANSWERED.
+    } else if (!creating && verifiedOwnerId !== null) {
+      /*
+       * A verified join into an EXISTING direct call: ANSWERED -- keyed on
+       * the call being tracked, NOT on the client omitting a field. The
+       * first version required directPeerAccountId to be absent; the phone
+       * sends it for every direct call, so the callee was never marked
+       * answered, the 30s no-answer timer killed live two-way calls, and
+       * both screens read "Ringing…" until then (field evidence 28 Aug:
+       * eight calls, thousands of routed frames each, all "no_answer").
+       * peerJoined ignores accounts that are not the peer.
+       */
       this.directCalls.peerJoined((raw as { callId: string }).callId, verifiedOwnerId);
     }
     return this.completeJoin(socket, (raw as { callId: string }).callId, result, voiceIdentityRejected);
@@ -1160,6 +1183,12 @@ export class CallRuntime {
     const existingState = this.participants.get(key);
     if (existingState) {
       // A successful resume cancels the pending disconnect reaper.
+      logger.info('Call seat resumed', {
+        callId,
+        participantId,
+        reaperWasArmed: existingState.reapTimer !== null,
+        newSocket: existingState.socketId !== socket.id,
+      });
       this.cancelReap(existingState);
       if (existingState.socketId && existingState.socketId !== socket.id) {
         // Resume from a new socket: the replaced socket's later disconnect
@@ -1219,11 +1248,15 @@ export class CallRuntime {
     }
 
     // resumeToken travels ONLY in this private ack, never in call:state/logs.
+    // The telephone's CURRENT state rides the ack, so a socket that joins or
+    // resumes after a transition already fired is never left with an old word.
+    const directState = this.directCalls.get(callId);
     return {
       ok: true,
       participantId,
       resumeToken: result.resumeToken,
       snapshot: wireSnapshot,
+      ...(directState === null ? {} : { directState }),
       // Only ever `true`, and only in this private ack. A field that named the
       // account, the reason, or the expiry would be handing a prober exactly
       // the information the single rejection path exists to withhold.
@@ -1261,6 +1294,12 @@ export class CallRuntime {
       callId: binding.callId,
       participantId: binding.participantId,
     });
+    // The telephone hears WHO hung up, before the room is dismantled.
+    this.directCalls.ended(
+      binding.callId,
+      snapshotBefore?.participants.find((p) => p.participantId === binding.participantId)
+        ?.accountId ?? null,
+    );
     this.emitToRoom(callRoom(binding.callId), CALL_EVENTS.ENDED, {
       callId: binding.callId,
       endedByParticipantId: binding.participantId,
@@ -1285,6 +1324,13 @@ export class CallRuntime {
     if (!binding) return;
     this.socketBindings.delete(socketId);
     const { callId, participantId } = binding;
+    // Metadata only. This line is how a call that "died at two minutes" is
+    // told apart from one that lost its socket at zero and was reaped at 120.
+    logger.info('Call socket disconnected; seat kept for resume', {
+      callId,
+      participantId,
+      graceMs: this.disconnectGraceMs,
+    });
     this.store.markDisconnected(callId, participantId);
     const state = this.participants.get(participantKey(callId, participantId));
     if (state) {
@@ -2456,6 +2502,7 @@ export class CallRuntime {
     const key = participantKey(callId, participantId);
     const state = this.participants.get(key);
     if (state) this.cancelReap(state);
+    const snapshotBeforeLeave = this.store.snapshot(callId);
     const result = this.store.leave(callId, participantId);
     this.detachParticipantTransport(callId, participantId, reason);
     for (const [ingestSessionId, entry] of [...this.ingestRegistry]) {
@@ -2475,7 +2522,39 @@ export class CallRuntime {
       void socket.leave(callParticipantRoom(callId, participantId));
     }
     this.transcriptLog.append({ kind: 'leave', callId, participantId, reason });
-    if (result.callEnded) {
+    /*
+     * A PERSONAL CALL IS A TELEPHONE CALL: when either party leaves -- hung
+     * up by the app, killed by the OS, or reaped after the disconnect grace
+     * -- it is over for the other party too. The store keeps seats until the
+     * last one goes, which is right for a conference and wrong here: it left
+     * the remaining phone alone in a room reading "guest left".
+     */
+    const personalPartner =
+      !result.callEnded && result.snapshot?.callType === 'personal' ? result.snapshot : null;
+    if (personalPartner !== null) {
+      const departed = snapshotBeforeLeave?.participants.find(
+        (p) => p.participantId === participantId,
+      );
+      logger.info('Personal call ended because a party left', { callId, participantId, reason });
+      this.directCalls.ended(callId, departed?.accountId ?? null);
+      this.emitToRoom(callRoom(callId), CALL_EVENTS.ENDED, {
+        callId,
+        endedByParticipantId: participantId,
+        endedByDisplayName: departed?.displayName ?? '',
+      });
+      // The store still holds the other seat; in a personal call any party
+      // may end it, and the one who left has just done so by leaving.
+      for (const remaining of personalPartner.participants) {
+        const ended = this.store.endCallByParticipant(callId, remaining.participantId);
+        if (ended.ok) {
+          for (const ingestSessionId of ended.retiredIngestSessionIds) {
+            this.retireIngestEntry(ingestSessionId, 'personal call: a party left');
+          }
+        }
+        break;
+      }
+      this.teardownCall(callId, `personal call: a party left (${reason})`);
+    } else if (result.callEnded) {
       this.teardownCall(callId, 'call ended');
     } else if (result.snapshot) {
       this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, toWireCallState(result.snapshot));
@@ -2625,6 +2704,11 @@ export class CallRuntime {
   /** Arm (or re-arm) the disconnect grace reaper for a disconnected seat. */
   private scheduleReap(state: CallParticipantRuntimeState): void {
     this.cancelReap(state);
+    logger.info('Call disconnect reaper armed', {
+      callId: state.callId,
+      participantId: state.participantId,
+      graceMs: this.disconnectGraceMs,
+    });
     state.reapTimer = this.setTimer(() => {
       state.reapTimer = null;
       try {
@@ -2643,6 +2727,10 @@ export class CallRuntime {
     if (!state.reapTimer) return;
     this.clearTimer(state.reapTimer);
     state.reapTimer = null;
+    logger.info('Call disconnect reaper cancelled', {
+      callId: state.callId,
+      participantId: state.participantId,
+    });
   }
 
   /** Grace expired without a resume: the seat is auto-left and fully cleaned. */

@@ -2,46 +2,67 @@
 /**
  * A call, on screen.
  *
- * WHAT A PERSON MUST BE ABLE TO TELL AT A GLANCE, and the reason this screen has
- * more state than a video tile: whether the other side is actually there.
- * "Connecting" and "connected with the camera off" look identical if the only
- * signal is a black rectangle, and a caller who cannot distinguish them will sit
- * waiting for somebody who has already hung up. So peer state is shown per tile,
- * in words.
+ * A DIRECT CALL IS A TELEPHONE SCREEN. From the tap it says "Calling…" --
+ * never "Joining": joining is how the app reaches the gateway, not what the
+ * person is doing. Every word after that comes from the server-owned
+ * telephone state (call:direct:state, and the join ack that carries it), and
+ * once two-way audio is proven the words give way to a TIMER whose origin is
+ * the server's `connectedAtMs` -- it keeps counting through a reconnect and
+ * both phones agree on it.
  *
- * THE CAMERA IS RELEASED ON EVERY EXIT PATH. Leaving, unmounting, backgrounding
- * -- all of them stop the tracks. On Android an un-stopped camera keeps the
- * hardware held and the privacy indicator lit, which to the person holding the
- * phone is indistinguishable from an app watching them after the call ended.
+ * THE RED BUTTON ENDS THE CALL FOR BOTH. `call:end`, acknowledged, and the
+ * other phone reads "Call ended" at once. It never reads "guest left": a
+ * direct call has no guests.
  *
- * NORMAL MODE, AND IT SAYS SO. This build carries camera and microphone and no
- * translation, so the screen states that rather than leaving somebody to
- * discover it by speaking a language nobody in the call understands.
+ * NO ARTIFICIAL GAIN. Loudness is a routing choice: earpiece by default for an
+ * audio-only call, loudspeaker when the camera comes on, and a Speaker
+ * control for the person to decide.
+ *
+ * DIAGNOSTICS ARE A DEVELOPER SWITCH. The voice-leg line, ICE warnings and
+ * peer-state words were useful while the audio path was being proven and
+ * are noise on a product screen. `EXPO_PUBLIC_CALL_DIAGNOSTICS=1` brings
+ * them back; nothing else does.
+ *
+ * THE CAMERA IS RELEASED ON EVERY EXIT PATH. Leaving, unmounting,
+ * backgrounding -- all of them stop the tracks. An un-stopped camera keeps
+ * the privacy indicator lit after the call, which to the person holding the
+ * phone is an app watching them.
  */
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
-import { AvatarView } from '../media/AvatarView';
-import { directCallPhase, directCallWords } from '../call/callPhase';
-import { TERMINAL_DIRECT_STATES, directStateWords } from '../call/directCallApi';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { setAudioModeAsync } from 'expo-audio';
 import { RTCView } from 'react-native-webrtc';
-import { CallConnection, type RemoteStream } from '../call/callConnection';
+import type { DirectCallStateSnapshot } from '@videofy-live/call-client-core';
+import { AvatarView } from '../media/AvatarView';
+import { useBottomInset } from '../ui/insets';
+import {
+  AvatarHalo,
+  C7Mark,
+  CALL_COLORS,
+  CallBackdrop,
+  EndCallButton,
+  GlassDock,
+  RoundControl,
+} from '../ui/callTheme';
+import { createAudioRouter, resolveRoute, type AudioRoute } from '../call/audioRoute';
+import { elapsedSinceMs, formatElapsed, observeServerClock } from '../call/callTimer';
+import { TERMINAL_DIRECT_STATES, directStateWords } from '../call/directCallApi';
+import {
+  CallConnection,
+  type CallTransportEvent,
+  type RemoteStream,
+} from '../call/callConnection';
 
 /** Not a secret; compiled into the bundle like every EXPO_PUBLIC_ value. */
 const GATEWAY_URL = process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
 
+/** The developer switch. Off in every build a person installs. */
+const DIAGNOSTICS = process.env['EXPO_PUBLIC_CALL_DIAGNOSTICS'] === '1';
+
 /**
- * An optional local override, normally empty.
- *
- * ICE servers come from the gateway at `/webrtc/ice`, because TURN credentials
- * expire and cannot be shipped in a bundle. This exists only so a developer can
- * point a build at something else; leaving it unset is the correct state.
+ * An optional local override, normally empty. ICE servers come from the
+ * gateway at `/webrtc/ice`, because TURN credentials expire and cannot be
+ * shipped in a bundle.
  */
 function iceOverride(): { urls: string | string[]; username?: string; credential?: string }[] {
   const raw = process.env['EXPO_PUBLIC_ICE_SERVERS'];
@@ -50,27 +71,15 @@ function iceOverride(): { urls: string | string[]; username?: string; credential
     const parsed: unknown = JSON.parse(raw);
     return Array.isArray(parsed) ? (parsed as ReturnType<typeof iceOverride>) : [];
   } catch {
-    // Malformed configuration is treated as absent, and the banner below still
-    // warns -- silently proceeding as if it were valid would be worse.
     return [];
   }
 }
-
-const PEER_WORDS: Record<string, string> = {
-  new: 'connecting',
-  connecting: 'connecting',
-  connected: 'connected',
-  disconnected: 'reconnecting',
-  failed: 'could not connect',
-  closed: 'left',
-};
 
 /**
  * A DIRECT call is person-to-person: it carries the peer, its session id is
  * internal implementation data, and no code is ever shown. A CONFERENCE is
  * the only kind with a human-readable, shareable code. (Founder ruling
- * 2026-08-28.) Kept as a union so conference UI cannot leak into a direct
- * call by accident.
+ * 2026-08-28.)
  */
 export type ActiveCallDescriptor =
   | {
@@ -88,21 +97,27 @@ export type ActiveCallDescriptor =
 export interface CallScreenProps {
   readonly call: ActiveCallDescriptor;
   readonly displayName: string;
-  /** The language this account speaks; the call enters with it. */
   readonly speakLanguage?: 'en' | 'es' | 'fr';
-  /** The language this account prefers to hear. */
   readonly hearLanguage?: 'en' | 'es' | 'fr';
   /** Null is valid: it means this client can JOIN but not CREATE a call. */
   readonly sessionToken: string | null;
   /**
-   * Direct calls only: ring the peer AFTER the join succeeds. Order is the
-   * contract: only a verified account may CREATE a call, so the caller joins
-   * first (becoming the host) and rings second -- ring-then-join would race
-   * the callee into being the creator. Absent when answering (the callee
-   * joins an existing session) and for conferences.
+   * Direct calls only: ring the peer AFTER the join succeeds (the caller
+   * joins first, becoming the host, and rings second). Absent when answering
+   * and for conferences -- which is also how the screen knows its role.
    */
   readonly onRing?: ((callId: string) => Promise<number | null>) | undefined;
   readonly onLeave: () => void;
+}
+
+/** The words the telephone shows while two-way audio is not yet proven. */
+function stateLine(
+  serverState: string | null,
+  role: 'caller' | 'callee',
+  peerName: string,
+): string {
+  if (serverState === null) return role === 'caller' ? `Calling ${peerName}…` : 'Connecting…';
+  return directStateWords(serverState, peerName);
 }
 
 export function CallScreen({
@@ -115,46 +130,53 @@ export function CallScreen({
   onLeave,
 }: CallScreenProps): JSX.Element {
   const callId = call.callId;
-  const peerName = call.kind === 'direct' ? call.peer.name : null;
+  const role: 'caller' | 'callee' = onRing === undefined ? 'callee' : 'caller';
   const connection = useRef<CallConnection | null>(null);
-  /** The self-view URL while the camera is on; null is genuinely off. */
+  const bottomInset = useBottomInset();
+
   const [localUrl, setLocalUrl] = useState<string | null>(null);
   const [remotes, setRemotes] = useState<Record<string, { url: string | null; state: string }>>({});
   const [error, setError] = useState<string | null>(null);
   /** OFF at every call start (founder ruling): the camera is not acquired. */
   const [cameraOn, setCameraOn] = useState(false);
+  const [cameraStarting, setCameraStarting] = useState(false);
   const [joining, setJoining] = useState(true);
   const [joined, setJoined] = useState(false);
-  const [joinFailed, setJoinFailed] = useState(false);
-  /** The two voice legs' transport states -- silence can name its link. */
+  const [muted, setMuted] = useState(false);
   const [legs, setLegs] = useState<{ publish: string; receive: string }>({
     publish: 'new',
     receive: 'new',
   });
   const [voice, setVoice] = useState<{ inboundPackets: number; iceState: string } | null>(null);
-  /** The server's word for this direct call, once it has spoken. */
-  const [serverState, setServerState] = useState<string | null>(null);
-  const [cameraStarting, setCameraStarting] = useState(false);
-  /*
-   * What the GATEWAY says is in the call, which is not the same as what the
-   * mesh has connected. A black screen cannot distinguish "nobody else is
-   * here" from "somebody is here and the media has not connected" -- and those
-   * have completely different fixes.
-   */
+  const [iceCount, setIceCount] = useState<number | null>(null);
+  const [transportLog, setTransportLog] = useState<readonly string[]>([]);
   const [roster, setRoster] = useState<
     readonly { participantId: string; displayName: string; accountId?: string }[]
   >([]);
-  const others = roster.length;
-  const [muted, setMuted] = useState(false);
+
   /*
-   * null until the fetch resolves. The old banner read a build-time env value
-   * and so reported "no ICE servers" even when the gateway was serving TURN
-   * perfectly well -- it was describing the app's configuration rather than the
-   * call's actual capability.
+   * THE TELEPHONE. `serverState` is the server's word; `connectedAtMs` is the
+   * server-stamped origin of the timer; `clockOffset` is measured once from
+   * the first wire so the origin can be ticked on the phone's clock.
    */
-  const [iceCount, setIceCount] = useState<number | null>(null);
-  /** null: not ringing anybody. -1: ring failed. >=0: phones reached. */
-  const [rang, setRang] = useState<number | null>(null);
+  const [serverState, setServerState] = useState<string | null>(null);
+  const [mode, setMode] = useState<'normal' | 'translated' | null>(null);
+  const [connectedAtMs, setConnectedAtMs] = useState<number | null>(null);
+  const clockOffset = useRef<number | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  /** Frozen at the moment the call ended, so the final duration stays on screen. */
+  const [finalElapsedMs, setFinalElapsedMs] = useState<number | null>(null);
+
+  /** Audio routing: an explicit choice, or null for the camera-driven default. */
+  const [chosenRoute, setChosenRoute] = useState<AudioRoute | null>(null);
+  const router = useRef(createAudioRouter((audioMode) => setAudioModeAsync(audioMode)));
+
+  const acceptDirectState = useCallback((wire: DirectCallStateSnapshot) => {
+    clockOffset.current = observeServerClock(clockOffset.current, wire.updatedAtMs, Date.now());
+    setServerState(wire.state);
+    setMode(wire.mode);
+    if (wire.connectedAtMs !== null) setConnectedAtMs(wire.connectedAtMs);
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -166,8 +188,6 @@ export function CallScreen({
       ...(speakLanguage === undefined ? {} : { speakLanguage }),
       ...(hearLanguage === undefined ? {} : { hearLanguage }),
       sessionToken,
-      // Left unset so the connection fetches from the gateway, which is the
-      // only source that can mint TURN credentials that expire.
       ...(iceOverride().length > 0 ? { iceServers: iceOverride() } : {}),
       onRemoteStream: (id, stream: RemoteStream) =>
         setRemotes((current) => ({
@@ -180,7 +200,14 @@ export function CallScreen({
           [id]: { url: current[id]?.url ?? null, state },
         })),
       onRoster: (list) => {
-        if (live) setRoster(list);
+        if (!live) return;
+        setRoster(list);
+        // A tile belongs to a seat. When the seat is gone the tile goes with
+        // it -- the old screen kept it and labelled it "left".
+        const present = new Set(list.map((entry) => entry.participantId));
+        setRemotes((current) =>
+          Object.fromEntries(Object.entries(current).filter(([id]) => present.has(id))),
+        );
       },
       onLegState: (leg, state) => {
         if (live) setLegs((current) => ({ ...current, [leg]: state }));
@@ -189,7 +216,24 @@ export function CallScreen({
         if (live) setVoice(stats);
       },
       onDirectState: (wire) => {
-        if (live) setServerState(wire.state);
+        if (live) acceptDirectState(wire);
+      },
+      onEnded: () => {
+        // ENDED reaches conferences too; for a direct call the telephone's
+        // own 'ended' usually arrives first and this is a no-op.
+        if (live) setServerState((current) => (current !== null && TERMINAL_DIRECT_STATES.has(current) ? current : 'ended'));
+      },
+      onTransport: (event: CallTransportEvent) => {
+        if (!live) return;
+        const line =
+          event.kind === 'socket-lost'
+            ? `socket lost (${event.reason})`
+            : event.kind === 'resuming'
+              ? `resuming seat (attempt ${event.attempt})`
+              : event.kind === 'resumed'
+                ? 'seat resumed, voice renegotiated'
+                : `resume failed: ${event.error}`;
+        setTransportLog((current) => [...current.slice(-4), `${new Date().toLocaleTimeString()} ${line}`]);
       },
       onIceServers: (count) => {
         if (live) setIceCount(count);
@@ -202,29 +246,17 @@ export function CallScreen({
 
     void (async () => {
       try {
-        // Microphone only. The camera is acquired by the Camera button, never here.
         await link.openLocalMedia();
         if (!live) return;
-
-        /*
-         * THE ACK IS READ, and this is the whole reason the call screen has a
-         * failure state. A refused join used to leave this sitting on "waiting
-         * for someone to join" forever, which is indistinguishable from an
-         * empty call and sends somebody looking for a person who was never
-         * able to be there.
-         */
         const ack = await link.join();
         if (!live) return;
         if (ack.ok) setJoined(true);
         if (ack.ok && onRing !== undefined) {
           const reached = await onRing(callId);
-          if (live) setRang(reached ?? -1);
-          // The telephone hears the dispatch result: zero devices is
-          // UNAVAILABLE now, not after thirty seconds of "Calling…".
+          // Zero devices is UNAVAILABLE now, not after thirty seconds of "Calling…".
           link.reportRingResult(reached ?? -1);
         }
         if (!ack.ok) {
-          setJoinFailed(true);
           setError(
             ack.code === 'host-not-authorized'
               ? 'Verify your email before starting a call. You can still join a call somebody invites you to.'
@@ -244,23 +276,44 @@ export function CallScreen({
       }
     })();
 
-    /*
-     * The cleanup is the ONLY guaranteed exit path -- a person can leave by
-     * backgrounding, by navigating, or by the process being killed, and only
-     * this runs for all of them.
-     */
     return () => {
       live = false;
       link.leave();
       connection.current = null;
+      void router.current.release();
     };
+    // The connection is built once per call; the callbacks read state through setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [callId, displayName, sessionToken]);
 
-  /*
-   * Camera ON acquires the camera (a denied permission leaves the audio
-   * call untouched and says so); camera OFF releases it. The self-view
-   * follows the real stream, not a flag.
-   */
+  // The timer ticks while there is an origin and the call has not ended.
+  const terminal = serverState !== null && TERMINAL_DIRECT_STATES.has(serverState);
+  useEffect(() => {
+    if (connectedAtMs === null || terminal) return undefined;
+    setNowMs(Date.now());
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [connectedAtMs, terminal]);
+
+  // Freeze the duration at the moment the call ends.
+  useEffect(() => {
+    if (terminal && connectedAtMs !== null && finalElapsedMs === null) {
+      setFinalElapsedMs(elapsedSinceMs(connectedAtMs, clockOffset.current, Date.now()));
+    }
+  }, [terminal, connectedAtMs, finalElapsedMs]);
+
+  // A terminal telephone state ends the screen after the words are read.
+  useEffect(() => {
+    if (!terminal) return undefined;
+    const timer = setTimeout(() => onLeave(), 2500);
+    return () => clearTimeout(timer);
+  }, [terminal, onLeave]);
+
+  // Audio route follows the camera unless the person chose.
+  useEffect(() => {
+    void router.current.apply(resolveRoute(cameraOn, chosenRoute));
+  }, [cameraOn, chosenRoute]);
+
   const toggleCamera = useCallback(() => {
     const next = !cameraOn;
     if (next) setCameraStarting(true);
@@ -282,147 +335,171 @@ export function CallScreen({
     });
   }, []);
 
-  // A terminal telephone state ends the screen after the words are read.
-  useEffect(() => {
-    if (serverState !== null && TERMINAL_DIRECT_STATES.has(serverState)) {
-      const timer = setTimeout(() => onLeave(), 2500);
-      return () => clearTimeout(timer);
+  const speakerOn = resolveRoute(cameraOn, chosenRoute) === 'speaker';
+  const toggleSpeaker = useCallback(() => {
+    setChosenRoute(speakerOn ? 'earpiece' : 'speaker');
+  }, [speakerOn]);
+
+  /** Direct: end for both, acknowledged. Conference: leave my seat. */
+  const hangUp = useCallback(() => {
+    if (call.kind !== 'direct') {
+      onLeave();
+      return;
     }
-    return undefined;
-  }, [serverState, onLeave]);
+    if (terminal) {
+      onLeave();
+      return;
+    }
+    const link = connection.current;
+    setServerState('ended');
+    void (link?.end() ?? Promise.resolve(false)).finally(() => {
+      setTimeout(() => onLeave(), 600);
+    });
+  }, [call.kind, onLeave, terminal]);
 
   const tiles = Object.entries(remotes);
-  const noIce = iceCount === 0;
-  const phase =
+  const peerVideo = tiles.find(([, tile]) => tile.url !== null)?.[1].url ?? null;
+  const elapsedMs =
+    finalElapsedMs ??
+    (connectedAtMs === null ? null : elapsedSinceMs(connectedAtMs, clockOffset.current, nowMs));
+  const modeLabel =
     call.kind === 'direct'
-      ? directCallPhase({
-          joined,
-          joinFailed,
-          rang: onRing === undefined ? 1 : rang,
-          others,
-          receiveState: legs.receive,
-          ended: false,
-        })
-      : null;
+      ? mode === 'translated'
+        ? 'Translated call'
+        : mode === 'normal'
+          ? 'Normal call'
+          : 'Direct call'
+      : 'Conference';
 
   return (
     <View style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.tiles}>
-        {joining && (
-          <View style={styles.centreBlock}>
-            <ActivityIndicator color="#3ec9c0" size="large" />
-            <Text style={styles.muted}>Joining the call</Text>
-          </View>
-        )}
+      <CallBackdrop />
 
-        {error !== null && (
-          <View style={styles.error}>
-            <Text style={styles.errorText}>{error}</Text>
-          </View>
-        )}
+      <View style={styles.top}>
+        <C7Mark caption={modeLabel} />
+      </View>
 
-        {noIce && (
-          <View style={styles.warn}>
-            <Text style={styles.warnText}>
-              No ICE servers configured. This call can only connect between devices on the same
-              network.
-            </Text>
-          </View>
-        )}
-
-        {/*
-          DIRECT CALL: the person and the call STATE, never a code. State
-          comes from the join ack, the ring result, the gateway roster and
-          the receive leg -- not from whether a video tile exists.
-        */}
-        {call.kind === 'direct' && phase !== null && !joining && tiles.length === 0 && (
-          <View style={styles.centreBlock}>
-            <AvatarView accountId={call.peer.accountId} name={call.peer.name} size={84} />
-            <Text style={styles.peerName}>{call.peer.name}</Text>
-            {/*
-              THE SERVER'S WORD WINS. Until the telephone has spoken, the local
-              phase (join ack, ring dispatch, roster, receive leg) fills in;
-              once call:direct:state arrives it is the only authority.
-            */}
-            <Text style={styles.muted}>
-              {serverState !== null
-                ? directStateWords(serverState, call.peer.name)
-                : directCallWords(phase, call.peer.name)}
-            </Text>
-            {(phase === 'unavailable' ||
-              serverState === 'unavailable' ||
-              serverState === 'no_answer' ||
-              serverState === 'busy') && (
-              <Text style={styles.hint}>You can message them instead, or call again later.</Text>
-            )}
-            {cameraStarting && <Text style={styles.hint}>Starting camera…</Text>}
-          </View>
-        )}
-
-        {/* CONFERENCE: the code is the whole point -- it is what gets shared. */}
-        {call.kind === 'conference' && tiles.length === 0 && !joining && (
-          <View style={styles.centreBlock}>
-            <Text style={styles.muted}>
-              {others === 0
-                ? 'Waiting for others to join. Share the conference code:'
-                : `${others} other${others === 1 ? '' : 's'} in this conference - connecting media`}
-            </Text>
-            <Text style={styles.code}>{callId}</Text>
-          </View>
-        )}
-
-        {/*
-          THE VOICE LEGS, NAMED. Shown only while something is wrong: a dead
-          leg, or a person present whose voice is not arriving. Metadata only.
-        */}
-        {others > 0 && (legs.receive !== 'connected' || (voice !== null && voice.inboundPackets === 0)) && (
-          <Text style={styles.hint}>
-            {`voice — you: ${legs.publish} · them: ${legs.receive}${
-              voice === null ? '' : ` · ${voice.inboundPackets} pkts in · ice ${voice.iceState}`
-            }`}
-          </Text>
-        )}
-
-        {tiles.map(([id, tile]) => (
-          <View key={id} style={styles.tile}>
-            {/*
-              VIDEO RENDERS THE MOMENT A STREAM EXISTS. It was gated on the
-              peer state string reaching 'connected', so a platform whose state
-              events lag or differ hid a stream that was already playing --
-              which on a real phone read as "video didn't show". The stream is
-              the truth; the state word is an overlay for when there is none.
-            */}
-            {tile.url !== null ? (
-              <RTCView streamURL={tile.url} style={styles.video} objectFit="cover" />
-            ) : (
-              <View style={[styles.video, styles.videoPlaceholder]}>
-                <Text style={styles.muted}>{PEER_WORDS[tile.state] ?? tile.state}</Text>
+      {/* ===== DIRECT CALL: the person, the state, the timer. ===== */}
+      {call.kind === 'direct' && (
+        <View style={styles.stage}>
+          {peerVideo !== null ? (
+            <View style={styles.peerVideoWrap}>
+              <RTCView streamURL={peerVideo} style={styles.peerVideo} objectFit="cover" />
+              <View style={styles.peerVideoBanner}>
+                <AvatarView accountId={call.peer.accountId} name={call.peer.name} size={28} />
+                <Text style={styles.peerVideoName} numberOfLines={1}>
+                  {call.peer.name}
+                </Text>
+                <Text style={styles.peerVideoTimer}>
+                  {elapsedMs !== null ? formatElapsed(elapsedMs) : stateLine(serverState, role, call.peer.name)}
+                </Text>
               </View>
-            )}
-            {(() => {
-              /*
-               * THE PERSON, PROMINENT. The marketing samples show a face and
-               * a name on every tile; an 11px monospace id under the video was
-               * a debug label wearing a person's seat.
-               */
-              const person = roster.find((entry) => entry.participantId === id);
-              const label = person?.displayName ?? 'Guest';
-              return (
-                <View style={styles.tileIdentity}>
-                  <AvatarView
-                    accountId={person?.accountId ?? id}
-                    name={label}
-                    size={28}
-                  />
-                  <Text style={styles.tileName} numberOfLines={1}>
-                    {label}
+            </View>
+          ) : (
+            <View style={styles.identity}>
+              <AvatarHalo
+                accountId={call.peer.accountId}
+                name={call.peer.name}
+                size={124}
+                pulsing={!terminal && elapsedMs === null}
+              />
+              <Text style={styles.peerName}>{call.peer.name}</Text>
+              {elapsedMs !== null && !terminal ? (
+                <>
+                  <Text style={styles.timer}>{formatElapsed(elapsedMs)}</Text>
+                  <Text style={[styles.stateLine, serverState === 'reconnecting' && styles.stateWarn]}>
+                    {serverState === 'reconnecting' ? 'Reconnecting…' : 'Connected'}
                   </Text>
-                </View>
-              );
-            })()}
-          </View>
-        ))}
-      </ScrollView>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.stateLine}>{stateLine(serverState, role, call.peer.name)}</Text>
+                  {terminal && elapsedMs !== null && (
+                    <Text style={styles.timerSmall}>{formatElapsed(elapsedMs)}</Text>
+                  )}
+                </>
+              )}
+              {(serverState === 'unavailable' ||
+                serverState === 'no_answer' ||
+                serverState === 'busy' ||
+                serverState === 'declined') && (
+                <Text style={styles.hint}>You can message them instead, or call again later.</Text>
+              )}
+              {cameraStarting && <Text style={styles.hint}>Starting camera…</Text>}
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* ===== CONFERENCE: the code is the whole point -- it is what gets shared. ===== */}
+      {call.kind === 'conference' && (
+        <View style={styles.stage}>
+          {joining && (
+            <View style={styles.identity}>
+              <ActivityIndicator color={CALL_COLORS.teal} size="large" />
+              <Text style={styles.stateLine}>Joining the conference</Text>
+            </View>
+          )}
+          {!joining && tiles.length === 0 && (
+            <View style={styles.identity}>
+              <Text style={styles.stateLine}>
+                {serverState === 'ended'
+                  ? 'Call ended'
+                  : roster.length === 0
+                    ? 'Waiting for others to join. Share the conference code:'
+                    : `${roster.length} other${roster.length === 1 ? '' : 's'} here — connecting media`}
+              </Text>
+              {serverState !== 'ended' && <Text style={styles.code}>{callId}</Text>}
+            </View>
+          )}
+          {tiles.length > 0 && (
+            <View style={styles.tiles}>
+              {tiles.map(([id, tile]) => {
+                const person = roster.find((entry) => entry.participantId === id);
+                const label = person?.displayName ?? 'Guest';
+                return (
+                  <View key={id} style={styles.tile}>
+                    {tile.url !== null ? (
+                      <RTCView streamURL={tile.url} style={styles.video} objectFit="cover" />
+                    ) : (
+                      <View style={[styles.video, styles.videoPlaceholder]}>
+                        <AvatarView accountId={person?.accountId ?? id} name={label} size={64} />
+                      </View>
+                    )}
+                    <View style={styles.tileIdentity}>
+                      <Text style={styles.tileName} numberOfLines={1}>
+                        {label}
+                      </Text>
+                      {DIAGNOSTICS && <Text style={styles.diag}>{tile.state}</Text>}
+                    </View>
+                  </View>
+                );
+              })}
+            </View>
+          )}
+        </View>
+      )}
+
+      {error !== null && (
+        <View style={styles.error}>
+          <Text style={styles.errorText}>{error}</Text>
+        </View>
+      )}
+
+      {DIAGNOSTICS && (
+        <View style={styles.diagBox}>
+          <Text style={styles.diag}>
+            {`joined ${joined} · you ${legs.publish} · them ${legs.receive}${
+              voice === null ? '' : ` · ${voice.inboundPackets} pkts · ice ${voice.iceState}`
+            } · ice servers ${iceCount ?? '?'} · state ${serverState ?? '-'}`}
+          </Text>
+          {transportLog.map((line) => (
+            <Text key={line} style={styles.diag}>
+              {line}
+            </Text>
+          ))}
+        </View>
+      )}
 
       {cameraOn && localUrl !== null && (
         <View style={styles.selfView}>
@@ -430,118 +507,97 @@ export function CallScreen({
         </View>
       )}
 
-      <View style={styles.controls}>
-        <Text style={styles.mode}>
-          {call.kind === 'direct'
-            ? 'Direct call — follows your conversation mode with this contact'
-            : 'Conference'}
-        </Text>
-        <View style={styles.buttons}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.control,
-              muted && styles.controlActive,
-              pressed && styles.pressed,
-            ]}
-            onPress={toggleMute}
-            accessibilityRole="button"
-          >
-            <Text style={styles.controlLabel}>{muted ? 'Unmute' : 'Mute'}</Text>
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [styles.control, pressed && styles.pressed]}
-            onPress={toggleCamera}
-            accessibilityRole="button"
-          >
-            <Text style={styles.controlLabel}>{cameraOn ? 'Camera off' : 'Camera on'}</Text>
-          </Pressable>
-          <Pressable
-            style={({ pressed }) => [styles.control, styles.leave, pressed && styles.pressed]}
-            onPress={onLeave}
-            accessibilityRole="button"
-          >
-            <Text style={styles.leaveLabel}>{call.kind === 'direct' ? 'End call' : 'Leave'}</Text>
-          </Pressable>
-        </View>
+      <View style={[styles.dockWrap, { paddingBottom: bottomInset + 12 }]}>
+        <GlassDock>
+          <View style={styles.controlsRow}>
+            <RoundControl mark="MIC" label={muted ? 'Unmute' : 'Mute'} active={muted} onPress={toggleMute} />
+            <RoundControl mark="SPK" label="Speaker" active={speakerOn} onPress={toggleSpeaker} />
+            <RoundControl
+              mark="CAM"
+              label={cameraOn ? 'Camera off' : 'Camera'}
+              active={cameraOn}
+              disabled={cameraStarting}
+              onPress={toggleCamera}
+            />
+          </View>
+          <EndCallButton label={call.kind === 'direct' ? 'End call' : 'Leave'} onPress={hangUp} />
+        </GlassDock>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#0b0f14' },
-  tiles: { flexGrow: 1, padding: 12, gap: 12, justifyContent: 'center' },
-  centreBlock: { alignItems: 'center', gap: 12, paddingVertical: 40 },
-  muted: { color: '#8d99a6', fontSize: 14 },
-  code: { color: '#3ec9c0', fontSize: 22, fontFamily: 'monospace', letterSpacing: 2 },
-  peerName: { color: '#e4ebf1', fontSize: 22, fontWeight: '700' },
-  hint: { color: '#5d6874', fontSize: 12, textAlign: 'center', lineHeight: 18, paddingHorizontal: 20 },
+  screen: { flex: 1, backgroundColor: CALL_COLORS.ground },
+  top: { paddingTop: 52, paddingHorizontal: 22 },
+  stage: { flex: 1, justifyContent: 'center' },
+  identity: { alignItems: 'center', gap: 10, paddingHorizontal: 28 },
+  peerName: { color: CALL_COLORS.text, fontSize: 28, fontWeight: '700', marginTop: 6, textAlign: 'center' },
+  stateLine: { color: CALL_COLORS.muted, fontSize: 16, textAlign: 'center' },
+  stateWarn: { color: '#d9a441' },
+  timer: {
+    color: CALL_COLORS.text,
+    fontSize: 40,
+    fontWeight: '300',
+    fontVariant: ['tabular-nums'],
+    letterSpacing: 1,
+    marginTop: 4,
+  },
+  timerSmall: { color: CALL_COLORS.muted, fontSize: 18, fontVariant: ['tabular-nums'] },
+  hint: { color: CALL_COLORS.faint, fontSize: 13, textAlign: 'center', lineHeight: 19, marginTop: 8 },
+  code: { color: CALL_COLORS.teal, fontSize: 24, fontFamily: 'monospace', letterSpacing: 2, marginTop: 6 },
 
-  tile: { gap: 6 },
-  video: { width: '100%', aspectRatio: 3 / 4, borderRadius: 12, backgroundColor: '#141a21' },
-  videoPlaceholder: { alignItems: 'center', justifyContent: 'center' },
-  tileIdentity: {
+  peerVideoWrap: { flex: 1, marginHorizontal: 12, borderRadius: 24, overflow: 'hidden' },
+  peerVideo: { flex: 1, backgroundColor: CALL_COLORS.navy },
+  peerVideoBanner: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    top: 12,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    backgroundColor: 'rgba(7,12,20,0.55)',
+    borderRadius: 999,
+    paddingHorizontal: 10,
     paddingVertical: 6,
-    paddingHorizontal: 2,
   },
-  tileName: { color: '#e4ebf1', fontSize: 15, fontWeight: '600', flexShrink: 1 },
+  peerVideoName: { color: CALL_COLORS.text, fontSize: 14, fontWeight: '600', flex: 1 },
+  peerVideoTimer: { color: CALL_COLORS.text, fontSize: 14, fontVariant: ['tabular-nums'] },
+
+  tiles: { paddingHorizontal: 12, gap: 12 },
+  tile: { gap: 6 },
+  video: { width: '100%', aspectRatio: 3 / 4, borderRadius: 18, backgroundColor: CALL_COLORS.navy },
+  videoPlaceholder: { alignItems: 'center', justifyContent: 'center' },
+  tileIdentity: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 2 },
+  tileName: { color: CALL_COLORS.text, fontSize: 15, fontWeight: '600', flexShrink: 1 },
 
   selfView: {
     position: 'absolute',
-    right: 14,
-    bottom: 130,
+    right: 16,
+    top: 96,
     width: 96,
     height: 128,
-    borderRadius: 10,
+    borderRadius: 14,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: '#273039',
+    borderColor: CALL_COLORS.glassEdge,
   },
-  selfVideo: { width: '100%', height: '100%', backgroundColor: '#141a21' },
-  selfOff: { color: '#5d6874', fontSize: 11 },
+  selfVideo: { width: '100%', height: '100%', backgroundColor: CALL_COLORS.navy },
 
   error: {
-    borderRadius: 10,
+    marginHorizontal: 16,
+    marginBottom: 10,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: '#4a2620',
-    backgroundColor: '#1d1210',
+    backgroundColor: 'rgba(29,18,16,0.9)',
     padding: 12,
   },
   errorText: { color: '#e06c5b', fontSize: 13, lineHeight: 19 },
-  warn: {
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#3a2a12',
-    backgroundColor: '#1d1710',
-    padding: 12,
-  },
-  warnText: { color: '#d9a441', fontSize: 12, lineHeight: 18 },
+  diagBox: { marginHorizontal: 16, marginBottom: 8, gap: 2 },
+  diag: { color: CALL_COLORS.faint, fontSize: 11, fontFamily: 'monospace' },
 
-  controls: {
-    borderTopWidth: 1,
-    borderTopColor: '#273039',
-    padding: 16,
-    paddingBottom: 28,
-    gap: 12,
-    backgroundColor: '#0b0f14',
-  },
-  mode: { color: '#5d6874', fontSize: 12, textAlign: 'center' },
-  buttons: { flexDirection: 'row', gap: 10 },
-  control: {
-    flex: 1,
-    paddingVertical: 14,
-    borderRadius: 10,
-    alignItems: 'center',
-    backgroundColor: '#141a21',
-    borderWidth: 1,
-    borderColor: '#273039',
-  },
-  controlLabel: { color: '#e4ebf1', fontSize: 15, fontWeight: '600' },
-  leave: { backgroundColor: '#3a1d18', borderColor: '#4a2620' },
-  leaveLabel: { color: '#e06c5b', fontSize: 15, fontWeight: '600' },
-  pressed: { opacity: 0.75 },
-  controlActive: { backgroundColor: '#3a2a12', borderColor: '#d9a441' },
+  dockWrap: { paddingHorizontal: 14 },
+  controlsRow: { flexDirection: 'row', justifyContent: 'space-around' },
 });

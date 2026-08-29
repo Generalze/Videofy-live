@@ -524,6 +524,35 @@ const LANGUAGE_FACTS: Migration = {
   `,
 };
 
+/**
+ * Call history (founder ruling 2026-08-29): a finished direct call is a
+ * domain record on the account pair, rendered in the chat timeline. Metadata
+ * only -- there is deliberately no column for content of any kind.
+ */
+const CALL_RECORDS: Migration = {
+  name: '014_call_records',
+  sql: `
+    CREATE TABLE IF NOT EXISTS call_records (
+      call_id             text    PRIMARY KEY,
+      low_account_id      text    NOT NULL,
+      high_account_id     text    NOT NULL,
+      caller_account_id   text    NOT NULL,
+      peer_account_id     text    NOT NULL,
+      mode                text    NOT NULL CHECK (mode IN ('normal', 'translated')),
+      created_at_ms       bigint  NOT NULL,
+      answered_at_ms      bigint,
+      connected_at_ms     bigint,
+      ended_at_ms         bigint  NOT NULL,
+      outcome             text    NOT NULL,
+      ended_by_account_id text,
+      duration_seconds    integer NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS call_records_pair_time_idx
+      ON call_records (low_account_id, high_account_id, ended_at_ms DESC);
+  `,
+};
+
 /** Applied in this order. Append only. */
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
@@ -539,4 +568,5 @@ export const MIGRATIONS: readonly Migration[] = [
   DEFAULT_LANGUAGE,
   CONVERSATION_MODES,
   LANGUAGE_FACTS,
+  CALL_RECORDS,
 ];

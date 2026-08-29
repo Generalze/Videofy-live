@@ -164,6 +164,56 @@ Camera on is a `replaceTrack` on a video sender negotiated empty at setup
 — instant, no renegotiation. Native Android Telecom/CallStyle is the next
 step for this surface.
 
+**Durability correction (29 Aug, P8 physical acceptance failed → fixed).**
+Root causes found on staging: (1) the callee's join carries
+`directPeerAccountId` too, and the gateway only counted a join *without* it
+as an answer — so every live call sat at CALLING/RINGING and the 30-second
+NO ANSWER window ended it under the callers' feet; (2) a phone whose
+Socket.IO transport blipped reconnected the socket but never re-joined its
+seat, so the gateway detached its voice legs and the 120-second disconnect
+reaper ended the call. Rulings that follow, all LOCKED:
+
+- **The join ack carries the telephone state** (`directState`), so a socket
+  that joins or resumes after a transition never holds an old word.
+- **The timer's origin is the server's `connectedAtMs`**, set at the FIRST
+  two-way connection and never moved. Both phones show the same elapsed
+  time; a reconnect cannot restart it; the final duration is frozen on
+  screen at ENDED. Clients measure their clock offset once, from the first
+  state received.
+- **RECONNECTING is 30 seconds** (was 12): long enough for a phone to change
+  network, resume the same seat and renegotiate both voice legs.
+- **Resume is the client's duty.** On every Socket.IO reconnect the app
+  re-joins with `resumeParticipantId`/`resumeToken` (same seat, reaper
+  cancelled) and rebuilds publish + receive legs. The web client already
+  did; the phone now does.
+- **A personal call is over when either party leaves** — hung up, killed,
+  or reaped after the grace. The other phone reads *Call ended*; it is
+  never left alone in a room reading "guest left". Explicit End is
+  `call:end`, acknowledged, and ends for both at once. Transport loss stays
+  RECONNECTING → NETWORK, a separate outcome.
+- **Call history is a domain record.** The gateway posts every finished
+  direct call to the account service (`POST /internal/calls`, internal
+  token): `callId, callerAccountId, peerAccountId, mode, createdAtMs,
+  answeredAtMs, connectedAtMs, endedAtMs, outcome (completed | missed |
+  declined | busy | unavailable | network | failed), endedByAccountId,
+  durationSeconds` (from the first connection). Table `call_records`
+  (migration 014). It renders in BOTH participants' conversation timeline
+  from each reader's side (Outgoing/Incoming, No answer/Missed call) with
+  *Call back*. Metadata only — never audio, never content.
+- **No artificial gain; loudness is routing.** Earpiece by default for an
+  audio-only call, loudspeaker when the camera comes on, and a Speaker
+  control (expo-audio `setAudioModeAsync({ shouldRouteThroughEarpiece })`).
+- **Direct calls say *Calling…* from the tap**; "Joining" never appears on a
+  call screen. Production screens carry no diagnostics: the voice-leg line,
+  ICE warnings, peer-state words and transport events show only under
+  `EXPO_PUBLIC_CALL_DIAGNOSTICS=1`.
+- **Instrumentation (metadata only)** on the gateway: socket disconnected /
+  reaper armed / reaper cancelled / seat resumed / personal call ended
+  because a party left — enough to attribute any future "died at N
+  minutes" to its actual cause.
+- The mobile **Conf › Start** button starts a conference at once (the code
+  is shown on the call screen); it no longer just generates a code.
+
 ---
 
 ## 2 · Where the platform stands (all LIVE on staging)

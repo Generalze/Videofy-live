@@ -1887,3 +1887,88 @@ describe('starting a call requires authority', () => {
     }
   });
 });
+
+describe('CallRuntime: a personal call is a telephone call', () => {
+  const identity = (token: string): string | null =>
+    token === 'ana-token'
+      ? 'acct_00000000000000aa'
+      : token === 'beto-token'
+        ? 'acct_00000000000000bb'
+        : null;
+
+  async function connectedPair() {
+    const harness = createHarness(identity, undefined, async () => 'normal');
+    const socketA = new FakeSocket('socket-a');
+    const socketB = new FakeSocket('socket-b');
+    const ackA = await join(harness, socketA, {
+      ...JOIN_A,
+      callId: 'ring-pair',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+    const ackB = await join(harness, socketB, {
+      ...JOIN_B,
+      callId: 'ring-pair',
+      directPeerAccountId: 'acct_00000000000000aa',
+      sessionToken: 'beto-token',
+    });
+    expect(ackA.ok && ackB.ok).toBe(true);
+    harness.emitToRoom.mockClear();
+    return { harness, socketA, socketB, ackA, ackB };
+  }
+
+  it('the callee joining is ANSWERED even though their join names the caller as the peer', async () => {
+    const { harness } = await connectedPair();
+    expect(harness.runtime.directCalls.get('ring-pair')?.state).toBe('connecting');
+    expect(harness.runtime.directCalls.get('ring-pair')?.answeredAtMs).not.toBeNull();
+  });
+
+  it('the join ack carries the telephone state, so a late socket never holds an old word', async () => {
+    const { ackB } = await connectedPair();
+    expect(ackB.ok && ackB.directState?.state).toBe('connecting');
+  });
+
+  it('when either party LEAVES, the call ends for the other party too', async () => {
+    const { harness, socketB, ackB } = await connectedPair();
+    const ack = vi.fn();
+    await socketB.trigger(
+      CALL_EVENTS.LEAVE,
+      { callId: 'ring-pair', participantId: ackB.ok ? ackB.participantId : '' },
+      ack,
+    );
+    const ended = roomEmissions(harness, CALL_EVENTS.ENDED);
+    expect(ended).toHaveLength(1);
+    expect(harness.store.snapshot('ring-pair')).toBeNull();
+    expect(harness.runtime.directCalls.get('ring-pair')?.state).toBe('ended');
+    expect(harness.runtime.directCalls.get('ring-pair')?.endedByAccountId).toBe(
+      'acct_00000000000000bb',
+    );
+  });
+
+  it('a seat reaped after the disconnect grace ends the call for the party still there', async () => {
+    const { harness } = await connectedPair();
+    harness.runtime.handleSocketDisconnect('socket-a');
+    expect(harness.store.snapshot('ring-pair')).not.toBeNull();
+    firePendingTimers(harness);
+    expect(harness.store.snapshot('ring-pair')).toBeNull();
+    expect(roomEmissions(harness, CALL_EVENTS.ENDED)).toHaveLength(1);
+  });
+
+  it('a resume within the grace keeps the SAME seat and the call alive', async () => {
+    const { harness, ackA } = await connectedPair();
+    harness.runtime.handleSocketDisconnect('socket-a');
+    const again = new FakeSocket('socket-a2');
+    const resumed = await join(harness, again, {
+      ...JOIN_A,
+      callId: 'ring-pair',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+      resumeParticipantId: ackA.ok ? ackA.participantId : '',
+      resumeToken: ackA.ok ? ackA.resumeToken : '',
+    });
+    expect(resumed.ok && resumed.participantId).toBe(ackA.ok ? ackA.participantId : 'x');
+    firePendingTimers(harness);
+    expect(harness.store.snapshot('ring-pair')).not.toBeNull();
+    expect(roomEmissions(harness, CALL_EVENTS.ENDED)).toHaveLength(0);
+  });
+});

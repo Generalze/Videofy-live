@@ -30,6 +30,8 @@ export interface ContactsResponse {
   readonly sent: readonly ContactPerson[];
 }
 
+import type { CallHistoryEntry } from '../call/callHistoryWords';
+
 /** A message as message-routes.ts sends it. `mediaPath` never crosses the wire. */
 export interface WireMessage {
   readonly messageId: string;
@@ -44,6 +46,16 @@ export interface WireMessage {
   readonly createdAtMs: number;
   readonly readAtMs: number | null;
 }
+
+/**
+ * A finished direct call, in the same timeline as the messages. The account
+ * service records it from the gateway's telephone outcome; the chat shows it
+ * between the messages so a missed call is found where a person looks.
+ */
+export type WireCallEntry = CallHistoryEntry;
+
+/** What `GET /messages/with/:id` returns: messages and calls, newest first. */
+export type TimelineItem = WireMessage | WireCallEntry;
 
 export interface ConversationEntry {
   readonly partner: ContactPerson;
@@ -138,7 +150,7 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
         authorizedFetch,
         `/messages/with/${accountId}${beforeMs === undefined ? '' : `?before=${beforeMs}`}`,
         undefined,
-        (body) => (body as { messages: WireMessage[] }).messages,
+        (body) => (body as { messages: TimelineItem[] }).messages,
       ),
     sendText: (accountId: string, body: string) =>
       request(

@@ -35,7 +35,8 @@ export function CallHomeScreen({ emailVerified, onJoin }: CallHomeScreenProps): 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Conference</Text>
         <Text style={styles.cardBody}>
-          Start a conference and share its code, or join one with the code you were given.
+          Start a conference now — the code to share appears on the call screen — or join one
+          with the code you were given.
         </Text>
         <TextInput
           style={styles.input}
@@ -50,7 +51,10 @@ export function CallHomeScreen({ emailVerified, onJoin }: CallHomeScreenProps): 
         <View style={styles.row}>
           <Pressable
             style={({ pressed }) => [styles.button, styles.flex, pressed && styles.pressed]}
-            onPress={() => setCode(generateCallCode())}
+            // START MEANS START (founder addendum 2026-08-29): the conference
+            // opens at once with a fresh code; the code is shown on the call
+            // screen, not typed back into this box.
+            onPress={() => onJoin(generateCallCode())}
             accessibilityRole="button"
           >
             <Text style={styles.buttonLabel}>Start</Text>
