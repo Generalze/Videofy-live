@@ -247,3 +247,35 @@ describe('locked channels', () => {
     expect(channels.directory().map((channel) => channel.channelId)).toEqual(['open']);
   });
 });
+
+describe('channel category', () => {
+  /*
+   * Founder ruling (29 Aug 2026): "explicit server field. Do not infer
+   * semantic categories from follows, visibility or live status." So a live,
+   * public channel with nothing chosen is still uncategorised.
+   */
+  it('is null until the operator chooses one, however live or public the channel is', () => {
+    const channels = new ProgrammeChannels();
+    channels.claim('alice', ALICE, 'Alice Live');
+    channels.setMediaState('alice', stateFor('x'));
+
+    expect(channels.category('alice')).toBeNull();
+    expect(channels.directory()[0]?.category).toBeNull();
+  });
+
+  it('carries the chosen category into the directory, and can be cleared', () => {
+    const channels = new ProgrammeChannels();
+    channels.claim('alice', ALICE, 'Alice Live');
+
+    channels.setCategory('alice', 'faith');
+    expect(channels.category('alice')).toBe('faith');
+    expect(channels.directory()[0]?.category).toBe('faith');
+
+    channels.setCategory('alice', null);
+    expect(channels.directory()[0]?.category).toBeNull();
+  });
+
+  it('answers null for a channel it has never seen', () => {
+    expect(new ProgrammeChannels().category('nobody')).toBeNull();
+  });
+});

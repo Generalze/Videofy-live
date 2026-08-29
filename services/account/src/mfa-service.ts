@@ -51,14 +51,19 @@ export function readMfaKeyring(value: string | undefined): Keyring | null {
     .split(',')
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0)
-    .map((entry) => {
+    .map((entry, index) => {
       const [keyId, key, marker] = entry.split(':');
       if (!keyId || !key) {
         // A malformed entry must not silently become a smaller keyring: the
         // record sealed under the missing key would stop opening, and the
         // symptom is somebody locked out of their own second factor.
+        //
+        // Named by POSITION and LENGTH, never by a prefix: a short keyId puts
+        // key material inside the first twelve characters, and this message
+        // lands in the boot log. Founder ruling (29 Aug 2026): no token prefix
+        // is ever printed.
         throw new Error(
-          `C7_MFA_KEYRING entry "${entry.slice(0, 12)}..." is not keyId:key[:current].`,
+          `C7_MFA_KEYRING entry ${index + 1} (${entry.length} characters) is not keyId:key[:current].`,
         );
       }
       return { keyId, key, ...(marker === 'current' ? { current: true } : {}) };

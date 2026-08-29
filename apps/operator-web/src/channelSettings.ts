@@ -7,7 +7,11 @@
  * shareable link looks like, with no React and no socket in the way, because
  * those rules are the part worth being sure about.
  */
-import type { ChannelVisibility } from '@videofy-live/shared-types';
+import type {
+  ChannelCategory,
+  ChannelVisibility,
+  OperatorChannelSettingsPayload,
+} from '@videofy-live/shared-types';
 
 /** The gateway refuses anything shorter; saying so here avoids a pointless round trip. */
 export const MIN_CODE_LENGTH = 6;
@@ -19,6 +23,28 @@ export interface ChannelSettingsDraft {
   readonly visibility: ChannelVisibility;
   /** Null means "clear the code"; undefined means "leave whatever is set alone". */
   readonly code?: string | null;
+  /**
+   * Undefined means "leave whatever is set alone"; null means "no category".
+   * Founder ruling (29 Aug 2026): one primary category in v1, chosen here by
+   * the operator and never inferred from follows, visibility or live status.
+   */
+  readonly category?: ChannelCategory | null;
+}
+
+/** What the picker says for a channel with no category. */
+export const NO_CATEGORY_LABEL = 'No category';
+
+/**
+ * What the category picker shows: the operator's unsaved choice if they made
+ * one, otherwise what the gateway last reported for this channel. Without the
+ * fallback a reloaded console would show "No category" over a channel that
+ * has one, and an operator would "fix" it by choosing again.
+ */
+export function shownCategory(
+  draft: ChannelSettingsDraft,
+  reported: ChannelCategory | null,
+): ChannelCategory | null {
+  return draft.category === undefined ? reported : draft.category;
 }
 
 export type SettingsProblem =
@@ -103,13 +129,14 @@ export function validateSettings(
  * on every unrelated settings change would put a live join code on the wire
  * each time somebody renamed their channel.
  */
-export function toSettingsPayload(
-  draft: ChannelSettingsDraft,
-): { displayName: string; visibility: ChannelVisibility; code?: string | null } {
+export function toSettingsPayload(draft: ChannelSettingsDraft): OperatorChannelSettingsPayload {
   return {
     displayName: draft.displayName.trim(),
     visibility: draft.visibility,
     ...(draft.code === undefined ? {} : { code: draft.code }),
+    // Sent only when touched, for the same reason as the code: an untouched
+    // draft must leave the server's category alone, not clear it.
+    ...(draft.category === undefined ? {} : { category: draft.category }),
   };
 }
 

@@ -8,6 +8,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import { CHANNEL_CATEGORIES } from '@videofy-live/shared-types';
 import { ChannelSettingsPanel } from './ChannelSettingsPanel';
 
 const OWN = 'abc123def4567890';
@@ -119,5 +120,49 @@ describe('on your own channel', () => {
     const html = markup({ draft: { displayName: '   ', visibility: 'public' } });
     expect(html).toContain('name viewers will see');
     expect(html).toContain('disabled');
+  });
+});
+
+/** The <option> tag carrying this value, so a test can ask whether it is selected. */
+function optionTag(html: string, value: string): string {
+  return html.match(new RegExp(`<option[^>]*value="${value}"[^>]*>`))?.[0] ?? '';
+}
+
+/*
+ * Founder ruling (29 Aug 2026): "a controlled channel-side category field,
+ * one primary category in v1." The picker offers exactly the controlled list
+ * plus "No category", and shows server truth until the operator chooses.
+ */
+describe('the category picker', () => {
+  it('offers the controlled list and "No category"', () => {
+    const html = markup();
+    expect(html).toContain('No category');
+    for (const entry of CHANNEL_CATEGORIES) {
+      expect(optionTag(html, entry.id)).not.toBe('');
+      expect(html).toContain(`>${entry.label}<`);
+    }
+    expect(optionTag(html, '')).toContain('selected');
+  });
+
+  it('marks the draft choice as selected', () => {
+    const html = markup({
+      draft: { displayName: 'Sunday Service', visibility: 'public', category: 'faith' },
+    });
+    expect(optionTag(html, 'faith')).toContain('selected');
+    expect(optionTag(html, '')).not.toContain('selected');
+  });
+
+  it('shows what the gateway reported until the operator chooses', () => {
+    const html = markup({ reportedCategory: 'news' });
+    expect(optionTag(html, 'news')).toContain('selected');
+  });
+
+  it('lets the draft clear a reported category', () => {
+    const html = markup({
+      reportedCategory: 'news',
+      draft: { displayName: 'Sunday Service', visibility: 'public', category: null },
+    });
+    expect(optionTag(html, 'news')).not.toContain('selected');
+    expect(optionTag(html, '')).toContain('selected');
   });
 });

@@ -17,12 +17,13 @@ import {
   DEFAULT_CHANNEL_ID,
   type ChannelSummary,
   type AudioMixPreferences,
+  type ChannelCategory,
   type ChannelVisibility,
   type MediaStateEvent,
 } from '@videofy-live/shared-types';
 
 export { DEFAULT_CHANNEL_ID };
-export type { AudioMixPreferences, ChannelSummary, ChannelVisibility };
+export type { AudioMixPreferences, ChannelCategory, ChannelSummary, ChannelVisibility };
 
 /** The room carrying a channel's programme to its listeners. */
 export function channelRoom(channelId: string, language: string): string {
@@ -53,6 +54,12 @@ interface ChannelState {
   ownerAccountId: string | null;
   displayName: string;
   visibility: ChannelVisibility;
+  /**
+   * The operator's declared category; null until they choose one. Founder
+   * ruling (29 Aug 2026): an explicit server field, never inferred from
+   * follows, visibility or live status.
+   */
+  category: ChannelCategory | null;
   mediaState: MediaStateEvent | null;
   audio: AudioMixPreferences;
   /**
@@ -120,6 +127,7 @@ export class ProgrammeChannels {
       ownerAccountId: null,
       displayName: channelId === DEFAULT_CHANNEL_ID ? 'Main' : `Channel ${channelId.slice(0, 6)}`,
       visibility: 'public',
+      category: null,
       mediaState: null,
       audio: { ...this.defaultAudio },
       accessCodeHash: null,
@@ -155,6 +163,23 @@ export class ProgrammeChannels {
 
   setVisibility(channelId: string, visibility: ChannelVisibility): void {
     this.ensure(channelId).visibility = visibility;
+  }
+
+  /**
+   * The channel's declared category.
+   *
+   * Founder ruling (29 Aug 2026): "Channel categories: explicit server field.
+   * Do not infer semantic categories from follows, visibility or live status.
+   * Add a controlled channel-side category field, one primary category in
+   * v1." This is that field: chosen by the operator, checked against the
+   * controlled list before it reaches here, null until they choose.
+   */
+  setCategory(channelId: string, category: ChannelCategory | null): void {
+    this.ensure(channelId).category = category;
+  }
+
+  category(channelId: string): ChannelCategory | null {
+    return this.channels.get(channelId)?.category ?? null;
   }
 
   /** Set or clear the join code for a locked channel. */
@@ -300,6 +325,7 @@ export class ProgrammeChannels {
         displayName: channel.displayName,
         live: channel.mediaState !== null,
         visibility: channel.visibility,
+        category: channel.category,
       }))
       // Live channels first, then by name, so the list is useful rather than
       // whatever order a Map happened to produce.

@@ -497,7 +497,7 @@ describe('ProgrammeSourceManager', () => {
       }),
     ).toMatchObject({
       publishUrl: 'rtmp://localhost:1935/live',
-      streamKeyRedacted: 'vi...mo',
+      streamKeyRedacted: '**** (12 characters)',
       streamPath: 'live/videofy-demo',
       hlsPlaybackUrl: 'http://localhost:8888/live/videofy-demo/index.m3u8',
     });

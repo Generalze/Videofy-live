@@ -143,6 +143,19 @@ export type CallPrivacy = 'public' | 'private' | 'restricted';
 /** Admission outcome of a non-host join into a restricted conference. */
 export type CallAdmission = 'joined' | 'pending';
 
+/**
+ * Whether a call id names a live call, one that has ended, or nothing.
+ *
+ * Founder ruling (29 Aug 2026): "An ended conference is terminal. The Recent
+ * row should show Ended and must not silently recreate a room under that old
+ * code." Telling 'ended' from 'unknown' is what lets a client show Ended
+ * instead of quietly opening a new room under the old code.
+ */
+export type CallStatus = 'active' | 'ended' | 'unknown';
+
+/** How many ended call ids are remembered; the oldest is forgotten first. */
+export const ENDED_CALL_MEMORY = 1000;
+
 /** Hard cap on offered listening languages: a menu, not a catalogue. */
 export const MAX_TARGET_LANGUAGES = 8;
 /** BCP-47 primary subtag with an optional region: en, yo, pt-BR. */
@@ -639,6 +652,12 @@ interface CallState {
 
 export class CallSessionStore {
   private readonly calls = new Map<string, CallState>();
+  /**
+   * Tombstones: ended call ids and when they ended, oldest first (a Map keeps
+   * insertion order). Bounded at ENDED_CALL_MEMORY so a long-running process
+   * does not remember every room ever opened.
+   */
+  private readonly endedCalls = new Map<string, number>();
   private readonly maxParticipants: number;
   private readonly now: () => string;
   private readonly createResumeToken: () => string;
@@ -825,7 +844,7 @@ export class CallSessionStore {
     }
     call.participants.delete(participantId);
     if (call.participants.size === 0) {
-      this.calls.delete(callId);
+      this.retire(callId);
       return { ok: true, callEnded: true, snapshot: null, ingestPlans: [] };
     }
     const ingestPlans: CallIngestPlan[] = [];
@@ -855,7 +874,7 @@ export class CallSessionStore {
     const retiredIngestSessionIds = [...call.participants.values()].map(
       (state) => buildIngestPlan(call, state).ingestSessionId,
     );
-    this.calls.delete(callId);
+    this.retire(callId);
     return { ok: true, snapshot, retiredIngestSessionIds };
   }
 
@@ -1427,6 +1446,40 @@ export class CallSessionStore {
   }
 
   /**
+   * Founder ruling (29 Aug 2026): "An ended conference is terminal." Answers
+   * 'active' while the call is in the map, 'ended' while its tombstone is
+   * remembered, and 'unknown' for an id never seen (or forgotten).
+   */
+  callStatus(callId: string): CallStatus {
+    if (this.calls.has(callId)) return 'active';
+    return this.endedCalls.has(callId) ? 'ended' : 'unknown';
+  }
+
+  /** When a remembered call ended, in epoch ms; null when it is not remembered. */
+  endedAtMs(callId: string): number | null {
+    return this.endedCalls.get(callId) ?? null;
+  }
+
+  /**
+   * The one way a call leaves the map. Every removal writes a tombstone, so
+   * 'ended' is answered the same whether the last seat left, the host ended
+   * the call, or the last knock was withdrawn from an otherwise empty room.
+   */
+  private retire(callId: string): void {
+    this.calls.delete(callId);
+    const parsed = Date.parse(this.now());
+    // Re-inserting moves the id to the newest end, so a room that was reused
+    // and ended again is not forgotten early on account of its first ending.
+    this.endedCalls.delete(callId);
+    this.endedCalls.set(callId, Number.isNaN(parsed) ? Date.now() : parsed);
+    while (this.endedCalls.size > ENDED_CALL_MEMORY) {
+      const oldest = this.endedCalls.keys().next().value;
+      if (oldest === undefined) break;
+      this.endedCalls.delete(oldest);
+    }
+  }
+
+  /**
    * R8's one-connected-per-subject rule INPUT; enforcement is the gateway's.
    * A disconnected-in-grace seat does not count, so the recovery path — a
    * fresh join while the old seat awaits its reap — stays open.
@@ -1501,7 +1554,7 @@ export class CallSessionStore {
     }
     call.participants.delete(participantId);
     if (call.participants.size === 0) {
-      this.calls.delete(callId);
+      this.retire(callId);
       return { removed: true, callEnded: true };
     }
     return { removed: true, callEnded: false };

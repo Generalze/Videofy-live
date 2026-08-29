@@ -1,12 +1,21 @@
 /** @author masterzee001 */
 /**
- * What a host decides before a conference opens: a title, who may enter,
- * and which languages they offer listeners. Pure rules, no React, so the
- * limits the gateway enforces (title 1..80 after trimming, at most eight
- * target languages) are applied once here and tested without a device.
+ * What a host decides before a conference opens: a title and who may
+ * enter. Pure rules, no React, so the limits the gateway enforces (title
+ * 1..80 after trimming, at most eight target languages on the wire) are
+ * applied once here and tested without a device.
  *
  * The wire shape is call-wire's CallJoinPayload (title / privacy /
  * targetLanguages), consulted only when the join CREATES the conference.
+ *
+ * TARGET LANGUAGES STAY ON THE WIRE, EMPTY (founder ruling 29 Aug 2026,
+ * LOCKED): "Handset conferences are normal mode and say so -- 'Translation
+ * is not active on mobile conferences yet.' -- with the language picker
+ * kept out of the handset flow until it works; direct translated calls
+ * remain separate." The handset always sends `targetLanguages: []`; the
+ * field and the picker helpers below (toggleLanguage, commonLanguages,
+ * moreLanguages, languageLabel) are kept so the wire shape and the day
+ * translation arrives need no rewrite, but no handset screen calls them.
  */
 import {
   LANGUAGE_CATALOGUE,
@@ -21,6 +30,7 @@ export interface ConferenceSetup {
   /** Absent when the host typed nothing; never an empty string on the wire. */
   readonly title?: string;
   readonly privacy: ConferencePrivacy;
+  /** Always [] from the handset: translation is not active on mobile conferences yet. */
   readonly targetLanguages: readonly string[];
 }
 

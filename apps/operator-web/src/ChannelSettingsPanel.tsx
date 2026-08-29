@@ -1,8 +1,15 @@
 import React from 'react';
-import type { ChannelVisibility } from '@videofy-live/shared-types';
+import {
+  CHANNEL_CATEGORIES,
+  isChannelCategory,
+  type ChannelCategory,
+  type ChannelVisibility,
+} from '@videofy-live/shared-types';
 import {
   canShareCodedLink,
+  NO_CATEGORY_LABEL,
   shareableViewerLink,
+  shownCategory,
   validateSettings,
   VISIBILITY_DESCRIPTIONS, VISIBILITY_LABELS,
   type ChannelSettingsDraft,
@@ -21,6 +28,12 @@ interface ChannelSettingsPanelProps {
   hasExistingCode: boolean;
   /** The code this session generated, still in memory and therefore shareable. */
   codeInHand: string | null;
+  /**
+   * The active channel's category as the gateway last reported it on
+   * channel:assigned. Shown until the operator picks something else. Omitted
+   * means the console does not track it yet, and the picker starts empty.
+   */
+  reportedCategory?: ChannelCategory | null;
   viewerOrigin: string;
   onDraftChange: (draft: ChannelSettingsDraft) => void;
   onGenerateCode: () => void;
@@ -42,6 +55,7 @@ export function ChannelSettingsPanel({
   draft,
   hasExistingCode,
   codeInHand,
+  reportedCategory = null,
   viewerOrigin,
   onDraftChange,
   onGenerateCode,
@@ -53,6 +67,7 @@ export function ChannelSettingsPanel({
   const codeProblem = problems.find((problem) => problem.field === 'code');
   const nameProblem = problems.find((problem) => problem.field === 'displayName');
   const canShare = canShareCodedLink(draft.visibility, codeInHand);
+  const category = shownCategory(draft, reportedCategory);
   const link = onOwnChannel
     ? shareableViewerLink(viewerOrigin, activeChannelId, draft.visibility, codeInHand)
     : null;
@@ -87,6 +102,35 @@ export function ChannelSettingsPanel({
               aria-invalid={nameProblem !== undefined}
             />
             {nameProblem ? <p role="alert">{nameProblem.message}</p> : null}
+          </div>
+
+          <div>
+            <label htmlFor="channel-category">Category</label>
+            {/*
+             * Founder ruling (29 Aug 2026): "explicit server field ... a
+             * controlled channel-side category field, one primary category in
+             * v1." The options come from the one controlled list in
+             * shared-types, so the console and the gateway cannot disagree
+             * about what a category is; "No category" is a real choice.
+             */}
+            <select
+              id="channel-category"
+              value={category ?? ''}
+              onChange={(event) =>
+                onDraftChange({
+                  ...draft,
+                  category: isChannelCategory(event.target.value) ? event.target.value : null,
+                })
+              }
+            >
+              <option value="">{NO_CATEGORY_LABEL}</option>
+              {CHANNEL_CATEGORIES.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.label}
+                </option>
+              ))}
+            </select>
+            <p>Viewers can browse programmes by category. Pick the one that fits this channel best.</p>
           </div>
 
           <fieldset>

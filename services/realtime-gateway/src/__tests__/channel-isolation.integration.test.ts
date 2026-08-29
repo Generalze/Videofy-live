@@ -228,6 +228,49 @@ describe('two programmes on one gateway', () => {
 
     expect(directory.map((channel) => channel.channelId)).toContain(alice.channelId);
   });
+
+  /*
+   * Founder ruling (29 Aug 2026): a controlled channel-side category field.
+   * Controlled means a value off the list is refused by name, and nothing
+   * else in the same message is applied.
+   */
+  it('refuses a category that is not on the list, and changes nothing', async () => {
+    const alice = await operatorOnOwnChannel(ALICE);
+    const errors: { message: string }[] = [];
+    alice.socket.on(SOCKET_EVENTS.ERROR, (error: { message: string }) => errors.push(error));
+
+    alice.socket.emit(SOCKET_EVENTS.OPERATOR_CHANNEL_SETTINGS, {
+      displayName: 'Renamed Anyway',
+      category: 'gossip',
+    });
+    await waitUntil(() => errors.length > 0);
+    expect(errors[0]?.message).toBe('Choose a category from the list.');
+
+    const listener = connect('listener');
+    const directory = await new Promise<readonly ChannelSummary[]>((resolve) => {
+      listener.on(SOCKET_EVENTS.CHANNEL_DIRECTORY, resolve);
+    });
+    const entry = directory.find((channel) => channel.channelId === alice.channelId);
+    expect(entry?.category).toBeNull();
+    expect(entry?.displayName).not.toBe('Renamed Anyway');
+  });
+
+  it('carries a chosen category to listeners and back to the operator', async () => {
+    const alice = await operatorOnOwnChannel(ALICE);
+    alice.socket.emit(SOCKET_EVENTS.OPERATOR_CHANNEL_SETTINGS, { category: 'faith' });
+    const confirmed = await new Promise<{ category?: string | null }>((resolve) => {
+      alice.socket.once(SOCKET_EVENTS.CHANNEL_ASSIGNED, resolve);
+    });
+    expect(confirmed.category).toBe('faith');
+
+    const listener = connect('listener');
+    const directory = await new Promise<readonly ChannelSummary[]>((resolve) => {
+      listener.on(SOCKET_EVENTS.CHANNEL_DIRECTORY, resolve);
+    });
+    expect(directory.find((channel) => channel.channelId === alice.channelId)?.category).toBe(
+      'faith',
+    );
+  });
 });
 
 describe('a private programme', () => {

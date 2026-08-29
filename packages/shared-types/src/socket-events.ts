@@ -1,3 +1,4 @@
+import type { ChannelCategory } from './channel-category.js';
 import type { SourceLanguageMode } from './language-controls.js';
 
 /**
@@ -133,6 +134,44 @@ export interface ChannelSummary {
   readonly displayName: string;
   readonly live: boolean;
   readonly visibility: ChannelVisibility;
+  /**
+   * The operator's declared category, or null when none is chosen.
+   *
+   * Founder ruling (29 Aug 2026): "Channel categories: explicit server
+   * field. Do not infer semantic categories from follows, visibility or live
+   * status." A client that groups channels reads THIS and nothing else; null
+   * means uncategorised, not an invitation to guess.
+   */
+  readonly category: ChannelCategory | null;
+}
+
+/**
+ * What an operator sends on operator:channel-settings.
+ *
+ * Every field is optional and an absent field means "leave it alone", which
+ * is what lets the console change visibility without resending a join code
+ * it does not have. `code: null` clears the code; `category: null` clears the
+ * category. A category off the controlled list is refused whole: the gateway
+ * answers ERROR "Choose a category from the list." and applies nothing.
+ */
+export interface OperatorChannelSettingsPayload {
+  displayName?: string;
+  visibility?: ChannelVisibility;
+  code?: string | null;
+  /** One primary category in v1 (founder ruling, 29 Aug 2026), or null for none. */
+  category?: ChannelCategory | null;
+}
+
+/** What the gateway answers with on channel:assigned. */
+export interface ChannelAssignedPayload {
+  /** The operator's own channel id, as the gateway derived it. */
+  channelId: string;
+  /** The channel they are publishing to now. */
+  active: string;
+  /** Whether a join code is SET on the active channel; never the code itself. */
+  hasCode?: boolean;
+  /** The active channel's category, so a reloaded console shows the truth. */
+  category?: ChannelCategory | null;
 }
 
 export const OPERATOR_ROOM = 'operators';

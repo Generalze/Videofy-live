@@ -41,7 +41,18 @@ export interface CreateAppOptions {
    * the same reason as the rest. Absent means the route is not mounted.
    */
   publicCalls?: () => PublicCallListing[];
+  /**
+   * Conference status (29 Aug): whether a call id is live, ended or never
+   * seen, lazily like the rest. Absent means the route is not mounted.
+   */
+  callStatus?: (callId: string) => ConferenceStatus;
 }
+
+/** What GET /calls/:callId/status answers, and nothing more. */
+export type ConferenceStatus = 'active' | 'ended' | 'unknown';
+
+/** The shape of a call id worth asking the store about; anything else is 'unknown'. */
+const CALL_ID_SHAPE = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** One row of GET /calls/public; what a stranger may know before joining. */
 export interface PublicCallListing {
@@ -198,6 +209,28 @@ export function createApp(options: CreateAppOptions = {}): express.Application {
     app.get('/calls/public', (_req: Request, res: Response) => {
       res.setHeader('Cache-Control', 'no-store');
       res.json({ calls: provide() });
+    });
+  }
+
+  /*
+   * CONFERENCE STATUS. Founder ruling (29 Aug 2026): "An ended conference is
+   * terminal. The Recent row should show Ended and must not silently recreate
+   * a room under that old code." A client holding an old code asks here
+   * before joining, and shows Ended instead of opening a fresh room.
+   *
+   * Unauthenticated, so it answers with the status word and NOTHING else --
+   * no title, no roster, no timestamps. A private room's code must not turn
+   * into a lookup oracle for what is inside it. A malformed id is 'unknown'
+   * rather than 400 for the same reason: the shape of the answer never
+   * changes with the input.
+   */
+  if (options.callStatus) {
+    const provide = options.callStatus;
+    app.get('/calls/:callId/status', (req: Request, res: Response) => {
+      res.setHeader('Cache-Control', 'no-store');
+      const callId = req.params['callId'] ?? '';
+      const status: ConferenceStatus = CALL_ID_SHAPE.test(callId) ? provide(callId) : 'unknown';
+      res.json({ status });
     });
   }
 

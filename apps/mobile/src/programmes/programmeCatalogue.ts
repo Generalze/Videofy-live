@@ -7,11 +7,17 @@
  * follow count moves when the viewer is the one who followed -- lives here
  * so it can be tested in node and read in one place.
  *
- * HONEST CATEGORIES. The directory wire carries id, name, live and
- * visibility, nothing else; a channel does not yet say what it is about.
- * So the chips are derived from those four fields and a chip is offered
- * only when at least one listed channel would answer to it. Nothing here
- * invents a topic, a viewer count or a schedule.
+ * FILTERS ARE NOT CATEGORIES (founder ruling 29 Aug 2026, LOCKED):
+ * "Categories are an explicit, controlled channel-side field -- one
+ * primary category in v1, set by the operator -- never inferred from
+ * follows, visibility or live state; Live / Following / Public are filters
+ * and are shown as filters." So there are two independent rows. The
+ * FILTER row is operational -- All / Live / Following / Public -- derived
+ * from what the wire carries, and a filter is offered only when at least
+ * one listed channel answers to it. The CATEGORY row is the channel's own
+ * `category` field, shown only when at least one listed channel carries
+ * one, in the controlled order of CHANNEL_CATEGORIES. Nothing here invents
+ * a category, a viewer count or a schedule.
  *
  * INTERESTED IS A FOLLOW WITH A REMINDER. The account service's follow
  * route takes `following` and `remind`; the phone's bell always sends both
@@ -20,8 +26,10 @@
  */
 import type { ChannelFollow } from '../api/client';
 import type { ChannelSummary } from '../api/channelDirectory';
+import { CHANNEL_CATEGORIES, type ChannelCategory, type ChannelCategoryEntry } from './channelCategories';
 
-export type Category = 'all' | 'live' | 'off' | 'following' | 'public' | 'link-only';
+/** The operational filters. `all` is always first and always offered. */
+export type Filter = 'all' | 'live' | 'following' | 'public';
 
 /** channelId -> the follow, for every channel the viewer follows. */
 export type FollowState = Readonly<Record<string, ChannelFollow>>;
@@ -29,16 +37,13 @@ export type FollowState = Readonly<Record<string, ChannelFollow>>;
 /** channelId -> how many people follow it. Absent means not known yet. */
 export type InterestCounts = Readonly<Record<string, number>>;
 
-/** Chip order as shown; `all` is always first and always offered. */
-const CATEGORY_ORDER: readonly Category[] = ['all', 'live', 'off', 'following', 'public', 'link-only'];
+const FILTER_ORDER: readonly Filter[] = ['all', 'live', 'following', 'public'];
 
-export const CATEGORY_LABELS: Readonly<Record<Category, string>> = {
+export const FILTER_LABELS: Readonly<Record<Filter, string>> = {
   all: 'All',
-  live: 'Live now',
-  off: 'Off air',
+  live: 'Live',
   following: 'Following',
   public: 'Public',
-  'link-only': 'Link-only',
 };
 
 /** Up to two initials from a display name, for the art tile. */
@@ -59,42 +64,67 @@ export function isFollowing(follows: FollowState, channelId: string): boolean {
   return follows[channelId] !== undefined;
 }
 
-export function inCategory(channel: ChannelSummary, category: Category, follows: FollowState): boolean {
-  switch (category) {
+export function inFilter(channel: ChannelSummary, filter: Filter, follows: FollowState): boolean {
+  switch (filter) {
     case 'all':
       return true;
     case 'live':
       return channel.live;
-    case 'off':
-      return !channel.live;
     case 'following':
       return isFollowing(follows, channel.channelId);
     case 'public':
       return channel.visibility === 'public';
-    case 'link-only':
-      return channel.visibility === 'private';
   }
 }
 
-/** The chips worth offering: `all`, then every category some listed channel answers to. */
-export function deriveCategories(channels: readonly ChannelSummary[], follows: FollowState): readonly Category[] {
-  return CATEGORY_ORDER.filter(
-    (category) => category === 'all' || channels.some((channel) => inCategory(channel, category, follows)),
-  );
+/** The filter chips worth offering: `all`, then every filter some listed channel answers to. */
+export function deriveFilters(channels: readonly ChannelSummary[], follows: FollowState): readonly Filter[] {
+  return FILTER_ORDER.filter((filter) => filter === 'all' || channels.some((channel) => inFilter(channel, filter, follows)));
 }
 
-/** A chosen chip that has since vanished (the last live channel went off) falls back to `all`. */
-export function resolveCategory(chosen: Category, available: readonly Category[]): Category {
+/** A chosen filter that has since vanished (the last live channel went off) falls back to `all`. */
+export function resolveFilter(chosen: Filter, available: readonly Filter[]): Filter {
   return available.includes(chosen) ? chosen : 'all';
+}
+
+/**
+ * The category chips: the controlled list, in its order, reduced to the
+ * categories at least one listed channel carries. Empty when no listed
+ * channel has one, and the screen then shows no category row at all --
+ * a category is read from the channel, never guessed for it.
+ */
+export function deriveCategoryChips(channels: readonly ChannelSummary[]): readonly ChannelCategoryEntry[] {
+  return CHANNEL_CATEGORIES.filter((entry) => channels.some((channel) => channel.category === entry.id));
+}
+
+/** A chosen category no listed channel carries any more clears to none. */
+export function resolveCategoryChoice(
+  chosen: ChannelCategory | null,
+  available: readonly ChannelCategoryEntry[],
+): ChannelCategory | null {
+  return chosen !== null && available.some((entry) => entry.id === chosen) ? chosen : null;
+}
+
+/** The label the controlled list gives a category id; null for none. */
+export function categoryLabel(category: ChannelCategory | null): string | null {
+  if (category === null) return null;
+  return CHANNEL_CATEGORIES.find((entry) => entry.id === category)?.label ?? null;
 }
 
 export function filterChannels(
   channels: readonly ChannelSummary[],
-  input: { readonly category: Category; readonly query: string; readonly follows: FollowState },
+  input: {
+    readonly filter: Filter;
+    /** null means every category, and channels with none. */
+    readonly category: ChannelCategory | null;
+    readonly query: string;
+    readonly follows: FollowState;
+  },
 ): readonly ChannelSummary[] {
   const q = input.query.trim().toLowerCase();
   return channels
-    .filter((channel) => inCategory(channel, input.category, input.follows))
+    .filter((channel) => inFilter(channel, input.filter, input.follows))
+    .filter((channel) => input.category === null || channel.category === input.category)
     .filter((channel) => q.length === 0 || channel.displayName.toLowerCase().includes(q))
     .sort((a, b) => Number(b.live) - Number(a.live) || a.displayName.localeCompare(b.displayName));
 }

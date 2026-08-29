@@ -21,13 +21,14 @@
  * rotation listener keeps the token current for as long as the session lives.
  */
 import { StatusBar } from 'expo-status-bar';
+import * as SplashScreen from 'expo-splash-screen';
 import * as Notifications from 'expo-notifications';
 /*
  * React 19 removed the GLOBAL JSX namespace, so `JSX.Element` no longer
  * resolves without an import. It is exported from 'react' instead.
  */
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import { ActivityIndicator, AppState, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { AppState, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { AuthSessionManager, type AuthState } from './src/auth/authSessionManager';
 import { createSecureSessionStore } from './src/auth/secureSessionStore';
@@ -60,6 +61,7 @@ import { ProfileScreen } from './src/screens/ProfileScreen';
 import { IncomingCallScreen } from './src/screens/IncomingCallScreen';
 import { PersonProfileScreen } from './src/screens/PersonProfileScreen';
 import { ProgrammeViewerScreen } from './src/screens/ProgrammeViewerScreen';
+import { BootScreen } from './src/screens/BootScreen';
 import { createDirectCallApi } from './src/call/directCallApi';
 import { foregroundPresentationFor } from './src/push/callNotificationPresentation';
 import { videofyCall } from './src/native/videofyCall';
@@ -73,6 +75,14 @@ const GATEWAY_BASE_URL =
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
 const ACCOUNT_BASE_URL =
   process.env['EXPO_PUBLIC_ACCOUNT_URL'] ?? 'https://staging.consummate7.com/auth';
+
+/*
+ * THE BRAND SCREEN, NOT A WHITE FRAME (founder ruling 29 Aug 2026). The OS
+ * splash (same ground, same mark) is held until BootScreen has painted its
+ * identical first frame; global scope, not awaited, or it runs too late.
+ */
+SplashScreen.preventAutoHideAsync().catch(() => {});
+SplashScreen.setOptions({ duration: 250 });
 
 const auth = new AuthSessionManager({
   accountBaseUrl: ACCOUNT_BASE_URL,
@@ -239,6 +249,12 @@ function AppInner(): JSX.Element {
   const [viewingChannel, setViewingChannel] = useState<ChannelSummary | null>(null);
   /** The signed-in person's own profile, for "Share my contact". */
   const [me, setMe] = useState<Profile | null>(null);
+  /** Stays false until BootScreen has finished its exit fade; the session status alone would cut it off mid-frame. */
+  const [booted, setBooted] = useState(false);
+  const hideSplash = useCallback(() => {
+    SplashScreen.hideAsync().catch(() => {});
+  }, []);
+  const onBooted = useCallback(() => setBooted(true), []);
   /** The app lock: one hour away, then biometrics or the password. Never in front of a call. */
   const [locked, setLocked] = useState(false);
   const [lockEmail, setLockEmail] = useState<string | null>(null);
@@ -542,14 +558,9 @@ function AppInner(): JSX.Element {
     });
   }, []);
 
-  if (state.status === 'starting' || state.status === 'validating') {
-    return (
-      <View style={styles.centre}>
-        <StatusBar style="light" />
-        <ActivityIndicator color="#3ec9c0" size="large" />
-        <Text style={styles.waiting}>Checking your session</Text>
-      </View>
-    );
+  // `validating` only ever happens at launch (AuthSessionManager.restore), so !booted covers the old condition plus the exit fade.
+  if (!booted) {
+    return <BootScreen status={state.status} onFirstFrame={hideSplash} onReady={onBooted} />;
   }
 
   if (state.status !== 'signed-in') {
@@ -564,7 +575,7 @@ function AppInner(): JSX.Element {
         <SignInScreen
           onSignIn={signIn}
           onCreateAccount={() => setWantsAccount(true)}
-          notice={NOTICE[state.reason ?? '']}
+          notice={NOTICE[state.status === 'signed-out' ? (state.reason ?? '') : '']}
         />
       </>
     );
@@ -753,7 +764,12 @@ function AppInner(): JSX.Element {
           <CallHomeScreen
             emailVerified={emailVerified}
             onJoin={(callId, setup) => {
-              void rememberConference({ callId, role: setup === undefined ? 'joined' : 'started', title: setup?.title ?? null });
+              void rememberConference({
+                callId,
+                role: setup === undefined ? 'joined' : 'started',
+                title: setup?.title ?? null,
+                ...(setup === undefined ? {} : { setup }),
+              });
               setActiveCall({ kind: 'conference', callId, ...(setup === undefined ? {} : { setup }) });
             }}
           />
@@ -808,14 +824,6 @@ function AppInner(): JSX.Element {
 }
 
 const styles = StyleSheet.create({
-  centre: {
-    flex: 1,
-    backgroundColor: '#0b0f14',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 16,
-  },
-  waiting: { color: '#5d6874', fontSize: 14 },
   // The masthead carries the top inset now; the shell starts at the edge.
   // The C7 ground paints behind everything; content stays transparent.
   shell: { flex: 1, backgroundColor: '#070b12' },

@@ -3,10 +3,18 @@
  * C7 Streams: the discovery surface.
  *
  * WHAT IS ON, FROM THE SAME DIRECTORY THE WEB SHOWS. The gateway's
- * channel:directory feed is the only source; the phone adds search, chips
- * derived from the four fields the wire carries, and the account service's
- * follows and follower counts -- nothing it cannot back with data. No
- * invented viewer counts, no topics the channels do not carry yet.
+ * channel:directory feed is the only source; the phone adds search, the
+ * follows and follower counts from the account service, and two chip rows
+ * it can back with data -- nothing else. No invented viewer counts, no
+ * schedules the channels do not carry.
+ *
+ * TWO ROWS, TWO MEANINGS (founder ruling 29 Aug 2026, LOCKED): "Categories
+ * are an explicit, controlled channel-side field -- one primary category in
+ * v1, set by the operator -- never inferred from follows, visibility or
+ * live state; Live / Following / Public are filters and are shown as
+ * filters." The FILTER row is always there. The CATEGORY row appears only
+ * when at least one listed channel carries a category, and lists only the
+ * categories present; a channel without one is never given one.
  *
  * INTERESTED = A FOLLOW WITH A REMINDER. Every row has a bell; pressing it
  * follows the channel with `remind` on, so the account service pushes when
@@ -20,18 +28,22 @@ import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { subscribeChannelDirectory, type ChannelSummary } from '../api/channelDirectory';
 import type { Api } from '../api/client';
+import type { ChannelCategory } from '../programmes/channelCategories';
 import {
-  CATEGORY_LABELS,
-  deriveCategories,
+  FILTER_LABELS,
+  categoryLabel,
+  deriveCategoryChips,
+  deriveFilters,
   describeVisibility,
   filterChannels,
   findChannel,
   formatInterest,
   initials,
   isFollowing,
-  resolveCategory,
+  resolveCategoryChoice,
+  resolveFilter,
   selectFeatured,
-  type Category,
+  type Filter,
 } from '../programmes/programmeCatalogue';
 import { useChannelInterest } from '../programmes/useChannelInterest';
 import { AdSlot } from '../ui/AdSlot';
@@ -84,7 +96,8 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
   const [channels, setChannels] = useState<readonly ChannelSummary[] | null>(null);
   const [link, setLink] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [query, setQuery] = useState('');
-  const [chosen, setChosen] = useState<Category>('all');
+  const [chosenFilter, setChosenFilter] = useState<Filter>('all');
+  const [chosenCategory, setChosenCategory] = useState<ChannelCategory | null>(null);
   const { follows, interest, pending, notice, loadInterest, toggle } = useChannelInterest(api);
 
   useEffect(() => {
@@ -97,9 +110,14 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
   }, [channels, loadInterest]);
 
   const listed = channels ?? NO_CHANNELS;
-  const available = useMemo(() => deriveCategories(listed, follows), [listed, follows]);
-  const category = resolveCategory(chosen, available);
-  const visible = useMemo(() => filterChannels(listed, { category, query, follows }), [listed, category, query, follows]);
+  const filters = useMemo(() => deriveFilters(listed, follows), [listed, follows]);
+  const filter = resolveFilter(chosenFilter, filters);
+  const categories = useMemo(() => deriveCategoryChips(listed), [listed]);
+  const category = resolveCategoryChoice(chosenCategory, categories);
+  const visible = useMemo(
+    () => filterChannels(listed, { filter, category, query, follows }),
+    [listed, filter, category, query, follows],
+  );
   const featured = useMemo(() => selectFeatured(listed, interest), [listed, interest]);
 
   // The push-routed open: once per id, and only when the directory lists it.
@@ -117,6 +135,17 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
   }, [openChannelId, listed, onOpen]);
 
   const featuredCount = featured === null ? null : formatInterest(interest[featured.channelId]);
+
+  const emptyWords =
+    query.length > 0
+      ? 'No channel matches that.'
+      : category !== null
+        ? `No listed channel is in ${categoryLabel(category) ?? 'that category'} right now.`
+        : filter === 'following'
+          ? 'You are not following any listed channel yet.'
+          : filter === 'live'
+            ? 'Nothing is live right now.'
+            : 'No public channels are listed right now.';
 
   return (
     <ScrollView style={styles.fill} contentContainerStyle={styles.screen}>
@@ -153,11 +182,31 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
         </GlassCard>
       )}
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
-        {available.map((entry) => (
-          <Chip key={entry} label={CATEGORY_LABELS[entry]} active={category === entry} onPress={() => setChosen(entry)} />
-        ))}
-      </ScrollView>
+      <View style={styles.chipBlock}>
+        <Text style={styles.chipLabel}>Filter</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
+          {filters.map((entry) => (
+            <Chip key={entry} label={FILTER_LABELS[entry]} active={filter === entry} onPress={() => setChosenFilter(entry)} />
+          ))}
+        </ScrollView>
+      </View>
+
+      {categories.length > 0 && (
+        <View style={styles.chipBlock}>
+          <Text style={styles.chipLabel}>Category</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
+            {categories.map((entry) => (
+              <Chip
+                key={entry.id}
+                label={entry.label}
+                active={category === entry.id}
+                onPress={() => setChosenCategory((current) => (current === entry.id ? null : entry.id))}
+              />
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
       <Text style={styles.hint}>Interested = we tell you when it goes live.</Text>
       {notice !== null && <Text style={styles.notice}>{notice}</Text>}
 
@@ -178,18 +227,11 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
       {channels === null && (
         <Text style={styles.empty}>{link === 'disconnected' ? 'Could not reach C7 Streams. Check your connection.' : 'Finding channels…'}</Text>
       )}
-      {channels !== null && visible.length === 0 && (
-        <Text style={styles.empty}>
-          {query.length > 0
-            ? 'No channel matches that.'
-            : category === 'following'
-              ? 'You are not following any listed channel yet.'
-              : 'No public channels are listed right now.'}
-        </Text>
-      )}
+      {channels !== null && visible.length === 0 && <Text style={styles.empty}>{emptyWords}</Text>}
       {visible.map((channel) => {
         const following = isFollowing(follows, channel.channelId);
         const count = formatInterest(interest[channel.channelId]);
+        const label = categoryLabel(channel.category);
         return (
           <Pressable key={channel.channelId} onPress={() => onOpen(channel)} accessibilityRole="button" style={({ pressed }) => pressed && styles.pressed}>
             <GlassCard padded={false} style={styles.row}>
@@ -204,6 +246,12 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
                 <View style={styles.metaRow}>
                   <Icon name={channel.visibility === 'public' ? 'globe' : 'lock'} size={14} color={C7.muted} />
                   <Text style={styles.meta}>{describeVisibility(channel.visibility)}</Text>
+                  {label !== null && (
+                    <>
+                      <Text style={styles.metaDot}>·</Text>
+                      <Text style={styles.meta}>{label}</Text>
+                    </>
+                  )}
                   {count !== null && (
                     <>
                       <Text style={styles.metaDot}>·</Text>
@@ -240,6 +288,8 @@ const styles = StyleSheet.create({
   watch: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: C7.tealDeep, borderRadius: 999, paddingVertical: 11 },
   watchLabel: { color: '#ffffff', fontSize: 15, fontWeight: '600' },
   chipRow: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start' },
+  chipBlock: { gap: 6 },
+  chipLabel: { color: C7.faint, fontSize: 11, letterSpacing: 1, fontWeight: '700', textTransform: 'uppercase' },
   filters: { flexDirection: 'row', gap: 8, paddingRight: 8 },
   hint: { color: C7.muted, fontSize: 12, marginTop: -6 },
   notice: { color: C7.amber, fontSize: 12, marginTop: -6 },

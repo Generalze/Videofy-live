@@ -18,8 +18,15 @@
  * what keeps the screens from collapsing back into flat black rectangles.
  */
 import { type JSX, type ReactNode } from 'react';
-import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, View, type ImageSourcePropType, type StyleProp, type ViewStyle } from 'react-native';
 import Svg, { Circle, Defs, Ellipse, Path, RadialGradient, Rect, Stop } from 'react-native-svg';
+
+/**
+ * The launcher logo (teal C, white 7, teal dot), cut from assets/adaptive-icon.png
+ * onto a transparent 1024 square: the same file the native splash shows.
+ */
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const LAUNCHER_LOGO = require('../../assets/splash-icon.png') as ImageSourcePropType;
 
 export const C7 = {
   ground: '#070b12',
@@ -47,6 +54,37 @@ export function C7Mark({ size = 34, tile = false }: { readonly size?: number; re
       <Path d="M45.5 17.6 A19.8 19.8 0 1 0 45.5 46.4" fill="none" stroke="#93a1bd" strokeWidth="7.5" strokeLinecap="square" />
       <Path d="M34.5 17.6 H52 L40 50" fill="none" stroke="#ffffff" strokeWidth="7.5" strokeLinejoin="miter" strokeLinecap="square" />
     </Svg>
+  );
+}
+
+/**
+ * The launcher logo, as pixels. This is NOT the favicon mark above: the icon
+ * the person taps on their phone is this one, so the boot screen (founder
+ * ruling, 29 Aug 2026: "centered C7 logo") shows the logo they just tapped
+ * and the OS splash hands over to it without a change of shape. Android's
+ * default image fade is off so the first frame is complete.
+ */
+export function C7BrandMark({
+  width = 200,
+  onLoad,
+  onError,
+}: {
+  readonly width?: number;
+  /** The bitmap has decoded and drawn; the native splash may go. */
+  readonly onLoad?: (() => void) | undefined;
+  /** The bitmap failed; callers treat this like onLoad so boot never stalls. */
+  readonly onError?: (() => void) | undefined;
+}): JSX.Element {
+  return (
+    <Image
+      source={LAUNCHER_LOGO}
+      style={{ width, height: width }}
+      resizeMode="contain"
+      fadeDuration={0}
+      accessibilityLabel="C7"
+      onLoad={() => onLoad?.()}
+      onError={() => onError?.()}
+    />
   );
 }
 

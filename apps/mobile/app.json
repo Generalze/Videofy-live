@@ -6,6 +6,7 @@
     "orientation": "portrait",
     "scheme": "videofy",
     "userInterfaceStyle": "automatic",
+    "backgroundColor": "#0b0f14",
     "newArchEnabled": true,
     "android": {
       "package": "com.consummate7.videofy",
@@ -33,7 +34,23 @@
       "expo-dev-client",
       "expo-audio",
       "expo-notifications",
-      "@config-plugins/react-native-webrtc"
+      "@config-plugins/react-native-webrtc",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0b0f14",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "dark": {
+            "backgroundColor": "#0b0f14",
+            "image": "./assets/splash-icon.png"
+          },
+          "android": {
+            "backgroundColor": "#0b0f14"
+          }
+        }
+      ]
     ],
     "extra": {
       "eas": {

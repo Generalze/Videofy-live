@@ -305,6 +305,22 @@ one hour without the app on screen, then biometrics (fingerprint / face)
 or the account password. The lock is NEVER in front of a ring or a live
 call; it waits until the call ends. A lock unlocks; it never signs out.
 
+**Four rulings, 29 Aug 2026 (LOCKED).** *Categories* are an explicit,
+controlled channel-side field -- one primary category in v1, set by the
+operator -- never inferred from follows, visibility or live state; Live /
+Following / Public are filters and are shown as filters. *An ended
+conference is terminal*: the Recent row says Ended, Join is greyed, and
+"Start similar" opens a NEW code copying the title and settings; the old
+row stays as history and never re-creates a room under its code. *Handset
+conferences are normal mode* and say so -- "Translation is not active on
+mobile conferences yet." -- with the language picker kept out of the
+handset flow until it works; direct translated calls remain separate.
+*Upgrade is hidden* until billing exists; a page that only explains plans
+is "View plans", and "Upgrade" returns only with checkout and entitlement
+activation. And the phone opens on a C7 brand screen -- dark ground, the
+mark, "Videofy Live", "Speak naturally. Be understood everywhere." -- with
+no white flash before it.
+
 **Everything else on the phone is in the app.** Programmes play inside the
 app (the web viewer under the C7 shell, until HLS renditions give a native
 player); reports are filed from the message or the profile without leaving

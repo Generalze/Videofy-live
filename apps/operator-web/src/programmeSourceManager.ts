@@ -398,9 +398,14 @@ function joinUrlPath(basePath: string, ...segments: string[]): string {
   return `/${encoded.join('/')}`;
 }
 
+/**
+ * LENGTH ONLY. A stream key is the credential that lets anyone publish into
+ * the programme, and its first and last characters were once shown as a
+ * "which key is this" hint. Founder ruling (29 Aug 2026): no token prefix is
+ * ever printed, and a display string is one copy-paste away from a log.
+ */
 function redactStreamKey(streamKey: string): string {
-  if (streamKey.length <= 4) return '****';
-  return `${streamKey.slice(0, 2)}...${streamKey.slice(-2)}`;
+  return `**** (${streamKey.length} characters)`;
 }
 
 export class ProgrammeSourceManager {

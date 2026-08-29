@@ -76,6 +76,7 @@ const adapterSurface =
 const app = createApp({
   directCalls: () => gateway.directCalls,
   publicCalls: () => gateway.listPublicCalls(),
+  callStatus: (callId) => gateway.callStatus(callId),
   sessionSecret: process.env['VIDEOFY_AUTH_SECRET'],
   diagnostics: () => gateway.getWebRtcDiagnostics(),
   ...(adapterSurface === null

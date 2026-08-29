@@ -10,3 +10,4 @@ export * from './socket-events.js';
 export * from './webrtc-signalling.js';
 export * from './webrtc-signalling-client.js';
 export * from './language-controls.js';
+export * from './channel-category.js';

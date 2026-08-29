@@ -55,7 +55,6 @@ import {
   type CallTransportEvent,
   type RemoteStream,
 } from '../call/callConnection';
-import { Chip } from '../ui/c7';
 import {
   admissionWords,
   knockWords,
@@ -63,7 +62,7 @@ import {
   type ConferenceInfo,
   type KnockingSeat,
 } from '../conference/admission';
-import { languageLabel, type ConferenceSetup } from '../conference/conferenceSetup';
+import type { ConferenceSetup } from '../conference/conferenceSetup';
 
 /** Not a secret; compiled into the bundle like every EXPO_PUBLIC_ value. */
 const GATEWAY_URL = process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
@@ -108,8 +107,10 @@ export type ActiveCallDescriptor =
        * CONFERENCE SETUP (29 Aug): what the host chose on the Start card.
        * Present only when this phone is STARTING the conference; absent when
        * joining by code, where the conference itself is authoritative and
-       * the gateway ignores it anyway. Also the title and languages shown
-       * until the gateway's call:state states them.
+       * the gateway ignores it anyway. Also the title shown until the
+       * gateway's call:state states it. Its targetLanguages is always []
+       * from the handset (founder ruling 29 Aug 2026: "Translation is not
+       * active on mobile conferences yet") and is never rendered here.
        */
       readonly setup?: ConferenceSetup | undefined;
     };
@@ -502,13 +503,6 @@ export function CallScreen({
             {info.title}
           </Text>
         )}
-        {call.kind === 'conference' && info.targetLanguages.length > 0 && (
-          <View style={styles.langRow}>
-            {info.targetLanguages.map((code) => (
-              <Chip key={code} label={languageLabel(code)} tone="teal" />
-            ))}
-          </View>
-        )}
       </View>
 
       {/* ===== HOST: somebody is at the door of a restricted conference. ===== */}
@@ -835,7 +829,6 @@ const styles = StyleSheet.create({
   controlsRow: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'flex-start' },
 
   confTitle: { color: CALL_COLORS.text, fontSize: 20, fontWeight: '600', fontFamily: 'serif', marginTop: 10, letterSpacing: -0.2 },
-  langRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
 
   knockBanner: {
     marginTop: 12,

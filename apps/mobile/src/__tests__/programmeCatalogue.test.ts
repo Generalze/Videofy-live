@@ -1,35 +1,50 @@
 /** @author masterzee001 */
 /**
- * The catalogue's arithmetic: chips only for what is listed, the featured
- * channel by follower count, a bell press that means follow-with-reminder,
- * and counts that move only when they are known.
+ * The catalogue's arithmetic: filter chips only for what is listed,
+ * category chips only for what channels carry, the featured channel by
+ * follower count, a bell press that means follow-with-reminder, and counts
+ * that move only when they are known.
  */
 import { describe, expect, it } from 'vitest';
 import type { ChannelSummary } from '../api/channelDirectory';
+import { CHANNEL_CATEGORIES, type ChannelCategory } from '../programmes/channelCategories';
 import {
   adjustInterest,
-  deriveCategories,
+  categoryLabel,
+  deriveCategoryChips,
+  deriveFilters,
   describeVisibility,
   filterChannels,
   findChannel,
   followsReducer,
   formatInterest,
   initials,
-  resolveCategory,
+  resolveCategoryChoice,
+  resolveFilter,
   selectFeatured,
   toggleIntent,
 } from '../programmes/programmeCatalogue';
 
-const channel = (channelId: string, displayName: string, live: boolean, visibility: ChannelSummary['visibility'] = 'public'): ChannelSummary => ({
+const first = CHANNEL_CATEGORIES[0] ?? { id: 'news' as ChannelCategory, label: 'News' };
+const second = CHANNEL_CATEGORIES[1] ?? first;
+
+const channel = (
+  channelId: string,
+  displayName: string,
+  live: boolean,
+  visibility: ChannelSummary['visibility'] = 'public',
+  category: ChannelCategory | null = null,
+): ChannelSummary => ({
   channelId,
   displayName,
   live,
   visibility,
+  category,
 });
 
 const townhall = channel('ch_town', 'Global Townhall', true);
-const faith = channel('ch_faith', 'Faith Live', true);
-const forum = channel('ch_forum', 'Ogun Forum', false);
+const faith = channel('ch_faith', 'Faith Live', true, 'public', second.id);
+const forum = channel('ch_forum', 'Ogun Forum', false, 'public', first.id);
 const linkOnly = channel('ch_link', 'Board Room', false, 'private');
 
 describe('initials', () => {
@@ -40,52 +55,86 @@ describe('initials', () => {
   });
 });
 
-describe('deriveCategories', () => {
-  it('offers only chips some listed channel answers to, with All always first', () => {
-    expect(deriveCategories([], {})).toEqual(['all']);
-    expect(deriveCategories([townhall], {})).toEqual(['all', 'live', 'public']);
-    expect(deriveCategories([forum], {})).toEqual(['all', 'off', 'public']);
-    expect(deriveCategories([townhall, forum, linkOnly], {})).toEqual(['all', 'live', 'off', 'public', 'link-only']);
+describe('deriveFilters', () => {
+  it('offers only filters some listed channel answers to, with All always first', () => {
+    expect(deriveFilters([], {})).toEqual(['all']);
+    expect(deriveFilters([townhall], {})).toEqual(['all', 'live', 'public']);
+    expect(deriveFilters([forum], {})).toEqual(['all', 'public']);
+    expect(deriveFilters([linkOnly], {})).toEqual(['all']);
+    expect(deriveFilters([townhall, forum, linkOnly], {})).toEqual(['all', 'live', 'public']);
   });
 
   it('offers Following only when a listed channel is followed', () => {
-    expect(deriveCategories([townhall], { ch_elsewhere: { channelId: 'ch_elsewhere', remind: true } })).not.toContain('following');
-    expect(deriveCategories([townhall], { ch_town: { channelId: 'ch_town', remind: true } })).toContain('following');
+    expect(deriveFilters([townhall], { ch_elsewhere: { channelId: 'ch_elsewhere', remind: true } })).not.toContain('following');
+    expect(deriveFilters([townhall], { ch_town: { channelId: 'ch_town', remind: true } })).toEqual(['all', 'live', 'following', 'public']);
+  });
+
+  it('never offers a category as a filter', () => {
+    const filters: readonly string[] = deriveFilters([forum, faith], {});
+    for (const entry of CHANNEL_CATEGORIES) expect(filters).not.toContain(entry.id);
+    expect(filters).not.toContain('link-only');
+    expect(filters).not.toContain('off');
   });
 });
 
-describe('resolveCategory', () => {
+describe('resolveFilter', () => {
   it('keeps a chip that is still offered and falls back to All when it vanished', () => {
-    expect(resolveCategory('live', ['all', 'live'])).toBe('live');
-    expect(resolveCategory('live', ['all', 'off'])).toBe('all');
+    expect(resolveFilter('live', ['all', 'live'])).toBe('live');
+    expect(resolveFilter('live', ['all', 'public'])).toBe('all');
+  });
+});
+
+describe('deriveCategoryChips', () => {
+  it('is empty when no listed channel carries a category, so no row is shown', () => {
+    expect(deriveCategoryChips([])).toEqual([]);
+    expect(deriveCategoryChips([townhall, linkOnly])).toEqual([]);
+  });
+
+  it('lists only the categories present, in the controlled order, never inferred from the name', () => {
+    expect(deriveCategoryChips([faith, forum, townhall])).toEqual([first, second]);
+    expect(deriveCategoryChips([faith])).toEqual([second]);
+    expect(deriveCategoryChips([channel('ch_x', 'Sport News Faith', true)])).toEqual([]);
+  });
+});
+
+describe('resolveCategoryChoice and categoryLabel', () => {
+  it('keeps a chosen category while some channel carries it and clears it otherwise', () => {
+    expect(resolveCategoryChoice(first.id, [first, second])).toBe(first.id);
+    expect(resolveCategoryChoice(first.id, [second])).toBeNull();
+    expect(resolveCategoryChoice(null, [first])).toBeNull();
+  });
+
+  it('labels a known id from the controlled list and nothing for none', () => {
+    expect(categoryLabel(first.id)).toBe(first.label);
+    expect(categoryLabel(null)).toBeNull();
   });
 });
 
 describe('filterChannels', () => {
   const all = [forum, faith, linkOnly, townhall];
+  const ids = (input: Partial<Parameters<typeof filterChannels>[1]>) =>
+    filterChannels(all, { filter: 'all', category: null, query: '', follows: {}, ...input }).map((c) => c.channelId);
 
   it('puts live channels first, then sorts by name', () => {
-    expect(filterChannels(all, { category: 'all', query: '', follows: {} }).map((c) => c.channelId)).toEqual([
-      'ch_faith',
-      'ch_town',
-      'ch_link',
-      'ch_forum',
-    ]);
+    expect(ids({})).toEqual(['ch_faith', 'ch_town', 'ch_link', 'ch_forum']);
   });
 
-  it('honours each category', () => {
-    const ids = (category: Parameters<typeof filterChannels>[1]['category'], follows = {}) =>
-      filterChannels(all, { category, query: '', follows }).map((c) => c.channelId);
-    expect(ids('live')).toEqual(['ch_faith', 'ch_town']);
-    expect(ids('off')).toEqual(['ch_link', 'ch_forum']);
-    expect(ids('public')).toEqual(['ch_faith', 'ch_town', 'ch_forum']);
-    expect(ids('link-only')).toEqual(['ch_link']);
-    expect(ids('following', { ch_forum: { channelId: 'ch_forum', remind: true } })).toEqual(['ch_forum']);
+  it('honours each filter', () => {
+    expect(ids({ filter: 'live' })).toEqual(['ch_faith', 'ch_town']);
+    expect(ids({ filter: 'public' })).toEqual(['ch_faith', 'ch_town', 'ch_forum']);
+    expect(ids({ filter: 'following', follows: { ch_forum: { channelId: 'ch_forum', remind: true } } })).toEqual(['ch_forum']);
+  });
+
+  it('a chosen category keeps only channels that carry it; none keeps everything', () => {
+    expect(ids({ category: first.id })).toEqual(['ch_forum']);
+    expect(ids({ category: second.id })).toEqual(['ch_faith']);
+    expect(ids({ category: second.id, filter: 'live' })).toEqual(['ch_faith']);
+    expect(ids({ category: first.id, filter: 'live' })).toEqual([]);
   });
 
   it('searches the display name, case-insensitively and trimmed', () => {
-    expect(filterChannels(all, { category: 'all', query: '  TOWN ', follows: {} })).toEqual([townhall]);
-    expect(filterChannels(all, { category: 'off', query: 'town', follows: {} })).toEqual([]);
+    expect(filterChannels(all, { filter: 'all', category: null, query: '  TOWN ', follows: {} })).toEqual([townhall]);
+    expect(filterChannels(all, { filter: 'live', category: null, query: 'forum', follows: {} })).toEqual([]);
   });
 });
 

@@ -11,6 +11,7 @@ import {
   generateJoinCode,
   resolveViewerOrigin,
   shareableViewerLink,
+  shownCategory,
   toSettingsPayload,
   validateSettings,
   VISIBILITY_DESCRIPTIONS,
@@ -200,5 +201,27 @@ describe('resolving where the viewer app lives', () => {
     expect(shareableViewerLink(origin, 'abc123', 'public', null)).toBe(
       'https://c7.example.com/listen/c/abc123',
     );
+  });
+});
+
+/*
+ * Founder ruling (29 Aug 2026): one primary category in v1, an explicit
+ * server field. The console sends it only when the operator touched it, so an
+ * unrelated rename cannot clear a category set in an earlier session.
+ */
+describe('the category on the wire', () => {
+  it('is left out when the operator did not touch it', () => {
+    expect(toSettingsPayload(draft())).not.toHaveProperty('category');
+  });
+
+  it('is sent as null to clear it, and as the id to set it', () => {
+    expect(toSettingsPayload(draft({ category: null })).category).toBeNull();
+    expect(toSettingsPayload(draft({ category: 'faith' })).category).toBe('faith');
+  });
+
+  it('shows the unsaved choice over what the gateway reported', () => {
+    expect(shownCategory(draft(), 'news')).toBe('news');
+    expect(shownCategory(draft({ category: null }), 'news')).toBeNull();
+    expect(shownCategory(draft({ category: 'sport' }), 'news')).toBe('sport');
   });
 });

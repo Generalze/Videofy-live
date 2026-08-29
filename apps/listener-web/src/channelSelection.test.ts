@@ -140,6 +140,7 @@ describe('the directory a viewer reads', () => {
     displayName,
     live,
     visibility: 'public' as const,
+    category: null,
   });
 
   it('puts what is on now first', () => {

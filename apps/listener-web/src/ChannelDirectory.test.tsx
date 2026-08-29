@@ -22,6 +22,7 @@ const channel = (channelId: string, displayName: string, live: boolean): Channel
   displayName,
   live,
   visibility: 'public',
+  category: null,
 });
 
 function markup(overrides: Partial<React.ComponentProps<typeof ChannelDirectory>> = {}): string {

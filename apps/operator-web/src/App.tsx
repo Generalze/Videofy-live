@@ -9,7 +9,7 @@ import type {
   TranscriptionEvent,
   WebRtcSignallingClientSnapshot,
 } from '@videofy-live/shared-types';
-import { SOCKET_EVENTS, WebRtcSignallingClient } from '@videofy-live/shared-types';
+import { SOCKET_EVENTS, WebRtcSignallingClient, type ChannelCategory } from '@videofy-live/shared-types';
 import styles from './App.module.css';
 import shell from './ConsoleShell.module.css';
 import { ConsolePage, ConsoleShell } from './ConsoleShell';
@@ -201,6 +201,8 @@ export default function App(): React.ReactElement {
   const [ownChannelId, setOwnChannelId] = useState<string | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string>('main');
   const [channelHasCode, setChannelHasCode] = useState(false);
+  /** The category the gateway reports for the channel (founder ruling 29 Aug: an explicit field, one primary). */
+  const [channelReportedCategory, setChannelReportedCategory] = useState<ChannelCategory | null>(null);
   /*
    * The code this session generated, kept only in memory. The gateway reports
    * that a code EXISTS and never what it is, so after a reload this is null and
@@ -337,10 +339,12 @@ export default function App(): React.ReactElement {
       channelId: string;
       active: string;
       hasCode?: boolean;
+      category?: ChannelCategory | null;
     }) => {
       setOwnChannelId(assignment.channelId);
       setActiveChannelId(assignment.active);
       if (assignment.hasCode !== undefined) setChannelHasCode(assignment.hasCode);
+      if (assignment.category !== undefined) setChannelReportedCategory(assignment.category);
     });
 
     socket.on(SOCKET_EVENTS.CONNECTED, () => {
@@ -1155,6 +1159,8 @@ export default function App(): React.ReactElement {
     setChannelDraft((current) => {
       const rest = { ...current };
       delete rest.code;
+      // The category, likewise: once sent, the picker shows what the gateway reports back.
+      delete rest.category;
       return rest;
     });
   };
@@ -1434,6 +1440,7 @@ export default function App(): React.ReactElement {
           activeChannelId={activeChannelId}
           draft={channelDraft}
           hasExistingCode={channelHasCode}
+          reportedCategory={channelReportedCategory}
           codeInHand={channelCodeInHand}
           viewerOrigin={VIEWER_ORIGIN}
           onDraftChange={setChannelDraft}

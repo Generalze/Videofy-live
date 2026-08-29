@@ -29,8 +29,10 @@ import { diffLiveTransitions } from './channel-live-transitions.js';
 import {
   INGEST_ROOM,
   createShareableWebRtcSessionId,
+  isChannelCategory,
   languageRoom,
   OPERATOR_ROOM,
+  type OperatorChannelSettingsPayload,
   SOCKET_EVENTS,
   type TranslatedAudioFramePayload,
   WEBRTC_BACKEND_MEDIA_PEER_ID,
@@ -75,7 +77,7 @@ import {
   MediaTranscriptionBridge,
   type MediaTranscriptionBridgeContext,
 } from './media-transcription-bridge.js';
-import { CallSessionStore } from '@videofy-live/call-session';
+import { CallSessionStore, type CallStatus } from '@videofy-live/call-session';
 import type { Router } from 'express';
 import {
   ConnectJoinGate,
@@ -149,6 +151,12 @@ export class Gateway {
    */
   private readonly programmeSourceRevisions = new Map<string, number>();
   private readonly callRuntime: CallRuntime;
+  /**
+   * The one call store, kept in hand for GET /calls/:callId/status. The
+   * runtime owns every mutation; this reference only answers whether a call
+   * id is live, ended or never seen.
+   */
+  private readonly callSessionStore: CallSessionStore;
 
   /** The direct-call telephone, for the HTTP pre-join / ringing / decline routes. */
   get directCalls(): CallRuntime['directCalls'] {
@@ -158,6 +166,15 @@ export class Gateway {
   /** The public conference listing, for GET /calls/public. */
   listPublicCalls(): ReturnType<CallRuntime['listPublicCalls']> {
     return this.callRuntime.listPublicCalls();
+  }
+
+  /**
+   * Conference status, for GET /calls/:callId/status. Founder ruling (29 Aug
+   * 2026): "An ended conference is terminal. The Recent row should show Ended
+   * and must not silently recreate a room under that old code."
+   */
+  callStatus(callId: string): CallStatus {
+    return this.callSessionStore.callStatus(callId);
   }
   private readonly mediaIngestUrl: string;
   /**
@@ -450,8 +467,9 @@ export class Gateway {
     // transcription bridge with call-scoped contexts; owns its own peer
     // registry so call publish peers never mix with programme callbacks.
     const callVoiceIdentityVerifier = createCallVoiceIdentityVerifier();
+    this.callSessionStore = new CallSessionStore();
     this.callRuntime = new CallRuntime({
-      store: new CallSessionStore(),
+      store: this.callSessionStore,
       emitToRoom: (room, event, payload) => {
         this.io.to(room).emit(event, payload);
       },
@@ -683,11 +701,13 @@ export class Gateway {
           active: DEFAULT_CHANNEL_ID,
         });
         this.handleOperatorSocket(socket);
-        // The accountId is logged; nothing identifying is. It is an opaque id,
-        // and it is the thing an incident would need.
+        // PRESENCE ONLY. The account id here was read out of a verified session
+        // token, and the founder ruling (29 Aug 2026) is that no "account
+        // identifier derived from a token" is ever printed. An incident joins
+        // on socketId; the account behind it lives in the account service.
         logger.info('Operator connected', {
           socketId: socket.id,
-          accountId: admission.accountId,
+          authenticated: true,
         });
         break;
       }
@@ -905,16 +925,21 @@ export class Gateway {
    */
   private parseChannelSettings(
     raw: unknown,
-  ): { displayName?: string; visibility?: ChannelVisibility; code?: string | null } | null {
-    if (!raw || typeof raw !== 'object') return null;
-    const candidate = raw as { displayName?: unknown; visibility?: unknown; code?: unknown };
-    const settings: { displayName?: string; visibility?: ChannelVisibility; code?: string | null } =
-      {};
+  ): { ok: true; settings: OperatorChannelSettingsPayload } | { ok: false; message: string } {
+    const invalid = { ok: false, message: 'Invalid channel settings' } as const;
+    if (!raw || typeof raw !== 'object') return invalid;
+    const candidate = raw as {
+      displayName?: unknown;
+      visibility?: unknown;
+      code?: unknown;
+      category?: unknown;
+    };
+    const settings: OperatorChannelSettingsPayload = {};
 
     if (candidate.displayName !== undefined) {
-      if (typeof candidate.displayName !== 'string') return null;
+      if (typeof candidate.displayName !== 'string') return invalid;
       const trimmed = candidate.displayName.trim();
-      if (trimmed.length === 0 || trimmed.length > 80) return null;
+      if (trimmed.length === 0 || trimmed.length > 80) return invalid;
       settings.displayName = trimmed;
     }
 
@@ -924,7 +949,7 @@ export class Gateway {
         candidate.visibility !== 'private' &&
         candidate.visibility !== 'locked'
       ) {
-        return null;
+        return invalid;
       }
       settings.visibility = candidate.visibility;
     }
@@ -938,13 +963,31 @@ export class Gateway {
          * code on a channel anybody can reach by link is a formality, and this
          * is the only thing standing in front of a private programme.
          */
-        if (typeof candidate.code !== 'string') return null;
-        if (candidate.code.length < 6 || candidate.code.length > 64) return null;
+        if (typeof candidate.code !== 'string') return invalid;
+        if (candidate.code.length < 6 || candidate.code.length > 64) return invalid;
         settings.code = candidate.code;
       }
     }
 
-    return settings;
+    /*
+     * Founder ruling (29 Aug 2026): "Add a controlled channel-side category
+     * field, one primary category in v1." Controlled means the list is the
+     * whole truth: a value off it is refused by name, and because the refusal
+     * happens before anything is applied, the rest of the same message is
+     * left unapplied too. A console cannot half-save.
+     */
+    if (candidate.category !== undefined) {
+      const category = candidate.category;
+      if (category === null) {
+        settings.category = null;
+      } else if (isChannelCategory(category)) {
+        settings.category = category;
+      } else {
+        return { ok: false, message: 'Choose a category from the list.' };
+      }
+    }
+
+    return { ok: true, settings };
   }
 
   /** A channel join request, from a client that may have sent anything. */
@@ -1226,6 +1269,9 @@ export class Gateway {
       socket.emit(SOCKET_EVENTS.CHANNEL_ASSIGNED, {
         channelId: this.operatorOwnChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID,
         active: requested,
+        // The category is server truth (founder ruling, 29 Aug 2026), so a
+        // console arriving after a reload learns it here rather than guessing.
+        category: this.channels.category(requested),
       });
       this.broadcastChannelDirectory();
       logger.info('Operator moved channel', { socketId: socket.id, channelId: requested });
@@ -1241,12 +1287,15 @@ export class Gateway {
      * which is a denial of service dressed as a settings change.
      */
     socket.on(SOCKET_EVENTS.OPERATOR_CHANNEL_SETTINGS, (raw: unknown) => {
-      const settings = this.parseChannelSettings(raw);
+      const parsed = this.parseChannelSettings(raw);
       const accountId = this.operatorAccounts.get(socket.id);
-      if (!settings || accountId === undefined) {
-        socket.emit(SOCKET_EVENTS.ERROR, { message: 'Invalid channel settings' });
+      if (!parsed.ok || accountId === undefined) {
+        socket.emit(SOCKET_EVENTS.ERROR, {
+          message: parsed.ok ? 'Invalid channel settings' : parsed.message,
+        });
         return;
       }
+      const settings = parsed.settings;
 
       const channelId = this.operatorChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID;
       if (channelId === DEFAULT_CHANNEL_ID || !this.channels.mayOperate(channelId, accountId)) {
@@ -1265,6 +1314,9 @@ export class Gateway {
       if (settings.code !== undefined) {
         this.channels.setAccessCode(channelId, settings.code);
       }
+      if (settings.category !== undefined) {
+        this.channels.setCategory(channelId, settings.category);
+      }
 
       socket.emit(SOCKET_EVENTS.CHANNEL_ASSIGNED, {
         channelId: this.operatorOwnChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID,
@@ -1275,12 +1327,14 @@ export class Gateway {
          * live join code into logs and transcripts for no gain.
          */
         hasCode: this.channels.hasAccessCode(channelId),
+        category: this.channels.category(channelId),
       });
       this.broadcastChannelDirectory();
       logger.info('Operator updated channel settings', {
         socketId: socket.id,
         channelId,
         visibility: settings.visibility,
+        category: settings.category,
       });
     });
 

@@ -23,7 +23,6 @@ import { AudioModule, RecordingPresets, setAudioModeAsync, useAudioRecorder } fr
 import { File } from 'expo-file-system';
 import type { Api, Availability, MeCounts } from '../api/client';
 import type { RegistrationOutcome } from '../push/deviceRegistrationService';
-import { WEB_URL } from '../people/people';
 import { deleteVoice, ENROLMENT_MIME_TYPE, enrolVoice, INGEST_URL, judgeTake, MAX_TAKE_MS, takeCounter, voiceStatus } from '../people/voiceEnrolment';
 import { C7, Chip, GlassCard } from '../ui/c7';
 import { Icon, type IconName } from '../ui/icons';
@@ -448,14 +447,35 @@ export function VoiceRow({
   );
 }
 
-export function UpgradeRow(): JSX.Element {
+/**
+ * The plans page, if there is one. Not a secret: `EXPO_PUBLIC_` values are
+ * compiled into the bundle. Empty or unset means there is no page yet.
+ */
+const PLANS_URL = process.env['EXPO_PUBLIC_PLANS_URL'];
+
+/** Where the Plans row points, or null when it must not be shown. Exported so the rule is testable. */
+export function plansUrl(raw: string | undefined = PLANS_URL): string | null {
+  const trimmed = (raw ?? '').trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
+
+/**
+ * PLANS, NOT UPGRADE (founder ruling 29 Aug 2026, LOCKED): "Upgrade is
+ * hidden until billing exists; a page that only explains plans is 'View
+ * plans', and 'Upgrade' returns only with checkout and entitlement
+ * activation." So this row renders nothing unless EXPO_PUBLIC_PLANS_URL
+ * names a page, and when it does the button says View plans and opens
+ * that page. The export keeps its name so the Profile needs no change.
+ */
+export function UpgradeRow(): JSX.Element | null {
+  const url = plansUrl();
+  if (url === null) return null;
   return (
     <GlassCard accent style={styles.upgrade}>
-      <Text style={styles.upgradeEyebrow}>TRANSLATION</Text>
-      <Text style={styles.upgradeTitle}>Translated calls and programmes are metered; normal calls are free.</Text>
-      <Text style={styles.hint}>Pay for the seconds that were translated, and nothing else.</Text>
-      <Pressable onPress={() => void Linking.openURL(`${WEB_URL}/billing`)} accessibilityRole="button" style={[styles.smallButton, styles.selfStart]}>
-        <Text style={styles.smallButtonLabel}>See plans and billing</Text>
+      <Text style={styles.upgradeTitle}>Plans</Text>
+      <Text style={styles.hint}>Translated calls and programmes are metered; normal calls are free.</Text>
+      <Pressable onPress={() => void Linking.openURL(url)} accessibilityRole="button" style={[styles.smallButton, styles.selfStart]}>
+        <Text style={styles.smallButtonLabel}>View plans</Text>
       </Pressable>
     </GlassCard>
   );
@@ -495,6 +515,5 @@ const styles = StyleSheet.create({
   recordingDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: C7.red },
   recordingCounter: { color: C7.text, fontSize: 18, fontWeight: '600', fontFamily: 'serif', fontVariant: ['tabular-nums'] },
   upgrade: { gap: 8 },
-  upgradeEyebrow: { color: C7.teal, fontSize: 11, letterSpacing: 1.2, fontWeight: '700' },
   upgradeTitle: { color: C7.text, fontSize: 18, fontWeight: '600', fontFamily: 'serif', lineHeight: 24 },
 });
