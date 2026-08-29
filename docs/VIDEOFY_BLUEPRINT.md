@@ -294,6 +294,12 @@ Chats empty-state that leads somewhere; verification state on Profile.
 
 ## 5 · Streaming — the Programme Quality Engine (canonical, 29 Aug 2026)
 
+**Status: APPROVED by the founder on 29 Aug 2026 as the canonical
+Programme Quality Engine design, with the four rulings in §5.11 and the
+retry-ceiling refinement in §5.3. It becomes the programme-quality
+implementation directive once the direct-call / PR #1 gate is cleared and
+merged. There is NO authority to begin P9 before that.**
+
 **Principle (locked): Videofy uses delay as production time, not waiting
 time.** The objective is not to make the stream late; it is, for every
 captured programme moment, to produce the highest-quality safe rendition
@@ -319,6 +325,14 @@ AIRTIME CLOCK   what the audience is watching now
 Every captured segment gets `airtimeMs = segment.startMs + delayMs` and a
 readiness deadline `airtimeMs − 6 000 ms` (the §1.3 margin). Everything
 Videofy wants to improve must finish before that deadline.
+
+**P95 selects; margin operates (founder refinement, locked).** Before
+broadcast, `requiredRunway = P95(STT + MT + TTS + packaging) + 6 s`, and
+the smallest ladder value ≥ that is chosen. During broadcast the delay is
+NOT recomputed from rolling statistics; live operation is governed only by
+each language's actual `marginMs = airtimeAt − readyAt`. A language whose
+margin approaches the six-second boundary is the operator's warning — the
+delay may then be raised gradually at a segment boundary, never lowered.
 
 ### 5.2 The processing path (existing spine, new stages)
 
@@ -361,12 +375,19 @@ segment_18372  capturedAt 20:15:00  airtimeAt 20:16:30
 ```
 
 Rendition states extend the existing `TargetLanguageOutputStatus`:
-`ready`, `ready-with-warning`, `retrying`, `captions-ready` (= captions +
-continuing original audio), `original-fallback` (the runtime miss),
-`failed`; **`unavailable` keeps its existing meaning — not offered for this
-programme.** RETRYING is legal only while the remaining budget exceeds the
-6 s margin plus that provider's P95 for the language; otherwise the track
-declares its miss at once. A segment is billed once whatever the retries.
+`ready`, `ready-with-warning`, `retrying`, `captions-ready` (CAPTIONS_ONLY:
+translated captions available AND original audio continues — never
+silence), `original-fallback` (this translated audio rendition missed its
+production deadline; original audio continues for that segment), `failed`;
+**`unavailable` keeps its existing meaning — the language is not offered
+for this programme.** (Founder-approved wording, 29 Aug.) RETRYING is legal only while BOTH hold: the remaining budget exceeds the
+6 s margin plus that provider's P95 for the language, AND the attempt count
+is below a small emergency ceiling (phase 1: one production attempt plus at
+most one retry). The deadline decides whether another attempt is useful;
+the ceiling stops a provider that fails instantly from being called a
+hundred times with seventy seconds left. Otherwise the track declares its
+miss at once. Billing: one segment translated for the customer is one
+billable translation outcome, whatever the internal retries.
 
 **Deadline-miss doctrine (locked, unchanged):** the programme clock never
 moves backward, and nobody stalls because one language is late.
@@ -462,20 +483,90 @@ vocabulary, the entity check, live loudness/fit, preflight, the readiness
 dashboard, the margin SLO. Governance (§10): this is the first cut from the
 clean post-merge base, on `p9/programme-quality-engine`.
 
-**Phase 1 (≈ 81 developer-days, each slice shippable and probe-measurable):**
-P1.0 unwired seams (utterance ceiling, live translate deadline, `onSpoken`,
-viewer availability) · P1.1 programme timeline (delay on the session,
-airtime, readiness records, deadline-miss, original-fallback) · P1.2 runway
-+ HLS packager · P1.3 quality gates + entity check + one retry · P1.4
-Programme Vocabulary v1 · P1.5 live audio production · P1.6 preflight and
-warm · P1.7 control room and viewer badge · P1.8 margin SLO. P1.3–P1.7 run
-in parallel after P1.1. **Phase 2:** language audition (typed text through
-the live chain, free with a cap), interventions with audit trail, hold with
-bumpers/slates, overlap strategy, audience-interaction offset, replay.
+**Phase 1 (≈ 81 developer-days, each slice shippable and probe-measurable),
+in the founder's order — the timeline contract first, HLS consumes it:**
 
-**Rulings pending (founder):** Editorial Live as a separate product; replay
-billing and disclosure; audition cap; the two grades mapped to the two
-billing grades (recommended: yes to all four).
+```
+P1.0  unwired seams (utterance ceiling, live translate deadline, onSpoken,
+      viewer availability)                                   MANDATORY
+  ↓
+P1.1  authoritative programme timeline (delay on the session, airtime per
+      segment, readiness records, deadline-miss, original-fallback)
+                                                             MANDATORY
+  ↓
+  parallel lanes:  P1.3 quality gates + entity check + bounded retry
+                   P1.4 Programme Vocabulary v1
+                   P1.5 live audio production
+                   P1.6 preflight and warm-up
+                   P1.7 control room and viewer badge
+  ↓
+P1.2  runway + HLS packager — once the timeline/readiness contracts are
+      stable. HLS is a consumer of the engine, never its architecture
+      driver; packager constraints must not leak upward.
+  ↓
+P1.8  measured end-to-end margin SLO
+```
+
+**Phase 2 / broadcaster edition:** language audition UI, interventions
+with audit trail, hold with bumpers/slates, overlap strategy,
+audience-interaction offset, replay, and Editorial Live (§5.11).
+
+### 5.11 Founder rulings (29 Aug 2026, LOCKED)
+
+1. **Editorial Live (2–5 min, configurable, human-in-the-loop) is a
+   SEPARATE future broadcaster product**, not part of the programme ladder.
+   Standard Videofy programmes are Live Multilingual (30/45/60) and
+   Broadcast Quality (90). Phase 1 does not carry it.
+2. **Programme runway ≠ recording.** The runway is ephemeral by default.
+   Recording, archive or replay requires explicit session attributes:
+   `recordingEnabled`, `replayEnabled`, a retention policy, a billing
+   treatment, speaker-facing disclosure, viewer-facing disclosure where
+   applicable, and operator authority. Buffering ninety seconds to produce
+   the programme is never permission to keep it.
+3. **Language audition is free within a capped preflight allowance.** A
+   reasonable number of auditions are included with the programme; they
+   stay metered internally and do not consume customer translation charges
+   until the cap is exceeded. No character-level micro-billing is exposed.
+   Internal record: `programmeId, language, auditionCount, provider,
+   duration / generated units, success | failure` — never source text. The
+   numeric cap is set from real operator behaviour and does not block
+   architecture.
+4. **Quality grade = billing grade.** The operator chooses production
+   intent; Videofy resolves the machinery:
+
+   ```
+   LIVE MULTILINGUAL  = Standard programme translation
+     30 / 45 / 60 from measured readiness · standard qualified voices ·
+     normal retry/fallback policy
+   BROADCAST QUALITY  = Premium programme translation
+     90 s · premium qualified voice path · greater recovery headroom ·
+     hard-language qualification · stronger pre-air quality controls
+   ```
+
+### 5.12 Phase-1 acceptance: the thirty-minute programme
+
+Phase 1 is not complete until one real 30-minute programme has run with at
+least original, French, Yoruba, Hausa and captions, with these injected
+deliberately: one slow translation, one TTS failure, one malformed /
+low-confidence STT segment, one critical number or date, and one language
+provider outage. It passes only if all of the following hold:
+
+```
+video never stops · original audio never stops · healthy languages never stop
+failed language: retried if safe, otherwise original-fallback
+captions continue where ready · no global stall
+airtime never moves backward · no segment airs after its deadline
+the operator sees the problem BEFORE airtime
+the viewer sees no engineering diagnostics
+```
+
+This scenario outranks any number of happy-path unit tests; it validates
+the philosophy. The headless programme probe is the instrument.
+
+**Governance:** P9 opens only after PR #1 (+P8) clears its physical gate
+and merges; `p9/programme-quality-engine` is then the next major programme
+branch, with P1.0 → P1.1 as the mandatory foundation before the parallel
+lanes.
 
 ---
 
