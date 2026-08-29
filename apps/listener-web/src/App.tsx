@@ -211,7 +211,8 @@ export default function App(): React.ReactElement {
   const [targetLanguage, setTargetLanguage] = useState(DEFAULT_LISTENER_TARGET_LANGUAGE);
   const targetLanguageRef = useRef(targetLanguage);
   targetLanguageRef.current = targetLanguage;
-  const [originalVolume, setOriginalVolume] = useState(0.2);
+  // A LEVEL, default full: the slider is how loud the original is (29 Aug).
+  const [originalVolume, setOriginalVolume] = useState(1);
   const [translatedVolume, setTranslatedVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
@@ -1130,7 +1131,7 @@ export default function App(): React.ReactElement {
 
   const handleResetMixDefaults = useCallback((): void => {
     resumeMixer();
-    setOriginalVolume(0.2);
+    setOriginalVolume(1);
     setTranslatedVolume(1);
     setMuted(false);
     resetMixDefaults();

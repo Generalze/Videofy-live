@@ -42,6 +42,7 @@ export interface DirectCallsHttpLike {
   get(callId: string): { state: string; mode: string; callerAccountId: string; callerName: string; peerAccountId: string; expiresAtMs: number } | null;
   shouldRing(callId: string, accountId: string): 'ring' | 'expired' | 'unknown';
   ringingAck(callId: string, accountId: string): boolean;
+  answering(callId: string, accountId: string): boolean;
   decline(callId: string, accountId: string): boolean;
 }
 
@@ -113,6 +114,53 @@ export function createApp(options: CreateAppOptions = {}): express.Application {
       const callId = String(req.params['callId'] ?? '');
       const declined = CALL_ID.test(callId) && provider().decline(callId, accountId);
       res.json({ declined });
+    });
+    // The person tapped Answer on the device: hold the ringing window while
+    // the app comes up (native receiver, coherent wave 29 Aug).
+    app.post('/calls/direct/:callId/answering', (req: Request, res: Response) => {
+      const accountId = accountOf(req);
+      if (accountId === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const callId = String(req.params['callId'] ?? '');
+      const held = CALL_ID.test(callId) && provider().answering(callId, accountId);
+      res.json({ held });
+    });
+    /*
+     * The device's side of the ring timeline (T4 push received .. T11 media
+     * connected), reported once per call by either party. Ids and times
+     * only; joined with the gateway's own stamps in one log line so a slow
+     * ring can be attributed to its stage.
+     */
+    app.post('/calls/direct/:callId/timing', (req: Request, res: Response) => {
+      const accountId = accountOf(req);
+      if (accountId === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const callId = String(req.params['callId'] ?? '');
+      if (!CALL_ID.test(callId)) {
+        res.status(404).json({ error: 'No such call.' });
+        return;
+      }
+      const body = (req.body ?? {}) as { role?: unknown; stamps?: unknown; reportedAtMs?: unknown };
+      const stamps: Record<string, number> = {};
+      if (body.stamps !== null && typeof body.stamps === 'object') {
+        for (const [key, value] of Object.entries(body.stamps as Record<string, unknown>)) {
+          if (/^[a-z0-9_]{1,40}$/.test(key) && typeof value === 'number' && Number.isFinite(value)) {
+            stamps[key] = value;
+          }
+        }
+      }
+      const record = provider().get(callId);
+      logger.info('Direct call device timeline', {
+        callId,
+        role: body.role === 'caller' ? 'caller' : 'callee',
+        stamps,
+        server: record === null ? null : { state: record.state, expiresAtMs: record.expiresAtMs },
+      });
+      res.json({ recorded: true });
     });
   };
   const app = express();

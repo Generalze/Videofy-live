@@ -316,7 +316,9 @@ describe('ringing a contact', () => {
 
     const ring = app.provider.sent[0]?.notification;
     expect(ring?.urgency).toBe('high');
-    expect(ring?.title).toBe('Incoming call');
+    // A call push is a wake-up for the native receiver, never a tray notification.
+    expect(ring?.title).toBeUndefined();
+    expect(ring?.data['kind']).toBe('call');
     expect(ring?.data['callId']).toBe(body.callId);
   });
 

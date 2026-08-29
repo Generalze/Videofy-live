@@ -1,0 +1,6 @@
+{
+  "platforms": ["android"],
+  "android": {
+    "modules": ["com.consummate7.videofy.call.VideofyCallModule"]
+  }
+}

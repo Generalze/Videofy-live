@@ -54,6 +54,14 @@ export const TERMINAL_STATES: ReadonlySet<DirectCallState> = new Set([
 
 /** Ringing window: nobody accepted -> NO ANSWER. Matches the push TTL. */
 export const RINGING_WINDOW_MS = 30_000;
+/**
+ * The ringing window is armed when the CALLER creates the call, so on a
+ * killed app the push, the validation, the person's reaction, the cold
+ * start and the JS boot all eat it. When the native layer reports that the
+ * person TAPPED ANSWER, the window is re-armed with this grace so the
+ * answer never lands on a call already marked no-answer.
+ */
+export const ANSWER_GRACE_MS = 15_000;
 /** Media recovery window before a drop becomes a NETWORK failure. */
 /**
  * A phone that changes network (wifi to data, a lift, a stairwell) needs
@@ -70,7 +78,7 @@ export interface DirectCallRecord {
   readonly callerName: string;
   readonly mode: 'normal' | 'translated';
   readonly createdAtMs: number;
-  readonly expiresAtMs: number;
+  expiresAtMs: number;
   state: DirectCallState;
   /** When the state last changed; for the T0..T11 timeline and staleness. */
   updatedAtMs: number;
@@ -93,7 +101,7 @@ export interface DirectCallWire {
   readonly callerAccountId: string;
   readonly callerName: string;
   readonly peerAccountId: string;
-  readonly expiresAtMs: number;
+  expiresAtMs: number;
   readonly updatedAtMs: number;
   readonly answeredAtMs: number | null;
   /** The authoritative origin of the elapsed timer both screens show. */
@@ -239,6 +247,23 @@ export class DirectCallLifecycle {
     if (!record || record.peerAccountId !== accountId) return false;
     if (record.state === 'calling') this.transition(record, 'ringing');
     return !TERMINAL_STATES.has(record.state);
+  }
+
+  /**
+   * The peer tapped Answer on the device; their join is seconds away. Holds
+   * the ringing window open for ANSWER_GRACE_MS. True while the call is
+   * still answerable.
+   */
+  answering(callId: string, accountId: string): boolean {
+    const record = this.calls.get(callId);
+    if (!record || record.peerAccountId !== accountId) return false;
+    if (record.state !== 'calling' && record.state !== 'ringing') return false;
+    if (record.state === 'calling') this.transition(record, 'ringing');
+    record.expiresAtMs = this.now() + ANSWER_GRACE_MS;
+    this.arm(record, 'ringing-window', ANSWER_GRACE_MS, () => {
+      if (record.state === 'calling' || record.state === 'ringing') this.transition(record, 'no_answer');
+    });
+    return true;
   }
 
   decline(callId: string, accountId: string): boolean {

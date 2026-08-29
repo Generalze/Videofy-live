@@ -427,8 +427,8 @@ export function registerMessageRoutes(
       kind: 'call',
       privacy: 'visible',
       urgency: 'high',
-      title: 'Incoming call',
-      body: `${senderName(resolved.caller.accountId)} is calling you on Videofy`,
+      // No title/body: a call push is a WAKE-UP for the native receiver, never
+      // a tray notification (the provider drops them for kind 'call' anyway).
       data: {
         kind: 'call',
         callId,

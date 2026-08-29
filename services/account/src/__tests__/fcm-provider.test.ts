@@ -67,6 +67,18 @@ function providerWith(
   return { provider, calls };
 }
 
+describe('a call push is data-only', () => {
+  it('never carries a notification block, even when a title and body are supplied', async () => {
+    const { provider, calls } = providerWith(() => new Response('{}', { status: 200 }));
+    await provider.send(TARGET, { ...RING, data: { kind: 'call', callId: 'ring-1' }, ttlSeconds: 30 });
+    const message = (calls[0]?.body as { message: Record<string, unknown> }).message;
+    expect(message['notification']).toBeUndefined();
+    expect((message['android'] as Record<string, unknown>)['notification']).toBeUndefined();
+    expect((message['android'] as Record<string, unknown>)['priority']).toBe('high');
+    expect((message['data'] as Record<string, string>)['kind']).toBe('call');
+  });
+});
+
 describe('what it will not claim to reach', () => {
   /*
    * THE ONE THAT PREVENTS SILENT NON-DELIVERY. FCM cannot send the VoIP push
@@ -124,12 +136,17 @@ describe('the payload it builds', () => {
     expect(message['data']).toEqual({ messageId: 'msg_1' });
   });
 
-  it('includes the words when they are meant to be seen', async () => {
+  it('includes the words when they are meant to be seen (a visible message push)', async () => {
     const { provider, calls } = providerWith(() => new Response('{}', { status: 200 }));
-    await provider.send(TARGET, RING);
+    await provider.send(TARGET, {
+      ...SILENT,
+      privacy: 'visible',
+      title: 'New message',
+      body: 'Zoe sent you a message',
+    });
 
     const message = (calls[0]?.body as { message: Record<string, unknown> }).message;
-    expect((message['notification'] as Record<string, string>)['body']).toBe('Zoe is calling');
+    expect((message['notification'] as Record<string, string>)['body']).toBe('Zoe sent you a message');
   });
 
   /* A phone off for ten minutes should not ring ten times for one missed call. */

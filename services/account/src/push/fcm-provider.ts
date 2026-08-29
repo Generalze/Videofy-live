@@ -144,9 +144,8 @@ export class FcmPushProvider implements PushProvider {
         ...(notification.collapseId === undefined ? {} : { collapse_key: notification.collapseId }),
         // A call invitation expires with its ringing window; see ttlSeconds.
         ...(notification.ttlSeconds === undefined ? {} : { ttl: `${notification.ttlSeconds}s` }),
-        // Calls ring on the app's 'calls' channel (ringtone, vibration,
-        // heads-up); everything else stays on the default, quiet channel.
-        ...(notification.kind === 'call' ? { notification: { channel_id: 'calls' } } : {}),
+        // A call is DATA-ONLY (below): no OS-rendered notification, so no
+        // channel. The app's native receiver rings the phone itself.
       },
       apns: {
         headers: {
@@ -172,7 +171,18 @@ export class FcmPushProvider implements PushProvider {
      * notification exists to avoid -- the redaction upstream removes the fields,
      * so the block must disappear with them.
      */
-    if (notification.title !== undefined || notification.body !== undefined) {
+    /*
+     * A CALL IS DATA-ONLY, ALWAYS. With a `notification` block Android draws
+     * a tray notification itself and never wakes the app's messaging
+     * service when the app is backgrounded or killed -- so nothing rang,
+     * nothing acknowledged, and the "incoming call" appeared only after a
+     * tap on the tray. Data-only with high priority reaches the native
+     * receiver in every app state, which presents the real incoming-call
+     * surface (Telecom / CallStyle) and rings. Title and body, if a caller
+     * supplied them, are dropped here on purpose.
+     */
+    const dataOnly = notification.kind === 'call';
+    if (!dataOnly && (notification.title !== undefined || notification.body !== undefined)) {
       message['notification'] = {
         ...(notification.title === undefined ? {} : { title: notification.title }),
         ...(notification.body === undefined ? {} : { body: notification.body }),

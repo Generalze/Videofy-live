@@ -48,6 +48,8 @@ import { createAudioRouter, resolveRoute, type AudioRoute } from '../call/audioR
 import { elapsedSinceMs, formatElapsed, observeServerClock } from '../call/callTimer';
 import { TERMINAL_DIRECT_STATES, directStateWords } from '../call/directCallApi';
 import { Icon } from '../ui/icons';
+import { videofyCall } from '../native/videofyCall';
+import { reportRingTimeline } from '../call/ringTimeline';
 import {
   CallConnection,
   type CallTransportEvent,
@@ -174,6 +176,8 @@ export function CallScreen({
 
   const acceptDirectState = useCallback((wire: DirectCallStateSnapshot) => {
     clockOffset.current = observeServerClock(clockOffset.current, wire.updatedAtMs, Date.now());
+    // T11: two-way audio proven by the server -- stamped on the device timeline.
+    if (wire.state === 'connected') videofyCall.reportMediaConnected(wire.callId);
     setServerState(wire.state);
     setMode(wire.mode);
     if (wire.connectedAtMs !== null) setConnectedAtMs(wire.connectedAtMs);
@@ -282,6 +286,12 @@ export function CallScreen({
       link.leave();
       connection.current = null;
       void router.current.release();
+      // The device's T4..T11 stamps go to the gateway once, metadata only,
+      // so the ring's seconds can be attributed (founder targets: <3 s ring,
+      // <2 s answer-to-audio).
+      if (call.kind === 'direct') {
+        void reportRingTimeline(GATEWAY_URL, sessionToken, callId, videofyCall.timeline(callId), role);
+      }
     };
     // The connection is built once per call; the callbacks read state through setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -4,6 +4,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
+  ANSWER_GRACE_MS,
   DirectCallLifecycle,
   RECONNECT_WINDOW_MS,
   RINGING_WINDOW_MS,
@@ -98,6 +99,20 @@ describe('DirectCallLifecycle', () => {
     none.create();
     none.lifecycle.noteRingDispatch('ring-1', 0);
     expect(none.lifecycle.get('ring-1')?.state).toBe('unavailable');
+  });
+
+  it('ANSWERING holds the ringing window open while a cold app comes up', () => {
+    const h = harness();
+    h.create();
+    h.lifecycle.ringingAck('ring-1', 'acct_peer');
+    expect(h.lifecycle.answering('ring-1', 'acct_stranger')).toBe(false);
+    expect(h.lifecycle.answering('ring-1', 'acct_peer')).toBe(true);
+    // The original 30 s window no longer ends the call...
+    h.fire(RINGING_WINDOW_MS);
+    expect(h.lifecycle.get('ring-1')?.state).toBe('ringing');
+    // ...the answer grace does, if nobody joins.
+    h.fire(ANSWER_GRACE_MS);
+    expect(h.lifecycle.get('ring-1')?.state).toBe('no_answer');
   });
 
   it('a stale push must not ring: the pre-join check answers expired', () => {

@@ -56,6 +56,7 @@ import { ProfileScreen } from './src/screens/ProfileScreen';
 import { IncomingCallScreen } from './src/screens/IncomingCallScreen';
 import { createDirectCallApi } from './src/call/directCallApi';
 import { foregroundPresentationFor } from './src/push/callNotificationPresentation';
+import { videofyCall } from './src/native/videofyCall';
 
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
 const GATEWAY_BASE_URL =
@@ -291,6 +292,47 @@ function AppInner(): JSX.Element {
    * A call id is routed once per life: receipt and tap both fire in the
    * foreground.
    */
+  /*
+   * THE NATIVE LAYER OWNS INCOMING CALLS (coherent wave, 29 Aug). With the
+   * module present, a call push is data-only and never reaches
+   * expo-notifications: the native service validates it, ACKS ringing and
+   * rings the phone in every app state. JS hears 'incoming' (show our own
+   * surface, do NOT ack again), 'answer' (take the seat), 'decline' and
+   * 'timeout' (drop the surface). An Answer tapped while the app was cold
+   * is consumed once on start. Without the module the old path stands.
+   */
+  useEffect(() => {
+    if (!videofyCall.available || state.status !== 'signed-in') return undefined;
+    const pending = videofyCall.consumePendingAnswer();
+    if (pending !== null) {
+      setIncomingCall(null);
+      setActiveCall({ kind: 'direct', callId: pending.callId, peer: { accountId: pending.callerAccountId, name: pending.callerName }, ring: false });
+    }
+    const incoming = videofyCall.onIncoming((call) => {
+      setIncomingCall({ callId: call.callId, caller: { accountId: call.callerAccountId, name: call.callerName }, mode: call.mode });
+    });
+    const answer = videofyCall.onAnswer((call) => {
+      setIncomingCall(null);
+      setActiveCall({ kind: 'direct', callId: call.callId, peer: { accountId: call.callerAccountId, name: call.callerName }, ring: false });
+    });
+    const decline = videofyCall.onDecline(() => setIncomingCall(null));
+    const timeout = videofyCall.onTimeout(() => setIncomingCall(null));
+    return () => {
+      incoming?.remove();
+      answer?.remove();
+      decline?.remove();
+      timeout?.remove();
+    };
+  }, [state.status]);
+
+  /* The ring credential: the native receiver's key to the gateway, same lifetime as the session. */
+  useEffect(() => {
+    if (!videofyCall.available) return;
+    const token = state.status === 'signed-in' ? auth.callSessionToken() : null;
+    if (token === null) videofyCall.clearRingCredential();
+    else videofyCall.setRingCredential(GATEWAY_BASE_URL, token);
+  }, [state.status]);
+
   useEffect(() => {
     const received = Notifications.addNotificationReceivedListener((notification) => {
       routeNotification((notification.request.content.data ?? {}) as Record<string, unknown>);
@@ -405,6 +447,7 @@ function AppInner(): JSX.Element {
           mode={ringing.mode}
           onAnswer={() => {
             setIncomingCall(null);
+            videofyCall.reportCallEnded(ringing.callId);
             setActiveCall({
               kind: 'direct',
               callId: ringing.callId,
@@ -414,6 +457,7 @@ function AppInner(): JSX.Element {
           }}
           onDecline={() => {
             setIncomingCall(null);
+            videofyCall.reportCallEnded(ringing.callId);
             void directCalls.decline(ringing.callId);
           }}
         />
@@ -444,7 +488,10 @@ function AppInner(): JSX.Element {
                   return result.ok ? result.value.reachedDevices : null;
                 }
           }
-          onLeave={() => setActiveCall(null)}
+          onLeave={() => {
+            videofyCall.reportCallEnded(activeCall.callId);
+            setActiveCall(null);
+          }}
         />
       </>
     );

@@ -201,7 +201,7 @@ describe('InterpretationAudioMixerController', () => {
     expect(controller.state).toMatchObject({
       enabled: true,
       mode: 'interpretation',
-      originalLevel: 0.2,
+      originalLevel: 1,
       translatedLevel: 1,
       translatedMuted: false,
       limiterActive: true,
@@ -224,27 +224,49 @@ describe('InterpretationAudioMixerController', () => {
     expect(context.sources).toHaveLength(2);
   });
 
-  it('keeps original at full volume when idle and ducks only while translated speech plays', async () => {
+  it('the original level is a level: 100 / 50 / 0 are distinct while idle, and ducking sits on top', async () => {
     const { audios, context, controller } = createHarness();
     const original = mediaElement();
 
     controller.attachOriginalElement(original);
 
-    expect(original.volume).toBe(1);
+    // Idle: the level is applied, not parked at full volume.
     expect(context.gains[0]!.gain.value).toBe(1);
+    controller.setOriginalLevel(0.5);
+    expect(context.gains[0]!.gain.value).toBe(0.5);
+    controller.setOriginalLevel(0);
+    expect(context.gains[0]!.gain.value).toBe(0);
+    controller.setOriginalLevel(1);
+    expect(context.gains[0]!.gain.value).toBe(1);
+    // The translated track never moves with the original.
     expect(context.gains[1]!.gain.value).toBe(1);
 
+    // While translated speech plays the original ducks BELOW the level.
     const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
     await mixed.play();
     expect(controller.state.speechActive).toBe(true);
-    expect(context.gains[0]!.gain.value).toBe(0.2);
+    expect(context.gains[0]!.gain.value).toBe(0.25);
 
-    controller.setOriginalLevel(0.35);
-    expect(context.gains[0]!.gain.value).toBe(0.35);
+    controller.setOriginalLevel(0.4);
+    expect(context.gains[0]!.gain.value).toBeCloseTo(0.1);
 
+    // The phrase ends: back to the chosen level, never to full volume.
     audios[0]!.onended?.();
     expect(controller.state.speechActive).toBe(false);
-    expect(context.gains[0]!.gain.value).toBe(1);
+    expect(context.gains[0]!.gain.value).toBe(0.4);
+  });
+
+  it('on the original channel (passthrough) the level applies and nothing ducks', async () => {
+    const { audios, context, controller } = createHarness();
+    controller.attachOriginalElement(mediaElement());
+    controller.setOriginalPassthrough(true);
+    controller.setOriginalLevel(0.5);
+    expect(context.gains[0]!.gain.value).toBe(0.5);
+    const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
+    await mixed.play();
+    expect(context.gains[0]!.gain.value).toBe(0.5);
+    audios[0]!.onended?.();
+    expect(context.gains[0]!.gain.value).toBe(0.5);
   });
 
   it('updates the context state after a suspended mixer resumes', async () => {
@@ -316,11 +338,13 @@ describe('InterpretationAudioMixerController', () => {
     expect(controller.state.mode).toBe('interpretation');
     expect(controller.state.originalLevel).toBe(0.35);
     expect(original.volume).toBe(1);
-    expect(context.gains[0]!.gain.value).toBe(1);
+    // The chosen level comes back, not full volume.
+    expect(context.gains[0]!.gain.value).toBe(0.35);
 
     const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
     await mixed.play();
-    expect(context.gains[0]!.gain.value).toBe(0.35);
+    // Ducked below the level while translated speech plays.
+    expect(context.gains[0]!.gain.value).toBeCloseTo(0.0875);
   });
 
   it('controls translated volume, mute and reset defaults', () => {
@@ -339,7 +363,7 @@ describe('InterpretationAudioMixerController', () => {
     controller.resetDefaults();
     expect(controller.state).toMatchObject({
       enabled: true,
-      originalLevel: 0.2,
+      originalLevel: 1,
       translatedLevel: 1,
       translatedMuted: false,
     });
@@ -724,7 +748,7 @@ describe('InterpretationAudioMixerController', () => {
 
       const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
       await mixed.play();
-      expect(original.volume).toBe(0.2);
+      expect(original.volume).toBe(0.25);
 
       audios[0]!.onended?.();
       expect(original.volume).toBe(1);
@@ -785,7 +809,7 @@ describe('InterpretationAudioMixerController', () => {
     failTap = false;
     const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
     await mixed.play();
-    expect(original.volume).toBe(0.2);
+    expect(original.volume).toBe(0.25);
 
     audios[0]!.onended?.();
     expect(original.volume).toBe(1);
@@ -837,14 +861,15 @@ describe('InterpretationAudioMixerController', () => {
     controller.attachOriginalElement(original);
 
     controller.setOriginalLevel(0.35);
-    expect(original.volume).toBe(1);
+    // The level applies at once, on the element itself when there is no graph.
+    expect(original.volume).toBe(0.35);
 
     const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
     await mixed.play();
-    expect(original.volume).toBe(0.35);
+    expect(original.volume).toBeCloseTo(0.0875);
 
     audios[0]!.onended?.();
-    expect(original.volume).toBe(1);
+    expect(original.volume).toBe(0.35);
 
     controller.setEnabled(false);
     expect(original.volume).toBe(1);
@@ -875,10 +900,10 @@ describe('InterpretationAudioMixerController', () => {
     const second = controller.createTranslatedAudio('http://localhost/b.wav');
     await first.play();
     await second.play();
-    expect(context.gains[0]!.gain.value).toBe(0.2);
+    expect(context.gains[0]!.gain.value).toBe(0.25);
 
     audios[0]!.onended?.();
-    expect(context.gains[0]!.gain.value).toBe(0.2);
+    expect(context.gains[0]!.gain.value).toBe(0.25);
 
     audios[1]!.onended?.();
     expect(context.gains[0]!.gain.value).toBe(1);
@@ -890,7 +915,7 @@ describe('InterpretationAudioMixerController', () => {
 
     const mixed = controller.createTranslatedAudio('http://localhost/audio.wav');
     await mixed.play();
-    expect(context.gains[0]!.gain.value).toBe(0.2);
+    expect(context.gains[0]!.gain.value).toBe(0.25);
 
     mixed.pause();
     expect(context.gains[0]!.gain.value).toBe(1);
