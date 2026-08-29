@@ -12,3 +12,6 @@ ios/
 # .env may hold a session token. .env.example is the committed template.
 .env
 .env.local
+
+# The native call module lives under modules/; the android/ rule above is for the prebuild output only.
+!modules/videofy-call/android/

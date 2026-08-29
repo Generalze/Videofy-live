@@ -1,0 +1,35 @@
+// The native incoming-call layer for Videofy (Android).
+//
+// A LOCAL EXPO MODULE, autolinked by expo-modules-autolinking from
+// apps/mobile/modules. No config plugin: the permissions and the messaging
+// service live in this module's own manifest, which prebuild merges. Kept to
+// the dependencies the job needs -- Firebase Messaging (already present
+// through expo-notifications), AndroidX core for CallStyle, and the security
+// crypto library for the ring credential -- so an EAS build stays boring.
+//
+// NO PROJECT DEPENDENCY ON expo-notifications: autolinked module projects
+// are not addressable as project(':expo-notifications') from another module
+// (the first EAS build failed exactly there). Messages that are not calls
+// are handed to expo-notifications' delegate by reflection at runtime.
+apply plugin: 'com.android.library'
+apply plugin: 'expo-module-gradle-plugin'
+
+group = 'com.consummate7.videofy'
+version = '0.1.0'
+
+android {
+  namespace 'com.consummate7.videofy.call'
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+dependencies {
+  implementation 'com.google.firebase:firebase-messaging:24.1.0'
+  implementation 'androidx.core:core-ktx:1.13.1'
+  implementation 'androidx.security:security-crypto:1.1.0-alpha06'
+}
