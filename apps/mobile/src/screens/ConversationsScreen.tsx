@@ -21,7 +21,7 @@ import { Icon } from '../ui/icons';
 
 const POLL_MS = 5000;
 
-type Filter = 'all' | 'unread' | 'translated' | 'calls';
+type Filter = 'all' | 'unread' | 'translated' | 'calls' | 'archived';
 
 function personName(person: ContactPerson): string {
   return person.displayName ?? person.username ?? person.accountId;
@@ -76,6 +76,9 @@ export function ConversationsScreen({ api, selfId, onOpen, onOpenPerson, onFindC
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     return (entries ?? []).filter((entry) => {
+      // Archived conversations live under their own filter and nowhere else.
+      if (filter === 'archived') return entry.archived === true;
+      if (entry.archived === true) return false;
       if (filter === 'unread' && entry.unread === 0) return false;
       if (filter === 'translated' && entry.last.translatedBody == null) return false;
       if (filter === 'calls' && (entry.last as { kind: string }).kind !== 'call') return false;
@@ -112,6 +115,7 @@ export function ConversationsScreen({ api, selfId, onOpen, onOpenPerson, onFindC
                 ['unread', 'Unread'],
                 ['translated', 'Translated'],
                 ['calls', 'Calls'],
+                ['archived', 'Archived'],
               ] as const
             ).map(([key, label]) => (
               <Chip key={key} label={label} active={filter === key} onPress={() => setFilter(key)} />
@@ -155,7 +159,10 @@ export function ConversationsScreen({ api, selfId, onOpen, onOpenPerson, onFindC
               <View style={styles.rowText}>
                 <View style={styles.rowTop}>
                   <Text style={styles.name} numberOfLines={1}>{personName(item.partner)}</Text>
-                  <Text style={styles.when}>{when(item.last.createdAtMs)}</Text>
+                  <View style={styles.rowWhen}>
+                    {item.muted === true && <Icon name="bell" size={12} color={C7.faint} />}
+                    <Text style={styles.when}>{when(item.last.createdAtMs)}</Text>
+                  </View>
                 </View>
                 {item.partner.username !== null && <Text style={styles.handle}>@{item.partner.username}</Text>}
                 <Text style={[styles.preview, item.unread > 0 && styles.previewUnread]} numberOfLines={2}>
@@ -196,6 +203,7 @@ const styles = StyleSheet.create({
   rowTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 },
   name: { color: C7.text, fontSize: 19, fontWeight: '600', fontFamily: 'serif', flexShrink: 1 },
   when: { color: C7.muted, fontSize: 12 },
+  rowWhen: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   handle: { color: C7.muted, fontSize: 13 },
   preview: { color: C7.muted, fontSize: 14, lineHeight: 19, marginTop: 2 },
   previewUnread: { color: C7.text },

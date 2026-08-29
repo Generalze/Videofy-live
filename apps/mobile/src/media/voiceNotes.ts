@@ -65,6 +65,26 @@ export async function fetchVoiceNoteAsDataUri(
   }
 }
 
+/**
+ * The TRANSLATED rendition of a voice note -- derived server-side from the
+ * original (which stays authoritative and is what the other fetch returns).
+ * WAV from the synthesiser today; the content type is read from the answer.
+ */
+export async function fetchTranslatedVoiceNoteAsDataUri(
+  authorizedFetch: AuthorizedFetch,
+  messageId: string,
+): Promise<string | null> {
+  try {
+    const response = await authorizedFetch(`/messages/${encodeURIComponent(messageId)}/voice/translated`);
+    if (response === null || !response.ok) return null;
+    const mime = response.headers.get('content-type')?.split(';')[0] ?? 'audio/wav';
+    const buffer = await response.arrayBuffer();
+    return `data:${mime};base64,${bytesToBase64(buffer)}`;
+  } catch {
+    return null;
+  }
+}
+
 /** mm:ss for a duration, because "63000ms" is not a thing to show a person. */
 export function formatDuration(durationMs: number | null): string {
   const total = Math.max(0, Math.round((durationMs ?? 0) / 1000));

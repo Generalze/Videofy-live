@@ -18,15 +18,19 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
+  Share,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { AvatarView } from '../media/AvatarView';
 import { useBottomInset } from '../ui/insets';
 import {
@@ -41,9 +45,10 @@ import { File } from 'expo-file-system';
 import type { Api, ContactPerson, TimelineItem, WireMessage } from '../api/client';
 import { callHistoryWords } from '../call/callHistoryWords';
 import type { AuthorizedFetch } from '../push/deviceRegistrationService';
-import { fetchVoiceNoteAsDataUri, formatDuration } from '../media/voiceNotes';
+import { fetchTranslatedVoiceNoteAsDataUri, fetchVoiceNoteAsDataUri, formatDuration } from '../media/voiceNotes';
 import { C7, C7Ground, Chip } from '../ui/c7';
 import { Icon } from '../ui/icons';
+import { MessageActionSheet, type MessageAction } from './MessageActionSheet';
 
 const POLL_MS = 3000;
 
@@ -72,6 +77,28 @@ export function ChatScreen({
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /*
+   * MESSAGE ACTIONS (founder ruling 29 Aug). A long press opens the sheet;
+   * the sheet offers only what the server would accept for THIS message.
+   * Reply and Edit change the composer; Unsend and Delete-for-me change the
+   * timeline through the server; Delete-for-me gets a few seconds of Undo.
+   */
+  const [sheetFor, setSheetFor] = useState<WireMessage | null>(null);
+  const [replyTo, setReplyTo] = useState<WireMessage | null>(null);
+  const [editing, setEditing] = useState<WireMessage | null>(null);
+  const [undo, setUndo] = useState<{ messageId: string; until: number } | null>(null);
+  const [forwarding, setForwarding] = useState<WireMessage | null>(null);
+  const [contacts, setContacts] = useState<readonly ContactPerson[] | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [mode2, setMode2] = useState<'timeline' | 'search' | 'pinned'>('timeline');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<readonly WireMessage[] | null>(null);
+  const [pinnedList, setPinnedList] = useState<readonly WireMessage[] | null>(null);
+  const [settings, setSettings] = useState<{ muted: boolean; archived: boolean } | null>(null);
+  /** A send that failed, kept so a tap can retry it rather than retyping. */
+  const [failedSend, setFailedSend] = useState<{ body: string; replyToMessageId?: string } | null>(null);
+  /** Which rendition a translated voice note plays: the derived audio, or the original. */
+  const [playOriginal, setPlayOriginal] = useState<ReadonlySet<string>>(new Set());
   /*
    * VOICE NOTES HAVE THREE STATES, NOT ONE. Hold-to-send meant a slip of the
    * thumb was a message, and there was no way to listen before sending
@@ -116,17 +143,204 @@ export function ChatScreen({
     setSending(true);
     setError(null);
     // Cleared BEFORE the request resolves so a slow network cannot eat a
-    // second tap into a duplicate; restored on failure so nothing is lost.
+    // second tap into a duplicate; a failure keeps it as a retry, not a loss.
     setDraft('');
-    const result = await api.sendText(partner.accountId, body);
+    if (editing !== null) {
+      const target = editing;
+      setEditing(null);
+      const result = await api.editMessage(target.messageId, body);
+      if (!result.ok) {
+        setDraft(body);
+        setEditing(target);
+        setError(result.status === 409 ? 'Edits are allowed for fifteen minutes after sending.' : result.error);
+      } else {
+        await load();
+      }
+      setSending(false);
+      return;
+    }
+    const replyToMessageId = replyTo?.messageId;
+    setReplyTo(null);
+    const result = await api.sendText(partner.accountId, body, replyToMessageId);
     if (!result.ok) {
-      setDraft(body);
-      setError(result.error);
+      setFailedSend(replyToMessageId === undefined ? { body } : { body, replyToMessageId });
+      setError(result.status === 'network' ? 'Not sent — no connection. Tap Retry.' : result.error);
     } else {
+      setFailedSend(null);
       await load();
     }
     setSending(false);
-  }, [api, draft, load, partner.accountId, sending]);
+  }, [api, draft, editing, load, partner.accountId, replyTo, sending]);
+
+  const retryFailedSend = useCallback(async () => {
+    if (failedSend === null || sending) return;
+    setSending(true);
+    const result = await api.sendText(partner.accountId, failedSend.body, failedSend.replyToMessageId);
+    if (result.ok) {
+      setFailedSend(null);
+      setError(null);
+      await load();
+    } else {
+      setError(result.status === 'network' ? 'Still no connection. Tap Retry.' : result.error);
+    }
+    setSending(false);
+  }, [api, failedSend, load, partner.accountId, sending]);
+
+  /* ---- the actions themselves ---- */
+  const runAction = useCallback(
+    async (message: WireMessage, action: MessageAction) => {
+      setSheetFor(null);
+      switch (action) {
+        case 'reply':
+          setEditing(null);
+          setReplyTo(message);
+          return;
+        case 'copy':
+          await Clipboard.setStringAsync(message.translatedBody ?? message.body ?? '');
+          return;
+        case 'share':
+          await Share.share({ message: message.translatedBody ?? message.body ?? '' });
+          return;
+        case 'forward': {
+          const list = await api.contacts();
+          setContacts(list.ok ? list.value.contacts : []);
+          setForwarding(message);
+          return;
+        }
+        case 'edit':
+          setReplyTo(null);
+          setEditing(message);
+          setDraft(message.body ?? '');
+          return;
+        case 'pin':
+        case 'unpin': {
+          const result = await api.pinMessage(message.messageId, action === 'pin');
+          if (!result.ok) setError(result.error);
+          await load();
+          return;
+        }
+        case 'retract':
+          Alert.alert('Unsend this message?', 'It is removed for both of you. "Message was removed" stays in its place.', [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Unsend',
+              style: 'destructive',
+              onPress: () => {
+                void api.retractMessage(message.messageId).then(async (result) => {
+                  if (!result.ok) setError(result.error);
+                  await load();
+                });
+              },
+            },
+          ]);
+          return;
+        case 'hide': {
+          const result = await api.hideMessage(message.messageId);
+          if (!result.ok) {
+            setError(result.error);
+            return;
+          }
+          setUndo({ messageId: message.messageId, until: Date.now() + 6000 });
+          await load();
+          return;
+        }
+      }
+    },
+    [api, load],
+  );
+
+  const undoHide = useCallback(async () => {
+    if (undo === null) return;
+    const target = undo;
+    setUndo(null);
+    const result = await api.unhideMessage(target.messageId);
+    if (!result.ok) setError(result.error);
+    await load();
+  }, [api, load, undo]);
+
+  useEffect(() => {
+    if (undo === null) return undefined;
+    const timer = setTimeout(() => setUndo(null), Math.max(0, undo.until - Date.now()));
+    return () => clearTimeout(timer);
+  }, [undo]);
+
+  const react = useCallback(
+    async (message: WireMessage, emoji: string | null) => {
+      setSheetFor(null);
+      const result = await api.reactToMessage(message.messageId, emoji);
+      if (!result.ok) setError(result.error);
+      await load();
+    },
+    [api, load],
+  );
+
+  const forwardTo = useCallback(
+    async (target: ContactPerson) => {
+      if (forwarding === null) return;
+      const message = forwarding;
+      setForwarding(null);
+      const result = await api.forwardMessage(target.accountId, message.messageId);
+      if (!result.ok) setError(result.error);
+      else setError(null);
+    },
+    [api, forwarding],
+  );
+
+  const actionsFor = useCallback(
+    (message: WireMessage): MessageAction[] => {
+      if (message.retractedAtMs != null) return ['hide'];
+      const mine = message.senderId === selfId;
+      const text = message.kind === 'text';
+      const editable = mine && text && Date.now() - message.createdAtMs < 15 * 60 * 1000;
+      return [
+        'reply',
+        ...(text ? (['copy', 'share'] as MessageAction[]) : []),
+        'forward',
+        message.pinnedByMe ? 'unpin' : 'pin',
+        ...(editable ? (['edit'] as MessageAction[]) : []),
+        ...(mine ? (['retract'] as MessageAction[]) : []),
+        'hide',
+      ];
+    },
+    [selfId],
+  );
+
+  /* ---- search, pinned, settings ---- */
+  useEffect(() => {
+    if (mode2 !== 'search') return undefined;
+    const q = searchQuery.trim();
+    if (q.length === 0) {
+      setSearchResults(null);
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      void api.searchMessages(partner.accountId, q).then((result) => setSearchResults(result.ok ? result.value : []));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [api, mode2, partner.accountId, searchQuery]);
+
+  useEffect(() => {
+    if (mode2 !== 'pinned') return;
+    void api.pinnedMessages(partner.accountId).then((result) => setPinnedList(result.ok ? result.value : []));
+  }, [api, mode2, partner.accountId, messages]);
+
+  useEffect(() => {
+    void api.conversations().then((result) => {
+      if (!result.ok) return;
+      const entry = result.value.find((item) => item.partner.accountId === partner.accountId);
+      setSettings({ muted: entry?.muted ?? false, archived: entry?.archived ?? false });
+    });
+  }, [api, partner.accountId]);
+
+  const updateSettings = useCallback(
+    async (next: { muted?: boolean; archived?: boolean }) => {
+      setMenuOpen(false);
+      const result = await api.conversationSettings(partner.accountId, next);
+      if (result.ok) setSettings(result.value);
+      else setError(result.error);
+    },
+    [api, partner.accountId],
+  );
 
   const startRecording = useCallback(async () => {
     setError(null);
@@ -321,12 +535,53 @@ export function ChatScreen({
           <Pressable onPress={() => onCall(partner)} accessibilityRole="button" accessibilityLabel="Call" style={({ pressed }) => [styles.headerCall, pressed && styles.pressed]}>
             <Icon name="phone" size={20} color={C7.teal} />
           </Pressable>
+          <Pressable onPress={() => setMenuOpen((open) => !open)} accessibilityRole="button" accessibilityLabel="More" hitSlop={8} style={styles.headerMore}>
+            <Icon name="more" size={20} color={C7.muted} />
+          </Pressable>
         </View>
+        {menuOpen && (
+          <View style={styles.menu}>
+            <Pressable onPress={() => { setMenuOpen(false); setMode2(mode2 === 'search' ? 'timeline' : 'search'); }} accessibilityRole="button" style={styles.menuItem}>
+              <Icon name="search" size={18} color={C7.text} />
+              <Text style={styles.menuLabel}>{mode2 === 'search' ? 'Close search' : 'Search in conversation'}</Text>
+            </Pressable>
+            <Pressable onPress={() => { setMenuOpen(false); setMode2(mode2 === 'pinned' ? 'timeline' : 'pinned'); }} accessibilityRole="button" style={styles.menuItem}>
+              <Icon name="programmes" size={18} color={C7.text} />
+              <Text style={styles.menuLabel}>{mode2 === 'pinned' ? 'Back to messages' : 'Pinned messages'}</Text>
+            </Pressable>
+            <Pressable onPress={() => void updateSettings({ muted: !(settings?.muted ?? false) })} accessibilityRole="button" style={styles.menuItem}>
+              <Icon name="bell" size={18} color={C7.text} />
+              <Text style={styles.menuLabel}>{settings?.muted ? 'Unmute' : 'Mute notifications'}</Text>
+            </Pressable>
+            <Pressable onPress={() => void updateSettings({ archived: !(settings?.archived ?? false) })} accessibilityRole="button" style={styles.menuItem}>
+              <Icon name="lock" size={18} color={C7.text} />
+              <Text style={styles.menuLabel}>{settings?.archived ? 'Unarchive' : 'Archive conversation'}</Text>
+            </Pressable>
+          </View>
+        )}
+        {mode2 === 'search' && (
+          <View style={styles.searchBar}>
+            <Icon name="search" size={18} color={C7.muted} />
+            <TextInput style={styles.searchInput} value={searchQuery} onChangeText={setSearchQuery} placeholder="Search this conversation" placeholderTextColor={C7.faint} autoFocus />
+            <Pressable onPress={() => { setMode2('timeline'); setSearchQuery(''); }} accessibilityRole="button" accessibilityLabel="Close search" hitSlop={8}>
+              <Icon name="close" size={16} color={C7.muted} />
+            </Pressable>
+          </View>
+        )}
+        {mode2 === 'pinned' && (
+          <View style={styles.searchBar}>
+            <Icon name="programmes" size={18} color={C7.teal} />
+            <Text style={[styles.searchInput, { color: C7.muted }]}>{pinnedList === null ? 'Pinned messages' : `${pinnedList.length} pinned`}</Text>
+            <Pressable onPress={() => setMode2('timeline')} accessibilityRole="button" accessibilityLabel="Back to messages" hitSlop={8}>
+              <Icon name="close" size={16} color={C7.muted} />
+            </Pressable>
+          </View>
+        )}
 
         <FlatList
           style={styles.fill}
           inverted
-          data={messages}
+          data={mode2 === 'search' ? (searchResults ?? []) : mode2 === 'pinned' ? (pinnedList ?? []) : messages}
           keyExtractor={(item) => (item.kind === 'call' ? `call:${item.callId}` : item.messageId)}
           contentContainerStyle={styles.messages}
           renderItem={({ item, index }) => {
@@ -367,26 +622,59 @@ export function ChatScreen({
             }
             const mine = item.senderId === selfId;
             const showTranslation = item.translatedBody != null && !revealed.has(item.messageId);
+            const retracted = item.retractedAtMs != null;
+            const translatedVoice = item.kind === 'voice' && item.translatedAudioAvailable === true;
+            const useOriginal = !translatedVoice || playOriginal.has(item.messageId);
+            const noteKey = useOriginal ? item.messageId : `${item.messageId}:translated`;
+            const noteDurationMs = useOriginal ? (item.mediaDurationMs ?? 0) : (item.translatedDurationMs ?? item.mediaDurationMs ?? 0);
             return (
               <View>
                 {dayChip}
                 <View style={[styles.bubbleRow, mine ? styles.bubbleRowMine : styles.bubbleRowTheirs]}>
-                  <View style={[styles.bubble, mine ? styles.mine : styles.theirs]}>
-                    {item.kind === 'voice' ? (
-                      <VoiceNoteBubble
-                        mine={mine}
-                        loaded={loadedNote === item.messageId}
-                        playing={loadedNote === item.messageId && playback.playing}
-                        positionSeconds={loadedNote === item.messageId ? playback.currentTime : 0}
-                        durationSeconds={
-                          loadedNote === item.messageId && playback.duration > 0
-                            ? playback.duration
-                            : (item.mediaDurationMs ?? 0) / 1000
-                        }
-                        onToggle={() => void togglePlayback(item.messageId, () => fetchVoiceNoteAsDataUri(authorizedFetch, item.messageId))}
-                        onSeek={seekLoaded}
-                        clock={clock}
-                      />
+                  <Pressable onLongPress={() => setSheetFor(item)} delayLongPress={280} style={[styles.bubble, mine ? styles.mine : styles.theirs, retracted && styles.retracted]}>
+                    {item.replyTo != null && (
+                      <View style={[styles.quote, mine && styles.quoteMine]}>
+                        <Text style={[styles.quoteWho, mine && styles.mineMeta]}>{item.replyTo.senderId === selfId ? 'You' : name}</Text>
+                        <Text style={[styles.quoteText, mine && styles.mineText]} numberOfLines={2}>{item.replyTo.preview}</Text>
+                      </View>
+                    )}
+                    {item.forwardedFrom != null && (
+                      <Text style={[styles.forwarded, mine && styles.mineMeta]}>↪ Forwarded</Text>
+                    )}
+                    {retracted ? (
+                      <Text style={[styles.retractedText, mine && styles.mineMeta]}>Message was removed</Text>
+                    ) : item.kind === 'voice' ? (
+                      <>
+                        {translatedVoice && (
+                          <View style={styles.voiceChoice}>
+                            <Pressable onPress={() => setPlayOriginal((current) => { const next = new Set(current); next.delete(item.messageId); return next; })} accessibilityRole="button">
+                              <Text style={[styles.voiceChoiceLabel, !useOriginal && styles.voiceChoiceOn, mine && styles.mineMeta]}>Translated ▶</Text>
+                            </Pressable>
+                            <Pressable onPress={() => setPlayOriginal((current) => new Set(current).add(item.messageId))} accessibilityRole="button">
+                              <Text style={[styles.voiceChoiceLabel, useOriginal && styles.voiceChoiceOn, mine && styles.mineMeta]}>Original</Text>
+                            </Pressable>
+                          </View>
+                        )}
+                        <VoiceNoteBubble
+                          mine={mine}
+                          loaded={loadedNote === noteKey}
+                          playing={loadedNote === noteKey && playback.playing}
+                          positionSeconds={loadedNote === noteKey ? playback.currentTime : 0}
+                          durationSeconds={loadedNote === noteKey && playback.duration > 0 ? playback.duration : noteDurationMs / 1000}
+                          onToggle={() =>
+                            void togglePlayback(noteKey, () =>
+                              useOriginal
+                                ? fetchVoiceNoteAsDataUri(authorizedFetch, item.messageId)
+                                : fetchTranslatedVoiceNoteAsDataUri(authorizedFetch, item.messageId),
+                            )
+                          }
+                          onSeek={seekLoaded}
+                          clock={clock}
+                        />
+                        {translatedVoice && !useOriginal && item.translatedBody != null && (
+                          <Text style={[styles.voiceTranscript, mine && styles.mineMeta]} numberOfLines={3}>{item.translatedBody}</Text>
+                        )}
+                      </>
                     ) : (
                       <>
                         <Text style={[styles.body, mine && styles.mineText]}>{showTranslation ? item.translatedBody : item.body}</Text>
@@ -412,6 +700,7 @@ export function ChatScreen({
                       </>
                     )}
                     <View style={styles.metaRow}>
+                      {item.editedAtMs != null && !retracted && <Text style={[styles.metaText, mine && styles.mineMeta]}>edited ·</Text>}
                       <Text style={[styles.metaText, mine && styles.mineMeta]}>{timeOf(item.createdAtMs)}</Text>
                       {mine ? (
                         <Text style={[styles.metaText, mine && styles.mineMeta, item.readAtMs !== null && styles.readTicks]}>
@@ -419,8 +708,17 @@ export function ChatScreen({
                         </Text>
                       ) : null}
                     </View>
-                  </View>
+                  </Pressable>
                 </View>
+                {item.reactions !== undefined && item.reactions.length > 0 && (
+                  <View style={[styles.reactionsRow, mine ? styles.bubbleRowMine : styles.bubbleRowTheirs]}>
+                    {item.reactions.map((reaction) => (
+                      <Pressable key={reaction.emoji} onPress={() => void react(item, reaction.mine ? null : reaction.emoji)} accessibilityRole="button" style={[styles.reactionChip, reaction.mine && styles.reactionChipMine]}>
+                        <Text style={styles.reactionChipText}>{reaction.emoji}{reaction.count > 1 ? ` ${reaction.count}` : ''}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
               </View>
             );
           }}
@@ -432,7 +730,40 @@ export function ChatScreen({
           </View>
         )}
 
+        {undo !== null && (
+          <View style={styles.snackbar}>
+            <Text style={styles.snackbarText}>Message deleted for you</Text>
+            <Pressable onPress={() => void undoHide()} accessibilityRole="button" hitSlop={8}>
+              <Text style={styles.snackbarAction}>Undo</Text>
+            </Pressable>
+          </View>
+        )}
+        {failedSend !== null && (
+          <View style={styles.snackbar}>
+            <Text style={styles.snackbarText} numberOfLines={1}>Not sent: {failedSend.body}</Text>
+            <Pressable onPress={() => void retryFailedSend()} accessibilityRole="button" hitSlop={8}>
+              <Text style={styles.snackbarAction}>{sending ? 'Sending…' : 'Retry'}</Text>
+            </Pressable>
+            <Pressable onPress={() => { setFailedSend(null); setError(null); }} accessibilityRole="button" accessibilityLabel="Discard" hitSlop={8}>
+              <Icon name="close" size={16} color={C7.muted} />
+            </Pressable>
+          </View>
+        )}
         <View style={styles.composerWrap}>
+          {(replyTo !== null || editing !== null) && (
+            <View style={styles.contextBar}>
+              <View style={styles.contextAccent} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.contextWho}>{editing !== null ? 'Editing your message' : `Replying to ${replyTo?.senderId === selfId ? 'yourself' : name}`}</Text>
+                {replyTo !== null && (
+                  <Text style={styles.contextText} numberOfLines={1}>{replyTo.kind === 'voice' ? 'Voice note' : (replyTo.translatedBody ?? replyTo.body ?? '')}</Text>
+                )}
+              </View>
+              <Pressable onPress={() => { setReplyTo(null); if (editing !== null) { setEditing(null); setDraft(''); } }} accessibilityRole="button" accessibilityLabel="Cancel" hitSlop={8}>
+                <Icon name="close" size={16} color={C7.muted} />
+              </Pressable>
+            </View>
+          )}
           {recording ? (
             <View style={styles.composer}>
               <Pressable onPress={() => void cancelRecording()} accessibilityRole="button" style={styles.quietAction}>
@@ -504,6 +835,32 @@ export function ChatScreen({
           </Text>
         </View>
       </KeyboardAvoidingView>
+
+      <MessageActionSheet
+        visible={sheetFor !== null}
+        actions={sheetFor === null ? [] : actionsFor(sheetFor)}
+        pinned={sheetFor?.pinnedByMe === true}
+        myReaction={sheetFor?.reactions?.find((r) => r.mine)?.emoji ?? null}
+        onAction={(action) => { if (sheetFor !== null) void runAction(sheetFor, action); }}
+        onReact={(emoji) => { if (sheetFor !== null) void react(sheetFor, emoji); }}
+        onClose={() => setSheetFor(null)}
+      />
+
+      <Modal visible={forwarding !== null} transparent animationType="fade" onRequestClose={() => setForwarding(null)}>
+        <Pressable style={styles.backdrop} onPress={() => setForwarding(null)}>
+          <Pressable style={styles.pickerSheet} onPress={() => undefined}>
+            <Text style={styles.pickerTitle}>Forward to</Text>
+            {contacts === null && <ActivityIndicator color={C7.teal} />}
+            {contacts !== null && contacts.length === 0 && <Text style={styles.pickerEmpty}>No contacts to forward to.</Text>}
+            {contacts?.map((person) => (
+              <Pressable key={person.accountId} onPress={() => void forwardTo(person)} accessibilityRole="button" style={styles.pickerRow}>
+                <AvatarView accountId={person.accountId} name={person.displayName ?? person.username ?? person.accountId} size={36} />
+                <Text style={styles.pickerName}>{person.displayName ?? person.username ?? person.accountId}</Text>
+              </Pressable>
+            ))}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -585,6 +942,40 @@ const styles = StyleSheet.create({
   headerIdentity: { flex: 1, gap: 1 },
   headerName: { color: C7.text, fontSize: 18, fontWeight: '600', fontFamily: 'serif' },
   headerHandle: { color: C7.muted, fontSize: 12 },
+  headerMore: { padding: 6 },
+  menu: { position: 'absolute', right: 12, top: 96, zIndex: 20, elevation: 8, backgroundColor: '#0e1826', borderWidth: 1, borderColor: C7.panelEdge, borderRadius: 14, paddingVertical: 6, minWidth: 220 },
+  menuItem: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingVertical: 11 },
+  menuLabel: { color: C7.text, fontSize: 14 },
+  searchBar: { flexDirection: 'row', alignItems: 'center', gap: 10, marginHorizontal: 12, marginTop: 8, borderRadius: 999, borderWidth: 1, borderColor: C7.panelEdge, backgroundColor: 'rgba(255,255,255,0.04)', paddingHorizontal: 14 },
+  searchInput: { flex: 1, color: C7.text, fontSize: 15, paddingVertical: 9 },
+  retracted: { opacity: 0.6 },
+  retractedText: { color: C7.muted, fontSize: 14, fontStyle: 'italic' },
+  quote: { borderLeftWidth: 2, borderLeftColor: C7.teal, paddingLeft: 8, marginBottom: 4, gap: 1 },
+  quoteMine: { borderLeftColor: 'rgba(7,11,18,0.5)' },
+  quoteWho: { color: C7.teal, fontSize: 11, fontWeight: '700' },
+  quoteText: { color: C7.muted, fontSize: 13 },
+  forwarded: { color: C7.muted, fontSize: 11, fontStyle: 'italic', marginBottom: 2 },
+  voiceChoice: { flexDirection: 'row', gap: 12, marginBottom: 4 },
+  voiceChoiceLabel: { color: C7.muted, fontSize: 12 },
+  voiceChoiceOn: { color: C7.teal, fontWeight: '700' },
+  voiceTranscript: { color: C7.muted, fontSize: 12, fontStyle: 'italic', marginTop: 4 },
+  reactionsRow: { flexDirection: 'row', gap: 4, marginTop: -2, paddingHorizontal: 6 },
+  reactionChip: { borderRadius: 999, borderWidth: 1, borderColor: C7.panelEdge, backgroundColor: 'rgba(14,22,36,0.95)', paddingHorizontal: 8, paddingVertical: 2 },
+  reactionChipMine: { borderColor: C7.teal, backgroundColor: C7.tealSoft },
+  reactionChipText: { color: C7.text, fontSize: 12 },
+  snackbar: { flexDirection: 'row', alignItems: 'center', gap: 12, marginHorizontal: 14, marginBottom: 6, borderRadius: 12, backgroundColor: '#0e1826', borderWidth: 1, borderColor: C7.panelEdge, paddingHorizontal: 14, paddingVertical: 10 },
+  snackbarText: { flex: 1, color: C7.text, fontSize: 13 },
+  snackbarAction: { color: C7.teal, fontSize: 13, fontWeight: '700' },
+  contextBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, paddingTop: 8 },
+  contextAccent: { width: 3, height: 32, borderRadius: 2, backgroundColor: C7.teal },
+  contextWho: { color: C7.teal, fontSize: 12, fontWeight: '700' },
+  contextText: { color: C7.muted, fontSize: 13 },
+  backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
+  pickerSheet: { backgroundColor: '#0e1826', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 18, paddingBottom: 32, gap: 6, borderWidth: 1, borderColor: C7.panelEdge, maxHeight: '70%' },
+  pickerTitle: { color: C7.text, fontSize: 18, fontWeight: '600', fontFamily: 'serif', marginBottom: 6 },
+  pickerEmpty: { color: C7.muted, fontSize: 14 },
+  pickerRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 },
+  pickerName: { color: C7.text, fontSize: 16 },
   headerCall: {
     width: 40,
     height: 40,

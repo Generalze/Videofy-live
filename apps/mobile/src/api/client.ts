@@ -45,6 +45,17 @@ export interface WireMessage {
   readonly mediaDurationMs: number | null;
   readonly createdAtMs: number;
   readonly readAtMs: number | null;
+  /** Translated voice note: a derived rendition exists beside the original. */
+  readonly translatedDurationMs?: number | null;
+  readonly translatedAudioAvailable?: boolean;
+  /** Message actions (founder ruling 29 Aug): what the server did to this message. */
+  readonly editedAtMs?: number | null;
+  readonly retractedAtMs?: number | null;
+  readonly replyToMessageId?: string | null;
+  readonly replyTo?: { readonly messageId: string; readonly senderId: string; readonly kind: 'text' | 'voice'; readonly preview: string } | null;
+  readonly forwardedFrom?: { readonly messageId: string; readonly senderId: string } | null;
+  readonly reactions?: readonly { readonly emoji: string; readonly count: number; readonly mine: boolean }[];
+  readonly pinnedByMe?: boolean;
 }
 
 /**
@@ -61,6 +72,8 @@ export interface ConversationEntry {
   readonly partner: ContactPerson;
   readonly last: WireMessage;
   readonly unread: number;
+  readonly muted?: boolean;
+  readonly archived?: boolean;
 }
 
 export interface VerificationStatus {
@@ -174,20 +187,41 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
         undefined,
         (body) => (body as { messages: TimelineItem[] }).messages,
       ),
-    sendText: (accountId: string, body: string) =>
+    sendText: (accountId: string, body: string, replyToMessageId?: string) =>
       request(
         authorizedFetch,
         `/messages/with/${accountId}`,
-        json({ body }),
+        json({ body, ...(replyToMessageId === undefined ? {} : { replyToMessageId }) }),
         (reply) => (reply as { message: WireMessage }).message,
       ),
-    sendVoice: (accountId: string, audioBase64: string, durationMs: number) =>
+    sendVoice: (accountId: string, audioBase64: string, durationMs: number, replyToMessageId?: string) =>
       request(
         authorizedFetch,
         `/messages/with/${accountId}/voice`,
-        json({ audioBase64, durationMs }),
+        json({ audioBase64, durationMs, ...(replyToMessageId === undefined ? {} : { replyToMessageId }) }),
         (reply) => (reply as { message: WireMessage }).message,
       ),
+    /* Message actions: each word means exactly what the server does. */
+    forwardMessage: (toAccountId: string, messageId: string) =>
+      request(authorizedFetch, `/messages/with/${toAccountId}/forward`, json({ messageId }), (reply) => (reply as { message: WireMessage }).message),
+    editMessage: (messageId: string, body: string) =>
+      request(authorizedFetch, `/messages/${encodeURIComponent(messageId)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ body }) }, (reply) => (reply as { message: WireMessage }).message),
+    retractMessage: (messageId: string) =>
+      request(authorizedFetch, `/messages/${encodeURIComponent(messageId)}/retract`, { method: 'POST' }, (reply) => (reply as { message: WireMessage }).message),
+    hideMessage: (messageId: string) =>
+      request(authorizedFetch, `/messages/${encodeURIComponent(messageId)}/hide`, { method: 'POST' }, () => undefined),
+    unhideMessage: (messageId: string) =>
+      request(authorizedFetch, `/messages/${encodeURIComponent(messageId)}/hide`, { method: 'DELETE' }, () => undefined),
+    reactToMessage: (messageId: string, emoji: string | null) =>
+      request(authorizedFetch, `/messages/${encodeURIComponent(messageId)}/reaction`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ emoji }) }, (reply) => (reply as { reactions: readonly { emoji: string; count: number; mine: boolean }[] }).reactions),
+    pinMessage: (messageId: string, pinned: boolean) =>
+      request(authorizedFetch, `/messages/${encodeURIComponent(messageId)}/pin`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pinned }) }, (reply) => (reply as { pinnedByMe: boolean }).pinnedByMe),
+    pinnedMessages: (accountId: string) =>
+      request(authorizedFetch, `/messages/with/${accountId}/pinned`, undefined, (body) => (body as { messages: WireMessage[] }).messages),
+    searchMessages: (accountId: string, q: string) =>
+      request(authorizedFetch, `/messages/with/${accountId}/search?q=${encodeURIComponent(q)}`, undefined, (body) => (body as { messages: WireMessage[] }).messages),
+    conversationSettings: (accountId: string, settings: { muted?: boolean; archived?: boolean }) =>
+      request(authorizedFetch, `/messages/with/${accountId}/settings`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) }, (reply) => reply as { muted: boolean; archived: boolean }),
     conversationMode: (accountId: string) =>
       request(
         authorizedFetch,
