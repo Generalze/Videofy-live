@@ -39,12 +39,15 @@ import { registerDeviceRoutes } from './device-routes.js';
 import { PushDispatcher } from './push/push-dispatcher.js';
 import { registerPushRoutes } from './push-routes.js';
 import { MessageStore, createInMemoryMessagePort } from './message-store.js';
+import { createInMemoryMessageActionPort } from './message-actions.js';
+import { createPostgresMessageActions } from './db/message-actions-postgres.js';
 import { RingRegistry } from './ring-registry.js';
 import {
   createInMemoryConversationModePort,
 } from './conversation-modes.js';
 import { createPostgresConversationModes } from './db/conversation-modes-postgres.js';
 import { createTextTranslator } from './translation-client.js';
+import { createVoiceNoteTranslator } from './voice-note-translation-client.js';
 import { registerAvatarRoutes } from './avatar-routes.js';
 import { createInMemoryCallRecordPort } from './call-records.js';
 import { createPostgresCallRecords } from './db/call-records-postgres.js';
@@ -620,6 +623,12 @@ registerPushRoutes(app, {
  */
 const messages = new MessageStore({
   port: databasePool ? createPostgresMessageRecords(databasePool) : createInMemoryMessagePort(),
+  // The reader's own facts (hides, reactions, pins, mute) MUST follow the
+  // records into the database: left to the store's in-memory default they
+  // would vanish on every restart while every health signal said fine.
+  actions: databasePool
+    ? createPostgresMessageActions(databasePool)
+    : createInMemoryMessageActionPort(),
 });
 
 registerMessageRoutes(app, {
@@ -640,6 +649,10 @@ registerMessageRoutes(app, {
    * stated in the client as "translation unavailable", never a lost message.
    */
   translator: createTextTranslator({
+    mediaIngestUrl: process.env['MEDIA_INGEST_URL'],
+    internalToken: process.env['INTERNAL_WEBRTC_TOKEN'],
+  }),
+  voiceTranslator: createVoiceNoteTranslator({
     mediaIngestUrl: process.env['MEDIA_INGEST_URL'],
     internalToken: process.env['INTERNAL_WEBRTC_TOKEN'],
   }),

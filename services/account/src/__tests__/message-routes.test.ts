@@ -48,8 +48,13 @@ interface Harness {
   as: (accountId: string, path: string, init?: RequestInit) => Promise<Response>;
   conversationModes: ConversationModePort;
   setTranslatorAvailable: (value: boolean) => void;
+  /** How many times the voice-note translator was asked; the fake returns a WAV stub. */
+  voiceTranslations: () => number;
   store: AccountStore;
 }
+
+/** What the fake voice translator speaks back; recognisable, never real audio. */
+const FAKE_TRANSLATED_AUDIO = Buffer.from('RIFF-fake-translated-wav');
 
 async function harness(): Promise<Harness> {
   const contacts = new ContactStore();
@@ -66,6 +71,7 @@ async function harness(): Promise<Harness> {
   const rings = new RingRegistry();
   const conversationModes = createInMemoryConversationModePort();
   let translatorAvailable = true;
+  let voiceTranslations = 0;
   const app = express();
   /*
    * Mirrors index.ts: the global identity parser steps aside for the routes
@@ -95,6 +101,23 @@ async function harness(): Promise<Harness> {
       translate: async ({ targetLanguage, sourceText }) =>
         translatorAvailable ? `[${targetLanguage}] ${sourceText}` : null,
     },
+    // Same switch governs the voice-note line; the fake never sees real audio.
+    voiceTranslator: {
+      translate: async ({ targetLanguage, durationMs }) => {
+        voiceTranslations += 1;
+        return translatorAvailable
+          ? {
+              ok: true,
+              rendering: {
+                translatedText: `[${targetLanguage}] spoken`,
+                audio: FAKE_TRANSLATED_AUDIO,
+                mime: 'audio/wav',
+                durationMs: durationMs + 250,
+              },
+            }
+          : { ok: false, stage: 'synthesize' };
+      },
+    },
     mediaDir: await mkdtemp(join(tmpdir(), 'msg-media-')),
     callerAccountId: (req) => {
       const id = req.header('x-test-account');
@@ -115,6 +138,7 @@ async function harness(): Promise<Harness> {
     setTranslatorAvailable: (value: boolean) => {
       translatorAvailable = value;
     },
+    voiceTranslations: () => voiceTranslations,
     store,
     close: () => new Promise<void>((r) => server.close(() => r())),
     as: (accountId, path, init = {}) =>
@@ -423,6 +447,114 @@ describe('translated conversations', () => {
     });
     const after = (await (await app.as(a, `/messages/with/${b}/mode`)).json()) as { mode: string };
     expect(after.mode).toBe('translated');
+  });
+});
+
+describe('translated voice notes', () => {
+  /*
+   * The original is stored first and stays authoritative; a rendering in the
+   * reader's language is a SECOND file beside it. Normal mode never asks the
+   * engine, and an engine that fails leaves the note exactly as recorded.
+   */
+  async function pairWithLanguages(harnessRef: Harness) {
+    const first = await harnessRef.store.register({
+      email: 'va@t.test',
+      password: 'long-and-sturdy-passphrase-A7',
+    });
+    const second = await harnessRef.store.register({
+      email: 'vb@t.test',
+      password: 'long-and-sturdy-passphrase-B7',
+    });
+    if (!first.ok || !second.ok) throw new Error('test accounts failed to register');
+    const a = first.account.accountId;
+    const b = second.account.accountId;
+    await harnessRef.store.setDefaultLanguage(a, 'en');
+    await harnessRef.store.setDefaultLanguage(b, 'es');
+    await befriend(harnessRef.contacts, a, b);
+    return { a, b };
+  }
+
+  interface VoiceWire {
+    messageId: string;
+    translatedBody: string | null;
+    translatedLanguage: string | null;
+    translatedDurationMs: number | null;
+    translatedAudioAvailable: boolean;
+    mediaDurationMs: number;
+  }
+
+  async function sendNote(harnessRef: Harness, a: string, b: string, bytes: Buffer) {
+    const sent = await harnessRef.as(a, `/messages/with/${b}/voice`, {
+      method: 'POST',
+      body: JSON.stringify({ audioBase64: bytes.toString('base64'), durationMs: 1500 }),
+    });
+    expect(sent.status).toBe(201);
+    return ((await sent.json()) as { message: VoiceWire }).message;
+  }
+
+  it('stores the derived audio beside the original and exposes both', async () => {
+    app = await harness();
+    const { a, b } = await pairWithLanguages(app);
+    await app.as(a, `/messages/with/${b}/mode`, {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'translated' }),
+    });
+    const original = Buffer.from('fake-aac-bytes');
+    const message = await sendNote(app, a, b, original);
+    expect(app.voiceTranslations()).toBe(1);
+    expect(message.translatedBody).toBe('[es] spoken');
+    expect(message.translatedLanguage).toBe('es');
+    expect(message.translatedDurationMs).toBe(1750);
+    expect(message.translatedAudioAvailable).toBe(true);
+    expect(message.mediaDurationMs).toBe(1500);
+
+    // The original is untouched and still the one behind the media route.
+    const asRecipient = await app.as(b, `/messages/media/${message.messageId}`);
+    expect(asRecipient.status).toBe(200);
+    expect(Buffer.from(await asRecipient.arrayBuffer()).equals(original)).toBe(true);
+
+    const translated = await app.as(b, `/messages/${message.messageId}/voice/translated`);
+    expect(translated.status).toBe(200);
+    expect(translated.headers.get('content-type')).toContain('audio/wav');
+    expect(Buffer.from(await translated.arrayBuffer()).equals(FAKE_TRANSLATED_AUDIO)).toBe(true);
+
+    // Same door as the original: a non-participant and an anonymous caller.
+    await befriend(app.contacts, a, 'acct_c');
+    expect(
+      (await app.as('acct_c', `/messages/${message.messageId}/voice/translated`)).status,
+    ).toBe(404);
+    expect(
+      (await fetch(`${app.url}/messages/${message.messageId}/voice/translated`)).status,
+    ).toBe(401);
+  });
+
+  it('a normal conversation never asks the engine', async () => {
+    app = await harness();
+    const { a, b } = await pairWithLanguages(app);
+    const message = await sendNote(app, a, b, Buffer.from('fake-aac-bytes'));
+    expect(app.voiceTranslations()).toBe(0);
+    expect(message.translatedAudioAvailable).toBe(false);
+    expect(message.translatedBody).toBe(null);
+    expect((await app.as(b, `/messages/${message.messageId}/voice/translated`)).status).toBe(404);
+  });
+
+  it('an engine failure keeps the original, playable and untranslated', async () => {
+    app = await harness();
+    const { a, b } = await pairWithLanguages(app);
+    await app.as(a, `/messages/with/${b}/mode`, {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'translated' }),
+    });
+    app.setTranslatorAvailable(false);
+    const original = Buffer.from('fake-aac-bytes');
+    const message = await sendNote(app, a, b, original);
+    expect(app.voiceTranslations()).toBe(1);
+    expect(message.translatedAudioAvailable).toBe(false);
+    expect(message.translatedBody).toBe(null);
+    expect(message.translatedDurationMs).toBe(null);
+    const asRecipient = await app.as(b, `/messages/media/${message.messageId}`);
+    expect(Buffer.from(await asRecipient.arrayBuffer()).equals(original)).toBe(true);
+    expect((await app.as(b, `/messages/${message.messageId}/voice/translated`)).status).toBe(404);
   });
 });
 

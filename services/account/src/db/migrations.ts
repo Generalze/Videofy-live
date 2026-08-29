@@ -553,6 +553,87 @@ const CALL_RECORDS: Migration = {
   `,
 };
 
+/**
+ * Translated voice notes (P7 messaging). A voice note in a translated
+ * conversation gets a second, derived audio file spoken in the recipient's
+ * language, stored BESIDE the original -- which stays the authoritative,
+ * playable recording. The translated text reuses translated_body/_language
+ * from 012; only the derived file and its length are new. Paths, never URLs.
+ */
+const VOICE_NOTE_TRANSLATION: Migration = {
+  name: '015_voice_note_translation',
+  sql: `
+    ALTER TABLE messages
+      ADD COLUMN IF NOT EXISTS translated_media_path   text,
+      ADD COLUMN IF NOT EXISTS translated_duration_ms  integer;
+  `,
+};
+
+/**
+ * What a person may do to a message (founder rulings 2026-08-29).
+ *
+ * Edit and retract change the message for both readers and so are columns on
+ * the row: `edited_at_ms` and the `retracted_at_ms` tombstone whose content
+ * columns are nulled at the moment it is set. Reply and forward are
+ * provenance, also on the row, because they are facts about the message.
+ *
+ * Hide, react, pin and mute/archive are ONE ACCOUNT's facts and so are side
+ * tables keyed by (message_id, account_id) -- the schema makes "user-scoped"
+ * true rather than every query having to remember it. Nothing references
+ * `messages` by foreign key on purpose: a tombstoned message keeps its row,
+ * so the side rows never dangle, and the ports already refuse to act on a
+ * message that does not exist.
+ */
+const MESSAGE_ACTIONS: Migration = {
+  name: '016_message_actions',
+  sql: `
+    ALTER TABLE messages
+      ADD COLUMN IF NOT EXISTS reply_to_message_id       text,
+      ADD COLUMN IF NOT EXISTS forwarded_from_message_id text,
+      ADD COLUMN IF NOT EXISTS forwarded_from_sender_id  text,
+      ADD COLUMN IF NOT EXISTS edited_at_ms              bigint,
+      ADD COLUMN IF NOT EXISTS retracted_at_ms           bigint;
+
+    -- Delete-for-me. The message stays; this reader stops seeing it.
+    CREATE TABLE IF NOT EXISTS message_hides (
+      message_id   text   NOT NULL,
+      account_id   text   NOT NULL,
+      hidden_at_ms bigint NOT NULL,
+      PRIMARY KEY (message_id, account_id)
+    );
+
+    -- One reaction per account per message; changing it replaces the row.
+    CREATE TABLE IF NOT EXISTS message_reactions (
+      message_id    text   NOT NULL,
+      account_id    text   NOT NULL,
+      emoji         text   NOT NULL,
+      reacted_at_ms bigint NOT NULL,
+      PRIMARY KEY (message_id, account_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS message_pins (
+      message_id   text   NOT NULL,
+      account_id   text   NOT NULL,
+      pinned_at_ms bigint NOT NULL,
+      PRIMARY KEY (message_id, account_id)
+    );
+
+    -- "My pins" is the lookup; the pair is resolved through the message.
+    CREATE INDEX IF NOT EXISTS message_pins_account_idx
+      ON message_pins (account_id, pinned_at_ms DESC);
+
+    -- Per account, per partner: NOT per pair. A mutes B without B knowing.
+    CREATE TABLE IF NOT EXISTS conversation_settings (
+      account_id    text    NOT NULL,
+      partner_id    text    NOT NULL,
+      muted         boolean NOT NULL DEFAULT false,
+      archived      boolean NOT NULL DEFAULT false,
+      updated_at_ms bigint  NOT NULL,
+      PRIMARY KEY (account_id, partner_id)
+    );
+  `,
+};
+
 /** Applied in this order. Append only. */
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
@@ -569,4 +650,6 @@ export const MIGRATIONS: readonly Migration[] = [
   CONVERSATION_MODES,
   LANGUAGE_FACTS,
   CALL_RECORDS,
+  VOICE_NOTE_TRANSLATION,
+  MESSAGE_ACTIONS,
 ];

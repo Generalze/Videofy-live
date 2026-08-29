@@ -78,6 +78,7 @@ async function harness(): Promise<Harness> {
     rings: new RingRegistry(),
     conversationModes: createInMemoryConversationModePort(),
     translator: { translate: async () => null },
+    voiceTranslator: { translate: async () => ({ ok: false, stage: 'unconfigured' }) },
     mediaDir: await mkdtemp(join(tmpdir(), 'call-history-')),
     calls,
     callerAccountId: (req) => {

@@ -29,7 +29,9 @@ import { reconcileVoiceMaterial } from './voice-material-reconciliation.js';
 import { VoiceProfileStore } from './voice-profile-store.js';
 import { registerSourceMediaDeliveryRoute } from './source-media-delivery-route.js';
 import { registerViewerReadyMediaDeliveryRoute } from './viewer-ready-media-delivery-route.js';
-import { IngestService } from './ingest-service.js';
+import { IngestService, buildTextToSpeechVoiceIdsByLanguage } from './ingest-service.js';
+import { createTranscriptionProvider } from './transcription-provider.js';
+import { registerVoiceNoteTranslationRoute } from './voice-note-translation-route.js';
 import { logger, setLogLevel } from './logger.js';
 import { MediaIngestError } from './ingest-error.js';
 import { setOpusMtDiagnosticLogger } from './translation-provider.js';
@@ -150,6 +152,44 @@ const ingest = new IngestService(
       }),
 );
 
+
+/*
+ * Translated voice notes (P7 messaging). Mounted BEFORE the global parser
+ * because a two-minute voice note is larger than 1mb; the route carries its
+ * own scoped limit. The recogniser is a second batch instance of the SAME
+ * configured provider -- the upload path's lives inside IngestService and
+ * exposing it is a larger change than this one; faster-whisper loads its
+ * worker lazily, so nothing is paid until the first note arrives. The
+ * translator IS the live instance, and the synthesiser is resolved per
+ * request because the live one is built further down this file.
+ */
+const voiceNoteVoiceIds = buildTextToSpeechVoiceIdsByLanguage(config);
+registerVoiceNoteTranslationRoute(app, {
+  auth: config.internalIngressAuth,
+  transcription: createTranscriptionProvider({
+    providerName: config.transcriptionProvider,
+    sourceLanguage: config.transcriptionSourceLanguage,
+    timeoutMs: config.transcriptionTimeoutMs,
+    fasterWhisper: {
+      pythonExecutable: config.fasterWhisperPythonExecutable,
+      ffmpegExecutable: config.fasterWhisperFfmpegExecutable,
+      modelSize: config.fasterWhisperModelSize,
+      device: config.fasterWhisperDevice,
+      computeType: config.fasterWhisperComputeType,
+      modelCacheDir: config.fasterWhisperModelCacheDir,
+      allowGpuFallback: config.fasterWhisperAllowGpuFallback,
+      timeoutMs: config.transcriptionTimeoutMs,
+    },
+  }),
+  translation: ingest.liveTranslation,
+  synthesis: () => streamingSynthesis,
+  voiceIdFor: (targetLanguage) =>
+    voiceNoteVoiceIds.get(targetLanguage) ?? config.textToSpeechDefaultVoiceId,
+  stagingDir: resolve(config.webrtcAudioChunkStagingDir, 'voice-notes'),
+  transcriptionTimeoutMs: config.transcriptionTimeoutMs,
+  translationTimeoutMs: config.translationTimeoutMs,
+  synthesisTimeoutMs: config.textToSpeechTimeoutMs,
+});
 
 app.use(express.json({ limit: '1mb' }));
 
