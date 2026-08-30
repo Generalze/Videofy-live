@@ -34,6 +34,26 @@ WWW_DIR="${WWW_DIR:?WWW_DIR is required (e.g. /srv/videofy-prod/www)}"
 PUBLIC_ORIGIN="${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required (e.g. https://consummate7.com)}"
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
+# WHERE THE BROWSER SENDS ITS REQUESTS, compiled into every bundle.
+#
+# These are PATHS, not origins, because every surface is served from the one
+# origin the page is already on -- which is also why the same values are right
+# for staging and production and nothing here is per-environment.
+#
+# They were absent from this script for its first week, and the code's fallback
+# is `http://localhost:3006`. So production shipped a site whose Join form
+# posted to the visitor's own machine and reported "Could not reach C7 right
+# now" -- a server that was answering 201 the whole time. The values had always
+# been in deploy/staging/build-apps.sh; this script was generalised without
+# them. The guard at the end of this file is what makes that unshippable rather
+# than merely fixed.
+export VITE_GATEWAY_URL=/
+export VITE_CALL_PATH=/call/
+export VITE_ACCOUNT_URL=/auth
+export VITE_INGEST_URL=/media
+export VITE_VIEWER_BASE=/listen
+export VITE_PROGRESSIVE_TRANSLATED_AUDIO=true
+
 # Public STUN only, as JSON. The client JSON.parses this and returns [] on any
 # failure, so a comma-separated list is silently identical to nothing at all.
 # TURN is issued at runtime by the gateway (/webrtc/ice-servers) and is never
@@ -80,3 +100,22 @@ stage call-web      "/call/"     call-web
 stage listener-web  "/listen/"   listener-web
 stage operator-web  "/operator/" operator-web
 echo "apps staged into $WWW_DIR for $PUBLIC_ORIGIN"
+
+# --- THE GUARD -------------------------------------------------------------
+# Founder directive 30 Aug 2026, production smoke: "no public bundle contains
+# localhost development endpoints". Checked HERE, on the files about to be
+# served, because by the time a person sees "Could not reach C7" the evidence
+# is a fetch that failed in their browser and the server looks healthy from
+# every angle we can measure.
+leaked=0
+for f in $(find "$WWW_DIR" -name '*.js' -type f 2>/dev/null); do
+  if grep -qE 'localhost:[0-9]+|127\.0\.0\.1:[0-9]+' "$f"; then
+    echo "REFUSED: $(basename "$f") names a development endpoint" >&2
+    leaked=1
+  fi
+done
+if [ "$leaked" -ne 0 ]; then
+  echo "staging aborted: a bundle would have shipped pointing at a developer's machine" >&2
+  exit 1
+fi
+echo "bundles carry no development endpoint"
