@@ -11,9 +11,9 @@
  * present in the markup whatever the route.
  *
  * Built to the golden masters (founder directive, LOCKED 30 Aug 2026,
- * OPERATOR PREMIUM UI GOLDEN MASTERS): 80px top bar with the C7 ring mark
+ * OPERATOR PREMIUM UI GOLDEN MASTERS): 84px top bar with the C7 ring mark
  * and "Videofy Live Operator"; the right cluster of viewers, console
- * language, gateway pill, bell and the channel avatar; a 270px rail with
+ * language, gateway pill, bell and the channel avatar; a 280px rail with
  * "Setup & prepare" and "Access & control", numbered items with line icons,
  * the violet active item, the SERVICES card, and the footer. Every value in
  * it is real state: the viewer count, the socket state, the service lights.

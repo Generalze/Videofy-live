@@ -227,24 +227,29 @@
   justify-content: space-between;
   gap: 32px;
 }
+/*
+ * The masters' page opening: an 11px caps eyebrow, a 38px title and a 15px
+ * lede that wraps near 500px. The five masters differ (title 34..40px, lede
+ * wrapping at 380..600px); these are the medians.
+ */
 .pageHeaderText {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
-  max-width: 720px;
+  max-width: 500px;
 }
 .pageTitle {
   margin: 0;
-  font-size: 40px;
-  line-height: 1.12;
+  font-size: 38px;
+  line-height: 1.15;
   font-weight: 700;
   letter-spacing: -0.02em;
   color: var(--op-text);
 }
 .pageLede {
   margin: 0;
-  font-size: 16px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 1.6;
   color: var(--op-text-muted);
 }
 .pageActions {

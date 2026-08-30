@@ -16,7 +16,7 @@
  * error message.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { isChannelCategory, isChannelVisibility, type ChannelProfile } from '@videofy-live/shared-types';
+import { isChannelCategory, isChannelVisibility, type ChannelProfile, type ChannelProfileUpdate } from '@videofy-live/shared-types';
 import { readOperatorSessionToken } from '../socketConfig';
 
 /** The persisted profile, exactly as the account service holds it. */
@@ -191,4 +191,53 @@ export function useChannelIdentity({
   }, [accountUrl, reloadKey, tick]);
 
   return { state, reload };
+}
+
+/** What the owner sends on PUT /channels/mine; an absent field is left alone. */
+export type ChannelIdentityPatch = ChannelProfileUpdate;
+
+export type ChannelIdentityUpdateResult =
+  | { readonly ok: true; readonly profile: ChannelIdentity }
+  /** The account service's own sentence (a taken handle, a bad shape), or why it could not be reached. */
+  | { readonly ok: false; readonly message: string };
+
+export interface UpdateMyChannelDeps extends FetchMyChannelDeps {
+  readonly patch: ChannelIdentityPatch;
+}
+
+/**
+ * PUT <account>/channels/mine: the Access page's "Edit channel". The account
+ * service validates the handle, name, description and category and answers
+ * with the whole profile, which is what the shell then shows -- nothing is
+ * assumed saved until the service says so. The token travels as a bearer
+ * header and nowhere else.
+ */
+export async function updateMyChannel({ accountUrl, token, patch, fetchImpl }: UpdateMyChannelDeps): Promise<ChannelIdentityUpdateResult> {
+  if (token === null) return { ok: false, message: 'Sign in on C7 in this browser to edit your channel.' };
+  const doFetch = fetchImpl ?? (typeof fetch === 'function' ? fetch : undefined);
+  if (doFetch === undefined) return { ok: false, message: 'This browser cannot reach the account service.' };
+  let response: Response;
+  try {
+    response = await doFetch(`${accountUrl.replace(/\/$/, '')}${MY_CHANNEL_PATH}`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json', 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+  } catch {
+    return { ok: false, message: 'The account service could not be reached.' };
+  }
+  let body: unknown = null;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
+  if (!response.ok) {
+    const served = typeof body === 'object' && body !== null ? (body as { error?: unknown }).error : undefined;
+    if (response.status === 401 || response.status === 403) return { ok: false, message: 'Sign in on C7 in this browser to edit your channel.' };
+    return { ok: false, message: typeof served === 'string' && served.length > 0 ? served : `The account service answered ${response.status}.` };
+  }
+  const profile = parseChannelProfile(body);
+  if (profile === null) return { ok: false, message: 'The saved channel profile could not be read.' };
+  return { ok: true, profile };
 }

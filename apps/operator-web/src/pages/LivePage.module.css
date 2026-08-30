@@ -16,7 +16,7 @@
 }
 .controls {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: 202fr 202fr 215fr 216fr 226fr;
   gap: 26px;
 }
 .control {

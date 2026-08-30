@@ -242,7 +242,7 @@ export function SourcePage({
                 onClick={() => setChosenType(tile.id)}
               >
                 <span className={styles.tileIcon}>
-                  <Icon name={tile.icon} size={24} />
+                  <Icon name={tile.icon} size={28} />
                 </span>
                 <span className={styles.tileTitle}>{tile.title}</span>
                 <span className={styles.tileSubtitle}>{tile.subtitle}</span>
@@ -270,11 +270,11 @@ export function SourcePage({
                 }}
               >
                 <span className={styles.dropIcon} aria-hidden="true">
-                  <Icon name="upload" size={28} />
+                  <Icon name="upload" size={32} />
                 </span>
                 <span className={styles.dropText}>Drag &amp; drop your video file here</span>
                 <span className={styles.dropOr}>or</span>
-                <Button size="sm" disabled={!canSelect} onClick={() => fileInputRef.current?.click()}>
+                <Button size="sm" className={styles.browseButton} disabled={!canSelect} onClick={() => fileInputRef.current?.click()}>
                   Browse files
                 </Button>
                 <input
@@ -440,7 +440,7 @@ export function SourcePage({
             />
             {!hasSource && (
               <span className={styles.previewIdle} aria-hidden="true">
-                <Icon name="broadcast" size={112} strokeWidth={1.5} />
+                <Icon name="broadcast" size={140} strokeWidth={1.5} />
               </span>
             )}
           </div>
@@ -484,7 +484,7 @@ export function SourcePage({
         <details className={styles.details} open>
           <summary className={styles.detailsSummary}>
             <span className={styles.detailsIcon} aria-hidden="true">
-              <Icon name="info" size={24} strokeWidth={1.5} />
+              <Icon name="info" size={28} strokeWidth={1.5} />
             </span>
             <span className={styles.detailsTitle}>Source details</span>
             <span className={styles.detailsChevron} aria-hidden="true">
@@ -538,7 +538,7 @@ export function SourcePage({
 function StatusChip({ icon, label, on }: { readonly icon: IconName; readonly label: string; readonly on: boolean }): React.ReactElement {
   return (
     <span className={styles.chip} data-on={on ? 'true' : 'false'}>
-      <Icon name={icon} size={18} className={styles.chipIcon} />
+      <Icon name={icon} size={20} className={styles.chipIcon} />
       <span>{label}</span>
     </span>
   );

@@ -67,9 +67,15 @@
   --op-radius-md: 12px;
   --op-radius-lg: 16px;
   --op-radius-pill: 999px;
-  --op-topbar-height: 80px;
-  --op-rail-width: 270px;
+  /*
+   * The five masters disagree with each other (rail/content boundary 268..296,
+   * top bar 76..90): these are the medians, the shared geometry that minimises
+   * the summed mismatch across all five rather than matching any one of them.
+   */
+  --op-topbar-height: 84px;
+  --op-rail-width: 280px;
   --op-content-padding: 28px;
+  --op-content-padding-top: 22px;
 
   /* Depth */
   --op-shadow-panel: 0 18px 40px rgba(0, 0, 0, 0.35), 0 1px 0 rgba(255, 255, 255, 0.03) inset;
@@ -83,6 +89,6 @@
 
   /* Type */
   --op-font: var(--vf-font-family-sans, 'Inter', 'Segoe UI', system-ui, sans-serif);
-  --op-eyebrow-size: 12px;
+  --op-eyebrow-size: 11px;
   --op-eyebrow-tracking: 0.12em;
 }

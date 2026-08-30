@@ -71,7 +71,7 @@ function Pipeline(): React.ReactElement {
       {PIPELINE.map((step, index) => (
         <a key={step.page} href={hashForPage(step.page)} className={styles.tile} data-step={index + 1} data-final={index === PIPELINE.length - 1 ? 'true' : undefined}>
           <span className={styles.tileIcon}>
-            <Icon name={step.icon} size={index === PIPELINE.length - 1 ? 44 : 26} strokeWidth={1.5} />
+            <Icon name={step.icon} size={index === PIPELINE.length - 1 ? 56 : 32} strokeWidth={1.5} />
           </span>
           <span className={styles.tileLabel}>{step.label}</span>
         </a>
@@ -117,7 +117,7 @@ function FeedCard({
   return (
     <Panel as="article" padding="none" className={styles.card} aria-label={title}>
       <div className={styles.cardHead}>
-        <IconTile tone="violet" size={48}>
+        <IconTile tone="violet" size={50}>
           <Icon name={icon} size={24} />
         </IconTile>
         <div className={styles.cardTitleBlock}>
@@ -130,7 +130,7 @@ function FeedCard({
       </div>
       <p className={styles.cardText}>{feed?.text ? feed.text : children}</p>
       <div className={styles.cardWave}>
-        <WaveBars seed={seed} bars={110} height={84} />
+        <WaveBars seed={seed} bars={86} height={84} palette="violet" />
       </div>
     </Panel>
   );

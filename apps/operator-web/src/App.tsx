@@ -14,7 +14,7 @@ import { SOCKET_EVENTS, WebRtcSignallingClient, type ChannelCategory } from '@vi
 import styles from './App.module.css';
 import { ConsolePage, ConsoleShell } from './ConsoleShell';
 import { useOperatorPage } from './consolePages';
-import { readAccountUrl, useChannelIdentity } from './premium/channelIdentity';
+import { readAccountUrl, updateMyChannel, useChannelIdentity, type ChannelIdentityPatch } from './premium/channelIdentity';
 import type { LanguageRow } from './languageRows';
 import { LanguagesPage, type CatalogueState } from './pages/LanguagesPage';
 import { NotYetPage } from './pages/NotYetPage';
@@ -66,7 +66,7 @@ import {
   buildPartnerPreviewReadiness,
   shouldShowMockControls,
 } from './partnerPreviewReadiness';
-import { createBroadcasterSocketOptions, createOperatorSocketOptions } from './socketConfig';
+import { createBroadcasterSocketOptions, createOperatorSocketOptions, readOperatorSessionToken } from './socketConfig';
 import {
   createProcessingSession,
   IngestClientError,
@@ -244,7 +244,15 @@ export default function App(): React.ReactElement {
     TimestampedTranslationEvent[]
   >([]);
   const [sourceLanguage, setSourceLanguage] = useState('en');
-  const [sourceLanguageMode, setSourceLanguageMode] = useState<'manual' | 'auto-detect'>('manual');
+  /*
+   * AUTO-DETECT BY DEFAULT (Languages master 03: Auto-detect is the active
+   * segment on a fresh console). Safe to start a session in: media-ingest's
+   * language control holds the default language ("en") in `detecting` until
+   * the first transcribed chunk reconciles it (language-controls.ts), and
+   * media-session treats an undecided source as unknown rather than refusing
+   * a matching target. Manual stays one click away.
+   */
+  const [sourceLanguageMode, setSourceLanguageMode] = useState<'manual' | 'auto-detect'>('auto-detect');
   // NO EN->ES PRESET (founder ruling, 30 Aug 2026): no target until the operator adds one.
   const [sessionTargetLanguage, setSessionTargetLanguage] = useState('');
   const [targetLanguages, setTargetLanguages] = useState<string[]>([]);
@@ -1116,6 +1124,8 @@ export default function App(): React.ReactElement {
     translation: timestampedTranslation,
     generatedAudio,
     selectedTargetLanguages: targetLanguages,
+    sourceLanguage,
+    sourceLanguageMode,
   });
   const workflowSummary = buildOperatorWorkflowSummary({
     connected,
@@ -1207,6 +1217,32 @@ export default function App(): React.ReactElement {
    * workflow that is Starting or Live. Unknown while the gateway is away.
    */
   const channelLive = connected ? workflowSummary.status === 'Live' || workflowSummary.status === 'Starting' : null;
+  /*
+   * Edit channel (Access page): PUT /channels/mine with the changed fields.
+   * The saved profile is re-read into the shell, and the gateway's own copy
+   * of the name and category (what the listener directory shows for a live
+   * programme) is brought into line through the existing settings event, so
+   * a rename does not leave two names for one channel.
+   */
+  const handleSaveChannelIdentity = useCallback(
+    async (patch: ChannelIdentityPatch) => {
+      const result = await updateMyChannel({ accountUrl: ACCOUNT_URL, token: readOperatorSessionToken(), patch });
+      if (result.ok) {
+        channelIdentity.reload();
+        const mirrored: ChannelSettingsDraft = {
+          displayName: result.profile.displayName,
+          visibility: channelDraft.visibility,
+          category: result.profile.category,
+        };
+        setChannelDraft((current) => ({ ...current, displayName: result.profile.displayName, category: result.profile.category }));
+        if (ownChannelId !== null && activeChannelId === ownChannelId && (patch.displayName !== undefined || patch.category !== undefined)) {
+          socketRef.current?.emit(SOCKET_EVENTS.OPERATOR_CHANNEL_SETTINGS, toSettingsPayload(mirrored));
+        }
+      }
+      return result;
+    },
+    [activeChannelId, channelDraft.visibility, channelIdentity, ownChannelId],
+  );
 
 
 
@@ -1363,6 +1399,14 @@ export default function App(): React.ReactElement {
       {/* ---------------- 08 Access ---------------- */}
       <ConsolePage id="access" active={page === 'access'} kicker="Step 4" title="Access" lede="Who can watch: public, private by link, or locked with a code; and which channel the programme goes out on.">
         <ChannelSettingsPanel
+          identity={{
+            identity: channelIdentity.state,
+            live: channelLive,
+            accountUrl: ACCOUNT_URL,
+            publicOrigin: PUBLIC_ORIGIN,
+            onSaveIdentity: handleSaveChannelIdentity,
+            onReloadIdentity: channelIdentity.reload,
+          }}
           ownChannelId={ownChannelId}
           activeChannelId={activeChannelId}
           draft={channelDraft}
@@ -1378,7 +1422,7 @@ export default function App(): React.ReactElement {
       </ConsolePage>
 
       {/* ---------------- 09 Preflight ---------------- */}
-      <ConsolePage id="preflight" active={page === 'preflight'} kicker="Step 5" title="Preflight" lede="What is ready and what is not, before anybody is watching. Provider latency measurement and the recommended delay arrive with the Programme Quality Engine.">
+      <ConsolePage id="preflight" active={page === 'preflight'} kicker="Step 5" title="Preflight" lede="What is ready and what is not, before anybody is watching. Every line below is the live state of a real service or of your own choices; nothing here is a preset. Provider latency measurement and the recommended delay are FUTURE (Programme Quality Engine).">
         <div className={styles.readinessList}>
           {readinessItems.map((item) => (
             <div key={item.id} className={styles.readinessItem}>
@@ -1399,7 +1443,7 @@ export default function App(): React.ReactElement {
       <ConsolePage
         id="live"
         active={page === 'live'}
-        kicker="On air"
+        kicker={workflowSummary.status === 'Live' ? 'On air' : 'Off air'}
         title="Live Control"
         lede="Manage the live programme. Control playback, recording and monitor real-time outputs."
         aside={

@@ -10,14 +10,42 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { CHANNEL_CATEGORIES } from '@videofy-live/shared-types';
 import { ChannelSettingsPanel } from './ChannelSettingsPanel';
+import type { ChannelIdentityCardProps } from './ChannelIdentityCard';
+import type { ChannelIdentityState } from './premium/channelIdentity';
 
 const OWN = 'abc123def4567890';
+
+const PROFILE = {
+  channelId: OWN,
+  ownerAccountId: 'acct_1',
+  handle: 'sunday_service',
+  displayName: 'Sunday Service',
+  description: 'Every Sunday, translated live.',
+  category: 'faith' as const,
+  visibility: 'public' as const,
+  avatarUrl: null,
+  bannerUrl: null,
+  createdAt: 1_700_000_000_000,
+  updatedAt: 1_700_000_500_000,
+};
+
+function identityProps(state: ChannelIdentityState): ChannelIdentityCardProps {
+  return {
+    identity: state,
+    live: false,
+    accountUrl: 'https://c7.test/auth',
+    publicOrigin: 'https://c7.test',
+    onSaveIdentity: async () => ({ ok: false, message: 'not in this test' }),
+    browser: { copyText: async () => {} },
+  };
+}
 
 function markup(
   overrides: Partial<React.ComponentProps<typeof ChannelSettingsPanel>> = {},
 ): string {
   return renderToStaticMarkup(
     <ChannelSettingsPanel
+      identity={identityProps({ status: 'ready', profile: PROFILE })}
       ownChannelId={OWN}
       activeChannelId={OWN}
       draft={{ displayName: 'Sunday Service', visibility: 'public' }}
@@ -164,5 +192,41 @@ describe('the category picker', () => {
     });
     expect(optionTag(html, 'news')).not.toContain('selected');
     expect(optionTag(html, '')).toContain('selected');
+  });
+});
+
+/*
+ * Founder directive (30 Aug 2026), OPERATOR CHANNEL IDENTITY: the Access page
+ * shows the persisted identity and the five channel actions, and never a name
+ * it made up.
+ */
+describe('the channel identity block', () => {
+  it('shows avatar initials, display name, @handle, category and visibility from the persisted profile', () => {
+    const html = markup();
+    expect(html).toContain('>SS<');
+    expect(html).toContain('Sunday Service');
+    expect(html).toContain('@sunday_service');
+    expect(html).toContain('Faith');
+    expect(html).toContain('Public');
+    expect(html).toContain('Every Sunday, translated live.');
+  });
+
+  it('offers View, Edit, Copy, Share and QR on the canonical /streams/<handle> link', () => {
+    const html = markup();
+    expect(html).toContain('href="https://c7.test/streams/sunday_service"');
+    expect(html).toContain('View channel');
+    expect(html).toContain('Edit channel');
+    expect(html).toContain('Copy channel link');
+    expect(html).toContain('Share (copies the link)');
+    expect(html).toContain('QR code');
+  });
+
+  it('says plainly when there is no profile to show, instead of inventing one', () => {
+    expect(markup({ identity: identityProps({ status: 'unset' }) })).toContain('Channel not set up');
+    expect(markup({ identity: identityProps({ status: 'signed-out' }) })).toContain('Not signed in');
+    expect(markup({ identity: identityProps({ status: 'error', message: 'The account service could not be reached.' }) })).toContain(
+      'The account service could not be reached.',
+    );
+    expect(markup({ identity: identityProps({ status: 'unset' }) })).not.toContain('Copy channel link');
   });
 });

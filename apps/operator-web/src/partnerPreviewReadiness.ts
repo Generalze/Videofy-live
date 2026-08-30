@@ -1,3 +1,4 @@
+/** @author masterzee001 */
 import type {
   MediaStateEvent,
   SourceLanguageControlMetadata,
@@ -19,6 +20,9 @@ export interface PartnerPreviewReadinessInput {
   translation?: TranslationSessionMetadata | null | undefined;
   generatedAudio?: TextToSpeechSessionMetadata | null | undefined;
   selectedTargetLanguages: readonly string[];
+  /** The console's source-language choice before a session exists (the control above replaces it once one does). */
+  sourceLanguage?: string | undefined;
+  sourceLanguageMode?: 'manual' | 'auto-detect' | undefined;
 }
 
 export interface PartnerPreviewReadinessItem {
@@ -71,12 +75,15 @@ export function buildPartnerPreviewReadiness(
       state:
         input.sourceLanguageControl?.status === 'locked' ||
         input.sourceLanguageControl?.status === 'confirmed' ||
-        input.sourceLanguageControl?.status === 'manual'
+        input.sourceLanguageControl?.status === 'manual' ||
+        (input.sourceLanguageControl === undefined && input.sourceLanguageMode === 'manual')
           ? 'ready'
           : 'warning',
       detail: input.sourceLanguageControl
         ? `${input.sourceLanguageControl.activeLanguage.toUpperCase()} - ${input.sourceLanguageControl.status} - rev ${input.sourceLanguageControl.revision}`
-        : 'English is the default; confirm or lock after detection.',
+        : input.sourceLanguageMode === 'manual'
+          ? `${(input.sourceLanguage ?? 'en').toUpperCase()} - set by you`
+          : `Auto-detect: decided from the programme audio once it runs (${(input.sourceLanguage ?? 'en').toUpperCase()} until then); confirm or lock it after detection.`,
     },
     {
       id: 'targets',
@@ -92,28 +99,29 @@ export function buildPartnerPreviewReadiness(
     {
       id: 'translation',
       label: 'Translation provider',
+      /* Whatever engine the deployment routes to (OPUS-MT, a commercial vendor, a specialist): ready means it said so. */
       state:
-        input.translation?.providerName === 'opus-mt' && input.translation.providerStatus === 'ready'
+        input.translation?.providerStatus === 'ready'
           ? 'ready'
           : input.translation?.providerStatus === 'failed'
             ? 'blocked'
             : 'warning',
       detail: input.translation?.providerName
         ? `${input.translation.providerName}:${input.translation.providerStatus ?? input.translation.status}`
-        : 'OPUS-MT status appears after session start.',
+        : 'Translation engine status appears after session start.',
     },
     {
       id: 'tts',
       label: 'Speech provider',
       state:
-        input.generatedAudio?.providerName === 'piper' && input.generatedAudio.providerStatus === 'ready'
+        input.generatedAudio?.providerStatus === 'ready'
           ? 'ready'
           : input.generatedAudio?.providerStatus === 'failed'
             ? 'blocked'
             : 'warning',
       detail: input.generatedAudio?.providerName
         ? `${input.generatedAudio.providerName}:${input.generatedAudio.providerStatus ?? input.generatedAudio.status}`
-        : 'Piper status appears after session start.',
+        : 'Speech engine status appears after session start.',
     },
     {
       id: 'listeners',

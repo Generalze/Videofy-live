@@ -133,5 +133,8 @@ describe('ConsoleShell', () => {
 
     const signedOut = render('overview', { identity: { status: 'signed-out' } });
     expect(signedOut).toContain('Not signed in');
+    // Signed out is a compact "Sign in" pill beside the avatar, not a sentence; the sentence is the accessible name.
+    expect(signedOut).toContain('>Sign in<');
+    expect(signedOut).not.toContain('>Not signed in<');
   });
 });

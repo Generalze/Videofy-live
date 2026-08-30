@@ -3,18 +3,27 @@
  * two panels 568 / 677 wide with a 25px gutter, a 64px notice bar under
  * them; the left panel's footer sits on a sunken ground.
  */
+/* The spectrum floats over the header row: it must never add to its height. */
 .aside {
-  width: 510px;
+  position: relative;
+  width: 520px;
   max-width: 40vw;
-  margin-top: -14px;
-  opacity: 0.72;
-  filter: drop-shadow(0 0 18px rgba(45, 212, 191, 0.35));
+  height: 112px;
+  color: var(--op-teal);
+  opacity: 0.8;
+  filter: drop-shadow(0 0 14px rgba(45, 212, 191, 0.4));
+}
+.asideWave {
+  position: absolute;
+  top: -18px;
+  left: 0;
+  width: 100%;
 }
 
 .grid {
   display: grid;
-  grid-template-columns: minmax(0, 568fr) minmax(0, 677fr);
-  gap: 25px;
+  grid-template-columns: minmax(0, 569fr) minmax(0, 678fr);
+  gap: 23px;
   align-items: stretch;
 }
 
@@ -31,7 +40,7 @@
 }
 .panelBody {
   flex: 1;
-  padding: 24px 26px 22px;
+  padding: 26px 26px 14px;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -39,7 +48,7 @@
 .panelFoot {
   border-top: 1px solid var(--op-hairline);
   background: rgba(3, 8, 23, 0.55);
-  padding: 18px 26px 20px;
+  padding: 18px 26px 18px;
 }
 
 .eyebrow {
@@ -65,7 +74,7 @@
   align-items: center;
   justify-content: center;
   gap: 10px;
-  height: 40px;
+  height: 39px;
   border: 0;
   border-radius: 8px;
   font: inherit;
@@ -106,20 +115,23 @@
 .rule {
   border: 0;
   border-top: 1px solid var(--op-hairline);
-  margin: 22px 0 16px;
+  margin: 18px 0 14px;
 }
 
 /* ---------------------------------------------------------------- Levels */
 .level {
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr);
+  grid-template-columns: 54px minmax(0, 1fr);
   gap: 20px;
   align-items: start;
-  padding: 6px 0 16px;
+  padding: 6px 0 22px;
+}
+.level:last-child {
+  padding-bottom: 16px;
 }
 .levelIcon {
-  width: 52px;
-  height: 52px;
+  width: 54px;
+  height: 54px;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
@@ -369,7 +381,9 @@
   padding: 0 18px;
 }
 .notice {
-  min-height: 64px;
+  /* The master sits the bar 17px under the panels; the page stack is 24. */
+  margin-top: -7px;
+  min-height: 68px;
   padding: 9px 22px 9px 22px;
   font-size: 15px;
   color: var(--op-text-secondary);

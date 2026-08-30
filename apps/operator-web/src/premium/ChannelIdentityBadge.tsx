@@ -16,7 +16,6 @@
 import React from 'react';
 import { channelCategoryLabel } from '@videofy-live/shared-types';
 import { channelAvatarSrc, channelInitials, channelStatusWord, type ChannelIdentityState, type ChannelLiveState } from './channelIdentity';
-import { ChevronDownIcon } from './icons';
 import styles from './ChannelIdentity.module.css';
 
 /** The picture or the initials, with the live dot. */
@@ -24,7 +23,7 @@ export function ChannelAvatar({
   state,
   live,
   accountUrl,
-  size = 44,
+  size = 40,
 }: {
   readonly state: ChannelIdentityState;
   readonly live: ChannelLiveState;
@@ -60,22 +59,31 @@ export interface ChannelIdentityBadgeProps {
   readonly menuId?: string | undefined;
 }
 
-function lines(state: ChannelIdentityState, live: ChannelLiveState): { readonly primary: string; readonly secondary: string } {
+/**
+ * What the badge says. `primary`/`secondary` name the state for assistive
+ * technology and the menu; `label` is the compact visible word beside the
+ * avatar (the masters show a 40px avatar and nothing wordier), null when the
+ * visible text is the two stacked lines of a ready channel.
+ */
+function lines(
+  state: ChannelIdentityState,
+  live: ChannelLiveState,
+): { readonly primary: string; readonly secondary: string; readonly label: string | null } {
   switch (state.status) {
     case 'loading':
-      return { primary: 'Loading channel', secondary: 'Reading your channel profile' };
+      return { primary: 'Loading channel', secondary: 'Reading your channel profile', label: 'Loading' };
     case 'signed-out':
-      return { primary: 'Not signed in', secondary: 'Sign in on C7 to load your channel' };
+      return { primary: 'Not signed in', secondary: 'Sign in on C7 to load your channel', label: 'Sign in' };
     case 'unset':
-      return { primary: 'Channel not set up', secondary: 'Set it up on Access' };
+      return { primary: 'Channel not set up', secondary: 'Set it up on Access', label: 'Channel not set up' };
     case 'error':
-      return { primary: 'Channel unavailable', secondary: state.message };
+      return { primary: 'Channel unavailable', secondary: state.message, label: 'Unavailable' };
     case 'ready': {
       const { handle, category } = state.profile;
       const parts = [`@${handle}`];
       if (category !== null) parts.push(channelCategoryLabel(category));
       parts.push(channelStatusWord(live));
-      return { primary: state.profile.displayName, secondary: parts.join(' · ') };
+      return { primary: state.profile.displayName, secondary: parts.join(' · '), label: null };
     }
   }
 }
@@ -84,16 +92,15 @@ export function ChannelIdentityBadge({ state, live, accountUrl, onToggle, expand
   const text = lines(state, live);
   const body = (
     <>
-      <span className={styles.badgeText}>
-        <span className={styles.badgePrimary}>{text.primary}</span>
-        <span className={styles.badgeSecondary}>{text.secondary}</span>
-      </span>
-      <ChannelAvatar state={state} live={live} accountUrl={accountUrl} />
-      {onToggle !== undefined && (
-        <span className={styles.badgeChevron}>
-          <ChevronDownIcon size={16} />
+      {text.label === null ? (
+        <span className={styles.badgeText}>
+          <span className={styles.badgePrimary}>{text.primary}</span>
+          <span className={styles.badgeSecondary}>{text.secondary}</span>
         </span>
+      ) : (
+        <span className={state.status === 'signed-out' ? styles.badgePill : styles.badgeWord}>{text.label}</span>
       )}
+      <ChannelAvatar state={state} live={live} accountUrl={accountUrl} />
     </>
   );
   if (onToggle === undefined) {

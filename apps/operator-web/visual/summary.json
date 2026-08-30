@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-08-30T00:41:39.823Z",
+  "capturedAt": "2026-08-30T01:07:31.477Z",
   "viewport": {
     "width": 1586,
     "height": 992
@@ -12,9 +12,9 @@
       "page": "overview",
       "route": "#/overview",
       "reference": "01-overview-reference.png",
-      "differingPixels": 154629,
+      "differingPixels": 114928,
       "totalPixels": 1573312,
-      "mismatchPct": 9.83,
+      "mismatchPct": 7.3,
       "actualSize": "1586x992",
       "referenceSize": "1586x992",
       "pass": true
@@ -23,9 +23,9 @@
       "page": "source",
       "route": "#/source",
       "reference": "02-source-reference.png",
-      "differingPixels": 115034,
+      "differingPixels": 109189,
       "totalPixels": 1573312,
-      "mismatchPct": 7.31,
+      "mismatchPct": 6.94,
       "actualSize": "1586x992",
       "referenceSize": "1586x992",
       "pass": true
@@ -34,9 +34,9 @@
       "page": "languages",
       "route": "#/languages",
       "reference": "03-languages-reference.png",
-      "differingPixels": 98888,
+      "differingPixels": 102783,
       "totalPixels": 1573312,
-      "mismatchPct": 6.29,
+      "mismatchPct": 6.53,
       "actualSize": "1586x992",
       "referenceSize": "1586x992",
       "pass": true
@@ -45,9 +45,9 @@
       "page": "audio",
       "route": "#/audio",
       "reference": "04-audio-voices-reference.png",
-      "differingPixels": 128943,
+      "differingPixels": 114670,
       "totalPixels": 1573312,
-      "mismatchPct": 8.2,
+      "mismatchPct": 7.29,
       "actualSize": "1586x992",
       "referenceSize": "1586x992",
       "pass": true
@@ -56,9 +56,9 @@
       "page": "live",
       "route": "#/live",
       "reference": "10-live-control-reference.png",
-      "differingPixels": 118969,
+      "differingPixels": 118092,
       "totalPixels": 1573312,
-      "mismatchPct": 7.56,
+      "mismatchPct": 7.51,
       "actualSize": "1586x992",
       "referenceSize": "1586x992",
       "pass": true

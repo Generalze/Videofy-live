@@ -1,6 +1,6 @@
 /*
- * The console shell, to the golden masters at 1586 x 992: an 80px top bar
- * across the full width, a 270px rail beneath it on the left, and the
+ * The console shell, to the golden masters at 1586 x 992: an 84px top bar
+ * across the full width, a 280px rail beneath it on the left, and the
  * content ground on the right with its teal illumination. Every page stays
  * MOUNTED (the Source page's <video> is the programme itself for uploaded
  * and direct-URL sources); pages are toggled with [hidden], never
@@ -26,19 +26,19 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 24px;
+  padding: 0 34px 0 24px;
   background: var(--op-bg-topbar);
   border-bottom: 1px solid var(--op-hairline);
 }
 .brand {
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: 13px;
 }
 .brandRing {
   position: relative;
-  width: 52px;
-  height: 52px;
+  width: 50px;
+  height: 50px;
   border-radius: 50%;
   display: grid;
   place-items: center;
@@ -115,7 +115,7 @@
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  padding: 11px 16px;
+  padding: 9px 16px;
   border-radius: var(--op-radius-md);
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--op-hairline);
@@ -155,7 +155,7 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  padding: 34px 24px 30px;
+  padding: 22px 24px 28px;
   background: linear-gradient(180deg, var(--op-bg-rail) 0%, var(--op-bg) 100%);
   border-right: 1px solid var(--op-hairline);
 }
@@ -168,12 +168,12 @@
   gap: 4px;
 }
 .section + .section {
-  margin-top: 14px;
+  margin-top: 16px;
 }
 .sectionLabel {
-  margin: 0 0 10px;
+  margin: 0 0 6px;
   padding: 0 0 0 2px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -184,7 +184,7 @@
   align-items: center;
   gap: 10px;
   width: 100%;
-  height: 48px;
+  height: 47px;
   padding: 0 14px 0 14px;
   border-radius: var(--op-radius-md);
   border: 1px solid transparent;
@@ -192,7 +192,7 @@
   color: var(--op-text-secondary);
   cursor: pointer;
   font: inherit;
-  font-size: 15px;
+  font-size: 14px;
   text-align: left;
   transition: background-color 120ms ease, color 120ms ease;
 }
@@ -216,7 +216,7 @@
   flex-shrink: 0;
 }
 .navNumber {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--op-text-muted);
   font-variant-numeric: tabular-nums;
   margin-left: 4px;
@@ -231,22 +231,23 @@
   color: var(--op-text-muted);
 }
 
+/* The masters sit the card ~34px under the last item, not at the foot of the rail. */
 .servicesCard {
-  margin-top: auto;
-  padding: 20px 20px 18px;
-  border-radius: 14px;
+  margin-top: 34px;
+  padding: 16px 20px 18px;
+  border-radius: 12px;
   border: 1px solid var(--op-panel-border);
   background: rgba(255, 255, 255, 0.02);
 }
 .servicesCard .sectionLabel {
-  margin-bottom: 14px;
+  margin-bottom: 16px;
 }
 .services {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 18px;
+  gap: 16px;
 }
 .serviceRow {
   display: flex;
@@ -262,18 +263,18 @@
   line-height: 1.25;
 }
 .serviceLabel {
-  font-size: 14px;
+  font-size: 13px;
   color: var(--op-text);
 }
 .serviceDetail {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--op-text-muted);
 }
 .railFooter {
   display: flex;
   align-items: center;
   gap: 14px;
-  margin-top: 24px;
+  margin-top: 26px;
   padding: 0 4px;
   font-size: 13px;
   color: var(--op-text-muted);
@@ -293,8 +294,8 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  padding: var(--op-content-padding);
-  gap: 20px;
+  padding: var(--op-content-padding-top) var(--op-content-padding) var(--op-content-padding);
+  gap: 26px;
   background:
     radial-gradient(900px 520px at 100% 0%, var(--op-glow-teal), transparent 60%),
     radial-gradient(700px 420px at 0% 100%, var(--op-glow-violet), transparent 60%),
@@ -303,9 +304,9 @@
 .gatewayBanner {
   display: flex;
   align-items: center;
-  gap: 20px;
-  min-height: 80px;
-  padding: 14px 20px;
+  gap: 18px;
+  min-height: 72px;
+  padding: 10px 18px 10px 20px;
   border-radius: var(--op-radius-md);
   border: 1px solid var(--op-danger-border);
   background: linear-gradient(90deg, rgba(239, 68, 68, 0.14), rgba(239, 68, 68, 0.05));
@@ -325,16 +326,16 @@
   flex: 1;
   display: grid;
   gap: 2px;
-  font-size: 16px;
-  line-height: 1.4;
+  font-size: 15px;
+  line-height: 1.45;
   color: var(--op-text);
 }
 .bannerText strong {
   font-weight: 600;
 }
 .bannerAction {
-  padding: 0 22px;
-  height: 40px;
+  padding: 0 20px;
+  height: 38px;
   border-radius: var(--op-radius-sm);
   border: 1px solid rgba(239, 68, 68, 0.6);
   background: transparent;

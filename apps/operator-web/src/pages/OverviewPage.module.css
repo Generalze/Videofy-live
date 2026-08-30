@@ -1,12 +1,40 @@
 /*
  * 01 Overview, to the golden master at 1586 x 992. Pixel values are read off
- * the master: the 82px status strip, the 264px feed cards, the 68px note
+ * the master: the 88px status strip, the 267px feed cards, the 67px note
  * bar, the 194 x 54 Go Live button, the rising pipeline on the right.
  */
 .body {
   display: grid;
-  gap: 22px;
-  margin-top: 6px;
+  gap: 18px;
+  margin-top: 2px;
+}
+
+/*
+ * The master's opening, measured: kicker cap at y230, title 40px on a 48px
+ * pitch, lede 16px on 25px wrapping at 456px, 27px above the 54px button.
+ * The shared PageHeader is the median of five masters; this page corrects
+ * it locally through its own section id, without touching the shell.
+ */
+:global(#page-overview) {
+  padding-top: 23px;
+}
+:global(#page-overview) > header > div:first-child {
+  gap: 0;
+  max-width: 470px;
+}
+:global(#page-overview) > header h2 {
+  margin-top: 15px;
+  font-size: 40px;
+  line-height: 48px;
+}
+:global(#page-overview) > header h2 + p {
+  margin-top: 12px;
+  font-size: 16px;
+  line-height: 25px;
+  color: var(--op-text-secondary);
+}
+:global(#page-overview) > header h2 + p + div {
+  margin-top: 22px;
 }
 
 /* ---------------------------------------------------------------- Go Live */
@@ -21,6 +49,10 @@
   background: linear-gradient(90deg, #4a2fd0 0%, #3b24c0 55%, #3a4fe0 100%);
   box-shadow: 0 12px 34px rgba(69, 43, 195, 0.4);
 }
+/* Disabled is still disabled (cursor, no hover); it just stays legible. */
+.goLive:disabled {
+  opacity: 0.6;
+}
 
 /* --------------------------------------------------------------- Pipeline */
 .pipeline {
@@ -31,7 +63,7 @@
   width: 760px;
   height: 210px;
   padding: 0 0 6px 60px;
-  margin: -6px -24px 0 0;
+  margin: -8px -24px 0 0;
   perspective: 1400px;
 }
 .pipelineGround {
@@ -50,10 +82,11 @@
   right: 110px;
   top: 62%;
   height: 2px;
-  transform: rotate(-4.5deg);
+  transform: rotate(-6deg);
   transform-origin: 0 50%;
-  background: linear-gradient(90deg, rgba(45, 212, 191, 0.05), rgba(45, 212, 191, 0.7) 45%, rgba(45, 212, 191, 0.9));
-  box-shadow: 0 0 12px rgba(45, 212, 191, 0.45);
+  background: repeating-linear-gradient(90deg, rgba(45, 212, 191, 0.85) 0 3px, transparent 3px 7px);
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 100%);
+  box-shadow: 0 0 10px rgba(45, 212, 191, 0.35);
   pointer-events: none;
 }
 .pipelineLine::before,
@@ -80,16 +113,16 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 14px;
+  gap: 12px;
   width: 90px;
-  height: 97px;
+  height: 100px;
   border-radius: 12px;
-  border: 1px solid rgba(120, 140, 200, 0.28);
-  background: linear-gradient(180deg, #0f1a38, #0a1226);
+  border: 1px solid rgba(120, 150, 210, 0.38);
+  background: linear-gradient(180deg, rgba(20, 32, 64, 0.92), rgba(9, 16, 36, 0.96));
   box-shadow: 0 18px 32px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(0, 0, 0, 0.3) inset;
-  color: var(--op-text);
+  color: #8fb3ec;
   text-decoration: none;
-  transform: rotateY(-18deg);
+  transform: rotateY(-10deg);
   transform-origin: 100% 100%;
   transition: border-color 120ms ease, filter 120ms ease;
 }
@@ -107,20 +140,20 @@
 }
 .tile[data-step='3'] {
   width: 96px;
-  height: 125px;
+  height: 128px;
 }
 .tile[data-step='4'] {
   width: 106px;
-  height: 148px;
+  height: 150px;
 }
 .tile[data-final='true'] {
   width: 156px;
-  height: 204px;
+  height: 186px;
   margin-left: 24px;
-  margin-bottom: -22px;
-  gap: 24px;
-  border-color: rgba(45, 212, 191, 0.65);
-  background: linear-gradient(180deg, #0d2a33, #08202a);
+  margin-bottom: -12px;
+  gap: 26px;
+  border-color: rgba(45, 212, 191, 0.75);
+  background: linear-gradient(180deg, #0b1f2b, #071722);
   box-shadow: 0 0 40px rgba(45, 212, 191, 0.28), 0 24px 48px rgba(0, 0, 0, 0.5);
   color: var(--op-teal-text);
 }
@@ -130,17 +163,17 @@
   color: inherit;
 }
 .tileLabel {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
   text-transform: uppercase;
-  color: var(--op-text-secondary);
+  color: #dbe4f5;
   text-align: center;
   white-space: nowrap;
 }
 .tile[data-final='true'] .tileLabel {
-  font-size: 16px;
-  letter-spacing: 0.04em;
+  font-size: 18px;
+  letter-spacing: 0.02em;
   color: var(--op-teal-text);
 }
 
@@ -148,7 +181,7 @@
 .strip {
   display: grid;
   grid-template-columns: 245fr 222fr 257fr 253fr 260fr;
-  height: 82px;
+  height: 88px;
   overflow: hidden;
 }
 .cell {
@@ -162,14 +195,22 @@
 .cell:first-child {
   border-left: 0;
 }
+/* The master rings each cell's dot with a soft teal halo. */
+.cell > :first-child {
+  box-shadow: 0 0 0 6px rgba(45, 212, 191, 0.14);
+}
 .cellIcon {
   display: inline-flex;
   line-height: 0;
+  color: var(--op-teal-text);
+}
+.cellViewers .cellIcon {
   color: var(--op-text);
 }
 .cellText {
   display: grid;
   gap: 4px;
+  padding-top: 3px;
   line-height: 1.15;
 }
 .cellLabel {
@@ -207,8 +248,8 @@
 .card {
   display: flex;
   flex-direction: column;
-  height: 264px;
-  padding: 28px 26px 0;
+  height: 267px;
+  padding: 32px 26px 0;
   overflow: hidden;
 }
 .cardHead {
@@ -248,7 +289,8 @@
   margin-top: 6px;
 }
 .cardText {
-  margin: 26px 0 0;
+  margin: 27px 0 0;
+  max-width: 312px;
   font-size: 16px;
   line-height: 26px;
   color: var(--op-text-secondary);
@@ -259,13 +301,15 @@
 }
 .cardWave {
   margin-top: auto;
-  padding-bottom: 6px;
-  opacity: 0.78;
+  padding-bottom: 8px;
+  opacity: 0.35;
+  /* The master draws the spectrum as 2px dots on a 5.33px vertical pitch. */
+  mask-image: repeating-linear-gradient(180deg, #000 0 2px, transparent 2px 5.33px);
 }
 
 /* ----------------------------------------------------------------- Notice */
 .notice {
-  min-height: 68px;
+  min-height: 67px;
   padding: 14px 20px;
   border-radius: var(--op-radius-lg);
 }

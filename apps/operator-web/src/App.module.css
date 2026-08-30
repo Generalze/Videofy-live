@@ -1214,3 +1214,140 @@
   font-size: 0.78rem;
   overflow-wrap: anywhere;
 }
+
+/* ---- Access: the channel identity block (ChannelIdentityCard) ---- */
+.identityCard {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--op-panel-border-strong, var(--color-border));
+  border-radius: var(--op-radius-lg, var(--radius-lg));
+  background: var(--op-panel, var(--color-surface));
+}
+
+.identityHeading {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.identityRow {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.identityText {
+  min-width: 0;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.identityText p {
+  margin: 0;
+}
+
+.identityName {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--op-text, var(--color-text));
+}
+
+.identityHandle {
+  font-size: 0.85rem;
+  color: var(--op-text-muted, var(--color-text-muted));
+}
+
+.identityMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  font-size: 0.78rem;
+  color: var(--op-text-muted, var(--color-text-muted));
+}
+
+.identityDescription {
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: var(--op-text-secondary, var(--color-text-muted));
+}
+
+.identityLink {
+  margin: 0;
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--op-text-muted, var(--color-text-muted));
+}
+
+.identityLink code {
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+  color: var(--op-text, var(--color-text));
+}
+
+.identityActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.identityAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.7rem;
+  border-radius: var(--op-radius-md, var(--radius-md));
+  border: 1px solid var(--op-panel-border-strong, var(--color-border));
+  background: transparent;
+  color: var(--op-text, var(--color-text));
+  font: inherit;
+  font-size: 0.82rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.identityAction:hover,
+.identityAction:focus-visible {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.identityForm {
+  display: grid;
+  gap: 0.65rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--op-hairline, var(--color-border));
+}
+
+.identityForm p {
+  margin: 0.2rem 0 0;
+  font-size: 0.75rem;
+  color: var(--op-text-muted, var(--color-text-muted));
+}
+
+.identityProblems {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+  color: var(--op-warn-text, var(--color-warn));
+}
+
+.identityEmpty {
+  display: grid;
+  justify-items: start;
+  gap: 0.4rem;
+}
+
+.identityEmptyTitle {
+  margin: 0.25rem 0 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--op-text, var(--color-text));
+}
+
+.identityEmptyText {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--op-text-muted, var(--color-text-muted));
+}

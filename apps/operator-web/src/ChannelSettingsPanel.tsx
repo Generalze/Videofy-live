@@ -1,3 +1,4 @@
+/** @author masterzee001 */
 import React from 'react';
 import {
   CHANNEL_CATEGORIES,
@@ -14,11 +15,18 @@ import {
   VISIBILITY_DESCRIPTIONS, VISIBILITY_LABELS,
   type ChannelSettingsDraft,
 } from './channelSettings';
+import { ChannelIdentityCard, type ChannelIdentityCardProps } from './ChannelIdentityCard';
 import styles from './App.module.css';
 
 const VISIBILITIES: readonly ChannelVisibility[] = ['public', 'private', 'locked'];
 
 interface ChannelSettingsPanelProps {
+  /**
+   * The persisted identity (avatar, name, @handle, category, visibility)
+   * and how to edit, view, copy, share and QR-encode it. Founder directive
+   * (30 Aug 2026): the Access page shows the channel identity block.
+   */
+  identity: ChannelIdentityCardProps;
   /** The operator's own channel id, as the gateway derived it. */
   ownChannelId: string | null;
   /** The channel they are publishing to now, which is 'main' until they move. */
@@ -50,6 +58,7 @@ interface ChannelSettingsPanelProps {
  * is a settings decision, and only applies once you have moved.
  */
 export function ChannelSettingsPanel({
+  identity,
   ownChannelId,
   activeChannelId,
   draft,
@@ -73,8 +82,10 @@ export function ChannelSettingsPanel({
     : null;
 
   return (
+    <>
+    <ChannelIdentityCard {...identity} />
     <section className={styles.broadcasterPanel} aria-labelledby="channel-settings-heading">
-      <h3 id="channel-settings-heading">Your channel</h3>
+      <h3 id="channel-settings-heading">Programme access</h3>
 
       {!onOwnChannel ? (
         <div>
@@ -191,5 +202,6 @@ export function ChannelSettingsPanel({
         </>
       )}
     </section>
+    </>
   );
 }

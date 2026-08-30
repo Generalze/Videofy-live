@@ -6,6 +6,7 @@ import {
   channelPublicLink,
   fetchMyChannel,
   parseChannelProfile,
+  updateMyChannel,
 } from './channelIdentity';
 
 const PROFILE = {
@@ -115,5 +116,32 @@ describe('identity helpers', () => {
     expect(channelAvatarSrc('https://c7.test/auth', '/channels/x/avatar?v=1')).toBe('https://c7.test/auth/channels/x/avatar?v=1');
     expect(channelAvatarSrc('https://c7.test/auth', 'https://cdn.test/a.png')).toBe('https://cdn.test/a.png');
     expect(channelAvatarSrc('https://c7.test/auth', null)).toBeNull();
+  });
+});
+
+describe('updateMyChannel', () => {
+  it('PUTs only the given fields as JSON with the bearer token and returns the saved profile', async () => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetchImpl: typeof fetch = async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return { ok: true, status: 200, json: async () => ({ ...PROFILE, handle: 'lagos_news_hour' }) } as Response;
+    };
+    const result = await updateMyChannel({ accountUrl: 'https://c7.test/auth/', token: 'tok', patch: { handle: 'lagos_news_hour' }, fetchImpl });
+    expect(result).toEqual({ ok: true, profile: { ...PROFILE, handle: 'lagos_news_hour' } });
+    expect(calls[0]?.url).toBe('https://c7.test/auth/channels/mine');
+    expect(calls[0]?.init.method).toBe('PUT');
+    expect(calls[0]?.init.body).toBe('{"handle":"lagos_news_hour"}');
+    expect((calls[0]?.init.headers as Record<string, string>)['authorization']).toBe('Bearer tok');
+  });
+
+  it("repeats the account service's own refusal, and never claims a save it did not get", async () => {
+    const taken = await updateMyChannel({ accountUrl: 'https://c7.test/auth', token: 'tok', patch: { handle: 'admin' }, fetchImpl: respond(409, { error: 'That handle is already taken.' }) });
+    expect(taken).toEqual({ ok: false, message: 'That handle is already taken.' });
+    const noChannel = await updateMyChannel({ accountUrl: 'https://c7.test/auth', token: 'tok', patch: { displayName: 'x' }, fetchImpl: respond(404, { error: 'You do not have a channel yet.' }) });
+    expect(noChannel).toEqual({ ok: false, message: 'You do not have a channel yet.' });
+    const signedOut = await updateMyChannel({ accountUrl: 'https://c7.test/auth', token: null, patch: {} });
+    expect(signedOut.ok).toBe(false);
+    const unreadable = await updateMyChannel({ accountUrl: 'https://c7.test/auth', token: 'tok', patch: {}, fetchImpl: respond(200, { nope: true }) });
+    expect(unreadable).toEqual({ ok: false, message: 'The saved channel profile could not be read.' });
   });
 });

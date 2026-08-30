@@ -21,7 +21,7 @@
 import React from 'react';
 import type { AudioModePreferences } from '@videofy-live/shared-types';
 import { Icon } from '../premium/icons';
-import { Button, Chip, Eyebrow, NoticeBar, WaveBars, type Tone } from '../premium/primitives';
+import { Button, Chip, Eyebrow, NoticeBar, type Tone } from '../premium/primitives';
 import { VOICE_STATUS_WORDS, type VoiceRow, type VoiceStatus } from '../voiceRows';
 import styles from './AudioVoicesPage.module.css';
 
@@ -54,11 +54,43 @@ function pct(value: number): number {
   return Math.round(Math.max(0, Math.min(1, value)) * 100);
 }
 
-/** The decorative spectrum to the right of the page title. Decoration only. */
+/** Deterministic pseudo-random in [0, 1): the same seed draws the same spectrum every render. */
+function mulberry32(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const ASIDE_BARS = 58;
+const ASIDE_PITCH = 9;
+const ASIDE_HEIGHT = 150;
+
+/**
+ * The decorative spectrum to the right of the page title: the master's
+ * sparse 2.5px teal bars on a 9px pitch, swelling twice across the width.
+ * DECORATION ONLY: seeded, never fed by audio, hidden from assistive tech.
+ */
 export function AudioVoicesAside(): React.ReactElement {
+  const random = mulberry32(4);
+  const width = ASIDE_BARS * ASIDE_PITCH;
+  const rects: React.ReactElement[] = [];
+  for (let i = 0; i < ASIDE_BARS; i++) {
+    const t = i / (ASIDE_BARS - 1);
+    const envelope = 0.12 + 0.88 * Math.pow(Math.abs(Math.sin(t * Math.PI * 2.2 + 0.4)), 1.4);
+    const spike = Math.pow(random(), 1.8);
+    const h = Math.max(4, Math.round(ASIDE_HEIGHT * envelope * (0.18 + spike * 0.82)));
+    rects.push(<rect key={i} x={i * ASIDE_PITCH} y={(ASIDE_HEIGHT - h) / 2} width={2.5} height={h} rx={1.25} fill="currentColor" opacity={0.4 + envelope * 0.6} />);
+  }
   return (
     <div className={styles.aside}>
-      <WaveBars seed={4} bars={110} height={124} palette="teal" />
+      <svg className={styles.asideWave} viewBox={`0 0 ${width} ${ASIDE_HEIGHT}`} preserveAspectRatio="none" aria-hidden="true" focusable="false" style={{ height: ASIDE_HEIGHT }}>
+        {rects}
+      </svg>
     </div>
   );
 }
