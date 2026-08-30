@@ -4,14 +4,47 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "android": { "buildType": "apk" }
+      "android": { "buildType": "apk" },
+      "env": {
+        "EXPO_PUBLIC_GATEWAY_URL": "https://staging.consummate7.com",
+        "EXPO_PUBLIC_ACCOUNT_URL": "https://staging.consummate7.com/auth",
+        "EXPO_PUBLIC_INGEST_URL": "https://staging.consummate7.com/media",
+        "EXPO_PUBLIC_LISTEN_URL": "https://staging.consummate7.com/listen",
+        "EXPO_PUBLIC_WEB_URL": "https://staging.consummate7.com",
+        "EXPO_PUBLIC_CALL_DIAGNOSTICS": "1"
+      }
     },
     "preview": {
       "distribution": "internal",
-      "android": { "buildType": "apk" }
+      "android": { "buildType": "apk" },
+      "env": {
+        "EXPO_PUBLIC_GATEWAY_URL": "https://staging.consummate7.com",
+        "EXPO_PUBLIC_ACCOUNT_URL": "https://staging.consummate7.com/auth",
+        "EXPO_PUBLIC_INGEST_URL": "https://staging.consummate7.com/media",
+        "EXPO_PUBLIC_LISTEN_URL": "https://staging.consummate7.com/listen",
+        "EXPO_PUBLIC_WEB_URL": "https://staging.consummate7.com"
+      }
+    },
+    "production-apk": {
+      "distribution": "internal",
+      "android": { "buildType": "apk" },
+      "env": {
+        "EXPO_PUBLIC_GATEWAY_URL": "https://consummate7.com",
+        "EXPO_PUBLIC_ACCOUNT_URL": "https://consummate7.com/auth",
+        "EXPO_PUBLIC_INGEST_URL": "https://consummate7.com/media",
+        "EXPO_PUBLIC_LISTEN_URL": "https://consummate7.com/listen",
+        "EXPO_PUBLIC_WEB_URL": "https://consummate7.com"
+      }
     },
     "production": {
-      "android": { "buildType": "app-bundle" }
+      "android": { "buildType": "app-bundle" },
+      "env": {
+        "EXPO_PUBLIC_GATEWAY_URL": "https://consummate7.com",
+        "EXPO_PUBLIC_ACCOUNT_URL": "https://consummate7.com/auth",
+        "EXPO_PUBLIC_INGEST_URL": "https://consummate7.com/media",
+        "EXPO_PUBLIC_LISTEN_URL": "https://consummate7.com/listen",
+        "EXPO_PUBLIC_WEB_URL": "https://consummate7.com"
+      }
     }
   },
   "submit": { "production": {} }

@@ -359,6 +359,43 @@ hard-coded. A page is done only with a VISUAL PASS and a FUNCTIONAL PASS.
 
 ---
 
+## 4B · Production — one origin, one machine, for now (LOCKED, 30 Aug 2026)
+
+**`https://consummate7.com` is the canonical production origin.** `www`
+exists only to redirect to the apex. There is no `app.`, no `operator.`,
+no separate Videofy hostname: everything lives on one trusted origin at
+the paths staging already proved — `/`, `/videofy/`, `/videofy/live/`,
+`/call/`, `/listen/`, `/streams/<handle>`, `/operator/`, `/auth/*`,
+`/media/*`, `/calls/*`, `/socket.io/*`. One origin is what keeps CORS,
+sessions, cookies, share links and provider callbacks simple, and that
+simplicity is the reason, not an accident of how it grew.
+
+**TURN never goes through the ordinary proxy.** The relay is dialled by
+the origin address (or a DNS-only `turn.` record); a proxied hostname
+reaches an edge that does not speak TURN, and two NATed peers then fail
+to build a path with nothing in the logs to say why.
+
+**Production and staging share a machine — environment isolation, not
+fault-domain isolation.** Separate trees, secrets, databases, ports,
+uploads, units and Caddy routes; one disk, kernel, host or provider
+failure still takes both. Accepted for the initial launch, and the day
+traffic or revenue justifies it, production moves to its own host.
+
+**Operating a public broadcast is its own entitlement.** A verified C7
+identity is not a production operator: the allowlist starts with the
+founder plus at most one approved backup, is fail-closed when empty, and
+never carries a test or staging account. Programme control derives the
+account from the authenticated session, server-side, and never from
+anything a client sends.
+
+**No silent synthetic anything in production.** A provider that is not
+configured either refuses its capability honestly or refuses to start
+where the capability is mandatory. And a deployment proves what it is
+running: requested SHA, checked-out SHA and running SHA must agree or
+the deploy fails — there is no green deploy with the old release live.
+
+---
+
 ## 5 · Streaming — the Programme Quality Engine (canonical, 29 Aug 2026)
 
 **Status: APPROVED by the founder on 29 Aug 2026 as the canonical
