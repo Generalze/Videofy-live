@@ -121,7 +121,7 @@ describe('partner preview readiness', () => {
     });
   });
 
-  it('does not claim ready when Spanish is not selected or listeners are absent', () => {
+  it('does not claim ready when no selected target has a voice or listeners are absent', () => {
     const items = buildPartnerPreviewReadiness({
       gatewayConnected: true,
       mediaIngestHealthy: true,
@@ -130,7 +130,10 @@ describe('partner preview readiness', () => {
       selectedTargetLanguages: ['fr'],
     });
 
-    expect(items.find((item) => item.id === 'spanish')).toMatchObject({ state: 'warning' });
+    expect(items.find((item) => item.id === 'targets')).toMatchObject({
+      state: 'warning',
+      detail: 'No selected target language has a voice available yet.',
+    });
     expect(items.find((item) => item.id === 'listeners')).toMatchObject({ state: 'warning' });
     expect(items.find((item) => item.id === 'source')).toMatchObject({ state: 'warning' });
   });

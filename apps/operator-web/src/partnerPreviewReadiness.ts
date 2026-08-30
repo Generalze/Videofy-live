@@ -35,8 +35,9 @@ export function shouldShowMockControls(mediaState: MediaStateEvent | null): bool
 export function buildPartnerPreviewReadiness(
   input: PartnerPreviewReadinessInput,
 ): PartnerPreviewReadinessItem[] {
-  const selectedSpanish = input.selectedTargetLanguages.includes('es');
-  const spanishCapability = input.targetLanguageCatalogue?.find((target) => target.language === 'es');
+  const voicedTargets = input.selectedTargetLanguages
+    .map((code) => input.targetLanguageCatalogue?.find((target) => target.language === code))
+    .filter((target): target is TargetLanguageCapability => target?.voiceAvailable === true);
   const sourceReady =
     input.programmeSource.status === 'broadcasting' ||
     input.programmeSource.status === 'paused' ||
@@ -78,13 +79,15 @@ export function buildPartnerPreviewReadiness(
         : 'English is the default; confirm or lock after detection.',
     },
     {
-      id: 'spanish',
-      label: 'Spanish target',
-      state: selectedSpanish && spanishCapability?.voiceAvailable ? 'ready' : 'warning',
+      id: 'targets',
+      label: 'Target languages',
+      state: voicedTargets.length > 0 ? 'ready' : 'warning',
       detail:
-        selectedSpanish && spanishCapability?.voiceAvailable
-          ? `Selected - ${spanishCapability.availability}`
-          : 'Use the EN to ES demo preset before a partner run.',
+        voicedTargets.length > 0
+          ? voicedTargets.map((target) => `${target.label} - ${target.availability}`).join('; ')
+          : input.selectedTargetLanguages.length === 0
+            ? 'Add at least one target language on the Languages page.'
+            : 'No selected target language has a voice available yet.',
     },
     {
       id: 'translation',

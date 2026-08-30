@@ -2,9 +2,37 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MediaStateEvent } from '@videofy-live/shared-types';
 import {
   createProcessingSession,
+  fetchTargetLanguageCatalogue,
   refreshProcessingSessionFromMediaState,
   type ProcessingSessionDto,
 } from './ingestClient';
+
+describe('fetchTargetLanguageCatalogue', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reads the deployment catalogue from GET /languages/catalogue before any programme exists', async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      expect(String(url)).toBe('http://localhost:3002/languages/catalogue');
+      return new Response(
+        JSON.stringify({
+          service: 'media-ingest',
+          catalogue: [{ language: 'fr', label: 'French', state: 'available', translationAvailable: true, voiceAvailable: true, textOnly: false, experimental: false, availability: 'voice-available', translationModel: null, voiceId: null, license: '', commercialUse: 'unknown' }],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const catalogue = await fetchTargetLanguageCatalogue('http://localhost:3002');
+    expect(catalogue.map((entry) => entry.language)).toEqual(['fr']);
+  });
+
+  it('fails loudly when the catalogue is missing, so the console shows an honest unavailable state', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 503 })));
+    await expect(fetchTargetLanguageCatalogue('http://localhost:3002')).rejects.toThrow(/503/);
+  });
+});
 
 describe('createProcessingSession', () => {
   afterEach(() => {

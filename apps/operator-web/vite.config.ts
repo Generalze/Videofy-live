@@ -32,6 +32,10 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.VITE_INGEST_URL': JSON.stringify(
         fromEnv(rootEnv, 'VITE_INGEST_URL', 'http://localhost:3002'),
       ),
+      // The channel identity in the shell reads GET <account>/channels/mine.
+      'import.meta.env.VITE_ACCOUNT_URL': JSON.stringify(
+        fromEnv(rootEnv, 'VITE_ACCOUNT_URL', 'http://localhost:3006'),
+      ),
       'import.meta.env.VITE_WEBRTC_ICE_SERVERS': JSON.stringify(
         fromEnv(rootEnv, 'VITE_WEBRTC_ICE_SERVERS', ''),
       ),

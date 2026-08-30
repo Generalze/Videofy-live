@@ -136,6 +136,28 @@ export async function createMicrophoneSession(
   return await readSessionResponse(response);
 }
 
+/**
+ * The deployment's target-language catalogue from GET /languages/catalogue,
+ * so the Languages page can show real capability states before a programme
+ * exists rather than waiting for a processing session or media state.
+ */
+export async function fetchTargetLanguageCatalogue(
+  ingestUrl: string,
+): Promise<TargetLanguageCapability[]> {
+  const response = await fetch(`${ingestUrl}/languages/catalogue`, { method: 'GET' });
+  if (!response.ok) {
+    throw new IngestClientError(
+      `Language catalogue request failed (${response.status}).`,
+      response.status,
+    );
+  }
+  const body = (await response.json()) as { catalogue?: unknown };
+  if (!Array.isArray(body.catalogue)) {
+    throw new IngestClientError('Language catalogue response carried no catalogue.', response.status);
+  }
+  return body.catalogue as TargetLanguageCapability[];
+}
+
 export async function updateSourceLanguageControl(
   ingestUrl: string,
   sessionId: string,

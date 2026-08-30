@@ -1,0 +1,262 @@
+/*
+ * 10 Live Control, measured off 10-live-control-reference.png at 1586 x 992:
+ * the control bar (buttons 62px high in five columns), the preview/status
+ * pair (590 : 624), three output cards (380 : 380 : 439), the collapsed
+ * diagnostics row (60px). Colour and depth come from tokens.css.
+ */
+.page {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------ control bar */
+.controlBar {
+  padding: 25px 26px;
+}
+.controls {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 26px;
+}
+.control {
+  height: 62px;
+  font-size: 17px;
+  font-weight: 500;
+  border-radius: var(--op-radius-md);
+  gap: 14px;
+}
+.control:disabled {
+  opacity: 0.4;
+}
+.controlRecording {
+  border-color: var(--op-danger-border);
+}
+.recordGlyph {
+  color: var(--op-danger);
+}
+
+/* ------------------------------------------------------- preview + status */
+.middle {
+  display: grid;
+  grid-template-columns: minmax(0, 590fr) minmax(0, 624fr);
+  gap: 15px;
+  align-items: stretch;
+}
+.previewPanel,
+.statusPanel {
+  padding: 20px 21px 19px;
+}
+.previewPanel > header,
+.statusPanel > header {
+  align-items: center;
+  margin-bottom: 15px;
+}
+.previewTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+}
+.liveChip {
+  font-size: 11px;
+  padding: 5px 10px;
+}
+.preview {
+  position: relative;
+  height: 195px;
+  border-radius: 10px;
+  border: 1px solid var(--op-panel-border);
+  background:
+    radial-gradient(420px 220px at 50% 50%, rgba(45, 212, 191, 0.1), transparent 70%),
+    linear-gradient(135deg, #070d21 0%, #0a1024 55%, #0f1230 100%);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.previewVideo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+.previewVideo[hidden] {
+  display: none;
+}
+.previewGlyph {
+  color: var(--op-teal);
+  filter: drop-shadow(0 0 18px rgba(45, 212, 191, 0.55));
+  display: inline-flex;
+}
+.previewChips {
+  position: absolute;
+  left: 10px;
+  bottom: 12px;
+  display: flex;
+  gap: 8px;
+}
+.previewChip {
+  background: rgba(10, 16, 34, 0.85);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: var(--op-text-secondary);
+  font-size: 12px;
+  padding: 5px 10px;
+}
+.previewSignal {
+  position: absolute;
+  right: 20px;
+  bottom: 14px;
+  color: var(--op-ok);
+  display: inline-flex;
+}
+
+.viewAll {
+  border: 0;
+  background: transparent;
+  color: #7b8cff;
+  font: inherit;
+  font-size: 15px;
+  cursor: pointer;
+  padding: 0;
+}
+.viewAll:hover {
+  text-decoration: underline;
+}
+.statusList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.statusRow {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto 8px;
+  align-items: center;
+  gap: 12px;
+  height: 45px;
+  padding: 0 21px 0 18px;
+  border: 1px solid var(--op-panel-border);
+  border-radius: 10px;
+  background: rgba(8, 13, 30, 0.7);
+  font-size: 15px;
+}
+.statusIcon {
+  display: inline-flex;
+  color: var(--op-text-secondary);
+}
+.statusLabel {
+  color: var(--op-text);
+}
+.statusValue {
+  color: var(--op-text-muted);
+  margin-right: 14px;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------ output cards */
+.feeds {
+  display: grid;
+  grid-template-columns: minmax(0, 380fr) minmax(0, 380fr) minmax(0, 439fr);
+  gap: 15px;
+}
+.feedCard {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-height: 215px;
+  overflow: hidden;
+}
+.feedHeader {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 25px 24px 0;
+}
+.feedTitle {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--op-text);
+}
+.feedPill {
+  margin-left: 6px;
+  font-size: 12px;
+  padding: 5px 12px;
+}
+.feedText {
+  margin: 16px 24px 0;
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--op-text-secondary);
+  max-height: 46px;
+  overflow: hidden;
+}
+.feedWave {
+  padding: 16px 4px 18px;
+  opacity: 0.8;
+}
+
+/* -------------------------------------------------------------- diagnostics */
+.diagnostics {
+  border: 1px solid var(--op-panel-border);
+  border-radius: var(--op-radius-md);
+  background: var(--op-panel);
+  background-image: var(--op-gradient-glass);
+}
+.diagnosticsSummary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 58px;
+  padding: 0 22px 0 20px;
+  cursor: pointer;
+  color: var(--op-text);
+  font-size: 16px;
+}
+.diagnosticsSummary::-webkit-details-marker {
+  display: none;
+}
+.diagnosticsCaret {
+  display: inline-flex;
+  color: var(--op-text-secondary);
+  transition: transform 120ms ease;
+}
+.diagnostics[open] .diagnosticsCaret {
+  transform: rotate(90deg);
+}
+.diagnosticsTitle {
+  flex: 1;
+}
+.diagnosticsToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #7b8cff;
+  font-size: 15px;
+}
+.diagnosticsHide {
+  display: none;
+}
+.diagnostics[open] .diagnosticsHide {
+  display: inline;
+}
+.diagnostics[open] .diagnosticsShow {
+  display: none;
+}
+.diagnosticsBody {
+  padding: 0 20px 20px;
+}
+
+@media (max-width: 1100px) {
+  .controls {
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  }
+  .middle,
+  .feeds {
+    grid-template-columns: 1fr;
+  }
+}

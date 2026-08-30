@@ -3,6 +3,7 @@ import type {
   GeneratedAudioEvent,
   GeneratedAudioReadyEvent,
   MediaStateEvent,
+  TargetLanguageCapability,
   TimestampedTranslationEvent,
   TranscriptionEvent,
 } from '@videofy-live/shared-types';
@@ -432,6 +433,18 @@ export class IngestService {
    */
   get translationPairAvailability(): LanguagePairAvailability[] {
     return this.languagePairAvailability;
+  }
+
+  /**
+   * The deployment's target-language catalogue with every language's
+   * capability state, BEFORE any programme exists. The same rows a media
+   * state carries; here so the operator console can show the catalogue
+   * without waiting for a processing session (founder directive, 30 Aug
+   * 2026: "the catalogue must be available before a programme starts
+   * through a real capability-catalogue read").
+   */
+  get targetLanguageCatalogue(): TargetLanguageCapability[] {
+    return this.sessions.getTargetLanguageCatalogue();
   }
 
   async start(): Promise<void> {

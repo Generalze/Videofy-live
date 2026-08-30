@@ -251,6 +251,20 @@ app.get('/health', (_req, res) => {
   });
 });
 
+/*
+ * The deployment's target-language catalogue, readable before a programme
+ * exists. Public and side-effect free: it lists which languages THIS
+ * deployment's chain can translate into and with what capability state, and
+ * nothing an operator could not learn from the next media state anyway.
+ */
+app.get('/languages/catalogue', (_req, res) => {
+  res.json({
+    service: 'media-ingest',
+    catalogue: ingest.targetLanguageCatalogue,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 app.post('/microphone/sessions', async (req, res) => {
   try {
     const body = (req.body ?? {}) as {

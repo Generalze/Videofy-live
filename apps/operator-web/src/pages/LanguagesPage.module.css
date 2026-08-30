@@ -1,0 +1,434 @@
+/*
+ * 03 Languages, measured off 03-languages-reference.png at 1586 x 992:
+ * two panels 553 : 648 with a 25px gutter, the legend bar beneath, and the
+ * Back / Continue pair right-aligned under it. Colours are the sampled
+ * master values where the tokens differ (panel #0b1328, sunken rows
+ * #0a1225, active segment #3b24c0).
+ */
+.page {
+  display: grid;
+  gap: 22px;
+  margin-top: 12px;
+}
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 553fr) minmax(0, 648fr);
+  gap: 25px;
+  align-items: stretch;
+}
+@media (max-width: 1100px) {
+  .columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.panel {
+  padding: 24px 21px 20px;
+  border-radius: 12px;
+  background: #0b1328;
+  background-image: var(--op-gradient-glass);
+  border-color: rgba(255, 255, 255, 0.07);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.panelEyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 22px;
+}
+.panelEyebrowText {
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  color: #e6e9f2;
+}
+.infoMark {
+  display: inline-flex;
+  color: var(--op-text-muted);
+}
+
+/* ------------------------------------------------------------- segmented */
+.segmented {
+  display: flex;
+  gap: 2px;
+}
+.segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 46px;
+  padding: 0 18px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+  color: #e6e9f2;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.segment svg {
+  color: var(--op-text-secondary);
+}
+.segment:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.segmentActive,
+.segmentActive:disabled {
+  background: linear-gradient(180deg, #452bc3, #3b24c0);
+  border-color: #5a44e0;
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 8px 22px rgba(69, 43, 195, 0.35);
+  opacity: 1;
+}
+.segmentActive svg {
+  color: #c7c3ff;
+}
+
+/* ---------------------------------------------------------------- fields */
+.fieldLabel {
+  margin: 28px 0 12px;
+  font-size: 15px;
+  color: #c3c9d8;
+}
+.panelEyebrow + .fieldLabel {
+  margin-top: 0;
+}
+.currentRow {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  height: 64px;
+  padding: 0 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: #0a1225;
+}
+.tag,
+.tagRow,
+.tagSmall,
+.tagTeal {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #0f1a33;
+  color: #e6e9f2;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+.tag {
+  width: 43px;
+  height: 38px;
+  font-size: 15px;
+}
+.tagRow {
+  width: 34px;
+  height: 34px;
+  font-size: 13px;
+}
+.tagSmall {
+  width: 30px;
+  height: 26px;
+  font-size: 12px;
+}
+.tagTeal {
+  width: 30px;
+  height: 26px;
+  font-size: 12px;
+  border-color: var(--op-teal-border);
+  background: var(--op-teal-soft);
+  color: var(--op-teal-text);
+}
+.currentName {
+  flex: 1;
+  font-size: 16px;
+  color: #e6e9f2;
+}
+.currentNameUnknown {
+  flex: 1;
+  font-size: 15px;
+  color: var(--op-text-muted);
+}
+.sourceChip {
+  font-size: 13px;
+}
+.liveControl {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+.liveControlWords {
+  margin: 0;
+  font-size: 13px;
+  color: var(--op-text-muted);
+}
+.liveControlButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.divider {
+  margin-top: 19px;
+}
+.dividerWide {
+  margin-top: 28px;
+}
+.divider + .fieldLabel {
+  margin-top: 18px;
+}
+
+.search {
+  position: relative;
+}
+.searchIcon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--op-text-muted);
+  pointer-events: none;
+}
+.searchInput {
+  width: 100%;
+  height: 40px;
+  padding: 0 14px 0 42px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0a1225;
+  color: var(--op-text);
+  font: inherit;
+  font-size: 15px;
+}
+.searchInput::placeholder {
+  color: var(--op-text-muted);
+}
+.searchInput:focus-visible {
+  outline: 2px solid var(--op-violet);
+  outline-offset: 1px;
+}
+.searchInput:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+.sourceMatches {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.sourceMatch {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--op-text);
+  font: inherit;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+.sourceMatch:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+.sourceMatch small {
+  color: var(--op-text-muted);
+}
+
+.note {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 44px;
+  padding: 12px 16px 12px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+}
+.noteIcon {
+  color: var(--op-violet-text);
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+.note p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 21px;
+  color: #b8bfd0;
+}
+
+/* ----------------------------------------------------------------- chips */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-height: 38px;
+}
+.emptyChips {
+  align-self: center;
+  font-size: 14px;
+  color: var(--op-text-muted);
+}
+.selectedChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 38px;
+  padding: 0 6px 0 6px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #0a1225;
+}
+.selectedName {
+  font-size: 15px;
+  color: #e6e9f2;
+}
+.selectedNote {
+  font-size: 12px;
+  color: var(--op-text-muted);
+}
+.chipRemove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--op-text-secondary);
+  cursor: pointer;
+}
+.chipRemove:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--op-text);
+}
+.chipRemove:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* ------------------------------------------------------------- catalogue */
+.catalogue {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  min-height: 260px;
+  max-height: 260px;
+  overflow-y: auto;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0a1225;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(99, 91, 255, 0.5) transparent;
+}
+.catalogueRow {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  min-height: 51px;
+  padding: 0 14px 0 13px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.catalogueRow:last-child {
+  border-bottom: 0;
+}
+.rowName {
+  flex: 1;
+  min-width: 0;
+  font-size: 16px;
+  color: #e6e9f2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rowNative {
+  margin-left: 8px;
+  font-size: 13px;
+  color: var(--op-text-muted);
+}
+.stateChip {
+  font-size: 11px;
+  padding: 5px 10px;
+}
+.add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 62px;
+  height: 32px;
+  margin-left: 6px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #a79dff;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.add:hover:not(:disabled) {
+  background: rgba(99, 91, 255, 0.12);
+}
+.add:disabled {
+  cursor: not-allowed;
+  color: var(--op-text-faint);
+}
+.added:disabled {
+  color: var(--op-teal-text);
+}
+.emptyRow {
+  padding: 16px 14px;
+  font-size: 14px;
+  color: var(--op-text-muted);
+}
+
+/* ---------------------------------------------------------------- legend */
+.legend {
+  padding: 14px 21px 16px;
+}
+.legendEyebrow {
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: #e6e9f2;
+  margin-bottom: 15px;
+}
+.legendRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 40px;
+  margin: 0;
+}
+.legendItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.legendItem dt,
+.legendItem dd {
+  margin: 0;
+}
+.legendItem dd {
+  font-size: 15px;
+  color: #b8bfd0;
+}
+
+/* --------------------------------------------------------------- actions */
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 18px;
+  margin-top: -1px;
+}

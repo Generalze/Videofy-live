@@ -164,6 +164,10 @@ const UPLOADED_VIDEO_MIME_TYPES = new Set([
   'video/x-quicktime',
 ]);
 const DIRECT_STREAM_EXTENSIONS = new Set(['mp4', 'webm', 'm3u8']);
+/** The accepted upload formats, for the operator to read: the same list UPLOADED_VIDEO_EXTENSIONS validates. */
+export const UPLOADED_VIDEO_FORMATS: readonly string[] = ['MP4', 'WebM', 'MOV'];
+/** The accepted direct-URL formats: the same list DIRECT_STREAM_EXTENSIONS validates. */
+export const DIRECT_STREAM_FORMATS: readonly string[] = ['MP4', 'WebM', 'HLS (.m3u8)'];
 const SAFE_RTMP_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const LOCAL_RTMP_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 const NATIVE_HLS_MIME_TYPES = ['application/vnd.apple.mpegurl', 'application/x-mpegURL'];

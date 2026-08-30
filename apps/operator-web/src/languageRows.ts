@@ -22,6 +22,20 @@ export const STATE_WORDS: Record<CapabilityState, string> = {
   unavailable: 'Unavailable',
 };
 
+/** What each capability word means, for the legend; the same facts the old inline note carried. */
+export const CAPABILITY_MEANINGS: readonly { state: CapabilityState; meaning: string }[] = [
+  { state: 'qualified', meaning: 'Live evidence on this chain' },
+  { state: 'available', meaning: 'Every stage declares it' },
+  { state: 'limited', meaning: 'Beta or partial' },
+  { state: 'unavailable', meaning: 'A stage has no provider' },
+];
+
+/** The two-letter tag the masters print beside a language: "EN", "PT" for pt-BR. */
+export function languageTag(code: string): string {
+  const base = code.split(/[-_]/)[0] ?? code;
+  return base.slice(0, 2).toUpperCase();
+}
+
 function normalise(value: string): string {
   return value.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 }

@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "visual:diff": "node ../../scripts/operator-visual-diff.mjs"
   },
   "dependencies": {
     "@videofy-live/design-system": "*",
