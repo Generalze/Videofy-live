@@ -611,6 +611,17 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
         res.status(401).json({ error: 'Sign in to continue.' });
         return;
       }
+      /*
+       * SWITCHED OFF, per the 30 Aug 2026 production ruling: "a missing
+       * provider must refuse the capability honestly ... NEVER a silent fall
+       * back to a synthetic/mock provider in production". 503 rather than 404:
+       * the endpoint exists and will work the day an SMS vendor is bought, and
+       * a person who reads "not available yet" is being told the truth.
+       */
+      if (!verification.channelAvailable('phone')) {
+        res.status(503).json({ error: 'Phone verification is not available yet.' });
+        return;
+      }
       const phone = (req.body as { phone?: unknown } | undefined)?.phone;
       if (typeof phone !== 'string' || phone.length > 32) {
         res.status(400).json({ error: 'Enter a phone number in international format.' });
@@ -641,6 +652,12 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
             res.status(409).json({ error: 'That number is already verified.' });
             return;
           }
+          // Belt and braces: the check above already refused, and this is what
+          // answers if the channel is switched off between the two.
+          if (outcome.reason === 'unavailable') {
+            res.status(503).json({ error: 'Phone verification is not available yet.' });
+            return;
+          }
           res.status(502).json({ error: 'The code could not be sent. Try again shortly.' });
         })
         .catch(() => res.status(500).json({ error: 'The code could not be sent.' }));
@@ -650,6 +667,16 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       const caller = callerAccountId(req);
       if (caller === null) {
         res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      /*
+       * SWITCHED OFF (C7_IDENTITY_PROVIDER=off), the honest-refusal half of the
+       * 30 Aug 2026 ruling. Nothing is started, no case is minted, and the
+       * account's identity component stays untouched at `unverified` -- being
+       * offered no check is not the same as failing one.
+       */
+      if (!verification.identityAvailable()) {
+        res.status(503).json({ error: 'Identity verification is not available yet.' });
         return;
       }
       void verification
@@ -691,6 +718,17 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       const caller = callerAccountId(req);
       if (caller === null) {
         res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      /*
+       * SWITCHED OFF, per the 30 Aug 2026 production ruling: "a missing
+       * provider must refuse the capability honestly ... NEVER a silent fall
+       * back to a synthetic/mock provider in production". 503 rather than 404:
+       * the endpoint exists and will work the day an SMS vendor is bought, and
+       * a person who reads "not available yet" is being told the truth.
+       */
+      if (!verification.channelAvailable('phone')) {
+        res.status(503).json({ error: 'Phone verification is not available yet.' });
         return;
       }
       const code = (req.body as { code?: unknown } | undefined)?.code;

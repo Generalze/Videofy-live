@@ -13,13 +13,32 @@
  * All three end the same way: a system that believes it verified somebody.
  * So an unrecognised name throws, missing credentials throw, and synthetic in
  * production throws — at STARTUP, before anything looks healthy.
+ *
+ * `off` is the FOURTH name, added so production can launch before a vendor
+ * exists. It is not a fallback and can never be reached by omission: it is
+ * selected only by writing the word, and what it selects refuses the capability
+ * out loud rather than pretending to provide it. Per the production ruling of
+ * 30 Aug 2026 -- "a missing provider must refuse the capability honestly or
+ * fail startup where the capability is mandatory -- NEVER a silent fall back to
+ * a synthetic/mock provider in production" -- an UNSET switch keeps its old
+ * meaning (synthetic, and therefore refused in production). Nothing is ever
+ * silently switched off.
  */
 import {
   assertProviderAllowed,
   createSyntheticProvider,
+  createUnavailableProvider,
+  deliveryAvailable,
   type DeliveryEnvironment,
   type VerificationDeliveryProvider,
 } from './providers.js';
+import {
+  assertIdentityProviderAllowed,
+  createSyntheticIdentityProvider,
+  createUnavailableIdentityProvider,
+  identityProviderAvailable,
+  type IdentityVerificationProvider,
+} from './identity-verification.js';
 import {
   createResendProvider,
   createTermiiProvider,
@@ -77,7 +96,9 @@ export function createEmailProvider(
     provider = createSyntheticProvider('email');
   } else {
     throw new ProviderConfigurationError(
-      `C7_EMAIL_PROVIDER="${selected}" is not a provider. Use "synthetic" or "resend".`,
+      `C7_EMAIL_PROVIDER="${selected}" is not a provider. Use "synthetic" or "resend". ` +
+        `Email has no "off": every account is reached by email for verification and ` +
+        `password recovery, so a deployment without it cannot recover anybody.`,
     );
   }
 
@@ -113,9 +134,20 @@ export function createPhoneProvider(
     });
   } else if (selected === 'synthetic') {
     provider = createSyntheticProvider('phone');
+  } else if (selected === 'off') {
+    /*
+     * EXPLICITLY off, because no SMS vendor has been bought yet.
+     *
+     * Production accepts exactly two phone values as a result: `termii`, or
+     * this. `synthetic` -- including the one you get by leaving the variable
+     * unset -- still refuses to start, so "off" can only ever be a decision
+     * somebody wrote down.
+     */
+    provider = createUnavailableProvider('phone');
   } else {
     throw new ProviderConfigurationError(
-      `C7_PHONE_PROVIDER="${selected}" is not a provider. Use "synthetic" or "termii".`,
+      `C7_PHONE_PROVIDER="${selected}" is not a provider. Use "termii", "off", or ` +
+        `"synthetic" (development and staging only).`,
     );
   }
 
@@ -129,7 +161,7 @@ export interface ProviderStatus {
   readonly provider: string;
   /** The adapter exists and is wired. */
   readonly implementation: 'integrated';
-  readonly configuration: 'credentials-present' | 'credentials-absent';
+  readonly configuration: 'credentials-present' | 'credentials-absent' | 'channel-disabled';
   /**
    * Never `certified`, and never promoted by one successful send. A single
    * delivered message is an observation, not a validation.
@@ -145,7 +177,84 @@ export function describeProvider(
     channel,
     provider: provider.name,
     implementation: 'integrated',
-    configuration: provider.synthetic ? 'credentials-absent' : 'credentials-present',
+    /*
+     * A disabled channel is reported as disabled, not as configured. Saying
+     * `credentials-present` about a provider that holds no credentials and
+     * sends nothing would make the boot log the first thing to lie.
+     */
+    configuration: !deliveryAvailable(provider)
+      ? 'channel-disabled'
+      : provider.synthetic
+        ? 'credentials-absent'
+        : 'credentials-present',
     validation: 'external-validation-deferred',
+  };
+}
+
+export interface IdentityProviderEnv {
+  readonly C7_IDENTITY_PROVIDER?: string;
+}
+
+/**
+ * Choosing the identity (KYC) provider from configuration.
+ *
+ * Until this existed the provider was HARD-CODED synthetic in the account
+ * service, and synthetic identity is refused in production -- so the service
+ * simply could not boot with `C7_ENVIRONMENT=production`. That is the blocker
+ * this function closes, and it closes it without weakening the refusal:
+ *
+ *   off        -> the capability is honestly unavailable; the routes answer 503
+ *                 and no account's identity component ever moves.
+ *   synthetic  -> development and staging only, exactly as before.
+ *   unset      -> synthetic, and therefore still REFUSED in production. Per the
+ *                 30 Aug 2026 ruling, absence must never mean "quietly off":
+ *                 switching identity verification off is a sentence the founder
+ *                 writes into the environment file, not an accident.
+ *
+ * A real vendor becomes a fifth branch here and nothing else changes.
+ */
+export function createIdentityProvider(
+  env: IdentityProviderEnv,
+  environment: DeliveryEnvironment,
+): IdentityVerificationProvider {
+  const selected = (env.C7_IDENTITY_PROVIDER ?? 'synthetic').trim().toLowerCase();
+
+  let provider: IdentityVerificationProvider;
+  if (selected === 'off') {
+    provider = createUnavailableIdentityProvider();
+  } else if (selected === 'synthetic') {
+    provider = createSyntheticIdentityProvider();
+  } else {
+    throw new ProviderConfigurationError(
+      `C7_IDENTITY_PROVIDER="${selected}" is not a provider. Use "off" (identity ` +
+        `verification is not offered) or "synthetic" (development and staging only).`,
+    );
+  }
+
+  assertIdentityProviderAllowed(provider, environment);
+  return provider;
+}
+
+/** What a report may say about the identity provider, and nothing stronger. */
+export interface IdentityProviderStatus {
+  readonly channel: 'identity';
+  readonly provider: string;
+  /** False means the capability is switched off and every route refuses. */
+  readonly available: boolean;
+  readonly configuration: 'credentials-present' | 'credentials-absent' | 'channel-disabled';
+}
+
+export function describeIdentityProvider(
+  provider: IdentityVerificationProvider,
+): IdentityProviderStatus {
+  return {
+    channel: 'identity',
+    provider: provider.name,
+    available: identityProviderAvailable(provider),
+    configuration: !identityProviderAvailable(provider)
+      ? 'channel-disabled'
+      : provider.synthetic
+        ? 'credentials-absent'
+        : 'credentials-present',
   };
 }

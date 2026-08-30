@@ -279,14 +279,76 @@ The whole of it is code:
 | units, backup timer (03:42 UTC), two-site Caddyfile | `deploy/production/systemd/*`, `deploy/production/Caddyfile` |
 | public-route smoke through Cloudflare | `deploy/production/smoke.sh [staging]` |
 | the day, step by step, with rollback | `docs/PRODUCTION_CUTOVER_RUNBOOK.md` |
+| the TURN proxy refusal, run at install and at smoke | `deploy/lib/turn-guard.sh` |
+| the restart-persistence proof (runbook step 21) | `deploy/production/check-restart-persistence.sh` |
 
-**Not yet bootable in production, by design.** The account's identity
-provider is hard-wired synthetic and refused in production regardless of
-configuration -- a code decision listed under "Blockers" in the runbook.
-media-ingest's `PROGRAMME_ROUTES_ARE_UNAUTHENTICATED` guard is being closed by
-the programme-control-auth lane (authenticated routes, allowlist mirrored via
-`OPERATOR_CONSOLE_ACCOUNT_IDS` in media-ingest.env). The production hostname
-does not resolve yet either; DNS is the founder's step.
+### Environment isolation, NOT fault-domain isolation
+
+Say this plainly, because "second environment" is easy to read as "second
+machine" and it is not. FOUNDER RULING, LOCKED 30 Aug 2026: *"Production runs
+on the SAME MACHINE as staging for the initial launch: environment isolation
+but NOT fault-domain isolation -- that limitation must be documented plainly."*
+
+Production and staging are separated by path, port, unit name, database, web
+root and secrets directory. They are NOT separated by hardware, kernel,
+network, power or provider. A single failure in any of the following takes out
+BOTH environments at once, and nothing inside the application prevents it:
+
+* the VPS itself (host failure, a Contabo incident, a reboot, a full disk, an
+  out-of-memory kill choosing whichever process it likes);
+* the one Postgres 16 cluster -- a staging migration that locks a table, a
+  staging query that exhausts connections, or a cluster that will not start
+  after an upgrade, is a production outage;
+* the one Caddy process and its one Caddyfile -- a bad restart takes both
+  hostnames off the internet together;
+* the one coturn daemon and its single relay port range (49160-49300/udp) --
+  shared capacity, and a restart drops live relays in both environments;
+* the one filesystem under `/srv` and `/var/lib`, including the shared 2.7 GB
+  model cache -- staging filling the disk stops production writing uploads,
+  avatars, backups and journald;
+* the one ssh account and sudo grant used to deploy both.
+
+What the separation does buy is real and worth stating too: different database
+and role, different password, different secrets directory the staging units
+cannot read, different `ReadWritePaths`, and different signing secrets -- so a
+staging session token is not valid on production and a staging deploy cannot
+restart a production unit.
+
+This is an accepted launch-day limitation, not an oversight. It is sound only
+while an outage is an inconvenience rather than a loss. **Production moves to
+its own host when traffic or revenue justifies it**; the trigger to write down
+now is the first paying customer whose programme cannot be rescheduled, or the
+first week where staging work must pause so as not to disturb production. Until
+then, the cheapest real mitigation is an off-box backup target
+(`BACKUP_OFF_BOX_TARGET`): a backup on the same disk as the database it
+protects survives none of the failures above.
+
+### Two rulings the production profile enforces mechanically
+
+* **TURN is never behind the ordinary Cloudflare proxy.** Either the proven
+  direct origin (`169.58.215.77`) or a DNS-only `turn.consummate7.com` A
+  record. A proxied host would resolve, mint a credential and relay nothing
+  while every health signal stayed green, so it is checked rather than
+  commented: `deploy/lib/turn-guard.sh` refuses the install, and fails the
+  smoke, if the configured host lands in a Cloudflare range.
+* **The production operator allowlist starts empty and fail-closed.**
+  `OPERATOR_CONSOLE_ACCOUNT_IDS` ships empty in BOTH `gateway.env` and
+  `media-ingest.env`; empty means nobody operates. It is the founder-designated
+  production operator plus at most one approved backup -- no staging, QA or
+  test account, and a verified C7 identity is not an entitlement. Programme
+  control derives the entitlement server-side from the session: `401` with no
+  session, `403` off the list, and no request field names an account.
+
+**Bootable in production; both former code blockers are closed.** The
+account service selects its identity provider by name --
+`C7_IDENTITY_PROVIDER=off` boots and answers `503` on the identity routes,
+while `synthetic` (including the synthetic you get by omitting the line) still
+refuses to start. media-ingest's `PROGRAMME_ROUTES_ARE_UNAUTHENTICATED` is
+`false`, with the routes authenticated by session plus the allowlist mirrored
+via `OPERATOR_CONSOLE_ACCOUNT_IDS` in media-ingest.env. Verify both on the SHA
+you deploy -- the runbook's "Blockers that were CODE" section carries the two
+`grep` commands. The one genuine prerequisite left is the founder's: the
+production hostname does not resolve yet, and DNS is step 1.
 
 Staging's own files under `deploy/staging/` are unchanged; `deploy/deploy.sh
 staging` reproduces the 30 Aug deploy with one addition -- it stages web apps

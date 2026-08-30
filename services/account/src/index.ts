@@ -75,11 +75,13 @@ import { createSecurityLog } from './security-log.js';
 import { MfaService, readMfaKeyring } from './mfa-service.js';
 import { rejectPassword } from './password.js';
 import {
-  assertIdentityProviderAllowed,
   createEmailProvider,
+  createIdentityProvider,
   createPhoneProvider,
-  createSyntheticIdentityProvider,
+  deliveryAvailable,
+  describeIdentityProvider,
   describeProvider,
+  identityProviderAvailable,
   RECOVERY_PEPPER_MIN_LENGTH,
   createMemoryAbuseLimiter,
   readEnvironment,
@@ -115,10 +117,21 @@ const environment = readEnvironment(process.env['C7_ENVIRONMENT']);
 const emailProvider = createEmailProvider(process.env, environment);
 const phoneProvider = createPhoneProvider(process.env, environment);
 
-// Identity stays synthetic deliberately: real KYC waits on a chosen provider
-// AND approved legal/policy content, and is refused in production until then.
-const identityProvider = createSyntheticIdentityProvider();
-assertIdentityProviderAllowed(identityProvider, environment);
+/*
+ * Identity (KYC), chosen by name like every other provider.
+ *
+ * It used to be hard-coded synthetic, and synthetic identity is refused in
+ * production -- so this service could not boot with C7_ENVIRONMENT=production
+ * at all. `C7_IDENTITY_PROVIDER=off` is what closes that, and it closes it the
+ * way the 30 Aug 2026 ruling requires: "a missing provider must refuse the
+ * capability honestly or fail startup where the capability is mandatory --
+ * NEVER a silent fall back to a synthetic/mock provider in production."
+ *
+ * UNSET still means synthetic, and synthetic still refuses to start in
+ * production. Switching identity verification off is a sentence somebody wrote
+ * into the environment file; it can never be the result of a forgotten one.
+ */
+const identityProvider = createIdentityProvider(process.env, environment);
 
 // eslint-disable-next-line no-console
 console.log(
@@ -126,11 +139,34 @@ console.log(
     service: 'account',
     message: 'Verification providers selected',
     environment,
+    /*
+     * NAMES AND STATES ONLY -- never a key, never a sender id, never a URL
+     * carrying credentials. This line is the first thing anybody reads when a
+     * deployment behaves oddly, so it says exactly which provider each channel
+     * got and whether that channel is offered at all.
+     */
     email: describeProvider('email', emailProvider),
     phone: describeProvider('phone', phoneProvider),
-    identity: { provider: identityProvider.name, synthetic: identityProvider.synthetic },
+    identity: describeIdentityProvider(identityProvider),
   }),
 );
+
+// Said separately and in plain words, because a channel that is switched off is
+// a product fact the operator must not discover from a support ticket.
+for (const [channel, offered] of [
+  ['phone', deliveryAvailable(phoneProvider)],
+  ['identity', identityProviderAvailable(identityProvider)],
+] as const) {
+  if (offered) continue;
+  // eslint-disable-next-line no-console
+  console.log(
+    JSON.stringify({
+      service: 'account',
+      message: `${channel} verification is switched OFF; its routes answer 503 and no account is marked verified through it`,
+      environment,
+    }),
+  );
+}
 
 /*
  * The secret the identity provider signs its callbacks with.

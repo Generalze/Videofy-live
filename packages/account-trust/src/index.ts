@@ -28,9 +28,12 @@ export {
   type ChallengeVerdict,
 } from './verification-token.js';
 export {
+  DeliveryChannelUnavailableError,
   SyntheticProviderInProductionError,
   assertProviderAllowed,
   createSyntheticProvider,
+  createUnavailableProvider,
+  deliveryAvailable,
   readEnvironment,
   type DeliveryEnvironment,
   type DeliveryResult,
@@ -41,10 +44,13 @@ export {
 } from './providers.js';
 export {
   CALLBACK_MAX_AGE_MS,
+  IdentityVerificationUnavailableError,
   SyntheticIdentityProviderInProductionError,
   applyCallback,
   assertIdentityProviderAllowed,
   createSyntheticIdentityProvider,
+  createUnavailableIdentityProvider,
+  identityProviderAvailable,
   isLegalTransition,
   signCallback,
   validateCallback,
@@ -171,9 +177,13 @@ export {
 export {
   ProviderConfigurationError,
   createEmailProvider,
+  createIdentityProvider,
   createPhoneProvider,
+  describeIdentityProvider,
   describeProvider,
   type EmailProviderEnv,
+  type IdentityProviderEnv,
+  type IdentityProviderStatus,
   type PhoneProviderEnv,
   type ProviderStatus,
 } from './provider-selection.js';

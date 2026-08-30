@@ -27,6 +27,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/env.sh
 . "$HERE/../lib/env.sh"
+# shellcheck source=../lib/turn-guard.sh
+. "$HERE/../lib/turn-guard.sh"
 videofy_env production
 
 if [[ $EUID -ne 0 ]]; then echo "run with sudo" >&2; exit 1; fi
@@ -143,9 +145,19 @@ fi
 # be used"). So production gets its own secret without a second daemon, a
 # second port or a second realm: the realm is an authentication label the
 # gateway never reads, and staging's credentials keep working unchanged.
+#
+# FOUNDER RULING, LOCKED 30 Aug 2026: "TURN is NEVER behind the ordinary
+# Cloudflare proxy: either the proven direct-origin arrangement
+# (169.58.215.77) or an optional DNS-only turn.consummate7.com A record."
+# BOTH arrangements are supported and neither is assumed. The value the
+# GATEWAY reads is TURN_HOST in gateway.env (ice-credentials.ts uses it
+# verbatim as the host of `turn:<host>:<port>`); turn.env below records the
+# default this installer seeds. The guard runs against the gateway's value and
+# REFUSES the install if it is a Cloudflare address -- see the guard block
+# after the coturn registration.
 TURN_ENV="$VIDEOFY_ENV_DIR/turn.env"
 if [[ ! -f "$TURN_ENV" ]]; then
-  ( umask 077; printf 'TURN_STATIC_AUTH_SECRET=%s\nTURN_HOST=%s\n' "$(openssl rand -hex 32)" "169.58.215.77" > "$TURN_ENV" )
+  ( umask 077; printf 'TURN_STATIC_AUTH_SECRET=%s\nTURN_HOST=%s\n' "$(openssl rand -hex 32)" "$VIDEOFY_TURN_ORIGIN_IP" > "$TURN_ENV" )
   chown root:root "$TURN_ENV"; chmod 0640 "$TURN_ENV"
   echo "generated production TURN secret into $TURN_ENV (value not displayed)"
 fi
@@ -164,6 +176,25 @@ else
   echo "coturn: skipped (SKIP_TURN=1); add the secret from $TURN_ENV as a second static-auth-secret line"
 fi
 unset turn_secret
+
+# --- TURN host: refuse the proxied hostname, accept either ruled arrangement -
+# Read from gateway.env because that is the ONLY value the gateway actually
+# dials with. A comment in the template cannot stop a hostname pasted here at
+# 2am; this can, and it runs on every re-install.
+turn_host="$(sed -n 's/^TURN_HOST=//p' "$G" | tail -1 | tr -d '"'"'"' \r')"
+set +e
+videofy_turn_guard "$turn_host" "TURN_HOST in $G"
+turn_rc=$?
+set -e
+if [[ $turn_rc -eq 1 ]]; then
+  echo "INSTALL FAILED: TURN_HOST in $G would send relay traffic through the Cloudflare proxy." >&2
+  echo "Set it to $VIDEOFY_TURN_ORIGIN_IP, or to a DNS-ONLY turn.consummate7.com A record, and re-run." >&2
+  exit 1
+fi
+if [[ $turn_rc -eq 2 ]]; then
+  echo "warn: TURN_HOST is empty in $G -- calls that need a relay will fail. Set it before launch."
+fi
+unset turn_host turn_rc
 
 # --- backup script + units --------------------------------------------------
 # The staging script is environment-agnostic (ENV_FILE / BACKUP_DIR); install
