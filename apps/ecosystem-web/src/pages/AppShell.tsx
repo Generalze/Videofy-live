@@ -1,3 +1,4 @@
+/** @author masterzee001 */
 /**
  * The registered C7 home, at `/app/`.
  *
@@ -15,7 +16,7 @@ import { useEffect, useState } from 'react';
 import { internalLink, type Route } from '../router';
 import { ProfilePanel, type Profile } from '../ProfilePanel';
 import { VerificationPanel } from '../VerificationPanel';
-import { clearSessionKeys } from '../session';
+import { expireSession, readSessionToken } from '../session';
 import { ContactsPanel } from '../ContactsPanel';
 import { MessagesPanel } from '../MessagesPanel';
 import { createAccountApi, type ContactPerson, type IncomingRing } from '../accountApi';
@@ -65,15 +66,6 @@ interface Bootstrap {
   readonly capabilities: readonly string[];
   /** The handle people add you by, and the name they see. Kept apart. */
   readonly profile: Profile;
-}
-
-/** The token the sign-in flow stored. Absent means "not signed in here". */
-function storedToken(): string | null {
-  try {
-    return window.localStorage.getItem('c7.session') ?? null;
-  } catch {
-    return null;
-  }
 }
 
 const ROLE_LABEL: Record<string, string> = {
@@ -175,7 +167,7 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
 
   useEffect(() => {
     if (state !== 'ready') return;
-    const token = storedToken();
+    const token = readSessionToken();
     if (token === null) return;
     const api = createAccountApi(ACCOUNT_URL, token);
     let cancelled = false;
@@ -193,7 +185,7 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
 
   /** Ring them, then open the call. Codes stay for conferences. */
   const callContact = (person: ContactPerson): void => {
-    const token = storedToken();
+    const token = readSessionToken();
     if (token === null) return;
     setCallNotice(null);
     void createAccountApi(ACCOUNT_URL, token)
@@ -213,14 +205,14 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
   };
 
   const answerRing = (ring: IncomingRing, join: boolean): void => {
-    const token = storedToken();
+    const token = readSessionToken();
     setIncomingRings((current) => current.filter((entry) => entry.callId !== ring.callId));
     if (token !== null) void createAccountApi(ACCOUNT_URL, token).dismissRing(ring.callId);
     if (join) window.open(`/call/?call=${encodeURIComponent(ring.callId)}`, '_blank', 'noopener');
   };
 
   useEffect(() => {
-    const token = storedToken();
+    const token = readSessionToken();
     if (token === null) {
       /*
        * THE RESTRICTED AREA RESTRICTS. Arriving here without a session used
@@ -240,9 +232,10 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
           /*
            * A token the server refuses must not linger looking signed-in: the
            * nav and every product surface read these keys, and a stale one
-           * keeps doors half-open. Clear both, then join the flow.
+           * keeps doors half-open. Clear both -- as an EXPIRY, so the join
+           * page that follows can say why -- then join the flow.
            */
-          clearSessionKeys();
+          expireSession();
           setState('signed-out');
           window.location.replace('/#join');
           return;
@@ -267,7 +260,7 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
   const current = me?.workspaces.find((workspace) => workspace.workspaceId === selected) ?? null;
 
   useEffect(() => {
-    const token = storedToken();
+    const token = readSessionToken();
     const organizationId = current?.organizationId;
     if (token === null || organizationId === undefined) {
       setOrganization(null);
@@ -518,7 +511,7 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
         {view === 'contacts' ? (
           <ContactsPanel
             accountUrl={ACCOUNT_URL}
-            token={storedToken() ?? ''}
+            token={readSessionToken() ?? ''}
             onMessage={(person) => {
               setChatPartner(person);
               setView('messages');
@@ -531,7 +524,7 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
         {view === 'messages' ? (
           <MessagesPanel
             accountUrl={ACCOUNT_URL}
-            token={storedToken() ?? ''}
+            token={readSessionToken() ?? ''}
             selfId={me.accountId}
             initialPartner={chatPartner}
             onCall={callContact}
@@ -540,7 +533,7 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
 
         {view === 'profile' ? (
           <ProfilePanel
-            token={storedToken() ?? ''}
+            token={readSessionToken() ?? ''}
             accountId={me.accountId}
             profile={me.profile}
             onChanged={() => setRefreshKey((key) => key + 1)}
@@ -554,7 +547,7 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
               Your account exists. These steps establish that it belongs to you.
             </p>
             <VerificationPanel
-              token={storedToken() ?? ''}
+              token={readSessionToken() ?? ''}
               email={me.email}
               emailState={me.trust.email}
               phoneState={me.trust.phone}

@@ -39,7 +39,8 @@ import { CONSOLE_RELEASE, CONSOLE_SECTIONS, NOT_YET_PAGES, PAGE_ICONS, PAGE_NUMB
 import { PAGE_TITLES, navigate, type OperatorPage } from './router';
 import { ChannelIdentityBadge } from './premium/ChannelIdentityBadge';
 import { ChannelIdentityMenu } from './premium/ChannelIdentityMenu';
-import type { ChannelIdentityState } from './premium/channelIdentity';
+import { isExpiredSession, type ChannelIdentityState } from './premium/channelIdentity';
+import { SignInDialog } from './premium/SignInDialog';
 import { AlertIcon, BellIcon, ChevronDownIcon, CloseIcon, EyeIcon, Icon } from './premium/icons';
 import { PageHeader, StatusDot, VisuallyHidden } from './premium/primitives';
 
@@ -62,6 +63,12 @@ export interface ShellStatus {
 export interface ShellHeader {
   /** The operator socket's connection state. Drives the pill and the red banner. */
   readonly gatewayConnected: boolean;
+  /**
+   * The gateway's own refusal sentence when it turned this console away
+   * (it names no secret), carried on the pill's title so "Disconnected" says
+   * why. Null when the gateway is merely unreachable.
+   */
+  readonly gatewayRefusal?: string | null | undefined;
   /** The console's language code. There is one; it is shown and cannot be changed yet. */
   readonly uiLanguage?: string | undefined;
 }
@@ -80,6 +87,8 @@ export interface ConsoleShellProps {
   /** Where /streams/<handle> is served. */
   readonly publicOrigin: string;
   readonly onReloadIdentity?: (() => void) | undefined;
+  /** Sign out of C7 in this browser (DELETE /sessions, then clear). Omitted, the menu has no Sign out. */
+  readonly onSignOut?: (() => void) | undefined;
   readonly children: React.ReactNode;
 }
 
@@ -93,10 +102,16 @@ export function ConsoleShell({
   accountUrl,
   publicOrigin,
   onReloadIdentity,
+  onSignOut,
   children,
 }: ConsoleShellProps): React.ReactElement {
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [signInOpen, setSignInOpen] = useState(false);
+  const openSignIn = (): void => {
+    setMenuOpen(false);
+    setSignInOpen(true);
+  };
   const identityRef = useRef<HTMLDivElement | null>(null);
 
   // A dismissed banner stays dismissed for THIS outage only; the next one shows again.
@@ -153,7 +168,12 @@ export function ConsoleShell({
             <ChevronDownIcon size={16} />
           </button>
           <span className={styles.topbarDivider} aria-hidden="true" />
-          <span className={styles.gatewayPill} role="status" data-connected={header.gatewayConnected}>
+          <span
+            className={styles.gatewayPill}
+            role="status"
+            data-connected={header.gatewayConnected}
+            title={header.gatewayConnected ? 'Connected to the realtime gateway' : (header.gatewayRefusal ?? 'The realtime gateway is not connected')}
+          >
             <StatusDot tone={header.gatewayConnected ? 'success' : 'danger'} size={8} />
             <span className={styles.gatewayWord}>Gateway</span>
             <span className={styles.gatewayState}>{header.gatewayConnected ? 'Connected' : 'Disconnected'}</span>
@@ -172,6 +192,7 @@ export function ConsoleShell({
               accountUrl={accountUrl}
               expanded={menuOpen}
               onToggle={() => setMenuOpen((current) => !current)}
+              onSignIn={openSignIn}
             />
             {menuOpen && (
               <ChannelIdentityMenu
@@ -184,11 +205,16 @@ export function ConsoleShell({
                 onEditChannel={() => navigate('access')}
                 onClose={() => setMenuOpen(false)}
                 onReload={onReloadIdentity}
+                onSignIn={openSignIn}
+                onSignOut={onSignOut}
               />
             )}
           </div>
         </div>
       </header>
+      {signInOpen && (
+        <SignInDialog accountUrl={accountUrl} reason={isExpiredSession(identity) ? 'expired' : 'signed-out'} onClose={() => setSignInOpen(false)} onSignedIn={onReloadIdentity} />
+      )}
 
       <aside className={styles.rail} aria-label="Console pages">
         <nav className={styles.nav} aria-label="Pages">

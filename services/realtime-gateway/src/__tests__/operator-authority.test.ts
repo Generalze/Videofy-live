@@ -1,3 +1,4 @@
+/** @author masterzee001 */
 /**
  * Who may operate a programme.
  *
@@ -9,7 +10,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Socket } from 'socket.io';
 import { issueSessionToken, requireSessionSecret } from '@videofy-live/account-tokens';
-import { createOperatorAuthority } from '../operator-authority.js';
+import {
+  OPERATOR_NOT_ENTITLED_MESSAGE,
+  OPERATOR_SIGN_IN_MESSAGE,
+  createOperatorAuthority,
+  operatorRefusalNotice,
+  type OperatorAdmission,
+} from '../operator-authority.js';
 
 const SECRET_VALUE = 'z'.repeat(48);
 const SECRET = requireSessionSecret(SECRET_VALUE, 'TEST_SECRET');
@@ -143,7 +150,9 @@ describe('the entitlement gate', () => {
       requireEntitlement: true,
       hasEntitlement: () => false,
     });
-    expect(gated.admit(socketWith({ auth: { token: token() } })).ok).toBe(false);
+    const admission = gated.admit(socketWith({ auth: { token: token() } }));
+    expect(admission.ok).toBe(false);
+    if (!admission.ok) expect(admission.reason).toBe('not-entitled');
   });
 
   it('admits an entitled account once required', () => {
@@ -167,5 +176,144 @@ describe('the entitlement gate', () => {
       requireEntitlement: true,
     });
     expect(misconfigured.admit(socketWith({ auth: { token: token() } })).ok).toBe(false);
+  });
+});
+
+/*
+ * WHAT A REFUSED CALLER IS TOLD.
+ *
+ * The founder's screenshot (30 Aug 2026): a signed-in account reading "Not
+ * signed in". One generic refusal for everything meant a real session that was
+ * simply not on the allowlist was told to sign in, which it already had. The
+ * line between the two messages is the signature -- an attacker holding no
+ * valid token learns nothing new from either -- and these tests pin that line
+ * from both sides.
+ */
+describe('what a refused operator is told', () => {
+  const gated = () =>
+    createOperatorAuthority({
+      secret: SECRET_VALUE,
+      nowSeconds: () => NOW_SECONDS,
+      requireEntitlement: true,
+      hasEntitlement: (accountId) => accountId === ACCOUNT,
+    });
+
+  function refusal(admission: OperatorAdmission) {
+    expect(admission.ok).toBe(false);
+    if (admission.ok) throw new Error('expected a refusal');
+    return { admission, notice: operatorRefusalNotice(admission.reason) };
+  }
+
+  it('admits a valid session for an enabled account', () => {
+    expect(gated().admit(socketWith({ auth: { token: token() } })).ok).toBe(true);
+  });
+
+  it('tells a VALID session for an account that is not enabled exactly that', () => {
+    const { admission, notice } = refusal(
+      gated().admit(socketWith({ auth: { token: token({ accountId: OTHER_ACCOUNT }) } })),
+    );
+
+    expect(admission.reason).toBe('not-entitled');
+    expect(notice).toEqual({ code: 'not-entitled', message: OPERATOR_NOT_ENTITLED_MESSAGE });
+    expect(notice.message).toBe('This account is not enabled for the operator console.');
+  });
+
+  /*
+   * THE SECURITY PROPERTY. Everything on the unverified side of the signature
+   * collapses into one reason and one message. An expired session for the
+   * NOT-enabled account must not get the entitlement message either: that
+   * would let anybody with a stale token learn which accounts are enabled.
+   */
+  it.each([
+    ['no token at all', socketWith({ query: { role: 'operator' } })],
+    ['a forged token', socketWith({ auth: { token: 'not-a-token' } })],
+    [
+      'an expired token for an enabled account',
+      socketWith({ auth: { token: token({ nowSeconds: NOW_SECONDS - 60 * 60 * 24 * 365 }) } }),
+    ],
+    [
+      'an expired token for an account that is not enabled',
+      socketWith({
+        auth: {
+          token: token({ accountId: OTHER_ACCOUNT, nowSeconds: NOW_SECONDS - 60 * 60 * 24 * 365 }),
+        },
+      }),
+    ],
+    [
+      'a token signed with a different secret',
+      socketWith({
+        auth: {
+          token: issueSessionToken({
+            secret: requireSessionSecret('y'.repeat(48), 'OTHER'),
+            accountId: ACCOUNT,
+            version: 1,
+            nowSeconds: NOW_SECONDS,
+          }),
+        },
+      }),
+    ],
+  ])('gives the one generic refusal for %s', (_label, socket) => {
+    const { admission, notice } = refusal(gated().admit(socket));
+
+    expect(admission.reason).not.toBe('not-entitled');
+    expect(notice).toEqual({ code: 'sign-in-required', message: OPERATOR_SIGN_IN_MESSAGE });
+  });
+
+  it('gives the generic refusal when the server has no secret, even to an enabled account', () => {
+    const unconfigured = createOperatorAuthority({
+      secret: undefined,
+      requireEntitlement: true,
+      hasEntitlement: () => true,
+    });
+    const { admission, notice } = refusal(
+      unconfigured.admit(socketWith({ auth: { token: token() } })),
+    );
+
+    expect(admission.reason).toBe('not-configured');
+    expect(notice.code).toBe('sign-in-required');
+  });
+
+  it('never consults the entitlement checker for a token that did not verify', () => {
+    const consulted: string[] = [];
+    const watched = createOperatorAuthority({
+      secret: SECRET_VALUE,
+      nowSeconds: () => NOW_SECONDS,
+      requireEntitlement: true,
+      hasEntitlement: (accountId) => {
+        consulted.push(accountId);
+        return true;
+      },
+    });
+
+    watched.admit(socketWith({ auth: { token: 'not-a-token' } }));
+    watched.admit(
+      socketWith({ auth: { token: token({ nowSeconds: NOW_SECONDS - 60 * 60 * 24 * 365 }) } }),
+    );
+    watched.admit(socketWith({ query: { role: 'operator' } }));
+
+    expect(consulted).toEqual([]);
+  });
+
+  it('never puts the token or the account id in a refusal, whichever side of the line', () => {
+    const presented = token({ accountId: OTHER_ACCOUNT });
+    const stale = token({ accountId: OTHER_ACCOUNT, nowSeconds: NOW_SECONDS - 60 * 60 * 24 * 365 });
+
+    for (const socket of [
+      socketWith({ auth: { token: presented } }),
+      socketWith({ auth: { token: stale } }),
+      socketWith({ query: { role: 'operator' } }),
+    ]) {
+      const { admission, notice } = refusal(gated().admit(socket));
+      const surfaced = JSON.stringify({ admission, notice });
+
+      expect(surfaced).not.toContain(OTHER_ACCOUNT);
+      expect(surfaced).not.toContain(ACCOUNT);
+      expect(surfaced).not.toContain(presented);
+      expect(surfaced).not.toContain(stale);
+      // Not even a prefix: the first segment of a token is its header.
+      expect(surfaced).not.toContain(presented.slice(0, 12));
+      expect(Object.keys(admission).sort()).toEqual(['ok', 'reason']);
+      expect(Object.keys(notice).sort()).toEqual(['code', 'message']);
+    }
   });
 });

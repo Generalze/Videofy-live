@@ -1,5 +1,7 @@
+/** @author masterzee001 */
 import { describe, expect, it } from 'vitest';
-import { joinRequestBody } from './JoinC7';
+import { joinRequestBody, persistJoinSession } from './JoinC7';
+import { hasSession, readSession, type SessionStorageLike } from './session';
 
 /**
  * The request the join form sends.
@@ -36,5 +38,70 @@ describe('what the join form sends', () => {
     const body = joinRequestBody('signin', 'a@example.com', 'pw', 'c7meakzoe');
     expect(body).toEqual({ email: 'a@example.com', password: 'pw' });
     expect(Object.keys(body)).not.toContain('username');
+  });
+});
+
+function memory(): SessionStorageLike & { keys(): string[] } {
+  const map = new Map<string, string>();
+  return {
+    getItem: (key) => map.get(key) ?? null,
+    setItem: (key, value) => {
+      map.set(key, value);
+    },
+    removeItem: (key) => {
+      map.delete(key);
+    },
+    keys: () => [...map.keys()],
+  };
+}
+
+/**
+ * What the join form STORES.
+ *
+ * The other half of the same class of defect: the form used to write the two
+ * session keys itself, in its own idea of the shape, and the operator console
+ * read them in its own. The seam is pinned here by round-tripping the sign-in
+ * answer through the one session module and reading it back the way every
+ * other surface on this origin does.
+ */
+describe('what the join form stores', () => {
+  it('writes the sign-in answer as the shared session, under both keys', () => {
+    const storage = memory();
+
+    expect(
+      persistJoinSession({ accountId: 'acct_1', token: 'tok-1', voiceGender: 'female' }, storage),
+    ).toBe(true);
+
+    expect(storage.keys().sort()).toEqual(['c7.session', 'videofy-account:session']);
+    expect(storage.getItem('c7.session')).toBe('tok-1');
+    expect(readSession(storage)).toEqual({
+      accountId: 'acct_1',
+      token: 'tok-1',
+      voiceGender: 'female',
+    });
+    expect(hasSession(storage)).toBe(true);
+  });
+
+  it('carries no voice when the service stated none', () => {
+    const storage = memory();
+    persistJoinSession({ accountId: 'acct_1', token: 'tok-1' }, storage);
+    expect(readSession(storage)).toEqual({ accountId: 'acct_1', token: 'tok-1' });
+  });
+
+  /*
+   * A half-session -- token but no account id -- is what made the site look
+   * signed in while every product surface said otherwise. It is refused whole.
+   */
+  it('stores nothing when the answer is not a session', () => {
+    for (const body of [{}, { token: 'tok-1' }, { accountId: 'acct_1' }, { accountId: '', token: 'tok-1' }, { accountId: 'acct_1', token: '' }]) {
+      const storage = memory();
+      expect(persistJoinSession(body, storage)).toBe(false);
+      expect(storage.keys()).toEqual([]);
+      expect(hasSession(storage)).toBe(false);
+    }
+  });
+
+  it('is unchanged by storage that is unavailable', () => {
+    expect(persistJoinSession({ accountId: 'acct_1', token: 'tok-1' }, null)).toBe(true);
   });
 });

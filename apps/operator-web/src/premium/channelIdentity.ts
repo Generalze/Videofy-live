@@ -10,14 +10,20 @@
  * session -- and never invents one: an account with no profile yet is shown
  * as exactly that, "Channel not set up", and the way to set it up.
  *
- * The session comes from the key every C7 browser surface shares (see
- * socketConfig.readOperatorSessionToken). The token is sent as a bearer
- * header and appears nowhere else: not in state, not in a log, not in an
- * error message.
+ * The session comes from premium/operatorSession.ts, the console's one
+ * reader of the browser session. The token is sent as a bearer header and
+ * appears nowhere else: not in state, not in a log, not in an error message.
+ *
+ * Founder report (30 Aug 2026): "Not signed in" while signed in. A token
+ * the account service REFUSES (older than its lifetime, or minted for
+ * another deployment) is not the same as no token: the first is "Session
+ * expired -- sign in again", and the browser's copy is cleared so the site
+ * stops looking signed in too. Neither tells anybody to reload; the shell
+ * re-reads the session the moment it changes.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { isChannelCategory, isChannelVisibility, type ChannelProfile, type ChannelProfileUpdate } from '@videofy-live/shared-types';
-import { readOperatorSessionToken } from '../socketConfig';
+import { clearSession, readSession, subscribe } from './operatorSession';
 
 /** The persisted profile, exactly as the account service holds it. */
 export type ChannelIdentity = ChannelProfile;
@@ -25,8 +31,12 @@ export type ChannelIdentity = ChannelProfile;
 export type ChannelIdentityState =
   /** The request is in flight; nothing is known yet. */
   | { readonly status: 'loading' }
-  /** No C7 session in this browser, or the account service refused it. */
-  | { readonly status: 'signed-out' }
+  /**
+   * No C7 session in this browser (`expired` absent), or one the account
+   * service refused with 401/403 (`expired: true`): it is past its lifetime
+   * or was minted elsewhere. The two read differently in the shell.
+   */
+  | { readonly status: 'signed-out'; readonly expired?: boolean | undefined }
   /** Signed in, but this account has not set a channel up yet (404). */
   | { readonly status: 'unset' }
   /** The account service could not be reached or answered something unreadable. */
@@ -35,6 +45,11 @@ export type ChannelIdentityState =
 
 /** The owner's own profile: the account service's authenticated route. */
 export const MY_CHANNEL_PATH = '/channels/mine';
+
+/** Whether the state is a session the account service refused (as opposed to none at all). */
+export function isExpiredSession(state: ChannelIdentityState): boolean {
+  return state.status === 'signed-out' && state.expired === true;
+}
 
 /** Whether the channel is on air (the listener directory's fact); null while the gateway is away. */
 export type ChannelLiveState = boolean | null;
@@ -120,7 +135,7 @@ export async function fetchMyChannel({ accountUrl, token, fetchImpl }: FetchMyCh
     return { status: 'error', message: 'The account service could not be reached.' };
   }
   if (response.status === 404) return { status: 'unset' };
-  if (response.status === 401 || response.status === 403) return { status: 'signed-out' };
+  if (response.status === 401 || response.status === 403) return { status: 'signed-out', expired: true };
   if (!response.ok) return { status: 'error', message: `The account service answered ${response.status}.` };
   let body: unknown;
   try {
@@ -157,11 +172,18 @@ export function channelAvatarSrc(accountUrl: string, avatarUrl: string | null): 
 }
 
 /**
- * The identity for the shell, refreshed on demand.
+ * The identity for the shell, refreshed on demand and whenever the session
+ * changes.
  *
  * `reloadKey` re-reads the profile when it changes -- the Access page passes
  * something that changes when settings are saved, so a renamed channel shows
- * its new name without a page reload.
+ * its new name without a page reload. Signing in (this tab's dialog, or
+ * another tab on the origin) re-reads it too, through operatorSession's
+ * subscription, so nobody is told to reload.
+ *
+ * A refused token is cleared from the browser and the state stays "expired"
+ * rather than falling back to plain "signed out": the person is told WHY the
+ * console wants them to sign in again.
  */
 export function useChannelIdentity({
   accountUrl,
@@ -174,16 +196,21 @@ export function useChannelIdentity({
   const [tick, setTick] = useState(0);
   const reload = useCallback((): void => setTick((current) => current + 1), []);
 
+  useEffect(() => subscribe(reload), [reload]);
+
   useEffect(() => {
     let cancelled = false;
-    const token = readOperatorSessionToken();
+    const token = readSession()?.token ?? null;
     if (token === null) {
-      setState({ status: 'signed-out' });
+      setState((current) => (isExpiredSession(current) ? current : { status: 'signed-out' }));
       return undefined;
     }
     setState({ status: 'loading' });
     void fetchMyChannel({ accountUrl, token }).then((next) => {
-      if (!cancelled) setState(next);
+      if (cancelled) return;
+      setState(next);
+      // Only the token that was refused is cleared; a newer one stays.
+      if (isExpiredSession(next) && readSession()?.token === token) clearSession();
     });
     return () => {
       cancelled = true;

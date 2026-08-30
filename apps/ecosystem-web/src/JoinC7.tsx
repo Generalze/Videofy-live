@@ -1,3 +1,4 @@
+/** @author masterzee001 */
 /**
  * The way into the ecosystem.
  *
@@ -12,7 +13,8 @@
  * The authenticated shell is intentionally small until there is something real
  * to put behind it.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { writeSession, type SessionStorageLike } from './session';
 
 const ACCOUNT_URL = (
   (import.meta.env['VITE_ACCOUNT_URL'] as string | undefined) ?? 'http://localhost:3006'
@@ -20,7 +22,7 @@ const ACCOUNT_URL = (
 
 type Mode = 'create' | 'signin' | 'reset';
 
-interface SessionResult {
+export interface SessionResult {
   readonly accountId?: string;
   readonly token?: string;
   /*
@@ -56,8 +58,52 @@ export function joinRequestBody(
   return mode === 'create' ? { email, password, username } : { email, password };
 }
 
-export function JoinC7() {
-  const [mode, setMode] = useState<Mode>('create');
+/**
+ * Store what the account service answered, in the ONE place sessions live.
+ *
+ * Through `session.ts` and nowhere else. This form used to write the two keys
+ * itself, which is how the site and the operator console came to disagree
+ * about whether somebody was signed in: each surface owned its own copy of
+ * the key names and shape. A body without a token or an account id is not a
+ * session -- nothing is written and the caller hears so -- because a
+ * half-written session (bare token, no id) looks signed in here and signed
+ * out everywhere else, which is exactly the defect being closed.
+ *
+ * Extracted, and given an injectable storage, so the seam between the sign-in
+ * answer and what the shared readers expect is pinned by a test rather than
+ * rediscovered in a screenshot.
+ */
+export function persistJoinSession(
+  body: SessionResult,
+  storage?: SessionStorageLike | null,
+): boolean {
+  if (typeof body.token !== 'string' || body.token.length === 0) return false;
+  if (typeof body.accountId !== 'string' || body.accountId.length === 0) return false;
+  writeSession(
+    {
+      accountId: body.accountId,
+      token: body.token,
+      ...(body.voiceGender === 'male' || body.voiceGender === 'female'
+        ? { voiceGender: body.voiceGender }
+        : {}),
+    },
+    storage,
+  );
+  return true;
+}
+
+/**
+ * `sessionEnded` is the shell telling this form WHY somebody is looking at
+ * it: their stored session was refused by the server. The form opens on
+ * sign-in and says so once, because "Create C7 account" offered to a person
+ * who was signed in a minute ago reads as the site having forgotten them.
+ */
+export function JoinC7({ sessionEnded = false }: { readonly sessionEnded?: boolean } = {}) {
+  const [mode, setMode] = useState<Mode>(sessionEnded ? 'signin' : 'create');
+  useEffect(() => {
+    // The verdict arrives asynchronously, after the first render.
+    if (sessionEnded) setMode('signin');
+  }, [sessionEnded]);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   /*
@@ -110,44 +156,20 @@ export function JoinC7() {
       }
       setSession(body);
       setPassword('');
-      // Kept so the registered shell can bootstrap. localStorage is readable by
-      // any script on this origin, which is why the token is short-lived and
-      // why `sign out everywhere` invalidates it server-side rather than
-      // relying on the browser having forgotten it.
-      try {
-        if (typeof body.token === 'string') {
-          window.localStorage.setItem('c7.session', body.token);
-          /*
-           * WRITTEN AGAIN, UNDER THE KEY AND SHAPE THE CALL APP READS.
-           *
-           * Signing in here never reached /call/, and the reason was two
-           * correct implementations disagreeing about a string: this app stored
-           * a bare token under `c7.session`, while call-web reads
-           * `videofy-account:session` and expects `{accountId, token,
-           * voiceGender?}`. So `readAccountSession` returned null, no
-           * sessionToken went into the join payload, and the gateway refused
-           * the host -- which surfaced to the person as "finish verifying your
-           * account", pointing at an account that was already verified.
-           *
-           * Both keys are written rather than one migrated, because this app
-           * reads `c7.session` in two other places and changing all of them at
-           * once is a bigger edit than the bug warrants. The proper fix is to
-           * lift call-web's `accountSession.ts` into a shared package so there
-           * is ONE definition of where a browser session lives; that is a
-           * follow-up, and it is recorded here so it is not rediscovered.
-           */
-          window.localStorage.setItem(
-            'videofy-account:session',
-            JSON.stringify({
-              accountId: body.accountId,
-              token: body.token,
-              ...(body.voiceGender ? { voiceGender: body.voiceGender } : {}),
-            }),
-          );
-        }
-      } catch {
-        /* storage unavailable; the session simply does not persist */
-      }
+      /*
+       * Kept so the registered shell can bootstrap. localStorage is readable
+       * by any script on this origin, which is why the token is short-lived
+       * and why `sign out everywhere` invalidates it server-side rather than
+       * relying on the browser having forgotten it.
+       *
+       * Written through session.ts, under BOTH keys and in the shape call-web
+       * and operator-web read. Signing in here once never reached /call/
+       * because this form stored a bare token under one key while call-web
+       * read a `{accountId, token}` object under another; the fix for that
+       * lived here, and the fix for the next disagreement would have too.
+       * Now there is one writer, and this is a call to it.
+       */
+      persistJoinSession(body);
       /*
        * THE FLOW, FINALLY. Signing in used to leave somebody exactly where
        * they were -- on a marketing page, session stored, nothing changed on
@@ -212,6 +234,12 @@ export function JoinC7() {
                   Sign in
                 </button>
               </div>
+
+              {sessionEnded ? (
+                <p className="join-note" role="status">
+                  Your session has ended — sign in again.
+                </p>
+              ) : null}
 
               {resetAsked ? (
                 <p className="join-note" role="status">

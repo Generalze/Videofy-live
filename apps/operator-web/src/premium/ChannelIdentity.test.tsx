@@ -46,6 +46,19 @@ describe('ChannelIdentityBadge', () => {
     expect(html).toContain('Channel: Channel not set up. Set it up on Access');
     expect(channelStatusWord(null)).toBe('Status unknown');
   });
+
+  it('opens the sign-in dialog when signed out or expired, and never tells anybody to reload', () => {
+    const signedOut = renderToStaticMarkup(<ChannelIdentityBadge state={{ status: 'signed-out' }} live={null} accountUrl="x" onToggle={noop} onSignIn={noop} />);
+    expect(signedOut).toContain('aria-haspopup="dialog"');
+    expect(signedOut).toContain('>Sign in<');
+    expect(signedOut).not.toContain('reload');
+
+    const expired = renderToStaticMarkup(<ChannelIdentityBadge state={{ status: 'signed-out', expired: true }} live={null} accountUrl="x" onToggle={noop} onSignIn={noop} />);
+    expect(expired).toContain('>Session expired<');
+    expect(expired).toContain('Sign in again to load your channel');
+    expect(expired).toContain('data-session-expired="true"');
+    expect(expired).not.toContain('reload');
+  });
 });
 
 describe('ChannelIdentityMenu', () => {
@@ -75,6 +88,18 @@ describe('ChannelIdentityMenu', () => {
     expect(html).toContain('Set up channel');
     expect(html).not.toContain('View channel');
     expect(html).not.toContain('/streams/');
+  });
+
+  it('offers Sign in when signed out, Sign in again when expired, and Sign out when ready', () => {
+    const signedOut = renderToStaticMarkup(<ChannelIdentityMenu state={{ status: 'signed-out' }} {...props} onSignIn={noop} />);
+    expect(signedOut).toContain('Not signed in');
+    expect(signedOut).toContain('>Sign in<');
+    expect(signedOut).not.toContain('reload');
+    const expired = renderToStaticMarkup(<ChannelIdentityMenu state={{ status: 'signed-out', expired: true }} {...props} onSignIn={noop} />);
+    expect(expired).toContain('Session expired');
+    expect(expired).toContain('Sign in again');
+    const ready = renderToStaticMarkup(<ChannelIdentityMenu state={READY} {...props} onSignOut={noop} browser={{ copyText: async () => undefined }} />);
+    expect(ready).toContain('Sign out');
   });
 
   it('renders the QR code inline as SVG', () => {

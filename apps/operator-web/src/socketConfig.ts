@@ -1,4 +1,6 @@
+/** @author masterzee001 */
 import type { ManagerOptions, SocketOptions } from 'socket.io-client';
+import { readSession } from './premium/operatorSession';
 
 export type SocketClientOptions = Partial<ManagerOptions & SocketOptions>;
 
@@ -26,23 +28,12 @@ export function resolveSocketTransportOptions(
  * defect in place: anybody fixing the client broke a green test and could
  * reasonably conclude they were wrong.
  *
- * The key and shape match call-web's accountSession and ecosystem-web's
- * sign-in writer. Reading it here is a third copy of that knowledge, which is
- * one more than is comfortable; lifting the session reader into a shared
- * package is the recorded follow-up.
+ * The reading itself lives in premium/operatorSession.ts, the console's ONE
+ * reader and writer of the browser session (both keys the site uses). This
+ * is a thin call into it, kept for the callers that only want the token.
  */
 export function readOperatorSessionToken(): string | null {
-  try {
-    // `typeof` guard rather than `window.`: this also runs under node in
-    // tests, where window does not exist and localStorage may be stubbed.
-    if (typeof localStorage === 'undefined') return null;
-    const raw = localStorage.getItem('videofy-account:session');
-    if (raw === null) return null;
-    const parsed = JSON.parse(raw) as { token?: unknown };
-    return typeof parsed.token === 'string' && parsed.token.length > 0 ? parsed.token : null;
-  } catch {
-    return null;
-  }
+  return readSession()?.token ?? null;
 }
 
 export function createOperatorSocketOptions(): SocketClientOptions {

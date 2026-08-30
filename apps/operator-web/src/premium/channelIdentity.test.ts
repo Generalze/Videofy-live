@@ -5,6 +5,7 @@ import {
   channelInitials,
   channelPublicLink,
   fetchMyChannel,
+  isExpiredSession,
   parseChannelProfile,
   updateMyChannel,
 } from './channelIdentity';
@@ -77,11 +78,16 @@ describe('fetchMyChannel', () => {
     expect(state).toEqual({ status: 'ready', profile: PROFILE });
   });
 
-  it('maps 404 to unset, 401/403 to signed-out, other failures to an error with the status', async () => {
+  it('maps 404 to unset, 401/403 to an EXPIRED session, other failures to an error with the status', async () => {
     const deps = { accountUrl: 'https://c7.test/auth', token: 't' };
     expect(await fetchMyChannel({ ...deps, fetchImpl: respond(404, { error: 'No channel.' }) })).toEqual({ status: 'unset' });
-    expect(await fetchMyChannel({ ...deps, fetchImpl: respond(401, {}) })).toEqual({ status: 'signed-out' });
-    expect(await fetchMyChannel({ ...deps, fetchImpl: respond(403, {}) })).toEqual({ status: 'signed-out' });
+    // A refused token is not "no token": the shell says "session expired", and clears it.
+    const refused = await fetchMyChannel({ ...deps, fetchImpl: respond(401, {}) });
+    expect(refused).toEqual({ status: 'signed-out', expired: true });
+    expect(isExpiredSession(refused)).toBe(true);
+    expect(await fetchMyChannel({ ...deps, fetchImpl: respond(403, {}) })).toEqual({ status: 'signed-out', expired: true });
+    expect(isExpiredSession({ status: 'signed-out' })).toBe(false);
+    expect(isExpiredSession({ status: 'unset' })).toBe(false);
     expect(await fetchMyChannel({ ...deps, fetchImpl: respond(503, {}) })).toEqual({
       status: 'error',
       message: 'The account service answered 503.',

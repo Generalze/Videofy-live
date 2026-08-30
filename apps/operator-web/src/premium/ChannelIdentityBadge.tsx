@@ -15,7 +15,7 @@
  */
 import React from 'react';
 import { channelCategoryLabel } from '@videofy-live/shared-types';
-import { channelAvatarSrc, channelInitials, channelStatusWord, type ChannelIdentityState, type ChannelLiveState } from './channelIdentity';
+import { channelAvatarSrc, channelInitials, channelStatusWord, isExpiredSession, type ChannelIdentityState, type ChannelLiveState } from './channelIdentity';
 import styles from './ChannelIdentity.module.css';
 
 /** The picture or the initials, with the live dot. */
@@ -54,6 +54,8 @@ export interface ChannelIdentityBadgeProps {
   readonly accountUrl: string;
   /** When given, the badge is a button that opens the identity menu. */
   readonly onToggle?: (() => void) | undefined;
+  /** When given, a signed-out or expired badge opens the sign-in dialog instead of the menu. */
+  readonly onSignIn?: (() => void) | undefined;
   readonly expanded?: boolean | undefined;
   readonly id?: string | undefined;
   readonly menuId?: string | undefined;
@@ -73,7 +75,10 @@ function lines(
     case 'loading':
       return { primary: 'Loading channel', secondary: 'Reading your channel profile', label: 'Loading' };
     case 'signed-out':
-      return { primary: 'Not signed in', secondary: 'Sign in on C7 to load your channel', label: 'Sign in' };
+      // Neither tells anybody to reload: the console signs people in itself and follows the session.
+      return isExpiredSession(state)
+        ? { primary: 'Session expired', secondary: 'Sign in again to load your channel', label: 'Session expired' }
+        : { primary: 'Not signed in', secondary: 'Sign in to load your channel', label: 'Sign in' };
     case 'unset':
       return { primary: 'Channel not set up', secondary: 'Set it up on Access', label: 'Channel not set up' };
     case 'error':
@@ -88,8 +93,9 @@ function lines(
   }
 }
 
-export function ChannelIdentityBadge({ state, live, accountUrl, onToggle, expanded = false, id, menuId }: ChannelIdentityBadgeProps): React.ReactElement {
+export function ChannelIdentityBadge({ state, live, accountUrl, onToggle, onSignIn, expanded = false, id, menuId }: ChannelIdentityBadgeProps): React.ReactElement {
   const text = lines(state, live);
+  const signedOut = state.status === 'signed-out';
   const body = (
     <>
       {text.label === null ? (
@@ -103,6 +109,23 @@ export function ChannelIdentityBadge({ state, live, accountUrl, onToggle, expand
       <ChannelAvatar state={state} live={live} accountUrl={accountUrl} />
     </>
   );
+  if (signedOut && onSignIn !== undefined) {
+    return (
+      <button
+        id={id}
+        type="button"
+        className={`${styles.badge} ${styles.badgeButton}`}
+        data-identity-status={state.status}
+        data-session-expired={isExpiredSession(state)}
+        aria-haspopup="dialog"
+        aria-label={`${text.primary}. ${text.secondary}`}
+        title={`${text.primary}. ${text.secondary}.`}
+        onClick={onSignIn}
+      >
+        {body}
+      </button>
+    );
+  }
   if (onToggle === undefined) {
     return (
       <div id={id} className={styles.badge} data-identity-status={state.status}>

@@ -16,10 +16,10 @@
  */
 import React, { useEffect, useState } from 'react';
 import { channelCategoryLabel } from '@videofy-live/shared-types';
-import { channelPublicLink, channelStatusWord, type ChannelIdentityState, type ChannelLiveState } from './channelIdentity';
+import { channelPublicLink, channelStatusWord, isExpiredSession, type ChannelIdentityState, type ChannelLiveState } from './channelIdentity';
 import { ChannelAvatar } from './ChannelIdentityBadge';
 import { defaultChannelMenuBrowser, type ChannelMenuBrowser } from './channelMenuBrowser';
-import { CheckIcon, CopyIcon, EditIcon, ExternalLinkIcon, QrIcon, ShareIcon } from './icons';
+import { CheckIcon, CloseIcon, CopyIcon, EditIcon, ExternalLinkIcon, QrIcon, ShareIcon } from './icons';
 import { encodeQr, qrSvgPath, qrViewBox } from './qr';
 import styles from './ChannelIdentity.module.css';
 
@@ -32,6 +32,10 @@ export interface ChannelIdentityMenuProps {
   readonly onEditChannel: () => void;
   readonly onClose: () => void;
   readonly onReload?: (() => void) | undefined;
+  /** Opens the console's own sign-in dialog. */
+  readonly onSignIn?: (() => void) | undefined;
+  /** DELETE /sessions then clear the browser; the shell follows the cleared session. */
+  readonly onSignOut?: (() => void) | undefined;
   readonly browser?: ChannelMenuBrowser | undefined;
   readonly id?: string | undefined;
   readonly labelledBy?: string | undefined;
@@ -47,6 +51,8 @@ export function ChannelIdentityMenu({
   onEditChannel,
   onClose,
   onReload,
+  onSignIn,
+  onSignOut,
   browser,
   id,
   labelledBy,
@@ -79,8 +85,24 @@ export function ChannelIdentityMenu({
           {state.status === 'loading' && <p className={styles.menuEmptyTitle}>Loading your channel</p>}
           {state.status === 'signed-out' && (
             <>
-              <p className={styles.menuEmptyTitle}>Not signed in</p>
-              <p className={styles.menuEmptyText}>Sign in on C7 in this browser, then reload the console to load your channel.</p>
+              <p className={styles.menuEmptyTitle}>{isExpiredSession(state) ? 'Session expired' : 'Not signed in'}</p>
+              <p className={styles.menuEmptyText}>
+                {isExpiredSession(state)
+                  ? 'Your C7 session has expired. Sign in again to load your channel and connect to the gateway.'
+                  : 'Sign in with your C7 account to load your channel and connect to the gateway.'}
+              </p>
+              {onSignIn !== undefined && (
+                <button
+                  type="button"
+                  className={styles.menuPrimary}
+                  onClick={() => {
+                    onClose();
+                    onSignIn();
+                  }}
+                >
+                  {isExpiredSession(state) ? 'Sign in again' : 'Sign in'}
+                </button>
+              )}
             </>
           )}
           {state.status === 'unset' && (
@@ -183,6 +205,20 @@ export function ChannelIdentityMenu({
           <QrIcon size={18} />
           {showQr ? 'Hide QR code' : 'QR code'}
         </button>
+        {onSignOut !== undefined && (
+          <button
+            role="menuitem"
+            type="button"
+            className={styles.menuItem}
+            onClick={() => {
+              onClose();
+              onSignOut();
+            }}
+          >
+            <CloseIcon size={18} />
+            Sign out
+          </button>
+        )}
       </div>
       {feedback?.kind === 'failed' && (
         <p role="alert" className={styles.menuFailure}>

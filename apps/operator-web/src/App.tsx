@@ -15,6 +15,7 @@ import styles from './App.module.css';
 import { ConsolePage, ConsoleShell } from './ConsoleShell';
 import { useOperatorPage } from './consolePages';
 import { readAccountUrl, updateMyChannel, useChannelIdentity, type ChannelIdentityPatch } from './premium/channelIdentity';
+import { readSession, signOut, subscribe as subscribeToSession } from './premium/operatorSession';
 import type { LanguageRow } from './languageRows';
 import { LanguagesPage, type CatalogueState } from './pages/LanguagesPage';
 import { NotYetPage } from './pages/NotYetPage';
@@ -232,6 +233,23 @@ export default function App(): React.ReactElement {
   const socketRef = useRef<Socket | null>(null);
   const broadcasterSocketRef = useRef<Socket | null>(null);
   const [connected, setConnected] = useState(false);
+  /*
+   * THE SESSION, AS THE SOCKET SEES IT. The operator socket carries the C7
+   * token at connect time and never after, so a sign-in (this tab's dialog
+   * or another tab) must rebuild the socket. This counter changes with the
+   * session and `connect` depends on it; the effect below tears the old
+   * socket down and dials again with the new credential.
+   */
+  const [sessionVersion, setSessionVersion] = useState(0);
+  useEffect(() => subscribeToSession(() => setSessionVersion((current) => current + 1)), []);
+  /*
+   * The gateway's own refusal, verbatim, for the Gateway pill. It arrives as
+   * a socket "error" event immediately followed by a server disconnect (the
+   * gateway refuses BEFORE the operator room), or as a connect_error from
+   * the handshake. It names no secret. Cleared by the next connect.
+   */
+  const [gatewayRefusal, setGatewayRefusal] = useState<string | null>(null);
+  const lastGatewayErrorRef = useRef<string | null>(null);
 
   const [mediaState, setMediaState] = useState<MediaStateEvent | null>(null);
   const [streamStatus, setStreamStatus] = useState('created');
@@ -364,8 +382,14 @@ export default function App(): React.ReactElement {
 
   const connect = useCallback((): void => {
     if (socketRef.current) return;
+    // sessionVersion is read so a session change rebuilds the options.
+    void sessionVersion;
     const socket = io(GATEWAY_URL, createOperatorSocketOptions());
     socketRef.current = socket;
+
+    socket.on(SOCKET_EVENTS.ERROR, (payload: { message?: unknown }) => {
+      lastGatewayErrorRef.current = typeof payload?.message === 'string' ? payload.message : null;
+    });
 
     socket.on(SOCKET_EVENTS.CHANNEL_ASSIGNED, (assignment: {
       channelId: string;
@@ -382,6 +406,8 @@ export default function App(): React.ReactElement {
     socket.on(SOCKET_EVENTS.CONNECTED, () => {
       setConnected(true);
       setGatewayOk(true);
+      setGatewayRefusal(null);
+      lastGatewayErrorRef.current = null;
       updateSocketDiagnostics('connect', {
         connected: true,
         transport: socket.io.engine.transport.name,
@@ -392,6 +418,8 @@ export default function App(): React.ReactElement {
     socket.on(SOCKET_EVENTS.DISCONNECTED, (reason: string) => {
       setConnected(false);
       setGatewayOk(false);
+      // The server hanging up right after an error event is the gateway turning the operator away.
+      if (reason === 'io server disconnect' && lastGatewayErrorRef.current !== null) setGatewayRefusal(lastGatewayErrorRef.current);
       void broadcasterCaptureControllerRef.current?.handleSignallingTeardown(
         `gateway disconnected: ${reason}`,
       );
@@ -404,6 +432,7 @@ export default function App(): React.ReactElement {
     socket.on('connect_error', (error: Error) => {
       setConnected(false);
       setGatewayOk(false);
+      setGatewayRefusal(error.message);
       updateSocketDiagnostics('connect_error', {
         connected: false,
         lastConnectError: error.message,
@@ -465,7 +494,7 @@ export default function App(): React.ReactElement {
       if (event.service === 'speech-worker') setWorkerOk(ok);
     });
 
-  }, [updateSocketDiagnostics]);
+  }, [sessionVersion, updateSocketDiagnostics]);
 
   useEffect(
     () => () => {
@@ -1224,6 +1253,10 @@ export default function App(): React.ReactElement {
    * programme) is brought into line through the existing settings event, so
    * a rename does not leave two names for one channel.
    */
+  /** Sign out of C7 here: the account service revokes, the browser forgets, and the shell and socket follow. */
+  const handleSignOut = useCallback((): void => {
+    void signOut({ accountUrl: ACCOUNT_URL, token: readSession()?.token ?? null });
+  }, []);
   const handleSaveChannelIdentity = useCallback(
     async (patch: ChannelIdentityPatch) => {
       const result = await updateMyChannel({ accountUrl: ACCOUNT_URL, token: readOperatorSessionToken(), patch });
@@ -1254,12 +1287,13 @@ export default function App(): React.ReactElement {
         viewers,
         warning: recording.error ?? workflowSummary.actionableWarning ?? mediaError ?? null,
       }}
-      header={{ gatewayConnected: connected }}
+      header={{ gatewayConnected: connected, gatewayRefusal }}
       identity={channelIdentity.state}
       channelLive={channelLive}
       accountUrl={ACCOUNT_URL}
       publicOrigin={PUBLIC_ORIGIN}
       onReloadIdentity={channelIdentity.reload}
+      onSignOut={handleSignOut}
     >
       {/* ---------------- 01 Overview: presentation in pages/OverviewPage.tsx, every value from the state above ---------------- */}
       <OverviewPage

@@ -95,7 +95,11 @@ import {
   type ConnectCallFacade,
   type ConnectProjectRegistry,
 } from '@videofy-live/connect-control';
-import { createOperatorAuthority, type OperatorAuthority } from './operator-authority.js';
+import {
+  createOperatorAuthority,
+  operatorRefusalNotice,
+  type OperatorAuthority,
+} from './operator-authority.js';
 import { CallRuntime, CALL_PARTICIPANT_ROLE } from './call-runtime.js';
 import { CallReceivePeerManager } from './call-receive-peers.js';
 import { CallTranscriptLog } from './call-transcript-log.js';
@@ -678,12 +682,21 @@ export class Gateway {
          */
         const admission = this.operatorAuthority.admit(socket);
         if (!admission.ok) {
+          // The reason is a four-valued enum, never the token or the account.
           logger.warn('Operator refused', { socketId: socket.id, reason: admission.reason });
-          socket.emit(SOCKET_EVENTS.ERROR, {
-            // One message for every refusal. Distinguishing "no token" from
-            // "bad token" tells somebody probing which half they got right.
-            message: 'Sign in to a C7 account with programme access to operate.',
-          });
+          /*
+           * TWO MESSAGES, SPLIT AT THE SIGNATURE. Everything unverified -- no
+           * token, forged, expired, or a server with no secret -- gets one
+           * answer, because distinguishing "no token" from "bad token" tells
+           * somebody probing which half they got right. A token that DID
+           * verify for an account that is not enabled gets told so: that
+           * caller already knows who they are, and "sign in" to somebody who
+           * has is the console lying to its own operator.
+           *
+           * Emitted before the disconnect so the console can show it; the
+           * notice is built from constants and cannot carry either secret.
+           */
+          socket.emit(SOCKET_EVENTS.ERROR, operatorRefusalNotice(admission.reason));
           socket.disconnect(true);
           return;
         }

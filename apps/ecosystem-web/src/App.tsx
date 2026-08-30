@@ -1,3 +1,4 @@
+/** @author masterzee001 */
 /**
  * The C7 public site: three layers, one bundle.
  *
@@ -20,7 +21,12 @@ import { ResetPassword, isResetPasswordPath } from './pages/ResetPassword';
 import { VerifyEmail, isVerifyEmailPath } from './pages/VerifyEmail';
 import { NotFound } from './pages/NotFound';
 import { ROUTE_PATHS, internalLink, useRoute, type Route } from './router';
-import { hasSession, signOutEverywhere } from './session';
+import {
+  consumeSessionEndedNotice,
+  hasSession,
+  signOutEverywhere,
+  validateSession,
+} from './session';
 
 const ACCOUNT_URL = (
   (import.meta.env['VITE_ACCOUNT_URL'] as string | undefined) ?? 'http://localhost:3006'
@@ -120,6 +126,44 @@ export function App() {
     setAuthed(hasSession());
   }, [route]);
   /*
+   * VERIFIED, NOT ASSUMED. `hasSession` is a key check, and a key check
+   * cannot tell a live session from one that aged out twelve hours ago or was
+   * minted on another origin. The founder saw the result: this nav said
+   * "signed in" while the operator console, which asks the server, said "not
+   * signed in". So the shell asks too -- on load, and again whenever the tab
+   * comes back into view, because the session that expires is the one in a
+   * tab left open overnight. A refusal clears both keys and flips the nav;
+   * an unreachable server changes nothing.
+   */
+  const [sessionEnded, setSessionEnded] = useState(false);
+  useEffect(() => {
+    // Left by an expiry the shell detected before a full navigation.
+    if (consumeSessionEndedNotice()) setSessionEnded(true);
+    let cancelled = false;
+    const check = (): void => {
+      void validateSession(ACCOUNT_URL).then((validity) => {
+        if (cancelled) return;
+        if (validity === 'expired') {
+          setAuthed(false);
+          setSessionEnded(true);
+        } else if (validity === 'valid') {
+          setAuthed(true);
+        }
+      });
+    };
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible') check();
+    };
+    check();
+    window.addEventListener('focus', check);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', check);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, []);
+  /*
    * Captured ONCE, from the URL this page was opened with.
    *
    * Read on every render it would flip to false the moment the token is
@@ -207,7 +251,7 @@ export function App() {
             </div>
           </section>
         ) : (
-          <JoinC7 />
+          <JoinC7 sessionEnded={sessionEnded} />
         )}
       </main>
 

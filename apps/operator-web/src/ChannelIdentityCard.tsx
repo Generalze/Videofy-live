@@ -21,6 +21,7 @@ import { CHANNEL_CATEGORIES, channelCategoryLabel, isChannelCategory } from '@vi
 import {
   channelPublicLink,
   channelStatusWord,
+  isExpiredSession,
   type ChannelIdentity,
   type ChannelIdentityPatch,
   type ChannelIdentityState,
@@ -92,8 +93,13 @@ export function ChannelIdentityCard({
           {identity.status === 'loading' && <p className={styles.identityEmptyTitle}>Loading your channel</p>}
           {identity.status === 'signed-out' && (
             <>
-              <p className={styles.identityEmptyTitle}>Not signed in</p>
-              <p className={styles.identityEmptyText}>Sign in on C7 in this browser, then reload the console to load your channel.</p>
+              <p className={styles.identityEmptyTitle}>{isExpiredSession(identity) ? 'Session expired' : 'Not signed in'}</p>
+              {/* Nobody is told to reload: the identity menu in the top bar signs people in, and this card follows the session. */}
+              <p className={styles.identityEmptyText}>
+                {isExpiredSession(identity)
+                  ? 'Your C7 session has expired. Sign in again from the identity menu in the top bar to load your channel.'
+                  : 'Sign in from the identity menu in the top bar to load your channel.'}
+              </p>
             </>
           )}
           {identity.status === 'unset' && (

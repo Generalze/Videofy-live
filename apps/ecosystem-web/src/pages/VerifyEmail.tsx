@@ -1,3 +1,4 @@
+/** @author masterzee001 */
 /**
  * The page the verification link lands on.
  *
@@ -20,23 +21,14 @@
  * should not outlive the tab that received it.
  */
 import { useEffect, useState } from 'react';
+import { readSessionToken } from '../session';
 
 const ACCOUNT_URL = (
   (import.meta.env['VITE_ACCOUNT_URL'] as string | undefined) ?? 'http://localhost:3006'
 ).replace(/\/+$/, '');
 
-/** Where the sign-in flow stores the session. Shared with the shell. */
-const SESSION_KEY = 'c7.session';
 /** Where a token waits while somebody signs in to finish. */
 const PENDING_KEY = 'c7.pending-email-token';
-
-function storedToken(): string | null {
-  try {
-    return window.localStorage.getItem(SESSION_KEY) ?? null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * The token from the link, or the one stashed before a sign-in.
@@ -83,13 +75,9 @@ type ResendState = 'idle' | 'sending' | 'sent';
 export function VerifyEmail({ onDone }: { readonly onDone: () => void }) {
   const [outcome, setOutcome] = useState<Outcome>({ kind: 'working' });
   const [resendState, setResendState] = useState<ResendState>('idle');
-  const sessionToken = ((): string | null => {
-    try {
-      return window.localStorage.getItem(SESSION_KEY);
-    } catch {
-      return null;
-    }
-  })();
+  // Through session.ts, like every other reader: a private copy of the key
+  // name here is how surfaces come to disagree about who is signed in.
+  const sessionToken = readSessionToken();
 
   useEffect(() => {
     const token = linkToken();
@@ -98,7 +86,7 @@ export function VerifyEmail({ onDone }: { readonly onDone: () => void }) {
       return;
     }
 
-    const session = storedToken();
+    const session = readSessionToken();
     if (session === null) {
       // Hold it so finishing does not mean returning to the inbox.
       rememberToken(token);

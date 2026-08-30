@@ -1,3 +1,4 @@
+/** @author masterzee001 */
 import { describe, expect, it } from 'vitest';
 import {
   createBroadcasterSocketOptions,
@@ -28,6 +29,10 @@ describe('createOperatorSocketOptions', () => {
     );
     const withSession = createOperatorSocketOptions();
     expect(withSession.auth).toEqual({ token: 'session-token' });
+    // The site's bare key alone is a session too (premium/operatorSession).
+    stored.clear();
+    stored.set('c7.session', 'bare-token');
+    expect(createOperatorSocketOptions().auth).toEqual({ token: 'bare-token' });
     delete (globalThis as { localStorage?: unknown }).localStorage;
     expect(options.transports).toBeUndefined();
     expect(options.reconnection).toBeUndefined();
