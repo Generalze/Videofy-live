@@ -15,12 +15,14 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import {
   DEFAULT_CHANNEL_ID,
+  type ChannelAssignedProfile,
   type ChannelSummary,
   type AudioMixPreferences,
   type ChannelCategory,
   type ChannelVisibility,
   type MediaStateEvent,
 } from '@videofy-live/shared-types';
+import type { ChannelProfile } from './channel-identity.js';
 
 export { DEFAULT_CHANNEL_ID };
 export type { AudioMixPreferences, ChannelCategory, ChannelSummary, ChannelVisibility };
@@ -60,6 +62,34 @@ interface ChannelState {
    * follows, visibility or live status.
    */
   category: ChannelCategory | null;
+  /**
+   * PERSISTED IDENTITY, mirrored from the account service. Founder directive
+   * (A, 30 Aug 2026): a channel is a persistent identity with a unique
+   * human-readable handle, an avatar and a profile that outlives the gateway
+   * process. Null handle means no profile has been read for this channel --
+   * the ONLY case in which the fallback display name may be shown.
+   */
+  handle: string | null;
+  avatarUrl: string | null;
+  /**
+   * When the last identity change came in through the operator socket
+   * rather than from the profile. A profile older than this does not
+   * overwrite it; a newer one does. See applyProfile.
+   */
+  localIdentityChangedAtMs: number;
+  /**
+   * A first read of the profile is in flight. Until it answers, the channel
+   * is kept out of the directory: showing "Channel abc123" for two seconds
+   * and then correcting it is exactly the fallback name the directive
+   * forbids when an identity exists.
+   */
+  hydrating: boolean;
+  /**
+   * The name of the broadcast on air, if the operator gave one. A PROGRAMME
+   * is one broadcast and the CHANNEL is who runs it (directive A); this is
+   * the only programme-level fact kept on the channel row.
+   */
+  programmeTitle: string | null;
   mediaState: MediaStateEvent | null;
   audio: AudioMixPreferences;
   /**
@@ -110,7 +140,10 @@ export class ProgrammeChannels {
   /** Which channel a session is feeding, so a teardown finds it without a scan. */
   private readonly channelBySession = new Map<string, string>();
 
-  constructor(private readonly defaultAudio: AudioMixPreferences = DEFAULT_AUDIO) {}
+  constructor(
+    private readonly defaultAudio: AudioMixPreferences = DEFAULT_AUDIO,
+    private readonly now: () => number = Date.now,
+  ) {}
 
   /**
    * Get or create a channel.
@@ -128,6 +161,11 @@ export class ProgrammeChannels {
       displayName: channelId === DEFAULT_CHANNEL_ID ? 'Main' : `Channel ${channelId.slice(0, 6)}`,
       visibility: 'public',
       category: null,
+      handle: null,
+      avatarUrl: null,
+      localIdentityChangedAtMs: 0,
+      hydrating: false,
+      programmeTitle: null,
       mediaState: null,
       audio: { ...this.defaultAudio },
       accessCodeHash: null,
@@ -144,7 +182,96 @@ export class ProgrammeChannels {
     channel.ownerAccountId = accountId;
     if (displayName && displayName.trim().length > 0) {
       channel.displayName = displayName.trim().slice(0, 80);
+      channel.localIdentityChangedAtMs = this.now();
     }
+  }
+
+  /**
+   * Take the persisted profile as the truth for this channel.
+   *
+   * Founder directive (A, 30 Aug 2026): "persist outside gateway memory";
+   * the registry's displayName, category and visibility come from the
+   * profile when one exists, so a restart never shows a fallback name for a
+   * configured channel. The owner, handle and avatar ALWAYS come from the
+   * profile, because nothing else can supply them.
+   *
+   * THE ONE EXCEPTION is an identity change that arrived through the
+   * operator socket AFTER the profile was last written: the console still
+   * saves name and category to the account itself (lane A3), and while that
+   * write is on its way the newest value is the local one. A profile updated
+   * later than the local change wins again, which is what lets the account
+   * remain the record without the operator watching their own edit vanish.
+   *
+   * Answers whether anything the directory shows changed, so a caller can
+   * decide whether a re-broadcast is warranted.
+   */
+  applyProfile(channelId: string, profile: ChannelProfile): boolean {
+    const channel = this.ensure(channelId);
+    let changed = false;
+    const set = <K extends keyof ChannelState>(key: K, value: ChannelState[K]): void => {
+      if (channel[key] === value) return;
+      channel[key] = value;
+      changed = true;
+    };
+    set('ownerAccountId', profile.ownerAccountId);
+    set('handle', profile.handle);
+    set('avatarUrl', profile.avatarUrl);
+    if (profile.updatedAt >= channel.localIdentityChangedAtMs) {
+      set('displayName', profile.displayName);
+      set('category', profile.category);
+      set('visibility', profile.visibility);
+    }
+    if (channel.hydrating) {
+      channel.hydrating = false;
+      changed = true;
+    }
+    return changed;
+  }
+
+  /**
+   * A first profile read has started. Only a channel with NO identity yet is
+   * held back; one that already has a handle stays listed while a refresh
+   * runs, so a live channel never blinks out of the directory.
+   */
+  beginHydration(channelId: string): void {
+    const channel = this.ensure(channelId);
+    if (channel.handle === null) channel.hydrating = true;
+  }
+
+  /** The read answered (or did not). Whatever is known now is shown. */
+  endHydration(channelId: string): void {
+    const channel = this.channels.get(channelId);
+    if (channel) channel.hydrating = false;
+  }
+
+  /** Whether a persisted profile has been read for this channel. */
+  hasProfile(channelId: string): boolean {
+    return (this.channels.get(channelId)?.handle ?? null) !== null;
+  }
+
+  /**
+   * What the operator shell shows about the channel it is on; null when no
+   * profile exists. Never a fallback name: a console given null keeps what
+   * it last showed rather than inventing one.
+   */
+  profileFor(channelId: string): ChannelAssignedProfile | null {
+    const channel = this.channels.get(channelId);
+    if (!channel || channel.handle === null) return null;
+    return {
+      handle: channel.handle,
+      displayName: channel.displayName,
+      category: channel.category,
+      avatarUrl: channel.avatarUrl,
+    };
+  }
+
+  /** Name the broadcast on air, or clear it. Shown only while the channel is live. */
+  setProgrammeTitle(channelId: string, title: string | null): void {
+    this.ensure(channelId).programmeTitle = title;
+  }
+
+  programmeTitle(channelId: string): string | null {
+    return this.channels.get(channelId)?.programmeTitle ?? null;
   }
 
   /**
@@ -162,7 +289,9 @@ export class ProgrammeChannels {
   }
 
   setVisibility(channelId: string, visibility: ChannelVisibility): void {
-    this.ensure(channelId).visibility = visibility;
+    const channel = this.ensure(channelId);
+    channel.visibility = visibility;
+    channel.localIdentityChangedAtMs = this.now();
   }
 
   /**
@@ -175,7 +304,9 @@ export class ProgrammeChannels {
    * controlled list before it reaches here, null until they choose.
    */
   setCategory(channelId: string, category: ChannelCategory | null): void {
-    this.ensure(channelId).category = category;
+    const channel = this.ensure(channelId);
+    channel.category = category;
+    channel.localIdentityChangedAtMs = this.now();
   }
 
   category(channelId: string): ChannelCategory | null {
@@ -298,7 +429,10 @@ export class ProgrammeChannels {
   }
 
   setMediaState(channelId: string, state: MediaStateEvent | null): void {
-    this.ensure(channelId).mediaState = state;
+    const channel = this.ensure(channelId);
+    channel.mediaState = state;
+    // A title belongs to one broadcast; when that broadcast is gone so is it.
+    if (state === null) channel.programmeTitle = null;
   }
 
   audio(channelId: string): AudioMixPreferences {
@@ -320,13 +454,23 @@ export class ProgrammeChannels {
       // Only public. Unlisted and private are both absent from discovery; they
       // differ in whether the link alone is enough to get in.
       .filter((channel) => channel.visibility === 'public')
-      .map((channel) => ({
-        channelId: channel.channelId,
-        displayName: channel.displayName,
-        live: channel.mediaState !== null,
-        visibility: channel.visibility,
-        category: channel.category,
-      }))
+      // A channel whose first identity read is still in flight is not shown
+      // under a fallback name; it appears when the read answers.
+      .filter((channel) => !channel.hydrating)
+      .map((channel) => {
+        const live = channel.mediaState !== null;
+        return {
+          channelId: channel.channelId,
+          displayName: channel.displayName,
+          live,
+          visibility: channel.visibility,
+          category: channel.category,
+          handle: channel.handle,
+          avatarUrl: channel.avatarUrl,
+          // Only while live, and only a title the operator actually gave.
+          currentProgramme: live ? channel.programmeTitle : null,
+        };
+      })
       // Live channels first, then by name, so the list is useful rather than
       // whatever order a Map happened to produce.
       .sort((left, right) =>

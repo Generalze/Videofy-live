@@ -7,6 +7,7 @@
  * anywhere reported it. These tests exist so that cannot come back.
  */
 import { describe, expect, it } from 'vitest';
+import type { ChannelProfile } from '../channel-identity.js';
 import {
   DEFAULT_CHANNEL_ID,
   ProgrammeChannels,
@@ -277,5 +278,148 @@ describe('channel category', () => {
 
   it('answers null for a channel it has never seen', () => {
     expect(new ProgrammeChannels().category('nobody')).toBeNull();
+  });
+});
+
+/*
+ * Founder directive (A, 30 Aug 2026): a channel is a persistent identity
+ * that lives outside gateway memory, and "never expose fallback names like
+ * 'Channel abc123' when an identity exists."
+ */
+describe('persistent identity', () => {
+  const profile = (overrides: Partial<ChannelProfile> = {}): ChannelProfile => ({
+    channelId: 'alice',
+    ownerAccountId: ALICE,
+    handle: 'alice-live',
+    displayName: 'Alice Live',
+    description: '',
+    category: 'faith',
+    visibility: 'public',
+    avatarUrl: '/channels/alice/avatar',
+    bannerUrl: null,
+    createdAt: 1,
+    updatedAt: 1_000,
+    ...overrides,
+  });
+
+  it('shows the fallback name only until a profile exists', () => {
+    const channels = new ProgrammeChannels();
+    channels.claim('alice', ALICE);
+    expect(channels.directory()[0]?.displayName).toMatch(/^Channel /);
+    expect(channels.directory()[0]?.handle).toBeNull();
+    expect(channels.hasProfile('alice')).toBe(false);
+
+    channels.applyProfile('alice', profile());
+
+    expect(channels.hasProfile('alice')).toBe(true);
+    expect(channels.directory()[0]).toMatchObject({
+      displayName: 'Alice Live',
+      handle: 'alice-live',
+      avatarUrl: '/channels/alice/avatar',
+      category: 'faith',
+      currentProgramme: null,
+    });
+    expect(channels.profileFor('alice')).toEqual({
+      handle: 'alice-live',
+      displayName: 'Alice Live',
+      category: 'faith',
+      avatarUrl: '/channels/alice/avatar',
+    });
+  });
+
+  it('claims the channel for the profile owner', () => {
+    const channels = new ProgrammeChannels();
+    channels.applyProfile('alice', profile());
+    expect(channels.mayOperate('alice', ALICE)).toBe(true);
+    expect(channels.mayOperate('alice', BOB)).toBe(false);
+  });
+
+  it('takes visibility from the profile, so a restart keeps a private channel private', () => {
+    const channels = new ProgrammeChannels();
+    channels.applyProfile('hidden', profile({ channelId: 'hidden', visibility: 'private' }));
+    expect(channels.directory()).toEqual([]);
+    expect(channels.mayJoin('hidden')).toBe(true);
+  });
+
+  /*
+   * The console still saves name and category to the account itself, so a
+   * change that came through the socket is newer than the profile until the
+   * account catches up -- and older than the profile after it does.
+   */
+  it('keeps a newer local change over an older profile, and yields to a newer one', () => {
+    let clock = 5_000;
+    const channels = new ProgrammeChannels(undefined, () => clock);
+    channels.setCategory('alice', 'news');
+
+    channels.applyProfile('alice', profile({ updatedAt: 1_000 }));
+    expect(channels.category('alice')).toBe('news');
+    expect(channels.directory()[0]?.handle).toBe('alice-live');
+
+    channels.applyProfile('alice', profile({ updatedAt: 6_000 }));
+    expect(channels.category('alice')).toBe('faith');
+
+    clock = 7_000;
+    channels.claim('alice', ALICE, 'Renamed Here');
+    channels.applyProfile('alice', profile({ updatedAt: 6_000 }));
+    expect(channels.directory()[0]?.displayName).toBe('Renamed Here');
+  });
+
+  it('reports a change only when something shown changed', () => {
+    const channels = new ProgrammeChannels();
+    expect(channels.applyProfile('alice', profile())).toBe(true);
+    expect(channels.applyProfile('alice', profile())).toBe(false);
+    expect(channels.applyProfile('alice', profile({ displayName: 'Alice Tonight' }))).toBe(true);
+  });
+
+  /*
+   * A channel whose FIRST identity read is in flight is not listed under a
+   * fallback name; one that already has an identity stays listed while a
+   * refresh runs.
+   */
+  it('holds a channel out of the directory only while its first read is in flight', () => {
+    const channels = new ProgrammeChannels();
+    channels.claim('alice', ALICE);
+    channels.beginHydration('alice');
+    expect(channels.directory()).toEqual([]);
+
+    channels.endHydration('alice');
+    expect(channels.directory().map((row) => row.channelId)).toEqual(['alice']);
+
+    channels.applyProfile('alice', profile());
+    channels.beginHydration('alice');
+    expect(channels.directory().map((row) => row.channelId)).toEqual(['alice']);
+  });
+
+  it('lists a channel the moment its profile arrives', () => {
+    const channels = new ProgrammeChannels();
+    channels.claim('alice', ALICE);
+    channels.beginHydration('alice');
+    channels.applyProfile('alice', profile());
+    expect(channels.directory()[0]?.displayName).toBe('Alice Live');
+  });
+});
+
+/* CHANNEL is who; PROGRAMME is what is on. The row carries the second only while live. */
+describe('the programme on air', () => {
+  it('names the programme only while the channel is live', () => {
+    const channels = new ProgrammeChannels();
+    channels.claim('alice', ALICE, 'Alice Live');
+    channels.setProgrammeTitle('alice', 'Sunday Service');
+    expect(channels.directory()[0]?.currentProgramme).toBeNull();
+
+    channels.setMediaState('alice', stateFor('x'));
+    expect(channels.directory()[0]?.currentProgramme).toBe('Sunday Service');
+  });
+
+  it('forgets the title with the programme', () => {
+    const channels = new ProgrammeChannels();
+    channels.claim('alice', ALICE, 'Alice Live');
+    channels.setMediaState('alice', stateFor('x'));
+    channels.setProgrammeTitle('alice', 'Sunday Service');
+    channels.setMediaState('alice', null);
+    expect(channels.programmeTitle('alice')).toBeNull();
+
+    channels.setMediaState('alice', stateFor('y'));
+    expect(channels.directory()[0]?.currentProgramme).toBeNull();
   });
 });

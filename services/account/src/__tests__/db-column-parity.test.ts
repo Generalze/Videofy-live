@@ -23,6 +23,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { CHANNEL_CATEGORIES, CHANNEL_VISIBILITIES } from '@videofy-live/shared-types';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -223,6 +224,7 @@ describe('devices', () => {
 describe.each([
   { table: 'channel_follows', file: 'channel-follows-postgres.ts' },
   { table: 'reports', file: 'reports-postgres.ts' },
+  { table: 'channel_profiles', file: 'channel-profiles-postgres.ts' },
 ])('$table', ({ table, file }) => {
   const sql = source(file);
 
@@ -333,5 +335,33 @@ describe('messages', () => {
     const insert = sql.slice(sql.indexOf('INSERT INTO messages'), sql.indexOf('async conversation'));
     const placeholders = [...insert.matchAll(/\$(\d+)/gu)].map((match) => Number(match[1]));
     expect(Math.max(...placeholders)).toBe(sharedColumns().length);
+  });
+});
+
+/**
+ * Migration 020 names the controlled category and visibility lists LITERALLY
+ * in its CHECK constraints, because SQL cannot import them. This holds the
+ * two copies equal: a category added to shared-types and not to the check
+ * would be accepted by every validator and refused by the database, which is
+ * a 500 on the day an operator picks it.
+ */
+describe('channel_profiles controlled lists', () => {
+  const migrations = readFileSync(join(here, '..', 'db', 'migrations.ts'), 'utf8');
+  const table = migrations.slice(migrations.indexOf('CREATE TABLE IF NOT EXISTS channel_profiles ('));
+
+  function quotedList(after: string): string[] {
+    const start = table.indexOf(after);
+    if (start < 0) throw new Error(`no ${after} in the channel_profiles migration`);
+    const open = table.indexOf('(', start + after.length - 1);
+    const close = table.indexOf(')', open);
+    return [...table.slice(open + 1, close).matchAll(/'([a-z]+)'/gu)].map((match) => match[1] ?? '');
+  }
+
+  it('checks category against exactly the shared-types list', () => {
+    expect(quotedList('category IN (')).toEqual(CHANNEL_CATEGORIES.map((entry) => entry.id));
+  });
+
+  it('checks visibility against exactly the shared-types tiers', () => {
+    expect(quotedList('visibility IN (')).toEqual([...CHANNEL_VISIBILITIES]);
   });
 });

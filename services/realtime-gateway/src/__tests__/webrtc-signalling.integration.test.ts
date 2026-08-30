@@ -171,6 +171,20 @@ describe('gateway WebRTC signalling integration', () => {
       reconnection: false,
     });
     clients.push(socket);
+    /*
+     * These suites exercise the PLATFORM channel, where a listener that never
+     * names a channel sits. An operator now lands on their own channel at
+     * connect (founder directive A, 30 Aug 2026), so the operator here moves
+     * to the platform channel first. Buffered before connect, it is the first
+     * message the gateway handles from this socket; re-sent on a reconnect,
+     * because a fresh connection lands afresh.
+     */
+    if (role === 'operator') {
+      socket.emit(SOCKET_EVENTS.JOIN_CHANNEL, { channelId: 'main' });
+      socket.io.on('reconnect', () => {
+        socket.emit(SOCKET_EVENTS.JOIN_CHANNEL, { channelId: 'main' });
+      });
+    }
     return socket;
   }
 

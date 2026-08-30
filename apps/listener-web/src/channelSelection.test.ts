@@ -8,9 +8,16 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildJoinPayload,
+  channelHandleLabel,
   channelViewerUrl,
   channelBasePath,
+  describeChannelAtDoor,
+  directoryCard,
+  initialsFor,
+  parseDirectoryEntries,
+  parseDirectoryEntry,
   readChannelFromLocation,
+  resolveChannelAvatarUrl,
   sortedDirectory,
   urlWithoutCode,
   viewerStage,
@@ -236,5 +243,187 @@ describe('where the app is mounted', () => {
     const url = channelViewerUrl(base, 'abc123');
     expect(url).toBe('/listen/c/abc123');
     expect(readChannelFromLocation(url, '').channelId).toBe('abc123');
+  });
+});
+
+/*
+ * FOUNDER DIRECTIVE (A, 30 Aug 2026): discovery uses the persisted identity.
+ * The wire gains handle, avatarUrl and currentProgramme in a concurrent lane;
+ * until then they read as null, never undefined, and nothing is invented.
+ */
+describe('reading a directory row', () => {
+  const row = {
+    channelId: 'ch-1',
+    displayName: 'C7 Newsroom',
+    live: true,
+    visibility: 'public',
+    category: 'news',
+    handle: 'c7_news',
+    avatarUrl: '/channels/ch-1/avatar',
+    currentProgramme: 'Evening Bulletin',
+  };
+
+  it('keeps the identity the gateway sent', () => {
+    expect(parseDirectoryEntry(row)).toEqual(row);
+  });
+
+  it('reads absent identity as null rather than undefined', () => {
+    const parsed = parseDirectoryEntry({
+      channelId: 'ch-1',
+      displayName: 'C7 Newsroom',
+      live: false,
+      visibility: 'public',
+    });
+    expect(parsed).toEqual({
+      channelId: 'ch-1',
+      displayName: 'C7 Newsroom',
+      live: false,
+      visibility: 'public',
+      category: null,
+      handle: null,
+      avatarUrl: null,
+      currentProgramme: null,
+    });
+  });
+
+  it('nulls a handle or category that is not the shape of one', () => {
+    expect(parseDirectoryEntry({ ...row, handle: 'Not A Handle' })?.handle).toBeNull();
+    expect(parseDirectoryEntry({ ...row, handle: 42 })?.handle).toBeNull();
+    expect(parseDirectoryEntry({ ...row, category: 'gossip' })?.category).toBeNull();
+    expect(parseDirectoryEntry({ ...row, currentProgramme: '   ' })?.currentProgramme).toBeNull();
+  });
+
+  it('drops rows that are not channels', () => {
+    expect(parseDirectoryEntry(null)).toBeNull();
+    expect(parseDirectoryEntry({ channelId: 'ch-1' })).toBeNull();
+    expect(parseDirectoryEntry({ ...row, visibility: 'secret' })).toBeNull();
+    expect(parseDirectoryEntry({ ...row, channelId: '../rooms' })).toBeNull();
+  });
+
+  it('reads the whole payload, keeping the rows that parse, in order', () => {
+    expect(parseDirectoryEntries([row, 'garbage', { ...row, channelId: 'ch-2' }]).map((e) => e.channelId)).toEqual([
+      'ch-1',
+      'ch-2',
+    ]);
+    expect(parseDirectoryEntries({ channels: [row] })).toEqual([]);
+    expect(parseDirectoryEntries(undefined)).toEqual([]);
+  });
+});
+
+describe('what a card is made of', () => {
+  const entry = {
+    channelId: 'ch-1',
+    displayName: 'C7 Newsroom',
+    live: true,
+    visibility: 'public' as const,
+    category: 'news' as const,
+    handle: 'c7_news',
+    avatarUrl: '/channels/ch-1/avatar',
+    currentProgramme: 'Evening Bulletin',
+  };
+
+  it('derives everything a card prints', () => {
+    expect(directoryCard(entry, '/auth')).toEqual({
+      channelId: 'ch-1',
+      displayName: 'C7 Newsroom',
+      handle: 'c7_news',
+      handleLabel: '@c7_news',
+      initials: 'CN',
+      avatarUrl: '/auth/channels/ch-1/avatar',
+      category: 'news',
+      categoryLabel: 'News',
+      live: true,
+      status: 'Live now',
+      currentProgramme: 'Evening Bulletin',
+    });
+  });
+
+  it('shows no programme for a channel that is off air, and no picture for one without', () => {
+    const card = directoryCard({ ...entry, live: false, avatarUrl: null }, '/auth');
+    expect(card.status).toBe('Not broadcasting');
+    expect(card.currentProgramme).toBeNull();
+    expect(card.avatarUrl).toBeNull();
+  });
+
+  /* A channel with no persisted identity yet: nothing is invented for it. */
+  it('prints nothing for identity a row does not carry', () => {
+    const card = directoryCard(
+      { ...entry, category: null, handle: null, avatarUrl: null, currentProgramme: null },
+      '/auth',
+    );
+    expect(card.handleLabel).toBeNull();
+    expect(card.categoryLabel).toBeNull();
+    expect(card.avatarUrl).toBeNull();
+    expect(card.currentProgramme).toBeNull();
+    expect(card.initials).toBe('CN');
+  });
+
+  it('takes initials from the first two words', () => {
+    expect(initialsFor('Global Townhall')).toBe('GT');
+    expect(initialsFor('  c7   newsroom  daily ')).toBe('CN');
+    expect(initialsFor('')).toBe('');
+  });
+
+  it('prints a handle with its @ and nothing for none', () => {
+    expect(channelHandleLabel('c7_news')).toBe('@c7_news');
+    expect(channelHandleLabel(null)).toBeNull();
+    expect(channelHandleLabel(undefined)).toBeNull();
+    expect(channelHandleLabel('')).toBeNull();
+  });
+});
+
+describe('where a channel picture comes from', () => {
+  it('takes a path relative to the account service', () => {
+    expect(resolveChannelAvatarUrl('/auth', '/channels/ch-1/avatar')).toBe('/auth/channels/ch-1/avatar');
+    expect(resolveChannelAvatarUrl('http://localhost:3006/', 'channels/ch-1/avatar')).toBe(
+      'http://localhost:3006/channels/ch-1/avatar',
+    );
+  });
+
+  it('leaves an absolute URL alone', () => {
+    expect(resolveChannelAvatarUrl('/auth', 'https://cdn.example.com/a.png')).toBe(
+      'https://cdn.example.com/a.png',
+    );
+  });
+
+  it('is nothing when there is no picture', () => {
+    expect(resolveChannelAvatarUrl('/auth', null)).toBeNull();
+    expect(resolveChannelAvatarUrl('/auth', '')).toBeNull();
+    expect(resolveChannelAvatarUrl('/auth', undefined)).toBeNull();
+  });
+});
+
+describe('how the door names its channel', () => {
+  const named = {
+    channelId: 'ch-1',
+    displayName: 'Board Room',
+    live: false,
+    visibility: 'locked' as const,
+    category: null,
+    handle: 'board_room',
+    avatarUrl: null,
+    currentProgramme: null,
+  };
+
+  it('uses the name and handle when the directory knows the channel', () => {
+    expect(describeChannelAtDoor([named], 'ch-1')).toBe('Board Room (@board_room)');
+    expect(describeChannelAtDoor([{ ...named, handle: null }], 'ch-1')).toBe('Board Room');
+  });
+
+  /* Only a channel nobody has named is called by its id. */
+  it('falls back to the id only when there is no identity to show', () => {
+    expect(describeChannelAtDoor([], 'ch-1')).toBe('Channel ch-1');
+    expect(describeChannelAtDoor([{ ...named, displayName: '  ' }], 'ch-1')).toBe('Channel ch-1');
+  });
+
+  /* A private channel is never listed; the account service names it at the door. */
+  it('names an unlisted channel from the profile behind its link', () => {
+    const known = { displayName: 'Board Room', handle: 'board_room' };
+    expect(describeChannelAtDoor([], 'ch-1', known)).toBe('Board Room (@board_room)');
+    expect(describeChannelAtDoor([], 'ch-1', { ...known, handle: null })).toBe('Board Room');
+    // The directory, when it does list the channel, is the fresher word.
+    expect(describeChannelAtDoor([named], 'ch-1', { displayName: 'Other', handle: 'other' })).toBe(
+      'Board Room (@board_room)',
+    );
   });
 });

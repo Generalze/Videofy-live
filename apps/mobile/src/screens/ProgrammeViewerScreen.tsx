@@ -17,14 +17,31 @@
  *
  * The viewer page is public for public channels; a private link-only
  * channel reaches its page by the same link the operator shares.
+ *
+ * THE HEADER IS THE CHANNEL'S IDENTITY (founder directive A, 30 Aug 2026,
+ * LOCKED): picture or initials, name and @handle, read from the directory
+ * row. The WebView still opens the OPAQUE listener link -- "opaque links
+ * still working" -- while the share action hands out the public canonical
+ * /streams/<handle> page. Share is offered only when a handle exists: with
+ * none there is nothing canonical to share, and a dead button is worse than
+ * no button (REAL when shown; absent, not disabled, otherwise).
  */
 import { useEffect, useState, type JSX } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { WebView } from 'react-native-webview';
+import * as Clipboard from 'expo-clipboard';
 import type { ChannelSummary } from '../api/channelDirectory';
 import { listenerUrlFor } from '../api/channelDirectory';
 import type { Api } from '../api/client';
-import { describeVisibility, formatInterest, isFollowing } from '../programmes/programmeCatalogue';
+import { WEB_URL } from '../people/people';
+import {
+  channelShareUrl,
+  describeVisibility,
+  formatInterest,
+  handleLabel,
+  isFollowing,
+} from '../programmes/programmeCatalogue';
+import { ChannelAvatar } from '../programmes/ChannelAvatar';
 import { useChannelInterest } from '../programmes/useChannelInterest';
 import { C7, C7Ground, Chip } from '../ui/c7';
 import { Icon } from '../ui/icons';
@@ -41,16 +58,30 @@ export interface ProgrammeViewerScreenProps {
 export function ProgrammeViewerScreen({ channel, api, onBack }: ProgrammeViewerScreenProps): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+  const [copied, setCopied] = useState(false);
   const { follows, interest, pending, notice, loadInterest, toggle } = useChannelInterest(api);
   const url = listenerUrlFor(LISTEN_URL, channel.channelId);
+  const shareUrl = channelShareUrl(WEB_URL, channel);
+  const handle = handleLabel(channel.handle);
 
   useEffect(() => {
     loadInterest([channel.channelId]);
   }, [channel.channelId, loadInterest]);
 
+  useEffect(() => {
+    if (!copied) return undefined;
+    const timer = setTimeout(() => setCopied(false), 3000);
+    return () => clearTimeout(timer);
+  }, [copied]);
+
   const following = isFollowing(follows, channel.channelId);
   const busy = pending.has(channel.channelId);
   const count = formatInterest(interest[channel.channelId]);
+
+  const share = (): void => {
+    if (shareUrl === null) return;
+    void Clipboard.setStringAsync(shareUrl).then(() => setCopied(true));
+  };
 
   return (
     <View style={styles.fill}>
@@ -59,9 +90,11 @@ export function ProgrammeViewerScreen({ channel, api, onBack }: ProgrammeViewerS
         <Pressable onPress={onBack} accessibilityRole="button" accessibilityLabel="Back" hitSlop={8} style={styles.back}>
           <Icon name="chevron" size={22} color={C7.text} />
         </Pressable>
+        <ChannelAvatar channel={channel} size={40} radius={20} live={channel.live} />
         <View style={{ flex: 1, gap: 3 }}>
           <Text style={styles.title} numberOfLines={1}>{channel.displayName}</Text>
           <View style={styles.metaRow}>
+            {handle !== null && <Text style={styles.handle}>{handle}</Text>}
             {channel.live ? <Chip label="Live" tone="live" /> : <Chip label="Off air" tone="amber" />}
             <Text style={styles.meta}>{describeVisibility(channel.visibility)}</Text>
             {count !== null && (
@@ -83,7 +116,19 @@ export function ProgrammeViewerScreen({ channel, api, onBack }: ProgrammeViewerS
           <Icon name="bell" size={18} color={following ? C7.ground : C7.teal} />
           <Text style={[styles.followLabel, following && styles.followLabelOn]}>{following ? 'Following' : 'Interested'}</Text>
         </Pressable>
+        {shareUrl !== null && (
+          <Pressable
+            onPress={share}
+            accessibilityRole="button"
+            accessibilityLabel="Copy the channel link"
+            hitSlop={6}
+            style={({ pressed }) => [styles.share, pressed && styles.pressed]}
+          >
+            <Icon name="share" size={18} color={C7.teal} />
+          </Pressable>
+        )}
       </View>
+      {copied && <Text style={styles.copied}>Link copied: {shareUrl}</Text>}
       {notice !== null && <Text style={styles.notice}>{notice}</Text>}
       <View style={styles.stage}>
         {failed ? (
@@ -127,6 +172,9 @@ const styles = StyleSheet.create({
   meta: { color: C7.muted, fontSize: 12 },
   metaDot: { color: C7.faint, fontSize: 12 },
   metaTeal: { color: C7.teal, fontSize: 12, fontWeight: '600' },
+  handle: { color: C7.teal, fontSize: 12, fontWeight: '600' },
+  share: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(62,201,192,0.5)' },
+  copied: { color: C7.teal, fontSize: 12, paddingHorizontal: 14, paddingVertical: 6 },
   follow: { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(62,201,192,0.5)', paddingHorizontal: 12, paddingVertical: 7 },
   followOn: { backgroundColor: C7.teal, borderColor: C7.teal },
   followLabel: { color: C7.teal, fontSize: 13, fontWeight: '700' },

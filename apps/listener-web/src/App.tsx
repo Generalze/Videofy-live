@@ -3,7 +3,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { io, Socket } from 'socket.io-client';
 import type {
   AudioMixPreferences,
-  ChannelSummary,
   GeneratedAudioReadyEvent,
   MediaStateEvent,
   TimestampedTranslationEvent,
@@ -21,11 +20,22 @@ import { SponsoredSlot } from './SponsoredSlot';
 import {
   buildJoinPayload,
   channelBasePath,
+  parseDirectoryEntries,
   readChannelFromLocation,
   urlWithoutCode,
   viewerStage,
   type ChannelSelection,
+  type DirectoryEntry,
 } from './channelSelection';
+import {
+  listenerMountBase,
+  parseStreamsRoute,
+  readAccountBase,
+  resolveChannelProfileById,
+  resolveStreamsHandle,
+  type StreamsChannelProfile,
+  type StreamsResolution,
+} from './streamsRoute';
 import {
   createInitialListenerWebRtcTransportSnapshot,
   ListenerWebRtcTransportController,
@@ -91,6 +101,8 @@ import {
 } from './listenerMediaState';
 
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
+/** The account service: /streams/<handle> and channel pictures resolve there (staging: /auth). */
+const ACCOUNT_BASE = readAccountBase({ VITE_ACCOUNT_URL: import.meta.env['VITE_ACCOUNT_URL'] });
 const VIEWER_PLAYBACK_WATCHDOG_MS = 1_000;
 const VIEWER_PLAYBACK_STAGNANT_CHECKS = 4;
 const VIEWER_PLAYBACK_MIN_READY_STATE = 2;
@@ -181,15 +193,40 @@ export default function App(): React.ReactElement {
   const [channelSelection, setChannelSelection] = useState<ChannelSelection>(() =>
     readChannelFromLocation(window.location.pathname, window.location.search),
   );
-  const [channelDirectory, setChannelDirectory] = useState<readonly ChannelSummary[]>([]);
+  const [channelDirectory, setChannelDirectory] = useState<readonly DirectoryEntry[]>([]);
   const [channelCodeInput, setChannelCodeInput] = useState('');
   const [channelRefused, setChannelRefused] = useState(false);
   const [channelJoined, setChannelJoined] = useState(false);
   /*
-   * Computed once from the page this app was loaded on. Staging serves it under
-   * /listen, so a link built as /c/<id> would leave the app entirely.
+   * /streams/<handle> -- FOUNDER DIRECTIVE (A, 30 Aug 2026, LOCKED): "public
+   * canonical route /streams/<handle> with opaque links still working". Read
+   * once, like the channel: the handle is resolved through the account
+   * service and the channel then opens exactly as a /c/<id> link does. The
+   * opaque links above are untouched by this.
    */
-  const channelBase = useRef(channelBasePath(window.location.pathname)).current;
+  const streamsRoute = useRef(parseStreamsRoute(window.location.pathname)).current;
+  const [streamsResolution, setStreamsResolution] = useState<StreamsResolution | null>(() =>
+    streamsRoute === null ? null : { state: 'resolving', handle: streamsRoute.handle },
+  );
+  const [streamsAttempt, setStreamsAttempt] = useState(0);
+  /*
+   * The identity behind the channel in the address bar, read from the account
+   * service's public profile-by-id route. A private or locked channel is never
+   * in the directory, so its door would otherwise call it "Channel <id>" --
+   * the fallback name the directive forbids when an identity exists.
+   */
+  const [doorChannel, setDoorChannel] = useState<StreamsChannelProfile | null>(null);
+  /*
+   * Computed once from the page this app was loaded on. Staging serves it under
+   * /listen, so a link built as /c/<id> would leave the app entirely. A
+   * /streams/<handle> page says nothing about where the bundle lives, so there
+   * the mount comes from the build instead.
+   */
+  const channelBase = useRef(
+    streamsRoute === null
+      ? channelBasePath(window.location.pathname)
+      : listenerMountBase(import.meta.env.BASE_URL),
+  ).current;
   const channelSelectionRef = useRef(channelSelection);
   channelSelectionRef.current = channelSelection;
   const socketRef = useRef<Socket | null>(null);
@@ -876,8 +913,10 @@ export default function App(): React.ReactElement {
       }
     });
 
-    socket.on(SOCKET_EVENTS.CHANNEL_DIRECTORY, (entries: readonly ChannelSummary[]) => {
-      setChannelDirectory(entries);
+    socket.on(SOCKET_EVENTS.CHANNEL_DIRECTORY, (entries: unknown) => {
+      // Read defensively: the identity fields land in a concurrent lane and
+      // are null, not undefined, until the gateway sends them.
+      setChannelDirectory(parseDirectoryEntries(entries));
     });
 
     socket.on(SOCKET_EVENTS.ERROR, (error: { message?: string }) => {
@@ -1276,6 +1315,66 @@ export default function App(): React.ReactElement {
     connect();
   }, [connect]);
 
+  /*
+   * Resolve the handle in the address bar, then open the channel the way a
+   * /c/<id> link does -- same selection, same join, same code handling. The
+   * URL is left as /streams/<handle>: that IS the page's canonical address
+   * (directive A), and reloading it must come back here.
+   *
+   * If the socket is already connected the join is sent now; if it is still
+   * connecting, its connect handler reads the selection ref and joins then.
+   * Never both, so the gateway sees one join.
+   */
+  useEffect(() => {
+    if (streamsRoute === null) return undefined;
+    let cancelled = false;
+    setStreamsResolution({ state: 'resolving', handle: streamsRoute.handle });
+    void resolveStreamsHandle(ACCOUNT_BASE, streamsRoute.handle, (url, init) => fetch(url, init)).then(
+      (resolution) => {
+        if (cancelled) return;
+        setStreamsResolution(resolution);
+        if (resolution.state !== 'found') return;
+        const code = readChannelFromLocation('', window.location.search).code;
+        const next: ChannelSelection = {
+          channelId: resolution.profile.channelId,
+          code,
+          codeFromUrl: code !== null,
+        };
+        setChannelSelection(next);
+        setChannelRefused(false);
+        setChannelJoined(true);
+        const socket = socketRef.current;
+        if (socket?.connected) {
+          socket.emit(SOCKET_EVENTS.JOIN_CHANNEL, buildJoinPayload(next, targetLanguageRef.current));
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [streamsRoute, streamsAttempt]);
+
+  useEffect(() => {
+    const channelId = channelSelection.channelId;
+    if (channelId === null) {
+      setDoorChannel(null);
+      return undefined;
+    }
+    if (streamsResolution?.state === 'found' && streamsResolution.profile.channelId === channelId) {
+      setDoorChannel(streamsResolution.profile);
+      return undefined;
+    }
+    let cancelled = false;
+    void resolveChannelProfileById(ACCOUNT_BASE, channelId, (url, init) => fetch(url, init)).then(
+      (profile) => {
+        if (!cancelled) setDoorChannel(profile);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [channelSelection.channelId, streamsResolution]);
+
   useEffect(() => {
     if (!hasStarted || !remoteProgrammeStream || streamStatus !== 'processing') {
       viewerPlaybackSampleRef.current = { currentTimeSeconds: null, stagnantChecks: 0 };
@@ -1581,6 +1680,10 @@ export default function App(): React.ReactElement {
         onSubmitCode={handleChannelCodeSubmit}
         onChooseChannel={handleChooseChannel}
         basePath={channelBase}
+        accountBase={ACCOUNT_BASE}
+        streams={streamsResolution}
+        doorChannel={doorChannel}
+        onRetryStreams={() => setStreamsAttempt((attempt) => attempt + 1)}
       />
       <header className={styles.header}>
         <div className={styles.brand}>

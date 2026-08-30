@@ -45,7 +45,7 @@ import { File } from 'expo-file-system';
 import type { Api, ContactPerson, TimelineItem, WireMessage } from '../api/client';
 import { callHistoryWords } from '../call/callHistoryWords';
 import type { AuthorizedFetch } from '../push/deviceRegistrationService';
-import { fetchTranslatedVoiceNoteAsDataUri, fetchVoiceNoteAsDataUri, formatDuration } from '../media/voiceNotes';
+import { fetchTranslatedVoiceNoteAsDataUri, fetchVoiceNoteAsDataUri, formatDuration, materialiseForPlayback } from '../media/voiceNotes';
 import { C7, C7Ground, Chip } from '../ui/c7';
 import { Icon } from '../ui/icons';
 import { MessageActionSheet, type MessageAction } from './MessageActionSheet';
@@ -461,15 +461,26 @@ export function ChatScreen({
           setError('That voice note could not be fetched.');
           return;
         }
-        player.replace({ uri });
-        player.playbackRate = rate;
+        let playable: string;
+        try {
+          playable = await materialiseForPlayback(uri, noteId);
+        } catch {
+          setError('That voice note could not be saved for playback.');
+          return;
+        }
+        player.replace({ uri: playable });
         setLoadedNote(noteId);
+        try {
+          player.playbackRate = rate;
+        } catch {
+          /* a player that refuses a rate before it has loaded still plays at 1x */
+        }
         player.play();
       } catch {
         setError('Playback failed on this device.');
       }
     },
-    [loadedNote, playback.playing, player],
+    [loadedNote, playback.playing, player, rate],
   );
 
   const seekLoaded = useCallback(
@@ -733,7 +744,11 @@ export function ChatScreen({
                           onCycleRate={() => {
                             const next = rate === 1 ? 1.5 : rate === 1.5 ? 2 : 1;
                             setRate(next);
-                            player.playbackRate = next;
+                            try {
+                              player.playbackRate = next;
+                            } catch {
+                              /* applied on the next load */
+                            }
                           }}
                         />
                         {translatedVoice && !useOriginal && item.translatedBody != null && (

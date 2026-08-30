@@ -706,6 +706,46 @@ const REPORTS: Migration = {
   `,
 };
 
+/**
+ * 020 -- channel profiles. Founder directive (LOCKED, 30 Aug 2026), OPERATOR
+ * CHANNEL IDENTITY: "persistent channel profile {channelId, ownerAccountId,
+ * handle, displayName, description, avatar, banner, category, visibility,
+ * createdAt, updatedAt}"; "unique human-readable @handle"; "persist outside
+ * gateway memory".
+ *
+ * The opaque channel id the gateway derives from the account stays the key;
+ * the handle is an alias with its own unique index on the FOLDED form, so
+ * `Zoe` and `zoe` are one claim. One channel per owner is a constraint, not
+ * a convention. The category and visibility checks name the controlled lists
+ * literally; the parity test holds them equal to the shared-types lists.
+ * The image columns hold a version ref, never bytes: the bytes live where
+ * account avatars do, on disk, keyed by channel id.
+ */
+const CHANNEL_PROFILES: Migration = {
+  name: '020_channel_profiles',
+  sql: `
+    CREATE TABLE IF NOT EXISTS channel_profiles (
+      channel_id       text   PRIMARY KEY,
+      owner_account_id text   NOT NULL UNIQUE,
+      handle           text   NOT NULL,
+      display_name     text   NOT NULL,
+      description      text   NOT NULL DEFAULT '',
+      category         text
+        CHECK (category IS NULL OR category IN ('news', 'faith', 'business', 'education', 'culture', 'music', 'sport', 'community', 'technology', 'health', 'government', 'entertainment')),
+      visibility       text   NOT NULL DEFAULT 'public'
+        CHECK (visibility IN ('public', 'private', 'locked')),
+      avatar_ref       text,
+      banner_ref       text,
+      created_at_ms    bigint NOT NULL,
+      updated_at_ms    bigint NOT NULL
+    );
+
+    -- The handle is unique as people read it, not as it is cased.
+    CREATE UNIQUE INDEX IF NOT EXISTS channel_profiles_handle_idx
+      ON channel_profiles (lower(handle));
+  `,
+};
+
 /** Applied in this order. Append only. */
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
@@ -727,4 +767,5 @@ export const MIGRATIONS: readonly Migration[] = [
   PROFILE_EXTRAS,
   CHANNEL_FOLLOWS,
   REPORTS,
+  CHANNEL_PROFILES,
 ];

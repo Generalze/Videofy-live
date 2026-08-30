@@ -331,6 +331,34 @@ search, jump-to-message, sending / failed bubbles, playback speed.
 
 ---
 
+## 4A · Operator channel identity and the premium console (LOCKED, 30 Aug 2026)
+
+**A channel is a persistent broadcaster identity; a programme is one
+broadcast.** Every entitled operator lands on their own channel at
+connect -- no "Move to my channel" in the ordinary workflow; `main` is the
+C7 platform channel, not anybody's default workspace. The opaque
+account-derived `channelId` stays internal; the persistent profile
+(`channelId, ownerAccountId, handle, displayName, description, avatar,
+banner, category, visibility, createdAt, updatedAt`) lives in the account
+service (migration 020), never only in gateway memory, so a restart never
+erases branding. A unique human-readable `@handle` gives the public
+canonical route `/streams/<handle>`; opaque links keep working. The
+operator shell always shows avatar, display name, @handle, category and
+channel status, with View / Edit / Copy link / Share / QR. C7 Streams
+discovery uses the persisted identity; a generated "Channel abc123" is
+never shown once an identity exists. Channel isolation, visibility rules,
+join-code security and opaque ids are unchanged.
+
+**The premium console is built to golden masters.** The PNGs in
+`docs/design/VIDEOFY OPERATOR UI AND IMPLEMENTATION CONTRACT/` are
+immutable acceptance references at 1586 x 992: implement, render,
+capture, pixel-diff, correct, repeat. Presentation consumes the existing
+controllers through props; every control is REAL, PARTIAL (honestly
+disabled) or FUTURE (not faked); sample values in the masters are never
+hard-coded. A page is done only with a VISUAL PASS and a FUNCTIONAL PASS.
+
+---
+
 ## 5 · Streaming — the Programme Quality Engine (canonical, 29 Aug 2026)
 
 **Status: APPROVED by the founder on 29 Aug 2026 as the canonical

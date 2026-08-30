@@ -1072,3 +1072,116 @@
   gap: 0.5rem;
   max-width: 22rem;
 }
+
+/*
+ * Directory cards carry the channel's persisted identity (directive A, 30 Aug
+ * 2026): picture or initials, name, @handle, category, live status and the
+ * programme on air. Additive: the row styles above still serve the door.
+ */
+.channelCard {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--color-border, rgba(255, 255, 255, 0.08));
+}
+
+.channelAvatar {
+  flex: 0 0 auto;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 50%;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.08));
+}
+
+.channelAvatarLive {
+  border-color: var(--color-live);
+}
+
+.channelAvatarImage {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.channelIdentity {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.channelMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.channelHandle {
+  color: var(--color-brand-light);
+}
+
+.channelCategory {
+  padding: 0.05rem 0.5rem;
+  border-radius: 999px;
+  background: var(--color-surface-raised);
+  font-size: 0.78rem;
+}
+
+.channelLive {
+  font-size: 0.85rem;
+  color: var(--color-live);
+  font-weight: 600;
+}
+
+.channelProgramme {
+  font-size: 0.9rem;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channelOpen {
+  flex: 0 0 auto;
+  color: var(--color-brand-light);
+}
+
+/* The handle in the address bar: being looked up, not a channel, or not reachable. */
+.streamsNotice {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+}
+
+.streamsNotice h3 {
+  font-size: 1.05rem;
+  margin: 0;
+}
+
+.streamsNotice p {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.streamsRetry {
+  align-self: flex-start;
+  margin-top: 0.25rem;
+}

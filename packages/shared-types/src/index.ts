@@ -11,3 +11,4 @@ export * from './webrtc-signalling.js';
 export * from './webrtc-signalling-client.js';
 export * from './language-controls.js';
 export * from './channel-category.js';
+export * from './channel-profile.js';

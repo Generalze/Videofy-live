@@ -23,6 +23,13 @@
  *
  * THE ADVERT SLOT IS PART OF THE LAYOUT (founder ruling 29 Aug): reserved,
  * separated, silent, below the channel list and above the tab bar.
+ *
+ * EVERY ROW IS THE CHANNEL'S PERSISTED IDENTITY (founder directive A, 30 Aug
+ * 2026, LOCKED): "C7 Streams discovery uses persisted identity (name,
+ * avatar, handle, category, live status, current programme)". Picture or
+ * initials, name, @handle, category chip, live chip, and the programme on
+ * air -- all read from the directory row, none invented; a channel with no
+ * handle or picture yet simply shows neither.
  */
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -38,13 +45,15 @@ import {
   filterChannels,
   findChannel,
   formatInterest,
-  initials,
+  handleLabel,
   isFollowing,
+  nowPlaying,
   resolveCategoryChoice,
   resolveFilter,
   selectFeatured,
   type Filter,
 } from '../programmes/programmeCatalogue';
+import { ChannelAvatar } from '../programmes/ChannelAvatar';
 import { useChannelInterest } from '../programmes/useChannelInterest';
 import { AdSlot } from '../ui/AdSlot';
 import { C7, Chip, GlassCard, SectionHeading } from '../ui/c7';
@@ -135,6 +144,9 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
   }, [openChannelId, listed, onOpen]);
 
   const featuredCount = featured === null ? null : formatInterest(interest[featured.channelId]);
+  const featuredHandle = featured === null ? null : handleLabel(featured.handle);
+  const featuredCategory = featured === null ? null : categoryLabel(featured.category);
+  const featuredNow = featured === null ? null : nowPlaying(featured);
 
   const emptyWords =
     query.length > 0
@@ -151,15 +163,21 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
     <ScrollView style={styles.fill} contentContainerStyle={styles.screen}>
       {featured !== null && (
         <GlassCard accent style={styles.featured}>
-          <View style={styles.featuredArt}>
-            <Text style={styles.featuredInitials}>{initials(featured.displayName)}</Text>
-          </View>
+          <ChannelAvatar channel={featured} size={110} radius={14} live style={styles.featuredArt} />
           <View style={{ flex: 1, gap: 8 }}>
             <View style={styles.chipRow}>
               <Chip label="Featured" tone="teal" />
               <Chip label="Live now" tone="live" />
+              {featuredCategory !== null && <Chip label={featuredCategory} />}
             </View>
             <Text style={styles.featuredTitle} numberOfLines={2}>{featured.displayName}</Text>
+            {featuredHandle !== null && <Text style={styles.handle}>{featuredHandle}</Text>}
+            {featuredNow !== null && (
+              <Text style={styles.now} numberOfLines={2}>
+                <Text style={styles.nowLabel}>Now: </Text>
+                {featuredNow}
+              </Text>
+            )}
             {featuredCount !== null && (
               <View style={styles.metaRow}>
                 <Icon name="people" size={14} color={C7.teal} />
@@ -232,26 +250,27 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
         const following = isFollowing(follows, channel.channelId);
         const count = formatInterest(interest[channel.channelId]);
         const label = categoryLabel(channel.category);
+        const handle = handleLabel(channel.handle);
+        const now = nowPlaying(channel);
         return (
           <Pressable key={channel.channelId} onPress={() => onOpen(channel)} accessibilityRole="button" style={({ pressed }) => pressed && styles.pressed}>
             <GlassCard padded={false} style={styles.row}>
-              <View style={[styles.art, channel.live && styles.artLive]}>
-                <Text style={styles.artInitials}>{initials(channel.displayName)}</Text>
-              </View>
+              <ChannelAvatar channel={channel} size={58} radius={12} live={channel.live} />
               <View style={{ flex: 1, gap: 5 }}>
                 <View style={styles.titleRow}>
                   <Text style={styles.rowTitle} numberOfLines={1}>{channel.displayName}</Text>
                   {channel.live ? <Chip label="Live" tone="live" /> : <Chip label="Off air" tone="amber" />}
                 </View>
+                {handle !== null && <Text style={styles.handle} numberOfLines={1}>{handle}</Text>}
+                {now !== null && (
+                  <Text style={styles.now} numberOfLines={1}>
+                    <Text style={styles.nowLabel}>Now: </Text>
+                    {now}
+                  </Text>
+                )}
                 <View style={styles.metaRow}>
                   <Icon name={channel.visibility === 'public' ? 'globe' : 'lock'} size={14} color={C7.muted} />
                   <Text style={styles.meta}>{describeVisibility(channel.visibility)}</Text>
-                  {label !== null && (
-                    <>
-                      <Text style={styles.metaDot}>·</Text>
-                      <Text style={styles.meta}>{label}</Text>
-                    </>
-                  )}
                   {count !== null && (
                     <>
                       <Text style={styles.metaDot}>·</Text>
@@ -260,9 +279,10 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
                     </>
                   )}
                 </View>
-                {following && (
+                {(label !== null || following) && (
                   <View style={styles.chipRow}>
-                    <Chip label="Following" tone="teal" />
+                    {label !== null && <Chip label={label} />}
+                    {following && <Chip label="Following" tone="teal" />}
                   </View>
                 )}
               </View>
@@ -281,8 +301,7 @@ const styles = StyleSheet.create({
   fill: { flex: 1 },
   screen: { padding: 16, gap: 14, paddingBottom: 32 },
   featured: { flexDirection: 'row', gap: 14, padding: 14 },
-  featuredArt: { width: 110, borderRadius: 14, backgroundColor: 'rgba(62,201,192,0.14)', alignItems: 'center', justifyContent: 'center', minHeight: 130 },
-  featuredInitials: { color: C7.teal, fontSize: 30, fontWeight: '700', fontFamily: 'serif' },
+  featuredArt: { alignSelf: 'flex-start' },
   featuredTitle: { color: C7.text, fontSize: 24, fontWeight: '600', fontFamily: 'serif' },
   featuredActions: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 4 },
   watch: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: C7.tealDeep, borderRadius: 999, paddingVertical: 11 },
@@ -297,9 +316,9 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, color: C7.text, fontSize: 15, paddingVertical: 8 },
   empty: { color: C7.muted, fontSize: 14, textAlign: 'center', paddingVertical: 18 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12 },
-  art: { width: 58, height: 58, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.05)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: C7.panelEdge },
-  artLive: { backgroundColor: 'rgba(62,201,192,0.12)', borderColor: 'rgba(62,201,192,0.35)' },
-  artInitials: { color: C7.text, fontSize: 18, fontWeight: '700', fontFamily: 'serif' },
+  handle: { color: C7.teal, fontSize: 13, fontWeight: '600' },
+  now: { color: C7.text, fontSize: 13 },
+  nowLabel: { color: C7.muted },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   rowTitle: { color: C7.text, fontSize: 17, fontWeight: '600', fontFamily: 'serif', flexShrink: 1 },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },

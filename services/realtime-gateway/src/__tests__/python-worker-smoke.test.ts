@@ -140,6 +140,10 @@ describe('Python worker to Node gateway smoke', () => {
       reconnectionDelayMax: 100,
     });
     sockets.push(socket);
+    // The listeners here never name a channel, so they sit on the platform
+    // channel; an operator lands on their own at connect (founder directive
+    // A, 30 Aug 2026) and is moved there first.
+    if (role === 'operator') socket.emit(SOCKET_EVENTS.JOIN_CHANNEL, { channelId: 'main' });
     return socket;
   }
 });

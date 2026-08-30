@@ -4,7 +4,12 @@
  * a known id, and never invented from anything else on the row.
  */
 import { describe, expect, it } from 'vitest';
-import { parseChannelDirectory, parseChannelSummary } from '../api/channelDirectory';
+import {
+  channelAvatarUri,
+  parseChannelDirectory,
+  parseChannelSummary,
+  streamsUrlFor,
+} from '../api/channelDirectory';
 import { CHANNEL_CATEGORIES } from '../programmes/channelCategories';
 
 const known = CHANNEL_CATEGORIES[0]?.id ?? 'news';
@@ -45,5 +50,68 @@ describe('parseChannelDirectory', () => {
     expect(rows.map((row) => row.channelId)).toEqual(['b', 'a']);
     expect(parseChannelDirectory({ channels: [] })).toEqual([]);
     expect(parseChannelDirectory(null)).toEqual([]);
+  });
+});
+
+/* Founder directive A (30 Aug 2026): identity is read from the row, never invented. */
+describe('the persisted identity on a row', () => {
+  const row = { channelId: 'a', displayName: 'C7 Newsroom', live: true, visibility: 'public' };
+
+  it('keeps a handle, a picture path and the programme on air', () => {
+    const parsed = parseChannelSummary({
+      ...row,
+      handle: 'c7_news',
+      avatarUrl: '/channels/a/avatar?v=3',
+      currentProgramme: 'Evening Bulletin',
+    });
+    expect(parsed?.handle).toBe('c7_news');
+    expect(parsed?.avatarUrl).toBe('/channels/a/avatar?v=3');
+    expect(parsed?.currentProgramme).toBe('Evening Bulletin');
+  });
+
+  it('reads absent identity as null, never undefined', () => {
+    const parsed = parseChannelSummary(row);
+    expect(parsed).toEqual({
+      channelId: 'a',
+      displayName: 'C7 Newsroom',
+      live: true,
+      visibility: 'public',
+      category: null,
+      handle: null,
+      avatarUrl: null,
+      currentProgramme: null,
+    });
+  });
+
+  it('nulls a handle off the shape and blank text', () => {
+    expect(parseChannelSummary({ ...row, handle: 'Not A Handle' })?.handle).toBeNull();
+    expect(parseChannelSummary({ ...row, handle: 'ab' })?.handle).toBeNull();
+    expect(parseChannelSummary({ ...row, handle: 42 })?.handle).toBeNull();
+    expect(parseChannelSummary({ ...row, avatarUrl: '' })?.avatarUrl).toBeNull();
+    expect(parseChannelSummary({ ...row, currentProgramme: '  ' })?.currentProgramme).toBeNull();
+  });
+});
+
+describe('the links built from identity', () => {
+  it('shares the public /streams/<handle> page', () => {
+    expect(streamsUrlFor('https://staging.consummate7.com', 'c7_news')).toBe(
+      'https://staging.consummate7.com/streams/c7_news',
+    );
+    expect(streamsUrlFor('https://staging.consummate7.com/', 'c7_news')).toBe(
+      'https://staging.consummate7.com/streams/c7_news',
+    );
+  });
+
+  it('fetches the picture from the account service', () => {
+    expect(channelAvatarUri('https://staging.consummate7.com/auth', '/channels/a/avatar')).toBe(
+      'https://staging.consummate7.com/auth/channels/a/avatar',
+    );
+    expect(channelAvatarUri('https://staging.consummate7.com/auth/', 'channels/a/avatar')).toBe(
+      'https://staging.consummate7.com/auth/channels/a/avatar',
+    );
+    expect(channelAvatarUri('https://staging.consummate7.com/auth', 'https://cdn.example.com/a.png')).toBe(
+      'https://cdn.example.com/a.png',
+    );
+    expect(channelAvatarUri('https://staging.consummate7.com/auth', null)).toBeNull();
   });
 });

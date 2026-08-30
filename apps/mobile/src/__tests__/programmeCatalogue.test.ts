@@ -11,6 +11,7 @@ import { CHANNEL_CATEGORIES, type ChannelCategory } from '../programmes/channelC
 import {
   adjustInterest,
   categoryLabel,
+  channelShareUrl,
   deriveCategoryChips,
   deriveFilters,
   describeVisibility,
@@ -18,7 +19,9 @@ import {
   findChannel,
   followsReducer,
   formatInterest,
+  handleLabel,
   initials,
+  nowPlaying,
   resolveCategoryChoice,
   resolveFilter,
   selectFeatured,
@@ -34,12 +37,17 @@ const channel = (
   live: boolean,
   visibility: ChannelSummary['visibility'] = 'public',
   category: ChannelCategory | null = null,
+  identity: Partial<Pick<ChannelSummary, 'handle' | 'avatarUrl' | 'currentProgramme'>> = {},
 ): ChannelSummary => ({
   channelId,
   displayName,
   live,
   visibility,
   category,
+  handle: null,
+  avatarUrl: null,
+  currentProgramme: null,
+  ...identity,
 });
 
 const townhall = channel('ch_town', 'Global Townhall', true);
@@ -225,5 +233,50 @@ describe('findChannel and describeVisibility', () => {
     expect(describeVisibility('public')).toBe('Public');
     expect(describeVisibility('private')).toBe('Private · Link-only');
     expect(describeVisibility('locked')).toBe('Locked');
+  });
+});
+
+/* Founder directive A (30 Aug 2026): identity is read from the row, never invented. */
+describe('handleLabel and nowPlaying', () => {
+  it('prints a handle with its @ and nothing for none', () => {
+    expect(handleLabel('c7_news')).toBe('@c7_news');
+    expect(handleLabel(null)).toBeNull();
+    expect(handleLabel('')).toBeNull();
+  });
+
+  it('names the programme on air only while the channel is live', () => {
+    expect(nowPlaying({ live: true, currentProgramme: 'Evening Bulletin' })).toBe('Evening Bulletin');
+    expect(nowPlaying({ live: false, currentProgramme: 'Evening Bulletin' })).toBeNull();
+    expect(nowPlaying({ live: true, currentProgramme: null })).toBeNull();
+    expect(nowPlaying({ live: true, currentProgramme: '   ' })).toBeNull();
+  });
+});
+
+describe('channelShareUrl', () => {
+  it('is the public /streams/<handle> page at the web origin', () => {
+    expect(channelShareUrl('https://staging.consummate7.com', { handle: 'c7_news' })).toBe(
+      'https://staging.consummate7.com/streams/c7_news',
+    );
+    expect(channelShareUrl('https://staging.consummate7.com/', { handle: 'c7_news' })).toBe(
+      'https://staging.consummate7.com/streams/c7_news',
+    );
+  });
+
+  /* Nothing canonical exists without a handle, so nothing is offered. */
+  it('is nothing for a channel without a handle', () => {
+    expect(channelShareUrl('https://staging.consummate7.com', { handle: null })).toBeNull();
+  });
+});
+
+describe('searching by handle', () => {
+  const named = channel('ch_named', 'Global Townhall', true, 'public', null, { handle: 'townhall_live' });
+
+  it('matches the handle, with or without the @', () => {
+    const ids = (query: string) =>
+      filterChannels([named, forum], { filter: 'all', category: null, query, follows: {} }).map((c) => c.channelId);
+    expect(ids('@townhall')).toEqual(['ch_named']);
+    expect(ids('hall_live')).toEqual(['ch_named']);
+    expect(ids('ogun')).toEqual(['ch_forum']);
+    expect(ids('@nobody')).toEqual([]);
   });
 });

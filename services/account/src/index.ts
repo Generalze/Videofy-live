@@ -49,6 +49,13 @@ import { createPostgresConversationModes } from './db/conversation-modes-postgre
 import { createTextTranslator } from './translation-client.js';
 import { createVoiceNoteTranslator } from './voice-note-translation-client.js';
 import { registerAvatarRoutes } from './avatar-routes.js';
+import {
+  ChannelProfiles,
+  createFileChannelImageStore,
+  createInMemoryChannelProfilePort,
+} from './channel-profiles.js';
+import { createPostgresChannelProfiles } from './db/channel-profiles-postgres.js';
+import { registerChannelRoutes } from './channel-routes.js';
 import { createInMemoryCallRecordPort } from './call-records.js';
 import { createPostgresCallRecords } from './db/call-records-postgres.js';
 import { registerCallHistoryRoutes } from './call-history-routes.js';
@@ -160,7 +167,11 @@ app.use(correlationMiddleware());
  * passed. The global parser now steps aside for exactly those routes; the
  * 16kb ceiling stays the rule for every identity endpoint.
  */
-const OWN_BODY_PARSER = [/^\/messages\/with\/[^/]+\/voice$/, /^\/profile\/avatar$/];
+const OWN_BODY_PARSER = [
+  /^\/messages\/with\/[^/]+\/voice$/,
+  /^\/profile\/avatar$/,
+  /^\/channels\/mine\/(avatar|banner)$/,
+];
 const identityJson = express.json({
   limit: '16kb',
   verify: (req, _res, buffer) => {
@@ -716,6 +727,31 @@ registerAvatarRoutes(app, {
     secret,
     nowSeconds: () => Math.floor(Date.now() / 1000),
   }),
+});
+/*
+ * CHANNEL IDENTITY. Founder directive (LOCKED, 30 Aug 2026): every entitled
+ * operator lands on their own persistent channel, and that identity must
+ * "persist outside gateway memory". The profile rows follow the accounts
+ * into Postgres; the pictures follow the avatars onto disk.
+ */
+registerChannelRoutes(app, {
+  profiles: new ChannelProfiles({
+    port: databasePool ? createPostgresChannelProfiles(databasePool) : createInMemoryChannelProfilePort(),
+    images: createFileChannelImageStore(
+      process.env['CHANNEL_MEDIA_DIR'] ?? resolve('data', 'channel-media'),
+    ),
+  }),
+  store,
+  internalAuth: resolveInternalIngressAuth(process.env),
+  callerAccountId: createCallerResolver({
+    store,
+    secret,
+    nowSeconds: () => Math.floor(Date.now() / 1000),
+  }),
+  onEvent: (event, detail) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', event, ...detail }));
+  },
 });
 // eslint-disable-next-line no-console
 console.log(

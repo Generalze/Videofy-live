@@ -143,6 +143,29 @@ export interface ChannelSummary {
    * means uncategorised, not an invitation to guess.
    */
   readonly category: ChannelCategory | null;
+  /**
+   * The channel's unique human-readable handle, or null when no persisted
+   * identity exists for it (the platform channel, or a channel the account
+   * service has not answered for).
+   *
+   * Founder directive (A, 30 Aug 2026): "unique human-readable @handle;
+   * public canonical route /streams/<handle> with opaque links still
+   * working." The opaque `channelId` stays the identifier everything joins
+   * by; the handle is what a person reads and shares.
+   */
+  readonly handle: string | null;
+  /** A public account path such as /channels/<id>/avatar, or null when none is set. */
+  readonly avatarUrl: string | null;
+  /**
+   * The title of the programme on air, when the channel is live AND a title
+   * is known; null otherwise -- never a made-up name.
+   *
+   * Founder directive (A, 30 Aug 2026): CHANNEL (persistent identity) and
+   * PROGRAMME (one broadcast) are separate things. This is the one programme
+   * fact a directory row carries, so discovery can say what is on without
+   * confusing it with who the channel is.
+   */
+  readonly currentProgramme: string | null;
 }
 
 /**
@@ -162,16 +185,44 @@ export interface OperatorChannelSettingsPayload {
   category?: ChannelCategory | null;
 }
 
+/**
+ * The persisted identity of the channel an operator is on, as the gateway
+ * read it from the account service.
+ *
+ * Founder directive (A, 30 Aug 2026): "the operator shell always shows
+ * avatar, displayName, @handle, category, channel status." These are those
+ * fields, and nothing a console would have to invent.
+ */
+export interface ChannelAssignedProfile {
+  readonly handle: string;
+  readonly displayName: string;
+  readonly category: ChannelCategory | null;
+  readonly avatarUrl: string | null;
+}
+
 /** What the gateway answers with on channel:assigned. */
 export interface ChannelAssignedPayload {
   /** The operator's own channel id, as the gateway derived it. */
   channelId: string;
-  /** The channel they are publishing to now. */
+  /**
+   * The channel they are publishing to now.
+   *
+   * Founder directive (A, 30 Aug 2026): an entitled operator lands on their
+   * own channel at connect, so at connect this equals `channelId`. It differs
+   * only after an explicit move to the platform channel.
+   */
   active: string;
   /** Whether a join code is SET on the active channel; never the code itself. */
   hasCode?: boolean;
   /** The active channel's category, so a reloaded console shows the truth. */
   category?: ChannelCategory | null;
+  /**
+   * The active channel's persisted identity; null when none exists (the
+   * platform channel, or an account service that did not answer -- in which
+   * case the console keeps whatever it last showed rather than a fallback
+   * name).
+   */
+  profile?: ChannelAssignedProfile | null;
 }
 
 export const OPERATOR_ROOM = 'operators';
@@ -186,6 +237,13 @@ export interface OperatorProgrammeSessionConfig {
   sessionId: string;
   broadcastId: string;
   sourceRevision: number;
+  /**
+   * What this broadcast is called, if the operator named it. Surfaces to
+   * listeners as ChannelSummary.currentProgramme while the channel is live;
+   * absent means the directory says nothing about the programme rather than
+   * guessing a name.
+   */
+  programmeTitle?: string;
   programmeSourceType?: string;
   rtmpPlaybackUrl?: string;
   targetLanguage: string;

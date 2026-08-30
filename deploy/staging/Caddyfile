@@ -109,7 +109,7 @@
 	# with no Cache-Control at all and fell straight back into heuristic caching.
 	# A fix that names its subjects individually has to be revisited every time a
 	# subject is added, and that revisit is what was missed.
-	@spa_shell path /call/ /call/index.html /listen/ /listen/index.html /operator/ /operator/index.html / /index.html /app/ /app/* /videofy/ /videofy/index.html /videofy/live/ /videofy/live/index.html
+	@spa_shell path /call/ /call/index.html /listen/ /listen/index.html /streams/* /operator/ /operator/index.html / /index.html /app/ /app/* /videofy/ /videofy/index.html /videofy/live/ /videofy/live/index.html
 	header @spa_shell Cache-Control "no-cache, must-revalidate"
 
 	# /assets/* is the ecosystem site's own bundle directory, served from the root.
@@ -127,6 +127,20 @@
 		root * /srv/videofy/www/listener-web
 		uri strip_prefix /listen
 		try_files {path} /index.html
+		file_server
+	}
+
+	# /streams/<handle> is the public canonical channel page (founder directive
+	# A, 30 Aug 2026): the SAME viewer bundle as /listen, reached by the
+	# channel's human-readable handle instead of its opaque id. The bundle is
+	# built with --base=/listen/, so the shell served here still loads its
+	# hashed assets from /listen/assets/* and no second copy of the app exists.
+	# The shell is what every /streams/ path resolves to: the viewer reads the
+	# handle from the address bar and resolves it through /auth/streams/<handle>.
+	# Listed in @spa_shell above so it revalidates on every load like /listen/.
+	handle /streams/* {
+		root * /srv/videofy/www/listener-web
+		rewrite * /index.html
 		file_server
 	}
 

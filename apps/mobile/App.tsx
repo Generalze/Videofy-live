@@ -28,7 +28,7 @@ import * as Notifications from 'expo-notifications';
  * resolves without an import. It is exported from 'react' instead.
  */
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import { AppState, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { AppState, BackHandler, Platform, Pressable, StyleSheet, Text, ToastAndroid, View } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { AuthSessionManager, type AuthState } from './src/auth/authSessionManager';
 import { createSecureSessionStore } from './src/auth/secureSessionStore';
@@ -125,13 +125,8 @@ async function unlockWithPassword(password: string): Promise<'ok' | 'wrong' | 'n
  * provider closure keeps token ownership inside AuthSessionManager, and
  * sign-out starves it immediately.
  */
-configureAvatars({
-  baseUrl: ACCOUNT_BASE_URL,
-  headers: () => {
-    const token = auth.callSessionToken();
-    return token === null ? null : { authorization: `Bearer ${token}` };
-  },
-});
+// Pictures travel through the authorised fetch, never through Image headers (see AvatarView).
+configureAvatars({ fetch: (path) => auth.authorizedFetch(path) });
 const api = createApi(authorizedFetch);
 const directCalls = createDirectCallApi({
   gatewayUrl: GATEWAY_BASE_URL,
@@ -459,6 +454,48 @@ function AppInner(): JSX.Element {
   }, [state.status]);
 
   const signIn = useCallback((email: string, password: string) => auth.signIn(email, password), []);
+
+  /*
+   * THE PHONE'S BACK BUTTON (founder 30 Aug: "nav back button exits the app,
+   * no warning"). Back means "one step back": close the programme, the
+   * profile, the chat, the add card; return to Chats from another tab. At
+   * the root, one press says "Press back again to exit" and a second press
+   * within two seconds leaves. During a ring or a call, back does nothing --
+   * leaving a call is the red button, never an accidental swipe.
+   */
+  const lastBackAt = useRef(0);
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (activeCall !== null || incomingCall !== null || locked) return true;
+      if (viewingChannel !== null) {
+        setViewingChannel(null);
+        setOpenChannelId(null);
+        return true;
+      }
+      if (viewingPerson !== null) {
+        setViewingPerson(null);
+        return true;
+      }
+      if (chatWith !== null) {
+        setChatWith(null);
+        return true;
+      }
+      if (addingContact) {
+        setAddingContact(false);
+        return true;
+      }
+      if (tab !== 'chats') {
+        setTab('chats');
+        return true;
+      }
+      const now = Date.now();
+      if (now - lastBackAt.current < 2_000) return false;
+      lastBackAt.current = now;
+      if (Platform.OS === 'android') ToastAndroid.show('Press back again to exit', ToastAndroid.SHORT);
+      return true;
+    });
+    return () => subscription.remove();
+  }, [activeCall, incomingCall, locked, viewingChannel, viewingPerson, chatWith, addingContact, tab]);
 
   /*
    * PRESENCE. A heartbeat a minute while the app is on screen -- 'busy' in a

@@ -25,7 +25,7 @@
  * count beside a channel is the number of people who follow it.
  */
 import type { ChannelFollow } from '../api/client';
-import type { ChannelSummary } from '../api/channelDirectory';
+import { streamsUrlFor, type ChannelSummary } from '../api/channelDirectory';
 import { CHANNEL_CATEGORIES, type ChannelCategory, type ChannelCategoryEntry } from './channelCategories';
 
 /** The operational filters. `all` is always first and always offered. */
@@ -121,11 +121,17 @@ export function filterChannels(
     readonly follows: FollowState;
   },
 ): readonly ChannelSummary[] {
-  const q = input.query.trim().toLowerCase();
+  // A typed "@name" is a search for the handle; the @ is not part of it.
+  const q = input.query.trim().toLowerCase().replace(/^@/, '');
   return channels
     .filter((channel) => inFilter(channel, input.filter, input.follows))
     .filter((channel) => input.category === null || channel.category === input.category)
-    .filter((channel) => q.length === 0 || channel.displayName.toLowerCase().includes(q))
+    .filter(
+      (channel) =>
+        q.length === 0 ||
+        channel.displayName.toLowerCase().includes(q) ||
+        (channel.handle !== null && channel.handle.includes(q)),
+    )
     .sort((a, b) => Number(b.live) - Number(a.live) || a.displayName.localeCompare(b.displayName));
 }
 
@@ -198,4 +204,32 @@ export function adjustInterest(interest: InterestCounts, channelId: string, delt
 
 export function findChannel(channels: readonly ChannelSummary[], channelId: string): ChannelSummary | null {
   return channels.find((channel) => channel.channelId === channelId) ?? null;
+}
+
+/* ------------------------------------------------ identity (directive A, 30 Aug 2026) */
+
+/** "@handle", ready to print; null when the channel has no handle yet, so nothing is shown. */
+export function handleLabel(handle: string | null): string | null {
+  return handle !== null && handle.length > 0 ? `@${handle}` : null;
+}
+
+/**
+ * The programme on air, or null. CHANNEL and PROGRAMME are separate
+ * (directive A): a title is only shown while the channel is live, and an
+ * off-air channel shows none rather than the last one it had.
+ */
+export function nowPlaying(channel: Pick<ChannelSummary, 'live' | 'currentProgramme'>): string | null {
+  if (!channel.live || channel.currentProgramme === null) return null;
+  const title = channel.currentProgramme.trim();
+  return title.length > 0 ? title : null;
+}
+
+/**
+ * The link a person shares from the viewer: the public canonical
+ * /streams/<handle> page. Null when the channel has no handle -- there is
+ * nothing canonical to share, and the share action is not offered rather
+ * than offered dead.
+ */
+export function channelShareUrl(webUrl: string, channel: Pick<ChannelSummary, 'handle'>): string | null {
+  return channel.handle === null ? null : streamsUrlFor(webUrl, channel.handle);
 }

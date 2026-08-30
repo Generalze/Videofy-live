@@ -59,11 +59,10 @@ export function Row({ icon, title, subtitle, open, onPress, children }: { readon
   );
 }
 
-/** connections / calls / following / saved, under the identity card. */
+/** connections / following / saved, under the identity card. (Founder 30 Aug: the call count does not belong on the profile.) */
 export function CountsRow({ counts }: { readonly counts: MeCounts | null }): JSX.Element {
   const cells: readonly [string, number | null][] = [
     ['Connections', counts?.connections ?? null],
-    ['Calls', counts?.calls ?? null],
     ['Following', counts?.following ?? null],
     ['Saved', counts?.saved ?? null],
   ];

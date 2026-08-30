@@ -92,3 +92,25 @@ export function formatDuration(durationMs: number | null): string {
   const seconds = total % 60;
   return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
+
+/**
+ * A PLAYABLE FILE, NOT A DATA URI. The phone reported "Playback failed on
+ * this device" for every voice note (founder, 30 Aug 2026): Android's media
+ * player does not reliably open a base64 data: URI. The bytes are written
+ * to the app's cache as a real file with the right extension and the
+ * player is given file://. Files are named by note so a replay costs
+ * nothing; the cache is the OS's to reclaim.
+ */
+export async function materialiseForPlayback(dataUri: string, key: string): Promise<string> {
+  const match = /^data:([^;,]+);base64,(.*)$/s.exec(dataUri);
+  if (match === null) return dataUri; // already a file/http URI
+  const [, mime, base64] = match as unknown as [string, string, string];
+  const extension = mime.includes('wav') ? 'wav' : mime.includes('ogg') || mime.includes('opus') ? 'ogg' : mime.includes('mpeg') || mime.includes('mp3') ? 'mp3' : mime.includes('webm') ? 'webm' : 'm4a';
+  const fs = await import('expo-file-system/legacy');
+  const directory = fs.cacheDirectory;
+  if (directory === null) return dataUri;
+  const safeKey = key.replace(/[^A-Za-z0-9_-]/g, '_');
+  const fileUri = `${directory}voice-${safeKey}.${extension}`;
+  await fs.writeAsStringAsync(fileUri, base64, { encoding: 'base64' });
+  return fileUri;
+}

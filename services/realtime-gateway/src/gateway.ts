@@ -27,11 +27,17 @@ import {
 } from './programme-channels.js';
 import { diffLiveTransitions } from './channel-live-transitions.js';
 import {
+  NULL_CHANNEL_IDENTITY,
+  type ChannelIdentityPort,
+  type ChannelProfile,
+} from './channel-identity.js';
+import {
   INGEST_ROOM,
   createShareableWebRtcSessionId,
   isChannelCategory,
   languageRoom,
   OPERATOR_ROOM,
+  type ChannelAssignedPayload,
   type OperatorChannelSettingsPayload,
   SOCKET_EVENTS,
   type TranslatedAudioFramePayload,
@@ -216,6 +222,12 @@ export class Gateway {
   /** The channel each operator MAY move to: derived from their account, theirs alone. */
   private readonly operatorOwnChannels = new Map<string, string>();
   private readonly channelSalt: string;
+  /**
+   * Where channel identity persists (founder directive A, 30 Aug 2026).
+   * Injected so tests run without HTTP; absent means in-memory values only,
+   * which is also what an unreachable account service degrades to.
+   */
+  private readonly channelIdentity: ChannelIdentityPort;
 
   /*
    * THE DEFAULT CHANNEL, UNDER THE OLD NAME.
@@ -295,6 +307,11 @@ export class Gateway {
        * to followers who asked to be told. Omitted means nobody is told.
        */
       onChannelLive?: (channelId: string, live: boolean, displayName: string) => Promise<void>;
+      /**
+       * The persistent channel identity source. Omitted -- tests, embedders
+       * -- means channels keep in-memory names and nothing is persisted.
+       */
+      channelIdentity?: ChannelIdentityPort | undefined;
       /** Call-level authority. Omitted means no account may start a call. */
       call?: {
         authorizeHost?: (sessionToken: string | null) => Promise<boolean>;
@@ -324,6 +341,7 @@ export class Gateway {
   ) {
     this.channelLiveHook = options.onChannelLive ?? null;
     this.channelSalt = options.operator?.channelSalt ?? 'videofy-live-channel';
+    this.channelIdentity = options.channelIdentity ?? NULL_CHANNEL_IDENTITY;
     this.operatorAuthority = createOperatorAuthority({
       secret: options.operator?.authSecret,
       ...(options.operator?.requireEntitlement === undefined
@@ -684,23 +702,29 @@ export class Gateway {
         const operatorChannelId = channelIdForAccount(admission.accountId, this.channelSalt);
         this.operatorOwnChannels.set(socket.id, operatorChannelId);
         /*
-         * OPT IN, DO NOT ASSUME. An operator publishes to the DEFAULT channel
-         * until they ask for their own.
+         * AUTO-LAND. Founder directive (A, 30 Aug 2026): "every entitled
+         * operator lands automatically on their own persistent channel;
+         * 'Move to my channel' leaves the normal workflow; main stays a
+         * special C7/platform channel."
          *
-         * Moving them automatically would have been the obvious thing and is
-         * wrong: every listener client that predates channels is on the
-         * default channel, so an automatic move publishes each operator's
-         * programme somewhere none of their audience is listening. The
-         * personalised channel is a thing an operator chooses, and the choice
-         * is what makes it safe to ship before every client understands it.
+         * This used to be opt-in, because listener clients that predated
+         * channels all sat on the default channel. Every listener surface
+         * now chooses a channel, so landing on the default would publish an
+         * operator's programme to an audience that is not theirs. The move
+         * to the platform channel remains for whoever operates it today
+         * (JOIN_CHANNEL 'main'); nothing in the ordinary path needs it.
+         *
+         * Claimed HERE, synchronously, so ownership is enforced from the
+         * first message. The persisted identity is read next, and the
+         * connect-time assignment waits for it: a console that showed a
+         * fallback name for two seconds and then corrected it would be
+         * showing exactly what the directive forbids.
          */
-        this.operatorChannels.set(socket.id, DEFAULT_CHANNEL_ID);
-        void socket.join(channelOperatorRoom(DEFAULT_CHANNEL_ID));
-        socket.emit(SOCKET_EVENTS.CHANNEL_ASSIGNED, {
-          channelId: operatorChannelId,
-          active: DEFAULT_CHANNEL_ID,
-        });
+        this.channels.claim(operatorChannelId, admission.accountId);
+        this.operatorChannels.set(socket.id, operatorChannelId);
+        void socket.join(channelOperatorRoom(operatorChannelId));
         this.handleOperatorSocket(socket);
+        void this.landOperator(socket, admission.accountId, operatorChannelId);
         // PRESENCE ONLY. The account id here was read out of a verified session
         // token, and the founder ruling (29 Aug 2026) is that no "account
         // identifier derived from a token" is ever printed. An incident joins
@@ -773,6 +797,8 @@ export class Gateway {
      */
     void socket.join(channelListenerRoom(state.channelId));
     socket.emit(SOCKET_EVENTS.CHANNEL_DIRECTORY, this.channels.directory());
+    // Lazily: a stale name is corrected by a second directory, not a delay.
+    this.refreshChannelProfiles();
     socket.emit(SOCKET_EVENTS.AUDIO_MODE_PREFERENCES, this.channels.audio(state.channelId));
     if (
       this.latestProgrammeMediaState &&
@@ -1257,23 +1283,20 @@ export class Gateway {
         void socket.leave(channelOperatorRoom(previous));
         void socket.join(channelOperatorRoom(requested));
       }
-      /*
-       * Claiming only on the move, not at connect. Claiming at connect would
-       * put an idle channel in the listener directory for every operator who
-       * ever signed in.
-       */
-      if (requested !== DEFAULT_CHANNEL_ID) {
-        this.channels.claim(requested, accountId);
-      }
       this.operatorChannels.set(socket.id, requested);
-      socket.emit(SOCKET_EVENTS.CHANNEL_ASSIGNED, {
-        channelId: this.operatorOwnChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID,
-        active: requested,
-        // The category is server truth (founder ruling, 29 Aug 2026), so a
-        // console arriving after a reload learns it here rather than guessing.
-        category: this.channels.category(requested),
-      });
-      this.broadcastChannelDirectory();
+      /*
+       * THE PLATFORM CHANNEL has no persisted identity to read: it is a
+       * special C7 channel (founder directive A, 30 Aug 2026), operable by
+       * whoever operates it today and widened to nobody. Any other channel
+       * is claimed and its profile read, exactly as at connect.
+       */
+      if (requested === DEFAULT_CHANNEL_ID) {
+        this.emitChannelAssigned(socket, requested);
+        this.broadcastChannelDirectory();
+      } else {
+        this.channels.claim(requested, accountId);
+        void this.landOperator(socket, accountId, requested);
+      }
       logger.info('Operator moved channel', { socketId: socket.id, channelId: requested });
     });
 
@@ -1318,18 +1341,15 @@ export class Gateway {
         this.channels.setCategory(channelId, settings.category);
       }
 
-      socket.emit(SOCKET_EVENTS.CHANNEL_ASSIGNED, {
-        channelId: this.operatorOwnChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID,
-        active: channelId,
-        /*
-         * Whether a code is SET, never the code. The operator's own client
-         * already has whatever they just typed; echoing it back would put a
-         * live join code into logs and transcripts for no gain.
-         */
-        hasCode: this.channels.hasAccessCode(channelId),
-        category: this.channels.category(channelId),
-      });
-      this.broadcastChannelDirectory();
+      /*
+       * MIRROR, THEN RE-READ. Founder directive (A, 30 Aug 2026): identity
+       * persists outside gateway memory. Visibility is written to the
+       * account from here; name and category are accepted here too, but the
+       * console saves those to the account directly (lane A3), so the ack
+       * re-reads the profile and answers with what the account now holds.
+       * An empty settings message is therefore a legitimate "re-read".
+       */
+      void this.acknowledgeChannelSettings(socket, channelId, settings);
       logger.info('Operator updated channel settings', {
         socketId: socket.id,
         channelId,
@@ -1412,6 +1432,9 @@ export class Gateway {
        */
       const channelId = this.operatorChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID;
       this.channels.bindSession(config.sessionId, channelId);
+      // The broadcast's name, for the directory while it is on air; null
+      // when the operator gave none, never a stand-in.
+      this.channels.setProgrammeTitle(channelId, config.programmeTitle ?? null);
       this.broadcastProgrammeSessionConfig(config, channelId);
     });
 
@@ -2340,6 +2363,107 @@ export class Gateway {
     const directory = this.channels.directory();
     this.io.to('listeners').emit(SOCKET_EVENTS.CHANNEL_DIRECTORY, directory);
     this.reportLiveTransitions(directory);
+    this.refreshChannelProfiles();
+  }
+
+  /**
+   * HYDRATE LAZILY. Every known channel's profile is read through the
+   * identity port, which answers from its cache for a minute at a time, so
+   * this costs one request per minute per gateway rather than one per
+   * broadcast. Only when a read CHANGES something shown is the directory
+   * sent again -- and that second broadcast finds everything cached and
+   * unchanged, so it cannot loop.
+   *
+   * Founder directive (A, 30 Aug 2026): "C7 Streams discovery uses persisted
+   * identity (name, avatar, handle, category, live status, current
+   * programme)." This is how a directory row comes to carry it.
+   */
+  private refreshChannelProfiles(): void {
+    void this.hydrateChannels(this.channels.knownChannelIds()).then((changed) => {
+      if (changed) this.broadcastChannelDirectory();
+    });
+  }
+
+  /**
+   * Land an operator on a channel: read its persisted identity, then tell
+   * the console where it is and what the channel is called, then tell
+   * listeners. In that order, so nobody is shown a fallback name for a
+   * channel that has a real one.
+   */
+  private async landOperator(socket: Socket, accountId: string, channelId: string): Promise<void> {
+    this.channels.beginHydration(channelId);
+    const profile = await this.channelIdentity.claim(channelId, accountId).catch(() => null);
+    if (profile) this.channels.applyProfile(channelId, profile);
+    this.channels.endHydration(channelId);
+    // The socket may have gone, or moved, while the account service answered.
+    if (this.operatorAccounts.get(socket.id) !== accountId) return;
+    if (this.operatorChannels.get(socket.id) !== channelId) return;
+    this.emitChannelAssigned(socket, channelId);
+    this.broadcastChannelDirectory();
+  }
+
+  private emitChannelAssigned(socket: Socket, active: string): void {
+    const payload: ChannelAssignedPayload = {
+      channelId: this.operatorOwnChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID,
+      active,
+      /*
+       * Whether a code is SET, never the code. The operator's own client
+       * already has whatever they just typed; echoing it back would put a
+       * live join code into logs and transcripts for no gain.
+       */
+      hasCode: this.channels.hasAccessCode(active),
+      // The category is server truth (founder ruling, 29 Aug 2026), so a
+      // console arriving after a reload learns it here rather than guessing.
+      category: this.channels.category(active),
+      // The persisted identity, or null; never a fallback name.
+      profile: this.channels.profileFor(active),
+    };
+    socket.emit(SOCKET_EVENTS.CHANNEL_ASSIGNED, payload);
+  }
+
+  /**
+   * Mirror a visibility change to the account, re-read the profile, and
+   * only then acknowledge -- so the ack carries what is persisted, not what
+   * was hoped. A failed mirror leaves the in-memory value in force and the
+   * account behind; the next successful settings ack catches it up.
+   */
+  private async acknowledgeChannelSettings(
+    socket: Socket,
+    channelId: string,
+    settings: OperatorChannelSettingsPayload,
+  ): Promise<void> {
+    let profile: ChannelProfile | null = null;
+    if (settings.visibility !== undefined) {
+      profile = await this.channelIdentity
+        .setVisibility(channelId, settings.visibility)
+        .catch(() => null);
+    }
+    if (profile === null) {
+      this.channelIdentity.invalidate(channelId);
+      const read = await this.channelIdentity
+        .profiles([channelId])
+        .catch(() => new Map<string, ChannelProfile>());
+      profile = read.get(channelId) ?? null;
+    }
+    if (profile) this.channels.applyProfile(channelId, profile);
+    if (this.operatorChannels.get(socket.id) !== channelId) return;
+    this.emitChannelAssigned(socket, channelId);
+    this.broadcastChannelDirectory();
+  }
+
+  /** Apply whatever profiles the port knows for these channels; true if anything shown changed. */
+  private async hydrateChannels(channelIds: readonly string[]): Promise<boolean> {
+    // The platform channel has no persisted identity; asking would be noise.
+    const wanted = channelIds.filter((channelId) => channelId !== DEFAULT_CHANNEL_ID);
+    if (wanted.length === 0) return false;
+    const profiles = await this.channelIdentity
+      .profiles(wanted)
+      .catch(() => new Map<string, ChannelProfile>());
+    let changed = false;
+    for (const [channelId, profile] of profiles) {
+      if (this.channels.applyProfile(channelId, profile)) changed = true;
+    }
+    return changed;
   }
 
   private readonly channelLiveHook: ((channelId: string, live: boolean, displayName: string) => Promise<void>) | null;
@@ -2413,10 +2537,21 @@ export class Gateway {
         ? candidate.rtmpPlaybackUrl
         : undefined;
     if (programmeSourceType === 'rtmp' && !rtmpPlaybackUrl) return null;
+    /*
+     * A title is decoration, so a bad one is dropped rather than refusing the
+     * whole configuration: a programme must never fail to start over its
+     * name. Trimmed, bounded and free of control characters, because it is
+     * shown to every listener in the directory.
+     */
+    const programmeTitle =
+      typeof candidate.programmeTitle === 'string'
+        ? sanitiseProgrammeTitle(candidate.programmeTitle)
+        : null;
     return {
       sessionId: candidate.sessionId,
       broadcastId: candidate.broadcastId,
       sourceRevision,
+      ...(programmeTitle ? { programmeTitle } : {}),
       ...(programmeSourceType ? { programmeSourceType } : {}),
       ...(rtmpPlaybackUrl ? { rtmpPlaybackUrl } : {}),
       targetLanguage: candidate.targetLanguage,
@@ -2550,6 +2685,17 @@ function canDeliverUploadedStems(state: MediaStateEvent): boolean {
       (output) => output.captionsAvailable || output.audioAvailable,
     ) ?? false)
   );
+}
+
+/** A programme title fit for a directory row, or null when nothing is left. */
+function sanitiseProgrammeTitle(value: string): string | null {
+  let cleaned = '';
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    cleaned += code < 0x20 || code === 0x7f ? ' ' : char;
+  }
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+  return cleaned.length > 0 ? cleaned.slice(0, 120) : null;
 }
 
 function isSafeIdentifier(value: unknown): value is string {

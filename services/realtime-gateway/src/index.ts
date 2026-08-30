@@ -12,6 +12,7 @@ import {
   provisionRouteCredentials,
 } from './adapter-route-policy.js';
 import { createApp } from './app.js';
+import { createChannelIdentityClient } from './channel-identity.js';
 import { loadConfig } from './config.js';
 import { createCallHostAuthority, createDirectCallModeResolver } from './call-host-authority.js';
 import { Gateway } from './gateway.js';
@@ -107,6 +108,27 @@ if (channelIdSalt === undefined || channelIdSalt.length === 0) {
   );
 }
 
+/*
+ * WHERE CHANNEL IDENTITY PERSISTS. Founder directive (A, 30 Aug 2026): a
+ * channel's profile lives outside gateway memory, in the account service,
+ * read over the same internal routes recordDirectCall uses. Without both the
+ * address and the credential the gateway still runs -- on in-memory names,
+ * which a restart forgets -- and says so at boot rather than at the first
+ * operator connect.
+ */
+const channelIdentity = (() => {
+  const base = process.env['ACCOUNT_SERVICE_URL'];
+  const token = process.env['INTERNAL_WEBRTC_TOKEN'];
+  if (!base || !token) {
+    logger.warn(
+      'Channel identity is not persisted: ACCOUNT_SERVICE_URL or INTERNAL_WEBRTC_TOKEN is not set. ' +
+        'Channel names, categories and visibility live in gateway memory until both are set.',
+    );
+    return undefined;
+  }
+  return createChannelIdentityClient({ accountServiceUrl: base, internalToken: token });
+})();
+
 const gateway = new Gateway(server, config.corsOrigins, {
   mediaIngestUrl: config.mediaIngestUrl,
   realtimeIngressUrl: config.realtimeIngressUrl,
@@ -128,6 +150,7 @@ const gateway = new Gateway(server, config.corsOrigins, {
   webRtcTranscriptionStagingDir: config.webRtcTranscriptionStagingDir,
   webRtcPartialCaptionIntervalMs: config.webRtcPartialCaptionIntervalMs,
   callTranscriptLogDir: config.callTranscriptLogDir,
+  channelIdentity,
   connect: {
     authSecret: config.connectAuthSecret,
     projectsPath: config.connectProjectsPath,
