@@ -42,6 +42,12 @@ async function status(path) {
   return response.status;
 }
 
+/** The programme-control routes are POST; a GET at the same path is Express's 404, not the guard. */
+async function postStatus(path) {
+  const response = await fetch(`${base}${path}`, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json' }, body: '{}' });
+  return response.status;
+}
+
 async function httpChecks() {
   console.log('\nEdge routing');
   const cases = [
@@ -301,7 +307,7 @@ async function socketChecks() {
     // the OPERATOR_CONSOLE_ACCOUNT_IDS allowlist; a deployment where either
     // check fails again has regressed, not merely fallen behind.
     const fake = 'ps_00000000-0000-0000-0000-000000000000';
-    const pause = await status(`/media/sessions/${fake}/pause`);
+    const pause = await postStatus(`/media/sessions/${fake}/pause`);
     record(
       'programme control demands authentication before existence',
       pause === 401 || pause === 403,
