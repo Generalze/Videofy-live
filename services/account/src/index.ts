@@ -56,6 +56,12 @@ import {
 } from './channel-profiles.js';
 import { createPostgresChannelProfiles } from './db/channel-profiles-postgres.js';
 import { registerChannelRoutes } from './channel-routes.js';
+import {
+  channelLookup,
+  createShellReader,
+  readConfiguredOrigin,
+  registerShareRoutes,
+} from './share-routes.js';
 import { createInMemoryCallRecordPort } from './call-records.js';
 import { createPostgresCallRecords } from './db/call-records-postgres.js';
 import { registerCallHistoryRoutes } from './call-history-routes.js';
@@ -770,13 +776,14 @@ registerAvatarRoutes(app, {
  * "persist outside gateway memory". The profile rows follow the accounts
  * into Postgres; the pictures follow the avatars onto disk.
  */
+const channelProfiles = new ChannelProfiles({
+  port: databasePool ? createPostgresChannelProfiles(databasePool) : createInMemoryChannelProfilePort(),
+  images: createFileChannelImageStore(
+    process.env['CHANNEL_MEDIA_DIR'] ?? resolve('data', 'channel-media'),
+  ),
+});
 registerChannelRoutes(app, {
-  profiles: new ChannelProfiles({
-    port: databasePool ? createPostgresChannelProfiles(databasePool) : createInMemoryChannelProfilePort(),
-    images: createFileChannelImageStore(
-      process.env['CHANNEL_MEDIA_DIR'] ?? resolve('data', 'channel-media'),
-    ),
-  }),
+  profiles: channelProfiles,
   store,
   internalAuth: resolveInternalIngressAuth(process.env),
   callerAccountId: createCallerResolver({
@@ -789,6 +796,51 @@ registerChannelRoutes(app, {
     console.log(JSON.stringify({ service: 'account', event, ...detail }));
   },
 });
+
+/*
+ * THE SHARE PAGE for /streams/<handle>, server-rendered.
+ *
+ * FOUNDER REPORT (30 Aug 2026): "the logo preview is not on the link when the
+ * preview loads." /streams/<handle> is the link the operator console's Copy,
+ * Share and QR all produce, and it was served as the raw listener bundle --
+ * whose head carries no Open Graph tags, so WhatsApp (which never runs
+ * JavaScript) had nothing to draw a card from. The edge now sends /streams/*
+ * here, rewritten to /share/streams/*, and this route injects a real head into
+ * the real listener shell. See share-routes.ts for why an unknown handle is a
+ * 200 rather than a 404.
+ *
+ * LISTENER_SHELL_PATH names the built shell. It is configurable because
+ * production and staging keep their web roots apart, and the route degrades to
+ * a minimal branded page rather than a 500 when the file cannot be read -- a
+ * web root that has not been staged yet must not take the sharing surface down.
+ */
+const listenerShellPath =
+  process.env['LISTENER_SHELL_PATH'] ??
+  resolve(process.env['WWW_DIR'] ?? '/srv/videofy/www', 'listener-web', 'index.html');
+registerShareRoutes(app, {
+  channels: channelLookup(channelProfiles),
+  readShell: createShellReader(listenerShellPath),
+  // og:url must name the ONE address the link is shared as. Absent, the
+  // request's own forwarded host is used, which is right for staging before
+  // its canonical hostname is settled.
+  configuredOrigin: readConfiguredOrigin(process.env['C7_PUBLIC_ORIGIN']),
+  // Both Caddyfiles mount this service at /auth; the avatar URL in og:image
+  // has to carry that prefix or a crawler cannot fetch the picture.
+  accountBasePath: process.env['ACCOUNT_PUBLIC_BASE_PATH'] ?? '/auth',
+  viewerBasePath: process.env['VIEWER_BASE_PATH'] ?? '/listen',
+  onEvent: (event, detail) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', event, ...detail }));
+  },
+});
+// eslint-disable-next-line no-console
+console.log(
+  JSON.stringify({
+    service: 'account',
+    message: 'Share pages ready',
+    shell: listenerShellPath,
+  }),
+);
 // eslint-disable-next-line no-console
 console.log(
   JSON.stringify({

@@ -1,67 +1,74 @@
 {
-  "capturedAt": "2026-08-30T05:43:06.111Z",
+  "capturedAt": "2026-08-30T18:26:01.743Z",
   "viewport": {
     "width": 1586,
     "height": 992
   },
   "threshold": 0.1,
-  "maxMismatchPct": 100,
+  "maxMismatchPct": 1,
+  "enforcement": "per page, fails the command",
+  "rendered": "the deterministic fixture entry",
   "base": "/",
   "pages": [
     {
       "page": "overview",
       "route": "#/overview",
       "reference": "01-overview-reference.png",
-      "differingPixels": 114928,
+      "differingPixels": 94395,
       "totalPixels": 1573312,
-      "mismatchPct": 7.3,
+      "mismatchPct": 6,
       "actualSize": "1586x992",
       "referenceSize": "1586x992",
-      "pass": true
+      "verdict": "FAIL",
+      "pass": false
     },
     {
       "page": "source",
       "route": "#/source",
       "reference": "02-source-reference.png",
-      "differingPixels": 109189,
+      "differingPixels": 113437,
       "totalPixels": 1573312,
-      "mismatchPct": 6.94,
+      "mismatchPct": 7.21,
       "actualSize": "1586x992",
       "referenceSize": "1586x992",
-      "pass": true
+      "verdict": "FAIL",
+      "pass": false
     },
     {
       "page": "languages",
       "route": "#/languages",
       "reference": "03-languages-reference.png",
-      "differingPixels": 102783,
+      "differingPixels": 95282,
       "totalPixels": 1573312,
-      "mismatchPct": 6.53,
+      "mismatchPct": 6.06,
       "actualSize": "1586x992",
       "referenceSize": "1586x992",
-      "pass": true
+      "verdict": "FAIL",
+      "pass": false
     },
     {
       "page": "audio",
       "route": "#/audio",
       "reference": "04-audio-voices-reference.png",
-      "differingPixels": 114670,
+      "differingPixels": 126228,
       "totalPixels": 1573312,
-      "mismatchPct": 7.29,
+      "mismatchPct": 8.02,
       "actualSize": "1586x992",
       "referenceSize": "1586x992",
-      "pass": true
+      "verdict": "FAIL",
+      "pass": false
     },
     {
       "page": "live",
       "route": "#/live",
       "reference": "10-live-control-reference.png",
-      "differingPixels": 118092,
+      "differingPixels": 90014,
       "totalPixels": 1573312,
-      "mismatchPct": 7.51,
+      "mismatchPct": 5.72,
       "actualSize": "1586x992",
       "referenceSize": "1586x992",
-      "pass": true
+      "verdict": "FAIL",
+      "pass": false
     }
   ]
 }

@@ -20,9 +20,7 @@ import type { LanguageRow } from './languageRows';
 import { LanguagesPage, type CatalogueState } from './pages/LanguagesPage';
 import { NotYetPage } from './pages/NotYetPage';
 import { OverviewPage } from './pages/OverviewPage';
-import { LivePage } from './pages/LivePage';
-import { Icon } from './premium/icons';
-import { MetricChip } from './premium/primitives';
+import { LiveControlAside, LivePage } from './pages/LivePage';
 import { AudioVoicesAside, AudioVoicesPage } from './pages/AudioVoicesPage';
 import { buildVoiceRows } from './voiceRows';
 import { navigate } from './router';
@@ -1503,18 +1501,12 @@ export default function App(): React.ReactElement {
         title="Live Control"
         lede="Manage the live programme. Control playback, recording and monitor real-time outputs."
         aside={
-          <>
-            <MetricChip
-              icon={<Icon name="broadcast" size={22} />}
-              value={workflowSummary.status === 'Live' ? 'ON AIR' : 'OFF AIR'}
-              tone={workflowSummary.status === 'Live' ? 'success' : 'neutral'}
-              title={workflowSummary.progressLabel}
-            />
-            <MetricChip icon={<Icon name="users" size={22} />} value={`${viewers} viewer${viewers === 1 ? '' : 's'}`} />
-            {/* FUTURE: programme quality and delay belong to the Programme Quality Engine, which is not built. */}
-            <MetricChip icon={<Icon name="shield" size={22} />} value="--" label="Quality" title="Not yet measured: programme quality arrives with the Programme Quality Engine." />
-            <MetricChip icon={<Icon name="waveform" size={22} />} value="--" label="Delay" title="Not yet measured: the translation delay arrives with the Programme Quality Engine." />
-          </>
+          /*
+           * FUTURE: programme quality and delay belong to the Programme
+           * Quality Engine, which is not built, so neither is passed and both
+           * chips read "--".
+           */
+          <LiveControlAside onAir={workflowSummary.status === 'Live'} progressLabel={workflowSummary.progressLabel} viewers={viewers} />
         }
       >
         <LivePage

@@ -15,14 +15,22 @@
  *   Translated audio slider        REAL   translatedVolume -> listener translated gain
  *   Subtitles enabled              REAL   subtitlesEnabled
  *   Voice rows                     REAL   target-language catalogue (registry state)
+ *   Row flag                       REAL   VoiceRow.flag, null in production -> code tag
+ *   Standard / Premium chip        REAL   VoiceRow.grade, null in production -> status word
  *   Row chevron (voice picker)     FUTURE disabled; no per-programme voice contract
  *   View Preflight                 REAL   hash navigation
+ *
+ * The flag and the grade are drawn only when the row carries them. Nothing
+ * in the deployment resolves either today, so buildVoiceRows returns null for
+ * both and the real console shows the language code and the availability
+ * word. The master's six flagged, graded rows come from the visual fixture,
+ * which production has no path to.
  */
 import React from 'react';
 import type { AudioModePreferences } from '@videofy-live/shared-types';
 import { Icon } from '../premium/icons';
 import { Button, Chip, Eyebrow, NoticeBar, type Tone } from '../premium/primitives';
-import { VOICE_STATUS_WORDS, type VoiceRow, type VoiceStatus } from '../voiceRows';
+import { VOICE_GRADE_WORDS, VOICE_STATUS_WORDS, type VoiceGrade, type VoiceRow, type VoiceStatus } from '../voiceRows';
 import styles from './AudioVoicesPage.module.css';
 
 export interface AudioVoicesPageProps {
@@ -48,11 +56,91 @@ const STATUS_TONE: Readonly<Record<VoiceStatus, Tone>> = {
   waiting: 'warn',
 };
 
+const STATUS_SKIN: Readonly<Partial<Record<VoiceStatus, string | undefined>>> = {
+  waiting: styles.chipWaiting,
+};
+
+const GRADE_TONE: Readonly<Record<VoiceGrade, Tone>> = {
+  standard: 'success',
+  premium: 'violet',
+};
+
+const GRADE_SKIN: Readonly<Record<VoiceGrade, string | undefined>> = {
+  standard: styles.chipStandard,
+  premium: styles.chipPremium,
+};
+
 const VOICE_PICKER_HINT = 'Per-programme voice choice is not available yet; the registry chooses the voice for each language.';
 
 function pct(value: number): number {
   return Math.round(Math.max(0, Math.min(1, value)) * 100);
 }
+
+/* ------------------------------------------------------------------- Flags */
+
+/**
+ * The flags 04 draws, as bands rather than artwork: each is a list of
+ * [fill, offset, size] along one axis of a 3 x 2 field. DECORATION beside a
+ * language name; a row without a flag shows its language code instead.
+ */
+interface FlagBands {
+  readonly axis: 'h' | 'v';
+  readonly bands: readonly (readonly [string, number, number])[];
+}
+
+const THIRDS: readonly (readonly [number, number])[] = [
+  [0, 1 / 3],
+  [1 / 3, 1 / 3],
+  [2 / 3, 1 / 3],
+];
+
+function thirds(a: string, b: string, c: string): readonly (readonly [string, number, number])[] {
+  return THIRDS.map(([at, size], index) => [[a, b, c][index] as string, at, size] as const);
+}
+
+const FLAG_BANDS: Readonly<Record<string, FlagBands>> = {
+  ES: { axis: 'h', bands: [['#c60b1e', 0, 0.25], ['#ffc400', 0.25, 0.5], ['#c60b1e', 0.75, 0.25]] },
+  FR: { axis: 'v', bands: thirds('#002395', '#ffffff', '#ed2939') },
+  DE: { axis: 'h', bands: thirds('#000000', '#dd0000', '#ffce00') },
+  NG: { axis: 'v', bands: thirds('#008751', '#ffffff', '#008751') },
+  SL: { axis: 'h', bands: thirds('#1eb53a', '#ffffff', '#0072c6') },
+};
+
+/** The Union Flag, drawn as its saltires and cross rather than as an image. */
+function UnionFlag(): React.ReactElement {
+  return (
+    <>
+      <rect width={60} height={30} fill="#012169" />
+      <path d="M0 0 L60 30 M60 0 L0 30" stroke="#ffffff" strokeWidth={7} />
+      <path d="M0 0 L60 30 M60 0 L0 30" stroke="#c8102e" strokeWidth={3} />
+      <path d="M30 0 V30 M0 15 H60" stroke="#ffffff" strokeWidth={11} />
+      <path d="M30 0 V30 M0 15 H60" stroke="#c8102e" strokeWidth={6} />
+    </>
+  );
+}
+
+function VoiceFlag({ code, label }: { readonly code: string; readonly label: string }): React.ReactElement | null {
+  const key = code.toUpperCase();
+  const bands = FLAG_BANDS[key];
+  if (key !== 'GB' && bands === undefined) return null;
+  return (
+    <svg className={styles.voiceFlag} viewBox="0 0 60 30" preserveAspectRatio="none" role="img" aria-label={`${label} flag`}>
+      {key === 'GB' || bands === undefined ? (
+        <UnionFlag />
+      ) : (
+        bands.bands.map(([fill, at, size]) =>
+          bands.axis === 'h' ? (
+            <rect key={`${fill}${at}`} x={0} y={at * 30} width={60} height={size * 30} fill={fill} />
+          ) : (
+            <rect key={`${fill}${at}`} x={at * 60} y={0} width={size * 60} height={30} fill={fill} />
+          ),
+        )
+      )}
+    </svg>
+  );
+}
+
+/* ---------------------------------------------------------------- Spectrum */
 
 /** Deterministic pseudo-random in [0, 1): the same seed draws the same spectrum every render. */
 function mulberry32(seed: number): () => number {
@@ -66,25 +154,41 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-const ASIDE_BARS = 58;
+const ASIDE_BARS = 55;
 const ASIDE_PITCH = 9;
-const ASIDE_HEIGHT = 150;
+const ASIDE_HEIGHT = 144;
 
 /**
- * The decorative spectrum to the right of the page title: the master's
- * sparse 2.5px teal bars on a 9px pitch, swelling twice across the width.
+ * The decorative spectrum to the right of the page title: 04's 2px teal bars
+ * on a 9px pitch over a 495 x 144 field, swelling once past the middle and
+ * tailing off to either side.
  * DECORATION ONLY: seeded, never fed by audio, hidden from assistive tech.
  */
 export function AudioVoicesAside(): React.ReactElement {
-  const random = mulberry32(4);
+  const random = mulberry32(9);
   const width = ASIDE_BARS * ASIDE_PITCH;
   const rects: React.ReactElement[] = [];
   for (let i = 0; i < ASIDE_BARS; i++) {
     const t = i / (ASIDE_BARS - 1);
-    const envelope = 0.12 + 0.88 * Math.pow(Math.abs(Math.sin(t * Math.PI * 2.2 + 0.4)), 1.4);
-    const spike = Math.pow(random(), 1.8);
-    const h = Math.max(4, Math.round(ASIDE_HEIGHT * envelope * (0.18 + spike * 0.82)));
-    rects.push(<rect key={i} x={i * ASIDE_PITCH} y={(ASIDE_HEIGHT - h) / 2} width={2.5} height={h} rx={1.25} fill="currentColor" opacity={0.4 + envelope * 0.6} />);
+    const envelope = Math.exp(-(((t - 0.56) / 0.28) ** 2));
+    const spike = Math.pow(random(), 1.6);
+    const h = Math.max(2, Math.round(ASIDE_HEIGHT * envelope * (0.2 + spike * 0.8)));
+    rects.push(
+      <rect
+        key={i}
+        x={i * ASIDE_PITCH}
+        y={(ASIDE_HEIGHT - h) / 2}
+        width={2}
+        height={h}
+        rx={1}
+        fill="currentColor"
+        opacity={0.35 + envelope * 0.65}
+      />,
+    );
+    const echo = Math.max(1, Math.round(h * 0.34));
+    rects.push(
+      <rect key={`e${i}`} x={i * ASIDE_PITCH} y={ASIDE_HEIGHT * 0.72} width={2} height={echo} rx={1} fill="currentColor" opacity={0.12 + envelope * 0.14} />,
+    );
   }
   return (
     <div className={styles.aside}>
@@ -143,6 +247,33 @@ function LevelRow({
         </div>
       </div>
     </div>
+  );
+}
+
+function VoiceRowItem({ row }: { readonly row: VoiceRow }): React.ReactElement {
+  const graded = row.grade !== null;
+  const word = graded ? VOICE_GRADE_WORDS[row.grade as VoiceGrade] : VOICE_STATUS_WORDS[row.status];
+  const tone = graded ? GRADE_TONE[row.grade as VoiceGrade] : STATUS_TONE[row.status];
+  const skin = (graded ? GRADE_SKIN[row.grade as VoiceGrade] : STATUS_SKIN[row.status]) ?? '';
+  const flag = row.flag === null ? null : <VoiceFlag code={row.flag} label={row.label} />;
+  return (
+    <li className={styles.voiceRow}>
+      {flag ?? (
+        <span className={styles.voiceTag} aria-hidden="true">
+          {row.code.slice(0, 3).toUpperCase()}
+        </span>
+      )}
+      <span className={styles.voiceText}>
+        <span className={styles.voiceName}>{row.label}</span>
+        <span className={styles.voiceProvider}>{row.provider ?? 'Provider not reported yet'}</span>
+      </span>
+      <Chip tone={tone} className={`${styles.voiceChip} ${skin}`} title={row.reason}>
+        {word}
+      </Chip>
+      <button type="button" className={styles.voiceMore} disabled aria-disabled="true" title={VOICE_PICKER_HINT} aria-label={`Choose voice for ${row.label}: not available`}>
+        <Icon name="chevron-right" size={18} />
+      </button>
+    </li>
   );
 }
 
@@ -228,21 +359,7 @@ export function AudioVoicesPage({
             ) : (
               <ul className={styles.voiceList} aria-label="Voices per target language">
                 {voices.map((row) => (
-                  <li key={row.code} className={styles.voiceRow}>
-                    <span className={styles.voiceTag} aria-hidden="true">
-                      {row.code.slice(0, 3).toUpperCase()}
-                    </span>
-                    <span className={styles.voiceText}>
-                      <span className={styles.voiceName}>{row.label}</span>
-                      <span className={styles.voiceProvider}>{row.provider ?? 'Provider not reported yet'}</span>
-                    </span>
-                    <Chip tone={STATUS_TONE[row.status]} className={styles.voiceChip} title={row.reason}>
-                      {VOICE_STATUS_WORDS[row.status]}
-                    </Chip>
-                    <button type="button" className={styles.voiceMore} disabled aria-disabled="true" title={VOICE_PICKER_HINT} aria-label={`Choose voice for ${row.label}: not available`}>
-                      <Icon name="chevron-right" size={18} />
-                    </button>
-                  </li>
+                  <VoiceRowItem key={row.code} row={row} />
                 ))}
               </ul>
             )}

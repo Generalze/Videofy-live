@@ -21,6 +21,13 @@
 # Every URL the apps call is RELATIVE (/auth, /media, /socket.io), so nothing
 # here bakes a hostname into a bundle; PUBLIC_ORIGIN reaches only the static
 # metadata files, which is the one place an absolute URL is unavoidable.
+#
+# THE PER-CHANNEL PAGE IS NOT STAMPED HERE. /streams/<handle> carries a
+# different title and picture for every channel, so no static file can serve
+# it; the account service renders it, injecting the channel's identity into the
+# listener shell this script stages (services/account/src/share-routes.ts). That
+# service reads the shell from LISTENER_SHELL_PATH, which must name the
+# listener-web/index.html this script writes into $WWW_DIR.
 set -euo pipefail
 
 WWW_DIR="${WWW_DIR:?WWW_DIR is required (e.g. /srv/videofy-prod/www)}"
@@ -40,10 +47,19 @@ stage() {
   else
     npm run build -w "apps/$app" >/dev/null
   fi
+  # Crawler-readable <title> and og:* for EVERY app. WhatsApp reads the HTML
+  # without running JavaScript, so a client-side title is invisible to it.
+  #
+  # THIS RAN FOR ecosystem-web ALONE, and that omission was the bug: /, /videofy/
+  # and /videofy/live/ previewed correctly while /call/, /listen/ and /operator/
+  # -- the three actual product surfaces -- went out with a bare <title>, no
+  # og:image and no og:url, and shared as naked URLs. The ecosystem site stamps
+  # one file per public route from its own table; every other app stamps its own
+  # single shell, taking the words from that app's index.html.
   if [ "$app" = "ecosystem-web" ]; then
-    # Crawler-readable <title> and og:* per public route. WhatsApp reads the
-    # HTML without running JavaScript, so a client-side title is invisible.
     node scripts/generate-route-html.mjs "apps/$app/dist" "$PUBLIC_ORIGIN"
+  else
+    node scripts/generate-route-html.mjs "apps/$app/dist" "$PUBLIC_ORIGIN" --app "$base"
   fi
   rm -rf "$WWW_DIR/$target.new"
   cp -r "apps/$app/dist" "$WWW_DIR/$target.new"

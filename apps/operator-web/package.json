@@ -8,9 +8,11 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "lint": "eslint src visual --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "typecheck": "tsc --noEmit",
-    "visual:diff": "node ../../scripts/operator-visual-diff.mjs"
+    "visual:diff": "node ../../scripts/operator-visual-diff.mjs",
+    "build:visual": "vite build --config vite.visual.config.ts",
+    "visual:baseline": "node ../../scripts/operator-visual-diff.mjs --baseline"
   },
   "dependencies": {
     "@videofy-live/design-system": "*",

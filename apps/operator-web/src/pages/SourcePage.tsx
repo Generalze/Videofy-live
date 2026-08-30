@@ -440,7 +440,7 @@ export function SourcePage({
             />
             {!hasSource && (
               <span className={styles.previewIdle} aria-hidden="true">
-                <Icon name="broadcast" size={140} strokeWidth={1.5} />
+                <Icon name="broadcast" size={140} strokeWidth={1.25} />
               </span>
             )}
           </div>

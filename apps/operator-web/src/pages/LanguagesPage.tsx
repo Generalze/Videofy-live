@@ -33,7 +33,7 @@ import type { SourceLanguageControlMetadata } from '@videofy-live/shared-types';
 import styles from './LanguagesPage.module.css';
 import { CAPABILITY_MEANINGS, DEGRADED_WORD, STATE_WORDS, filterLanguages, isAddableTarget, isSelectableSource, languageTag, type CapabilityState, type LanguageRow } from '../languageRows';
 import { Button, Chip, Divider, Eyebrow, Panel, type Tone } from '../premium/primitives';
-import { ArrowRightIcon, CheckIcon, CloseIcon, HandIcon, InfoIcon, PlusIcon, SearchIcon, SignalIcon, SparkleIcon } from '../premium/icons';
+import { ArrowRightIcon, BroadcastIcon, CheckIcon, CloseIcon, HandIcon, InfoIcon, PlusIcon, SearchIcon, SparkleIcon } from '../premium/icons';
 
 export type SourceLanguageMode = 'manual' | 'auto-detect';
 
@@ -94,6 +94,28 @@ function DegradedChip({ reason }: { readonly reason?: string | undefined }): Rea
   );
 }
 
+/*
+ * The name of a language the TARGET catalogue does not carry.
+ *
+ * The current-source row looked its name up in the target catalogue, so a
+ * programme spoken in English showed "EN" where the master shows "English":
+ * English is a language this deployment translates FROM, and there is no
+ * reason for it to appear in the list of languages it translates INTO. A
+ * locale display name is not operational state -- it is the platform's own
+ * name for a language tag -- so naming the code here invents nothing, claims
+ * no capability, and cannot make an unavailable language look ready.
+ */
+function localeName(code: string): string | null {
+  try {
+    const names = new Intl.DisplayNames(['en'], { type: 'language' });
+    const name = names.of(code);
+    if (name === undefined || name.toLowerCase() === code.toLowerCase()) return null;
+    return name;
+  } catch {
+    return null;
+  }
+}
+
 function PanelEyebrow({ children }: { readonly children: React.ReactNode }): React.ReactElement {
   return (
     <div className={styles.panelEyebrow}>
@@ -138,12 +160,18 @@ export function LanguagesPage({
   const detected = detection === 'detected' || detection === 'confirmed';
   const sourceState: { label: string; tone: Tone } =
     detected
-      ? { label: 'Detected', tone: 'success' }
+      ? { label: 'Detected', tone: 'teal' }
       : detection === 'detecting'
         ? { label: 'Detecting', tone: 'info' }
-        : sourceLanguageMode === 'auto-detect'
-          ? { label: 'Awaiting audio', tone: 'neutral' }
-          : { label: 'Manual', tone: 'neutral' };
+        : // A low-confidence detection has landed and is waiting on the
+          // operator. It is not "Awaiting audio": the audio arrived.
+          detection === 'needs-confirmation'
+          ? { label: 'Confirm source', tone: 'warn' }
+          : sourceLanguageMode === 'auto-detect'
+            ? { label: 'Awaiting audio', tone: 'neutral' }
+            : { label: 'Manual', tone: 'neutral' };
+
+  const currentName = currentRow?.label ?? localeName(liveLanguage);
 
   const sourceMatches = useMemo(() => filterLanguages(rows, sourceQuery, 8), [rows, sourceQuery]);
   const chosen = useMemo(
@@ -175,7 +203,7 @@ export function LanguagesPage({
               title={locked ? lockedReason : undefined}
               onClick={() => onSourceLanguageChange({ value: sourceLanguage, mode: 'auto-detect' })}
             >
-              <SignalIcon size={18} />
+              <BroadcastIcon size={18} />
               <span>Auto-detect</span>
             </button>
             <button
@@ -194,8 +222,8 @@ export function LanguagesPage({
           <p className={styles.fieldLabel}>Current source</p>
           <div className={styles.currentRow} role="status" aria-label="Current source language">
             <span className={styles.tag}>{languageTag(liveLanguage)}</span>
-            <span className={currentRow === undefined ? styles.currentNameUnknown : styles.currentName}>
-              {currentRow?.label ?? (rows.length === 0 ? 'Name arrives with the catalogue' : liveLanguage.toUpperCase())}
+            <span className={currentName === null ? styles.currentNameUnknown : styles.currentName}>
+              {currentName ?? (rows.length === 0 ? 'Name arrives with the catalogue' : liveLanguage.toUpperCase())}
             </span>
             <Chip tone={sourceState.tone} size="md" className={styles.sourceChip}>
               {sourceState.label}
@@ -265,10 +293,13 @@ export function LanguagesPage({
           {sourceLanguageMode === 'auto-detect' && (
             <div className={styles.note}>
               <SparkleIcon size={18} className={styles.noteIcon} />
-              <p>
-                Auto-detect listens to the programme audio once it runs and updates the source language if needed. Low-confidence
-                detections ask you to confirm here.
-              </p>
+              {/*
+                * The master's sentence, word for word. What it no longer
+                * spells out -- that a low-confidence detection waits on the
+                * operator -- the source row now says where it happens, on
+                * the chip ("Confirm source") and in the live control row.
+                */}
+              <p>Auto-detect analyses the audio in real time and updates the source language if needed.</p>
             </div>
           )}
         </Panel>

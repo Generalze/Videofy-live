@@ -12,8 +12,8 @@ import { AudioVoicesPage } from './AudioVoicesPage';
 import type { VoiceRow } from '../voiceRows';
 
 const ROWS: readonly VoiceRow[] = [
-  { code: 'es', label: 'Spanish', provider: 'Azure Neural (es-ES)', status: 'ready', reason: undefined },
-  { code: 'yo', label: 'Yoruba', provider: null, status: 'waiting', reason: 'The registry has not reported yet.' },
+  { code: 'es', label: 'Spanish', provider: 'Azure Neural (es-ES)', status: 'ready', reason: undefined, flag: null, grade: null },
+  { code: 'yo', label: 'Yoruba', provider: null, status: 'waiting', reason: 'The registry has not reported yet.', flag: null, grade: null },
 ];
 
 function markup(overrides: Partial<React.ComponentProps<typeof AudioVoicesPage>> = {}): string {

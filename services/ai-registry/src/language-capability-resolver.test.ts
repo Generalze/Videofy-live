@@ -70,9 +70,26 @@ describe('resolveLanguageCapabilities', () => {
   });
 
   it('a provider that has never been run counts as a claim even where its page is explicit', () => {
-    // 9jaLingo is `configured`: its documented languages must not read as declared.
-    const withStt: CommercialProvider[] = COMMERCIAL_PROVIDERS.map((provider) =>
-      provider.providerId === 'deepgram'
+    /*
+     * THE RULE IS UNCHANGED; ITS SUBJECT HAD TO BE CONSTRUCTED.
+     *
+     * This used to read the shipped 9jaLingo record, which sat at `configured`
+     * because no key existed and no request had ever been made. The C-AI1.2
+     * benchmark on 2026-08-30 changed that, and after it NO commercial provider
+     * in the registry is still un-run -- so the only honest way to keep testing
+     * the never-run rule is to build a never-run provider, rather than to
+     * quietly reinterpret a passing assertion as being about something else.
+     *
+     * WHAT IS PINNED: a vendor whose page explicitly lists Yoruba, whose model
+     * record carries it, and against which nothing has ever been run, must
+     * still read as a CLAIM. Documentation is not evidence, and a specialist's
+     * documentation is not evidence either.
+     */
+    const neverRun: CommercialProvider[] = COMMERCIAL_PROVIDERS.map((provider) => {
+      if (provider.providerId === 'naijalingo') {
+        return { ...provider, integrationStage: 'configured', liveObservations: [] };
+      }
+      return provider.providerId === 'deepgram'
         ? {
             ...provider,
             models: provider.models.map((model) => ({
@@ -80,9 +97,9 @@ describe('resolveLanguageCapabilities', () => {
               verifiedLanguages: [...model.verifiedLanguages, 'yo'],
             })),
           }
-        : provider,
-    );
-    const yoruba = row('yo', resolveLanguageCapabilities({ providers: withStt }));
+        : provider;
+    });
+    const yoruba = row('yo', resolveLanguageCapabilities({ providers: neverRun }));
     expect(yoruba.tts).toBe(true);
     expect(yoruba.providers.tts).toBe('naijalingo');
     expect(yoruba.state).toBe('limited');
@@ -313,10 +330,28 @@ describe('the Nigerian specialist rule', () => {
       const language = row(code, rows);
       expect(language.providers.tts, code).toBe('naijalingo');
       expect(language.degraded, code).toBeUndefined();
-      // 9jaLingo is `configured`: documented, never exercised here. That is a
-      // claim, and a claim is `limited` however specialist the vendor is.
-      expect(language.stageStates.tts, code).toBe('limited');
     }
+
+    /*
+     * THE FOUR LANGUAGES NO LONGER READ ALIKE, and that is the point of
+     * splitting them here rather than looping over one assertion.
+     *
+     * ha, ig and yo each carry a five-sample live observation from the
+     * 2026-08-30 benchmark, so each is `qualified` -- we ran it. `pcm` was not
+     * exercised and stays `available`: declared from the vendor's SDK, never
+     * spoken. One vendor account, two different truths, and the resolver has to
+     * keep them apart -- an assertion that treated all four alike would have
+     * quietly promoted Nigerian Pidgin on evidence collected in three OTHER
+     * languages, which is precisely the borrowed claim this package exists to
+     * prevent.
+     */
+    for (const code of ['ha', 'ig', 'yo'] as const) {
+      expect(row(code, rows).stageStates.tts, code).toBe('qualified');
+    }
+    // `available` and not `qualified`: DECLARED, on a vendor SDK that was read
+    // to this file's standard, rather than RUN. The distinction is the whole
+    // reason the two states exist, and pcm is where it currently bites.
+    expect(row('pcm', rows).stageStates.tts).toBe('available');
   });
 
   it('does not quietly widen the Nigerian chain with a local voice engine', () => {

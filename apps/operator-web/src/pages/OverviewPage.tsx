@@ -71,7 +71,7 @@ function Pipeline(): React.ReactElement {
       {PIPELINE.map((step, index) => (
         <a key={step.page} href={hashForPage(step.page)} className={styles.tile} data-step={index + 1} data-final={index === PIPELINE.length - 1 ? 'true' : undefined}>
           <span className={styles.tileIcon}>
-            <Icon name={step.icon} size={index === PIPELINE.length - 1 ? 56 : 32} strokeWidth={1.5} />
+            <Icon name={step.icon} size={index === PIPELINE.length - 1 ? 57 : 36} strokeWidth={1.5} />
           </span>
           <span className={styles.tileLabel}>{step.label}</span>
         </a>
@@ -80,13 +80,22 @@ function Pipeline(): React.ReactElement {
   );
 }
 
-function StatusCell({ icon, label, status }: { readonly icon: IconName; readonly label: string; readonly status: StatusWord }): React.ReactElement {
+function StatusCell({
+  icon,
+  label,
+  status,
+}: {
+  /** 'cc' draws the master's closed-caption plate; anything else is a line icon. */
+  readonly icon: IconName | 'cc';
+  readonly label: string;
+  readonly status: StatusWord;
+}): React.ReactElement {
   return (
     <div className={styles.cell} data-word={status.word}>
       {/* The master lights every cell teal; the WORD carries the state, the dot only turns red on failure. */}
       <StatusDot tone={status.tone === 'danger' ? 'danger' : 'teal'} size={8} />
-      <span className={styles.cellIcon}>
-        <Icon name={icon} size={24} />
+      <span className={styles.cellIcon} aria-hidden="true">
+        {icon === 'cc' ? <span className={styles.ccBadge}>CC</span> : <Icon name={icon} size={30} />}
       </span>
       <span className={styles.cellText}>
         <span className={styles.cellLabel}>{label}</span>
@@ -117,7 +126,7 @@ function FeedCard({
   return (
     <Panel as="article" padding="none" className={styles.card} aria-label={title}>
       <div className={styles.cardHead}>
-        <IconTile tone="violet" size={50}>
+        <IconTile tone="violet" size={51}>
           <Icon name={icon} size={24} />
         </IconTile>
         <div className={styles.cardTitleBlock}>
@@ -176,11 +185,11 @@ export function OverviewPage({ active, workflow, starting, onGoLive, source, tra
         <Panel padding="none" className={styles.strip} aria-label="Programme status">
           <StatusCell icon="camera" label="Video" status={trackWord(source.videoDetected, workflow.status)} />
           <StatusCell icon="waveform" label="Audio" status={trackWord(source.audioDetected, workflow.status)} />
-          <StatusCell icon="subtitles" label="Transcription" status={feedWord(transcription)} />
+          <StatusCell icon="cc" label="Transcription" status={feedWord(transcription)} />
           <StatusCell icon="translate" label="Translation" status={feedWord(translation)} />
           <div className={`${styles.cell} ${styles.cellViewers}`} role="status">
             <span className={styles.cellIcon}>
-              <Icon name="users" size={24} />
+              <Icon name="users" size={27} />
             </span>
             <span className={styles.viewersBox}>{viewers}</span>
             <span className={styles.cellWord}>Viewer{viewers === 1 ? '' : 's'}</span>
@@ -200,7 +209,7 @@ export function OverviewPage({ active, workflow, starting, onGoLive, source, tra
         </div>
 
         <NoticeBar
-          icon={<Icon name="info" size={20} />}
+          icon={<Icon name="info" size={22} />}
           className={styles.notice}
           action={
             <LinkButton href={hashForPage('preflight')} variant="secondary" size="sm" className={styles.preflight} icon={<Icon name="shield" size={18} />} iconAfter={<Icon name="chevron-right" size={16} />}>

@@ -333,19 +333,56 @@ describe('commercial provider records', () => {
     }
   });
 
-  it('PIN: nothing is certified, whatever the evidence says', () => {
-    // Evidence that a vendor CAN do something is not evidence that it does it
-    // well enough for us. Only C-AI1.2 benchmarks move the stage this far.
-    //
-    // This deliberately no longer asserts `configured` for everything. It did
-    // while nothing had been run, and ElevenLabs has now been run -- freezing
-    // the whole registry at the lowest stage would have made real evidence
-    // unrecordable, which is a worse failure than the drift it guarded against.
-    // What must stay true is the ceiling, not the floor.
-    for (const p of COMMERCIAL_PROVIDERS) {
-      expect(p.integrationStage, p.providerId).not.toBe('certified');
-      expect(p.integrationStage, p.providerId).not.toBe('testing');
+  it('PIN: certification is EARNED, and the receipt travels with it', () => {
+    /*
+     * This test used to say "nothing is certified, whatever the evidence
+     * says", and it was right for as long as nothing had been benchmarked.
+     * C-AI1.2 ran on 2026-08-30 (scripts/certify-providers.mjs, real traffic
+     * from staging), so the assertion moves from a BLANKET BAN to the rule the
+     * ban was standing in for: a certified provider must carry a multi-sample
+     * observation. Keeping the ban would have made real evidence unrecordable,
+     * which is a worse failure than the drift it guarded against.
+     */
+    for (const candidate of COMMERCIAL_PROVIDERS) {
+      if (candidate.integrationStage !== 'certified') continue;
+      expect(stageEvidenceComplaints(candidate), candidate.providerId).toEqual([]);
+      expect(
+        candidate.liveObservations.some((o) => o.sampleCount > 1),
+        candidate.providerId,
+      ).toBe(true);
     }
+  });
+
+  it('PIN: every provider certified on 2026-08-30 satisfies the evidence gate', () => {
+    // Named one by one rather than derived from the list, so that ADDING a
+    // provider to the certified set is a visible edit to this test and not a
+    // silent consequence of editing the registry.
+    for (const id of ['deepgram', 'elevenlabs', 'azure', 'naijalingo']) {
+      const found = findCommercialProvider(id)!;
+      expect(found.integrationStage, id).toBe('certified');
+      expect(stageEvidenceComplaints(found), id).toEqual([]);
+      const benchmarked = found.liveObservations.filter((o) => o.observedAt === '2026-08-30');
+      expect(benchmarked.length, id).toBeGreaterThan(0);
+      for (const observation of benchmarked) {
+        // A benchmark observation names where it ran. One that cannot say
+        // which environment produced it is not checkable by a later reader.
+        expect(observation.environment, id).toMatch(/staging/);
+      }
+    }
+  });
+
+  it('PIN: a provider nobody exercised keeps its stage', () => {
+    /*
+     * GOOGLE IS THE CONTROL CASE for this whole wave. Its credentials are
+     * absent on the box, so the certification run SKIPPED it and said so; it
+     * must therefore still sit at `integrated` on its single 2026-08-22 run. A
+     * harness that certified it anyway would be worse than an unstartable
+     * service, because the unstartable service is honest.
+     */
+    const google = findCommercialProvider('google-cloud')!;
+    expect(google.integrationStage).toBe('integrated');
+    expect(google.integrationStage).not.toBe('certified');
+    expect(google.liveObservations.every((o) => o.sampleCount === 1)).toBe(true);
   });
 
   it('PIN: turn detection is recorded per MODEL, not per vendor', () => {
@@ -474,43 +511,83 @@ describe('a recorded stage travels with the evidence for it', () => {
     ).toEqual([]);
   });
 
-  it('PIN: ElevenLabs is integrated on real evidence and is not certified', () => {
-    const eleven = findCommercialProvider('elevenlabs');
-    expect(eleven?.integrationStage).toBe('integrated');
-    expect(eleven?.liveObservations).toHaveLength(1);
-    expect(eleven?.liveObservations[0]?.sampleCount).toBe(1);
-    // The smoke proves the streaming surface works. It proves nothing about
-    // how long it takes on an ordinary day.
-    expect(eleven?.integrationStage).not.toBe('certified');
+  it('PIN: ElevenLabs is certified on a distribution, and the smoke is kept', () => {
+    const eleven = findCommercialProvider('elevenlabs')!;
+    expect(eleven.integrationStage).toBe('certified');
+    expect(eleven.liveObservations).toHaveLength(2);
+
+    // The 2026-08-22 existence proof is NOT deleted by the benchmark that
+    // superseded it. The two answer different questions -- "does it work at
+    // all" and "how long does it take" -- and dropping the first would erase
+    // when this adapter was first known to work.
+    const smoke = eleven.liveObservations.find((o) => o.observedAt === '2026-08-22')!;
+    expect(smoke.sampleCount).toBe(1);
+
+    const benchmark = eleven.liveObservations.find((o) => o.observedAt === '2026-08-30')!;
+    expect(benchmark.sampleCount).toBe(5);
+    expect(benchmark.capability).toBe('tts');
+    expect(benchmark.languages).toEqual(['es']);
+    expect(stageEvidenceComplaints(eleven)).toEqual([]);
   });
 
-  it('PIN: providers whose smoke has not run stay configured', () => {
-    // The list shrinks as evidence arrives -- that is the point of it -- but a
-    // provider must never leave it without an observation to leave it for.
-    // Deepgram and Azure left on 2026-08-22. 9jaLingo cannot leave: its API
-    // host and authentication header are undocumented, so there is no request
-    // to run against it -- which is a fact about the vendor's documentation,
-    // not about our effort.
-    for (const id of ['naijalingo']) {
-      const found = findCommercialProvider(id);
-      expect(found?.liveObservations).toEqual([]);
-      expect(found?.integrationStage).toBe('configured');
+  it('PIN: 9jaLingo is certified per LANGUAGE, and only for what was measured', () => {
+    /*
+     * This test used to hold 9jaLingo at `configured`, correctly: no key
+     * existed and no request had ever been made against the vendor. Both facts
+     * changed on 2026-08-30, and the assertion changes with them rather than
+     * outliving them.
+     *
+     * WHAT IT NOW GUARDS is the SHAPE of the claim. ha, ig and yo are three
+     * language routes, and this vendor exists precisely because a general
+     * vendor answers all three with fluent, wrong audio that no status code
+     * reveals. One observation covering all three at once would be exactly the
+     * over-broad claim the specialist was adopted to prevent.
+     */
+    const naija = findCommercialProvider('naijalingo')!;
+    expect(naija.integrationStage).toBe('certified');
+    expect(stageEvidenceComplaints(naija)).toEqual([]);
+
+    for (const language of ['ha', 'ig', 'yo']) {
+      const perLanguage = naija.liveObservations.filter(
+        (o) => (o.languages ?? []).length === 1 && (o.languages ?? [])[0] === language,
+      );
+      expect(perLanguage, language).toHaveLength(1);
+      expect(perLanguage[0]?.sampleCount, language).toBe(5);
+      expect(perLanguage[0]?.capability, language).toBe('tts');
     }
+
+    // Nigerian Pidgin was NOT exercised. The model still claims it from the
+    // vendor's own SDK, and no observation pretends the claim was measured.
+    expect(
+      naija.liveObservations.some(
+        (o) => (o.languages ?? []).length === 1 && (o.languages ?? [])[0] === 'pcm',
+      ),
+    ).toBe(false);
+
+    // Latency and byte counts are exactly the signals that miss a wrong
+    // accent, so the record has to say what it cannot speak to.
+    expect(naija.notes).toMatch(/NOT FOR PRONUNCIATION/);
   });
 
-  it('PIN: Azure is integrated on TTS evidence ONLY', () => {
+  it('PIN: Azure is certified on TTS evidence ONLY', () => {
     const azure = findCommercialProvider('azure')!;
-    expect(azure.integrationStage).toBe('integrated');
-    expect(azure.liveObservations).toHaveLength(1);
-    expect(azure.liveObservations[0]?.capability).toBe('tts');
-    expect(azure.liveObservations[0]?.sampleCount).toBe(1);
+    expect(azure.integrationStage).toBe('certified');
+    expect(azure.liveObservations).toHaveLength(2);
+    expect(azure.liveObservations.every((o) => o.capability === 'tts')).toBe(true);
 
-    // The surfaces the smoke did NOT exercise stay unverified. Treating a
-    // provider as one indivisible thing is how a vendor gets credited for a
-    // capability nobody ran.
+    const benchmark = azure.liveObservations.find((o) => o.observedAt === '2026-08-30')!;
+    expect(benchmark.sampleCount).toBe(5);
+    expect(benchmark.languages).toEqual(['en-US']);
+
+    /*
+     * THE POINT OF THIS TEST SURVIVES THE STAGE CHANGE INTACT: the surfaces the
+     * benchmark did NOT exercise stay unverified. `certified` is a vendor-level
+     * word and the capability matrix is where selection actually looks -- so a
+     * TTS benchmark must not leave Azure credited with a transcription or
+     * translation surface nobody ran.
+     */
     expect(azure.capabilities.transcription?.streaming).toBe('unverified');
     expect(azure.capabilities.translation?.requestResponse).toBe('unverified');
-    expect(azure.integrationStage).not.toBe('certified');
   });
 
   it('PIN: Google is integrated on a real run, and still not certified', () => {
@@ -649,23 +726,46 @@ describe('authentication requirements are three different things, not one list',
 });
 
 describe('Deepgram evidence is recorded per dialect', () => {
-  it('PIN: Deepgram is integrated on real protocol evidence', () => {
+  it('PIN: Deepgram is certified on nova-3 benchmarks, both execution modes', () => {
     const deepgram = findCommercialProvider('deepgram')!;
-    expect(deepgram.integrationStage).toBe('integrated');
-    expect(deepgram.liveObservations).toHaveLength(2);
-    expect(deepgram.integrationStage).not.toBe('certified');
-    expect(deepgram.integrationStage).not.toBe('testing');
+    expect(deepgram.integrationStage).toBe('certified');
+    expect(stageEvidenceComplaints(deepgram)).toEqual([]);
+
+    // BOTH MODES, separately. programme:uploaded wants a batch primary and
+    // call:live wants a streaming one; one observation could not have
+    // satisfied both, and pretending it did would certify a service category
+    // nobody benchmarked.
+    const benchmarks = deepgram.liveObservations.filter((o) => o.observedAt === '2026-08-30');
+    expect(benchmarks).toHaveLength(2);
+    for (const observation of benchmarks) {
+      expect(observation.modelId).toBe('nova-3');
+      expect(observation.sampleCount).toBe(5);
+      expect(observation.capability).toBe('transcription');
+      expect(observation.languages).toEqual(['en']);
+    }
+    expect(benchmarks.some((o) => /streaming/iu.test(o.summary))).toBe(true);
+    expect(benchmarks.some((o) => /batch/iu.test(o.summary))).toBe(true);
   });
 
-  it('PIN: Nova and Flux carry SEPARATE observations', () => {
+  it('PIN: Nova and Flux carry SEPARATE observations, and Flux was NOT benchmarked', () => {
     const deepgram = findCommercialProvider('deepgram')!;
     const models = deepgram.liveObservations.map((o) => o.modelId);
-    // One smoke cannot stand for both: Flux speaks Listen v2 with turn events
+    // One run cannot stand for both: Flux speaks Listen v2 with turn events
     // and Nova speaks Listen v1 with Results. A single vendor-level record
     // would average two different products into one claim.
     expect(new Set(models)).toEqual(new Set(['nova-3', 'flux-general-en']));
-    for (const observation of deepgram.liveObservations) {
-      expect(observation.sampleCount).toBe(1);
-    }
+
+    /*
+     * THE COARSENESS OF `integrationStage` IS PINNED HERE.
+     *
+     * The field is per VENDOR and now reads `certified`, but Flux still holds
+     * only its 2026-08-22 existence proof -- one sample, no benchmark. A reader
+     * must not take the vendor-level word to cover a model nobody measured, and
+     * selection reads models[] for exactly this reason.
+     */
+    const flux = deepgram.liveObservations.filter((o) => o.modelId === 'flux-general-en');
+    expect(flux).toHaveLength(1);
+    expect(flux[0]?.sampleCount).toBe(1);
+    expect(flux[0]?.observedAt).toBe('2026-08-22');
   });
 });

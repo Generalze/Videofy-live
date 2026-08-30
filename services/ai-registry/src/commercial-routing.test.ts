@@ -72,13 +72,26 @@ describe('the first-deployment route', () => {
     expect(tts.ordered[1]?.role).toBe('fallback');
   });
 
-  it('PIN: a provider with no adapter run against it is still gated out', () => {
-    // 9jaLingo. Its API host and auth header are undocumented, so there is no
-    // request to run -- and no amount of wanting the language coverage makes
-    // that evidence.
+  it('PIN: 9jaLingo now routes for yo, and ONLY because a run earned it', () => {
+    /*
+     * This test used to assert the opposite, and both readings are the same
+     * rule seen at two moments. 9jaLingo sat at `configured` while no key
+     * existed and no request had ever been made; the C-AI1.2 benchmark on
+     * 2026-08-30 ran five real Yoruba syntheses through the deployed adapter,
+     * and the stage moved BECAUSE OF THAT and nothing else.
+     *
+     * What is still pinned is the ordering the founder ruled: for a Nigerian
+     * language the chain is the specialist, then AZURE, and nothing else --
+     * ElevenLabs is absent by design because it answers Yoruba with confident,
+     * wrong audio.
+     */
     const tts = route('tts', PROG_UPLOAD, { language: 'yo', minimumStage: 'integrated' });
-    expect(tts.ordered.map((c) => c.providerId)).not.toContain('naijalingo');
-    expect(tts.refusals.join(' ')).toMatch(/naijalingo: stage 'configured'/);
+    expect(tts.ordered.map((c) => c.providerId)).toEqual(['naijalingo', 'azure']);
+    // The role is 'specialist', not 'primary'. That distinction is the whole
+    // Nigerian-language ruling in one word: this vendor leads because it is the
+    // one that speaks the language, not because it won a general ranking.
+    expect(tts.ordered[0]?.role).toBe('specialist');
+    expect(tts.ordered.map((c) => c.providerId)).not.toContain('elevenlabs');
   });
 
   it('PIN: a primary that cannot authenticate is refused, and the reason says so', () => {
@@ -108,11 +121,27 @@ describe('the first-deployment route', () => {
   });
 
   it('PIN: a stage below the deployment minimum is refused, not silently used', () => {
+    /*
+     * TRANSLATION, and Google, because that is where the gate is still LOAD
+     * BEARING after C-AI1.2.
+     *
+     * The C-AI1.2 benchmark on 2026-08-30 could not exercise Google -- no
+     * credential is configured on the box -- so it stayed at `integrated` while
+     * the vendors that were measured moved past it. A production deployment
+     * demanding `certified` must therefore get a refusal here, with the reason
+     * attached, rather than a provider nobody benchmarked.
+     */
+    const translation = route('translation', CALL, { minimumStage: 'certified' });
+    expect(translation.ordered).toEqual([]);
+    expect(translation.refusals.join(' ')).toMatch(/is below the required 'certified'/);
+  });
+
+  it('PIN: certified providers DO route once the evidence exists', () => {
+    // The other half of the same rule, and the half that would otherwise go
+    // untested: a gate that refuses everything is indistinguishable from a gate
+    // that works, right up until something legitimately passes it.
     const tts = route('tts', CALL, { minimumStage: 'certified' });
-    expect(tts.ordered).toEqual([]);
-    // Nothing is certified, so a deployment demanding it gets nothing and is
-    // told exactly that.
-    expect(tts.refusals.join(' ')).toMatch(/is below the required 'certified'/);
+    expect(tts.ordered.map((c) => c.providerId)).toEqual(['elevenlabs', 'azure']);
   });
 });
 
@@ -195,12 +224,20 @@ describe('9jaLingo is a specialist, which is not the same as better', () => {
   });
 
   it('PIN: being a specialist does not activate the language in the product', () => {
-    // 9jaLingo is at `configured` -- no adapter has been run against it -- so a
-    // deployment requiring `integrated` gets a refusal rather than a route,
-    // and no Nigerian language is switched on merely by this table existing.
+    /*
+     * THE CLAIM THIS TEST MAKES SURVIVED THE STAGE CHANGE, and it is worth
+     * saying why. 9jaLingo is now `certified` on 2026-08-30 evidence, so it
+     * routes -- but ROUTING IS NOT ACTIVATION. That a chain exists for Yoruba
+     * says only who would speak it if the product asked; whether Yoruba is
+     * offered to anyone stays a demand-led product decision made elsewhere,
+     * and no table in this package switches a language on.
+     *
+     * The specialist rule itself is what is pinned: the chain is the
+     * specialist then Azure, and ElevenLabs is never in it.
+     */
     const result = route('tts', PROG_UPLOAD, { language: 'yo', minimumStage: 'integrated' });
-    expect(result.ordered.map((c) => c.providerId)).not.toContain('naijalingo');
-    expect(result.refusals.join(' ')).toMatch(/naijalingo: stage 'configured'/);
+    expect(result.ordered.map((c) => c.providerId)).toEqual(['naijalingo', 'azure']);
+    expect(result.ordered.map((c) => c.providerId)).not.toContain('elevenlabs');
   });
 });
 

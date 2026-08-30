@@ -10,6 +10,7 @@
  * channel identity -- including that an account without a profile is told
  * so rather than shown a generated name.
  */
+import { readFileSync } from 'node:fs';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -136,5 +137,92 @@ describe('ConsoleShell', () => {
     // Signed out is a compact "Sign in" pill beside the avatar, not a sentence; the sentence is the accessible name.
     expect(signedOut).toContain('>Sign in<');
     expect(signedOut).not.toContain('>Not signed in<');
+  });
+});
+
+/*
+ * THE GLOBAL SHELL BELONGS TO ONE MASTER.
+ *
+ * Founder directive 30 Aug 2026, SS13 OPERATOR GOLDEN-MASTER CORRECTION:
+ * "01-overview-reference.png owns the GLOBAL SHELL ... Do NOT average global
+ * shell dimensions from the five independently generated masters."
+ *
+ * An earlier wave did average them, and the averaging was invisible: the
+ * tokens looked like considered numbers, the harness reported a plausible
+ * percentage, and nothing matched any master. The five disagree, measurably:
+ *
+ *   master        rail edge   top-bar divider   alert
+ *   01 overview        296              y=89    y 109..190
+ *   02 source          302              y=76    y  92..152
+ *   03 languages       268              none    none
+ *   04 audio           270              y=79    y  92..161
+ *   10 live            283              y=89    none
+ *
+ * So the values below are not preferences to be tuned toward a better
+ * average. They are 01's, and a change to one of them is a change to which
+ * master owns the shell -- which is a founder decision, not a styling one.
+ * That is why this reads the stylesheet rather than trusting a comment.
+ */
+describe("the global shell carries 01-overview's geometry, not an average", () => {
+  const tokens = readFileSync(new URL('./premium/tokens.css', import.meta.url), 'utf8');
+  const shell = readFileSync(new URL('./ConsoleShell.module.css', import.meta.url), 'utf8');
+
+  const value = (name: string): string => {
+    const match = tokens.match(new RegExp(String.raw`--${name}:\s*([^;]+);`));
+    if (match?.[1] === undefined) throw new Error(`No --${name} in premium/tokens.css.`);
+    return match[1].trim();
+  };
+
+  it.each([
+    /* The column median flips from the rail to the ground between x=295 and x=296. */
+    ['op-rail-width', '296px'],
+    /* The rail's background starts at y=89 and the divider shares that row. */
+    ['op-topbar-height', '89px'],
+    /* The alert's left border lands on x=320, which is the rail edge plus 24. */
+    ['op-content-padding', '24px'],
+    /* Its right border lands on x=1558, so the right inset is 27. 01 is asymmetric. */
+    ['op-content-padding-right', '27px'],
+    /* Its top border lands on y=109, 19 below the divider row. */
+    ['op-content-padding-top', '19px'],
+    /* The active pill spans x 26..277 inside the 296px rail. */
+    ['op-rail-pad-left', '26px'],
+    ['op-rail-pad-right', '18px'],
+    /* Item boxes at 148, 200, 252, ...: 44 on a 52 pitch. */
+    ['op-rail-item-height', '44px'],
+    ['op-rail-item-gap', '8px'],
+    /* The alert is 82 rows tall: y 109..190. */
+    ['op-banner-height', '82px'],
+  ])('pins --%s to %s, as measured off 01', (name, expected) => {
+    expect(value(name)).toBe(expected);
+  });
+
+  it('draws the divider on the content column, not on the top bar', () => {
+    /*
+     * 01 draws the divider row across x 296..1585 only: the rail's own
+     * background owns x 0..295 on that row. A border-bottom on the bar would
+     * paint the rail's first row too, which 01 does not do.
+     */
+    const topbar = shell.slice(shell.indexOf('.topbar {'), shell.indexOf('.brand {'));
+    expect(topbar).not.toMatch(/border-bottom:\s*1px/);
+    const main = shell.slice(shell.indexOf('.main {'), shell.indexOf('.gatewayBanner {'));
+    expect(main).toMatch(/border-top:\s*1px solid var\(--op-hairline\)/);
+  });
+
+  it('leaves the content ground flat, as 01 draws it', () => {
+    /*
+     * 01's four content corners read (2,9,23), (3,9,24), (2,10,26) and
+     * (2,10,25) -- the same colour as its centre. The teal and violet
+     * radials an earlier wave painted on the ground are not in the master.
+     */
+    const main = shell.slice(shell.indexOf('.main {'), shell.indexOf('.gatewayBanner {'));
+    expect(main).not.toMatch(/radial-gradient/);
+  });
+
+  it('leaves the rail one flat colour with no right border', () => {
+    /* 01's rail reads rgb(8,18,36) at y=300 and rgb(8,20,39) at y=920, and
+     * x=295 is DARKER than the rail rather than a lighter hairline. */
+    const rail = shell.slice(shell.indexOf('.rail {'), shell.indexOf('.nav {'));
+    expect(rail).not.toMatch(/linear-gradient/);
+    expect(rail).not.toMatch(/border-right:\s*1px/);
   });
 });

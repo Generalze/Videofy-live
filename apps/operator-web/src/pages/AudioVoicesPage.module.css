@@ -1,72 +1,87 @@
 /*
- * Audio & Voices, measured off 04-audio-voices-reference.png at 1586 x 992:
- * two panels 568 / 677 wide with a 25px gutter, a 64px notice bar under
- * them; the left panel's footer sits on a sunken ground.
+ * Audio & Voices, measured off 04-audio-voices-reference.png at 1586 x 992.
+ *
+ * The master draws the content column 294..1562: two panels 567 and 678 wide
+ * with a 24px gutter, and a 68px notice bar 17px under them. The shell now
+ * owns the content origin from 01-overview-reference.png, which puts that
+ * column 26px to the right of where 04 drew it and 30px narrower, so every
+ * width here is a ratio of the column the shell gives rather than a literal.
+ * Everything inside a panel is a literal, because a panel's interior is the
+ * page body and 04 owns it.
  */
+
 /* The spectrum floats over the header row: it must never add to its height. */
 .aside {
   position: relative;
-  width: 520px;
+  width: 495px;
   max-width: 40vw;
   height: 112px;
   color: var(--op-teal);
-  opacity: 0.8;
-  filter: drop-shadow(0 0 14px rgba(45, 212, 191, 0.4));
+  opacity: 0.85;
+  filter: drop-shadow(0 0 12px rgba(45, 212, 191, 0.35));
 }
 .asideWave {
   position: absolute;
-  top: -18px;
+  top: -30px;
   left: 0;
   width: 100%;
 }
 
 .grid {
   display: grid;
-  grid-template-columns: minmax(0, 569fr) minmax(0, 678fr);
-  gap: 23px;
+  grid-template-columns: minmax(0, 567fr) minmax(0, 678fr);
+  gap: 24px;
   align-items: stretch;
 }
 
+/*
+ * 04's panel ground is flat rgb(8,18,37) corner to corner -- no glass sheen.
+ * The shared gradient token lightened the top by five levels over a third of
+ * the panel, which is the widest single block of colour error on the page.
+ */
 .panel {
   display: flex;
   flex-direction: column;
   min-width: 0;
   border: 1px solid var(--op-panel-border);
   border-radius: var(--op-radius-lg);
-  background: #0b1328;
-  background-image: var(--op-gradient-glass);
+  background: #081225;
   box-shadow: var(--op-shadow-panel);
   overflow: hidden;
 }
 .panelBody {
   flex: 1;
-  padding: 26px 26px 14px;
+  padding: 22px 25px 22px;
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
+/* 04 gives the subtitles footer a hairline and the panel's own ground: it is not sunken. */
 .panelFoot {
-  border-top: 1px solid var(--op-hairline);
-  background: rgba(3, 8, 23, 0.55);
-  padding: 18px 26px 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  background: transparent;
+  padding: 17px 25px 15px;
 }
 
-.eyebrow {
+.eyebrow.eyebrow {
   font-size: 13px;
+  line-height: 1;
   letter-spacing: 0.1em;
   color: var(--op-text-secondary);
-  margin-bottom: 14px;
+  margin: 0 0 20px;
 }
 
 /* ------------------------------------------------------------- Segmented */
+/* 04 draws one 47px box with no inset: the active half runs edge to edge. */
 .segmented {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  padding: 3px;
-  border: 1px solid var(--op-panel-border-strong);
+  gap: 0;
+  padding: 0;
+  border: 1px solid rgb(34, 46, 66);
   border-radius: 10px;
-  background: rgba(7, 17, 37, 0.9);
+  background: #111c32;
+  overflow: hidden;
 }
 .segment,
 .segmentActive {
@@ -74,60 +89,62 @@
   align-items: center;
   justify-content: center;
   gap: 10px;
-  height: 39px;
+  height: 45px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 0;
   font: inherit;
   font-size: 15px;
   font-weight: 500;
-  color: var(--op-text-secondary);
+  color: var(--op-text);
   background: transparent;
   cursor: pointer;
 }
 .segment:hover {
-  color: var(--op-text);
+  color: #fff;
   background: rgba(255, 255, 255, 0.04);
 }
+/* Not the primary violet: 04's active half runs rgb(21,34,88) to rgb(48,35,142). */
 .segmentActive {
   color: #fff;
-  background: linear-gradient(90deg, #452bc3, #3b24c0);
-  box-shadow: 0 6px 18px rgba(69, 43, 195, 0.35);
+  background: linear-gradient(90deg, #152258, #30238e);
+  box-shadow: none;
 }
 .segment:focus-visible,
 .segmentActive:focus-visible {
   outline: 2px solid var(--op-violet);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 
 .applied {
-  margin: 20px 0 12px;
-  font-size: 14px;
+  margin: 18px 0 12px;
+  font-size: 15px;
   line-height: 1.4;
   color: var(--op-text-muted);
 }
-.mixChip {
+.mixChip.mixChip {
   align-self: flex-start;
+  height: 27px;
   font-size: 13px;
-  padding: 6px 12px;
+  padding: 0 12px;
   background: rgba(69, 43, 195, 0.14);
   border-color: rgba(99, 91, 255, 0.4);
 }
 .rule {
   border: 0;
-  border-top: 1px solid var(--op-hairline);
-  margin: 18px 0 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.115);
+  margin: 19px 0 0;
 }
 
 /* ---------------------------------------------------------------- Levels */
 .level {
   display: grid;
   grid-template-columns: 54px minmax(0, 1fr);
-  gap: 20px;
+  gap: 18px;
   align-items: start;
-  padding: 6px 0 22px;
+  margin-top: 18px;
 }
-.level:last-child {
-  padding-bottom: 16px;
+.level + .level {
+  margin-top: 27px;
 }
 .levelIcon {
   width: 54px;
@@ -136,19 +153,18 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-top: 6px;
 }
 .levelIconTeal {
   color: var(--op-teal);
   background: rgba(45, 212, 191, 0.1);
   border: 1px solid rgba(45, 212, 191, 0.35);
-  box-shadow: 0 0 22px rgba(9, 68, 77, 0.9);
+  box-shadow: 0 0 14px rgba(9, 68, 77, 0.55);
 }
 .levelIconViolet {
   color: #a78bfa;
   background: rgba(99, 91, 255, 0.12);
   border: 1px solid rgba(99, 91, 255, 0.4);
-  box-shadow: 0 0 22px rgba(69, 43, 195, 0.45);
+  box-shadow: 0 0 14px rgba(69, 43, 195, 0.3);
 }
 .levelBody {
   min-width: 0;
@@ -157,34 +173,37 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 .levelLabel {
   font-size: 16px;
+  line-height: 1.3;
   font-weight: 500;
   color: var(--op-text);
 }
 .levelValue {
-  font-size: 16px;
+  font-size: 18px;
+  line-height: 1.2;
   font-weight: 600;
 }
 .levelValueTeal {
-  color: var(--op-teal);
+  color: #18c298;
 }
 .levelValueViolet {
-  color: #a78bfa;
+  color: #8b6ce8;
 }
 .marks {
   display: flex;
   justify-content: space-between;
-  margin-top: 4px;
-  font-size: 13px;
+  margin-top: 8px;
+  font-size: 15px;
+  line-height: 1.2;
   color: var(--op-text-muted);
 }
 
 .slider {
   --fill: 0%;
-  --accent: var(--op-teal);
+  --accent: #18c298;
   appearance: none;
   -webkit-appearance: none;
   width: 100%;
@@ -194,44 +213,48 @@
   cursor: pointer;
 }
 .sliderTeal {
-  --accent: var(--op-teal);
+  --accent: #18c298;
 }
 .sliderViolet {
-  --accent: #7c5cff;
+  --accent: #854eef;
 }
 .slider::-webkit-slider-runnable-track {
   height: 6px;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--accent) 0 var(--fill), rgba(255, 255, 255, 0.1) var(--fill) 100%);
+  background: linear-gradient(90deg, var(--accent) 0 var(--fill), rgba(255, 255, 255, 0.15) var(--fill) 100%);
 }
 .slider::-moz-range-track {
   height: 6px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.15);
 }
 .slider::-moz-range-progress {
   height: 6px;
   border-radius: 999px;
   background: var(--accent);
 }
+/*
+ * 04's thumb is an open white ring: at 20% its middle reads the empty track,
+ * at 100% it reads the violet fill. A filled thumb cannot do both.
+ */
 .slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 18px;
-  height: 18px;
-  margin-top: -6px;
+  width: 20px;
+  height: 20px;
+  margin-top: -7px;
   border-radius: 50%;
-  background: #fff;
-  border: 3px solid var(--accent);
-  box-shadow: 0 0 0 3px rgba(2, 10, 26, 0.9);
+  background: transparent;
+  border: 3px solid #fff;
+  box-shadow: none;
 }
 .slider::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
-  background: #fff;
-  border: 3px solid var(--accent);
-  box-shadow: 0 0 0 3px rgba(2, 10, 26, 0.9);
+  background: transparent;
+  border: 3px solid #fff;
+  box-shadow: none;
 }
 .slider:focus-visible {
   outline: 2px solid var(--op-violet);
@@ -251,7 +274,7 @@
   -webkit-appearance: none;
   width: 22px;
   height: 22px;
-  margin: 2px 0 0;
+  margin: 0;
   border-radius: 6px;
   border: 1px solid var(--op-violet-border);
   background: rgba(99, 91, 255, 0.12);
@@ -279,21 +302,23 @@
 }
 .subtitlesText {
   display: grid;
-  gap: 8px;
+  gap: 12px;
 }
 .subtitlesLabel {
   font-size: 17px;
+  line-height: 1.25;
   font-weight: 600;
   color: var(--op-text);
 }
 .subtitlesNote {
   font-size: 14px;
+  line-height: 1.4;
   color: var(--op-text-muted);
 }
 
 /* ----------------------------------------------------------------- Voices */
 .voicesLede {
-  margin: 0 0 16px;
+  margin: 0 0 14px;
   font-size: 15px;
   line-height: 1.5;
   color: var(--op-text-secondary);
@@ -308,22 +333,23 @@
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 9px;
+  gap: 5px;
 }
 .voiceRow {
   display: grid;
   grid-template-columns: 36px minmax(0, 1fr) auto 28px;
   align-items: center;
-  gap: 16px;
-  height: 56px;
-  padding: 0 14px 0 12px;
+  gap: 18px;
+  height: 60px;
+  padding: 0 12px;
   border-radius: 10px;
-  border: 1px solid var(--op-hairline);
-  background: rgba(15, 26, 51, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: #0d182e;
 }
+/* The language code, shown when nothing names a flag for the language. */
 .voiceTag {
   width: 36px;
-  height: 24px;
+  height: 27px;
   border-radius: 4px;
   display: inline-flex;
   align-items: center;
@@ -335,6 +361,13 @@
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.06));
   border: 1px solid rgba(255, 255, 255, 0.14);
 }
+.voiceFlag {
+  width: 36px;
+  height: 27px;
+  border-radius: 4px;
+  display: block;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
 .voiceText {
   display: grid;
   gap: 3px;
@@ -342,6 +375,7 @@
 }
 .voiceName {
   font-size: 16px;
+  line-height: 1.2;
   font-weight: 500;
   color: var(--op-text);
   white-space: nowrap;
@@ -350,16 +384,35 @@
 }
 .voiceProvider {
   font-size: 13px;
+  line-height: 1.2;
   color: var(--op-text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.voiceChip {
-  font-size: 13px;
-  padding: 6px 12px;
+.voiceChip.voiceChip {
+  height: 28px;
+  padding: 0 14px;
   min-width: 86px;
   justify-content: center;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+}
+.chipStandard.chipStandard {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(52, 211, 153, 0.3);
+  color: #34d399;
+}
+.chipPremium.chipPremium {
+  background: rgba(124, 92, 255, 0.1);
+  border-color: rgba(139, 113, 255, 0.36);
+  color: #a78bfa;
+}
+.chipWaiting.chipWaiting {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.32);
+  color: #f0b64a;
 }
 .voiceMore {
   width: 28px;
@@ -372,21 +425,28 @@
   align-items: center;
   justify-content: center;
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 0.75;
 }
 
 /* ----------------------------------------------------------------- Notice */
-.noticeButton {
-  height: 40px;
-  padding: 0 18px;
-}
-.notice {
-  /* The master sits the bar 17px under the panels; the page stack is 24. */
+/* 04 sits the bar 17px under the panels; the page stack already gives 24. */
+.notice.notice {
   margin-top: -7px;
   min-height: 68px;
-  padding: 9px 22px 9px 22px;
+  gap: 16px;
+  padding: 0 20px 0 18px;
   font-size: 15px;
+  background: #081326;
   color: var(--op-text-secondary);
+}
+.noticeButton.noticeButton {
+  height: 39px;
+  padding: 0 18px;
+  gap: 10px;
+  font-size: 15px;
+  background: rgba(124, 92, 255, 0.07);
+  border-color: rgba(124, 92, 255, 0.3);
+  color: #a5b4fc;
 }
 
 @media (max-width: 1100px) {

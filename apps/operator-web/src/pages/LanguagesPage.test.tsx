@@ -77,7 +77,7 @@ describe('LanguagesPage', () => {
     expect(render()).not.toContain('Detected');
     const auto = render({ sourceLanguageMode: 'auto-detect' });
     expect(auto).toContain('Awaiting audio');
-    expect(auto).toContain('Auto-detect listens to the programme audio');
+    expect(auto).toContain('Auto-detect analyses the audio in real time');
     const live = render({
       sourceLanguageMode: 'auto-detect',
       onSourceLanguageAction: vi.fn(),

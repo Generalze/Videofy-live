@@ -1,10 +1,28 @@
 /*
- * The console shell, to the golden masters at 1586 x 992: an 84px top bar
- * across the full width, a 280px rail beneath it on the left, and the
- * content ground on the right with its teal illumination. Every page stays
- * MOUNTED (the Source page's <video> is the programme itself for uploaded
- * and direct-URL sources); pages are toggled with [hidden], never
- * conditionally rendered.
+ * The console shell, to 01-overview-reference.png at 1586 x 992.
+ *
+ * ONE MASTER OWNS THE SHELL (founder directive, 30 Aug 2026, SS13 OPERATOR
+ * GOLDEN-MASTER CORRECTION). 01 owns the rail, the top bar, the ground, the
+ * global spacing, the alert geometry and the content origin. The other four
+ * masters were generated independently and disagree with it; they are not
+ * consulted for any global value and their disagreement is expected, not a
+ * defect to average away.
+ *
+ * What 01 measures, and how:
+ *   rail            x 0..295. The column median flips from rgb(8,18,36) to
+ *                   rgb(2,10,26) between 295 and 296 on every quiet row.
+ *   top bar         y 0..88, full width. The rail's own background starts at
+ *                   y=89, and the 1px divider on that row runs x 296..1585
+ *                   only -- so the divider belongs to the content column.
+ *   content origin  x=320, y=109: where the alert's border lands.
+ *   alert           1239 x 82 at (320,109), radius 8.
+ *   rail rhythm     44px items on a 52px pitch, first at y=148.
+ *   services card   x 26..264, y 734..898.
+ *   footer          ink y 929..950.
+ *
+ * Every page stays MOUNTED (the Source page's <video> is the programme
+ * itself for uploaded and direct-URL sources); pages are toggled with
+ * [hidden], never conditionally rendered.
  */
 .shell {
   display: grid;
@@ -26,19 +44,30 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 34px 0 24px;
+  /*
+   * 01 puts the brand ring's left edge on x=25 and the avatar's right edge
+   * on x=1538, so the bar is inset 25 and 47.
+   */
+  padding: 0 47px 0 25px;
   background: var(--op-bg-topbar);
-  border-bottom: 1px solid var(--op-hairline);
+  /*
+   * NO BORDER HERE. In 01 the divider row (y=89) is drawn across the content
+   * column only -- x 296..1585 -- because the rail's background already owns
+   * x 0..295 on that row. A border-bottom on the bar would paint the rail's
+   * first row too. The content column carries it instead (see .main).
+   */
 }
 .brand {
   display: flex;
   align-items: center;
-  gap: 13px;
+  /* 01: the ring's ink ends on x=77 and the wordmark's starts on x=98. */
+  gap: 20px;
 }
 .brandRing {
   position: relative;
-  width: 50px;
-  height: 50px;
+  /* 01 inks the ring x 25..77, y 20..71. */
+  width: 52px;
+  height: 52px;
   border-radius: 50%;
   display: grid;
   place-items: center;
@@ -73,7 +102,8 @@
 .topbarRight {
   display: flex;
   align-items: center;
-  gap: 18px;
+  /* 01's dividers sit ~20 clear of the ink on either side. */
+  gap: 20px;
 }
 .topbarDivider {
   width: 1px;
@@ -155,27 +185,48 @@
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  padding: 22px 24px 28px;
-  background: linear-gradient(180deg, var(--op-bg-rail) 0%, var(--op-bg) 100%);
-  border-right: 1px solid var(--op-hairline);
+  /*
+   * 01's active pill spans x 26..277 inside a 296px rail: 26 on the left,
+   * 18 on the right. Asymmetric, and left asymmetric.
+   */
+  padding: var(--op-rail-pad-top) var(--op-rail-pad-right) 28px var(--op-rail-pad-left);
+  /*
+   * FLAT, NOT A GRADIENT. 01's rail reads rgb(8,18,36) at y=300 and
+   * rgb(8,20,39) at y=920 -- one colour under the grain. The old
+   * rail-to-ground gradient faded the bottom third to the content ground,
+   * which 01 does not do. And no right border: x=295 reads rgb(8,17,35),
+   * darker than the rail, not a lighter hairline.
+   */
+  background: var(--op-bg-rail);
 }
 .nav {
   display: grid;
-  gap: 8px;
+  gap: 0;
 }
+/* 44px items on a 52px pitch: 01's item tops are 148, 200, 252, 304, 356, 408, 460. */
 .section {
   display: grid;
-  gap: 4px;
+  gap: var(--op-rail-item-gap);
 }
+/*
+ * 01's second label inks y 526..537 against a first group that ends at
+ * y=504, and its first item box starts at y=554.
+ */
 .section + .section {
-  margin-top: 16px;
+  margin-top: 18px;
 }
 .sectionLabel {
-  margin: 0 0 6px;
-  padding: 0 0 0 2px;
-  font-size: 11px;
+  /*
+   * Placed, not guessed: the rail's 26px top padding plus this box and its
+   * 9px tail plus the section's 8px gap put the first item box on y=148,
+   * which is where 01 draws it.
+   */
+  margin: 0 0 9px;
+  padding: 0 0 0 22px;
+  font-size: 13px;
+  line-height: 16px;
   font-weight: 600;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--op-text-muted);
 }
@@ -184,15 +235,17 @@
   align-items: center;
   gap: 10px;
   width: 100%;
-  height: 47px;
-  padding: 0 14px 0 14px;
+  /* 01: pill y 148..191. */
+  height: var(--op-rail-item-height);
+  /* 01: the row's ink starts on x=46, 20 inside the pill's own left edge. */
+  padding: 0 14px 0 20px;
   border-radius: var(--op-radius-md);
   border: 1px solid transparent;
   background: transparent;
   color: var(--op-text-secondary);
   cursor: pointer;
   font: inherit;
-  font-size: 14px;
+  font-size: 15px;
   text-align: left;
   transition: background-color 120ms ease, color 120ms ease;
 }
@@ -231,23 +284,32 @@
   color: var(--op-text-muted);
 }
 
-/* The masters sit the card ~34px under the last item, not at the foot of the rail. */
+/*
+ * 01 draws the card at x 26..264, y 734..898 -- 32 under the last rail item
+ * and 13 narrower than the nav above it, which is why it carries a right
+ * margin of its own rather than sitting on the rail's padding.
+ *
+ * Its HEIGHT is not pinned. The card lists the real service lights, and 01
+ * happens to show two; a deployment with three would be taller. Pinning
+ * 165px would be inventing operational data to satisfy a screenshot.
+ */
 .servicesCard {
-  margin-top: 34px;
-  padding: 16px 20px 18px;
-  border-radius: 12px;
+  margin-top: 31px;
+  margin-right: 13px;
+  padding: 18px 18px 21px;
+  border-radius: 10px;
   border: 1px solid var(--op-panel-border);
   background: rgba(255, 255, 255, 0.02);
 }
 .servicesCard .sectionLabel {
-  margin-bottom: 16px;
+  margin-bottom: 15px;
 }
 .services {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 16px;
+  gap: 18px;
 }
 .serviceRow {
   display: flex;
@@ -259,7 +321,7 @@
 }
 .serviceText {
   display: grid;
-  gap: 3px;
+  gap: 6px;
   line-height: 1.25;
 }
 .serviceLabel {
@@ -267,16 +329,17 @@
   color: var(--op-text);
 }
 .serviceDetail {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--op-text-muted);
 }
+/* 01 inks the footer row at y 929..950, 30 under the card, starting on x=40. */
 .railFooter {
   display: flex;
   align-items: center;
   gap: 14px;
-  margin-top: 26px;
-  padding: 0 4px;
-  font-size: 13px;
+  margin-top: 30px;
+  padding: 0 0 0 14px;
+  font-size: 14px;
   color: var(--op-text-muted);
 }
 .versionPill {
@@ -294,22 +357,41 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  padding: var(--op-content-padding-top) var(--op-content-padding) var(--op-content-padding);
+  /*
+   * 01's content origin: the alert's left border on x=320 (296 + 24) and its
+   * top border on y=109 (89 + the divider row + 19). The right inset is 27,
+   * not 24 -- 01 is asymmetric and is reproduced as drawn.
+   */
+  padding: var(--op-content-padding-top) var(--op-content-padding-right) var(--op-content-padding-right)
+    var(--op-content-padding);
   gap: 26px;
-  background:
-    radial-gradient(900px 520px at 100% 0%, var(--op-glow-teal), transparent 60%),
-    radial-gradient(700px 420px at 0% 100%, var(--op-glow-violet), transparent 60%),
-    var(--op-bg);
+  /*
+   * The divider under the top bar. It lives here rather than on the bar
+   * because 01 draws it across x 296..1585 only.
+   */
+  border-top: 1px solid var(--op-hairline);
+  /*
+   * FLAT GROUND. 01's four content corners read (2,9,23), (3,9,24),
+   * (2,10,26) and (2,10,25) -- the same colour as its centre. The teal and
+   * violet radials an earlier wave painted here are not in the master.
+   */
+  background: var(--op-bg);
 }
+/*
+ * 01 draws the alert 1239 x 82 at (320,109). Its border reads rgb(149,37,29)
+ * and its fill rgb(30,14,23) over the rgb(2,10,26) ground, which is one red
+ * at two alphas -- a FLAT fill, not the left-to-right gradient an earlier
+ * wave used. The corner reaches full width six rows in, so the radius is 8.
+ */
 .gatewayBanner {
   display: flex;
   align-items: center;
   gap: 18px;
-  min-height: 72px;
+  min-height: var(--op-banner-height);
   padding: 10px 18px 10px 20px;
-  border-radius: var(--op-radius-md);
+  border-radius: var(--op-radius-sm);
   border: 1px solid var(--op-danger-border);
-  background: linear-gradient(90deg, rgba(239, 68, 68, 0.14), rgba(239, 68, 68, 0.05));
+  background: rgba(228, 52, 31, 0.12);
 }
 .bannerIcon {
   display: grid;
@@ -410,14 +492,14 @@
   .topbar {
     position: static;
     height: auto;
+    padding: 12px 16px;
     flex-wrap: wrap;
     gap: 12px;
-    padding: 12px 16px;
   }
   .rail {
     position: static;
     height: auto;
-    border-right: 0;
+    padding: 16px;
     border-bottom: 1px solid var(--op-hairline);
   }
   .nav {
@@ -443,5 +525,6 @@
   }
   .main {
     padding: 16px;
+    border-top: 0;
   }
 }

@@ -7,7 +7,7 @@
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { LivePage, type LivePageProps } from './LivePage';
+import { LiveControlAside, LivePage, type LivePageProps } from './LivePage';
 import { feedPill } from './liveFeed';
 import { createInitialProgrammeSourceSnapshot } from '../programmeSourceManager';
 import type { OperatorWorkflowSummary } from '../operatorWorkflow';
@@ -158,5 +158,28 @@ describe('LivePage', () => {
   it('marks the wave decoration as hidden from assistive technology', () => {
     const html = render();
     expect(html.match(/aria-hidden="true" focusable="false"/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('LiveControlAside', () => {
+  it('reads "--" for quality and delay when the caller measures neither, and says why', () => {
+    const html = renderToStaticMarkup(<LiveControlAside onAir={false} progressLabel="Waiting for source" viewers={0} />);
+    expect(html).toContain('OFF AIR');
+    expect(html).toContain('0 viewers');
+    expect(html.match(/--/g)?.length ?? 0).toBe(2);
+    expect(html).toContain('Programme Quality Engine');
+    expect(html).not.toContain('Good');
+    expect(html).not.toContain('480');
+  });
+
+  it('shows only the figures it is given, and pluralises the viewer count', () => {
+    const html = renderToStaticMarkup(
+      <LiveControlAside onAir progressLabel="Programme audio active" viewers={1} quality="Good" delay="480 ms" />,
+    );
+    expect(html).toContain('ON AIR');
+    expect(html).toContain('1 viewer<');
+    expect(html).toContain('Good');
+    expect(html).toContain('480 ms');
+    expect(html).not.toContain('--');
   });
 });

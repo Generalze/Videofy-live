@@ -10,15 +10,24 @@
  * for it. Everything on a row derives from that; where the catalogue has
  * not arrived yet the row is honest: provider unknown, status Waiting.
  *
- * DELIBERATELY NOT HERE: a Standard / Premium grade. The resolver accepts a
- * grade and returns the same rows for both ("the live path does not yet
- * select synthesis by grade"), so no per-language grade exists to show. The
- * status chip therefore reports voice availability, which the master's
- * caption says it does ("Status reflects current voice availability").
+ * THE GRADE AND THE FLAG ARE NOT RESOLVED HERE. 04-audio-voices-reference
+ * draws a national flag and a Standard / Premium chip on every row, and
+ * nothing in the deployment produces either: the capability resolver accepts
+ * a grade and returns the same rows for both ("the live path does not yet
+ * select synthesis by grade"), and no feed names a country for a language.
+ * So a row carries both fields and buildVoiceRows sets both to null -- the
+ * page then shows the language code and the availability word, which is what
+ * the master's own caption promises ("Status reflects current voice
+ * availability"). A row that one day HAS a grade behind it can say so
+ * without the page inventing one, and the visual fixture (which production
+ * cannot read) fills them in to measure the master's layout.
  */
 import type { TargetLanguageCapability } from '@videofy-live/shared-types';
 
 export type VoiceStatus = 'ready' | 'limited' | 'captions-only' | 'waiting';
+
+/** The commercial grade a voice is sold at. Never resolved by the live path today. */
+export type VoiceGrade = 'standard' | 'premium';
 
 export interface VoiceRow {
   readonly code: string;
@@ -29,7 +38,20 @@ export interface VoiceRow {
   readonly status: VoiceStatus;
   /** Why the status is what it is, for a title/hint. */
   readonly reason: string | undefined;
+  /**
+   * ISO 3166-1 alpha-2 of a flag to show beside the language, or null when
+   * nothing names one. Null is the production value: no feed maps a language
+   * to a country, and the page shows the language code instead.
+   */
+  readonly flag: string | null;
+  /** The sold grade, or null when nothing has resolved one. Null in production. */
+  readonly grade: VoiceGrade | null;
 }
+
+export const VOICE_GRADE_WORDS: Readonly<Record<VoiceGrade, string>> = {
+  standard: 'Standard',
+  premium: 'Premium',
+};
 
 export const VOICE_STATUS_WORDS: Readonly<Record<VoiceStatus, string>> = {
   ready: 'Ready',
@@ -80,6 +102,8 @@ export function buildVoiceRows(
         provider: null,
         status: 'waiting',
         reason: catalogue === undefined ? 'The registry has not reported yet.' : 'This language is outside the deployment catalogue.',
+        flag: null,
+        grade: null,
       };
     }
     return {
@@ -88,6 +112,8 @@ export function buildVoiceRows(
       provider: providerLabel(entry.providers?.tts, entry.voiceId),
       status: statusFor(entry),
       reason: entry.reason,
+      flag: null,
+      grade: null,
     };
   });
 }

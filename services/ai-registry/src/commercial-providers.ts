@@ -214,11 +214,23 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
       auth: { kind: 'api-key', envVars: ['DEEPGRAM_API_KEY'] },
       optionalEnvVars: ['DEEPGRAM_MODEL'],
     },
-    // `integrated` on the live observations below: both dialects were run
-    // against the real API from the development environment on 2026-08-22 and
-    // spoke the protocols this repository models them as speaking. NOT
-    // `testing` -- no real traffic has crossed them -- and not certified.
-    integrationStage: 'integrated',
+    /*
+     * `certified` on the 2026-08-30 benchmark below, and ONLY on nova-3.
+     *
+     * Five real streaming runs and five real batch runs against the live API
+     * from staging (c7-eu-01), through the deployed adapters, with the
+     * distributions recorded. That is what this file has always meant by
+     * certified: more than one measurement, taken from runs that happened.
+     *
+     * FLUX IS NOT CERTIFIED AND THIS FIELD CANNOT SAY SO. `integrationStage` is
+     * a vendor-level field and Flux still has only the 2026-08-22 existence
+     * proof; a benchmark of Listen v1 says nothing about Listen v2. Selection
+     * is per (provider, capability, language route, service category) and reads
+     * `models[]`, which is exactly why one vendor-level enum is allowed to be
+     * this coarse -- but a reader must not take this word to cover
+     * `flux-general-en`, whose observation below still carries sampleCount 1.
+     */
+    integrationStage: 'certified',
     capabilities: {
       transcription: {
         batch: 'yes',
@@ -321,6 +333,43 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
           'Results, and one observation cannot stand for both. No batch ' +
           'evidence exists for Flux and none can -- it is streaming-only.',
       },
+      {
+        observedAt: '2026-08-30',
+        environment: 'staging (c7-eu-01)',
+        capability: 'transcription',
+        modelId: 'nova-3',
+        languages: ['en'],
+        sampleCount: 5,
+        summary:
+          'C-AI1.2 benchmark, scripts/certify-providers.mjs, through the DEPLOYED ' +
+          'DeepgramNovaStreamingProvider and the real Listen v1 socket. 5/5 samples ' +
+          'succeeded. Time to first non-empty transcript, measured from the first audio ' +
+          'frame with audio fed at REAL TIME in 100 ms frames: min 1010 ms, median ' +
+          '1055 ms, mean 1040 ms, max 1056 ms. Socket connect 332 ms on the first ' +
+          'sample; each run returned a 119-character final transcript, so this is ' +
+          'PROTOCOL AND RESPONSIVENESS evidence and not merely a socket that opened. ' +
+          'Fixture: 7.88 s of synthetic 16 kHz mono English. Synthetic speech is CLEAN ' +
+          'speech, so this figure is a FLOOR and says nothing about a noisy room, an ' +
+          'accented speaker, or any language other than English.',
+      },
+      {
+        observedAt: '2026-08-30',
+        environment: 'staging (c7-eu-01)',
+        capability: 'transcription',
+        modelId: 'nova-3',
+        languages: ['en'],
+        sampleCount: 5,
+        summary:
+          'C-AI1.2 benchmark through the DEPLOYED DeepgramBatchTranscriptionProvider ' +
+          '(Listen v1 pre-recorded). 5/5 samples succeeded. Whole-request latency for ' +
+          '7.88 s of audio: min 463 ms, median 479 ms, mean 549 ms, max 816 ms. Each ' +
+          'run returned 2 utterance segments and 119 characters; a 200 with an empty ' +
+          'transcript is counted as a FAILED sample by the harness, so an empty answer ' +
+          'could not have been recorded here as a fast one. Recorded SEPARATELY from ' +
+          'the streaming observation above: batch and streaming are different execution ' +
+          'strategies serving different service categories, and programme:uploaded ' +
+          'depends on this one specifically.',
+      },
     ],
     notes:
       'TWO PROTOCOL DIALECTS, not one vendor API. Nova speaks Listen v1 ' +
@@ -400,11 +449,13 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
       auth: { kind: 'api-key', envVars: ['ELEVENLABS_API_KEY'] },
       optionalEnvVars: ['ELEVENLABS_MODEL', 'ELEVENLABS_DEFAULT_VOICE_ID'],
     },
-    // `integrated` on the strength of the live observation below: the adapter
-    // was run against the real vendor from the development environment and
-    // satisfied the platform contract. NOT `testing` -- it has not carried real
-    // traffic -- and emphatically not `certified`.
-    integrationStage: 'integrated',
+    // `certified` on the 2026-08-30 benchmark below: five real streaming runs
+    // against the live vendor from staging, through the deployed adapter, with
+    // the distribution recorded. The 2026-08-22 single-run observation is kept
+    // beneath it rather than replaced -- an existence proof and a distribution
+    // answer different questions, and deleting the first would hide when this
+    // adapter was first known to work at all.
+    integrationStage: 'certified',
     capabilities: {
       tts: { completeAudio: 'yes', streamingAudio: 'yes' },
       transcription: UNVERIFIED_TRANSCRIPTION,
@@ -450,6 +501,23 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
           'an observation, not a latency distribution, and must not be quoted as ' +
           'representative or used to certify.',
       },
+      {
+        observedAt: '2026-08-30',
+        environment: 'staging (c7-eu-01)',
+        capability: 'tts',
+        modelId: 'eleven_flash_v2_5',
+        languages: ['es'],
+        sampleCount: 5,
+        summary:
+          'C-AI1.2 benchmark, scripts/certify-providers.mjs, through the DEPLOYED ' +
+          'ElevenLabsStreamingSynthesisProvider against the real vendor. 5/5 samples ' +
+          'succeeded on five different Spanish sentences. TIME TO FIRST AUDIO CHUNK: ' +
+          'min 115 ms, median 123 ms, mean 154 ms, max 284 ms. First sample delivered ' +
+          '68 chunks and 43,096 samples (2.69 s) of pcm_16000 in 367 ms total, so the ' +
+          'audio genuinely streamed rather than arriving in one piece. The 3059 ms ' +
+          'single run recorded on 2026-08-22 is now visible for what it was: one ' +
+          'sample, a long way off this distribution, and never a basis for a claim.',
+      },
     ],
     notes:
       'pcm_16000 matches the engine format exactly, so no resample is needed. ' +
@@ -464,13 +532,14 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
       configEnvVars: ['AZURE_SPEECH_REGION'],
       auth: { kind: 'api-key', envVars: ['AZURE_SPEECH_KEY'] },
     },
-    // `integrated` on the live observation below, and on the TTS surface ONLY.
-    // The adapter was run against the real service from the development
-    // environment and returned the engine format directly. Transcription and
-    // translation remain unverified: a TTS smoke is evidence about TTS, and
-    // treating a provider as one indivisible thing is how a vendor gets
-    // credited for a capability nobody exercised.
-    integrationStage: 'integrated',
+    // `certified` on the 2026-08-30 benchmark below, and ON THE TTS SURFACE
+    // ONLY. Five real runs against the live service from staging, through the
+    // deployed adapter, with the distribution recorded. Transcription and
+    // translation remain unverified and this word does not reach them: a TTS
+    // benchmark is evidence about TTS, and treating a provider as one
+    // indivisible thing is exactly how a vendor gets credited for a capability
+    // nobody exercised. Selection reads the capability matrix, not this field.
+    integrationStage: 'certified',
     capabilities: {
       // Read, not assumed. The rest of the matrix stays unverified because the
       // rest of the API has not been read to the same standard.
@@ -518,6 +587,26 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
           'latency distribution, and must not be compared against another ' +
           'provider on the strength of a single sample each.',
       },
+      {
+        observedAt: '2026-08-30',
+        environment: 'staging (c7-eu-01)',
+        capability: 'tts',
+        modelId: 'cognitiveservices-v1',
+        languages: ['en-US'],
+        sampleCount: 5,
+        summary:
+          'C-AI1.2 benchmark, scripts/certify-providers.mjs, through the DEPLOYED ' +
+          'AzureStreamingSynthesisProvider against the real service (northeurope). ' +
+          '5/5 samples succeeded on five different English sentences. TIME TO FIRST ' +
+          'AUDIO CHUNK: min 83 ms, median 144 ms, mean 220 ms, max 539 ms. First ' +
+          'sample delivered 6 chunks and 45,400 samples (2.84 s) of ' +
+          'raw-16khz-16bit-mono-pcm in 563 ms total -- the engine format, no ' +
+          'resample. Voice en-US-AvaMultilingualNeural, the one this deployment ' +
+          'configures; a voice absent from the region answers 400 with no body, so ' +
+          'this figure belongs to that voice in that region and to no other pair. ' +
+          'en-US ONLY: this says nothing about the ha/ig/yo fallback route Azure ' +
+          'also serves, which is a different claim and an unmeasured one.',
+      },
     ],
     notes:
       'STREAMING TTS ONLY, deliberately. Azure real-time speech-to-text is the ' +
@@ -554,7 +643,25 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
         'NAIJALINGO_SAMPLE_RATE',
       ],
     },
-    integrationStage: 'configured',
+    /*
+     * `certified` on the three 2026-08-30 benchmarks below -- FOR AVAILABILITY
+     * AND LATENCY, WHICH IS ALL A BENCHMARK CAN CERTIFY.
+     *
+     * Fifteen real runs (five each for ha, ig and yo) against the live vendor
+     * from staging, through the deployed adapter, every one returning decoded
+     * WAV audio. That satisfies `stageEvidenceComplaints` and it is a genuine
+     * result: this vendor went from "a contract we have read" to "a service we
+     * have measured" in one session.
+     *
+     * WHAT IT EMPHATICALLY DOES NOT CERTIFY IS THE AUDIO. This vendor exists
+     * because ElevenLabs and Azure answer Yoruba, Hausa and Igbo with HTTP 200
+     * and confident, wrong pronunciation -- a failure no status code, byte
+     * count or latency can see. Every number here is exactly the kind of signal
+     * that cannot detect it. A speaker of each language still has to listen,
+     * and until they do, `certified` here means the specialist ANSWERS, not
+     * that it answers correctly. See `notes`.
+     */
+    integrationStage: 'certified',
     capabilities: {
       tts: { completeAudio: 'yes', streamingAudio: 'unverified' },
       transcription: UNVERIFIED_TRANSCRIPTION,
@@ -590,8 +697,81 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
         candidateFor: ['call:live', 'programme:uploaded', 'programme:live'],
       },
     ],
-    liveObservations: [],
+    liveObservations: [
+      {
+        observedAt: '2026-08-30',
+        environment: 'staging (c7-eu-01)',
+        capability: 'tts',
+        modelId: '9jalingo-tts-1',
+        languages: ['ha'],
+        sampleCount: 5,
+        summary:
+          'C-AI1.2 benchmark, scripts/certify-providers.mjs, through the DEPLOYED ' +
+          'NaijaLingoStreamingSynthesisProvider against the real vendor. 5/5 samples ' +
+          'succeeded, speaker abdullahi_ha, one Hausa sentence per sample. Whole-request ' +
+          'latency: min 5941 ms, median 7891 ms, mean 7772 ms, max 10109 ms. First ' +
+          'sample returned 89,228 samples (5.58 s) of audio decoded from the WAV RIFF ' +
+          'header. ONE CHUNK PER RESPONSE: the adapter collects the whole body, so ' +
+          'time-to-first-chunk EQUALS total time and no streaming latency is claimed. ' +
+          'THIS IS AVAILABILITY AND LATENCY ONLY -- nobody who speaks Hausa has heard ' +
+          'this audio, and no server signal can tell you whether it is right.',
+      },
+      {
+        observedAt: '2026-08-30',
+        environment: 'staging (c7-eu-01)',
+        capability: 'tts',
+        modelId: '9jalingo-tts-1',
+        languages: ['ig'],
+        sampleCount: 5,
+        summary:
+          'C-AI1.2 benchmark through the deployed adapter. 5/5 samples succeeded, ' +
+          'speaker adaeze_ig, one Igbo sentence per sample. Whole-request latency: ' +
+          'min 4972 ms, median 6470 ms, mean 6719 ms, max 9023 ms. First sample ' +
+          'returned 70,668 samples (4.42 s). Recorded SEPARATELY from ha and yo ' +
+          'deliberately: three languages are three routes, and one run against one of ' +
+          'them licenses nothing about the other two. No listening test yet.',
+      },
+      {
+        observedAt: '2026-08-30',
+        environment: 'staging (c7-eu-01)',
+        capability: 'tts',
+        modelId: '9jalingo-tts-1',
+        languages: ['yo'],
+        sampleCount: 5,
+        summary:
+          'C-AI1.2 benchmark through the deployed adapter. 5/5 samples succeeded, ' +
+          'speaker abimbola_yo, one Yoruba sentence per sample. Whole-request latency: ' +
+          'min 7153 ms, median 7755 ms, mean 8002 ms, max 9447 ms -- the slowest of the ' +
+          'three routes. First sample returned 70,028 samples (4.38 s). No listening ' +
+          'test yet, and Yoruba is the language the 2026-08-26 test found the general ' +
+          'vendors getting confidently wrong, so this route is the one where an ' +
+          'unheard PASS is worth the least.',
+      },
+      {
+        observedAt: '2026-08-30',
+        environment: 'staging (c7-eu-01)',
+        capability: 'tts',
+        modelId: '9jalingo-tts-1',
+        languages: ['ha', 'ig', 'yo'],
+        sampleCount: 3,
+        summary:
+          'COLD START, recorded as its own fact and excluded from every latency figure ' +
+          'above. First contact of the day refused all three languages with the ' +
+          "vendor's 503 'inference capacity is starting after an idle period'. Once " +
+          'capacity was serving it stayed serving, and a later wake was answered in ' +
+          'under 5 s. THE COLD-START DURATION WAS NOT MEASURED and is not stated: the ' +
+          'first wake loop watched /v1/health, which reported engine_ready false and ' +
+          'desired_copy_count 0 for ten minutes WHILE the speech endpoint was already ' +
+          'answering 200 with real audio -- so the only honest reading is that the ' +
+          'readiness flag is not a readiness signal and the interval was never timed. ' +
+          'A number would have been available; it would have been wrong.',
+      },
+    ],
     notes:
+      'CERTIFIED FOR AVAILABILITY, NOT FOR PRONUNCIATION. 2026-08-30: 15 runs, five ' +
+      'per language, all returning decoded audio -- and not one of them heard by a ' +
+      'speaker of the language. That listening test is the only evidence that can ' +
+      'close the failure this vendor was adopted to prevent, and it is still open. ' +
       'THREE OF THE FOUR UNKNOWNS CLOSED on 2026-08-30 by reading the official ' +
       'SDK rather than the documentation page: the host, the auth header ' +
       "('X-API-Key', raw key, no scheme -- the OpenAI-shaped body invites " +
@@ -599,10 +779,14 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
       'streaming endpoint. THE PCM SAMPLE RATE IS STILL UNPUBLISHED and is NOT ' +
       'guessed: the adapter requests `wav` and reads the true rate from the RIFF ' +
       'header, because a wrong PCM rate does not fail -- it plays at the wrong ' +
-      'pitch in a language the reviewer may not speak. STILL `configured`, not ' +
-      '`integrated`: no key exists yet, so this adapter has never been run ' +
-      'against the vendor, and having read a contract is not evidence of having ' +
-      'spoken it. ROUTING (see commercial-routing): for ha/ig/yo/pcm the chain is ' +
+      'pitch in a language the reviewer may not speak. THE KEY NOW EXISTS AND THE ' +
+      'ADAPTER HAS SPOKEN THE CONTRACT. The sentence that stood here -- "no key ' +
+      'exists yet, so this adapter has never been run against the vendor" -- was ' +
+      'true until 2026-08-30 and is corrected rather than quietly dropped, because ' +
+      'a reader who remembers it should be able to see what changed and when. ' +
+      'PCM IS STILL NOT ATTEMPTED: the benchmark ran on `wav` throughout, so the ' +
+      'unpublished raw-PCM rate remains unmeasured and unguessed. ' +
+      'ROUTING (see commercial-routing): for ha/ig/yo/pcm the chain is ' +
       '9jaLingo then AZURE and nothing else -- ElevenLabs is deliberately absent ' +
       'because it answers those languages with confident, wrong audio. Every ' +
       'sentence the fallback serves is marked degraded where an operator can see ' +

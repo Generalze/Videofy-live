@@ -5,7 +5,16 @@
     <link rel="icon" type="image/svg+xml" href="/call.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#0b0b10" />
-    <title>Videofy Call</title>
+    <!--
+      Title and description are the share card: crawlers read this file and
+      never run JavaScript. scripts/generate-route-html.mjs reads both at
+      deploy time and adds the tags that need the origin.
+    -->
+    <title>Videofy Call - Speak naturally, be understood</title>
+    <meta
+      name="description"
+      content="Call anyone and be understood: real-time translated voice and video from Consummate 7."
+    />
   </head>
   <body>
     <div id="root"></div>

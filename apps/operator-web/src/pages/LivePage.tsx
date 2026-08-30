@@ -9,8 +9,10 @@
  * Every surface on the master is classified:
  *   ON AIR chip              REAL     workflow.status from buildOperatorWorkflowSummary
  *   viewers chip             REAL     connectedListeners / signalling listener count
- *   Quality chip             FUTURE   the Programme Quality Engine is not built: "--", says so
- *   Delay chip               FUTURE   same engine: "--", says so
+ *   Quality chip             FUTURE   the Programme Quality Engine is not built. The chip
+ *                                     shows only what its caller hands it, and the console
+ *                                     hands it nothing, so an operator reads "--".
+ *   Delay chip               FUTURE   same engine, same rule: the console reads "--".
  *   Go Live / Restart        REAL     handleStartInterpretation / handleRestartProgrammeSource
  *   End                      REAL     handleStopProgrammeSource, enabled by workflow.canEnd
  *   Pause / Resume           REAL     handlePause / handleResume, enabled by canPause / canResume
@@ -31,7 +33,7 @@ import type { ProgrammeRecorderSnapshot } from '../programmeRecorder';
 import type { ProgrammeSourceSnapshot } from '../programmeSourceManager';
 import { navigate } from '../router';
 import { Icon, type IconName } from '../premium/icons';
-import { Button, Chip, IconTile, Panel, StatusDot, WaveBars, type Tone } from '../premium/primitives';
+import { Button, Chip, IconTile, MetricChip, Panel, StatusDot, WaveBars, type Tone } from '../premium/primitives';
 import { feedPill } from './liveFeed';
 
 /** One output card's real state: the stage's status word from media state, and its latest text. */
@@ -69,6 +71,59 @@ export interface LivePageProps {
   readonly diagnostics: React.ReactNode;
 }
 
+/**
+ * The four figures beside the page title, to the master's top-right cluster.
+ *
+ * It lives here, beside the page it belongs to, so the console and the visual
+ * harness render ONE implementation rather than two drawings of it.
+ *
+ * `quality` and `delay` are FUTURE and are the caller's to supply: the
+ * Programme Quality Engine that would measure them is not built, the console
+ * therefore passes neither, and an operator reads "--" with a title that says
+ * why. Nothing here manufactures a figure when the caller has none.
+ */
+export function LiveControlAside({
+  onAir,
+  progressLabel,
+  viewers,
+  quality = null,
+  delay = null,
+}: {
+  readonly onAir: boolean;
+  /** The workflow's own sentence for the programme's state, on the chip's title. */
+  readonly progressLabel: string;
+  readonly viewers: number;
+  /** A measured programme-quality word, or null while nothing measures it. */
+  readonly quality?: string | null | undefined;
+  /** A measured end-to-end delay, or null while nothing measures it. */
+  readonly delay?: string | null | undefined;
+}): React.ReactElement {
+  return (
+    <>
+      <MetricChip
+        icon={<Icon name="broadcast" size={22} />}
+        value={onAir ? 'ON AIR' : 'OFF AIR'}
+        tone={onAir ? 'success' : 'neutral'}
+        title={progressLabel}
+      />
+      <MetricChip icon={<Icon name="users" size={22} />} value={`${viewers} viewer${viewers === 1 ? '' : 's'}`} />
+      <MetricChip
+        icon={<Icon name="shield" size={22} />}
+        tone={quality === null ? 'neutral' : 'success'}
+        value={quality ?? '--'}
+        label="Quality"
+        title={quality === null ? 'Not yet measured: programme quality arrives with the Programme Quality Engine.' : undefined}
+      />
+      <MetricChip
+        icon={<Icon name="waveform" size={22} />}
+        value={delay ?? '--'}
+        label="Delay"
+        title={delay === null ? 'Not yet measured: the translation delay arrives with the Programme Quality Engine.' : undefined}
+      />
+    </>
+  );
+}
+
 function StatusRow({
   icon,
   label,
@@ -89,7 +144,7 @@ function StatusRow({
       </span>
       <span className={styles.statusLabel}>{label}</span>
       <span className={styles.statusValue}>{value}</span>
-      <StatusDot tone={tone} size={8} label={meaning} />
+      <StatusDot tone={tone} size={10} label={meaning} />
     </li>
   );
 }
@@ -123,7 +178,7 @@ function FeedCard({
         {card.text ?? placeholder}
       </p>
       <div className={styles.feedWave}>
-        <WaveBars seed={seed} bars={120} height={30} />
+        <WaveBars seed={seed} bars={64} height={26} />
       </div>
     </Panel>
   );
