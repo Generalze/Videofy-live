@@ -57,7 +57,8 @@ export interface IngestConfig {
   uploadMaxBytes: number;
   audioChunkDir: string;
   webrtcAudioChunkStagingDir: string;
-  transcriptionProvider: 'mock' | 'faster-whisper';
+  /** `off` = batch transcription declared unavailable (CTO ruling 30 Aug 2026). */
+  transcriptionProvider: 'off' | 'mock' | 'faster-whisper';
   /**
    * The live path's recogniser, and the cutover switch.
    *
@@ -206,11 +207,53 @@ export function loadConfig(): IngestConfig {
   if (videoSource !== 'mock' && videoSource !== 'local-file') {
     throw new Error(`VIDEO_SOURCE must be "mock" or "local-file"; received "${videoSource}"`);
   }
+  /*
+   * BATCH transcription -- uploaded files -- and LIVE transcription are
+   * SEPARATE CAPABILITIES, and this selector used to force a choice between
+   * two providers as if they were one (CTO ruling, 30 Aug 2026). A deployment
+   * that wants live Deepgram and no batch path at all had nowhere to say so,
+   * and the only non-mock value was faster-whisper -- which would have been
+   * staged onto the box purely to satisfy a boot check, not because anybody
+   * had approved it.
+   *
+   * `off` says it: batch transcription is unavailable, honestly, and the live
+   * path (STREAMING_TRANSCRIPTION_PROVIDER, below) is untouched by it.
+   */
   const transcriptionProvider = process.env['TRANSCRIPTION_PROVIDER'] ?? 'mock';
-  if (transcriptionProvider !== 'mock' && transcriptionProvider !== 'faster-whisper') {
+  if (!['off', 'mock', 'faster-whisper'].includes(transcriptionProvider)) {
     throw new Error(
-      `TRANSCRIPTION_PROVIDER must be "mock" or "faster-whisper"; received "${transcriptionProvider}"`,
+      'TRANSCRIPTION_PROVIDER must be "off", "mock" or "faster-whisper"; ' +
+        `received "${transcriptionProvider}"`,
     );
+  }
+  /*
+   * MOCK IS FORBIDDEN IN PRODUCTION, on both paths. A mock transcriber returns
+   * a fabricated transcript with every success signal a real one has, so a
+   * production deployment carrying one does not fail -- it publishes invented
+   * words in somebody's programme. `off` is the honest way to have no batch
+   * transcription; mock is not.
+   */
+  const environment = (process.env['C7_ENVIRONMENT'] ?? process.env['NODE_ENV'] ?? '')
+    .trim()
+    .toLowerCase();
+  if (environment === 'production') {
+    if (transcriptionProvider === 'mock') {
+      throw new Error(
+        'TRANSCRIPTION_PROVIDER=mock is refused in production: it fabricates transcripts. ' +
+          'Use "off" to declare batch transcription unavailable.',
+      );
+    }
+    if ((process.env['STREAMING_TRANSCRIPTION_PROVIDER'] ?? 'off') === 'mock') {
+      throw new Error(
+        'STREAMING_TRANSCRIPTION_PROVIDER=mock is refused in production: it fabricates ' +
+          'live transcripts. Use "off", or a certified provider.',
+      );
+    }
+    if ((process.env['STREAMING_SYNTHESIS_PROVIDER'] ?? 'off') === 'mock') {
+      throw new Error(
+        'STREAMING_SYNTHESIS_PROVIDER=mock is refused in production: it fabricates speech.',
+      );
+    }
   }
   const streamingTranscriptionProvider =
     process.env['STREAMING_TRANSCRIPTION_PROVIDER'] ?? 'off';
@@ -327,7 +370,7 @@ export function loadConfig(): IngestConfig {
     webrtcAudioChunkStagingDir:
       process.env['WEBRTC_AUDIO_CHUNK_STAGING_DIR'] ??
       resolve(process.cwd(), '../../uploads/webrtc-staging'),
-    transcriptionProvider,
+    transcriptionProvider: transcriptionProvider as IngestConfig['transcriptionProvider'],
     streamingTranscriptionProvider: streamingTranscriptionProvider as
       IngestConfig['streamingTranscriptionProvider'],
     streamingSynthesisProvider:

@@ -4,6 +4,7 @@ export type MediaIngestErrorCode =
   | 'duplicate-processing'
   | 'duplicate-submission'
   | 'generated-audio-unavailable'
+  | 'transcription-unavailable'
   | 'invalid-media'
   | 'invalid-transition'
   | 'microphone-device-disconnected'
