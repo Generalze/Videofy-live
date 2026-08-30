@@ -47,9 +47,11 @@ import {
   type SpeechProbabilityDetector,
 } from '@videofy-live/speech-activity';
 import {
-  buildStreamingSynthesisProvider,
+  buildLiveSynthesis,
   buildStreamingTranscriptionProvider,
   describeLiveEngine,
+  describeNaijaLingoPreflight,
+  preflightNigerianSpecialist,
 } from './live-provider-wiring.js';
 
 const config = loadConfig();
@@ -250,6 +252,17 @@ app.get('/health', (_req, res) => {
       translation: liveEngine.translation,
       ...(liveEngine.stubbed.length > 0 ? { stubbed: liveEngine.stubbed } : {}),
     },
+    /**
+     * What ha/ig/yo/pcm will ACTUALLY sound like on this box.
+     *
+     * Reported unconditionally, including when it is fine, and including when
+     * nobody has asked for those languages yet. This is the one degradation in
+     * the pipeline that produces no other signal: the fallback returns 200 and
+     * plausible audio, and only a speaker of the language can hear that the
+     * wrong vendor answered. A surface that stayed silent about it would be
+     * reporting a working product while shipping a broken one.
+     */
+    ...(nigerianSynthesis === null ? {} : { nigerianLanguageSynthesis: nigerianSynthesis() }),
     ...(unavailablePairs.length > 0 ? { unavailableTranslationPairs: unavailablePairs } : {}),
     ...(strandedVoiceCleanups > 0 ? { strandedVoiceCleanups } : {}),
     timestamp: new Date().toISOString(),
@@ -872,7 +885,42 @@ if (operatorEntitlement.allowedCount === 0) {
 // socket anyway would accept a call's audio and produce no captions while
 // every component reported success.
 const streamingTranscription = buildStreamingTranscriptionProvider(config);
-const streamingSynthesis = buildStreamingSynthesisProvider(config);
+const liveSynthesis = buildLiveSynthesis(config);
+const streamingSynthesis = liveSynthesis.provider;
+
+/**
+ * Ask 9jaLingo two questions before anybody needs an answer, and say the result
+ * in ONE line.
+ *
+ * WHY AT BOOT AND NOT ON FIRST USE. The way "paste the key" goes wrong is
+ * quiet: a key that is valid but has no plan, a key whose speaker catalogue
+ * does not cover Yoruba, a header the vendor changed. All three produce a
+ * fallback that sounds like a working product to anyone who does not speak the
+ * language -- so the moment to find out is before the demo, not during it.
+ *
+ * IT CANNOT FAIL THE BOOT. A vendor outage must not become an outage here;
+ * that coupling is exactly what the fallback exists to avoid. It reports, and
+ * the report goes on /health so somebody who missed the log can still find it.
+ *
+ * NAMES ONLY. Nothing in this line is or contains a credential.
+ */
+if (liveSynthesis.nigerian !== null) {
+  void preflightNigerianSpecialist()
+    .then((preflight) => {
+      liveSynthesis.nigerian?.recordPreflight(preflight);
+      const line = describeNaijaLingoPreflight(preflight);
+      if (preflight.keyConfigured && preflight.reachable && preflight.problem === null) {
+        logger.info(line);
+      } else {
+        logger.warn(line);
+      }
+    })
+    .catch((error: unknown) => {
+      logger.warn('9jaLingo preflight could not run', {
+        message: error instanceof Error ? error.message : 'unknown failure',
+      });
+    });
+}
 
 /**
  * Say plainly whether this deployment can translate speech at all.
@@ -883,6 +931,11 @@ const streamingSynthesis = buildStreamingSynthesisProvider(config);
  * at the loudest moment available -- startup -- and on /health for anything
  * that checks later.
  */
+/** Read at request time, like `liveEngine`; null only when synthesis is off. */
+const nigerianSynthesis = liveSynthesis.nigerian === null
+  ? null
+  : (): unknown => liveSynthesis.nigerian?.state();
+
 const liveEngine = describeLiveEngine(config);
 if (!liveEngine.real) {
   logger.warn('Translation engine is NOT real; calls cannot produce translated audio', {

@@ -4,7 +4,11 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  NIGERIAN_FALLBACK_PROVIDER_ID,
   NIGERIAN_SPECIALIST_LANGUAGES,
+  NIGERIAN_SPECIALIST_PROVIDER_ID,
+  NIGERIAN_TTS_ROUTE_ORDER,
+  isDegradedNigerianSynthesis,
   isNigerianSpecialistLanguage,
   localFallbackPermitted,
   resolveCommercialRoute,
@@ -216,6 +220,85 @@ describe('local models are a separate path, never a quiet substitute', () => {
       expect(ids).not.toContain('local');
       expect(ids).not.toContain('piper');
       expect(ids).not.toContain('faster-whisper');
+    }
+  });
+});
+
+
+/**
+ * The founder ruling of 2026-08-30, as tests rather than as a comment.
+ *
+ * Each of these guards a DIFFERENT way the rule could be broken while every
+ * other test still passed, which is the only reason there are five of them:
+ * the specialist could lead and ElevenLabs could still be behind it; Azure
+ * could be reached via the general chain rather than named; the rule could
+ * apply to three languages and quietly miss Pidgin; it could leak into the
+ * other ninety; and the degraded question could answer "no" for a language
+ * nobody checked.
+ */
+describe('ha/ig/yo/pcm: 9jaLingo, then Azure, then nothing', () => {
+  it('PIN: the chain is EXACTLY the specialist then Azure, for all four', () => {
+    for (const language of ['ha', 'ig', 'yo', 'pcm']) {
+      const ids = route('tts', PROG_UPLOAD, { language, minimumStage: 'configured' }).ordered.map(
+        (c) => c.providerId,
+      );
+      // Not `toContain`, not `[0]`. The whole list, because the defect this
+      // replaces was an EXTRA member: ElevenLabs sat third and answered
+      // whenever the first two did not, in confident, wrong Yoruba.
+      expect(ids, language).toEqual(['naijalingo', 'azure']);
+    }
+  });
+
+  it('PIN: ElevenLabs never speaks a Nigerian language, however the chain fails', () => {
+    for (const language of NIGERIAN_SPECIALIST_LANGUAGES) {
+      // Even with the specialist unusable -- no key, or a key that does not
+      // resolve -- the answer is Azure alone. "One more vendor behind the
+      // fallback" is not extra safety here; it is a third chance to serve
+      // fluent nonsense.
+      const result = route('tts', PROG_UPLOAD, {
+        language,
+        minimumStage: 'configured',
+        isUsable: (id) => id !== 'naijalingo',
+      });
+      expect(result.ordered.map((c) => c.providerId), language).toEqual(['azure']);
+      expect(result.refusals.join(' ')).toMatch(/naijalingo: credentials or authentication/);
+    }
+  });
+
+  it('PIN: a control language keeps the general chain untouched', () => {
+    // The rule REPLACES the general chain for four languages. If it leaked, it
+    // would show up here as Spanish losing its primary.
+    const ids = route('tts', PROG_UPLOAD, { language: 'es', minimumStage: 'configured' }).ordered.map(
+      (c) => c.providerId,
+    );
+    expect(ids).toEqual(['elevenlabs', 'azure']);
+  });
+
+  it('PIN: the order constant and the resolved route cannot drift apart', () => {
+    // One exported constant is the single source; media-ingest imports it too.
+    // Asserting the resolver against it is what makes that claim checkable
+    // rather than merely stated in a comment.
+    expect(NIGERIAN_TTS_ROUTE_ORDER).toEqual([
+      NIGERIAN_SPECIALIST_PROVIDER_ID,
+      NIGERIAN_FALLBACK_PROVIDER_ID,
+    ]);
+    expect(
+      route('tts', PROG_UPLOAD, { language: 'yo', minimumStage: 'configured' }).ordered.map(
+        (c) => c.providerId,
+      ),
+    ).toEqual([...NIGERIAN_TTS_ROUTE_ORDER]);
+  });
+
+  it('PIN: anything but the specialist is DEGRADED for these languages, and only these', () => {
+    for (const language of ['ha', 'ig', 'yo', 'pcm', 'YO-ng']) {
+      expect(isDegradedNigerianSynthesis(language, 'azure'), language).toBe(true);
+      expect(isDegradedNigerianSynthesis(language, 'elevenlabs'), language).toBe(true);
+      expect(isDegradedNigerianSynthesis(language, 'naijalingo'), language).toBe(false);
+    }
+    // A general language served by a general vendor is not degradation; saying
+    // it was would make the marker meaningless everywhere it matters.
+    for (const language of ['es', 'en', 'fr', undefined]) {
+      expect(isDegradedNigerianSynthesis(language, 'azure'), String(language)).toBe(false);
     }
   });
 });

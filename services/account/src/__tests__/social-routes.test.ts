@@ -189,6 +189,53 @@ describe('presence', () => {
   });
 });
 
+describe('the languages an account may choose', () => {
+  /*
+   * THE SEAM THIS CLOSES. The phone's Profile offered English, Spanish and
+   * French because these two routes refused everything else, and a refusal
+   * looks on a device like a tap that did not register. The catalogue is now
+   * the authority -- which is a widening, not an opening: a code outside it is
+   * still refused.
+   */
+  it('accepts any catalogue language, including the Nigerian four', async () => {
+    const alice = await person('alice');
+    for (const spokenLanguage of ['yo', 'ha', 'ig', 'pcm', 'sw', 'zh']) {
+      const response = await call('POST', '/accounts/languages', { spokenLanguage }, alice.token);
+      expect(response.status, spokenLanguage).toBe(200);
+      expect(await response.json()).toMatchObject({ spokenLanguage });
+    }
+
+    const listening = await call('POST', '/accounts/languages', { listeningLanguage: 'fil' }, alice.token);
+    expect(listening.status).toBe(200);
+
+    const primary = await call('POST', '/accounts/default-language', { defaultLanguage: 'ig' }, alice.token);
+    expect(primary.status).toBe(200);
+    expect(await primary.json()).toEqual({ defaultLanguage: 'ig' });
+  });
+
+  it('still refuses a code the catalogue does not know', async () => {
+    const alice = await person('alice');
+    for (const body of [{ spokenLanguage: 'klingon' }, { spokenLanguage: 'xx' }, { listeningLanguage: 42 }, {}]) {
+      const response = await call('POST', '/accounts/languages', body, alice.token);
+      expect(response.status, JSON.stringify(body)).toBe(400);
+    }
+    expect((await call('POST', '/accounts/default-language', { defaultLanguage: 'zz' }, alice.token)).status).toBe(400);
+  });
+
+  it('stores the catalogue KEY for a regional tag or an alias, not the tag as sent', async () => {
+    // `en-GB` is what a device locale hands over, and `tl` is what an older
+    // client calls Filipino. Storing either verbatim would make every later
+    // `stored === row.code` comparison false.
+    const alice = await person('alice');
+    const regional = await call('POST', '/accounts/languages', { spokenLanguage: 'en-GB' }, alice.token);
+    expect(regional.status).toBe(200);
+    expect(await regional.json()).toMatchObject({ spokenLanguage: 'en' });
+
+    const alias = await call('POST', '/accounts/languages', { listeningLanguage: 'tl' }, alice.token);
+    expect(await alias.json()).toMatchObject({ listeningLanguage: 'fil' });
+  });
+});
+
 describe('the profile extras', () => {
   it('round-trip through /me and appear on the profile a contact sees', async () => {
     const alice = await person('alice');

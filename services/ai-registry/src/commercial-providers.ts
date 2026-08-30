@@ -147,6 +147,27 @@ const DEEPGRAM_FLUX_REFERENCE =
 const ELEVENLABS_MODELS_DOC = 'https://elevenlabs.io/docs/overview/capabilities/text-to-speech';
 const ELEVENLABS_STREAM_DOC = 'https://elevenlabs.io/docs/api-reference/text-to-speech/stream';
 const NAIJALINGO_API_DOC = 'https://www.9jalingo.org/api-documentation';
+/**
+ * The vendor's OWN CLIENT, which is a better authority than its docs page.
+ *
+ * Read on 2026-08-30: npm `naijalingo@0.1.3`, README plus compiled
+ * `dist/index.js`. It states the four things the documentation page still does
+ * not -- the host, the authentication header, the model id and the full
+ * endpoint set -- and it names the language-code-as-voice mistake explicitly.
+ * Reading a vendor's client rather than its marketing page cost one lookup and
+ * replaced three guesses.
+ *
+ * A URL, AND THAT IS A RULE RATHER THAN A STYLE. `service-selection` pins that
+ * every model's `evidence` resolves to a page the next reader can open: a
+ * citation nobody can follow is an assertion. The npm VERSION page is that
+ * page -- it serves the README this record was built from, pinned to the exact
+ * version, so a later 0.2.0 that changes the header cannot silently rewrite
+ * what we claim to have read. What was read inside it is stated separately.
+ */
+const NAIJALINGO_SDK_DOC = 'https://www.npmjs.com/package/naijalingo/v/0.1.3';
+
+/** What was read at that URL, for prose that has to say so. */
+const NAIJALINGO_SDK_READING = `${NAIJALINGO_SDK_DOC} (README + dist/index.js, read 2026-08-30)`;
 const GOOGLE_TRANSLATE_DOC = 'https://docs.cloud.google.com/translate/docs/translate-text';
 const AZURE_TTS_REST_DOC =
   'https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech';
@@ -512,12 +533,26 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
     displayName: '9jaLingo (NaijaLingo)',
     requirements: {
       configEnvVars: [],
+      // ACTIVATION IS ONE VARIABLE. Everything else has a published default, so
+      // switching this vendor on is "paste the key" and nothing else -- which
+      // is the whole point of having read the SDK.
       auth: { kind: 'api-key', envVars: ['NAIJALINGO_API_KEY'] },
-      // A base-URL override is useful for a test double or a self-hosted
-      // instance. It is NOT required: the old registry demanded one because
-      // nobody had read the vendor's documentation, which made an unread
-      // endpoint into an operator's problem.
-      optionalEnvVars: ['NAIJALINGO_BASE_URL'],
+      optionalEnvVars: [
+        // Test double or self-hosted instance; the real host is published.
+        'NAIJALINGO_BASE_URL',
+        // Speaker ids. NOT language codes -- the vendor's own SDK throws for
+        // that, and so does the adapter.
+        'NAIJALINGO_DEFAULT_VOICE',
+        'NAIJALINGO_VOICE_IDS',
+        'NAIJALINGO_MODEL',
+        // Only if the vendor changes its handshake before its docs do.
+        'NAIJALINGO_AUTH_HEADER',
+        'NAIJALINGO_AUTH_SCHEME',
+        // wav (default) or pcm. `pcm` additionally REQUIRES the rate below,
+        // because raw PCM declares none and the vendor publishes none.
+        'NAIJALINGO_RESPONSE_FORMAT',
+        'NAIJALINGO_SAMPLE_RATE',
+      ],
     },
     integrationStage: 'configured',
     capabilities: {
@@ -526,32 +561,53 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
       translation: UNVERIFIED_TRANSLATION,
     },
     capabilityEvidence:
-      `${NAIJALINGO_API_DOC} (POST /v1/audio/speech; input/voice/lang/response_format; ` +
-      'response_format includes pcm; languages ha, ig, yo, pcm). Streaming is ' +
-      'mentioned but its framing is not specified, so it stays unverified.',
+      `${NAIJALINGO_SDK_READING}: base URL https://api.9jalingo.org; auth header ` +
+      "'X-API-Key' with the raw key and no scheme; POST /v1/audio/speech and " +
+      'POST /v1/audio/speech/stream; GET /v1/health, /v1/languages, /v1/models, ' +
+      '/v1/speakers; model 9jalingo-tts-1; response_format wav|pcm|mp3|flac|aac|' +
+      `alac|ogg; languages ha, ig, yo, pcm. Also ${NAIJALINGO_API_DOC}, which ` +
+      'covers the request body but states neither the host nor the header.',
     models: [
       {
-        modelId: 'audio-speech-v1',
+        // The vendor's own `DEFAULT_MODEL_NAME`. The previous record carried
+        // `audio-speech-v1`, which nothing published ever said.
+        modelId: '9jalingo-tts-1',
         purpose:
-          'Nigerian-language synthesis over an OpenAI-compatible speech endpoint. ' +
-          'Specialist, never a general fallback.',
-        capabilities: { tts: { completeAudio: 'yes', streamingAudio: 'unverified' } },
+          'Nigerian-language synthesis over an OpenAI-shaped speech endpoint. ' +
+          'Specialist, never a general fallback. 240+ speaker ids across the ' +
+          'four languages; a voice is a SPEAKER ID and never a language code.',
+        /*
+         * `streamingAudio: yes` on a CITATION, which is the bar this file sets
+         * -- the SDK ships `POST /v1/audio/speech/stream` and an `AudioStream`
+         * that yields chunks. It is a claim about the VENDOR, not about our
+         * adapter: media-ingest still collects the whole buffer and reports
+         * time-to-first-chunk equal to total time, so no latency claim is
+         * borrowed from this cell.
+         */
+        capabilities: { tts: { completeAudio: 'yes', streamingAudio: 'yes' } },
         verifiedLanguages: ['ha', 'ig', 'yo', 'pcm'],
-        evidence: NAIJALINGO_API_DOC,
-        candidateFor: ['programme:uploaded', 'programme:live'],
+        evidence: NAIJALINGO_SDK_DOC,
+        candidateFor: ['call:live', 'programme:uploaded', 'programme:live'],
       },
     ],
     liveObservations: [],
     notes:
-      'Documented (read 2026-08-22): POST /v1/audio/speech with `input`, ' +
-      '`voice`/`speaker`, `lang`/`language` in {ha,ig,yo,pcm}, and ' +
-      '`response_format` including `pcm`. NOT documented on the public page: the ' +
-      'API HOST, the authentication header format, output sample rates, the ' +
-      'streaming framing, and any STT endpoint. Those are PROTOCOL VALIDATION ' +
-      'DEFERRED -- the base URL and auth scheme must be supplied as configuration ' +
-      'and confirmed by a live smoke, and no endpoint has been invented to fill ' +
-      'the gaps. Integration does NOT activate Hausa/Igbo/Yoruba/Pidgin in ' +
-      'product routing; language activation stays demand-led.',
+      'THREE OF THE FOUR UNKNOWNS CLOSED on 2026-08-30 by reading the official ' +
+      'SDK rather than the documentation page: the host, the auth header ' +
+      "('X-API-Key', raw key, no scheme -- the OpenAI-shaped body invites " +
+      "'Authorization: Bearer', which would have failed every call), and the " +
+      'streaming endpoint. THE PCM SAMPLE RATE IS STILL UNPUBLISHED and is NOT ' +
+      'guessed: the adapter requests `wav` and reads the true rate from the RIFF ' +
+      'header, because a wrong PCM rate does not fail -- it plays at the wrong ' +
+      'pitch in a language the reviewer may not speak. STILL `configured`, not ' +
+      '`integrated`: no key exists yet, so this adapter has never been run ' +
+      'against the vendor, and having read a contract is not evidence of having ' +
+      'spoken it. ROUTING (see commercial-routing): for ha/ig/yo/pcm the chain is ' +
+      '9jaLingo then AZURE and nothing else -- ElevenLabs is deliberately absent ' +
+      'because it answers those languages with confident, wrong audio. Every ' +
+      'sentence the fallback serves is marked degraded where an operator can see ' +
+      'it. Integration does NOT by itself activate these languages in product ' +
+      'routing; language activation stays demand-led.',
   },
 ];
 

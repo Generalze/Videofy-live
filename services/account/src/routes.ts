@@ -11,6 +11,7 @@
  * credential sitting in a file that outlives the session it belonged to.
  */
 import type express from 'express';
+import { lookupLanguage } from '@videofy-live/language-catalogue';
 import {
   bearerToken,
   issueSessionToken,
@@ -19,6 +20,36 @@ import {
   verifySessionToken,
 } from '@videofy-live/account-tokens';
 import type { AccountRecord, AccountStore } from './account-store.js';
+
+/**
+ * WHICH LANGUAGES AN ACCOUNT MAY CHOOSE: the shared catalogue, and nothing
+ * narrower.
+ *
+ * This used to be `'en' | 'es' | 'fr'`, hard-written in two route handlers.
+ * The consequence was not a missing feature but an invisible one: media ingest
+ * published a ninety-eight language catalogue, the operator console showed it,
+ * and a phone offering any of the other ninety-five would have been answered
+ * with a 400 that looks, on a device, like a tap that did nothing.
+ *
+ * The catalogue is the authority; a code outside it is still refused, so this
+ * is a widening and not an opening. Whether a language WORKS is a separate
+ * question, answered by the capability resolver -- an account may hold a
+ * preference for a language this deployment cannot yet speak, and that is a
+ * capability warning to show, not a reason to refuse the preference.
+ */
+const UNSUPPORTED_LANGUAGE_MESSAGE = 'Pick a language from the catalogue.';
+
+/**
+ * The catalogue KEY for whatever the caller sent, or null.
+ *
+ * Normalising rather than merely validating, because a device hands over its
+ * locale: `en-GB` and `en` are the same language, and storing both would make
+ * `profile.spokenLanguage === row.code` false for half the phones on earth.
+ * The catalogue's own aliases apply too, so `tl` is stored as `fil`.
+ */
+function accountLanguageKey(value: unknown): string | null {
+  return typeof value === 'string' ? (lookupLanguage(value)?.code ?? null) : null;
+}
 import type { VerificationService } from './verification.js';
 import {
   STEP_UP_FRESHNESS_MS,
@@ -1277,9 +1308,11 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       res.status(401).json({ error: 'Sign in to continue.' });
       return;
     }
-    const requested = (req.body as { defaultLanguage?: unknown } | undefined)?.defaultLanguage;
-    if (requested !== 'en' && requested !== 'es' && requested !== 'fr') {
-      res.status(400).json({ error: 'Pick one of the supported languages.' });
+    const requested = accountLanguageKey(
+      (req.body as { defaultLanguage?: unknown } | undefined)?.defaultLanguage,
+    );
+    if (requested === null) {
+      res.status(400).json({ error: UNSUPPORTED_LANGUAGE_MESSAGE });
       return;
     }
     void deps.store
@@ -1306,20 +1339,20 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       return;
     }
     const body = (req.body ?? {}) as { spokenLanguage?: unknown; listeningLanguage?: unknown };
-    const valid = (value: unknown): value is 'en' | 'es' | 'fr' =>
-      value === 'en' || value === 'es' || value === 'fr';
+    const spoken = accountLanguageKey(body.spokenLanguage);
+    const listening = accountLanguageKey(body.listeningLanguage);
     if (
-      (body.spokenLanguage !== undefined && !valid(body.spokenLanguage)) ||
-      (body.listeningLanguage !== undefined && !valid(body.listeningLanguage)) ||
+      (body.spokenLanguage !== undefined && spoken === null) ||
+      (body.listeningLanguage !== undefined && listening === null) ||
       (body.spokenLanguage === undefined && body.listeningLanguage === undefined)
     ) {
-      res.status(400).json({ error: 'Pick one of the supported languages.' });
+      res.status(400).json({ error: UNSUPPORTED_LANGUAGE_MESSAGE });
       return;
     }
     void deps.store
       .setLanguages(caller.accountId, {
-        ...(valid(body.spokenLanguage) ? { spokenLanguage: body.spokenLanguage } : {}),
-        ...(valid(body.listeningLanguage) ? { listeningLanguage: body.listeningLanguage } : {}),
+        ...(spoken === null ? {} : { spokenLanguage: spoken }),
+        ...(listening === null ? {} : { listeningLanguage: listening }),
       })
       .then((record) => {
         if (!record) {

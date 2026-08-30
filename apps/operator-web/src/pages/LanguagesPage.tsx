@@ -31,7 +31,7 @@
 import React, { useMemo, useState } from 'react';
 import type { SourceLanguageControlMetadata } from '@videofy-live/shared-types';
 import styles from './LanguagesPage.module.css';
-import { CAPABILITY_MEANINGS, STATE_WORDS, filterLanguages, languageTag, type CapabilityState, type LanguageRow } from '../languageRows';
+import { CAPABILITY_MEANINGS, DEGRADED_WORD, STATE_WORDS, filterLanguages, isAddableTarget, isSelectableSource, languageTag, type CapabilityState, type LanguageRow } from '../languageRows';
 import { Button, Chip, Divider, Eyebrow, Panel, type Tone } from '../premium/primitives';
 import { ArrowRightIcon, CheckIcon, CloseIcon, HandIcon, InfoIcon, PlusIcon, SearchIcon, SignalIcon, SparkleIcon } from '../premium/icons';
 
@@ -74,6 +74,22 @@ function CapabilityChip({ state, reason }: { readonly state: CapabilityState; re
   return (
     <Chip tone={STATE_TONE[state]} size="sm" caps className={styles.stateChip} title={reason ?? STATE_WORDS[state]}>
       {STATE_WORDS[state]}
+    </Chip>
+  );
+}
+
+/*
+ * THE ONE THING NOBODY DOWNSTREAM CAN SEE FOR THEMSELVES.
+ *
+ * A Nigerian language served by a general voice vendor plays perfectly and is
+ * wrong, and every automated signal on that path is green (founder-confirmed,
+ * 2026-08-26). Only a speaker of the language can tell, so the operator has to
+ * be told in words, on the row, before the programme starts.
+ */
+function DegradedChip({ reason }: { readonly reason?: string | undefined }): React.ReactElement {
+  return (
+    <Chip tone="warn" size="sm" caps className={styles.stateChip} title={reason ?? DEGRADED_WORD}>
+      {DEGRADED_WORD}
     </Chip>
   );
 }
@@ -227,6 +243,10 @@ export function LanguagesPage({
                   <button
                     type="button"
                     className={styles.sourceMatch}
+                    // SOURCE, so the question is STT and MT: a language nothing
+                    // can transcribe cannot be spoken into a programme.
+                    disabled={!isSelectableSource(row)}
+                    title={isSelectableSource(row) ? undefined : (row.reason ?? 'No recogniser on this chain hears this language.')}
                     onClick={() => {
                       onSourceLanguageChange({ value: row.code, mode: 'manual' });
                       setSourceQuery('');
@@ -264,7 +284,8 @@ export function LanguagesPage({
               <span key={row.code} className={styles.selectedChip}>
                 <span className={styles.tagTeal}>{languageTag(row.code)}</span>
                 <span className={styles.selectedName}>{row.label}</span>
-                {row.textOnly ? <small className={styles.selectedNote}>captions only</small> : null}
+                {row.textOnly || row.captionsOnly ? <small className={styles.selectedNote}>captions only</small> : null}
+                {row.degraded ? <small className={styles.selectedNote}>degraded voice</small> : null}
                 {row.state === 'limited' ? <small className={styles.selectedNote}>beta</small> : null}
                 <button
                   type="button"
@@ -307,8 +328,11 @@ export function LanguagesPage({
             {rows.length > 0 && candidates.length === 0 && <li className={styles.emptyRow}>No language matches that.</li>}
             {candidates.map((row) => {
               const added = targetLanguages.includes(row.code);
-              const addable = !added && !locked && row.state !== 'unavailable';
-              const why = locked ? lockedReason : added ? 'Already selected' : row.state === 'unavailable' ? (row.reason ?? 'A stage of the chain has no provider for this language.') : `Add ${row.label}`;
+              // TARGET, so the question is MT and TTS. Recognition has nothing
+              // to do with whether a listener can be given this language.
+              const offerable = isAddableTarget(row);
+              const addable = !added && !locked && offerable;
+              const why = locked ? lockedReason : added ? 'Already selected' : !offerable ? (row.reason ?? 'Nothing on this chain translates into this language.') : `Add ${row.label}`;
               return (
                 <li key={row.code} className={styles.catalogueRow}>
                   <span className={styles.tagRow}>{languageTag(row.code)}</span>
@@ -316,7 +340,9 @@ export function LanguagesPage({
                     {row.label}
                     {row.nativeName !== undefined && row.nativeName !== row.label && <small className={styles.rowNative}>{row.nativeName}</small>}
                   </span>
-                  <CapabilityChip state={row.state} reason={row.reason} />
+                  {row.captionsOnly === true && <small className={styles.rowNative}>captions only</small>}
+                  <CapabilityChip state={row.targetState ?? row.state} reason={row.reason} />
+                  {row.degraded === true && <DegradedChip reason={row.reason} />}
                   <button
                     type="button"
                     className={`${styles.add} ${added ? styles.added : ''}`}

@@ -11,27 +11,57 @@
  * none of it is intelligible. Every server-side signal was green. So the
  * answer here is built from evidence GRADES, not from "does the call succeed".
  *
+ * WHAT CHANGED ON 2026-08-30, and why it is the point of this file.
+ *
+ * The MT stage used to be answered by two hand-written arrays of ten and six
+ * codes copied out of media-ingest's env defaults. Everything else in the
+ * catalogue therefore reported `unavailable` -- not because no engine could
+ * translate it, but because nobody had written it down here. The console could
+ * not show breadth that genuinely exists, which is its own kind of lie. Every
+ * stage now ENUMERATES over the providers and engines that declare a language
+ * (commercial-providers.ts for vendor accounts, self-hosted-engines.ts for the
+ * local models), so a language is enabled by a provider being SEEN, never by
+ * anybody adding it to a list. Promotion by hardcoding is what this file
+ * exists to make impossible.
+ *
  * The chain this describes is the one that actually runs today:
  *
- *   STT  Deepgram (nova-3 / flux)
- *   MT   opus-mt, self-hosted Marian models, one model per direction
- *   TTS  ElevenLabs then Azure, with 9jaLingo in front for ha/ig/yo/pcm
+ *   STT  Deepgram (nova-3 / flux), then local faster-whisper
+ *   MT   opus-mt / M2M-100, NLLB-200 as the configured fallback, Google last
+ *   TTS  ElevenLabs then Azure -- EXCEPT ha/ig/yo/pcm, which are 9jaLingo then
+ *        Azure and nothing else (commercial-routing.ts owns that rule)
  *
- * Per stage a language earns one of four evidence levels, and the row's state
- * is the WEAKEST stage:
+ * Per stage a language earns one of four evidence levels, and each reported
+ * state is the WEAKEST stage that answers its question:
  *
  *   live      a `liveObservations` entry names the language        -> qualified
- *   declared  the model's `verifiedLanguages` (documentation read) -> available
- *   claimed   `claimedLanguages`, or any provider still at the
- *             `configured` stage, whose adapter has never been run -> limited
- *   none      no provider at all                                  -> unavailable
+ *   declared  a model's `verifiedLanguages` (documentation read), or
+ *             a local engine PINNED BY REVISION whose asset names it
+ *                                                                  -> available
+ *   claimed   `claimedLanguages`, a model card's published list, or
+ *             any provider still at the `configured` stage whose
+ *             adapter has never been run                            -> limited
+ *   none      no provider at all                                   -> unavailable
  *
- * Every catalogue language gets a row, `unavailable` ones included, so a picker
- * can SHOW the language and refuse to SELECT it rather than pretend it does
- * not exist. The three stage booleans are reported separately because a
- * language may be a usable target (MT + TTS) without being a usable source
- * (STT); the state answers the conservative question, the booleans answer the
- * specific one.
+ * THREE STATES, NOT ONE, because "can we do this language" is three questions:
+ *
+ *   sourceState   STT + MT. Can somebody SPEAK it into a programme?
+ *   targetState   MT + TTS. Can a programme be HEARD in it?
+ *   state         all three, the conservative answer, unchanged for callers
+ *                 that only ever wanted one word.
+ *
+ * A picker that gated its target list on the conservative state refused Igbo
+ * as a target because no recogniser transcribes Igbo -- which has nothing to do
+ * with whether a listener can hear Igbo. `captionsOnly` marks the rows that can
+ * be translated and not spoken; they are a real product state, not a failure.
+ *
+ * THE SPECIALIST RULE. For ha/ig/yo/pcm a general vendor can never rise above
+ * `claimed`, and when the specialist is not configured the row is flagged
+ * `degraded` with a reason that says so in words. This is the founder-confirmed
+ * finding of 2026-08-26 expressed as data: those vendors answer with confident,
+ * wrong audio, so their HTTP 200 is not evidence about the language and must
+ * never be allowed to read as availability. "Enable everything" is not
+ * permission to claim everything is good.
  *
  * DELIBERATELY NOT HERE: per-grade routing. The tariff has two grades that
  * differ only in synthesis vendor (standard = Azure, premium = ElevenLabs),
@@ -39,32 +69,50 @@
  * fallback chain. Reporting two columns would describe a router that does not
  * exist. `grade` is accepted so callers can pass it now, and it changes
  * nothing until live-provider-wiring selects by grade; the seam is marked.
- *
- * The opus-mt table is a MIRROR of media-ingest's config defaults
- * (DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES, DEFAULT_OPUS_MT_LANGUAGE_MODELS).
- * This library cannot import a service, so the values are copied and named as
- * copies. A change to either belongs in both until media-ingest consumes the
- * registry directly.
  */
-import { LANGUAGE_CATALOGUE, baseSubtag } from '@videofy-live/language-catalogue';
+import { LANGUAGE_CATALOGUE } from '@videofy-live/language-catalogue';
 import { COMMERCIAL_PROVIDERS, type CommercialProvider } from './commercial-providers.js';
+import {
+  NIGERIAN_SPECIALIST_PROVIDER_ID,
+  NIGERIAN_TTS_ROUTE_ORDER,
+  isNigerianSpecialistLanguage,
+} from './commercial-routing.js';
+import {
+  SELF_HOSTED_ENGINES,
+  catalogueKeyOf,
+  type CapabilityStage,
+  type SelfHostedEngine,
+} from './self-hosted-engines.js';
 
 export type LanguageCapabilityState = 'available' | 'qualified' | 'limited' | 'unavailable';
 
 /** The two tariff grades. Today they resolve identically; see the header. */
 export type SynthesisGrade = 'standard' | 'premium';
 
-export type CapabilityStage = 'stt' | 'mt' | 'tts';
-
 export interface LanguageCapability {
   readonly code: string;
   readonly englishName: string;
   readonly nativeName: string;
+  /** The conservative answer: the weakest of all three stages. */
   readonly state: LanguageCapabilityState;
+  /** Speaking this language INTO a programme: STT and MT. */
+  readonly sourceState: LanguageCapabilityState;
+  /** Hearing a programme IN this language: MT and TTS. */
+  readonly targetState: LanguageCapabilityState;
+  /** Per stage, so a caller can ask its own question instead of ours. */
+  readonly stageStates: Readonly<Record<CapabilityStage, LanguageCapabilityState>>;
   readonly stt: boolean;
   readonly mt: boolean;
   readonly tts: boolean;
+  /** Translatable but not speakable: a real product state, not a failure. */
+  readonly captionsOnly: boolean;
   readonly providers: { readonly stt?: string; readonly mt?: string; readonly tts?: string };
+  /**
+   * A specialist language being served by a general vendor. The audio plays,
+   * every signal is green, and a speaker of the language can hear that it is
+   * wrong. Surfaces MUST label it.
+   */
+  readonly degraded?: boolean;
   /** Present whenever the state is below `qualified`; names the stage(s) at fault. */
   readonly reason?: string;
 }
@@ -76,11 +124,25 @@ export interface ResolveLanguageCapabilitiesInput {
    * then both grades return the same rows, which is the truth of the live path.
    */
   readonly grade?: SynthesisGrade;
-  /** Injectable for tests; defaults to the registry. The function reads nothing else. */
+  /** Injectable for tests; defaults to the registry. */
   readonly providers?: readonly CommercialProvider[];
+  /** Injectable for tests; defaults to the self-hosted engine declarations. */
+  readonly engines?: readonly SelfHostedEngine[];
+  /**
+   * Which provider and engine ids this deployment actually has configured, by
+   * id -- NEVER by credential value; nothing here reads the environment.
+   *
+   * Omitted means "judge every declaration on its evidence", which is the
+   * catalogue-wide answer the operator console wants. Supplied, it is how a
+   * service asks the deployment-specific question, and it is the only way to
+   * model the case that matters most: WITHOUT 9jaLingo, Hausa, Igbo, Yoruba
+   * and Nigerian Pidgin must not read as available, because the general
+   * vendors' confident wrong audio is not availability.
+   */
+  readonly configuredProviderIds?: readonly string[];
 }
 
-/** Ordered weakest to strongest so `Math.min` over indices picks the row's state. */
+/** Ordered weakest to strongest so the minimum over a stage set picks the state. */
 const EVIDENCE_ORDER = ['none', 'claimed', 'declared', 'live'] as const;
 type Evidence = (typeof EVIDENCE_ORDER)[number];
 
@@ -91,30 +153,30 @@ const STATE_BY_EVIDENCE: Record<Evidence, LanguageCapabilityState> = {
   live: 'qualified',
 };
 
-/** Which registry providers serve which stage of the live chain, in chain order. */
-const LIVE_CHAIN: Readonly<Record<'stt' | 'tts', readonly string[]>> = {
+/**
+ * Which VENDOR ACCOUNTS serve which stage, in chain order. Order breaks
+ * evidence ties and nothing else.
+ *
+ * The Nigerian TTS order is NOT restated here: it is imported from
+ * commercial-routing.ts, which is the single source of that founder ruling.
+ * Two copies of "who speaks Yoruba" is exactly how the answer drifts.
+ */
+const COMMERCIAL_CHAIN: Readonly<Record<CapabilityStage, readonly string[]>> = {
   stt: ['deepgram'],
-  // 9jaLingo first: the live synthesis router puts the specialist in front of
-  // the general chain for its four languages. Order only breaks evidence ties.
-  tts: ['naijalingo', 'elevenlabs', 'azure'],
+  // Google is the registry's declared MT primary; it sits behind the local
+  // engines here because the local engines are what this deployment runs.
+  mt: ['google-cloud'],
+  tts: ['elevenlabs', 'azure'],
+};
+
+/** Local engines come first at MT and last elsewhere; see COMMERCIAL_CHAIN. */
+const ENGINES_BEFORE_VENDORS: Readonly<Record<CapabilityStage, boolean>> = {
+  stt: false,
+  mt: true,
+  tts: false,
 };
 
 export const OPUS_MT_PROVIDER_ID = 'opus-mt';
-
-/**
- * Mirror of DEFAULT_OPUS_MT_LANGUAGE_MODELS: languages with an explicit,
- * configured Marian route. `declared`, not `live` -- staging has reported these
- * pairs resolvable, but no observation in the registry records a translation
- * in them, and this file only reads the registry.
- */
-const OPUS_MT_ROUTED_LANGUAGES: readonly string[] = ['en', 'fr', 'es', 'pt'];
-
-/**
- * Mirror of DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES minus the routed
- * set: listed as targets with no explicit model route, so the runtime must
- * find a Helsinki-NLP snapshot by convention. A convention is a claim.
- */
-const OPUS_MT_CLAIMED_LANGUAGES: readonly string[] = ['de', 'it', 'ja', 'zh', 'ar', 'yo'];
 
 const STAGE_LABEL: Record<CapabilityStage, string> = {
   stt: 'STT',
@@ -122,27 +184,57 @@ const STAGE_LABEL: Record<CapabilityStage, string> = {
   tts: 'TTS',
 };
 
+const CAPABILITY_OF_STAGE: Record<CapabilityStage, 'transcription' | 'translation' | 'tts'> = {
+  stt: 'transcription',
+  mt: 'translation',
+  tts: 'tts',
+};
+
 interface StageResult {
   readonly evidence: Evidence;
   readonly provider?: string;
+  readonly degraded?: boolean;
+}
+
+function rank(evidence: Evidence): number {
+  return EVIDENCE_ORDER.indexOf(evidence);
 }
 
 function strongest(a: Evidence, b: Evidence): Evidence {
-  return EVIDENCE_ORDER.indexOf(a) >= EVIDENCE_ORDER.indexOf(b) ? a : b;
+  return rank(a) >= rank(b) ? a : b;
 }
 
+function weakestOf(evidence: readonly Evidence[]): Evidence {
+  return evidence.reduce((a, b) => (rank(a) <= rank(b) ? a : b));
+}
+
+/** Cap an evidence level, so a general vendor cannot out-rank its own limits. */
+function cappedAt(evidence: Evidence, ceiling: Evidence): Evidence {
+  return rank(evidence) <= rank(ceiling) ? evidence : ceiling;
+}
+
+/**
+ * Does this tag name that catalogue language? Vendor tags are reduced through
+ * the catalogue's own aliases, so Deepgram's `tl`, Azure's `fil-PH` and
+ * Whisper's `nn` all land on the catalogue key rather than being missed.
+ */
 function listsLanguage(tags: readonly string[] | undefined, code: string): boolean {
-  return (tags ?? []).some((tag) => baseSubtag(tag) === code);
+  return (tags ?? []).some((tag) => catalogueKeyOf(tag) === code);
 }
 
-function providerEvidence(
+function commercialEvidence(
   provider: CommercialProvider,
-  capability: 'transcription' | 'tts',
+  capability: 'transcription' | 'translation' | 'tts',
   code: string,
 ): Evidence {
   let best: Evidence = 'none';
   for (const model of provider.models) {
-    const modelCapability = capability === 'tts' ? model.capabilities.tts : model.capabilities.transcription;
+    const modelCapability =
+      capability === 'tts'
+        ? model.capabilities.tts
+        : capability === 'translation'
+          ? model.capabilities.translation
+          : model.capabilities.transcription;
     if (modelCapability === undefined) continue;
     if (listsLanguage(model.claimedLanguages, code)) best = strongest(best, 'claimed');
     if (listsLanguage(model.verifiedLanguages, code)) {
@@ -162,37 +254,96 @@ function providerEvidence(
   return best;
 }
 
-function resolveChainStage(
-  stage: 'stt' | 'tts',
+/**
+ * A local engine has no vendor to observe, so it has two levels and not four:
+ * a model pinned by revision here that names the language has been RUN here
+ * (`declared`); a model card's published list has not (`claimed`).
+ */
+function engineEvidence(engine: SelfHostedEngine, code: string): Evidence {
+  if (listsLanguage(engine.exercisedLanguages, code)) return 'declared';
+  if (listsLanguage(engine.declaredLanguages, code)) return 'claimed';
+  return 'none';
+}
+
+interface ChainCandidate {
+  readonly id: string;
+  readonly evidence: Evidence;
+}
+
+function resolveStage(
+  stage: CapabilityStage,
   code: string,
   providers: readonly CommercialProvider[],
+  engines: readonly SelfHostedEngine[],
+  isConfigured: (id: string) => boolean,
 ): StageResult {
-  const capability = stage === 'stt' ? 'transcription' : 'tts';
-  let result: StageResult = { evidence: 'none' };
-  for (const providerId of LIVE_CHAIN[stage]) {
+  const capability = CAPABILITY_OF_STAGE[stage];
+  const specialistLanguage = stage === 'tts' && isNigerianSpecialistLanguage(code);
+
+  const vendorIds = specialistLanguage ? NIGERIAN_TTS_ROUTE_ORDER : COMMERCIAL_CHAIN[stage];
+  const vendorCandidates: ChainCandidate[] = [];
+  for (const providerId of vendorIds) {
+    if (!isConfigured(providerId)) continue;
     const provider = providers.find((candidate) => candidate.providerId === providerId);
     if (provider === undefined) continue;
-    const evidence = providerEvidence(provider, capability, code);
+    vendorCandidates.push({ id: providerId, evidence: commercialEvidence(provider, capability, code) });
+  }
+
+  /*
+   * THE SPECIALIST RULE, applied before anything is ranked.
+   *
+   * For ha/ig/yo/pcm the general fallback is capped at `claimed` however good
+   * its own record looks, because its record is about other languages. If the
+   * specialist contributes nothing -- absent from the registry, or not
+   * configured on this deployment -- whatever is left is a DEGRADED rendering
+   * and says so. Local engines are deliberately not consulted for these four:
+   * commercial-routing.ts rules the chain is 9jaLingo, then Azure, then
+   * nothing, and a second opinion here would quietly widen it.
+   */
+  if (specialistLanguage) {
+    const specialist = vendorCandidates.find((c) => c.id === NIGERIAN_SPECIALIST_PROVIDER_ID);
+    if (specialist !== undefined && specialist.evidence !== 'none') {
+      return { evidence: specialist.evidence, provider: specialist.id };
+    }
+    /*
+     * The fallback is reported AT `claimed` even though it lists none of these
+     * four languages, and that is deliberate. Azure does not claim Yoruba and
+     * synthesises it anyway -- fluently, confidently and wrongly. Reporting
+     * `unavailable` here would describe a chain that refuses, when the chain
+     * actually answers; the row would read as silence and the listener would
+     * get wrong audio. `limited` plus `degraded` is what really happens.
+     */
+    for (const candidate of vendorCandidates) {
+      if (candidate.id === NIGERIAN_SPECIALIST_PROVIDER_ID) continue;
+      return { evidence: 'claimed', provider: candidate.id, degraded: true };
+    }
+    return { evidence: 'none' };
+  }
+
+  const engineCandidates: ChainCandidate[] = engines
+    .filter((engine) => engine.stage === stage && isConfigured(engine.engineId))
+    .map((engine) => ({ id: engine.engineId, evidence: engineEvidence(engine, code) }));
+
+  const ordered = ENGINES_BEFORE_VENDORS[stage]
+    ? [...engineCandidates, ...vendorCandidates]
+    : [...vendorCandidates, ...engineCandidates];
+
+  let result: StageResult = { evidence: 'none' };
+  for (const candidate of ordered) {
     // Strictly-greater keeps chain order as the tiebreak.
-    if (EVIDENCE_ORDER.indexOf(evidence) > EVIDENCE_ORDER.indexOf(result.evidence)) {
-      result = { evidence, provider: providerId };
+    if (rank(candidate.evidence) > rank(result.evidence)) {
+      result = { evidence: candidate.evidence, provider: candidate.id };
     }
   }
   return result;
 }
 
-function resolveTranslationStage(code: string): StageResult {
-  if (OPUS_MT_ROUTED_LANGUAGES.includes(code)) {
-    return { evidence: 'declared', provider: OPUS_MT_PROVIDER_ID };
-  }
-  if (OPUS_MT_CLAIMED_LANGUAGES.includes(code)) {
-    return { evidence: 'claimed', provider: OPUS_MT_PROVIDER_ID };
-  }
-  return { evidence: 'none' };
-}
-
-function describeShortfall(stages: Record<CapabilityStage, StageResult>, weakest: Evidence): string {
-  const named = (Object.keys(stages) as CapabilityStage[])
+function describeShortfall(
+  stages: Record<CapabilityStage, StageResult>,
+  weakest: Evidence,
+  considered: readonly CapabilityStage[],
+): string {
+  const named = considered
     .filter((stage) => stages[stage].evidence === weakest)
     .map((stage) => STAGE_LABEL[stage])
     .join(', ');
@@ -209,42 +360,89 @@ function describeShortfall(stages: Record<CapabilityStage, StageResult>, weakest
 }
 
 /**
+ * Why a Nigerian-language row is degraded, in words an operator or a listener
+ * can act on. Deliberately specific: "fallback in use" would be read as a
+ * routing detail, and this is a quality warning nobody else can give, because
+ * every automated signal on this path is green.
+ */
+function degradedWords(englishName: string, providerId: string | undefined): string {
+  return (
+    `DEGRADED ${englishName}: served by ${providerId ?? 'a general voice vendor'}, not the ` +
+    '9jaLingo specialist. General vendors return HTTP 200 and fluent-sounding audio for ' +
+    'this language with the wrong pronunciation -- confirmed by listening on 2026-08-26. ' +
+    'Set NAIJALINGO_API_KEY to route it to the specialist.'
+  );
+}
+
+/**
  * One row per catalogue language, in catalogue (rank) order. Pure: the result
- * depends only on the catalogue, the providers passed in (default: the
- * registry constant), and nothing on the clock or the environment.
+ * depends only on the catalogue, the providers and engines passed in
+ * (default: the registry declarations), and nothing on the clock or the
+ * environment.
  */
 export function resolveLanguageCapabilities(
   input: ResolveLanguageCapabilitiesInput = {},
 ): readonly LanguageCapability[] {
   const providers = input.providers ?? COMMERCIAL_PROVIDERS;
+  const engines = input.engines ?? SELF_HOSTED_ENGINES;
+  const configured = input.configuredProviderIds;
+  const isConfigured = (id: string): boolean => configured === undefined || configured.includes(id);
   // `input.grade` is read here and nowhere else: the seam described in the
   // header. It is intentionally not folded into the result yet.
   void input.grade;
 
   return LANGUAGE_CATALOGUE.map((language) => {
     const stages: Record<CapabilityStage, StageResult> = {
-      stt: resolveChainStage('stt', language.code, providers),
-      mt: resolveTranslationStage(language.code),
-      tts: resolveChainStage('tts', language.code, providers),
+      stt: resolveStage('stt', language.code, providers, engines, isConfigured),
+      mt: resolveStage('mt', language.code, providers, engines, isConfigured),
+      tts: resolveStage('tts', language.code, providers, engines, isConfigured),
     };
-    const weakest = (Object.values(stages) as StageResult[])
-      .map((stage) => stage.evidence)
-      .reduce((a, b) => (EVIDENCE_ORDER.indexOf(a) <= EVIDENCE_ORDER.indexOf(b) ? a : b));
-    const reason = describeShortfall(stages, weakest);
+    const all: CapabilityStage[] = ['stt', 'mt', 'tts'];
+    const weakest = weakestOf(all.map((stage) => stages[stage].evidence));
+    const sourceEvidence = weakestOf([stages.stt.evidence, stages.mt.evidence]);
+    const targetEvidence = weakestOf([stages.mt.evidence, stages.tts.evidence]);
+    const reason = describeShortfall(stages, weakest, all);
+    const degraded = all.some((stage) => stages[stage].degraded === true);
+    const words = degraded ? `${reason} ${degradedWords(language.englishName, stages.tts.provider)}`.trim() : reason;
+
     const providerNames: { stt?: string; mt?: string; tts?: string } = {};
     if (stages.stt.provider !== undefined) providerNames.stt = stages.stt.provider;
     if (stages.mt.provider !== undefined) providerNames.mt = stages.mt.provider;
     if (stages.tts.provider !== undefined) providerNames.tts = stages.tts.provider;
+
     return {
       code: language.code,
       englishName: language.englishName,
       nativeName: language.nativeName,
       state: STATE_BY_EVIDENCE[weakest],
+      sourceState: STATE_BY_EVIDENCE[sourceEvidence],
+      targetState: STATE_BY_EVIDENCE[targetEvidence],
+      stageStates: {
+        stt: STATE_BY_EVIDENCE[stages.stt.evidence],
+        mt: STATE_BY_EVIDENCE[stages.mt.evidence],
+        tts: STATE_BY_EVIDENCE[stages.tts.evidence],
+      },
       stt: stages.stt.evidence !== 'none',
       mt: stages.mt.evidence !== 'none',
       tts: stages.tts.evidence !== 'none',
+      captionsOnly: stages.mt.evidence !== 'none' && stages.tts.evidence === 'none',
       providers: providerNames,
-      ...(reason === '' ? {} : { reason }),
+      ...(degraded ? { degraded: true } : {}),
+      ...(words === '' ? {} : { reason: words }),
     };
   });
+}
+
+/**
+ * The languages a picker may OFFER as targets, and the ones it must show
+ * disabled. Exported so the console and the phone ask the same question of the
+ * same function rather than each re-deriving "is this selectable".
+ */
+export function isOfferableTarget(capability: LanguageCapability): boolean {
+  return capability.targetState !== 'unavailable' || capability.captionsOnly;
+}
+
+/** The same question for the language somebody SPEAKS. */
+export function isOfferableSource(capability: LanguageCapability): boolean {
+  return capability.sourceState !== 'unavailable';
 }

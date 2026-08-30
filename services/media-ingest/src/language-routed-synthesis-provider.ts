@@ -76,11 +76,22 @@ export function createLanguageRoutedSynthesisProvider(
 ): StreamingSpeechSynthesisProvider {
   const routed = [...options.routes.keys()].sort();
 
+  /*
+   * THE NAME SAYS WHICH VENDOR, not the word "specialist".
+   *
+   * It used to read `routed(ha,ig,pcm,yo -> specialist; * -> ...)`, which is
+   * exactly the sentence a startup log should not print: it states that a
+   * specialist exists without saying whether it is the one anybody meant. This
+   * name reaches the boot log and /health, and it is the cheapest place for an
+   * operator to see that Yoruba is going somewhere other than 9jaLingo.
+   */
+  const destinations = [...new Set([...options.routes.values()].map((route) => route.name))].sort();
+
   return {
     name:
       routed.length === 0
         ? options.fallback.name
-        : `routed(${routed.join(',')} -> specialist; * -> ${options.fallback.name})`,
+        : `routed(${routed.join(',')} -> ${destinations.join(' | ')}; * -> ${options.fallback.name})`,
 
     async synthesize(request: StreamingSynthesisOptions): Promise<StreamingSynthesisResult> {
       const base = baseLanguage(request.targetLanguage);

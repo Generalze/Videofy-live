@@ -122,23 +122,45 @@ const PROGRAMME_MEDIA_READY_TIMEOUT_MS = 20_000;
  * what the last media state carried; until then the search says it is
  * loading rather than offering a guess.
  */
+function capabilityWord(value: string | undefined): LanguageRow['state'] | undefined {
+  return value === 'qualified' || value === 'available' || value === 'limited' || value === 'unavailable'
+    ? value
+    : undefined;
+}
+
 function catalogueRows(
-  catalogue: readonly { language: string; label: string; availability: string; translationAvailable: boolean; textOnly?: boolean; state?: string; nativeName?: string; reason?: string }[] | undefined,
+  catalogue:
+    | readonly {
+        language: string;
+        label: string;
+        availability: string;
+        translationAvailable: boolean;
+        textOnly?: boolean;
+        state?: string;
+        sourceState?: string;
+        targetState?: string;
+        captionsOnly?: boolean;
+        degraded?: boolean;
+        nativeName?: string;
+        reason?: string;
+      }[]
+    | undefined,
 ): readonly LanguageRow[] {
   if (catalogue === undefined) return [];
   return catalogue.map((entry) => {
-    const declared = entry.state;
     const state: LanguageRow['state'] =
-      declared === 'qualified' || declared === 'available' || declared === 'limited' || declared === 'unavailable'
-        ? declared
-        : entry.translationAvailable
-          ? 'available'
-          : 'unavailable';
+      capabilityWord(entry.state) ?? (entry.translationAvailable ? 'available' : 'unavailable');
     return {
       code: entry.language,
       label: entry.label,
       nativeName: entry.nativeName,
       state,
+      // Absent on an older ingest; the row helpers fall back to `state`
+      // rather than inventing a per-direction answer.
+      sourceState: capabilityWord(entry.sourceState),
+      targetState: capabilityWord(entry.targetState),
+      captionsOnly: entry.captionsOnly,
+      degraded: entry.degraded,
       textOnly: entry.textOnly,
       reason: entry.reason ?? entry.availability,
     };

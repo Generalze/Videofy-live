@@ -13,7 +13,7 @@
  * THE VERIFICATION ROW SAYS WHAT VERIFICATION ACTUALLY GATES: email alone
  * unlocks hosting; phone and identity gate commercial products.
  */
-import { useCallback, useEffect, useState, type JSX } from 'react';
+import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { AvatarView } from '../media/AvatarView';
 import { pickAvatar } from '../media/avatarPicker';
@@ -22,17 +22,27 @@ import type { RegistrationOutcome } from '../push/deviceRegistrationService';
 import { C7, Chip, GlassCard } from '../ui/c7';
 import { Icon } from '../ui/icons';
 import { AboutMeRow, AvailabilityRow, CountsRow, NotificationsRow, PrivacyRow, Row, UpgradeRow, VoiceRow } from './profileRows';
+import {
+  canHear,
+  canSpeak,
+  capabilityNote,
+  fetchLanguageCapabilities,
+  filterChoices,
+  languageChoices,
+  languageName,
+  withChosenFirst,
+  type CapabilityRow,
+  type LanguageChoice,
+} from '../people/languageChoices';
+import { INGEST_URL } from '../people/voiceEnrolment';
 
-const LANGUAGES = [
-  ['en', 'English'],
-  ['es', 'Spanish'],
-  ['fr', 'French'],
-] as const;
-
-function languageName(code: string | null | undefined): string {
-  const found = LANGUAGES.find(([c]) => c === code);
-  return found ? found[1] : (code ?? '—');
-}
+/**
+ * How many languages a section shows at once. Ninety-eight chips is not a
+ * picker, it is a wall; the search is how somebody reaches the rest, and the
+ * current choice is always first so it is never behind a query.
+ */
+const SHOWN_UNSEARCHED = 8;
+const SHOWN_SEARCHED = 14;
 
 export interface ProfileScreenProps {
   readonly api: Api;
@@ -69,6 +79,17 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
    * has a name instead of a guess.
    */
   const [pictureDiagnosis, setPictureDiagnosis] = useState<string | null>(null);
+  /*
+   * THE LANGUAGE CATALOGUE, AND WHAT THIS DEPLOYMENT CAN DO WITH IT.
+   *
+   * The names are bundled, so the picker works with no network. The capability
+   * words come from media-ingest's public GET /languages/catalogue -- the same
+   * rows the operator console reads, so the phone and the console cannot
+   * disagree. `null` means the read has not happened or did not work, and
+   * every row then reads `unknown` rather than pretending.
+   */
+  const [capabilities, setCapabilities] = useState<CapabilityRow[] | null>(null);
+  const [languageQuery, setLanguageQuery] = useState('');
   const diagnosePicture = useCallback(
     (accountId: string, detail: string) => {
       void probeAvatar(accountId).then((probe) => {
@@ -140,6 +161,66 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
   }, [api]);
 
   const emailVerified = verification?.email === 'verified';
+  /*
+   * The capability read: once, on mount, and never blocking anything. A phone
+   * that cannot reach media ingest still gets the whole catalogue with honest
+   * `unknown` states rather than an empty picker.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    void fetchLanguageCapabilities({ fetch, ingestUrl: INGEST_URL }).then((rows) => {
+      if (!cancelled) setCapabilities(rows);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const spokenLanguage = profile?.spokenLanguage ?? profile?.defaultLanguage ?? null;
+  const listeningLanguage = profile?.listeningLanguage ?? profile?.defaultLanguage ?? null;
+  const choices = useMemo(
+    () => languageChoices(capabilities ?? undefined),
+    [capabilities],
+  );
+  const shown = languageQuery.trim().length === 0 ? SHOWN_UNSEARCHED : SHOWN_SEARCHED;
+  const spokenOptions = useMemo(
+    () => filterChoices(withChosenFirst(choices.filter(canSpeak), spokenLanguage), languageQuery, shown),
+    [choices, spokenLanguage, languageQuery, shown],
+  );
+  const listeningOptions = useMemo(
+    () => filterChoices(withChosenFirst(choices.filter(canHear), listeningLanguage), languageQuery, shown),
+    [choices, listeningLanguage, languageQuery, shown],
+  );
+
+  /*
+   * THE WARNING THAT ONLY A SPEAKER COULD OTHERWISE GIVE. When one of the
+   * chosen languages is being served by a general voice vendor instead of the
+   * 9jaLingo specialist, the audio plays and is wrong, and every signal the
+   * app can see is green. So it is written here, in words, above the hint.
+   */
+  const chosenWarning = useMemo(() => {
+    const flagged = choices.filter(
+      (choice) => choice.degraded && (choice.code === spokenLanguage || choice.code === listeningLanguage),
+    );
+    if (flagged.length === 0) return null;
+    return `${flagged.map((choice) => choice.label).join(' and ')}: this deployment has no specialist voice for it yet, so spoken output is a degraded rendering. Text stays correct.`;
+  }, [choices, spokenLanguage, listeningLanguage]);
+
+  const setLanguage = useCallback(
+    async (languages: { spokenLanguage?: string; listeningLanguage?: string }) => {
+      const result = await api.setLanguages(languages);
+      if (result.ok) {
+        void load();
+        return;
+      }
+      // A refusal used to vanish: the old handler tested `ok` and did nothing
+      // else, so a language the server would not accept looked like a tap that
+      // simply did not register.
+      setNotice(result.error ?? 'That language could not be saved.');
+    },
+    [api, load],
+  );
+
   const toggle = (key: OpenRow) => () => setOpen((current) => (current === key ? null : key));
 
   return (
@@ -191,19 +272,51 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
       >
         {profile !== null && (
           <>
+            <TextInput
+              style={styles.input}
+              value={languageQuery}
+              onChangeText={setLanguageQuery}
+              placeholder="Search languages (name, own name or code)"
+              placeholderTextColor={C7.faint}
+              autoCorrect={false}
+              autoCapitalize="none"
+              accessibilityLabel="Search languages"
+            />
+
             <Text style={styles.label}>I speak</Text>
             <View style={styles.chips}>
-              {LANGUAGES.map(([code, label]) => (
-                <Chip key={code} label={label} active={(profile.spokenLanguage ?? profile.defaultLanguage) === code} onPress={() => void api.setLanguages({ spokenLanguage: code }).then((r) => { if (r.ok) void load(); })} />
+              {spokenOptions.map((choice) => (
+                <Chip
+                  key={choice.code}
+                  label={chipLabel(choice)}
+                  tone={choice.degraded ? 'amber' : 'neutral'}
+                  active={spokenLanguage === choice.code}
+                  onPress={() => void setLanguage({ spokenLanguage: choice.code })}
+                />
               ))}
+              {spokenOptions.length === 0 && <Text style={styles.hint}>No language matches that.</Text>}
             </View>
+
             <Text style={styles.label}>I prefer to hear</Text>
             <View style={styles.chips}>
-              {LANGUAGES.map(([code, label]) => (
-                <Chip key={code} label={label} active={(profile.listeningLanguage ?? profile.defaultLanguage) === code} onPress={() => void api.setLanguages({ listeningLanguage: code }).then((r) => { if (r.ok) void load(); })} />
+              {listeningOptions.map((choice) => (
+                <Chip
+                  key={choice.code}
+                  label={chipLabel(choice)}
+                  tone={choice.degraded ? 'amber' : 'neutral'}
+                  active={listeningLanguage === choice.code}
+                  onPress={() => void setLanguage({ listeningLanguage: choice.code })}
+                />
               ))}
+              {listeningOptions.length === 0 && <Text style={styles.hint}>No language matches that.</Text>}
             </View>
-            <Text style={styles.hint}>Calls and translated messages follow these. The full language catalogue arrives with the programme wave.</Text>
+
+            {chosenWarning !== null && <Text style={styles.pictureNotice}>{chosenWarning}</Text>}
+            <Text style={styles.hint}>
+              {capabilities === null
+                ? 'Translated messages and programmes follow these. This phone could not reach the translation service, so no language is marked as ready. Live calls currently carry English, Spanish and French; any other choice leaves calls on their own default.'
+                : 'Translated messages and programmes follow these. Beta means a provider lists the language and nobody here has heard it yet; captions only means text without a voice. Live calls currently carry English, Spanish and French; any other choice leaves calls on their own default.'}
+            </Text>
           </>
         )}
       </Row>
@@ -286,6 +399,12 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
       </Pressable>
     </ScrollView>
   );
+}
+
+/** "Yoruba · degraded voice": the name, and the one thing worth knowing. */
+function chipLabel(choice: LanguageChoice): string {
+  const note = capabilityNote(choice);
+  return note === null ? choice.label : `${choice.label} · ${note}`;
 }
 
 const styles = StyleSheet.create({

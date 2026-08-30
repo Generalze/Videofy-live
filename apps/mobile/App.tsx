@@ -213,6 +213,15 @@ type ActiveCall =
     }
   | { readonly kind: 'conference'; readonly callId: string; readonly setup?: ConferenceSetup };
 
+/**
+ * The three languages the LIVE CALL chain carries today. A profile language
+ * outside them is not an error and not a call language either: the call keeps
+ * its own default rather than sending a code the far end will refuse.
+ */
+function callLanguageOrUndefined(code: string | null | undefined): 'en' | 'es' | 'fr' | undefined {
+  return code === 'en' || code === 'es' || code === 'fr' ? code : undefined;
+}
+
 export default function App(): JSX.Element {
   return (
     <InsetsProvider>
@@ -261,7 +270,18 @@ function AppInner(): JSX.Element {
    * identifier where a person was promised.
    */
   const [callName, setCallName] = useState<string | null>(null);
-  /** The account's default language; the language their calls enter with. */
+  /**
+   * The account's default language; the language their calls enter with.
+   *
+   * STILL THREE, AND NARROWER THAN THE PROFILE ON PURPOSE. A person may now
+   * choose any catalogue language on their profile, and the LIVE CALL pipeline
+   * carries en/es/fr end to end (call-session's CallLanguage, the call-web
+   * join guard, media-ingest's call route). Widening the profile without
+   * widening that chain would push an unsupported code into a call and get a
+   * refusal at the far end, so a profile language the call cannot carry is
+   * simply not sent and the call keeps its own default. The gap is real and
+   * belongs to the call-language wave; it is narrowed here rather than hidden.
+   */
   const [callLanguages, setCallLanguages] = useState<{
     speak?: 'en' | 'es' | 'fr';
     hear?: 'en' | 'es' | 'fr';
@@ -442,11 +462,11 @@ function AppInner(): JSX.Element {
       if (result.ok) setMe(result.value);
       if (result.ok) {
         setCallName(result.value.displayName ?? result.value.username);
-        const speak = result.value.spokenLanguage ?? result.value.defaultLanguage;
-        const hear = result.value.listeningLanguage ?? result.value.defaultLanguage;
+        const speak = callLanguageOrUndefined(result.value.spokenLanguage ?? result.value.defaultLanguage);
+        const hear = callLanguageOrUndefined(result.value.listeningLanguage ?? result.value.defaultLanguage);
         setCallLanguages({
-          ...(speak == null ? {} : { speak }),
-          ...(hear == null ? {} : { hear }),
+          ...(speak === undefined ? {} : { speak }),
+          ...(hear === undefined ? {} : { hear }),
         });
       }
     });

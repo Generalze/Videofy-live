@@ -18,7 +18,7 @@ import {
 const REQUIRED = (
   'en es fr de pt it nl ru uk pl cs sk ro hu el tr ar fa ur hi bn pa gu mr ta te kn ml or si ne ' +
   'zh ja ko vi th id ms fil sw am ha yo ig zu xh af so rw ln mg sn st tn ts ve nso wo ff om ti he ' +
-  'az kk uz ky tg mn my km lo ka hy sq bs hr sr sl mk lt lv et fi sv no da is ga cy eu ca gl ht ps sd ku'
+  'az kk uz ky tg mn my km lo ka hy sq bs hr sr sl mk lt lv et fi sv no da is ga cy eu ca gl ht ps sd ku pcm'
 ).split(' ');
 
 describe('LANGUAGE_CATALOGUE', () => {
@@ -63,6 +63,17 @@ describe('LANGUAGE_CATALOGUE', () => {
       const expected = language.script === 'Arab' || language.script === 'Hebr';
       expect(language.rtl, language.code).toBe(expected);
     }
+  });
+
+  it('carries Nigerian Pidgin as its own language, keyed pcm', () => {
+    // The 9jaLingo specialist synthesises ha, ig, yo AND pcm. A catalogue
+    // without pcm can never show the fourth, and Naija is a language tens of
+    // millions speak daily, not a dialect of English.
+    const pidgin = lookupLanguage('pcm');
+    expect(pidgin?.englishName).toBe('Nigerian Pidgin');
+    expect(pidgin?.regions).toContain('NG');
+    expect(pidgin?.note).toBeDefined();
+    expect(searchLanguages('naij')[0]?.code).toBe('pcm');
   });
 
   it('expresses Chinese as one entry with a note', () => {

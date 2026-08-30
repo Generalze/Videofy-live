@@ -121,9 +121,17 @@ export interface Profile {
   readonly email: string;
   readonly username: string | null;
   readonly displayName: string | null;
-  readonly defaultLanguage?: 'en' | 'es' | 'fr' | null;
-  readonly spokenLanguage?: 'en' | 'es' | 'fr' | null;
-  readonly listeningLanguage?: 'en' | 'es' | 'fr' | null;
+  /*
+   * A CATALOGUE CODE, not a three-way union.
+   *
+   * These were 'en' | 'es' | 'fr' on both sides of the wire, which is how the
+   * Profile screen came to offer three languages while media ingest published
+   * ninety-eight. The server validates against the shared catalogue; the type
+   * here says what the server accepts.
+   */
+  readonly defaultLanguage?: string | null;
+  readonly spokenLanguage?: string | null;
+  readonly listeningLanguage?: string | null;
   readonly official?: boolean;
   /** Whether people can find this account by username (POST /accounts/discovery). */
   readonly discoverable: boolean;
@@ -308,10 +316,11 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
         (body) => body as { mode: 'normal' | 'translated' },
       ),
     setLanguages: (languages: {
-      spokenLanguage?: 'en' | 'es' | 'fr';
-      listeningLanguage?: 'en' | 'es' | 'fr';
+      /** A catalogue code (routes.ts validates it against the shared catalogue). */
+      spokenLanguage?: string;
+      listeningLanguage?: string;
     }) => request(authorizedFetch, '/accounts/languages', json(languages), () => undefined),
-    setDefaultLanguage: (defaultLanguage: 'en' | 'es' | 'fr') =>
+    setDefaultLanguage: (defaultLanguage: string) =>
       request(authorizedFetch, '/accounts/default-language', json({ defaultLanguage }), () => undefined),
     markRead: (accountId: string) =>
       request(authorizedFetch, `/messages/with/${accountId}/read`, json({}), () => undefined),
@@ -339,9 +348,9 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
           profile?: {
             username?: string | null;
             displayName?: string | null;
-            defaultLanguage?: 'en' | 'es' | 'fr' | null;
-            spokenLanguage?: 'en' | 'es' | 'fr' | null;
-            listeningLanguage?: 'en' | 'es' | 'fr' | null;
+            defaultLanguage?: string | null;
+            spokenLanguage?: string | null;
+            listeningLanguage?: string | null;
             official?: boolean;
             discoverable?: boolean;
             bio?: string;

@@ -50,6 +50,24 @@ export interface TargetLanguageCapability {
   /** Catalogue endonym; absent for a target that is outside the catalogue. */
   nativeName?: string;
   state?: TargetLanguageCapabilityState;
+  /**
+   * The same evidence read for one direction at a time.
+   *
+   * `state` is the weakest of all three chain stages, which is the right
+   * conservative answer and the wrong one for a picker: it refused Igbo as a
+   * TARGET because no recogniser transcribes Igbo, which has nothing to do
+   * with whether a listener can hear it.
+   */
+  sourceState?: TargetLanguageCapabilityState;
+  targetState?: TargetLanguageCapabilityState;
+  /** Translatable, with no voice on the chain. A product state, not a fault. */
+  captionsOnly?: boolean;
+  /**
+   * A Nigerian language served by a general voice vendor rather than the
+   * 9jaLingo specialist. The audio plays and is wrong; every surface that
+   * shows this language must say so. See `reason` for the words.
+   */
+  degraded?: boolean;
   providers?: TargetLanguageCapabilityProviders;
   /** Names the chain stage(s) holding the state below `qualified`. */
   reason?: string;

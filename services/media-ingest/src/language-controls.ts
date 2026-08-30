@@ -5,7 +5,11 @@ import type {
   SourceLanguageMode,
   TargetLanguageCapability,
 } from '@videofy-live/shared-types';
-import { resolveLanguageCapabilities, type LanguageCapability } from '@videofy-live/ai-registry';
+import {
+  SELF_HOSTED_ENGINES,
+  resolveLanguageCapabilities,
+  type LanguageCapability,
+} from '@videofy-live/ai-registry';
 import { LANGUAGE_CATALOGUE } from '@videofy-live/language-catalogue';
 import { MediaIngestError } from './ingest-error.js';
 
@@ -133,14 +137,51 @@ export function applySourceLanguageAction(
   }
 }
 
+/**
+ * Which capability providers this deployment actually has, by ID.
+ *
+ * NAMES AND IDS ONLY. This reads whether a variable is SET; it never reads,
+ * returns or logs a value, and no caller can obtain one through it.
+ *
+ * It exists because the resolver is pure and must stay pure, while the answer
+ * the console needs is deployment-specific in exactly one place that matters:
+ * without NAIJALINGO_API_KEY, Hausa, Igbo, Yoruba and Nigerian Pidgin are
+ * served by a general voice vendor that returns confident, wrong audio. The
+ * resolver can only mark that as degraded if somebody tells it which providers
+ * are really there, and the environment is the only thing that knows.
+ *
+ * Local engines are listed unconditionally: they ship inside the image, so the
+ * thing that can be missing is a credential, not a model.
+ */
+export function configuredCapabilityProviderIds(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const set = (name: string): boolean => (env[name]?.trim() ?? '') !== '';
+  const configured: string[] = SELF_HOSTED_ENGINES.map((engine) => engine.engineId);
+  if (set('DEEPGRAM_API_KEY')) configured.push('deepgram');
+  if (set('ELEVENLABS_API_KEY')) configured.push('elevenlabs');
+  if (set('AZURE_SPEECH_KEY') && set('AZURE_SPEECH_REGION')) configured.push('azure');
+  if (set('NAIJALINGO_API_KEY')) configured.push('naijalingo');
+  if (set('GOOGLE_TRANSLATE_PROJECT_ID')) configured.push('google-cloud');
+  return configured;
+}
+
 export function buildTargetLanguageCatalogue(input: {
   supportedTranslationLanguages: readonly string[];
   supportedVoiceLanguages: readonly string[];
   opusMtModelIds?: ReadonlyMap<string, string>;
   voiceIds?: ReadonlyMap<string, string>;
+  /**
+   * Provider ids this deployment has configured. Defaults to reading which
+   * credential NAMES are set, so a catalogue built without thinking about it
+   * still tells the truth about the specialist.
+   */
+  configuredProviderIds?: readonly string[];
 }): TargetLanguageCapability[] {
   const chain = new Map(
-    resolveLanguageCapabilities().map((capability) => [capability.code, capability]),
+    resolveLanguageCapabilities({
+      configuredProviderIds: input.configuredProviderIds ?? configuredCapabilityProviderIds(),
+    }).map((capability) => [capability.code, capability]),
   );
   return listTargetLanguages(input).map((candidate) => {
     const evidence = chain.get(candidate.language);
@@ -153,6 +194,14 @@ export function buildTargetLanguageCatalogue(input: {
       label: candidate.label,
       ...(candidate.nativeName === undefined ? {} : { nativeName: candidate.nativeName }),
       state: evidence?.state ?? 'unavailable',
+      ...(evidence === undefined
+        ? {}
+        : {
+            sourceState: evidence.sourceState,
+            targetState: evidence.targetState,
+            captionsOnly: evidence.captionsOnly,
+          }),
+      ...(evidence?.degraded === true ? { degraded: true } : {}),
       providers: evidence?.providers ?? {},
       ...(evidence?.reason === undefined ? {} : { reason: evidence.reason }),
       translationAvailable,

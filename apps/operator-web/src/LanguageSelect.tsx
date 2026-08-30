@@ -16,7 +16,7 @@
  */
 import React, { useMemo, useState } from 'react';
 import styles from './LanguageSelect.module.css';
-import { STATE_WORDS, filterLanguages, type CapabilityState, type LanguageRow } from './languageRows';
+import { DEGRADED_WORD, STATE_WORDS, filterLanguages, isAddableTarget, isSelectableSource, type CapabilityState, type LanguageRow } from './languageRows';
 
 export type { CapabilityState, LanguageRow } from './languageRows';
 
@@ -49,8 +49,9 @@ export function TargetLanguageSelect({
         {chosen.map((row) => (
           <span key={row.code} className={styles.chip}>
             {row.label}
-            {row.textOnly ? <small> · captions only</small> : null}
-            {row.state === 'limited' ? <small> · beta</small> : null}
+            {row.textOnly || row.captionsOnly ? <small> · captions only</small> : null}
+            {row.degraded ? <small> · {DEGRADED_WORD.toLowerCase()}</small> : null}
+            {(row.targetState ?? row.state) === 'limited' ? <small> · beta</small> : null}
             <button type="button" className={styles.chipRemove} aria-label={`Remove ${row.label}`} disabled={disabled} onClick={() => onToggle(row.code, false)}>
               ×
             </button>
@@ -74,15 +75,16 @@ export function TargetLanguageSelect({
               <button
                 type="button"
                 className={styles.rowButton}
-                disabled={row.state === 'unavailable'}
-                title={row.reason ?? STATE_WORDS[row.state]}
+                disabled={!isAddableTarget(row)}
+                title={row.reason ?? STATE_WORDS[row.targetState ?? row.state]}
                 onClick={() => onToggle(row.code, true)}
               >
                 <span className={styles.rowLabel}>
                   {row.label}
                   {row.nativeName !== undefined && row.nativeName !== row.label ? <small> {row.nativeName}</small> : null}
+                  {row.degraded ? <small> · {DEGRADED_WORD.toLowerCase()}</small> : null}
                 </span>
-                <StateBadge state={row.state} />
+                <StateBadge state={row.targetState ?? row.state} />
               </button>
             </li>
           ))}
@@ -139,7 +141,7 @@ export function SourceLanguageSelect({
             <ul className={styles.list} aria-label="Source language matches">
               {candidates.map((row) => (
                 <li key={row.code} className={styles.row}>
-                  <button type="button" className={styles.rowButton} onClick={() => { onChange({ value: row.code, mode: 'manual' }); setQuery(''); }}>
+                  <button type="button" className={styles.rowButton} disabled={!isSelectableSource(row)} title={isSelectableSource(row) ? undefined : row.reason} onClick={() => { onChange({ value: row.code, mode: 'manual' }); setQuery(''); }}>
                     <span className={styles.rowLabel}>{row.label}{row.nativeName !== undefined && row.nativeName !== row.label ? <small> {row.nativeName}</small> : null}</span>
                   </button>
                 </li>

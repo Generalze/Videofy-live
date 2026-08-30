@@ -120,13 +120,13 @@ function toRecord(row: AccountRow): AccountRecord {
     updatedAt: row.updated_at.toISOString(),
     ...(voiceGender.present ? { voiceGender: voiceGender.value as 'male' | 'female' } : {}),
     ...(defaultLanguage.present
-      ? { defaultLanguage: defaultLanguage.value as 'en' | 'es' | 'fr' }
+      ? { defaultLanguage: defaultLanguage.value }
       : {}),
     ...(spokenLanguage.present
-      ? { spokenLanguage: spokenLanguage.value as 'en' | 'es' | 'fr' }
+      ? { spokenLanguage: spokenLanguage.value }
       : {}),
     ...(listeningLanguage.present
-      ? { listeningLanguage: listeningLanguage.value as 'en' | 'es' | 'fr' }
+      ? { listeningLanguage: listeningLanguage.value }
       : {}),
     ...(trust.present ? { trust: trust.value as NonNullable<AccountRecord['trust']> } : {}),
     ...(emailChallenge.present

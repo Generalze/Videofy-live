@@ -1,5 +1,13 @@
 import { z } from 'zod';
 
+/** The capability resolver's four words, as the wire carries them. */
+export const TargetLanguageCapabilityStateSchema = z.enum([
+  'available',
+  'qualified',
+  'limited',
+  'unavailable',
+]);
+
 export const StreamStatusSchema = z.enum([
   'created',
   'validating',
@@ -316,6 +324,28 @@ export const MediaStateEventSchema = z.object({
       z.object({
         language: z.string().min(2).max(16),
         label: z.string().min(1),
+        /*
+         * CAPABILITY FACTS TRAVEL WITH THE ROW. They were being computed by
+         * media-ingest, sent on GET /languages/catalogue, and then dropped
+         * here -- so a console reading the catalogue off a RUNNING session saw
+         * rows with no capability state and fell back to guessing from
+         * `translationAvailable`. Optional because an older ingest does not
+         * send them; never invented when absent.
+         */
+        nativeName: z.string().min(1).optional(),
+        state: TargetLanguageCapabilityStateSchema.optional(),
+        sourceState: TargetLanguageCapabilityStateSchema.optional(),
+        targetState: TargetLanguageCapabilityStateSchema.optional(),
+        captionsOnly: z.boolean().optional(),
+        degraded: z.boolean().optional(),
+        reason: z.string().min(1).optional(),
+        providers: z
+          .object({
+            stt: z.string().min(1).optional(),
+            mt: z.string().min(1).optional(),
+            tts: z.string().min(1).optional(),
+          })
+          .optional(),
         translationAvailable: z.boolean(),
         voiceAvailable: z.boolean(),
         textOnly: z.boolean(),

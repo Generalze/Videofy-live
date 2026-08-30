@@ -57,7 +57,19 @@ export type AccountVoiceGender = 'male' | 'female';
  * CallLanguage union; kept as its own type because account and call are
  * separate bounded contexts that happen to agree today.
  */
-export type AccountDefaultLanguage = 'en' | 'es' | 'fr';
+/**
+ * A LANGUAGE CATALOGUE CODE, validated at the route.
+ *
+ * This was `'en' | 'es' | 'fr'`, and the union was the whole reason the phone's
+ * Profile offered three languages: a wider picker would have been refused with
+ * a 400 that looked, on the device, like a tap that did nothing. The catalogue
+ * (packages/language-catalogue) is the authority on what a code may be, and
+ * `routes.ts` checks every value against it before it reaches a store.
+ *
+ * Deliberately NOT a union of the ninety-eight codes: the catalogue grows, and
+ * a type that had to be regenerated each time it did would be copied wrongly.
+ */
+export type AccountDefaultLanguage = string;
 
 export interface AccountRecord {
   readonly accountId: AccountId;
