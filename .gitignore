@@ -69,6 +69,10 @@ web_modules/
 # dotenv environment variable files
 .env
 .env.*
+# Tracked on purpose: it holds no secret, only the same-origin PATHS every
+# production-mode build must compile in. Untracked, it existed on one box by
+# hand and production shipped pointing at localhost.
+!.env.production
 !.env.example
 
 # parcel-bundler cache (https://parceljs.org/)

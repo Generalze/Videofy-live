@@ -103,23 +103,28 @@ echo "apps staged into $WWW_DIR for $PUBLIC_ORIGIN"
 
 # --- THE GUARD -------------------------------------------------------------
 # Founder directive 30 Aug 2026, production smoke: "no public bundle contains
-# localhost development endpoints". Checked HERE, on the files about to be
-# served, because by the time a person sees "Could not reach C7" the evidence
-# is a fetch that failed in their browser and the server looks healthy from
-# every angle we can measure.
-leaked=0
-# -path pruning, not a plain find: `stage` keeps the previous release beside
-# the new one as <app>.old so a bad deploy can be walked back, and those files
-# legitimately carry whatever the last build did. Scanning them would refuse
-# every deploy that follows a bad one -- including the one carrying the fix.
-for f in $(find "$WWW_DIR" \( -name '*.old' -o -name '*.new' \) -prune -o -name '*.js' -type f -print 2>/dev/null); do
-  if grep -qE 'localhost:[0-9]+|127\.0\.0\.1:[0-9]+' "$f"; then
-    echo "REFUSED: $(basename "$f") names a development endpoint" >&2
-    leaked=1
-  fi
+# localhost development endpoints".
+#
+# It asserts the POSITIVE, and that distinction is the whole point. A bundle
+# keeps its `?? 'http://localhost:3006'` fallback as a dead string even when
+# the configured value is compiled in beside it, so absence-of-localhost is
+# both false-positive and, on its own, weak evidence. What actually matters is
+# that the configured path IS there: if VITE_ACCOUNT_URL never reached the
+# build, "/auth" appears nowhere and the app talks to the visitor's machine.
+missing=0
+for app in ecosystem-web call-web listener-web operator-web; do
+  dir="$WWW_DIR/$app/assets"
+  [ -d "$dir" ] || continue
+  for want in '/auth' '/media'; do
+    grep -qrF -- "$want" "$dir" 2>/dev/null && continue
+    # An app that never speaks to that service does not have to name it.
+    grep -qrE 'VITE_(ACCOUNT|INGEST)_URL|localhost:(3006|3002)' "$dir" 2>/dev/null || continue
+    echo "REFUSED: $app names no '$want' -- its build did not receive the endpoint" >&2
+    missing=1
+  done
 done
-if [ "$leaked" -ne 0 ]; then
-  echo "staging aborted: a bundle would have shipped pointing at a developer's machine" >&2
+if [ "$missing" -ne 0 ]; then
+  echo "staging aborted: a bundle would have shipped without its endpoints" >&2
   exit 1
 fi
-echo "bundles carry no development endpoint"
+echo "bundles carry their configured endpoints"
