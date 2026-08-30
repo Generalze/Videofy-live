@@ -27,6 +27,12 @@ MODELS=(
   Helsinki-NLP/opus-mt-en-es
   Helsinki-NLP/opus-mt-en-ROMANCE
   Helsinki-NLP/opus-mt-es-en
+  # Nigerian languages. en-yo does not exist on the hub; Yoruba comes from the
+  # Atlantic-Volta group model, which selects its output with a >>yor<< token
+  # the worker finds by probing the tokenizer vocabulary.
+  Helsinki-NLP/opus-mt-en-ha
+  Helsinki-NLP/opus-mt-en-ig
+  Helsinki-NLP/opus-mt-en-alv
 )
 
 echo "--- system packages ---"

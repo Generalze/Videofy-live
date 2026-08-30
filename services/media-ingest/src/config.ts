@@ -17,9 +17,26 @@ import { resolve } from 'node:path';
  * P6.1A defaults, exported so tests pin them: English is a supported
  * translation/TTS target and es→en has an explicit ordered OPUS-MT route.
  */
-export const DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES = 'fr,es,de,pt,it,ja,zh,ar,yo,en';
+export const DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES = 'fr,es,de,pt,it,ja,zh,ar,yo,ha,ig,en';
+/*
+ * The Nigerian pairs are here because a voice without a translation is a
+ * language we can pronounce and cannot deliver: 9jaLingo speaks Yoruba,
+ * Hausa, Igbo and Pidgin, and until these models existed a programme could
+ * not put anything Yoruba in front of it.
+ *
+ * Yoruba goes through the Atlantic-Volta GROUP model, because
+ * `opus-mt-en-yo` does not exist -- checked against the hub, not assumed.
+ * A group model picks its output language from a `>>lang<<` control token,
+ * and the worker finds it by probing the tokenizer's own vocabulary
+ * (`>>yor<<` is present), so nothing here has to name the token and get it
+ * wrong. Igbo and Hausa have direct models and use them.
+ *
+ * Nigerian Pidgin (pcm) is deliberately absent: no OPUS-MT model translates
+ * into it, so it stays honestly untranslatable rather than being routed
+ * through something that would answer in the wrong language.
+ */
 export const DEFAULT_OPUS_MT_LANGUAGE_MODELS =
-  'en:fr:Helsinki-NLP/opus-mt-en-fr,fr:en:Helsinki-NLP/opus-mt-fr-en,en:es:Helsinki-NLP/opus-mt-en-es,en:pt:Helsinki-NLP/opus-mt-en-ROMANCE,es:en:Helsinki-NLP/opus-mt-es-en';
+  'en:fr:Helsinki-NLP/opus-mt-en-fr,fr:en:Helsinki-NLP/opus-mt-fr-en,en:es:Helsinki-NLP/opus-mt-en-es,en:pt:Helsinki-NLP/opus-mt-en-ROMANCE,es:en:Helsinki-NLP/opus-mt-es-en,en:ha:Helsinki-NLP/opus-mt-en-ha,en:ig:Helsinki-NLP/opus-mt-en-ig,en:yo:Helsinki-NLP/opus-mt-en-alv';
 
 export interface IngestConfig {
   aiRuntimeProfile: RuntimeProfile;
