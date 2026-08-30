@@ -34,6 +34,7 @@ import { createTranscriptionProvider } from './transcription-provider.js';
 import { registerVoiceNoteTranslationRoute } from './voice-note-translation-route.js';
 import { logger, setLogLevel } from './logger.js';
 import { MediaIngestError } from './ingest-error.js';
+import { sendIngestError } from './ingest-error-response.js';
 import {
   OPERATOR_CONSOLE_ACCOUNT_IDS_VARIABLE,
   createProgrammeControlGuard,
@@ -1038,20 +1039,6 @@ async function shutdown(signal: string): Promise<void> {
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));
 
-function sendIngestError(res: express.Response, error: unknown): void {
-  if (error instanceof MediaIngestError) {
-    res.status(error.statusCode).json({
-      error: error.message,
-      code: error.code,
-      session: error.session,
-    });
-    return;
-  }
-
-  const message = error instanceof Error ? error.message : 'Media ingest failed.';
-  logger.error('Unexpected media ingest failure', { message });
-  res.status(500).json({ error: 'Media ingest failed.' });
-}
 
 function parseIntegerField(value: unknown, fieldName: string): number {
   const parsed = typeof value === 'string' || typeof value === 'number' ? Number(value) : NaN;

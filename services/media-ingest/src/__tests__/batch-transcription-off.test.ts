@@ -29,10 +29,14 @@ const FASTER_WHISPER = {
 };
 
 function provider(name: 'off' | 'mock' | 'faster-whisper') {
+  // faster-whisper settings are never reached on the paths under test; the
+  // cast keeps this fixture from having to track a config shape it does not
+  // exercise.
   return createTranscriptionProvider({
     providerName: name,
     sourceLanguage: 'en',
-    fasterWhisper: FASTER_WHISPER,
+    timeoutMs: 30_000,
+    fasterWhisper: FASTER_WHISPER as never,
   });
 }
 

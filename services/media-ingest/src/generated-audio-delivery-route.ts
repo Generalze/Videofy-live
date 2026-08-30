@@ -2,6 +2,7 @@ import express from 'express';
 import { createReadStream } from 'node:fs';
 import type { GeneratedAudioFile } from './media-session.js';
 import { MediaIngestError } from './ingest-error.js';
+import { sendIngestError } from './ingest-error-response.js';
 import { logger } from './logger.js';
 
 export interface GeneratedAudioDeliveryService {
@@ -96,17 +97,3 @@ export function parseRangeHeader(
   return { start, end: Math.min(end, fileSizeBytes - 1) };
 }
 
-function sendIngestError(res: express.Response, error: unknown): void {
-  if (error instanceof MediaIngestError) {
-    res.status(error.statusCode).json({
-      error: error.message,
-      code: error.code,
-      session: error.session,
-    });
-    return;
-  }
-
-  const message = error instanceof Error ? error.message : 'Media ingest failed.';
-  logger.error('Unexpected generated-audio delivery failure', { message });
-  res.status(500).json({ error: 'Media ingest failed.' });
-}
