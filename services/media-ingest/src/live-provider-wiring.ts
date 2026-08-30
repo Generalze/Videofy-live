@@ -22,6 +22,8 @@ import { AzureStreamingSynthesisProvider } from './providers/azure/streaming-tts
 import { createFallbackSpeechSynthesisProvider } from './fallback-speech-synthesis-provider.js';
 import {
   NAIJALINGO_PUBLISHED_SPEAKER_BY_LANGUAGE,
+  NAIJALINGO_SELECTED_VOICE_BY_LANGUAGE,
+  NAIJALINGO_SELECTED_VOICE_IDS,
   NaijaLingoStreamingSynthesisProvider,
   describeNaijaLingoPreflight,
   preflightNaijaLingo,
@@ -402,13 +404,20 @@ function withNigerianSpecialist(
      */
     defaultVoice: env.naijaLingoDefaultVoice ?? NAIJALINGO_PUBLISHED_SPEAKER_BY_LANGUAGE['yo'] ?? '',
     defaultVoiceByLanguage: {
+      // Published example, then the founder's chosen voice, then the
+      // deployment's own word: each layer only speaks where the next has
+      // nothing to say.
       ...NAIJALINGO_PUBLISHED_SPEAKER_BY_LANGUAGE,
+      ...NAIJALINGO_SELECTED_VOICE_BY_LANGUAGE,
       ...parseVoiceIdMap(env.naijaLingoVoiceByLanguage),
     },
     authHeaderName: env.naijaLingoAuthHeader,
     authScheme: env.naijaLingoAuthScheme,
     model: env.naijaLingoModel,
-    voiceIds: parseVoiceIdMap(env.naijaLingoVoiceIds),
+    // `<language>:<gender>` reaches either voice of a chosen pair; the
+    // account already records a person's voiceGender, and wiring that
+    // preference through to synthesis is the remaining seam.
+    voiceIds: { ...NAIJALINGO_SELECTED_VOICE_IDS, ...parseVoiceIdMap(env.naijaLingoVoiceIds) },
     ...(fetchImpl === undefined ? {} : { fetchImpl }),
   });
 

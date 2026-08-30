@@ -123,6 +123,44 @@ export const NAIJALINGO_PUBLISHED_SPEAKER_BY_LANGUAGE: Readonly<Record<string, s
 };
 
 /**
+ * The voices the founder picked out of the 9jaLingo library (30 Aug 2026),
+ * one male and one female for each of the three approved languages.
+ *
+ * WHY THESE OVERRIDE THE PUBLISHED EXAMPLES. The map above is evidence that
+ * a speaker id is ACCEPTED -- it comes from the vendor's own README. These
+ * were CHOSEN, by somebody who can hear the difference, which is the only
+ * judgement that counts for a language the server cannot evaluate. So they
+ * win wherever they exist, and the published examples still stand behind
+ * them for anything not chosen (Pidgin, today).
+ *
+ * The vendor accepts both forms as `voice`: a speaker name like `adeola_yo`
+ * and an opaque voice id like these. Verified against the live API rather
+ * than assumed -- both answered 200 with audio.
+ */
+export const NAIJALINGO_SELECTED_VOICE_IDS: Readonly<Record<string, string>> = {
+  'yo:male': 'a48b979b-c2c7-43b6-95f8-37e830f36aba',
+  'yo:female': 'e8792ad0-97c9-4a09-aa14-a013b53a2772',
+  'ig:male': 'f5a63082-13c4-451e-812b-21d559ff317b',
+  'ig:female': '036d27c0-448d-4d6c-a97c-9606a58a849e',
+  'ha:male': 'c4c90444-21a4-400c-9aef-c1a0094c6c13',
+  'ha:female': '93ef940b-5e72-43d8-99d9-23cb96539cba',
+};
+
+/**
+ * Which of the pair speaks when nobody has asked for a gender.
+ *
+ * Female, because that is what the product defaulted to before anybody
+ * could choose (see the account's `voiceGender`), so this changes the
+ * VOICE and not the expectation. A deployment overrides per language with
+ * NAIJALINGO_VOICE_BY_LANGUAGE.
+ */
+export const NAIJALINGO_SELECTED_VOICE_BY_LANGUAGE: Readonly<Record<string, string>> = {
+  yo: NAIJALINGO_SELECTED_VOICE_IDS['yo:female'] ?? '',
+  ig: NAIJALINGO_SELECTED_VOICE_IDS['ig:female'] ?? '',
+  ha: NAIJALINGO_SELECTED_VOICE_IDS['ha:female'] ?? '',
+};
+
+/**
  * Every string the vendor accepts as a language, lower case.
  *
  * Wider than `NAIJALINGO_LANGUAGES` on purpose: it exists to catch a language
