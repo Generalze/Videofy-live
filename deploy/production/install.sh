@@ -54,6 +54,14 @@ install -d -o root -g root -m 0700 "$VIDEOFY_BACKUP_DIR"
 # Written by the deployer (stage-webapps runs unprivileged), read by Caddy.
 install -d -o "$DEPLOY_OWNER" -g root -m 0755 "$VIDEOFY_WWW_DIR"
 install -d -o caddy -g caddy -m 0755 /var/log/caddy
+# The LOG FILE too, not merely its directory. `caddy validate` never opens a
+# log file, so a root-owned one passes validation and then fails the restart
+# with "permission denied" -- which is how a valid configuration took the
+# public site down for two minutes. Created here, owned by the user that
+# writes it.
+for logname in videofy videofy-prod; do
+  install -o caddy -g caddy -m 0640 /dev/null "/var/log/caddy/$logname.log" 2>/dev/null ||     chown caddy:caddy "/var/log/caddy/$logname.log"
+done
 
 # The application tree: an empty repository that deploy.sh fetches bundles
 # into. Owned by the deployer (who writes it), group videofy (who reads it).
