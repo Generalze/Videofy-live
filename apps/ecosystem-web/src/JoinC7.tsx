@@ -181,7 +181,23 @@ export function JoinC7({ sessionEnded = false }: { readonly sessionEnded?: boole
       window.location.assign('/app/');
       return;
     } catch {
-      setError('Could not reach C7 right now.');
+      /*
+       * NAME THE HOST IT TRIED. "Could not reach C7 right now" is true and
+       * useless: it reads as an outage, and the two times it has appeared the
+       * service was answering 201 and 401 to the same request from a terminal.
+       * Both were the bundle addressing somewhere else -- a build that never
+       * received VITE_ACCOUNT_URL and compiled in localhost, and a tab still
+       * running the JavaScript it loaded before the fix. Either is obvious the
+       * moment the message says where it went, and neither is guessable while
+       * it does not. The origin is public; it is in every request this page
+       * makes.
+       */
+      const target = new URL(ACCOUNT_URL, window.location.origin).origin;
+      setError(
+        target === window.location.origin
+          ? 'Could not reach C7 right now.'
+          : `Could not reach C7 at ${target}. If that is not where C7 lives, reload the page (Ctrl+Shift+R) to pick up the current version.`,
+      );
     } finally {
       setBusy(false);
     }
