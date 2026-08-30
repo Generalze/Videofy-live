@@ -103,13 +103,23 @@ CHECKOUT_EPOCH="$(date +%s)"
 # seconds in between).
 
 npm ci --no-audit --no-fund --silent 2>&1 | tail -2 || npm install --no-audit --no-fund --silent 2>&1 | tail -2
-for p in shared-types participant-contracts account-tokens account-trust billing-tariff language-catalogue call-wire call-client-core media-adapter-port service-env ai-registry; do
-  [ -d "packages/$p" ] && npm run build -w "packages/$p" --silent 2>&1 | tail -1 || true
-done
 [ -e node_modules/@videofy-live/language-catalogue ] || ln -s ../../packages/language-catalogue node_modules/@videofy-live/language-catalogue
-for s in account call-session media-ingest realtime-gateway; do
-  npm run build -w "services/$s" --silent 2>&1 | tail -1
-done
+
+# THE ROOT BUILD, NOT A LIST KEPT HERE.
+#
+# This used to name eleven packages and four services. Two of them drifted out
+# of it within a week -- `services/ai-registry` (a library that lives under
+# services/, so a packages-only loop skipped it) and
+# `packages/conference-authority` -- and each failed the same way: a module
+# that "does not provide an export" for code that plainly has it, or a type
+# declaration that cannot be found. On a developer's machine a stale dist hides
+# both; on a fresh production tree neither is survivable.
+#
+# The root `build` script is the authoritative, dependency-ORDERED list, and
+# scripts/check-build-order.mjs fails the test chain if that order is ever
+# wrong. Deferring to it means a new package is deployable the day it is added
+# rather than the day somebody remembers this file.
+npm run build --silent 2>&1 | tail -3
 
 if [ -f deploy/lib/stage-webapps.sh ]; then
   WWW_DIR="$WWW_DIR" PUBLIC_ORIGIN="$PUBLIC_ORIGIN" bash deploy/lib/stage-webapps.sh 2>&1 | tail -5
