@@ -69,11 +69,18 @@ scp -q "$BUNDLE" "$VIDEOFY_SSH_HOST:/tmp/videofy-$VIDEOFY_ENV.bundle" || { echo 
 
 ssh "$VIDEOFY_SSH_HOST" bash -s \
   "$VIDEOFY_ENV" "$SHA" "$DEPLOY_REF" "$VIDEOFY_ROOT" "$VIDEOFY_APP_DIR" "$VIDEOFY_WWW_DIR" \
-  "$VIDEOFY_PUBLIC_ORIGIN" "$VIDEOFY_UNITS" \
+  "$VIDEOFY_PUBLIC_ORIGIN" "$(printf '%s' "$VIDEOFY_UNITS" | tr ' ' ',')" \
   "$VIDEOFY_ACCOUNT_PORT" "$VIDEOFY_GATEWAY_PORT" "$VIDEOFY_INGEST_PORT" <<'REMOTE'
 set -euo pipefail
 ENV_NAME="$1"; SHA="$2"; DEPLOY_REF="$3"; ROOT="$4"; APP_DIR="$5"; WWW_DIR="$6"
-PUBLIC_ORIGIN="$7"; UNITS="$8"; ACCOUNT_PORT="$9"; GATEWAY_PORT="${10}"; INGEST_PORT="${11}"
+PUBLIC_ORIGIN="$7"; UNITS_CSV="$8"; ACCOUNT_PORT="$9"; GATEWAY_PORT="${10}"; INGEST_PORT="${11}"
+# COMMA-SEPARATED ON THE WIRE, on purpose. `ssh host bash -s a b "c d e"` joins
+# its arguments into ONE remote command string, and the remote shell then
+# re-splits them: a three-word unit list silently became three positional
+# parameters and shifted every argument after it. The visible symptom was a
+# deploy that restarted only the FIRST service and printed a unit name where a
+# port belonged; the invisible one was two services that never started at all.
+UNITS="$(printf '%s' "$UNITS_CSV" | tr ',' ' ')"
 BUNDLE="/tmp/videofy-$ENV_NAME.bundle"
 
 [ -d "$APP_DIR/.git" ] || { echo "DEPLOY FAILED: $APP_DIR is not a git tree; run deploy/$ENV_NAME/install.sh first"; exit 1; }
