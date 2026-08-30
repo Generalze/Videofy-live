@@ -24,6 +24,12 @@ stage() {
   else
     npm run build -w "apps/$app" >/dev/null
   fi
+  if [ "$app" = "ecosystem-web" ]; then
+    # Crawler-readable <title> and og:* per public route (WhatsApp reads the HTML
+    # without running JavaScript). Acceptance D1, 30 Aug: this step was only in
+    # build-apps.sh, so a deploy through this script shipped a bundle with no cards.
+    node scripts/generate-route-html.mjs "apps/$app/dist" "${PUBLIC_ORIGIN:-https://staging.consummate7.com}"
+  fi
   rm -rf "/srv/videofy/www/$target.new"
   cp -r "apps/$app/dist" "/srv/videofy/www/$target.new"
   chmod -R o+rX "/srv/videofy/www/$target.new"

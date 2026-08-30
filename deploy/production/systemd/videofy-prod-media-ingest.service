@@ -1,0 +1,41 @@
+[Unit]
+Description=Videofy Live media ingest (production; holds provider credentials)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=videofy
+Group=videofy
+WorkingDirectory=/srv/videofy-prod/app/services/media-ingest
+# Names come from this file; VALUES never appear in the unit, in the repository,
+# or in journald. 0640 root:videofy: the service user reads it, nobody else.
+EnvironmentFile=/etc/videofy-prod/media-ingest.env
+# This service sets rootDir to the monorepo root, so tsc mirrors the repo
+# layout under dist/. The entry is nested; it is not dist/index.js.
+ExecStart=/usr/bin/node dist/services/media-ingest/src/index.js
+
+KillSignal=SIGTERM
+TimeoutStopSec=25
+
+Restart=on-failure
+RestartSec=3
+
+# Least privilege, and PRODUCTION'S OWN directories only. The shared model
+# cache (/var/lib/videofy/models) and Python runtime (/opt/videofy-ai) are
+# deliberately NOT writable: identical bytes, read by both environments.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/videofy-prod/state /srv/videofy-prod/uploads
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=videofy-prod-media-ingest
+
+[Install]
+WantedBy=multi-user.target

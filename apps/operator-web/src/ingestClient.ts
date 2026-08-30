@@ -12,6 +12,23 @@ import type {
   TargetLanguageCapability,
   AiProviderStatusMetadata,
 } from '@videofy-live/shared-types';
+import { readSession } from './premium/operatorSession';
+
+/**
+ * The operator's credential for programme control, read AT CALL TIME.
+ *
+ * Every programme route on media-ingest (create, feed, pause, resume, cancel,
+ * retry, export) now demands the same C7 session the gateway socket demands,
+ * plus the operator allowlist. The token is read from the shared browser
+ * session on each request and never held in module state: a sign-out or a
+ * sign-in in another tab is honoured by the very next call. Without a
+ * session the request is sent bare, and the service's own sentence --
+ * "Sign in to operate." -- comes back as the error the console shows.
+ */
+function operatorAuthorization(): Record<string, string> {
+  const token = readSession()?.token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 export interface ProcessingSessionDto {
   id: string;
@@ -89,6 +106,7 @@ export async function createProcessingSession(
 
   const response = await fetch(`${ingestUrl.replace(/\/$/, '')}/sessions`, {
     method: 'POST',
+    headers: operatorAuthorization(),
     body,
   });
 
@@ -129,7 +147,7 @@ export async function createMicrophoneSession(
 ): Promise<ProcessingSessionDto> {
   const response = await fetch(`${ingestUrl.replace(/\/$/, '')}/microphone/sessions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...operatorAuthorization() },
     body: JSON.stringify(input),
   });
 
@@ -167,7 +185,7 @@ export async function updateSourceLanguageControl(
     `${ingestUrl.replace(/\/$/, '')}/sessions/${encodeURIComponent(sessionId)}/source-language`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...operatorAuthorization() },
       body: JSON.stringify(input),
     },
   );
@@ -194,6 +212,7 @@ export async function sendMicrophoneChunk(
     `${ingestUrl.replace(/\/$/, '')}/microphone/sessions/${encodeURIComponent(sessionId)}/chunks`,
     {
       method: 'POST',
+      headers: operatorAuthorization(),
       body,
     },
   );
@@ -293,6 +312,7 @@ export async function retryTranscriptionChunk(
 export async function exportTranscript(ingestUrl: string, sessionId: string): Promise<string> {
   const response = await fetch(
     `${ingestUrl.replace(/\/$/, '')}/sessions/${encodeURIComponent(sessionId)}/transcript`,
+    { headers: operatorAuthorization() },
   );
 
   if (!response.ok) {
@@ -332,6 +352,7 @@ export async function exportPairedTranslation(
 ): Promise<string> {
   const response = await fetch(
     `${ingestUrl.replace(/\/$/, '')}/sessions/${encodeURIComponent(sessionId)}/translation/export`,
+    { headers: operatorAuthorization() },
   );
 
   if (!response.ok) {
@@ -370,7 +391,10 @@ async function sendSessionCommand(
   path: string,
   method: 'DELETE' | 'POST',
 ): Promise<ProcessingSessionDto> {
-  const response = await fetch(`${ingestUrl.replace(/\/$/, '')}${path}`, { method });
+  const response = await fetch(`${ingestUrl.replace(/\/$/, '')}${path}`, {
+    method,
+    headers: operatorAuthorization(),
+  });
   return await readSessionResponse(response);
 }
 

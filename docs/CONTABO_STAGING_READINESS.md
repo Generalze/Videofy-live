@@ -257,3 +257,38 @@ they are not interchangeable:
 Running commercial traffic today would mean weakening that gate. That is a
 product decision, not a deployment step, and it should be made explicitly rather
 than discovered while trying to make a staging call work.
+
+## Production -- a second environment on the same box (prepared 2026-08-30)
+
+Production is not a new machine. It is `/srv/videofy-prod`, `/etc/videofy-prod`,
+the `videofy-prod-*` units, loopback ports 3101/3102/3106, database
+`videofy_account_prod` (role `videofy_prod`) in the same Postgres 16 cluster,
+its own web root and its own Caddy site block for `consummate7.com`, next to
+staging and sharing only the translation models under `/var/lib/videofy/models`
+and the Python runtime under `/opt/videofy-ai`, both read-only. coturn stays one
+daemon with a SECOND `static-auth-secret` line for production.
+
+The whole of it is code:
+
+| piece | where |
+| --- | --- |
+| the one table of paths and ports for both environments | `deploy/lib/env.sh` |
+| deploy, either environment, SHA-verified before and after | `deploy/deploy.sh <staging\|production> <ref>` |
+| production install (dirs, env templates, generated secrets, db, TURN, units, Caddy) | `deploy/production/install.sh` |
+| env templates, names only, one line of meaning each | `deploy/production/env-templates/*.template` |
+| units, backup timer (03:42 UTC), two-site Caddyfile | `deploy/production/systemd/*`, `deploy/production/Caddyfile` |
+| public-route smoke through Cloudflare | `deploy/production/smoke.sh [staging]` |
+| the day, step by step, with rollback | `docs/PRODUCTION_CUTOVER_RUNBOOK.md` |
+
+**Not yet bootable in production, by design.** The account's identity
+provider is hard-wired synthetic and refused in production regardless of
+configuration -- a code decision listed under "Blockers" in the runbook.
+media-ingest's `PROGRAMME_ROUTES_ARE_UNAUTHENTICATED` guard is being closed by
+the programme-control-auth lane (authenticated routes, allowlist mirrored via
+`OPERATOR_CONSOLE_ACCOUNT_IDS` in media-ingest.env). The production hostname
+does not resolve yet either; DNS is the founder's step.
+
+Staging's own files under `deploy/staging/` are unchanged; `deploy/deploy.sh
+staging` reproduces the 30 Aug deploy with one addition -- it stages web apps
+through `deploy/lib/stage-webapps.sh`, which also stamps the per-route Open
+Graph HTML that `build-apps.sh` did and `scripts/stage-webapps.sh` did not.

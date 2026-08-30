@@ -172,6 +172,11 @@ npm run test:integration
   output; other languages depend on configured models and voices, and
   NLLB-200 fallback is licensed for non-commercial use only.
 
+Deployment: [docs/CONTABO_STAGING_READINESS.md](docs/CONTABO_STAGING_READINESS.md)
+describes the staging box; [docs/PRODUCTION_CUTOVER_RUNBOOK.md](docs/PRODUCTION_CUTOVER_RUNBOOK.md)
+is the step-by-step for the production environment on the same box, driven by
+`deploy/deploy.sh <staging|production> <ref>`.
+
 See [Architecture V3](docs/VIDEOFY_MASTER_ARCHITECTURE.md) and the
 [Phase 6 execution plan](docs/PHASE_6_EXECUTION_PLAN.md) for the authoritative sequence;
 `docs/roadmap.md` is historical context.

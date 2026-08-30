@@ -1,0 +1,39 @@
+[Unit]
+Description=Videofy Live account service (production)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=videofy
+Group=videofy
+WorkingDirectory=/srv/videofy-prod/app/services/account
+# Names come from this file; VALUES never appear in the unit, in the repository,
+# or in journald. 0640 root:videofy: the service user reads it, nobody else.
+EnvironmentFile=/etc/videofy-prod/account.env
+ExecStart=/usr/bin/node dist/index.js
+
+KillSignal=SIGTERM
+TimeoutStopSec=25
+
+Restart=on-failure
+RestartSec=3
+
+# Least privilege, and PRODUCTION'S OWN directories only. Staging's state,
+# uploads and media are not listed, so a production process cannot write
+# there even by misconfiguration. /var/lib/videofy/models is read-only.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/videofy-prod/state /srv/videofy-prod/uploads /var/lib/videofy-prod/avatars /var/lib/videofy-prod/message-media /var/lib/videofy-prod/channel-media
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=videofy-prod-account
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,37 @@
+[Unit]
+Description=Videofy Live realtime gateway (production)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=videofy
+Group=videofy
+WorkingDirectory=/srv/videofy-prod/app/services/realtime-gateway
+# Names come from this file; VALUES never appear in the unit, in the repository,
+# or in journald. 0640 root:videofy: the service user reads it, nobody else.
+EnvironmentFile=/etc/videofy-prod/gateway.env
+ExecStart=/usr/bin/node dist/index.js
+
+KillSignal=SIGTERM
+TimeoutStopSec=25
+
+Restart=on-failure
+RestartSec=3
+
+# Least privilege, and PRODUCTION'S OWN directories only.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/videofy-prod/state /srv/videofy-prod/uploads
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=videofy-prod-gateway
+
+[Install]
+WantedBy=multi-user.target

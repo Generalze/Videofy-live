@@ -34,6 +34,11 @@ import { createTranscriptionProvider } from './transcription-provider.js';
 import { registerVoiceNoteTranslationRoute } from './voice-note-translation-route.js';
 import { logger, setLogLevel } from './logger.js';
 import { MediaIngestError } from './ingest-error.js';
+import {
+  OPERATOR_CONSOLE_ACCOUNT_IDS_VARIABLE,
+  createProgrammeControlGuard,
+  operatorEntitlementFromAllowlist,
+} from './programme-control-auth.js';
 import { setOpusMtDiagnosticLogger } from './translation-provider.js';
 import { attachRealtimeAudioIngress, REALTIME_INGRESS_PATH } from './realtime-ingress-server.js';
 import { createLiveStreamOpener } from './live-session-host.js';
@@ -265,7 +270,54 @@ app.get('/languages/catalogue', (_req, res) => {
   });
 });
 
-app.post('/microphone/sessions', async (req, res) => {
+/**
+ * Who is calling, from a verified session token.
+ *
+ * With no secret configured this refuses everybody rather than falling back to
+ * trusting a header. Failing closed costs the voice feature; failing open costs
+ * somebody their voice, because an unverified owner id is just a string the
+ * client chose.
+ */
+const authenticate = (() => {
+  const configured = process.env['VIDEOFY_AUTH_SECRET'];
+  if (!configured) {
+    logger.warn(
+      'VIDEOFY_AUTH_SECRET is not set; personal voice and programme control endpoints will refuse every request',
+    );
+    return createRefusingAuthentication();
+  }
+  return createTokenAuthentication(
+    requireSessionSecret(configured, 'VIDEOFY_AUTH_SECRET'),
+  );
+})();
+
+/**
+ * PROGRAMME CONTROL IS OPERATED, NOT OPEN.
+ *
+ * Every route below that creates, feeds, steers or reads a programme runs
+ * behind this guard: the SAME verified session the gateway's operator socket
+ * requires, and the SAME OPERATOR_CONSOLE_ACCOUNT_IDS allowlist it applies.
+ * Unset means nobody -- the deployment that forgets the variable notices in
+ * minutes; one that silently opens to everybody notices in a headline. The
+ * gateway's internal token is honoured too, so a server-side probe can drive
+ * a programme; it already holds a credential that creates sessions.
+ *
+ * GET /languages/catalogue stays public: it is the deployment's capability
+ * list, and nothing an anonymous caller could act on. The three delivery
+ * routes (/source-media, /viewer-media, generated audio) are the AUDIENCE's
+ * and are not operator routes; they keep their own rules.
+ */
+const operatorEntitlement = operatorEntitlementFromAllowlist(
+  process.env[OPERATOR_CONSOLE_ACCOUNT_IDS_VARIABLE],
+);
+const operatorOnly = createProgrammeControlGuard({
+  authenticate,
+  entitlement: operatorEntitlement,
+  internalTokenAllowed: (presented) =>
+    internalIngressRequestAllowed(config.internalIngressAuth, presented),
+});
+
+app.post('/microphone/sessions', operatorOnly, async (req, res) => {
   try {
     const body = (req.body ?? {}) as {
       deviceId?: unknown;
@@ -293,7 +345,7 @@ app.post('/microphone/sessions', async (req, res) => {
   }
 });
 
-app.post('/microphone/sessions/:sessionId/chunks', upload.single('audio'), async (req, res) => {
+app.post('/microphone/sessions/:sessionId/chunks', operatorOnly, upload.single('audio'), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: 'Upload a microphone chunk using the "audio" form field.' });
     return;
@@ -318,7 +370,7 @@ app.post('/microphone/sessions/:sessionId/chunks', upload.single('audio'), async
   }
 });
 
-app.post('/microphone/sessions/:sessionId/stop', (req, res) => {
+app.post('/microphone/sessions/:sessionId/stop', operatorOnly, (req, res) => {
   try {
     const session = ingest.stopMicrophoneSession(req.params.sessionId);
     res.json({ session });
@@ -513,7 +565,7 @@ app.post('/internal/media/sessions/:sessionId/stop', (req, res) => {
   }
 });
 
-app.post('/microphone/sessions/:sessionId/device-disconnected', (req, res) => {
+app.post('/microphone/sessions/:sessionId/device-disconnected', operatorOnly, (req, res) => {
   try {
     const session = ingest.failMicrophoneDeviceDisconnected(req.params.sessionId);
     res.json({ session });
@@ -522,7 +574,7 @@ app.post('/microphone/sessions/:sessionId/device-disconnected', (req, res) => {
   }
 });
 
-app.post('/sessions', upload.single('media'), async (req, res) => {
+app.post('/sessions', operatorOnly, upload.single('media'), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: 'Upload a media file using the "media" form field.' });
     return;
@@ -573,7 +625,7 @@ app.post('/sessions', upload.single('media'), async (req, res) => {
   }
 });
 
-app.post('/sessions/:sessionId/audio/retry', async (req, res) => {
+app.post('/sessions/:sessionId/audio/retry', operatorOnly, async (req, res) => {
   try {
     const session = await ingest.retryAudioExtraction(req.params.sessionId);
     res.json({ session });
@@ -582,7 +634,7 @@ app.post('/sessions/:sessionId/audio/retry', async (req, res) => {
   }
 });
 
-app.delete('/sessions/:sessionId/audio', async (req, res) => {
+app.delete('/sessions/:sessionId/audio', operatorOnly, async (req, res) => {
   try {
     const session = await ingest.cleanupFailedAudio(req.params.sessionId);
     res.json({ session });
@@ -591,7 +643,7 @@ app.delete('/sessions/:sessionId/audio', async (req, res) => {
   }
 });
 
-app.post('/sessions/:sessionId/pause', (req, res) => {
+app.post('/sessions/:sessionId/pause', operatorOnly, (req, res) => {
   try {
     const session = ingest.pauseSession(req.params.sessionId);
     res.json({ session });
@@ -600,7 +652,7 @@ app.post('/sessions/:sessionId/pause', (req, res) => {
   }
 });
 
-app.post('/sessions/:sessionId/resume', (req, res) => {
+app.post('/sessions/:sessionId/resume', operatorOnly, (req, res) => {
   try {
     const session = ingest.resumeSession(req.params.sessionId);
     res.json({ session });
@@ -609,7 +661,7 @@ app.post('/sessions/:sessionId/resume', (req, res) => {
   }
 });
 
-app.post('/sessions/:sessionId/cancel', (req, res) => {
+app.post('/sessions/:sessionId/cancel', operatorOnly, (req, res) => {
   try {
     const session = ingest.cancelSession(req.params.sessionId);
     res.json({ session });
@@ -618,7 +670,7 @@ app.post('/sessions/:sessionId/cancel', (req, res) => {
   }
 });
 
-app.post('/sessions/:sessionId/transcription/chunks/:chunkId/retry', async (req, res) => {
+app.post('/sessions/:sessionId/transcription/chunks/:chunkId/retry', operatorOnly, async (req, res) => {
   try {
     const session = await ingest.retryTranscriptionChunk(req.params.sessionId, req.params.chunkId);
     res.json({ session });
@@ -627,7 +679,7 @@ app.post('/sessions/:sessionId/transcription/chunks/:chunkId/retry', async (req,
   }
 });
 
-app.get('/sessions/:sessionId/transcript', (req, res) => {
+app.get('/sessions/:sessionId/transcript', operatorOnly, (req, res) => {
   try {
     const transcript = ingest.exportTranscript(req.params.sessionId);
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -641,7 +693,7 @@ app.get('/sessions/:sessionId/transcript', (req, res) => {
   }
 });
 
-app.post('/sessions/:sessionId/translation/segments/:segmentId/retry', async (req, res) => {
+app.post('/sessions/:sessionId/translation/segments/:segmentId/retry', operatorOnly, async (req, res) => {
   try {
     const session = await ingest.retryTranslationSegment(
       req.params.sessionId,
@@ -654,7 +706,7 @@ app.post('/sessions/:sessionId/translation/segments/:segmentId/retry', async (re
   }
 });
 
-app.get('/sessions/:sessionId/translation/export', (req, res) => {
+app.get('/sessions/:sessionId/translation/export', operatorOnly, (req, res) => {
   try {
     const paired = ingest.exportPairedTranslation(req.params.sessionId);
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -668,7 +720,7 @@ app.get('/sessions/:sessionId/translation/export', (req, res) => {
   }
 });
 
-app.post('/sessions/:sessionId/generated-audio/segments/:segmentId/retry', async (req, res) => {
+app.post('/sessions/:sessionId/generated-audio/segments/:segmentId/retry', operatorOnly, async (req, res) => {
   try {
     const session = await ingest.retryGeneratedAudioSegment(
       req.params.sessionId,
@@ -681,7 +733,7 @@ app.post('/sessions/:sessionId/generated-audio/segments/:segmentId/retry', async
   }
 });
 
-app.post('/sessions/:sessionId/source-language', (req, res) => {
+app.post('/sessions/:sessionId/source-language', operatorOnly, (req, res) => {
   try {
     const body = (req.body ?? {}) as { action?: unknown; language?: unknown };
     const action = requireStringField(body.action, 'action') as Parameters<
@@ -696,27 +748,6 @@ app.post('/sessions/:sessionId/source-language', (req, res) => {
     sendIngestError(res, error);
   }
 });
-
-/**
- * Who is calling, from a verified session token.
- *
- * With no secret configured this refuses everybody rather than falling back to
- * trusting a header. Failing closed costs the voice feature; failing open costs
- * somebody their voice, because an unverified owner id is just a string the
- * client chose.
- */
-const authenticate = (() => {
-  const configured = process.env['VIDEOFY_AUTH_SECRET'];
-  if (!configured) {
-    logger.warn(
-      'VIDEOFY_AUTH_SECRET is not set; personal voice endpoints will refuse every request',
-    );
-    return createRefusingAuthentication();
-  }
-  return createTokenAuthentication(
-    requireSessionSecret(configured, 'VIDEOFY_AUTH_SECRET'),
-  );
-})();
 
 let voiceProfileSerial = 0;
 registerVoiceProfileInitRoute(app, {
@@ -807,43 +838,32 @@ if (config.internalIngressAuth.mode === 'insecure-explicit') {
 }
 
 /**
- * The programme-control routes are UNAUTHENTICATED, and must never reach
- * production while they are.
+ * Programme control is authenticated, and the service says so at boot.
  *
- * `/microphone/sessions` and `/sessions/:id/*` are the Operator console's
- * surface: creating a session, pausing, resuming, cancelling, reading a
- * transcript. None of them authenticates a caller, because the console has no
- * identity to present -- it has no sign-in at all. Anonymous reach to them is
- * not an information leak, it is remote control of a live broadcast.
- *
- * Deliberately accepted on staging (2026-08-23, owner's call) on the grounds
- * that no real broadcast runs there. That decision does not extend one inch
- * further, and "we meant to fix it before production" is not a mechanism. This
- * is the mechanism: in production the service refuses to start. Two staging
- * acceptance checks fail on purpose alongside it, so the debt stays visible
- * rather than resting on somebody's memory.
- *
- * Removing this guard is not the fix. The fix is an authenticated Operator
- * console; when that lands, this block goes with it.
+ * Until 30 Aug 2026 `/microphone/sessions` and `/sessions/:id/*` accepted
+ * anonymous callers, and a guard here refused to start in production because
+ * anonymous reach to them is remote control of a live broadcast. The fix that
+ * guard was waiting for is `operatorOnly` above: a verified C7 session plus
+ * the operator allowlist, mirrored from the gateway. This block is what
+ * replaced the refusal -- the mode is logged so a deployment can read from its
+ * own journal which population may operate, and an empty allowlist is called
+ * out because it means the console works for nobody.
  */
-const PROGRAMME_ROUTES_ARE_UNAUTHENTICATED = true;
+const PROGRAMME_ROUTES_ARE_UNAUTHENTICATED = false as const;
 const deploymentEnvironment = (process.env['C7_ENVIRONMENT'] ?? process.env['NODE_ENV'] ?? '')
   .trim()
   .toLowerCase();
-if (PROGRAMME_ROUTES_ARE_UNAUTHENTICATED && deploymentEnvironment === 'production') {
-  logger.error(
-    'Refusing to start: programme control routes are unauthenticated and this is production',
-    {
-      detail:
-        'POST /microphone/sessions and /sessions/:id/{pause,resume,cancel,transcript} accept ' +
-        'anonymous callers. Give the Operator console an identity before deploying here.',
-    },
-  );
+if (PROGRAMME_ROUTES_ARE_UNAUTHENTICATED) {
+  logger.error('Refusing to start: programme control routes must never be unauthenticated');
   process.exit(1);
 }
-if (PROGRAMME_ROUTES_ARE_UNAUTHENTICATED) {
+logger.info('programme control authenticated: session + operator allowlist', {
+  environment: deploymentEnvironment || 'unset',
+  operatorAccountsAllowed: operatorEntitlement.allowedCount,
+});
+if (operatorEntitlement.allowedCount === 0) {
   logger.warn(
-    'Programme control routes accept anonymous callers; accepted for staging only, never production',
+    `${OPERATOR_CONSOLE_ACCOUNT_IDS_VARIABLE} is not set: programme control refuses every account.`,
   );
 }
 

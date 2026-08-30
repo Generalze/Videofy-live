@@ -77,7 +77,7 @@ fill_secret() {
 }
 
 fill_secret INTERNAL_WEBRTC_TOKEN "$ENV_DIR/gateway.env" "$ENV_DIR/media-ingest.env"
-fill_secret VIDEOFY_AUTH_SECRET  "$ENV_DIR/gateway.env" "$ENV_DIR/account.env"
+fill_secret VIDEOFY_AUTH_SECRET  "$ENV_DIR/gateway.env" "$ENV_DIR/account.env" "$ENV_DIR/media-ingest.env"
 fill_secret CONNECT_AUTH_SECRET  "$ENV_DIR/gateway.env"
 
 # --- systemd --------------------------------------------------------------
