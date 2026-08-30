@@ -115,13 +115,17 @@ missing=0
 for app in ecosystem-web call-web listener-web operator-web; do
   dir="$WWW_DIR/$app/assets"
   [ -d "$dir" ] || continue
-  for want in '/auth' '/media'; do
-    grep -qrF -- "$want" "$dir" 2>/dev/null && continue
-    # An app that never speaks to that service does not have to name it.
-    grep -qrE 'VITE_(ACCOUNT|INGEST)_URL|localhost:(3006|3002)' "$dir" 2>/dev/null || continue
-    echo "REFUSED: $app names no '$want' -- its build did not receive the endpoint" >&2
+  # Each path is paired with ITS OWN service marker. Checking for either
+  # marker and then demanding both paths refuses an app that legitimately
+  # speaks to one service and not the other -- which is most of them.
+  check_endpoint() { # $1 path, $2 marker regex for that service alone
+    grep -qrF -- "$1" "$dir" 2>/dev/null && return 0
+    grep -qrE "$2" "$dir" 2>/dev/null || return 0   # never talks to it; nothing to prove
+    echo "REFUSED: $app names no '$1' -- its build did not receive the endpoint" >&2
     missing=1
-  done
+  }
+  check_endpoint '/auth'  'VITE_ACCOUNT_URL|localhost:3006'
+  check_endpoint '/media' 'VITE_INGEST_URL|localhost:3002'
 done
 if [ "$missing" -ne 0 ]; then
   echo "staging aborted: a bundle would have shipped without its endpoints" >&2
