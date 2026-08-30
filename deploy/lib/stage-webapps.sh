@@ -108,7 +108,11 @@ echo "apps staged into $WWW_DIR for $PUBLIC_ORIGIN"
 # is a fetch that failed in their browser and the server looks healthy from
 # every angle we can measure.
 leaked=0
-for f in $(find "$WWW_DIR" -name '*.js' -type f 2>/dev/null); do
+# -path pruning, not a plain find: `stage` keeps the previous release beside
+# the new one as <app>.old so a bad deploy can be walked back, and those files
+# legitimately carry whatever the last build did. Scanning them would refuse
+# every deploy that follows a bad one -- including the one carrying the fix.
+for f in $(find "$WWW_DIR" \( -name '*.old' -o -name '*.new' \) -prune -o -name '*.js' -type f -print 2>/dev/null); do
   if grep -qE 'localhost:[0-9]+|127\.0\.0\.1:[0-9]+' "$f"; then
     echo "REFUSED: $(basename "$f") names a development endpoint" >&2
     leaked=1
