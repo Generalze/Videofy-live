@@ -48,6 +48,13 @@
 	# ICE servers (STUN + a time-limited TURN credential) for call video.
 	# Call video is a peer-to-peer mesh, so the browser must be told how to
 	# traverse NAT before it can connect to another participant.
+	# The direct-call telephone: pre-join check, ringing ack, decline, and
+	# the conference status/public listing. Gateway-owned; a device asks these
+	# BEFORE it is in a socket room. (Was live on the box but missing here.)
+	handle /calls/* {
+		reverse_proxy 127.0.0.1:3001
+	}
+
 	handle /webrtc/* {
 		reverse_proxy 127.0.0.1:3001
 	}
