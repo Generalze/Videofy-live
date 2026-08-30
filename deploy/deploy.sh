@@ -167,7 +167,17 @@ esac
 FAILED=0
 for probe in "account $ACCOUNT_PORT" "gateway $GATEWAY_PORT" "media-ingest $INGEST_PORT"; do
   set -- $probe
-  CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:$2/health" || true)"
+  # RETRY, don't race. systemd reports a unit active the moment the process is
+  # forked; node still has to import, connect to Postgres and bind. Probing once
+  # immediately reported 000 for two services that answered 200 eight seconds
+  # later -- a deploy that fails spuriously erodes this gate exactly as much as
+  # one that passes wrongly, because the next failure gets waved through.
+  CODE=000
+  for _ in $(seq 1 15); do
+    CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:$2/health" || true)"
+    [ "$CODE" = "200" ] && break
+    sleep 2
+  done
   echo "[$ENV_NAME] $1 :$2/health $CODE"
   [ "$CODE" = "200" ] || FAILED=1
 done
