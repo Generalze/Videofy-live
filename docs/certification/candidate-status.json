@@ -43,9 +43,17 @@
   "translategemma": {
    "licence": "Gemma terms",
    "commercial": "permitted, revocable",
-   "qualityStatus": "NOT MEASURED",
-   "infrastructureStatus": "NOT STAGED",
-   "blocker": "gated; needs founder to accept terms on a C7-controlled HF account and store HF_TOKEN via Set-EnvKey.ps1",
+   "qualityStatus": "EXCLUDED-PHASE1",
+   "infrastructureStatus": "STAGED (benchmark venv only)",
+   "revision": "10042cb0e6e7fdce748996a71dc3dc432a4e0c89",
+   "runtime": "python 3.12.3 / torch 2.13.0+cpu / transformers 5.16.1",
+   "languageSupport": {
+    "yo": "NOT SUPPORTED",
+    "ha": "NOT SUPPORTED",
+    "ig": "NOT SUPPORTED",
+    "pcm": "REFUSED by chat template"
+   },
+   "note": "The licence was never the problem -- Gemma permits commercial hosted use. The model returns Devanagari, Gujarati, Arabic and Thai for yo/ha/ig while translating fr/es/pt AND Swahili correctly in the same run. Regional and script variants (ha-NE, ha-GH, yo-BJ) changed nothing. An instance of Google's own 'experimental tier': present in the chat template, absent in capability.",
    "productionApproved": false
   },
   "nllb": {
@@ -66,6 +74,6 @@
  },
  "routes": {
   "_comment": "No route is promoted. Recommendations are candidates for human review only.",
-  "humanReviewStatus": "V2 forward packs built, not distributed; reverse UNMEASURED pending native source"
+  "humanReviewStatus": "V2 forward packs MAY NOW BE DISTRIBUTED UNCHANGED: TranslateGemma entered the top two for no direction, so no V3 is required. Reverse directions remain UNMEASURED pending frozen native corpora."
  }
 }

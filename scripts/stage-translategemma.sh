@@ -51,7 +51,12 @@ if [ ! -x "${VENV}/bin/python" ]; then
     'transformers>=4.50' sentencepiece protobuf accelerate 'huggingface_hub>=0.26'
 fi
 
-sudo -n "${VENV}/bin/python" - <<'PY'
+# --preserve-env, NOT `env HF_TOKEN=...`. sudo sanitises the environment by
+# default, which is why the first run found the token empty -- but passing it
+# back as `env NAME=value` would put the secret in the remote process list for
+# the life of the download. Preserving the variable keeps it in the environment,
+# where it is not visible to `ps`.
+sudo -n --preserve-env=HF_TOKEN,HF_HOME,HF_HUB_CACHE "${VENV}/bin/python" - <<'PY'
 import json, os, sys
 
 # The token reaches the process through the environment and is never printed.
