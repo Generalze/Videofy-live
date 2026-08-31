@@ -22,6 +22,10 @@ import { RingRegistry } from '../ring-registry.js';
 import { createInMemoryConversationModePort } from '../conversation-modes.js';
 import { PushDispatcher, createRecordingPushProvider } from '../push/push-dispatcher.js';
 import { registerMessageRoutes } from '../message-routes.js';
+import {
+  createTranslationRouteRegistryFromRecords,
+  type TranslationRouteRecord,
+} from '../translation-route-policy.js';
 import { createInMemoryCallRecordPort } from '../call-records.js';
 import type { Caller } from '../routes.js';
 
@@ -36,6 +40,29 @@ const TRUST: AccountTrust = {
 function caller(accountId: string): Caller {
   return { accountId, trust: TRUST, record: {} as Caller['record'] };
 }
+
+/** One approved messaging route, so the translated-edit case has one to take. */
+const EN_ES_ROUTE: TranslationRouteRecord = {
+  sourceLanguage: 'en',
+  targetLanguage: 'es',
+  provider: 'opus-mt',
+  modelId: 'Helsinki-NLP/opus-mt-en-es',
+  executionClass: 'local',
+  productionApproved: true,
+  technicalEvidence: {
+    sampleCount: 40,
+    successRate: 1,
+    latencyMs: { min: 40, median: 90, mean: 95, max: 300 },
+    recordedAt: '2026-08-30T00:00:00.000Z',
+  },
+  humanReviewStatus: 'passed',
+  licenceStatus: { licence: 'Apache-2.0', commercialUse: 'permitted', evidence: 'model card' },
+  serviceScopes: {
+    messaging: 'approved',
+    'programme-live': 'unapproved',
+    'call-live': 'unapproved',
+  },
+};
 
 interface Wire {
   messageId: string;
@@ -87,6 +114,9 @@ async function harness() {
     push: new PushDispatcher({ devices, providers: [provider] }),
     rings: new RingRegistry(),
     conversationModes,
+    // en->es is approved for messaging so the edit test can exercise the
+    // re-render; every other pair here has no route and delivers originals.
+    translationRoutes: createTranslationRouteRegistryFromRecords([EN_ES_ROUTE]),
     translator: {
       translate: async ({ targetLanguage, sourceText }) => `[${targetLanguage}] ${sourceText}`,
     },

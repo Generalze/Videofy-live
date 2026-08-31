@@ -20,6 +20,7 @@
     "@videofy-live/service-env": "*",
     "@videofy-live/shared-types": "*",
     "@videofy-live/speech-activity": "*",
+    "@videofy-live/translation-routes": "*",
     "express": "^4.19.2",
     "google-auth-library": "^11.0.0",
     "multer": "^2.2.0",

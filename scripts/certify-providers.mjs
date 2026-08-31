@@ -70,13 +70,27 @@ const ENVIRONMENT_LABEL = argValue('--environment', 'staging (c7-eu-01)');
 /**
  * How long to wait for scale-to-zero capacity to come up before giving up.
  *
- * The vendor's own 503 says "retry in about five minutes", so a budget shorter
- * than that would record "9jaLingo does not work" when what happened is
- * "9jaLingo was asleep and nobody waited". Eight minutes by default.
+ * A budget shorter than the true cold start records "9jaLingo does not work"
+ * when what happened is "9jaLingo was asleep and nobody waited" -- and it does
+ * so most often on the FIRST run of a quiet day, which is exactly when
+ * somebody is about to demo.
+ *
+ * Eight minutes used to be the default, chosen against the vendor's own 503
+ * body: "Inference capacity is starting after an idle period. Please retry
+ * shortly in about 5 minutes." THAT MESSAGE IS WRONG. Measured 2026-08-30:
+ * 36 consecutive 503s over 606 s of continuous polling, and the endpoint did
+ * not serve inside a ten-minute budget; it served a minute or two later. The
+ * real cold start is roughly 11-12 minutes. Once warm, first requests land in
+ * 3.1-6.2 s.
+ *
+ * Twenty minutes, therefore: comfortably past the measured figure rather than
+ * barely past it, because the cost of waiting too long is a slow run and the
+ * cost of waiting too little is a false negative recorded against a working
+ * vendor. Do not tune this back down to the number printed in the 503.
  */
 const WARM_BUDGET_MS = Math.max(
   0,
-  Number.parseInt(argValue('--warm-budget-ms', '480000'), 10) || 0,
+  Number.parseInt(argValue('--warm-budget-ms', '1200000'), 10) || 0,
 );
 
 const selected = ONLY.trim() === '' ? null : new Set(ONLY.split(',').map((part) => part.trim()));

@@ -11,7 +11,10 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DeepgramNovaStreamingProvider } from '../providers/deepgram/nova-streaming-stt.js';
+import {
+  DEFAULT_UTTERANCE_END_MS,
+  DeepgramNovaStreamingProvider,
+} from '../providers/deepgram/nova-streaming-stt.js';
 import {
   DeepgramFluxStreamingProvider,
   FLUX_RECOMMENDED_FRAME_SAMPLES,
@@ -500,6 +503,150 @@ async function openFlux(overrides: Record<string, unknown> = {}) {
 
 const turn = (event: string, transcript = '', extra: Record<string, unknown> = {}) => ({
   type: 'TurnInfo', event, transcript, ...extra,
+});
+
+describe('a declared source language is honoured, or the session is refused', () => {
+  // MEASURED 2026-08-30, on staging credentials from c7-eu-01: Nova refused
+  // `yo` with HTTP 400 at connect while Flux OPENED the same session and
+  // returned fluent English, and `zz-not-a-language` opened on Flux too. Two
+  // adapters failing in opposite directions on identical input is worse than
+  // either failure alone, because the safe one hides how unsafe the other is.
+
+  it('PIN: Nova sends the session language on the wire', async () => {
+    const r = await openDeepgram();
+    expect(new URL(r.fake.url).searchParams.get('language')).toBe('en');
+  });
+
+  it('PIN: Flux refuses a language its single-language model cannot serve', async () => {
+    const fake = fakeSocket();
+    const provider = new DeepgramFluxStreamingProvider({
+      apiKey: 'k', model: 'flux-general-en', sockets: fake.factory,
+    });
+    await expect(
+      provider.openStream({
+        sessionId: 'cs_1', streamId: 'st_1', sourceLanguage: 'yo',
+        onSignal: () => {}, onError: () => {},
+      }),
+    ).rejects.toThrow(/cannot transcribe "yo"/);
+    // Refused BEFORE the socket: no vendor call, no audio accepted.
+    expect(fake.url).toBe('');
+  });
+
+  it('PIN: Flux refuses a language that is not a language at all', async () => {
+    const fake = fakeSocket();
+    const provider = new DeepgramFluxStreamingProvider({
+      apiKey: 'k', model: 'flux-general-en', sockets: fake.factory,
+    });
+    await expect(
+      provider.openStream({
+        sessionId: 'cs_1', streamId: 'st_1', sourceLanguage: 'zz-not-a-language',
+        onSignal: () => {}, onError: () => {},
+      }),
+    ).rejects.toThrow(/cannot transcribe/);
+  });
+
+  it('PIN: Flux accepts the language its model does serve, region and all', async () => {
+    const fake = fakeSocket();
+    const provider = new DeepgramFluxStreamingProvider({
+      apiKey: 'k', model: 'flux-general-en', sockets: fake.factory,
+    });
+    await expect(
+      provider.openStream({
+        sessionId: 'cs_1', streamId: 'st_1', sourceLanguage: 'en-NG',
+        onSignal: () => {}, onError: () => {},
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it('PIN: a session that claims no language is not contradicted', async () => {
+    // auto-detect has made no claim the adapter could refuse.
+    const fake = fakeSocket();
+    const provider = new DeepgramFluxStreamingProvider({
+      apiKey: 'k', model: 'flux-general-en', sockets: fake.factory,
+    });
+    await expect(
+      provider.openStream({
+        sessionId: 'cs_1', streamId: 'st_1', sourceLanguage: 'yo',
+        sourceLanguageMode: 'auto-detect', onSignal: () => {}, onError: () => {},
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it('PIN: a multi Flux model carries the SESSION language as language_hint', async () => {
+    const fake = fakeSocket();
+    const provider = new DeepgramFluxStreamingProvider({
+      apiKey: 'k', model: 'flux-general-multi', sockets: fake.factory, languageHint: 'en',
+    });
+    await provider.openStream({
+      sessionId: 'cs_1', streamId: 'st_1', sourceLanguage: 'es',
+      onSignal: () => {}, onError: () => {},
+    });
+    // The session outranks the deployment default; a deployment-wide hint that
+    // silently overrode a per-call language is the same defect, quieter.
+    expect(new URL(fake.url).searchParams.get('language_hint')).toBe('es');
+  });
+});
+
+describe('requestEndpointing is wiring, not decoration', () => {
+  // MEASURED 2026-08-30: `LiveStreamPipeline.open` sets `requestEndpointing:
+  // true` on every live session and NO adapter read it, so Nova was never sent
+  // `utterance_end_ms`, never sent `vad_events`, and produced 0 endpoint
+  // signals across 38 live samples. The platform's candidate-boundary path was
+  // dead in production and looked alive in source.
+
+  it('PIN: a session asking for endpointing gets utterance_end_ms and vad_events', async () => {
+    const fake = fakeSocket();
+    const provider = new DeepgramNovaStreamingProvider({
+      apiKey: 'k', model: 'nova-3', sockets: fake.factory,
+    });
+    await provider.openStream({
+      sessionId: 'cs_1', streamId: 'st_1', sourceLanguage: 'en',
+      requestEndpointing: true, onSignal: () => {}, onError: () => {},
+    });
+    const params = new URL(fake.url).searchParams;
+    expect(params.get('utterance_end_ms')).toBe(String(DEFAULT_UTTERANCE_END_MS));
+    expect(params.get('vad_events')).toBe('true');
+  });
+
+  it('PIN: a session that does not ask for it is not given it', async () => {
+    const fake = fakeSocket();
+    const provider = new DeepgramNovaStreamingProvider({
+      apiKey: 'k', model: 'nova-3', sockets: fake.factory,
+    });
+    await provider.openStream({
+      sessionId: 'cs_1', streamId: 'st_1', sourceLanguage: 'en',
+      onSignal: () => {}, onError: () => {},
+    });
+    const params = new URL(fake.url).searchParams;
+    expect(params.get('utterance_end_ms')).toBeNull();
+    expect(params.get('vad_events')).toBeNull();
+  });
+
+  it('PIN: an explicit deployment value still wins over the default', async () => {
+    const fake = fakeSocket();
+    const provider = new DeepgramNovaStreamingProvider({
+      apiKey: 'k', model: 'nova-3', sockets: fake.factory, utteranceEndMs: 2500,
+    });
+    await provider.openStream({
+      sessionId: 'cs_1', streamId: 'st_1', sourceLanguage: 'en',
+      requestEndpointing: true, onSignal: () => {}, onError: () => {},
+    });
+    expect(new URL(fake.url).searchParams.get('utterance_end_ms')).toBe('2500');
+  });
+
+  it('PIN: the endpoint signal the pipeline asked for actually reaches it', async () => {
+    const signals: StreamingTranscriptionSignal[] = [];
+    const fake = fakeSocket();
+    const provider = new DeepgramNovaStreamingProvider({
+      apiKey: 'k', model: 'nova-3', sockets: fake.factory,
+    });
+    await provider.openStream({
+      sessionId: 'cs_1', streamId: 'st_1', sourceLanguage: 'en',
+      requestEndpointing: true, onSignal: (s) => signals.push(s), onError: () => {},
+    });
+    fake.server({ type: 'UtteranceEnd', last_word_end: 1.25 });
+    expect(signals.filter((s) => s.kind === 'endpoint')).toHaveLength(1);
+  });
 });
 
 describe('Flux TurnInfo normalization', () => {

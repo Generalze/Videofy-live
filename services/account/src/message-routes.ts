@@ -39,7 +39,17 @@ import { randomBytes } from 'node:crypto';
 import type { RingRegistry } from './ring-registry.js';
 import type { ConversationModePort } from './conversation-modes.js';
 import type { TextTranslator } from './translation-client.js';
-import type { VoiceNoteTranslator } from './voice-note-translation-client.js';
+import type {
+  VoiceNoteTranslationOutcome,
+  VoiceNoteTranslator,
+} from './voice-note-translation-client.js';
+import { normaliseLanguageTag } from '@videofy-live/translation-routes';
+import {
+  decideMessagingRoute,
+  type MessagingRouteDecision,
+  type TranslationRouteRecord,
+  type TranslationRouteRegistry,
+} from './translation-route-policy.js';
 import { displayBody, messagePair, type MessageView } from './message-store.js';
 import { callRecordToWire, type CallRecordPort } from './call-records.js';
 import { createReadStream } from 'node:fs';
@@ -74,6 +84,24 @@ export interface MessageRouteDependencies {
   readonly translator: TextTranslator;
   /** Same line, for voice notes: audio in, translated text and audio out. */
   readonly voiceTranslator: VoiceNoteTranslator;
+  /**
+   * WHICH ROUTES THIS PATH MAY TRANSLATE ON. Required, not optional: a
+   * missing registry would silently restore the ungated behaviour the
+   * founder's ruling exists to end, and an unwired seam that still compiles
+   * is the exact defect this repo keeps paying for. Given no approved
+   * record, every message goes out as written -- which is the correct
+   * answer to "may production invoke this route" when nothing has approved
+   * it.
+   */
+  readonly translationRoutes: TranslationRouteRegistry;
+  /**
+   * How long translation may hold a send open before the original goes out
+   * anyway -- text AND voice, when set. Present so the bound itself can be
+   * TESTED rather than asserted in a comment; production leaves it unset and
+   * gets the two defaults, which differ because a voice note is three stages
+   * over two minutes of speech and a chat message is not.
+   */
+  readonly translationBudgetMs?: number;
   /** Call history for the pair; rendered in the timeline beside messages. */
   readonly calls?: CallRecordPort;
   readonly callerAccountId: (req: express.Request) => Caller | null;
@@ -83,6 +111,78 @@ export interface MessageRouteDependencies {
 /** Voice notes: two minutes, ~3MB of AAC. Enough for a message, not a podcast. */
 const MAX_VOICE_DURATION_MS = 120_000;
 const MAX_VOICE_BYTES = 3 * 1024 * 1024;
+
+/**
+ * What happened to translation on THIS message, said plainly to the client.
+ *
+ * `not-requested` -- the conversation is in normal mode; nothing was asked.
+ * `same-language`  -- both sides use the same language; rule 1, no call made.
+ * `translated`     -- an approved local route rendered it; `provider` names it.
+ * `unavailable`    -- the original was delivered and `reason` says why it
+ *                     could not be translated. This is the honest word for
+ *                     every degradation: no route, a refusal, a dead engine,
+ *                     a timeout, an echo. It is never silence.
+ */
+export interface MessageTranslationDisposition {
+  readonly status: 'not-requested' | 'same-language' | 'translated' | 'unavailable';
+  readonly reason: string | null;
+  readonly provider: string | null;
+}
+
+/** The rendering (if any) and the honest account of how it went. */
+interface TranslationAttempt {
+  readonly rendering: { translatedBody: string; translatedLanguage: string } | undefined;
+  readonly translation: MessageTranslationDisposition;
+}
+
+const NOT_REQUESTED: MessageTranslationDisposition = {
+  status: 'not-requested',
+  reason: null,
+  provider: null,
+};
+
+/**
+ * DELIVERY IS AUTHORITATIVE, SO TRANSLATION IS ON A CLOCK.
+ *
+ * The clients already carry their own abort, but the deps are injected and a
+ * translator that never settles -- a wedged worker, a socket that neither
+ * closes nor answers -- would otherwise hold a sender's message open for as
+ * long as it liked. Past the budget the message goes out as written. The
+ * late promise is swallowed so a rejection arriving after the race cannot
+ * take the process down with it.
+ */
+const TRANSLATION_DELIVERY_BUDGET_MS = 20_000;
+
+/**
+ * A voice note gets its own, longer bound. Three stages run over up to two
+ * minutes of speech, and the client that talks to the engine already aborts
+ * at sixty seconds -- so this sits ABOVE that deliberately. A bound tighter
+ * than the client's own would convert slow successes into silent originals,
+ * which is the failure the text client's matrix caught once already.
+ */
+const VOICE_TRANSLATION_DELIVERY_BUDGET_MS = 90_000;
+
+async function withinDeliveryBudget<T>(
+  work: Promise<T>,
+  onLate: T,
+  budgetMs: number,
+): Promise<{ readonly timedOut: boolean; readonly value: T }> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const guarded = work.then(
+    (value) => ({ timedOut: false, value }),
+    () => ({ timedOut: false, value: onLate }),
+  );
+  try {
+    return await Promise.race([
+      guarded,
+      new Promise<{ timedOut: boolean; value: T }>((resolve) => {
+        timer = setTimeout(() => resolve({ timedOut: true, value: onLate }), budgetMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
 
 /** What a message looks like to a client. `mediaPath` is deliberately absent. */
 function toWire(message: MessageRecord): Record<string, unknown> {
@@ -176,6 +276,10 @@ export function registerMessageRoutes(
     res.status(404).json({ error: 'Not found.' });
   };
 
+  /** The bounds on how long translation may hold a send open. */
+  const budgetMs = deps.translationBudgetMs ?? TRANSLATION_DELIVERY_BUDGET_MS;
+  const voiceBudgetMs = deps.translationBudgetMs ?? VOICE_TRANSLATION_DELIVERY_BUDGET_MS;
+
   /**
    * Resolve the caller AND their standing with the target, or refuse.
    *
@@ -268,51 +372,168 @@ export function registerMessageRoutes(
   };
 
   /**
-   * The rendering of `text` for `recipientId`, if the pair is in translated
-   * mode and the two languages differ. ONE seam for send, forward and edit:
-   * the mode is resolved at the moment of the action, the recipient's
-   * preference names the target, and a failed translation yields undefined
-   * so the original goes out -- a message is never lost to a vendor outage.
-   * The original is stored regardless. Events carry languages, never words.
+   * The language pair for one direction. Source is what the sender SPEAKS
+   * (writes), target is what the reader PREFERS TO HEAR, each with the
+   * account's primary language as the fallback. A reader who has named no
+   * language has no target, and there is nothing to translate into.
+   */
+  const languagePairFor = (
+    senderId: string,
+    recipientId: string,
+  ): { sourceLanguage: string; targetLanguage: string | null } => {
+    const sender = deps.store.get(senderId);
+    const recipient = deps.store.get(recipientId);
+    return {
+      sourceLanguage: sender?.spokenLanguage ?? sender?.defaultLanguage ?? 'en',
+      targetLanguage: recipient?.listeningLanguage ?? recipient?.defaultLanguage ?? null,
+    };
+  };
+
+  /**
+   * Ask the registry, then apply the ruling. A registry that throws or hangs
+   * APPROVES NOTHING -- it does not fail open onto an uncertified provider,
+   * and it does not stop the message either: the caller delivers the
+   * original and says translation is unavailable.
+   */
+  const routeDecisionFor = async (
+    sourceLanguage: string,
+    targetLanguage: string | null,
+  ): Promise<MessagingRouteDecision> => {
+    if (
+      targetLanguage === null ||
+      normaliseLanguageTag(targetLanguage) === normaliseLanguageTag(sourceLanguage)
+    ) {
+      // Rule 1 and "no target" are decided from the languages alone; the
+      // registry is never consulted, so a same-language pair cannot cost a
+      // lookup, a provider call, or a chargeable event.
+      return decideMessagingRoute({ sourceLanguage, targetLanguage, records: [] });
+    }
+    let records: readonly TranslationRouteRecord[] = [];
+    try {
+      const looked = await withinDeliveryBudget(
+        Promise.resolve(deps.translationRoutes.routesFor(sourceLanguage, targetLanguage)),
+        [] as readonly TranslationRouteRecord[],
+        budgetMs,
+      );
+      records = looked.value;
+    } catch {
+      records = [];
+    }
+    return decideMessagingRoute({ sourceLanguage, targetLanguage, records });
+  };
+
+  /**
+   * The rendering of `text` for `recipientId`. ONE seam for send, forward and
+   * edit, and the whole of the founder's messaging ruling passes through it:
+   *
+   *  - the conversation must be in translated mode at the MOMENT of the send;
+   *  - the same language on both sides bypasses translation entirely -- no
+   *    provider call and no chargeable event;
+   *  - an APPROVED LOCAL route (OPUS-MT first) translates, and the chosen
+   *    provider and model travel with the request so the engine cannot
+   *    quietly serve it from somewhere else;
+   *  - a missing, refused, unapproved, failing, timing-out or ECHOING
+   *    translator yields no rendering, so the ORIGINAL is delivered and the
+   *    disposition says why.
+   *
+   * The original is stored regardless, and delivery never waits longer than
+   * the budget below. Events carry languages, providers and reasons -- never
+   * a word of anybody's message.
    */
   const renderFor = async (
     senderId: string,
     recipientId: string,
     text: string,
-  ): Promise<{ translatedBody: string; translatedLanguage: string } | undefined> => {
+  ): Promise<TranslationAttempt> => {
     const pair = messagePair(senderId, recipientId);
     const conversationMode = await deps.conversationModes.get(pair.low, pair.high);
-    if (conversationMode?.mode !== 'translated') return undefined;
-    const sender = deps.store.get(senderId);
-    const recipient = deps.store.get(recipientId);
-    // The finer facts, with primary as the fallback: source is what the
-    // sender SPEAKS (writes), target is what the reader PREFERS TO HEAR.
-    const sourceLanguage = sender?.spokenLanguage ?? sender?.defaultLanguage ?? 'en';
-    const targetLanguage = recipient?.listeningLanguage ?? recipient?.defaultLanguage ?? null;
-    if (targetLanguage === null || targetLanguage === sourceLanguage) {
+    if (conversationMode?.mode !== 'translated') {
+      return { rendering: undefined, translation: NOT_REQUESTED };
+    }
+    const { sourceLanguage, targetLanguage } = languagePairFor(senderId, recipientId);
+    const decision = await routeDecisionFor(sourceLanguage, targetLanguage);
+
+    if (decision.kind === 'bypass') {
       deps.onEvent?.('message.translate', {
         source: sourceLanguage,
         target: targetLanguage ?? 'unset',
         ok: -1,
+        reason: 'same-language',
+        chargeable: 0,
       });
-      return undefined;
+      return {
+        rendering: undefined,
+        translation: { status: 'same-language', reason: null, provider: null },
+      };
     }
-    const translated = await deps.translator.translate({
-      sourceLanguage,
-      targetLanguage,
-      sourceText: text.trim().slice(0, 4000),
-    });
-    // The failure mode is DELIVER THE ORIGINAL, never a lost message --
-    // but a translator that quietly nulls is undiagnosable in the field,
-    // so the outcome is an event either way. Languages only; never text.
+    if (decision.kind === 'unavailable' || targetLanguage === null) {
+      const reason = decision.kind === 'unavailable' ? decision.reason : 'no-target-language';
+      deps.onEvent?.('message.translate', {
+        source: sourceLanguage,
+        target: targetLanguage ?? 'unset',
+        ok: 0,
+        reason,
+        chargeable: 0,
+      });
+      return {
+        rendering: undefined,
+        translation: { status: 'unavailable', reason, provider: null },
+      };
+    }
+
+    const sourceText = text.trim().slice(0, 4000);
+    const attempt = await withinDeliveryBudget<string | null>(
+      deps.translator.translate({
+        sourceLanguage,
+        targetLanguage,
+        sourceText,
+        route: { provider: decision.provider, modelId: decision.modelId },
+      }),
+      null,
+      budgetMs,
+    );
+    const translated = attempt.value;
+    /*
+     * NOTHING IS FABRICATED AND NOTHING IS RELABELLED. Empty output is a
+     * failure; output that is merely the source text handed back is a
+     * failure too -- an engine that echoes on a bad pair would otherwise
+     * have its echo stored and shown to the reader as a translation.
+     */
+    const rendered = translated === null ? '' : translated.trim();
+    const failure: 'ok' | 'translation-timeout' | 'translator-failed' | 'echoed-source' =
+      attempt.timedOut
+        ? 'translation-timeout'
+        : rendered.length === 0
+          ? 'translator-failed'
+          : rendered.toLowerCase() === sourceText.toLowerCase()
+            ? 'echoed-source'
+            : 'ok';
+    if (failure !== 'ok') {
+      deps.onEvent?.('message.translate', {
+        source: sourceLanguage,
+        target: targetLanguage,
+        ok: 0,
+        reason: failure,
+        provider: decision.provider,
+        chargeable: 0,
+      });
+      return {
+        rendering: undefined,
+        translation: { status: 'unavailable', reason: failure, provider: decision.provider },
+      };
+    }
     deps.onEvent?.('message.translate', {
       source: sourceLanguage,
       target: targetLanguage,
-      ok: translated === null ? 0 : 1,
+      ok: 1,
+      reason: 'ok',
+      provider: decision.provider,
+      chargeable: 1,
     });
-    return translated === null
-      ? undefined
-      : { translatedBody: translated, translatedLanguage: targetLanguage };
+    return {
+      rendering: { translatedBody: rendered, translatedLanguage: targetLanguage },
+      translation: { status: 'translated', reason: null, provider: decision.provider },
+    };
   };
 
   /** The optional reply pointer on a send; anything but a string is "no reply". */
@@ -393,7 +614,11 @@ export function registerMessageRoutes(
     }
 
     // Translated mode is resolved at SEND time; see renderFor.
-    const rendering = await renderFor(resolved.caller.accountId, resolved.targetId, body);
+    const { rendering, translation } = await renderFor(
+      resolved.caller.accountId,
+      resolved.targetId,
+      body,
+    );
 
     const result = await deps.messages.sendText(
       resolved.caller.accountId,
@@ -412,11 +637,13 @@ export function registerMessageRoutes(
       translated: rendering === undefined ? 0 : 1,
       reply: result.message.replyToMessageId ? 1 : 0,
     });
-    res
-      .status(201)
-      .json({
-        message: viewToWire(await deps.messages.viewOne(resolved.caller.accountId, result.message)),
-      });
+    res.status(201).json({
+      message: viewToWire(await deps.messages.viewOne(resolved.caller.accountId, result.message)),
+      // The message is sent either way; this says whether it was translated,
+      // and if not, why -- so the sender's client can be honest rather than
+      // leave a missing translation looking like a slow one.
+      translation,
+    });
   });
 
   /**
@@ -447,7 +674,7 @@ export function registerMessageRoutes(
     const forwardedFrom = { messageId: original.messageId, senderId: original.senderId };
 
     if (original.kind === 'text' && original.body !== null) {
-      const rendering = await renderFor(
+      const { rendering, translation } = await renderFor(
         resolved.caller.accountId,
         resolved.targetId,
         original.body,
@@ -467,6 +694,7 @@ export function registerMessageRoutes(
       deps.onEvent?.('message.sent', { kind: 'text', forwarded: 1 });
       res.status(201).json({
         message: viewToWire(await deps.messages.viewOne(resolved.caller.accountId, result.message)),
+        translation,
       });
       return;
     }
@@ -523,7 +751,11 @@ export function registerMessageRoutes(
       resolved.message.lowAccountId === resolved.caller.accountId
         ? resolved.message.highAccountId
         : resolved.message.lowAccountId;
-    const rendering = await renderFor(resolved.caller.accountId, recipientId, body);
+    const { rendering, translation } = await renderFor(
+      resolved.caller.accountId,
+      recipientId,
+      body,
+    );
     const result = await deps.messages.editText(
       resolved.message.messageId,
       resolved.caller.accountId,
@@ -537,6 +769,7 @@ export function registerMessageRoutes(
     deps.onEvent?.('message.edited', { translated: rendering === undefined ? 0 : 1 });
     res.json({
       message: viewToWire(await deps.messages.viewOne(resolved.caller.accountId, result.message)),
+      translation,
     });
   });
 
@@ -690,12 +923,40 @@ export function registerMessageRoutes(
    * deliberately unwired while the text unit is undecided; the response
    * says so rather than letting silence read as "free forever".
    */
+  /**
+   * BOTH DIRECTIONS, ASKED SEPARATELY. en->yo being approved says nothing
+   * about yo->en, so the answer names what the caller can send translated
+   * and what they can expect to receive translated, each from its own
+   * registry record. A client that knows before the send can say
+   * "translation unavailable for Yoruba" instead of letting an untranslated
+   * message look like a bug.
+   */
+  const routeAvailabilityFor = async (
+    senderId: string,
+    recipientId: string,
+  ): Promise<{ status: string; reason: string | null; provider: string | null }> => {
+    const { sourceLanguage, targetLanguage } = languagePairFor(senderId, recipientId);
+    const decision = await routeDecisionFor(sourceLanguage, targetLanguage);
+    if (decision.kind === 'bypass') return { status: 'same-language', reason: null, provider: null };
+    if (decision.kind === 'unavailable') {
+      return { status: 'unavailable', reason: decision.reason, provider: null };
+    }
+    return { status: 'available', reason: null, provider: decision.provider };
+  };
+
   app.get('/messages/with/:accountId/mode', async (req, res) => {
     const resolved = reachableTarget(req, res);
     if (resolved === null) return;
     const pair = messagePair(resolved.caller.accountId, resolved.targetId);
     const record = await deps.conversationModes.get(pair.low, pair.high);
-    res.json({ mode: record?.mode ?? 'normal', billing: 'free-during-staging' });
+    res.json({
+      mode: record?.mode ?? 'normal',
+      billing: 'free-during-staging',
+      translation: {
+        outgoing: await routeAvailabilityFor(resolved.caller.accountId, resolved.targetId),
+        incoming: await routeAvailabilityFor(resolved.targetId, resolved.caller.accountId),
+      },
+    });
   });
 
   app.post('/messages/with/:accountId/mode', async (req, res) => {
@@ -715,7 +976,15 @@ export function registerMessageRoutes(
       updatedAtMs: Date.now(),
     });
     deps.onEvent?.('message.mode', { mode: requested });
-    res.json({ mode: requested, billing: 'free-during-staging' });
+    res.json({
+      mode: requested,
+      billing: 'free-during-staging',
+      // Turning translation ON is the moment to be told it cannot happen.
+      translation: {
+        outgoing: await routeAvailabilityFor(resolved.caller.accountId, resolved.targetId),
+        incoming: await routeAvailabilityFor(resolved.targetId, resolved.caller.accountId),
+      },
+    });
   });
 
   /*
@@ -776,12 +1045,18 @@ export function registerMessageRoutes(
       await writeFile(mediaPath, audio);
 
       /*
-       * TRANSLATED MODE, SAME RULE AS TEXT: resolved at send time, source is
-       * what the sender speaks, target is what the reader prefers to hear,
-       * and nothing to translate when they match. The ORIGINAL is already on
-       * disk above and stays authoritative; the rendering is a second file
-       * beside it, and any failure leaves the note exactly as recorded.
-       * Events carry stage and languages only -- never audio or words.
+       * TRANSLATED MODE, SAME RULE AS TEXT, AND THE SAME REGISTRY GATE.
+       *
+       * A voice note's TRANSLATION STAGE is the only part this ruling
+       * governs: original audio -> approved recognition -> the approved
+       * OPUS route -> approved speech. The route gate is asked about the
+       * text pair, because the middle stage is the one being ruled on.
+       *
+       * The ORIGINAL recording is already on disk above and stays
+       * authoritative. A refused route, a dead engine or a timeout means the
+       * recipient hears WHAT WAS ACTUALLY SAID with translation honestly
+       * unavailable -- never invented speech. Events carry stage, languages
+       * and reasons only; never audio, never words.
        */
       let rendering:
         | {
@@ -791,23 +1066,52 @@ export function registerMessageRoutes(
             translatedDurationMs: number;
           }
         | undefined;
+      let translation: MessageTranslationDisposition = NOT_REQUESTED;
       const pair = messagePair(resolved.caller.accountId, resolved.targetId);
       const conversationMode = await deps.conversationModes.get(pair.low, pair.high);
       if (conversationMode?.mode === 'translated') {
-        const sender = deps.store.get(resolved.caller.accountId);
-        const recipient = deps.store.get(resolved.targetId);
-        const sourceLanguage = sender?.spokenLanguage ?? sender?.defaultLanguage ?? 'en';
-        const targetLanguage =
-          recipient?.listeningLanguage ?? recipient?.defaultLanguage ?? null;
-        if (targetLanguage !== null && targetLanguage !== sourceLanguage) {
-          const outcome = await deps.voiceTranslator.translate({
-            audio,
-            mime: 'audio/mp4',
-            sourceLanguage,
-            targetLanguage,
-            durationMs: Math.round(durationMs),
+        const { sourceLanguage, targetLanguage } = languagePairFor(
+          resolved.caller.accountId,
+          resolved.targetId,
+        );
+        const decision = await routeDecisionFor(sourceLanguage, targetLanguage);
+        if (decision.kind === 'bypass') {
+          translation = { status: 'same-language', reason: null, provider: null };
+          deps.onEvent?.('message.voice.translate', {
+            source: sourceLanguage,
+            target: targetLanguage ?? 'unset',
+            ok: -1,
+            stage: 'skip',
+            reason: 'same-language',
+            chargeable: 0,
           });
-          if (outcome.ok) {
+        } else if (decision.kind === 'unavailable' || targetLanguage === null) {
+          const reason = decision.kind === 'unavailable' ? decision.reason : 'no-target-language';
+          translation = { status: 'unavailable', reason, provider: null };
+          deps.onEvent?.('message.voice.translate', {
+            source: sourceLanguage,
+            target: targetLanguage ?? 'unset',
+            ok: 0,
+            stage: 'route',
+            reason,
+            chargeable: 0,
+          });
+        } else {
+          const outcome = (
+            await withinDeliveryBudget<VoiceNoteTranslationOutcome>(
+              deps.voiceTranslator.translate({
+                audio,
+                mime: 'audio/mp4',
+                sourceLanguage,
+                targetLanguage,
+                durationMs: Math.round(durationMs),
+                route: { provider: decision.provider, modelId: decision.modelId },
+              }),
+              { ok: false, stage: 'translation-timeout' },
+              voiceBudgetMs,
+            )
+          ).value;
+          if (outcome.ok && outcome.rendering.translatedText.trim().length > 0) {
             const extension = outcome.rendering.mime.includes('wav') ? 'wav' : 'm4a';
             const translatedMediaPath = join(
               deps.mediaDir,
@@ -825,18 +1129,22 @@ export function registerMessageRoutes(
               // Disk refused the derived file; the original is untouched.
             }
           }
+          const stage = outcome.ok
+            ? rendering === undefined
+              ? 'store'
+              : 'ok'
+            : outcome.stage;
+          translation =
+            rendering === undefined
+              ? { status: 'unavailable', reason: stage, provider: decision.provider }
+              : { status: 'translated', reason: null, provider: decision.provider };
           deps.onEvent?.('message.voice.translate', {
             source: sourceLanguage,
             target: targetLanguage,
             ok: rendering === undefined ? 0 : 1,
-            stage: outcome.ok ? (rendering === undefined ? 'store' : 'ok') : outcome.stage,
-          });
-        } else {
-          deps.onEvent?.('message.voice.translate', {
-            source: sourceLanguage,
-            target: targetLanguage ?? 'unset',
-            ok: -1,
-            stage: 'skip',
+            stage,
+            provider: decision.provider,
+            chargeable: rendering === undefined ? 0 : 1,
           });
         }
       }
@@ -853,6 +1161,7 @@ export function registerMessageRoutes(
       deps.onEvent?.('message.sent', { kind: 'voice' });
       res.status(201).json({
         message: viewToWire(await deps.messages.viewOne(resolved.caller.accountId, message)),
+        translation,
       });
     },
   );

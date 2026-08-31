@@ -169,9 +169,10 @@ const NLLB_EVIDENCE =
   'https://huggingface.co/facebook/nllb-200-distilled-600M ' +
   '(model card FLORES-200 language list, read 2026-08-30)';
 const OPUS_MT_EVIDENCE =
-  'services/ai-registry/src/registry.ts (opus-mt assets pinned by revision) and ' +
-  'media-ingest DEFAULT_OPUS_MT_LANGUAGE_MODELS / ' +
-  'DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES';
+  'services/ai-registry/src/registry.ts (opus-mt assets pinned by revision), ' +
+  'media-ingest DEFAULT_OPUS_MT_LANGUAGE_MODELS (the configured model routes, ' +
+  'which is what findModel enforces), and docs/certification/opus-benchmarks.md ' +
+  '(twelve directions driven through the deployed provider, 2026-08-30)';
 const LOCAL_VOICE_EVIDENCE =
   'services/ai-registry/src/registry.ts (piper and mms-tts voices pinned by checksum or revision)';
 
@@ -196,12 +197,45 @@ export const SELF_HOSTED_ENGINES: readonly SelfHostedEngine[] = [
     displayName: 'OPUS-MT (Helsinki-NLP Marian)',
     stage: 'mt',
     selectedBy: 'TRANSLATION_PROVIDER',
-    exercisedLanguages: ['en', 'es', 'fr'],
-    // Mirror of DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES: listed as
-    // targets with no explicit model route, so the runtime must find a
-    // Helsinki-NLP snapshot by convention. A convention is a claim.
-    declaredLanguages: ['en', 'fr', 'es', 'de', 'pt', 'it', 'ja', 'zh', 'ar', 'yo'],
+    /*
+     * CORRECTED 2026-08-31 FROM MEASUREMENT, in both directions.
+     *
+     * This engine used to declare de, it, ja, zh and ar -- mirrored from
+     * DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES on the reasoning that the
+     * runtime would find a Helsinki-NLP snapshot by convention. It does not.
+     * `DEFAULT_OPUS_MT_LANGUAGE_MODELS` names a model per pair and `findModel`
+     * rejects anything absent from it with `unsupported-language`; the
+     * certification run confirmed that refusal on every route. Five claimed
+     * languages were unreachable.
+     *
+     * It also OMITTED ha and ig, which do have configured model routes and were
+     * run. The comment in this file's header already said a convention is a
+     * claim; this entry was the claim, and it was wrong in both directions at
+     * once -- languages it could not serve listed, languages it could serve
+     * missing.
+     *
+     * Every language below now comes from a CONFIGURED MODEL ROUTE that was
+     * driven end to end. Yoruba is served through opus-mt-en-alv with a
+     * `>>yor<<` target token, checked against `>>ewe<<` to prove the token
+     * steers rather than the model answering Yoruba by coincidence.
+     *
+     * BEING LISTED HERE IS NOT APPROVAL. These are languages the engine can be
+     * asked for; whether production may invoke a given DIRECTION is decided by
+     * packages/translation-routes, and today it approves none of them. Six of
+     * the twelve directions have no human reviewer yet, and reading the X->en
+     * output found fluent English that was materially wrong on 3-4 samples in 8
+     * for each of ha, ig and yo.
+     */
+    exercisedLanguages: ['en', 'es', 'fr', 'ha', 'ig', 'pt', 'yo'],
+    // Nothing is merely claimed: every configured route was run.
+    declaredLanguages: [],
     evidence: OPUS_MT_EVIDENCE,
+    notes:
+      'Twelve directions benchmarked on staging 2026-08-30 (docs/certification/' +
+      'opus-benchmarks.md), twice, medians within 1.3%. Four of them -- pt->en, ' +
+      'ha->en, ig->en and yo->en -- have benchmark evidence but are NOT in ' +
+      'DEFAULT_OPUS_MT_LANGUAGE_MODELS, so the deployed service refuses them ' +
+      'with unsupported-language. The model works; the service cannot reach it.',
   },
   {
     engineId: 'm2m100',

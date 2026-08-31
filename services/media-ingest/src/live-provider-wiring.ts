@@ -544,6 +544,14 @@ function buildGeneralSynthesis(
               servedBy: observation.servedBy,
               fellThrough: observation.fellThrough,
               timeToFirstChunkMs: observation.timeToFirstChunkMs,
+              /*
+               * BOTH CLOCKS, because they disagree exactly when it matters.
+               * `timeToFirstChunkMs` starts at the SERVING provider; during a
+               * measured fall-through it read 62 ms while the listener had
+               * waited 527 ms. Logging only that one made a chain paying ~330 ms
+               * for a failed primary look as fast as a healthy one.
+               */
+              listenerWaitedMs: observation.listenerWaitedMs,
             }),
           );
         },

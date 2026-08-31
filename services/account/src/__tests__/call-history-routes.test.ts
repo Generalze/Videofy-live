@@ -24,6 +24,7 @@ import { ContactStore } from '../contact-store.js';
 import { createInMemoryConversationModePort } from '../conversation-modes.js';
 import { DeviceStore } from '../device-store.js';
 import { registerMessageRoutes } from '../message-routes.js';
+import { createTranslationRouteRegistryFromRecords } from '../translation-route-policy.js';
 import { MessageStore, createInMemoryMessagePort } from '../message-store.js';
 import { PushDispatcher, createRecordingPushProvider } from '../push/push-dispatcher.js';
 import { RingRegistry } from '../ring-registry.js';
@@ -77,6 +78,7 @@ async function harness(): Promise<Harness> {
     push: new PushDispatcher({ devices, providers: [createRecordingPushProvider()] }),
     rings: new RingRegistry(),
     conversationModes: createInMemoryConversationModePort(),
+    translationRoutes: createTranslationRouteRegistryFromRecords([]),
     translator: { translate: async () => null },
     voiceTranslator: { translate: async () => ({ ok: false, stage: 'unconfigured' }) },
     mediaDir: await mkdtemp(join(tmpdir(), 'call-history-')),

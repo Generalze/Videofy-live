@@ -25,6 +25,10 @@ import {
 } from '../conversation-modes.js';
 import { PushDispatcher, createRecordingPushProvider } from '../push/push-dispatcher.js';
 import { registerMessageRoutes } from '../message-routes.js';
+import {
+  createTranslationRouteRegistryFromRecords,
+  type TranslationRouteRecord,
+} from '../translation-route-policy.js';
 import type { Caller } from '../routes.js';
 
 const TRUST: AccountTrust = {
@@ -50,13 +54,55 @@ interface Harness {
   setTranslatorAvailable: (value: boolean) => void;
   /** How many times the voice-note translator was asked; the fake returns a WAV stub. */
   voiceTranslations: () => number;
+  /** Every text-translation call the routes made, with the route they named. */
+  translatorCalls: () => readonly { sourceLanguage: string; targetLanguage: string; provider: string }[];
   store: AccountStore;
 }
 
 /** What the fake voice translator speaks back; recognisable, never real audio. */
 const FAKE_TRANSLATED_AUDIO = Buffer.from('RIFF-fake-translated-wav');
 
-async function harness(): Promise<Harness> {
+/**
+ * An APPROVED messaging route, in the registry's own shape. Everything the
+ * policy demands is present and true here, so a test that flips ONE field
+ * proves that field is what does the refusing.
+ */
+export function approvedRoute(
+  sourceLanguage: string,
+  targetLanguage: string,
+  overrides: Partial<TranslationRouteRecord> = {},
+): TranslationRouteRecord {
+  return {
+    sourceLanguage,
+    targetLanguage,
+    provider: 'opus-mt',
+    modelId: `Helsinki-NLP/opus-mt-${sourceLanguage}-${targetLanguage}`,
+    executionClass: 'local',
+    productionApproved: true,
+    technicalEvidence: {
+      sampleCount: 40,
+      successRate: 1,
+      latencyMs: { min: 40, median: 90, mean: 95, max: 300 },
+      recordedAt: '2026-08-30T00:00:00.000Z',
+    },
+    humanReviewStatus: 'passed',
+    licenceStatus: {
+      licence: 'Apache-2.0',
+      commercialUse: 'permitted',
+      evidence: 'model card, fixture',
+    },
+    serviceScopes: {
+      messaging: 'approved',
+      'programme-live': 'unapproved',
+      'call-live': 'unapproved',
+    },
+    ...overrides,
+  };
+}
+
+async function harness(
+  options: { routes?: readonly TranslationRouteRecord[] } = {},
+): Promise<Harness> {
   const contacts = new ContactStore();
   const devices = new DeviceStore();
   const provider = createRecordingPushProvider();
@@ -72,6 +118,15 @@ async function harness(): Promise<Harness> {
   const conversationModes = createInMemoryConversationModePort();
   let translatorAvailable = true;
   let voiceTranslations = 0;
+  /*
+   * The default registry approves the pair these tests speak (en<->es) with
+   * OPUS-MT, so the existing expectations exercise the APPROVED path. A test
+   * that wants a missing or refused route passes its own records.
+   */
+  const routes =
+    options.routes ?? [approvedRoute('en', 'es'), approvedRoute('es', 'en')];
+  const translatorCalls: { sourceLanguage: string; targetLanguage: string; provider: string }[] =
+    [];
   const app = express();
   /*
    * Mirrors index.ts: the global identity parser steps aside for the routes
@@ -97,9 +152,12 @@ async function harness(): Promise<Harness> {
     rings,
     conversationModes,
     // The fake translator marks its output so a test can tell rendering from original.
+    translationRoutes: createTranslationRouteRegistryFromRecords(routes),
     translator: {
-      translate: async ({ targetLanguage, sourceText }) =>
-        translatorAvailable ? `[${targetLanguage}] ${sourceText}` : null,
+      translate: async ({ sourceLanguage, targetLanguage, sourceText, route }) => {
+        translatorCalls.push({ sourceLanguage, targetLanguage, provider: route.provider });
+        return translatorAvailable ? `[${targetLanguage}] ${sourceText}` : null;
+      },
     },
     // Same switch governs the voice-note line; the fake never sees real audio.
     voiceTranslator: {
@@ -139,6 +197,7 @@ async function harness(): Promise<Harness> {
       translatorAvailable = value;
     },
     voiceTranslations: () => voiceTranslations,
+    translatorCalls: () => translatorCalls,
     store,
     close: () => new Promise<void>((r) => server.close(() => r())),
     as: (accountId, path, init = {}) =>

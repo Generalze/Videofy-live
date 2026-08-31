@@ -437,10 +437,25 @@ app.post('/internal/text-translation', async (req, res) => {
      * queue; concurrency here is just not adding our own artificial one.
      */
     let providerName: string | null = null;
+    /*
+     * A SENTENCE THAT DID NOT TRANSLATE IS COUNTED, NOT HIDDEN.
+     *
+     * Keeping the original for a failed sentence is right -- a message must
+     * never lose words to a vendor -- but returning it inside `translatedText`
+     * with no other signal made the response a LIE the caller could not detect:
+     * a two-sentence message where one sentence failed came back as a 200 with
+     * half the text in the sender's language, labelled as a translation. The
+     * whole-message case was caught downstream by an echo guard; the mixed case
+     * was invisible to everyone.
+     *
+     * So the counts travel with the text and the caller decides. That is the
+     * same rule the messaging path already applies to a total failure: deliver
+     * real words, and say honestly that they are not a translation.
+     */
     const pieces = await Promise.all(
       bounded.map(async (raw, index) => {
         const piece = raw.trim();
-        if (piece.length === 0) return '';
+        if (piece.length === 0) return { text: '', translated: true };
         try {
           const result = await ingest.liveTranslation.translate({
             sessionId: 'internal-text',
@@ -454,15 +469,20 @@ app.post('/internal/text-translation', async (req, res) => {
             sourceText: piece,
           });
           providerName = result.providerName ?? providerName;
-          return result.translatedText.trim() || piece;
+          const translatedPiece = result.translatedText.trim();
+          if (translatedPiece.length === 0) return { text: piece, translated: false };
+          return { text: translatedPiece, translated: true };
         } catch {
-          return piece;
+          return { text: piece, translated: false };
         }
       }),
     );
+    const spoken = pieces.filter((piece) => piece.text.length > 0);
     res.json({
-      translatedText: pieces.filter((piece) => piece.length > 0).join(' '),
+      translatedText: spoken.map((piece) => piece.text).join(' '),
       providerName,
+      sentenceCount: spoken.length,
+      translatedSentenceCount: spoken.filter((piece) => piece.translated).length,
     });
   } catch (error) {
     logger.warn('Internal text translation failed', {

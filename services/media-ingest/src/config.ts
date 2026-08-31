@@ -168,6 +168,49 @@ export interface IngestConfig {
  * `development-demo` behaviour is unchanged and pinned. Commercial profiles are
  * still refused today, but now BY THE REGISTRY and with the reason attached.
  */
+/**
+ * A SELECTOR THAT IS SET BUT BLANK IS NOT A CHOICE, AND MUST SAY SO.
+ *
+ * `process.env['X'] ?? 'default'` treats an ABSENT variable as unset and a
+ * PRESENT-BUT-EMPTY one as the literal empty string, so a deployment whose env
+ * file carries `TRANSCRIPTION_PROVIDER=` fell straight past the default into
+ * the value check and died on `received ""`. Production media-ingest restarted
+ * 7418 times behind exactly that message: it names the variable and the empty
+ * value, and nothing in it says WHY empty is different from unset, or that the
+ * env file disagrees with the template shipped beside it.
+ *
+ * Blank stays a REFUSAL. Quietly reading it as "the default" is the trap this
+ * repository has been bitten by before -- a blank line silently choosing a
+ * provider is how an unapproved engine reaches production without appearing in
+ * any diff. What changes is only that the refusal is diagnosable: the message
+ * says the name is present and empty, and says what to write instead.
+ *
+ * Returns the trimmed value, or `fallback` when the variable is genuinely
+ * absent. Throws when it is present and blank.
+ *
+ * EXPORTED so the absent-versus-blank distinction can be pinned directly. It
+ * cannot be pinned through `loadConfig`: that calls `loadRootEnv`, which fills
+ * any unset name from the repository's own `.env`, so a developer's local file
+ * decides what "absent" means and the test passes or fails by working directory.
+ */
+export function selectorOrDefault(
+  name: string,
+  fallback: string,
+  choices: readonly string[],
+): string {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const value = raw.trim();
+  if (value === '') {
+    throw new Error(
+      `${name} is present but empty. A blank selector is not a choice: ` +
+        `set it to one of ${choices.map((choice) => `"${choice}"`).join(', ')}, ` +
+        `or remove the line entirely to accept the default "${fallback}".`,
+    );
+  }
+  return value;
+}
+
 function assertRuntimeProfileStartable(profile: RuntimeProfile): void {
   if (profile === 'development-demo') return;
 
@@ -219,8 +262,13 @@ export function loadConfig(): IngestConfig {
    * `off` says it: batch transcription is unavailable, honestly, and the live
    * path (STREAMING_TRANSCRIPTION_PROVIDER, below) is untouched by it.
    */
-  const transcriptionProvider = process.env['TRANSCRIPTION_PROVIDER'] ?? 'mock';
-  if (!['off', 'mock', 'faster-whisper'].includes(transcriptionProvider)) {
+  const transcriptionChoices = ['off', 'mock', 'faster-whisper'] as const;
+  const transcriptionProvider = selectorOrDefault(
+    'TRANSCRIPTION_PROVIDER',
+    'mock',
+    transcriptionChoices,
+  );
+  if (!(transcriptionChoices as readonly string[]).includes(transcriptionProvider)) {
     throw new Error(
       'TRANSCRIPTION_PROVIDER must be "off", "mock" or "faster-whisper"; ' +
         `received "${transcriptionProvider}"`,
@@ -255,18 +303,27 @@ export function loadConfig(): IngestConfig {
       );
     }
   }
-  const streamingTranscriptionProvider =
-    process.env['STREAMING_TRANSCRIPTION_PROVIDER'] ?? 'off';
+  const streamingTranscriptionChoices = ['off', 'mock', 'deepgram-nova', 'deepgram-flux'] as const;
+  const streamingTranscriptionProvider = selectorOrDefault(
+    'STREAMING_TRANSCRIPTION_PROVIDER',
+    'off',
+    streamingTranscriptionChoices,
+  );
   if (
-    !['off', 'mock', 'deepgram-nova', 'deepgram-flux'].includes(streamingTranscriptionProvider)
+    !(streamingTranscriptionChoices as readonly string[]).includes(streamingTranscriptionProvider)
   ) {
     throw new Error(
       'STREAMING_TRANSCRIPTION_PROVIDER must be "off", "mock", "deepgram-nova" or ' +
         `"deepgram-flux"; received "${streamingTranscriptionProvider}"`,
     );
   }
-  const streamingSynthesisProvider = process.env['STREAMING_SYNTHESIS_PROVIDER'] ?? 'off';
-  if (!['off', 'mock', 'elevenlabs', 'azure', 'chain'].includes(streamingSynthesisProvider)) {
+  const streamingSynthesisChoices = ['off', 'mock', 'elevenlabs', 'azure', 'chain'] as const;
+  const streamingSynthesisProvider = selectorOrDefault(
+    'STREAMING_SYNTHESIS_PROVIDER',
+    'off',
+    streamingSynthesisChoices,
+  );
+  if (!(streamingSynthesisChoices as readonly string[]).includes(streamingSynthesisProvider)) {
     throw new Error(
       'STREAMING_SYNTHESIS_PROVIDER must be "off", "mock" or "elevenlabs"; ' +
         `received "${streamingSynthesisProvider}"`,
@@ -286,7 +343,12 @@ export function loadConfig(): IngestConfig {
       `FASTER_WHISPER_DEVICE must be "cpu" or "cuda"; received "${fasterWhisperDevice}"`,
     );
   }
-  const translationProvider = process.env['TRANSLATION_PROVIDER'] ?? 'mock';
+  const translationProvider = selectorOrDefault('TRANSLATION_PROVIDER', 'mock', [
+    'mock',
+    'argos',
+    'opus-mt',
+    'm2m100',
+  ]);
   if (
     translationProvider !== 'mock' &&
     translationProvider !== 'argos' &&

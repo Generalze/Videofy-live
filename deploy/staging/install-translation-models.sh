@@ -14,6 +14,15 @@
 # arrive a minute late, or not at all. They are pulled once, now, and the
 # service is left with downloads DISABLED so a missing model is a loud failure
 # at startup rather than a silent stall mid-call.
+#
+# STAGING A MODEL IS NOT APPROVING A ROUTE. Everything below puts weights on
+# disk and proves they load; none of it says a language pair may be served to
+# anyone. That decision lives in the translation route registry, one record per
+# DIRECTION -- en->yo and yo->en are separate records with separate evidence,
+# and the same model may be approved for messaging and refused for a live call.
+# A model appearing in this list means only that the box has it.
+# The staged inventory, with revisions, licences and checksums, is in
+# docs/certification/opus-models.md.
 set -euo pipefail
 
 VENV=/opt/videofy-ai
@@ -33,6 +42,18 @@ MODELS=(
   Helsinki-NLP/opus-mt-en-ha
   Helsinki-NLP/opus-mt-en-ig
   Helsinki-NLP/opus-mt-en-alv
+  # The REVERSE direction is a separate model and separate evidence: en->ha
+  # working proves nothing about ha->en. These three exist upstream as direct
+  # single-pair models, so Yoruba INTO English needs no group model and no
+  # language token -- only Yoruba OUT of English goes through en-alv.
+  Helsinki-NLP/opus-mt-ha-en
+  Helsinki-NLP/opus-mt-ig-en
+  Helsinki-NLP/opus-mt-yo-en
+  # Portuguese. opus-mt-pt-en and opus-mt-en-pt are NOT on the hub (401), so
+  # Portuguese is served by the ROMANCE group models in both directions: pt is
+  # a listed source language of ROMANCE-en, and >>pt<< is a real token in
+  # en-ROMANCE. Nothing is substituted for a missing pair.
+  Helsinki-NLP/opus-mt-ROMANCE-en
 )
 
 echo "--- system packages ---"
@@ -79,8 +100,42 @@ if failed:
     sys.exit(1)
 PY
 
-# The service reads these as the user below, not as root.
+# The service reads these as the user below, not as root. Fetching as root and
+# forgetting this leaves root-owned model directories that the worker cannot
+# lock, so it must run whatever path got us here -- including a hand-run fetch.
 chown -R "$SERVICE_USER:$SERVICE_USER" "$CACHE"
+
+echo "--- verifying every model loads THE WAY THE SERVICE LOADS IT ---"
+# cache_dir IS NOT HF_HOME. transformers resolves the hub cache to $HF_HOME/hub,
+# but the worker (translation-provider.ts) passes cache_dir=OPUS_MT_MODEL_CACHE_DIR
+# and that path is used verbatim -- so a fetch that sets only HF_HOME lands the
+# files one directory deeper than the service will ever look. Both are set above
+# and the fetch passes cache_dir explicitly; this step is what catches it if
+# either ever drifts, because a download reporting "ok" does not.
+#
+# local_files_only mirrors OPUS_MT_ALLOW_MODEL_DOWNLOAD=false: it proves the
+# model is resolvable with the network taken away, which is the only condition
+# the service ever runs in.
+sudo -u "$SERVICE_USER" env HF_HOME="$CACHE" HF_HUB_OFFLINE=1 \
+  "$VENV/bin/python" - "$CACHE" "${MODELS[@]}" <<'PY'
+import sys
+from transformers import MarianMTModel, MarianTokenizer
+
+cache = sys.argv[1]
+broken = []
+for model_id in sys.argv[2:]:
+    try:
+        MarianTokenizer.from_pretrained(model_id, cache_dir=cache, local_files_only=True)
+        MarianMTModel.from_pretrained(model_id, cache_dir=cache, local_files_only=True)
+        print(f"  loads  {model_id}")
+    except Exception as error:                      # noqa: BLE001
+        broken.append(model_id)
+        print(f"  BROKEN {model_id}: {error}")
+
+if broken:
+    print(f"\n{len(broken)} model(s) downloaded but do not load offline: {', '.join(broken)}")
+    sys.exit(1)
+PY
 
 echo "--- silero VAD model ---"
 # The learned voice detector. Without it the gate falls back to energy and
@@ -125,8 +180,18 @@ for line in \
   "OPUS_MT_PYTHON=$VENV/bin/python" \
   "OPUS_MT_MODEL_CACHE_DIR=$CACHE" \
   "OPUS_MT_ALLOW_MODEL_DOWNLOAD=false" \
-  "AI_PYTHON_EXECUTABLE=$VENV/bin/python"   "HF_HOME=$CACHE"   "HF_HUB_OFFLINE=1" \n  "SILERO_VAD_MODEL_PATH=$CACHE/silero_vad.onnx"
+  "AI_PYTHON_EXECUTABLE=$VENV/bin/python" \
+  "HF_HOME=$CACHE" \
+  "HF_HUB_OFFLINE=1" \
+  "SILERO_VAD_MODEL_PATH=$CACHE/silero_vad.onnx"
 do
+  # A word with no '=' is not a setting. The list above once ended a line with a
+  # LITERAL \n instead of a backslash-newline, which put the bare word `n` into
+  # this loop and appended a line reading `n` to the env file -- still present
+  # in /etc/videofy/media-ingest.env on the staging box at the time of writing.
+  # systemd ignores it, so nothing ever complained; a typo one character to the
+  # left would have written a real key instead.
+  case "$line" in *=*) ;; *) echo "  FAIL malformed env entry: $line"; exit 1 ;; esac
   key="${line%%=*}"
   sed -i "/^${key}=/d" "$ENV_FILE"
   printf '%s\n' "$line" >> "$ENV_FILE"

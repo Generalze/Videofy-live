@@ -47,6 +47,11 @@ import {
 } from './conversation-modes.js';
 import { createPostgresConversationModes } from './db/conversation-modes-postgres.js';
 import { createTextTranslator } from './translation-client.js';
+import {
+  createTranslationRouteRegistryFromGate,
+  createTranslationRouteRegistryFromRecords,
+} from './translation-route-policy.js';
+import { loadTranslationRouteRegistry } from '@videofy-live/translation-routes/document-file';
 import { createVoiceNoteTranslator } from './voice-note-translation-client.js';
 import { registerAvatarRoutes } from './avatar-routes.js';
 import {
@@ -687,6 +692,26 @@ registerPushRoutes(app, {
  * as a deliberate seam: if message traffic outgrows identity traffic, the
  * store and routes lift out together.
  */
+/*
+ * The translation route document, loaded ONCE at boot. Fail-closed by design:
+ * an unreadable or invalid document produces no registry and therefore no
+ * approved route, and messaging delivers originals rather than translating on
+ * a document nobody could check. The log names the ORIGIN of the document and
+ * how many problems it had -- never the path and never a file's contents,
+ * because this service does not print env values.
+ */
+const routeRegistry = loadTranslationRouteRegistry();
+// eslint-disable-next-line no-console
+console.log(
+  JSON.stringify({
+    service: 'account',
+    event: 'translation.routes.loaded',
+    ok: routeRegistry.ok ? 1 : 0,
+    routes: routeRegistry.ok ? routeRegistry.registry.routes().length : 0,
+    problems: routeRegistry.ok ? 0 : routeRegistry.problems.length,
+  }),
+);
+
 const messages = new MessageStore({
   port: databasePool ? createPostgresMessageRecords(databasePool) : createInMemoryMessagePort(),
   // The reader's own facts (hides, reactions, pins, mute) MUST follow the
@@ -714,6 +739,21 @@ registerMessageRoutes(app, {
    * unset URL or token simply means translated mode delivers originals --
    * stated in the client as "translation unavailable", never a lost message.
    */
+  /*
+   * WHICH ROUTES MESSAGING MAY TRANSLATE ON (founder's ruling 30 Aug 2026).
+   *
+   * The route registry package is authoritative for approval; the messaging
+   * policy adds only the rules this service owns -- the same-language
+   * bypass, OPUS-MT first, and no automatic cloud route. A document that
+   * cannot be read or does not validate yields NO registry, and the
+   * fail-closed empty list below approves nothing: every cross-language
+   * message then goes out as written, marked honestly unavailable. That is
+   * the correct behaviour when the file describing what may be translated
+   * cannot be trusted -- not a reason to translate anyway.
+   */
+  translationRoutes: routeRegistry.ok
+    ? createTranslationRouteRegistryFromGate(routeRegistry.registry)
+    : createTranslationRouteRegistryFromRecords([]),
   translator: createTextTranslator({
     mediaIngestUrl: process.env['MEDIA_INGEST_URL'],
     internalToken: process.env['INTERNAL_WEBRTC_TOKEN'],

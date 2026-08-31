@@ -13,6 +13,8 @@
  * recorded. The stage name is surfaced for the event log; never any content.
  */
 
+import type { ApprovedRoute } from './translation-client.js';
+
 export interface VoiceNoteRendering {
   readonly translatedText: string;
   readonly audio: Buffer;
@@ -31,6 +33,13 @@ export interface VoiceNoteTranslator {
     readonly sourceLanguage: string;
     readonly targetLanguage: string;
     readonly durationMs: number;
+    /**
+     * The route the registry approved for the TRANSLATION STAGE of this
+     * note. Recognition and speech are separately certified stages owned by
+     * media-ingest; this names only the middle one, which is what the
+     * messaging ruling governs.
+     */
+    readonly route: ApprovedRoute;
   }): Promise<VoiceNoteTranslationOutcome>;
 }
 
@@ -67,6 +76,9 @@ export function createVoiceNoteTranslator(options: {
             sourceLanguage: input.sourceLanguage,
             targetLanguage: input.targetLanguage,
             durationMs: input.durationMs,
+            // Same declared-not-yet-enforced binding as the text client.
+            provider: input.route.provider,
+            modelId: input.route.modelId,
           }),
           signal: controller.signal,
         });
