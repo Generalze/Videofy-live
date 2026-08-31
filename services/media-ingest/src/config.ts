@@ -90,6 +90,14 @@ export interface IngestConfig {
   fasterWhisperModelCacheDir: string | null;
   fasterWhisperAllowGpuFallback: boolean;
   translationProvider: 'off' | 'mock' | 'argos' | 'opus-mt' | 'm2m100';
+  /**
+   * The reviewed document naming which exact directions are approved.
+   *
+   * Null falls back to the package's seed, which approves nothing -- so a
+   * deployment that forgets to set this refuses every direction rather than
+   * permitting them.
+   */
+  translationRoutesDocument: string | null;
   translationFallbackProvider: 'none' | 'm2m100' | 'nllb200';
   translationTimeoutMs: number;
   translationTargetLanguage: string;
@@ -513,6 +521,7 @@ export function loadConfig(): IngestConfig {
     fasterWhisperAllowGpuFallback:
       (process.env['FASTER_WHISPER_ALLOW_GPU_FALLBACK'] ?? 'false').toLowerCase() === 'true',
     translationProvider,
+    translationRoutesDocument: process.env['TRANSLATION_ROUTES_DOCUMENT']?.trim() || null,
     translationFallbackProvider,
     translationTimeoutMs: readPositiveInt('TRANSLATION_TIMEOUT_MS', 30_000),
     translationTargetLanguage:

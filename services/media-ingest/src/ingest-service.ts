@@ -38,6 +38,8 @@ import {
   createTextToSpeechProvider,
   type TextToSpeechProvider,
 } from './text-to-speech-provider.js';
+import { GatedTranslationProvider, type GateObserver } from './gated-translation-provider.js';
+import { buildTranslationGate, type GateWiring } from './translation-gate-wiring.js';
 import type { StreamingBackedTextToSpeechOptions } from './streaming-backed-text-to-speech-provider.js';
 import type { StreamingSpeechSynthesisProvider } from './streaming-speech-synthesis-provider.js';
 import {
@@ -310,6 +312,10 @@ export interface IngestServiceDependencies {
    * building it warms a vendor.
    */
   streamingSynthesisProvider?: StreamingSpeechSynthesisProvider;
+  /** Injected in tests; production builds it from the route document. */
+  translationGate?: GateWiring;
+  /** Told every gate decision, so billing and /health see what the caller saw. */
+  onTranslationOutcome?: GateObserver;
   /** Told when an uploaded segment was served by a fallback vendor. */
   onSynthesisDegraded?: StreamingBackedTextToSpeechOptions['onDegraded'];
 }
@@ -331,6 +337,8 @@ export class IngestService {
   private readonly sessions: ProcessingSessionStore;
   /** The same translation provider the batch path uses. See the constructor. */
   private readonly liveTranslationProvider: TimestampedTranslationProvider;
+  /** For /health and the boot line: which directions this deployment may translate. */
+  private readonly translationGateWiring: GateWiring;
 
   /**
    * The standard provider, optionally wrapped.
@@ -368,7 +376,36 @@ export class IngestService {
           timeoutMs: config.transcriptionTimeoutMs,
         },
       });
-    const translationProvider = buildTranslationProvider(config);
+    /*
+     * THE GATE WRAPS THE PROVIDER, so every execution path gets it.
+     *
+     * There are two paths today -- the live pipeline and the internal-text
+     * route -- and adding a check to each would leave the rule true only until
+     * somebody adds a third. Wrapping the provider makes the gate unavoidable:
+     * to translate you must hold a provider, and the provider you hold asks the
+     * registry first. Refused routes never reach the engine at all.
+     *
+     * SCOPE. This gate is `programme-live`. A call-scoped session is therefore
+     * REFUSED by it rather than silently approved under a programme's approval
+     * -- fail-closed, and the honest state until call scope is wired
+     * separately. Approving one scope with another's evidence is the exact
+     * thing the directional registry exists to prevent.
+     */
+    const rawTranslationProvider = buildTranslationProvider(config);
+    const gateWiring =
+      deps.translationGate ??
+      buildTranslationGate({
+        scope: 'programme-live',
+        ...(config.translationRoutesDocument
+          ? { documentPath: config.translationRoutesDocument }
+          : {}),
+      });
+    const translationProvider = new GatedTranslationProvider({
+      inner: rawTranslationProvider,
+      gate: gateWiring.gate,
+      ...(deps.onTranslationOutcome ? { onOutcome: deps.onTranslationOutcome } : {}),
+    });
+    this.translationGateWiring = gateWiring;
     // Held so the LIVE path can use the same instance. A second provider would
     // mean two model loads, two warm-up costs, and two sets of behaviour to
     // reason about for one product.
