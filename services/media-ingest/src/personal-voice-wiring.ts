@@ -56,7 +56,7 @@ export interface PersonalVoiceWiringOptions {
  */
 export function createPersonalVoiceWiring(
   options: PersonalVoiceWiringOptions,
-): Required<IngestServiceDependencies> {
+): Required<Pick<IngestServiceDependencies, 'resolvePersonalVoiceId' | 'wrapTextToSpeechProvider'>> {
   return {
     resolvePersonalVoiceId: (ownerId) => {
       // usableForOwner already excludes revoked, deleted and not-yet-ready

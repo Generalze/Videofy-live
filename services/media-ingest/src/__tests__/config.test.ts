@@ -342,7 +342,7 @@ describe('MMS text-to-speech config', () => {
     process.env['TEXT_TO_SPEECH_PROVIDER'] = 'espeak';
 
     expect(() => loadConfig()).toThrow(
-      /TEXT_TO_SPEECH_PROVIDER must be "mock", "piper", or "piper\+mms"/,
+      /TEXT_TO_SPEECH_PROVIDER must be "mock", "piper", "piper\+mms" or "streaming"/,
     );
   });
 });

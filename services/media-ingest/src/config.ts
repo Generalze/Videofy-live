@@ -118,7 +118,7 @@ export interface IngestConfig {
   nllb200ModelCacheDir: string | null;
   nllb200MaxConcurrency: number;
   nllb200AllowModelDownload: boolean;
-  textToSpeechProvider: 'mock' | 'piper' | 'piper+mms';
+  textToSpeechProvider: 'mock' | 'piper' | 'piper+mms' | 'streaming';
   textToSpeechTimeoutMs: number;
   textToSpeechSupportedLanguages: string[];
   textToSpeechDefaultVoiceId: string;
@@ -302,6 +302,20 @@ export function loadConfig(): IngestConfig {
         'STREAMING_SYNTHESIS_PROVIDER=mock is refused in production: it fabricates speech.',
       );
     }
+    /*
+     * The hole the other three refusals left open. This selector defaults to
+     * `mock`, and its mock does not fabricate speech -- it writes a 44-byte WAV
+     * with a zero-length data chunk and reports success, which is worse: a
+     * fabricated voice is at least audible enough to be noticed. A staging box
+     * ran this against a real uploaded programme and produced eight silent
+     * files, each logged as "Generated audio ready".
+     */
+    if ((process.env['TEXT_TO_SPEECH_PROVIDER']?.trim() || 'mock') === 'mock') {
+      throw new Error(
+        'TEXT_TO_SPEECH_PROVIDER=mock is refused in production: it writes empty audio files ' +
+          'that every downstream signal reports as success. Use "streaming".',
+      );
+    }
   }
   const streamingTranscriptionChoices = ['off', 'mock', 'deepgram-nova', 'deepgram-flux'] as const;
   const streamingTranscriptionProvider = selectorOrDefault(
@@ -370,14 +384,20 @@ export function loadConfig(): IngestConfig {
       `TRANSLATION_FALLBACK_PROVIDER must be "none", "m2m100", or "nllb200"; received "${translationFallbackProvider}"`,
     );
   }
-  const textToSpeechProvider = process.env['TEXT_TO_SPEECH_PROVIDER']?.trim() || 'mock';
-  if (
-    textToSpeechProvider !== 'mock' &&
-    textToSpeechProvider !== 'piper' &&
-    textToSpeechProvider !== 'piper+mms'
-  ) {
+  /*
+   * `streaming` routes uploaded programmes through the SAME synthesis stack the
+   * live path uses -- the Nigerian specialist, the certified chain, the chosen
+   * voices, the degraded mark -- instead of a second engine that had been
+   * taught none of it. See streaming-backed-text-to-speech-provider.ts for what
+   * a deployment shipped while these were two separate engines.
+   */
+  const textToSpeechChoices = ['mock', 'piper', 'piper+mms', 'streaming'] as const;
+  const textToSpeechProvider = (process.env['TEXT_TO_SPEECH_PROVIDER']?.trim() ||
+    'mock') as (typeof textToSpeechChoices)[number];
+  if (!textToSpeechChoices.includes(textToSpeechProvider)) {
     throw new Error(
-      `TEXT_TO_SPEECH_PROVIDER must be "mock", "piper", or "piper+mms"; received "${textToSpeechProvider}"`,
+      'TEXT_TO_SPEECH_PROVIDER must be "mock", "piper", "piper+mms" or "streaming"; ' +
+        `received "${textToSpeechProvider}"`,
     );
   }
   const piperVoiceId = process.env['PIPER_VOICE_ID'] ?? 'mock-voice';

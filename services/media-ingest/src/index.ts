@@ -142,9 +142,37 @@ const personalVoiceProvider = openVoicePersonal ?? createUnavailablePersonalVoic
  * With no engine configured the service receives no personal-voice
  * dependencies at all and behaves exactly as it did before P6.3.
  */
-const ingest = new IngestService(
-  config,
-  openVoicePersonal === null
+/*
+ * ONE SYNTHESIS STACK, built before anything that speaks.
+ *
+ * It used to be built beside the live path, several hundred lines below the
+ * batch service -- which is precisely how the batch service came to have a
+ * speech engine of its own that had never heard of the Nigerian specialist or
+ * the founder's chosen voices. It is hoisted here because the uploaded-media
+ * path needs it too, and because the specialist warms itself at construction:
+ * the vendor behind it scales to zero, so earlier is strictly better.
+ */
+const liveSynthesis = buildLiveSynthesis(config);
+const streamingSynthesis = liveSynthesis.provider;
+
+const ingest = new IngestService(config, {
+  /*
+   * THE JOIN. Without this line the batch factory has no stack to speak with,
+   * TEXT_TO_SPEECH_PROVIDER=streaming refuses at boot, and the deployment falls
+   * back to the selector that writes empty files. Both halves of this were
+   * built and tested before; the join is the part that was missing.
+   */
+  ...(streamingSynthesis === null ? {} : { streamingSynthesisProvider: streamingSynthesis }),
+  onSynthesisDegraded: (input, degradation) => {
+    // Language and vendor, never the text that was spoken.
+    logger.warn('Uploaded segment served by a fallback voice', {
+      targetLanguage: input.targetLanguage,
+      expected: degradation.expectedProvider,
+      served: degradation.servedBy,
+      reason: degradation.reason,
+    });
+  },
+  ...(openVoicePersonal === null
     ? {}
     : createPersonalVoiceWiring({
         voiceProfileStore,
@@ -157,8 +185,8 @@ const ingest = new IngestService(
           // The reason, never the asset or owner: this line reaches logs.
           logger.warn('Personal voice unavailable; using standard voice', { reason });
         },
-      }),
-);
+      })),
+});
 
 
 /*
@@ -906,8 +934,6 @@ if (operatorEntitlement.allowedCount === 0) {
 // socket anyway would accept a call's audio and produce no captions while
 // every component reported success.
 const streamingTranscription = buildStreamingTranscriptionProvider(config);
-const liveSynthesis = buildLiveSynthesis(config);
-const streamingSynthesis = liveSynthesis.provider;
 
 /**
  * Ask 9jaLingo two questions before anybody needs an answer, and say the result

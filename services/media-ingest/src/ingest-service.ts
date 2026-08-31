@@ -38,6 +38,8 @@ import {
   createTextToSpeechProvider,
   type TextToSpeechProvider,
 } from './text-to-speech-provider.js';
+import type { StreamingBackedTextToSpeechOptions } from './streaming-backed-text-to-speech-provider.js';
+import type { StreamingSpeechSynthesisProvider } from './streaming-speech-synthesis-provider.js';
 import {
   buildTargetLanguageOutputs,
   capRecentEvents,
@@ -298,6 +300,18 @@ export interface IngestServiceDependencies {
    * Both are injected, so this service still has no idea voice profiles exist.
    */
   resolvePersonalVoiceId?: (ownerId: string) => string | null;
+  /**
+   * The live synthesis stack, for TEXT_TO_SPEECH_PROVIDER=streaming.
+   *
+   * Uploaded programmes and live calls speak with one voice stack or they drift
+   * apart, and they had: the specialist routing that keeps Yoruba out of a
+   * general vendor's mouth existed only on the live side, so an uploaded
+   * programme reached none of it. Injected rather than built here because
+   * building it warms a vendor.
+   */
+  streamingSynthesisProvider?: StreamingSpeechSynthesisProvider;
+  /** Told when an uploaded segment was served by a fallback vendor. */
+  onSynthesisDegraded?: StreamingBackedTextToSpeechOptions['onDegraded'];
 }
 
 export class IngestService {
@@ -371,6 +385,12 @@ export class IngestService {
       translationModelIds,
       textToSpeechProvider: this.buildTextToSpeechProvider({
         providerName: config.textToSpeechProvider,
+        ...(deps.streamingSynthesisProvider === undefined
+          ? {}
+          : { streaming: deps.streamingSynthesisProvider }),
+        ...(deps.onSynthesisDegraded === undefined
+          ? {}
+          : { onDegraded: deps.onSynthesisDegraded }),
         timeoutMs: config.textToSpeechTimeoutMs,
         supportedLanguages: config.textToSpeechSupportedLanguages,
         defaultVoiceId: config.textToSpeechDefaultVoiceId,

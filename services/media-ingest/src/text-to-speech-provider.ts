@@ -6,6 +6,11 @@ import { dirname } from 'node:path';
 import { promisify } from 'node:util';
 import { MediaIngestError } from './ingest-error.js';
 import {
+  StreamingBackedTextToSpeechProvider,
+  type StreamingBackedTextToSpeechOptions,
+} from './streaming-backed-text-to-speech-provider.js';
+import type { StreamingSpeechSynthesisProvider } from './streaming-speech-synthesis-provider.js';
+import {
   PYTHON_WORKER_LOOP,
   PythonWorkerError,
   createPersistentPythonWorker,
@@ -96,12 +101,23 @@ const PIPER_CHARS_PER_SECOND_BY_LANGUAGE: Readonly<Record<string, number>> = {
 };
 
 export interface TextToSpeechProviderConfig {
-  providerName: 'mock' | 'piper' | 'piper+mms';
+  providerName: 'mock' | 'piper' | 'piper+mms' | 'streaming';
   timeoutMs: number;
   supportedLanguages: string[];
   defaultVoiceId: string;
   piper: PiperTextToSpeechProviderOptions;
   mms?: MmsTextToSpeechProviderOptions;
+  /**
+   * The live synthesis stack, when `providerName` is 'streaming'.
+   *
+   * Passed in already built rather than constructed here, because building it
+   * warms the Nigerian specialist -- a real request to a vendor -- and this
+   * factory is called in tests that must not reach anybody's API. The boot path
+   * owns that decision and already holds the stack for the live path.
+   */
+  streaming?: StreamingSpeechSynthesisProvider;
+  /** Told when a segment was served by a fallback vendor. See the adapter. */
+  onDegraded?: StreamingBackedTextToSpeechOptions['onDegraded'];
 }
 
 export interface PiperConfig {
@@ -157,6 +173,20 @@ export interface MmsTextToSpeechProviderOptions extends MmsTtsConfig {
 export function createTextToSpeechProvider(
   config: TextToSpeechProviderConfig,
 ): TextToSpeechProvider {
+  if (config.providerName === 'streaming') {
+    if (!config.streaming) {
+      throw new MediaIngestError(
+        'The streaming text-to-speech provider requires a live synthesis stack. ' +
+          'Check STREAMING_SYNTHESIS_PROVIDER: with it off there is nothing to speak with.',
+        'unsupported-tts-provider',
+        500,
+      );
+    }
+    return new StreamingBackedTextToSpeechProvider({
+      provider: config.streaming,
+      ...(config.onDegraded === undefined ? {} : { onDegraded: config.onDegraded }),
+    });
+  }
   if (config.providerName === 'mock') {
     return new MockTextToSpeechProvider(config.supportedLanguages);
   }
