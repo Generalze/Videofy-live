@@ -15,7 +15,7 @@
 #      on an account C7 CONTROLS -- access follows the account, and so does
 #      termination.
 #   2. Founder stores the read token:
-#        .\deploy\Set-EnvKey.ps1 -Name HF_TOKEN -EnvFile /etc/videofy/bench.env
+#        .\deploy\Set-EnvKey.ps1 -Environment benchmark -Name HF_TOKEN
 #   3. bash scripts/stage-translategemma.sh
 set -euo pipefail
 
@@ -28,7 +28,7 @@ ENV_FILE="/etc/videofy/bench.env"
 if ! sudo -n test -f "$ENV_FILE"; then
   echo "refusing: $ENV_FILE does not exist." >&2
   echo "  Store the token first:" >&2
-  echo "    .\\deploy\\Set-EnvKey.ps1 -Name HF_TOKEN -EnvFile $ENV_FILE" >&2
+  echo "    .\\deploy\\Set-EnvKey.ps1 -Environment benchmark -Name HF_TOKEN" >&2
   exit 2
 fi
 

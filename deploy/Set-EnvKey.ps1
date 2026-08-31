@@ -21,11 +21,21 @@
 
 .EXAMPLE
   .\deploy\Set-EnvKey.ps1 -Environment production -Service account -Name RESEND_API_KEY -Restart
+
+.EXAMPLE
+  # Benchmark credentials are isolated: no -Service, no restart, and the only
+  # file they can reach is /etc/videofy/bench.env, which nothing serving
+  # traffic reads.
+  .\deploy\Set-EnvKey.ps1 -Environment benchmark -Name HF_TOKEN
 #>
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('staging', 'production')][string]$Environment,
-  [Parameter(Mandatory = $true)][ValidateSet('account', 'gateway', 'media-ingest')][string]$Service,
+  [Parameter(Mandatory = $true)][ValidateSet('staging', 'production', 'benchmark')][string]$Environment,
+  # Required for staging and production, forbidden for benchmark. Enforced by
+  # Resolve-EnvTarget rather than by attribute, because the rule differs per
+  # environment and a wrong combination must fail loudly, not silently pick a
+  # default file.
+  [ValidateSet('account', 'gateway', 'media-ingest')][string]$Service,
   [Parameter(Mandatory = $true)][ValidatePattern('^[A-Z_][A-Z0-9_]*$')][string]$Name,
   [string]$SshHost = 'c7-claude',
   [switch]$Restart
@@ -33,10 +43,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$envDir = if ($Environment -eq 'production') { '/etc/videofy-prod' } else { '/etc/videofy' }
-$envFile = "$envDir/$Service.env"
-$unit = if ($Environment -eq 'production') { "videofy-prod-$Service" } else { "videofy-$Service" }
-if ($Environment -eq 'staging' -and $Service -eq 'gateway') { $unit = 'videofy-gateway' }
+. (Join-Path $PSScriptRoot 'EnvTarget.ps1')
+$targetArgs = @{ Environment = $Environment }
+if ($Service) { $targetArgs['Service'] = $Service }
+$target = Resolve-EnvTarget @targetArgs
+$envFile = $target.EnvFile
+$unit = $target.Unit
+
+if ($Environment -eq 'benchmark' -and $Restart) {
+  throw 'benchmark has no service to restart: omit -Restart'
+}
 
 Write-Host "Target: $SshHost  $envFile  ($Name)" -ForegroundColor Cyan
 
@@ -66,7 +82,12 @@ finally {
   & ssh $SshHost 'rm -f /tmp/set-env-key.sh' | Out-Null
 }
 
-if ($Restart) {
+if (-not $target.Restartable) {
+  # Nothing serving traffic reads this file, so there is nothing to restart and
+  # saying "remember to restart" would be a false instruction.
+  Write-Host "Benchmark credential stored. No service reads this file." -ForegroundColor Green
+}
+elseif ($Restart) {
   Write-Host "Restarting $unit ..." -ForegroundColor Cyan
   & ssh $SshHost "sudo -n systemctl restart $unit && sleep 4 && systemctl is-active $unit"
 }
