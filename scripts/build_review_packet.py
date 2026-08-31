@@ -64,6 +64,24 @@ FIELDS = [
 SEED = 20260831  # fixed: reproducible shuffle, no information leak
 
 # --------------------------------------------------------------------------
+# V2: the two strongest candidates PER DIRECTION, by CTO ruling 31 Aug 2026.
+#
+# The composition deliberately differs across languages, because the Phase-1
+# evidence does: OPUS-MT is best at en->yo and worst at en->ha by a factor of
+# seven. C7 selects routes directionally, so the review must too. Reviewing the
+# same global pair everywhere would spend a native speaker's attention on an
+# engine that has already lost that direction.
+# --------------------------------------------------------------------------
+V2_PAIRS: dict[str, tuple[str, str]] = {
+    "en->ha": ("m2m100", "madlad"),
+    "ha->en": ("m2m100", "madlad"),
+    "en->ig": ("madlad", "m2m100"),
+    "ig->en": ("madlad", "m2m100"),
+    "en->yo": ("opus", "m2m100"),
+    "yo->en": ("madlad", "m2m100"),
+}
+
+# --------------------------------------------------------------------------
 # The 60-item stratified selection.
 #
 # WHY A SHORTER PACK EXISTS. 136 items is 1.5-2 hours of unpaid concentration,
@@ -121,6 +139,12 @@ def main() -> int:
     ap.add_argument("--out", default="docs/certification/review-packets")
     ap.add_argument("--stratified", action="store_true",
                     help="60-item reviewer pack; the 136-item archive is unchanged")
+    ap.add_argument("--v2", action="store_true",
+                    help="keep only the two strongest candidates per direction")
+    ap.add_argument("--forward-only", action="store_true",
+                    help="omit X->en. Use when no NATIVE source corpus exists: the "
+                         "reverse rows are round-trip reconstructions and must never "
+                         "be presented to a reviewer as direct evidence.")
     args = ap.parse_args()
 
     reports = [json.loads(Path(p).read_text(encoding="utf-8")) for p in args.results]
@@ -152,6 +176,10 @@ def main() -> int:
             if language == "en":
                 continue
             if args.stratified and english_original not in STRATIFIED_SOURCES:
+                continue
+            if args.forward_only and not row["direction"].startswith("en->"):
+                continue
+            if args.v2 and rep["engine"] not in V2_PAIRS.get(row["direction"], ()):
                 continue
             by_language.setdefault(language, []).append({
                 "case_id": case_id(row["direction"], row["category"], row["source"]),

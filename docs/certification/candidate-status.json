@@ -1,0 +1,71 @@
+{
+ "_comment": "Quality and infrastructure are INDEPENDENT states, per CTO ruling 31 Aug 2026. A model must not lose the quality ranking because one VPS cannot run it, and must not be promoted because it is cheap.",
+ "asOf": "2026-08-31",
+ "host": "c7-eu-01 (8 vCPU, 23 GB RAM, CPU-only)",
+ "candidates": {
+  "opus": {
+   "licence": "CC-BY-4.0",
+   "commercial": true,
+   "qualityStatus": "PHASE1-MEASURED",
+   "infrastructureStatus": "VIABLE",
+   "peakRssMb": 1301,
+   "medianLatencyMs": [
+    262,
+    360
+   ],
+   "productionApproved": false
+  },
+  "m2m100": {
+   "licence": "MIT",
+   "commercial": true,
+   "qualityStatus": "PHASE1-MEASURED",
+   "infrastructureStatus": "VIABLE",
+   "peakRssMb": 5409,
+   "medianLatencyMs": [
+    2114,
+    2678
+   ],
+   "productionApproved": false
+  },
+  "madlad": {
+   "licence": "Apache-2.0",
+   "commercial": true,
+   "qualityStatus": "PHASE1-MEASURED-STRONGEST",
+   "infrastructureStatus": "NOT VIABLE on c7-eu-01",
+   "infrastructureNote": "21188 MB peak on a 23 GB box that also runs production; Yoruba p95 34.4 s. If human review makes it a route's quality winner, mark QUALITY QUALIFIED / INFRASTRUCTURE BLOCKED and leave optimisation to a separate decision. No quantisation/ONNX/GPU work authorised.",
+   "peakRssMb": 21188,
+   "medianLatencyMs": [
+    4876,
+    5881
+   ],
+   "productionApproved": false
+  },
+  "translategemma": {
+   "licence": "Gemma terms",
+   "commercial": "permitted, revocable",
+   "qualityStatus": "NOT MEASURED",
+   "infrastructureStatus": "NOT STAGED",
+   "blocker": "gated; needs founder to accept terms on a C7-controlled HF account and store HF_TOKEN via Set-EnvKey.ps1",
+   "productionApproved": false
+  },
+  "nllb": {
+   "licence": "CC-BY-NC-4.0",
+   "commercial": false,
+   "qualityStatus": "REFERENCE ONLY",
+   "infrastructureStatus": "n/a",
+   "productionApproved": false
+  },
+  "toucan": {
+   "licence": "non-commercial as published",
+   "commercial": false,
+   "qualityStatus": "NOT MEASURED",
+   "infrastructureStatus": "NOT STAGED",
+   "note": "commercial licence request drafted, not sent by Claude (no email capability). Silence is not permission.",
+   "productionApproved": false
+  }
+ },
+ "routes": {
+  "_comment": "No route is promoted. Recommendations are candidates for human review only.",
+  "humanReviewStatus": "V2 forward packs built, not distributed; reverse UNMEASURED pending native source"
+ }
+}
