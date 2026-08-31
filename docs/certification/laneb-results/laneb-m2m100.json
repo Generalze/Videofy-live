@@ -1,0 +1,1660 @@
+{
+ "engine": "m2m100",
+ "lane": "B",
+ "load_seconds": {
+  "m2m100": 1.6
+ },
+ "peak_rss_mb": 5310.6,
+ "reverseSourceProvenance": {
+  "sourceAuthoredBy": "claude-opus-5",
+  "pendingFluentConfirmation": true,
+  "note": "Machine-authored source pending fluent confirmation, NOT native-authored. Written for fr/es/pt only, where the author can verify and where fluent reviewers are being arranged. The Nigerian languages remain on native contributor elicitation and no source for them is authored here."
+ },
+ "rows": [
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "money",
+   "source": "The price is two thousand naira per bag.",
+   "output": "Le prix est de 2 000 nairas par sac.",
+   "latency_ms": 5439.1,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "money",
+   "source": "Please send 45,000 naira to my account today.",
+   "output": "Veuillez envoyer 45 000 nairas à mon compte aujourd'hui.",
+   "latency_ms": 2584.4,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "money",
+   "source": "I have received the money you sent.",
+   "output": "J’ai reçu l’argent que vous m’avez envoyé.",
+   "latency_ms": 2105.2,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "money",
+   "source": "I have not received the money you sent.",
+   "output": "Je n'ai pas reçu l'argent que vous m'avez envoyé.",
+   "latency_ms": 2549.1,
+   "defects": [
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "money",
+   "source": "Your balance is 12,500 naira.",
+   "output": "Votre solde est de 12 500 nairas.",
+   "latency_ms": 1709.4,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "phone",
+   "source": "Call me on 08031234567 when you arrive.",
+   "output": "Appelez-moi au 08031234567 lorsque vous arrivez.",
+   "latency_ms": 2152.5,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "account",
+   "source": "Transfer to account 0123456789 at First Bank.",
+   "output": "Transfert vers le compte 0123456789 de First Bank.",
+   "latency_ms": 2327.4,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "otp",
+   "source": "Your verification code is 483920. Do not share it.",
+   "output": "Votre code de vérification est 483920. ne le partagez pas.",
+   "latency_ms": 2408.8,
+   "defects": [
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "url",
+   "source": "Read more at https://consummate7.com/help before you call.",
+   "output": "Lisez plus à https://consummate7.com/help avant de vous appeler.",
+   "latency_ms": 3465.8,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "datetime",
+   "source": "The event starts at four thirty on the fifteenth of March.",
+   "output": "L'événement débute à quatre trente le 15 mars.",
+   "latency_ms": 2420.2,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "datetime",
+   "source": "The meeting has been moved to 15 March at 4:30.",
+   "output": "La réunion a été reportée au 15 mars à 4h30.",
+   "latency_ms": 2279.4,
+   "defects": [
+    "lexical-unverified:March"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "entity",
+   "source": "My name is Zoe and I work in Lagos.",
+   "output": "Je m’appelle Zoe et je travaille à Lagos.",
+   "latency_ms": 2432.3,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "entity",
+   "source": "Adebayo travelled from Abeokuta to Kano last night.",
+   "output": "Adebayo a voyagé de Abeokuta à Kano la nuit dernière.",
+   "latency_ms": 2381.4,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "negation",
+   "source": "Do not send the payment yet.",
+   "output": "N’envoyez pas encore le paiement.",
+   "latency_ms": 1701.4,
+   "defects": [
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "negation",
+   "source": "I did not say that I would not come.",
+   "output": "Je n'ai pas dit que je ne viendrais pas.",
+   "latency_ms": 1915.8,
+   "defects": [
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "negation",
+   "source": "She has not arrived at the office.",
+   "output": "Elle n’est pas arrivée au bureau.",
+   "latency_ms": 1825.7,
+   "defects": [
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "health",
+   "source": "Take one tablet twice a day after eating.",
+   "output": "Prendre un comprimé deux fois par jour après avoir mangé.",
+   "latency_ms": 2043.6,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "health",
+   "source": "Do not give this medicine to a child under five years old.",
+   "output": "Ne donnez pas ce médicament à un enfant de moins de 5 ans.",
+   "latency_ms": 2586.9,
+   "defects": [
+    "lexical-unverified:five",
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "agriculture",
+   "source": "The rains will start next month, so prepare the land now.",
+   "output": "Les pluies commenceront le mois prochain, alors préparez le sol maintenant.",
+   "latency_ms": 2645.3,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "business",
+   "source": "We need to sign the agreement before the end of the month.",
+   "output": "Nous devons signer l’accord avant la fin du mois.",
+   "latency_ms": 2306.1,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "broadcast",
+   "source": "Good morning everyone, and welcome to this broadcast.",
+   "output": "Bonjour à tous et bienvenue sur cette émission.",
+   "latency_ms": 1655.3,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "conversation",
+   "source": "How are you doing this evening?",
+   "output": "Comment faites-vous ce soir ?",
+   "latency_ms": 1052.7,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "conversation",
+   "source": "Please send me the address before you leave.",
+   "output": "Veuillez m'envoyer l'adresse avant de partir.",
+   "latency_ms": 2204.0,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "multi",
+   "source": "I am on my way. Please wait for me at the gate. I will be there soon.",
+   "output": "Je suis sur le chemin.Veuillez m'attendre à la porte.Je serai là bientôt.",
+   "latency_ms": 3602.4,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "multi",
+   "source": "The meeting is cancelled. We will meet tomorrow instead.",
+   "output": "La réunion est annulée, nous nous réunirons demain.",
+   "latency_ms": 2485.6,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "long",
+   "source": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure somebody is at the shop to receive them, and call me if there is any problem with the delivery.",
+   "output": "Merci pour votre message. j'ai parlé avec le fournisseur et les marchandises arriveront le vendredi matin. s'il vous plaît assurez-vous que quelqu'un est au magasin pour les recevoir, et appelez-moi s'il y a un problème avec la livraison.",
+   "latency_ms": 8741.6,
+   "defects": [
+    "lexical-unverified:Friday"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "emoji-only",
+   "source": "👍👍",
+   "output": "",
+   "latency_ms": 576.3,
+   "defects": [
+    "empty-output"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "number-only",
+   "source": "45000",
+   "output": "45 000",
+   "latency_ms": 880.4,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "code-only",
+   "source": "OTP-483920",
+   "output": "OTP-483920",
+   "latency_ms": 1182.4,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "punctuation",
+   "source": "???!!!",
+   "output": "... ? ... !",
+   "latency_ms": 649.3,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "mixed",
+   "source": "Abeg send the money before 5pm 🙏",
+   "output": "Abeg envoie l'argent avant 17h",
+   "latency_ms": 1808.7,
+   "defects": [
+    "quantity-unverified:5"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "emoji-text",
+   "source": "Congratulations on the new baby 🎉 we are very happy for you.",
+   "output": "Félicitations pour votre nouveau bébé, nous sommes très heureux pour vous.",
+   "latency_ms": 2090.9,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->fr",
+   "category": "hashtag",
+   "source": "Join us tonight #VideofyLive for the broadcast.",
+   "output": "Rejoignez-nous ce soir #VideofyLive pour la diffusion.",
+   "latency_ms": 2424.7,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "money",
+   "source": "Le prix est de deux mille naira par sac.",
+   "englishMeaning": "The price is two thousand naira per bag.",
+   "output": "The price is two thousand naira per bag.",
+   "latency_ms": 1465.4,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "money",
+   "source": "Merci d'envoyer 45 000 nairas sur mon compte aujourd'hui.",
+   "englishMeaning": "Please send 45,000 naira to my account today.",
+   "output": "Thank you for sending 45,000 nairas to my account today.",
+   "latency_ms": 2333.0,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "money",
+   "source": "J'ai bien recu l'argent que tu as envoye.",
+   "englishMeaning": "I have received the money you sent.",
+   "output": "I received the money you sent.",
+   "latency_ms": 1585.5,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "money-negation",
+   "source": "Je n'ai pas recu l'argent que tu as envoye.",
+   "englishMeaning": "I have not received the money you sent.",
+   "output": "I did not receive the money you sent.",
+   "latency_ms": 1830.1,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "money",
+   "source": "Votre solde est de 12 500 nairas.",
+   "englishMeaning": "Your balance is 12,500 naira.",
+   "output": "Your balance is 12,500 nairas.",
+   "latency_ms": 1907.8,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "phone",
+   "source": "Appelle-moi au 08031234567 quand tu arrives.",
+   "englishMeaning": "Call me on 08031234567 when you arrive.",
+   "output": "Call me at 08031234567 when you arrive.",
+   "latency_ms": 2100.9,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "account",
+   "source": "Virement sur le compte 0123456789 a la First Bank.",
+   "englishMeaning": "Transfer to account 0123456789 at First Bank.",
+   "output": "Transfer to 0123456789 to the First Bank.",
+   "latency_ms": 2401.2,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "otp",
+   "source": "Votre code de verification est 483920. Ne le partagez pas.",
+   "englishMeaning": "Your verification code is 483920. Do not share it.",
+   "output": "Your verification code is 483920.",
+   "latency_ms": 1824.0,
+   "defects": [
+    "negation-lost"
+   ],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "url",
+   "source": "Lisez https://consummate7.com/help avant d'appeler.",
+   "englishMeaning": "Read https://consummate7.com/help before you call.",
+   "output": "Please read https://consummate7.com/help before calling.",
+   "latency_ms": 2567.0,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "datetime",
+   "source": "La reunion est reportee au 15 mars a 16h30.",
+   "englishMeaning": "The meeting has been moved to 15 March at 4:30.",
+   "output": "The meeting is postponed to March 15 at 16:30.",
+   "latency_ms": 2200.9,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "entity",
+   "source": "Je m'appelle Zoe et je travaille a Lagos.",
+   "englishMeaning": "My name is Zoe and I work in Lagos.",
+   "output": "My name is Zoe and I work in Lagos.",
+   "latency_ms": 1883.7,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "negation",
+   "source": "N'envoie pas encore le paiement.",
+   "englishMeaning": "Do not send the payment yet.",
+   "output": "Do not send the payment yet.",
+   "latency_ms": 1358.0,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "negation",
+   "source": "Je n'ai pas dit que je ne viendrais pas.",
+   "englishMeaning": "I did not say that I would not come.",
+   "output": "I didn’t say I’t come.",
+   "latency_ms": 1814.1,
+   "defects": [
+    "negation-lost"
+   ],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "health",
+   "source": "Prenez un comprime deux fois par jour apres les repas.",
+   "englishMeaning": "Take one tablet twice a day after eating.",
+   "output": "Take one tablet twice a day after meals.",
+   "latency_ms": 1981.2,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "health",
+   "source": "Ne donnez pas ce medicament a un enfant de moins de cinq ans.",
+   "englishMeaning": "Do not give this medicine to a child under five years old.",
+   "output": "Do not give this medicine to a child under 5 years old.",
+   "latency_ms": 1824.2,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "multi",
+   "source": "Je suis en route. Attends-moi au portail. J'arrive bientot.",
+   "englishMeaning": "I am on my way. Wait for me at the gate. I will be there soon.",
+   "output": "I’m on the way, wait for me at the gate, I’m coming soon.",
+   "latency_ms": 3320.3,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "broadcast",
+   "source": "Bonjour a tous, et bienvenue a cette emission.",
+   "englishMeaning": "Good morning everyone, and welcome to this broadcast.",
+   "output": "Hello everyone, and welcome to this show.",
+   "latency_ms": 1838.2,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "conversation",
+   "source": "Comment vas-tu ce soir ?",
+   "englishMeaning": "How are you doing this evening?",
+   "output": "How are you tonight?",
+   "latency_ms": 1333.7,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "business",
+   "source": "Nous devons signer l'accord avant la fin du mois.",
+   "englishMeaning": "We need to sign the agreement before the end of the month.",
+   "output": "We must sign the agreement before the end of the month.",
+   "latency_ms": 2216.6,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "fr->en",
+   "category": "agriculture",
+   "source": "Les pluies commenceront le mois prochain, preparez la terre.",
+   "englishMeaning": "The rains will start next month, so prepare the land.",
+   "output": "The rain will start next month, prepare the soil.",
+   "latency_ms": 1820.0,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "money",
+   "source": "The price is two thousand naira per bag.",
+   "output": "El precio es de dos mil nairas por bolsa.",
+   "latency_ms": 2411.5,
+   "defects": [
+    "quantity-unverified:2000"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "money",
+   "source": "Please send 45,000 naira to my account today.",
+   "output": "Por favor, envíe 45.000 nairas a mi cuenta hoy.",
+   "latency_ms": 2476.0,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "money",
+   "source": "I have received the money you sent.",
+   "output": "He recibido el dinero que has enviado.",
+   "latency_ms": 1534.0,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "money",
+   "source": "I have not received the money you sent.",
+   "output": "No recibí el dinero que me enviaste.",
+   "latency_ms": 1863.0,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "money",
+   "source": "Your balance is 12,500 naira.",
+   "output": "Su saldo es de 12.500 nairas.",
+   "latency_ms": 1566.2,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "phone",
+   "source": "Call me on 08031234567 when you arrive.",
+   "output": "Llame al 08031234567 cuando llegue.",
+   "latency_ms": 2337.0,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "account",
+   "source": "Transfer to account 0123456789 at First Bank.",
+   "output": "Transferencia a la cuenta 0123456789 en First Bank.",
+   "latency_ms": 2846.5,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "otp",
+   "source": "Your verification code is 483920. Do not share it.",
+   "output": "Su código de verificación es 483920. no lo comparta.",
+   "latency_ms": 2070.9,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "url",
+   "source": "Read more at https://consummate7.com/help before you call.",
+   "output": "Lee más en https://consummate7.com/help antes de llamar.",
+   "latency_ms": 2867.9,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "datetime",
+   "source": "The event starts at four thirty on the fifteenth of March.",
+   "output": "El evento comienza a las cuatro y treinta del día quince de marzo.",
+   "latency_ms": 2448.8,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "datetime",
+   "source": "The meeting has been moved to 15 March at 4:30.",
+   "output": "La reunión se ha pospuesto al 15 de marzo a las 4:30.",
+   "latency_ms": 2321.7,
+   "defects": [
+    "lexical-unverified:March"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "entity",
+   "source": "My name is Zoe and I work in Lagos.",
+   "output": "Mi nombre es Zoe y trabajo en Lagos.",
+   "latency_ms": 1840.9,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "entity",
+   "source": "Adebayo travelled from Abeokuta to Kano last night.",
+   "output": "Adebayo viajó de Abeokuta a Kano la noche pasada.",
+   "latency_ms": 2366.3,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "negation",
+   "source": "Do not send the payment yet.",
+   "output": "No envíe el pago todavía.",
+   "latency_ms": 1073.2,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "negation",
+   "source": "I did not say that I would not come.",
+   "output": "No he dicho que no venga.",
+   "latency_ms": 1171.7,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "negation",
+   "source": "She has not arrived at the office.",
+   "output": "No ha llegado a la oficina.",
+   "latency_ms": 1490.4,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "health",
+   "source": "Take one tablet twice a day after eating.",
+   "output": "Tome un comprimido dos veces al día después de comer.",
+   "latency_ms": 2048.1,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "health",
+   "source": "Do not give this medicine to a child under five years old.",
+   "output": "No dar este medicamento a un niño menor de cinco años.",
+   "latency_ms": 2088.5,
+   "defects": [
+    "lexical-unverified:five",
+    "quantity-unverified:5"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "agriculture",
+   "source": "The rains will start next month, so prepare the land now.",
+   "output": "Las lluvias comenzarán el próximo mes, así que prepárate ahora.",
+   "latency_ms": 2485.2,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "business",
+   "source": "We need to sign the agreement before the end of the month.",
+   "output": "Necesitamos firmar el acuerdo antes del final del mes.",
+   "latency_ms": 1651.7,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "broadcast",
+   "source": "Good morning everyone, and welcome to this broadcast.",
+   "output": "Buenas tardes a todos y bienvenidos a esta emisión.",
+   "latency_ms": 2331.6,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "conversation",
+   "source": "How are you doing this evening?",
+   "output": "¿Cómo estás haciendo esta noche?",
+   "latency_ms": 1108.9,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "conversation",
+   "source": "Please send me the address before you leave.",
+   "output": "Por favor, envíeme la dirección antes de salir.",
+   "latency_ms": 1725.4,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "multi",
+   "source": "I am on my way. Please wait for me at the gate. I will be there soon.",
+   "output": "Estoy en camino, por favor, espera por mí en la puerta, pronto estaré allí.",
+   "latency_ms": 2387.3,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "multi",
+   "source": "The meeting is cancelled. We will meet tomorrow instead.",
+   "output": "La reunión se ha cancelado y nos reuniremos mañana.",
+   "latency_ms": 2032.5,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "long",
+   "source": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure somebody is at the shop to receive them, and call me if there is any problem with the delivery.",
+   "output": "Gracias por su mensaje. he hablado con el proveedor y las mercancías llegarán el viernes por la mañana. Por favor, asegúrese de que alguien esté en la tienda para recibirlos, y llámame si hay algún problema con el envío.",
+   "latency_ms": 7671.7,
+   "defects": [
+    "lexical-unverified:Friday"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "emoji-only",
+   "source": "👍👍",
+   "output": "",
+   "latency_ms": 791.3,
+   "defects": [
+    "empty-output"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "number-only",
+   "source": "45000",
+   "output": "45000 años",
+   "latency_ms": 673.8,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "code-only",
+   "source": "OTP-483920",
+   "output": "Página 483920",
+   "latency_ms": 1320.5,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "punctuation",
+   "source": "???!!!",
+   "output": "¡¡¡¡¡¡¡",
+   "latency_ms": 1043.0,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "mixed",
+   "source": "Abeg send the money before 5pm 🙏",
+   "output": "Abeg envía el dinero antes de las 5pm 🙏",
+   "latency_ms": 2041.0,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "emoji-text",
+   "source": "Congratulations on the new baby 🎉 we are very happy for you.",
+   "output": "Felicitaciones por el nuevo bebé, estamos muy contentos por ti.",
+   "latency_ms": 2290.2,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->es",
+   "category": "hashtag",
+   "source": "Join us tonight #VideofyLive for the broadcast.",
+   "output": "Únete a nosotros esta noche #VideofyLive para la transmisión.",
+   "latency_ms": 2348.7,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "money",
+   "source": "El precio es de dos mil nairas por saco.",
+   "englishMeaning": "The price is two thousand naira per bag.",
+   "output": "The price is two thousand nairas per bag.",
+   "latency_ms": 1556.0,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "money",
+   "source": "Por favor envia 45.000 nairas a mi cuenta hoy.",
+   "englishMeaning": "Please send 45,000 naira to my account today.",
+   "output": "Please send 45,000 nairas to my account today.",
+   "latency_ms": 2005.5,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "money",
+   "source": "He recibido el dinero que enviaste.",
+   "englishMeaning": "I have received the money you sent.",
+   "output": "I received the money you sent.",
+   "latency_ms": 1482.5,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "money-negation",
+   "source": "No he recibido el dinero que enviaste.",
+   "englishMeaning": "I have not received the money you sent.",
+   "output": "I have not received the money you sent.",
+   "latency_ms": 1735.4,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "money",
+   "source": "Su saldo es de 12.500 nairas.",
+   "englishMeaning": "Your balance is 12,500 naira.",
+   "output": "Its balance is 12,500 nairas.",
+   "latency_ms": 1343.4,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "phone",
+   "source": "Llamame al 08031234567 cuando llegues.",
+   "englishMeaning": "Call me on 08031234567 when you arrive.",
+   "output": "Call me at 08031234567 when you arrive.",
+   "latency_ms": 2119.1,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "account",
+   "source": "Transfiere a la cuenta 0123456789 del First Bank.",
+   "englishMeaning": "Transfer to account 0123456789 at First Bank.",
+   "output": "Transfer to the First Bank account 0123456789.",
+   "latency_ms": 1953.9,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "otp",
+   "source": "Su codigo de verificacion es 483920. No lo comparta.",
+   "englishMeaning": "Your verification code is 483920. Do not share it.",
+   "output": "Their verification code is 483920.",
+   "latency_ms": 2147.2,
+   "defects": [
+    "negation-lost"
+   ],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "url",
+   "source": "Lea https://consummate7.com/help antes de llamar.",
+   "englishMeaning": "Read https://consummate7.com/help before you call.",
+   "output": "Please read https://consummate7.com/help before calling.",
+   "latency_ms": 2649.0,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "datetime",
+   "source": "La reunion se ha cambiado al 15 de marzo a las 16:30.",
+   "englishMeaning": "The meeting has been moved to 15 March at 4:30.",
+   "output": "The meeting was changed to March 15 at 16:30.",
+   "latency_ms": 1929.3,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "entity",
+   "source": "Me llamo Zoe y trabajo en Lagos.",
+   "englishMeaning": "My name is Zoe and I work in Lagos.",
+   "output": "My name is Zoe and I work in Lagos.",
+   "latency_ms": 2594.1,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "negation",
+   "source": "No envies todavia el pago.",
+   "englishMeaning": "Do not send the payment yet.",
+   "output": "Do not send the payment.",
+   "latency_ms": 1728.4,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "negation",
+   "source": "No dije que no vendria.",
+   "englishMeaning": "I did not say that I would not come.",
+   "output": "I didn’t say it’t come.",
+   "latency_ms": 2149.0,
+   "defects": [
+    "negation-lost"
+   ],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "health",
+   "source": "Tome una pastilla dos veces al dia despues de comer.",
+   "englishMeaning": "Take one tablet twice a day after eating.",
+   "output": "Take one pill twice a day after eating.",
+   "latency_ms": 1983.4,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "health",
+   "source": "No de este medicamento a un nino menor de cinco anos.",
+   "englishMeaning": "Do not give this medicine to a child under five years old.",
+   "output": "Do not give this medicine to a child under 5 years old.",
+   "latency_ms": 2159.5,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "multi",
+   "source": "Voy de camino. Esperame en la puerta. Llegare pronto.",
+   "englishMeaning": "I am on my way. Wait for me at the gate. I will be there soon.",
+   "output": "I’m on my way, wait at the door, come soon.",
+   "latency_ms": 2736.6,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "broadcast",
+   "source": "Buenos dias a todos, y bienvenidos a esta transmision.",
+   "englishMeaning": "Good morning everyone, and welcome to this broadcast.",
+   "output": "Good morning to everyone, and welcome to this broadcast.",
+   "latency_ms": 2139.8,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "conversation",
+   "source": "Como estas esta noche?",
+   "englishMeaning": "How are you doing this evening?",
+   "output": "How are you tonight?",
+   "latency_ms": 1130.7,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "business",
+   "source": "Tenemos que firmar el acuerdo antes de fin de mes.",
+   "englishMeaning": "We need to sign the agreement before the end of the month.",
+   "output": "We have to sign the agreement before the end of the month.",
+   "latency_ms": 2267.9,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "es->en",
+   "category": "agriculture",
+   "source": "Las lluvias empezaran el mes que viene, prepara la tierra.",
+   "englishMeaning": "The rains will start next month, so prepare the land.",
+   "output": "The rains will begin next month, prepare the earth.",
+   "latency_ms": 1727.9,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "money",
+   "source": "The price is two thousand naira per bag.",
+   "output": "O preço é de 2 mil nairas por saco.",
+   "latency_ms": 2215.2,
+   "defects": [
+    "quantity-unverified:2000"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "money",
+   "source": "Please send 45,000 naira to my account today.",
+   "output": "Por favor, envie 45.000 naira para a minha conta hoje.",
+   "latency_ms": 2049.4,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "money",
+   "source": "I have received the money you sent.",
+   "output": "Recebi o dinheiro que você enviou.",
+   "latency_ms": 1521.9,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "money",
+   "source": "I have not received the money you sent.",
+   "output": "Não recebi o dinheiro que enviou.",
+   "latency_ms": 1573.3,
+   "defects": [
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "money",
+   "source": "Your balance is 12,500 naira.",
+   "output": "Seu saldo é de 12.500 nairas.",
+   "latency_ms": 1728.9,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "phone",
+   "source": "Call me on 08031234567 when you arrive.",
+   "output": "Ligue para 08031234567 quando você chegar.",
+   "latency_ms": 1663.8,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "account",
+   "source": "Transfer to account 0123456789 at First Bank.",
+   "output": "Transferência para a conta 0123456789 no First Bank.",
+   "latency_ms": 2713.0,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "otp",
+   "source": "Your verification code is 483920. Do not share it.",
+   "output": "Seu código de verificação é 483920.Não compartilhe.",
+   "latency_ms": 2487.9,
+   "defects": [
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "url",
+   "source": "Read more at https://consummate7.com/help before you call.",
+   "output": "Leia mais em https://consummate7.com/help antes de ligar.",
+   "latency_ms": 3185.3,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "datetime",
+   "source": "The event starts at four thirty on the fifteenth of March.",
+   "output": "O evento começa às quatro e trinta no dia 15 de março.",
+   "latency_ms": 2206.2,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "datetime",
+   "source": "The meeting has been moved to 15 March at 4:30.",
+   "output": "A reunião foi adiada para 15 de março às 4:30.",
+   "latency_ms": 2272.4,
+   "defects": [
+    "lexical-unverified:March"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "entity",
+   "source": "My name is Zoe and I work in Lagos.",
+   "output": "Meu nome é Zoe e eu trabalho em Lagos.",
+   "latency_ms": 1651.9,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "entity",
+   "source": "Adebayo travelled from Abeokuta to Kano last night.",
+   "output": "Adebayo viajou de Abeokuta para Kano ontem à noite.",
+   "latency_ms": 2332.7,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "negation",
+   "source": "Do not send the payment yet.",
+   "output": "Não envie o pagamento ainda.",
+   "latency_ms": 946.2,
+   "defects": [
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "negation",
+   "source": "I did not say that I would not come.",
+   "output": "Não disse que não iria.",
+   "latency_ms": 1336.5,
+   "defects": [
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "negation",
+   "source": "She has not arrived at the office.",
+   "output": "Ela ainda não chegou ao escritório.",
+   "latency_ms": 1203.7,
+   "defects": [
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "health",
+   "source": "Take one tablet twice a day after eating.",
+   "output": "Tome um comprimido duas vezes ao dia após as refeições.",
+   "latency_ms": 2232.9,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "health",
+   "source": "Do not give this medicine to a child under five years old.",
+   "output": "Não dê este medicamento a uma criança com menos de 5 anos.",
+   "latency_ms": 2004.7,
+   "defects": [
+    "lexical-unverified:five",
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "agriculture",
+   "source": "The rains will start next month, so prepare the land now.",
+   "output": "As chuvas começam no próximo mês, então prepare a terra agora.",
+   "latency_ms": 2174.5,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "business",
+   "source": "We need to sign the agreement before the end of the month.",
+   "output": "Precisamos assinar o acordo antes do final do mês.",
+   "latency_ms": 1704.2,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "broadcast",
+   "source": "Good morning everyone, and welcome to this broadcast.",
+   "output": "Bom dia a todos, e bem-vindo a esta transmissão.",
+   "latency_ms": 2134.8,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "conversation",
+   "source": "How are you doing this evening?",
+   "output": "Como você está fazendo esta noite?",
+   "latency_ms": 1107.7,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "conversation",
+   "source": "Please send me the address before you leave.",
+   "output": "Envie-me o endereço antes de sair.",
+   "latency_ms": 1842.6,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "multi",
+   "source": "I am on my way. Please wait for me at the gate. I will be there soon.",
+   "output": "Eu estou no meu caminho.Por favor, espere-me na porta.Estou lá em breve.",
+   "latency_ms": 3032.3,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "multi",
+   "source": "The meeting is cancelled. We will meet tomorrow instead.",
+   "output": "A reunião foi cancelada e vamos nos encontrar amanhã.",
+   "latency_ms": 1764.8,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "long",
+   "source": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure somebody is at the shop to receive them, and call me if there is any problem with the delivery.",
+   "output": "Eu falei com o fornecedor e as mercadorias chegarão na manhã de sexta-feira. Por favor, certifique-se de que alguém está na loja para recebê-las, e ligue para mim se houver algum problema com a entrega.",
+   "latency_ms": 7216.0,
+   "defects": [
+    "lexical-unverified:Friday"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "emoji-only",
+   "source": "👍👍",
+   "output": "",
+   "latency_ms": 620.4,
+   "defects": [
+    "empty-output"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "number-only",
+   "source": "45000",
+   "output": "45 mil",
+   "latency_ms": 670.9,
+   "defects": [
+    "quantity-unverified:45000"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "code-only",
+   "source": "OTP-483920",
+   "output": "Página 483920",
+   "latency_ms": 860.2,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "punctuation",
+   "source": "???!!!",
+   "output": "É isso mesmo!!",
+   "latency_ms": 617.7,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "mixed",
+   "source": "Abeg send the money before 5pm 🙏",
+   "output": "Abeg envia o dinheiro antes das 5pm 🙏",
+   "latency_ms": 1653.5,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "emoji-text",
+   "source": "Congratulations on the new baby 🎉 we are very happy for you.",
+   "output": "Parabéns pelo novo bebê  estamos muito felizes por você.",
+   "latency_ms": 1797.8,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->pt",
+   "category": "hashtag",
+   "source": "Join us tonight #VideofyLive for the broadcast.",
+   "output": "Junte-se a nós esta noite #VideofyLive para a transmissão.",
+   "latency_ms": 2381.7,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "money",
+   "source": "O preco e de dois mil nairas por saco.",
+   "englishMeaning": "The price is two thousand naira per bag.",
+   "output": "The price is two thousand naires per bag.",
+   "latency_ms": 1367.8,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "money",
+   "source": "Por favor envie 45.000 nairas para a minha conta hoje.",
+   "englishMeaning": "Please send 45,000 naira to my account today.",
+   "output": "Please send 45,000 naires to my account today.",
+   "latency_ms": 1571.2,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "money",
+   "source": "Recebi o dinheiro que voce enviou.",
+   "englishMeaning": "I have received the money you sent.",
+   "output": "I received the money you sent.",
+   "latency_ms": 1044.8,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "money-negation",
+   "source": "Nao recebi o dinheiro que voce enviou.",
+   "englishMeaning": "I have not received the money you sent.",
+   "output": "I did not receive the money you sent.",
+   "latency_ms": 1360.9,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "money",
+   "source": "O seu saldo e de 12.500 nairas.",
+   "englishMeaning": "Your balance is 12,500 naira.",
+   "output": "His salary is 12,500 nairas.",
+   "latency_ms": 1590.3,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "phone",
+   "source": "Ligue para 08031234567 quando chegar.",
+   "englishMeaning": "Call me on 08031234567 when you arrive.",
+   "output": "Call 08031234567 when you arrive.",
+   "latency_ms": 1725.0,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "account",
+   "source": "Transfira para a conta 0123456789 no First Bank.",
+   "englishMeaning": "Transfer to account 0123456789 at First Bank.",
+   "output": "Transfer to 0123456789 on First Bank.",
+   "latency_ms": 2237.4,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "otp",
+   "source": "O seu codigo de verificacao e 483920. Nao o partilhe.",
+   "englishMeaning": "Your verification code is 483920. Do not share it.",
+   "output": "Your verification code is 483920.",
+   "latency_ms": 2197.6,
+   "defects": [
+    "negation-lost"
+   ],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "url",
+   "source": "Leia https://consummate7.com/help antes de ligar.",
+   "englishMeaning": "Read https://consummate7.com/help before you call.",
+   "output": "Read https://consummate7.com/help before calling.",
+   "latency_ms": 2389.5,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "datetime",
+   "source": "A reuniao foi adiada para 15 de marco as 16:30.",
+   "englishMeaning": "The meeting has been moved to 15 March at 4:30.",
+   "output": "The meeting was postponed to 15 March at 16:30.",
+   "latency_ms": 2259.9,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "entity",
+   "source": "O meu nome e Zoe e trabalho em Lagos.",
+   "englishMeaning": "My name is Zoe and I work in Lagos.",
+   "output": "My name is Zoe and I work in Lagos.",
+   "latency_ms": 2102.6,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "negation",
+   "source": "Nao envie o pagamento ainda.",
+   "englishMeaning": "Do not send the payment yet.",
+   "output": "No payment yet.",
+   "latency_ms": 1187.3,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "negation",
+   "source": "Nao disse que nao viria.",
+   "englishMeaning": "I did not say that I would not come.",
+   "output": "I didn’t say I’t come.",
+   "latency_ms": 1655.4,
+   "defects": [
+    "negation-lost"
+   ],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "health",
+   "source": "Tome um comprimido duas vezes por dia depois de comer.",
+   "englishMeaning": "Take one tablet twice a day after eating.",
+   "output": "Take one pill twice a day after eating.",
+   "latency_ms": 1623.0,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "health",
+   "source": "Nao de este medicamento a uma crianca com menos de cinco anos.",
+   "englishMeaning": "Do not give this medicine to a child under five years old.",
+   "output": "Do not give this medicine to a child under 5 years of age.",
+   "latency_ms": 1717.4,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "multi",
+   "source": "Estou a caminho. Espere por mim no portao. Chego em breve.",
+   "englishMeaning": "I am on my way. Wait for me at the gate. I will be there soon.",
+   "output": "I'm on my way. Wait for me at the gate. I'll arrive soon.",
+   "latency_ms": 2874.3,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "broadcast",
+   "source": "Bom dia a todos, e bem-vindos a esta transmissao.",
+   "englishMeaning": "Good morning everyone, and welcome to this broadcast.",
+   "output": "Good morning to everyone, and welcome to this broadcast.",
+   "latency_ms": 1865.0,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "conversation",
+   "source": "Como esta esta noite?",
+   "englishMeaning": "How are you doing this evening?",
+   "output": "How is it tonight?",
+   "latency_ms": 946.6,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "business",
+   "source": "Precisamos de assinar o acordo antes do fim do mes.",
+   "englishMeaning": "We need to sign the agreement before the end of the month.",
+   "output": "We need to sign the agreement before the end of the month.",
+   "latency_ms": 1726.4,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  },
+  {
+   "engine": "m2m100",
+   "direction": "pt->en",
+   "category": "agriculture",
+   "source": "As chuvas comecam no proximo mes, prepare a terra.",
+   "englishMeaning": "The rains will start next month, so prepare the land.",
+   "output": "The rain starts next month, prepare the soil.",
+   "latency_ms": 1750.2,
+   "defects": [],
+   "sourceProvenance": "machine-authored, pending fluent confirmation"
+  }
+ ]
+}

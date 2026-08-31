@@ -54,10 +54,20 @@ def main() -> int:
         for row in rep["rows"]:
             i = per_direction.get(row["direction"], 0)
             per_direction[row["direction"]] = i + 1
-            if i >= len(CORPUS):
-                continue
             target = row["direction"].split("->")[1]
-            defects = check(CORPUS[i], row["output"], target)
+
+            if "englishMeaning" in row:
+                # A Lane B REVERSE row. Its case came from the direct-source
+                # corpus, not from CORPUS, so re-scoring it against CORPUS by
+                # POSITION would compare a French sentence to whatever English
+                # case happened to sit at the same index -- which is how the
+                # reverse column came out a suspiciously uniform 4/4/4. The
+                # defects computed at run time against the right case stand.
+                defects = row["defects"]
+            elif i < len(CORPUS):
+                defects = check(CORPUS[i], row["output"], target)
+            else:
+                continue
             cell = table.setdefault(row["direction"], {}).setdefault(
                 engine, {"cata": 0, "passthrough": 0, "unverified": 0, "lat": [], "n": 0})
             cell["n"] += 1
@@ -77,8 +87,17 @@ def main() -> int:
     forward = [d for d in sorted(table) if d.startswith("en->")]
     reverse = [d for d in sorted(table) if not d.startswith("en->")]
 
-    for label, directions in (("FORWARD  en->X", forward),
-                              ("REVERSE  X->en  (provisional: round-trip only)", reverse)):
+    # The reverse caveat depends on where the source came from. Lane B uses
+    # DIRECT authored source; the Nigerian screen used a round trip. Saying
+    # "round-trip only" over direct evidence would understate it, and saying
+    # "direct" over a round trip would overstate it.
+    provenance = next((r.get("reverseSourceProvenance") for r in reports
+                       if r.get("reverseSourceProvenance")), None)
+    reverse_label = ("REVERSE  X->en  (DIRECT source, "
+                     + ("machine-authored, pending fluent confirmation)"
+                        if provenance else "provenance unrecorded)")
+                     ) if provenance else "REVERSE  X->en  (provisional: round-trip only)"
+    for label, directions in (("FORWARD  en->X", forward), (reverse_label, reverse)):
         print(f"\n{label}\n" + "-" * 104)
         header = f"{'direction':10s}"
         for e in engines:

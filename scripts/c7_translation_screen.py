@@ -169,6 +169,15 @@ NEG_MARKERS = {
     # would have condemned an engine for working. `\w*gh[iị]` is the fix.
     "ig": (r"\w*gh[iị]\b", r"\badigh\w*", r"\banagh\w*", r"\bọdịgh\w*",
            r"\bekwe\w*na\b", r"\bnata\b"),
+    # Romance negation is a circumfix or a preposed particle and looks nothing
+    # like English "not". Without these entries the checker fell back to the
+    # English markers and reported every CORRECT French negation -- n'ai pas,
+    # Ne ... pas, N'envoyez pas -- as a lost one: six spurious catastrophic
+    # failures per Romance language, enough to move the ranking.
+    "fr": (r"\bne\b", r"\bn['’]", r"\bpas\b", r"\bjamais\b",
+           r"\baucun\w*", r"\brien\b", r"\bni\b"),
+    "es": (r"\bno\b", r"\bnunca\b", r"\bning[uú]n\w*", r"\bnada\b", r"\btampoco\b"),
+    "pt": (r"\bn[aoã]o\b", r"\bnunca\b", r"\bnenhum\w*", r"\bnada\b", r"\bjamais\b"),
 }
 
 DIGITS = re.compile(r"\d")
@@ -231,8 +240,17 @@ def check(case: Case, output: str, target: str) -> list[str]:
 
     # 3. NEGATION PRESERVATION -- the defect that matters most in a chat
     if case.negated:
-        markers = NEG_MARKERS.get(target, NEG_MARKERS["en"])
-        if not any(re.search(m, out, re.I) for m in markers):
+        markers = NEG_MARKERS.get(target)
+        if markers is None:
+            # REFUSE TO JUDGE rather than judge with another language's rules.
+            #
+            # This defaulted to the English markers for any unknown target, so a
+            # correct negation in a language the checker does not know looked
+            # identical to a lost one. Silently applying one language's rules to
+            # another is the shape of nearly every error this checker has made;
+            # the honest output is "not checked", which a human then checks.
+            found.append(f"negation-unverified({target})")
+        elif not any(re.search(m, out, re.I) for m in markers):
             found.append("negation-lost")
 
     # 4/5. OMISSION and HALLUCINATION, by sentence count
