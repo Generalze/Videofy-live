@@ -998,6 +998,25 @@ if (!liveEngine.real) {
     translation: liveEngine.translation,
   });
 }
+/*
+ * WHAT SPEAKS FOR AN UPLOADED PROGRAMME -- said out loud at boot.
+ *
+ * Every other engine on this service announces itself here, and the batch
+ * speech engine did not. That is the blind spot a deployment fell into: it ran
+ * `mock` against real programmes for as long as nobody uploaded one and
+ * listened, because no line ever named it and its output arrived as a file
+ * like any other. `mock` reads as a warning now, and `streaming` names the
+ * stack it borrows, so which one is mounted takes one glance.
+ */
+logger.info('Programme speech engine ready', {
+  provider: config.textToSpeechProvider,
+  ...(config.textToSpeechProvider === 'streaming'
+    ? { speaks: streamingSynthesis?.name ?? 'nothing: no live synthesis stack' }
+    : {}),
+  ...(config.textToSpeechProvider === 'mock'
+    ? { warning: 'mock writes EMPTY audio files; uploaded programmes will be silent' }
+    : {}),
+});
 /**
  * The learned voice detector, when the model is on this machine.
  *
