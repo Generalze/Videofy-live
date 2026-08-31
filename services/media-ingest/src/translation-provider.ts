@@ -60,7 +60,7 @@ export interface ArgosTranslateConfig {
 }
 
 export interface TranslationProviderConfig {
-  providerName: 'mock' | 'argos' | 'opus-mt' | 'm2m100';
+  providerName: 'off' | 'mock' | 'argos' | 'opus-mt' | 'm2m100';
   supportedTargetLanguages: string[];
   argos: ArgosTranslateConfig;
   opusMt?: OpusMtConfig;
@@ -172,9 +172,36 @@ function nllbLanguageCode(language: string): string {
   return code;
 }
 
+/**
+ * Translation, declared unavailable.
+ *
+ * The honest state for a deployment with no approved routes. It REFUSES; it
+ * never invents. A mock translator returns fabricated text carrying every
+ * success signal a real one has, so nothing downstream can tell and a reader
+ * sees invented words attributed to a real person -- the same shape as the
+ * transcription mock, and the batch TTS mock that wrote 44-byte audio files.
+ *
+ * Callers must deliver the ORIGINAL when this throws. A message that arrives
+ * untranslated is a translation problem; one that does not arrive is worse.
+ */
+export class UnavailableTranslationProvider implements TimestampedTranslationProvider {
+  readonly name = 'off';
+
+  async translate(): Promise<TranslationProviderResult> {
+    throw new MediaIngestError(
+      'Translation is not available on this deployment.',
+      'translation-unavailable',
+      503,
+    );
+  }
+}
+
 export function createTimestampedTranslationProvider(
   config: TranslationProviderConfig,
 ): TimestampedTranslationProvider {
+  if (config.providerName === 'off') {
+    return new UnavailableTranslationProvider();
+  }
   if (config.providerName === 'mock') {
     return new MockTimestampedTranslationProvider(config.supportedTargetLanguages);
   }

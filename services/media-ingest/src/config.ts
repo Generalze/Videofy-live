@@ -89,7 +89,7 @@ export interface IngestConfig {
   fasterWhisperComputeType: string;
   fasterWhisperModelCacheDir: string | null;
   fasterWhisperAllowGpuFallback: boolean;
-  translationProvider: 'mock' | 'argos' | 'opus-mt' | 'm2m100';
+  translationProvider: 'off' | 'mock' | 'argos' | 'opus-mt' | 'm2m100';
   translationFallbackProvider: 'none' | 'm2m100' | 'nllb200';
   translationTimeoutMs: number;
   translationTargetLanguage: string;
@@ -316,6 +316,46 @@ export function loadConfig(): IngestConfig {
           'that every downstream signal reports as success. Use "streaming".',
       );
     }
+    if ((process.env['TRANSLATION_PROVIDER']?.trim() || 'mock') === 'mock') {
+      throw new Error(
+        'TRANSLATION_PROVIDER=mock is refused in production: it fabricates translations. ' +
+          'Use "off" to declare translation unavailable, or a certified engine.',
+      );
+    }
+    /*
+     * DEVELOPMENT-DEMO IS REFUSED ON EVERY SELECTOR. It is the same hazard as
+     * mock wearing a more reassuring name: a deployment carrying one does not
+     * fail, it serves invented output to real people.
+     */
+    for (const selector of [
+      'TRANSCRIPTION_PROVIDER',
+      'STREAMING_TRANSCRIPTION_PROVIDER',
+      'STREAMING_SYNTHESIS_PROVIDER',
+      'TEXT_TO_SPEECH_PROVIDER',
+      'TRANSLATION_PROVIDER',
+      'AI_RUNTIME_PROFILE',
+    ]) {
+      const value = (process.env[selector] ?? '').trim().toLowerCase();
+      if (value === 'development-demo' || value === 'demo') {
+        throw new Error(
+          `${selector}=${value} is refused in production: demo modes fabricate output.`,
+        );
+      }
+    }
+    /*
+     * THE DIRECTIONAL REGISTRY IS NOT OPTIONAL IN PRODUCTION. Without a route
+     * document there is nothing to consult, and the failure mode is not an
+     * error -- it is every direction translating, approved or not.
+     */
+    const routesDocument = (process.env['TRANSLATION_ROUTES_DOCUMENT'] ?? '').trim();
+    const translationProviderName = process.env['TRANSLATION_PROVIDER']?.trim() || 'mock';
+    if (translationProviderName !== 'off' && routesDocument === '') {
+      throw new Error(
+        'TRANSLATION_ROUTES_DOCUMENT is required in production whenever translation is ' +
+          'enabled: it names the reviewed document that says which exact directions are ' +
+          'approved. Set it, or set TRANSLATION_PROVIDER=off.',
+      );
+    }
   }
   const streamingTranscriptionChoices = ['off', 'mock', 'deepgram-nova', 'deepgram-flux'] as const;
   const streamingTranscriptionProvider = selectorOrDefault(
@@ -357,20 +397,25 @@ export function loadConfig(): IngestConfig {
       `FASTER_WHISPER_DEVICE must be "cpu" or "cuda"; received "${fasterWhisperDevice}"`,
     );
   }
-  const translationProvider = selectorOrDefault('TRANSLATION_PROVIDER', 'mock', [
+  /*
+   * `off` is the honest state for a deployment that translates nothing.
+   *
+   * Every other optional AI selector already has one. This one did not, so a
+   * deployment with no approved routes had to name an engine it would never
+   * legitimately reach -- and naming an engine is how an engine ends up being
+   * used. `off` says the true thing, and the route registry remains the
+   * authority over WHICH directions run regardless of what is named here.
+   */
+  const translationChoices = ['off', 'mock', 'argos', 'opus-mt', 'm2m100'] as const;
+  const translationProvider = selectorOrDefault(
+    'TRANSLATION_PROVIDER',
     'mock',
-    'argos',
-    'opus-mt',
-    'm2m100',
-  ]);
-  if (
-    translationProvider !== 'mock' &&
-    translationProvider !== 'argos' &&
-    translationProvider !== 'opus-mt' &&
-    translationProvider !== 'm2m100'
-  ) {
+    translationChoices,
+  ) as (typeof translationChoices)[number];
+  if (!translationChoices.includes(translationProvider)) {
     throw new Error(
-      `TRANSLATION_PROVIDER must be "mock", "argos", "opus-mt", or "m2m100"; received "${translationProvider}"`,
+      `TRANSLATION_PROVIDER must be one of ${translationChoices.join(', ')}; ` +
+        `received "${translationProvider}"`,
     );
   }
   const translationFallbackProvider =

@@ -5,6 +5,7 @@ export type MediaIngestErrorCode =
   | 'duplicate-submission'
   | 'generated-audio-unavailable'
   | 'transcription-unavailable'
+  | 'translation-unavailable'
   | 'tts-empty-output'
   | 'invalid-media'
   | 'invalid-transition'

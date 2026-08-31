@@ -47,6 +47,7 @@ import {
   SileroSpeechDetector,
   type SpeechProbabilityDetector,
 } from '@videofy-live/speech-activity';
+import { buildTranslationGate } from './translation-gate-wiring.js';
 import {
   buildLiveSynthesis,
   buildStreamingTranscriptionProvider,
@@ -1008,6 +1009,32 @@ if (!liveEngine.real) {
  * like any other. `mock` reads as a warning now, and `streaming` names the
  * stack it borrows, so which one is mounted takes one glance.
  */
+/*
+ * THE TRANSLATION GATE, built at boot and said out loud.
+ *
+ * The registry package was declared in this service's package.json and imported
+ * by nothing, so every direction translated regardless of approval. This is the
+ * join, and the line below is how anybody can tell it held: a deployment that
+ * failed closed says so, and one with no approved directions says that too
+ * rather than looking identical to a working one.
+ */
+const translationGate = buildTranslationGate({
+  scope: 'programme-live',
+  ...(process.env['TRANSLATION_ROUTES_DOCUMENT']
+    ? { documentPath: process.env['TRANSLATION_ROUTES_DOCUMENT'] }
+    : {}),
+});
+logger.info('Translation route gate ready', {
+  scope: 'programme-live',
+  failedClosed: translationGate.failedClosed,
+  approvedDirections: translationGate.approvedDirections.length,
+  directions: translationGate.approvedDirections,
+  detail: translationGate.description,
+  ...(translationGate.failedClosed
+    ? { warning: 'every direction refuses; the ORIGINAL is still delivered untranslated' }
+    : {}),
+});
+
 logger.info('Programme speech engine ready', {
   provider: config.textToSpeechProvider,
   ...(config.textToSpeechProvider === 'streaming'
