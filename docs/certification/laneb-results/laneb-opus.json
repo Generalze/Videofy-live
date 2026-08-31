@@ -2,14 +2,14 @@
  "engine": "opus",
  "lane": "B",
  "load_seconds": {
-  "opus:en-fr": 1.9,
-  "opus:fr-en": 1.0,
+  "opus:en-fr": 1.5,
+  "opus:fr-en": 0.8,
   "opus:en-es": 1.2,
-  "opus:es-en": 1.2,
-  "opus:en-pt": 1.4,
-  "opus:pt-en": 1.1
+  "opus:es-en": 0.9,
+  "opus:en-pt": 1.1,
+  "opus:pt-en": 0.9
  },
- "peak_rss_mb": 1336.5,
+ "peak_rss_mb": 1343.1,
  "reverseSourceProvenance": {
   "sourceAuthoredBy": "claude-opus-5",
   "pendingFluentConfirmation": true,
@@ -22,7 +22,7 @@
    "category": "money",
    "source": "The price is two thousand naira per bag.",
    "output": "Le prix est de deux mille naira par sac.",
-   "latency_ms": 255.0,
+   "latency_ms": 189.5,
    "defects": [
     "quantity-unverified:2000"
    ]
@@ -33,7 +33,7 @@
    "category": "money",
    "source": "Please send 45,000 naira to my account today.",
    "output": "Envoyez 45 000 naira à mon compte aujourd'hui.",
-   "latency_ms": 207.4,
+   "latency_ms": 226.7,
    "defects": []
   },
   {
@@ -42,7 +42,7 @@
    "category": "money",
    "source": "I have received the money you sent.",
    "output": "J'ai reçu l'argent que vous avez envoyé.",
-   "latency_ms": 191.3,
+   "latency_ms": 253.0,
    "defects": []
   },
   {
@@ -51,10 +51,8 @@
    "category": "money",
    "source": "I have not received the money you sent.",
    "output": "Je n'ai pas reçu l'argent que vous avez envoyé.",
-   "latency_ms": 218.7,
-   "defects": [
-    "negation-lost"
-   ]
+   "latency_ms": 241.9,
+   "defects": []
   },
   {
    "engine": "opus",
@@ -62,7 +60,7 @@
    "category": "money",
    "source": "Your balance is 12,500 naira.",
    "output": "Votre solde est de 12 500 naira.",
-   "latency_ms": 141.2,
+   "latency_ms": 166.3,
    "defects": []
   },
   {
@@ -71,7 +69,7 @@
    "category": "phone",
    "source": "Call me on 08031234567 when you arrive.",
    "output": "Appelez-moi au 08031234567 à votre arrivée.",
-   "latency_ms": 195.3,
+   "latency_ms": 252.8,
    "defects": []
   },
   {
@@ -80,7 +78,7 @@
    "category": "account",
    "source": "Transfer to account 0123456789 at First Bank.",
    "output": "Virement au compte 0123456789 à First Bank.",
-   "latency_ms": 211.9,
+   "latency_ms": 586.2,
    "defects": []
   },
   {
@@ -89,10 +87,8 @@
    "category": "otp",
    "source": "Your verification code is 483920. Do not share it.",
    "output": "Votre code de vérification est 483920. Ne le partagez pas.",
-   "latency_ms": 212.0,
-   "defects": [
-    "negation-lost"
-   ]
+   "latency_ms": 307.7,
+   "defects": []
   },
   {
    "engine": "opus",
@@ -100,7 +96,7 @@
    "category": "url",
    "source": "Read more at https://consummate7.com/help before you call.",
    "output": "Pour en savoir plus, consultez https://consummate7.com/help avant d'appeler.",
-   "latency_ms": 346.8,
+   "latency_ms": 460.9,
    "defects": []
   },
   {
@@ -109,7 +105,7 @@
    "category": "datetime",
    "source": "The event starts at four thirty on the fifteenth of March.",
    "output": "L'événement commence à quatre heures trente le 15 mars.",
-   "latency_ms": 237.0,
+   "latency_ms": 221.2,
    "defects": []
   },
   {
@@ -118,7 +114,7 @@
    "category": "datetime",
    "source": "The meeting has been moved to 15 March at 4:30.",
    "output": "La réunion a été reportée au 15 mars à 16 h 30.",
-   "latency_ms": 240.2,
+   "latency_ms": 245.9,
    "defects": [
     "quantity-unverified:4:30",
     "lexical-unverified:March"
@@ -130,7 +126,7 @@
    "category": "entity",
    "source": "My name is Zoe and I work in Lagos.",
    "output": "Je m'appelle Zoe et je travaille à Lagos.",
-   "latency_ms": 229.6,
+   "latency_ms": 260.9,
    "defects": []
   },
   {
@@ -139,7 +135,7 @@
    "category": "entity",
    "source": "Adebayo travelled from Abeokuta to Kano last night.",
    "output": "Adebayo a voyagé d'Abeokuta à Kano la nuit dernière.",
-   "latency_ms": 621.7,
+   "latency_ms": 307.4,
    "defects": []
   },
   {
@@ -148,10 +144,8 @@
    "category": "negation",
    "source": "Do not send the payment yet.",
    "output": "N'envoyez pas encore le paiement.",
-   "latency_ms": 209.9,
-   "defects": [
-    "negation-lost"
-   ]
+   "latency_ms": 217.2,
+   "defects": []
   },
   {
    "engine": "opus",
@@ -159,10 +153,8 @@
    "category": "negation",
    "source": "I did not say that I would not come.",
    "output": "Je n'ai pas dit que je ne viendrais pas.",
-   "latency_ms": 224.7,
-   "defects": [
-    "negation-lost"
-   ]
+   "latency_ms": 222.2,
+   "defects": []
   },
   {
    "engine": "opus",
@@ -170,10 +162,8 @@
    "category": "negation",
    "source": "She has not arrived at the office.",
    "output": "Elle n'est pas arrivée au bureau.",
-   "latency_ms": 153.7,
-   "defects": [
-    "negation-lost"
-   ]
+   "latency_ms": 160.5,
+   "defects": []
   },
   {
    "engine": "opus",
@@ -181,7 +171,7 @@
    "category": "health",
    "source": "Take one tablet twice a day after eating.",
    "output": "Prenez un comprimé deux fois par jour après avoir mangé.",
-   "latency_ms": 189.3,
+   "latency_ms": 200.1,
    "defects": []
   },
   {
@@ -190,11 +180,10 @@
    "category": "health",
    "source": "Do not give this medicine to a child under five years old.",
    "output": "Ne donnez pas ce médicament à un enfant de moins de cinq ans.",
-   "latency_ms": 233.8,
+   "latency_ms": 257.8,
    "defects": [
     "lexical-unverified:five",
-    "quantity-unverified:5",
-    "negation-lost"
+    "quantity-unverified:5"
    ]
   },
   {
@@ -203,7 +192,7 @@
    "category": "agriculture",
    "source": "The rains will start next month, so prepare the land now.",
    "output": "Les pluies commenceront le mois prochain, alors préparez la terre maintenant.",
-   "latency_ms": 286.5,
+   "latency_ms": 587.5,
    "defects": []
   },
   {
@@ -212,7 +201,7 @@
    "category": "business",
    "source": "We need to sign the agreement before the end of the month.",
    "output": "Nous devons signer l'accord avant la fin du mois.",
-   "latency_ms": 211.5,
+   "latency_ms": 220.1,
    "defects": []
   },
   {
@@ -221,7 +210,7 @@
    "category": "broadcast",
    "source": "Good morning everyone, and welcome to this broadcast.",
    "output": "Bonjour tout le monde, et bienvenue à cette émission.",
-   "latency_ms": 199.8,
+   "latency_ms": 201.4,
    "defects": []
   },
   {
@@ -230,7 +219,7 @@
    "category": "conversation",
    "source": "How are you doing this evening?",
    "output": "Comment allez-vous ce soir ?",
-   "latency_ms": 126.0,
+   "latency_ms": 123.4,
    "defects": []
   },
   {
@@ -239,7 +228,7 @@
    "category": "conversation",
    "source": "Please send me the address before you leave.",
    "output": "Veuillez m'envoyer l'adresse avant de partir.",
-   "latency_ms": 182.5,
+   "latency_ms": 180.7,
    "defects": []
   },
   {
@@ -248,7 +237,7 @@
    "category": "multi",
    "source": "I am on my way. Please wait for me at the gate. I will be there soon.",
    "output": "Attendez-moi à la porte, je serai bientôt là.",
-   "latency_ms": 216.7,
+   "latency_ms": 213.8,
    "defects": []
   },
   {
@@ -257,7 +246,7 @@
    "category": "multi",
    "source": "The meeting is cancelled. We will meet tomorrow instead.",
    "output": "La réunion est annulée, nous nous retrouverons demain.",
-   "latency_ms": 192.2,
+   "latency_ms": 179.8,
    "defects": []
   },
   {
@@ -266,7 +255,7 @@
    "category": "long",
    "source": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure somebody is at the shop to receive them, and call me if there is any problem with the delivery.",
    "output": "Merci pour votre message. J'ai parlé au fournisseur et les marchandises arriveront le vendredi matin. S'il vous plaît assurez-vous que quelqu'un est à la boutique pour les recevoir, et appelez-moi s'il y a un problème avec la livraison.",
-   "latency_ms": 1119.4,
+   "latency_ms": 918.0,
    "defects": [
     "lexical-unverified:Friday"
    ]
@@ -286,7 +275,7 @@
    "category": "emoji-only",
    "source": "👍👍",
    "output": "C'est pas vrai.",
-   "latency_ms": 130.9,
+   "latency_ms": 119.7,
    "defects": []
   },
   {
@@ -295,7 +284,7 @@
    "category": "number-only",
    "source": "45000",
    "output": "45000",
-   "latency_ms": 58.2,
+   "latency_ms": 49.0,
    "defects": []
   },
   {
@@ -304,7 +293,7 @@
    "category": "code-only",
    "source": "OTP-483920",
    "output": "OTP-483920",
-   "latency_ms": 251.6,
+   "latency_ms": 252.1,
    "defects": []
   },
   {
@@ -313,7 +302,7 @@
    "category": "punctuation",
    "source": "???!!!",
    "output": "???!!!",
-   "latency_ms": 87.1,
+   "latency_ms": 80.6,
    "defects": []
   },
   {
@@ -322,7 +311,7 @@
    "category": "mixed",
    "source": "Abeg send the money before 5pm 🙏",
    "output": "Abeg envoie l'argent avant 17h",
-   "latency_ms": 177.0,
+   "latency_ms": 186.4,
    "defects": [
     "quantity-unverified:5"
    ]
@@ -333,7 +322,7 @@
    "category": "emoji-text",
    "source": "Congratulations on the new baby 🎉 we are very happy for you.",
    "output": "Félicitations pour le nouveau bébé, nous sommes très heureux pour vous.",
-   "latency_ms": 244.5,
+   "latency_ms": 250.8,
    "defects": []
   },
   {
@@ -342,7 +331,7 @@
    "category": "hashtag",
    "source": "Join us tonight #VideofyLive for the broadcast.",
    "output": "Rejoignez-nous ce soir #VideofyLive pour la diffusion.",
-   "latency_ms": 339.8,
+   "latency_ms": 558.5,
    "defects": []
   },
   {
@@ -352,7 +341,7 @@
    "source": "Le prix est de deux mille naira par sac.",
    "englishMeaning": "The price is two thousand naira per bag.",
    "output": "The price is two thousand naira per bag.",
-   "latency_ms": 333.2,
+   "latency_ms": 214.7,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -363,7 +352,7 @@
    "source": "Merci d'envoyer 45 000 nairas sur mon compte aujourd'hui.",
    "englishMeaning": "Please send 45,000 naira to my account today.",
    "output": "Thank you for sending 45,000 nairas to my account today.",
-   "latency_ms": 228.8,
+   "latency_ms": 189.5,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -374,7 +363,7 @@
    "source": "J'ai bien recu l'argent que tu as envoye.",
    "englishMeaning": "I have received the money you sent.",
    "output": "I got the money you sent.",
-   "latency_ms": 410.8,
+   "latency_ms": 122.6,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -385,7 +374,7 @@
    "source": "Je n'ai pas recu l'argent que tu as envoye.",
    "englishMeaning": "I have not received the money you sent.",
    "output": "I didn't get the money you sent.",
-   "latency_ms": 229.6,
+   "latency_ms": 175.2,
    "defects": [
     "negation-lost"
    ],
@@ -398,7 +387,7 @@
    "source": "Votre solde est de 12 500 nairas.",
    "englishMeaning": "Your balance is 12,500 naira.",
    "output": "Your balance is 12,500 nairas.",
-   "latency_ms": 164.0,
+   "latency_ms": 142.2,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -409,7 +398,7 @@
    "source": "Appelle-moi au 08031234567 quand tu arrives.",
    "englishMeaning": "Call me on 08031234567 when you arrive.",
    "output": "Call me at 08031234567 when you get here.",
-   "latency_ms": 268.7,
+   "latency_ms": 191.8,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -420,7 +409,7 @@
    "source": "Virement sur le compte 0123456789 a la First Bank.",
    "englishMeaning": "Transfer to account 0123456789 at First Bank.",
    "output": "Transfer to account 0123456789 to First Bank.",
-   "latency_ms": 256.1,
+   "latency_ms": 192.7,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -431,7 +420,7 @@
    "source": "Votre code de verification est 483920. Ne le partagez pas.",
    "englishMeaning": "Your verification code is 483920. Do not share it.",
    "output": "Your verification code is 483920. Don't share it.",
-   "latency_ms": 220.6,
+   "latency_ms": 212.9,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -442,7 +431,7 @@
    "source": "Lisez https://consummate7.com/help avant d'appeler.",
    "englishMeaning": "Read https://consummate7.com/help before you call.",
    "output": "Read https://consummate7.com/help before calling.",
-   "latency_ms": 261.9,
+   "latency_ms": 242.8,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -453,7 +442,7 @@
    "source": "La reunion est reportee au 15 mars a 16h30.",
    "englishMeaning": "The meeting has been moved to 15 March at 4:30.",
    "output": "The meeting is postponed until 15 March at 4:30 p.m.",
-   "latency_ms": 263.7,
+   "latency_ms": 220.0,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -464,7 +453,7 @@
    "source": "Je m'appelle Zoe et je travaille a Lagos.",
    "englishMeaning": "My name is Zoe and I work in Lagos.",
    "output": "My name is Zoe and I work in Lagos.",
-   "latency_ms": 259.6,
+   "latency_ms": 221.2,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -475,7 +464,7 @@
    "source": "N'envoie pas encore le paiement.",
    "englishMeaning": "Do not send the payment yet.",
    "output": "Don't send the payment yet.",
-   "latency_ms": 163.9,
+   "latency_ms": 436.7,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -486,7 +475,7 @@
    "source": "Je n'ai pas dit que je ne viendrais pas.",
    "englishMeaning": "I did not say that I would not come.",
    "output": "I didn't say I wasn't coming.",
-   "latency_ms": 219.2,
+   "latency_ms": 184.5,
    "defects": [
     "negation-lost"
    ],
@@ -499,7 +488,7 @@
    "source": "Prenez un comprime deux fois par jour apres les repas.",
    "englishMeaning": "Take one tablet twice a day after eating.",
    "output": "Take a tablet twice a day after meals.",
-   "latency_ms": 166.1,
+   "latency_ms": 142.6,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -510,7 +499,7 @@
    "source": "Ne donnez pas ce medicament a un enfant de moins de cinq ans.",
    "englishMeaning": "Do not give this medicine to a child under five years old.",
    "output": "Don't give this medicine to a child under the age of five.",
-   "latency_ms": 268.3,
+   "latency_ms": 226.5,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -521,7 +510,7 @@
    "source": "Je suis en route. Attends-moi au portail. J'arrive bientot.",
    "englishMeaning": "I am on my way. Wait for me at the gate. I will be there soon.",
    "output": "I'm on my way, wait for me at the gate, and I'll be right there.",
-   "latency_ms": 375.6,
+   "latency_ms": 355.9,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -532,7 +521,7 @@
    "source": "Bonjour a tous, et bienvenue a cette emission.",
    "englishMeaning": "Good morning everyone, and welcome to this broadcast.",
    "output": "Hello, everyone, and welcome to this show.",
-   "latency_ms": 506.4,
+   "latency_ms": 179.2,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -543,7 +532,7 @@
    "source": "Comment vas-tu ce soir ?",
    "englishMeaning": "How are you doing this evening?",
    "output": "How are you tonight?",
-   "latency_ms": 127.7,
+   "latency_ms": 96.2,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -554,7 +543,7 @@
    "source": "Nous devons signer l'accord avant la fin du mois.",
    "englishMeaning": "We need to sign the agreement before the end of the month.",
    "output": "We must sign the agreement before the end of the month.",
-   "latency_ms": 236.1,
+   "latency_ms": 190.7,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -565,7 +554,7 @@
    "source": "Les pluies commenceront le mois prochain, preparez la terre.",
    "englishMeaning": "The rains will start next month, so prepare the land.",
    "output": "The rains will begin next month, prepare the earth.",
-   "latency_ms": 216.1,
+   "latency_ms": 194.5,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -575,7 +564,7 @@
    "category": "money",
    "source": "The price is two thousand naira per bag.",
    "output": "El precio es de dos mil nairas por bolsa.",
-   "latency_ms": 188.9,
+   "latency_ms": 226.4,
    "defects": [
     "quantity-unverified:2000"
    ]
@@ -586,7 +575,7 @@
    "category": "money",
    "source": "Please send 45,000 naira to my account today.",
    "output": "Por favor envíeme 45.000 naira a mi cuenta hoy.",
-   "latency_ms": 209.9,
+   "latency_ms": 526.0,
    "defects": []
   },
   {
@@ -595,7 +584,7 @@
    "category": "money",
    "source": "I have received the money you sent.",
    "output": "He recibido el dinero que me enviaste.",
-   "latency_ms": 124.7,
+   "latency_ms": 137.0,
    "defects": []
   },
   {
@@ -604,7 +593,7 @@
    "category": "money",
    "source": "I have not received the money you sent.",
    "output": "No he recibido el dinero que me enviaste.",
-   "latency_ms": 148.3,
+   "latency_ms": 151.6,
    "defects": []
   },
   {
@@ -613,7 +602,7 @@
    "category": "money",
    "source": "Your balance is 12,500 naira.",
    "output": "Tu saldo es 12.500 naira.",
-   "latency_ms": 145.7,
+   "latency_ms": 150.3,
    "defects": []
   },
   {
@@ -622,7 +611,7 @@
    "category": "phone",
    "source": "Call me on 08031234567 when you arrive.",
    "output": "Llámame al 08031234567 cuando llegues.",
-   "latency_ms": 193.4,
+   "latency_ms": 197.4,
    "defects": []
   },
   {
@@ -631,7 +620,7 @@
    "category": "account",
    "source": "Transfer to account 0123456789 at First Bank.",
    "output": "Transferencia a cuenta 0134456789 en First Bank.",
-   "latency_ms": 204.3,
+   "latency_ms": 225.3,
    "defects": [
     "identifier-corrupted:0123456789"
    ]
@@ -642,7 +631,7 @@
    "category": "otp",
    "source": "Your verification code is 483920. Do not share it.",
    "output": "Su código de verificación es 483920. No lo comparta.",
-   "latency_ms": 433.5,
+   "latency_ms": 229.9,
    "defects": []
   },
   {
@@ -651,7 +640,7 @@
    "category": "url",
    "source": "Read more at https://consummate7.com/help before you call.",
    "output": "Lea más en https://consummate7.com/help antes de llamar.",
-   "latency_ms": 292.9,
+   "latency_ms": 312.2,
    "defects": []
   },
   {
@@ -660,7 +649,7 @@
    "category": "datetime",
    "source": "The event starts at four thirty on the fifteenth of March.",
    "output": "El evento comienza a las cuatro y media el 15 de marzo.",
-   "latency_ms": 193.5,
+   "latency_ms": 205.5,
    "defects": []
   },
   {
@@ -669,7 +658,7 @@
    "category": "datetime",
    "source": "The meeting has been moved to 15 March at 4:30.",
    "output": "La reunión se ha trasladado al 15 de marzo a las 4:30.",
-   "latency_ms": 231.6,
+   "latency_ms": 233.0,
    "defects": [
     "lexical-unverified:March"
    ]
@@ -680,7 +669,7 @@
    "category": "entity",
    "source": "My name is Zoe and I work in Lagos.",
    "output": "Mi nombre es Zoe y trabajo en Lagos.",
-   "latency_ms": 154.2,
+   "latency_ms": 164.8,
    "defects": []
   },
   {
@@ -689,7 +678,7 @@
    "category": "entity",
    "source": "Adebayo travelled from Abeokuta to Kano last night.",
    "output": "Adebayo viajó de Abeokuta a Kano anoche.",
-   "latency_ms": 224.0,
+   "latency_ms": 233.1,
    "defects": []
   },
   {
@@ -698,7 +687,7 @@
    "category": "negation",
    "source": "Do not send the payment yet.",
    "output": "No envíe el pago todavía.",
-   "latency_ms": 127.0,
+   "latency_ms": 118.8,
    "defects": []
   },
   {
@@ -707,7 +696,7 @@
    "category": "negation",
    "source": "I did not say that I would not come.",
    "output": "No dije que no vendría.",
-   "latency_ms": 160.7,
+   "latency_ms": 147.6,
    "defects": []
   },
   {
@@ -716,7 +705,7 @@
    "category": "negation",
    "source": "She has not arrived at the office.",
    "output": "No ha llegado a la oficina.",
-   "latency_ms": 141.9,
+   "latency_ms": 139.6,
    "defects": []
   },
   {
@@ -725,7 +714,7 @@
    "category": "health",
    "source": "Take one tablet twice a day after eating.",
    "output": "Tome un comprimido dos veces al día después de comer.",
-   "latency_ms": 205.6,
+   "latency_ms": 190.8,
    "defects": []
   },
   {
@@ -734,7 +723,7 @@
    "category": "health",
    "source": "Do not give this medicine to a child under five years old.",
    "output": "No le dé este medicamento a un niño menor de cinco años.",
-   "latency_ms": 212.0,
+   "latency_ms": 210.7,
    "defects": [
     "lexical-unverified:five",
     "quantity-unverified:5"
@@ -746,7 +735,7 @@
    "category": "agriculture",
    "source": "The rains will start next month, so prepare the land now.",
    "output": "Las lluvias comenzarán el próximo mes, así que prepara la tierra ahora.",
-   "latency_ms": 267.2,
+   "latency_ms": 590.1,
    "defects": []
   },
   {
@@ -755,7 +744,7 @@
    "category": "business",
    "source": "We need to sign the agreement before the end of the month.",
    "output": "Tenemos que firmar el acuerdo antes de fin de mes.",
-   "latency_ms": 177.6,
+   "latency_ms": 222.5,
    "defects": []
   },
   {
@@ -764,7 +753,7 @@
    "category": "broadcast",
    "source": "Good morning everyone, and welcome to this broadcast.",
    "output": "Buenos días a todos, y bienvenidos a esta transmisión.",
-   "latency_ms": 182.7,
+   "latency_ms": 223.5,
    "defects": []
   },
   {
@@ -773,7 +762,7 @@
    "category": "conversation",
    "source": "How are you doing this evening?",
    "output": "¿Cómo te va esta noche?",
-   "latency_ms": 112.5,
+   "latency_ms": 143.7,
    "defects": []
   },
   {
@@ -782,7 +771,7 @@
    "category": "conversation",
    "source": "Please send me the address before you leave.",
    "output": "Por favor, envíame la dirección antes de irte.",
-   "latency_ms": 222.2,
+   "latency_ms": 237.5,
    "defects": []
   },
   {
@@ -791,7 +780,7 @@
    "category": "multi",
    "source": "I am on my way. Please wait for me at the gate. I will be there soon.",
    "output": "Por favor, espérame en la puerta, estaré allí pronto.",
-   "latency_ms": 564.9,
+   "latency_ms": 307.2,
    "defects": []
   },
   {
@@ -800,7 +789,7 @@
    "category": "multi",
    "source": "The meeting is cancelled. We will meet tomorrow instead.",
    "output": "La reunión se cancela, nos reuniremos mañana en su lugar.",
-   "latency_ms": 247.9,
+   "latency_ms": 257.7,
    "defects": []
   },
   {
@@ -809,7 +798,7 @@
    "category": "long",
    "source": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure somebody is at the shop to receive them, and call me if there is any problem with the delivery.",
    "output": "Gracias por su mensaje. He hablado con el proveedor y la mercancía llegará el viernes por la mañana. Por favor, asegúrese de que alguien está en la tienda para recibirlos, y llámeme si hay algún problema con la entrega.",
-   "latency_ms": 770.0,
+   "latency_ms": 700.7,
    "defects": [
     "lexical-unverified:Friday"
    ]
@@ -829,7 +818,7 @@
    "category": "emoji-only",
    "source": "👍👍",
    "output": "",
-   "latency_ms": 136.1,
+   "latency_ms": 131.7,
    "defects": [
     "empty-output"
    ]
@@ -840,7 +829,7 @@
    "category": "number-only",
    "source": "45000",
    "output": "45000",
-   "latency_ms": 69.0,
+   "latency_ms": 61.9,
    "defects": []
   },
   {
@@ -849,7 +838,7 @@
    "category": "code-only",
    "source": "OTP-483920",
    "output": "OTP-483920",
-   "latency_ms": 135.1,
+   "latency_ms": 124.5,
    "defects": []
   },
   {
@@ -858,7 +847,7 @@
    "category": "punctuation",
    "source": "???!!!",
    "output": "???!!!",
-   "latency_ms": 116.7,
+   "latency_ms": 102.6,
    "defects": []
   },
   {
@@ -867,7 +856,7 @@
    "category": "mixed",
    "source": "Abeg send the money before 5pm 🙏",
    "output": "Abeg envía el dinero antes de las 5pm",
-   "latency_ms": 222.0,
+   "latency_ms": 194.0,
    "defects": []
   },
   {
@@ -876,7 +865,7 @@
    "category": "emoji-text",
    "source": "Congratulations on the new baby 🎉 we are very happy for you.",
    "output": "Felicitaciones por el nuevo bebé  estamos muy felices por ti.",
-   "latency_ms": 263.1,
+   "latency_ms": 232.9,
    "defects": []
   },
   {
@@ -885,7 +874,7 @@
    "category": "hashtag",
    "source": "Join us tonight #VideofyLive for the broadcast.",
    "output": "Únete a nosotros esta noche #VideofyLive para la emisión.",
-   "latency_ms": 367.3,
+   "latency_ms": 570.9,
    "defects": []
   },
   {
@@ -895,7 +884,7 @@
    "source": "El precio es de dos mil nairas por saco.",
    "englishMeaning": "The price is two thousand naira per bag.",
    "output": "The price is two thousand nairas per sack.",
-   "latency_ms": 183.9,
+   "latency_ms": 180.4,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -906,7 +895,7 @@
    "source": "Por favor envia 45.000 nairas a mi cuenta hoy.",
    "englishMeaning": "Please send 45,000 naira to my account today.",
    "output": "Please send 45,000 nairas to my account today.",
-   "latency_ms": 201.4,
+   "latency_ms": 197.7,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -917,7 +906,7 @@
    "source": "He recibido el dinero que enviaste.",
    "englishMeaning": "I have received the money you sent.",
    "output": "I got the money you sent.",
-   "latency_ms": 161.2,
+   "latency_ms": 181.3,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -928,7 +917,7 @@
    "source": "No he recibido el dinero que enviaste.",
    "englishMeaning": "I have not received the money you sent.",
    "output": "I didn't get the money you sent.",
-   "latency_ms": 187.8,
+   "latency_ms": 229.8,
    "defects": [
     "negation-lost"
    ],
@@ -941,7 +930,7 @@
    "source": "Su saldo es de 12.500 nairas.",
    "englishMeaning": "Your balance is 12,500 naira.",
    "output": "Its balance is 12,500 nairas.",
-   "latency_ms": 156.0,
+   "latency_ms": 192.2,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -952,7 +941,7 @@
    "source": "Llamame al 08031234567 cuando llegues.",
    "englishMeaning": "Call me on 08031234567 when you arrive.",
    "output": "Call me at 08031234567 when you get here.",
-   "latency_ms": 222.6,
+   "latency_ms": 289.5,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -963,7 +952,7 @@
    "source": "Transfiere a la cuenta 0123456789 del First Bank.",
    "englishMeaning": "Transfer to account 0123456789 at First Bank.",
    "output": "Transfers to First Bank account 0123456789.",
-   "latency_ms": 229.0,
+   "latency_ms": 280.6,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -974,7 +963,7 @@
    "source": "Su codigo de verificacion es 483920. No lo comparta.",
    "englishMeaning": "Your verification code is 483920. Do not share it.",
    "output": "Your verification code is 483920. Don't share it.",
-   "latency_ms": 236.1,
+   "latency_ms": 279.2,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -985,7 +974,7 @@
    "source": "Lea https://consummate7.com/help antes de llamar.",
    "englishMeaning": "Read https://consummate7.com/help before you call.",
    "output": "Read https://consummate7.com/help before calling.",
-   "latency_ms": 248.9,
+   "latency_ms": 613.4,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -996,7 +985,7 @@
    "source": "La reunion se ha cambiado al 15 de marzo a las 16:30.",
    "englishMeaning": "The meeting has been moved to 15 March at 4:30.",
    "output": "The meeting was changed to March 15 at 4:30 p.m.",
-   "latency_ms": 257.6,
+   "latency_ms": 312.1,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1007,7 +996,7 @@
    "source": "Me llamo Zoe y trabajo en Lagos.",
    "englishMeaning": "My name is Zoe and I work in Lagos.",
    "output": "My name is Zoe and I work in Lagos.",
-   "latency_ms": 212.3,
+   "latency_ms": 264.6,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1018,7 +1007,7 @@
    "source": "No envies todavia el pago.",
    "englishMeaning": "Do not send the payment yet.",
    "output": "Don't send the payment yet.",
-   "latency_ms": 146.7,
+   "latency_ms": 188.0,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1029,7 +1018,7 @@
    "source": "No dije que no vendria.",
    "englishMeaning": "I did not say that I would not come.",
    "output": "I didn't say I wouldn't come.",
-   "latency_ms": 177.4,
+   "latency_ms": 214.0,
    "defects": [
     "negation-lost"
    ],
@@ -1042,7 +1031,7 @@
    "source": "Tome una pastilla dos veces al dia despues de comer.",
    "englishMeaning": "Take one tablet twice a day after eating.",
    "output": "Take a pill twice a day after eating.",
-   "latency_ms": 168.1,
+   "latency_ms": 206.7,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1053,7 +1042,7 @@
    "source": "No de este medicamento a un nino menor de cinco anos.",
    "englishMeaning": "Do not give this medicine to a child under five years old.",
    "output": "Do not give this medicine to a child under five years of age.",
-   "latency_ms": 216.4,
+   "latency_ms": 276.9,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1064,7 +1053,7 @@
    "source": "Voy de camino. Esperame en la puerta. Llegare pronto.",
    "englishMeaning": "I am on my way. Wait for me at the gate. I will be there soon.",
    "output": "I'm on my way, wait for me at the door, I'll be here soon.",
-   "latency_ms": 646.8,
+   "latency_ms": 403.4,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1075,7 +1064,7 @@
    "source": "Buenos dias a todos, y bienvenidos a esta transmision.",
    "englishMeaning": "Good morning everyone, and welcome to this broadcast.",
    "output": "Good morning, everyone, and welcome to this broadcast.",
-   "latency_ms": 204.1,
+   "latency_ms": 240.4,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1086,7 +1075,7 @@
    "source": "Como estas esta noche?",
    "englishMeaning": "How are you doing this evening?",
    "output": "How are you tonight?",
-   "latency_ms": 124.7,
+   "latency_ms": 136.3,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1097,7 +1086,7 @@
    "source": "Tenemos que firmar el acuerdo antes de fin de mes.",
    "englishMeaning": "We need to sign the agreement before the end of the month.",
    "output": "We have to sign the deal before the end of the month.",
-   "latency_ms": 217.5,
+   "latency_ms": 260.2,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1108,7 +1097,7 @@
    "source": "Las lluvias empezaran el mes que viene, prepara la tierra.",
    "englishMeaning": "The rains will start next month, so prepare the land.",
    "output": "The rains will start next month, prepare the land.",
-   "latency_ms": 213.1,
+   "latency_ms": 218.9,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1118,7 +1107,7 @@
    "category": "money",
    "source": "The price is two thousand naira per bag.",
    "output": "Il prezzo è 2.000 naira per sac.",
-   "latency_ms": 235.0,
+   "latency_ms": 207.1,
    "defects": []
   },
   {
@@ -1127,7 +1116,7 @@
    "category": "money",
    "source": "Please send 45,000 naira to my account today.",
    "output": "Por favor invia 45,000 naira a mi account oggi.",
-   "latency_ms": 276.7,
+   "latency_ms": 221.9,
    "defects": []
   },
   {
@@ -1136,7 +1125,7 @@
    "category": "money",
    "source": "I have received the money you sent.",
    "output": "Ho ricevut l'argento que mi enviaste.",
-   "latency_ms": 298.7,
+   "latency_ms": 252.6,
    "defects": []
   },
   {
@@ -1145,7 +1134,7 @@
    "category": "money",
    "source": "I have not received the money you sent.",
    "output": "Non ricevu l'argento che mi enviaste.",
-   "latency_ms": 527.0,
+   "latency_ms": 251.7,
    "defects": [
     "negation-lost"
    ]
@@ -1156,7 +1145,7 @@
    "category": "money",
    "source": "Your balance is 12,500 naira.",
    "output": "Su saldo è 12.500 naira.",
-   "latency_ms": 201.2,
+   "latency_ms": 166.1,
    "defects": []
   },
   {
@@ -1165,7 +1154,7 @@
    "category": "phone",
    "source": "Call me on 08031234567 when you arrive.",
    "output": "Chiamami a 080312344567 quando arrivi.",
-   "latency_ms": 261.5,
+   "latency_ms": 235.3,
    "defects": [
     "identifier-corrupted:08031234567"
    ]
@@ -1176,7 +1165,7 @@
    "category": "account",
    "source": "Transfer to account 0123456789 at First Bank.",
    "output": "Virere al conto 0123456789 al First Bank.",
-   "latency_ms": 301.7,
+   "latency_ms": 252.7,
    "defects": []
   },
   {
@@ -1185,7 +1174,7 @@
    "category": "otp",
    "source": "Your verification code is 483920. Do not share it.",
    "output": "Il vostro codice di verificazione è 483920. Non lo condividi.",
-   "latency_ms": 293.9,
+   "latency_ms": 261.9,
    "defects": [
     "negation-lost"
    ]
@@ -1196,7 +1185,7 @@
    "category": "url",
    "source": "Read more at https://consummate7.com/help before you call.",
    "output": "Per sapere di più su https://consummate7.com/help prima di chiamare.",
-   "latency_ms": 395.8,
+   "latency_ms": 378.3,
    "defects": []
   },
   {
@@ -1205,7 +1194,7 @@
    "category": "datetime",
    "source": "The event starts at four thirty on the fifteenth of March.",
    "output": "L'evento compie a 4:30 a 15 de marzo.",
-   "latency_ms": 253.4,
+   "latency_ms": 265.1,
    "defects": []
   },
   {
@@ -1214,7 +1203,7 @@
    "category": "datetime",
    "source": "The meeting has been moved to 15 March at 4:30.",
    "output": "La riunione è stata mossa al 15 marzo a 4:30.",
-   "latency_ms": 226.9,
+   "latency_ms": 235.3,
    "defects": [
     "lexical-unverified:March"
    ]
@@ -1225,7 +1214,7 @@
    "category": "entity",
    "source": "My name is Zoe and I work in Lagos.",
    "output": "Mio nome è Zoe e lavoro a Lagos.",
-   "latency_ms": 224.1,
+   "latency_ms": 487.9,
    "defects": []
   },
   {
@@ -1234,7 +1223,7 @@
    "category": "entity",
    "source": "Adebayo travelled from Abeokuta to Kano last night.",
    "output": "Adebayo viajou da Abeokuta a Kano anoche.",
-   "latency_ms": 315.7,
+   "latency_ms": 265.8,
    "defects": []
   },
   {
@@ -1243,7 +1232,7 @@
    "category": "negation",
    "source": "Do not send the payment yet.",
    "output": "Non enviate ancora il pagamento.",
-   "latency_ms": 139.9,
+   "latency_ms": 127.5,
    "defects": [
     "negation-lost"
    ]
@@ -1254,7 +1243,7 @@
    "category": "negation",
    "source": "I did not say that I would not come.",
    "output": "Non dissi che non virei.",
-   "latency_ms": 175.9,
+   "latency_ms": 155.3,
    "defects": [
     "negation-lost"
    ]
@@ -1265,7 +1254,7 @@
    "category": "negation",
    "source": "She has not arrived at the office.",
    "output": "Non è arrivata al suo oficio.",
-   "latency_ms": 182.4,
+   "latency_ms": 151.7,
    "defects": [
     "negation-lost"
    ]
@@ -1276,7 +1265,7 @@
    "category": "health",
    "source": "Take one tablet twice a day after eating.",
    "output": "Prendere un tablet due volte al giorno dopo la cina.",
-   "latency_ms": 504.3,
+   "latency_ms": 250.2,
    "defects": []
   },
   {
@@ -1285,7 +1274,7 @@
    "category": "health",
    "source": "Do not give this medicine to a child under five years old.",
    "output": "Non dare questo medicamento a un bambino di età inferiore a 5 anni.",
-   "latency_ms": 292.8,
+   "latency_ms": 255.1,
    "defects": [
     "lexical-unverified:five",
     "negation-lost"
@@ -1297,7 +1286,7 @@
    "category": "agriculture",
    "source": "The rains will start next month, so prepare the land now.",
    "output": "Le pluies cominceranno il mese prossimo, quindi preparate la terra ora.",
-   "latency_ms": 343.6,
+   "latency_ms": 271.5,
    "defects": []
   },
   {
@@ -1306,7 +1295,7 @@
    "category": "business",
    "source": "We need to sign the agreement before the end of the month.",
    "output": "Dobbiamo firmar l'acordo prima del fin del mes.",
-   "latency_ms": 278.9,
+   "latency_ms": 252.3,
    "defects": []
   },
   {
@@ -1315,7 +1304,7 @@
    "category": "broadcast",
    "source": "Good morning everyone, and welcome to this broadcast.",
    "output": "Buongiorno a tutti, e benvenuti a questa emissione.",
-   "latency_ms": 298.6,
+   "latency_ms": 239.5,
    "defects": []
   },
   {
@@ -1324,7 +1313,7 @@
    "category": "conversation",
    "source": "How are you doing this evening?",
    "output": "Come va esta sera?",
-   "latency_ms": 136.6,
+   "latency_ms": 135.0,
    "defects": []
   },
   {
@@ -1333,7 +1322,7 @@
    "category": "conversation",
    "source": "Please send me the address before you leave.",
    "output": "Mandami l'indirizzo prima de partir.",
-   "latency_ms": 217.0,
+   "latency_ms": 194.0,
    "defects": []
   },
   {
@@ -1342,7 +1331,7 @@
    "category": "multi",
    "source": "I am on my way. Please wait for me at the gate. I will be there soon.",
    "output": "Io sono in via. Por favor, attende-me a la porta.",
-   "latency_ms": 384.9,
+   "latency_ms": 306.5,
    "defects": []
   },
   {
@@ -1351,7 +1340,7 @@
    "category": "multi",
    "source": "The meeting is cancelled. We will meet tomorrow instead.",
    "output": "La riunione è annullada. Ci vedremo domani.",
-   "latency_ms": 308.4,
+   "latency_ms": 325.4,
    "defects": []
   },
   {
@@ -1360,7 +1349,7 @@
    "category": "long",
    "source": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure somebody is at the shop to receive them, and call me if there is any problem with the delivery.",
    "output": "Grazie per il vostro messaggio. Ho parlato al fornitor e la merce arriverà il venerdì magna. Assegúrate di che qualcuno è al negozio per riceverli, e chiamami se c'è qualche problema con la consegna.",
-   "latency_ms": 1221.1,
+   "latency_ms": 1250.2,
    "defects": [
     "lexical-unverified:Friday"
    ]
@@ -1380,7 +1369,7 @@
    "category": "emoji-only",
    "source": "👍👍",
    "output": "- I",
-   "latency_ms": 83.9,
+   "latency_ms": 89.6,
    "defects": []
   },
   {
@@ -1389,7 +1378,7 @@
    "category": "number-only",
    "source": "45000",
    "output": "45000",
-   "latency_ms": 71.9,
+   "latency_ms": 73.4,
    "defects": []
   },
   {
@@ -1398,7 +1387,7 @@
    "category": "code-only",
    "source": "OTP-483920",
    "output": "OTP-483920",
-   "latency_ms": 116.7,
+   "latency_ms": 120.1,
    "defects": []
   },
   {
@@ -1407,7 +1396,7 @@
    "category": "punctuation",
    "source": "???!!!",
    "output": "???!!!",
-   "latency_ms": 103.0,
+   "latency_ms": 99.8,
    "defects": []
   },
   {
@@ -1416,7 +1405,7 @@
    "category": "mixed",
    "source": "Abeg send the money before 5pm 🙏",
    "output": "Abeg envia i soldi prima das 17h00",
-   "latency_ms": 224.3,
+   "latency_ms": 254.7,
    "defects": [
     "quantity-unverified:5"
    ]
@@ -1427,7 +1416,7 @@
    "category": "emoji-text",
    "source": "Congratulations on the new baby 🎉 we are very happy for you.",
    "output": "Felicitazion per il new new new new new new estims felici per te.",
-   "latency_ms": 455.1,
+   "latency_ms": 448.5,
    "defects": [
     "repetition-loop(new)"
    ]
@@ -1438,7 +1427,7 @@
    "category": "hashtag",
    "source": "Join us tonight #VideofyLive for the broadcast.",
    "output": "Vine a noi stasera #VideofyLive per la diffusione.",
-   "latency_ms": 318.1,
+   "latency_ms": 276.7,
    "defects": []
   },
   {
@@ -1448,7 +1437,7 @@
    "source": "O preco e de dois mil nairas por saco.",
    "englishMeaning": "The price is two thousand naira per bag.",
    "output": "The preco and two thousand nairas per bag.",
-   "latency_ms": 178.9,
+   "latency_ms": 255.9,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1459,7 +1448,7 @@
    "source": "Por favor envie 45.000 nairas para a minha conta hoje.",
    "englishMeaning": "Please send 45,000 naira to my account today.",
    "output": "Please send 45,000 noodles to my account today.",
-   "latency_ms": 200.8,
+   "latency_ms": 432.3,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1470,7 +1459,7 @@
    "source": "Recebi o dinheiro que voce enviou.",
    "englishMeaning": "I have received the money you sent.",
    "output": "I got the money you sent.",
-   "latency_ms": 156.5,
+   "latency_ms": 151.6,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1481,7 +1470,7 @@
    "source": "Nao recebi o dinheiro que voce enviou.",
    "englishMeaning": "I have not received the money you sent.",
    "output": "I didn't get the money you sent.",
-   "latency_ms": 433.0,
+   "latency_ms": 191.5,
    "defects": [
     "negation-lost"
    ],
@@ -1494,7 +1483,7 @@
    "source": "O seu saldo e de 12.500 nairas.",
    "englishMeaning": "Your balance is 12,500 naira.",
    "output": "Your balance is 12,500 noodles.",
-   "latency_ms": 171.0,
+   "latency_ms": 184.2,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1505,7 +1494,7 @@
    "source": "Ligue para 08031234567 quando chegar.",
    "englishMeaning": "Call me on 08031234567 when you arrive.",
    "output": "Call 08031234567 when you arrive.",
-   "latency_ms": 247.0,
+   "latency_ms": 209.1,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1516,7 +1505,7 @@
    "source": "Transfira para a conta 0123456789 no First Bank.",
    "englishMeaning": "Transfer to account 0123456789 at First Bank.",
    "output": "Transfer to account 0123456789 at First Bank.",
-   "latency_ms": 283.1,
+   "latency_ms": 233.3,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1527,7 +1516,7 @@
    "source": "O seu codigo de verificacao e 483920. Nao o partilhe.",
    "englishMeaning": "Your verification code is 483920. Do not share it.",
    "output": "Your verification code and 483920. Don't share it.",
-   "latency_ms": 276.6,
+   "latency_ms": 245.4,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1538,7 +1527,7 @@
    "source": "Leia https://consummate7.com/help antes de ligar.",
    "englishMeaning": "Read https://consummate7.com/help before you call.",
    "output": "Read https://consummate7.com/help before calling.",
-   "latency_ms": 263.6,
+   "latency_ms": 310.9,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1549,7 +1538,7 @@
    "source": "A reuniao foi adiada para 15 de marco as 16:30.",
    "englishMeaning": "The meeting has been moved to 15 March at 4:30.",
    "output": "The meeting was postponed to March 15 at 4:30 p.m.",
-   "latency_ms": 229.9,
+   "latency_ms": 284.3,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1560,7 +1549,7 @@
    "source": "O meu nome e Zoe e trabalho em Lagos.",
    "englishMeaning": "My name is Zoe and I work in Lagos.",
    "output": "My name and Zoe and I work in Lagos.",
-   "latency_ms": 181.2,
+   "latency_ms": 235.6,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1571,7 +1560,7 @@
    "source": "Nao envie o pagamento ainda.",
    "englishMeaning": "Do not send the payment yet.",
    "output": "Don't send the payment yet.",
-   "latency_ms": 160.3,
+   "latency_ms": 170.9,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1582,7 +1571,7 @@
    "source": "Nao disse que nao viria.",
    "englishMeaning": "I did not say that I would not come.",
    "output": "You didn't say you weren't coming.",
-   "latency_ms": 215.0,
+   "latency_ms": 217.0,
    "defects": [
     "negation-lost"
    ],
@@ -1595,7 +1584,7 @@
    "source": "Tome um comprimido duas vezes por dia depois de comer.",
    "englishMeaning": "Take one tablet twice a day after eating.",
    "output": "Take one tablet twice a day after eating.",
-   "latency_ms": 175.5,
+   "latency_ms": 188.1,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1606,7 +1595,7 @@
    "source": "Nao de este medicamento a uma crianca com menos de cinco anos.",
    "englishMeaning": "Do not give this medicine to a child under five years old.",
    "output": "Not from this medicine to a child under five years of age.",
-   "latency_ms": 275.4,
+   "latency_ms": 244.1,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1617,7 +1606,7 @@
    "source": "Estou a caminho. Espere por mim no portao. Chego em breve.",
    "englishMeaning": "I am on my way. Wait for me at the gate. I will be there soon.",
    "output": "I'm on my way, wait for me at the gate, I'll be right there.",
-   "latency_ms": 388.1,
+   "latency_ms": 638.4,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1628,7 +1617,7 @@
    "source": "Bom dia a todos, e bem-vindos a esta transmissao.",
    "englishMeaning": "Good morning everyone, and welcome to this broadcast.",
    "output": "Good morning, everyone, and welcome to this transmission.",
-   "latency_ms": 481.0,
+   "latency_ms": 222.3,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1639,7 +1628,7 @@
    "source": "Como esta esta noite?",
    "englishMeaning": "How are you doing this evening?",
    "output": "How's it going tonight?",
-   "latency_ms": 216.7,
+   "latency_ms": 137.0,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1650,7 +1639,7 @@
    "source": "Precisamos de assinar o acordo antes do fim do mes.",
    "englishMeaning": "We need to sign the agreement before the end of the month.",
    "output": "We need to sign the deal before the end of the month.",
-   "latency_ms": 242.8,
+   "latency_ms": 234.3,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   },
@@ -1661,7 +1650,7 @@
    "source": "As chuvas comecam no proximo mes, prepare a terra.",
    "englishMeaning": "The rains will start next month, so prepare the land.",
    "output": "The rains start in the next month, prepare the ground.",
-   "latency_ms": 225.7,
+   "latency_ms": 236.2,
    "defects": [],
    "sourceProvenance": "machine-authored, pending fluent confirmation"
   }

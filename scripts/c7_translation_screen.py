@@ -153,7 +153,12 @@ def chrf(hyp: str, ref: str, max_n: int = 6, beta: float = 2.0) -> float:
 # Integrity checks. Each returns a defect string or None.
 # --------------------------------------------------------------------------
 NEG_MARKERS = {
-    "en": (r"\bnot\b", r"\bn't\b", r"\bno\b", r"\bnever\b", r"\bdon'?t\b", r"\bwithout\b"),
+    # `\bn't\b` never matches: in "didn't" there is no word boundary before the
+    # n. So every English contraction -- didn't, wasn't, don't, isn't -- read as
+    # a LOST negation, which is most of how people actually write. Match the
+    # suffix on the word instead.
+    "en": (r"\bnot\b", r"\w+n['’]t\b", r"\bno\b", r"\bnever\b", r"\bnone\b",
+           r"\bnothing\b", r"\bwithout\b", r"\bcannot\b"),
     # Written out per language because a negation checker that only knows
     # English cannot see a flipped Yoruba sentence, which is the direction that
     # matters most: nobody in the room can read it either.
