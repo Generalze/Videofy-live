@@ -119,3 +119,58 @@ Yoruba degeneration — both of which need a native speaker, not a bigger corpus
 MADLAD-400 and TranslateGemma are unresolved for reasons in
 [phase0-candidate-licence-gate.md](phase0-candidate-licence-gate.md), not on
 quality. Neither has been fairly measured and neither should be dismissed.
+
+---
+
+# MADLAD-400 3B added — 31 Aug 2026
+
+Run in the isolated pinned venv (python 3.12.3, torch 2.4.1+cpu,
+transformers 4.44.2, sentencepiece 0.2.0) after the sanity gate passed 5/5.
+Model revision `fa184c6` unchanged. `/opt/videofy-ai` untouched.
+
+Full table: `screen-results/route-decision-table.txt`.
+
+## Per-direction catastrophic counts, out of 34
+
+| direction | OPUS-MT | M2M100 | MADLAD | best on this evidence |
+|---|---:|---:|---:|---|
+| en→ha | 7 | **1** | 1 | M2M100 (MADLAD ties but costs 4× the RAM) |
+| en→ig | 6 | 4 | **0** | MADLAD — *but 2 untranslated passthroughs* |
+| en→yo | **2** | 3 | 4 | **OPUS-MT** |
+| ha→en * | 7 | **2** | 2 | M2M100 |
+| ig→en * | 7 | 4 | **3** | MADLAD |
+| yo→en * | 7 | 5 | **1** | MADLAD |
+
+\* reverse rows are round-trip self-consistency, not reverse quality.
+
+**No engine wins everything, and the differences are not marginal.** OPUS-MT is
+best at `en→yo` and worst at `en→ha` by a factor of seven. That is the evidence
+for a directional router rather than one engine carrying every language.
+
+## The wall MADLAD hits
+
+| engine | peak RSS | median latency | p95 |
+|---|---:|---:|---:|
+| OPUS-MT | 1 301 MB | 262–360 ms | 600–826 ms |
+| M2M100 | 5 409 MB | 2.1–2.7 s | 3.0–6.9 s |
+| **MADLAD** | **21 188 MB** | **4.9–5.9 s** | **8.6–34.4 s** |
+
+**21 GB peak on a 23 GB box that also runs production.** MADLAD cannot be
+deployed on c7-eu-01 beside the live services, and a 34-second p95 is not a
+messaging experience regardless of host. Its quality wins are real; its
+viability here is not. Quality and infrastructure are separate columns by
+directive, and this is why.
+
+## A fourth checker correction
+
+MADLAD's `en→ig` showed six "passthrough" defects. Four were **correct
+behaviour**: `👍👍`, `45000`, `OTP-483920` and `???!!!` were returned unchanged,
+which is exactly what should happen to input that has no translation. Only two
+were real — a broadcast greeting and a long message came back in English.
+
+The checker no longer flags passthrough on non-linguistic cases. Corrected
+`en→ig` passthrough is 2, not 6.
+
+That is the fourth time inspecting the outputs has caught the checker rather
+than the model. Each one was found by reading what the engine actually produced.
+None would have been found by looking at a score.

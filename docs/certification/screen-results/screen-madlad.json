@@ -1,0 +1,2137 @@
+{
+ "engine": "madlad",
+ "load_seconds": {
+  "madlad": 9.2
+ },
+ "peak_rss_mb": 21188.2,
+ "rows": [
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "money",
+   "source": "The price is two thousand naira per bag.",
+   "output": "Iye rẹ ni ẹgbẹrun meji naira fun aṣọ kan.",
+   "latency_ms": 4109.8,
+   "defects": [
+    "quantity-unverified:2000"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "money",
+   "source": "Iye rẹ ni ẹgbẹrun meji naira fun aṣọ kan.",
+   "output": "It costs two thousand naira for one garment.",
+   "latency_ms": 3847.2,
+   "defects": [
+    "quantity-unverified:2000"
+   ],
+   "roundtrip_chrf": 51.1,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "money",
+   "source": "Please send 45,000 naira to my account today.",
+   "output": "Mo fẹ ki o fi 45,000 naira ranṣẹ si akọọlẹ mi lojoojumọ.",
+   "latency_ms": 7403.4,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "money",
+   "source": "Mo fẹ ki o fi 45,000 naira ranṣẹ si akọọlẹ mi lojoojumọ.",
+   "output": "I want you to send 45,000 naira to my account every day.",
+   "latency_ms": 7165.7,
+   "defects": [],
+   "roundtrip_chrf": 70.5,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "money",
+   "source": "I have received the money you sent.",
+   "output": "Mò gbà owò náà tí o fi ranṣẹ̀.",
+   "latency_ms": 5320.3,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "money",
+   "source": "Mò gbà owò náà tí o fi ranṣẹ̀.",
+   "output": "I received the money you sent.",
+   "latency_ms": 3091.7,
+   "defects": [],
+   "roundtrip_chrf": 84.2,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "money",
+   "source": "I have not received the money you sent.",
+   "output": "Mò kò gbà owò náà tí o fi ranṣẹ̀.",
+   "latency_ms": 5532.7,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "money",
+   "source": "Mò kò gbà owò náà tí o fi ranṣẹ̀.",
+   "output": "I did not receive the money you sent.",
+   "latency_ms": 3426.3,
+   "defects": [],
+   "roundtrip_chrf": 72.8,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "money",
+   "source": "Your balance is 12,500 naira.",
+   "output": "Owo rẹ jẹ naira 12,500.",
+   "latency_ms": 4222.7,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "money",
+   "source": "Owo rẹ jẹ naira 12,500.",
+   "output": "It costs 12,500 naira.",
+   "latency_ms": 3909.7,
+   "defects": [],
+   "roundtrip_chrf": 51.1,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "phone",
+   "source": "Call me on 08031234567 when you arrive.",
+   "output": "Pe mi ni 08031234567 nigbati o ba de.",
+   "latency_ms": 5852.2,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "phone",
+   "source": "Pe mi ni 08031234567 nigbati o ba de.",
+   "output": "Call me at 08031234567 when you arrive.",
+   "latency_ms": 5420.5,
+   "defects": [],
+   "roundtrip_chrf": 84.9,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "account",
+   "source": "Transfer to account 0123456789 at First Bank.",
+   "output": "Lọ si iroyin 0123456789 ni First Bank.",
+   "latency_ms": 5850.3,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "account",
+   "source": "Lọ si iroyin 0123456789 ni First Bank.",
+   "output": "Go to account 0123456789 at First Bank.",
+   "latency_ms": 4986.9,
+   "defects": [],
+   "roundtrip_chrf": 80.7,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "otp",
+   "source": "Your verification code is 483920. Do not share it.",
+   "output": "Àkóónú ìṣàfilọ́lẹ̀ rẹ̀ ni 483920. Kò pẹ̀lù rẹ̀.",
+   "latency_ms": 9341.7,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "otp",
+   "source": "Àkóónú ìṣàfilọ́lẹ̀ rẹ̀ ni 483920. Kò pẹ̀lù rẹ̀.",
+   "output": "Your initialization code is 483920. It is not supported.",
+   "latency_ms": 5918.7,
+   "defects": [],
+   "roundtrip_chrf": 50.5,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "url",
+   "source": "Read more at https://consummate7.com/help before you call.",
+   "output": "Ka diẹ sii ni https://consummate7.com/help ṣaaju ki o to pe.",
+   "latency_ms": 7594.5,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "url",
+   "source": "Ka diẹ sii ni https://consummate7.com/help ṣaaju ki o to pe.",
+   "output": "Read more at https://consummate7.com/help before you call.",
+   "latency_ms": 4845.3,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "datetime",
+   "source": "The event starts at four thirty on the fifteenth of March.",
+   "output": "Awọn iṣẹlẹ bẹrẹ ni 4:30 ni ọjọ kẹtadinlogun ti oṣu Kẹrin.",
+   "latency_ms": 7481.9,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "datetime",
+   "source": "Awọn iṣẹlẹ bẹrẹ ni 4:30 ni ọjọ kẹtadinlogun ti oṣu Kẹrin.",
+   "output": "The events began at 4:30 on the 11th of April.",
+   "latency_ms": 6675.5,
+   "defects": [],
+   "roundtrip_chrf": 27.9,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "datetime",
+   "source": "The meeting has been moved to 15 March at 4:30.",
+   "output": "Ipade naa ti gbe lọ si ọjọ 15 Oṣù Kejìlá ni aago 4:30.",
+   "latency_ms": 7435.6,
+   "defects": [
+    "lexical-unverified:March"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "datetime",
+   "source": "Ipade naa ti gbe lọ si ọjọ 15 Oṣù Kejìlá ni aago 4:30.",
+   "output": "The meeting was postponed to October 15 at 4:30 a.m.",
+   "latency_ms": 6421.5,
+   "defects": [
+    "lexical-unverified:March"
+   ],
+   "roundtrip_chrf": 41.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "entity",
+   "source": "My name is Zoe and I work in Lagos.",
+   "output": "Orukọ mi ni Zoe ati pe mo n ṣiṣẹ ni Lagos.",
+   "latency_ms": 5629.0,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "entity",
+   "source": "Orukọ mi ni Zoe ati pe mo n ṣiṣẹ ni Lagos.",
+   "output": "My name is Zoe and I work in Lagos.",
+   "latency_ms": 4066.6,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "entity",
+   "source": "Adebayo travelled from Abeokuta to Kano last night.",
+   "output": "Adebayo lọ lati Abeokuta lọ si Kano lojoojumọ.",
+   "latency_ms": 5483.2,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "entity",
+   "source": "Adebayo lọ lati Abeokuta lọ si Kano lojoojumọ.",
+   "output": "Adebayo travels from Abeokuta to Kano every day.",
+   "latency_ms": 4229.7,
+   "defects": [],
+   "roundtrip_chrf": 65.3,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "negation",
+   "source": "Do not send the payment yet.",
+   "output": "Kò fi ẹ̀yàn náà pamọ́ lọ́wọ́lọ́wọ́.",
+   "latency_ms": 6305.8,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "negation",
+   "source": "Kò fi ẹ̀yàn náà pamọ́ lọ́wọ́lọ́wọ́.",
+   "output": "Do not save the current selection.",
+   "latency_ms": 2884.6,
+   "defects": [],
+   "roundtrip_chrf": 30.4,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "negation",
+   "source": "I did not say that I would not come.",
+   "output": "Emi ko sọ pe emi ko le de.",
+   "latency_ms": 3179.1,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "negation",
+   "source": "Emi ko sọ pe emi ko le de.",
+   "output": "I'm not saying I can't come.",
+   "latency_ms": 3493.1,
+   "defects": [],
+   "roundtrip_chrf": 30.8,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "negation",
+   "source": "She has not arrived at the office.",
+   "output": "O ko ti de ile-iṣẹ naa.",
+   "latency_ms": 2858.4,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "negation",
+   "source": "O ko ti de ile-iṣẹ naa.",
+   "output": "He has not arrived at the factory.",
+   "latency_ms": 3158.5,
+   "defects": [],
+   "roundtrip_chrf": 70.9,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "health",
+   "source": "Take one tablet twice a day after eating.",
+   "output": "Lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́.",
+   "latency_ms": 16569.6,
+   "defects": [
+    "repetition-loop(lọ́wọ́lọ́wọ́)"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "health",
+   "source": "Lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́.",
+   "output": "Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current Current",
+   "latency_ms": 28629.3,
+   "defects": [
+    "repetition-loop(Current)"
+   ],
+   "roundtrip_chrf": 2.3,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "health",
+   "source": "Do not give this medicine to a child under five years old.",
+   "output": "Kò fi nǹkan yìí fun ọmọ̀dè tí o kù nínú oṣù mẹ́tà.",
+   "latency_ms": 8522.9,
+   "defects": [
+    "lexical-unverified:five",
+    "quantity-unverified:5"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "health",
+   "source": "Kò fi nǹkan yìí fun ọmọ̀dè tí o kù nínú oṣù mẹ́tà.",
+   "output": "Do not give this item to a child who died within three months.",
+   "latency_ms": 4919.9,
+   "defects": [
+    "lexical-unverified:five",
+    "quantity-unverified:5"
+   ],
+   "roundtrip_chrf": 41.9,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "agriculture",
+   "source": "The rains will start next month, so prepare the land now.",
+   "output": "Omi yoo bẹrẹ ni oṣu to n bọ, nitorinaa ṣetan ilẹ bayii.",
+   "latency_ms": 6252.0,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "agriculture",
+   "source": "Omi yoo bẹrẹ ni oṣu to n bọ, nitorinaa ṣetan ilẹ bayii.",
+   "output": "Water will start coming next month, so prepare the ground now.",
+   "latency_ms": 4394.3,
+   "defects": [],
+   "roundtrip_chrf": 67.3,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "business",
+   "source": "We need to sign the agreement before the end of the month.",
+   "output": "A ni lati ṣe adehun naa ṣaaju ipari oṣu yii.",
+   "latency_ms": 5040.4,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "business",
+   "source": "A ni lati ṣe adehun naa ṣaaju ipari oṣu yii.",
+   "output": "We have to make the deal before the end of this month.",
+   "latency_ms": 3895.5,
+   "defects": [],
+   "roundtrip_chrf": 46.7,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "broadcast",
+   "source": "Good morning everyone, and welcome to this broadcast.",
+   "output": "Ọjọ́ alẹ́ mìíràn, gbogbo ẹ̀yin, atí ayẹyẹ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ",
+   "latency_ms": 33976.2,
+   "defects": [
+    "repetition-loop(lọ́wọ́lọ́wọ́)"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "broadcast",
+   "source": "Ọjọ́ alẹ́ mìíràn, gbogbo ẹ̀yin, atí ayẹyẹ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ́wọ́lọ",
+   "output": "The other night, all of you, and the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration, the current celebration",
+   "latency_ms": 34363.3,
+   "defects": [],
+   "roundtrip_chrf": 6.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "conversation",
+   "source": "How are you doing this evening?",
+   "output": "Bawo ni o ti n ṣe lojoojumọ yi?",
+   "latency_ms": 4234.6,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "conversation",
+   "source": "Bawo ni o ti n ṣe lojoojumọ yi?",
+   "output": "How have you been doing this day?",
+   "latency_ms": 2599.1,
+   "defects": [],
+   "roundtrip_chrf": 42.7,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "conversation",
+   "source": "Please send me the address before you leave.",
+   "output": "Jẹ́ ki o fi àdírẹ̀sì náà ranṣẹ sí mí nígbà tí o bá lọ.",
+   "latency_ms": 9934.9,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "conversation",
+   "source": "Jẹ́ ki o fi àdírẹ̀sì náà ranṣẹ sí mí nígbà tí o bá lọ.",
+   "output": "Please send me the address when you leave.",
+   "latency_ms": 3181.7,
+   "defects": [],
+   "roundtrip_chrf": 76.4,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "multi",
+   "source": "I am on my way. Please wait for me at the gate. I will be there soon.",
+   "output": "Mò wa ní ojú mìí. Mò fẹ́ pé mò lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́.",
+   "latency_ms": 31256.7,
+   "defects": [
+    "repetition-loop(lọ́wọ́lọ́wọ́)"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "multi",
+   "source": "Mò wa ní ojú mìí. Mò fẹ́ pé mò lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́.",
+   "output": "I'm in my face. I want to be in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face in my face",
+   "latency_ms": 35424.4,
+   "defects": [],
+   "roundtrip_chrf": 6.8,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "multi",
+   "source": "The meeting is cancelled. We will meet tomorrow instead.",
+   "output": "Àjọ́ kọ̀ǹpútà náà tí a yọ̀kúrò. A tí n bá kọ̀ǹpútà lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́.",
+   "latency_ms": 20452.2,
+   "defects": [
+    "repetition-loop(lọ́wọ́lọ́wọ́)"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "multi",
+   "source": "Àjọ́ kọ̀ǹpútà náà tí a yọ̀kúrò. A tí n bá kọ̀ǹpútà lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́ lọ́wọ́lọ́wọ́.",
+   "output": "The list of computers that have been removed. We have already removed the current computer.",
+   "latency_ms": 7199.9,
+   "defects": [],
+   "roundtrip_chrf": 20.4,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "long",
+   "source": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure somebody is at the shop to receive them, and call me if there is any problem with the delivery.",
+   "output": "O ṣeun fun ifiranṣẹ rẹ. Mo ti sọrọ pẹlu olupese ati pe awọn ọja yoo de ni ọjọ Jimọ ni alẹ. Jọwọ rii daju pe ẹnikan wa ni ile itaja lati gba wọn, ki o si pe mi ti o ba ni iṣoro eyikeyi pẹlu ifijiṣẹ.",
+   "latency_ms": 17848.0,
+   "defects": [
+    "lexical-unverified:Friday"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "long",
+   "source": "O ṣeun fun ifiranṣẹ rẹ. Mo ti sọrọ pẹlu olupese ati pe awọn ọja yoo de ni ọjọ Jimọ ni alẹ. Jọwọ rii daju pe ẹnikan wa ni ile itaja lati gba wọn, ki o si pe mi ti o ba ni iṣoro eyikeyi pẹlu ifijiṣẹ.",
+   "output": "Thank you for your message. I have spoken with the supplier and the products will arrive on Friday night. Please make sure that someone is in the store to pick them up, and call me if you have any problems with the delivery.",
+   "latency_ms": 14729.9,
+   "defects": [],
+   "roundtrip_chrf": 68.3,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": [],
+   "roundtrip_chrf": 0.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "emoji-only",
+   "source": "👍👍",
+   "output": "👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍",
+   "latency_ms": 34011.2,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "emoji-only",
+   "source": "👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍",
+   "output": "👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍👍",
+   "latency_ms": 36572.9,
+   "defects": [],
+   "roundtrip_chrf": 5.7,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "number-only",
+   "source": "45000",
+   "output": "Àwọn Ìṣàmúlò-ètò",
+   "latency_ms": 6680.6,
+   "defects": [
+    "quantity-unverified:45000"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "number-only",
+   "source": "Àwọn Ìṣàmúlò-ètò",
+   "output": "Applications",
+   "latency_ms": 2108.9,
+   "defects": [
+    "quantity-unverified:45000"
+   ],
+   "roundtrip_chrf": 0.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "code-only",
+   "source": "OTP-483920",
+   "output": "OTP-483920",
+   "latency_ms": 2872.0,
+   "defects": [
+    "passthrough"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "code-only",
+   "source": "OTP-483920",
+   "output": "OTP-483920",
+   "latency_ms": 3904.1,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "punctuation",
+   "source": "???!!!",
+   "output": "???!!!",
+   "latency_ms": 1327.7,
+   "defects": [
+    "passthrough"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "punctuation",
+   "source": "???!!!",
+   "output": "???!!!",
+   "latency_ms": 1924.8,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "mixed",
+   "source": "Abeg send the money before 5pm 🙏",
+   "output": "Abeg fi owo ranṣẹ ṣaaju 5pm 🙏",
+   "latency_ms": 3868.7,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "mixed",
+   "source": "Abeg fi owo ranṣẹ ṣaaju 5pm 🙏",
+   "output": "Please send money before 5pm 🙏",
+   "latency_ms": 3613.3,
+   "defects": [],
+   "roundtrip_chrf": 62.1,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "emoji-text",
+   "source": "Congratulations on the new baby 🎉 we are very happy for you.",
+   "output": "O ṣeun fun ọmọ tuntun 🎉 a nifẹ pupọ fun ọ.",
+   "latency_ms": 4529.8,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "emoji-text",
+   "source": "O ṣeun fun ọmọ tuntun 🎉 a nifẹ pupọ fun ọ.",
+   "output": "Thank you for the new baby 🎉 we love you so much.",
+   "latency_ms": 4445.1,
+   "defects": [],
+   "roundtrip_chrf": 34.4,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->yo",
+   "category": "hashtag",
+   "source": "Join us tonight #VideofyLive for the broadcast.",
+   "output": "Ṣabẹwo si wa lojoojumọ #VideofyLive fun ifọrọwanilẹnuwo naa.",
+   "latency_ms": 5880.6,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "yo->en",
+   "category": "hashtag",
+   "source": "Ṣabẹwo si wa lojoojumọ #VideofyLive fun ifọrọwanilẹnuwo naa.",
+   "output": "Visit us daily on #VideofyLive for the interview.",
+   "latency_ms": 4112.8,
+   "defects": [],
+   "roundtrip_chrf": 46.8,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "money",
+   "source": "The price is two thousand naira per bag.",
+   "output": "Farashin shi ne naira dubu biyu ga kowace jakar.",
+   "latency_ms": 4340.2,
+   "defects": [
+    "quantity-unverified:2000"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "money",
+   "source": "Farashin shi ne naira dubu biyu ga kowace jakar.",
+   "output": "The price is 2,000 naira for each bag.",
+   "latency_ms": 4931.7,
+   "defects": [],
+   "roundtrip_chrf": 40.5,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "money",
+   "source": "Please send 45,000 naira to my account today.",
+   "output": "Don Allah ku tura naira 45,000 zuwa asusuna yau.",
+   "latency_ms": 6265.7,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "money",
+   "source": "Don Allah ku tura naira 45,000 zuwa asusuna yau.",
+   "output": "Please send 45,000 naira to my account today.",
+   "latency_ms": 5300.5,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "money",
+   "source": "I have received the money you sent.",
+   "output": "Na karɓi azurfar da kuka aiko mini.",
+   "latency_ms": 3686.6,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "money",
+   "source": "Na karɓi azurfar da kuka aiko mini.",
+   "output": "I have received the silver you have sent to me.",
+   "latency_ms": 3418.6,
+   "defects": [],
+   "roundtrip_chrf": 58.6,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "money",
+   "source": "I have not received the money you sent.",
+   "output": "Ba ni da kudin da kuka aiko mini da shi.",
+   "latency_ms": 4143.4,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "money",
+   "source": "Ba ni da kudin da kuka aiko mini da shi.",
+   "output": "I don't have the money you sent me.",
+   "latency_ms": 3620.4,
+   "defects": [],
+   "roundtrip_chrf": 52.6,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "money",
+   "source": "Your balance is 12,500 naira.",
+   "output": "Kudin ku naira 12,500.",
+   "latency_ms": 4485.9,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "money",
+   "source": "Kudin ku naira 12,500.",
+   "output": "12,500 naira.",
+   "latency_ms": 3720.7,
+   "defects": [],
+   "roundtrip_chrf": 47.4,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "phone",
+   "source": "Call me on 08031234567 when you arrive.",
+   "output": "Ka kira ni a kan 08031234567 idan ka isa.",
+   "latency_ms": 6698.3,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "phone",
+   "source": "Ka kira ni a kan 08031234567 idan ka isa.",
+   "output": "Call me on 08031234567 when you arrive.",
+   "latency_ms": 6272.3,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "account",
+   "source": "Transfer to account 0123456789 at First Bank.",
+   "output": "Shigar da asusun 0123456789 a First Bank.",
+   "latency_ms": 6830.1,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "account",
+   "source": "Shigar da asusun 0123456789 a First Bank.",
+   "output": "Enter the account 0123456789 in First Bank.",
+   "latency_ms": 5738.5,
+   "defects": [],
+   "roundtrip_chrf": 64.1,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "otp",
+   "source": "Your verification code is 483920. Do not share it.",
+   "output": "Lambarka ta tabbatarwa ita ce 483920. Kada ka raba ta.",
+   "latency_ms": 5685.1,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "otp",
+   "source": "Lambarka ta tabbatarwa ita ce 483920. Kada ka raba ta.",
+   "output": "Your verification number is 483920. Do not share it.",
+   "latency_ms": 5518.9,
+   "defects": [],
+   "roundtrip_chrf": 82.9,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "url",
+   "source": "Read more at https://consummate7.com/help before you call.",
+   "output": "Ka karanta karin bayani a https://consummate7.com/help kafin ka kira.",
+   "latency_ms": 5925.9,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "url",
+   "source": "Ka karanta karin bayani a https://consummate7.com/help kafin ka kira.",
+   "output": "Read more at https://consummate7.com/help before you call.",
+   "latency_ms": 5907.6,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "datetime",
+   "source": "The event starts at four thirty on the fifteenth of March.",
+   "output": "Taron zai fara ne da karfe huɗu da rabi na dare a ranar 15 ga watan Maris.",
+   "latency_ms": 6903.8,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "datetime",
+   "source": "Taron zai fara ne da karfe huɗu da rabi na dare a ranar 15 ga watan Maris.",
+   "output": "The meeting will begin at 4:30 p.m. on March 15.",
+   "latency_ms": 5900.0,
+   "defects": [
+    "addition(3/1 sentences)"
+   ],
+   "roundtrip_chrf": 13.6,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "datetime",
+   "source": "The meeting has been moved to 15 March at 4:30.",
+   "output": "An mayar da taron zuwa ranar 15 ga watan Maris da karfe 4:30 na yamma.",
+   "latency_ms": 7466.1,
+   "defects": [
+    "lexical-unverified:March"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "datetime",
+   "source": "An mayar da taron zuwa ranar 15 ga watan Maris da karfe 4:30 na yamma.",
+   "output": "The meeting was postponed to March 15 at 4:30 p.m.",
+   "latency_ms": 6796.9,
+   "defects": [],
+   "roundtrip_chrf": 45.6,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "entity",
+   "source": "My name is Zoe and I work in Lagos.",
+   "output": "Sunana Zoe kuma ina aiki a Lagos.",
+   "latency_ms": 3328.8,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "entity",
+   "source": "Sunana Zoe kuma ina aiki a Lagos.",
+   "output": "My name is Zoe and I work in Lagos.",
+   "latency_ms": 4299.7,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "entity",
+   "source": "Adebayo travelled from Abeokuta to Kano last night.",
+   "output": "Adebayo ya tafi daga Abeokuta zuwa Kano jiya dare.",
+   "latency_ms": 4269.7,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "entity",
+   "source": "Adebayo ya tafi daga Abeokuta zuwa Kano jiya dare.",
+   "output": "Adebayo left Abeokuta for Kano last night.",
+   "latency_ms": 4137.6,
+   "defects": [],
+   "roundtrip_chrf": 56.2,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "negation",
+   "source": "Do not send the payment yet.",
+   "output": "Kada ka aika da biyan har yanzu.",
+   "latency_ms": 2768.4,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "negation",
+   "source": "Kada ka aika da biyan har yanzu.",
+   "output": "Don't send the payment yet.",
+   "latency_ms": 2757.8,
+   "defects": [],
+   "roundtrip_chrf": 84.8,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "negation",
+   "source": "I did not say that I would not come.",
+   "output": "Ban faɗa muku ba, cẽwa bã zan zo ba.\"",
+   "latency_ms": 4215.3,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "negation",
+   "source": "Ban faɗa muku ba, cẽwa bã zan zo ba.\"",
+   "output": "Did I not tell you that I would not come?\"",
+   "latency_ms": 3662.0,
+   "defects": [],
+   "roundtrip_chrf": 63.4,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "negation",
+   "source": "She has not arrived at the office.",
+   "output": "Ba ta isa ofishin ba.",
+   "latency_ms": 2664.4,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "negation",
+   "source": "Ba ta isa ofishin ba.",
+   "output": "It's not enough for the office.",
+   "latency_ms": 2879.8,
+   "defects": [],
+   "roundtrip_chrf": 38.8,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "health",
+   "source": "Take one tablet twice a day after eating.",
+   "output": "Ka riƙi kwalba guda sau biyu a rãnar, a bãyan abinci.",
+   "latency_ms": 5249.0,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "health",
+   "source": "Ka riƙi kwalba guda sau biyu a rãnar, a bãyan abinci.",
+   "output": "Take a cup twice a day, after meals.",
+   "latency_ms": 3767.7,
+   "defects": [],
+   "roundtrip_chrf": 37.2,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "health",
+   "source": "Do not give this medicine to a child under five years old.",
+   "output": "Kada ka ba da wannan magani ga wani yaro wanda bai kai shekara biyar ba.",
+   "latency_ms": 5996.4,
+   "defects": [
+    "lexical-unverified:five",
+    "quantity-unverified:5"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "health",
+   "source": "Kada ka ba da wannan magani ga wani yaro wanda bai kai shekara biyar ba.",
+   "output": "Do not give this medicine to a child under the age of five.",
+   "latency_ms": 4665.2,
+   "defects": [
+    "quantity-unverified:5"
+   ],
+   "roundtrip_chrf": 76.1,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "agriculture",
+   "source": "The rains will start next month, so prepare the land now.",
+   "output": "To, ku yi tattali, kuma ku yi taƙawa, kuma ku yi ɗã'ã, kuma ku yi taƙawa, kuma ku yi ɗã'ã, kuma ku yi taƙawa.",
+   "latency_ms": 14049.3,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "agriculture",
+   "source": "To, ku yi tattali, kuma ku yi taƙawa, kuma ku yi ɗã'ã, kuma ku yi taƙawa, kuma ku yi ɗã'ã, kuma ku yi taƙawa.",
+   "output": "So take your precautions, and be cautious, and obey, and be cautious, and obey, and be cautious.",
+   "latency_ms": 9183.5,
+   "defects": [],
+   "roundtrip_chrf": 13.4,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "business",
+   "source": "We need to sign the agreement before the end of the month.",
+   "output": "Muna bukatar mu sanya hannu kan yarjejeniyar kafin ƙarshen wannan watan.",
+   "latency_ms": 8619.0,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "business",
+   "source": "Muna bukatar mu sanya hannu kan yarjejeniyar kafin ƙarshen wannan watan.",
+   "output": "We need to sign the agreement before the end of this month.",
+   "latency_ms": 4790.1,
+   "defects": [],
+   "roundtrip_chrf": 91.6,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "broadcast",
+   "source": "Good morning everyone, and welcome to this broadcast.",
+   "output": "Assalamu alaikum da fatan alheri ga dukkanku, da kuma maraba da zuwa ga wannan shirin.",
+   "latency_ms": 7704.4,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "broadcast",
+   "source": "Assalamu alaikum da fatan alheri ga dukkanku, da kuma maraba da zuwa ga wannan shirin.",
+   "output": "Assalamu alaikum and good luck to all of you, and welcome to this program.",
+   "latency_ms": 7338.2,
+   "defects": [],
+   "roundtrip_chrf": 41.7,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "conversation",
+   "source": "How are you doing this evening?",
+   "output": "Me kake yi yau dare?",
+   "latency_ms": 2675.9,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "conversation",
+   "source": "Me kake yi yau dare?",
+   "output": "What are you doing tonight?",
+   "latency_ms": 2995.3,
+   "defects": [],
+   "roundtrip_chrf": 47.1,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "conversation",
+   "source": "Please send me the address before you leave.",
+   "output": "To, ka aiko mini da adireshin a gabãnin ka tafi.",
+   "latency_ms": 4876.2,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "conversation",
+   "source": "To, ka aiko mini da adireshin a gabãnin ka tafi.",
+   "output": "So send me the address before you leave.",
+   "latency_ms": 3455.6,
+   "defects": [],
+   "roundtrip_chrf": 85.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "multi",
+   "source": "I am on my way. Please wait for me at the gate. I will be there soon.",
+   "output": "Inã a kan hanya. To, ku yi jira a wurin ƙofa. Zan je nan da sannu.",
+   "latency_ms": 7229.5,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "multi",
+   "source": "Inã a kan hanya. To, ku yi jira a wurin ƙofa. Zan je nan da sannu.",
+   "output": "I'm on my way, so wait at the door, I'll be here shortly.",
+   "latency_ms": 6033.9,
+   "defects": [],
+   "roundtrip_chrf": 32.3,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "multi",
+   "source": "The meeting is cancelled. We will meet tomorrow instead.",
+   "output": "An dakatar da tattaunawar. Za mu tattauna gobe a maimakon haka.",
+   "latency_ms": 6117.0,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "multi",
+   "source": "An dakatar da tattaunawar. Za mu tattauna gobe a maimakon haka.",
+   "output": "We'll talk tomorrow instead.",
+   "latency_ms": 4096.9,
+   "defects": [
+    "omission(1/2 clauses, 50% length)"
+   ],
+   "roundtrip_chrf": 36.4,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "long",
+   "source": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure somebody is at the shop to receive them, and call me if there is any problem with the delivery.",
+   "output": "Na gode da sakon ku. Na yi magana da mai samarwa kuma kayayyakin za su isa ranar Juma'a da safe. Don Allah ku tabbatar da cewa akwai wani a shagon don karɓar su, kuma ku kira ni idan akwai wata matsala game da isar da su.",
+   "latency_ms": 15226.5,
+   "defects": [
+    "lexical-unverified:Friday"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "long",
+   "source": "Na gode da sakon ku. Na yi magana da mai samarwa kuma kayayyakin za su isa ranar Juma'a da safe. Don Allah ku tabbatar da cewa akwai wani a shagon don karɓar su, kuma ku kira ni idan akwai wata matsala game da isar da su.",
+   "output": "Thank you for your message. I have spoken with the supplier and the goods will arrive on Friday morning. So please make sure there is someone in the store to pick them up, and call me if there is any problem with the delivery.",
+   "latency_ms": 13564.0,
+   "defects": [],
+   "roundtrip_chrf": 81.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": [],
+   "roundtrip_chrf": 0.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "emoji-only",
+   "source": "👍👍",
+   "output": "(Allah) Ya ce: \"Ya ku mutãnena!",
+   "latency_ms": 4055.7,
+   "defects": [
+    "invented-from-non-linguistic('(Allah) Ya ce: \"Ya ku mutãnena!')"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "emoji-only",
+   "source": "(Allah) Ya ce: \"Ya ku mutãnena!",
+   "output": "He said: O my people!",
+   "latency_ms": 2776.4,
+   "defects": [
+    "invented-from-non-linguistic('He said: O my people!')"
+   ],
+   "roundtrip_chrf": 0.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "number-only",
+   "source": "45000",
+   "output": "KCharselect unicode block name",
+   "latency_ms": 2882.6,
+   "defects": [
+    "quantity-unverified:45000"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "number-only",
+   "source": "KCharselect unicode block name",
+   "output": "Alphabetical Signs",
+   "latency_ms": 1963.4,
+   "defects": [
+    "quantity-unverified:45000"
+   ],
+   "roundtrip_chrf": 0.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "code-only",
+   "source": "OTP-483920",
+   "output": "OTP-483920",
+   "latency_ms": 3517.3,
+   "defects": [
+    "passthrough"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "code-only",
+   "source": "OTP-483920",
+   "output": "OTP-483920",
+   "latency_ms": 3134.2,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "punctuation",
+   "source": "???!!!",
+   "output": "A'aha!",
+   "latency_ms": 3148.2,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "punctuation",
+   "source": "A'aha!",
+   "output": "No indeed!",
+   "latency_ms": 1746.5,
+   "defects": [],
+   "roundtrip_chrf": 2.5,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "mixed",
+   "source": "Abeg send the money before 5pm 🙏",
+   "output": "Abeg aika da kudi kafin 5pm 🙏",
+   "latency_ms": 3868.3,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "mixed",
+   "source": "Abeg aika da kudi kafin 5pm 🙏",
+   "output": "Abeg send the money before 5pm 🙏",
+   "latency_ms": 3616.1,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "emoji-text",
+   "source": "Congratulations on the new baby 🎉 we are very happy for you.",
+   "output": "Muna taya ku murnar haihuwar jariri mai suna 🎉 muna farin ciki matuka da ku.",
+   "latency_ms": 6297.5,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "emoji-text",
+   "source": "Muna taya ku murnar haihuwar jariri mai suna 🎉 muna farin ciki matuka da ku.",
+   "output": "We congratulate you on the birth of a baby named 🎉 we are very happy with you.",
+   "latency_ms": 5820.1,
+   "defects": [],
+   "roundtrip_chrf": 56.7,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ha",
+   "category": "hashtag",
+   "source": "Join us tonight #VideofyLive for the broadcast.",
+   "output": "Ku hadu da mu a yau #VideofyLive don sauraron shirin.",
+   "latency_ms": 4867.4,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ha->en",
+   "category": "hashtag",
+   "source": "Ku hadu da mu a yau #VideofyLive don sauraron shirin.",
+   "output": "Meet us today at #VideofyLive to listen to the show.",
+   "latency_ms": 4814.0,
+   "defects": [],
+   "roundtrip_chrf": 38.7,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "money",
+   "source": "The price is two thousand naira per bag.",
+   "output": "Ọnụahịa ya bụ naira iri abụọ kwa akpa.",
+   "latency_ms": 4965.3,
+   "defects": [
+    "quantity-unverified:2000"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "money",
+   "source": "Ọnụahịa ya bụ naira iri abụọ kwa akpa.",
+   "output": "The price is 200 naira per bag.",
+   "latency_ms": 3698.4,
+   "defects": [
+    "quantity-unverified:2000"
+   ],
+   "roundtrip_chrf": 58.3,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "money",
+   "source": "Please send 45,000 naira to my account today.",
+   "output": "Biko zigara naira 45,000 na akaụntụ m taa.",
+   "latency_ms": 6299.9,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "money",
+   "source": "Biko zigara naira 45,000 na akaụntụ m taa.",
+   "output": "Please deposit naira 45,000 in my account today.",
+   "latency_ms": 5305.4,
+   "defects": [],
+   "roundtrip_chrf": 62.8,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "money",
+   "source": "I have received the money you sent.",
+   "output": "Anabatala m ego i zigara m.",
+   "latency_ms": 3247.0,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "money",
+   "source": "Anabatala m ego i zigara m.",
+   "output": "Anabatala m ego and m cigarette.",
+   "latency_ms": 4015.0,
+   "defects": [],
+   "roundtrip_chrf": 9.3,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "money",
+   "source": "I have not received the money you sent.",
+   "output": "Anaghị m enweta ego i zigara m.",
+   "latency_ms": 3519.9,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "money",
+   "source": "Anaghị m enweta ego i zigara m.",
+   "output": "I am not receiving the money you send me.",
+   "latency_ms": 3750.0,
+   "defects": [],
+   "roundtrip_chrf": 62.7,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "money",
+   "source": "Your balance is 12,500 naira.",
+   "output": "Akaụntụ gị bụ 12,500 naira.",
+   "latency_ms": 4521.3,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "money",
+   "source": "Akaụntụ gị bụ 12,500 naira.",
+   "output": "Your account is 12,500 naira.",
+   "latency_ms": 3966.2,
+   "defects": [],
+   "roundtrip_chrf": 59.8,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "phone",
+   "source": "Call me on 08031234567 when you arrive.",
+   "output": "Kpọtụrụ m na 08031234567 mgbe ị na-abịa.",
+   "latency_ms": 6741.4,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "phone",
+   "source": "Kpọtụrụ m na 08031234567 mgbe ị na-abịa.",
+   "output": "Contact me on 08031234567 when you come.",
+   "latency_ms": 6339.3,
+   "defects": [],
+   "roundtrip_chrf": 65.9,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "account",
+   "source": "Transfer to account 0123456789 at First Bank.",
+   "output": "Zigara akaụntụ 0123456789 na First Bank.",
+   "latency_ms": 6225.5,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "account",
+   "source": "Zigara akaụntụ 0123456789 na First Bank.",
+   "output": "Leave account 0123456789 at First Bank.",
+   "latency_ms": 5603.6,
+   "defects": [],
+   "roundtrip_chrf": 75.5,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "otp",
+   "source": "Your verification code is 483920. Do not share it.",
+   "output": "Kóòdù nkwenye gị bụ 483920. Enweghị ike ịkekọrịta ya.",
+   "latency_ms": 8371.6,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "otp",
+   "source": "Kóòdù nkwenye gị bụ 483920. Enweghị ike ịkekọrịta ya.",
+   "output": "Your verification code is 483920. It cannot be shared.",
+   "latency_ms": 5909.9,
+   "defects": [
+    "negation-lost"
+   ],
+   "roundtrip_chrf": 76.1,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "url",
+   "source": "Read more at https://consummate7.com/help before you call.",
+   "output": "Gụọ ihe ọzọ na https://consummate7.com/help tupu ịkpọ.",
+   "latency_ms": 6482.5,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "url",
+   "source": "Gụọ ihe ọzọ na https://consummate7.com/help tupu ịkpọ.",
+   "output": "Read more at https://consummate7.com/help before calling.",
+   "latency_ms": 5751.9,
+   "defects": [],
+   "roundtrip_chrf": 87.4,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "datetime",
+   "source": "The event starts at four thirty on the fifteenth of March.",
+   "output": "Ihe omume ahụ na-amalite na elekere anọ na ọkara n'ụbọchị iri na ise nke ọnwa March.",
+   "latency_ms": 7578.0,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "datetime",
+   "source": "Ihe omume ahụ na-amalite na elekere anọ na ọkara n'ụbọchị iri na ise nke ọnwa March.",
+   "output": "The event begins at 4:30 p.m. on the 26th of March.",
+   "latency_ms": 7307.9,
+   "defects": [
+    "addition(3/1 sentences)"
+   ],
+   "roundtrip_chrf": 38.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "datetime",
+   "source": "The meeting has been moved to 15 March at 4:30.",
+   "output": "Mgbakọ ahụ gbanwere gaa na 15 March na 4:30.",
+   "latency_ms": 9393.1,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "datetime",
+   "source": "Mgbakọ ahụ gbanwere gaa na 15 March na 4:30.",
+   "output": "The meeting was moved to 15 March at 4:30.",
+   "latency_ms": 6156.8,
+   "defects": [],
+   "roundtrip_chrf": 76.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "entity",
+   "source": "My name is Zoe and I work in Lagos.",
+   "output": "Aha m bụ Zoe ma m na-arụ ọrụ na Lagos.",
+   "latency_ms": 5573.5,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "entity",
+   "source": "Aha m bụ Zoe ma m na-arụ ọrụ na Lagos.",
+   "output": "My name is Zoe and I work in Lagos.",
+   "latency_ms": 4108.1,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "entity",
+   "source": "Adebayo travelled from Abeokuta to Kano last night.",
+   "output": "Adebayo na-aga site n'Abeokuta gaa Kano n'ụbọchị gara aga.",
+   "latency_ms": 6831.2,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "entity",
+   "source": "Adebayo na-aga site n'Abeokuta gaa Kano n'ụbọchị gara aga.",
+   "output": "Adebayo was travelling from Abeokuta to Kano the previous day.",
+   "latency_ms": 4693.8,
+   "defects": [],
+   "roundtrip_chrf": 61.3,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "negation",
+   "source": "Do not send the payment yet.",
+   "output": "Enweghị ike iziga ụgwọ ahụ.",
+   "latency_ms": 4134.1,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "negation",
+   "source": "Enweghị ike iziga ụgwọ ahụ.",
+   "output": "Unable to proceed with the charge.",
+   "latency_ms": 3116.5,
+   "defects": [
+    "negation-lost"
+   ],
+   "roundtrip_chrf": 13.2,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "negation",
+   "source": "I did not say that I would not come.",
+   "output": "Agaghị m asị na m ga-abịa.",
+   "latency_ms": 4314.1,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "negation",
+   "source": "Agaghị m asị na m ga-abịa.",
+   "output": "I do not say that I will come.",
+   "latency_ms": 3272.8,
+   "defects": [],
+   "roundtrip_chrf": 52.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "negation",
+   "source": "She has not arrived at the office.",
+   "output": "Ọ bịaghị n'ọfịs.",
+   "latency_ms": 3745.9,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "negation",
+   "source": "Ọ bịaghị n'ọfịs.",
+   "output": "He did not come to office.",
+   "latency_ms": 3018.9,
+   "defects": [],
+   "roundtrip_chrf": 27.2,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "health",
+   "source": "Take one tablet twice a day after eating.",
+   "output": "Biko jiri otu mbadamba ugboro abụọ n'ụbọchị mgbe ị na-eri nri.",
+   "latency_ms": 6142.2,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "health",
+   "source": "Biko jiri otu mbadamba ugboro abụọ n'ụbọchị mgbe ị na-eri nri.",
+   "output": "Please take one tablet twice a day with food.",
+   "latency_ms": 4020.4,
+   "defects": [],
+   "roundtrip_chrf": 64.5,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "health",
+   "source": "Do not give this medicine to a child under five years old.",
+   "output": "Enweghị ike ịnye ọgwụ a n'okpuru afọ ise.",
+   "latency_ms": 4464.9,
+   "defects": [
+    "lexical-unverified:five",
+    "quantity-unverified:5"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "health",
+   "source": "Enweghị ike ịnye ọgwụ a n'okpuru afọ ise.",
+   "output": "This medicine cannot be given to children under six years of age.",
+   "latency_ms": 3777.4,
+   "defects": [
+    "lexical-unverified:five",
+    "quantity-unverified:5",
+    "negation-lost"
+   ],
+   "roundtrip_chrf": 47.1,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "agriculture",
+   "source": "The rains will start next month, so prepare the land now.",
+   "output": "Oké ifufe ga-amalite n'ọnwa na-abịanụ, yabụ mepụta ala ugbu a.",
+   "latency_ms": 7222.3,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "agriculture",
+   "source": "Oké ifufe ga-amalite n'ọnwa na-abịanụ, yabụ mepụta ala ugbu a.",
+   "output": "The storm will start in the coming months, so prepare the ground now.",
+   "latency_ms": 4350.7,
+   "defects": [],
+   "roundtrip_chrf": 53.8,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "business",
+   "source": "We need to sign the agreement before the end of the month.",
+   "output": "Anyị ga-achọ ịsacha nkwekọrịta ahụ tupu njedebe nke ọnwa a.",
+   "latency_ms": 4999.5,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "business",
+   "source": "Anyị ga-achọ ịsacha nkwekọrịta ahụ tupu njedebe nke ọnwa a.",
+   "output": "We will seek to conclude the agreement before the end of this month.",
+   "latency_ms": 5289.1,
+   "defects": [],
+   "roundtrip_chrf": 67.3,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "broadcast",
+   "source": "Good morning everyone, and welcome to this broadcast.",
+   "output": "Good morning everyone, and welcome to this broadcast.",
+   "latency_ms": 3539.5,
+   "defects": [
+    "passthrough"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "broadcast",
+   "source": "Good morning everyone, and welcome to this broadcast.",
+   "output": "Good morning everyone, and welcome to this broadcast.",
+   "latency_ms": 3931.9,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "conversation",
+   "source": "How are you doing this evening?",
+   "output": "Olee otú ị si arụ ọrụ abalị a?",
+   "latency_ms": 4261.6,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "conversation",
+   "source": "Olee otú ị si arụ ọrụ abalị a?",
+   "output": "How are you working tonight?",
+   "latency_ms": 2698.5,
+   "defects": [],
+   "roundtrip_chrf": 39.1,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "conversation",
+   "source": "Please send me the address before you leave.",
+   "output": "Biko zigara m adreesị tupù ịlaghachi.",
+   "latency_ms": 4172.4,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "conversation",
+   "source": "Biko zigara m adreesị tupù ịlaghachi.",
+   "output": "Please send me the address before returning.",
+   "latency_ms": 3123.5,
+   "defects": [],
+   "roundtrip_chrf": 74.8,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "multi",
+   "source": "I am on my way. Please wait for me at the gate. I will be there soon.",
+   "output": "M na-aga n'ụzọ m. Biko na-echere m n'okporo ụzọ. M ga-aga ebe ahụ n'oge na-adịghị anya.",
+   "latency_ms": 10789.4,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "multi",
+   "source": "M na-aga n'ụzọ m. Biko na-echere m n'okporo ụzọ. M ga-aga ebe ahụ n'oge na-adịghị anya.",
+   "output": "I'm going on my way. Please wait for me on the road. I'll be there soon.",
+   "latency_ms": 7014.3,
+   "defects": [],
+   "roundtrip_chrf": 66.6,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "multi",
+   "source": "The meeting is cancelled. We will meet tomorrow instead.",
+   "output": "Ndesịta nzukọ ahụ akwụsịla. Anyị ga-eme nzukọ n'ọdịnihu n'ebe ahụ.",
+   "latency_ms": 7757.4,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "multi",
+   "source": "Ndesịta nzukọ ahụ akwụsịla. Anyị ga-eme nzukọ n'ọdịnihu n'ebe ahụ.",
+   "output": "The meeting list has ended. We will hold future meetings in that location.",
+   "latency_ms": 5091.7,
+   "defects": [],
+   "roundtrip_chrf": 40.3,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "long",
+   "source": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure somebody is at the shop to receive them, and call me if there is any problem with the delivery.",
+   "output": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure someone is at the shop to receive them, and call me if there is any problem with the delivery.",
+   "latency_ms": 15200.3,
+   "defects": [
+    "passthrough"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "long",
+   "source": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure someone is at the shop to receive them, and call me if there is any problem with the delivery.",
+   "output": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure someone is at the shop to receive them, and call me if there is any problem with the delivery.",
+   "latency_ms": 13830.5,
+   "defects": [],
+   "roundtrip_chrf": 96.4,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": [],
+   "roundtrip_chrf": 0.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "emoji-only",
+   "source": "👍👍",
+   "output": "👍👍",
+   "latency_ms": 2112.9,
+   "defects": [
+    "passthrough"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "emoji-only",
+   "source": "👍👍",
+   "output": "👍👍",
+   "latency_ms": 2231.3,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "number-only",
+   "source": "45000",
+   "output": "45000",
+   "latency_ms": 5011.5,
+   "defects": [
+    "passthrough"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "number-only",
+   "source": "45000",
+   "output": "45000",
+   "latency_ms": 2446.1,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "code-only",
+   "source": "OTP-483920",
+   "output": "OTP-483920",
+   "latency_ms": 3539.0,
+   "defects": [
+    "passthrough"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "code-only",
+   "source": "OTP-483920",
+   "output": "OTP-483920",
+   "latency_ms": 3757.7,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "punctuation",
+   "source": "???!!!",
+   "output": "???!!!",
+   "latency_ms": 1088.8,
+   "defects": [
+    "passthrough"
+   ]
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "punctuation",
+   "source": "???!!!",
+   "output": "???!!!",
+   "latency_ms": 1701.2,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "mixed",
+   "source": "Abeg send the money before 5pm 🙏",
+   "output": "Abeg zitere ego tupu 5pm 🙏",
+   "latency_ms": 4328.5,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "mixed",
+   "source": "Abeg zitere ego tupu 5pm 🙏",
+   "output": "Abeg zitere money before 5pm 🙏",
+   "latency_ms": 3811.1,
+   "defects": [],
+   "roundtrip_chrf": 65.7,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "emoji-text",
+   "source": "Congratulations on the new baby 🎉 we are very happy for you.",
+   "output": "Nnukwu onyinye maka nwa ọhụrụ 🎉 anyị na-enwe obi ụtọ maka gị.",
+   "latency_ms": 7627.2,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "emoji-text",
+   "source": "Nnukwu onyinye maka nwa ọhụrụ 🎉 anyị na-enwe obi ụtọ maka gị.",
+   "output": "Great gift for newborn 🎉 we are happy for you.",
+   "latency_ms": 4283.0,
+   "defects": [],
+   "roundtrip_chrf": 37.5,
+   "provisional": true
+  },
+  {
+   "engine": "madlad",
+   "direction": "en->ig",
+   "category": "hashtag",
+   "source": "Join us tonight #VideofyLive for the broadcast.",
+   "output": "Kpọtụrụ anyị n'ụbọchị a #VideofyLive maka mgbasa ozi.",
+   "latency_ms": 5881.0,
+   "defects": []
+  },
+  {
+   "engine": "madlad",
+   "direction": "ig->en",
+   "category": "hashtag",
+   "source": "Kpọtụrụ anyị n'ụbọchị a #VideofyLive maka mgbasa ozi.",
+   "output": "Contact us today #VideofyLive for media.",
+   "latency_ms": 3682.5,
+   "defects": [],
+   "roundtrip_chrf": 42.7,
+   "provisional": true
+  }
+ ]
+}

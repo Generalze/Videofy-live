@@ -267,8 +267,13 @@ def check(case: Case, output: str, target: str) -> list[str]:
             found.append("non-latin-script")
             break
 
-    # Untranslated passthrough.
-    if case.text.strip() and target != "en" and chrf(out, case.text) > 88:
+    # Untranslated passthrough -- but NOT for non-linguistic input, where
+    # returning the input unchanged is the CORRECT answer. An emoji, a bare
+    # number, an OTP string and a row of punctuation have no translation, and
+    # handing them back verbatim is what a good engine should do. Flagging that
+    # counted MADLAD's correct handling of four such cases as failures.
+    if (case.text.strip() and target != "en" and not case.non_linguistic
+            and chrf(out, case.text) > 88):
         found.append("passthrough")
 
     return found
