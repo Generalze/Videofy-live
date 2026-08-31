@@ -4,13 +4,21 @@
  *
  * SCOPE IS A TENANT BOUNDARY, NOT A UI FILTER. A term entered for one
  * programme must never influence another, and "the console only shows you
- * yours" is not that guarantee -- it is a guarantee about a screen. The
- * isolation lives here, below every caller, so a consumer that forgets to
- * filter gets nothing rather than somebody else's vocabulary.
+ * yours" is a guarantee about a screen, not about the data.
  *
- * Every read takes a programmeId. There is deliberately no "all terms" method:
- * an API that can return every programme's vocabulary is an API that will,
- * eventually, from a code path nobody reviewed.
+ * THE INVARIANT, stated precisely:
+ *
+ *     No application-level vocabulary read is permitted without an explicit,
+ *     non-empty programme scope.
+ *
+ * An earlier version of this comment claimed there is "no single collection
+ * holding everybody's terms". That describes the in-memory implementation and
+ * would stop being true the moment this is backed by Postgres, where one table
+ * naturally holds rows for every programme. The physical layout is not the
+ * guarantee; the refusal to read without a scope is. Every method here takes a
+ * programmeId, an empty one is refused rather than answered, and there is
+ * deliberately no method that returns terms across programmes -- because an API
+ * that CAN do that eventually will, from a path nobody reviewed.
  */
 
 import {
