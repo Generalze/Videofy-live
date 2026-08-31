@@ -40,6 +40,8 @@ import random
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 LANGUAGE_NAMES = {"yo": "Yoruba", "ha": "Hausa", "ig": "Igbo", "pcm": "Nigerian Pidgin"}
 
 # The reviewer's questions, verbatim from the directive. Order preserved: the
@@ -61,6 +63,50 @@ FIELDS = [
 
 SEED = 20260831  # fixed: reproducible shuffle, no information leak
 
+# --------------------------------------------------------------------------
+# The 60-item stratified selection.
+#
+# WHY A SHORTER PACK EXISTS. 136 items is 1.5-2 hours of unpaid concentration,
+# and a tired reviewer produces exactly the evidence this whole wave is trying
+# to avoid: agreeable, fast, and wrong. CTO ruling 31 Aug 2026.
+#
+# SELECTION IS DECLARED HERE, IN CODE, AND WAS FIXED BEFORE ANY REVIEWER SAW
+# ANYTHING. That is the only thing that stops a "stratified sample" becoming a
+# sample of the cases that flatter whichever engine one hopes will win.
+#
+# The SAME 15 cases run through all four cells (2 engines x 2 directions), so a
+# reviewer's verdict on one engine's Yoruba is directly comparable to the
+# other's on the identical sentence. 15 x 2 x 2 = 60.
+#
+# Eleven of the fifteen are cases where a defect costs the user money, a missed
+# instruction, or a reversed meaning. Four are ordinary talk, because an engine
+# that never errs and never sounds human is also not shippable, and a reviewer
+# needs something normal to calibrate against.
+# --------------------------------------------------------------------------
+STRATIFIED_SOURCES: tuple[str, ...] = (
+    # money and identifiers -- where an error costs somebody money
+    "The price is two thousand naira per bag.",
+    "Please send 45,000 naira to my account today.",
+    "I have not received the money you sent.",       # negation AND money
+    "Call me on 08031234567 when you arrive.",
+    "Transfer to account 0123456789 at First Bank.",
+    "Your verification code is 483920. Do not share it.",
+    # instructions and negation -- where an error costs somebody an action
+    "Do not send the payment yet.",
+    "I did not say that I would not come.",
+    "Do not give this medicine to a child under five years old.",
+    # times, names and places -- silently corrupted by every engine so far
+    "The meeting has been moved to 15 March at 4:30.",
+    "My name is Zoe and I work in Lagos.",
+    # ordinary talk -- naturalness cannot be judged from warnings alone
+    "Good morning everyone, and welcome to this broadcast.",
+    "How are you doing this evening?",
+    "I am on my way. Please wait for me at the gate. I will be there soon.",
+    "Thank you for your message. I have spoken to the supplier and the goods "
+    "will arrive on Friday morning. Please make sure somebody is at the shop "
+    "to receive them, and call me if there is any problem with the delivery.",
+)
+
 
 def case_id(direction: str, category: str, source: str) -> str:
     """Immutable across runs and independent of engine, order or wording of the
@@ -73,6 +119,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("results", nargs="+", help="screen-*.json from Phase 1")
     ap.add_argument("--out", default="docs/certification/review-packets")
+    ap.add_argument("--stratified", action="store_true",
+                    help="60-item reviewer pack; the 136-item archive is unchanged")
     args = ap.parse_args()
 
     reports = [json.loads(Path(p).read_text(encoding="utf-8")) for p in args.results]
@@ -80,9 +128,21 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     # Group every (engine, direction, case) into per-language buckets.
+    #
+    # Selection walks the CORPUS by position rather than matching on the row's
+    # `source`. For a reverse row that field holds the engine's own forward
+    # output, not the English original, so a text match would filter every
+    # `en->X` row and pass every `X->en` row -- leaving a pack that is twice the
+    # intended size and silently unbalanced while still looking deliberate.
+    from c7_translation_screen import CORPUS
+
     by_language: dict[str, list[dict]] = {}
     for rep in reports:
+        seen_per_direction: dict[str, int] = {}
         for row in rep["rows"]:
+            index = seen_per_direction.get(row["direction"], 0)
+            seen_per_direction[row["direction"]] = index + 1
+            english_original = CORPUS[index].text if index < len(CORPUS) else None
             src_lang, tgt_lang = row["direction"].split("->")
             # The language under review is the NON-English side, whichever way
             # the direction runs: an English speaker cannot judge Yoruba output,
@@ -90,6 +150,8 @@ def main() -> int:
             # SOURCE was understood.
             language = tgt_lang if tgt_lang != "en" else src_lang
             if language == "en":
+                continue
+            if args.stratified and english_original not in STRATIFIED_SOURCES:
                 continue
             by_language.setdefault(language, []).append({
                 "case_id": case_id(row["direction"], row["category"], row["source"]),
