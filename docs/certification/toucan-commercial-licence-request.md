@@ -108,9 +108,23 @@ Addresses taken from the paper itself, not guessed.
 
 ## After the exclusion of TranslateGemma
 
-This request matters more than when it was drafted. TranslateGemma's chat
-template **refuses `pcm` outright**, OPUS-MT and M2M100 do not list it, and
-MADLAD's `<2pcm>` is not a single vocabulary token. **Every cleared candidate
-now fails Pidgin**, so Toucan is the only surveyed route to it and this enquiry
-is the only thing between C7 and telling users plainly that Pidgin is not
-translated.
+This request matters more than when it was drafted.
+
+**No commercially cleared candidate currently provides validated Nigerian
+Pidgin translation support.** Every one of them is in a state of ABSENCE, not
+of failure — none was asked and got it wrong:
+
+| candidate | pcm state |
+|---|---|
+| TranslateGemma 4B | **REFUSED** — the chat template rejects `pcm` |
+| OPUS-MT | **NOT OFFERED** — no such route |
+| M2M100 1.2B | **NOT OFFERED** — absent from the 100 languages |
+| MADLAD-400 3B | **NOT ADDRESSABLE** — `<2pcm>` is not a single vocabulary token |
+
+That distinction matters: "unsupported" and "translated wrong" are different
+states with different remedies, and collapsing them would let a future reader
+think Pidgin had been tried and failed. It has not been tried, because nothing
+cleared can accept the request.
+
+Toucan is the only surveyed route to it, so this enquiry is the only thing
+between C7 and telling users plainly that Pidgin translation is unsupported.

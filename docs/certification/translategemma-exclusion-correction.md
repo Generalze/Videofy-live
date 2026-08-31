@@ -38,17 +38,25 @@ en->ig  "Good morning everyone, and welcome to this broadcast."
      -> "Ịga ụtụtụ Ụmụ, ụnwe obi ụtọ ịpụrụ ụzọ."      100% Latin
 ```
 
-That output is in **correct Igbo orthography**, with the dotted vowels the
-language uses. Whether it MEANS anything is a question only an Igbo speaker can
-answer, and this project has no standing to say either way.
+That output is **100% Latin script using Igbo-specific orthographic characters
+and diacritics**. That is the whole of what was observed — a character-class
+count, made by a program.
+
+**Whether it is valid or meaningful Igbo is HUMAN-UNVERIFIED.** The earlier
+wording here said "correct Igbo orthography", which is a claim about validity
+that nobody on this project is in a position to make. Being in the right script
+is not being right, and the distance between those two is exactly where this
+project's failures have lived.
 
 The two Igbo failures were real — `أنا لم أتلقเงินที่คุณส่ง` mixes Arabic and
 Thai, and the money sentence entered a 75-second repetition loop — but "Igbo is
-script-mixed garbage" overstated a 1-of-3 into a 3-of-3.
+script-mixed garbage" overstated a 1-of-3 into a 3-of-3. One output was in the
+expected script; two were not; none has been read by a speaker.
 
-This does not change the exclusion. One usable output in three, with a
-repetition loop and a wrong-script answer in the other two, is not a route C7
-can carry. It changes how the failure should be described, and being right about
+This does not change the exclusion. One output in the expected script out of
+three, with a repetition loop and a wrong-script answer in the other two, is not
+a route C7 can carry — and "in the expected script" is not "usable", which is a
+verdict still owed to a speaker. It changes how the failure should be described, and being right about
 that matters more than the sentence sounding decisive.
 
 ## 3. The exclusion is recorded narrowly
