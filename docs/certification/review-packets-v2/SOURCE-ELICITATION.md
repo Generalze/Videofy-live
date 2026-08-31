@@ -52,8 +52,15 @@ This is better than any corpus above, not merely available:
 
 - **genuinely native** — written by a speaker, not translated into the language
 - **the right domain** — real messaging, which no news or encyclopedic corpus is
-- **C7-owned** — no licence encumbrance, now or later
+- **cleanly licensed** — under an explicit contributor permission, see below
 - **unbiased** — belongs to no engine's training distribution
+
+> **Correction, 31 Aug 2026.** An earlier version of this document called the
+> resulting corpus "C7-owned". **That was wrong.** A contributor writing
+> sentences does not thereby transfer copyright in them, and calling the corpus
+> owned would have been a licence assumption of exactly the kind this project
+> refuses to make about model weights. The permission below is a broad licence,
+> not an assignment; C7 does not own this text, it is licensed to use it.
 
 Then C7 runs each candidate on those 15 sentences, `X→en`, and the reviewer
 receives the English outputs to judge — which they can do, because they wrote
@@ -62,6 +69,21 @@ the source and know what it meant.
 **Order matters: elicitation must complete before the reviewer sees any
 candidate output**, or they will be judging engines on sentences they chose
 after seeing how engines behave.
+
+## Contributor permission — obtain this BEFORE collecting anything
+
+Nothing may be collected until the contributor has agreed to the following. It
+is a licence, not an assignment: the author keeps their copyright.
+
+> By submitting these messages and English meanings, I confirm they are my
+> original writing and grant C7 / Tech Advance Concept a perpetual, worldwide,
+> irrevocable, royalty-free licence to use, reproduce, modify, evaluate, publish
+> internally, and use them for training, testing, benchmarking and improving
+> translation systems and related C7 services.
+
+If C7 ever wants **ownership** rather than a licence, that requires an explicit
+copyright assignment and is a different document. For this benchmark the broad
+licence is sufficient, and simpler.
 
 ## What to ask for
 
@@ -80,11 +102,48 @@ Give the reviewer this, in their language or in English:
 > - **3 instructions or warnings** — including at least one saying **not** to do
 >   something
 > - **3 ordinary messages** — a greeting, a question, ordinary news
+> - **at least one message that mixes English with your language**, if that is
+>   how you normally write. Do not force it if it is not natural for you.
+> - **at least one about money that uses "not"** — for example saying you have
+>   NOT received a payment. This exact shape has already broken two engines.
 >
 > Short is good. One or two sentences each. Please also write, in English, what
 > each one means — that is the answer we will compare against.
 >
 > Do not translate English sentences. Write what you would actually say.
+
+## The English meaning is SEMANTIC ground truth, not wording
+
+The English gloss the author supplies says what the message MEANS. It is not a
+model answer and candidate output must never be scored by lexical similarity to
+it. Both of these are correct for the same source:
+
+```
+author's meaning:  "I haven't received the money yet."
+candidate output:  "The payment hasn't reached me yet."
+```
+
+A regex or a chrF score penalises the second. A human reading both does not.
+This project's checker has been wrong four times for precisely this reason, and
+the reverse direction must not repeat it: **the human verdict is the score.**
+
+## Ordering — elicitation comes before EVERYTHING
+
+The contributor must finish writing and submit their 15 messages before they
+see:
+
+- any candidate reverse output
+- **the V2 forward review pack**
+- any answer key
+- any machine score
+
+The forward pack matters as much as the rest. A contributor who has already read
+30 translations of money, OTP and negation cases has learned what the benchmark
+is hunting for, and will write toward it. Their sentences would then test the
+engines on the cases we already knew about rather than the ones we did not.
+
+Once submitted, the 15 messages and their English meanings are **FROZEN** before
+any model is run against them.
 
 ## Cost and timing
 
