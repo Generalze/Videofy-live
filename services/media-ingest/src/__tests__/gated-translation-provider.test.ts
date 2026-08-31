@@ -155,6 +155,72 @@ describe('an approved exact route invokes the provider once', () => {
   });
 });
 
+describe('programme vocabulary: do-not-translate is protected like an identifier', () => {
+  function withTerms(terms: string[]) {
+    const spy = spyProvider();
+    const outcomes: { action: string; billable: boolean; reason?: string | undefined }[] = [];
+    const provider = new GatedTranslationProvider({
+      inner: spy.provider,
+      gate: createTranslationGate({
+        gate: routeGate('en->fr:programme-live'),
+        scope: 'programme-live',
+        protectedTerms: terms,
+      }),
+      onOutcome: (o) => outcomes.push({ action: o.action, billable: o.billable, reason: o.reason }),
+    });
+    return { provider, calls: spy.calls, outcomes };
+  }
+
+  it('the provider never sees the raw protected term', async () => {
+    const h = withTerms(['Ọ̀gbẹ́ni Adéyẹmí']);
+    await h.provider.translate(input({ sourceText: 'Welcome Ọ̀gbẹ́ni Adéyẹmí to the show.' }));
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]?.sourceText).not.toContain('Ọ̀gbẹ́ni Adéyẹmí');
+  });
+
+  it('restores the exact configured rendering', async () => {
+    const h = withTerms(['Ọ̀gbẹ́ni Adéyẹmí']);
+    const r = await h.provider.translate(
+      input({ sourceText: 'Welcome Ọ̀gbẹ́ni Adéyẹmí to the show.' }));
+    expect(r.translatedText).toContain('Ọ̀gbẹ́ni Adéyẹmí');
+  });
+
+  it('protects the LONGEST configured term, not a fragment of it', async () => {
+    const h = withTerms(['Lagos', 'First Bank of Lagos']);
+    await h.provider.translate(input({ sourceText: 'Go to First Bank of Lagos today.' }));
+    expect(h.calls[0]?.sourceText).not.toContain('First Bank of Lagos');
+  });
+
+  it('surfaces a lost marker instead of delivering corrupted output', async () => {
+    const outcomes: { reason?: string | undefined; billable: boolean }[] = [];
+    const provider = new GatedTranslationProvider({
+      inner: {
+        name: 'losing',
+        // The engine dropped the marker -- the presenter's name is simply gone.
+        async translate() { return { translatedText: 'Bienvenue a l emission.' }; },
+      },
+      gate: createTranslationGate({
+        gate: routeGate('en->fr:programme-live'), scope: 'programme-live',
+        protectedTerms: ['Ọ̀gbẹ́ni Adéyẹmí'],
+      }),
+      onOutcome: (o) => outcomes.push({ reason: o.reason, billable: o.billable }),
+    });
+    const source = 'Welcome Ọ̀gbẹ́ni Adéyẹmí to the show.';
+    const r = await provider.translate(input({ sourceText: source }));
+    expect(r.translatedText).toBe(source);
+    expect(outcomes[0]).toMatchObject({ reason: 'identifier-corrupted', billable: false });
+  });
+
+  it("one programme's terms cannot reach another: the gate holds only what it was given", async () => {
+    // Programme B's gate is built with no terms. Even with A's name in the
+    // text, nothing is protected -- because isolation is enforced by WHAT THE
+    // GATE WAS BUILT WITH, not by a filter the caller might forget.
+    const h = withTerms([]);
+    await h.provider.translate(input({ sourceText: 'Welcome Ọ̀gbẹ́ni Adéyẹmí to the show.' }));
+    expect(h.calls[0]?.sourceText).toContain('Ọ̀gbẹ́ni Adéyẹmí');
+  });
+});
+
 describe('an engine that loses an identifier has not translated the message', () => {
   it('returns the ORIGINAL and charges nothing', async () => {
     const calls: TranslationProviderInput[] = [];

@@ -101,6 +101,19 @@ export interface TranslationGateOptions {
   readonly gate: RouteGate;
   readonly scope: TranslationScope;
   /**
+   * Programme vocabulary marked do-not-translate.
+   *
+   * Protected by the SAME mechanism as a phone number, because the requirement
+   * is identical: come back byte-for-byte or the message has not been
+   * translated. A presenter's name mangled into a near-miss is the error an
+   * audience notices first, since it is the word they already know.
+   *
+   * Supplied per programme. The gate never reads a store: whoever builds it
+   * has already resolved the right programme's terms, so one programme's
+   * vocabulary cannot leak into another's translation through this path.
+   */
+  readonly protectedTerms?: readonly string[];
+  /**
    * The certified input limit. Beyond it the gate refuses.
    *
    * NEVER TRUNCATES. A silently shortened message is the worst outcome
@@ -146,12 +159,40 @@ const FIELD_DELIMITER = '|';
 const PLACEHOLDER = (i: number) => `⟦ID${i}⟧`;
 
 /** Text with every identifier replaced by an opaque marker. */
-export function protectIdentifiers(text: string): {
+export function protectIdentifiers(
+  text: string,
+  protectedTerms: readonly string[] = [],
+): {
   masked: string;
   identifiers: readonly string[];
 } {
   const identifiers: string[] = [];
   let masked = text;
+
+  /*
+   * VOCABULARY FIRST, and longest first within it.
+   *
+   * Before the generic patterns, so a configured term containing digits is
+   * protected as the operator wrote it rather than being split by the phone
+   * pattern. Longest first so `First Bank of Lagos` is not eaten by `Lagos`.
+   *
+   * Unicode-aware boundaries, never the word-boundary escape: it is ASCII-based
+   * even under `u`, so it cannot bound `Adéyẹmí` or `ụtụtụ` -- the terms this
+   * feature exists for -- and the protection would silently do nothing.
+   */
+  for (const term of [...protectedTerms].sort((a, b) => b.length - a.length)) {
+    if (term.trim() === '') continue;
+    const pattern = new RegExp(
+      `(?<![\p{L}\p{N}])${escapeRegExp(term)}(?![\p{L}\p{N}])`,
+      'giu',
+    );
+    masked = masked.replace(pattern, (match) => {
+      const index = identifiers.length;
+      identifiers.push(match);
+      return PLACEHOLDER(index);
+    });
+  }
+
   for (const pattern of IDENTIFIER_PATTERNS) {
     masked = masked.replace(new RegExp(pattern.source, pattern.flags), (match) => {
       const index = identifiers.length;
@@ -275,8 +316,8 @@ export function createTranslationGate(options: TranslationGateOptions) {
         };
       }
 
-      // C. IDENTIFIER PROTECTION.
-      const { masked, identifiers } = protectIdentifiers(text);
+      // C. IDENTIFIER PROTECTION, plus the programme's do-not-translate terms.
+      const { masked, identifiers } = protectIdentifiers(text, options.protectedTerms ?? []);
 
       return {
         action: 'translate',
@@ -338,4 +379,10 @@ function billingKey(
     )
     .digest('hex')
     .slice(0, 32);
+}
+
+
+/** So a term containing regex metacharacters is matched literally. */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, String.raw`\$&`);
 }
