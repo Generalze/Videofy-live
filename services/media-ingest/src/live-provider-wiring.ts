@@ -36,6 +36,7 @@ import {
   type NigerianSynthesisState,
 } from './nigerian-synthesis-route.js';
 import { createLanguageRoutedSynthesisProvider } from './language-routed-synthesis-provider.js';
+import { createWarmKeeper } from './providers/naijalingo/warm-keeper.js';
 /*
  * THE SINGLE SOURCE OF THE NIGERIAN RULE, imported rather than restated.
  *
@@ -82,6 +83,17 @@ export interface LiveProviderEnv {
   readonly naijaLingoResponseFormat?: string | undefined;
   /** `yo=adeola_yo,ig=adaeze_ig` — per-language SPEAKER ids, never codes. */
   readonly naijaLingoVoiceByLanguage?: string | undefined;
+  /**
+   * Keep the specialist's capacity awake even when nobody is using it.
+   *
+   * Off by default because always-warm has a real bill. A deployment that is
+   * about to be DEMONSTRATED should turn it on: the vendor scales to zero and
+   * takes about five minutes to come back, and during those minutes every
+   * Nigerian-language sentence is spoken by the fallback that mispronounces it.
+   */
+  readonly naijaLingoWarmAlwaysOn?: string | undefined;
+  readonly naijaLingoWarmIntervalMs?: string | undefined;
+  readonly naijaLingoWarmIdleAfterMs?: string | undefined;
   readonly azureSpeechKey?: string | undefined;
   readonly azureSpeechRegion?: string | undefined;
   readonly azureVoiceIds?: string | undefined;
@@ -150,6 +162,9 @@ export function readLiveProviderEnv(env: NodeJS.ProcessEnv = process.env): LiveP
     naijaLingoVoiceIds: optional(env['NAIJALINGO_VOICE_IDS']),
     naijaLingoResponseFormat: optional(env['NAIJALINGO_RESPONSE_FORMAT']),
     naijaLingoVoiceByLanguage: optional(env['NAIJALINGO_VOICE_BY_LANGUAGE']),
+    naijaLingoWarmAlwaysOn: optional(env['NAIJALINGO_WARM_ALWAYS_ON']),
+    naijaLingoWarmIntervalMs: optional(env['NAIJALINGO_WARM_INTERVAL_MS']),
+    naijaLingoWarmIdleAfterMs: optional(env['NAIJALINGO_WARM_IDLE_AFTER_MS']),
     azureSpeechKey: optional(env['AZURE_SPEECH_KEY']),
     azureSpeechRegion: optional(env['AZURE_SPEECH_REGION']),
     azureVoiceIds: optional(env['AZURE_VOICE_IDS']),
@@ -306,6 +321,17 @@ function parseResponseFormat(raw: string | undefined): NaijaLingoResponseFormat 
  * the night of a demo. Paste NAIJALINGO_API_KEY; everything else has a
  * published default and an override.
  */
+/**
+ * A positive millisecond count from an environment string, or the default.
+ *
+ * Zero or negative would make `setInterval` a busy loop against somebody
+ * else's API, and a typo must not be able to do that.
+ */
+function readPositiveMs(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt((value ?? '').trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function withNigerianSpecialist(
   general: StreamingSpeechSynthesisProvider,
   env: LiveProviderEnv,
@@ -429,6 +455,47 @@ function withNigerianSpecialist(
    */
   specialist.warmUp();
 
+  /*
+   * AND KEEP IT AWAKE. One warm-up at boot is not enough on its own: the
+   * capacity behind this vendor scales back to zero after an idle period, so a
+   * service that started this morning is cold again by the afternoon.
+   *
+   * MEASURED, 31 Aug 2026. A programme was uploaded to staging and all twelve
+   * segments -- ha, ig and yo -- were spoken by the fallback. `GET /v1/health`
+   * said `engine_ready: false, status: starting` and synthesis answered 503
+   * "capacity is starting after an idle period, retry in about 5 minutes". The
+   * routing, the labelling and the audio were all correct; the specialist was
+   * simply asleep, and the founder heard Azure's Yoruba.
+   *
+   * `createWarmKeeper` was written for exactly this and nothing had ever
+   * imported it. It is wired here, at the one place that holds the specialist.
+   */
+  const warmKeeper = createWarmKeeper({
+    warm: () => specialist.warmUp(),
+    intervalMs: readPositiveMs(env.naijaLingoWarmIntervalMs, 4 * 60_000),
+    // Comfortably longer than a programme, so a session cannot go cold beneath
+    // itself between one segment and the next.
+    idleAfterMs: readPositiveMs(env.naijaLingoWarmIdleAfterMs, 45 * 60_000),
+    alwaysOn: (env.naijaLingoWarmAlwaysOn ?? '').trim().toLowerCase() === 'true',
+  });
+
+  /*
+   * Said at boot, because "always-on" is the difference between a demo that
+   * sounds right and one that does not, and it is invisible otherwise.
+   */
+  // eslint-disable-next-line no-console
+  console.log(
+    JSON.stringify({
+      service: 'media-ingest',
+      message: 'Nigerian specialist warm-keeper ready',
+      alwaysOn: warmKeeper.active,
+      note: warmKeeper.active
+        ? 'capacity kept awake continuously'
+        : 'warms only while in use; the FIRST sentence after an idle period may be a ' +
+          'degraded fallback. Set NAIJALINGO_WARM_ALWAYS_ON=true before a demo.',
+    }),
+  );
+
   if (azure === null) {
     // eslint-disable-next-line no-console
     console.warn(
@@ -450,6 +517,10 @@ function withNigerianSpecialist(
     // cold vendor twice for one sentence.
     fallback: azure,
     onOutcome: (outcome) => {
+      // Demand, observed rather than guessed: this fires once per sentence the
+      // specialist was asked for, whether or not it answered. A cold vendor is
+      // exactly when keeping the pings going matters most.
+      warmKeeper.noteUsed();
       if (outcome.degradation !== null) {
         /*
          * WARN, NAMING THE LANGUAGE AND THE REASON. This is the line the whole
