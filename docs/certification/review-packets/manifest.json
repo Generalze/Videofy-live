@@ -1,0 +1,38 @@
+{
+ "seed": 20260831,
+ "packets": [
+  {
+   "language": "ha",
+   "name": "Hausa",
+   "items": 136,
+   "engines": [
+    "m2m100",
+    "opus"
+   ],
+   "review_file": "review-ha.csv",
+   "key_file": "ANSWER-KEY-ha.csv"
+  },
+  {
+   "language": "ig",
+   "name": "Igbo",
+   "items": 136,
+   "engines": [
+    "m2m100",
+    "opus"
+   ],
+   "review_file": "review-ig.csv",
+   "key_file": "ANSWER-KEY-ig.csv"
+  },
+  {
+   "language": "yo",
+   "name": "Yoruba",
+   "items": 136,
+   "engines": [
+    "m2m100",
+    "opus"
+   ],
+   "review_file": "review-yo.csv",
+   "key_file": "ANSWER-KEY-yo.csv"
+  }
+ ]
+}

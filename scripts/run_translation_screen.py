@@ -38,6 +38,11 @@ OPUS_ROUTES = {
     "ig": ("Helsinki-NLP/opus-mt-en-ig", "", "Helsinki-NLP/opus-mt-ig-en", ""),
 }
 M2M100 = "facebook/m2m100_1.2B"
+MADLAD = "google/madlad400-3b-mt"
+# MADLAD takes a `<2xx>` target token on the INPUT, T5-style; there is no source
+# token. A wrong prefix does not error, it translates into whatever it guessed,
+# so the mapping lives in exactly one place.
+MADLAD_TOKENS = {"en": "<2en>", "yo": "<2yo>", "ha": "<2ha>", "ig": "<2ig>"}
 
 
 def peak_rss_mb() -> float:
@@ -47,7 +52,7 @@ def peak_rss_mb() -> float:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", required=True, choices=("opus", "m2m100"))
+    ap.add_argument("--engine", required=True, choices=("opus", "m2m100", "madlad"))
     ap.add_argument("--languages", default="yo,ha,ig")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
@@ -83,11 +88,12 @@ def main() -> int:
             lats.append((time.perf_counter() - started) * 1000.0)
         return outs, lats
 
-    if args.engine == "m2m100":
+    if args.engine in ("m2m100", "madlad"):
+        model_id = M2M100 if args.engine == "m2m100" else MADLAD
         t0 = time.perf_counter()
-        tok = AutoTokenizer.from_pretrained(M2M100, local_files_only=True)
-        mdl = AutoModelForSeq2SeqLM.from_pretrained(M2M100, local_files_only=True)
-        load_times["m2m100"] = time.perf_counter() - t0
+        tok = AutoTokenizer.from_pretrained(model_id, local_files_only=True)
+        mdl = AutoModelForSeq2SeqLM.from_pretrained(model_id, local_files_only=True)
+        load_times[args.engine] = time.perf_counter() - t0
 
     for lang in langs:
         texts = [c.text for c in CORPUS]
@@ -102,10 +108,13 @@ def main() -> int:
             rtok = AutoTokenizer.from_pretrained(rev_id, local_files_only=True)
             rmdl = AutoModelForSeq2SeqLM.from_pretrained(rev_id, local_files_only=True)
             back, back_lat = generate(rtok, rmdl, fwd, prefix=rev_prefix)
-        else:
+        elif args.engine == "m2m100":
             tok.src_lang = "en"
             fwd, fwd_lat = generate(tok, mdl, texts, forced=tok.get_lang_id(lang), src="en")
             back, back_lat = generate(tok, mdl, fwd, forced=tok.get_lang_id("en"), src=lang)
+        else:
+            fwd, fwd_lat = generate(tok, mdl, texts, prefix=MADLAD_TOKENS[lang] + " ")
+            back, back_lat = generate(tok, mdl, fwd, prefix=MADLAD_TOKENS["en"] + " ")
 
         for case, f, b, fl, bl in zip(CORPUS, fwd, back, fwd_lat, back_lat):
             rows.append({
