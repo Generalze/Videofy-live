@@ -52,6 +52,12 @@ class Case:
     category: str
     text: str
     keep: tuple[str, ...] = ()
+    # Strings that mean NOTHING except as an exact digit sequence: phone
+    # numbers, account numbers, OTPs. Declared, never inferred -- a length rule
+    # counted the QUANTITY 2000 as an identifier in the first run, which is the
+    # difference between "wrote the amount in words" and "sent money to the
+    # wrong account".
+    identifiers: tuple[str, ...] = ()
     negated: bool = False
     sentences: int = 1
     non_linguistic: bool = False
@@ -65,10 +71,12 @@ CORPUS: tuple[Case, ...] = (
     Case("money", "I have not received the money you sent.", (), negated=True),
     Case("money", "Your balance is 12,500 naira.", ("12,500", "12500")),
     # --- identifiers that must survive verbatim
-    Case("phone", "Call me on 08031234567 when you arrive.", ("08031234567",)),
-    Case("account", "Transfer to account 0123456789 at First Bank.", ("0123456789",)),
+    Case("phone", "Call me on 08031234567 when you arrive.",
+         identifiers=("08031234567",)),
+    Case("account", "Transfer to account 0123456789 at First Bank.",
+         identifiers=("0123456789",)),
     Case("otp", "Your verification code is 483920. Do not share it.",
-         ("483920",), negated=True, sentences=2),
+         identifiers=("483920",), negated=True, sentences=2),
     Case("url", "Read more at https://consummate7.com/help before you call.",
          ("https://consummate7.com/help",)),
     # --- dates and times: weakest band in every engine measured so far
@@ -107,7 +115,7 @@ CORPUS: tuple[Case, ...] = (
     Case("blank", "", (), non_linguistic=True),
     Case("emoji-only", "👍👍", (), non_linguistic=True),
     Case("number-only", "45000", ("45000",), non_linguistic=True),
-    Case("code-only", "OTP-483920", ("483920",), non_linguistic=True),
+    Case("code-only", "OTP-483920", identifiers=("483920",), non_linguistic=True),
     Case("punctuation", "???!!!", (), non_linguistic=True),
     # --- mixed language and emoji with text
     Case("mixed", "Abeg send the money before 5pm 🙏", ("5",)),
@@ -149,9 +157,18 @@ NEG_MARKERS = {
     # Written out per language because a negation checker that only knows
     # English cannot see a flipped Yoruba sentence, which is the direction that
     # matters most: nobody in the room can read it either.
-    "yo": (r"\bkò\b", r"\bko\b", r"\bkì\b", r"\bki\b", r"\bmá\b", r"\bma\b", r"\bàì\b"),
+    # `ò` and `kò` both negate, and the BARE form is the common one. Missing it
+    # made the first run of this screen report a correct Yoruba double negation
+    # ("Mi ò sọ pé mi ò ní wá") as a lost one.
+    "yo": (r"\bkò\b", r"\bko\b", r"\bò\b", r"\bkì\b", r"\bki\b", r"\bmá\b",
+           r"\bma\b", r"\bàì\b", r"\blàì\b", r"\blái\b"),
     "ha": (r"\bba\b", r"\bbabu\b", r"\bkada\b", r"\bkar\b", r"\bbai\b"),
-    "ig": (r"\badigh\w*", r"\banagh\w*", r"\bghị\b", r"\bghi\b", r"\bekwe\w*na\b", r"\bọdịgh\w*"),
+    # IGBO NEGATES BY SUFFIX, which a word-boundary pattern cannot see. The
+    # first run of this screen reported five false "negation-lost" against
+    # `enweghị`, `bụghị`, `dịghị` and `abụghị` -- all correctly negated -- and
+    # would have condemned an engine for working. `\w*gh[iị]` is the fix.
+    "ig": (r"\w*gh[iị]\b", r"\badigh\w*", r"\banagh\w*", r"\bọdịgh\w*",
+           r"\bekwe\w*na\b", r"\bnata\b"),
 }
 
 DIGITS = re.compile(r"\d")
@@ -181,15 +198,36 @@ def check(case: Case, output: str, target: str) -> list[str]:
         return found
 
     # 1. NUMERIC / verbatim preservation
+    #
+    # TWO CLASSES, and conflating them was a real error in the first run of this
+    # screen. A phone number, OTP or account number is an IDENTIFIER: it means
+    # nothing except as an exact digit string, and one wrong digit sends money
+    # to a stranger. An amount or a count is a QUANTITY, and rendering "five" as
+    # "márùn-ún" or "two thousand" as "ẹgbẹ̀rún méjì" is CORRECT translation --
+    # a checker that calls that a defect punishes the model for working.
+    #
+    # The same mistake applied to place names: Lagos -> Èkó is the right Yoruba
+    # exonym, not a lost entity. Only a mutated name is a defect, and this
+    # checker cannot tell those apart, so it reports rather than convicts.
     for token in case.keep:
         if token in out:
             continue
+        digits = normalise_number(token)
+        if digits and digits in normalise_number(out):
+            continue
         if DIGITS.search(token):
-            # Digits may be legitimately reformatted (45,000 -> 45000 -> 45 000)
-            # so compare on digits alone before calling it a defect.
-            if normalise_number(token) and normalise_number(token) in normalise_number(out):
-                continue
-        found.append(f"lost:{token}")
+            # May have been spelled out in a language this checker cannot read.
+            found.append(f"quantity-unverified:{token}")
+        else:
+            found.append(f"lexical-unverified:{token}")
+
+    for token in case.identifiers:
+        digits = normalise_number(token)
+        if digits and digits in normalise_number(out):
+            continue
+        # Unambiguous and severe. Nothing legitimate reformats a phone number
+        # into different digits.
+        found.append(f"identifier-corrupted:{token}")
 
     # 3. NEGATION PRESERVATION -- the defect that matters most in a chat
     if case.negated:
@@ -198,9 +236,18 @@ def check(case: Case, output: str, target: str) -> list[str]:
             found.append("negation-lost")
 
     # 4/5. OMISSION and HALLUCINATION, by sentence count
-    out_sentences = len([s for s in re.split(r"[.!?。]+", out) if s.strip()])
-    if case.sentences > 1 and out_sentences < case.sentences:
-        found.append(f"omission({out_sentences}/{case.sentences} sentences)")
+    #
+    # Counting CLAUSE boundaries, not full stops, and requiring real length
+    # loss. Yoruba and Igbo routinely join what English splits, so a
+    # three-sentence source arriving as one sentence with two semicolons has
+    # lost nothing -- and the first run of this screen called that an omission
+    # four times per language. Real omission shows up as missing CONTENT.
+    out_sentences = len([s for s in re.split(r"[.!?;。]+", out) if s.strip()])
+    length_ratio = len(out) / max(1, len(case.text))
+    if case.sentences > 1 and out_sentences < case.sentences and length_ratio < 0.6:
+        found.append(
+            f"omission({out_sentences}/{case.sentences} clauses, {length_ratio:.0%} length)"
+        )
     if out_sentences > case.sentences + 1:
         found.append(f"addition({out_sentences}/{case.sentences} sentences)")
 
