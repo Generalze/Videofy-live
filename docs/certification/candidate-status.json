@@ -43,7 +43,7 @@
   "translategemma": {
    "licence": "Gemma terms",
    "commercial": "permitted, revocable",
-   "qualityStatus": "EXCLUDED-PHASE1",
+   "qualityStatus": "EXCLUDED-PHASE1 (narrow)",
    "infrastructureStatus": "STAGED (benchmark venv only)",
    "revision": "10042cb0e6e7fdce748996a71dc3dc432a4e0c89",
    "runtime": "python 3.12.3 / torch 2.13.0+cpu / transformers 5.16.1",
@@ -53,8 +53,9 @@
     "ig": "NOT SUPPORTED",
     "pcm": "REFUSED by chat template"
    },
-   "note": "The licence was never the problem -- Gemma permits commercial hosted use. The model returns Devanagari, Gujarati, Arabic and Thai for yo/ha/ig while translating fr/es/pt AND Swahili correctly in the same run. Regional and script variants (ha-NE, ha-GH, yo-BJ) changed nothing. An instance of Google's own 'experimental tier': present in the chat template, absent in capability.",
-   "productionApproved": false
+   "note": "The licence was never the problem -- Gemma permits commercial hosted use. Devanagari is the dominant intrusion in Yoruba (Cyrillic and Gujarati also appear); Hausa returns Arabic; Igbo produced ONE correctly-scripted output of three, plus an Arabic/Thai mix and a 75 s repetition loop. Controls fr/es/pt AND Swahili were correct in the same run, ruling out the harness.",
+   "productionApproved": false,
+   "exclusionScope": "Excluded for C7 Hausa, Igbo, Yoruba and Nigerian Pidgin translation using the tested official TranslateGemma chat-template path and exact benchmark configuration (revision 10042cb0, transformers 5.16.1, torch 2.13.0+cpu, greedy decoding, float32 CPU). NOT a claim that the model can never translate these languages under other prompts, decoding strategies, precisions or future revisions."
   },
   "nllb": {
    "licence": "CC-BY-NC-4.0",
@@ -68,12 +69,13 @@
    "commercial": false,
    "qualityStatus": "NOT MEASURED",
    "infrastructureStatus": "NOT STAGED",
-   "note": "commercial licence request drafted, not sent by Claude (no email capability). Silence is not permission.",
-   "productionApproved": false
+   "note": "Commercial licence enquiry SENT by the founder to the three UBC-NLP authors listed in the published ACL paper. Silence is not permission.",
+   "productionApproved": false,
+   "licenceRequestStatus": "AWAITING LICENSOR RESPONSE"
   }
  },
  "routes": {
   "_comment": "No route is promoted. Recommendations are candidates for human review only.",
-  "humanReviewStatus": "V2 forward packs MAY NOW BE DISTRIBUTED UNCHANGED: TranslateGemma entered the top two for no direction, so no V3 is required. Reverse directions remain UNMEASURED pending frozen native corpora."
+  "humanReviewStatus": "V2 forward packs are FINAL; TranslateGemma entered the top two for no direction so no V3 is required. ORDERING IS BINDING, per language: native-source elicitation -> contributor licence accepted -> corpus frozen with sha256 -> ONLY THEN send that reviewer V2. V2 must never precede elicitation for a given reviewer. Reverse directions remain UNMEASURED."
  }
 }

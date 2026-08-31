@@ -1,6 +1,12 @@
-# Toucan — commercial licence request (DRAFT, not sent)
+# Toucan — commercial licence request (SENT, awaiting response)
 
-**Status: awaiting founder authorisation. Nothing has been sent to anyone.**
+**Status: SENT.** The founder sent this to the three UBC-NLP authors listed in
+the published ACL paper on 31 Aug 2026.
+
+**AWAITING LICENSOR RESPONSE.** Until explicit written commercial permission
+exists, Toucan remains `productionApproved = false` and benchmark/research only.
+**Silence is not permission** — no reply, or a slow reply, changes nothing about
+what C7 may use.
 
 ## Why we are asking
 
@@ -17,10 +23,14 @@ letter; the alternative is shipping Pidgin support that does not exist.
 
 ## Recipient
 
-The Toucan / Cheetah authors at UBC-NLP (Deep Learning & NLP Group, University
-of British Columbia), via the contact on the Toucan repository or the paper's
-corresponding author. **Founder to confirm the address before sending** — this
-draft deliberately does not guess an individual's email.
+Sent to the three authors listed in the published ACL paper
+(*Toucan: Many-to-Many Translation for 150 African Language Pairs*):
+
+- `a.elmadany@ubc.ca`
+- `ife.adebara@ubc.ca`
+- `muhammad.mageed@ubc.ca`
+
+Addresses taken from the paper itself, not guessed.
 
 ## Draft
 
@@ -81,7 +91,7 @@ draft deliberately does not guess an individual's email.
 > Founder & CTO, Consummate 7
 > consummate7.com
 
-## Notes for the founder before sending
+## Notes recorded at the time of sending
 
 - **Nothing here commits C7 to anything.** It asks whether terms exist and what
   they are.
@@ -95,3 +105,12 @@ draft deliberately does not guess an individual's email.
 - If UBC-NLP says no, Pidgin stays unsupported by every cleared candidate and
   the honest product answer is that C7 does not translate Pidgin yet — not that
   it routes Pidgin through something that answers in a different language.
+
+## After the exclusion of TranslateGemma
+
+This request matters more than when it was drafted. TranslateGemma's chat
+template **refuses `pcm` outright**, OPUS-MT and M2M100 do not list it, and
+MADLAD's `<2pcm>` is not a single vocabulary token. **Every cleared candidate
+now fails Pidgin**, so Toucan is the only surveyed route to it and this enquiry
+is the only thing between C7 and telling users plainly that Pidgin is not
+translated.
