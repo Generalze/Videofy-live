@@ -63,6 +63,7 @@ import { PersonProfileScreen } from './src/screens/PersonProfileScreen';
 import { ProgrammeViewerScreen } from './src/screens/ProgrammeViewerScreen';
 import { BootScreen } from './src/screens/BootScreen';
 import { createDirectCallApi } from './src/call/directCallApi';
+import { routeCallPush, shouldDismissIncoming } from './src/call/incomingCallRouting';
 import { foregroundPresentationFor } from './src/push/callNotificationPresentation';
 import { videofyCall } from './src/native/videofyCall';
 import { createAppLock } from './src/auth/appLock';
@@ -316,12 +317,24 @@ function AppInner(): JSX.Element {
   }, []);
 
   const routedCalls = useRef(new Set<string>());
+  /*
+   * Pushes that arrived before this device could ask about them.
+   *
+   * The notification listeners run at mount, before `auth.restore()` resolves,
+   * so a cold-start call push had no session to ask with, was answered null,
+   * and was then recorded as handled -- the incoming screen never appeared and
+   * the caller rang out against a phone that had woken up and said nothing.
+   * Deferred pushes are re-driven the moment a session exists.
+   */
+  const deferredPushes = useRef<Record<string, unknown>[]>([]);
+  const hasSessionRef = useRef(false);
+  hasSessionRef.current = state.status === 'signed-in';
+
   const routeNotification = useCallback(
     (data: Record<string, unknown>) => {
       const kind = String(data['kind'] ?? '');
       if (kind === 'call' && typeof data['callId'] === 'string') {
         if (routedCalls.current.has(data['callId'])) return;
-        routedCalls.current.add(data['callId']);
         /*
          * A PUSH IS ONLY A WAKE-UP. The device asks the server whether the
          * call is still live; a stale push (after no answer, decline or hang
@@ -330,18 +343,27 @@ function AppInner(): JSX.Element {
          * acknowledgement reports, so the caller's "Ringing…" is true.
          */
         const callId = data['callId'];
-        const fromAccountId = typeof data['fromAccountId'] === 'string' ? data['fromAccountId'] : '';
-        const fromName =
-          typeof data['fromName'] === 'string' && data['fromName'].length > 0
-            ? data['fromName']
-            : 'Caller';
-        void directCalls.check(callId).then((check) => {
-          if (check === null || !check.ring) return;
-          setIncomingCall({
-            callId,
-            caller: { accountId: check.callerAccountId || fromAccountId, name: check.callerName || fromName },
-            mode: check.mode,
-          });
+        void routeCallPush({
+          callId,
+          fromAccountId: typeof data['fromAccountId'] === 'string' ? data['fromAccountId'] : '',
+          fromName:
+            typeof data['fromName'] === 'string' && data['fromName'].length > 0
+              ? data['fromName']
+              : 'Caller',
+          hasSession: hasSessionRef.current,
+          check: (id) => directCalls.check(id),
+        }).then((routing) => {
+          if (routing.kind === 'defer') {
+            // NOT marked routed: the question was never answered.
+            if (!deferredPushes.current.some((held) => held['callId'] === callId)) {
+              deferredPushes.current.push(data);
+            }
+            return;
+          }
+          routedCalls.current.add(callId);
+          if (routing.kind === 'ignore') return;
+          setIncomingCall(routing.presentation);
+          // Acknowledged only now, because only now is it genuinely on screen.
           void directCalls.ackRinging(callId);
         });
       } else if (kind === 'message' && typeof data['fromAccountId'] === 'string') {
@@ -356,6 +378,44 @@ function AppInner(): JSX.Element {
     },
     [openChatWithAccount],
   );
+
+  /*
+   * RE-DRIVE WHAT COULD NOT BE ASKED. The moment a session exists, every push
+   * held back during the cold start is routed properly. Without this the
+   * deferral would merely be a quieter way of dropping the call.
+   */
+  useEffect(() => {
+    if (state.status !== 'signed-in') return;
+    const held = deferredPushes.current;
+    if (held.length === 0) return;
+    deferredPushes.current = [];
+    for (const data of held) routeNotification(data);
+  }, [state.status, routeNotification]);
+
+  /*
+   * WATCH A RINGING CALL SO IT CAN STOP RINGING.
+   *
+   * On the native path the module reports decline, timeout and answer. Without
+   * it nothing tells this device the call is over, so a caller who hangs up --
+   * or an answer on the person's other phone -- left this screen ringing until
+   * somebody touched it. A failed poll is not a dismissal: only the server
+   * saying the call is no longer ringing takes the screen down.
+   */
+  useEffect(() => {
+    if (incomingCall === null) return undefined;
+    const callId = incomingCall.callId;
+    let live = true;
+    const poll = setInterval(() => {
+      void directCalls.check(callId).then((check) => {
+        if (!live || !shouldDismissIncoming(check)) return;
+        setIncomingCall((current) => (current?.callId === callId ? null : current));
+      });
+    }, 2000);
+    return () => {
+      live = false;
+      clearInterval(poll);
+    };
+  }, [incomingCall]);
 
   /*
    * THE THREE LIVES OF A NOTIFICATION, honestly stated (P8 review finding):
