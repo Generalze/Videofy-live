@@ -747,6 +747,58 @@ const CHANNEL_PROFILES: Migration = {
 };
 
 /** Applied in this order. Append only. */
+/**
+ * Programme vocabulary, and the revision that makes it one coherent state.
+ *
+ * TWO TABLES, ON PURPOSE. The entries hold the terms; a separate one-row-per-
+ * programme state table holds the revision. That row is the SERIALIZATION POINT
+ * for mutations: a writer takes `FOR UPDATE` on it, so two operators editing the
+ * same programme at once cannot both read revision 17 and both write 18 --
+ * which would leave both their changes in the rows while the revision advanced
+ * only once, and a snapshot labelled 18 would be missing one of them.
+ *
+ * The lock is PROGRAMME-LOCAL. Programme A's writer must never block
+ * programme B's, which is why the revision lives in a row keyed by programme
+ * rather than in a single global counter.
+ *
+ * Every index leads with programme_id, because every legitimate query is
+ * programme-scoped and no query that is not should be cheap.
+ */
+const PROGRAMME_VOCABULARY: Migration = {
+  name: '021_programme_vocabulary',
+  sql: `
+    CREATE TABLE IF NOT EXISTS programme_vocabulary_state (
+      programme_id text PRIMARY KEY,
+      -- Advanced by exactly one per semantic change, inside the same
+      -- transaction as the change itself.
+      revision     bigint NOT NULL DEFAULT 0,
+      updated_at   timestamptz NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS programme_vocabulary_entries (
+      programme_id        text NOT NULL,
+      entry_id            text NOT NULL,
+      term                text NOT NULL,
+      canonical_rendering text NOT NULL DEFAULT '',
+      language            text NOT NULL DEFAULT '*',
+      pronunciation_hint  text NOT NULL DEFAULT '',
+      do_not_translate    boolean NOT NULL DEFAULT false,
+      stt_keyterm         boolean NOT NULL DEFAULT false,
+      kind                text NOT NULL DEFAULT 'programme-term',
+      notes               text NOT NULL DEFAULT '',
+      enabled             boolean NOT NULL DEFAULT true,
+      updated_at          timestamptz NOT NULL DEFAULT now(),
+      -- Composite key: an entry id is unique WITHIN a programme, not globally.
+      -- Two programmes may legitimately use the same id, and a delete keyed on
+      -- id alone would take both.
+      PRIMARY KEY (programme_id, entry_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS programme_vocabulary_entries_programme_idx
+      ON programme_vocabulary_entries (programme_id);
+  `,
+};
+
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
   ORGANIZATIONS,
@@ -768,4 +820,5 @@ export const MIGRATIONS: readonly Migration[] = [
   CHANNEL_FOLLOWS,
   REPORTS,
   CHANNEL_PROFILES,
+  PROGRAMME_VOCABULARY,
 ];
