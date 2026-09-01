@@ -19,8 +19,9 @@
  * no merge, no silently discarding the other person's work -- the software
  * cannot know which of two people is right.
  */
-import React from 'react';
+import React, { useState } from 'react';
 import styles from './VocabularyPage.module.css';
+import { VocabularyForm } from './VocabularyForm';
 
 export type ConsumerState = 'consumed' | 'unconsumed' | 'unsupported';
 
@@ -107,6 +108,9 @@ function StateChip({ state, consumer, detail }: {
 
 export function VocabularyPage(props: VocabularyPageProps): React.ReactElement {
   const { snapshot, unavailable, conflict, saving } = props;
+  // Which row the form is editing, or null to create. Held here rather than in
+  // the form so choosing a row and submitting it are one interaction.
+  const [editing, setEditing] = useState<VocabularyEntryView | null>(null);
 
   if (unavailable) {
     return (
@@ -164,6 +168,17 @@ export function VocabularyPage(props: VocabularyPageProps): React.ReactElement {
         </div>
       ) : null}
 
+      <VocabularyForm
+        editing={editing}
+        revision={snapshot.revision}
+        saving={saving === true}
+        onSave={(entry, expectedRevision) => {
+          setEditing(null);
+          props.onSave(entry, expectedRevision);
+        }}
+        onCancelEdit={() => setEditing(null)}
+      />
+
       <table className={styles.table}>
         <thead>
           <tr>
@@ -209,7 +224,15 @@ export function VocabularyPage(props: VocabularyPageProps): React.ReactElement {
                              consumer={CONSUMERS.pronunciationHint}
                              detail={capabilities.synthesisRouteName} />
                 </td>
-                <td>
+                <td className={styles.rowActions}>
+                  <button
+                    type="button"
+                    disabled={saving === true}
+                    onClick={() => setEditing(entry)}
+                    className={styles.edit}
+                  >
+                    Edit
+                  </button>
                   <button
                     type="button"
                     disabled={saving === true}

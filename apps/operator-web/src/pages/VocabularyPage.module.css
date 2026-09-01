@@ -200,3 +200,80 @@
   font-size: 12px;
   color: var(--op-text-faint);
 }
+
+/* ---- Add / edit form ---------------------------------------------------- */
+
+.form {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: var(--op-radius-md);
+  background: var(--op-panel);
+  border: 1px solid var(--op-panel-border);
+}
+.formTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--op-text);
+}
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px 14px;
+}
+.field { display: grid; gap: 4px; font-size: 12px; color: var(--op-text-muted); }
+.field input,
+.field select {
+  padding: 7px 9px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-panel-border-strong);
+  background: var(--op-panel-raised);
+  color: var(--op-text);
+  font-family: var(--op-font);
+  font-size: 13px;
+}
+.formToggles { display: flex; flex-wrap: wrap; gap: 14px; }
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--op-text-secondary);
+}
+.formActions { display: flex; gap: 10px; }
+.save {
+  padding: 7px 16px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-teal-border);
+  background: var(--op-teal-soft);
+  color: var(--op-teal-text);
+  font-family: var(--op-font);
+  font-size: 13px;
+  cursor: pointer;
+}
+/* Disabled while a write is in flight, so one submit cannot become two. */
+.save:disabled { opacity: 0.5; cursor: default; }
+.cancel {
+  padding: 7px 14px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-panel-border-strong);
+  background: transparent;
+  color: var(--op-text-secondary);
+  font-family: var(--op-font);
+  font-size: 13px;
+  cursor: pointer;
+}
+.rowActions { display: flex; gap: 8px; }
+.edit {
+  padding: 5px 11px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-panel-border-strong);
+  background: transparent;
+  color: var(--op-text-secondary);
+  font-family: var(--op-font);
+  font-size: 12px;
+  cursor: pointer;
+}
+.edit:hover { background: var(--op-panel-raised); }
+.edit:disabled { opacity: 0.5; cursor: default; }

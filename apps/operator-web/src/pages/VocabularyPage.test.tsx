@@ -142,14 +142,19 @@ describe('language and direction are visible', () => {
   it('shows a language-scoped term as scoped, not global', () => {
     const html = markup(
       <VocabularyPage snapshot={view([entry({ language: 'fr' })])} {...NOOP} />);
-    expect(html).toMatch(/>fr</u);
-    expect(html).not.toMatch(/every language/u);
+    // Scoped to the TABLE. The add-form legitimately explains that `*` means
+    // every language, and an assertion over the whole page conflated that
+    // helper text with a claim about this operator's term.
+    const table = html.slice(html.indexOf('<table'));
+    expect(table).toMatch(/>fr</u);
+    expect(table).not.toMatch(/every language/u);
   });
 
   it('shows a * term as applying to every language', () => {
     const html = markup(
       <VocabularyPage snapshot={view([entry({ language: '*' })])} {...NOOP} />);
-    expect(html).toMatch(/every language/u);
+    const table = html.slice(html.indexOf('<table'));
+    expect(table).toMatch(/every language/u);
   });
 });
 
