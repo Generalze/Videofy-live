@@ -64,6 +64,20 @@ import type {
  */
 export const DEFAULT_UTTERANCE_END_MS = 1000;
 
+/**
+ * Does this model accept `keyterm`?
+ *
+ * Nova-3 does. Nova-2 and earlier take the older `keywords` parameter with
+ * different semantics, and an unrecognised parameter is IGNORED rather than
+ * rejected -- so a deployment on the wrong model would boost nothing while the
+ * console showed the term as consumed. Exported so the capability reported to
+ * an operator is derived from the same rule that builds the request, and cannot
+ * drift from it.
+ */
+export function supportsKeyterms(model: string): boolean {
+  return /^nova-3/u.test(model.trim().toLowerCase());
+}
+
 export interface DeepgramNovaStreamingConfig {
   readonly apiKey: string;
   /** e.g. `nova-3` or `flux-general-en`. Recorded per-model in the registry. */
@@ -156,6 +170,24 @@ class DeepgramNovaSession implements StreamingTranscriptionSession {
     }
     if (this.options.sourceLanguage !== undefined && this.options.sourceLanguageMode !== 'auto-detect') {
       params.set('language', this.options.sourceLanguage);
+    }
+
+    /*
+     * PROGRAMME VOCABULARY as Deepgram keyterms.
+     *
+     * `keyterm` is a NOVA-3 parameter. Earlier models take the older `keywords`
+     * form with different semantics, and sending `keyterm` to them is silently
+     * ignored -- which would leave an operator believing a presenter's name was
+     * boosted when nothing was. So it is gated on the model actually in use and
+     * the capability is reported honestly elsewhere; see
+     * `supportsKeyterms` below, which is what the console reads.
+     *
+     * Repeated, one parameter per term, because that is the wire format.
+     */
+    if (supportsKeyterms(this.config.model)) {
+      for (const term of this.options.keyterms ?? []) {
+        if (term.trim() !== '') params.append('keyterm', term);
+      }
     }
     return `${base}?${params.toString()}`;
   }
