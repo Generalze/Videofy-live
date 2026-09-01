@@ -22,7 +22,10 @@
  * fake -- and a second fake written to satisfy a path would be a second model
  * of the database, which is exactly what the shared one exists to avoid.
  */
-import { describe, expect, it } from 'vitest';
+import express from 'express';
+import type { AddressInfo } from 'node:net';
+import { afterEach, describe, expect, it } from 'vitest';
+import { registerSponsoredCreativeRoutes } from '../../../../services/account/src/sponsored-creative-routes';
 import { createPostgresSponsoredCreative } from '../../../../services/account/src/db/programme-sponsored-creative-postgres';
 import { makeCreativeFakePool } from './sponsoredCreativeFakePool';
 import type { ProgrammeSponsoredCreative } from '@videofy-live/shared-types';
@@ -146,5 +149,79 @@ describe('the ordinary first save is unaffected', () => {
     expect(late.ok).toBe(false);
     if (late.ok) throw new Error('unreachable');
     expect(late.currentRevision).toBe(1);
+  });
+});
+
+/**
+ * The same race, at the HTTP boundary.
+ *
+ * The store returning a structured conflict is necessary and not sufficient:
+ * what the contract promises an operator is a 409 carrying the two revisions,
+ * and what the defect actually produced was a 500. Those are different
+ * responses and only an end-to-end assertion distinguishes them -- a store test
+ * cannot tell you how the route rendered its answer.
+ */
+describe('two concurrent first saves, over real HTTP', () => {
+  let server: import('node:http').Server | null = null;
+
+  afterEach(async () => {
+    if (server !== null) {
+      const closing = server;
+      server = null;
+      await new Promise<void>((r) => closing.close(() => r()));
+    }
+  });
+
+  it('one 200 at revision 1, one 409 with both revisions, and no 500', async () => {
+    const pool = makeCreativeFakePool({ pauseFirst: /^INSERT/iu });
+    const app = express();
+    app.use(express.json());
+    registerSponsoredCreativeRoutes(app, {
+      creatives: createPostgresSponsoredCreative(pool.pool),
+      callerAccountId: () => ({ accountId: 'acct_1' }),
+      mayAdminister: async (_a, programmeId) => programmeId === 'prog_A',
+      programmeExists: async () => true,
+    });
+    server = app.listen(0);
+    await new Promise<void>((r) => server!.once('listening', r));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}` +
+      '/operator/programmes/prog_A/sponsored-creative';
+
+    const put = (headline: string): Promise<Response> =>
+      fetch(url, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...creative(headline), expectedRevision: 0 }),
+      });
+
+    const first = put('First operator');
+    for (let i = 0; i < 40 && !pool.isPaused(); i += 1) {
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    expect(pool.isPaused()).toBe(true);
+
+    const second = put('Second operator');
+    await new Promise((r) => setTimeout(r, 10));
+    pool.resume();
+
+    const [a, b] = await Promise.all([first, second]);
+    const statuses = [a.status, b.status].sort();
+
+    // EXACTLY these two. A 500 here is the defect this pins.
+    expect(statuses).toEqual([200, 409]);
+    expect(statuses).not.toContain(500);
+
+    const okResponse = a.status === 200 ? a : b;
+    const conflictResponse = a.status === 409 ? a : b;
+
+    const okBody = (await okResponse.json()) as { revision: number };
+    expect(okBody.revision).toBe(1);
+
+    const conflictBody = (await conflictResponse.json()) as {
+      error: string; expectedRevision: number; currentRevision: number;
+    };
+    expect(conflictBody.error).toBe('revision-conflict');
+    expect(conflictBody.expectedRevision).toBe(0);
+    expect(conflictBody.currentRevision).toBe(1);
   });
 });
