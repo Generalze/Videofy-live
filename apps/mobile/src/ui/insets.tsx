@@ -20,6 +20,9 @@ interface SafeAreaModule {
 
 let safeArea: SafeAreaModule | null = null;
 try {
+  // OPTIONAL AT RUNTIME: a build without the package must still start, which
+  // an import cannot express -- it would fail at module load, not here.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
   safeArea = require('react-native-safe-area-context') as SafeAreaModule;
 } catch {
   safeArea = null;
@@ -42,14 +45,12 @@ export function InsetsProvider({ children }: { readonly children: ReactNode }): 
  */
 export function useBottomInset(): number {
   if (safeArea === null) return FALLBACK_BOTTOM;
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   const insets = safeArea.useSafeAreaInsets();
   return Math.max(insets.bottom, 12);
 }
 
 export function useTopInset(): number {
   if (safeArea === null) return FALLBACK_TOP;
-  // eslint-disable-next-line react-hooks/rules-of-hooks
   const insets = safeArea.useSafeAreaInsets();
   return Math.max(insets.top, 24);
 }

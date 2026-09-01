@@ -316,6 +316,13 @@ function AppInner(): JSX.Element {
     setTab('chats');
   }, []);
 
+  /*
+   * The signed-in account, or null. Narrowed once here because `accountId`
+   * exists only on the signed-in variant, so an effect cannot name it in a
+   * dependency list without this.
+   */
+  const signedInAccountId = state.status === 'signed-in' ? state.accountId : null;
+
   const routedCalls = useRef(new Set<string>());
   /*
    * Pushes that arrived before this device could ask about them.
@@ -448,8 +455,8 @@ function AppInner(): JSX.Element {
    * is consumed once on start. Without the module the old path stands.
    */
   useEffect(() => {
-    if (!videofyCall.available || state.status !== 'signed-in') return undefined;
-    const pending = videofyCall.consumePendingAnswer(state.accountId);
+    if (!videofyCall.available || signedInAccountId === null) return undefined;
+    const pending = videofyCall.consumePendingAnswer(signedInAccountId);
     if (pending !== null) {
       setIncomingCall(null);
       setActiveCall({ kind: 'direct', callId: pending.callId, peer: { accountId: pending.callerAccountId, name: pending.callerName }, ring: false });
@@ -469,7 +476,13 @@ function AppInner(): JSX.Element {
       decline?.remove();
       timeout?.remove();
     };
-  }, [state.status]);
+    /*
+     * ACCOUNT ID IS A REAL DEPENDENCY. The cold-start answer is consumed FOR a
+     * specific account, so a session that changed identity without changing
+     * status would have consumed the previous owner's pending answer. The
+     * listeners are account-scoped; re-subscribing on a change is correct.
+     */
+  }, [signedInAccountId]);
 
   /* The ring credential: the native receiver's key to the gateway, bound to this account and the session's expiry. */
   useEffect(() => {

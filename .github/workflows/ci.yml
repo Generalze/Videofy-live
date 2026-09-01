@@ -15,6 +15,12 @@ on:
     branches:
       - main
       - copilot/initial-repo-foundation
+      # RELEASE CANDIDATES MUST BE QUALIFIED WHERE THEY LIVE. The P8 branches
+      # were never in this list, so the integration that became the accepted
+      # baseline had no CI run at all -- the last green build belonged to a
+      # pre-merge commit on a different branch. A candidate nobody can point a
+      # pipeline at is a candidate nobody has tested.
+      - 'p8/**'
 
 jobs:
   validate:
@@ -69,3 +75,98 @@ jobs:
 
       - name: Run cross-process integration smoke
         run: npm run test:integration
+
+  # ---------------------------------------------------------------------------
+  # THE ANDROID NATIVE GATE.
+  #
+  # COMPILE VALIDATION, NOT A BUILD. It exists to catch the things that used to
+  # be discovered by spending an EAS build: a Kotlin syntax error, a manifest
+  # that will not merge, a native module the autolinker never sees. Those are
+  # cheap here and expensive there.
+  #
+  # It deliberately does NOT run `assemble`: packaging an APK is slower, needs
+  # signing decisions, and proves nothing extra about whether the sources
+  # compile. No EAS is invoked, no artefact is published, nothing is deployed.
+  #
+  # It runs on an ephemeral runner because the development machine has no JDK
+  # and no Android SDK, and provisioning multi-gigabyte toolchains on a laptop
+  # to satisfy a gate is the wrong trade.
+  android-native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # A CLEAN INSTALL FROM THE LOCKFILE. A checkout must not need a prior
+      # `npm install` to discover a workspace; if it does, that is a release
+      # defect and this is where it surfaces.
+      - name: Install Node dependencies
+        run: npm ci
+
+      # The mobile app imports built workspace packages; prebuild reads the
+      # config, which reads those.
+      - name: Build workspace packages
+        run: npm run build
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # Does the Expo config parse and resolve at all? A malformed app.json or
+      # a plugin that cannot be found fails here, in seconds, rather than
+      # halfway through a native build.
+      - name: Validate Expo configuration
+        working-directory: apps/mobile
+        run: npx --yes expo config --type prebuild > /dev/null
+
+      # Generates android/ from app.json, the config plugins and the local
+      # modules. This is where an unlinked native module would go missing.
+      - name: Expo prebuild (Android)
+        working-directory: apps/mobile
+        run: npx --yes expo prebuild --platform android --no-install --clean
+
+      # THE NATIVE MODULE MUST ACTUALLY BE THERE. Prebuild succeeding is not
+      # the same as the autolinker having found our Kotlin: a module that is
+      # never linked compiles nothing and fails silently on a device instead.
+      - name: Verify the Videofy call module was linked
+        working-directory: apps/mobile
+        run: |
+          set -e
+          test -f android/settings.gradle
+          grep -q "videofy-call" android/settings.gradle             || (echo "videofy-call was not autolinked into settings.gradle" && exit 1)
+
+      # Kotlin and Java compilation plus the manifest merge, without packaging.
+      - name: Compile Android sources and merge manifests
+        working-directory: apps/mobile/android
+        run: ./gradlew --no-daemon compileDebugKotlin compileDebugJavaWithJavac processDebugManifest
+
+      # The merged manifest is what the device actually reads. These four are
+      # what make a call ring like a telephone rather than appear as a tray
+      # notification, and a merge that silently dropped one would be invisible
+      # until a physical device failed to ring.
+      - name: Verify the merged manifest keeps the telephone permissions
+        working-directory: apps/mobile/android
+        run: |
+          set -e
+          MERGED=$(find app/build/intermediates -name AndroidManifest.xml -path "*debug*" | head -1)
+          test -n "$MERGED" || (echo "no merged manifest was produced" && exit 1)
+          echo "merged manifest: $MERGED"
+          for permission in USE_FULL_SCREEN_INTENT MANAGE_OWN_CALLS FOREGROUND_SERVICE_PHONE_CALL POST_NOTIFICATIONS; do
+            grep -q "$permission" "$MERGED"               || (echo "merged manifest is missing $permission" && exit 1)
+          done
+          for component in VideofyConnectionService IncomingCallService IncomingCallActivity VideofyMessagingService; do
+            grep -q "$component" "$MERGED"               || (echo "merged manifest is missing $component" && exit 1)
+          done

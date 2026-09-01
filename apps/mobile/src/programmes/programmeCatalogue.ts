@@ -177,6 +177,8 @@ export function followsReducer(state: FollowState, action: FollowAction): Follow
   }
   if (action.follow === null) {
     if (state[action.channelId] === undefined) return state;
+    // Destructured out to drop the key; the value itself is not wanted.
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { [action.channelId]: _gone, ...rest } = state;
     return rest;
   }

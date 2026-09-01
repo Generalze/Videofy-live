@@ -25,7 +25,8 @@ import Svg, { Circle, Defs, Ellipse, Path, RadialGradient, Rect, Stop } from 're
  * The launcher logo (teal C, white 7, teal dot), cut from assets/adaptive-icon.png
  * onto a transparent 1024 square: the same file the native splash shows.
  */
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// Metro resolves an asset through require(); there is no import form for it.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const LAUNCHER_LOGO = require('../../assets/splash-icon.png') as ImageSourcePropType;
 
 export const C7 = {

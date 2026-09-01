@@ -46,7 +46,7 @@ import {
 } from '../ui/callTheme';
 import { createAudioRouter, resolveRoute, type AudioRoute } from '../call/audioRoute';
 import { elapsedSinceMs, formatElapsed, observeServerClock } from '../call/callTimer';
-import { TERMINAL_DIRECT_STATES, directStateWords } from '../call/directCallApi';
+import { TERMINAL_DIRECT_STATES } from '../call/directCallApi';
 import { connectedRow, stateLine } from '../call/callDisplay';
 import { Icon } from '../ui/icons';
 import { videofyCall } from '../native/videofyCall';
@@ -359,11 +359,20 @@ export function CallScreen({
       }
     })();
 
+    /*
+     * REFS COPIED FOR THE CLEANUP.
+     *
+     * A ref read inside a cleanup function is read at TEARDOWN, not at the
+     * time the effect ran, so it may point at something belonging to a call
+     * this cleanup is not for. Captured here, they belong to this call.
+     */
+    const routerAtStart = router.current;
+    const stampsAtStart = videoStamps;
     return () => {
       live = false;
       link.leave();
       connection.current = null;
-      void router.current.release();
+      void routerAtStart.release();
       // The device's T4..T11 stamps go to the gateway once, metadata only,
       // so the ring's seconds can be attributed (founder targets: <3 s ring,
       // <2 s answer-to-audio).
@@ -372,7 +381,7 @@ export function CallScreen({
           GATEWAY_URL,
           sessionToken,
           callId,
-          { ...videofyCall.timeline(callId), ...videoStamps.current },
+          { ...videofyCall.timeline(callId), ...stampsAtStart.current },
           role,
         );
       }

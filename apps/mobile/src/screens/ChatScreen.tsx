@@ -45,7 +45,7 @@ import { File } from 'expo-file-system';
 import type { Api, ContactPerson, TimelineItem, WireMessage } from '../api/client';
 import { callHistoryWords } from '../call/callHistoryWords';
 import type { AuthorizedFetch } from '../push/deviceRegistrationService';
-import { fetchTranslatedVoiceNoteAsDataUri, fetchVoiceNoteAsDataUri, formatDuration, materialiseForPlayback } from '../media/voiceNotes';
+import { fetchTranslatedVoiceNoteAsDataUri, fetchVoiceNoteAsDataUri, materialiseForPlayback } from '../media/voiceNotes';
 import { C7, C7Ground, Chip } from '../ui/c7';
 import { Icon } from '../ui/icons';
 import { MessageActionSheet, type MessageAction } from './MessageActionSheet';
