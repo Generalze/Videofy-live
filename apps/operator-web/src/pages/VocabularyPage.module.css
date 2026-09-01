@@ -1,0 +1,192 @@
+/*
+ * 05 Programme Vocabulary.
+ *
+ * Follows the console's panel palette (#0b1328 panels, #0a1225 sunken rows).
+ * The consumer chips are the load-bearing element: three states with three
+ * distinct treatments, so "unsupported" cannot be mistaken for "consumed" at a
+ * glance across a long table. `unconsumed` is deliberately the quietest -- it
+ * is the ordinary state of a field nobody filled in.
+ */
+.page {
+  display: grid;
+  gap: 21px;
+  margin-top: 0;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.revision {
+  margin: 0;
+  font-size: 13px;
+  color: #93a2c9;
+  font-variant-numeric: tabular-nums;
+}
+
+.effective {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #0a1225;
+  border: 1px solid #1b2748;
+  color: #b9c6e8;
+  font-size: 13px;
+}
+
+/* A conflict is an interruption, not a footnote: it stops the operator. */
+.conflict {
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: #2a1420;
+  border: 1px solid #7a2540;
+  color: #ffd9e2;
+  display: grid;
+  gap: 8px;
+}
+.conflict p { margin: 0; font-size: 14px; }
+.conflictDetail { color: #e3aebd; font-size: 13px; }
+.reload {
+  justify-self: start;
+  padding: 7px 14px;
+  border-radius: 6px;
+  border: 1px solid #7a2540;
+  background: #3b1a29;
+  color: #ffd9e2;
+  font-size: 13px;
+  cursor: pointer;
+}
+.reload:hover { background: #4a2032; }
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #0b1328;
+  border: 1px solid #1b2748;
+  border-radius: 8px;
+  overflow: hidden;
+  font-size: 13px;
+}
+.table th {
+  text-align: left;
+  padding: 10px 14px;
+  background: #0a1225;
+  color: #8fa0c8;
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  border-bottom: 1px solid #1b2748;
+}
+.table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid #131d38;
+  vertical-align: top;
+  color: #dbe3f6;
+}
+.table tr:last-child td { border-bottom: none; }
+
+/* A disabled term reaches no consumer, and reads that way. */
+.disabled { opacity: 0.55; }
+
+.term { display: block; font-weight: 600; }
+.kind {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: #8fa0c8;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.notes {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #7c8bb0;
+  font-style: italic;
+}
+.language { color: #b9c6e8; }
+.none { color: #5b6788; }
+
+.states { display: grid; gap: 5px; }
+
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-size: 11px;
+  border: 1px solid transparent;
+  width: fit-content;
+}
+.chipState {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+.chipConsumer { color: inherit; opacity: 0.82; }
+
+/* Something reads it. */
+.consumed {
+  background: #0d2a1c;
+  border-color: #1d5b3a;
+  color: #8fe3b4;
+}
+/* Set, and nothing on this deployment can read it. The one that must not be
+   mistaken for consumed. */
+.unsupported {
+  background: #2e2410;
+  border-color: #7a5a1c;
+  color: #f0cd8a;
+}
+/* Not filled in. The ordinary case, and the quietest. */
+.unconsumed {
+  background: #131d38;
+  border-color: #223055;
+  color: #8494ba;
+}
+
+.delete {
+  padding: 5px 11px;
+  border-radius: 6px;
+  border: 1px solid #34406b;
+  background: transparent;
+  color: #b9c6e8;
+  font-size: 12px;
+  cursor: pointer;
+}
+.delete:hover { background: #1a2444; }
+.delete:disabled { opacity: 0.5; cursor: default; }
+
+.empty, .loading {
+  padding: 22px 14px;
+  color: #8494ba;
+  text-align: center;
+}
+
+.unavailable {
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: #0a1225;
+  border: 1px solid #1b2748;
+  color: #b9c6e8;
+  font-size: 14px;
+  margin: 0;
+}
+
+.footnote {
+  margin: 0;
+  font-size: 12px;
+  color: #7c8bb0;
+}

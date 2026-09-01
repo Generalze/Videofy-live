@@ -94,10 +94,19 @@ function readEntry(
   if (term === '') return { error: 'A term is required.' };
   if (term.length > 200) return { error: 'That term is too long.' };
 
+  // An ABSENT kind defaults; an unknown one is refused.
+  //
+  // Silently reinterpreting `kind: 'peson'` as `programme-term` stores
+  // something the client did not ask for and reports success, so a typo in a
+  // console or an integration becomes wrong data nobody is told about. The
+  // default exists for callers that never expressed a preference, not to
+  // paper over ones that expressed a wrong one.
   const kinds = ['person', 'place', 'organisation', 'programme-term', 'code'];
-  const kind = typeof b['kind'] === 'string' && kinds.includes(b['kind'])
-    ? (b['kind'] as VocabularyRecord['kind'])
-    : 'programme-term';
+  const rawKind = b['kind'];
+  if (rawKind !== undefined && (typeof rawKind !== 'string' || !kinds.includes(rawKind))) {
+    return { error: `kind must be one of ${kinds.join(', ')}.` };
+  }
+  const kind = (rawKind as VocabularyRecord['kind'] | undefined) ?? 'programme-term';
 
   const str = (key: string): string =>
     typeof b[key] === 'string' ? (b[key] as string).trim() : '';

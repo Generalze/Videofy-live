@@ -263,6 +263,23 @@ describe('a successful mutation returns the new revision', () => {
     expect(r.body).toMatchObject({ revision: 9, removed: true });
   });
 
+  it('refuses an UNKNOWN kind rather than reinterpreting it', async () => {
+    // A typo stored as programme-term is wrong data reported as success.
+    h = await harness();
+    const r = await call(h, 'PUT', '/operator/programmes/prog_A/vocabulary/lagos',
+      { ...ENTRY, expectedRevision: 7, kind: 'peson' });
+    expect(r.status).toBe(400);
+    expect(h.fake.calls.filter((c) => c.op === 'upsert')).toHaveLength(0);
+  });
+
+  it('still defaults an ABSENT kind, which expressed no preference', async () => {
+    h = await harness();
+    const r = await call(h, 'PUT', '/operator/programmes/prog_A/vocabulary/lagos',
+      { ...ENTRY, expectedRevision: 7 });
+    expect(r.status).toBe(200);
+    expect(r.body.entry.kind).toBe('programme-term');
+  });
+
   it('refuses an entry with no term rather than storing a blank one', async () => {
     h = await harness();
     const r = await call(h, 'PUT', '/operator/programmes/prog_A/vocabulary/lagos',
