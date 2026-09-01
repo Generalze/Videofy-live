@@ -15,8 +15,21 @@ import { useEffect, useState } from 'react';
 import type { IconName } from './premium/icons';
 import { OPERATOR_PAGES, pageFromHash, watchPage, type OperatorPage } from './router';
 
-/** Reserved pages: honest 'not yet' copy, no controls. */
-export const NOT_YET_PAGES: ReadonlySet<OperatorPage> = new Set<OperatorPage>(['vocabulary', 'quality', 'advertising']);
+/**
+ * Reserved pages: honest 'not yet' copy, no controls.
+ *
+ * EMPTY, AND THAT IS THE POINT. This held 'vocabulary', 'quality' and
+ * 'advertising' long after all three shipped, so the navigation rail carried
+ * `data-not-yet` on them and announced "(not yet available)" to screen readers
+ * about pages that fetch live route evidence and accept durable edits. A test
+ * asserting the count matched the set size passed happily throughout, which is
+ * how the wrong answer stayed locked in.
+ *
+ * Sighted operators saw working pages; anyone using assistive technology was
+ * told not to bother. Add a page here only while it genuinely has no controls,
+ * and take it out in the same commit that gives it some.
+ */
+export const NOT_YET_PAGES: ReadonlySet<OperatorPage> = new Set<OperatorPage>();
 
 export interface ConsoleSection {
   readonly id: 'setup' | 'access';

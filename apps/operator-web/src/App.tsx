@@ -24,6 +24,7 @@ import { useQuality } from './useQuality';
 import { useAdvertising } from './useAdvertising';
 import { AdvertisingPage } from './pages/AdvertisingPage';
 import { QualityPage } from './pages/QualityPage';
+import { summariseRouteQuality } from './qualitySummary';
 import { OverviewPage } from './pages/OverviewPage';
 import { LiveControlAside, LivePage } from './pages/LivePage';
 import { AudioVoicesAside, AudioVoicesPage } from './pages/AudioVoicesPage';
@@ -1290,6 +1291,17 @@ export default function App(): React.ReactElement {
    * identity Pages 05 and 06 use. Advertising is configured per programme;
    * there is no global creative anywhere in this product.
    */
+  /*
+   * ONE READING OF THE ROUTE EVIDENCE, shared by Page 06 and Live Control.
+   *
+   * The weakest route decides the word, exactly as the weakest STAGE decides a
+   * route: an operator glancing at the chip must not see "Ready" while one of
+   * their languages cannot go to air. The delay is the LARGEST recommendation
+   * across routes, because a buffer sized for the fastest route protects
+   * nothing on the slowest.
+   */
+  const qualitySummary = summariseRouteQuality(quality.rows);
+
   const advertising = useAdvertising({
     accountUrl: ACCOUNT_URL,
     programmeId: ownChannelId,
@@ -1537,7 +1549,7 @@ export default function App(): React.ReactElement {
       </ConsolePage>
 
       {/* ---------------- 09 Preflight ---------------- */}
-      <ConsolePage id="preflight" active={page === 'preflight'} kicker="Step 5" title="Preflight" lede="What is ready and what is not, before anybody is watching. Every line below is the live state of a real service or of your own choices; nothing here is a preset. Provider latency measurement and the recommended delay are FUTURE (Programme Quality Engine).">
+      <ConsolePage id="preflight" active={page === 'preflight'} kicker="Step 5" title="Preflight" lede="What is ready and what is not, before anybody is watching. Every line below is the live state of a real service or of your own choices; nothing here is a preset. Route quality analysis and the recommended safety delay are implemented and live on Quality / Delay; the recommendation is ADVISORY. No broadcast safety buffer exists yet, so the programme goes out live and nothing here delays it.">
         <div className={styles.readinessList}>
           {readinessItems.map((item) => (
             <div key={item.id} className={styles.readinessItem}>
@@ -1563,11 +1575,20 @@ export default function App(): React.ReactElement {
         lede="Manage the live programme. Control playback, recording and monitor real-time outputs."
         aside={
           /*
-           * FUTURE: programme quality and delay belong to the Programme
-           * Quality Engine, which is not built, so neither is passed and both
-           * chips read "--".
+           * THE SAME EVIDENCE PAGE 06 SHOWS, and nothing recomputed here.
+           *
+           * The delay is ADVISORY -- a recommendation from route evidence, not
+           * a measurement of an output that is being held back. Nothing delays
+           * the programme, which is why the aside also states the buffer's
+           * absence outright rather than leaving it to be inferred.
            */
-          <LiveControlAside onAir={workflowSummary.status === 'Live'} progressLabel={workflowSummary.progressLabel} viewers={viewers} />
+          <LiveControlAside
+            onAir={workflowSummary.status === 'Live'}
+            progressLabel={workflowSummary.progressLabel}
+            viewers={viewers}
+            quality={qualitySummary.quality}
+            recommendedDelay={qualitySummary.recommendedDelay}
+          />
         }
       >
         <LivePage

@@ -87,6 +87,26 @@ describe('ConsoleShell', () => {
     expect((html.match(/data-not-yet="true"/g) ?? []).length).toBe(NOT_YET_PAGES.size);
   });
 
+  it('never calls an implemented page unavailable, whatever the set happens to hold', () => {
+    /*
+     * COUNTING AGAINST THE SET PROVES NOTHING ABOUT WHICH PAGES ARE IN IT.
+     * The assertion above matched the rail to `NOT_YET_PAGES.size` and passed
+     * for months while that set still listed Vocabulary, Quality / Delay and
+     * Advertising -- all three shipped, all three announced to screen readers
+     * as "(not yet available)". Naming the pages is what makes the guard mean
+     * something.
+     */
+    for (const page of ['vocabulary', 'quality', 'advertising'] as const) {
+      expect(NOT_YET_PAGES.has(page), `${page} is implemented and must not be reserved`).toBe(false);
+    }
+    const html = render('languages');
+    // Whatever the rail renders, none of these may carry the reserved marking.
+    for (const page of ['vocabulary', 'quality', 'advertising'] as const) {
+      const link = new RegExp(`href="#${page}"[^>]*data-not-yet="true"`, 'u');
+      expect(html, `${page} is marked unavailable in the rail`).not.toMatch(link);
+    }
+  });
+
   it('shows the viewer count, the gateway state and the services with their words from real state', () => {
     const down = render('overview');
     expect(down).toContain('2 viewers');

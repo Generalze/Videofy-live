@@ -28,7 +28,7 @@ import {
   fixtureIdentity,
   fixtureLanguageRows,
   fixtureLiveActiveLanguages,
-  fixtureLiveDelay,
+  fixtureLiveRecommendedDelay,
   fixtureLiveGeneratedVoice,
   fixtureLiveHeader,
   fixtureLiveQuality,
@@ -168,7 +168,7 @@ export function FixtureConsole(): React.ReactElement {
             progressLabel={fixtureLiveWorkflow.progressLabel}
             viewers={fixtureStatus.viewers}
             quality={fixtureLiveQuality}
-            delay={fixtureLiveDelay}
+            recommendedDelay={fixtureLiveRecommendedDelay}
           />
         }
       >

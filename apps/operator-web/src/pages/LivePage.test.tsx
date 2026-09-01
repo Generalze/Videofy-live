@@ -162,24 +162,49 @@ describe('LivePage', () => {
 });
 
 describe('LiveControlAside', () => {
-  it('reads "--" for quality and delay when the caller measures neither, and says why', () => {
+  it('says the quality is unread and the delay unknown when it is given neither', () => {
     const html = renderToStaticMarkup(<LiveControlAside onAir={false} progressLabel="Waiting for source" viewers={0} />);
     expect(html).toContain('OFF AIR');
     expect(html).toContain('0 viewers');
-    expect(html.match(/--/g)?.length ?? 0).toBe(2);
-    expect(html).toContain('Programme Quality Engine');
+    // An absent recommendation is a fact about the evidence, not a gap.
+    expect(html).toContain('Unknown');
+    expect(html).toContain('has not been read');
+    // The engine EXISTS; the old copy said it did not.
+    expect(html).not.toContain('Programme Quality Engine');
     expect(html).not.toContain('Good');
-    expect(html).not.toContain('480');
   });
 
   it('shows only the figures it is given, and pluralises the viewer count', () => {
     const html = renderToStaticMarkup(
-      <LiveControlAside onAir progressLabel="Programme audio active" viewers={1} quality="Good" delay="480 ms" />,
+      <LiveControlAside onAir progressLabel="Programme audio active" viewers={1} quality="Ready" recommendedDelay="45 s" />,
     );
     expect(html).toContain('ON AIR');
     expect(html).toContain('1 viewer<');
-    expect(html).toContain('Good');
-    expect(html).toContain('480 ms');
-    expect(html).not.toContain('--');
+    expect(html).toContain('Ready');
+    expect(html).toContain('45 s');
+  });
+
+  /*
+   * THE ONE MISREADING THAT COULD PUT AN UNRECOVERABLE MOMENT TO AIR.
+   *
+   * An operator who reads the advisory recommendation as an active buffer
+   * believes they have seconds in hand to cut away from something. They have
+   * none: the output is live. So the chip is labelled advisory, the buffer's
+   * absence is stated outright rather than inferred from silence, and the two
+   * phrasings that would imply a real delay are forbidden outright.
+   */
+  it('can never present the recommendation as an active broadcast delay', () => {
+    for (const html of [
+      renderToStaticMarkup(<LiveControlAside onAir progressLabel="x" viewers={1} quality="Ready" recommendedDelay="45 s" />),
+      renderToStaticMarkup(<LiveControlAside onAir={false} progressLabel="x" viewers={0} />),
+    ]) {
+      expect(html).toContain('Advisory delay');
+      expect(html).toContain('Broadcast buffer');
+      expect(html).toContain('Not active');
+      expect(html).toMatch(/output is NOT delayed|not delayed|goes out live|receive the programme live/u);
+      // The two claims that would be false.
+      expect(html).not.toMatch(/Current delay/iu);
+      expect(html).not.toMatch(/On-air delay/iu);
+    }
   });
 });

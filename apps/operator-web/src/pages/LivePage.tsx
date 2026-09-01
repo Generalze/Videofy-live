@@ -9,10 +9,12 @@
  * Every surface on the master is classified:
  *   ON AIR chip              REAL     workflow.status from buildOperatorWorkflowSummary
  *   viewers chip             REAL     connectedListeners / signalling listener count
- *   Quality chip             FUTURE   the Programme Quality Engine is not built. The chip
- *                                     shows only what its caller hands it, and the console
- *                                     hands it nothing, so an operator reads "--".
- *   Delay chip               FUTURE   same engine, same rule: the console reads "--".
+ *   Quality chip             REAL     the weakest route state from programme-quality, via
+ *                                     Page 06's evidence; "--" only when nothing was read.
+ *   Advisory delay chip      REAL     the RECOMMENDED delay from programme-quality. Advisory:
+ *                                     it is what the buffer SHOULD be, not what it is.
+ *   Broadcast buffer chip    REAL     always "Not active" until a real buffer exists. The
+ *                                     recommendation must never be read as one.
  *   Go Live / Restart        REAL     handleStartInterpretation / handleRestartProgrammeSource
  *   End                      REAL     handleStopProgrammeSource, enabled by workflow.canEnd
  *   Pause / Resume           REAL     handlePause / handleResume, enabled by canPause / canResume
@@ -77,26 +79,41 @@ export interface LivePageProps {
  * It lives here, beside the page it belongs to, so the console and the visual
  * harness render ONE implementation rather than two drawings of it.
  *
- * `quality` and `delay` are FUTURE and are the caller's to supply: the
- * Programme Quality Engine that would measure them is not built, the console
- * therefore passes neither, and an operator reads "--" with a title that says
- * why. Nothing here manufactures a figure when the caller has none.
+ * THREE SEPARATE FACTS, AND THEY MUST NOT BLUR INTO ONE.
+ *
+ *   Route quality analysis    IMPLEMENTED -- measured per route, per stage
+ *   Recommended delay         IMPLEMENTED, ADVISORY -- what the buffer SHOULD be
+ *   Broadcast safety buffer   NOT IMPLEMENTED -- nothing delays the output
+ *
+ * The chip therefore says "Advisory delay", never "Current delay" and never
+ * "On-air delay". An operator who reads a recommendation as an active buffer
+ * believes they have seconds in hand to cut away from something, and they have
+ * none: the output is live. That is the one misreading on this page that could
+ * put an unrecoverable moment to air, so the buffer chip states its absence
+ * outright rather than leaving it to be inferred from silence.
+ *
+ * Nothing here computes any of it. The recommendation is programme-quality's,
+ * arriving through props exactly as Page 06 receives it.
  */
 export function LiveControlAside({
   onAir,
   progressLabel,
   viewers,
   quality = null,
-  delay = null,
+  recommendedDelay = null,
 }: {
   readonly onAir: boolean;
   /** The workflow's own sentence for the programme's state, on the chip's title. */
   readonly progressLabel: string;
   readonly viewers: number;
-  /** A measured programme-quality word, or null while nothing measures it. */
+  /** The weakest route state read from programme-quality, or null if unread. */
   readonly quality?: string | null | undefined;
-  /** A measured end-to-end delay, or null while nothing measures it. */
-  readonly delay?: string | null | undefined;
+  /**
+   * The ADVISORY recommended delay, already formatted (e.g. "45 s"), or null
+   * when no route evidence supports one. Never a measured output delay: there
+   * is no buffer to measure.
+   */
+  readonly recommendedDelay?: string | null | undefined;
 }): React.ReactElement {
   return (
     <>
@@ -112,13 +129,34 @@ export function LiveControlAside({
         tone={quality === null ? 'neutral' : 'success'}
         value={quality ?? '--'}
         label="Quality"
-        title={quality === null ? 'Not yet measured: programme quality arrives with the Programme Quality Engine.' : undefined}
+        title={
+          quality === null
+            ? 'Route quality has not been read for this programme yet. Open Quality / Delay.'
+            : 'The weakest stage across this programme’s language routes.'
+        }
       />
       <MetricChip
         icon={<Icon name="waveform" size={22} />}
-        value={delay ?? '--'}
-        label="Delay"
-        title={delay === null ? 'Not yet measured: the translation delay arrives with the Programme Quality Engine.' : undefined}
+        // "Unknown", not "--": an absent recommendation is a fact about the
+        // evidence, not a missing feature.
+        value={recommendedDelay ?? 'Unknown'}
+        label="Advisory delay"
+        tone="neutral"
+        title={
+          recommendedDelay === null
+            ? 'No route evidence supports a recommendation yet. Advisory only; the output is not delayed.'
+            : 'Advisory: the safety delay this programme’s routes suggest. The output is NOT delayed.'
+        }
+      />
+      <MetricChip
+        icon={<Icon name="shield" size={22} />}
+        value="Not active"
+        label="Broadcast buffer"
+        tone="neutral"
+        title={
+          'No broadcast safety buffer exists yet: viewers receive the programme live. ' +
+          'The advisory delay is a recommendation, not a buffer.'
+        }
       />
     </>
   );

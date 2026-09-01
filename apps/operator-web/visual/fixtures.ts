@@ -260,8 +260,16 @@ export const fixtureLiveActiveLanguages: readonly string[] = ['es', 'fr'];
  * are handed to the page as props. They are the master's numbers, not a claim
  * about any programme.
  */
-export const fixtureLiveQuality = 'Good';
-export const fixtureLiveDelay = '480 ms';
+export const fixtureLiveQuality = 'Ready';
+/*
+ * ADVISORY SECONDS, not milliseconds and not an output delay.
+ *
+ * This read '480 ms', which is a LATENCY -- a plausible-looking figure for a
+ * thing the product does not measure, sitting in the chip an operator would
+ * read as their safety margin. The recommendation programme-quality actually
+ * produces is a whole number of seconds from a small grade set.
+ */
+export const fixtureLiveRecommendedDelay = '45 s';
 
 /** Every callback a page needs. A fixture render is never interacted with. */
 export const noop = (): void => undefined;
