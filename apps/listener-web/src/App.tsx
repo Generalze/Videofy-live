@@ -18,6 +18,11 @@ import styles from './App.module.css';
 import { ChannelDirectory } from './ChannelDirectory';
 import { SponsoredSlot } from './SponsoredSlot';
 import {
+  HOUSE_DELIVERY,
+  fetchSponsoredCreative,
+  type DeliveredCreative,
+} from './sponsoredDelivery';
+import {
   buildJoinPayload,
   channelBasePath,
   parseDirectoryEntries,
@@ -1657,6 +1662,46 @@ export default function App(): React.ReactElement {
     );
   };
 
+  /*
+   * THE SPONSORED SLOT'S CREATIVE, for the channel actually being watched.
+   *
+   * Starts at the house creative, so the reserved space is never empty and
+   * never briefly wrong. Re-read when the channel changes, because a creative
+   * belongs to ONE programme and carrying the previous channel's advert into
+   * the next one would be delivering an advert nobody bought.
+   */
+  const [sponsored, setSponsored] = useState<DeliveredCreative>(HOUSE_DELIVERY);
+
+  /*
+   * Does the surrounding app draw the sponsored slot itself?
+   *
+   * Read once from the URL the host opened. Only an explicit `nativeAds=1`
+   * suppresses ours, so nothing a viewer can stumble into removes the advert.
+   */
+  const nativeSponsoredHost = useMemo(
+    () => new URLSearchParams(window.location.search).get('nativeAds') === '1',
+    [],
+  );
+
+  useEffect(() => {
+    const channelId = channelSelection.channelId;
+    if (channelId === null) {
+      setSponsored(HOUSE_DELIVERY);
+      return;
+    }
+    let current = true;
+    void fetchSponsoredCreative(ACCOUNT_BASE, channelId, (url, init) => fetch(url, init)).then(
+      (delivered) => {
+        // A late answer for a channel the viewer has already left must not
+        // replace the one they are on now.
+        if (current) setSponsored(delivered);
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [channelSelection.channelId]);
+
   const handleChooseChannel = (channelId: string): void => {
     const next = { channelId, code: null, codeFromUrl: false };
     setChannelSelection(next);
@@ -1838,7 +1883,15 @@ export default function App(): React.ReactElement {
         </section>
 
         {/* The advert placement: below the player, above the controls, never over either. */}
-        <SponsoredSlot />
+        {/* The creative is the SERVICE's decision, already resolved to
+            programme-or-house; this only renders what it was handed.
+
+            SUPPRESSED WHEN A NATIVE HOST DRAWS ITS OWN. The mobile app embeds
+            this player in a WebView and renders the sponsored slot natively
+            above it; without this the viewer would see the same advert twice.
+            The default is to SHOW -- an ordinary browser never sets the flag,
+            and a mistake here costs a missing advert rather than a double one. */}
+        {!nativeSponsoredHost && <SponsoredSlot creative={sponsored.creative} />}
 
         <section className={styles.controlsSection} aria-label="Language and audio controls">
           <div className={styles.controlGroup}>

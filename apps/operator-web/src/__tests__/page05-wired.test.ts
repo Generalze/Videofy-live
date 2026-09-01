@@ -23,10 +23,14 @@ const APP = readFileSync(
 
 /** The JSX inside one ConsolePage, by id. */
 function consolePage(id: string): string {
-  const open = APP.indexOf(`<ConsolePage id="${id}"`);
+  // Pages carrying a lede are written across several lines; older ones are
+  // inline. Both are the same element, so the helper accepts either.
+  const spaced = APP.indexOf(`<ConsolePage
+        id="${id}"`);
+  const inline = APP.indexOf(`<ConsolePage id="${id}"`);
+  const open = spaced > -1 ? spaced : inline;
   expect(open, `no ConsolePage with id="${id}"`).toBeGreaterThan(-1);
-  const close = APP.indexOf('</ConsolePage>', open);
-  return APP.slice(open, close);
+  return APP.slice(open, APP.indexOf('</ConsolePage>', open));
 }
 
 describe('05 Programme Vocabulary is reachable through the console', () => {
@@ -61,13 +65,11 @@ describe('05 Programme Vocabulary is reachable through the console', () => {
   });
 });
 
-describe('07 is still honestly marked NOT YET', () => {
-  // Advertising is not built. The placeholder is the correct content until the
-  // capability behind the page exists, and removing it early would be the
-  // opposite of what Page 05 fixed. 06 has since been built and wired; its own
-  // reachability is asserted in page06-wired.test.ts.
-  it('advertising still renders the placeholder', () => {
-    expect(consolePage('advertising')).toMatch(/<NotYetPage/u);
+describe('every console page is now a real page', () => {
+  // 06 and 07 have both been built and wired since this file was written;
+  // their own reachability is asserted in page06-wired and page07-wired.
+  it.each(['vocabulary', 'quality', 'advertising'])('%s is not a placeholder', (id) => {
+    expect(consolePage(id)).not.toMatch(/<NotYetPage/u);
   });
 });
 

@@ -62,6 +62,8 @@ import {
 import { createPostgresChannelProfiles } from './db/channel-profiles-postgres.js';
 import { registerChannelRoutes } from './channel-routes.js';
 import { registerVocabularyRoutes } from './vocabulary-routes.js';
+import { registerSponsoredCreativeRoutes } from './sponsored-creative-routes.js';
+import { createPostgresSponsoredCreative } from './db/programme-sponsored-creative-postgres.js';
 import { createPostgresVocabulary } from './db/programme-vocabulary-postgres.js';
 import {
   channelLookup,
@@ -874,15 +876,51 @@ if (databasePool) {
     message: 'Programme vocabulary routes ready',
     persistence: 'postgres',
   }));
+
+  /*
+   * THE SPONSORED CREATIVE, operator and delivery.
+   *
+   * Same authority as vocabulary for the operator half. The delivery half is
+   * public and read-only, and its `programmeExists` is the CHANNEL PROFILE
+   * lookup rather than a constant true: a house creative exists for every
+   * programme, so without a real existence check any mistyped id would answer
+   * with a plausible advert instead of a 404.
+   */
+  registerSponsoredCreativeRoutes(app, {
+    creatives: createPostgresSponsoredCreative(databasePool),
+    callerAccountId: createCallerResolver({
+      store,
+      secret,
+      nowSeconds: () => Math.floor(Date.now() / 1000),
+    }),
+    mayAdminister: async (accountId, programmeId) => {
+      const owned = await channelProfiles.mine(accountId);
+      return owned !== null && owned.channelId === programmeId;
+    },
+    programmeExists: async (programmeId) =>
+      (await channelProfiles.byId(programmeId)) !== null,
+    onEvent: (event, detail) => {
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify({ service: 'account', event, ...detail }));
+    },
+  });
+  // eslint-disable-next-line no-console
+  console.log(JSON.stringify({
+    service: 'account',
+    message: 'Sponsored creative routes ready',
+    persistence: 'postgres',
+  }));
 } else {
   // eslint-disable-next-line no-console
   console.warn(JSON.stringify({
     service: 'account',
     level: 'warn',
     message:
-      'Programme vocabulary is UNAVAILABLE: no database. The routes are not ' +
-      'registered, so the console reports the capability as absent rather than ' +
-      'accepting terms it would lose on restart.',
+      'Programme vocabulary and the sponsored creative are UNAVAILABLE: no ' +
+      'database. Neither set of routes is registered, so the console reports ' +
+      'each capability as absent rather than accepting configuration it would ' +
+      'lose on restart. Viewers still receive the house creative, which needs ' +
+      'no storage.',
   }));
 }
 

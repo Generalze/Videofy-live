@@ -799,6 +799,50 @@ const PROGRAMME_VOCABULARY: Migration = {
   `,
 };
 
+/**
+ * The programme's sponsored creative: ONE row, which is both the data and the
+ * revision that labels it.
+ *
+ * ONE TABLE, unlike programme vocabulary. Vocabulary needed a separate state
+ * row because its data is many rows and a revision spanning them has to live
+ * somewhere; a sponsored creative is exactly one row per programme, so that row
+ * is already the serialization point. A second table here would be ceremony
+ * with an extra way to disagree.
+ *
+ * THE WINDOW IS A CHECK CONSTRAINT, not only application validation. The
+ * service refuses `starts_at >= ends_at` before it ever reaches here, and the
+ * constraint refuses it again -- because a window that can never be open would
+ * make a creative that is saved, looks configured, and never once appears, with
+ * nothing anywhere reporting a fault.
+ *
+ * NO SCHEDULER READS THIS TABLE. There is no job, no timer and no cron: the
+ * bounds are compared against the clock when a viewer asks. A scheduler would
+ * be a second source of truth that can be late, down, or running twice.
+ */
+const PROGRAMME_SPONSORED_CREATIVE: Migration = {
+  name: '022_programme_sponsored_creative',
+  sql: `
+    CREATE TABLE IF NOT EXISTS programme_sponsored_creative (
+      programme_id text        PRIMARY KEY,
+      -- Advances once per SEMANTIC change; 0 means no row has ever been saved.
+      revision     bigint      NOT NULL DEFAULT 0,
+      headline     text        NOT NULL,
+      body         text        NOT NULL,
+      cta          text        NOT NULL,
+      -- Null is a real value: a creative with no destination is legitimate.
+      href         text,
+      -- "Use the programme's own creative", NOT "advertising is on": the slot
+      -- is reserved either way and falls back to the house creative.
+      enabled      boolean     NOT NULL DEFAULT false,
+      starts_at    timestamptz,
+      ends_at      timestamptz,
+      updated_at   timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT programme_sponsored_creative_window
+        CHECK (starts_at IS NULL OR ends_at IS NULL OR starts_at < ends_at)
+    );
+  `,
+};
+
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
   ORGANIZATIONS,
@@ -821,4 +865,5 @@ export const MIGRATIONS: readonly Migration[] = [
   REPORTS,
   CHANNEL_PROFILES,
   PROGRAMME_VOCABULARY,
+  PROGRAMME_SPONSORED_CREATIVE,
 ];

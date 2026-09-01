@@ -1,0 +1,253 @@
+/*
+ * 07 Advertising.
+ *
+ * EVERY COLOUR FROM THE OPERATOR DESIGN AUTHORITY. No hex, no theme, and no
+ * --advertising-* family: a private palette is how a console ends up with two
+ * answers to "what is a panel".
+ *
+ * The five effective states reuse existing semantic families rather than new
+ * ones. Only ONE of them is the "your creative is on air" state, and it is the
+ * only one wearing the affirmative colour -- the other four all mean viewers
+ * are seeing the house creative, and they are deliberately quiet so that an
+ * operator scanning the page cannot mistake "saved" for "showing".
+ */
+.page {
+  display: grid;
+  gap: 21px;
+  margin-top: 0;
+  font-family: var(--op-font);
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.revision {
+  margin: 0;
+  font-size: 13px;
+  color: var(--op-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.secondary {
+  flex: none;
+  padding: 8px 14px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-panel-border-strong);
+  background: var(--op-panel-raised);
+  color: var(--op-text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.secondary:hover { border-color: var(--op-teal-border); }
+.secondary:focus-visible {
+  outline: 2px solid var(--op-teal-border);
+  outline-offset: 2px;
+}
+
+.empty {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: var(--op-radius-md);
+  background: var(--op-panel-raised);
+  border: 1px solid var(--op-panel-border);
+  color: var(--op-text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+  max-width: 68ch;
+}
+
+/* ---- what viewers are actually being served ---- */
+
+.effective {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: var(--op-radius-md);
+  background: var(--op-panel-sunken);
+  border: 1px solid var(--op-panel-border);
+}
+
+.effectiveHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sourceNote {
+  font-size: 13px;
+  color: var(--op-text-secondary);
+}
+
+.effectiveWhy {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--op-text-faint);
+  max-width: 78ch;
+}
+
+.badge {
+  flex: none;
+  padding: 3px 9px;
+  border-radius: var(--op-radius-pill);
+  border: 1px solid transparent;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+/* The ONLY state where the programme's own creative is on air. */
+.active {
+  background: var(--op-ok-soft);
+  border-color: var(--op-ok-border);
+  color: var(--op-ok-text);
+}
+
+/* Configured, not yet showing. Not a fault, so not a warning colour. */
+.scheduled {
+  background: var(--op-violet-soft);
+  border-color: var(--op-violet-border);
+  color: var(--op-violet-text);
+}
+
+/* Saved and switched off. A choice, quietly stated. */
+.disabled {
+  background: var(--op-panel-raised);
+  border-color: var(--op-panel-border-strong);
+  color: var(--op-text-muted);
+}
+
+/* Ran and finished. Worth noticing: it may need renewing. */
+.ended {
+  background: var(--op-warn-soft);
+  border-color: var(--op-warn-border);
+  color: var(--op-warn-text);
+}
+
+/* No programme creative at all. The ordinary resting state. */
+.house {
+  background: var(--op-panel-raised);
+  border-color: var(--op-panel-border);
+  color: var(--op-text-secondary);
+}
+
+/* ---- an interruption, not a footnote ---- */
+
+.conflict {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: var(--op-radius-md);
+  background: var(--op-danger-soft);
+  border: 1px solid var(--op-danger-border);
+  color: var(--op-danger-text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* ---- the form ---- */
+
+.form {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border-radius: var(--op-radius-md);
+  background: var(--op-panel);
+  border: 1px solid var(--op-panel-border);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.field {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--op-text-secondary);
+}
+
+.field input,
+.field textarea {
+  padding: 9px 11px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-panel-border-strong);
+  background: var(--op-panel-raised);
+  color: var(--op-text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.field textarea { resize: vertical; line-height: 1.5; }
+
+.field input:focus-visible,
+.field textarea:focus-visible {
+  outline: 2px solid var(--op-teal-border);
+  outline-offset: 1px;
+}
+
+.hint {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--op-text-faint);
+}
+
+.problem {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--op-danger-text);
+}
+
+.toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--op-radius-sm);
+  background: var(--op-panel-raised);
+  border: 1px solid var(--op-panel-border);
+  font-size: 13px;
+  color: var(--op-text);
+}
+
+.toggle small {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--op-text-faint);
+  max-width: 62ch;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+}
+
+.save {
+  padding: 9px 18px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-teal-border);
+  background: var(--op-teal-soft);
+  color: var(--op-teal-text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.save:disabled { opacity: 0.6; cursor: default; }
+
+.save:focus-visible {
+  outline: 2px solid var(--op-teal-border);
+  outline-offset: 2px;
+}

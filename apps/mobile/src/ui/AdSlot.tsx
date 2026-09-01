@@ -4,30 +4,44 @@
  *
  * RESERVED, SEPARATED, SILENT. It is always the same shape and always
  * labelled Sponsored, sits between sections rather than over content, and
- * never carries sound or motion. Until an advertising source is wired
- * (operator console › Advertising), it shows the house creative -- so the
- * space is designed in from day one instead of being retrofitted.
+ * never carries sound or motion.
+ *
+ * THE SHARED, SERIALISABLE CONTRACT. This file used to declare its own
+ * `AdCreative` carrying an `onPress` CALLBACK -- which cannot be sent over a
+ * wire, so no server could ever have supplied one. A creative now arrives from
+ * the delivery endpoint like any other data, and the destination is an https
+ * address the service already validated.
+ *
+ * THE SERVICE DECIDES WHICH CREATIVE THIS IS. What arrives is the EFFECTIVE
+ * one: the programme's own when it is enabled and inside its window, otherwise
+ * the house creative. This component does not evaluate a schedule, because a
+ * phone with a wrong date would otherwise run an advert outside the period it
+ * was sold for.
  */
 import { useState, type JSX } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { HOUSE_CREATIVE, type SponsoredCreative } from '@videofy-live/shared-types';
+import { creativeOpener } from '../sponsoredDelivery';
 import { C7 } from './c7';
 import { Icon } from './icons';
 
-export interface AdCreative {
-  readonly headline: string;
-  readonly body: string;
-  readonly cta: string;
-  readonly onPress?: () => void;
-}
+export type { SponsoredCreative };
 
-const HOUSE: AdCreative = {
-  headline: 'Your message, in every language.',
-  body: 'C7 programmes reach audiences in the language they think in.',
-  cta: 'Learn more',
-};
-
-export function AdSlot({ creative = HOUSE, dismissible = true }: { readonly creative?: AdCreative; readonly dismissible?: boolean }): JSX.Element | null {
+export function AdSlot({ creative = HOUSE_CREATIVE, dismissible = true }: { readonly creative?: SponsoredCreative; readonly dismissible?: boolean }): JSX.Element | null {
   const [dismissed, setDismissed] = useState(false);
+  const href = creative.href;
+
+  /*
+   * NO LINK MEANS NO PRESS HANDLER. A button that responds to a tap by doing
+   * nothing reads as broken; without a destination the call to action is plain
+   * text, exactly as it is on the web.
+   *
+   * A FAILED OPEN MUST NOT TAKE THE PROGRAMME DOWN. `openURL` rejects when
+   * nothing can handle the address, and an unhandled rejection here would crash
+   * a listener out of a live programme over an advert.
+   */
+  const open = creativeOpener(href, (url) => Linking.openURL(url)) ?? undefined;
+
   if (dismissed) return null;
   return (
     <View style={styles.slot} accessibilityLabel="Sponsored">
@@ -45,9 +59,15 @@ export function AdSlot({ creative = HOUSE, dismissible = true }: { readonly crea
           <Text style={styles.headline}>{creative.headline}</Text>
           <Text style={styles.body}>{creative.body}</Text>
         </View>
-        <Pressable onPress={creative.onPress} accessibilityRole="button" style={({ pressed }) => [styles.cta, pressed && styles.pressed]}>
-          <Text style={styles.ctaLabel}>{creative.cta} ›</Text>
-        </Pressable>
+        {open === undefined ? (
+          <View style={styles.cta}>
+            <Text style={styles.ctaLabel}>{creative.cta} ›</Text>
+          </View>
+        ) : (
+          <Pressable onPress={open} accessibilityRole="button" style={({ pressed }) => [styles.cta, pressed && styles.pressed]}>
+            <Text style={styles.ctaLabel}>{creative.cta} ›</Text>
+          </Pressable>
+        )}
       </View>
     </View>
   );

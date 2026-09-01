@@ -22,6 +22,8 @@ import { NotYetPage } from './pages/NotYetPage';
 import { VocabularyPage } from './pages/VocabularyPage';
 import { useVocabulary } from './useVocabulary';
 import { useQuality } from './useQuality';
+import { useAdvertising } from './useAdvertising';
+import { AdvertisingPage } from './pages/AdvertisingPage';
 import { QualityPage } from './pages/QualityPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { LiveControlAside, LivePage } from './pages/LivePage';
@@ -1284,6 +1286,16 @@ export default function App(): React.ReactElement {
     targetLanguages,
   });
 
+  /*
+   * PAGE 07 STATE. Scoped to the operator's own channel, the same programme
+   * identity Pages 05 and 06 use. Advertising is configured per programme;
+   * there is no global creative anywhere in this product.
+   */
+  const advertising = useAdvertising({
+    accountUrl: ACCOUNT_URL,
+    programmeId: ownChannelId,
+  });
+
   const channelIdentity = useChannelIdentity({
     accountUrl: ACCOUNT_URL,
     reloadKey: `${activeChannelId}:${channelReportedCategory ?? ''}`,
@@ -1478,14 +1490,25 @@ export default function App(): React.ReactElement {
       </ConsolePage>
 
       {/* ---------------- 07 Advertising ---------------- */}
-      <ConsolePage id="advertising" active={page === 'advertising'} title="Advertising">
-        <NotYetPage
-          title="The programme\u2019s advert placement"
-          what={[
-            'The apps reserve a first-class Sponsored slot on the programme surface: visually separated, silent, never over the controls.',
-            'This page will hold the creative for that slot and its schedule; until an advertising source exists the apps show the house creative.',
-          ]}
-          reference="Coherent wave directive, 29 Aug 2026 (item 3)."
+      <ConsolePage
+        id="advertising"
+        active={page === 'advertising'}
+        title="Advertising"
+        lede="The creative in your programme's Sponsored slot, and when it runs. The slot is a reserved placement on every viewer surface: when your own creative is off or outside its times, it shows the house creative rather than nothing."
+      >
+        <AdvertisingPage
+          snapshot={advertising.snapshot}
+          unavailable={advertising.unavailable}
+          conflict={advertising.conflict}
+          problems={advertising.problems}
+          saving={advertising.saving}
+          loading={advertising.loading}
+          onReload={() => {
+            void advertising.reload();
+          }}
+          onSave={(creative, expectedRevision) => {
+            void advertising.save(creative, expectedRevision);
+          }}
         />
       </ConsolePage>
 
