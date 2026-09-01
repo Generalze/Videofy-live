@@ -61,12 +61,13 @@ describe('05 Programme Vocabulary is reachable through the console', () => {
   });
 });
 
-describe('06 and 07 are still honestly marked NOT YET', () => {
-  // They are not built. The placeholder is the correct content until the
-  // capability behind each page exists, and removing it early would be the
-  // opposite of what Page 05 just fixed.
-  it.each(['quality', 'advertising'])('%s still renders the placeholder', (id) => {
-    expect(consolePage(id)).toMatch(/<NotYetPage/u);
+describe('07 is still honestly marked NOT YET', () => {
+  // Advertising is not built. The placeholder is the correct content until the
+  // capability behind the page exists, and removing it early would be the
+  // opposite of what Page 05 fixed. 06 has since been built and wired; its own
+  // reachability is asserted in page06-wired.test.ts.
+  it('advertising still renders the placeholder', () => {
+    expect(consolePage('advertising')).toMatch(/<NotYetPage/u);
   });
 });
 

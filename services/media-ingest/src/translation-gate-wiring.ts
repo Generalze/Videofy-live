@@ -18,11 +18,32 @@
  * the output.
  */
 
+import type { TranslationDecision } from '@videofy-live/translation-routes';
 import {
   createTranslationGate,
   type RouteGate,
   type TranslationScope,
 } from './translation-gate.js';
+
+/**
+ * The full-fidelity registry, for surfaces that must EXPLAIN a decision rather
+ * than merely obey it.
+ *
+ * The gate's own `RouteGate` stays deliberately narrow -- it needs "may I" and
+ * a provider name, and widening it would invite a caller to start re-judging
+ * approval. But the operator console has to say WHY a route is refused, which
+ * model is behind it and what was measured, and none of that is on the gate's
+ * interface. So the wiring hands back the registry it already loaded instead
+ * of anybody reading the document a second time: two loads of one file is two
+ * answers waiting to disagree after an edit.
+ */
+export interface RouteEvidenceSource {
+  mayTranslate(
+    sourceLanguage: string,
+    targetLanguage: string,
+    scope: string,
+  ): TranslationDecision;
+}
 
 export interface GateWiring {
   readonly gate: ReturnType<typeof createTranslationGate>;
@@ -30,6 +51,22 @@ export interface GateWiring {
   readonly description: string;
   readonly approvedDirections: readonly string[];
   readonly failedClosed: boolean;
+  /**
+   * The loaded registry, or null when none was. Null is not "allow": a surface
+   * reading this must report that it cannot answer, exactly as the gate
+   * refuses.
+   */
+  readonly registry: RouteEvidenceSource | null;
+}
+
+/** True when the loaded object is the real registry rather than a test double. */
+function hasFullEvidence(candidate: unknown): candidate is RouteEvidenceSource {
+  return (
+    typeof candidate === 'object' &&
+    candidate !== null &&
+    typeof (candidate as { mayTranslate?: unknown }).mayTranslate === 'function' &&
+    typeof (candidate as { lookup?: unknown }).lookup === 'function'
+  );
 }
 
 export interface WiringOptions {
@@ -83,6 +120,7 @@ export function buildTranslationGate(options: WiringOptions): GateWiring {
       `route document loaded; ${approved.length} approved direction(s) for ${options.scope}`,
     approvedDirections: approved,
     failedClosed: false,
+    registry: hasFullEvidence(registry) ? registry : null,
   };
 }
 
@@ -96,6 +134,9 @@ function closed(options: WiringOptions, why: string): GateWiring {
     description: `FAILED CLOSED -- ${why}`,
     approvedDirections: [],
     failedClosed: true,
+    // Nothing was loaded, so there is no evidence to show. The quality surface
+    // reports "cannot answer" rather than an empty list of healthy routes.
+    registry: null,
   };
 }
 

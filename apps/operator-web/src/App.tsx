@@ -21,6 +21,8 @@ import { LanguagesPage, type CatalogueState } from './pages/LanguagesPage';
 import { NotYetPage } from './pages/NotYetPage';
 import { VocabularyPage } from './pages/VocabularyPage';
 import { useVocabulary } from './useVocabulary';
+import { useQuality } from './useQuality';
+import { QualityPage } from './pages/QualityPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { LiveControlAside, LivePage } from './pages/LivePage';
 import { AudioVoicesAside, AudioVoicesPage } from './pages/AudioVoicesPage';
@@ -1269,6 +1271,19 @@ export default function App(): React.ReactElement {
     programmeId: ownChannelId,
   });
 
+  /*
+   * PAGE 06 STATE. The DIRECTIONS this programme is actually configured for --
+   * the operator's chosen source language and their selected targets -- not
+   * every route the deployment could theoretically run. A page listing installed
+   * providers would tell an operator a language is available when this
+   * programme is not set up to use it.
+   */
+  const quality = useQuality({
+    ingestUrl: INGEST_URL,
+    sourceLanguage,
+    targetLanguages,
+  });
+
   const channelIdentity = useChannelIdentity({
     accountUrl: ACCOUNT_URL,
     reloadKey: `${activeChannelId}:${channelReportedCategory ?? ''}`,
@@ -1445,15 +1460,19 @@ export default function App(): React.ReactElement {
       </ConsolePage>
 
       {/* ---------------- 06 Quality / Delay ---------------- */}
-      <ConsolePage id="quality" active={page === 'quality'} title="Quality / Delay">
-        <NotYetPage
-          title="Live Multilingual or Broadcast Quality"
-          what={[
-            'Two grades, one choice: Live Multilingual (30 / 45 / 60 s from measured readiness, standard voices) or Broadcast Quality (90 s, premium voices, hard languages).',
-            'Preflight measures each language\u2019s chain and recommends the lowest safe delay; the delay never decreases during a programme.',
-            'Every language rendition shows its airtime margin while live.',
-          ]}
-          reference="Videofy Blueprint \u00a71.3 and \u00a75.4 (grades), \u00a75.5 (preflight) \u2014 phase 1 slices P1.1, P1.6, P1.7."
+      <ConsolePage
+        id="quality"
+        active={page === 'quality'}
+        title="Quality / Delay"
+        lede="What each language route can actually do, what is providing it, and how much delay to budget. Every state below is the service's own answer about a real route; nothing on this page is inferred here."
+      >
+        <QualityPage
+          rows={quality.rows}
+          unavailable={quality.unavailable}
+          loading={quality.loading}
+          onReload={() => {
+            void quality.reload();
+          }}
         />
       </ConsolePage>
 

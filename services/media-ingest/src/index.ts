@@ -48,6 +48,7 @@ import {
   type SpeechProbabilityDetector,
 } from '@videofy-live/speech-activity';
 import { buildTranslationGate } from './translation-gate-wiring.js';
+import { registerQualityRoutes } from './quality-routes.js';
 import { supportsKeyterms } from './providers/deepgram/nova-streaming-stt.js';
 import {
   buildLiveSynthesis,
@@ -1070,6 +1071,24 @@ logger.info('Translation route gate ready', {
   detail: translationGate.description,
   ...(translationGate.failedClosed
     ? { warning: 'every direction refuses; the ORIGINAL is still delivered untranslated' }
+    : {}),
+});
+
+/*
+ * THE QUALITY SURFACE. Registered from the SAME gate instance above, so the
+ * console is told exactly what the gate would decide -- not a second reading of
+ * the document that can disagree with it after an edit.
+ */
+registerQualityRoutes(app, {
+  registry: translationGate.registry,
+  catalogue: () => ingest.targetLanguageCatalogue,
+  scope: 'programme-live',
+});
+logger.info('Route quality surface ready', {
+  scope: 'programme-live',
+  evidenceAvailable: translationGate.registry !== null,
+  ...(translationGate.registry === null
+    ? { warning: 'no route document loaded; the console will report quality as unknown' }
     : {}),
 });
 
