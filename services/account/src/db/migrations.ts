@@ -747,7 +747,7 @@ const CHANNEL_PROFILES: Migration = {
 };
 
 /**
- * 021 -- the Language Specialist programme.
+ * 023 -- the Language Specialist programme.
  *
  * TEN TABLES, AND THE SHAPE IS THE POLICY. Four of them are append-only with a
  * trigger to prove it, one carries a CHECK constraint that a future product
@@ -795,7 +795,7 @@ const CHANNEL_PROFILES: Migration = {
  * one, and each is a thing that must then be protected, disclosed and deleted.
  */
 const LANGUAGE_SPECIALISTS: Migration = {
-  name: '021_language_specialists',
+  name: '023_language_specialists',
   sql: `
     CREATE TABLE IF NOT EXISTS specialist_profiles (
       account_id        text        PRIMARY KEY,
@@ -1021,20 +1021,22 @@ const LANGUAGE_SPECIALISTS: Migration = {
 };
 
 /**
- * 022 -- specialist integrity: attempts, composite keys, source validation.
+ * 024 -- specialist integrity: attempts, composite keys, source validation.
  *
- * A FOLLOW-UP, NOT AN EDIT OF 021. Migration 021 has already run against a
- * local specialist database and is published on the feature branch. Editing it
- * would mean two databases that agree about which migrations ran and disagree
- * about what they did -- the exact failure the header of this file forbids. No
- * production deployment has applied either, and that is a reason to be
- * scrupulous rather than a licence to rewrite history.
+ * A FOLLOW-UP, NOT AN EDIT OF 023. Migration 023 has already run against a
+ * local specialist database. Editing it would mean two databases that agree
+ * about which migrations ran and disagree about what they did -- the exact
+ * failure the header of this file forbids. No production deployment has applied
+ * either, and that is a reason to be scrupulous rather than a licence to
+ * rewrite history.
  *
- * NUMBERING IS PROVISIONAL. This branch has not been rebased onto the final P8
- * Checkpoint-C head, and main may consume 021/022 in the meantime. If it does,
- * these two are renumbered as a pair at that one rebase -- neither has run
- * anywhere but a local specialist database, so renaming them then is honest.
- * Renaming after a deployment would not be.
+ * NUMBERING IS NOW SETTLED. These three began life as 021-023 on the specialist
+ * branch while main was still moving. At the one authorised rebase onto the P8
+ * Checkpoint-C head, main had taken 021 (programme vocabulary) and 022
+ * (programme sponsored creative), so the specialist set moved to 023-025. None
+ * had run anywhere but a local specialist database, which is exactly what made
+ * renaming them honest at that moment and would not have made it honest after
+ * a deployment.
  *
  * WHAT THIS ADDS, AND WHY EACH IS IN THE DATABASE RATHER THAN THE APPLICATION:
  *
@@ -1070,12 +1072,12 @@ const LANGUAGE_SPECIALISTS: Migration = {
  *    contradicts the record beside it is worse than an absent one.
  */
 const SPECIALIST_INTEGRITY: Migration = {
-  name: '022_specialist_integrity',
+  name: '024_specialist_integrity',
   sql: `
     /* --- 1. attempt identity ------------------------------------------- */
 
     -- The draft/source identity for the CURRENT attempt. Defaulted for the rows
-    -- 021 already created locally, which are all attempt 1 by construction.
+    -- 023 already created locally, which are all attempt 1 by construction.
     ALTER TABLE specialist_languages
       ADD COLUMN IF NOT EXISTS attempt_id text NOT NULL DEFAULT 'att_legacy_1';
 
@@ -1243,16 +1245,14 @@ const SPECIALIST_INTEGRITY: Migration = {
 };
 
 /**
- * 023 -- source provenance, in the database.
+ * 025 -- source provenance, in the database.
  *
- * A THIRD FILE RATHER THAN AN EDIT OF THE OTHER TWO, for the reason 022 already
- * gives: both have run against a local specialist database and both are
- * published on the feature branch. Numbering stays provisional until the one
- * rebase onto the final P8 Checkpoint-C head; all three are renumbered together
- * then if main has consumed 021-023 meanwhile, and that is honest because none
- * has run anywhere but locally.
+ * A THIRD FILE RATHER THAN AN EDIT OF THE OTHER TWO, for the reason 024 already
+ * gives: both have run against a local specialist database. The numbering is
+ * settled -- see 024's header for how 021-023 became 023-025 at the one
+ * authorised rebase.
  *
- * WHAT 022 LEFT REPRESENTABLE. It bound a corpus to its own consent and a
+ * WHAT 024 LEFT REPRESENTABLE. It bound a corpus to its own consent and a
  * verdict to its own assignment and reviewer, but the SOURCE VALIDATION side
  * carried single-column references only:
  *
@@ -1277,7 +1277,7 @@ const SPECIALIST_INTEGRITY: Migration = {
  * because MATCH FULL would refuse every blind-review row.
  */
 const SPECIALIST_SOURCE_PROVENANCE: Migration = {
-  name: '023_specialist_source_provenance',
+  name: '025_specialist_source_provenance',
   sql: `
     -- The target the two keys below need. Redundant with the primary key on its
     -- own; load-bearing as the thing they point at.

@@ -2,12 +2,11 @@
 
 **Owner:** masterzee001 · **Branch:** `feature/language-specialist-portal` · **Not merged.**
 
-> **Integration status: HOLD.** Two CTO audits — eleven items on `07e4a7f`,
-> four more on `28dbeaf` — all addressed below. Not rebased onto P8, not merged,
-> not deployed. Migration numbering stays provisional until the one rebase onto
-> the final P8 Checkpoint-C head: main may consume 021–023 meanwhile, and none
-> has run anywhere but a local specialist database, so renumbering then is
-> honest.
+> **Rebased onto Checkpoint C.** Two CTO audits — eleven items on `07e4a7f`,
+> four more on `28dbeaf` — both PASS. The branch has since been rebased once, as
+> authorised, onto Checkpoint C (`2b61dd9`), and the migrations renumbered from
+> 021–023 to **023–025** because main had taken 021 (programme vocabulary) and
+> 022 (programme sponsored creative) in the meantime. Not merged, not deployed.
 
 C7's persistent human-language quality network: the people who tell us whether a
 translation actually says what it said. This document is the design record and
@@ -45,7 +44,7 @@ reason most of the design below looks the way it does.
 | Layer | Where |
 |---|---|
 | Domain rules (no I/O) | `packages/language-specialist` |
-| Persistence + HTTP | `services/account` (`specialist-store.ts`, `specialist-routes.ts`, `specialist-admin-routes.ts`, `db/specialist-records-postgres.ts`, migration `021`) |
+| Persistence + HTTP | `services/account` (`specialist-store.ts`, `specialist-routes.ts`, `specialist-admin-routes.ts`, `db/specialist-records-postgres.ts`, migrations `023`–`025`) |
 | Public page + specialist portal | `apps/ecosystem-web` |
 | Operator console | `apps/operator-web` (`src/specialists/`) |
 | Edge routing | `deploy/production/Caddyfile` |
@@ -417,7 +416,7 @@ path**: nothing set it, nothing read it, and every specialist sat at
 that never changes and gates nothing is not a status; it is a label contradicting
 the record beside it, and the dashboard printed the contradiction.
 
-Model **B** was chosen: the column is dropped in migration 022, and progress is
+Model **B** was chosen: the column is dropped in migration 024, and progress is
 `progressOf(tracks)` — `NO_LANGUAGES | IN_PROGRESS | AWAITING_DECISION |
 QUALIFIED | NOT_QUALIFIED | SUSPENDED` — computed from the per-language states.
 It gates nothing (authorization is per language and per capability) and it cannot
@@ -502,15 +501,14 @@ existing C7 join flow); unauthorised operator calls answer **404**.
 
 ## 10. Migrations
 
-**`021_language_specialists`** — ten new tables, no existing table altered.
+**`023_language_specialists`** — ten new tables, no existing table altered.
 
-**`022_specialist_integrity`** — a **follow-up, never an edit of 021**. 021 has
-already run against a local specialist database and is published on the branch;
-editing it would mean two databases that agree about which migrations ran and
-disagree about what they did. A test asserts 021 still contains no `ALTER TABLE`
-of its own.
+**`024_specialist_integrity`** — a **follow-up, never an edit of 023**. 023 had
+already run against a local specialist database; editing it would mean two
+databases that agree about which migrations ran and disagree about what they
+did. A test asserts 023 still contains no `ALTER TABLE` of its own.
 
-What 022 adds:
+What 024 adds:
 
 | # | change | why it belongs in the database |
 |---|---|---|
@@ -527,10 +525,10 @@ Five tables are append-only by trigger: `specialist_consents`,
 append-only is a convention that survives until somebody writes a well-meaning
 `UPDATE` in a console session.
 
-**`023_specialist_source_provenance`** — a third file, on the same principle:
-022 has also run locally and is published.
+**`025_specialist_source_provenance`** — a third file, on the same principle:
+024 had also run locally.
 
-022 bound a corpus to its own consent and a verdict to its own assignment and
+024 bound a corpus to its own consent and a verdict to its own assignment and
 reviewer, but the source-validation side still carried **single-column**
 references. `specialist_validated_sources.set_id` pointed at *any* set: Alice's
 frozen French source could name the set C7 supplied to Bob, or her own Spanish
@@ -545,10 +543,21 @@ cross-language and cross-attempt provenance is unrepresentable. A NULL
 packet has no set, and MATCH FULL would refuse every one of them. Corpora and
 source sets also gain a foreign key to the track they belong to.
 
-**Numbering is provisional** until the one rebase onto the final P8 Checkpoint-C
-head. None of the three has run anywhere but a local specialist database, so
-renumbering them together then is honest; renumbering after a deployment would
-not be.
+**Numbering is settled.** The three began life as 021–023 while main was still
+moving. At the one authorised rebase onto Checkpoint C, main held 021
+(`programme_vocabulary`) and 022 (`programme_sponsored_creative`), so the
+specialist set moved to 023–025 and those two are preserved untouched ahead of
+it in the `MIGRATIONS` array. None of the three had run anywhere but a local
+specialist database, which is exactly what made renaming them honest at that
+moment and would not have made it honest after a deployment.
+
+Note that the specialist migrations are *defined* earlier in `migrations.ts`
+than main's 021/022 while running after them. That is legal and deliberate —
+the file's own header states that order is the array order and never a filename
+sort — but a reader scanning top to bottom sees 020, 023, 024, 025, 021, 022.
+Moving the blocks is a pure textual reshuffle with no behavioural effect, and it
+was left out of the rebase because the instruction was to resolve genuine
+integration conflicts only.
 
 Without a database the service falls back to in-memory ports, as the tariff and
 device stores do. A local run works; a restart forgets, which is the truth and
@@ -570,19 +579,37 @@ the record.
 
 ```bash
 npm install
-npm run build -w apps/ecosystem-web
-npm run build -w apps/operator-web
 
-# the account service; no database needed for a local run
-VIDEOFY_AUTH_SECRET=<32+ chars> ACCOUNT_PORT=3006 \
-  npm run dev -w services/account
+# BUILD IN A NON-PRODUCTION MODE. `.env.production` sets
+# VITE_ACCOUNT_URL=/auth, which is right behind the deployment's reverse
+# proxy and wrong in front of a bare `vite preview`: the bundle then asks
+# the preview server for /auth/..., is handed the SPA fallback's HTML, and
+# every panel sits on "Loading..." forever. Any mode with no .env file of
+# its own falls back to the config default of http://localhost:3006.
+(cd apps/ecosystem-web && npx vite build --mode audit)
+(cd apps/operator-web  && npx vite build --mode audit)
 
-# the two bundles
-npx vite preview --config apps/ecosystem-web/vite.config.ts --port 4330
-npx vite preview --config apps/operator-web/vite.config.ts  --port 4331
+# The account service, started from ITS OWN directory: the development
+# account store resolves ../../voice-enrollment/accounts.json against the
+# working directory, so starting it from the repo root loads an empty store
+# from outside the repo and every login fails with "do not match".
+# C7_ENVIRONMENT=development is required -- the default is production, and
+# production refuses to start with the synthetic email provider.
+(cd services/account && \
+  C7_ENVIRONMENT=development VIDEOFY_AUTH_SECRET=<32+ chars> \
+  ACCOUNT_PORT=3006 PLATFORM_OPERATOR_ACCOUNT_IDS=<a verified accountId> \
+  npx tsx src/index.ts)
+
+# the two bundles, each served from its own directory: "dist" is resolved
+# against the working directory, not against the config file's location
+(cd apps/ecosystem-web && npx vite preview --port 4330)
+(cd apps/operator-web  && npx vite preview --port 4331)
 ```
 
 Then `http://localhost:4330/language-specialists/`.
+
+Run `npm run build` again when you are finished. An audit-mode `dist` points
+at localhost and must never be the thing that gets deployed.
 
 ### Screenshots
 

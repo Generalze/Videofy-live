@@ -291,10 +291,10 @@ describe('the migration is appended, never reordered', () => {
     expect(order.trimEnd().endsWith('SPECIALIST_SOURCE_PROVENANCE,\n];')).toBe(true);
   });
 
-  it('PIN: 023 follows 022, and 022 is not edited either', () => {
-    // The same rule one migration further on: 022 has also run against a local
-    // specialist database and is published, so the source-provenance keys are a
-    // third file rather than an amendment to the second.
+  it('PIN: 025 follows 024, and 024 is not edited either', () => {
+    // The same rule one migration further on: 024 has also run against a local
+    // specialist database, so the source-provenance keys are a third file
+    // rather than an amendment to the second.
     const order = migrations.slice(migrations.indexOf('export const MIGRATIONS'));
     expect(order.indexOf('SPECIALIST_INTEGRITY')).toBeLessThan(
       order.indexOf('SPECIALIST_SOURCE_PROVENANCE'),
@@ -303,7 +303,7 @@ describe('the migration is appended, never reordered', () => {
       (match) => match[1] ?? '',
     );
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toContain('023_specialist_source_provenance');
+    expect(names).toContain('025_specialist_source_provenance');
   });
 
   it('PIN: source provenance is a composite key, not a bare set id', () => {
@@ -322,24 +322,51 @@ describe('the migration is appended, never reordered', () => {
     );
   });
 
-  it('PIN: 022 FOLLOWS 021 rather than editing it', () => {
-    // 021 has already run against a local specialist database and is published
-    // on the branch. Editing it would mean two databases that agree about which
-    // migrations ran and disagree about what they did -- the failure the header
-    // of migrations.ts forbids. So the integrity work is a follow-up.
+  it('PIN: 024 FOLLOWS 023 rather than editing it', () => {
+    // 023 has already run against a local specialist database. Editing it would
+    // mean two databases that agree about which migrations ran and disagree
+    // about what they did -- the failure the header of migrations.ts forbids.
+    // So the integrity work is a follow-up.
     const order = migrations.slice(migrations.indexOf('export const MIGRATIONS'));
     expect(order.indexOf('LANGUAGE_SPECIALISTS')).toBeLessThan(
       order.indexOf('SPECIALIST_INTEGRITY'),
     );
 
-    // And 021's own SQL is untouched: it still only CREATEs. An ALTER inside it
+    // And 023's own SQL is untouched: it still only CREATEs. An ALTER inside it
     // would be a rewrite of a migration that has run.
     const original = migrations.slice(
-      migrations.indexOf("name: '021_language_specialists'"),
-      migrations.indexOf("name: '022_specialist_integrity'"),
+      migrations.indexOf("name: '023_language_specialists'"),
+      migrations.indexOf("name: '024_specialist_integrity'"),
     );
     expect(original).toContain('CREATE TABLE IF NOT EXISTS specialist_profiles');
     expect(original).not.toContain('ALTER TABLE');
+  });
+
+  it('PIN: the 021 and 022 from main are preserved, and run BEFORE the specialist set', () => {
+    // The specialist migrations began life as 021-023 while main was moving. At
+    // the one authorised rebase onto Checkpoint C, main held 021 and 022, so the
+    // specialist set became 023-025. Both halves have to be true: main's two
+    // still exist unrenamed, and they run first -- a specialist table that came
+    // up before the programme vocabulary it does not reference would be
+    // harmless today and a silent ordering bug the first time it did.
+    const names = [...migrations.matchAll(/name: '([0-9]{3}_[a-z_]+)'/gu)].map(
+      (match) => match[1] ?? '',
+    );
+    expect(names).toContain('021_programme_vocabulary');
+    expect(names).toContain('022_programme_sponsored_creative');
+
+    const order = migrations.slice(migrations.indexOf('export const MIGRATIONS'));
+    expect(order.indexOf('PROGRAMME_VOCABULARY')).toBeLessThan(
+      order.indexOf('LANGUAGE_SPECIALISTS'),
+    );
+    expect(order.indexOf('PROGRAMME_SPONSORED_CREATIVE')).toBeLessThan(
+      order.indexOf('LANGUAGE_SPECIALISTS'),
+    );
+
+    // And nothing kept an old specialist number, which would collide with main's.
+    expect(names).not.toContain('021_language_specialists');
+    expect(names).not.toContain('022_specialist_integrity');
+    expect(names).not.toContain('023_specialist_source_provenance');
   });
 
   it('carries a name that has not been used before', () => {
@@ -347,6 +374,6 @@ describe('the migration is appended, never reordered', () => {
       (match) => match[1] ?? '',
     );
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toContain('021_language_specialists');
+    expect(names).toContain('023_language_specialists');
   });
 });
