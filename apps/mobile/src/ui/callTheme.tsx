@@ -169,17 +169,21 @@ export function EndCallButton({
   label,
   onPress,
   icon,
+  disabled = false,
 }: {
   readonly label: string;
   readonly onPress: () => void;
   readonly icon?: ReactNode;
+  /** The request is already in flight; a second press would send a second end. */
+  readonly disabled?: boolean;
 }): JSX.Element {
   return (
     <Pressable
-      onPress={onPress}
+      onPress={disabled ? undefined : onPress}
       accessibilityRole="button"
       accessibilityLabel={label}
-      style={({ pressed }) => [styles.roundWrap, pressed && styles.pressed]}
+      accessibilityState={{ disabled }}
+      style={({ pressed }) => [styles.roundWrap, (pressed || disabled) && styles.pressed]}
     >
       <View style={[styles.round, styles.end]}>{icon ?? <Text style={styles.endLabel}>End</Text>}</View>
       <Text style={styles.roundLabel}>{label}</Text>

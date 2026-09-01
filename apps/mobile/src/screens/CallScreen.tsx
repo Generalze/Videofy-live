@@ -47,6 +47,7 @@ import {
 import { createAudioRouter, resolveRoute, type AudioRoute } from '../call/audioRoute';
 import { elapsedSinceMs, formatElapsed, observeServerClock } from '../call/callTimer';
 import { TERMINAL_DIRECT_STATES, directStateWords } from '../call/directCallApi';
+import { connectedRow, stateLine } from '../call/callDisplay';
 import { Icon } from '../ui/icons';
 import { videofyCall } from '../native/videofyCall';
 import { reportRingTimeline } from '../call/ringTimeline';
@@ -131,16 +132,6 @@ export interface CallScreenProps {
   readonly onLeave: () => void;
 }
 
-/** The words the telephone shows while two-way audio is not yet proven. */
-function stateLine(
-  serverState: string | null,
-  role: 'caller' | 'callee',
-  peerName: string,
-): string {
-  if (serverState === null) return role === 'caller' ? `Calling ${peerName}…` : 'Connecting…';
-  return directStateWords(serverState, peerName);
-}
-
 export function CallScreen({
   call,
   displayName,
@@ -196,6 +187,13 @@ export function CallScreen({
    * the first wire so the origin can be ticked on the phone's clock.
    */
   const [serverState, setServerState] = useState<string | null>(null);
+  /*
+   * The End button has been pressed and the request is in flight.
+   *
+   * Deliberately NOT a call state: the call is over when the server says so.
+   * This only keeps the control responsive and un-pressable twice.
+   */
+  const [ending, setEnding] = useState(false);
   const [mode, setMode] = useState<'normal' | 'translated' | null>(null);
   const [connectedAtMs, setConnectedAtMs] = useState<number | null>(null);
   const clockOffset = useRef<number | null>(null);
@@ -385,6 +383,14 @@ export function CallScreen({
 
   // The timer ticks while there is an origin and the call has not ended.
   const terminal = serverState !== null && TERMINAL_DIRECT_STATES.has(serverState);
+  /*
+   * The state the SERVER says the call is in right now, or null before the
+   * first wire arrives. Every sentence on this screen comes from here; nothing
+   * derives a status from the timer, the roster, the socket or the tiles.
+   */
+  // The peer's name only exists on a direct call; a conference has a roster.
+  const peerName = call.kind === 'direct' ? call.peer.name : '';
+  const connectedRowState = connectedRow(serverState, connectedAtMs, peerName);
   useEffect(() => {
     if (connectedAtMs === null || terminal) return undefined;
     setNowMs(Date.now());
@@ -469,8 +475,20 @@ export function CallScreen({
       onLeave();
       return;
     }
+    /*
+     * THE SERVER ENDS THE CALL; THIS ONLY ASKS.
+     *
+     * This used to set 'ended' locally before `end()` resolved, so the screen
+     * could claim a call was over while the server still had it open -- the
+     * caller's own device disagreeing with the callee's. `ending` keeps the
+     * button responsive and disabled without asserting anything untrue.
+     *
+     * The screen still leaves on its own after the request settles: a person
+     * who pressed End must never be held on a call screen because an
+     * acknowledgement was lost.
+     */
     const link = connection.current;
-    setServerState('ended');
+    setEnding(true);
     void (link?.end() ?? Promise.resolve(false)).finally(() => {
       setTimeout(() => onLeave(), 600);
     });
@@ -561,13 +579,28 @@ export function CallScreen({
               <View style={styles.modePill}>
                 <Text style={styles.modePillLabel}>{modeLabel}</Text>
               </View>
-              {elapsedMs !== null && !terminal ? (
+              {elapsedMs !== null && connectedRowState.show ? (
                 <>
+                  {/*
+                    * THE TIMER SHOWS WHEN; THE WORDS SHOW WHAT.
+                    *
+                    * `connectedAtMs` says when two-way audio was FIRST proven
+                    * and never moves again -- which is exactly right for a
+                    * duration and exactly wrong for a status. This row used to
+                    * read "Connected" whenever that value existed, so a server
+                    * that had gone back to `connecting` after a renegotiation
+                    * still showed Connected, and the screen quietly disagreed
+                    * with the call.
+                    *
+                    * The elapsed time keeps running across a reconnect, because
+                    * the call did not restart; the sentence beneath it is
+                    * whatever the server currently says.
+                    */}
                   <Text style={styles.timer}>{formatElapsed(elapsedMs)}</Text>
                   <View style={styles.stateRow}>
-                    <View style={[styles.stateDot, serverState === 'reconnecting' && styles.stateDotWarn]} />
-                    <Text style={[styles.stateLine, styles.stateConnected, serverState === 'reconnecting' && styles.stateWarn]}>
-                      {serverState === 'reconnecting' ? 'Reconnecting…' : 'Connected'}
+                    <View style={[styles.stateDot, connectedRowState.warn && styles.stateDotWarn]} />
+                    <Text style={[styles.stateLine, styles.stateConnected, connectedRowState.warn && styles.stateWarn]}>
+                      {connectedRowState.words}
                     </Text>
                   </View>
                 </>
@@ -701,6 +734,9 @@ export function CallScreen({
             <EndCallButton
               label={call.kind === 'direct' ? 'End call' : 'Leave'}
               onPress={hangUp}
+              // Pressed once means once. The screen leaves when the request
+              // settles; it does not claim the call ended before the server says.
+              disabled={ending}
               icon={<Icon name="hangup" size={30} color="#ffffff" />}
             />
           </View>
