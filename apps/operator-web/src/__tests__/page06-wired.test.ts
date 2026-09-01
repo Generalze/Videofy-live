@@ -39,7 +39,8 @@ describe('06 Quality / Delay is reachable through the console', () => {
 
   it('feeds it real state rather than literals', () => {
     const page = consolePage('quality');
-    for (const prop of ['rows', 'unavailable', 'loading']) {
+    // `reason` included: the page must not invent a cause of its own.
+    for (const prop of ['rows', 'unavailable', 'reason', 'loading']) {
       expect(page).toMatch(new RegExp(`${prop}=\\{quality\\.`, 'u'));
     }
     expect(page).toMatch(/quality\.reload\(\)/u);

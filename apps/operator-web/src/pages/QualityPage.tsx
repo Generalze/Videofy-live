@@ -33,8 +33,19 @@ import styles from './QualityPage.module.css';
 export interface QualityPageProps {
   /** Null until the service has answered. Never defaulted to an empty list. */
   readonly rows: readonly RouteQualityRow[] | null;
-  /** The service could not answer at all. */
+  /** There is no usable answer. WHY is `reason`, and the two differ. */
   readonly unavailable: boolean;
+  /**
+   * The reason, in the words of whoever actually knows it.
+   *
+   * TWO DIFFERENT FAILURES REACH THIS PAGE and an operator fixes them in
+   * different places: the service ANSWERED and said it has no route document
+   * loaded, or the service did not answer at all. This component cannot tell
+   * them apart and must not guess -- an earlier draft printed "the media
+   * service did not answer" for both, which is simply false in the first case
+   * and sends somebody to check a network that is fine.
+   */
+  readonly reason: string | null;
   readonly loading: boolean;
   readonly onReload: () => void;
 }
@@ -140,9 +151,17 @@ export function QualityPage(props: QualityPageProps): React.ReactElement {
     return (
       <div className={styles.page}>
         <p className={styles.empty}>
-          Route quality is unknown: the media service did not answer. Nothing on
-          this page can be trusted until it does, and no state is assumed in the
-          meantime.
+          <strong>Route quality is unknown.</strong>{' '}
+          {/*
+            * VERBATIM, NOT REWORDED. The service composed this sentence and it
+            * names the actual cause; restating it here would be a second
+            * explanation free to drift from the real one.
+            */}
+          {props.reason ?? 'No reason was given, so the cause is unknown as well.'}
+        </p>
+        <p className={styles.empty}>
+          Nothing on this page can be trusted until that is resolved, and no
+          state is assumed in the meantime.
         </p>
         <button type="button" className={styles.reload} onClick={props.onReload}>
           Try again

@@ -150,6 +150,7 @@ function Harness(props: { source: string; targets: readonly string[] }): React.R
     <QualityPage
       rows={quality.rows}
       unavailable={quality.unavailable}
+      reason={quality.reason}
       loading={quality.loading}
       onReload={() => {
         void quality.reload();
@@ -360,6 +361,43 @@ describe('a service that cannot answer is never rendered as healthy', () => {
     // The failure mode this guards: an empty table reading as "no problems".
     expect(container.querySelector('[data-direction]')).toBeNull();
     expect(container.textContent).not.toMatch(/\bREADY\b/u);
+  });
+});
+
+/*
+ * TWO CAUSES, TWO SENTENCES.
+ *
+ * "No route document is loaded" and "the service never replied" are fixed by
+ * different people in different places, and the page briefly printed the second
+ * for both. An operator told the network is down while the network is fine
+ * looks in the wrong place for exactly as long as they believe the page.
+ */
+describe('the two ways of having no answer stay distinguishable', () => {
+  it('names the ROUTE DOCUMENT when the service answered and had nothing', async () => {
+    await serve([], [capability({ language: 'en' }), capability({})], {
+      withDocument: false,
+    });
+    await mount('en', ['fr']);
+
+    const text = container.textContent ?? '';
+    expect(text).toMatch(/No translation route document is loaded/u);
+    expect(text).toMatch(/refused at the gate/u);
+    // The service DID answer. Saying otherwise is the defect this pins.
+    expect(text).not.toMatch(/did not respond/u);
+    expect(text).not.toMatch(/did not answer/u);
+  });
+
+  it('names the NETWORK when the service never answered at all', async () => {
+    // A port with nothing listening: a real connection failure, not a 200
+    // carrying an empty payload.
+    baseUrl = 'http://127.0.0.1:1';
+    await mount('en', ['fr']);
+
+    const text = container.textContent ?? '';
+    expect(text).toMatch(/Route quality is unavailable/u);
+    // And NOT the route-document explanation, which would be equally false.
+    expect(text).not.toMatch(/No translation route document is loaded/u);
+    expect(container.querySelector('[data-direction]')).toBeNull();
   });
 });
 

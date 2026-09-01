@@ -1469,6 +1469,7 @@ export default function App(): React.ReactElement {
         <QualityPage
           rows={quality.rows}
           unavailable={quality.unavailable}
+          reason={quality.reason}
           loading={quality.loading}
           onReload={() => {
             void quality.reload();
