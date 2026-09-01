@@ -61,6 +61,8 @@ import {
 } from './channel-profiles.js';
 import { createPostgresChannelProfiles } from './db/channel-profiles-postgres.js';
 import { registerChannelRoutes } from './channel-routes.js';
+import { registerVocabularyRoutes } from './vocabulary-routes.js';
+import { createPostgresVocabulary } from './db/programme-vocabulary-postgres.js';
 import {
   channelLookup,
   createShellReader,
@@ -836,6 +838,53 @@ registerChannelRoutes(app, {
     console.log(JSON.stringify({ service: 'account', event, ...detail }));
   },
 });
+
+/*
+ * PROGRAMME VOCABULARY, operator CRUD.
+ *
+ * Registered only with a database. Vocabulary that vanished on restart would be
+ * worse than none: an operator would enter a presenter's name, watch it work,
+ * and find it silently gone next week with no error to explain it.
+ *
+ * `mayAdminister` reuses the CHANNEL ownership that already exists rather than
+ * inventing an admin concept. A programme is administered by whoever owns the
+ * channel it belongs to, which is the answer the platform already gives to the
+ * same question everywhere else.
+ */
+if (databasePool) {
+  registerVocabularyRoutes(app, {
+    vocabulary: createPostgresVocabulary(databasePool),
+    callerAccountId: createCallerResolver({
+      store,
+      secret,
+      nowSeconds: () => Math.floor(Date.now() / 1000),
+    }),
+    mayAdminister: async (accountId, programmeId) => {
+      const owned = await channelProfiles.mine(accountId);
+      return owned !== null && owned.channelId === programmeId;
+    },
+    onEvent: (event, detail) => {
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify({ service: 'account', event, ...detail }));
+    },
+  });
+  // eslint-disable-next-line no-console
+  console.log(JSON.stringify({
+    service: 'account',
+    message: 'Programme vocabulary routes ready',
+    persistence: 'postgres',
+  }));
+} else {
+  // eslint-disable-next-line no-console
+  console.warn(JSON.stringify({
+    service: 'account',
+    level: 'warn',
+    message:
+      'Programme vocabulary is UNAVAILABLE: no database. The routes are not ' +
+      'registered, so the console reports the capability as absent rather than ' +
+      'accepting terms it would lose on restart.',
+  }));
+}
 
 /*
  * THE SHARE PAGE for /streams/<handle>, server-rendered.
