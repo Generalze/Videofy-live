@@ -97,6 +97,32 @@ export interface RestoreResult {
   readonly corrupted: readonly string[];
 }
 
+/**
+ * A programme term to protect, and optionally the spelling to restore it as.
+ *
+ * `canonicalRendering` is applied ONLY where this term actually matched the
+ * source. It is not an output-wide search and replace: rewriting the finished
+ * translation would let a word the translator produced naturally be replaced
+ * merely because it resembles a programme term, which is a corruption of
+ * somebody's sentence rather than a correction of a name.
+ */
+export interface ProtectedTerm {
+  readonly term: string;
+  /** Empty or absent means "restore exactly what was in the source". */
+  readonly canonicalRendering?: string | undefined;
+}
+
+/**
+ * One masked span: what was matched, and what goes back in its place.
+ *
+ * They differ only when a canonical rendering applies. Keeping both means the
+ * restore is a substitution at a KNOWN position rather than a search.
+ */
+export interface MaskedSpan {
+  readonly matched: string;
+  readonly restoreAs: string;
+}
+
 export interface TranslationGateOptions {
   readonly gate: RouteGate;
   readonly scope: TranslationScope;
@@ -112,7 +138,7 @@ export interface TranslationGateOptions {
    * has already resolved the right programme's terms, so one programme's
    * vocabulary cannot leak into another's translation through this path.
    */
-  readonly protectedTerms?: readonly string[];
+  readonly protectedTerms?: readonly ProtectedTerm[];
   /**
    * The certified input limit. Beyond it the gate refuses.
    *
@@ -161,12 +187,12 @@ const PLACEHOLDER = (i: number) => `⟦ID${i}⟧`;
 /** Text with every identifier replaced by an opaque marker. */
 export function protectIdentifiers(
   text: string,
-  protectedTerms: readonly string[] = [],
+  protectedTerms: readonly ProtectedTerm[] = [],
 ): {
   masked: string;
-  identifiers: readonly string[];
+  identifiers: readonly MaskedSpan[];
 } {
-  const identifiers: string[] = [];
+  const identifiers: MaskedSpan[] = [];
   let masked = text;
 
   /*
@@ -180,15 +206,22 @@ export function protectIdentifiers(
    * even under `u`, so it cannot bound `Adéyẹmí` or `ụtụtụ` -- the terms this
    * feature exists for -- and the protection would silently do nothing.
    */
-  for (const term of [...protectedTerms].sort((a, b) => b.length - a.length)) {
-    if (term.trim() === '') continue;
+  for (const entry of [...protectedTerms].sort((a, b) => b.term.length - a.term.length)) {
+    if (entry.term.trim() === '') continue;
     const pattern = new RegExp(
-      `(?<![\p{L}\p{N}])${escapeRegExp(term)}(?![\p{L}\p{N}])`,
+      `(?<![\p{L}\p{N}])${escapeRegExp(entry.term)}(?![\p{L}\p{N}])`,
       'giu',
     );
     masked = masked.replace(pattern, (match) => {
       const index = identifiers.length;
-      identifiers.push(match);
+      const canonical = entry.canonicalRendering?.trim();
+      identifiers.push({
+        matched: match,
+        // The agreed spelling where one exists, otherwise EXACTLY what the
+        // source said. A term with no canonical rendering is a term the
+        // operator wants preserved, not normalised.
+        restoreAs: canonical !== undefined && canonical !== '' ? canonical : match,
+      });
       return PLACEHOLDER(index);
     });
   }
@@ -196,7 +229,9 @@ export function protectIdentifiers(
   for (const pattern of IDENTIFIER_PATTERNS) {
     masked = masked.replace(new RegExp(pattern.source, pattern.flags), (match) => {
       const index = identifiers.length;
-      identifiers.push(match);
+      // An identifier is never rewritten. There is no agreed spelling for a
+      // phone number; there is only the phone number.
+      identifiers.push({ matched: match, restoreAs: match });
       return PLACEHOLDER(index);
     });
   }
@@ -212,16 +247,20 @@ export function protectIdentifiers(
  */
 export function restoreIdentifiers(
   engineOutput: string,
-  identifiers: readonly string[],
+  identifiers: readonly MaskedSpan[],
 ): RestoreResult {
   let text = engineOutput;
   const corrupted: string[] = [];
-  identifiers.forEach((value, index) => {
+  identifiers.forEach((span, index) => {
     const marker = PLACEHOLDER(index);
     if (text.includes(marker)) {
-      text = text.split(marker).join(value);
+      // Substitution at a KNOWN position -- the marker this exact span left
+      // behind. Nothing else in the translation is examined, so a word the
+      // engine produced naturally can never be rewritten for resembling a
+      // programme term.
+      text = text.split(marker).join(span.restoreAs);
     } else {
-      corrupted.push(value);
+      corrupted.push(span.matched);
     }
   });
   return { text, corrupted };

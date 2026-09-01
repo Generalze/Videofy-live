@@ -106,7 +106,7 @@ describe('C. identifier protection', () => {
   ])('masks and restores %s byte-for-byte', (_label, text, identifier) => {
     const { masked, identifiers } = protectIdentifiers(text);
     expect(masked).not.toContain(identifier);
-    expect(identifiers).toContain(identifier);
+    expect(identifiers.map((s) => s.matched)).toContain(identifier);
 
     // The engine translates the words around the marker and leaves it alone.
     const restored = restoreIdentifiers(masked, identifiers);
@@ -125,7 +125,7 @@ describe('C. identifier protection', () => {
 
   it('does not let the phone pattern eat the digits inside a URL', () => {
     const { identifiers } = protectIdentifiers('See https://example.com/2026/08/31 today.');
-    expect(identifiers).toEqual(['https://example.com/2026/08/31']);
+    expect(identifiers.map((s) => s.matched)).toEqual(['https://example.com/2026/08/31']);
   });
 
   it('hands the engine text with no raw identifier in it', () => {
