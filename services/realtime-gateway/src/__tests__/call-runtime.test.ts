@@ -1249,6 +1249,74 @@ describe('CallRuntime lifecycle: disconnect, reaper, leave, resume', () => {
     ).toBe(true);
   });
 
+  /*
+   * THE TWO-MINUTE HYPOTHESIS, closed from both ends.
+   *
+   * The founder saw calls die at about two minutes, which is the disconnect
+   * grace. The grace is not a call limit -- it is the window a dropped seat is
+   * held open FOR a resume -- so the question was never whether 120 seconds is
+   * too short. It was whether the reaper can arm on a call that never dropped,
+   * and whether a resumed seat can still be reaped by the socket it replaced.
+   *
+   * Enlarging the grace would have hidden either fault rather than fixing it.
+   */
+  it('A: a healthy connected socket never arms the disconnect reaper', async () => {
+    // Nothing has disconnected. A timer existing at all here would mean a live
+    // call is already counting down towards being reaped.
+    expect(harness.timers.filter((timer) => !timer.cleared)).toHaveLength(0);
+
+    // Ordinary traffic on a healthy call must not arm one either.
+    harness.emitToRoom.mockClear();
+    await join(harness, new FakeSocket('socket-c'), {
+      ...JOIN_B,
+      resumeParticipantId: 'participant_2',
+      resumeToken: 'resume-token-2',
+    });
+    expect(harness.timers.filter((timer) => !timer.cleared)).toHaveLength(0);
+    expect(harness.runtime.getDiagnostics().participantCount).toBe(2);
+  });
+
+  it('B: the replaced socket disconnecting cannot reap the resumed seat', async () => {
+    /*
+     * THE OLD SOCKET IS STILL BOUND WHEN THE NEW ONE RESUMES.
+     *
+     * A first draft of this test disconnected socket-a, resumed, and then
+     * disconnected socket-a again -- and passed whether or not the runtime
+     * protected anything, because the first disconnect had already removed
+     * that socket's binding. It proved nothing.
+     *
+     * The real ordering on a phone changing network is the opposite: the new
+     * socket connects and resumes the seat BEFORE the dead one is noticed, so
+     * the old binding is still live when its disconnect finally lands. If that
+     * late event still resolved to the participant it would mark a working
+     * seat disconnected and arm a fresh reaper underneath it -- a call dying
+     * about two minutes after a network change, with nothing in the logs but a
+     * routine disconnect.
+     */
+    const resumed = await join(harness, new FakeSocket('socket-a2'), {
+      ...JOIN_A,
+      resumeParticipantId: 'participant_1',
+      resumeToken: 'resume-token-1',
+    });
+    expect(resumed.ok).toBe(true);
+    expect(harness.timers.filter((timer) => !timer.cleared)).toHaveLength(0);
+
+    // NOW the socket it replaced reports its disconnect.
+    harness.runtime.handleSocketDisconnect('socket-a');
+
+    expect(harness.runtime.getDiagnostics().participantCount).toBe(2);
+    const seat = harness.store
+      .snapshot('demo')
+      ?.participants.find((participant) => participant.participantId === 'participant_1');
+    expect(seat?.connected).toBe(true);
+    // No countdown was started against the resumed seat.
+    expect(harness.timers.filter((timer) => !timer.cleared)).toHaveLength(0);
+
+    // Even firing every timer that ever existed leaves the call intact.
+    firePendingTimers(harness);
+    expect(harness.runtime.getDiagnostics().participantCount).toBe(2);
+  });
+
   it('tears everything down and returns all counts to baseline when the last participant leaves', async () => {
     const ackA = vi.fn();
     await socketA.trigger(
