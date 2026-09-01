@@ -288,7 +288,38 @@ describe('the rules that live in the database', () => {
 describe('the migration is appended, never reordered', () => {
   it('runs last, after every migration that shipped before it', () => {
     const order = migrations.slice(migrations.indexOf('export const MIGRATIONS'));
-    expect(order.trimEnd().endsWith('SPECIALIST_INTEGRITY,\n];')).toBe(true);
+    expect(order.trimEnd().endsWith('SPECIALIST_SOURCE_PROVENANCE,\n];')).toBe(true);
+  });
+
+  it('PIN: 023 follows 022, and 022 is not edited either', () => {
+    // The same rule one migration further on: 022 has also run against a local
+    // specialist database and is published, so the source-provenance keys are a
+    // third file rather than an amendment to the second.
+    const order = migrations.slice(migrations.indexOf('export const MIGRATIONS'));
+    expect(order.indexOf('SPECIALIST_INTEGRITY')).toBeLessThan(
+      order.indexOf('SPECIALIST_SOURCE_PROVENANCE'),
+    );
+    const names = [...migrations.matchAll(/name: '([0-9]{3}_[a-z_]+)'/gu)].map(
+      (match) => match[1] ?? '',
+    );
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toContain('023_specialist_source_provenance');
+  });
+
+  it('PIN: source provenance is a composite key, not a bare set id', () => {
+    // `set_id` alone pointed at ANY set: Alice's frozen French source could name
+    // the set C7 supplied to Bob, or her own Spanish one, or the set from her
+    // previous attempt -- and the row would read perfectly well while attesting
+    // that a fluent speaker had checked sentences never shown to them.
+    expect(migrations).toContain('UNIQUE (set_id, account_id, language, attempt)');
+    expect(migrations).toContain('FOREIGN KEY (set_id, account_id, language, revision)');
+    expect(migrations).toContain(
+      'REFERENCES specialist_source_sets (set_id, account_id, language, attempt)',
+    );
+    // And the packet side: a SOURCE_VALIDATION assignment may only name its own.
+    expect(migrations).toContain(
+      'FOREIGN KEY (source_set_id, account_id, language, qualification_attempt)',
+    );
   });
 
   it('PIN: 022 FOLLOWS 021 rather than editing it', () => {

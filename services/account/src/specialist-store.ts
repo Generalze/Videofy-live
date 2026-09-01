@@ -45,7 +45,7 @@
  * they stand in one language, and merging the two is how "qualified" ends up
  * meaning four different things at once.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomInt, randomUUID } from 'node:crypto';
 import {
   CONSENT_SCOPE,
   ELICITATION_ITEM_COUNT,
@@ -525,6 +525,24 @@ export function createInMemorySpecialistPort(): SpecialistRecordPort {
     },
 
     async appendValidatedSource(source) {
+      /*
+       * The composite provenance the database enforces, enforced here too: a
+       * validated source may only freeze the set belonging to the SAME account,
+       * the SAME language and the SAME attempt. `set_id` alone pointed at any
+       * set in the table, so Alice's frozen French source could have named the
+       * set C7 supplied to Bob -- and the row would read perfectly well while
+       * attesting that a fluent speaker had checked sentences they were never
+       * shown.
+       */
+      const set = db.sourceSets.get(source.setId);
+      if (
+        set === undefined ||
+        set.accountId !== source.accountId ||
+        set.language !== source.language ||
+        set.attempt !== source.revision
+      ) {
+        throw new Error('the cited source set does not belong to this validated source');
+      }
       const clash = db.validated.some(
         (entry) =>
           entry.accountId === source.accountId &&
@@ -557,6 +575,22 @@ export function createInMemorySpecialistPort(): SpecialistRecordPort {
       return db.assignments.get(assignmentId) ?? null;
     },
     async putAssignment(assignment) {
+      /*
+       * The same composite key on the packet side. A NULL `sourceSetId` is
+       * legal and unchecked -- a blind-review packet has no set -- which
+       * matches the database's MATCH SIMPLE behaviour.
+       */
+      if (assignment.sourceSetId !== null) {
+        const set = db.sourceSets.get(assignment.sourceSetId);
+        if (
+          set === undefined ||
+          set.accountId !== assignment.accountId ||
+          set.language !== assignment.language ||
+          set.attempt !== assignment.qualificationAttempt
+        ) {
+          throw new Error('the cited source set does not belong to this assignment');
+        }
+      }
       db.assignments.set(assignment.assignmentId, assignment);
     },
 
@@ -656,6 +690,11 @@ export type StoreRefusal =
   | 'not-operator-settable'
   | 'wrong-source-kind'
   | 'no-source-set'
+  /** A candidate names a sentence that is not in the frozen source. */
+  | 'unknown-source-ordinal'
+  /** The same engine judged twice on one sentence. */
+  | 'duplicate-engine-candidate'
+  | 'no-candidates'
   /** The packet belongs to an attempt or a source this person is no longer on. */
   | 'stale-assignment';
 
@@ -667,6 +706,24 @@ function refuse<T>(reason: StoreRefusal, detail?: string): StoreResult<T> {
   return detail === undefined ? { ok: false, reason } : { ok: false, reason, detail };
 }
 
+/**
+ * Fisher-Yates, over a cryptographic source.
+ *
+ * `Math.random()` would be adequate against a careless reader and is the wrong
+ * habit in a file whose subject is not letting a reviewer infer which engine
+ * wrote what. `randomInt` costs nothing here -- a packet is tens of rows.
+ */
+function shuffle<T>(items: readonly T[]): T[] {
+  const out = [...items];
+  for (let index = out.length - 1; index > 0; index -= 1) {
+    const swap = randomInt(index + 1);
+    const held = out[index] as T;
+    out[index] = out[swap] as T;
+    out[swap] = held;
+  }
+  return out;
+}
+
 /** Events carry ids and counts. Never a message, a meaning or an email address. */
 export type SpecialistEvent = (event: string, detail: Record<string, string | number>) => void;
 
@@ -675,6 +732,43 @@ export interface SpecialistStoreOptions {
   readonly now?: () => number;
   readonly newId?: () => string;
   readonly onEvent?: SpecialistEvent;
+}
+
+/** One sentence of a frozen source, whichever kind produced it. */
+export interface FrozenSourceItem {
+  readonly ordinal: number;
+  readonly category: string;
+  readonly text: string;
+}
+
+/** The frozen source a review packet may be built from. */
+export interface FrozenSourceView {
+  readonly kind: SourceRequirement;
+  readonly revision: number;
+  readonly sha256: string;
+  readonly items: readonly FrozenSourceItem[];
+}
+
+/**
+ * What a caller may say about one candidate translation.
+ *
+ * IT NAMES A SENTENCE; IT DOES NOT SUPPLY ONE. The source text is resolved
+ * server-side from the frozen source, so a packet cannot hold the words of one
+ * source while claiming the fingerprint of another.
+ */
+export interface CandidateRequest {
+  readonly sourceOrdinal: number;
+  readonly candidateText: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly machineScore?: number;
+  readonly benchmarkRank?: number;
+  readonly expectedWinner?: boolean;
+}
+
+/** The lock a refusal carries, or null when it is not a lock. */
+function lockOf(result: { readonly reason: StoreRefusal; readonly detail?: string }): ReviewLock | null {
+  return result.reason === 'review-locked' ? ((result.detail ?? 'not-applied') as ReviewLock) : null;
 }
 
 /** The one place a language track's shape is decided. */
@@ -1380,20 +1474,76 @@ export class SpecialistStore {
     return this.port.assignments(accountId);
   }
 
-  /** The frozen source for a track's CURRENT attempt, whichever kind it is. */
-  private async frozenSourceFor(
-    track: LanguageTrackRecord,
-  ): Promise<{ revision: number; sha256: string } | null> {
+  /**
+   * The frozen source for a track's CURRENT attempt, with its sentences.
+   *
+   * ONE SHAPE FOR BOTH KINDS. An elicitation corpus stores `item` /
+   * `nativeMessage`; a validated source stores `ordinal` / `text`. Callers that
+   * need "the sentences this packet may be built from" should not have to know
+   * which -- and the one that did know would eventually get it wrong for the
+   * other.
+   */
+  private async frozenSourceFor(track: LanguageTrackRecord): Promise<FrozenSourceView | null> {
     if (trackFor(track.language)?.sourceRequirement === 'VALIDATION') {
       const validated = await this.port.validatedSourceAt(
         track.accountId,
         track.language,
         track.attempt,
       );
-      return validated === null ? null : { revision: validated.revision, sha256: validated.sha256 };
+      if (validated === null) return null;
+      return {
+        kind: 'VALIDATION',
+        revision: validated.revision,
+        sha256: validated.sha256,
+        items: validated.items.map((item) => ({
+          ordinal: item.ordinal,
+          category: item.category,
+          text: item.text,
+        })),
+      };
     }
     const corpus = await this.port.corpusAt(track.accountId, track.language, track.attempt);
-    return corpus === null ? null : { revision: corpus.revision, sha256: corpus.sha256 };
+    if (corpus === null) return null;
+    return {
+      kind: 'ELICITATION',
+      revision: corpus.revision,
+      sha256: corpus.sha256,
+      items: corpus.items.map((item) => ({
+        ordinal: item.item,
+        category: item.category,
+        /*
+         * The NATIVE message is the source under review. The English column is
+         * a semantic reference and must never be handed to an engine or to a
+         * reviewer as the thing being translated.
+         */
+        text: item.nativeMessage,
+      })),
+    };
+  }
+
+  /**
+   * The frozen corpus for the CURRENT attempt, for the elicitation screen.
+   *
+   * The screen used to read `corpora.at(-1)` -- the latest across every attempt
+   * -- so a person on attempt 2 was shown attempt 1's frozen rows and told they
+   * had already submitted. Attempt 1 stays readable, as history, under
+   * submissions.
+   */
+  async currentCorpusFor(accountId: string, language: unknown): Promise<FrozenCorpus | null> {
+    const key = specialistLanguageKey(language);
+    if (key === null) return null;
+    const track = await this.trackRecord(accountId, key);
+    if (track === undefined) return null;
+    return this.port.corpusAt(accountId, key, track.attempt);
+  }
+
+  /** The frozen source a packet for this language would be built from, if any. */
+  async currentSourceFor(accountId: string, language: unknown): Promise<FrozenSourceView | null> {
+    const key = specialistLanguageKey(language);
+    if (key === null) return null;
+    const track = await this.trackRecord(accountId, key);
+    if (track === undefined) return null;
+    return this.frozenSourceFor(track);
   }
 
   /**
@@ -1411,7 +1561,7 @@ export class SpecialistStore {
   async createReviewAssignment(input: {
     accountId: string;
     language: string;
-    candidates: readonly Omit<StoredCandidate, 'assignmentId'>[];
+    candidates: readonly CandidateRequest[];
     dueAtMs?: number | null;
   }): Promise<StoreResult<AssignmentRecord>> {
     const key = specialistLanguageKey(input.language);
@@ -1421,6 +1571,61 @@ export class SpecialistStore {
 
     const source = await this.frozenSourceFor(track);
     if (source === null) return refuse('review-locked');
+    if (input.candidates.length === 0) return refuse('no-candidates');
+
+    /*
+     * THE SOURCE TEXT IS RESOLVED HERE, FROM THE FROZEN SET. A caller names a
+     * sentence by its ordinal; it does not supply the sentence. Accepting the
+     * text meant a packet could carry sentences from one frozen source while
+     * claiming the fingerprint of another -- the row would say SHA(B) and hold
+     * the words of A, and every result citing that hash would be describing
+     * material it was never computed from. With the text resolved, the packet
+     * cannot disagree with the evidence it names, because it never held an
+     * independent copy of it.
+     */
+    const byOrdinal = new Map(source.items.map((item) => [item.ordinal, item]));
+    const seen = new Set<string>();
+    const resolved: Omit<StoredCandidate, 'assignmentId'>[] = [];
+
+    for (const request of input.candidates) {
+      const item = byOrdinal.get(request.sourceOrdinal);
+      if (item === undefined) {
+        return refuse('unknown-source-ordinal', String(request.sourceOrdinal));
+      }
+      /*
+       * One engine, one verdict per sentence. Two candidates from the same
+       * provider on one source are two measurements of the same thing in one
+       * packet: a reviewer judging both produces two verdicts a result cannot
+       * combine, and the blind makes it impossible for them to notice.
+       */
+      const engineOnSource = `${request.sourceOrdinal}::${request.provider}`;
+      if (seen.has(engineOnSource)) {
+        return refuse('duplicate-engine-candidate', engineOnSource);
+      }
+      seen.add(engineOnSource);
+
+      resolved.push({
+        candidateId: `cand_${this.newId()}`,
+        ordinal: 0,
+        /*
+         * DERIVED, not supplied. The frozen source is the specialist's own (or
+         * validated) native text, so the direction under review is that text
+         * into English. An en->X packet would be built from a different frozen
+         * source and is not this endpoint.
+         */
+        direction: `${key}->en`,
+        category: item.category,
+        sourceText: item.text,
+        candidateText: request.candidateText,
+        provider: request.provider,
+        model: request.model,
+        ...(request.machineScore === undefined ? {} : { machineScore: request.machineScore }),
+        ...(request.benchmarkRank === undefined ? {} : { benchmarkRank: request.benchmarkRank }),
+        ...(request.expectedWinner === undefined
+          ? {}
+          : { expectedWinner: request.expectedWinner }),
+      });
+    }
 
     const assignment: AssignmentRecord = {
       assignmentId: `asg_${this.newId()}`,
@@ -1436,14 +1641,20 @@ export class SpecialistStore {
       sourceSetId: null,
     };
 
+    /*
+     * SHUFFLED HERE, after resolution. The order an operator writes -- best
+     * engine first -- would otherwise be a signal the reviewer reads instead of
+     * the text, and resolving before shuffling keeps the two concerns apart.
+     */
+    const ordered = shuffle(resolved).map((candidate, index) => ({
+      ...candidate,
+      ordinal: index + 1,
+      assignmentId: assignment.assignmentId,
+    }));
+
     await this.port.transaction(async (tx) => {
       await tx.putAssignment(assignment);
-      await tx.putCandidates(
-        input.candidates.map((candidate) => ({
-          ...candidate,
-          assignmentId: assignment.assignmentId,
-        })),
-      );
+      await tx.putCandidates(ordered);
     });
 
     this.onEvent('specialist.assignment.created', {
@@ -1452,18 +1663,100 @@ export class SpecialistStore {
       assignmentId: assignment.assignmentId,
       attempt: track.attempt,
       sourceRevision: source.revision,
-      candidates: input.candidates.length,
+      sourceSha256: source.sha256,
+      candidates: ordered.length,
     });
     return { ok: true, value: assignment };
   }
 
   /**
+   * Whether ONE assignment is open, and why not if it is not.
+   *
+   * THE LIST AND THE PACKET CALL THE SAME FUNCTION, which is the whole reason
+   * it exists. They used to decide separately: the list special-cased
+   * SOURCE_VALIDATION to "always unlocked" while `openReview` refused it on a
+   * SUSPENDED track, so a suspended specialist saw an Open button that answered
+   * 403. A list that disagrees with the thing it links to teaches people to
+   * distrust the list.
+   */
+  private async accessFor(
+    track: LanguageTrackRecord,
+    assignment: AssignmentRecord,
+  ): Promise<StoreResult<null>> {
+    if (assignment.qualificationAttempt !== track.attempt) return refuse('stale-assignment');
+
+    /*
+     * A SOURCE_VALIDATION packet is the work that PRODUCES the frozen source,
+     * so it cannot be gated on one existing -- that gate would deadlock. It is
+     * gated on the track being usable at all.
+     */
+    if (assignment.kind === 'SOURCE_VALIDATION') {
+      if (track.state === 'SUSPENDED') return refuse('review-locked', 'suspended');
+      return { ok: true, value: null };
+    }
+
+    const source = await this.frozenSourceFor(track);
+    const access = reviewAccess({
+      language: assignment.language,
+      qualificationState: track.state,
+      attempt: track.attempt,
+      sourceFrozenForAttempt: source !== null,
+      sourceCompleteForAttempt: (await this.sourceState(track)).complete,
+    });
+    if (!access.unlocked) return refuse('review-locked', access.reason);
+
+    /*
+     * The fingerprint, not merely the revision. A source frozen, corrected and
+     * re-frozen shares its revision and not its hash, and a packet built before
+     * the correction is evidence about text that no longer stands.
+     */
+    if (assignment.sourceSha256 !== null && source !== null && assignment.sourceSha256 !== source.sha256) {
+      return refuse('stale-assignment', 'source-superseded');
+    }
+    return { ok: true, value: null };
+  }
+
+  /**
+   * Every assignment this person holds, each with the SAME access answer the
+   * packet endpoint will give.
+   *
+   * The list no longer computes locks of its own; it reports what `accessFor`
+   * says, so the two cannot drift.
+   */
+  async assignmentViews(accountId: string): Promise<
+    readonly {
+      assignment: AssignmentRecord;
+      unlocked: boolean;
+      lock: ReviewLock | null;
+      stale: boolean;
+    }[]
+  > {
+    const assignments = await this.port.assignments(accountId);
+    const views = [];
+    for (const assignment of assignments) {
+      const track = await this.trackRecord(accountId, assignment.language);
+      if (track === undefined) {
+        views.push({ assignment, unlocked: false, lock: 'not-applied' as ReviewLock, stale: false });
+        continue;
+      }
+      const access = await this.accessFor(track, assignment);
+      views.push({
+        assignment,
+        unlocked: access.ok,
+        lock: access.ok ? null : lockOf(access),
+        /* Stale is not a lock: it will never open, so it leaves the list. */
+        stale: !access.ok && access.reason === 'stale-assignment',
+      });
+    }
+    return views;
+  }
+
+  /**
    * The packet, if this person may see it.
    *
-   * FOUR REFUSALS, IN THIS ORDER. Ownership first, because telling somebody an
-   * assignment is "locked" when it is not theirs confirms it exists and belongs
-   * to whoever they were guessing about. Then the attempt binding. Then the
-   * gate. Then the evidence fingerprint.
+   * OWNERSHIP FIRST, because telling somebody an assignment is "locked" when it
+   * is not theirs confirms it exists and belongs to whoever they were guessing
+   * about. Then the shared access decision.
    *
    * RETURNS THE PERSISTED ASSIGNMENT. It used to move NEW -> IN_PROGRESS and
    * then return the object read BEFORE the update, so the first open of every
@@ -1481,48 +1774,8 @@ export class SpecialistStore {
     const track = await this.trackRecord(accountId, stored.language);
     if (track === undefined) return refuse('review-locked', 'not-applied');
 
-    /*
-     * THE ATTEMPT BINDING. A packet from a superseded attempt is stale, not
-     * locked: the difference matters because "locked" invites somebody to wait
-     * for it to open, and this one never will.
-     */
-    if (stored.qualificationAttempt !== track.attempt) return refuse('stale-assignment');
-
-    const source = await this.frozenSourceFor(track);
-
-    /*
-     * A SOURCE_VALIDATION packet is the work that PRODUCES the frozen source,
-     * so it cannot be gated on one existing. It is gated on the opposite: once
-     * the source is frozen there is nothing left to validate.
-     */
-    if (stored.kind === 'SOURCE_VALIDATION') {
-      if (track.state === 'SUSPENDED') return refuse('review-locked', 'suspended');
-      return {
-        ok: true,
-        value: {
-          assignment: await this.markInProgress(stored),
-          candidates: await this.port.candidates(assignmentId),
-        },
-      };
-    }
-
-    const access = reviewAccess({
-      language: stored.language,
-      qualificationState: track.state,
-      attempt: track.attempt,
-      sourceFrozenForAttempt: source !== null,
-      sourceCompleteForAttempt: (await this.sourceState(track)).complete,
-    });
-    if (!access.unlocked) return refuse('review-locked', access.reason);
-
-    /*
-     * The fingerprint, not merely the revision. A source frozen, corrected and
-     * re-frozen shares its revision and not its hash, and a packet built before
-     * the correction is evidence about text that no longer stands.
-     */
-    if (stored.sourceSha256 !== null && source !== null && stored.sourceSha256 !== source.sha256) {
-      return refuse('stale-assignment', 'source-superseded');
-    }
+    const access = await this.accessFor(track, stored);
+    if (!access.ok) return refuse(access.reason, access.detail);
 
     return {
       ok: true,

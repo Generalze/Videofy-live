@@ -17,7 +17,6 @@ import {
   CONSENT_VERSION,
   ELICITATION_PROMPTS,
   forbiddenTermsIn,
-  type StoredCandidate,
 } from '@videofy-live/language-specialist';
 import { registerSpecialistRoutes } from '../specialist-routes.js';
 import { registerSpecialistAdminRoutes } from '../specialist-admin-routes.js';
@@ -25,6 +24,7 @@ import {
   SpecialistStore,
   createInMemorySpecialistPort,
   type AssignmentRecord,
+  type CandidateRequest,
 } from '../specialist-store.js';
 import type { Caller } from '../routes.js';
 
@@ -145,13 +145,16 @@ async function throughElicitation(language = 'yo', freeze = true): Promise<void>
   if (freeze) await send('POST', `/specialists/elicitation/${language}/freeze`, {});
 }
 
-const CANDIDATES: readonly Omit<StoredCandidate, 'assignmentId'>[] = [
+/**
+ * Two engines on item 3 of the frozen corpus.
+ *
+ * A candidate NAMES its sentence and does not carry the text: the store
+ * resolves that from the frozen source, so a packet cannot hold the words of
+ * one source while recording the fingerprint of another.
+ */
+const CANDIDATES: readonly CandidateRequest[] = [
   {
-    candidateId: 'cand_a',
-    ordinal: 1,
-    direction: 'yo->en',
-    category: 'payment-not-received',
-    sourceText: 'Mi ò tíì gba owó náà.',
+    sourceOrdinal: 3,
     candidateText: 'I have received the money.',
     provider: 'opus-mt',
     model: 'Helsinki-NLP/opus-mt-mul-en',
@@ -160,11 +163,7 @@ const CANDIDATES: readonly Omit<StoredCandidate, 'assignmentId'>[] = [
     expectedWinner: true,
   },
   {
-    candidateId: 'cand_b',
-    ordinal: 2,
-    direction: 'yo->en',
-    category: 'payment-not-received',
-    sourceText: 'Mi ò tíì gba owó náà.',
+    sourceOrdinal: 3,
     candidateText: 'I have not received the money yet.',
     provider: 'm2m100',
     model: 'facebook/m2m100_418M',
@@ -186,7 +185,7 @@ async function issue(
   store: SpecialistStore,
   accountId: string,
   language: string,
-  candidates: readonly Omit<StoredCandidate, 'assignmentId'>[] = CANDIDATES,
+  candidates: readonly CandidateRequest[] = CANDIDATES,
 ): Promise<AssignmentRecord> {
   const result = await store.createReviewAssignment({ accountId, language, candidates });
   if (!result.ok) throw new Error(`the store refused the packet: ${result.reason}`);
@@ -595,25 +594,35 @@ describe('the blind', () => {
     }
   });
 
-  it('gives the reviewer the source, the candidate and the direction', async () => {
+  it('PIN: the source comes from the FROZEN corpus, not from the request', async () => {
+    // The candidate named item 3 by ordinal; the sentence a reviewer sees is
+    // the one the contributor actually wrote and submitted. An operator used to
+    // supply the text, so a packet could carry the words of one source while
+    // recording the fingerprint of another.
     const response = await get(`/specialists/assignments/${assignmentId}`);
     const first = response.body.candidates[0];
-    expect(first.sourceText).toBe('Mi ò tíì gba owó náà.');
-    expect(first.candidateText).toBe('I have received the money.');
+    expect(first.sourceText).toBe(fifteen()[2]?.nativeMessage);
     expect(first.direction).toBe('yo->en');
-    expect(first.candidateId).toBe('cand_a');
+    expect(['I have received the money.', 'I have not received the money yet.']).toContain(
+      first.candidateText,
+    );
+    /* The id is minted server-side; a request cannot pin one. */
+    expect(first.candidateId).toMatch(/^cand_/u);
   });
 
   it('records a judgement and closes the assignment when every row is done', async () => {
+    const [a, b] = (await get(`/specialists/assignments/${assignmentId}`)).body.candidates.map(
+      (candidate: { candidateId: string }) => candidate.candidateId,
+    );
     const first = await send('POST', `/specialists/assignments/${assignmentId}/verdicts`, {
-      candidateId: 'cand_a',
+      candidateId: a,
       ...COMPLETE_VERDICT,
     });
     expect(first.status).toBe(201);
     expect(first.body).toEqual({ judged: 1, total: 2 });
 
     const second = await send('POST', `/specialists/assignments/${assignmentId}/verdicts`, {
-      candidateId: 'cand_b',
+      candidateId: b,
       ...COMPLETE_VERDICT,
       meaningPreserved: 'yes',
       meaningReversed: 'no',
@@ -635,12 +644,15 @@ describe('the blind', () => {
   });
 
   it('refuses a second judgement of the same translation', async () => {
+    const [a] = (await get(`/specialists/assignments/${assignmentId}`)).body.candidates.map(
+      (candidate: { candidateId: string }) => candidate.candidateId,
+    );
     await send('POST', `/specialists/assignments/${assignmentId}/verdicts`, {
-      candidateId: 'cand_a',
+      candidateId: a,
       ...COMPLETE_VERDICT,
     });
     const again = await send('POST', `/specialists/assignments/${assignmentId}/verdicts`, {
-      candidateId: 'cand_a',
+      candidateId: a,
       ...COMPLETE_VERDICT,
     });
     expect(again.status).toBe(409);
@@ -659,7 +671,7 @@ describe('the blind', () => {
   it("PIN: an ordinary user cannot write a verdict into somebody else's assignment", async () => {
     h.as(caller('acct_someone_else'));
     const response = await send('POST', `/specialists/assignments/${assignmentId}/verdicts`, {
-      candidateId: 'cand_a',
+      candidateId: 'cand_whatever',
       ...COMPLETE_VERDICT,
     });
     expect(response.status).toBe(404);
@@ -722,8 +734,11 @@ describe('what reaches the operational log', () => {
     });
     await send('POST', '/specialists/elicitation/yo/freeze', {});
     const assignment = await issue(h.store, 'acct_zoe', 'yo');
+    const [judged] = (
+      await get(`/specialists/assignments/${assignment.assignmentId}`)
+    ).body.candidates.map((candidate: { candidateId: string }) => candidate.candidateId);
     await send('POST', `/specialists/assignments/${assignment.assignmentId}/verdicts`, {
-      candidateId: 'cand_a',
+      candidateId: judged,
       ...COMPLETE_VERDICT,
       correctedTranslation: 'CORRECTION-SECRET',
       note: 'NOTE-SECRET',
@@ -825,7 +840,11 @@ describe('the operator console', () => {
     expect(response.body.corpora[0].items).toHaveLength(14);
     // The asymmetry is the design: identity withheld while judgement was
     // formed, available afterwards so the result can be interpreted.
-    expect(response.body.reviews[0].candidates[0].provider).toBe('opus-mt');
+    expect(
+      response.body.reviews[0].candidates
+        .map((candidate: { provider: string }) => candidate.provider)
+        .sort(),
+    ).toEqual(['m2m100', 'opus-mt']);
     const read = h.events.find((entry) => entry.event === 'specialist.evidence.read');
     expect(read?.detail).toMatchObject({ operator: 'acct_operator', accountId: 'acct_zoe' });
     expect(JSON.stringify(read)).not.toContain('ìránṣẹ́');
@@ -924,16 +943,14 @@ describe('the operator console', () => {
     const response = await send('POST', '/admin/language-specialists/acct_zoe/yo/assignments', {
       candidates: [
         {
-          sourceText: 'Mi ò tíì gba owó náà.',
+          sourceOrdinal: 3,
           candidateText: 'I have received the money.',
-          direction: 'yo->en',
           provider: 'opus-mt',
           model: 'Helsinki-NLP/opus-mt-mul-en',
         },
         {
-          sourceText: 'Mi ò tíì gba owó náà.',
+          sourceOrdinal: 3,
           candidateText: 'I have not received the money yet.',
-          direction: 'yo->en',
           provider: 'm2m100',
           model: 'facebook/m2m100_418M',
         },
@@ -950,6 +967,50 @@ describe('the operator console', () => {
     // The identities were kept server-side, which is what makes the blind work.
     expect(stored.map((candidate) => candidate.provider).sort()).toEqual(['m2m100', 'opus-mt']);
     expect(stored.map((candidate) => candidate.ordinal)).toEqual([1, 2]);
+    // And the source is the contributor's own frozen sentence, not a copy.
+    expect(stored.every((candidate) => candidate.sourceText === fifteen()[2]?.nativeMessage)).toBe(
+      true,
+    );
+  });
+
+  it('PIN: a supplied sourceText is REFUSED, not quietly ignored', async () => {
+    // Ignoring it would let somebody believe they had chosen the source, and
+    // the packet they got back would look like the one they asked for.
+    const response = await send('POST', '/admin/language-specialists/acct_zoe/yo/assignments', {
+      candidates: [
+        {
+          sourceOrdinal: 3,
+          sourceText: 'a sentence nobody submitted',
+          candidateText: 'y',
+          provider: 'p',
+          model: 'm',
+        },
+      ],
+    });
+    expect(response.status).toBe(400);
+    expect(response.body.error).toContain('Do not send sourceText');
+  });
+
+  it('PIN: a candidate naming a sentence outside the frozen source is refused', async () => {
+    const response = await send('POST', '/admin/language-specialists/acct_zoe/yo/assignments', {
+      candidates: [{ sourceOrdinal: 99, candidateText: 'y', provider: 'p', model: 'm' }],
+    });
+    expect(response.status).toBe(400);
+    expect(response.body.reason).toBe('unknown-source-ordinal');
+  });
+
+  it('PIN: the same engine cannot appear twice on one sentence', async () => {
+    // Two measurements of one thing in one packet: a reviewer judging both
+    // produces two verdicts a result cannot combine, and the blind makes it
+    // impossible for them to notice.
+    const response = await send('POST', '/admin/language-specialists/acct_zoe/yo/assignments', {
+      candidates: [
+        { sourceOrdinal: 3, candidateText: 'one', provider: 'opus-mt', model: 'm' },
+        { sourceOrdinal: 3, candidateText: 'two', provider: 'opus-mt', model: 'm' },
+      ],
+    });
+    expect(response.status).toBe(400);
+    expect(response.body.reason).toBe('duplicate-engine-candidate');
   });
 
   it('PIN: an assignment cannot be issued before the corpus is frozen', async () => {
@@ -962,7 +1023,7 @@ describe('the operator console', () => {
     h.as(caller('acct_operator'));
     const response = await send('POST', '/admin/language-specialists/acct_other/ha/assignments', {
       candidates: [
-        { sourceText: 'x', candidateText: 'y', direction: 'ha->en', provider: 'p', model: 'm' },
+        { sourceOrdinal: 1, candidateText: 'y', provider: 'p', model: 'm' },
       ],
     });
     expect(response.status).toBe(409);
@@ -974,7 +1035,7 @@ describe('the operator console', () => {
     // reviewer is blind on purpose, so if the server does not know either, the
     // result names nothing.
     const response = await send('POST', '/admin/language-specialists/acct_zoe/yo/assignments', {
-      candidates: [{ sourceText: 'x', candidateText: 'y', direction: 'yo->en' }],
+      candidates: [{ sourceOrdinal: 3, candidateText: 'y' }],
     });
     expect(response.status).toBe(400);
   });
@@ -983,7 +1044,7 @@ describe('the operator console', () => {
     h.as(caller('acct_zoe'));
     const response = await send('POST', '/admin/language-specialists/acct_zoe/yo/assignments', {
       candidates: [
-        { sourceText: 'x', candidateText: 'y', direction: 'yo->en', provider: 'p', model: 'm' },
+        { sourceOrdinal: 3, candidateText: 'y', provider: 'p', model: 'm' },
       ],
     });
     expect(response.status).toBe(404);

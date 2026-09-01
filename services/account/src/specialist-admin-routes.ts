@@ -28,7 +28,6 @@
  * refuses without one. A qualification that changed because "somebody clicked
  * something" is not a record anybody can defend to the person it was about.
  */
-import { randomInt, randomUUID } from 'node:crypto';
 import type express from 'express';
 import { admitPlatformOperator } from '@videofy-live/billing-tariff';
 import { resolveTrustState } from '@videofy-live/account-trust';
@@ -40,10 +39,9 @@ import {
   specialistLanguageKey,
   trackNames,
   type SourceItem,
-  type StoredCandidate,
 } from '@videofy-live/language-specialist';
 import type { Caller } from './routes.js';
-import { progressOf, type SpecialistStore } from './specialist-store.js';
+import { progressOf, type CandidateRequest, type SpecialistStore } from './specialist-store.js';
 
 export interface SpecialistAdminRouteDependencies {
   readonly specialists: SpecialistStore;
@@ -60,25 +58,6 @@ export interface SpecialistAdminRouteDependencies {
 
 function refuse(res: express.Response): void {
   res.status(404).json({ error: 'Not found.' });
-}
-
-/**
- * Fisher-Yates, over a cryptographic source.
- *
- * `Math.random()` would be adequate against a careless reader and is the wrong
- * habit to establish in a file whose subject is not letting a reviewer infer
- * which engine wrote what. `randomInt` costs nothing here -- a packet is tens
- * of rows -- and removes the question entirely.
- */
-function shuffle<T>(items: readonly T[]): T[] {
-  const out = [...items];
-  for (let index = out.length - 1; index > 0; index -= 1) {
-    const swap = randomInt(index + 1);
-    const held = out[index] as T;
-    out[index] = out[swap] as T;
-    out[swap] = held;
-  }
-  return out;
 }
 
 export function registerSpecialistAdminRoutes(
@@ -320,12 +299,19 @@ export function registerSpecialistAdminRoutes(
    * asserted against the serialised response by a test. The operator posting
    * them is not a leak -- they already know, and somebody has to.
    *
-   * THE ORDER IS NOT PRESERVED. Candidates are shuffled before they are stored,
-   * so the position of a row in the request -- which is how an operator would
-   * naturally write it, best engine first -- cannot become a signal the
-   * reviewer reads instead of the text. The `ordinal` a reviewer sees is the
-   * shuffled position, and the mapping back to the request lives only in the
-   * candidate id.
+   * THE OPERATOR DOES NOT SUPPLY THE SOURCE. A candidate names a sentence by
+   * `sourceOrdinal`; the store resolves the text and the category from the
+   * frozen source for this account, language and attempt. Accepting the text
+   * meant a packet could carry sentences from one frozen source while recording
+   * the fingerprint of another -- the row would say SHA(B) and hold the words of
+   * A, and every result citing that hash would be describing material it was
+   * never computed from. Sending `sourceText` is now refused outright rather
+   * than ignored.
+   *
+   * THE ORDER IS NOT PRESERVED. The store shuffles before writing, so the
+   * position of a row in the request -- which is how an operator would naturally
+   * write it, best engine first -- cannot become a signal the reviewer reads
+   * instead of the text.
    */
   app.post('/admin/language-specialists/:accountId/:language/assignments', async (req, res) => {
     const who = operator(req, res);
@@ -363,7 +349,7 @@ export function registerSpecialistAdminRoutes(
       return;
     }
 
-    const candidates: Omit<StoredCandidate, 'assignmentId'>[] = [];
+    const candidates: CandidateRequest[] = [];
     for (const entry of raw) {
       if (typeof entry !== 'object' || entry === null) {
         res.status(400).json({ error: 'Each candidate must be an object.' });
@@ -374,49 +360,57 @@ export function registerSpecialistAdminRoutes(
         typeof row[key] === 'string' && (row[key] as string).trim().length > 0
           ? (row[key] as string).trim()
           : null;
-      const sourceText = text('sourceText');
+
+      /*
+       * A CANDIDATE NAMES A SENTENCE; IT DOES NOT SUPPLY ONE. A supplied
+       * `sourceText` is REFUSED rather than ignored: silently dropping it would
+       * let somebody believe they had chosen the source, and the packet they
+       * got back would look like the one they asked for. The server resolves
+       * the text from the frozen source, so a packet cannot hold the words of
+       * one source while claiming the fingerprint of another.
+       */
+      if (row['sourceText'] !== undefined) {
+        res.status(400).json({
+          error:
+            'Do not send sourceText. Name the sentence with sourceOrdinal; the text is taken ' +
+            'from the frozen source this packet is built against.',
+        });
+        return;
+      }
+
+      const sourceOrdinal = row['sourceOrdinal'];
       const candidateText = text('candidateText');
-      const direction = text('direction');
       const provider = text('provider');
       const model = text('model');
       if (
-        sourceText === null ||
+        typeof sourceOrdinal !== 'number' ||
+        !Number.isInteger(sourceOrdinal) ||
         candidateText === null ||
-        direction === null ||
         provider === null ||
         model === null
       ) {
         res.status(400).json({
           error:
-            'Each candidate needs sourceText, candidateText, direction, provider and model. ' +
+            'Each candidate needs an integer sourceOrdinal, candidateText, provider and model. ' +
             'The provider and model are stored server-side and never shown to the reviewer.',
         });
         return;
       }
-      candidates.push({
-        candidateId: `cand_${randomUUID().replace(/-/gu, '').slice(0, 16)}`,
-        ordinal: 0,
-        direction,
-        category: text('category') ?? '',
-        sourceText,
-        candidateText,
-        provider,
-        model,
-      });
+      candidates.push({ sourceOrdinal, candidateText, provider, model });
     }
 
-    const shuffled = shuffle(candidates).map((candidate, index) => ({
-      ...candidate,
-      ordinal: index + 1,
-    }));
     const created = await deps.specialists.createReviewAssignment({
       accountId,
       language,
-      candidates: shuffled,
+      candidates,
       ...(typeof body['dueAtMs'] === 'number' ? { dueAtMs: body['dueAtMs'] } : {}),
     });
     if (!created.ok) {
-      res.status(409).json({ error: 'That packet could not be issued.', reason: created.reason });
+      res.status(created.reason === 'review-locked' ? 409 : 400).json({
+        error: 'That packet could not be issued.',
+        reason: created.reason,
+        ...(created.detail === undefined ? {} : { detail: created.detail }),
+      });
       return;
     }
 
@@ -426,13 +420,13 @@ export function registerSpecialistAdminRoutes(
       language,
       assignmentId: created.value.assignmentId,
       attempt: created.value.qualificationAttempt,
-      candidates: shuffled.length,
+      candidates: candidates.length,
     });
     /* The ids are returned so an operator can reconcile; the order is not. */
     res.status(201).json({
       assignmentId: created.value.assignmentId,
       language,
-      candidates: shuffled.length,
+      candidates: candidates.length,
       /*
        * The binding is echoed so an operator can see, at the moment of issuing,
        * which attempt and which frozen source this packet is tied to.

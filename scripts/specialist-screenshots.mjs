@@ -178,28 +178,31 @@ async function issueReview(operatorToken, accountId, language) {
         authorization: `Bearer ${operatorToken}`,
       },
       body: JSON.stringify({
+        /*
+         * A candidate NAMES its sentence and does not carry it. The server
+         * resolves the text from the frozen corpus for this account, language
+         * and attempt, so a packet cannot hold the words of one source while
+         * recording the fingerprint of another.
+         *
+         * Item 3 is the negation row -- "I have not received the money" -- which
+         * is the shape that has already broken two engines.
+         */
         candidates: [
           {
-            sourceText: 'Mi ò tíì gba owó náà o.',
+            sourceOrdinal: 3,
             candidateText: 'I have received the money.',
-            direction: 'yo->en',
-            category: 'payment-not-received',
             provider: 'illustrative-a',
             model: 'illustrative/a',
           },
           {
-            sourceText: 'Mi ò tíì gba owó náà o.',
+            sourceOrdinal: 3,
             candidateText: 'I have not received the money yet.',
-            direction: 'yo->en',
-            category: 'payment-not-received',
             provider: 'illustrative-b',
             model: 'illustrative/b',
           },
           {
-            sourceText: 'Má fi owó náà ránṣẹ́ títí ìwọ yóò fi gbọ́ lọ́wọ́ mi.',
+            sourceOrdinal: 11,
             candidateText: 'Send the money before you hear from me.',
-            direction: 'yo->en',
-            category: 'negative-instruction',
             provider: 'illustrative-a',
             model: 'illustrative/a',
           },

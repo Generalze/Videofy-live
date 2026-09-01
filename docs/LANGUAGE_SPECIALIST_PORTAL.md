@@ -2,11 +2,12 @@
 
 **Owner:** masterzee001 · **Branch:** `feature/language-specialist-portal` · **Not merged.**
 
-> **Integration status: HOLD.** The CTO audit of `07e4a7f` raised eleven items;
-> all eleven are addressed below. Not rebased onto P8, not merged, not deployed.
-> Migration numbering stays provisional until the one rebase onto the final P8
-> Checkpoint-C head — main may consume 021/022 meanwhile, and neither has run
-> anywhere but a local specialist database, so renumbering then is honest.
+> **Integration status: HOLD.** Two CTO audits — eleven items on `07e4a7f`,
+> four more on `28dbeaf` — all addressed below. Not rebased onto P8, not merged,
+> not deployed. Migration numbering stays provisional until the one rebase onto
+> the final P8 Checkpoint-C head: main may consume 021–023 meanwhile, and none
+> has run anywhere but a local specialist database, so renumbering then is
+> honest.
 
 C7's persistent human-language quality network: the people who tell us whether a
 translation actually says what it said. This document is the design record and
@@ -109,6 +110,13 @@ shares its revision and not its hash, and a packet built before the correction i
 evidence about text that no longer stands. A packet whose attempt no longer
 matches is **stale** (HTTP 410), not locked — "locked" invites somebody to wait
 for it to open, and it never will.
+
+Every read follows the attempt too. `GET /specialists/elicitation/:language`
+used to take `corpora.at(-1)` — the latest corpus across *every* attempt — so
+somebody on attempt 2 was shown attempt 1's frozen rows, told they had already
+submitted, and given no way to write anything. The evidence was intact; the
+screen was a lie about it. Attempt 1 stays readable under **Submissions**, which
+is where history belongs.
 
 ## 2.4 Multi-write evidence operations are atomic
 
@@ -279,6 +287,15 @@ The portal enforces the order by having nowhere else to go: a VALIDATION track
 renders the source check, not the fifteen-item form, and review stays locked
 until the source is frozen.
 
+### The list and the packet give the same answer
+
+`assignmentViews()` and `openReview()` call one function, `accessFor()`. They
+used to decide separately: the list special-cased `SOURCE_VALIDATION` to "always
+unlocked" while `openReview` refused it on a `SUSPENDED` track, so a suspended
+specialist saw an **Open** button that answered 403. A list that disagrees with
+the thing it links to teaches people to distrust the list. A test walks every
+assignment and asserts the two agree row by row.
+
 ## 5. Blind review
 
 The reviewer is never sent the provider, the model, any automatic score, any
@@ -303,6 +320,29 @@ the rest: beautiful-but-reversed is somebody losing money or missing a warning.
 
 Every yes/no is required. An unanswered question stored as a default is
 indistinguishable from a judgement the reviewer made.
+
+### Candidates are derived from the frozen source
+
+A caller **names** a sentence by `sourceOrdinal`; it does not supply one. The
+store resolves the text, the category and the direction from the frozen source
+for that account, language and attempt.
+
+This matters because an operator used to post `sourceText` freely, so a packet
+could carry sentences from one frozen source while recording the fingerprint of
+another — the row would say `SHA(B)` and hold the words of A, and every result
+citing that hash would be describing material it was never computed from. With
+the text resolved, the packet cannot disagree with the evidence it names,
+because it never holds an independent copy of it. Sending `sourceText` is
+**refused outright**, not ignored: ignoring it would let somebody believe they
+had chosen the source.
+
+Refused: an ordinal outside the frozen set; the **same engine twice on one
+sentence** (two measurements of one thing that no result can combine, and the
+blind makes it impossible for a reviewer to notice); a packet with no
+candidates; a packet for a track with no frozen source at the current attempt.
+
+For a **corrected** validation source, candidates derive from the corrected
+text, and a `REJECT`ed sentence is not an ordinal a packet can be built on.
 
 ### The observed-language question
 
@@ -487,9 +527,27 @@ Five tables are append-only by trigger: `specialist_consents`,
 append-only is a convention that survives until somebody writes a well-meaning
 `UPDATE` in a console session.
 
+**`023_specialist_source_provenance`** — a third file, on the same principle:
+022 has also run locally and is published.
+
+022 bound a corpus to its own consent and a verdict to its own assignment and
+reviewer, but the source-validation side still carried **single-column**
+references. `specialist_validated_sources.set_id` pointed at *any* set: Alice's
+frozen French source could name the set C7 supplied to Bob, or her own Spanish
+one, or the set from her previous attempt — and the row would read perfectly
+well while attesting that a fluent speaker had checked sentences they were never
+shown. `specialist_assignments.source_set_id` had the same hole.
+
+Both are now composite foreign keys against
+`UNIQUE (set_id, account_id, language, attempt)`, so cross-account,
+cross-language and cross-attempt provenance is unrepresentable. A NULL
+`source_set_id` stays legal and unenforced (MATCH SIMPLE) — a blind-review
+packet has no set, and MATCH FULL would refuse every one of them. Corpora and
+source sets also gain a foreign key to the track they belong to.
+
 **Numbering is provisional** until the one rebase onto the final P8 Checkpoint-C
-head. Neither migration has run anywhere but a local specialist database, so
-renumbering them as a pair then is honest; renumbering after a deployment would
+head. None of the three has run anywhere but a local specialist database, so
+renumbering them together then is honest; renumbering after a deployment would
 not be.
 
 Without a database the service falls back to in-memory ports, as the tariff and

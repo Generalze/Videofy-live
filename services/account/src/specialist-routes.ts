@@ -80,6 +80,9 @@ const REFUSAL_STATUS: Readonly<Record<StoreRefusal, number>> = {
   'review-locked': 403,
   'wrong-source-kind': 409,
   'no-source-set': 409,
+  'unknown-source-ordinal': 400,
+  'duplicate-engine-candidate': 400,
+  'no-candidates': 400,
   /*
    * 410, not 404 and not 403. The packet EXISTED and is gone as work: a 404
    * would say it never was, and a 403 would invite the reviewer to wait for it
@@ -108,6 +111,11 @@ const REFUSAL_MESSAGE: Readonly<Record<StoreRefusal, string>> = {
   'review-locked': 'Review is not open for this language yet.',
   'wrong-source-kind': 'That step does not apply to this language.',
   'no-source-set': 'There is nothing to check for this language yet.',
+  'unknown-source-ordinal':
+    'A candidate names a sentence that is not in the frozen source for this attempt.',
+  'duplicate-engine-candidate':
+    'The same engine appears twice on one sentence. One engine gives one answer per sentence.',
+  'no-candidates': 'Supply at least one candidate translation.',
   'stale-assignment':
     'This assignment belonged to an earlier assessment and is no longer part of yours.',
   'not-your-assignment': 'Not found.',
@@ -131,17 +139,6 @@ function languageNames(language: string): { englishName: string; nativeName: str
     englishName: names?.english ?? language,
     nativeName: names?.native ?? language,
   };
-}
-
-/**
- * The attempt a person is currently on for a language.
- *
- * `null` when they hold no track, which never equals an assignment's attempt --
- * so a packet for a language they have since dropped is filtered out rather
- * than shown as openable.
- */
-function currentAttempt(tracks: readonly TrackView[], language: string): number | null {
-  return tracks.find((track) => track.language === language)?.attempt ?? null;
 }
 
 /** The wire shape of one language track. Counts and flags, never the messages. */
@@ -230,10 +227,10 @@ export function registerSpecialistRoutes(
   app.get('/specialists/me', async (req, res) => {
     const who = caller(req, res);
     if (who === null) return;
-    const [profile, tracks, assignments, capabilities] = await Promise.all([
+    const [profile, tracks, assignmentViews, capabilities] = await Promise.all([
       deps.specialists.profile(who.accountId),
       deps.specialists.tracksFor(who.accountId),
-      deps.specialists.assignmentsFor(who.accountId),
+      deps.specialists.assignmentViews(who.accountId),
       deps.specialists.capabilitiesFor(who.accountId),
     ]);
     res.json({
@@ -250,21 +247,22 @@ export function registerSpecialistRoutes(
       country: profile?.country ?? null,
       timeZone: profile?.timeZone ?? null,
       tracks: tracks.map(trackWire),
-      assignments: assignments
-        /*
-         * A packet from a superseded attempt is not this person's work any
-         * more. It stays in the database as history and leaves the list, so
-         * nobody is invited to open something that will refuse them.
-         */
-        .filter((assignment) => currentAttempt(tracks, assignment.language) === assignment.qualificationAttempt)
-        .map((assignment) => ({
-          assignmentId: assignment.assignmentId,
-          language: assignment.language,
-          ...languageNames(assignment.language),
-          kind: assignment.kind,
-          state: assignment.state,
-          createdAtMs: assignment.createdAtMs,
-          dueAtMs: assignment.dueAtMs,
+      /*
+       * A packet from a superseded attempt is not this person's work any more.
+       * It stays in the database as history and leaves this list, so nobody is
+       * invited to open something that will refuse them. The staleness answer
+       * comes from the store, not from a second comparison here.
+       */
+      assignments: assignmentViews
+        .filter((view) => !view.stale)
+        .map((view) => ({
+          assignmentId: view.assignment.assignmentId,
+          language: view.assignment.language,
+          ...languageNames(view.assignment.language),
+          kind: view.assignment.kind,
+          state: view.assignment.state,
+          createdAtMs: view.assignment.createdAtMs,
+          dueAtMs: view.assignment.dueAtMs,
         })),
       capabilities: capabilities.map((grant) => ({
         language: grant.language,
@@ -388,12 +386,18 @@ export function registerSpecialistRoutes(
       deny(res, 'not-a-track');
       return;
     }
-    const [draft, corpora, consent] = await Promise.all([
+    /*
+     * THE CURRENT ATTEMPT, ALL THREE OF THEM. This read `corpora.at(-1)` -- the
+     * latest corpus across every attempt -- so somebody who had been allowed a
+     * reassessment opened attempt 2 and was shown attempt 1's frozen rows, told
+     * they had already submitted, and given no way to write anything. Attempt
+     * 1 is still readable, as history, under submissions.
+     */
+    const [draft, frozen, consent] = await Promise.all([
       deps.specialists.draftFor(who.accountId, key),
-      deps.specialists.corporaFor(who.accountId, key),
+      deps.specialists.currentCorpusFor(who.accountId, key),
       deps.specialists.latestConsent(who.accountId, key),
     ]);
-    const frozen = corpora.at(-1) ?? null;
     res.json({
       language: key,
       ...languageNames(key),
@@ -474,56 +478,29 @@ export function registerSpecialistRoutes(
   app.get('/specialists/assignments', async (req, res) => {
     const who = caller(req, res);
     if (who === null) return;
-    const [assignments, tracks] = await Promise.all([
-      deps.specialists.assignmentsFor(who.accountId),
-      deps.specialists.tracksFor(who.accountId),
-    ]);
-    /**
-     * The lock on a track, or `not-applied` when there is no track at all.
-     *
-     * `?? 'not-applied'` was wrong here and wrong in a way that only showed up
-     * on screen: `reviewLock` is NULL when review is OPEN, and `??` treats null
-     * as absent. So every unlocked assignment was reported as locked, and a
-     * specialist whose corpus was frozen was told to apply for a language they
-     * had already qualified in. Found in the visual audit, on the assignments
-     * page, with the packet itself opening perfectly well.
-     *
-     * The two cases are now distinguished by whether the TRACK exists, which is
-     * the actual question being asked.
+    /*
+     * THE LIST ASKS THE STORE, and the store answers with the same function the
+     * packet endpoint uses. The list used to compute its own locks, and
+     * special-cased SOURCE_VALIDATION to "always unlocked" -- so a suspended
+     * specialist saw an Open button on a packet that answered 403. A list that
+     * disagrees with the thing it links to teaches people to distrust the list.
      */
-    const lockFor = (language: string): ReviewLock | null => {
-      const track = tracks.find((entry) => entry.language === language);
-      return track === undefined ? 'not-applied' : track.reviewLock;
-    };
+    const views = await deps.specialists.assignmentViews(who.accountId);
     res.json({
-      assignments: assignments
-        /* Superseded packets leave the list. See `/specialists/me`. */
-        .filter(
-          (assignment) =>
-            currentAttempt(tracks, assignment.language) === assignment.qualificationAttempt,
-        )
-        .map((assignment) => {
-          /*
-           * A SOURCE_VALIDATION packet is the work that PRODUCES the frozen
-           * source, so gating it on one existing would make it permanently
-           * unopenable -- the deadlock that gate would create is the whole
-           * reason the kind is checked here.
-           */
-          const lock =
-            assignment.kind === 'SOURCE_VALIDATION' ? null : lockFor(assignment.language);
-          return {
-            assignmentId: assignment.assignmentId,
-            language: assignment.language,
-            ...languageNames(assignment.language),
-            kind: assignment.kind,
-            state: assignment.state,
-            createdAtMs: assignment.createdAtMs,
-            dueAtMs: assignment.dueAtMs,
-            /* The list says locked for the same reason the packet refuses. */
-            unlocked: lock === null,
-            lockMessage: lock === null ? null : reviewLockMessage(lock),
-          };
-        }),
+      assignments: views
+        /* Superseded packets leave the list: they will never open. */
+        .filter((view) => !view.stale)
+        .map((view) => ({
+          assignmentId: view.assignment.assignmentId,
+          language: view.assignment.language,
+          ...languageNames(view.assignment.language),
+          kind: view.assignment.kind,
+          state: view.assignment.state,
+          createdAtMs: view.assignment.createdAtMs,
+          dueAtMs: view.assignment.dueAtMs,
+          unlocked: view.unlocked,
+          lockMessage: view.lock === null ? null : reviewLockMessage(view.lock),
+        })),
     });
   });
 

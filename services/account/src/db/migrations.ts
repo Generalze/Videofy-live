@@ -1242,6 +1242,92 @@ const SPECIALIST_INTEGRITY: Migration = {
   `,
 };
 
+/**
+ * 023 -- source provenance, in the database.
+ *
+ * A THIRD FILE RATHER THAN AN EDIT OF THE OTHER TWO, for the reason 022 already
+ * gives: both have run against a local specialist database and both are
+ * published on the feature branch. Numbering stays provisional until the one
+ * rebase onto the final P8 Checkpoint-C head; all three are renumbered together
+ * then if main has consumed 021-023 meanwhile, and that is honest because none
+ * has run anywhere but locally.
+ *
+ * WHAT 022 LEFT REPRESENTABLE. It bound a corpus to its own consent and a
+ * verdict to its own assignment and reviewer, but the SOURCE VALIDATION side
+ * carried single-column references only:
+ *
+ *   `specialist_validated_sources.set_id` pointed at a set. ANY set. Alice's
+ *   frozen French source could name the set C7 supplied to Bob, or Alice's own
+ *   Spanish one, or the set from her previous attempt -- and the row would read
+ *   perfectly well while attesting that a fluent speaker had checked sentences
+ *   they were never shown.
+ *
+ *   `specialist_assignments.source_set_id` pointed at a set with no relation to
+ *   the assignment's own account, language or attempt, so a SOURCE_VALIDATION
+ *   packet could be issued against somebody else's material.
+ *
+ * Both are now composite foreign keys, so bad provenance is unrepresentable
+ * rather than merely refused by a lookup in the store. The application checks
+ * are kept: a database that refuses is a good last line, and an error a person
+ * can read is a better first one.
+ *
+ * NULL source_set_id STAYS LEGAL. A blind-review packet has no set, and a
+ * composite key with a NULL component is not enforced (MATCH SIMPLE, the
+ * default). That is the behaviour wanted here and it is worth saying out loud,
+ * because MATCH FULL would refuse every blind-review row.
+ */
+const SPECIALIST_SOURCE_PROVENANCE: Migration = {
+  name: '023_specialist_source_provenance',
+  sql: `
+    -- The target the two keys below need. Redundant with the primary key on its
+    -- own; load-bearing as the thing they point at.
+    ALTER TABLE specialist_source_sets
+      DROP CONSTRAINT IF EXISTS specialist_source_sets_identity_key;
+    ALTER TABLE specialist_source_sets
+      ADD CONSTRAINT specialist_source_sets_identity_key
+      UNIQUE (set_id, account_id, language, attempt);
+
+    -- A validated source may only freeze the set belonging to the SAME account,
+    -- the SAME language and the SAME attempt. "revision" is the attempt number
+    -- by construction, which is why it is the column matched against "attempt".
+    ALTER TABLE specialist_validated_sources
+      DROP CONSTRAINT IF EXISTS specialist_validated_sources_set_id_fkey;
+    ALTER TABLE specialist_validated_sources
+      DROP CONSTRAINT IF EXISTS specialist_validated_sources_provenance_fkey;
+    ALTER TABLE specialist_validated_sources
+      ADD CONSTRAINT specialist_validated_sources_provenance_fkey
+      FOREIGN KEY (set_id, account_id, language, revision)
+      REFERENCES specialist_source_sets (set_id, account_id, language, attempt);
+
+    -- A SOURCE_VALIDATION packet may only name the set belonging to its own
+    -- account, language and attempt. NULL is legal and unenforced: a
+    -- blind-review packet has no set.
+    ALTER TABLE specialist_assignments
+      DROP CONSTRAINT IF EXISTS specialist_assignments_source_set_fkey;
+    ALTER TABLE specialist_assignments
+      ADD CONSTRAINT specialist_assignments_source_set_fkey
+      FOREIGN KEY (source_set_id, account_id, language, qualification_attempt)
+      REFERENCES specialist_source_sets (set_id, account_id, language, attempt);
+
+    -- A frozen corpus belongs to a track, at a revision that is that track's
+    -- attempt. Without this a corpus could name a language the person never
+    -- applied in, which is the elicitation half of the same defect.
+    ALTER TABLE specialist_source_corpora
+      DROP CONSTRAINT IF EXISTS specialist_source_corpora_track_fkey;
+    ALTER TABLE specialist_source_corpora
+      ADD CONSTRAINT specialist_source_corpora_track_fkey
+      FOREIGN KEY (account_id, language)
+      REFERENCES specialist_languages (account_id, language);
+
+    ALTER TABLE specialist_source_sets
+      DROP CONSTRAINT IF EXISTS specialist_source_sets_track_fkey;
+    ALTER TABLE specialist_source_sets
+      ADD CONSTRAINT specialist_source_sets_track_fkey
+      FOREIGN KEY (account_id, language)
+      REFERENCES specialist_languages (account_id, language);
+  `,
+};
+
 /** Applied in this order. Append only. */
 /**
  * Programme vocabulary, and the revision that makes it one coherent state.
@@ -1364,4 +1450,5 @@ export const MIGRATIONS: readonly Migration[] = [
   PROGRAMME_SPONSORED_CREATIVE,
   LANGUAGE_SPECIALISTS,
   SPECIALIST_INTEGRITY,
+  SPECIALIST_SOURCE_PROVENANCE,
 ];

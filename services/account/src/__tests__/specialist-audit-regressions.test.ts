@@ -18,12 +18,12 @@ import {
   observedLanguageQuestion,
   readVerdict,
   type SourceItem,
-  type StoredCandidate,
 } from '@videofy-live/language-specialist';
 import {
   SpecialistStore,
   createInMemorySpecialistPort,
   progressOf,
+  type CandidateRequest,
   type SpecialistRecordPort,
 } from '../specialist-store.js';
 
@@ -48,23 +48,22 @@ function fifteen(mark = ''): { item: number; nativeMessage: string; englishSeman
   }));
 }
 
-const CANDIDATES: readonly Omit<StoredCandidate, 'assignmentId'>[] = [
+/**
+ * Two engines on one sentence of the FROZEN source.
+ *
+ * A candidate names its sentence by ordinal and does not carry the text: the
+ * store resolves that from the frozen source, so a packet cannot hold the words
+ * of one source while recording the fingerprint of another.
+ */
+const CANDIDATES: readonly CandidateRequest[] = [
   {
-    candidateId: 'cand_a',
-    ordinal: 1,
-    direction: 'yo->en',
-    category: 'payment-not-received',
-    sourceText: 'Mi ò tíì gba owó náà.',
+    sourceOrdinal: 3,
     candidateText: 'I have received the money.',
     provider: 'opus-mt',
     model: 'Helsinki-NLP/opus-mt-mul-en',
   },
   {
-    candidateId: 'cand_b',
-    ordinal: 2,
-    direction: 'yo->en',
-    category: 'payment-not-received',
-    sourceText: 'Mi ò tíì gba owó náà.',
+    sourceOrdinal: 3,
     candidateText: 'I have not received the money yet.',
     provider: 'm2m100',
     model: 'facebook/m2m100_418M',
@@ -86,6 +85,17 @@ function verdictFor(candidateId: string): Parameters<SpecialistStore['recordVerd
   const reading = readVerdict(candidateId, VERDICT);
   if (!reading.ok) throw new Error('the fixture verdict is incomplete');
   return reading.verdict;
+}
+
+/**
+ * The ids the store minted for a packet, in stored order.
+ *
+ * A caller no longer chooses candidate ids -- the store mints them, so a
+ * request cannot pin one and a test cannot assume one. Reading them back is
+ * also the only honest way to write a verdict.
+ */
+async function candidateIds(store: SpecialistStore, assignmentId: string): Promise<string[]> {
+  return (await store.candidatesFor(assignmentId)).map((candidate) => candidate.candidateId);
 }
 
 /** Apply, consent, fill in, freeze. The whole elicitation path for one attempt. */
@@ -272,10 +282,11 @@ describe('finding 2 — an assignment is bound to its attempt and its evidence',
     await decide(store, 'acct_zoe', 'REASSESSMENT_ALLOWED');
     await store.applyForLanguage('acct_zoe', 'yo');
 
+    const [candidateId] = await candidateIds(store, created.value.assignmentId);
     const written = await store.recordVerdict(
       'acct_zoe',
       created.value.assignmentId,
-      verdictFor('cand_a'),
+      verdictFor(candidateId as string),
     );
     expect(written.ok).toBe(false);
     expect(written.ok === false && written.reason).toBe('stale-assignment');
@@ -406,12 +417,14 @@ describe('finding 3 — multi-write evidence operations roll back', () => {
     if (!created.ok) throw new Error('the fixture packet was refused');
     const assignmentId = created.value.assignmentId;
 
+    const [firstId, lastId] = await candidateIds(setup, assignmentId);
+
     /* The first verdict lands normally, so only the LAST one is under test. */
-    await setup.recordVerdict('acct_zoe', assignmentId, verdictFor('cand_a'));
+    await setup.recordVerdict('acct_zoe', assignmentId, verdictFor(firstId as string));
     expect(await setup.verdictsFor(assignmentId)).toHaveLength(1);
 
     const store = newStore(failOnce(port, 'putAssignment'));
-    const result = await store.recordVerdict('acct_zoe', assignmentId, verdictFor('cand_b'));
+    const result = await store.recordVerdict('acct_zoe', assignmentId, verdictFor(lastId as string));
     expect(result.ok).toBe(false);
 
     /* Neither the verdict nor the completion: one verdict, still in progress. */
@@ -526,17 +539,19 @@ describe('finding 5 — a verdict cannot cross an assignment', () => {
     const first = await store.createReviewAssignment({
       accountId: 'acct_zoe',
       language: 'yo',
-      candidates: [CANDIDATES[0] as Omit<StoredCandidate, 'assignmentId'>],
+      candidates: [CANDIDATES[0] as CandidateRequest],
     });
     const second = await store.createReviewAssignment({
       accountId: 'acct_zoe',
       language: 'yo',
-      candidates: [{ ...(CANDIDATES[1] as Omit<StoredCandidate, 'assignmentId'>), candidateId: 'cand_other' }],
+      candidates: [CANDIDATES[1] as CandidateRequest],
     });
     if (!first.ok || !second.ok) throw new Error('the fixture packets were refused');
 
+    /* A candidate that genuinely belongs to the OTHER packet. */
+    const [foreign] = await candidateIds(store, second.value.assignmentId);
     await expect(
-      port.appendVerdict('' + first.value.assignmentId, 'acct_zoe', verdictFor('cand_other'), NOW),
+      port.appendVerdict(first.value.assignmentId, 'acct_zoe', verdictFor(foreign as string), NOW),
     ).rejects.toThrow(/does not belong to this assignment/u);
   });
 
@@ -551,15 +566,33 @@ describe('finding 5 — a verdict cannot cross an assignment', () => {
     });
     if (!created.ok) throw new Error('the fixture packet was refused');
 
+    const [candidateId] = await candidateIds(store, created.value.assignmentId);
     await expect(
-      port.appendVerdict(created.value.assignmentId, 'acct_someone_else', verdictFor('cand_a'), NOW),
+      port.appendVerdict(
+        created.value.assignmentId,
+        'acct_someone_else',
+        verdictFor(candidateId as string),
+        NOW,
+      ),
     ).rejects.toThrow(/must come from the account/u);
   });
 
   it('PIN: a candidate cannot be stored against an assignment that does not exist', async () => {
     const port = createInMemorySpecialistPort();
     await expect(
-      port.putCandidates([{ ...(CANDIDATES[0] as Omit<StoredCandidate, 'assignmentId'>), assignmentId: 'asg_nope' }]),
+      port.putCandidates([
+        {
+          candidateId: 'cand_orphan',
+          assignmentId: 'asg_nope',
+          ordinal: 1,
+          direction: 'yo->en',
+          category: 'money',
+          sourceText: 'x',
+          candidateText: 'y',
+          provider: 'p',
+          model: 'm',
+        },
+      ]),
     ).rejects.toThrow(/must belong to an assignment/u);
   });
 });
@@ -680,6 +713,366 @@ describe('finding 7 — established languages validate the source first', () => 
     const saved = await store.saveDraft('acct_zoe', 'fr', fifteen());
     expect(saved.ok).toBe(false);
     expect(saved.ok === false && saved.reason).toBe('wrong-source-kind');
+  });
+});
+
+/* ========================================================================== */
+/*  Second audit — 1. the elicitation read is scoped to the current attempt   */
+/* ========================================================================== */
+
+describe('second audit 1 — the elicitation read never crosses attempts', () => {
+  it('PIN: attempt 2 reports no frozen corpus and none of attempt 1 rows', async () => {
+    // The route read `corpora.at(-1)` -- the latest across EVERY attempt -- so
+    // somebody allowed a reassessment opened attempt 2, was shown attempt 1's
+    // frozen rows, told they had already submitted, and given no way to write
+    // anything. The evidence was intact; the screen was a lie about it.
+    const store = newStore();
+    await throughElicitation(store, 'acct_zoe', 'first-');
+
+    const one = await store.currentCorpusFor('acct_zoe', 'yo');
+    expect(one?.revision).toBe(1);
+    expect(one?.items[0]?.nativeMessage).toContain('first-');
+
+    await decide(store, 'acct_zoe', 'UNDER_REVIEW');
+    await decide(store, 'acct_zoe', 'NOT_QUALIFIED');
+    await decide(store, 'acct_zoe', 'REASSESSMENT_ALLOWED');
+    await store.applyForLanguage('acct_zoe', 'yo');
+
+    /* Attempt 2: no corpus, no draft, nothing inherited. */
+    expect(await store.currentCorpusFor('acct_zoe', 'yo')).toBeNull();
+    expect(await store.draftFor('acct_zoe', 'yo')).toBeNull();
+
+    /* Attempt 1 is still there -- as history, which is where it belongs. */
+    const all = await store.corporaFor('acct_zoe', 'yo');
+    expect(all).toHaveLength(1);
+    expect(all[0]?.revision).toBe(1);
+  });
+
+  it('PIN: once attempt 2 is frozen, the read follows attempt 2', async () => {
+    const store = newStore();
+    await throughElicitation(store, 'acct_zoe', 'first-');
+    await decide(store, 'acct_zoe', 'UNDER_REVIEW');
+    await decide(store, 'acct_zoe', 'NOT_QUALIFIED');
+    await decide(store, 'acct_zoe', 'REASSESSMENT_ALLOWED');
+    await store.applyForLanguage('acct_zoe', 'yo');
+    await store.saveDraft('acct_zoe', 'yo', fifteen('second-'));
+    await store.freezeElicitation('acct_zoe', 'yo');
+
+    const current = await store.currentCorpusFor('acct_zoe', 'yo');
+    expect(current?.revision).toBe(2);
+    expect(current?.items[0]?.nativeMessage).toContain('second-');
+    expect(current?.items[0]?.nativeMessage).not.toContain('first-');
+  });
+});
+
+/* ========================================================================== */
+/*  Second audit — 2. candidates derive from the frozen source                */
+/* ========================================================================== */
+
+describe('second audit 2 — a packet cannot claim one source and hold another', () => {
+  it('PIN: the stored source text comes from the frozen corpus', async () => {
+    const store = newStore();
+    await throughElicitation(store, 'acct_zoe', 'first-');
+    const created = await store.createReviewAssignment({
+      accountId: 'acct_zoe',
+      language: 'yo',
+      candidates: CANDIDATES,
+    });
+    if (!created.ok) throw new Error('the fixture packet was refused');
+
+    const corpus = await store.currentCorpusFor('acct_zoe', 'yo');
+    const item3 = corpus?.items.find((item) => item.item === 3);
+    const stored = await store.candidatesFor(created.value.assignmentId);
+    expect(stored).toHaveLength(2);
+    for (const candidate of stored) {
+      /* The contributor's own sentence, not anything a caller supplied. */
+      expect(candidate.sourceText).toBe(item3?.nativeMessage);
+      expect(candidate.category).toBe(item3?.category);
+      expect(candidate.direction).toBe('yo->en');
+    }
+    expect(created.value.sourceSha256).toBe(corpus?.sha256);
+  });
+
+  it('PIN: freeze B, then try to issue against A => REFUSED', async () => {
+    // The deliberate proof the audit asks for. Attempt 1 (source A) has fifteen
+    // items; attempt 2 (source B) is frozen with the code-switch row answered
+    // and item 3 deliberately left out of B's ordinals is impossible -- so
+    // instead B is a SHORTER source, and an ordinal valid only in A is used.
+    const store = newStore();
+    await throughElicitation(store, 'acct_zoe', 'first-');
+    const sourceA = await store.currentCorpusFor('acct_zoe', 'yo');
+    expect(sourceA?.items.some((item) => item.item === 3)).toBe(true);
+
+    await decide(store, 'acct_zoe', 'UNDER_REVIEW');
+    await decide(store, 'acct_zoe', 'NOT_QUALIFIED');
+    await decide(store, 'acct_zoe', 'REASSESSMENT_ALLOWED');
+    await store.applyForLanguage('acct_zoe', 'yo');
+
+    /*
+     * Source B: the same fifteen prompts, different words. An ordinal outside
+     * it is refused; an ordinal inside it resolves to B's words and never to
+     * A's, which is the half that matters most.
+     */
+    await store.saveDraft('acct_zoe', 'yo', fifteen('second-'));
+    const frozenB = await store.freezeElicitation('acct_zoe', 'yo');
+    if (!frozenB.ok) throw new Error('source B was refused');
+
+    const outside = await store.createReviewAssignment({
+      accountId: 'acct_zoe',
+      language: 'yo',
+      candidates: [
+        { sourceOrdinal: 99, candidateText: 'copied from A', provider: 'p', model: 'm' },
+      ],
+    });
+    expect(outside.ok).toBe(false);
+    expect(outside.ok === false && outside.reason).toBe('unknown-source-ordinal');
+
+    /* And a valid ordinal is resolved against B, never against A. */
+    const created = await store.createReviewAssignment({
+      accountId: 'acct_zoe',
+      language: 'yo',
+      candidates: [{ sourceOrdinal: 3, candidateText: 'x', provider: 'p', model: 'm' }],
+    });
+    if (!created.ok) throw new Error('the packet against B was refused');
+    const [stored] = await store.candidatesFor(created.value.assignmentId);
+    expect(stored?.sourceText).toContain('second-');
+    expect(stored?.sourceText).not.toContain('first-');
+
+    /*
+     * THE ROW CANNOT CLAIM SHA(B) WHILE HOLDING A. The packet records B's
+     * fingerprint and B's words, because it never held an independent copy of
+     * either.
+     */
+    expect(created.value.sourceSha256).toBe(frozenB.value.sha256);
+    expect(created.value.sourceSha256).not.toBe(sourceA?.sha256);
+  });
+
+  it('PIN: a corrected validation source is what its candidates derive from', async () => {
+    const store = newStore();
+    await store.applyForLanguage('acct_zoe', 'fr');
+    await store.supplySourceSet({
+      accountId: 'acct_zoe',
+      language: 'fr',
+      items: FRENCH_SOURCE,
+      suppliedBy: 'acct_operator',
+    });
+    await store.saveSourceJudgements('acct_zoe', 'fr', [
+      { ordinal: 1, verdict: 'ACCEPT' },
+      { ordinal: 2, verdict: 'CORRECT', correctedText: 'la phrase corrigee' },
+      { ordinal: 3, verdict: 'REJECT' },
+    ]);
+    const frozen = await store.freezeSourceValidation('acct_zoe', 'fr');
+    if (!frozen.ok) throw new Error('the validated source was refused');
+
+    /* The rejected sentence is not a sentence a packet can be built on. */
+    const rejected = await store.createReviewAssignment({
+      accountId: 'acct_zoe',
+      language: 'fr',
+      candidates: [{ sourceOrdinal: 3, candidateText: 'x', provider: 'p', model: 'm' }],
+    });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.ok === false && rejected.reason).toBe('unknown-source-ordinal');
+
+    /* And the corrected one carries the CORRECTION, not what C7 supplied. */
+    const created = await store.createReviewAssignment({
+      accountId: 'acct_zoe',
+      language: 'fr',
+      candidates: [{ sourceOrdinal: 2, candidateText: 'x', provider: 'p', model: 'm' }],
+    });
+    if (!created.ok) throw new Error('the packet was refused');
+    const [stored] = await store.candidatesFor(created.value.assignmentId);
+    expect(stored?.sourceText).toBe('la phrase corrigee');
+    expect(created.value.sourceSha256).toBe(frozen.value.sha256);
+  });
+});
+
+/* ========================================================================== */
+/*  Second audit — 3. source provenance is database-bound                     */
+/* ========================================================================== */
+
+describe('second audit 3 — bad source provenance is unrepresentable', () => {
+  async function suppliedSet(store: SpecialistStore, account: string, language: string) {
+    await store.applyForLanguage(account, language);
+    const supplied = await store.supplySourceSet({
+      accountId: account,
+      language,
+      items: FRENCH_SOURCE,
+      suppliedBy: 'acct_operator',
+    });
+    if (!supplied.ok) throw new Error('the fixture set was refused');
+    return supplied.value.setId;
+  }
+
+  it('PIN: a validated source cannot freeze another account\'s set', async () => {
+    const port = createInMemorySpecialistPort();
+    const store = newStore(port);
+    const alice = await suppliedSet(store, 'acct_alice', 'fr');
+    await suppliedSet(store, 'acct_bob', 'fr');
+
+    await expect(
+      port.appendValidatedSource({
+        setId: alice,
+        accountId: 'acct_bob',
+        language: 'fr',
+        revision: 1,
+        items: [],
+        sourceCount: 0,
+        sha256: 'x'.repeat(64),
+        frozenAtMs: NOW,
+        validatorAccountId: 'acct_bob',
+        corrected: false,
+      }),
+    ).rejects.toThrow(/does not belong to this validated source/u);
+  });
+
+  it('PIN: a validated source cannot freeze another LANGUAGE of the same person', async () => {
+    const port = createInMemorySpecialistPort();
+    const store = newStore(port);
+    const french = await suppliedSet(store, 'acct_alice', 'fr');
+    await suppliedSet(store, 'acct_alice', 'es');
+
+    await expect(
+      port.appendValidatedSource({
+        setId: french,
+        accountId: 'acct_alice',
+        language: 'es',
+        revision: 1,
+        items: [],
+        sourceCount: 0,
+        sha256: 'x'.repeat(64),
+        frozenAtMs: NOW,
+        validatorAccountId: 'acct_alice',
+        corrected: false,
+      }),
+    ).rejects.toThrow(/does not belong to this validated source/u);
+  });
+
+  it('PIN: a validated source cannot freeze a previous ATTEMPT set', async () => {
+    const port = createInMemorySpecialistPort();
+    const store = newStore(port);
+    const attemptOne = await suppliedSet(store, 'acct_alice', 'fr');
+
+    await expect(
+      port.appendValidatedSource({
+        setId: attemptOne,
+        accountId: 'acct_alice',
+        language: 'fr',
+        /* The set is attempt 1; this claims to be the freeze of attempt 2. */
+        revision: 2,
+        items: [],
+        sourceCount: 0,
+        sha256: 'x'.repeat(64),
+        frozenAtMs: NOW,
+        validatorAccountId: 'acct_alice',
+        corrected: false,
+      }),
+    ).rejects.toThrow(/does not belong to this validated source/u);
+  });
+
+  it('PIN: a SOURCE_VALIDATION packet cannot name another account\'s set', async () => {
+    const port = createInMemorySpecialistPort();
+    const store = newStore(port);
+    const alice = await suppliedSet(store, 'acct_alice', 'fr');
+    await suppliedSet(store, 'acct_bob', 'fr');
+
+    await expect(
+      port.putAssignment({
+        assignmentId: 'asg_forged',
+        accountId: 'acct_bob',
+        language: 'fr',
+        kind: 'SOURCE_VALIDATION',
+        state: 'NEW',
+        createdAtMs: NOW,
+        dueAtMs: null,
+        qualificationAttempt: 1,
+        sourceRevision: null,
+        sourceSha256: null,
+        sourceSetId: alice,
+      }),
+    ).rejects.toThrow(/does not belong to this assignment/u);
+  });
+
+  it('a blind-review packet has no set, and that stays legal', async () => {
+    // A composite key with a NULL component is not enforced. That is the
+    // behaviour wanted here, and it is worth a test: MATCH FULL would refuse
+    // every blind-review row.
+    const port = createInMemorySpecialistPort();
+    const store = newStore(port);
+    await throughElicitation(store, 'acct_zoe');
+    const created = await store.createReviewAssignment({
+      accountId: 'acct_zoe',
+      language: 'yo',
+      candidates: CANDIDATES,
+    });
+    expect(created.ok).toBe(true);
+    expect(created.ok && created.value.sourceSetId).toBeNull();
+  });
+});
+
+/* ========================================================================== */
+/*  Second audit — 4. the list and the packet agree                           */
+/* ========================================================================== */
+
+describe('second audit 4 — the list never promises what the packet refuses', () => {
+  it('PIN: a SUSPENDED track does not show a SOURCE_VALIDATION packet as open', async () => {
+    // The list special-cased SOURCE_VALIDATION to "always unlocked" while
+    // `openReview` refused it on a suspended track, so a suspended specialist
+    // saw an Open button that answered 403. A list that disagrees with the
+    // thing it links to teaches people to distrust the list.
+    const store = newStore();
+    await store.applyForLanguage('acct_zoe', 'fr');
+    const supplied = await store.supplySourceSet({
+      accountId: 'acct_zoe',
+      language: 'fr',
+      items: FRENCH_SOURCE,
+      suppliedBy: 'acct_operator',
+    });
+    if (!supplied.ok) throw new Error('the fixture set was refused');
+    const assignmentId = supplied.value.assignment.assignmentId;
+
+    const open = await store.assignmentViews('acct_zoe');
+    expect(open[0]?.unlocked).toBe(true);
+    expect((await store.openReview('acct_zoe', assignmentId)).ok).toBe(true);
+
+    const suspended = await store.decide({
+      accountId: 'acct_zoe',
+      language: 'fr',
+      toState: 'SUSPENDED',
+      decidedBy: 'acct_operator',
+      reason: 'under investigation',
+    });
+    expect(suspended.ok).toBe(true);
+
+    const views = await store.assignmentViews('acct_zoe');
+    expect(views[0]?.unlocked).toBe(false);
+    expect(views[0]?.lock).toBe('suspended');
+
+    const opened = await store.openReview('acct_zoe', assignmentId);
+    expect(opened.ok).toBe(false);
+    expect(opened.ok === false && opened.detail).toBe('suspended');
+  });
+
+  it('PIN: every list answer is the answer the packet gives', async () => {
+    // Not "they happen to agree here" -- they are the same function.
+    const store = newStore();
+    await throughElicitation(store, 'acct_zoe');
+    await store.createReviewAssignment({
+      accountId: 'acct_zoe',
+      language: 'yo',
+      candidates: CANDIDATES,
+    });
+    await store.applyForLanguage('acct_zoe', 'fr');
+    await store.supplySourceSet({
+      accountId: 'acct_zoe',
+      language: 'fr',
+      items: FRENCH_SOURCE,
+      suppliedBy: 'acct_operator',
+    });
+
+    for (const view of await store.assignmentViews('acct_zoe')) {
+      const opened = await store.openReview('acct_zoe', view.assignment.assignmentId);
+      expect(opened.ok, view.assignment.assignmentId).toBe(view.unlocked);
+    }
   });
 });
 
