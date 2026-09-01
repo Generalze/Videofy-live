@@ -23,9 +23,25 @@ import {
   VOICE_PARTICIPATION_STATES,
 } from '@videofy-live/language-specialist';
 
+/*
+ * SOURCE READ WITH LINE ENDINGS CANONICALISED.
+ *
+ * This repository declares no .gitattributes, so a Windows checkout with
+ * core.autocrlf=true delivers every file with CRLF endings while the
+ * assertions below are written with newline escapes. The migration-order check
+ * failed for that reason alone: the array DID end with the intended migration,
+ * spelled with a carriage return in front of the newline.
+ *
+ * Line endings are checkout representation, not meaning. Normalising on the way
+ * in keeps this file asserting order and schema parity, which is what it is for.
+ */
+function readSource(path: string): string {
+  return readFileSync(path, 'utf8').split('\r\n').join('\n');
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
-const port = readFileSync(join(here, '..', 'db', 'specialist-records-postgres.ts'), 'utf8');
-const migrations = readFileSync(join(here, '..', 'db', 'migrations.ts'), 'utf8');
+const port = readSource(join(here, '..', 'db', 'specialist-records-postgres.ts'));
+const migrations = readSource(join(here, '..', 'db', 'migrations.ts'));
 
 /** The column list a `const NAME_COLUMNS = '...'` declaration holds. */
 function columnList(constant: string): string[] {

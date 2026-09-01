@@ -16,9 +16,30 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const APP = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), '..', 'App.tsx'),
-  'utf8',
+/*
+ * SOURCE READ WITH LINE ENDINGS CANONICALISED.
+ *
+ * This checkout is Windows with core.autocrlf=true and the repository declares
+ * no .gitattributes, so every file arrives with CRLF endings while these
+ * assertions are written with newline escapes. Eight assertions across the
+ * repository failed for that reason alone -- nothing was unwired and nothing
+ * was misordered, but the release branch could not pass its own gate. A guard
+ * that fails for a reason unrelated to what it guards is a guard somebody
+ * switches off.
+ *
+ * Line endings are checkout representation, not meaning. Normalising once, on
+ * the way in, keeps every assertion below about STRUCTURE and keeps them
+ * failing only for the reasons they were written to catch.
+ */
+function readSource(text: string): string {
+  return text.split('\r\n').join('\n');
+}
+
+const APP = readSource(
+  readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'App.tsx'),
+    'utf8',
+  ),
 );
 
 /** The JSX inside one ConsolePage, by id. */
@@ -75,10 +96,10 @@ describe('every console page is now a real page', () => {
 
 describe('the page takes no colour of its own', () => {
   it('uses design-system tokens rather than a private palette', () => {
-    const css = readFileSync(
+    const css = readSource(readFileSync(
       join(dirname(fileURLToPath(import.meta.url)), '..', 'pages', 'VocabularyPage.module.css'),
       'utf8',
-    );
+    ));
     // A second navy palette in hex is how a console ends up with two answers to
     // "what is a panel".
     const hexColours = css.match(/#[0-9a-fA-F]{3,8}\b/gu) ?? [];
