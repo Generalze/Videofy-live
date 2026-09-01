@@ -63,20 +63,44 @@ export interface VocabularySnapshot {
 export interface RevisionedVocabularyPort extends VocabularyPort {
   /** Monotonic per programme. Incremented by every mutation. */
   revision(programmeId: string): Promise<number>;
+  /** The atomic read. See VocabularySnapshotSource. */
+  snapshotRead(programmeId: string): Promise<{
+    revision: number;
+    entries: readonly VocabularyRecord[];
+  }>;
 }
 
 /**
- * The narrowest thing `takeSnapshot` actually needs: a revision and the rows.
+ * ONE ATOMIC READ. Not a revision plus a list.
  *
- * Declared separately so BOTH the in-memory port and the durable Postgres one
- * satisfy it. Demanding the full write interface for a read-only operation
- * would have forced a test-only adapter between the real store and the real
- * consumers -- and an adapter written for a proof is a place the proof can
- * diverge from production without anybody noticing.
+ * An earlier revision of this file declared this as `{ revision, list }` on the
+ * reasoning that those are the smallest operations `takeSnapshot` uses. That
+ * was wrong, and it reopened a race the durable port had already been built to
+ * close: two independent reads let a writer commit between them, producing
+ * revision N paired with rows from N+1 -- a snapshot whose number is a lie
+ * about its own contents, and nothing anywhere reports it.
+ *
+ * The smallest thing this needs is not the smallest set of CALLS, it is the
+ * smallest COHERENT read. Postgres provides it with a transaction and FOR
+ * SHARE; the in-memory port provides it by construction. Neither is weakened to
+ * match the other.
  */
 export interface VocabularySnapshotSource {
+  snapshotRead(programmeId: string): Promise<{
+    revision: number;
+    entries: readonly VocabularyRecord[];
+  }>;
+}
+
+/**
+ * Just the number, for asking whether a running session is stale.
+ *
+ * Separate because that question genuinely needs one value and no rows, and
+ * requiring the atomic read for it would push callers toward the wider
+ * interface for no gain.
+ */
+export interface RevisionSource {
   revision(programmeId: string): Promise<number>;
-  list(programmeId: string): Promise<readonly VocabularyRecord[]>;
 }
 
 /**
@@ -96,8 +120,9 @@ export async function takeSnapshot(
   if (programmeId.trim() === '') {
     throw new Error('takeSnapshot requires a programmeId');
   }
-  const revision = await port.revision(programmeId);
-  const rows = await port.list(programmeId);
+  // EXACTLY ONE CALL. The revision and the rows come from the same read, so
+  // there is no window in which a writer can commit between them.
+  const { revision, entries: rows } = await port.snapshotRead(programmeId);
 
   // Resolved TWICE against the same rows, because the two sides of a session
   // are different languages. One call cannot answer both.
@@ -129,7 +154,7 @@ export async function takeSnapshot(
  * that half the consumers cannot perform.
  */
 export async function snapshotIsCurrent(
-  port: VocabularySnapshotSource,
+  port: RevisionSource,
   snapshot: VocabularySnapshot,
 ): Promise<{ current: boolean; storedRevision: number; appliesFrom: 'this-session' | 'next-session' }> {
   const storedRevision = await port.revision(snapshot.programmeId);
@@ -167,6 +192,19 @@ export function createRevisionedInMemoryPort(
     async list(programmeId) {
       if (programmeId.trim() === '') throw new Error('list requires a programmeId');
       return [...(byProgramme.get(programmeId)?.values() ?? [])];
+    },
+    /*
+     * Coherent BY CONSTRUCTION: both values are read synchronously, with no
+     * await between them, so nothing can interleave. Implemented here rather
+     * than composed from revision() and list() -- composing them would rebuild
+     * the exact race this method exists to prevent.
+     */
+    async snapshotRead(programmeId) {
+      if (programmeId.trim() === '') throw new Error('snapshotRead requires a programmeId');
+      return {
+        revision: revisions.get(programmeId) ?? 0,
+        entries: [...(byProgramme.get(programmeId)?.values() ?? [])],
+      };
     },
     async upsert(record) {
       const bucket = byProgramme.get(record.programmeId) ?? new Map();
