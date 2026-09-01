@@ -15,6 +15,13 @@
  * `FOR UPDATE` on the row, because two writers reading revision 3 and both
  * writing 4 would otherwise lose one edit silently.
  *
+ * AND THE FIRST SAVE IS A SEPARATE RACE, because `FOR UPDATE` cannot lock a row
+ * that does not exist yet. At revision 0 the lock protects nothing, so two
+ * operators setting a programme up at the same moment both see absence. The
+ * insert therefore arbitrates itself with `ON CONFLICT DO NOTHING`: the loser
+ * gets the same structured revision conflict as every other stale write,
+ * instead of a unique-key error surfacing as a 500.
+ *
  * NO-OPS DO NOT ADVANCE THE REVISION. Saving the same creative twice leaves it
  * at 3. Advancing would tell an operator their unchanged form was a change, and
  * would invalidate somebody else's open page for nothing.
@@ -138,16 +145,56 @@ export function createPostgresSponsoredCreative(pool: Pool): DurableSponsoredCre
         }
 
         if (existing === undefined) {
+          /*
+           * THE FIRST SAVE CANNOT BE SERIALISED BY `FOR UPDATE`.
+           *
+           * There is no row to lock at revision 0, so the SELECT above locks
+           * nothing and two operators saving a programme's first creative BOTH
+           * see absence and both believe they may insert revision 1. The lock
+           * protects every save except the one where two people are most likely
+           * to be setting a programme up at the same time.
+           *
+           * `ON CONFLICT DO NOTHING` makes the insert itself the race: the row
+           * is the arbiter, exactly as it is for every later save. A returned
+           * row means this transaction created it; no row means somebody else
+           * did, and that is a revision conflict -- NOT a unique-key error,
+           * which is what the loser used to receive as a 500.
+           */
           const inserted = await client.query(
             `INSERT INTO programme_sponsored_creative
                (programme_id, revision, headline, body, cta, href, enabled, starts_at, ends_at, updated_at)
              VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, now())
+             ON CONFLICT (programme_id) DO NOTHING
              RETURNING revision, headline, body, cta, href, enabled, starts_at, ends_at`,
             [
               programmeId, creative.headline, creative.body, creative.cta,
               creative.href, creative.enabled, creative.startsAt, creative.endsAt,
             ],
           );
+
+          if (inserted.rows.length === 0) {
+            /*
+             * SOMEBODY ELSE GOT THERE FIRST. Re-read what they wrote and report
+             * the ordinary structured conflict, so this operator is told to
+             * reload rather than handed a database error they cannot act on.
+             */
+            const winner = await client.query(
+              `SELECT revision FROM programme_sponsored_creative WHERE programme_id = $1`,
+              [programmeId],
+            );
+            await client.query('COMMIT');
+            const currentRevision =
+              winner.rows.length === 0
+                ? 1
+                : toRevision((winner.rows[0] as { revision: string | number }).revision);
+            return {
+              ok: false,
+              conflict: 'revision-conflict',
+              expectedRevision,
+              currentRevision,
+            };
+          }
+
           await client.query('COMMIT');
           const row = inserted.rows[0] as Row;
           return { ok: true, revision: toRevision(row.revision), creative: toCreative(row) };

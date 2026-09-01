@@ -55,7 +55,6 @@ import {
 } from '../programmes/programmeCatalogue';
 import { ChannelAvatar } from '../programmes/ChannelAvatar';
 import { useChannelInterest } from '../programmes/useChannelInterest';
-import { AdSlot } from '../ui/AdSlot';
 import { C7, Chip, GlassCard, SectionHeading } from '../ui/c7';
 import { Icon } from '../ui/icons';
 
@@ -291,8 +290,6 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
           </Pressable>
         );
       })}
-
-      <AdSlot />
     </ScrollView>
   );
 }

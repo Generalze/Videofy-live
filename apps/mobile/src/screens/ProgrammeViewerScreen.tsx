@@ -43,18 +43,11 @@ import {
 } from '../programmes/programmeCatalogue';
 import { ChannelAvatar } from '../programmes/ChannelAvatar';
 import { useChannelInterest } from '../programmes/useChannelInterest';
-import { AdSlot } from '../ui/AdSlot';
-import {
-  HOUSE_DELIVERY,
-  fetchSponsoredCreative,
-  type DeliveredCreative,
-} from '../sponsoredDelivery';
 import { C7, C7Ground, Chip } from '../ui/c7';
 import { Icon } from '../ui/icons';
 
 const GATEWAY_URL = process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
 const LISTEN_URL = process.env['EXPO_PUBLIC_LISTEN_URL'] ?? `${GATEWAY_URL}/listen`;
-const ACCOUNT_URL = process.env['EXPO_PUBLIC_ACCOUNT_URL'] ?? 'https://staging.consummate7.com/auth';
 
 export interface ProgrammeViewerScreenProps {
   readonly channel: ChannelSummary;
@@ -68,28 +61,15 @@ export function ProgrammeViewerScreen({ channel, api, onBack }: ProgrammeViewerS
   const [copied, setCopied] = useState(false);
   const { follows, interest, pending, notice, loadInterest, toggle } = useChannelInterest(api);
   /*
-   * `nativeAds=1` tells the embedded player NOT to draw its own sponsored slot:
-   * this screen draws it natively, below the player, from the same delivery
-   * read. Without the flag the viewer would see one advert twice.
+   * THE SPONSORED SLOT IS INSIDE THE EMBEDDED PAGE, not out here.
+   *
+   * listener-web renders it directly below the viewer display and above the
+   * controls, which is the locked placement. A native slot on this screen was
+   * tried and removed: it necessarily sat AFTER the whole WebView, so the
+   * advert appeared below the embedded controls instead of below the display,
+   * and it needed a second delivery implementation to feed it.
    */
-  const url = `${listenerUrlFor(LISTEN_URL, channel.channelId)}?nativeAds=1`;
-
-  /*
-   * THIS PROGRAMME'S CREATIVE, from the public delivery endpoint -- the same
-   * endpoint and the same fallback the web player uses, so a phone and a
-   * browser watching one programme cannot show different adverts.
-   */
-  const [sponsored, setSponsored] = useState<DeliveredCreative>(HOUSE_DELIVERY);
-
-  useEffect(() => {
-    let current = true;
-    void fetchSponsoredCreative(ACCOUNT_URL, channel.channelId).then((delivered) => {
-      if (current) setSponsored(delivered);
-    });
-    return () => {
-      current = false;
-    };
-  }, [channel.channelId]);
+  const url = listenerUrlFor(LISTEN_URL, channel.channelId);
   const shareUrl = channelShareUrl(WEB_URL, channel);
   const handle = handleLabel(channel.handle);
 
@@ -188,21 +168,12 @@ export function ProgrammeViewerScreen({ channel, api, onBack }: ProgrammeViewerS
           </View>
         )}
       </View>
-      {/*
-        * THE SPONSORED SLOT, native and BELOW the player -- never over the
-        * video and never over the controls inside it. The embedded player is
-        * told not to draw its own, so this is the single advert on the screen.
-        */}
-      <View style={styles.sponsored}>
-        <AdSlot creative={sponsored.creative} />
-      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   fill: { flex: 1, backgroundColor: C7.ground },
-  sponsored: { paddingHorizontal: 14, paddingTop: 10, paddingBottom: 14 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingTop: 50, paddingHorizontal: 14, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: C7.panelEdge },
   back: { transform: [{ rotate: '180deg' }], padding: 4 },
   title: { color: C7.text, fontSize: 18, fontWeight: '600', fontFamily: 'serif' },

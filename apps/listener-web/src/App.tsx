@@ -1672,16 +1672,6 @@ export default function App(): React.ReactElement {
    */
   const [sponsored, setSponsored] = useState<DeliveredCreative>(HOUSE_DELIVERY);
 
-  /*
-   * Does the surrounding app draw the sponsored slot itself?
-   *
-   * Read once from the URL the host opened. Only an explicit `nativeAds=1`
-   * suppresses ours, so nothing a viewer can stumble into removes the advert.
-   */
-  const nativeSponsoredHost = useMemo(
-    () => new URLSearchParams(window.location.search).get('nativeAds') === '1',
-    [],
-  );
 
   useEffect(() => {
     const channelId = channelSelection.channelId;
@@ -1882,16 +1872,20 @@ export default function App(): React.ReactElement {
           )}
         </section>
 
-        {/* The advert placement: below the player, above the controls, never over either. */}
-        {/* The creative is the SERVICE's decision, already resolved to
-            programme-or-house; this only renders what it was handed.
-
-            SUPPRESSED WHEN A NATIVE HOST DRAWS ITS OWN. The mobile app embeds
-            this player in a WebView and renders the sponsored slot natively
-            above it; without this the viewer would see the same advert twice.
-            The default is to SHOW -- an ordinary browser never sets the flag,
-            and a mistake here costs a missing advert rather than a double one. */}
-        {!nativeSponsoredHost && <SponsoredSlot creative={sponsored.creative} />}
+        {/*
+          * THE CANONICAL ADVERT PLACEMENT: directly below the viewer display and
+          * directly above the language and audio controls. Never over either.
+          *
+          * THE ONLY ONE IN THE PRODUCT. The mobile app embeds this page in a
+          * WebView, so a phone and a browser render literally the same slot in
+          * literally the same position. A native slot outside the WebView was
+          * tried and removed: it sat after the whole embedded page, which put
+          * the advert below the controls rather than below the display.
+          *
+          * The creative is the SERVICE's decision, already resolved to
+          * programme-or-house; this only renders what it was handed.
+          */}
+        <SponsoredSlot creative={sponsored.creative} />
 
         <section className={styles.controlsSection} aria-label="Language and audio controls">
           <div className={styles.controlGroup}>

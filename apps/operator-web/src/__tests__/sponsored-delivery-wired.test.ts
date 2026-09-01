@@ -40,33 +40,70 @@ describe('listener-web actually delivers the creative to its slot', () => {
   });
 });
 
-describe('mobile actually delivers the creative to its slot', () => {
-  const screen = read('apps', 'mobile', 'src', 'screens', 'ProgrammeViewerScreen.tsx');
+describe('the canonical placement: display, then advert, then controls', () => {
+  const app = read('apps', 'listener-web', 'src', 'App.tsx');
 
-  it('reads the same public delivery endpoint', () => {
-    expect(screen).toMatch(/fetchSponsoredCreative\(ACCOUNT_URL, channel\.channelId\)/u);
-  });
-
-  it('passes it into the native slot', () => {
-    expect(screen).toMatch(/<AdSlot creative=\{sponsored\.creative\}/u);
-  });
-
-  it('tells the embedded player not to draw a second advert', () => {
+  it('the slot sits BETWEEN the viewer display and the language controls', () => {
     /*
-     * The programme screen renders listener-web in a WebView. Without this the
-     * viewer sees the same advert twice -- once natively and once inside the
-     * page -- which is worse than either alone.
+     * THE LOCKED ORDERING. Not merely "somewhere on the page": an advert below
+     * the controls, or above the video, is a different product decision than
+     * the one that was made. Positions are compared rather than matched
+     * individually, because each element existing proves nothing about order.
      */
-    expect(screen).toMatch(/nativeAds=1/u);
+    const slot = app.indexOf('<SponsoredSlot creative={sponsored.creative}');
+    const controls = app.indexOf('className={styles.controlsSection}');
+    expect(slot).toBeGreaterThan(-1);
+    expect(controls).toBeGreaterThan(-1);
+    // The player section closes before the slot opens...
+    const playerClose = app.lastIndexOf('</section>', slot);
+    expect(playerClose).toBeGreaterThan(-1);
+    expect(playerClose).toBeLessThan(slot);
+    // ...and the slot comes before the controls.
+    expect(slot).toBeLessThan(controls);
+  });
+
+  it('is rendered unconditionally, never suppressed by a host flag', () => {
+    /*
+     * A flag that hid this slot for an embedding app was tried and removed. It
+     * put the advert below the whole embedded page on mobile -- under the
+     * controls instead of under the display -- and it made the placement
+     * conditional on a query parameter, which is one URL away from no advert.
+     */
+    expect(app).not.toMatch(/nativeAds/u);
+    expect(app).not.toMatch(/&&\s*<SponsoredSlot/u);
   });
 });
 
-describe('the web player only stands down when explicitly told to', () => {
-  const app = read('apps', 'listener-web', 'src', 'App.tsx');
+describe('mobile has exactly one sponsored placement, and it is the web one', () => {
+  const viewer = read('apps', 'mobile', 'src', 'screens', 'ProgrammeViewerScreen.tsx');
+  const directory = read('apps', 'mobile', 'src', 'screens', 'ProgrammesScreen.tsx');
 
-  it('shows its slot by default and hides it only on the explicit flag', () => {
-    expect(app).toMatch(/nativeAds'\) === '1'/u);
-    expect(app).toMatch(/\{!nativeSponsoredHost && <SponsoredSlot/u);
+  it('the programme screen embeds the player plainly and adds no advert', () => {
+    // The WebView shows listener-web, which draws the canonical slot itself.
+    expect(viewer).toMatch(/listenerUrlFor\(LISTEN_URL, channel\.channelId\)/u);
+    expect(viewer).not.toMatch(/nativeAds/u);
+    expect(viewer).not.toMatch(/<AdSlot/u);
+    expect(viewer).not.toMatch(/fetchSponsoredCreative/u);
+  });
+
+  it('the directory screen carries no sponsored slot', () => {
+    // Slice 1 has ONE placement: below the viewer display. A directory is not
+    // a programme and had no creative that could correctly fill it.
+    expect(directory).not.toMatch(/<AdSlot/u);
+  });
+
+  it('there is no second mobile delivery implementation', () => {
+    // Two clients fetching one creative is two things to drift.
+    expect(() => read('apps', 'mobile', 'src', 'sponsoredDelivery.ts')).toThrow();
+  });
+
+  it('the native primitive is kept but placed nowhere', () => {
+    const native = read('apps', 'mobile', 'src', 'ui', 'AdSlot.tsx');
+    expect(native).toMatch(/export function AdSlot/u);
+    // Not rendered by any screen.
+    for (const screen of [viewer, directory]) {
+      expect(screen).not.toMatch(/AdSlot/u);
+    }
   });
 });
 
