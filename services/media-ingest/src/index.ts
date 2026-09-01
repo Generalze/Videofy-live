@@ -48,6 +48,7 @@ import {
   type SpeechProbabilityDetector,
 } from '@videofy-live/speech-activity';
 import { buildTranslationGate } from './translation-gate-wiring.js';
+import { supportsKeyterms } from './providers/deepgram/nova-streaming-stt.js';
 import {
   buildLiveSynthesis,
   buildStreamingTranscriptionProvider,
@@ -305,6 +306,43 @@ app.get('/health', (_req, res) => {
  * deployment's chain can translate into and with what capability state, and
  * nothing an operator could not learn from the next media state anyway.
  */
+/*
+ * WHAT THIS DEPLOYMENT'S SELECTED ROUTES CAN ACTUALLY DO WITH VOCABULARY.
+ *
+ * The operator console must not decide this. A second model-name check written
+ * in React would be a second answer to a question this service already answers
+ * when it builds the request -- and the moment the two disagree, the console
+ * tells an operator a term is consumed while the wire sends nothing.
+ *
+ * So the SAME `supportsKeyterms` predicate that decides whether `keyterm` goes
+ * into the Deepgram URL decides what is reported here. One rule, one answer.
+ */
+app.get('/vocabulary/capabilities', (_req, res) => {
+  // Read from the SAME env the wiring reads, with the SAME default, so the
+  // reported model is the one actually requested rather than a second guess.
+  const sttSelected = config.streamingTranscriptionProvider;
+  const sttModel =
+    (process.env['DEEPGRAM_MODEL'] ?? '').trim() ||
+    (sttSelected === 'deepgram-flux' ? 'flux-general-en' : 'nova-3');
+  res.json({
+    service: 'media-ingest',
+    sttRouteName:
+      sttSelected === 'off' ? 'no recognition route' : `${sttSelected} ${sttModel}`.trim(),
+    // The identical predicate the request builder uses.
+    sttKeyterms: sttSelected.startsWith('deepgram') && supportsKeyterms(sttModel),
+    synthesisRouteName: streamingSynthesis?.name ?? 'no synthesis route',
+    /*
+     * NO SYNTHESIS ROUTE ON THIS DEPLOYMENT ACCEPTS A PRONUNCIATION HINT.
+     * Reported as false rather than omitted, so the console shows stored hints
+     * as `unsupported` instead of leaving an operator to assume they work. When
+     * a voice gains the mechanism this becomes a capability check like the one
+     * above, never a hard-coded true.
+     */
+    pronunciationHints: false,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 app.get('/languages/catalogue', (_req, res) => {
   res.json({
     service: 'media-ingest',

@@ -1,11 +1,17 @@
 /*
  * 05 Programme Vocabulary.
  *
- * Follows the console's panel palette (#0b1328 panels, #0a1225 sunken rows).
- * The consumer chips are the load-bearing element: three states with three
- * distinct treatments, so "unsupported" cannot be mistaken for "consumed" at a
- * glance across a long table. `unconsumed` is deliberately the quietest -- it
- * is the ordinary state of a field nobody filled in.
+ * EVERY COLOUR COMES FROM THE OPERATOR DESIGN AUTHORITY. An earlier draft of
+ * this file carried its own navy palette in hex, which is how a console ends up
+ * with two answers to "what is a panel" and a page that drifts out of the
+ * system the first time a token changes. No --vocabulary-* tokens are defined
+ * here, and no theme.
+ *
+ * The three consumer states map onto existing semantic families rather than new
+ * ones: teal for consumed (something reads it), warn for unsupported (set, and
+ * nothing on this deployment can read it), and the raised panel for unconsumed
+ * (not filled in -- the ordinary case, and deliberately the quietest). Conflict
+ * uses the danger family, because it is an interruption rather than a note.
  */
 .page {
   display: grid;
@@ -25,86 +31,88 @@
   font-size: 20px;
   font-weight: 600;
   letter-spacing: -0.01em;
+  color: var(--op-text);
 }
 
 .revision {
   margin: 0;
   font-size: 13px;
-  color: #93a2c9;
+  color: var(--op-text-secondary);
   font-variant-numeric: tabular-nums;
 }
 
 .effective {
   margin: 0;
   padding: 10px 14px;
-  border-radius: 8px;
-  background: #0a1225;
-  border: 1px solid #1b2748;
-  color: #b9c6e8;
+  border-radius: var(--op-radius-md);
+  background: var(--op-panel-raised);
+  border: 1px solid var(--op-panel-border);
+  color: var(--op-text-secondary);
   font-size: 13px;
 }
 
-/* A conflict is an interruption, not a footnote: it stops the operator. */
+/* An interruption, not a footnote: it stops the operator. */
 .conflict {
   padding: 14px 16px;
-  border-radius: 8px;
-  background: #2a1420;
-  border: 1px solid #7a2540;
-  color: #ffd9e2;
+  border-radius: var(--op-radius-md);
+  background: var(--op-danger-soft);
+  border: 1px solid var(--op-danger-border);
+  color: var(--op-danger-text);
   display: grid;
   gap: 8px;
 }
 .conflict p { margin: 0; font-size: 14px; }
-.conflictDetail { color: #e3aebd; font-size: 13px; }
+.conflictDetail { opacity: 0.85; font-size: 13px; }
 .reload {
   justify-self: start;
   padding: 7px 14px;
-  border-radius: 6px;
-  border: 1px solid #7a2540;
-  background: #3b1a29;
-  color: #ffd9e2;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-danger-border);
+  background: transparent;
+  color: var(--op-danger-text);
+  font-family: var(--op-font);
   font-size: 13px;
   cursor: pointer;
 }
-.reload:hover { background: #4a2032; }
+.reload:hover { background: var(--op-danger-soft); }
 
 .table {
   width: 100%;
   border-collapse: collapse;
-  background: #0b1328;
-  border: 1px solid #1b2748;
-  border-radius: 8px;
+  background: var(--op-panel);
+  border: 1px solid var(--op-panel-border);
+  border-radius: var(--op-radius-md);
   overflow: hidden;
   font-size: 13px;
 }
 .table th {
   text-align: left;
   padding: 10px 14px;
-  background: #0a1225;
-  color: #8fa0c8;
+  background: var(--op-panel-raised);
+  color: var(--op-text-muted);
   font-weight: 500;
   font-size: 12px;
   letter-spacing: 0.02em;
   text-transform: uppercase;
-  border-bottom: 1px solid #1b2748;
+  border-bottom: 1px solid var(--op-panel-border);
 }
 .table td {
   padding: 12px 14px;
-  border-bottom: 1px solid #131d38;
+  border-bottom: 1px solid var(--op-hairline);
   vertical-align: top;
-  color: #dbe3f6;
+  color: var(--op-text);
 }
 .table tr:last-child td { border-bottom: none; }
 
 /* A disabled term reaches no consumer, and reads that way. */
 .disabled { opacity: 0.55; }
 
-.term { display: block; font-weight: 600; }
+.term { display: block; font-weight: 600; color: var(--op-text); }
 .kind {
   display: inline-block;
   margin-top: 3px;
   font-size: 11px;
-  color: #8fa0c8;
+  color: var(--op-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
@@ -112,11 +120,11 @@
   display: block;
   margin-top: 4px;
   font-size: 12px;
-  color: #7c8bb0;
+  color: var(--op-text-faint);
   font-style: italic;
 }
-.language { color: #b9c6e8; }
-.none { color: #5b6788; }
+.language { color: var(--op-text-secondary); }
+.none { color: var(--op-text-faint); }
 
 .states { display: grid; gap: 5px; }
 
@@ -125,7 +133,7 @@
   align-items: baseline;
   gap: 7px;
   padding: 3px 8px;
-  border-radius: 5px;
+  border-radius: var(--op-radius-sm);
   font-size: 11px;
   border: 1px solid transparent;
   width: fit-content;
@@ -139,48 +147,50 @@
 
 /* Something reads it. */
 .consumed {
-  background: #0d2a1c;
-  border-color: #1d5b3a;
-  color: #8fe3b4;
+  background: var(--op-teal-soft);
+  border-color: var(--op-teal-border);
+  color: var(--op-teal-text);
 }
-/* Set, and nothing on this deployment can read it. The one that must not be
-   mistaken for consumed. */
+/* Set, and nothing on this deployment can read it. The one that must never be
+   mistaken for consumed, so it takes the warn family rather than a shade of
+   the same colour. */
 .unsupported {
-  background: #2e2410;
-  border-color: #7a5a1c;
-  color: #f0cd8a;
+  background: var(--op-warn-soft);
+  border-color: var(--op-warn-border);
+  color: var(--op-warn-text);
 }
-/* Not filled in. The ordinary case, and the quietest. */
+/* Not filled in. The ordinary state, and the quietest. */
 .unconsumed {
-  background: #131d38;
-  border-color: #223055;
-  color: #8494ba;
+  background: var(--op-panel-raised);
+  border-color: var(--op-panel-border);
+  color: var(--op-text-muted);
 }
 
 .delete {
   padding: 5px 11px;
-  border-radius: 6px;
-  border: 1px solid #34406b;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-panel-border-strong);
   background: transparent;
-  color: #b9c6e8;
+  color: var(--op-text-secondary);
+  font-family: var(--op-font);
   font-size: 12px;
   cursor: pointer;
 }
-.delete:hover { background: #1a2444; }
+.delete:hover { background: var(--op-panel-raised); }
 .delete:disabled { opacity: 0.5; cursor: default; }
 
 .empty, .loading {
   padding: 22px 14px;
-  color: #8494ba;
+  color: var(--op-text-muted);
   text-align: center;
 }
 
 .unavailable {
   padding: 14px 16px;
-  border-radius: 8px;
-  background: #0a1225;
-  border: 1px solid #1b2748;
-  color: #b9c6e8;
+  border-radius: var(--op-radius-md);
+  background: var(--op-panel-raised);
+  border: 1px solid var(--op-panel-border);
+  color: var(--op-text-secondary);
   font-size: 14px;
   margin: 0;
 }
@@ -188,5 +198,5 @@
 .footnote {
   margin: 0;
   font-size: 12px;
-  color: #7c8bb0;
+  color: var(--op-text-faint);
 }

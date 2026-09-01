@@ -19,6 +19,8 @@ import { readSession, signOut, subscribe as subscribeToSession } from './premium
 import type { LanguageRow } from './languageRows';
 import { LanguagesPage, type CatalogueState } from './pages/LanguagesPage';
 import { NotYetPage } from './pages/NotYetPage';
+import { VocabularyPage } from './pages/VocabularyPage';
+import { useVocabulary } from './useVocabulary';
 import { OverviewPage } from './pages/OverviewPage';
 import { LiveControlAside, LivePage } from './pages/LivePage';
 import { AudioVoicesAside, AudioVoicesPage } from './pages/AudioVoicesPage';
@@ -1256,6 +1258,17 @@ export default function App(): React.ReactElement {
    * (a new assignment, or a saved category coming back), so a renamed
    * channel shows its new name without a reload.
    */
+  /*
+   * PAGE 05 STATE. The programme is the operator's own channel -- the same
+   * identity the rest of the console already administers -- so vocabulary is
+   * scoped to it without inventing a second notion of "which programme".
+   */
+  const vocabulary = useVocabulary({
+    accountUrl: ACCOUNT_URL,
+    ingestUrl: INGEST_URL,
+    programmeId: ownChannelId,
+  });
+
   const channelIdentity = useChannelIdentity({
     accountUrl: ACCOUNT_URL,
     reloadKey: `${activeChannelId}:${channelReportedCategory ?? ''}`,
@@ -1414,14 +1427,20 @@ export default function App(): React.ReactElement {
 
       {/* ---------------- 05 Programme Vocabulary ---------------- */}
       <ConsolePage id="vocabulary" active={page === 'vocabulary'} title="Programme Vocabulary">
-        <NotYetPage
-          title="Names, places and terms the programme will use"
-          what={[
-            'Enter or import the programme\u2019s terminology before going live: names, places, organisations, numbers, pronunciation.',
-            'A term influences recognition (STT keyterms), translation (do-not-translate and canonical renderings), captions and pronunciation.',
-            'Lower-thirds are not a vocabulary feature; localized graphics come as a metadata rendition later.',
-          ]}
-          reference="Videofy Blueprint \u00a77 and \u00a75.8 (Programme Quality Engine, phase 1 slice P1.4)."
+        <VocabularyPage
+          snapshot={vocabulary.snapshot}
+          unavailable={vocabulary.unavailable}
+          conflict={vocabulary.conflict}
+          saving={vocabulary.saving}
+          onReload={() => {
+            void vocabulary.reload();
+          }}
+          onSave={(entry, expectedRevision) => {
+            void vocabulary.save(entry, expectedRevision);
+          }}
+          onDelete={(entryId, expectedRevision) => {
+            void vocabulary.remove(entryId, expectedRevision);
+          }}
         />
       </ConsolePage>
 
