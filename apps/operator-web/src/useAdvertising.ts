@@ -135,8 +135,12 @@ export function useAdvertising(options: UseAdvertisingOptions): UseAdvertisingRe
           unavailable: error instanceof AdvertisingUnavailableError,
         }));
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     },
+    // `api` is rebuilt each render when no client is injected; depending on it
+    // would re-run this forever. The directive sits on the dependency array
+    // because that is the line the rule reports; one line earlier it suppressed
+    // nothing and was itself reported as unused.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [accountUrl, programmeId],
   );
 

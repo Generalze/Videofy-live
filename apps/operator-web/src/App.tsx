@@ -18,7 +18,6 @@ import { readAccountUrl, updateMyChannel, useChannelIdentity, type ChannelIdenti
 import { readSession, signOut, subscribe as subscribeToSession } from './premium/operatorSession';
 import type { LanguageRow } from './languageRows';
 import { LanguagesPage, type CatalogueState } from './pages/LanguagesPage';
-import { NotYetPage } from './pages/NotYetPage';
 import { VocabularyPage } from './pages/VocabularyPage';
 import { useVocabulary } from './useVocabulary';
 import { useQuality } from './useQuality';

@@ -53,7 +53,7 @@ export function makeFakePool(options: {
     private snapshot: { state: Map<string, number>; entries: Map<string, Row> } | null = null;
     private release_: (() => void) | null = null;
 
-    async query(sql: string, params: unknown[] = []): Promise<{ rows: any[]; rowCount: number }> {
+    async query(sql: string, params: unknown[] = []): Promise<{ rows: unknown[]; rowCount: number }> {
       if (options.failOn?.test(sql)) throw new Error('injected failure');
       if (pauseArmed && options.pauseFirst?.test(sql)) {
         pauseArmed = false;
@@ -187,10 +187,3 @@ export function makeFakePool(options: {
     peekEntries: () => [...entries.values()],
   };
 }
-
-/** Asserts the mutation succeeded and returns its revision. */
-function ok(outcome: { ok: boolean; revision?: number }): number {
-  if (!outcome.ok) throw new Error('expected the mutation to succeed');
-  return outcome.revision ?? -1;
-}
-
