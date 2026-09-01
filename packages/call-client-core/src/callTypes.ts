@@ -294,10 +294,31 @@ export type CallJoinFailureCode =
   | 'translation-engine-unavailable'
   | 'internal';
 
-/** The telephone's state for a direct call; see call-wire's DirectCallStateWire. */
+/**
+ * The telephone's state for a direct call; see call-wire's DirectCallStateWire.
+ *
+ * The state union is RE-DECLARED here rather than imported because this package
+ * does not depend on call-wire, and a parity test asserts the two lists are
+ * identical -- so a word added on one side and forgotten on the other fails the
+ * build instead of reaching a caller.
+ */
+export type DirectCallSnapshotState =
+  | 'calling'
+  | 'ringing'
+  | 'answered'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'busy'
+  | 'declined'
+  | 'no_answer'
+  | 'unavailable'
+  | 'network'
+  | 'ended';
+
 export interface DirectCallStateSnapshot {
   callId: string;
-  state: string;
+  state: DirectCallSnapshotState;
   mode: CallMode;
   callerAccountId: string;
   peerAccountId: string;

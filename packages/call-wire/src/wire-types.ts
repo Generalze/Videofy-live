@@ -415,9 +415,41 @@ export type CallJoinFailureCode =
  * survives every reconnect, so the clock on both phones agrees and never
  * restarts.
  */
+/**
+ * THE TWELVE STATES A DIRECT CALL CAN BE IN. The server's vocabulary, and the
+ * only one.
+ *
+ * This was `string`, and a second vocabulary grew beside it in the mobile app
+ * with `dialing` and `failed` -- words the server never sends -- while lacking
+ * `ringing`, `reconnecting`, `busy`, `declined`, `no_answer` and `network`,
+ * which it does. Nothing caught the divergence because `string` accepts
+ * anything, so the two lists could drift for as long as nobody read them side
+ * by side.
+ *
+ * Naming the union makes the compiler the thing that notices. A client
+ * rendering a state the server cannot produce, or omitting one it can, is now
+ * a build failure rather than a surprise in front of a caller.
+ *
+ * The definition lives with the WIRE because that is what both sides agree on;
+ * the gateway's DirectCallLifecycle is where the transitions are decided.
+ */
+export type DirectCallWireState =
+  | 'calling'
+  | 'ringing'
+  | 'answered'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'busy'
+  | 'declined'
+  | 'no_answer'
+  | 'unavailable'
+  | 'network'
+  | 'ended';
+
 export interface DirectCallStateWire {
   callId: string;
-  state: string;
+  state: DirectCallWireState;
   mode: CallMode;
   callerAccountId: string;
   peerAccountId: string;
