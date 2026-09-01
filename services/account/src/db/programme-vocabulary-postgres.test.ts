@@ -200,6 +200,12 @@ function fakePool(options: {
   };
 }
 
+/** Asserts the mutation succeeded and returns its revision. */
+function ok(outcome: { ok: boolean; revision?: number }): number {
+  if (!outcome.ok) throw new Error('expected the mutation to succeed');
+  return outcome.revision ?? -1;
+}
+
 function record(over: Partial<VocabularyRecord> = {}): VocabularyRecord {
   return {
     programmeId: 'prog_A', id: 'v1', term: 'Adéyẹmí', canonicalRendering: '',
@@ -213,15 +219,15 @@ describe('revision advances once per semantic change', () => {
   it('a create bumps exactly one', async () => {
     const f = fakePool();
     const db = createPostgresVocabulary(f.pool);
-    expect((await db.upsert(record({ id: 'a' }))).revision).toBe(1);
+    expect(ok(await db.upsert(record({ id: 'a' })))).toBe(1);
   });
 
   it('a real edit bumps exactly one', async () => {
     const f = fakePool();
     const db = createPostgresVocabulary(f.pool);
     await db.upsert(record({ id: 'a', term: 'Lagos' }));
-    expect((await db.upsert(record({ id: 'a', term: 'Lagos', canonicalRendering: 'Èkó' })))
-      .revision).toBe(2);
+    expect(ok(await db.upsert(record({ id: 'a', term: 'Lagos', canonicalRendering: 'Èkó' }))))
+      .toBe(2);
   });
 
   it('a NO-OP update bumps zero', async () => {
@@ -230,26 +236,26 @@ describe('revision advances once per semantic change', () => {
     const f = fakePool();
     const db = createPostgresVocabulary(f.pool);
     await db.upsert(record({ id: 'a', term: 'Lagos' }));
-    expect((await db.upsert(record({ id: 'a', term: 'Lagos' }))).revision).toBe(1);
+    expect(ok(await db.upsert(record({ id: 'a', term: 'Lagos' })))).toBe(1);
   });
 
   it('one API call changing several fields is ONE revision', async () => {
     const f = fakePool();
     const db = createPostgresVocabulary(f.pool);
     await db.upsert(record({ id: 'a', term: 'Lagos' }));
-    const after = await db.upsert(record({
+    const after = ok(await db.upsert(record({
       id: 'a', term: 'Lagos', canonicalRendering: 'Èkó',
       doNotTranslate: true, sttKeyterm: true, notes: 'agreed with the producer',
-    }));
-    expect(after.revision).toBe(2);
+    })));
+    expect(after).toBe(2);
   });
 
   it('a delete that removed something bumps one; a no-op delete bumps zero', async () => {
     const f = fakePool();
     const db = createPostgresVocabulary(f.pool);
     await db.upsert(record({ id: 'a' }));
-    expect((await db.remove('prog_A', 'a')).revision).toBe(2);
-    expect((await db.remove('prog_A', 'a')).revision).toBe(2);
+    expect(ok(await db.remove('prog_A', 'a'))).toBe(2);
+    expect(ok(await db.remove('prog_A', 'a'))).toBe(2);
   });
 });
 
@@ -390,6 +396,102 @@ describe('snapshot reads are internally consistent', () => {
     expect(snap.entries.map((e) => e.term).sort()).toEqual(['Abéòkúta', 'Chinelo']);
     expect(snap.entries.find((e) => e.id === 'a')?.canonicalRendering).toBe('Abeokuta');
     expect(snap.entries.find((e) => e.id === 'b')?.sttKeyterm).toBe(true);
+  });
+});
+
+describe('optimistic revision gate: a stale operator changes nothing', () => {
+  it('runs the full A/B sequence', async () => {
+    const f = fakePool();
+    const db = createPostgresVocabulary(f.pool);
+
+    // Programme reaches revision 1 with one entry, which both operators open.
+    ok(await db.upsert(record({ id: 'lagos', term: 'Lagos' })));
+    const opened = (await db.snapshotRead('prog_A')).revision;
+    expect(opened).toBe(1);
+
+    // A edits from revision 1 and succeeds.
+    const a = await db.upsert(
+      record({ id: 'lagos', term: 'Lagos', canonicalRendering: 'Èkó' }), opened);
+    expect(a.ok).toBe(true);
+    expect(ok(a)).toBe(2);
+
+    // B, still looking at revision 1, edits ANOTHER field of the same entry.
+    // Without the gate this lands and silently erases A's canonical rendering.
+    const b = await db.upsert(
+      record({ id: 'lagos', term: 'Lagos', notes: 'B was here' }), opened);
+    expect(b.ok).toBe(false);
+    if (!b.ok) {
+      expect(b.conflict).toBe('revision-conflict');
+      expect(b.expectedRevision).toBe(1);
+      expect(b.currentRevision).toBe(2);
+    }
+
+    // Nothing of B's landed, the revision did not move, A's value is intact.
+    const after = await db.snapshotRead('prog_A');
+    expect(after.revision).toBe(2);
+    expect(after.entries[0]?.canonicalRendering).toBe('Èkó');
+    expect(after.entries[0]?.notes).toBe('');
+
+    // B reloads and retries against the current revision.
+    const retry = await db.upsert(
+      record({ id: 'lagos', term: 'Lagos', canonicalRendering: 'Èkó', notes: 'B was here' }),
+      after.revision);
+    expect(ok(retry)).toBe(3);
+    const final = await db.snapshotRead('prog_A');
+    expect(final.entries[0]?.canonicalRendering).toBe('Èkó');
+    expect(final.entries[0]?.notes).toBe('B was here');
+  });
+
+  it('a stale DELETE is refused too', async () => {
+    // A delete decided from a stale view discards whatever was edited since.
+    const f = fakePool();
+    const db = createPostgresVocabulary(f.pool);
+    ok(await db.upsert(record({ id: 'lagos', term: 'Lagos' })));
+    const opened = 1;
+    ok(await db.upsert(record({ id: 'lagos', term: 'Lagos', canonicalRendering: 'Èkó' }), opened));
+
+    const stale = await db.remove('prog_A', 'lagos', opened);
+    expect(stale.ok).toBe(false);
+    expect((await db.snapshotRead('prog_A')).entries).toHaveLength(1);
+  });
+
+  it('a NO-OP with the CORRECT revision succeeds and does not bump', async () => {
+    const f = fakePool();
+    const db = createPostgresVocabulary(f.pool);
+    ok(await db.upsert(record({ id: 'lagos', term: 'Lagos' })));
+    expect(ok(await db.upsert(record({ id: 'lagos', term: 'Lagos' }), 1))).toBe(1);
+  });
+
+  it('a NO-OP with a STALE revision is still a conflict', async () => {
+    // The client is stale even when its requested end-state happens to match.
+    // Accepting it would tell somebody their view was current when it was not,
+    // and the next edit they make from that view would be wrong.
+    const f = fakePool();
+    const db = createPostgresVocabulary(f.pool);
+    ok(await db.upsert(record({ id: 'lagos', term: 'Lagos' })));
+    ok(await db.upsert(record({ id: 'other', term: 'Kano' }), 1));   // revision 2
+
+    const noop = await db.upsert(record({ id: 'lagos', term: 'Lagos' }), 1);
+    expect(noop.ok).toBe(false);
+    if (!noop.ok) expect(noop.currentRevision).toBe(2);
+  });
+
+  it('omitting expectedRevision still works, for machine-initiated writes', async () => {
+    // Operator paths must always send it; a seed or migration legitimately has
+    // nothing to have looked at.
+    const f = fakePool();
+    const db = createPostgresVocabulary(f.pool);
+    expect(ok(await db.upsert(record({ id: 'seeded' })))).toBe(1);
+  });
+
+  it('a conflict performs NO mutation and NO bump', async () => {
+    const f = fakePool();
+    const db = createPostgresVocabulary(f.pool);
+    ok(await db.upsert(record({ id: 'a', term: 'A' })));
+    const before = f.peekEntries().length;
+    await db.upsert(record({ id: 'b', term: 'B' }), 99);
+    expect(f.peekEntries()).toHaveLength(before);
+    expect(f.peekRevision('prog_A')).toBe(1);
   });
 });
 

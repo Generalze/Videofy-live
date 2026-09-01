@@ -32,6 +32,16 @@ import type {
   VocabularyRecord,
 } from '@videofy-live/programme-vocabulary/store';
 
+/**
+ * What an operator's mutation returns.
+ *
+ * A CONFLICT is not an error in the software; it is the software noticing that
+ * two people edited the same thing and refusing to pick a winner silently.
+ */
+export type MutationOutcome<T> =
+  | ({ ok: true; revision: number } & T)
+  | { ok: false; conflict: 'revision-conflict'; expectedRevision: number; currentRevision: number };
+
 export interface DurableVocabularyPort {
   revision(programmeId: string): Promise<number>;
   list(programmeId: string): Promise<readonly VocabularyRecord[]>;
@@ -40,8 +50,27 @@ export interface DurableVocabularyPort {
     revision: number;
     entries: readonly VocabularyRecord[];
   }>;
-  upsert(record: VocabularyRecord): Promise<{ record: VocabularyRecord; revision: number }>;
-  remove(programmeId: string, entryId: string): Promise<{ removed: boolean; revision: number }>;
+  /**
+   * @param expectedRevision the revision the operator was LOOKING AT.
+   *
+   * Database serialization orders concurrent writes; it cannot tell that the
+   * second writer decided from stale information. Two operators both open
+   * revision 17, A commits 18, and B -- still reading 17 -- submits a change to
+   * the same entry built on a value A has already replaced. Both writes are
+   * orderly and one person's work is gone.
+   *
+   * Omitted means "I did not look first", which is only legitimate for
+   * machine-initiated writes. Operator paths must always send it.
+   */
+  upsert(
+    record: VocabularyRecord,
+    expectedRevision?: number,
+  ): Promise<MutationOutcome<{ record: VocabularyRecord }>>;
+  remove(
+    programmeId: string,
+    entryId: string,
+    expectedRevision?: number,
+  ): Promise<MutationOutcome<{ removed: boolean }>>;
 }
 
 function requireProgramme(programmeId: string, operation: string): void {
@@ -153,12 +182,26 @@ export function createPostgresVocabulary(pool: Pool): DurableVocabularyPort {
       }
     },
 
-    async upsert(record) {
+    async upsert(record, expectedRevision) {
       requireProgramme(record.programmeId, 'upsert');
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        await lockProgramme(client, record.programmeId);
+        const currentRevision = await lockProgramme(client, record.programmeId);
+
+        // THE OPTIMISTIC GATE, checked after the lock and before any write.
+        // Rolling back here means no entry mutation and no bump -- a stale
+        // operator changes nothing at all, rather than changing something on
+        // top of work they never saw.
+        if (expectedRevision !== undefined && expectedRevision !== currentRevision) {
+          await client.query('ROLLBACK');
+          return {
+            ok: false as const,
+            conflict: 'revision-conflict' as const,
+            expectedRevision,
+            currentRevision,
+          };
+        }
 
         // `IS DISTINCT FROM` across every semantic column, so a write whose
         // values match what is stored reports no change and the revision holds.
@@ -215,7 +258,7 @@ export function createPostgresVocabulary(pool: Pool): DurableVocabularyPort {
             );
 
         await client.query('COMMIT');
-        return { record, revision };
+        return { ok: true as const, record, revision };
       } catch (error) {
         // Neither the row nor the revision survives. A bumped revision over a
         // rolled-back row would tell every running session it is stale for a
@@ -227,12 +270,23 @@ export function createPostgresVocabulary(pool: Pool): DurableVocabularyPort {
       }
     },
 
-    async remove(programmeId, entryId) {
+    async remove(programmeId, entryId, expectedRevision) {
       requireProgramme(programmeId, 'remove');
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        await lockProgramme(client, programmeId);
+        const currentRevision = await lockProgramme(client, programmeId);
+        // A delete decided from a stale view is the same hazard: the entry may
+        // have been edited since, and removing it discards that edit too.
+        if (expectedRevision !== undefined && expectedRevision !== currentRevision) {
+          await client.query('ROLLBACK');
+          return {
+            ok: false as const,
+            conflict: 'revision-conflict' as const,
+            expectedRevision,
+            currentRevision,
+          };
+        }
         const { rowCount } = await client.query(
           // BOTH keys. Deleting on entry_id alone would take the same id out of
           // every programme that happens to use it.
@@ -249,7 +303,7 @@ export function createPostgresVocabulary(pool: Pool): DurableVocabularyPort {
               )).rows[0]?.revision ?? 0,
             );
         await client.query('COMMIT');
-        return { removed, revision };
+        return { ok: true as const, removed, revision };
       } catch (error) {
         await client.query('ROLLBACK').catch(() => undefined);
         throw error;
