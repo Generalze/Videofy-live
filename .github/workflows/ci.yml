@@ -141,17 +141,48 @@ jobs:
       # THE NATIVE MODULE MUST ACTUALLY BE THERE. Prebuild succeeding is not
       # the same as the autolinker having found our Kotlin: a module that is
       # never linked compiles nothing and fails silently on a device instead.
+      #
+      # ASKED OF THE AUTOLINKER, not of settings.gradle. A first version of
+      # this step grepped settings.gradle for the module name and failed --
+      # not because the module was unlinked, but because Expo SDK 57 resolves
+      # modules at configuration time through useExpoModules(), so no
+      # individual name is ever written there. The resolver is the authority,
+      # and it names the exact class the app expects to call.
       - name: Verify the Videofy call module was linked
         working-directory: apps/mobile
         run: |
           set -e
-          test -f android/settings.gradle
-          grep -q "videofy-call" android/settings.gradle             || (echo "videofy-call was not autolinked into settings.gradle" && exit 1)
+          npx --yes expo-modules-autolinking resolve --platform android --json > autolink.json
+          node -e "
+            const d = require('./autolink.json');
+            const found = (d.modules || []).find((m) => m.packageName === 'videofy-call');
+            if (!found) { console.error('videofy-call was not autolinked'); process.exit(1); }
+            const classes = found.projects.flatMap((p) => (p.modules || []).map((m) => m.classifier));
+            const expected = 'com.consummate7.videofy.call.VideofyCallModule';
+            if (!classes.includes(expected)) {
+              console.error('autolinked, but ' + expected + ' is missing; found: ' + classes.join(', '));
+              process.exit(1);
+            }
+            console.log('videofy-call linked: ' + classes.join(', '));
+          "
 
       # Kotlin and Java compilation plus the manifest merge, without packaging.
       - name: Compile Android sources and merge manifests
         working-directory: apps/mobile/android
         run: ./gradlew --no-daemon compileDebugKotlin compileDebugJavaWithJavac processDebugManifest
+
+      # AND OUR KOTLIN WAS AMONG WHAT COMPILED. A green Gradle run proves the
+      # app compiled; it does not by itself prove our module was part of it.
+      # These are the classes that make a call ring.
+      - name: Verify the call module's classes were produced
+        working-directory: apps/mobile
+        run: |
+          set -e
+          for klass in VideofyCallModule VideofyConnectionService IncomingCallService IncomingCallActivity VideofyMessagingService; do
+            found=$(find . -path ./node_modules -prune -o -name "$klass.class" -print 2>/dev/null | head -1)
+            test -n "$found" || (echo "no compiled class for $klass" && exit 1)
+            echo "compiled: $klass"
+          done
 
       # The merged manifest is what the device actually reads. These four are
       # what make a call ring like a telephone rather than appear as a tray
