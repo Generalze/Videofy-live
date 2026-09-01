@@ -30,6 +30,10 @@ import { createPostgresContactRecords } from './db/contact-records-postgres.js';
 import { OrganizationStore } from './organization-store.js';
 import { registerOrganizationRoutes } from './organization-routes.js';
 import { parseOperatorAllowlist } from '@videofy-live/billing-tariff';
+import { registerSpecialistRoutes } from './specialist-routes.js';
+import { registerSpecialistAdminRoutes } from './specialist-admin-routes.js';
+import { SpecialistStore, createInMemorySpecialistPort } from './specialist-store.js';
+import { createPostgresSpecialistPort } from './db/specialist-records-postgres.js';
 import { TariffStore, createInMemoryTariffPort } from './tariff-store.js';
 import { createPostgresTariffPort } from './db/tariff-records-postgres.js';
 import { registerTariffRoutes } from './tariff-routes.js';
@@ -974,6 +978,76 @@ console.log(
     service: 'account',
     message: 'Messaging ready',
     store: databasePool ? 'postgres' : 'ephemeral',
+  }),
+);
+
+/*
+ * THE LANGUAGE SPECIALIST PROGRAMME.
+ *
+ * Mounted here, on the account service, because a Language Specialist is a ROLE
+ * ON A C7 ACCOUNT and not a separate population. A second service would mean a
+ * second identity, a second session and a second place to be wrong about who is
+ * calling; the caller resolver below is the same one every other route family
+ * on this process uses, for the reason its own comment gives.
+ *
+ * The operator half reuses the platform allowlist that governs pricing. It is
+ * the only privilege concept in this deployment that is not a customer role,
+ * and inventing a specialist-admin role beside it would be a second door into
+ * the same room.
+ */
+const specialists = new SpecialistStore({
+  port: databasePool ? createPostgresSpecialistPort(databasePool) : createInMemorySpecialistPort(),
+  onEvent: (event, detail) => {
+    /*
+     * IDS, LANGUAGE CODES, COUNTS AND THE CORPUS HASH. Never a source message,
+     * never an English meaning, never a corrected translation, never the
+     * applicant's own words about themselves. A log line is shipped, indexed
+     * and retained, and it is readable by far more people than the database is;
+     * a contributor's writing in one is a second copy of the corpus that
+     * outlives the request that made it.
+     */
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', event, ...detail }));
+  },
+});
+
+registerSpecialistRoutes(app, {
+  specialists,
+  callerAccountId: createCallerResolver({
+    store,
+    secret,
+    nowSeconds: () => Math.floor(Date.now() / 1000),
+  }),
+  onEvent: (event, detail) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', event, ...detail }));
+  },
+});
+
+registerSpecialistAdminRoutes(app, {
+  specialists,
+  callerAccountId: createCallerResolver({
+    store,
+    secret,
+    nowSeconds: () => Math.floor(Date.now() / 1000),
+  }),
+  /* The SAME set that governs pricing. See platform-operator.ts. */
+  platformOperators,
+  onEvent: (event, detail) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', event, ...detail }));
+  },
+});
+
+// eslint-disable-next-line no-console
+console.log(
+  JSON.stringify({
+    service: 'account',
+    message: 'Language Specialist programme ready',
+    store: databasePool ? 'postgres' : 'ephemeral',
+    // A COUNT, not the ids. Naming the people who can decide somebody's
+    // qualification in a log line is a list of who to compromise.
+    platformOperators: platformOperators.size,
   }),
 );
 

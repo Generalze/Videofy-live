@@ -169,6 +169,38 @@ if (routes.length === 0) {
   process.exit(1);
 }
 
+/**
+ * EVERY entry must have parsed, not merely one of them.
+ *
+ * This existed as `routes.length === 0` alone, and that guard has a hole the
+ * width of the whole problem: a route whose entry the pattern could not read is
+ * silently ABSENT, the generator prints a smaller number, and the page ships
+ * with the homepage's Open Graph card. It happened on the first route added
+ * after this script was written — a comment inside the object literal put
+ * `path:` somewhere the pattern did not look, and the only symptom was "3
+ * routes" where there were four.
+ *
+ * So the count is checked against the number of `path:` keys in the array,
+ * which is a far cruder thing to find and therefore a reliable denominator. A
+ * mismatch fails the build, which is the ten seconds it takes to see it against
+ * the weeks a bare share card survives unnoticed.
+ */
+const arrayBody = metaSource.slice(
+  metaSource.indexOf('export const ROUTE_META'),
+  metaSource.indexOf('export function metaForPath'),
+);
+const declared = [...arrayBody.matchAll(/^\s*path:\s*'/gmu)].length;
+if (declared !== routes.length) {
+  console.error(
+    `site-meta.ts declares ${declared} routes but only ${routes.length} could be parsed.\n` +
+      `Parsed: ${routes.map((route) => route.path).join(', ')}\n` +
+      'An entry the pattern cannot read ships with the WRONG share card and says so ' +
+      'only by printing a smaller number. Keep each entry as ' +
+      "`{ path, title, description, imageAlt }` with no comment between the brace and `path:`.",
+  );
+  process.exit(1);
+}
+
 for (const route of routes) {
   const html = stampShell(shell, route);
   const target =

@@ -20,7 +20,9 @@ import { AppShell } from './pages/AppShell';
 import { ResetPassword, isResetPasswordPath } from './pages/ResetPassword';
 import { VerifyEmail, isVerifyEmailPath } from './pages/VerifyEmail';
 import { NotFound } from './pages/NotFound';
-import { ROUTE_PATHS, internalLink, useRoute, type Route } from './router';
+import { LanguageSpecialists } from './pages/LanguageSpecialists';
+import { SpecialistPortal, portalTitle } from './specialist/SpecialistPortal';
+import { ROUTE_PATHS, internalLink, useRoute, usePathname, type Route } from './router';
 import {
   consumeSessionEndedNotice,
   hasSession,
@@ -38,6 +40,14 @@ const TITLES: Readonly<Record<Route, string>> = {
   videofy: 'Videofy — Communication. Creation. Entertainment. Reach.',
   'videofy-live': 'VIDEOFY-LIVE — Speak Naturally. Understand Globally.',
   app: 'Your C7 account',
+  /*
+   * The recruitment page's title is the SAME string site-meta.ts stamps into
+   * the generated HTML. Two copies would let the crawler card and the tab
+   * disagree, and only one of them is visible while you are editing.
+   */
+  'language-specialists': 'Become a C7 Language Specialist — Consummate 7',
+  /* Replaced per sub-page by `portalTitle`; this is the value before it loads. */
+  specialist: 'C7 Language Specialist',
   'not-found': 'Page not found — Consummate 7',
 };
 
@@ -183,9 +193,14 @@ export function App() {
     () => typeof window !== 'undefined' && isResetPasswordPath(window.location.pathname),
   );
 
+  /*
+   * The portal has six sub-pages behind one route, so its title follows the
+   * PATH rather than the route. Everything else has one title per route.
+   */
+  const pathname = usePathname();
   useEffect(() => {
-    document.title = TITLES[route];
-  }, [route]);
+    document.title = route === 'specialist' ? portalTitle(pathname) : TITLES[route];
+  }, [route, pathname]);
 
   return (
     <div className={`page page-${route}`}>
@@ -230,6 +245,13 @@ export function App() {
         {route === 'app' && !verifyingEmail && !resettingPassword ? (
           <AppShell navigate={navigate} />
         ) : null}
+        {route === 'language-specialists' ? <LanguageSpecialists navigate={navigate} /> : null}
+        {/*
+          * The portal owns its own chrome -- a left rail, a breadcrumb and its
+          * own page titles -- so it renders as a peer of the shell rather than
+          * inside the marketing page furniture.
+          */}
+        {route === 'specialist' ? <SpecialistPortal navigate={navigate} /> : null}
         {route === 'not-found' ? <NotFound navigate={navigate} /> : null}
 
         {/* Registration lives at the end of every REAL page. A not-found page
@@ -241,7 +263,16 @@ export function App() {
           them -- and it sat at the foot of every marketing page. Signed in,
           the page ends with the door to their dashboard instead.
         */}
-        {route === 'not-found' || route === 'app' ? null : authed ? (
+        {/*
+          THE PORTAL IS NOT A MARKETING PAGE. A "Create C7 account" band under
+          somebody's blind review packet is the site forgetting who is standing
+          there, and the recruitment page already ends with its own call to
+          action written for the audience it has.
+        */}
+        {route === 'not-found' ||
+        route === 'app' ||
+        route === 'specialist' ||
+        route === 'language-specialists' ? null : authed ? (
           <section className="signedin-band">
             <div className="shell signedin-band-shell">
               <p className="section-lede">You are signed in.</p>
@@ -264,6 +295,7 @@ export function App() {
             <a {...internalLink('c7', navigate)}>Ecosystem</a>
             <a {...internalLink('videofy', navigate)}>Videofy</a>
             <a {...internalLink('videofy-live', navigate)}>Videofy-Live</a>
+            <a {...internalLink('language-specialists', navigate)}>Language Specialists</a>
             <a href="/call/">Launch Live</a>
           </nav>
           <p className="footer-note">
