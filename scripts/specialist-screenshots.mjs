@@ -91,7 +91,14 @@ async function seed() {
     country: 'Nigeria',
     timeZone: '(GMT+0100) West Africa Time',
   });
-  for (const language of ['yo', 'ha', 'fr']) {
+  /*
+   * Four tracks on purpose, one per state the audit cares about:
+   *   yo  elicitation, carried all the way to a frozen corpus
+   *   ha  elicitation, left at the consent step
+   *   fr  VALIDATION, so the source-check screen has something to show
+   *   pt  VALIDATION, and the language that asks the observed-language question
+   */
+  for (const language of ['yo', 'ha', 'fr', 'pt']) {
     await call('POST', `/specialists/languages/${language}/apply`);
   }
 
@@ -131,6 +138,36 @@ async function seed() {
  * The candidates below are illustrative, written for this script. They are NOT
  * engine output and must never be read as benchmark evidence.
  */
+/**
+ * Supply the source a fluent speaker validates. VALIDATION tracks only.
+ *
+ * Illustrative French, written for this script. It is NOT a corpus and must
+ * never be read as one.
+ */
+async function supplySource(operatorToken, accountId, language) {
+  const response = await fetch(
+    `${ACCOUNT}/admin/language-specialists/${accountId}/${language}/source`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${operatorToken}` },
+      body: JSON.stringify({
+        items: [
+          { category: 'money', suppliedText: 'Le prix est de deux mille nairas le sac.' },
+          { category: 'negation', suppliedText: "Je n'ai pas encore reçu l'argent." },
+          { category: 'phone', suppliedText: 'Appelle-moi au 08031234567 quand tu arrives.' },
+          { category: 'otp', suppliedText: 'Votre code est 483920. Ne le partagez pas.' },
+          { category: 'meeting', suppliedText: 'On se voit vendredi à seize heures.' },
+        ],
+      }),
+    },
+  );
+  if (!response.ok) {
+    console.log(`  could not supply ${language} source: ${response.status} ${await response.text()}`);
+    return;
+  }
+  console.log(`  supplied ${language} source for validation`);
+}
+
 async function issueReview(operatorToken, accountId, language) {
   const response = await fetch(
     `${ACCOUNT}/admin/language-specialists/${accountId}/${language}/assignments`,
@@ -225,7 +262,10 @@ async function main() {
   console.log(`seeded account ${seeded.accountId}`);
 
   const operatorToken = arg('operator-token', null);
-  if (operatorToken !== null) await issueReview(operatorToken, seeded.accountId, 'yo');
+  if (operatorToken !== null) {
+    await issueReview(operatorToken, seeded.accountId, 'yo');
+    await supplySource(operatorToken, seeded.accountId, 'fr');
+  }
 
   /*
    * The review packet is captured on ITS OWN URL, which is only known after the
@@ -259,6 +299,12 @@ async function main() {
     { name: 'portal-profile', url: `${SITE}/specialist/profile/`, session: true },
     { name: 'portal-qualification', url: `${SITE}/specialist/qualification/`, session: true },
     { name: 'portal-consent', url: `${SITE}/specialist/qualification/ha/elicitation/`, session: true },
+    {
+      /* The Checkpoint-B source check: sentences only, no candidate anywhere. */
+      name: 'portal-source-validation',
+      url: `${SITE}/specialist/qualification/fr/source-check/`,
+      session: true,
+    },
     { name: 'portal-elicitation', url: `${SITE}/specialist/qualification/yo/elicitation/`, session: true },
     { name: 'portal-assignments', url: `${SITE}/specialist/assignments/`, session: true },
     { name: 'portal-submissions', url: `${SITE}/specialist/submissions/`, session: true },
@@ -323,10 +369,25 @@ async function main() {
          * The horizontal-overflow check, run at capture time rather than by
          * eye. A page that scrolls sideways is a defect the screenshot itself
          * hides, because `fullPage` widens the image to fit the overflow.
+         *
+         * IT ASKS WHETHER THE PAGE CAN ACTUALLY SCROLL, not what
+         * `documentElement.scrollWidth` says. That number counts the content of
+         * a nested scroll container too: the operator's applicant table
+         * legitimately scrolls inside its own box, and the root reported 262px
+         * of "overflow" for a page that would not move a pixel when scrolled.
+         * A check that cries wolf on a correct page is a check somebody
+         * switches off, so it now measures the thing that matters -- whether a
+         * person can push the navigation off screen.
          */
-        const overflow = await tab.evaluate(
-          () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
-        );
+        const overflow = await tab.evaluate(() => {
+          const before = window.scrollX;
+          window.scrollTo(9999, window.scrollY);
+          const moved = window.scrollX;
+          window.scrollTo(before, window.scrollY);
+          /* `body`, not `documentElement`: see above. */
+          const bodyOverflow = document.body.scrollWidth - document.body.clientWidth;
+          return Math.max(moved, bodyOverflow > 1 ? bodyOverflow : 0);
+        });
         const flag = overflow > 1 ? `  OVERFLOW +${overflow}px` : '';
         console.log(`captured ${page.name} @ ${viewport.name}${flag}`);
         await context.close();

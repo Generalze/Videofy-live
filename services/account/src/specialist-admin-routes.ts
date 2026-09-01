@@ -33,17 +33,17 @@ import type express from 'express';
 import { admitPlatformOperator } from '@videofy-live/billing-tariff';
 import { resolveTrustState } from '@videofy-live/account-trust';
 import {
-  ELICITATION_PROMPTS,
   QUALIFICATION_STATES,
   SPECIALIST_CAPABILITIES,
   checkCapabilityGrant,
   isQualificationState,
   specialistLanguageKey,
   trackNames,
+  type SourceItem,
   type StoredCandidate,
 } from '@videofy-live/language-specialist';
 import type { Caller } from './routes.js';
-import type { SpecialistStore } from './specialist-store.js';
+import { progressOf, type SpecialistStore } from './specialist-store.js';
 
 export interface SpecialistAdminRouteDependencies {
   readonly specialists: SpecialistStore;
@@ -130,7 +130,8 @@ export function registerSpecialistAdminRoutes(
     res.json({
       applicants: profiles.map((profile) => ({
         accountId: profile.accountId,
-        applicationState: profile.applicationState,
+        /* Derived from the tracks below, never a stored approval state. */
+        progress: progressOf(byAccount.get(profile.accountId) ?? []),
         appliedAtMs: profile.appliedAtMs,
         updatedAtMs: profile.updatedAtMs,
         country: profile.country,
@@ -173,12 +174,18 @@ export function registerSpecialistAdminRoutes(
         attempt: track.attempt,
         appliedAtMs: track.appliedAtMs,
         decidedAtMs: track.decidedAtMs,
-        elicitation: {
-          answered: track.elicitationAnswered,
-          total: ELICITATION_PROMPTS.length,
-          complete: track.elicitationComplete,
-          frozen: track.corpusFrozen,
-          sha256: track.corpusSha256,
+        /*
+         * `source`, not `elicitation`: a validation track has source work too,
+         * and naming both after one of them is how an operator ends up asking
+         * a French specialist where their fifteen messages are.
+         */
+        source: {
+          kind: track.sourceRequirement,
+          answered: track.sourceAnswered,
+          total: track.sourceTotal,
+          complete: track.sourceComplete,
+          frozen: track.sourceFrozen,
+          sha256: track.sourceSha256,
         },
         reviewUnlocked: track.reviewUnlocked,
         decisions: await deps.specialists.decisionsFor(accountId, track.language),
@@ -186,7 +193,8 @@ export function registerSpecialistAdminRoutes(
     }
     res.json({
       accountId,
-      applicationState: profile.applicationState,
+      /* Derived from the tracks, never a stored approval state. */
+      progress: progressOf(tracks),
       appliedAtMs: profile.appliedAtMs,
       country: profile.country,
       timeZone: profile.timeZone,
@@ -205,6 +213,15 @@ export function registerSpecialistAdminRoutes(
         kind: assignment.kind,
         state: assignment.state,
         createdAtMs: assignment.createdAtMs,
+        /*
+         * The evidence binding, shown. An operator looking at a packet needs to
+         * know which attempt it belonged to and which frozen source it was
+         * built from -- otherwise a superseded packet in the list is
+         * indistinguishable from a live one.
+         */
+        qualificationAttempt: assignment.qualificationAttempt,
+        sourceRevision: assignment.sourceRevision,
+        sourceSha256: assignment.sourceSha256,
       })),
       voice: { state: 'NOT_INVITED', voiceRightsGranted: false },
     });
@@ -392,25 +409,121 @@ export function registerSpecialistAdminRoutes(
       ...candidate,
       ordinal: index + 1,
     }));
-    const assignment = await deps.specialists.createReviewAssignment({
+    const created = await deps.specialists.createReviewAssignment({
       accountId,
       language,
       candidates: shuffled,
       ...(typeof body['dueAtMs'] === 'number' ? { dueAtMs: body['dueAtMs'] } : {}),
     });
+    if (!created.ok) {
+      res.status(409).json({ error: 'That packet could not be issued.', reason: created.reason });
+      return;
+    }
 
     emit('specialist.assignment.issued', {
       operator: who,
       accountId,
       language,
-      assignmentId: assignment.assignmentId,
+      assignmentId: created.value.assignmentId,
+      attempt: created.value.qualificationAttempt,
       candidates: shuffled.length,
     });
     /* The ids are returned so an operator can reconcile; the order is not. */
     res.status(201).json({
-      assignmentId: assignment.assignmentId,
+      assignmentId: created.value.assignmentId,
       language,
       candidates: shuffled.length,
+      /*
+       * The binding is echoed so an operator can see, at the moment of issuing,
+       * which attempt and which frozen source this packet is tied to.
+       */
+      qualificationAttempt: created.value.qualificationAttempt,
+      sourceRevision: created.value.sourceRevision,
+      sourceSha256: created.value.sourceSha256,
+    });
+  });
+
+  /**
+   * Supply the source a fluent speaker will validate.
+   *
+   * THE FIRST STEP FOR A VALIDATION TRACK, and it must come before any
+   * translation exists. C7 can obtain French, Spanish and Portuguese source; it
+   * cannot judge whether that source is any good, and a reviewer handed a
+   * translation of a malformed sentence is being asked two questions at once.
+   *
+   * Refused once the source is frozen: replacing it then would silently change
+   * what every candidate translation was produced from.
+   */
+  app.post('/admin/language-specialists/:accountId/:language/source', async (req, res) => {
+    const who = operator(req, res);
+    if (who === null) return;
+    const accountId = req.params['accountId'] ?? '';
+    const language = specialistLanguageKey(req.params['language']);
+    if (language === null) {
+      refuse(res);
+      return;
+    }
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const raw = Array.isArray(body['items']) ? body['items'] : null;
+    if (raw === null || raw.length === 0) {
+      res.status(400).json({ error: 'Supply at least one source sentence.' });
+      return;
+    }
+
+    const items: SourceItem[] = [];
+    for (const [index, entry] of raw.entries()) {
+      if (typeof entry !== 'object' || entry === null) {
+        res.status(400).json({ error: 'Each source sentence must be an object.' });
+        return;
+      }
+      const row = entry as Record<string, unknown>;
+      const suppliedText =
+        typeof row['suppliedText'] === 'string' ? row['suppliedText'].trim() : '';
+      if (suppliedText.length === 0) {
+        res.status(400).json({ error: 'Each source sentence needs a suppliedText.' });
+        return;
+      }
+      items.push({
+        /*
+         * The ordinal is assigned HERE, from position, rather than trusted from
+         * the request. A duplicate ordinal in a pasted file would make two
+         * sentences one row, and the judgement of the second would silently
+         * overwrite the first.
+         */
+        ordinal: index + 1,
+        category: typeof row['category'] === 'string' ? row['category'] : '',
+        suppliedText,
+      });
+    }
+
+    const result = await deps.specialists.supplySourceSet({
+      accountId,
+      language,
+      items,
+      suppliedBy: who,
+      ...(typeof body['dueAtMs'] === 'number' ? { dueAtMs: body['dueAtMs'] } : {}),
+    });
+    if (!result.ok) {
+      if (result.reason === 'not-a-track' || result.reason === 'not-applied') {
+        refuse(res);
+        return;
+      }
+      res.status(409).json({ error: 'That source could not be supplied.', reason: result.reason });
+      return;
+    }
+
+    emit('specialist.source.issued', {
+      operator: who,
+      accountId,
+      language,
+      assignmentId: result.value.assignment.assignmentId,
+      items: items.length,
+    });
+    res.status(201).json({
+      assignmentId: result.value.assignment.assignmentId,
+      language,
+      items: items.length,
     });
   });
 

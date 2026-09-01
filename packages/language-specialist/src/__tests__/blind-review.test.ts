@@ -162,8 +162,9 @@ describe('the review gate', () => {
   const YORUBA = {
     language: 'yo',
     qualificationState: 'ASSESSMENT_IN_PROGRESS' as const,
-    corpusFrozen: false,
-    elicitationComplete: false,
+    attempt: 1,
+    sourceFrozenForAttempt: false,
+    sourceCompleteForAttempt: false,
   };
 
   it('PIN: review is LOCKED while the elicitation is unfinished', () => {
@@ -171,47 +172,70 @@ describe('the review gate', () => {
   });
 
   it('PIN: written-but-not-submitted is still locked, with its own words', () => {
-    // A person who has typed all fifteen and not pressed submit must not be
+    // Somebody who has typed all fifteen and not pressed submit must not be
     // told to do work they have already done.
-    const access = reviewAccess({ ...YORUBA, elicitationComplete: true });
+    const access = reviewAccess({ ...YORUBA, sourceCompleteForAttempt: true });
     expect(access).toEqual({ unlocked: false, reason: 'corpus-not-frozen' });
     expect(reviewLockMessage('corpus-not-frozen')).toContain('Submit them');
   });
 
-  it('PIN: review is AVAILABLE once the corpus is frozen', () => {
+  it('PIN: review is AVAILABLE once the source is frozen FOR THIS ATTEMPT', () => {
     expect(
-      reviewAccess({ ...YORUBA, elicitationComplete: true, corpusFrozen: true }),
+      reviewAccess({ ...YORUBA, sourceCompleteForAttempt: true, sourceFrozenForAttempt: true }),
     ).toEqual({ unlocked: true });
   });
 
-  it('PIN: a language needing no elicitation is still gated on the track', () => {
-    // Returning unlocked for anyone who happens not to need a corpus would be a
-    // bypass shaped like an exemption.
+  it('PIN: the field is about THIS attempt, not about any corpus ever', () => {
+    // The gate used to ask "does a corpus exist for this account and language",
+    // which stays true forever once one does -- so after a reassessment,
+    // attempt 2 opened on attempt 1's frozen source and the person would have
+    // judged translations of sentences from the assessment they had failed.
+    // The name is now one a caller cannot pass "any corpus" to honestly.
+    const attemptTwo = reviewAccess({
+      ...YORUBA,
+      attempt: 2,
+      sourceFrozenForAttempt: false,
+      sourceCompleteForAttempt: false,
+    });
+    expect(attemptTwo).toEqual({ unlocked: false, reason: 'elicitation-incomplete' });
+  });
+
+  it('PIN: a VALIDATION track is gated on its own source work, not exempt', () => {
+    // French, Spanish and Portuguese used to report "no elicitation required"
+    // and open for review immediately, which read as "these languages need no
+    // source work". They need DIFFERENT source work: C7 can obtain source for
+    // them and cannot judge it, so a fluent speaker validates it first.
+    const french = {
+      language: 'fr',
+      qualificationState: 'ASSESSMENT_IN_PROGRESS' as const,
+      attempt: 1,
+      sourceFrozenForAttempt: false,
+      sourceCompleteForAttempt: false,
+    };
+    expect(reviewAccess(french)).toEqual({
+      unlocked: false,
+      reason: 'source-validation-incomplete',
+    });
+    expect(reviewAccess({ ...french, sourceCompleteForAttempt: true })).toEqual({
+      unlocked: false,
+      reason: 'source-not-frozen',
+    });
+    expect(reviewAccess({ ...french, sourceFrozenForAttempt: true })).toEqual({ unlocked: true });
+  });
+
+  it('PIN: somebody with no track is refused, whatever the source says', () => {
     expect(
-      reviewAccess({
-        language: 'fr',
-        qualificationState: null,
-        corpusFrozen: false,
-        elicitationComplete: false,
-      }),
+      reviewAccess({ ...YORUBA, qualificationState: null, sourceFrozenForAttempt: true }),
     ).toEqual({ unlocked: false, reason: 'not-applied' });
-    expect(
-      reviewAccess({
-        language: 'fr',
-        qualificationState: 'ASSESSMENT_IN_PROGRESS',
-        corpusFrozen: false,
-        elicitationComplete: false,
-      }),
-    ).toEqual({ unlocked: true });
   });
 
-  it('PIN: a suspended track cannot review, frozen corpus or not', () => {
+  it('PIN: a suspended track cannot review, frozen source or not', () => {
     expect(
       reviewAccess({
-        language: 'yo',
+        ...YORUBA,
         qualificationState: 'SUSPENDED',
-        corpusFrozen: true,
-        elicitationComplete: true,
+        sourceFrozenForAttempt: true,
+        sourceCompleteForAttempt: true,
       }),
     ).toEqual({ unlocked: false, reason: 'suspended' });
   });
@@ -221,9 +245,25 @@ describe('the review gate', () => {
       reviewAccess({
         language: 'de',
         qualificationState: 'QUALIFIED',
-        corpusFrozen: true,
-        elicitationComplete: true,
+        attempt: 1,
+        sourceFrozenForAttempt: true,
+        sourceCompleteForAttempt: true,
       }),
     ).toEqual({ unlocked: false, reason: 'not-a-track' });
+  });
+
+  it('has a sentence for every lock it can produce', () => {
+    // A lock with no words is a screen that says nothing while refusing.
+    for (const reason of [
+      'not-a-track',
+      'not-applied',
+      'suspended',
+      'elicitation-incomplete',
+      'corpus-not-frozen',
+      'source-validation-incomplete',
+      'source-not-frozen',
+    ] as const) {
+      expect(reviewLockMessage(reason).length, reason).toBeGreaterThan(10);
+    }
   });
 });

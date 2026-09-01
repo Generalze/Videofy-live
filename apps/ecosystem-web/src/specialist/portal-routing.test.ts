@@ -12,7 +12,15 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ROUTE_PATHS, routeFromPath } from '../router';
 import { ROUTE_META, metaForPath } from '../site-meta';
-import { breadcrumb, pathForElicitation, pathForPage, pathForReview, viewFromPath } from './route';
+import {
+  breadcrumb,
+  pathForElicitation,
+  pathForPage,
+  pathForReview,
+  pathForSourceCheck,
+  pathForSourceWork,
+  viewFromPath,
+} from './route';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -115,6 +123,18 @@ describe('inside the portal', () => {
     expect(viewFromPath('/specialist/qualification/yo/elicitation/')).toEqual({
       page: 'qualification',
       language: 'yo',
+      task: 'elicitation',
+    });
+    /*
+     * The validation track's own word. It used to be missing entirely, so a
+     * French specialist checking C7's sentences reached the page by a URL
+     * saying `elicitation` and read a breadcrumb describing work they were not
+     * doing.
+     */
+    expect(viewFromPath('/specialist/qualification/fr/source-check/')).toEqual({
+      page: 'qualification',
+      language: 'fr',
+      task: 'source-check',
     });
     expect(viewFromPath('/specialist/assignments/asg_1/review/')).toEqual({
       page: 'assignments',
@@ -151,7 +171,19 @@ describe('inside the portal', () => {
     for (const page of ['dashboard', 'profile', 'languages', 'qualification', 'assignments', 'submissions'] as const) {
       expect(viewFromPath(pathForPage(page)).page, page).toBe(page);
     }
-    expect(viewFromPath(pathForElicitation('ha'))).toEqual({ page: 'qualification', language: 'ha' });
+    expect(viewFromPath(pathForElicitation('ha'))).toEqual({
+      page: 'qualification',
+      language: 'ha',
+      task: 'elicitation',
+    });
+    expect(viewFromPath(pathForSourceCheck('es'))).toEqual({
+      page: 'qualification',
+      language: 'es',
+      task: 'source-check',
+    });
+    /* And the picker sends each requirement to its own word. */
+    expect(pathForSourceWork('yo', 'ELICITATION')).toBe(pathForElicitation('yo'));
+    expect(pathForSourceWork('fr', 'VALIDATION')).toBe(pathForSourceCheck('fr'));
     expect(viewFromPath(pathForReview('asg_x'))).toEqual({
       page: 'assignments',
       assignmentId: 'asg_x',
@@ -175,6 +207,13 @@ describe('inside the portal', () => {
       'qualification',
       'yo',
       'elicitation',
+    ]);
+    /* The trail names the work, rather than assuming which of the two it is. */
+    expect(breadcrumb(viewFromPath('/specialist/qualification/fr/source-check/'))).toEqual([
+      'specialist',
+      'qualification',
+      'fr',
+      'source-check',
     ]);
   });
 });

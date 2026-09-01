@@ -344,7 +344,7 @@ function Applicant({
           <dl className={styles.facts}>
             <div>
               <dt>Application</dt>
-              <dd>{stateWord(detail.applicationState)}</dd>
+              <dd>{stateWord(detail.progress)}</dd>
             </div>
             <div>
               <dt>Applied</dt>
@@ -398,10 +398,22 @@ function Applicant({
 
             <dl className={styles.facts}>
               <div>
-                <dt>Source messages</dt>
+                <dt>Attempt</dt>
+                {/*
+                  Shown because evidence is keyed by it. A fingerprint without
+                  the attempt it belongs to cannot be reconciled with anything.
+                */}
+                <dd>{track.attempt}</dd>
+              </div>
+              <div>
+                <dt>
+                  {track.source.kind === 'ELICITATION' ? 'Source messages' : 'Source checked'}
+                </dt>
                 <dd>
-                  {track.elicitation.answered} / {track.elicitation.total}
-                  {track.elicitation.frozen ? ' · frozen' : ''}
+                  {track.source.total === 0
+                    ? 'not supplied'
+                    : `${track.source.answered} / ${track.source.total}`}
+                  {track.source.frozen ? ' · frozen' : ''}
                 </dd>
               </div>
               <div>
@@ -409,10 +421,8 @@ function Applicant({
                 <dd>{track.reviewUnlocked ? 'Open' : 'Locked'}</dd>
               </div>
               <div>
-                <dt>Corpus fingerprint</dt>
-                <dd className={`${styles.mono} ${styles.hash}`}>
-                  {track.elicitation.sha256 ?? '—'}
-                </dd>
+                <dt>Source fingerprint</dt>
+                <dd className={`${styles.mono} ${styles.hash}`}>{track.source.sha256 ?? '—'}</dd>
               </div>
             </dl>
 

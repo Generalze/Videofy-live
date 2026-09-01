@@ -1054,3 +1054,30 @@
   padding-top: var(--vf-space-3);
   font-weight: var(--vf-font-weight-semibold);
 }
+
+/*
+ * The observed-language question. Set apart from the eight criteria because it
+ * is a different KIND of question: the others assume the output is in the
+ * target language at all, and this one asks whether it is.
+ */
+.sp-criterion-observed {
+  padding: var(--vf-space-3);
+  margin-inline: calc(var(--vf-space-3) * -1);
+  border-radius: var(--vf-radius-md);
+  border: 1px solid var(--vf-status-warn-border);
+  background: var(--vf-status-warn-surface);
+}
+
+.sp-criterion-observed .sp-criterion-question {
+  color: var(--vf-text-primary);
+  font-weight: var(--vf-font-weight-semibold);
+}
+
+/* Five options do not fit one row on a phone. */
+.sp-choice-wrap {
+  flex-wrap: wrap;
+}
+
+.sp-choice-wrap .sp-choice-option {
+  flex: 1 1 6rem;
+}

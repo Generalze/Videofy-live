@@ -32,13 +32,14 @@ export {
 export type { DisplayState, QualificationState } from './qualification.js';
 
 export {
+  SOURCE_REQUIREMENTS,
   SPECIALIST_TRACKS,
   isSpecialistLanguage,
   specialistLanguageKey,
   trackFor,
   trackNames,
 } from './tracks.js';
-export type { SpecialistTrack } from './tracks.js';
+export type { SourceRequirement, SpecialistTrack } from './tracks.js';
 
 export {
   CONSENT_AFFIRMATION,
@@ -87,14 +88,17 @@ export type { Digest, FreezeRefusal, FreezeRequest, FreezeResult, FrozenCorpus }
 export {
   DECISIVE_CRITERION,
   MAX_NOTE_LENGTH,
+  OBSERVED_LANGUAGE_LANGUAGES,
   REVIEW_CRITERIA,
   WITHHELD_FIELDS,
   blindCandidate,
   blindPacket,
+  observedLanguageQuestion,
   readVerdict,
 } from './blind-review.js';
 export type {
   BlindCandidate,
+  ObservedLanguageQuestion,
   ReviewCriterion,
   ReviewVerdict,
   Score,
@@ -106,6 +110,29 @@ export type {
 
 export { reviewAccess, reviewLockMessage } from './review-gate.js';
 export type { ReviewAccess, ReviewGateInput, ReviewLock } from './review-gate.js';
+
+export {
+  MAX_SOURCE_LENGTH,
+  SOURCE_VERDICTS,
+  applyJudgements,
+  canonicalSourceBody,
+  freezeValidatedSource,
+  readSourceJudgements,
+  validationItem,
+  validationPacket,
+  wasCorrected,
+} from './source-validation.js';
+export type {
+  SourceFreezeRefusal,
+  SourceFreezeResult,
+  SourceItem,
+  SourceJudgement,
+  SourceJudgementProblem,
+  SourceJudgementReading,
+  SourceVerdict,
+  ValidatedSourceItem,
+  ValidationItemView,
+} from './source-validation.js';
 
 export {
   SPECIALIST_CAPABILITIES,

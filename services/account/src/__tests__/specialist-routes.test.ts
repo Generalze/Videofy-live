@@ -24,6 +24,7 @@ import { registerSpecialistAdminRoutes } from '../specialist-admin-routes.js';
 import {
   SpecialistStore,
   createInMemorySpecialistPort,
+  type AssignmentRecord,
 } from '../specialist-store.js';
 import type { Caller } from '../routes.js';
 
@@ -172,6 +173,25 @@ const CANDIDATES: readonly Omit<StoredCandidate, 'assignmentId'>[] = [
     expectedWinner: false,
   },
 ];
+
+/**
+ * Issue a blind review packet, or fail the test where it went wrong.
+ *
+ * `createReviewAssignment` returns a StoreResult now, because it refuses a
+ * packet for a track with no frozen source at the current attempt. Unwrapping
+ * it here keeps every call site one line and makes a refusal an obvious test
+ * failure rather than an `undefined` three assertions later.
+ */
+async function issue(
+  store: SpecialistStore,
+  accountId: string,
+  language: string,
+  candidates: readonly Omit<StoredCandidate, 'assignmentId'>[] = CANDIDATES,
+): Promise<AssignmentRecord> {
+  const result = await store.createReviewAssignment({ accountId, language, candidates });
+  if (!result.ok) throw new Error(`the store refused the packet: ${result.reason}`);
+  return result.value;
+}
 
 const COMPLETE_VERDICT = {
   meaningPreserved: 'no',
@@ -485,31 +505,32 @@ describe('the review gate', () => {
     h = await harness();
   });
 
-  it('PIN: review is inaccessible before the corpus is frozen', async () => {
+  it('PIN: a packet cannot even be ISSUED before the corpus is frozen', async () => {
+    // Stronger than the gate it replaces. The read path refused an early
+    // packet; this refuses its creation, so one cannot sit waiting to become
+    // visible the instant the source is frozen -- the same ordering failure,
+    // one step upstream.
     await throughElicitation('yo', false);
-    const assignment = await h.store.createReviewAssignment({
+    const result = await h.store.createReviewAssignment({
       accountId: 'acct_zoe',
       language: 'yo',
       candidates: CANDIDATES,
     });
-    const response = await get(`/specialists/assignments/${assignment.assignmentId}`);
-    expect(response.status).toBe(403);
-    expect(response.body.reason).toBe('review-locked');
-    // And nothing leaked in the refusal.
-    expect(response.raw).not.toContain('Mi ò tíì');
-    expect(response.raw).not.toContain('opus-mt');
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toBe('review-locked');
+    expect((await get('/specialists/assignments')).body.assignments).toHaveLength(0);
   });
 
-  it('PIN: the assignment LIST says locked for the same reason', async () => {
-    await throughElicitation('yo', false);
-    await h.store.createReviewAssignment({
-      accountId: 'acct_zoe',
-      language: 'yo',
-      candidates: CANDIDATES,
-    });
-    const list = await get('/specialists/assignments');
-    expect(list.body.assignments[0].unlocked).toBe(false);
-    expect(list.body.assignments[0].lockMessage).toContain('Submit them');
+  it('PIN: the LIST reports a locked track without inventing its own words', async () => {
+    // A validation track has source work of its own, so the lock a French
+    // specialist meets is not the fifteen-message one -- and the sentence comes
+    // from the server, which is where the rule that produced it lives.
+    await send('POST', '/specialists/me', { motivation: 'x' });
+    await send('POST', '/specialists/languages/fr/apply', {});
+    const track = (await get('/specialists/languages')).body.tracks[0];
+    expect(track.review.unlocked).toBe(false);
+    expect(track.review.lock).toBe('source-validation-incomplete');
+    expect(track.review.message).toContain('Check the source sentences');
   });
 
   it('PIN: the assignment LIST reports an OPEN assignment as open', async () => {
@@ -519,11 +540,7 @@ describe('the review gate', () => {
     // apply for a language they had already submitted in -- while the packet
     // itself opened perfectly well. Found by looking at the rendered page.
     await throughElicitation('yo', true);
-    await h.store.createReviewAssignment({
-      accountId: 'acct_zoe',
-      language: 'yo',
-      candidates: CANDIDATES,
-    });
+    await issue(h.store, 'acct_zoe', 'yo');
     const list = await get('/specialists/assignments');
     expect(list.body.assignments[0].unlocked).toBe(true);
     expect(list.body.assignments[0].lockMessage).toBeNull();
@@ -531,11 +548,7 @@ describe('the review gate', () => {
 
   it('PIN: review is accessible once the corpus is frozen', async () => {
     await throughElicitation('yo', true);
-    const assignment = await h.store.createReviewAssignment({
-      accountId: 'acct_zoe',
-      language: 'yo',
-      candidates: CANDIDATES,
-    });
+    const assignment = await issue(h.store, 'acct_zoe', 'yo');
     const response = await get(`/specialists/assignments/${assignment.assignmentId}`);
     expect(response.status).toBe(200);
     expect(response.body.candidates).toHaveLength(2);
@@ -543,11 +556,7 @@ describe('the review gate', () => {
 
   it('PIN: a suspended track loses review even with a frozen corpus', async () => {
     await throughElicitation('yo', true);
-    const assignment = await h.store.createReviewAssignment({
-      accountId: 'acct_zoe',
-      language: 'yo',
-      candidates: CANDIDATES,
-    });
+    const assignment = await issue(h.store, 'acct_zoe', 'yo');
     await h.store.decide({
       accountId: 'acct_zoe',
       language: 'yo',
@@ -565,13 +574,7 @@ describe('the blind', () => {
   beforeEach(async () => {
     h = await harness();
     await throughElicitation('yo', true);
-    assignmentId = (
-      await h.store.createReviewAssignment({
-        accountId: 'acct_zoe',
-        language: 'yo',
-        candidates: CANDIDATES,
-      })
-    ).assignmentId;
+    assignmentId = (await issue(h.store, 'acct_zoe', 'yo')).assignmentId;
   });
 
   it('PIN: no provider, model, machine score or expected winner reaches the reviewer', async () => {
@@ -718,11 +721,7 @@ describe('what reaches the operational log', () => {
       entries: fifteen({ 1: { native: 'SOURCE-SECRET', english: 'MEANING-SECRET' } }),
     });
     await send('POST', '/specialists/elicitation/yo/freeze', {});
-    const assignment = await h.store.createReviewAssignment({
-      accountId: 'acct_zoe',
-      language: 'yo',
-      candidates: CANDIDATES,
-    });
+    const assignment = await issue(h.store, 'acct_zoe', 'yo');
     await send('POST', `/specialists/assignments/${assignment.assignmentId}/verdicts`, {
       candidateId: 'cand_a',
       ...COMPLETE_VERDICT,
@@ -819,11 +818,7 @@ describe('the operator console', () => {
   });
 
   it('shows the evidence, engine names included, and audits the read', async () => {
-    await h.store.createReviewAssignment({
-      accountId: 'acct_zoe',
-      language: 'yo',
-      candidates: CANDIDATES,
-    });
+    await issue(h.store, 'acct_zoe', 'yo');
     const response = await get('/admin/language-specialists/acct_zoe/yo/evidence');
     expect(response.status).toBe(200);
     expect(response.body.corpora[0].sha256).toMatch(/^[0-9a-f]{64}$/u);

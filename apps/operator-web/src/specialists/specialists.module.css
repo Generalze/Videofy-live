@@ -16,6 +16,8 @@
   display: flex;
   flex-direction: column;
   gap: 20px;
+  /* Every child is a flex item; none may push the page sideways. See .tableWrap. */
+  min-width: 0;
   min-height: 100vh;
   padding: var(--op-content-padding-top, 28px) var(--op-content-padding, 32px) 64px;
   background: var(--op-bg);
@@ -242,6 +244,17 @@
   border: 1px solid var(--op-panel-border);
   border-radius: var(--op-radius-lg);
   background: var(--op-panel);
+  /*
+   * `min-width: 0`, and it is the whole fix. `.shell` is a column flex
+   * container, so this wrapper is a flex ITEM -- and a flex item's default
+   * `min-width: auto` refuses to shrink below its content. The `overflow-x`
+   * above therefore never engaged: instead of the table scrolling inside its
+   * box, the box grew and took the page with it, 262px past the viewport at
+   * 390px. Caught by the capture script's overflow check rather than by eye,
+   * because `fullPage` widens the image to fit the overflow and hides it.
+   */
+  min-width: 0;
+  max-width: 100%;
 }
 
 .table {
@@ -379,6 +392,7 @@
   display: flex;
   flex-direction: column;
   gap: 24px;
+  min-width: 0;
   padding: 16px;
   border: 1px solid var(--op-panel-border);
   border-radius: var(--op-radius-md);
@@ -431,6 +445,15 @@
 @media (max-width: 767px) {
   .shell {
     padding: 20px 16px 48px;
+  }
+
+  /*
+   * A phone cannot show five columns of an applicant table. The rows stay
+   * readable by scrolling INSIDE the wrapper, which is what the wrapper was
+   * always for -- it just could not shrink to do it.
+   */
+  .table {
+    min-width: 34rem;
   }
 
   .decisionRow {

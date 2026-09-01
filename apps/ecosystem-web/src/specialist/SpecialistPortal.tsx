@@ -30,6 +30,7 @@ import { readSessionToken, expireSession, signOutEverywhere } from '../session';
 import { createSpecialistApi, type Me, type ProgrammeLanguage, type SubmissionWire } from './api';
 import { Assignments, Dashboard, Languages, Profile, Submissions } from './panels';
 import { Qualification } from './Qualification';
+import { SourceValidation } from './SourceValidation';
 import { Review } from './Review';
 import { Notice } from './primitives';
 import {
@@ -37,6 +38,7 @@ import {
   PORTAL_PAGES,
   breadcrumb,
   pathForPage,
+  pathForSourceWork,
   viewFromPath,
   type PortalPage,
 } from './route';
@@ -262,12 +264,29 @@ export function SpecialistPortal({
 
           {effective.page === 'qualification' ? (
             'language' in effective ? (
-              <Qualification
-                api={api}
-                language={effective.language}
-                track={me.tracks.find((track) => track.language === effective.language)}
-                onChanged={refresh}
-              />
+              /*
+               * WHICH SOURCE WORK THIS LANGUAGE NEEDS decides the screen. An
+               * elicitation track writes fifteen messages; a validation track
+               * checks sentences C7 supplied. Rendering the fifteen-item form
+               * for both would ask a French specialist for source C7 does not
+               * need from them, and would offer no way to do the work it does.
+               */
+              (me.tracks.find((track) => track.language === effective.language)
+                ?.sourceRequirement ?? 'ELICITATION') === 'VALIDATION' ? (
+                <SourceValidation
+                  api={api}
+                  language={effective.language}
+                  track={me.tracks.find((track) => track.language === effective.language)}
+                  onChanged={refresh}
+                />
+              ) : (
+                <Qualification
+                  api={api}
+                  language={effective.language}
+                  track={me.tracks.find((track) => track.language === effective.language)}
+                  onChanged={refresh}
+                />
+              )
             ) : (
               <QualificationOverview me={me} />
             )
@@ -332,11 +351,11 @@ function QualificationOverview({ me }: { readonly me: Me }) {
                   <dd>{track.attempt}</dd>
                 </div>
                 <div>
-                  <dt>Source messages</dt>
+                  <dt>{track.source.kind === 'ELICITATION' ? 'Source messages' : 'Source checked'}</dt>
                   <dd>
-                    {track.requiresSourceElicitation
-                      ? `${track.elicitation.answered} / ${track.elicitation.total}`
-                      : 'Not required'}
+                    {track.source.total === 0
+                      ? 'Not supplied yet'
+                      : `${track.source.answered} / ${track.source.total}`}
                   </dd>
                 </div>
                 <div>
@@ -347,12 +366,12 @@ function QualificationOverview({ me }: { readonly me: Me }) {
               {track.review.message === null ? null : (
                 <p className="sp-body sp-muted">{track.review.message}</p>
               )}
-              {track.requiresSourceElicitation && !track.elicitation.frozen ? (
+              {!track.source.frozen && track.source.total > 0 ? (
                 <a
                   className="sp-button sp-button-primary"
-                  {...pathLink(`/specialist/qualification/${track.language}/elicitation/`)}
+                  {...pathLink(pathForSourceWork(track.language, track.source.kind))}
                 >
-                  {track.elicitation.answered === 0 ? 'Start elicitation' : 'Continue elicitation'}
+                  {track.source.answered === 0 ? 'Start' : 'Continue'}
                 </a>
               ) : null}
             </article>

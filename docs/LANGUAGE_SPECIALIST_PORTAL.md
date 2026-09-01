@@ -2,6 +2,12 @@
 
 **Owner:** masterzee001 · **Branch:** `feature/language-specialist-portal` · **Not merged.**
 
+> **Integration status: HOLD.** The CTO audit of `07e4a7f` raised eleven items;
+> all eleven are addressed below. Not rebased onto P8, not merged, not deployed.
+> Migration numbering stays provisional until the one rebase onto the final P8
+> Checkpoint-C head — main may consume 021/022 meanwhile, and neither has run
+> anywhere but a local specialist database, so renumbering then is honest.
+
 C7's persistent human-language quality network: the people who tell us whether a
 translation actually says what it said. This document is the design record and
 the run sheet.
@@ -76,6 +82,53 @@ code that opens a door the allowlist does not.
 
 ---
 
+## 2.3 Evidence belongs to an ATTEMPT
+
+The first audit finding, and the one most of the rest follow from.
+
+The gate used to ask *"does a corpus exist for this account and language"*, which
+stays true forever once one does. So after an operator allowed a reassessment,
+**attempt 2 opened for review on attempt 1's frozen source** — the person would
+have judged translations of sentences from the assessment they had already
+failed, and the verdicts would have been filed against the new attempt.
+
+Now:
+
+- the track carries `attempt` **and** a fresh `attemptId`, allocated when a
+  reassessment is taken up;
+- the draft, the frozen source, the source set and every assignment are keyed by
+  attempt;
+- the domain gate's field is named `sourceFrozenForAttempt`, so a caller passing
+  "any corpus ever" has to lie about what it means;
+- attempt N's corpus, assignments and verdicts are untouched and still readable
+  as history — a correction is revision N+1, never an edit of N.
+
+An assignment additionally records `sourceRevision` **and** `sourceSha256`. The
+fingerprint, not merely the number: a source frozen, corrected and re-frozen
+shares its revision and not its hash, and a packet built before the correction is
+evidence about text that no longer stands. A packet whose attempt no longer
+matches is **stale** (HTTP 410), not locked — "locked" invites somebody to wait
+for it to open, and it never will.
+
+## 2.4 Multi-write evidence operations are atomic
+
+Five operations write twice, and half of each pair is worse than neither:
+
+| operation | the two writes |
+|---|---|
+| accept the permission | consent row + start the assessment |
+| freeze a source | frozen source + move the track to SUBMITTED |
+| issue a packet | assignment + its candidates |
+| decide an outcome | track state + the decision that explains it |
+| record the last verdict | verdict + close the assignment |
+
+None can be repaired by a compensating write: the evidence tables refuse `UPDATE`
+and `DELETE` by trigger. So the port carries a real `transaction` — Postgres
+binds it to one checked-out client with `BEGIN`/`COMMIT`/`ROLLBACK`, and the
+in-memory port snapshots and restores — and failure-injection tests prove each
+rollback rather than assuming it. A transaction nobody has seen roll back is a
+transaction nobody knows is there.
+
 ## 3. Qualification is per language
 
 There is no `isSpecialist` boolean anywhere in this change, and the absence is
@@ -118,9 +171,18 @@ language catalogue. Adding a seventh is one line and a deployment — not a
 schema change, not a type change, and not a release of any bundle, because the
 public page and the operator console both render the list the server sends.
 
-The three Nigerian tracks carry `requiresSourceElicitation: true`; the other
-three do not, because C7 can obtain honest source for them without asking a
-volunteer for twenty minutes of writing it does not need.
+Every track needs **frozen source**. They differ only in where it comes from:
+
+- **`ELICITATION`** (`yo`, `ha`, `ig`) — the contributor writes it. C7 holds no
+  native-authored corpus, and every source it could find was licence-blocked or
+  drawn from religious text that reads nothing like a message.
+- **`VALIDATION`** (`fr`, `es`, `pt`) — C7 supplies it and a fluent speaker
+  validates or corrects it **before anything is translated**. See §4.5.
+
+An earlier version recorded the second case as `requiresSourceElicitation: false`
+and let review open immediately, which read as *"these languages need no source
+work"*. They need **different** source work, and treating the absence of one as
+the absence of both was a bypass shaped like an exemption.
 
 ---
 
@@ -182,6 +244,41 @@ reassessment.
 
 ---
 
+## 4.5 Source validation (the Checkpoint-B ruling)
+
+For `fr`, `es`, `pt`:
+
+```
+source only -> validate/correct -> freeze -> SHA-256
+  -> run BOTH engines on the frozen source -> blind review
+```
+
+**The validator never sees a candidate translation.** A person who has read two
+translations of a sentence has an opinion about the sentence that came from the
+translations, and their answer would be filed as an answer about the sentence.
+`validationPacket()` builds the payload by naming the fields it copies — the same
+construction the blind uses, for a related reason.
+
+Each sentence gets `ACCEPT`, `CORRECT` (with the corrected text, required) or
+`REJECT`. A rejected sentence is **dropped**, not carried through: a sentence a
+fluent speaker says is not a sentence in their language should not be translated
+by anybody. Rejecting every sentence is its own refusal (`nothing-usable`) rather
+than an empty success — it tells C7 something important about the source it
+supplied.
+
+**If anything was corrected, both engines are rerun.** The frozen record carries
+`corrected`, and the hash is over the corrected text. Scoring engine A on the
+original and engine B on the correction is two measurements of different things
+reported as one comparison.
+
+Stored in `specialist_source_sets` (mutable until frozen) and
+`specialist_validated_sources` (append-only, trigger-protected): language,
+revision, validator account, per-item verdict, corrections, `frozenAt`, `sha256`.
+
+The portal enforces the order by having nowhere else to go: a VALIDATION track
+renders the source check, not the fifteen-item form, and review stays locked
+until the source is frozen.
+
 ## 5. Blind review
 
 The reviewer is never sent the provider, the model, any automatic score, any
@@ -206,6 +303,23 @@ the rest: beautiful-but-reversed is somebody losing money or missing a warning.
 
 Every yes/no is required. An unanswered question stored as a default is
 indistinguishable from a judgement the reviewer made.
+
+### The observed-language question
+
+For Portuguese the packet also asks, as a **required structured field**:
+
+> What language is this output actually written in?
+> Portuguese · Italian · Spanish · Other · Unsure
+
+C7 has already watched an engine answer Portuguese in Italian. That is a distinct
+failure class: every other question on the packet assumes the output is in the
+target language at all, so a reviewer meeting Italian had nowhere to put it but
+the free-text note, where no result would ever count it.
+
+It is **per target language and opt-in** — the confusable set differs, and a
+language that has shown no such failure is not asked. Adding one is a single
+entry in `OBSERVED_LANGUAGE_QUESTIONS`. The answer is validated against the
+offered options: a field that accepts anything is a note with a different name.
 
 ---
 
@@ -255,6 +369,20 @@ at a time, by a named operator, on a `QUALIFIED` track only.
 
 ---
 
+## 7.5 Application status is derived, not stored
+
+The profile carried `UNDER_REVIEW | ACCEPTED | DECLINED` with **no transition
+path**: nothing set it, nothing read it, and every specialist sat at
+`UNDER_REVIEW` forever — including people `QUALIFIED` in two languages. A status
+that never changes and gates nothing is not a status; it is a label contradicting
+the record beside it, and the dashboard printed the contradiction.
+
+Model **B** was chosen: the column is dropped in migration 022, and progress is
+`progressOf(tracks)` — `NO_LANGUAGES | IN_PROGRESS | AWAITING_DECISION |
+QUALIFIED | NOT_QUALIFIED | SUSPENDED` — computed from the per-language states.
+It gates nothing (authorization is per language and per capability) and it cannot
+contradict the records beside it, because it is computed from them.
+
 ## 8. Privacy
 
 **Collected:** account id (already held), a free-text reason for applying, and
@@ -293,6 +421,10 @@ and counts.
 
 ### API (behind the `/auth` prefix at the edge)
 
+Source validation adds `GET`/`PUT /specialists/source-validation/:language` and
+`POST /specialists/source-validation/:language/freeze`; an operator supplies the
+sentences with `POST /admin/language-specialists/:accountId/:language/source`.
+
 **Specialist, always scoped to the session — no `:accountId` parameter exists**
 
 ```
@@ -328,16 +460,37 @@ existing C7 join flow); unauthorised operator calls answer **404**.
 
 ---
 
-## 10. Migration
+## 10. Migrations
 
-`021_language_specialists`, appended — no existing table is altered and no
-existing column is touched. Ten new tables. Rollback is `DROP TABLE` on the new
-tables alone.
+**`021_language_specialists`** — ten new tables, no existing table altered.
 
-Four are append-only by trigger: `specialist_consents`,
-`specialist_source_corpora`, `specialist_review_verdicts`,
-`specialist_decisions`. Application-level append-only is a convention that
-survives until somebody writes a well-meaning `UPDATE` in a console session.
+**`022_specialist_integrity`** — a **follow-up, never an edit of 021**. 021 has
+already run against a local specialist database and is published on the branch;
+editing it would mean two databases that agree about which migrations ran and
+disagree about what they did. A test asserts 021 still contains no `ALTER TABLE`
+of its own.
+
+What 022 adds:
+
+| # | change | why it belongs in the database |
+|---|---|---|
+| 1 | `attempt_id` on tracks; `attempt` on drafts and decisions; the draft key becomes `(account, language, attempt)`; `qualification_attempt`, `source_revision`, `source_sha256`, `source_set_id` on assignments | evidence belongs to an attempt, not to a person and a language |
+| 2 | `UNIQUE (consent_id, account_id, language, consent_version)` on consents, plus a composite FK from the corpus | a corpus referenced *some* consent id; it must reference its **own** |
+| 3 | `UNIQUE (candidate_id, assignment_id)`, `UNIQUE (assignment_id, account_id)`, and two composite FKs from verdicts | a verdict crossing assignments, or from another account, is now unrepresentable |
+| 4 | `specialist_source_sets`, `specialist_validated_sources` (append-only by trigger), `SOURCE_VALIDATION` added to the kind CHECK | the Checkpoint-B source-validation workflow |
+| 5 | `observed_language` on verdicts | a structured answer a result can count |
+| 6 | `DROP COLUMN application_state` | a column that contradicted the tracks beside it |
+
+Five tables are append-only by trigger: `specialist_consents`,
+`specialist_source_corpora`, `specialist_validated_sources`,
+`specialist_review_verdicts`, `specialist_decisions`. Application-level
+append-only is a convention that survives until somebody writes a well-meaning
+`UPDATE` in a console session.
+
+**Numbering is provisional** until the one rebase onto the final P8 Checkpoint-C
+head. Neither migration has run anywhere but a local specialist database, so
+renumbering them as a pair then is honest; renumbering after a deployment would
+not be.
 
 Without a database the service falls back to in-memory ports, as the tariff and
 device stores do. A local run works; a restart forgets, which is the truth and

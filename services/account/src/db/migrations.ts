@@ -1020,6 +1020,228 @@ const LANGUAGE_SPECIALISTS: Migration = {
   `,
 };
 
+/**
+ * 022 -- specialist integrity: attempts, composite keys, source validation.
+ *
+ * A FOLLOW-UP, NOT AN EDIT OF 021. Migration 021 has already run against a
+ * local specialist database and is published on the feature branch. Editing it
+ * would mean two databases that agree about which migrations ran and disagree
+ * about what they did -- the exact failure the header of this file forbids. No
+ * production deployment has applied either, and that is a reason to be
+ * scrupulous rather than a licence to rewrite history.
+ *
+ * NUMBERING IS PROVISIONAL. This branch has not been rebased onto the final P8
+ * Checkpoint-C head, and main may consume 021/022 in the meantime. If it does,
+ * these two are renumbered as a pair at that one rebase -- neither has run
+ * anywhere but a local specialist database, so renaming them then is honest.
+ * Renaming after a deployment would not be.
+ *
+ * WHAT THIS ADDS, AND WHY EACH IS IN THE DATABASE RATHER THAN THE APPLICATION:
+ *
+ * 1. ATTEMPT IDENTITY. Evidence belongs to an attempt, not to a person and a
+ *    language. Without this, a reassessment inherits the previous attempt's
+ *    frozen corpus and opens for review on evidence a decision already
+ *    superseded. The draft's uniqueness moves to (account, language, attempt)
+ *    and assignments carry the attempt they were built for.
+ *
+ * 2. CONSENT BINDING. A corpus referenced SOME consent id. It must reference a
+ *    consent belonging to the same account, the same language and the same
+ *    version -- otherwise Alice's Yoruba corpus can cite Bob's consent, or her
+ *    own Hausa one, and the licence record for that material is a lie that
+ *    reads perfectly well. A composite foreign key makes it unrepresentable.
+ *
+ * 3. VERDICT INTEGRITY. A verdict must be about a candidate that belongs to the
+ *    assignment it names, and must come from the account the assignment belongs
+ *    to. Both were application-level lookups; both are now composite foreign
+ *    keys, so a verdict crossing assignments cannot be inserted at all.
+ *
+ * 4. SOURCE VALIDATION. The Checkpoint-B ruling: for languages where C7 can
+ *    obtain source but cannot judge it, a fluent speaker validates or corrects
+ *    the source BEFORE anything is translated, and the corrected source is
+ *    frozen and hashed like an elicitation corpus.
+ *
+ * 5. OBSERVED LANGUAGE. A structured answer to "what language is this output
+ *    actually in", for the failure class already seen: an engine answering
+ *    Portuguese in Italian. It is not a note, because a note cannot be counted.
+ *
+ * 6. THE DEAD APPROVAL COLUMN GOES. `application_state` had three values and no
+ *    transition path: nothing set it, nothing read it, and every specialist sat
+ *    at UNDER_REVIEW while their language tracks said QUALIFIED. A column that
+ *    contradicts the record beside it is worse than an absent one.
+ */
+const SPECIALIST_INTEGRITY: Migration = {
+  name: '022_specialist_integrity',
+  sql: `
+    /* --- 1. attempt identity ------------------------------------------- */
+
+    -- The draft/source identity for the CURRENT attempt. Defaulted for the rows
+    -- 021 already created locally, which are all attempt 1 by construction.
+    ALTER TABLE specialist_languages
+      ADD COLUMN IF NOT EXISTS attempt_id text NOT NULL DEFAULT 'att_legacy_1';
+
+    ALTER TABLE specialist_elicitation_drafts
+      ADD COLUMN IF NOT EXISTS attempt integer NOT NULL DEFAULT 1;
+
+    -- One draft per person per language per ATTEMPT. The old key allowed one
+    -- per language for all time, so attempt 2 would have overwritten attempt
+    -- 1's rows -- or, worse, been read as attempt 2's own progress.
+    ALTER TABLE specialist_elicitation_drafts
+      DROP CONSTRAINT IF EXISTS specialist_elicitation_drafts_account_id_language_key;
+    ALTER TABLE specialist_elicitation_drafts
+      DROP CONSTRAINT IF EXISTS specialist_elicitation_drafts_attempt_key;
+    ALTER TABLE specialist_elicitation_drafts
+      ADD CONSTRAINT specialist_elicitation_drafts_attempt_key
+      UNIQUE (account_id, language, attempt);
+
+    -- Which attempt a packet was built for, and from which frozen source.
+    -- A packet from attempt 1 must never become attempt 2's packet merely
+    -- because the same account and language are review-unlocked again.
+    ALTER TABLE specialist_assignments
+      ADD COLUMN IF NOT EXISTS qualification_attempt integer NOT NULL DEFAULT 1;
+    ALTER TABLE specialist_assignments
+      ADD COLUMN IF NOT EXISTS source_revision integer;
+    -- The fingerprint, not merely the revision: a source frozen, corrected and
+    -- re-frozen shares the revision and not the hash.
+    ALTER TABLE specialist_assignments
+      ADD COLUMN IF NOT EXISTS source_sha256 text;
+    ALTER TABLE specialist_assignments
+      ADD COLUMN IF NOT EXISTS source_set_id text;
+
+    -- The attempt a decision was about, so the audit trail reads unambiguously
+    -- once a person has been assessed twice.
+    ALTER TABLE specialist_decisions
+      ADD COLUMN IF NOT EXISTS attempt integer NOT NULL DEFAULT 1;
+
+    /* --- 2. consent binding -------------------------------------------- */
+
+    -- The target a composite foreign key needs. Redundant with the primary key
+    -- on its own; load-bearing as the thing the corpus points at.
+    ALTER TABLE specialist_consents
+      DROP CONSTRAINT IF EXISTS specialist_consents_identity_key;
+    ALTER TABLE specialist_consents
+      ADD CONSTRAINT specialist_consents_identity_key
+      UNIQUE (consent_id, account_id, language, consent_version);
+
+    -- A corpus may only cite a consent belonging to the SAME account, the SAME
+    -- language and the SAME version. The single-column reference this replaces
+    -- was satisfied by any consent row in the table.
+    ALTER TABLE specialist_source_corpora
+      DROP CONSTRAINT IF EXISTS specialist_source_corpora_consent_id_fkey;
+    ALTER TABLE specialist_source_corpora
+      DROP CONSTRAINT IF EXISTS specialist_source_corpora_consent_binding_fkey;
+    ALTER TABLE specialist_source_corpora
+      ADD CONSTRAINT specialist_source_corpora_consent_binding_fkey
+      FOREIGN KEY (consent_id, account_id, language, consent_version)
+      REFERENCES specialist_consents (consent_id, account_id, language, consent_version);
+
+    /* --- 3. verdict relational integrity -------------------------------- */
+
+    -- Targets for the two composite keys below.
+    ALTER TABLE specialist_assignments
+      DROP CONSTRAINT IF EXISTS specialist_assignments_owner_key;
+    ALTER TABLE specialist_assignments
+      ADD CONSTRAINT specialist_assignments_owner_key UNIQUE (assignment_id, account_id);
+
+    ALTER TABLE specialist_review_candidates
+      DROP CONSTRAINT IF EXISTS specialist_review_candidates_owner_key;
+    ALTER TABLE specialist_review_candidates
+      ADD CONSTRAINT specialist_review_candidates_owner_key
+      UNIQUE (candidate_id, assignment_id);
+
+    -- A verdict about a candidate from ANOTHER assignment is now impossible to
+    -- insert, rather than merely refused by a lookup in the store.
+    ALTER TABLE specialist_review_verdicts
+      DROP CONSTRAINT IF EXISTS specialist_review_verdicts_candidate_id_fkey;
+    ALTER TABLE specialist_review_verdicts
+      DROP CONSTRAINT IF EXISTS specialist_review_verdicts_candidate_binding_fkey;
+    ALTER TABLE specialist_review_verdicts
+      ADD CONSTRAINT specialist_review_verdicts_candidate_binding_fkey
+      FOREIGN KEY (candidate_id, assignment_id)
+      REFERENCES specialist_review_candidates (candidate_id, assignment_id);
+
+    -- A verdict from an account the assignment does not belong to is likewise
+    -- unrepresentable. One reviewer per packet is the whole point of a blind.
+    ALTER TABLE specialist_review_verdicts
+      DROP CONSTRAINT IF EXISTS specialist_review_verdicts_assignment_id_fkey;
+    ALTER TABLE specialist_review_verdicts
+      DROP CONSTRAINT IF EXISTS specialist_review_verdicts_reviewer_binding_fkey;
+    ALTER TABLE specialist_review_verdicts
+      ADD CONSTRAINT specialist_review_verdicts_reviewer_binding_fkey
+      FOREIGN KEY (assignment_id, account_id)
+      REFERENCES specialist_assignments (assignment_id, account_id);
+
+    /* --- 4. source validation ------------------------------------------- */
+
+    -- What C7 supplied for a fluent speaker to check, plus their working
+    -- judgements. MUTABLE until frozen, like the elicitation draft: a
+    -- half-finished check must survive a closed tab.
+    CREATE TABLE IF NOT EXISTS specialist_source_sets (
+      set_id        text    PRIMARY KEY,
+      account_id    text    NOT NULL,
+      language      text    NOT NULL,
+      attempt       integer NOT NULL,
+      items         jsonb   NOT NULL,
+      judgements    jsonb   NOT NULL DEFAULT '[]'::jsonb,
+      supplied_by   text    NOT NULL,
+      created_at_ms bigint  NOT NULL,
+      updated_at_ms bigint  NOT NULL,
+      UNIQUE (account_id, language, attempt)
+    );
+
+    -- The validated source, frozen. IMMUTABLE, exactly like the elicitation
+    -- corpus, and for the same reason: a source edited after engines ran
+    -- against it turns a benchmark into two measurements of different things.
+    CREATE TABLE IF NOT EXISTS specialist_validated_sources (
+      set_id               text    PRIMARY KEY
+        REFERENCES specialist_source_sets (set_id),
+      account_id           text    NOT NULL,
+      language             text    NOT NULL,
+      revision             integer NOT NULL,
+      items                jsonb   NOT NULL,
+      source_count         integer NOT NULL,
+      sha256               text    NOT NULL,
+      frozen_at_ms         bigint  NOT NULL,
+      validator_account_id text    NOT NULL,
+      -- Whether any sentence was CHANGED. It decides something: if it was, both
+      -- engines must be rerun against the corrected text.
+      corrected            boolean NOT NULL DEFAULT false,
+      UNIQUE (account_id, language, revision)
+    );
+
+    CREATE INDEX IF NOT EXISTS specialist_validated_sources_who_idx
+      ON specialist_validated_sources (account_id, language, revision);
+
+    DROP TRIGGER IF EXISTS specialist_validated_sources_no_rewrite ON specialist_validated_sources;
+    CREATE TRIGGER specialist_validated_sources_no_rewrite
+      BEFORE UPDATE OR DELETE ON specialist_validated_sources
+      FOR EACH ROW EXECUTE FUNCTION specialist_records_are_append_only();
+
+    -- SOURCE_VALIDATION joins the kinds a packet can be.
+    ALTER TABLE specialist_assignments
+      DROP CONSTRAINT IF EXISTS specialist_assignments_kind_check;
+    ALTER TABLE specialist_assignments
+      ADD CONSTRAINT specialist_assignments_kind_check
+      CHECK (kind IN ('BLIND_TRANSLATION_REVIEW', 'SOURCE_ELICITATION', 'SOURCE_VALIDATION'));
+
+    /* --- 5. observed language ------------------------------------------- */
+
+    -- "What language is this output actually written in?" Stored as the label
+    -- the reviewer chose. Deliberately NOT constrained to a list here: the
+    -- options differ per target language and live in the domain package, and a
+    -- CHECK naming one language's neighbours would have to be migrated every
+    -- time another language opted in.
+    ALTER TABLE specialist_review_verdicts
+      ADD COLUMN IF NOT EXISTS observed_language text;
+
+    /* --- 6. the dead approval column ------------------------------------ */
+
+    -- Nothing wrote it, nothing read it, and it contradicted the language
+    -- tracks beside it. Progress is derived from those tracks instead.
+    ALTER TABLE specialist_profiles
+      DROP COLUMN IF EXISTS application_state;
+  `,
+};
+
 /** Applied in this order. Append only. */
 /**
  * Programme vocabulary, and the revision that makes it one coherent state.
@@ -1141,4 +1363,5 @@ export const MIGRATIONS: readonly Migration[] = [
   PROGRAMME_VOCABULARY,
   PROGRAMME_SPONSORED_CREATIVE,
   LANGUAGE_SPECIALISTS,
+  SPECIALIST_INTEGRITY,
 ];

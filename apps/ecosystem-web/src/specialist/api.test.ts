@@ -6,7 +6,7 @@
  * the interesting cases are all failures rather than successes.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSpecialistApi, dayWord, stateTone, stateWord } from './api';
+import { createSpecialistApi, dayWord, progressWord, stateTone, stateWord } from './api';
 
 function answer(body: string, init: ResponseInit = {}): void {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status: 200, ...init })));
@@ -92,6 +92,65 @@ describe('reading an answer', () => {
     await createSpecialistApi('http://x', 'tok').consent('yo/../../admin');
     const [url] = spy.mock.calls[0] as unknown as [string];
     expect(url).toBe('http://x/specialists/consent/yo%2F..%2F..%2Fadmin');
+  });
+});
+
+describe('the audit corrections, as the browser sees them', () => {
+  it('PIN: derived progress is printed, and there is no approval state (finding 9)', async () => {
+    // The profile used to carry UNDER_REVIEW | ACCEPTED | DECLINED with no
+    // transition path, so every specialist read "Under review" while their
+    // language tracks said QUALIFIED.
+    answer(JSON.stringify({ accountId: 'acct_zoe', progress: 'QUALIFIED', tracks: [], assignments: [] }));
+    const result = await createSpecialistApi('http://x', 'tok').me();
+    expect(result.ok && result.value.progress).toBe('QUALIFIED');
+    expect(result.ok && 'applicationState' in result.value).toBe(false);
+    expect(progressWord('AWAITING_DECISION')).toBe('Awaiting decision');
+  });
+
+  it('PIN: a superseded packet is GONE, not merely locked (finding 2)', async () => {
+    // 410, because the packet existed and is no longer this person's work. A
+    // 403 would invite them to wait for it to open, and it never will.
+    answer('{"error":"This assignment belonged to an earlier assessment.","reason":"stale-assignment"}', {
+      status: 410,
+    });
+    const result = await createSpecialistApi('http://x', 'tok').packet('asg_1');
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && 'reason' in result && result.reason).toBe('stale-assignment');
+    expect(result.ok === false && 'error' in result && result.error).toContain('earlier assessment');
+  });
+
+  it('reaches the source-validation surface, not the elicitation one (finding 7)', async () => {
+    const spy = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', spy);
+    const api = createSpecialistApi('http://x', 'tok');
+    await api.sourceValidation('fr');
+    await api.freezeSourceValidation('fr');
+    const paths = spy.mock.calls.map((call) => (call as unknown as [string])[0]);
+    expect(paths[0]).toBe('http://x/specialists/source-validation/fr');
+    expect(paths[1]).toBe('http://x/specialists/source-validation/fr/freeze');
+    // And nothing about this flow touches the fifteen-item form.
+    expect(paths.join(' ')).not.toContain('elicitation');
+  });
+
+  it('PIN: the observed-language question arrives from the SERVER (finding 8)', async () => {
+    // Per target language and opt-in, so adding a language is a server change
+    // alone -- and a language that asks nothing sends null rather than an empty
+    // control for the client to render.
+    answer(
+      JSON.stringify({
+        assignmentId: 'asg_1',
+        language: 'pt',
+        observedLanguage: {
+          question: 'What language is this output actually written in?',
+          options: ['Portuguese', 'Italian', 'Spanish', 'Other', 'Unsure'],
+        },
+        candidates: [],
+        criteria: [],
+        judgedCandidateIds: [],
+      }),
+    );
+    const result = await createSpecialistApi('http://x', 'tok').packet('asg_1');
+    expect(result.ok && result.value.observedLanguage?.options).toContain('Italian');
   });
 });
 

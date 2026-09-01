@@ -34,7 +34,8 @@ export interface ApplicantLanguage {
 
 export interface ApplicantRow {
   readonly accountId: string;
-  readonly applicationState: string;
+  /** Derived by the server from the tracks below. Never a stored approval. */
+  readonly progress: string;
   readonly appliedAtMs: number;
   readonly updatedAtMs: number;
   readonly country: string | null;
@@ -64,7 +65,15 @@ export interface ApplicantTrack {
   readonly attempt: number;
   readonly appliedAtMs: number;
   readonly decidedAtMs: number | null;
-  readonly elicitation: {
+  /**
+   * The source position for the CURRENT attempt.
+   *
+   * `source`, not `elicitation`: a validation track has source work too, and
+   * naming both after one of them is how an operator ends up asking a French
+   * specialist where their fifteen messages are.
+   */
+  readonly source: {
+    readonly kind: 'ELICITATION' | 'VALIDATION';
     readonly answered: number;
     readonly total: number;
     readonly complete: boolean;
@@ -77,7 +86,7 @@ export interface ApplicantTrack {
 
 export interface ApplicantDetail {
   readonly accountId: string;
-  readonly applicationState: string;
+  readonly progress: string;
   readonly appliedAtMs: number;
   readonly country: string | null;
   readonly timeZone: string | null;
@@ -95,6 +104,10 @@ export interface ApplicantDetail {
     readonly kind: string;
     readonly state: string;
     readonly createdAtMs: number;
+    /* Which attempt and which frozen source a packet was built for. */
+    readonly qualificationAttempt: number;
+    readonly sourceRevision: number | null;
+    readonly sourceSha256: string | null;
   }[];
   readonly voice: { readonly state: string; readonly voiceRightsGranted: boolean };
 }

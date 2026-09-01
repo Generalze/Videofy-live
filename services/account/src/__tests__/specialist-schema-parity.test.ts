@@ -40,12 +40,21 @@ function columnList(constant: string): string[] {
     .filter((column) => column.length > 0);
 }
 
-/** The columns a `CREATE TABLE` in the migration declares. */
+/**
+ * The columns a table has AFTER every migration has run.
+ *
+ * CREATE TABLE IS NOT THE SCHEMA. It was, while there was one migration; the
+ * moment a follow-up adds or drops a column, reading only the CREATE says the
+ * table has a shape it has not had since. This reader replays the ALTERs in
+ * file order, which is the order they actually run, so the parity check
+ * compares the port against the table as it will exist rather than as it was
+ * first written.
+ */
 function tableColumns(table: string): string[] {
   const start = migrations.indexOf(`CREATE TABLE IF NOT EXISTS ${table} (`);
   if (start < 0) throw new Error(`no CREATE TABLE for ${table}`);
   const body = migrations.slice(start, migrations.indexOf('\n    );', start));
-  return body
+  const columns = body
     .split('\n')
     .slice(1)
     .map((line) => line.replace(/--[^\n]*/gu, '').trim())
@@ -54,8 +63,31 @@ function tableColumns(table: string): string[] {
      * `consent_text_sha256` were invisible to this reader, and the parity check
      * silently stopped covering the two columns that matter most.
      */
-    .map((line) => /^([a-z0-9_]+)\s+(text|bigint|integer|boolean|jsonb|double)\b/u.exec(line)?.[1])
+    .map(
+      (line) =>
+        /^([a-z0-9_]+)\s+(text|bigint|integer|boolean|jsonb|double)\b/u.exec(line)?.[1],
+    )
     .filter((column): column is string => column !== undefined);
+
+  /* Then every ADD and DROP against this table, in the order they run. */
+  const alters = [
+    ...migrations.matchAll(
+      new RegExp(
+        `ALTER TABLE\\s+${table}\\s+(ADD COLUMN IF NOT EXISTS|DROP COLUMN IF EXISTS)\\s+([a-z0-9_]+)`,
+        'gu',
+      ),
+    ),
+  ];
+  for (const [, action, column] of alters) {
+    if (column === undefined) continue;
+    if (action?.startsWith('ADD')) {
+      if (!columns.includes(column)) columns.push(column);
+    } else {
+      const at = columns.indexOf(column);
+      if (at !== -1) columns.splice(at, 1);
+    }
+  }
+  return columns;
 }
 
 /**
@@ -77,6 +109,8 @@ const PAIRS: readonly [string, string][] = [
   ['CAPABILITY_COLUMNS', 'specialist_capabilities'],
   ['DECISION_COLUMNS', 'specialist_decisions'],
   ['VERDICT_COLUMNS', 'specialist_review_verdicts'],
+  ['SOURCE_SET_COLUMNS', 'specialist_source_sets'],
+  ['VALIDATED_SOURCE_COLUMNS', 'specialist_validated_sources'],
 ];
 
 describe('the port reads every column it writes', () => {
@@ -144,6 +178,72 @@ describe('the rules that live in the database', () => {
     );
   });
 
+  it('PIN: the consent a corpus cites must be its OWN (finding 4)', () => {
+    // The single-column reference above was satisfied by ANY consent row in the
+    // table: Alice's Yoruba corpus could cite Bob's consent, or her own Hausa
+    // one, and the licence record for that material would be a lie that reads
+    // perfectly well. The composite key makes it unrepresentable.
+    expect(migrations).toContain(
+      'UNIQUE (consent_id, account_id, language, consent_version)',
+    );
+    expect(migrations).toContain(
+      'FOREIGN KEY (consent_id, account_id, language, consent_version)',
+    );
+    expect(migrations).toContain(
+      'REFERENCES specialist_consents (consent_id, account_id, language, consent_version)',
+    );
+  });
+
+  it('PIN: a verdict cannot cross an assignment (finding 5)', () => {
+    // Both composite keys, and both targets they need. Application-level
+    // lookups caught these; the database now refuses the INSERT outright.
+    expect(migrations).toContain('UNIQUE (candidate_id, assignment_id)');
+    expect(migrations).toContain('FOREIGN KEY (candidate_id, assignment_id)');
+    expect(migrations).toContain(
+      'REFERENCES specialist_review_candidates (candidate_id, assignment_id)',
+    );
+
+    expect(migrations).toContain('UNIQUE (assignment_id, account_id)');
+    expect(migrations).toContain('FOREIGN KEY (assignment_id, account_id)');
+    expect(migrations).toContain(
+      'REFERENCES specialist_assignments (assignment_id, account_id)',
+    );
+  });
+
+  it('PIN: evidence is keyed by ATTEMPT, not by person and language (finding 1)', () => {
+    // A draft unique only on (account, language) is a draft attempt 2 inherits
+    // -- which is how a reassessment reported itself complete before a word had
+    // been written.
+    expect(migrations).toContain('UNIQUE (account_id, language, attempt)');
+    expect(migrations).toContain('qualification_attempt integer NOT NULL DEFAULT 1');
+  });
+
+  it('PIN: a packet records the source it was built from (finding 2)', () => {
+    expect(migrations).toContain('source_revision integer');
+    expect(migrations).toContain('source_sha256 text');
+  });
+
+  it('PIN: a validated source is append-only, like the corpus (finding 7)', () => {
+    expect(migrations).toContain('CREATE TABLE IF NOT EXISTS specialist_validated_sources');
+    expect(migrations).toContain(
+      'BEFORE UPDATE OR DELETE ON specialist_validated_sources',
+    );
+    expect(migrations).toContain("'SOURCE_VALIDATION'");
+  });
+
+  it('PIN: the dead approval column is dropped, not merely ignored (finding 9)', () => {
+    // Nothing wrote it, nothing read it, and it contradicted the language
+    // tracks beside it. A column left in place would be read by the next person
+    // who found it.
+    expect(migrations).toContain('DROP COLUMN IF EXISTS application_state');
+    expect(tableColumns('specialist_profiles')).not.toContain('application_state');
+  });
+
+  it('PIN: the observed-language answer has somewhere to live (finding 8)', () => {
+    expect(migrations).toContain('observed_language text');
+    expect(tableColumns('specialist_review_verdicts')).toContain('observed_language');
+  });
+
   it('PIN: one verdict per candidate per assignment', () => {
     expect(migrations).toContain('UNIQUE (assignment_id, candidate_id)');
   });
@@ -188,7 +288,27 @@ describe('the rules that live in the database', () => {
 describe('the migration is appended, never reordered', () => {
   it('runs last, after every migration that shipped before it', () => {
     const order = migrations.slice(migrations.indexOf('export const MIGRATIONS'));
-    expect(order.trimEnd().endsWith('LANGUAGE_SPECIALISTS,\n];')).toBe(true);
+    expect(order.trimEnd().endsWith('SPECIALIST_INTEGRITY,\n];')).toBe(true);
+  });
+
+  it('PIN: 022 FOLLOWS 021 rather than editing it', () => {
+    // 021 has already run against a local specialist database and is published
+    // on the branch. Editing it would mean two databases that agree about which
+    // migrations ran and disagree about what they did -- the failure the header
+    // of migrations.ts forbids. So the integrity work is a follow-up.
+    const order = migrations.slice(migrations.indexOf('export const MIGRATIONS'));
+    expect(order.indexOf('LANGUAGE_SPECIALISTS')).toBeLessThan(
+      order.indexOf('SPECIALIST_INTEGRITY'),
+    );
+
+    // And 021's own SQL is untouched: it still only CREATEs. An ALTER inside it
+    // would be a rewrite of a migration that has run.
+    const original = migrations.slice(
+      migrations.indexOf("name: '021_language_specialists'"),
+      migrations.indexOf("name: '022_specialist_integrity'"),
+    );
+    expect(original).toContain('CREATE TABLE IF NOT EXISTS specialist_profiles');
+    expect(original).not.toContain('ALTER TABLE');
   });
 
   it('carries a name that has not been used before', () => {

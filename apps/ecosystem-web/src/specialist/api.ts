@@ -47,6 +47,9 @@ export interface Programme {
   readonly reviewCriteria: readonly ReviewCriterion[];
 }
 
+/** Where a track's frozen source comes from. */
+export type SourceRequirement = 'ELICITATION' | 'VALIDATION';
+
 export interface TrackWire {
   readonly language: string;
   readonly englishName: string;
@@ -54,9 +57,19 @@ export interface TrackWire {
   readonly state: string;
   readonly appliedAtMs: number;
   readonly decidedAtMs: number | null;
+  /** Which assessment this is. Evidence is keyed by it, not by the language. */
   readonly attempt: number;
+  readonly sourceRequirement: SourceRequirement;
   readonly requiresSourceElicitation: boolean;
-  readonly elicitation: {
+  /**
+   * The source position FOR THE CURRENT ATTEMPT.
+   *
+   * `source`, not `elicitation`: a validation track has source work too, and
+   * naming both after one of them is how a screen ends up asking a French
+   * specialist where their fifteen messages are.
+   */
+  readonly source: {
+    readonly kind: SourceRequirement;
     readonly answered: number;
     readonly total: number;
     readonly complete: boolean;
@@ -89,10 +102,25 @@ export interface CapabilityWire {
   readonly grantedAtMs: number;
 }
 
+/**
+ * How far through the programme somebody is.
+ *
+ * DERIVED BY THE SERVER from the per-language tracks, never a stored approval
+ * state. The profile used to carry one that nothing could move, so every
+ * specialist read "Under review" while their languages said QUALIFIED.
+ */
+export type Progress =
+  | 'NO_LANGUAGES'
+  | 'IN_PROGRESS'
+  | 'AWAITING_DECISION'
+  | 'QUALIFIED'
+  | 'NOT_QUALIFIED'
+  | 'SUSPENDED';
+
 export interface Me {
   readonly accountId: string;
   readonly applied: boolean;
-  readonly applicationState: string | null;
+  readonly progress: Progress;
   readonly appliedAtMs: number | null;
   readonly country: string | null;
   readonly timeZone: string | null;
@@ -169,15 +197,55 @@ export interface BlindCandidateWire {
   readonly candidateText: string;
 }
 
+/** The observed-language question, where the target language asks one. */
+export interface ObservedLanguageWire {
+  readonly question: string;
+  readonly options: readonly string[];
+}
+
 export interface ReviewPacket {
   readonly assignmentId: string;
   readonly language: string;
   readonly englishName: string;
   readonly nativeName: string;
+  readonly kind: string;
   readonly state: string;
   readonly criteria: readonly ReviewCriterion[];
+  /** Null where this target language does not ask it. Never an empty control. */
+  readonly observedLanguage: ObservedLanguageWire | null;
   readonly candidates: readonly BlindCandidateWire[];
   readonly judgedCandidateIds: readonly string[];
+}
+
+export interface SourceItemWire {
+  readonly ordinal: number;
+  readonly category: string;
+  readonly suppliedText: string;
+}
+
+export interface SourceJudgementWire {
+  readonly ordinal: number;
+  readonly verdict: 'ACCEPT' | 'CORRECT' | 'REJECT';
+  readonly correctedText?: string;
+  readonly note?: string;
+}
+
+export interface SourceValidationState {
+  readonly language: string;
+  readonly englishName: string;
+  readonly nativeName: string;
+  readonly attempt: number | null;
+  /** The supplied sentences. No candidate translation anywhere in this payload. */
+  readonly items: readonly SourceItemWire[];
+  readonly judgements: readonly SourceJudgementWire[];
+  readonly verdicts: readonly string[];
+  readonly frozen: {
+    readonly revision: number;
+    readonly sourceCount: number;
+    readonly sha256: string;
+    readonly frozenAtMs: number;
+    readonly corrected: boolean;
+  } | null;
 }
 
 export interface SubmissionWire {
@@ -298,6 +366,14 @@ export interface SpecialistApi {
     verdict: Record<string, unknown>,
   ): Promise<ApiResult<{ judged: number; total: number }>>;
   submissions(): Promise<ApiResult<{ submissions: readonly SubmissionWire[] }>>;
+  sourceValidation(language: string): Promise<ApiResult<SourceValidationState>>;
+  saveSourceJudgements(
+    language: string,
+    judgements: readonly SourceJudgementWire[],
+  ): Promise<ApiResult<{ judged: number; total: number; complete: boolean }>>;
+  freezeSourceValidation(
+    language: string,
+  ): Promise<ApiResult<{ sha256: string; sourceCount: number; corrected: boolean }>>;
 }
 
 /**
@@ -354,6 +430,24 @@ export function createSpecialistApi(accountUrl: string, token: string | null): S
         json(verdict),
       ),
     submissions: () => request(base, token, '/specialists/submissions'),
+    sourceValidation: (language) =>
+      request<SourceValidationState>(
+        base,
+        token,
+        `/specialists/source-validation/${encodeURIComponent(language)}`,
+      ),
+    saveSourceJudgements: (language, judgements) =>
+      request(base, token, `/specialists/source-validation/${encodeURIComponent(language)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ judgements }),
+      }),
+    freezeSourceValidation: (language) =>
+      request(
+        base,
+        token,
+        `/specialists/source-validation/${encodeURIComponent(language)}/freeze`,
+        json({}),
+      ),
   };
 }
 
@@ -395,6 +489,20 @@ export const STATE_WORDS: Readonly<Record<string, string>> = {
 
 export function stateWord(state: string): string {
   return STATE_WORDS[state] ?? state;
+}
+
+/** How derived progress is printed. Never a stored approval state. */
+export const PROGRESS_WORDS: Readonly<Record<Progress, string>> = {
+  NO_LANGUAGES: 'No languages yet',
+  IN_PROGRESS: 'In progress',
+  AWAITING_DECISION: 'Awaiting decision',
+  QUALIFIED: 'Qualified',
+  NOT_QUALIFIED: 'Not qualified',
+  SUSPENDED: 'Suspended',
+};
+
+export function progressWord(progress: string): string {
+  return PROGRESS_WORDS[progress as Progress] ?? progress;
 }
 
 /**

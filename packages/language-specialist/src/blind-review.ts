@@ -152,6 +152,58 @@ export const REVIEW_CRITERIA: readonly ReviewCriterion[] = [
  */
 export const DECISIVE_CRITERION = 'meaningReversed';
 
+/* -------------------------------------------------------------------------- */
+/*  Observed language                                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * "What language is this output actually written in?"
+ *
+ * A STRUCTURED, REQUIRED OBSERVATION -- not a note. C7 has already watched an
+ * engine answer Portuguese in Italian. That is a distinct failure class from a
+ * bad translation: every other question on the packet assumes the output is in
+ * the target language at all, so a reviewer meeting Italian has nowhere honest
+ * to put it except the free-text note, where it becomes unqueryable prose that
+ * no result ever counts.
+ *
+ * PER TARGET LANGUAGE, AND OPT-IN. The confusable set differs by language --
+ * Portuguese is confused with Italian and Spanish; another target would have
+ * its own neighbours -- so this is a table keyed by language rather than one
+ * global list, and a language that has shown no such failure is not asked. The
+ * shape is deliberately general enough that adding a language is one entry.
+ *
+ * `Unsure` is a real option. A reviewer who cannot tell Spanish from Portuguese
+ * in a short sentence should be able to say so; forcing a guess would put a
+ * guess into evidence indistinguishable from a judgement.
+ */
+export interface ObservedLanguageQuestion {
+  readonly question: string;
+  /** Ordered as shown. The target language first, then its confusables. */
+  readonly options: readonly string[];
+}
+
+const OBSERVED_LANGUAGE_QUESTIONS: Readonly<Record<string, ObservedLanguageQuestion>> = {
+  pt: {
+    question: 'What language is this output actually written in?',
+    options: ['Portuguese', 'Italian', 'Spanish', 'Other', 'Unsure'],
+  },
+};
+
+/**
+ * The observed-language question for a target language, or null if it does not
+ * ask one.
+ *
+ * Null rather than an empty question, so a caller has to decide what to do
+ * about its absence instead of rendering an empty control.
+ */
+export function observedLanguageQuestion(language: string): ObservedLanguageQuestion | null {
+  return OBSERVED_LANGUAGE_QUESTIONS[language] ?? null;
+}
+
+/** Languages that ask it. Exported so the operator console can say which. */
+export const OBSERVED_LANGUAGE_LANGUAGES: readonly string[] =
+  Object.keys(OBSERVED_LANGUAGE_QUESTIONS);
+
 /** A completed judgement of one candidate. */
 export interface ReviewVerdict {
   readonly candidateId: string;
@@ -163,6 +215,14 @@ export interface ReviewVerdict {
   readonly naturalness: Score;
   readonly grammar: Score;
   readonly trustInRealChat: YesNo;
+  /**
+   * Which language the output is actually IN.
+   *
+   * Present exactly when the target language asks the question, and required
+   * then. It is not optional-with-a-default: "Portuguese" recorded because
+   * nobody answered is a claim the reviewer never made.
+   */
+  readonly observedLanguage?: string;
   /** Optional. Genuinely useful on the rows marked reversed. */
   readonly correctedTranslation?: string;
   readonly note?: string;
@@ -186,6 +246,7 @@ export type VerdictProblem =
   | { readonly kind: 'missing'; readonly field: string }
   | { readonly kind: 'not-yes-no'; readonly field: string }
   | { readonly kind: 'not-a-score'; readonly field: string }
+  | { readonly kind: 'not-an-option'; readonly field: string }
   | { readonly kind: 'too-long'; readonly field: string };
 
 export type VerdictReading =
@@ -217,8 +278,17 @@ function score(value: unknown): Score | null {
  * yes/no question", and an unanswered one stored as a default would be
  * indistinguishable from a judgement the reviewer actually made. The two free
  * text fields are the only optional ones.
+ *
+ * `language` decides whether the observed-language question is asked, and it is
+ * REQUIRED where it is asked. Passing no language reads a verdict with no such
+ * question, which is right for the languages that do not ask one and is why the
+ * parameter is optional rather than the answer being optional.
  */
-export function readVerdict(candidateId: string, input: unknown): VerdictReading {
+export function readVerdict(
+  candidateId: string,
+  input: unknown,
+  options: { readonly language?: string } = {},
+): VerdictReading {
   const body = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {};
   const problems: VerdictProblem[] = [];
   const answers: Record<string, YesNo | Score> = {};
@@ -262,6 +332,26 @@ export function readVerdict(candidateId: string, input: unknown): VerdictReading
   const correctedTranslation = text('correctedTranslation');
   const note = text('note');
 
+  /*
+   * The observed language, where the target asks for it. Validated against the
+   * OFFERED options rather than accepted as free text: the whole reason this is
+   * a structured field is that a note cannot be counted, and a field that
+   * accepts anything is a note with a different name.
+   */
+  const asks =
+    options.language === undefined ? null : observedLanguageQuestion(options.language);
+  let observedLanguage: string | null = null;
+  if (asks !== null) {
+    const raw = body['observedLanguage'];
+    if (raw === undefined) {
+      problems.push({ kind: 'missing', field: 'observedLanguage' });
+    } else if (typeof raw !== 'string' || !asks.options.includes(raw)) {
+      problems.push({ kind: 'not-an-option', field: 'observedLanguage' });
+    } else {
+      observedLanguage = raw;
+    }
+  }
+
   if (problems.length > 0) return { ok: false, problems };
 
   /*
@@ -280,6 +370,7 @@ export function readVerdict(candidateId: string, input: unknown): VerdictReading
       naturalness: answers['naturalness'] as Score,
       grammar: answers['grammar'] as Score,
       trustInRealChat: answers['trustInRealChat'] as YesNo,
+      ...(observedLanguage === null ? {} : { observedLanguage }),
       ...(correctedTranslation === null ? {} : { correctedTranslation }),
       ...(note === null ? {} : { note }),
     },

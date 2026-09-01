@@ -4,46 +4,74 @@
  *
  * THIS IS WHERE THE ORDERING RULE IS ENFORCED, not in the routes and not in the
  * browser. `openReview` consults the same gate the assignment list does, and the
- * freeze path is the only writer of a corpus. A route that forgot to check
- * would still be refused here, which is the arrangement that survives somebody
- * adding a twelfth endpoint in a hurry.
+ * freeze path is the only writer of a frozen source. A route that forgot to
+ * check would still be refused here, which is the arrangement that survives
+ * somebody adding a twelfth endpoint in a hurry.
+ *
+ * EVERY EVIDENCE QUESTION IS SCOPED TO AN ATTEMPT. This is the correction the
+ * file now exists in its current form for. It used to ask "does a corpus exist
+ * for this account and language", which stays true forever once one does -- so
+ * after an operator allowed a reassessment, attempt 2 opened for review on
+ * attempt 1's frozen source, and the person would have judged translations of
+ * sentences from the assessment they had already failed. Drafts, frozen
+ * sources, the gate and assignments are all keyed by attempt now, and the
+ * domain gate's field is named `sourceFrozenForAttempt` so a caller cannot pass
+ * "any corpus ever" without lying about what it means.
+ *
+ * MULTI-WRITE EVIDENCE OPERATIONS RUN IN A TRANSACTION. Five operations here
+ * write twice, and half of each pair is worse than neither:
+ *
+ *   accept the permission + start the assessment
+ *   freeze a source       + move the track to SUBMITTED
+ *   create an assignment  + store its candidates
+ *   change a qualification+ append the decision that explains it
+ *   record the last verdict + close the assignment
+ *
+ * A failure between the two used to leave a corpus with no submission, a packet
+ * with no rows, or -- worst -- somebody's standing changed with no audit row
+ * saying who changed it or why. None can be repaired by a compensating write,
+ * because the evidence tables refuse UPDATE and DELETE by trigger: the only
+ * honest outcome is that the first write never happened. So the port carries a
+ * real `transaction`, and failure-injection tests prove the rollback rather
+ * than assuming it.
  *
  * FOUR THINGS ARE APPEND-ONLY and it is worth naming which: consents, frozen
- * corpora, verdicts and decisions. Each is a record of something a person did
- * at a moment, and each is read later as evidence of what they did. An update
- * path for any of them is a way for the evidence and the event to diverge with
- * nothing to show for it. The Postgres port carries triggers refusing UPDATE
- * and DELETE on all four, so this class could not rewrite one if it tried.
+ * sources, verdicts and decisions. Each is a record of something a person did
+ * at a moment, and each is read later as evidence of what they did.
  *
- * EVERYTHING ELSE IS PER LANGUAGE. There is no account-wide specialist flag in
- * this file, and `SpecialistProfile` deliberately holds no qualification state:
- * the profile says somebody applied to the programme, the track says where they
- * stand in one language, and merging the two is how "qualified" ends up meaning
- * four different things at once.
- *
- * IN MEMORY WHEN THERE IS NO DATABASE, exactly as the tariff and device stores
- * do. A local run works; a restart forgets, which is the truth and is logged as
- * such by the service.
+ * EVERYTHING IS PER LANGUAGE. There is no account-wide specialist flag in this
+ * file, and `SpecialistProfile` deliberately holds no qualification state and
+ * no approval state: the profile says somebody applied, the track says where
+ * they stand in one language, and merging the two is how "qualified" ends up
+ * meaning four different things at once.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import {
   CONSENT_SCOPE,
+  ELICITATION_ITEM_COUNT,
   canTransition,
   checkConsent,
   freezeCorpus,
+  freezeValidatedSource,
   isOperatorSettable,
   readElicitation,
+  readSourceJudgements,
   reviewAccess,
   specialistLanguageKey,
   trackFor,
+  wasCorrected,
   type ConsentScope,
   type ElicitationItem,
   type FrozenCorpus,
   type QualificationState,
   type ReviewLock,
   type ReviewVerdict,
+  type SourceItem,
+  type SourceJudgement,
+  type SourceRequirement,
   type SpecialistCapability,
   type StoredCandidate,
+  type ValidatedSourceItem,
 } from '@videofy-live/language-specialist';
 
 /* -------------------------------------------------------------------------- */
@@ -51,19 +79,26 @@ import {
 /* -------------------------------------------------------------------------- */
 
 /**
- * The application itself. Deliberately thin.
+ * The application itself. Deliberately thin, and deliberately without a
+ * lifecycle.
  *
- * NO ADDRESS, NO GOVERNMENT ID, NO DEMOGRAPHICS. None of them is needed to
- * decide whether somebody can tell a good Yoruba translation from a bad one,
- * and every one of them is a thing that has to be protected, disclosed and
- * eventually deleted. `country` and `timeZone` are here because assignments are
- * scheduled and a person should not be asked to review at 3am; both are
- * optional and neither is verified.
+ * NO GLOBAL APPROVAL STATE. This carried `UNDER_REVIEW | ACCEPTED | DECLINED`
+ * and nothing could move it: no operator action set it, nothing consulted it,
+ * and every specialist sat at UNDER_REVIEW forever -- including people
+ * QUALIFIED in two languages. A status that never changes and gates nothing is
+ * not a status; it is a label contradicting the record beside it, and the
+ * dashboard printed the contradiction. Progress is DERIVED from the per-language
+ * tracks, which is where standing actually lives. See `progressOf`.
+ *
+ * NO ADDRESS, NO GOVERNMENT ID, NO DEMOGRAPHICS. None is needed to decide
+ * whether somebody can tell a good Yoruba translation from a bad one, and each
+ * is a thing that must then be protected, disclosed and deleted. `country` and
+ * `timeZone` are here because assignments are scheduled and a person should not
+ * be asked to review at 3am; both are optional and neither is verified.
  */
 export interface SpecialistProfile {
   readonly accountId: string;
   readonly appliedAtMs: number;
-  readonly applicationState: 'UNDER_REVIEW' | 'ACCEPTED' | 'DECLINED';
   /** Their own words on why. Free text, never logged. */
   readonly motivation: string;
   readonly country: string | null;
@@ -80,8 +115,21 @@ export interface LanguageTrackRecord {
   /** The operator who set the current state, when an operator set it. */
   readonly decidedBy: string | null;
   readonly decisionNote: string | null;
-  /** Increments on each REASSESSMENT_ALLOWED. Corpus revisions follow it. */
+  /**
+   * Which assessment this is. Increments when a reassessment is taken up.
+   *
+   * EVERY PIECE OF EVIDENCE IS KEYED BY IT: the draft, the frozen source, the
+   * assignments and the gate. An attempt is not a counter for display; it is
+   * the identity of one body of evidence.
+   */
   readonly attempt: number;
+  /**
+   * The draft/source identity for the CURRENT attempt.
+   *
+   * Allocated fresh when an attempt begins, so attempt 2's work cannot land in
+   * attempt 1's row and attempt 1's row cannot be read as attempt 2's progress.
+   */
+  readonly attemptId: string;
 }
 
 export interface ConsentRecord {
@@ -105,18 +153,78 @@ export interface ElicitationDraft {
   readonly attemptId: string;
   readonly accountId: string;
   readonly language: string;
+  /** Which attempt these rows belong to. Never inferred from the track. */
+  readonly attempt: number;
   readonly items: readonly ElicitationItem[];
   readonly updatedAtMs: number;
+}
+
+/** C7-supplied source awaiting a fluent speaker's judgement. */
+export interface SourceSetRecord {
+  readonly setId: string;
+  readonly accountId: string;
+  readonly language: string;
+  readonly attempt: number;
+  readonly items: readonly SourceItem[];
+  /** The validator's working judgements. Mutable until the source is frozen. */
+  readonly judgements: readonly SourceJudgement[];
+  readonly suppliedBy: string;
+  readonly createdAtMs: number;
+  readonly updatedAtMs: number;
+}
+
+/** A validated source, frozen. Append-only, like the elicitation corpus. */
+export interface ValidatedSourceRecord {
+  readonly setId: string;
+  readonly accountId: string;
+  readonly language: string;
+  readonly revision: number;
+  readonly items: readonly ValidatedSourceItem[];
+  readonly sourceCount: number;
+  readonly sha256: string;
+  readonly frozenAtMs: number;
+  readonly validatorAccountId: string;
+  /**
+   * Whether any sentence was changed.
+   *
+   * Recorded because it decides something: if the source was corrected, BOTH
+   * engines must be rerun against the corrected text. Scoring engine A on the
+   * original and engine B on the correction is two measurements of different
+   * things reported as one comparison.
+   */
+  readonly corrected: boolean;
 }
 
 export interface AssignmentRecord {
   readonly assignmentId: string;
   readonly accountId: string;
   readonly language: string;
-  readonly kind: 'BLIND_TRANSLATION_REVIEW' | 'SOURCE_ELICITATION';
+  readonly kind: 'BLIND_TRANSLATION_REVIEW' | 'SOURCE_VALIDATION';
   readonly state: 'NEW' | 'IN_PROGRESS' | 'SUBMITTED';
   readonly createdAtMs: number;
   readonly dueAtMs: number | null;
+  /**
+   * WHICH ATTEMPT THIS PACKET BELONGS TO.
+   *
+   * Without it, a packet issued during attempt 1 becomes the packet for attempt
+   * 2 the moment the same account and language are review-unlocked again -- the
+   * person opens work built from evidence a later decision superseded, and the
+   * verdicts are filed against the new attempt. `openReview` refuses a mismatch.
+   */
+  readonly qualificationAttempt: number;
+  /** The frozen source this packet was built from. Null on a validation packet. */
+  readonly sourceRevision: number | null;
+  /**
+   * The fingerprint of that source.
+   *
+   * Carried so a packet can be checked against the evidence and not merely
+   * against a number: a source frozen, corrected and re-frozen at the same
+   * revision shares the revision and not the hash, and a packet built before
+   * the correction must not be reviewed after it.
+   */
+  readonly sourceSha256: string | null;
+  /** For a SOURCE_VALIDATION packet: the supplied set being judged. */
+  readonly sourceSetId: string | null;
 }
 
 export interface CapabilityRecord {
@@ -137,6 +245,8 @@ export interface DecisionRecord {
   readonly decidedBy: string;
   readonly reason: string;
   readonly atMs: number;
+  /** The attempt the decision was about, so history reads unambiguously. */
+  readonly attempt: number;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -144,10 +254,23 @@ export interface DecisionRecord {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Durable storage. Four of these methods are append-only by contract and by
- * trigger; the rest upsert.
+ * Durable storage.
+ *
+ * `transaction` is the load-bearing addition. Everything that writes twice goes
+ * through it, and the port handed to the callback is the one the work must use:
+ * the Postgres implementation binds it to a single client so BEGIN/COMMIT
+ * covers both writes, and the in-memory one snapshots and restores.
  */
 export interface SpecialistRecordPort {
+  /**
+   * Run `work` atomically. A throw rolls back everything it wrote.
+   *
+   * Nested calls run inline rather than opening a savepoint: nothing here nests
+   * deliberately, and a silent second BEGIN would commit half the outer work on
+   * an inner failure -- the exact defect this method exists to remove.
+   */
+  transaction<T>(work: (tx: SpecialistRecordPort) => Promise<T>): Promise<T>;
+
   profile(accountId: string): Promise<SpecialistProfile | null>;
   allProfiles(): Promise<readonly SpecialistProfile[]>;
   putProfile(profile: SpecialistProfile): Promise<void>;
@@ -160,12 +283,26 @@ export interface SpecialistRecordPort {
   appendConsent(consent: ConsentRecord): Promise<void>;
   consents(accountId: string, language: string): Promise<readonly ConsentRecord[]>;
 
-  draft(accountId: string, language: string): Promise<ElicitationDraft | null>;
+  /** The draft for ONE attempt. There is no "the draft" for a language. */
+  draft(accountId: string, language: string, attempt: number): Promise<ElicitationDraft | null>;
   putDraft(draft: ElicitationDraft): Promise<void>;
 
   /** Append-only. MUST reject a duplicate (accountId, language, revision). */
   appendCorpus(corpus: FrozenCorpus): Promise<void>;
   corpora(accountId: string, language: string): Promise<readonly FrozenCorpus[]>;
+  corpusAt(accountId: string, language: string, revision: number): Promise<FrozenCorpus | null>;
+
+  sourceSet(accountId: string, language: string, attempt: number): Promise<SourceSetRecord | null>;
+  putSourceSet(set: SourceSetRecord): Promise<void>;
+
+  /** Append-only. MUST reject a duplicate (accountId, language, revision). */
+  appendValidatedSource(source: ValidatedSourceRecord): Promise<void>;
+  validatedSources(accountId: string, language: string): Promise<readonly ValidatedSourceRecord[]>;
+  validatedSourceAt(
+    accountId: string,
+    language: string,
+    revision: number,
+  ): Promise<ValidatedSourceRecord | null>;
 
   assignments(accountId: string): Promise<readonly AssignmentRecord[]>;
   assignment(assignmentId: string): Promise<AssignmentRecord | null>;
@@ -195,149 +332,306 @@ export interface SpecialistRecordPort {
 /*  In-memory port                                                             */
 /* -------------------------------------------------------------------------- */
 
+interface Collections {
+  profiles: Map<string, SpecialistProfile>;
+  tracks: Map<string, LanguageTrackRecord>;
+  consents: ConsentRecord[];
+  drafts: Map<string, ElicitationDraft>;
+  corpora: FrozenCorpus[];
+  sourceSets: Map<string, SourceSetRecord>;
+  validated: ValidatedSourceRecord[];
+  assignments: Map<string, AssignmentRecord>;
+  candidates: Map<string, StoredCandidate[]>;
+  verdicts: Map<string, { accountId: string; atMs: number; verdict: ReviewVerdict }[]>;
+  capabilities: CapabilityRecord[];
+  decisions: DecisionRecord[];
+}
+
+function emptyCollections(): Collections {
+  return {
+    profiles: new Map(),
+    tracks: new Map(),
+    consents: [],
+    drafts: new Map(),
+    corpora: [],
+    sourceSets: new Map(),
+    validated: [],
+    assignments: new Map(),
+    candidates: new Map(),
+    verdicts: new Map(),
+    capabilities: [],
+    decisions: [],
+  };
+}
+
+/**
+ * A copy of every collection, one level deep.
+ *
+ * ONE LEVEL IS ENOUGH AND DEEPER WOULD MISLEAD: every record here is replaced
+ * rather than mutated, so restoring the containers restores the state. A deep
+ * clone would additionally hide a mutation bug that the real Postgres port
+ * would not hide.
+ */
+function snapshot(source: Collections): Collections {
+  return {
+    profiles: new Map(source.profiles),
+    tracks: new Map(source.tracks),
+    consents: [...source.consents],
+    drafts: new Map(source.drafts),
+    corpora: [...source.corpora],
+    sourceSets: new Map(source.sourceSets),
+    validated: [...source.validated],
+    assignments: new Map(source.assignments),
+    candidates: new Map([...source.candidates].map(([key, rows]) => [key, [...rows]])),
+    verdicts: new Map([...source.verdicts].map(([key, rows]) => [key, [...rows]])),
+    capabilities: [...source.capabilities],
+    decisions: [...source.decisions],
+  };
+}
+
 /**
  * The port without a database. Used locally and by every test in this service.
  *
- * The append-only methods THROW on a duplicate rather than returning false,
- * matching what Postgres does on a primary-key violation. A port whose
- * in-memory version is more forgiving than its real one is a port whose tests
- * pass on a code path production refuses.
+ * The append-only methods THROW on a duplicate rather than returning false, and
+ * the relational rules the database carries are enforced here as well. A port
+ * whose in-memory version is more forgiving than its real one is a port whose
+ * tests pass on a shape Postgres refuses. `transaction` is real here too, for
+ * the same reason: a rollback only the database performs is a rollback no test
+ * in this service exercises.
  */
 export function createInMemorySpecialistPort(): SpecialistRecordPort {
-  const profiles = new Map<string, SpecialistProfile>();
-  const tracks = new Map<string, LanguageTrackRecord>();
-  const consents: ConsentRecord[] = [];
-  const drafts = new Map<string, ElicitationDraft>();
-  const corpora: FrozenCorpus[] = [];
-  const assignments = new Map<string, AssignmentRecord>();
-  const candidates = new Map<string, StoredCandidate[]>();
-  const verdicts = new Map<string, { accountId: string; atMs: number; verdict: ReviewVerdict }[]>();
-  const capabilities: CapabilityRecord[] = [];
-  const decisions: DecisionRecord[] = [];
+  let db = emptyCollections();
 
   /**
    * The composite map key.
    *
    * The separator is written out rather than left as a space, and it is a
-   * character that cannot occur in either half: an account id is opaque and a
-   * language is a BCP-47 base subtag, so neither contains a colon. A separator
-   * that CAN occur in a component is how two different pairs quietly become
-   * one key.
+   * character that cannot occur in any component: an account id is opaque, a
+   * language is a BCP-47 base subtag and an attempt is a number, so none
+   * contains a colon. A separator that CAN occur in a component is how two
+   * different tuples quietly become one key.
    */
-  const key = (accountId: string, language: string): string => `${accountId}::${language}`;
+  const key = (...parts: (string | number)[]): string => parts.join('::');
 
-  return {
+  let depth = 0;
+
+  const port: SpecialistRecordPort = {
+    async transaction(work) {
+      /* Nested: already inside one, so just run. See the interface note. */
+      if (depth > 0) return work(port);
+      const before = snapshot(db);
+      depth += 1;
+      try {
+        return await work(port);
+      } catch (error) {
+        db = before;
+        throw error;
+      } finally {
+        depth -= 1;
+      }
+    },
+
     async profile(accountId) {
-      return profiles.get(accountId) ?? null;
+      return db.profiles.get(accountId) ?? null;
     },
     async allProfiles() {
-      return [...profiles.values()];
+      return [...db.profiles.values()];
     },
     async putProfile(profile) {
-      profiles.set(profile.accountId, profile);
+      db.profiles.set(profile.accountId, profile);
     },
 
     async tracks(accountId) {
-      return [...tracks.values()].filter((track) => track.accountId === accountId);
+      return [...db.tracks.values()].filter((track) => track.accountId === accountId);
     },
     async allTracks() {
-      return [...tracks.values()];
+      return [...db.tracks.values()];
     },
     async putTrack(track) {
-      tracks.set(key(track.accountId, track.language), track);
+      db.tracks.set(key(track.accountId, track.language), track);
     },
 
     async appendConsent(consent) {
-      if (consents.some((entry) => entry.consentId === consent.consentId)) {
+      if (db.consents.some((entry) => entry.consentId === consent.consentId)) {
         throw new Error('consent already recorded');
       }
-      consents.push(consent);
+      db.consents.push(consent);
     },
     async consents(accountId, language) {
-      return consents.filter(
+      return db.consents.filter(
         (entry) => entry.accountId === accountId && entry.language === language,
       );
     },
 
-    async draft(accountId, language) {
-      return drafts.get(key(accountId, language)) ?? null;
+    async draft(accountId, language, attempt) {
+      return db.drafts.get(key(accountId, language, attempt)) ?? null;
     },
     async putDraft(draft) {
-      drafts.set(key(draft.accountId, draft.language), draft);
+      db.drafts.set(key(draft.accountId, draft.language, draft.attempt), draft);
     },
 
     async appendCorpus(corpus) {
-      const clash = corpora.some(
+      /*
+       * The composite consent binding the database enforces, enforced here too:
+       * a corpus may only cite a consent belonging to the same account, the
+       * same language and the same consent version.
+       */
+      const consent = db.consents.find((entry) => entry.consentId === corpus.consentId);
+      if (
+        consent === undefined ||
+        consent.accountId !== corpus.accountId ||
+        consent.language !== corpus.language ||
+        consent.consentVersion !== corpus.consentVersion
+      ) {
+        throw new Error('the cited consent does not belong to this corpus');
+      }
+      const clash = db.corpora.some(
         (entry) =>
           entry.accountId === corpus.accountId &&
           entry.language === corpus.language &&
           entry.revision === corpus.revision,
       );
       if (clash) throw new Error('a corpus is already frozen at this revision');
-      corpora.push(corpus);
+      db.corpora.push(corpus);
     },
     async corpora(accountId, language) {
-      return corpora.filter(
+      return db.corpora.filter(
         (entry) => entry.accountId === accountId && entry.language === language,
+      );
+    },
+    async corpusAt(accountId, language, revision) {
+      return (
+        db.corpora.find(
+          (entry) =>
+            entry.accountId === accountId &&
+            entry.language === language &&
+            entry.revision === revision,
+        ) ?? null
+      );
+    },
+
+    async sourceSet(accountId, language, attempt) {
+      return (
+        [...db.sourceSets.values()].find(
+          (entry) =>
+            entry.accountId === accountId &&
+            entry.language === language &&
+            entry.attempt === attempt,
+        ) ?? null
+      );
+    },
+    async putSourceSet(set) {
+      db.sourceSets.set(set.setId, set);
+    },
+
+    async appendValidatedSource(source) {
+      const clash = db.validated.some(
+        (entry) =>
+          entry.accountId === source.accountId &&
+          entry.language === source.language &&
+          entry.revision === source.revision,
+      );
+      if (clash) throw new Error('a validated source is already frozen at this revision');
+      db.validated.push(source);
+    },
+    async validatedSources(accountId, language) {
+      return db.validated.filter(
+        (entry) => entry.accountId === accountId && entry.language === language,
+      );
+    },
+    async validatedSourceAt(accountId, language, revision) {
+      return (
+        db.validated.find(
+          (entry) =>
+            entry.accountId === accountId &&
+            entry.language === language &&
+            entry.revision === revision,
+        ) ?? null
       );
     },
 
     async assignments(accountId) {
-      return [...assignments.values()].filter((entry) => entry.accountId === accountId);
+      return [...db.assignments.values()].filter((entry) => entry.accountId === accountId);
     },
     async assignment(assignmentId) {
-      return assignments.get(assignmentId) ?? null;
+      return db.assignments.get(assignmentId) ?? null;
     },
     async putAssignment(assignment) {
-      assignments.set(assignment.assignmentId, assignment);
+      db.assignments.set(assignment.assignmentId, assignment);
     },
 
     async putCandidates(next) {
       for (const candidate of next) {
-        const bucket = candidates.get(candidate.assignmentId) ?? [];
+        /*
+         * The relational rule the database enforces: a candidate must belong to
+         * an assignment that exists. An in-memory port accepting an orphan is a
+         * port whose tests pass on a shape Postgres refuses.
+         */
+        if (!db.assignments.has(candidate.assignmentId)) {
+          throw new Error('a candidate must belong to an assignment that exists');
+        }
+        const bucket = db.candidates.get(candidate.assignmentId) ?? [];
         bucket.push(candidate);
-        candidates.set(candidate.assignmentId, bucket);
+        db.candidates.set(candidate.assignmentId, bucket);
       }
     },
     async candidates(assignmentId) {
-      return [...(candidates.get(assignmentId) ?? [])].sort((a, b) => a.ordinal - b.ordinal);
+      return [...(db.candidates.get(assignmentId) ?? [])].sort((a, b) => a.ordinal - b.ordinal);
     },
 
     async appendVerdict(assignmentId, accountId, verdict, atMs) {
-      const bucket = verdicts.get(assignmentId) ?? [];
+      const assignment = db.assignments.get(assignmentId);
+      /*
+       * Both composite foreign keys the database carries, refused in the same
+       * order it would refuse them: the candidate must belong to THIS
+       * assignment, and the verdict's account must be the assignment's own
+       * reviewer.
+       */
+      if (assignment === undefined) throw new Error('no such assignment');
+      if (assignment.accountId !== accountId) {
+        throw new Error('a verdict must come from the account the assignment belongs to');
+      }
+      const owned = (db.candidates.get(assignmentId) ?? []).some(
+        (candidate) => candidate.candidateId === verdict.candidateId,
+      );
+      if (!owned) throw new Error('that candidate does not belong to this assignment');
+
+      const bucket = db.verdicts.get(assignmentId) ?? [];
       if (bucket.some((entry) => entry.verdict.candidateId === verdict.candidateId)) {
         throw new Error('a verdict already exists for this candidate');
       }
       bucket.push({ accountId, atMs, verdict });
-      verdicts.set(assignmentId, bucket);
+      db.verdicts.set(assignmentId, bucket);
     },
     async verdicts(assignmentId) {
-      return (verdicts.get(assignmentId) ?? []).map((entry) => entry.verdict);
+      return (db.verdicts.get(assignmentId) ?? []).map((entry) => entry.verdict);
     },
 
     async capabilities(accountId) {
-      return capabilities.filter((entry) => entry.accountId === accountId);
+      return db.capabilities.filter((entry) => entry.accountId === accountId);
     },
     async putCapability(capability) {
-      const existing = capabilities.findIndex(
+      const existing = db.capabilities.findIndex(
         (entry) =>
           entry.accountId === capability.accountId &&
           entry.language === capability.language &&
           entry.capability === capability.capability,
       );
-      if (existing === -1) capabilities.push(capability);
-      else capabilities[existing] = capability;
+      if (existing === -1) db.capabilities.push(capability);
+      else db.capabilities[existing] = capability;
     },
 
     async appendDecision(decision) {
-      decisions.push(decision);
+      db.decisions.push(decision);
     },
     async decisions(accountId, language) {
-      return decisions.filter(
+      return db.decisions.filter(
         (entry) => entry.accountId === accountId && entry.language === language,
       );
     },
   };
+
+  return port;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -352,13 +646,18 @@ export type StoreRefusal =
   | 'incomplete'
   | 'malformed'
   | 'already-frozen'
+  | 'nothing-usable'
   | 'review-locked'
   | 'not-your-assignment'
   | 'unknown-assignment'
   | 'unknown-candidate'
   | 'already-judged'
   | 'illegal-transition'
-  | 'not-operator-settable';
+  | 'not-operator-settable'
+  | 'wrong-source-kind'
+  | 'no-source-set'
+  /** The packet belongs to an attempt or a source this person is no longer on. */
+  | 'stale-assignment';
 
 export type StoreResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -385,14 +684,51 @@ export interface TrackView {
   readonly appliedAtMs: number;
   readonly decidedAtMs: number | null;
   readonly attempt: number;
+  readonly sourceRequirement: SourceRequirement;
   readonly requiresSourceElicitation: boolean;
-  /** Rows answered so far out of the fifteen. Never the rows themselves. */
-  readonly elicitationAnswered: number;
-  readonly elicitationComplete: boolean;
-  readonly corpusFrozen: boolean;
-  readonly corpusSha256: string | null;
+  /** Rows answered so far, FOR THIS ATTEMPT. Never the rows themselves. */
+  readonly sourceAnswered: number;
+  readonly sourceTotal: number;
+  readonly sourceComplete: boolean;
+  /** A frozen source EXISTS AT THIS ATTEMPT. Not "at some attempt". */
+  readonly sourceFrozen: boolean;
+  readonly sourceSha256: string | null;
   readonly reviewUnlocked: boolean;
   readonly reviewLock: ReviewLock | null;
+}
+
+/**
+ * How far through the programme somebody is, derived from their tracks.
+ *
+ * DERIVED, NEVER STORED. The profile used to carry an approval state nothing
+ * could move; this is computed from the records that do change, so it cannot
+ * contradict them. It gates nothing -- authorization is per language and per
+ * capability -- and exists so a dashboard can say something true.
+ */
+export type SpecialistProgress =
+  | 'NO_LANGUAGES'
+  | 'IN_PROGRESS'
+  | 'AWAITING_DECISION'
+  | 'QUALIFIED'
+  | 'NOT_QUALIFIED'
+  | 'SUSPENDED';
+
+export function progressOf(tracks: readonly { state: QualificationState }[]): SpecialistProgress {
+  if (tracks.length === 0) return 'NO_LANGUAGES';
+  const states = tracks.map((track) => track.state);
+  /* Best outcome first: one qualified language is the headline, not an average. */
+  if (states.includes('QUALIFIED')) return 'QUALIFIED';
+  if (states.includes('SUBMITTED') || states.includes('UNDER_REVIEW')) return 'AWAITING_DECISION';
+  if (
+    states.includes('APPLIED') ||
+    states.includes('ASSESSMENT_PENDING') ||
+    states.includes('ASSESSMENT_IN_PROGRESS') ||
+    states.includes('REASSESSMENT_ALLOWED')
+  ) {
+    return 'IN_PROGRESS';
+  }
+  if (states.includes('NOT_QUALIFIED')) return 'NOT_QUALIFIED';
+  return 'SUSPENDED';
 }
 
 export class SpecialistStore {
@@ -408,6 +744,10 @@ export class SpecialistStore {
     this.onEvent = options.onEvent ?? (() => undefined);
   }
 
+  private digest(body: string): string {
+    return createHash('sha256').update(body, 'utf8').digest('hex');
+  }
+
   /* ---------------------------------------------------------------- profile */
 
   async profile(accountId: string): Promise<SpecialistProfile | null> {
@@ -419,7 +759,7 @@ export class SpecialistStore {
    *
    * Applying twice is not an error. Somebody who fills the form in, closes the
    * tab and comes back should find their words there, and a second submission
-   * that raised a 409 would look like the site had lost them.
+   * raising a 409 would look like the site had lost them.
    */
   async applyToProgramme(input: {
     accountId: string;
@@ -432,7 +772,6 @@ export class SpecialistStore {
     const profile: SpecialistProfile = {
       accountId: input.accountId,
       appliedAtMs: existing?.appliedAtMs ?? nowMs,
-      applicationState: existing?.applicationState ?? 'UNDER_REVIEW',
       motivation: input.motivation,
       country: input.country,
       timeZone: input.timeZone,
@@ -449,18 +788,11 @@ export class SpecialistStore {
 
   /* ----------------------------------------------------------------- tracks */
 
-  /**
-   * Every open track for a person, plus the tracks they have not opened.
-   *
-   * The unopened ones are included because the dashboard has to show them:
-   * "French — not assessed" is the row that tells somebody they may apply, and
-   * building it in the browser would put the list of languages in two places.
-   */
   async tracksFor(accountId: string): Promise<readonly TrackView[]> {
     const stored = await this.port.tracks(accountId);
     const views: TrackView[] = [];
     for (const track of stored) {
-      views.push(await this.viewOf(accountId, track));
+      views.push(await this.viewOf(track));
     }
     return views;
   }
@@ -468,25 +800,72 @@ export class SpecialistStore {
   async trackFor(accountId: string, language: unknown): Promise<TrackView | null> {
     const key = specialistLanguageKey(language);
     if (key === null) return null;
-    const stored = (await this.port.tracks(accountId)).find((track) => track.language === key);
-    if (stored === undefined) return null;
-    return this.viewOf(accountId, stored);
+    const stored = await this.trackRecord(accountId, key);
+    return stored === undefined ? null : this.viewOf(stored);
   }
 
-  private async viewOf(
+  private async trackRecord(
     accountId: string,
-    track: LanguageTrackRecord,
-  ): Promise<TrackView> {
-    const spec = trackFor(track.language);
-    const draft = await this.port.draft(accountId, track.language);
+    language: string,
+  ): Promise<LanguageTrackRecord | undefined> {
+    return (await this.port.tracks(accountId)).find((entry) => entry.language === language);
+  }
+
+  /**
+   * The evidence position of ONE attempt.
+   *
+   * Every read below names `track.attempt`. That is the whole correction: the
+   * previous version read "the latest corpus" and "the draft for this
+   * language", both of which survive a reassessment and unlocked the new
+   * attempt on the old attempt's work.
+   */
+  private async sourceState(track: LanguageTrackRecord): Promise<{
+    answered: number;
+    total: number;
+    complete: boolean;
+    frozen: boolean;
+    sha256: string | null;
+  }> {
+    if (trackFor(track.language)?.sourceRequirement === 'VALIDATION') {
+      const frozen = await this.port.validatedSourceAt(
+        track.accountId,
+        track.language,
+        track.attempt,
+      );
+      const set = await this.port.sourceSet(track.accountId, track.language, track.attempt);
+      const reading =
+        set === null ? null : readSourceJudgements(set.items, set.judgements);
+      return {
+        answered: reading?.judged ?? 0,
+        total: set?.items.length ?? 0,
+        /* No set supplied yet is NOT complete, however few rows that is. */
+        complete: set !== null && reading !== null && reading.complete,
+        frozen: frozen !== null,
+        sha256: frozen?.sha256 ?? null,
+      };
+    }
+
+    const frozen = await this.port.corpusAt(track.accountId, track.language, track.attempt);
+    const draft = await this.port.draft(track.accountId, track.language, track.attempt);
     const reading = readElicitation(draft?.items ?? []);
-    const frozen = await this.port.corpora(accountId, track.language);
-    const latest = frozen.at(-1) ?? null;
+    return {
+      answered: reading.answered,
+      total: ELICITATION_ITEM_COUNT,
+      complete: reading.complete,
+      frozen: frozen !== null,
+      sha256: frozen?.sha256 ?? null,
+    };
+  }
+
+  private async viewOf(track: LanguageTrackRecord): Promise<TrackView> {
+    const spec = trackFor(track.language);
+    const source = await this.sourceState(track);
     const access = reviewAccess({
       language: track.language,
       qualificationState: track.state,
-      corpusFrozen: latest !== null,
-      elicitationComplete: reading.complete,
+      attempt: track.attempt,
+      sourceFrozenForAttempt: source.frozen,
+      sourceCompleteForAttempt: source.complete,
     });
     return {
       language: track.language,
@@ -494,53 +873,60 @@ export class SpecialistStore {
       appliedAtMs: track.appliedAtMs,
       decidedAtMs: track.decidedAtMs,
       attempt: track.attempt,
+      sourceRequirement: spec?.sourceRequirement ?? 'ELICITATION',
       requiresSourceElicitation: spec?.requiresSourceElicitation ?? false,
-      elicitationAnswered: reading.answered,
-      elicitationComplete: reading.complete,
-      corpusFrozen: latest !== null,
-      corpusSha256: latest?.sha256 ?? null,
+      sourceAnswered: source.answered,
+      sourceTotal: source.total,
+      sourceComplete: source.complete,
+      sourceFrozen: source.frozen,
+      sourceSha256: source.sha256,
       reviewUnlocked: access.unlocked,
       reviewLock: access.unlocked ? null : access.reason,
     };
   }
 
   /**
-   * Open a language track.
+   * Open a language track, or take up a permitted reassessment.
    *
-   * Re-applying to a track that is already open returns it unchanged rather
-   * than resetting it. A person who taps Apply twice must not lose an
-   * assessment in progress, and a person whose track is NOT_QUALIFIED must not
-   * be able to restart it by re-applying -- that is what REASSESSMENT_ALLOWED
-   * is for, and it belongs to an operator.
+   * A REASSESSMENT IS A NEW BODY OF EVIDENCE, not a reset of the old one. It
+   * increments the attempt AND allocates a fresh `attemptId`, so the new attempt
+   * starts with no draft, no judgements and no frozen source -- while attempt
+   * N's corpus, assignments and verdicts stay exactly where they are, immutable
+   * and still readable as the history of what happened.
+   *
+   * Re-applying to a track that is otherwise open returns it unchanged. A person
+   * who taps Apply twice must not lose an assessment in progress, and somebody
+   * whose track is NOT_QUALIFIED must not restart it by re-applying -- that is
+   * what REASSESSMENT_ALLOWED is for, and it belongs to an operator.
    */
   async applyForLanguage(accountId: string, language: unknown): Promise<StoreResult<TrackView>> {
     const key = specialistLanguageKey(language);
     if (key === null) return refuse('not-a-track');
-    const existing = (await this.port.tracks(accountId)).find((track) => track.language === key);
+    const existing = await this.trackRecord(accountId, key);
+
     if (existing !== undefined) {
-      /*
-       * REASSESSMENT_ALLOWED is the one state where applying means something:
-       * an operator has said they may try again, and this is them taking it up.
-       */
-      if (existing.state === 'REASSESSMENT_ALLOWED') {
-        const reopened: LanguageTrackRecord = {
-          ...existing,
-          state: 'ASSESSMENT_PENDING',
-          attempt: existing.attempt + 1,
-          decidedAtMs: null,
-          decidedBy: null,
-          decisionNote: null,
-        };
-        await this.port.putTrack(reopened);
-        this.onEvent('specialist.reassessment.started', {
-          accountId,
-          language: key,
-          attempt: reopened.attempt,
-        });
-        return { ok: true, value: await this.viewOf(accountId, reopened) };
+      if (existing.state !== 'REASSESSMENT_ALLOWED') {
+        return { ok: true, value: await this.viewOf(existing) };
       }
-      return { ok: true, value: await this.viewOf(accountId, existing) };
+      const reopened: LanguageTrackRecord = {
+        ...existing,
+        state: 'ASSESSMENT_PENDING',
+        attempt: existing.attempt + 1,
+        /* A NEW identity. Reusing it would let attempt N's rows answer for N+1. */
+        attemptId: `att_${this.newId()}`,
+        decidedAtMs: null,
+        decidedBy: null,
+        decisionNote: null,
+      };
+      await this.port.putTrack(reopened);
+      this.onEvent('specialist.reassessment.started', {
+        accountId,
+        language: key,
+        attempt: reopened.attempt,
+      });
+      return { ok: true, value: await this.viewOf(reopened) };
     }
+
     const nowMs = this.now();
     const track: LanguageTrackRecord = {
       accountId,
@@ -551,10 +937,11 @@ export class SpecialistStore {
       decidedBy: null,
       decisionNote: null,
       attempt: 1,
+      attemptId: `att_${this.newId()}`,
     };
     await this.port.putTrack(track);
     this.onEvent('specialist.language.applied', { accountId, language: key });
-    return { ok: true, value: await this.viewOf(accountId, track) };
+    return { ok: true, value: await this.viewOf(track) };
   }
 
   /* ---------------------------------------------------------------- consent */
@@ -576,7 +963,7 @@ export class SpecialistStore {
   }): Promise<StoreResult<ConsentRecord>> {
     const key = specialistLanguageKey(input.language);
     if (key === null) return refuse('not-a-track');
-    const track = (await this.port.tracks(input.accountId)).find((entry) => entry.language === key);
+    const track = await this.trackRecord(input.accountId, key);
     if (track === undefined) return refuse('not-applied');
 
     const check = checkConsent({
@@ -593,19 +980,23 @@ export class SpecialistStore {
       language: key,
       consentVersion: check.consentVersion,
       scope: check.scope,
-      consentTextSha256: createHash('sha256').update(input.consentText, 'utf8').digest('hex'),
+      consentTextSha256: this.digest(input.consentText),
       acceptedAtMs: this.now(),
     };
-    await this.port.appendConsent(consent);
 
     /*
-     * Accepting the permission is what STARTS the assessment. The form is the
-     * assessment for these languages, and a person who has agreed and typed
-     * nothing yet is genuinely in progress.
+     * TWO WRITES, ONE TRANSACTION. Accepting the permission is what STARTS the
+     * assessment, so the consent row and the state change are one event. A
+     * consent recorded against a track that never moved reads, later, as
+     * somebody who agreed and then did nothing.
      */
-    if (canTransition(track.state, 'ASSESSMENT_IN_PROGRESS')) {
-      await this.port.putTrack({ ...track, state: 'ASSESSMENT_IN_PROGRESS' });
-    }
+    await this.port.transaction(async (tx) => {
+      await tx.appendConsent(consent);
+      if (canTransition(track.state, 'ASSESSMENT_IN_PROGRESS')) {
+        await tx.putTrack({ ...track, state: 'ASSESSMENT_IN_PROGRESS' });
+      }
+    });
+
     this.onEvent('specialist.consent.accepted', {
       accountId: input.accountId,
       language: key,
@@ -621,10 +1012,13 @@ export class SpecialistStore {
 
   /* ------------------------------------------------------------ elicitation */
 
+  /** The draft for the CURRENT attempt, or null. Never a previous attempt's. */
   async draftFor(accountId: string, language: unknown): Promise<ElicitationDraft | null> {
     const key = specialistLanguageKey(language);
     if (key === null) return null;
-    return this.port.draft(accountId, key);
+    const track = await this.trackRecord(accountId, key);
+    if (track === undefined) return null;
+    return this.port.draft(accountId, key, track.attempt);
   }
 
   /**
@@ -635,10 +1029,8 @@ export class SpecialistStore {
    * than storing rows nobody will ever freeze. Malformed rows are still
    * refused: an unknown item number is a client bug, not a person's answer.
    *
-   * A frozen corpus does not stop the draft existing -- it stops it MATTERING.
-   * Nothing reads the draft once a corpus is frozen, and the freeze path
-   * refuses a second write, so an edit afterwards changes no evidence. Deleting
-   * it instead would take away the copy the contributor can still read.
+   * Written against `track.attempt`, so a reassessment starts from an empty
+   * form and the previous attempt's answers stay readable as history.
    */
   async saveDraft(
     accountId: string,
@@ -647,8 +1039,9 @@ export class SpecialistStore {
   ): Promise<StoreResult<{ answered: number; complete: boolean }>> {
     const key = specialistLanguageKey(language);
     if (key === null) return refuse('not-a-track');
-    const track = (await this.port.tracks(accountId)).find((entry) => entry.language === key);
+    const track = await this.trackRecord(accountId, key);
     if (track === undefined) return refuse('not-applied');
+    if (trackFor(key)?.sourceRequirement !== 'ELICITATION') return refuse('wrong-source-kind');
     if ((await this.latestConsent(accountId, key)) === null) return refuse('no-consent');
 
     const reading = readElicitation(entries);
@@ -662,11 +1055,11 @@ export class SpecialistStore {
       return refuse('malformed', malformed.map((problem) => problem.kind).join(','));
     }
 
-    const existing = await this.port.draft(accountId, key);
     await this.port.putDraft({
-      attemptId: existing?.attemptId ?? `att_${this.newId()}`,
+      attemptId: track.attemptId,
       accountId,
       language: key,
+      attempt: track.attempt,
       items: reading.items,
       updatedAtMs: this.now(),
     });
@@ -674,6 +1067,7 @@ export class SpecialistStore {
     this.onEvent('specialist.elicitation.saved', {
       accountId,
       language: key,
+      attempt: track.attempt,
       answered: reading.answered,
     });
     return { ok: true, value: { answered: reading.answered, complete: reading.complete } };
@@ -682,10 +1076,15 @@ export class SpecialistStore {
   /**
    * Freeze the draft into an immutable corpus. The moment review unlocks.
    *
-   * Three refusals stand between a draft and a corpus, and all three are here
-   * rather than in the route: no consent, not complete, already frozen. The
-   * third is also refused by the port and again by a database trigger, because
-   * a silent overwrite is the one failure in this system that leaves no trace.
+   * Three refusals stand between a draft and a corpus: no consent, not
+   * complete, already frozen AT THIS ATTEMPT. The third is also refused by the
+   * port and again by a database constraint, because a silent overwrite is the
+   * one failure in this system that leaves no trace.
+   *
+   * THE CORPUS AND THE TRANSITION ARE ONE TRANSACTION. A corpus with no
+   * submission is a person who did the work and whose track says they did not;
+   * the corpus table refuses UPDATE and DELETE, so there is no repairing it
+   * afterwards. The only correct outcome is that neither write happened.
    */
   async freezeElicitation(
     accountId: string,
@@ -693,35 +1092,30 @@ export class SpecialistStore {
   ): Promise<StoreResult<FrozenCorpus>> {
     const key = specialistLanguageKey(language);
     if (key === null) return refuse('not-a-track');
-    const track = (await this.port.tracks(accountId)).find((entry) => entry.language === key);
+    const track = await this.trackRecord(accountId, key);
     if (track === undefined) return refuse('not-applied');
+    if (trackFor(key)?.sourceRequirement !== 'ELICITATION') return refuse('wrong-source-kind');
 
     const consent = await this.latestConsent(accountId, key);
-    const draft = await this.port.draft(accountId, key);
-    const frozen = await this.port.corpora(accountId, key);
+    const draft = await this.port.draft(accountId, key, track.attempt);
+    const already = await this.port.corpusAt(accountId, key, track.attempt);
 
     const result = freezeCorpus({
-      attemptId: draft?.attemptId ?? `att_${this.newId()}`,
+      attemptId: track.attemptId,
       accountId,
       language: key,
       /*
-       * THE REVISION IS THE ATTEMPT NUMBER, not a count of what is stored. They
-       * are the same until an operator allows a reassessment, and after that
-       * the attempt is the thing every result cites. Deriving it from the row
-       * count would renumber history the first time a row was ever removed.
+       * THE REVISION IS THE ATTEMPT NUMBER, not a count of what is stored.
+       * Deriving it from the row count would renumber history the first time a
+       * row was ever removed, and would let attempt 2 write revision 1.
        */
       revision: track.attempt,
       entries: draft?.items ?? [],
       consentId: consent?.consentId ?? null,
       consentVersion: consent?.consentVersion ?? null,
       nowMs: this.now(),
-      digest: (body) => createHash('sha256').update(body, 'utf8').digest('hex'),
-      /*
-       * A corpus already exists for the CURRENT attempt. A reassessment bumps
-       * `attempt`, which is what makes a correction a new revision rather than
-       * an edit of history.
-       */
-      alreadyFrozen: frozen.some((corpus) => corpus.revision === track.attempt),
+      digest: (body) => this.digest(body),
+      alreadyFrozen: already !== null,
     });
     if (!result.ok) {
       const reason: StoreRefusal =
@@ -736,19 +1130,26 @@ export class SpecialistStore {
     }
 
     try {
-      await this.port.appendCorpus(result.corpus);
+      await this.port.transaction(async (tx) => {
+        await tx.appendCorpus(result.corpus);
+        if (canTransition(track.state, 'SUBMITTED')) {
+          await tx.putTrack({ ...track, state: 'SUBMITTED' });
+        }
+      });
     } catch {
-      /* The port refused a duplicate. Report the refusal, never retry over it. */
+      /*
+       * Either the corpus clashed or the transition failed; either way NOTHING
+       * was written. Reported as a refusal a caller can act on rather than as a
+       * 500, because a duplicate freeze is a retry and not a fault.
+       */
       return refuse('already-frozen');
     }
 
-    if (canTransition(track.state, 'SUBMITTED')) {
-      await this.port.putTrack({ ...track, state: 'SUBMITTED' });
-    }
     /* The sha256 IS the evidence pointer, so it is logged. The messages are not. */
     this.onEvent('specialist.corpus.frozen', {
       accountId,
       language: key,
+      attempt: track.attempt,
       revision: result.corpus.revision,
       sourceCount: result.corpus.sourceCount,
       sha256: result.corpus.sha256,
@@ -760,82 +1161,384 @@ export class SpecialistStore {
     return this.port.corpora(accountId, language);
   }
 
+  /* ------------------------------------------------------ source validation */
+
+  /**
+   * Supply the source a fluent speaker is asked to validate.
+   *
+   * Bound to the CURRENT attempt, so a set supplied for attempt 1 does not
+   * become the work of attempt 2. Replacing an unfrozen set is allowed -- an
+   * operator who pasted the wrong file should be able to fix it before anybody
+   * has judged anything -- and refused once the source is frozen.
+   */
+  async supplySourceSet(input: {
+    accountId: string;
+    language: unknown;
+    items: readonly SourceItem[];
+    suppliedBy: string;
+    dueAtMs?: number | null;
+  }): Promise<StoreResult<{ assignment: AssignmentRecord; setId: string }>> {
+    const key = specialistLanguageKey(input.language);
+    if (key === null) return refuse('not-a-track');
+    const track = await this.trackRecord(input.accountId, key);
+    if (track === undefined) return refuse('not-applied');
+    if (trackFor(key)?.sourceRequirement !== 'VALIDATION') return refuse('wrong-source-kind');
+    if (input.items.length === 0) return refuse('incomplete');
+    if ((await this.port.validatedSourceAt(input.accountId, key, track.attempt)) !== null) {
+      return refuse('already-frozen');
+    }
+
+    const existing = await this.port.sourceSet(input.accountId, key, track.attempt);
+    const nowMs = this.now();
+    const set: SourceSetRecord = {
+      setId: existing?.setId ?? `src_${this.newId()}`,
+      accountId: input.accountId,
+      language: key,
+      attempt: track.attempt,
+      items: input.items,
+      /* A new set is a new question; previous judgements do not answer it. */
+      judgements: [],
+      suppliedBy: input.suppliedBy,
+      createdAtMs: existing?.createdAtMs ?? nowMs,
+      updatedAtMs: nowMs,
+    };
+
+    const assignment: AssignmentRecord = {
+      assignmentId: `asg_${this.newId()}`,
+      accountId: input.accountId,
+      language: key,
+      kind: 'SOURCE_VALIDATION',
+      state: 'NEW',
+      createdAtMs: nowMs,
+      dueAtMs: input.dueAtMs ?? null,
+      qualificationAttempt: track.attempt,
+      sourceRevision: null,
+      sourceSha256: null,
+      sourceSetId: set.setId,
+    };
+
+    await this.port.transaction(async (tx) => {
+      await tx.putSourceSet(set);
+      await tx.putAssignment(assignment);
+      if (canTransition(track.state, 'ASSESSMENT_IN_PROGRESS')) {
+        await tx.putTrack({ ...track, state: 'ASSESSMENT_IN_PROGRESS' });
+      }
+    });
+
+    this.onEvent('specialist.source.supplied', {
+      accountId: input.accountId,
+      language: key,
+      attempt: track.attempt,
+      items: input.items.length,
+      suppliedBy: input.suppliedBy,
+    });
+    return { ok: true, value: { assignment, setId: set.setId } };
+  }
+
+  /** The set a validator is working on, for the current attempt. */
+  async sourceSetFor(accountId: string, language: unknown): Promise<SourceSetRecord | null> {
+    const key = specialistLanguageKey(language);
+    if (key === null) return null;
+    const track = await this.trackRecord(accountId, key);
+    if (track === undefined) return null;
+    return this.port.sourceSet(accountId, key, track.attempt);
+  }
+
+  /** Save the validator's judgements so far. Incomplete is fine; malformed is not. */
+  async saveSourceJudgements(
+    accountId: string,
+    language: unknown,
+    judgements: unknown,
+  ): Promise<StoreResult<{ judged: number; total: number; complete: boolean }>> {
+    const key = specialistLanguageKey(language);
+    if (key === null) return refuse('not-a-track');
+    const track = await this.trackRecord(accountId, key);
+    if (track === undefined) return refuse('not-applied');
+    if ((await this.port.validatedSourceAt(accountId, key, track.attempt)) !== null) {
+      return refuse('already-frozen');
+    }
+    const set = await this.port.sourceSet(accountId, key, track.attempt);
+    if (set === null) return refuse('no-source-set');
+
+    const reading = readSourceJudgements(set.items, judgements);
+    const malformed = reading.problems.filter((problem) => problem.kind !== 'correction-missing');
+    if (malformed.length > 0) {
+      return refuse('malformed', malformed.map((problem) => problem.kind).join(','));
+    }
+
+    await this.port.putSourceSet({
+      ...set,
+      judgements: reading.judgements,
+      updatedAtMs: this.now(),
+    });
+    this.onEvent('specialist.source.judged', {
+      accountId,
+      language: key,
+      attempt: track.attempt,
+      judged: reading.judged,
+    });
+    return {
+      ok: true,
+      value: { judged: reading.judged, total: set.items.length, complete: reading.complete },
+    };
+  }
+
+  /**
+   * Freeze the validated source. The moment review unlocks on a VALIDATION
+   * track.
+   *
+   * The corrected source, not the supplied one, is what gets hashed and what
+   * both engines must then be run against.
+   */
+  async freezeSourceValidation(
+    accountId: string,
+    language: unknown,
+  ): Promise<StoreResult<ValidatedSourceRecord>> {
+    const key = specialistLanguageKey(language);
+    if (key === null) return refuse('not-a-track');
+    const track = await this.trackRecord(accountId, key);
+    if (track === undefined) return refuse('not-applied');
+    if (trackFor(key)?.sourceRequirement !== 'VALIDATION') return refuse('wrong-source-kind');
+
+    const set = await this.port.sourceSet(accountId, key, track.attempt);
+    if (set === null) return refuse('no-source-set');
+    const already = await this.port.validatedSourceAt(accountId, key, track.attempt);
+
+    const result = freezeValidatedSource({
+      items: set.items,
+      judgements: set.judgements,
+      alreadyFrozen: already !== null,
+      digest: (body) => this.digest(body),
+    });
+    if (!result.ok) {
+      const reason: StoreRefusal =
+        result.reason === 'already-frozen'
+          ? 'already-frozen'
+          : result.reason === 'incomplete'
+            ? 'incomplete'
+            : result.reason === 'nothing-usable'
+              ? 'nothing-usable'
+              : 'malformed';
+      return refuse(reason, result.detail);
+    }
+
+    const record: ValidatedSourceRecord = {
+      setId: set.setId,
+      accountId,
+      language: key,
+      revision: track.attempt,
+      items: result.items,
+      sourceCount: result.items.length,
+      sha256: result.sha256,
+      frozenAtMs: this.now(),
+      validatorAccountId: accountId,
+      corrected: wasCorrected(result.items),
+    };
+
+    const openValidation = (await this.port.assignments(accountId)).find(
+      (entry) =>
+        entry.kind === 'SOURCE_VALIDATION' &&
+        entry.sourceSetId === set.setId &&
+        entry.state !== 'SUBMITTED',
+    );
+
+    try {
+      await this.port.transaction(async (tx) => {
+        await tx.appendValidatedSource(record);
+        if (canTransition(track.state, 'SUBMITTED')) {
+          await tx.putTrack({ ...track, state: 'SUBMITTED' });
+        }
+        if (openValidation !== undefined) {
+          await tx.putAssignment({ ...openValidation, state: 'SUBMITTED' });
+        }
+      });
+    } catch {
+      return refuse('already-frozen');
+    }
+
+    this.onEvent('specialist.source.frozen', {
+      accountId,
+      language: key,
+      attempt: track.attempt,
+      sourceCount: record.sourceCount,
+      corrected: record.corrected ? 1 : 0,
+      sha256: record.sha256,
+    });
+    return { ok: true, value: record };
+  }
+
+  async validatedSourcesFor(
+    accountId: string,
+    language: string,
+  ): Promise<readonly ValidatedSourceRecord[]> {
+    return this.port.validatedSources(accountId, language);
+  }
+
   /* ------------------------------------------------------------ assignments */
 
   async assignmentsFor(accountId: string): Promise<readonly AssignmentRecord[]> {
     return this.port.assignments(accountId);
   }
 
+  /** The frozen source for a track's CURRENT attempt, whichever kind it is. */
+  private async frozenSourceFor(
+    track: LanguageTrackRecord,
+  ): Promise<{ revision: number; sha256: string } | null> {
+    if (trackFor(track.language)?.sourceRequirement === 'VALIDATION') {
+      const validated = await this.port.validatedSourceAt(
+        track.accountId,
+        track.language,
+        track.attempt,
+      );
+      return validated === null ? null : { revision: validated.revision, sha256: validated.sha256 };
+    }
+    const corpus = await this.port.corpusAt(track.accountId, track.language, track.attempt);
+    return corpus === null ? null : { revision: corpus.revision, sha256: corpus.sha256 };
+  }
+
   /**
-   * Create a review assignment and stash its candidates.
+   * Create a blind review assignment and stash its candidates.
    *
-   * The candidates carry provider and model. They are stored here and NEVER
-   * returned by `openReview`; see `blindCandidate` in the domain package for
-   * why the redaction is a construction rather than a deletion.
+   * BOUND TO THE ATTEMPT AND TO THE SOURCE IT WAS BUILT FROM. Without the
+   * binding, a packet issued during attempt 1 becomes attempt 2's packet the
+   * moment the track is unlocked again, and verdicts on superseded evidence are
+   * filed against the new assessment.
+   *
+   * THE ASSIGNMENT AND ITS CANDIDATES ARE ONE TRANSACTION. An assignment with
+   * no rows is a packet a reviewer opens to find nothing, and they have no way
+   * to tell it from one they have already finished.
    */
   async createReviewAssignment(input: {
     accountId: string;
     language: string;
     candidates: readonly Omit<StoredCandidate, 'assignmentId'>[];
     dueAtMs?: number | null;
-  }): Promise<AssignmentRecord> {
+  }): Promise<StoreResult<AssignmentRecord>> {
+    const key = specialistLanguageKey(input.language);
+    if (key === null) return refuse('not-a-track');
+    const track = await this.trackRecord(input.accountId, key);
+    if (track === undefined) return refuse('not-applied');
+
+    const source = await this.frozenSourceFor(track);
+    if (source === null) return refuse('review-locked');
+
     const assignment: AssignmentRecord = {
       assignmentId: `asg_${this.newId()}`,
       accountId: input.accountId,
-      language: input.language,
+      language: key,
       kind: 'BLIND_TRANSLATION_REVIEW',
       state: 'NEW',
       createdAtMs: this.now(),
       dueAtMs: input.dueAtMs ?? null,
+      qualificationAttempt: track.attempt,
+      sourceRevision: source.revision,
+      sourceSha256: source.sha256,
+      sourceSetId: null,
     };
-    await this.port.putAssignment(assignment);
-    await this.port.putCandidates(
-      input.candidates.map((candidate) => ({ ...candidate, assignmentId: assignment.assignmentId })),
-    );
+
+    await this.port.transaction(async (tx) => {
+      await tx.putAssignment(assignment);
+      await tx.putCandidates(
+        input.candidates.map((candidate) => ({
+          ...candidate,
+          assignmentId: assignment.assignmentId,
+        })),
+      );
+    });
+
     this.onEvent('specialist.assignment.created', {
       accountId: input.accountId,
-      language: input.language,
+      language: key,
       assignmentId: assignment.assignmentId,
+      attempt: track.attempt,
+      sourceRevision: source.revision,
       candidates: input.candidates.length,
     });
-    return assignment;
+    return { ok: true, value: assignment };
   }
 
   /**
    * The packet, if this person may see it.
    *
-   * TWO REFUSALS, IN THIS ORDER. Ownership first, then the gate: telling
-   * somebody an assignment is "locked" when it is not theirs would confirm the
-   * assignment exists and belongs to whoever they were guessing about.
+   * FOUR REFUSALS, IN THIS ORDER. Ownership first, because telling somebody an
+   * assignment is "locked" when it is not theirs confirms it exists and belongs
+   * to whoever they were guessing about. Then the attempt binding. Then the
+   * gate. Then the evidence fingerprint.
+   *
+   * RETURNS THE PERSISTED ASSIGNMENT. It used to move NEW -> IN_PROGRESS and
+   * then return the object read BEFORE the update, so the first open of every
+   * packet reported a state the database no longer held -- and the caller had
+   * no way to know which of the two was true.
    */
   async openReview(
     accountId: string,
     assignmentId: string,
   ): Promise<StoreResult<{ assignment: AssignmentRecord; candidates: readonly StoredCandidate[] }>> {
-    const assignment = await this.port.assignment(assignmentId);
-    if (assignment === null) return refuse('unknown-assignment');
-    if (assignment.accountId !== accountId) return refuse('not-your-assignment');
+    const stored = await this.port.assignment(assignmentId);
+    if (stored === null) return refuse('unknown-assignment');
+    if (stored.accountId !== accountId) return refuse('not-your-assignment');
 
-    const track = (await this.port.tracks(accountId)).find(
-      (entry) => entry.language === assignment.language,
-    );
-    const draft = await this.port.draft(accountId, assignment.language);
-    const frozen = await this.port.corpora(accountId, assignment.language);
+    const track = await this.trackRecord(accountId, stored.language);
+    if (track === undefined) return refuse('review-locked', 'not-applied');
+
+    /*
+     * THE ATTEMPT BINDING. A packet from a superseded attempt is stale, not
+     * locked: the difference matters because "locked" invites somebody to wait
+     * for it to open, and this one never will.
+     */
+    if (stored.qualificationAttempt !== track.attempt) return refuse('stale-assignment');
+
+    const source = await this.frozenSourceFor(track);
+
+    /*
+     * A SOURCE_VALIDATION packet is the work that PRODUCES the frozen source,
+     * so it cannot be gated on one existing. It is gated on the opposite: once
+     * the source is frozen there is nothing left to validate.
+     */
+    if (stored.kind === 'SOURCE_VALIDATION') {
+      if (track.state === 'SUSPENDED') return refuse('review-locked', 'suspended');
+      return {
+        ok: true,
+        value: {
+          assignment: await this.markInProgress(stored),
+          candidates: await this.port.candidates(assignmentId),
+        },
+      };
+    }
+
     const access = reviewAccess({
-      language: assignment.language,
-      qualificationState: track?.state ?? null,
-      corpusFrozen: frozen.length > 0,
-      elicitationComplete: readElicitation(draft?.items ?? []).complete,
+      language: stored.language,
+      qualificationState: track.state,
+      attempt: track.attempt,
+      sourceFrozenForAttempt: source !== null,
+      sourceCompleteForAttempt: (await this.sourceState(track)).complete,
     });
     if (!access.unlocked) return refuse('review-locked', access.reason);
 
-    if (assignment.state === 'NEW') {
-      await this.port.putAssignment({ ...assignment, state: 'IN_PROGRESS' });
+    /*
+     * The fingerprint, not merely the revision. A source frozen, corrected and
+     * re-frozen shares its revision and not its hash, and a packet built before
+     * the correction is evidence about text that no longer stands.
+     */
+    if (stored.sourceSha256 !== null && source !== null && stored.sourceSha256 !== source.sha256) {
+      return refuse('stale-assignment', 'source-superseded');
     }
+
     return {
       ok: true,
-      value: { assignment, candidates: await this.port.candidates(assignmentId) },
+      value: {
+        assignment: await this.markInProgress(stored),
+        candidates: await this.port.candidates(assignmentId),
+      },
     };
+  }
+
+  /** Move NEW -> IN_PROGRESS and return what is now stored, never what was. */
+  private async markInProgress(assignment: AssignmentRecord): Promise<AssignmentRecord> {
+    if (assignment.state !== 'NEW') return assignment;
+    const next: AssignmentRecord = { ...assignment, state: 'IN_PROGRESS' };
+    await this.port.putAssignment(next);
+    return next;
   }
 
   /**
@@ -843,7 +1546,12 @@ export class SpecialistStore {
    *
    * The gate is consulted again rather than trusted from the read that produced
    * the packet: a session that opened a packet legitimately and then had its
-   * track suspended must not still be able to write verdicts into evidence.
+   * track suspended, or superseded by a reassessment, must not still be able to
+   * write verdicts into evidence.
+   *
+   * THE VERDICT AND THE COMPLETION ARE ONE TRANSACTION. The final verdict
+   * closes the assignment; a verdict stored against an assignment still marked
+   * IN_PROGRESS is a finished review nothing will collect.
    */
   async recordVerdict(
     accountId: string,
@@ -857,16 +1565,21 @@ export class SpecialistStore {
     if (!candidates.some((candidate) => candidate.candidateId === verdict.candidateId)) {
       return refuse('unknown-candidate');
     }
+
+    let judged = 0;
     try {
-      await this.port.appendVerdict(assignmentId, accountId, verdict, this.now());
+      judged = await this.port.transaction(async (tx) => {
+        await tx.appendVerdict(assignmentId, accountId, verdict, this.now());
+        const count = (await tx.verdicts(assignmentId)).length;
+        if (count >= candidates.length) {
+          await tx.putAssignment({ ...assignment, state: 'SUBMITTED' });
+        }
+        return count;
+      });
     } catch {
       return refuse('already-judged');
     }
 
-    const judged = (await this.port.verdicts(assignmentId)).length;
-    if (judged >= candidates.length) {
-      await this.port.putAssignment({ ...assignment, state: 'SUBMITTED' });
-    }
     /* Ids and counts. Not the corrected translation, not the note. */
     this.onEvent('specialist.verdict.recorded', {
       accountId,
@@ -906,11 +1619,12 @@ export class SpecialistStore {
   /**
    * An operator setting a qualification outcome.
    *
-   * Every decision writes an audit row, including the ones that fail no rule.
-   * "Who decided, when, from what, to what, and why" has to be answerable
-   * without reading a diff of the database -- the same standard the tariff
-   * routes hold for a price change, and for the same reason: this is the record
-   * a person's standing in the programme rests on.
+   * THE STATE CHANGE AND ITS AUDIT ROW ARE ONE TRANSACTION, and this is the
+   * most important of the five. A standing that changed with no row saying who
+   * changed it, when, from what, to what and why is exactly the record this
+   * programme cannot afford to lose -- and the decisions table refuses UPDATE
+   * and DELETE, so it cannot be reconstructed afterwards. If the audit row
+   * cannot be written, the change must not happen.
    */
   async decide(input: {
     accountId: string;
@@ -921,7 +1635,7 @@ export class SpecialistStore {
   }): Promise<StoreResult<TrackView>> {
     const key = specialistLanguageKey(input.language);
     if (key === null) return refuse('not-a-track');
-    const track = (await this.port.tracks(input.accountId)).find((entry) => entry.language === key);
+    const track = await this.trackRecord(input.accountId, key);
     if (track === undefined) return refuse('not-applied');
     if (!isOperatorSettable(input.toState)) return refuse('not-operator-settable');
     if (!canTransition(track.state, input.toState)) {
@@ -936,25 +1650,31 @@ export class SpecialistStore {
       decidedBy: input.decidedBy,
       decisionNote: input.reason,
     };
-    await this.port.putTrack(next);
-    await this.port.appendDecision({
-      decisionId: `dec_${this.newId()}`,
-      accountId: input.accountId,
-      language: key,
-      fromState: track.state,
-      toState: input.toState,
-      decidedBy: input.decidedBy,
-      reason: input.reason,
-      atMs: nowMs,
+
+    await this.port.transaction(async (tx) => {
+      await tx.putTrack(next);
+      await tx.appendDecision({
+        decisionId: `dec_${this.newId()}`,
+        accountId: input.accountId,
+        language: key,
+        fromState: track.state,
+        toState: input.toState,
+        decidedBy: input.decidedBy,
+        reason: input.reason,
+        atMs: nowMs,
+        attempt: track.attempt,
+      });
     });
+
     this.onEvent('specialist.decision', {
       accountId: input.accountId,
       language: key,
+      attempt: track.attempt,
       from: track.state,
       to: input.toState,
       decidedBy: input.decidedBy,
     });
-    return { ok: true, value: await this.viewOf(input.accountId, next) };
+    return { ok: true, value: await this.viewOf(next) };
   }
 
   async grantCapability(capability: CapabilityRecord): Promise<void> {

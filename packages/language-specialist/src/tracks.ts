@@ -1,11 +1,12 @@
 /** @author masterzee001 */
 /**
- * Which languages a person may apply in.
+ * Which languages a person may apply in, and what SOURCE each one needs before
+ * a translation can be reviewed in it.
  *
  * SIX TO BEGIN WITH, and the list is data rather than a union type for one
- * reason: the directive says adding a language must not be a schema redesign.
- * A `type SpecialistLanguage = 'yo' | 'ha' | ...` reads well and then appears
- * in eleven signatures, four database CHECK constraints and a React prop, and
+ * reason: adding a language must not be a schema redesign. A
+ * `type SpecialistLanguage = 'yo' | 'ha' | ...` reads well and then appears in
+ * eleven signatures, four database CHECK constraints and a React prop, and
  * adding Swahili becomes a migration. Here it is a row in an array and a
  * catalogue lookup.
  *
@@ -15,27 +16,56 @@
  * the second here is how the specialist portal ends up spelling a language
  * differently from the listener's language menu.
  *
- * ELICITATION IS NOT UNIVERSAL. The three Nigerian tracks need native source
- * written by a speaker, because C7 holds none and every corpus it could find
- * was either licence-blocked or drawn from religious text that reads nothing
- * like a message (docs/certification/review-packets-v2/SOURCE-ELICITATION.md).
- * French, Spanish and Portuguese are not in that position -- C7 can already
- * obtain honest source for them -- so demanding fifteen hand-written messages
- * there would be twenty minutes of a volunteer's time spent on nothing. The
- * flag records that difference rather than leaving it to a route to remember.
+ * EVERY TRACK NEEDS FROZEN SOURCE. The two requirements differ only in where
+ * the source comes from:
+ *
+ *   ELICITATION  the contributor WRITES it. C7 holds no native-authored Hausa,
+ *                Yoruba or Igbo corpus, and every source it could find was
+ *                either licence-blocked or drawn from religious text that reads
+ *                nothing like a message
+ *                (docs/certification/review-packets-v2/SOURCE-ELICITATION.md).
+ *
+ *   VALIDATION   C7 SUPPLIES it and a fluent speaker validates or corrects it
+ *                before anything is translated. This is the Checkpoint-B
+ *                ruling: source-only first, and the reviewer must not see a
+ *                candidate translation while judging whether the source itself
+ *                is right. Source C7 can obtain is not the same as source C7
+ *                has checked, and reviewing a translation of a bad sentence
+ *                measures nothing.
+ *
+ * An earlier version of this file recorded the second case as
+ * `requiresSourceElicitation: false` and let review open immediately, which
+ * read as "these languages need no source work". They need different source
+ * work. The flag is kept as a derived convenience so existing readers still
+ * make sense, and a test holds the two in agreement.
  */
 import { lookupLanguage } from '@videofy-live/language-catalogue';
+
+/** Where the frozen source for a track comes from. */
+export const SOURCE_REQUIREMENTS = ['ELICITATION', 'VALIDATION'] as const;
+export type SourceRequirement = (typeof SOURCE_REQUIREMENTS)[number];
 
 export interface SpecialistTrack {
   /** BCP-47 base subtag; the catalogue key and the storage key. */
   readonly language: string;
+  readonly sourceRequirement: SourceRequirement;
   /**
-   * Whether qualification in this language begins with source elicitation.
+   * True when the source is written by the contributor.
    *
-   * True means the fifteen-item form gates everything else: no frozen corpus,
-   * no review. See `elicitation.ts` and `freeze.ts`.
+   * Derived from `sourceRequirement`, never set independently. It exists
+   * because "does this track begin with the fifteen-item form" is a question
+   * several surfaces genuinely ask, and deriving it at each call site is how
+   * two of them end up disagreeing.
    */
   readonly requiresSourceElicitation: boolean;
+}
+
+function track(language: string, sourceRequirement: SourceRequirement): SpecialistTrack {
+  return {
+    language,
+    sourceRequirement,
+    requiresSourceElicitation: sourceRequirement === 'ELICITATION',
+  };
 }
 
 /**
@@ -45,12 +75,12 @@ export interface SpecialistTrack {
  * enumerates languages.
  */
 export const SPECIALIST_TRACKS: readonly SpecialistTrack[] = [
-  { language: 'yo', requiresSourceElicitation: true },
-  { language: 'ha', requiresSourceElicitation: true },
-  { language: 'ig', requiresSourceElicitation: true },
-  { language: 'fr', requiresSourceElicitation: false },
-  { language: 'es', requiresSourceElicitation: false },
-  { language: 'pt', requiresSourceElicitation: false },
+  track('yo', 'ELICITATION'),
+  track('ha', 'ELICITATION'),
+  track('ig', 'ELICITATION'),
+  track('fr', 'VALIDATION'),
+  track('es', 'VALIDATION'),
+  track('pt', 'VALIDATION'),
 ];
 
 /**
@@ -64,7 +94,7 @@ export function trackFor(code: unknown): SpecialistTrack | null {
   if (typeof code !== 'string') return null;
   const key = lookupLanguage(code)?.code ?? null;
   if (key === null) return null;
-  return SPECIALIST_TRACKS.find((track) => track.language === key) ?? null;
+  return SPECIALIST_TRACKS.find((entry) => entry.language === key) ?? null;
 }
 
 export function isSpecialistLanguage(code: unknown): boolean {

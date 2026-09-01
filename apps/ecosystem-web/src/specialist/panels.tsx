@@ -16,17 +16,49 @@
 import { useState } from 'react';
 import { pathLink } from '../router';
 import { Card, Chip, Empty, Notice, Progress, StatTile } from './primitives';
-import { pathForElicitation, pathForPage, pathForReview } from './route';
-import { dayWord, stateTone, stateWord, type Me, type ProgrammeLanguage, type SubmissionWire, type TrackWire } from './api';
+import { pathForPage, pathForReview, pathForSourceWork } from './route';
+import {
+  dayWord,
+  progressWord,
+  stateTone,
+  stateWord,
+  type Me,
+  type ProgrammeLanguage,
+  type SubmissionWire,
+  type TrackWire,
+} from './api';
+
+/**
+ * What a packet is called on screen.
+ *
+ * A table, not a ternary. The ternary it replaces said "Blind translation
+ * review" or "Source elicitation", so a SOURCE_VALIDATION packet -- which is a
+ * French speaker checking C7's own sentences -- was labelled as the
+ * fifteen-message form they had not been asked to fill in. An unknown kind
+ * prints as itself rather than as one of the two known ones, because a wrong
+ * label is worse than an unfamiliar one.
+ */
+const ASSIGNMENT_WORDS: Readonly<Record<string, string>> = {
+  BLIND_TRANSLATION_REVIEW: 'Blind translation review',
+  SOURCE_VALIDATION: 'Source check',
+  SOURCE_ELICITATION: 'Source elicitation',
+};
+
+function assignmentWord(kind: string): string {
+  return ASSIGNMENT_WORDS[kind] ?? kind;
+}
 
 /* -------------------------------------------------------------- dashboard */
 
 export function Dashboard({ me }: { readonly me: Me }) {
   const qualified = me.tracks.filter((track) => track.state === 'QUALIFIED');
   const pending = me.assignments.filter((assignment) => assignment.state !== 'SUBMITTED');
-  const nextStep = me.tracks.find(
-    (track) => track.requiresSourceElicitation && !track.elicitation.frozen,
-  );
+  /*
+   * The next piece of SOURCE work, whichever kind this language needs. It used
+   * to look only for an unfinished elicitation, so a French specialist with a
+   * source set waiting saw no next step at all.
+   */
+  const nextStep = me.tracks.find((track) => !track.source.frozen);
 
   return (
     <>
@@ -38,11 +70,26 @@ export function Dashboard({ me }: { readonly me: Me }) {
       </header>
 
       <div className="sp-stats">
+        {/*
+          DERIVED, not a stored approval state. This tile read "Under review"
+          for everybody forever -- including people qualified in two languages --
+          because the profile carried a status nothing could move. It now
+          follows the language tracks, so it cannot contradict the card beside
+          it.
+        */}
         <StatTile
-          label="Application"
-          value={me.applied ? stateWord(me.applicationState ?? 'UNDER_REVIEW') : 'Not started'}
+          label="Progress"
+          value={me.applied ? progressWord(me.progress) : 'Not started'}
           detail={me.applied ? `Applied ${dayWord(me.appliedAtMs)}` : 'Tell us about your languages'}
-          tone={me.applied ? 'caution' : 'neutral'}
+          tone={
+            me.progress === 'QUALIFIED'
+              ? 'positive'
+              : me.progress === 'NOT_QUALIFIED' || me.progress === 'SUSPENDED'
+                ? 'negative'
+                : me.applied
+                  ? 'caution'
+                  : 'neutral'
+          }
         />
         <StatTile label="Languages" value={String(me.tracks.length)} detail="Applied for" />
         <StatTile
@@ -117,11 +164,7 @@ export function Dashboard({ me }: { readonly me: Me }) {
                 {pending.slice(0, 3).map((assignment) => (
                   <li className="sp-row" key={assignment.assignmentId}>
                     <div className="sp-row-main">
-                      <span className="sp-row-name">
-                        {assignment.kind === 'BLIND_TRANSLATION_REVIEW'
-                          ? 'Blind translation review'
-                          : 'Source elicitation'}
-                      </span>
+                      <span className="sp-row-name">{assignmentWord(assignment.kind)}</span>
                       <span className="sp-row-sub">{assignment.englishName}</span>
                     </div>
                     <Chip tone={assignment.state === 'NEW' ? 'accent' : 'caution'}>
@@ -141,19 +184,21 @@ export function Dashboard({ me }: { readonly me: Me }) {
                 submit your fifteen messages" twice, in two voices.
               */}
               <p className="sp-body">
-                {nextStep.englishName} qualification begins with fifteen short messages you write
-                yourself. Review opens for {nextStep.englishName} once they are submitted.
+                {nextStep.source.kind === 'ELICITATION'
+                  ? `${nextStep.englishName} qualification begins with fifteen short messages you write yourself.`
+                  : `${nextStep.englishName} qualification begins with checking the source sentences we supply.`}{' '}
+                Review opens for {nextStep.englishName} once they are submitted.
               </p>
               <Progress
-                done={nextStep.elicitation.answered}
-                total={nextStep.elicitation.total}
-                label={`${nextStep.englishName} messages written`}
+                done={nextStep.source.answered}
+                total={nextStep.source.total}
+                label={`${nextStep.englishName} source work`}
               />
               <a
                 className="sp-button sp-button-primary"
-                {...pathLink(pathForElicitation(nextStep.language))}
+                {...pathLink(pathForSourceWork(nextStep.language, nextStep.source.kind))}
               >
-                {nextStep.elicitation.answered === 0 ? 'Start' : 'Continue'}
+                {nextStep.source.answered === 0 ? 'Start' : 'Continue'}
               </a>
             </Card>
           )}
@@ -347,30 +392,33 @@ export function Languages({
 }
 
 function LanguageProgress({ track }: { readonly track: TrackWire }) {
-  if (!track.requiresSourceElicitation) {
-    return (
-      <p className="sp-body sp-muted">
-        {track.review.unlocked
-          ? 'Review is open for this language.'
-          : (track.review.message ?? '')}
-      </p>
-    );
-  }
+  /*
+   * BOTH SOURCE REQUIREMENTS SHOW PROGRESS. A validation track used to show a
+   * bare sentence and no way in, because the branch above treated "does not
+   * need the fifteen-item form" as "needs nothing".
+   */
   return (
     <>
       <Progress
-        done={track.elicitation.answered}
-        total={track.elicitation.total}
-        label={`${track.englishName} messages written`}
+        done={track.source.answered}
+        total={track.source.total}
+        label={
+          track.source.kind === 'ELICITATION'
+            ? `${track.englishName} messages written`
+            : `${track.englishName} sentences checked`
+        }
       />
-      {track.elicitation.frozen ? (
+      {track.source.frozen ? (
         <p className="sp-body sp-muted">
           Submitted and locked.{' '}
-          <span className="sp-mono sp-hash">{track.elicitation.sha256?.slice(0, 16)}…</span>
+          <span className="sp-mono sp-hash">{track.source.sha256?.slice(0, 16)}…</span>
         </p>
+      ) : track.source.total === 0 ? (
+        /* Nothing supplied yet: an honest wait, not a button that refuses. */
+        <p className="sp-body sp-muted">{track.review.message ?? ''}</p>
       ) : (
-        <a className="sp-button" {...pathLink(pathForElicitation(track.language))}>
-          {track.elicitation.answered === 0 ? 'Start' : 'Continue'}
+        <a className="sp-button" {...pathLink(pathForSourceWork(track.language, track.source.kind))}>
+          {track.source.answered === 0 ? 'Start' : 'Continue'}
         </a>
       )}
     </>
@@ -415,11 +463,7 @@ export function Assignments({
             {assignments.map((assignment) => (
               <li className="sp-row" key={assignment.assignmentId}>
                 <div className="sp-row-main">
-                  <span className="sp-row-name">
-                    {assignment.kind === 'BLIND_TRANSLATION_REVIEW'
-                      ? 'Blind translation review'
-                      : 'Source elicitation'}
-                  </span>
+                  <span className="sp-row-name">{assignmentWord(assignment.kind)}</span>
                   <span className="sp-row-sub">
                     {assignment.englishName} · created {dayWord(assignment.createdAtMs)}
                     {assignment.dueAtMs === null ? '' : ` · due ${dayWord(assignment.dueAtMs)}`}
@@ -492,7 +536,7 @@ export function Submissions({
             title={
               submission.kind === 'SOURCE_ELICITATION'
                 ? `Source messages · revision ${submission.revision}`
-                : 'Blind translation review'
+                : assignmentWord(submission.kind)
             }
           >
             {submission.kind === 'SOURCE_ELICITATION' ? (

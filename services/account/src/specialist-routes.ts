@@ -34,14 +34,16 @@ import {
   SPECIALIST_TRACKS,
   blindPacket,
   consentOffer,
+  observedLanguageQuestion,
   readVerdict,
   reviewLockMessage,
   specialistLanguageKey,
   trackNames,
+  validationPacket,
   type ReviewLock,
 } from '@videofy-live/language-specialist';
 import type { Caller } from './routes.js';
-import type { SpecialistStore, StoreRefusal, TrackView } from './specialist-store.js';
+import { progressOf, type SpecialistStore, type StoreRefusal, type TrackView } from './specialist-store.js';
 
 export interface SpecialistRouteDependencies {
   readonly specialists: SpecialistStore;
@@ -74,7 +76,16 @@ const REFUSAL_STATUS: Readonly<Record<StoreRefusal, number>> = {
   incomplete: 400,
   malformed: 400,
   'already-frozen': 409,
+  'nothing-usable': 409,
   'review-locked': 403,
+  'wrong-source-kind': 409,
+  'no-source-set': 409,
+  /*
+   * 410, not 404 and not 403. The packet EXISTED and is gone as work: a 404
+   * would say it never was, and a 403 would invite the reviewer to wait for it
+   * to open, which it never will.
+   */
+  'stale-assignment': 410,
   'not-your-assignment': 404,
   'unknown-assignment': 404,
   'unknown-candidate': 400,
@@ -91,8 +102,14 @@ const REFUSAL_MESSAGE: Readonly<Record<StoreRefusal, string>> = {
   incomplete: 'Every message needs its English meaning before you can submit.',
   malformed: 'Some rows could not be read. Reload the form and try again.',
   'already-frozen':
-    'Your messages are already submitted and cannot be changed. Ask languages@consummate7.com if a correction is needed.',
+    'Your work is already submitted and cannot be changed. Ask languages@consummate7.com if a correction is needed.',
+  'nothing-usable':
+    'Every sentence was rejected, so there is nothing to freeze. Tell us what is wrong with them at languages@consummate7.com.',
   'review-locked': 'Review is not open for this language yet.',
+  'wrong-source-kind': 'That step does not apply to this language.',
+  'no-source-set': 'There is nothing to check for this language yet.',
+  'stale-assignment':
+    'This assignment belonged to an earlier assessment and is no longer part of yours.',
   'not-your-assignment': 'Not found.',
   'unknown-assignment': 'Not found.',
   'unknown-candidate': 'That translation is not part of this assignment.',
@@ -116,6 +133,17 @@ function languageNames(language: string): { englishName: string; nativeName: str
   };
 }
 
+/**
+ * The attempt a person is currently on for a language.
+ *
+ * `null` when they hold no track, which never equals an assignment's attempt --
+ * so a packet for a language they have since dropped is filtered out rather
+ * than shown as openable.
+ */
+function currentAttempt(tracks: readonly TrackView[], language: string): number | null {
+  return tracks.find((track) => track.language === language)?.attempt ?? null;
+}
+
 /** The wire shape of one language track. Counts and flags, never the messages. */
 function trackWire(view: TrackView): Record<string, unknown> {
   return {
@@ -125,13 +153,21 @@ function trackWire(view: TrackView): Record<string, unknown> {
     appliedAtMs: view.appliedAtMs,
     decidedAtMs: view.decidedAtMs,
     attempt: view.attempt,
+    sourceRequirement: view.sourceRequirement,
     requiresSourceElicitation: view.requiresSourceElicitation,
-    elicitation: {
-      answered: view.elicitationAnswered,
-      total: ELICITATION_PROMPTS.length,
-      complete: view.elicitationComplete,
-      frozen: view.corpusFrozen,
-      sha256: view.corpusSha256,
+    /*
+     * COUNTS FOR THE CURRENT ATTEMPT ONLY. `source` rather than `elicitation`
+     * because a validation track has source work too, and calling both by the
+     * name of one of them is how a screen ends up asking a French specialist
+     * for fifteen messages.
+     */
+    source: {
+      kind: view.sourceRequirement,
+      answered: view.sourceAnswered,
+      total: view.sourceTotal,
+      complete: view.sourceComplete,
+      frozen: view.sourceFrozen,
+      sha256: view.sourceSha256,
     },
     review: {
       unlocked: view.reviewUnlocked,
@@ -203,20 +239,33 @@ export function registerSpecialistRoutes(
     res.json({
       accountId: who.accountId,
       applied: profile !== null,
-      applicationState: profile?.applicationState ?? null,
+      /*
+       * DERIVED FROM THE TRACKS, never stored. The profile used to carry an
+       * approval state nothing could move, so every specialist read
+       * "Under review" while their languages said QUALIFIED. This cannot
+       * contradict the records beside it because it is computed from them.
+       */
+      progress: progressOf(tracks),
       appliedAtMs: profile?.appliedAtMs ?? null,
       country: profile?.country ?? null,
       timeZone: profile?.timeZone ?? null,
       tracks: tracks.map(trackWire),
-      assignments: assignments.map((assignment) => ({
-        assignmentId: assignment.assignmentId,
-        language: assignment.language,
-        ...languageNames(assignment.language),
-        kind: assignment.kind,
-        state: assignment.state,
-        createdAtMs: assignment.createdAtMs,
-        dueAtMs: assignment.dueAtMs,
-      })),
+      assignments: assignments
+        /*
+         * A packet from a superseded attempt is not this person's work any
+         * more. It stays in the database as history and leaves the list, so
+         * nobody is invited to open something that will refuse them.
+         */
+        .filter((assignment) => currentAttempt(tracks, assignment.language) === assignment.qualificationAttempt)
+        .map((assignment) => ({
+          assignmentId: assignment.assignmentId,
+          language: assignment.language,
+          ...languageNames(assignment.language),
+          kind: assignment.kind,
+          state: assignment.state,
+          createdAtMs: assignment.createdAtMs,
+          dueAtMs: assignment.dueAtMs,
+        })),
       capabilities: capabilities.map((grant) => ({
         language: grant.language,
         capability: grant.capability,
@@ -246,7 +295,12 @@ export function registerSpecialistRoutes(
       country: text(body['country'], 100),
       timeZone: text(body['timeZone'], 100),
     });
-    res.status(201).json({ applied: true, applicationState: profile.applicationState });
+    /*
+     * `applied`, and nothing about approval. There is no global approval state
+     * to report: standing is per language, and the caller reads it from
+     * `/specialists/languages`.
+     */
+    res.status(201).json({ applied: true, appliedAtMs: profile.appliedAtMs });
   });
 
   /** Every track this person has opened, and where each one stands. */
@@ -442,21 +496,34 @@ export function registerSpecialistRoutes(
       return track === undefined ? 'not-applied' : track.reviewLock;
     };
     res.json({
-      assignments: assignments.map((assignment) => {
-        const lock = lockFor(assignment.language);
-        return {
-          assignmentId: assignment.assignmentId,
-          language: assignment.language,
-          ...languageNames(assignment.language),
-          kind: assignment.kind,
-          state: assignment.state,
-          createdAtMs: assignment.createdAtMs,
-          dueAtMs: assignment.dueAtMs,
-          /* The list says locked for the same reason the packet refuses. */
-          unlocked: lock === null,
-          lockMessage: lock === null ? null : reviewLockMessage(lock),
-        };
-      }),
+      assignments: assignments
+        /* Superseded packets leave the list. See `/specialists/me`. */
+        .filter(
+          (assignment) =>
+            currentAttempt(tracks, assignment.language) === assignment.qualificationAttempt,
+        )
+        .map((assignment) => {
+          /*
+           * A SOURCE_VALIDATION packet is the work that PRODUCES the frozen
+           * source, so gating it on one existing would make it permanently
+           * unopenable -- the deadlock that gate would create is the whole
+           * reason the kind is checked here.
+           */
+          const lock =
+            assignment.kind === 'SOURCE_VALIDATION' ? null : lockFor(assignment.language);
+          return {
+            assignmentId: assignment.assignmentId,
+            language: assignment.language,
+            ...languageNames(assignment.language),
+            kind: assignment.kind,
+            state: assignment.state,
+            createdAtMs: assignment.createdAtMs,
+            dueAtMs: assignment.dueAtMs,
+            /* The list says locked for the same reason the packet refuses. */
+            unlocked: lock === null,
+            lockMessage: lock === null ? null : reviewLockMessage(lock),
+          };
+        }),
     });
   });
 
@@ -477,13 +544,49 @@ export function registerSpecialistRoutes(
       deny(res, opened.reason, opened.detail);
       return;
     }
-    const judged = await deps.specialists.verdictsFor(opened.value.assignment.assignmentId);
+    const assignment = opened.value.assignment;
+
+    /*
+     * A SOURCE_VALIDATION packet is a different job with a different payload:
+     * the sentences C7 supplied, and NO candidate translation anywhere near
+     * them. A validator who has read two translations of a sentence has an
+     * opinion about the sentence that came from the translations, which is the
+     * one thing this step exists to avoid. `validationPacket` builds the rows
+     * by naming the fields it copies, the same construction the blind uses.
+     */
+    if (assignment.kind === 'SOURCE_VALIDATION') {
+      const set = await deps.specialists.sourceSetFor(who.accountId, assignment.language);
+      if (set === null) {
+        deny(res, 'no-source-set');
+        return;
+      }
+      res.json({
+        assignmentId: assignment.assignmentId,
+        language: assignment.language,
+        ...languageNames(assignment.language),
+        kind: assignment.kind,
+        state: assignment.state,
+        items: validationPacket(set.items),
+        judgements: set.judgements,
+        verdicts: ['ACCEPT', 'CORRECT', 'REJECT'],
+      });
+      return;
+    }
+
+    const judged = await deps.specialists.verdictsFor(assignment.assignmentId);
     res.json({
-      assignmentId: opened.value.assignment.assignmentId,
-      language: opened.value.assignment.language,
-      ...languageNames(opened.value.assignment.language),
-      state: opened.value.assignment.state,
+      assignmentId: assignment.assignmentId,
+      language: assignment.language,
+      ...languageNames(assignment.language),
+      kind: assignment.kind,
+      state: assignment.state,
       criteria: REVIEW_CRITERIA,
+      /*
+       * The observed-language question, where this target language asks one.
+       * Null elsewhere, so a client renders nothing rather than an empty
+       * control -- and so adding a language is a server change alone.
+       */
+      observedLanguage: observedLanguageQuestion(assignment.language),
       candidates: blindPacket(opened.value.candidates),
       /* Which rows are done, by id. The answers themselves are not re-sent. */
       judgedCandidateIds: judged.map((verdict) => verdict.candidateId),
@@ -500,17 +603,31 @@ export function registerSpecialistRoutes(
       res.status(400).json({ error: 'Which translation is this about?' });
       return;
     }
-    const reading = readVerdict(candidateId, body);
+    /*
+     * THE LANGUAGE IS READ FROM THE ASSIGNMENT, not from the request body. It
+     * decides whether the observed-language question is required, and a client
+     * that could name the language could opt itself out of answering it.
+     */
+    const assignmentId = req.params['assignmentId'] ?? '';
+    const assignment = (await deps.specialists.assignmentsFor(who.accountId)).find(
+      (entry) => entry.assignmentId === assignmentId,
+    );
+    if (assignment === undefined) {
+      deny(res, 'unknown-assignment');
+      return;
+    }
+
+    const reading = readVerdict(candidateId, body, { language: assignment.language });
     if (!reading.ok) {
       res.status(400).json({
-        error: 'Please answer every yes/no question and both 1-5 scores.',
+        error: 'Please answer every question on the packet.',
         problems: reading.problems,
       });
       return;
     }
     const result = await deps.specialists.recordVerdict(
       who.accountId,
-      req.params['assignmentId'] ?? '',
+      assignmentId,
       reading.verdict,
     );
     if (!result.ok) {
@@ -518,6 +635,90 @@ export function registerSpecialistRoutes(
       return;
     }
     res.status(201).json(result.value);
+  });
+
+  /**
+   * The source a fluent speaker is asked to check, and their judgements so far.
+   *
+   * SOURCE ONLY. There is no candidate translation in this payload and no
+   * endpoint that would add one before the source is frozen.
+   */
+  app.get('/specialists/source-validation/:language', async (req, res) => {
+    const who = caller(req, res);
+    if (who === null) return;
+    const key = specialistLanguageKey(req.params['language']);
+    if (key === null) {
+      deny(res, 'not-a-track');
+      return;
+    }
+    const [set, track, frozen] = await Promise.all([
+      deps.specialists.sourceSetFor(who.accountId, key),
+      deps.specialists.trackFor(who.accountId, key),
+      deps.specialists.validatedSourcesFor(who.accountId, key),
+    ]);
+    const current = track === null ? null : (frozen.find((entry) => entry.revision === track.attempt) ?? null);
+    res.json({
+      language: key,
+      ...languageNames(key),
+      attempt: track?.attempt ?? null,
+      items: set === null ? [] : validationPacket(set.items),
+      judgements: set?.judgements ?? [],
+      verdicts: ['ACCEPT', 'CORRECT', 'REJECT'],
+      frozen:
+        current === null
+          ? null
+          : {
+              revision: current.revision,
+              sourceCount: current.sourceCount,
+              sha256: current.sha256,
+              frozenAtMs: current.frozenAtMs,
+              corrected: current.corrected,
+            },
+    });
+  });
+
+  /** Save the validator's judgements. Incomplete is fine; malformed is not. */
+  app.put('/specialists/source-validation/:language', async (req, res) => {
+    const who = caller(req, res);
+    if (who === null) return;
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const result = await deps.specialists.saveSourceJudgements(
+      who.accountId,
+      req.params['language'],
+      body['judgements'],
+    );
+    if (!result.ok) {
+      deny(res, result.reason, result.detail);
+      return;
+    }
+    res.json(result.value);
+  });
+
+  /**
+   * Submit the checked source. Irreversible, and the moment review opens.
+   *
+   * If anything was corrected the response says so, because it decides what
+   * happens next: BOTH engines are rerun against the corrected text before any
+   * translation of it is reviewed.
+   */
+  app.post('/specialists/source-validation/:language/freeze', async (req, res) => {
+    const who = caller(req, res);
+    if (who === null) return;
+    const result = await deps.specialists.freezeSourceValidation(
+      who.accountId,
+      req.params['language'],
+    );
+    if (!result.ok) {
+      deny(res, result.reason, result.detail);
+      return;
+    }
+    res.status(201).json({
+      revision: result.value.revision,
+      sourceCount: result.value.sourceCount,
+      sha256: result.value.sha256,
+      frozenAtMs: result.value.frozenAtMs,
+      corrected: result.value.corrected,
+    });
   });
 
   /**

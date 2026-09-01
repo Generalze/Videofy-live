@@ -97,9 +97,15 @@ export function Review({
   const current =
     packet.candidates.find((candidate) => candidate.candidateId === selected) ?? remaining[0] ?? null;
 
+  /*
+   * The observed-language question counts toward completeness where the target
+   * asks it. The server requires it; letting Save look enabled and then be
+   * refused would teach a reviewer to distrust the button.
+   */
   const complete =
     current !== null &&
-    packet.criteria.every((criterion) => answers[criterion.key] !== undefined);
+    packet.criteria.every((criterion) => answers[criterion.key] !== undefined) &&
+    (packet.observedLanguage === null || answers['observedLanguage'] !== undefined);
 
   const submit = async (): Promise<void> => {
     if (current === null) return;
@@ -242,6 +248,37 @@ export function Review({
                   </li>
                 ))}
               </ul>
+
+              {packet.observedLanguage === null ? null : (
+                /*
+                 * A STRUCTURED, REQUIRED OBSERVATION. C7 has already watched an
+                 * engine answer Portuguese in Italian. Every other question on
+                 * this packet assumes the output is in the target language at
+                 * all, so without this a reviewer meeting Italian had nowhere
+                 * to put it but the note -- where no result would count it.
+                 */
+                <div className="sp-criterion sp-criterion-observed">
+                  <p className="sp-criterion-question">
+                    {packet.observedLanguage.question}
+                    <span className="sp-criterion-flag">Required</span>
+                  </p>
+                  <div className="sp-choice sp-choice-wrap">
+                    {packet.observedLanguage.options.map((option) => (
+                      <button
+                        key={option}
+                        type="button"
+                        className={`sp-choice-option${answers['observedLanguage'] === option ? ' sp-choice-on' : ''}`}
+                        aria-pressed={answers['observedLanguage'] === option}
+                        onClick={() =>
+                          setAnswers((current) => ({ ...current, observedLanguage: option }))
+                        }
+                      >
+                        {option}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <label className="sp-field">
                 <span className="sp-field-label">Your corrected translation (optional)</span>

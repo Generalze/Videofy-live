@@ -22,15 +22,18 @@
  * beside a number and JavaScript coerces it often enough to look correct until
  * the boundary nobody tested.
  */
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type {
   ElicitationItem,
   FrozenCorpus,
   QualificationState,
   ReviewVerdict,
   Score,
+  SourceItem,
+  SourceJudgement,
   SpecialistCapability,
   StoredCandidate,
+  ValidatedSourceItem,
   YesNo,
 } from '@videofy-live/language-specialist';
 import type {
@@ -40,46 +43,54 @@ import type {
   DecisionRecord,
   ElicitationDraft,
   LanguageTrackRecord,
+  SourceSetRecord,
   SpecialistProfile,
   SpecialistRecordPort,
+  ValidatedSourceRecord,
 } from '../specialist-store.js';
 
 /* -------------------------------------------------------------- column lists */
 
+/* `application_state` is gone: migration 022 drops the dead approval column. */
 const PROFILE_COLUMNS =
-  'account_id, applied_at_ms, application_state, motivation, country, time_zone, updated_at_ms';
+  'account_id, applied_at_ms, motivation, country, time_zone, updated_at_ms';
 
 const TRACK_COLUMNS =
-  'account_id, language, state, applied_at_ms, decided_at_ms, decided_by, decision_note, attempt';
+  'account_id, language, state, applied_at_ms, decided_at_ms, decided_by, decision_note, attempt, attempt_id';
 
 const CONSENT_COLUMNS =
   'consent_id, account_id, language, consent_version, scope, consent_text_sha256, accepted_at_ms';
 
-const DRAFT_COLUMNS = 'attempt_id, account_id, language, items, updated_at_ms';
+const DRAFT_COLUMNS = 'attempt_id, account_id, language, attempt, items, updated_at_ms';
 
 const CORPUS_COLUMNS =
   'attempt_id, account_id, language, revision, items, source_count, sha256, frozen_at_ms, consent_id, consent_version';
 
 const ASSIGNMENT_COLUMNS =
-  'assignment_id, account_id, language, kind, state, created_at_ms, due_at_ms';
+  'assignment_id, account_id, language, kind, state, created_at_ms, due_at_ms, qualification_attempt, source_revision, source_sha256, source_set_id';
 
 const CANDIDATE_COLUMNS =
   'candidate_id, assignment_id, ordinal, direction, category, source_text, candidate_text, provider, model, machine_score, benchmark_rank, expected_winner';
 
 const VERDICT_COLUMNS =
-  'verdict_id, assignment_id, candidate_id, account_id, meaning_preserved, meaning_reversed, information_omitted, information_invented, names_numbers_corrupted, naturalness, grammar, trust_in_real_chat, corrected_translation, note, submitted_at_ms';
+  'verdict_id, assignment_id, candidate_id, account_id, meaning_preserved, meaning_reversed, information_omitted, information_invented, names_numbers_corrupted, naturalness, grammar, trust_in_real_chat, observed_language, corrected_translation, note, submitted_at_ms';
 
 const CAPABILITY_COLUMNS = 'account_id, language, capability, granted_by, granted_at_ms';
 
 const DECISION_COLUMNS =
-  'decision_id, account_id, language, from_state, to_state, decided_by, reason, at_ms';
+  'decision_id, account_id, language, from_state, to_state, decided_by, reason, at_ms, attempt';
+
+const SOURCE_SET_COLUMNS =
+  'set_id, account_id, language, attempt, items, judgements, supplied_by, created_at_ms, updated_at_ms';
+
+const VALIDATED_SOURCE_COLUMNS =
+  'set_id, account_id, language, revision, items, source_count, sha256, frozen_at_ms, validator_account_id, corrected';
 
 /* --------------------------------------------------------------- row shapes */
 
 interface ProfileRow {
   account_id: string;
   applied_at_ms: string;
-  application_state: string;
   motivation: string;
   country: string | null;
   time_zone: string | null;
@@ -95,6 +106,7 @@ interface TrackRow {
   decided_by: string | null;
   decision_note: string | null;
   attempt: number;
+  attempt_id: string;
 }
 
 interface ConsentRow {
@@ -111,8 +123,34 @@ interface DraftRow {
   attempt_id: string;
   account_id: string;
   language: string;
+  attempt: number;
   items: unknown;
   updated_at_ms: string;
+}
+
+interface SourceSetRow {
+  set_id: string;
+  account_id: string;
+  language: string;
+  attempt: number;
+  items: unknown;
+  judgements: unknown;
+  supplied_by: string;
+  created_at_ms: string;
+  updated_at_ms: string;
+}
+
+interface ValidatedSourceRow {
+  set_id: string;
+  account_id: string;
+  language: string;
+  revision: number;
+  items: unknown;
+  source_count: number;
+  sha256: string;
+  frozen_at_ms: string;
+  validator_account_id: string;
+  corrected: boolean;
 }
 
 interface CorpusRow {
@@ -136,6 +174,10 @@ interface AssignmentRow {
   state: string;
   created_at_ms: string;
   due_at_ms: string | null;
+  qualification_attempt: number;
+  source_revision: number | null;
+  source_sha256: string | null;
+  source_set_id: string | null;
 }
 
 interface CandidateRow {
@@ -166,6 +208,7 @@ interface VerdictRow {
   naturalness: number;
   grammar: number;
   trust_in_real_chat: string;
+  observed_language: string | null;
   corrected_translation: string | null;
   note: string | null;
   submitted_at_ms: string;
@@ -188,6 +231,7 @@ interface DecisionRow {
   decided_by: string;
   reason: string;
   at_ms: string;
+  attempt: number;
 }
 
 /* ------------------------------------------------------------------ mappers */
@@ -198,7 +242,6 @@ function toProfile(row: ProfileRow): SpecialistProfile {
   return {
     accountId: row.account_id,
     appliedAtMs: Number(row.applied_at_ms),
-    applicationState: row.application_state as SpecialistProfile['applicationState'],
     motivation: row.motivation,
     country: row.country,
     timeZone: row.time_zone,
@@ -216,6 +259,7 @@ function toTrack(row: TrackRow): LanguageTrackRecord {
     decidedBy: row.decided_by,
     decisionNote: row.decision_note,
     attempt: row.attempt,
+    attemptId: row.attempt_id,
   };
 }
 
@@ -236,8 +280,38 @@ function toDraft(row: DraftRow): ElicitationDraft {
     attemptId: row.attempt_id,
     accountId: row.account_id,
     language: row.language,
+    attempt: row.attempt,
     items: (row.items ?? []) as readonly ElicitationItem[],
     updatedAtMs: Number(row.updated_at_ms),
+  };
+}
+
+function toSourceSet(row: SourceSetRow): SourceSetRecord {
+  return {
+    setId: row.set_id,
+    accountId: row.account_id,
+    language: row.language,
+    attempt: row.attempt,
+    items: (row.items ?? []) as readonly SourceItem[],
+    judgements: (row.judgements ?? []) as readonly SourceJudgement[],
+    suppliedBy: row.supplied_by,
+    createdAtMs: Number(row.created_at_ms),
+    updatedAtMs: Number(row.updated_at_ms),
+  };
+}
+
+function toValidatedSource(row: ValidatedSourceRow): ValidatedSourceRecord {
+  return {
+    setId: row.set_id,
+    accountId: row.account_id,
+    language: row.language,
+    revision: row.revision,
+    items: (row.items ?? []) as readonly ValidatedSourceItem[],
+    sourceCount: row.source_count,
+    sha256: row.sha256,
+    frozenAtMs: Number(row.frozen_at_ms),
+    validatorAccountId: row.validator_account_id,
+    corrected: row.corrected,
   };
 }
 
@@ -271,6 +345,10 @@ function toAssignment(row: AssignmentRow): AssignmentRecord {
     state: row.state as AssignmentRecord['state'],
     createdAtMs: Number(row.created_at_ms),
     dueAtMs: ms(row.due_at_ms),
+    qualificationAttempt: row.qualification_attempt,
+    sourceRevision: row.source_revision,
+    sourceSha256: row.source_sha256,
+    sourceSetId: row.source_set_id,
   };
 }
 
@@ -306,6 +384,7 @@ function toVerdict(row: VerdictRow): ReviewVerdict {
     naturalness: row.naturalness as Score,
     grammar: row.grammar as Score,
     trustInRealChat: row.trust_in_real_chat as YesNo,
+    ...(row.observed_language === null ? {} : { observedLanguage: row.observed_language }),
     ...(row.corrected_translation === null
       ? {}
       : { correctedTranslation: row.corrected_translation }),
@@ -333,15 +412,78 @@ function toDecision(row: DecisionRow): DecisionRecord {
     decidedBy: row.decided_by,
     reason: row.reason,
     atMs: Number(row.at_ms),
+    attempt: row.attempt,
   };
 }
 
 /* --------------------------------------------------------------------- port */
 
-export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
+/**
+ * What this port runs its statements against.
+ *
+ * A POOL OR ONE CLIENT, and the difference is the whole transaction story. A
+ * pool hands each `query` whichever connection is free, so two writes issued
+ * through a pool can land on two connections and BEGIN on one covers neither.
+ * Inside `transaction` the port is rebuilt against a single checked-out client,
+ * so every write in the callback is on the connection that opened the
+ * transaction.
+ */
+type Queryable = Pick<Pool, 'query'> | Pick<PoolClient, 'query'>;
+
+export function createPostgresSpecialistPort(
+  pool: Pool,
+  /**
+   * The connection to use. Defaults to the pool; `transaction` passes a client.
+   *
+   * `inTransaction` is carried rather than inferred from the type, because a
+   * client used OUTSIDE a transaction is a perfectly ordinary thing and a
+   * nested BEGIN is not.
+   */
+  db: Queryable = pool,
+  inTransaction = false,
+): SpecialistRecordPort {
   return {
+    /**
+     * Real BEGIN / COMMIT / ROLLBACK, on one checked-out client.
+     *
+     * The callback is handed a port bound to that client, so a caller cannot
+     * accidentally write through the pool and outside the transaction. A nested
+     * call runs inline rather than opening a savepoint: nothing here nests
+     * deliberately, and a silent second BEGIN would commit half the outer work
+     * on an inner failure -- the exact defect this exists to remove.
+     *
+     * The client is released in a `finally`, so a throw cannot leak a
+     * connection out of the pool. A leaked client is a failure that only shows
+     * up under load, long after the request that caused it.
+     */
+    async transaction(work) {
+      if (inTransaction) return work(this);
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const value = await work(createPostgresSpecialistPort(pool, client, true));
+        await client.query('COMMIT');
+        return value;
+      } catch (error) {
+        /*
+         * The rollback is itself best-effort: a connection that died mid
+         * transaction cannot be rolled back through, and Postgres discards the
+         * work anyway. Swallowing it here keeps the ORIGINAL error -- the one
+         * that says what actually went wrong -- as the one the caller sees.
+         */
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          /* the connection is gone; the transaction is discarded regardless */
+        }
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
     async profile(accountId) {
-      const result = await pool.query<ProfileRow>(
+      const result = await db.query<ProfileRow>(
         `SELECT ${PROFILE_COLUMNS} FROM specialist_profiles WHERE account_id = $1`,
         [accountId],
       );
@@ -350,26 +492,24 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
     },
 
     async allProfiles() {
-      const result = await pool.query<ProfileRow>(
+      const result = await db.query<ProfileRow>(
         `SELECT ${PROFILE_COLUMNS} FROM specialist_profiles ORDER BY applied_at_ms DESC`,
       );
       return result.rows.map(toProfile);
     },
 
     async putProfile(profile) {
-      await pool.query(
+      await db.query(
         `INSERT INTO specialist_profiles (${PROFILE_COLUMNS})
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (account_id) DO UPDATE SET
-           application_state = EXCLUDED.application_state,
-           motivation        = EXCLUDED.motivation,
-           country           = EXCLUDED.country,
-           time_zone         = EXCLUDED.time_zone,
-           updated_at_ms     = EXCLUDED.updated_at_ms`,
+           motivation    = EXCLUDED.motivation,
+           country       = EXCLUDED.country,
+           time_zone     = EXCLUDED.time_zone,
+           updated_at_ms = EXCLUDED.updated_at_ms`,
         [
           profile.accountId,
           profile.appliedAtMs,
-          profile.applicationState,
           profile.motivation,
           profile.country,
           profile.timeZone,
@@ -379,7 +519,7 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
     },
 
     async tracks(accountId) {
-      const result = await pool.query<TrackRow>(
+      const result = await db.query<TrackRow>(
         `SELECT ${TRACK_COLUMNS} FROM specialist_languages WHERE account_id = $1 ORDER BY language ASC`,
         [accountId],
       );
@@ -387,22 +527,23 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
     },
 
     async allTracks() {
-      const result = await pool.query<TrackRow>(
+      const result = await db.query<TrackRow>(
         `SELECT ${TRACK_COLUMNS} FROM specialist_languages ORDER BY applied_at_ms DESC`,
       );
       return result.rows.map(toTrack);
     },
 
     async putTrack(track) {
-      await pool.query(
+      await db.query(
         `INSERT INTO specialist_languages (${TRACK_COLUMNS})
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          ON CONFLICT (account_id, language) DO UPDATE SET
            state         = EXCLUDED.state,
            decided_at_ms = EXCLUDED.decided_at_ms,
            decided_by    = EXCLUDED.decided_by,
            decision_note = EXCLUDED.decision_note,
-           attempt       = EXCLUDED.attempt`,
+           attempt       = EXCLUDED.attempt,
+           attempt_id    = EXCLUDED.attempt_id`,
         [
           track.accountId,
           track.language,
@@ -412,13 +553,14 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
           track.decidedBy,
           track.decisionNote,
           track.attempt,
+          track.attemptId,
         ],
       );
     },
 
     async appendConsent(consent) {
       /* No ON CONFLICT. See the module note. */
-      await pool.query(
+      await db.query(
         `INSERT INTO specialist_consents (${CONSENT_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           consent.consentId,
@@ -433,7 +575,7 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
     },
 
     async consents(accountId, language) {
-      const result = await pool.query<ConsentRow>(
+      const result = await db.query<ConsentRow>(
         `SELECT ${CONSENT_COLUMNS} FROM specialist_consents
          WHERE account_id = $1 AND language = $2 ORDER BY accepted_at_ms ASC`,
         [accountId, language],
@@ -441,11 +583,16 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
       return result.rows.map(toConsent);
     },
 
-    async draft(accountId, language) {
-      const result = await pool.query<DraftRow>(
+    async draft(accountId, language, attempt) {
+      /*
+       * SCOPED TO THE ATTEMPT. Reading "the draft for this language" is how a
+       * reassessment inherited the previous attempt's answers and reported
+       * itself complete before a word had been written.
+       */
+      const result = await db.query<DraftRow>(
         `SELECT ${DRAFT_COLUMNS} FROM specialist_elicitation_drafts
-         WHERE account_id = $1 AND language = $2`,
-        [accountId, language],
+         WHERE account_id = $1 AND language = $2 AND attempt = $3`,
+        [accountId, language, attempt],
       );
       const row = result.rows[0];
       return row === undefined ? null : toDraft(row);
@@ -453,20 +600,22 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
 
     async putDraft(draft) {
       /*
-       * The conflict target is (account_id, language), NOT the attempt id: one
-       * draft per person per language is the rule, and a client sending a new
-       * attempt id would otherwise create a second draft that nothing reads.
+       * The conflict target is (account_id, language, attempt), NOT the attempt
+       * id: one draft per person per language PER ATTEMPT is the rule, and a
+       * client sending a new attempt id would otherwise create a second draft
+       * for the same attempt that nothing reads.
        */
-      await pool.query(
+      await db.query(
         `INSERT INTO specialist_elicitation_drafts (${DRAFT_COLUMNS})
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (account_id, language) DO UPDATE SET
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (account_id, language, attempt) DO UPDATE SET
            items         = EXCLUDED.items,
            updated_at_ms = EXCLUDED.updated_at_ms`,
         [
           draft.attemptId,
           draft.accountId,
           draft.language,
+          draft.attempt,
           JSON.stringify(draft.items),
           draft.updatedAtMs,
         ],
@@ -479,7 +628,7 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
        * than overwriting. The UNIQUE key and the trigger say the same thing;
        * this is the layer that reports it to the caller.
        */
-      await pool.query(
+      await db.query(
         `INSERT INTO specialist_source_corpora (${CORPUS_COLUMNS})
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
         [
@@ -498,7 +647,7 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
     },
 
     async corpora(accountId, language) {
-      const result = await pool.query<CorpusRow>(
+      const result = await db.query<CorpusRow>(
         `SELECT ${CORPUS_COLUMNS} FROM specialist_source_corpora
          WHERE account_id = $1 AND language = $2 ORDER BY revision ASC`,
         [accountId, language],
@@ -506,8 +655,96 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
       return result.rows.map(toCorpus);
     },
 
+    async corpusAt(accountId, language, revision) {
+      /* The corpus for ONE attempt. See the note on `draft`. */
+      const result = await db.query<CorpusRow>(
+        `SELECT ${CORPUS_COLUMNS} FROM specialist_source_corpora
+         WHERE account_id = $1 AND language = $2 AND revision = $3`,
+        [accountId, language, revision],
+      );
+      const row = result.rows[0];
+      return row === undefined ? null : toCorpus(row);
+    },
+
+    async sourceSet(accountId, language, attempt) {
+      const result = await db.query<SourceSetRow>(
+        `SELECT ${SOURCE_SET_COLUMNS} FROM specialist_source_sets
+         WHERE account_id = $1 AND language = $2 AND attempt = $3`,
+        [accountId, language, attempt],
+      );
+      const row = result.rows[0];
+      return row === undefined ? null : toSourceSet(row);
+    },
+
+    async putSourceSet(set) {
+      await db.query(
+        `INSERT INTO specialist_source_sets (${SOURCE_SET_COLUMNS})
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (account_id, language, attempt) DO UPDATE SET
+           items         = EXCLUDED.items,
+           judgements    = EXCLUDED.judgements,
+           supplied_by   = EXCLUDED.supplied_by,
+           updated_at_ms = EXCLUDED.updated_at_ms`,
+        [
+          set.setId,
+          set.accountId,
+          set.language,
+          set.attempt,
+          JSON.stringify(set.items),
+          JSON.stringify(set.judgements),
+          set.suppliedBy,
+          set.createdAtMs,
+          set.updatedAtMs,
+        ],
+      );
+    },
+
+    async appendValidatedSource(source) {
+      /*
+       * No ON CONFLICT, so a second freeze at the same revision raises rather
+       * than overwriting -- the same rule the elicitation corpus follows, and
+       * for the same reason: a source edited after engines ran against it turns
+       * a comparison into two measurements of different things.
+       */
+      await db.query(
+        `INSERT INTO specialist_validated_sources (${VALIDATED_SOURCE_COLUMNS})
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          source.setId,
+          source.accountId,
+          source.language,
+          source.revision,
+          JSON.stringify(source.items),
+          source.sourceCount,
+          source.sha256,
+          source.frozenAtMs,
+          source.validatorAccountId,
+          source.corrected,
+        ],
+      );
+    },
+
+    async validatedSources(accountId, language) {
+      const result = await db.query<ValidatedSourceRow>(
+        `SELECT ${VALIDATED_SOURCE_COLUMNS} FROM specialist_validated_sources
+         WHERE account_id = $1 AND language = $2 ORDER BY revision ASC`,
+        [accountId, language],
+      );
+      return result.rows.map(toValidatedSource);
+    },
+
+    async validatedSourceAt(accountId, language, revision) {
+      const result = await db.query<ValidatedSourceRow>(
+        `SELECT ${VALIDATED_SOURCE_COLUMNS} FROM specialist_validated_sources
+         WHERE account_id = $1 AND language = $2 AND revision = $3`,
+        [accountId, language, revision],
+      );
+      const row = result.rows[0];
+      return row === undefined ? null : toValidatedSource(row);
+    },
+
     async assignments(accountId) {
-      const result = await pool.query<AssignmentRow>(
+      const result = await db.query<AssignmentRow>(
         `SELECT ${ASSIGNMENT_COLUMNS} FROM specialist_assignments
          WHERE account_id = $1 ORDER BY created_at_ms DESC`,
         [accountId],
@@ -516,7 +753,7 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
     },
 
     async assignment(assignmentId) {
-      const result = await pool.query<AssignmentRow>(
+      const result = await db.query<AssignmentRow>(
         `SELECT ${ASSIGNMENT_COLUMNS} FROM specialist_assignments WHERE assignment_id = $1`,
         [assignmentId],
       );
@@ -525,9 +762,9 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
     },
 
     async putAssignment(assignment) {
-      await pool.query(
+      await db.query(
         `INSERT INTO specialist_assignments (${ASSIGNMENT_COLUMNS})
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          ON CONFLICT (assignment_id) DO UPDATE SET
            state     = EXCLUDED.state,
            due_at_ms = EXCLUDED.due_at_ms`,
@@ -539,13 +776,22 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
           assignment.state,
           assignment.createdAtMs,
           assignment.dueAtMs,
+          /*
+           * The evidence binding is written once and never updated: which
+           * attempt and which frozen source a packet was built for is a fact
+           * about its creation, not a mutable property.
+           */
+          assignment.qualificationAttempt,
+          assignment.sourceRevision,
+          assignment.sourceSha256,
+          assignment.sourceSetId,
         ],
       );
     },
 
     async putCandidates(candidates) {
       for (const candidate of candidates) {
-        await pool.query(
+        await db.query(
           `INSERT INTO specialist_review_candidates (${CANDIDATE_COLUMNS})
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
           [
@@ -567,7 +813,7 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
     },
 
     async candidates(assignmentId) {
-      const result = await pool.query<CandidateRow>(
+      const result = await db.query<CandidateRow>(
         `SELECT ${CANDIDATE_COLUMNS} FROM specialist_review_candidates
          WHERE assignment_id = $1 ORDER BY ordinal ASC`,
         [assignmentId],
@@ -576,9 +822,9 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
     },
 
     async appendVerdict(assignmentId, accountId, verdict, atMs) {
-      await pool.query(
+      await db.query(
         `INSERT INTO specialist_review_verdicts (${VERDICT_COLUMNS})
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
         [
           `ver_${assignmentId}_${verdict.candidateId}`,
           assignmentId,
@@ -592,6 +838,8 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
           verdict.naturalness,
           verdict.grammar,
           verdict.trustInRealChat,
+          /* Null where the target language does not ask the question. */
+          verdict.observedLanguage ?? null,
           verdict.correctedTranslation ?? null,
           verdict.note ?? null,
           atMs,
@@ -600,7 +848,7 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
     },
 
     async verdicts(assignmentId) {
-      const result = await pool.query<VerdictRow>(
+      const result = await db.query<VerdictRow>(
         `SELECT ${VERDICT_COLUMNS} FROM specialist_review_verdicts
          WHERE assignment_id = $1 ORDER BY submitted_at_ms ASC`,
         [assignmentId],
@@ -609,7 +857,7 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
     },
 
     async capabilities(accountId) {
-      const result = await pool.query<CapabilityRow>(
+      const result = await db.query<CapabilityRow>(
         `SELECT ${CAPABILITY_COLUMNS} FROM specialist_capabilities
          WHERE account_id = $1 ORDER BY language ASC, capability ASC`,
         [accountId],
@@ -618,7 +866,7 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
     },
 
     async putCapability(capability) {
-      await pool.query(
+      await db.query(
         `INSERT INTO specialist_capabilities (${CAPABILITY_COLUMNS})
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (account_id, language, capability) DO UPDATE SET
@@ -635,9 +883,9 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
     },
 
     async appendDecision(decision) {
-      await pool.query(
+      await db.query(
         `INSERT INTO specialist_decisions (${DECISION_COLUMNS})
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           decision.decisionId,
           decision.accountId,
@@ -647,12 +895,13 @@ export function createPostgresSpecialistPort(pool: Pool): SpecialistRecordPort {
           decision.decidedBy,
           decision.reason,
           decision.atMs,
+          decision.attempt,
         ],
       );
     },
 
     async decisions(accountId, language) {
-      const result = await pool.query<DecisionRow>(
+      const result = await db.query<DecisionRow>(
         `SELECT ${DECISION_COLUMNS} FROM specialist_decisions
          WHERE account_id = $1 AND language = $2 ORDER BY at_ms ASC`,
         [accountId, language],

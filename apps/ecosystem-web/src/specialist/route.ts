@@ -29,12 +29,19 @@ export type PortalView =
   | { readonly page: 'profile' }
   | { readonly page: 'languages' }
   | { readonly page: 'qualification' }
-  /** The fifteen-item form for one language, with its consent gate in front. */
-  | { readonly page: 'qualification'; readonly language: string }
+  /**
+   * The source work for one language: the fifteen-item form on an elicitation
+   * track, the source check on a validation one. `task` is carried so the
+   * breadcrumb names the work rather than assuming which of the two it is.
+   */
+  | { readonly page: 'qualification'; readonly language: string; readonly task: SourceTask }
   | { readonly page: 'assignments' }
   /** The blind review packet for one assignment. */
   | { readonly page: 'assignments'; readonly assignmentId: string }
   | { readonly page: 'submissions' };
+
+/** The two words a source-work path can end in. */
+export type SourceTask = 'elicitation' | 'source-check';
 
 export const PORTAL_ROOT = '/specialist';
 
@@ -76,13 +83,18 @@ export function viewFromPath(pathname: string): PortalView {
       return { page: 'languages' };
     case 'qualification': {
       /*
-       * `/specialist/qualification/yo/elicitation` -- the trailing word is
-       * checked so that a future second task under a language (a pronunciation
-       * assessment, say) cannot be silently served the elicitation form.
+       * `/specialist/qualification/yo/elicitation` and
+       * `/specialist/qualification/fr/source-check`. The trailing word is
+       * checked rather than ignored, so a future third task under a language (a
+       * pronunciation assessment, say) cannot be silently served one of these
+       * two -- and it NAMES the work: a French specialist checking C7's
+       * sentences is not doing elicitation, and a breadcrumb saying so
+       * misdescribes the page they are looking at.
        */
       const language = parts[2];
-      if (language !== undefined && parts[3] === 'elicitation') {
-        return { page: 'qualification', language };
+      const task = parts[3];
+      if (language !== undefined && (task === 'elicitation' || task === 'source-check')) {
+        return { page: 'qualification', language, task };
       }
       return { page: 'qualification' };
     }
@@ -109,6 +121,19 @@ export function pathForElicitation(language: string): string {
   return `${PORTAL_ROOT}/qualification/${encodeURIComponent(language)}/elicitation/`;
 }
 
+/** The same screen family, named for the work a VALIDATION track actually does. */
+export function pathForSourceCheck(language: string): string {
+  return `${PORTAL_ROOT}/qualification/${encodeURIComponent(language)}/source-check/`;
+}
+
+/** Whichever of the two this language's source requirement calls for. */
+export function pathForSourceWork(
+  language: string,
+  requirement: 'ELICITATION' | 'VALIDATION',
+): string {
+  return requirement === 'VALIDATION' ? pathForSourceCheck(language) : pathForElicitation(language);
+}
+
 export function pathForReview(assignmentId: string): string {
   return `${PORTAL_ROOT}/assignments/${encodeURIComponent(assignmentId)}/review/`;
 }
@@ -123,7 +148,12 @@ export function breadcrumb(view: PortalView): readonly string[] {
   const trail: string[] = ['specialist'];
   if (view.page !== 'dashboard') trail.push(view.page);
   if (view.page === 'qualification' && 'language' in view) {
-    trail.push(view.language, 'elicitation');
+    /*
+     * The task the URL actually names. It was hardcoded to 'elicitation', so a
+     * French specialist checking C7's sentences read a breadcrumb describing
+     * work they were not doing.
+     */
+    trail.push(view.language, view.task);
   }
   if (view.page === 'assignments' && 'assignmentId' in view) {
     trail.push('review', view.assignmentId.slice(0, 8));
