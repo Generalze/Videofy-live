@@ -145,6 +145,20 @@
   color: var(--op-text-muted);
 }
 
+/*
+ * A read that failed. Same measure as the not-found gate, so the two refusal
+ * shapes of this console look like siblings rather than like one of them being
+ * an accident.
+ */
+.failure {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+  max-width: 56ch;
+  padding-top: 48px;
+}
+
 /* --------------------------------------------------------------- filters */
 
 .filters {

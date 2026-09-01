@@ -108,12 +108,60 @@ export function SpecialistsConsole() {
         <Applicants api={api} onForbidden={() => setForbidden(true)} />
       ) : (
         <Applicant
+          /*
+           * KEYED ON THE ACCOUNT ID, so a move from one applicant to another
+           * REMOUNTS rather than reusing the mounted component's state. Without
+           * it the previous applicant's overview, languages and evidence stay on
+           * screen under the new URL until the next read lands -- a page that
+           * says `acct_b` in the breadcrumb while showing `acct_a`'s
+           * qualification is the one mistake this console must never make,
+           * because the next click on it records a decision.
+           */
+          key={view.accountId}
           api={api}
           accountId={view.accountId}
           onForbidden={() => setForbidden(true)}
         />
       )}
     </main>
+  );
+}
+
+/* ---------------------------------------------------------------- failure */
+
+/**
+ * What a read that failed looks like, everywhere in this console.
+ *
+ * IT PRINTS THE API LAYER'S OWN SENTENCE AND WRITES NONE OF ITS OWN. `api.ts`
+ * already distinguishes "could not reach the account service" from "answered
+ * with something this console could not read" from whatever the service itself
+ * said, and it is the only place that can tell them apart. A second explanation
+ * composed in React would be a guess dressed as a diagnosis, and the operator
+ * would act on the guess.
+ *
+ * A REFUSAL NEVER ARRIVES HERE. 401 and 404 are folded into `forbidden` by
+ * `request()` and become the not-found screen, so nothing this component can
+ * render leaks the reason the service declined.
+ */
+function LoadFailure({
+  heading,
+  error,
+  onRetry,
+}: {
+  readonly heading: string;
+  readonly error: string;
+  readonly onRetry: () => void;
+}) {
+  return (
+    <section className={styles.failure} role="alert">
+      <h1 className={styles.title}>{heading}</h1>
+      <p className={styles.notice}>{error}</p>
+      <div className={styles.actions}>
+        <button type="button" className={styles.button} onClick={onRetry}>
+          Retry
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -126,24 +174,62 @@ function Applicants({
   readonly api: ReturnType<typeof createSpecialistAdminApi>;
   readonly onForbidden: () => void;
 }) {
+  /*
+   * THREE STATES, NOT TWO. `list === null` used to mean both "the request has
+   * not answered" and "the request failed and nobody wrote the failure down",
+   * and the second is indistinguishable from the first on screen: the console
+   * sat on "Loading applicants..." for as long as the operator was willing to
+   * wait. Loading, failed and loaded are now separate facts.
+   */
   const [list, setList] = useState<ApplicantList | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [reload, setReload] = useState(0);
   const [language, setLanguage] = useState('all');
   const [state, setState] = useState('all');
   const [query, setQuery] = useState('');
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
     void api.applicants().then((result) => {
       if (cancelled) return;
-      if (result.ok) setList(result.value);
-      else if (result.forbidden === true) onForbidden();
+      setLoading(false);
+      if (result.ok) {
+        setList(result.value);
+        setFailure(null);
+        return;
+      }
+      if (result.forbidden === true) {
+        onForbidden();
+        return;
+      }
+      /* The API layer's sentence, unedited. See LoadFailure. */
+      setFailure(result.error);
     });
     return () => {
       cancelled = true;
     };
-  }, [api, onForbidden]);
+  }, [api, onForbidden, reload]);
 
-  if (list === null) return <p className={styles.lede}>Loading applicants…</p>;
+  /*
+   * A FAILED RELOAD DOES NOT THROW AWAY A LIST THAT LOADED. The list is checked
+   * first, so a transient failure after a successful read leaves the operator
+   * looking at real applicants rather than at an error screen where their work
+   * used to be.
+   */
+  if (list === null && failure !== null) {
+    return (
+      <LoadFailure
+        heading="Could not load applicants"
+        error={failure}
+        onRetry={() => setReload((key) => key + 1)}
+      />
+    );
+  }
+  if (list === null) {
+    return <p className={styles.lede}>{loading ? 'Loading applicants…' : 'No applicants.'}</p>;
+  }
 
   const languages = [...new Set(list.applicants.flatMap((a) => a.languages.map((l) => l.language)))];
   const rows = list.applicants.filter((applicant) => {
@@ -171,6 +257,10 @@ function Applicants({
           </p>
         </div>
       </header>
+
+      {/* A reload that failed after the list loaded. The list below is what the
+          last successful read returned, and saying so is the point. */}
+      {failure === null ? null : <p className={styles.notice}>{failure}</p>}
 
       <div className={styles.filters}>
         <label className={styles.filter}>
@@ -291,17 +381,36 @@ function Applicant({
   const [openLanguage, setOpenLanguage] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<Evidence | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /*
+   * SEPARATE FROM `notice`. `notice` is what a decision, a grant or an evidence
+   * read had to say, and it is rendered ABOVE an applicant who is on screen. A
+   * first read that fails has no applicant to render it above, so it needs its
+   * own fact -- which is precisely the one the old code dropped into `notice`
+   * and then never showed, because `detail === null` returned the loading line
+   * before the notice could be reached.
+   */
+  const [failure, setFailure] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const load = useCallback(() => setRefreshKey((key) => key + 1), []);
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
     void api.applicant(accountId).then((result) => {
       if (cancelled) return;
-      if (result.ok) setDetail(result.value);
-      else if (result.forbidden === true) onForbidden();
-      else setNotice(result.error);
+      setLoading(false);
+      if (result.ok) {
+        setDetail(result.value);
+        setFailure(null);
+        return;
+      }
+      if (result.forbidden === true) {
+        onForbidden();
+        return;
+      }
+      setFailure(result.error);
     });
     return () => {
       cancelled = true;
@@ -325,7 +434,13 @@ function Applicant({
     };
   }, [api, accountId, openLanguage, onForbidden]);
 
-  if (detail === null) return <p className={styles.lede}>Loading applicant…</p>;
+  /* The reload that failed keeps the applicant it last read; see Applicants. */
+  if (detail === null && failure !== null) {
+    return <LoadFailure heading="Could not load applicant" error={failure} onRetry={load} />;
+  }
+  if (detail === null) {
+    return <p className={styles.lede}>{loading ? 'Loading applicant…' : 'No applicant.'}</p>;
+  }
 
   return (
     <>
@@ -336,6 +451,7 @@ function Applicant({
         </div>
       </header>
 
+      {failure === null ? null : <p className={styles.notice}>{failure}</p>}
       {notice === null ? null : <p className={styles.notice}>{notice}</p>}
 
       <div className={styles.columns}>
