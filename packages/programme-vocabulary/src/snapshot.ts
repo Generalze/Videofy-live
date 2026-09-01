@@ -66,6 +66,20 @@ export interface RevisionedVocabularyPort extends VocabularyPort {
 }
 
 /**
+ * The narrowest thing `takeSnapshot` actually needs: a revision and the rows.
+ *
+ * Declared separately so BOTH the in-memory port and the durable Postgres one
+ * satisfy it. Demanding the full write interface for a read-only operation
+ * would have forced a test-only adapter between the real store and the real
+ * consumers -- and an adapter written for a proof is a place the proof can
+ * diverge from production without anybody noticing.
+ */
+export interface VocabularySnapshotSource {
+  revision(programmeId: string): Promise<number>;
+  list(programmeId: string): Promise<readonly VocabularyRecord[]>;
+}
+
+/**
  * Take the snapshot a session will use for its whole life.
  *
  * Resolved ONCE, from one read, so every consumer is on the same revision by
@@ -73,7 +87,7 @@ export interface RevisionedVocabularyPort extends VocabularyPort {
  * moment.
  */
 export async function takeSnapshot(
-  port: RevisionedVocabularyPort,
+  port: VocabularySnapshotSource,
   programmeId: string,
   languages: SessionLanguages,
   capabilities: ConsumptionCapabilities,
@@ -115,7 +129,7 @@ export async function takeSnapshot(
  * that half the consumers cannot perform.
  */
 export async function snapshotIsCurrent(
-  port: RevisionedVocabularyPort,
+  port: VocabularySnapshotSource,
   snapshot: VocabularySnapshot,
 ): Promise<{ current: boolean; storedRevision: number; appliesFrom: 'this-session' | 'next-session' }> {
   const storedRevision = await port.revision(snapshot.programmeId);
