@@ -3047,3 +3047,363 @@ button:focus-visible {
 .call-row .button-small {
   margin-top: 0.3rem;
 }
+
+/* ============================================================================
+ * LANGUAGE SPECIALISTS — the public recruitment page.
+ *
+ * THIS PAGE IS A SIBLING OF /videofy/live/, not a visitor from another product.
+ * It uses this stylesheet's own variables — the navy ground, --accent, --amber,
+ * --line — and this stylesheet's own components (.shell, .hero, .button,
+ * .section-title, .section-field). The signed-in portal is a different matter
+ * and is built from the Videofy design system in specialist/specialist.css;
+ * the two are deliberately not mixed, because a marketing page and a product
+ * surface are different jobs and this site already says so on every other page.
+ *
+ * Every layout size is fluid for the same reason the rest of this file is:
+ * there should be no width at which the page is merely tolerable.
+ * ========================================================================= */
+
+.ls-hero {
+  padding-block: clamp(4rem, 9vw, 7.5rem) clamp(2.5rem, 5vw, 4rem);
+}
+
+.ls-hero-shell {
+  display: grid;
+  /*
+   * Copy first, artwork second, and the artwork is allowed to be narrower.
+   * `minmax(0, …)` on both because the SVG is a grid child and a grid child
+   * defaults to min-width:auto — without it the field pushes the page sideways
+   * at small widths, which this site's `overflow-x: hidden` would then hide
+   * rather than fix.
+   */
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: clamp(2rem, 5vw, 4.5rem);
+  align-items: center;
+}
+
+.ls-hero-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1.4rem;
+}
+
+.ls-eyebrow {
+  margin: 0;
+  padding: 0.42rem 0.95rem;
+  border: 1px solid var(--line-bright);
+  border-radius: 999px;
+  background: rgba(110, 168, 255, 0.08);
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.ls-title {
+  max-width: 16ch;
+}
+
+/* The second line carries the amber, exactly as the product hero carries its
+   own accent on its second line. One accent per hero; never two competing. */
+.ls-title-accent {
+  color: var(--amber);
+}
+
+.ls-lede {
+  max-width: 52ch;
+}
+
+/* ---- the language field --------------------------------------------------- */
+
+.ls-hero-art {
+  position: relative;
+  aspect-ratio: 700 / 330;
+  width: 100%;
+}
+
+.ls-field {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.ls-field-dot {
+  fill: var(--text-faint);
+  opacity: 0.28;
+}
+
+.ls-field-dot-on {
+  fill: var(--accent);
+  opacity: 0.55;
+}
+
+/*
+ * The chips are positioned as PERCENTAGES of the artwork box, so they travel
+ * with it at every width instead of drifting off the field the moment the
+ * viewport is not the one they were placed at.
+ */
+.ls-chip {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  padding: 0.32rem 0.8rem;
+  border: 1px solid var(--line-bright);
+  border-radius: 999px;
+  background: rgba(7, 11, 22, 0.86);
+  color: var(--text);
+  font-size: clamp(0.66rem, 0.5vw + 0.55rem, 0.82rem);
+  white-space: nowrap;
+  backdrop-filter: blur(2px);
+}
+
+/* ---- the four facets ------------------------------------------------------ */
+
+.ls-facets {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1px;
+  margin-top: clamp(2.5rem, 5vw, 4rem);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--line);
+  overflow: hidden;
+}
+
+.ls-facet {
+  padding: clamp(1.25rem, 2vw, 1.8rem);
+  background: var(--ink-2);
+}
+
+.ls-facet-name {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.ls-facet-body {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.92rem;
+}
+
+/* ---- sections ------------------------------------------------------------- */
+
+.ls-section {
+  padding-block: clamp(3.5rem, 7vw, 6rem);
+}
+
+.ls-section-tight {
+  padding-block: clamp(2rem, 4vw, 3.5rem);
+}
+
+.ls-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1.1rem;
+  margin-top: clamp(2rem, 4vw, 3rem);
+}
+
+.ls-card {
+  padding: clamp(1.25rem, 2vw, 1.75rem);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--ink-2);
+}
+
+.ls-card-name {
+  margin: 0 0 0.55rem;
+  font-size: 1.02rem;
+  font-weight: 600;
+}
+
+.ls-card-body {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.93rem;
+}
+
+/* ---- languages open now --------------------------------------------------- */
+
+.ls-languages {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0.9rem;
+  margin: clamp(1.5rem, 3vw, 2.4rem) 0 0;
+  padding: 0;
+}
+
+.ls-language {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  padding: 1.1rem 1.2rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--ink-2);
+}
+
+.ls-language-native {
+  font-size: 1.08rem;
+  font-weight: 600;
+}
+
+.ls-language-english {
+  color: var(--text-dim);
+  font-size: 0.86rem;
+}
+
+.ls-language-note {
+  color: var(--text-faint);
+  font-size: 0.78rem;
+}
+
+/* ---- how it works --------------------------------------------------------- */
+
+.ls-steps {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 1.1rem;
+  margin: clamp(2rem, 4vw, 3rem) 0 0;
+  padding: 0;
+  counter-reset: ls-step;
+}
+
+.ls-step {
+  position: relative;
+  padding-top: 2.9rem;
+}
+
+/*
+ * The connecting rule sits BEHIND the numbers and stops at the last step. A
+ * line that runs past the final marker reads as a sequence that continues
+ * somewhere off the page.
+ */
+.ls-step::before {
+  content: '';
+  position: absolute;
+  top: 1.05rem;
+  left: 2.1rem;
+  right: -1.1rem;
+  height: 1px;
+  background: var(--line-bright);
+}
+
+.ls-step:last-child::before {
+  display: none;
+}
+
+.ls-step-index {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: grid;
+  place-items: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  border: 1px solid var(--line-bright);
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--amber);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.ls-step-name {
+  margin: 0 0 0.4rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.ls-step-body {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+}
+
+/* ---- the close ------------------------------------------------------------ */
+
+.ls-close {
+  border-top: 1px solid var(--line);
+}
+
+.ls-close-shell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1.2rem;
+}
+
+/*
+ * The voice boundary, set apart rather than folded into the paragraph above it.
+ * Somebody deciding whether to contribute their writing is entitled to see,
+ * before they sign up, that this is not a voice programme.
+ */
+.ls-boundary {
+  margin: 0.6rem 0 0;
+  max-width: 66ch;
+  padding-left: 1rem;
+  border-left: 2px solid var(--line-bright);
+  color: var(--text-faint);
+  font-size: 0.88rem;
+}
+
+/* ---- responsive ----------------------------------------------------------- */
+
+/*
+ * 900: the hero becomes one column and the artwork goes below the copy. The
+ * field needs roughly half the viewport to read as a field at all; narrower, it
+ * is a texture, and a texture beside a headline is noise.
+ */
+@media (max-width: 900px) {
+  .ls-hero-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ls-hero-art {
+    order: 2;
+  }
+}
+
+/*
+ * 640: the step connector goes away. Stacked, the rule would be a vertical
+ * dangler between blocks rather than a sequence.
+ */
+@media (max-width: 640px) {
+  .ls-step::before {
+    display: none;
+  }
+}
+
+/* ---- Language Specialist tile icons --------------------------------------- */
+
+/*
+ * A rounded badge holding one line glyph, at the head of every facet and
+ * eligibility tile. The board leads each tile with a mark; without it the two
+ * card grids read as a wall of paragraphs and nothing separates one row from
+ * the next at a glance.
+ */
+.ls-badge {
+  display: grid;
+  place-items: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  margin-bottom: 0.85rem;
+  border: 1px solid var(--line-bright);
+  border-radius: 11px;
+  background: rgba(110, 168, 255, 0.07);
+  color: var(--accent);
+}
+
+.ls-icon {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+/* The eligibility badges take the warm accent, so the two grids are
+   distinguishable at a glance rather than only by their words. */
+.ls-card .ls-badge {
+  background: rgba(240, 194, 94, 0.08);
+  color: var(--amber);
+}

@@ -1,0 +1,1056 @@
+/**
+ * The Language Specialist portal.
+ *
+ * BUILT FROM `--vf-*` AND NOTHING ELSE. Every colour, space, radius and type
+ * size below points at a design-system token. There are no hex literals in this
+ * file and no `--sp-` colour of its own: the design system is the styling
+ * authority, and a parallel palette here would be a second place a C7 colour
+ * could be wrong -- the exact drift `tokens.css` exists to stop.
+ *
+ * SCOPED UNDER `.sp`. The marketing pages on this site use their own navy
+ * language (`--ink`, `--accent`, `--amber` in styles.css) and must not change.
+ * Every rule below is a descendant of `.sp`, so nothing here can reach the
+ * homepage. `tokens.css` declares custom properties only, so importing it costs
+ * the marketing pages nothing either.
+ *
+ * FLUID, NOT STEPPED, wherever it can be. The site's own stylesheet says there
+ * should be no width at which the page is merely tolerable, and the same
+ * applies here. There are two real breakpoints -- the rail becomes a top bar,
+ * and the two-column screens become one -- because those are structural changes
+ * rather than size changes, and everything else is `clamp` and `minmax`.
+ */
+
+.sp {
+  min-height: 100vh;
+  background: var(--vf-surface-canvas);
+  color: var(--vf-text-primary);
+  font-size: var(--vf-font-size-sm);
+  line-height: var(--vf-line-height-normal);
+}
+
+/* ---------------------------------------------------------------- layout */
+
+.sp-shell {
+  display: grid;
+  /*
+   * A fixed rail and a fluid main column. `minmax(0, 1fr)` rather than `1fr`:
+   * a grid child defaults to `min-width: auto`, so one wide table would push
+   * the whole layout sideways and the page would scroll horizontally at every
+   * width. That is the defect the site's own `overflow-x: hidden` was papering
+   * over elsewhere.
+   */
+  grid-template-columns: 248px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.sp-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-5);
+  padding: var(--vf-space-5) var(--vf-space-4);
+  background: var(--vf-surface-1);
+  border-right: 1px solid var(--vf-border-subtle);
+}
+
+.sp-rail-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-space-3);
+  margin: 0;
+}
+
+.sp-rail-mark {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--vf-radius-md);
+  background: var(--vf-violet-600);
+  color: var(--vf-text-on-accent);
+  font-weight: var(--vf-font-weight-bold);
+  font-size: var(--vf-font-size-xs);
+  letter-spacing: 0.04em;
+}
+
+.sp-rail-title {
+  font-weight: var(--vf-font-weight-semibold);
+  font-size: var(--vf-font-size-sm);
+}
+
+.sp-rail-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-1);
+}
+
+.sp-rail-foot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-1);
+  margin-top: auto;
+  padding-top: var(--vf-space-4);
+  border-top: 1px solid var(--vf-border-subtle);
+}
+
+.sp-rail-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-space-2);
+  padding: var(--vf-space-3) var(--vf-space-3);
+  border: 0;
+  border-radius: var(--vf-radius-md);
+  background: transparent;
+  color: var(--vf-text-secondary);
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.sp-rail-link:hover {
+  background: var(--vf-surface-2);
+  color: var(--vf-text-primary);
+}
+
+.sp-rail-link-on {
+  background: var(--vf-surface-accent);
+  color: var(--vf-text-primary);
+  font-weight: var(--vf-font-weight-medium);
+}
+
+.sp-rail-count {
+  display: grid;
+  place-items: center;
+  min-width: 1.375rem;
+  height: 1.375rem;
+  padding: 0 var(--vf-space-1);
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-violet-600);
+  color: var(--vf-text-on-accent);
+  font-size: var(--vf-font-size-2xs);
+  font-weight: var(--vf-font-weight-semibold);
+}
+
+.sp-rail-signout {
+  color: var(--vf-text-muted);
+}
+
+.sp-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-5);
+  padding: var(--vf-space-6) var(--vf-page-gutter) var(--vf-space-9);
+  max-width: var(--vf-container-xl);
+  width: 100%;
+}
+
+.sp-gate-shell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--vf-space-4);
+  padding: var(--vf-space-10) var(--vf-page-gutter);
+}
+
+/* -------------------------------------------------------------- crumbs */
+
+.sp-crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-space-2);
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-xs);
+}
+
+.sp-crumbs a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.sp-crumbs a:hover {
+  color: var(--vf-text-secondary);
+}
+
+.sp-crumb-sep {
+  margin-right: var(--vf-space-2);
+  color: var(--vf-text-disabled);
+}
+
+/* ---------------------------------------------------------------- heads */
+
+.sp-page-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-2);
+}
+
+.sp-page-head-review {
+  flex-direction: row;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--vf-space-5);
+  flex-wrap: wrap;
+}
+
+.sp-page-title {
+  margin: 0;
+  font-size: var(--vf-font-size-2xl);
+  line-height: var(--vf-line-height-snug);
+  font-weight: var(--vf-font-weight-semibold);
+  letter-spacing: -0.01em;
+}
+
+.sp-page-lede {
+  margin: 0;
+  max-width: 62ch;
+  color: var(--vf-text-secondary);
+}
+
+.sp-eyebrow {
+  margin: 0;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-2xs);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* ----------------------------------------------------------------- stats */
+
+.sp-stats {
+  display: grid;
+  /*
+   * `auto-fit` with a floor, not four fixed columns. Four tiles side by side at
+   * 1440px and stacked at 390px is the same rule expressed once, and it does
+   * the sensible thing at every width in between without a breakpoint.
+   */
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: var(--vf-space-4);
+}
+
+.sp-stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-1);
+  padding: var(--vf-space-4);
+  border: 1px solid var(--vf-border-subtle);
+  border-radius: var(--vf-radius-lg);
+  background: var(--vf-surface-1);
+}
+
+.sp-stat-label {
+  margin: 0;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-xs);
+}
+
+.sp-stat-value {
+  margin: 0;
+  font-size: var(--vf-font-size-xl);
+  font-weight: var(--vf-font-weight-semibold);
+  line-height: var(--vf-line-height-snug);
+}
+
+.sp-stat-detail {
+  margin: 0;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-xs);
+}
+
+.sp-stat-positive {
+  border-color: var(--vf-status-success-border);
+}
+.sp-stat-accent {
+  border-color: var(--vf-border-accent);
+}
+.sp-stat-caution {
+  border-color: var(--vf-status-warn-border);
+}
+
+/* ----------------------------------------------------------------- cards */
+
+.sp-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: var(--vf-space-5);
+  align-items: start;
+}
+
+.sp-columns-wizard {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+}
+
+.sp-columns-review {
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+}
+
+.sp-column-side,
+.sp-wizard,
+.sp-review-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-4);
+  min-width: 0;
+}
+
+.sp-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-3);
+  padding: var(--vf-space-5);
+  border: 1px solid var(--vf-border-subtle);
+  border-radius: var(--vf-radius-lg);
+  background: var(--vf-surface-1);
+  box-shadow: var(--vf-elevation-1);
+  min-width: 0;
+}
+
+.sp-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--vf-space-4);
+}
+
+.sp-card-title {
+  margin: 0;
+  font-size: var(--vf-font-size-lg);
+  font-weight: var(--vf-font-weight-semibold);
+  line-height: var(--vf-line-height-snug);
+}
+
+.sp-body {
+  margin: 0;
+  color: var(--vf-text-secondary);
+}
+
+.sp-muted {
+  color: var(--vf-text-muted);
+}
+
+.sp-mono {
+  margin: 0;
+  font-family: var(--vf-font-family-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: var(--vf-font-size-xs);
+  color: var(--vf-text-muted);
+}
+
+/* A fingerprint must be able to break; it is longer than any column. */
+.sp-hash {
+  word-break: break-all;
+}
+
+.sp-link {
+  color: var(--vf-text-accent);
+  font-size: var(--vf-font-size-sm);
+  text-decoration: none;
+}
+
+.sp-link:hover {
+  text-decoration: underline;
+}
+
+.sp-list {
+  margin: 0;
+  padding-left: var(--vf-space-5);
+  color: var(--vf-text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-1);
+}
+
+.sp-list-withheld {
+  color: var(--vf-text-muted);
+}
+
+/* ------------------------------------------------------------------ rows */
+
+.sp-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sp-row {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-space-3);
+  padding: var(--vf-space-3) 0;
+  border-bottom: 1px solid var(--vf-border-subtle);
+  min-width: 0;
+}
+
+.sp-row:last-child {
+  border-bottom: 0;
+}
+
+.sp-rows-tight .sp-row {
+  padding: var(--vf-space-2) 0;
+}
+
+.sp-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-half);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sp-row-name {
+  font-weight: var(--vf-font-weight-medium);
+}
+
+.sp-row-name-quiet {
+  font-weight: var(--vf-font-weight-regular);
+  color: var(--vf-text-secondary);
+}
+
+.sp-row-sub,
+.sp-row-meta {
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-xs);
+}
+
+.sp-row-index {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface-3);
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-xs);
+  font-weight: var(--vf-font-weight-semibold);
+}
+
+/* ----------------------------------------------------------------- chips */
+
+.sp-chip {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: var(--vf-space-1) var(--vf-space-3);
+  border: 1px solid transparent;
+  border-radius: var(--vf-radius-pill);
+  font-size: var(--vf-font-size-2xs);
+  font-weight: var(--vf-font-weight-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/*
+ * Colour tints a chip; the WORD carries the meaning. Design system §5.1.13:
+ * status is never communicated by colour alone, and this product's entire
+ * subject is people reading things correctly.
+ */
+.sp-chip-positive {
+  background: var(--vf-status-success-surface);
+  border-color: var(--vf-status-success-border);
+  color: var(--vf-status-success-text);
+}
+
+.sp-chip-caution {
+  background: var(--vf-status-warn-surface);
+  border-color: var(--vf-status-warn-border);
+  color: var(--vf-status-warn-text);
+}
+
+.sp-chip-negative {
+  background: var(--vf-status-danger-surface);
+  border-color: var(--vf-status-danger-border);
+  color: var(--vf-status-danger-text);
+}
+
+.sp-chip-neutral {
+  background: var(--vf-status-neutral-surface);
+  border-color: var(--vf-status-neutral-border);
+  color: var(--vf-status-neutral-text);
+}
+
+.sp-chip-accent {
+  background: var(--vf-surface-accent);
+  border-color: var(--vf-border-accent);
+  color: var(--vf-text-accent);
+}
+
+/* --------------------------------------------------------------- buttons */
+
+.sp-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-start;
+  gap: var(--vf-space-2);
+  padding: var(--vf-space-3) var(--vf-space-5);
+  border: 1px solid var(--vf-border-default);
+  border-radius: var(--vf-control-radius);
+  background: var(--vf-surface-3);
+  color: var(--vf-text-primary);
+  font: inherit;
+  font-weight: var(--vf-font-weight-medium);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.sp-button:hover:not(:disabled) {
+  background: var(--vf-surface-4);
+}
+
+.sp-button:disabled {
+  color: var(--vf-text-disabled);
+  cursor: not-allowed;
+}
+
+.sp-button-primary {
+  background: var(--vf-violet-600);
+  border-color: var(--vf-violet-600);
+  color: var(--vf-text-on-accent);
+}
+
+.sp-button-primary:hover:not(:disabled) {
+  background: var(--vf-violet-500, var(--vf-violet-600));
+  border-color: var(--vf-violet-500, var(--vf-violet-600));
+}
+
+.sp-button-primary:disabled {
+  background: var(--vf-surface-3);
+  border-color: var(--vf-border-default);
+}
+
+.sp-button-small {
+  padding: var(--vf-space-2) var(--vf-space-3);
+  font-size: var(--vf-font-size-xs);
+}
+
+.sp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vf-space-3);
+}
+
+/* Focus is the design system's ring, everywhere, and it is never removed. */
+.sp :is(a, button, input, textarea, select):focus-visible {
+  outline: none;
+  border-radius: var(--vf-focus-radius);
+  box-shadow: var(--vf-focus-ring);
+}
+
+/* ----------------------------------------------------------------- forms */
+
+.sp-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-4);
+}
+
+.sp-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-2);
+  min-width: 0;
+}
+
+.sp-field-narrow {
+  max-width: 14rem;
+}
+
+.sp-field-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--vf-space-4);
+}
+
+.sp-field-label {
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-font-size-xs);
+}
+
+.sp-input,
+.sp-textarea {
+  width: 100%;
+  padding: var(--vf-space-3);
+  border: 1px solid var(--vf-border-default);
+  border-radius: var(--vf-control-radius);
+  background: var(--vf-surface-sunken);
+  color: var(--vf-text-primary);
+  font: inherit;
+}
+
+.sp-textarea {
+  resize: vertical;
+  line-height: var(--vf-line-height-normal);
+}
+
+.sp-input:disabled,
+.sp-textarea:disabled {
+  color: var(--vf-text-muted);
+  background: var(--vf-surface-2);
+}
+
+.sp-check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--vf-space-3);
+  color: var(--vf-text-secondary);
+  cursor: pointer;
+}
+
+.sp-check input {
+  margin-top: 0.15rem;
+  accent-color: var(--vf-violet-600);
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+}
+
+/* -------------------------------------------------------------- progress */
+
+.sp-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-space-3);
+}
+
+.sp-progress-rail {
+  flex: 1 1 auto;
+  height: 6px;
+  min-width: 5rem;
+  border-radius: var(--vf-progress-radius);
+  background: var(--vf-surface-3);
+  overflow: hidden;
+}
+
+.sp-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--vf-progress-radius);
+  background: var(--vf-violet-600);
+}
+
+.sp-progress-count {
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------- notices */
+
+.sp-notice {
+  margin: 0;
+  padding: var(--vf-space-3) var(--vf-space-4);
+  border: 1px solid var(--vf-status-danger-border);
+  border-radius: var(--vf-radius-md);
+  background: var(--vf-status-danger-surface);
+  color: var(--vf-status-danger-text);
+}
+
+.sp-notice-caution {
+  border-color: var(--vf-status-warn-border);
+  background: var(--vf-status-warn-surface);
+  color: var(--vf-status-warn-text);
+}
+
+/* An empty state is a designed state, never a blank panel. */
+.sp-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--vf-space-2);
+  padding: var(--vf-space-6) var(--vf-space-4);
+  border: 1px dashed var(--vf-border-default);
+  border-radius: var(--vf-empty-radius);
+  text-align: left;
+}
+
+.sp-empty-title {
+  margin: 0;
+  font-weight: var(--vf-font-weight-semibold);
+}
+
+.sp-empty-body {
+  margin: 0;
+  max-width: 52ch;
+  color: var(--vf-text-muted);
+}
+
+/* ------------------------------------------------------------- languages */
+
+.sp-language-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: var(--vf-space-4);
+}
+
+.sp-language-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--vf-space-3);
+}
+
+.sp-language-native {
+  margin: 0;
+  font-size: var(--vf-font-size-lg);
+  font-weight: var(--vf-font-weight-semibold);
+}
+
+.sp-language-english {
+  margin: 0;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-xs);
+}
+
+/* ----------------------------------------------------------------- facts */
+
+.sp-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--vf-space-3);
+  margin: 0;
+}
+
+.sp-facts dt {
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-2xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sp-facts dd {
+  margin: var(--vf-space-1) 0 0;
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------- wizard */
+
+.sp-steps {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-space-2);
+  margin: 0;
+  padding: 0;
+}
+
+.sp-step {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-space-2);
+  padding: var(--vf-space-2) var(--vf-space-4);
+  border: 1px solid var(--vf-border-subtle);
+  border-radius: var(--vf-radius-pill);
+  color: var(--vf-text-muted);
+  font-size: var(--vf-font-size-xs);
+}
+
+.sp-step-reached {
+  color: var(--vf-text-secondary);
+  border-color: var(--vf-border-default);
+}
+
+.sp-step-current {
+  color: var(--vf-text-primary);
+  border-color: var(--vf-border-accent);
+  background: var(--vf-surface-accent-weak);
+}
+
+.sp-step .sp-step-index {
+  display: grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: var(--vf-radius-circle);
+  background: var(--vf-surface-3);
+  font-size: var(--vf-font-size-2xs);
+  font-weight: var(--vf-font-weight-semibold);
+}
+
+.sp-step-current .sp-step-index {
+  background: var(--vf-violet-600);
+  color: var(--vf-text-on-accent);
+}
+
+/* ---------------------------------------------------------------- consent */
+
+/*
+ * The permission is set slightly larger than body text and given a quiet
+ * ground. It is the one paragraph on this surface a person is asked to read
+ * rather than skim, and typographic default treatment invites skimming.
+ */
+.sp-consent-text {
+  margin: 0;
+  padding: var(--vf-space-4);
+  border-left: 2px solid var(--vf-border-accent);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface-sunken);
+  color: var(--vf-text-primary);
+  font-size: var(--vf-font-size-md);
+  line-height: var(--vf-line-height-relaxed);
+}
+
+.sp-consent-retained {
+  color: var(--vf-text-secondary);
+}
+
+.sp-consent-grants {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: var(--vf-space-4);
+}
+
+.sp-guidance {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-4);
+}
+
+.sp-guidance-name {
+  margin: 0 0 var(--vf-space-1);
+  font-weight: var(--vf-font-weight-semibold);
+}
+
+/* ------------------------------------------------------------ elicitation */
+
+.sp-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-4);
+}
+
+.sp-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-3);
+  padding: var(--vf-space-4);
+  border: 1px solid var(--vf-border-subtle);
+  border-radius: var(--vf-radius-md);
+  background: var(--vf-surface-2);
+}
+
+.sp-item-head {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-space-3);
+}
+
+.sp-item-purpose {
+  margin: 0;
+  flex: 1 1 auto;
+  color: var(--vf-text-secondary);
+}
+
+.sp-item-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: var(--vf-space-4);
+}
+
+.sp-textarea-short {
+  min-height: 3.5rem;
+}
+
+.sp-submission-items {
+  margin: 0;
+  padding-left: var(--vf-space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-4);
+}
+
+.sp-submission-native {
+  margin: var(--vf-space-1) 0 0;
+  font-size: var(--vf-font-size-md);
+}
+
+.sp-submission-english {
+  margin: var(--vf-space-1) 0 0;
+  color: var(--vf-text-muted);
+}
+
+/* ---------------------------------------------------------------- review */
+
+/*
+ * Source and candidate are set at reading size, not UI size. A reviewer is
+ * being asked to notice a reversed negation in a language with tone marks;
+ * 14px chrome text is not the place to do it.
+ */
+.sp-source-text,
+.sp-candidate-text {
+  margin: 0;
+  padding: var(--vf-space-4);
+  border-radius: var(--vf-radius-md);
+  background: var(--vf-surface-sunken);
+  font-size: var(--vf-font-size-lg);
+  line-height: var(--vf-line-height-relaxed);
+}
+
+.sp-candidate-text {
+  border-left: 2px solid var(--vf-border-accent);
+}
+
+.sp-criteria {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-space-4);
+}
+
+.sp-criterion-question {
+  margin: 0 0 var(--vf-space-2);
+  display: flex;
+  align-items: center;
+  gap: var(--vf-space-2);
+  flex-wrap: wrap;
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-font-size-xs);
+}
+
+/*
+ * The decisive question is weighted. A reversal turns "I have received the
+ * money" into "I have NOT received the money", which in a real chat is somebody
+ * losing money or missing a warning.
+ */
+.sp-criterion-decisive {
+  padding: var(--vf-space-3);
+  margin-inline: calc(var(--vf-space-3) * -1);
+  border-radius: var(--vf-radius-md);
+  background: var(--vf-surface-accent-weak);
+}
+
+.sp-criterion-decisive .sp-criterion-question {
+  color: var(--vf-text-primary);
+  font-weight: var(--vf-font-weight-semibold);
+}
+
+.sp-criterion-flag {
+  padding: 0 var(--vf-space-2);
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-surface-accent-strong);
+  color: var(--vf-text-accent);
+  font-size: var(--vf-font-size-2xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.sp-choice {
+  display: flex;
+  gap: var(--vf-space-2);
+}
+
+.sp-choice-option {
+  flex: 1 1 auto;
+  padding: var(--vf-space-2) var(--vf-space-3);
+  border: 1px solid var(--vf-border-default);
+  border-radius: var(--vf-control-radius);
+  background: var(--vf-surface-2);
+  color: var(--vf-text-secondary);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.sp-choice-option:hover {
+  border-color: var(--vf-border-interactive);
+}
+
+.sp-choice-on {
+  background: var(--vf-surface-accent-strong);
+  border-color: var(--vf-border-accent);
+  color: var(--vf-text-primary);
+  font-weight: var(--vf-font-weight-semibold);
+}
+
+.sp-choice-scale .sp-choice-option {
+  text-align: center;
+}
+
+/* ----------------------------------------------------------- responsive */
+
+/*
+ * 1024: the rail becomes a top bar. Below a laptop the 248px column is a
+ * quarter of the screen spent on navigation, and the review packet is the one
+ * screen here that genuinely needs the width.
+ */
+@media (max-width: 1023px) {
+  .sp-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sp-rail {
+    border-right: 0;
+    border-bottom: 1px solid var(--vf-border-subtle);
+  }
+
+  .sp-rail-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .sp-rail-foot {
+    flex-direction: row;
+    flex-wrap: wrap;
+    margin-top: 0;
+  }
+
+  .sp-columns,
+  .sp-columns-wizard,
+  .sp-columns-review {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/*
+ * 768: the two-up field pairs collapse. The elicitation row puts the message
+ * and its meaning side by side, which is right on a laptop and cramped on a
+ * phone -- two 45-character boxes is not two usable boxes.
+ */
+@media (max-width: 767px) {
+  .sp-main {
+    padding-top: var(--vf-space-5);
+  }
+
+  .sp-item-fields,
+  .sp-field-pair,
+  .sp-consent-grants {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sp-page-head-review {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .sp-row {
+    flex-wrap: wrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sp * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* The total sits apart from the groups it adds up. */
+.sp-row-total {
+  border-top: 1px solid var(--vf-border-default);
+  border-bottom: 0;
+  margin-top: var(--vf-space-1);
+  padding-top: var(--vf-space-3);
+  font-weight: var(--vf-font-weight-semibold);
+}

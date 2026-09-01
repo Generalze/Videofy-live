@@ -7,10 +7,10 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "npm --prefix ../.. run build -w @videofy-live/shared-types && npm --prefix ../.. run build -w @videofy-live/language-catalogue && npm --prefix ../.. run build -w @videofy-live/workspace-authority && npm --prefix ../.. run build -w @videofy-live/account-trust && npm --prefix ../.. run build -w @videofy-live/billing-tariff && tsc",
+    "build": "npm --prefix ../.. run build -w @videofy-live/shared-types && npm --prefix ../.. run build -w @videofy-live/language-catalogue && npm --prefix ../.. run build -w @videofy-live/language-specialist && npm --prefix ../.. run build -w @videofy-live/workspace-authority && npm --prefix ../.. run build -w @videofy-live/account-trust && npm --prefix ../.. run build -w @videofy-live/billing-tariff && tsc",
     "start": "node dist/index.js",
-    "test": "npm --prefix ../.. run build -w @videofy-live/shared-types && npm --prefix ../.. run build -w @videofy-live/language-catalogue && npm --prefix ../.. run build -w @videofy-live/workspace-authority && npm --prefix ../.. run build -w @videofy-live/account-trust && npm --prefix ../.. run build -w @videofy-live/billing-tariff && vitest run",
-    "typecheck": "npm --prefix ../.. run build -w @videofy-live/shared-types && npm --prefix ../.. run build -w @videofy-live/language-catalogue && npm --prefix ../.. run build -w @videofy-live/workspace-authority && npm --prefix ../.. run build -w @videofy-live/account-trust && npm --prefix ../.. run build -w @videofy-live/billing-tariff && tsc --noEmit",
+    "test": "npm --prefix ../.. run build -w @videofy-live/shared-types && npm --prefix ../.. run build -w @videofy-live/language-catalogue && npm --prefix ../.. run build -w @videofy-live/language-specialist && npm --prefix ../.. run build -w @videofy-live/workspace-authority && npm --prefix ../.. run build -w @videofy-live/account-trust && npm --prefix ../.. run build -w @videofy-live/billing-tariff && vitest run",
+    "typecheck": "npm --prefix ../.. run build -w @videofy-live/shared-types && npm --prefix ../.. run build -w @videofy-live/language-catalogue && npm --prefix ../.. run build -w @videofy-live/language-specialist && npm --prefix ../.. run build -w @videofy-live/workspace-authority && npm --prefix ../.. run build -w @videofy-live/account-trust && npm --prefix ../.. run build -w @videofy-live/billing-tariff && tsc --noEmit",
     "lint": "eslint src --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "import-accounts": "tsx src/db/import-accounts.ts"
   },
@@ -19,6 +19,7 @@
     "@videofy-live/account-trust": "*",
     "@videofy-live/billing-tariff": "*",
     "@videofy-live/language-catalogue": "*",
+    "@videofy-live/language-specialist": "*",
     "@videofy-live/participant-contracts": "*",
     "@videofy-live/service-env": "*",
     "@videofy-live/shared-types": "*",

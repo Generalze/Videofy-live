@@ -50,6 +50,33 @@ export const ROUTE_META: readonly RouteMeta[] = [
       'Real-time multilingual communication for conversations, conferences and live programmes.',
     imageAlt: 'VIDEOFY-LIVE — real-time multilingual communication',
   },
+  /*
+   * The recruitment page is a PUBLIC route with its own card because it is the
+   * page that gets shared: pasted into a WhatsApp group of Yoruba speakers,
+   * forwarded by somebody who knows a Hausa translator. Without an entry here it
+   * would inherit the homepage preview, and the one link this programme depends
+   * on would arrive looking like a link to something else.
+   *
+   * The description says what a specialist DOES and promises nothing about
+   * payment. See FORBIDDEN_PUBLIC_TERMS in @videofy-live/language-specialist.
+   *
+   * THE COMMENT IS OUTSIDE THE OBJECT LITERAL, and that is load-bearing rather
+   * than a style choice. `scripts/generate-route-html.mjs` parses this array as
+   * TEXT so there is exactly one place these strings are written, and its
+   * pattern expects `path:` immediately after the brace. With the comment
+   * INSIDE, the entry did not match, the generator stamped three routes instead
+   * of four, and it said so only by printing a smaller number -- which is how
+   * this page would have shipped with the homepage's share card. The generator
+   * now refuses a count mismatch outright; this comment sits here so the next
+   * person does not have to rediscover why.
+   */
+  {
+    path: '/language-specialists/',
+    title: 'Become a C7 Language Specialist — Consummate 7',
+    description:
+      'Native and highly fluent speakers help C7 evaluate translation quality, natural wording, terminology, pronunciation and cultural accuracy.',
+    imageAlt: 'Become a C7 Language Specialist',
+  },
 ];
 
 export function metaForPath(pathname: string): RouteMeta {

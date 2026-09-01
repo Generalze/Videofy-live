@@ -90,13 +90,32 @@
 		}
 	}
 
+	# --- the Language Specialist portal ------------------------------------
+	# Two NEW public shell paths and one new operator path were added to the
+	# matchers above at the same time as the routes themselves:
+	#
+	#   /language-specialists/          the public recruitment page, served by
+	#                                   ecosystem-web through the root handler's
+	#                                   `try_files {path}/index.html`, so it gets
+	#                                   its own generated Open Graph card.
+	#   /specialist/*                   the signed-in portal, one shell for every
+	#                                   path beneath it.
+	#   /operator/language-specialists  the operator console, served by the
+	#                                   /operator/* handler's index.html fallback.
+	#
+	# The comment on those matchers says they are LISTS that must be extended
+	# whenever a public path is added, and that forgetting is exactly how the
+	# stale-shell bug came back for the ecosystem site. The API these pages call
+	# is /auth/specialists/* and /auth/admin/language-specialists/*, which the
+	# existing account-service block already carries -- no new proxy rule.
+
 	# --- static single-page apps -------------------------------------------
 	# The shell is revalidated on every load (a shell with no Cache-Control is
 	# heuristically cached for hours and keeps naming the PREVIOUS bundle);
 	# the hashed assets are immutable. Both matchers are lists and must be
 	# extended whenever a public path is added -- that omission is exactly how
 	# the bug came back for the ecosystem site.
-	@spa_shell path /call/ /call/index.html /listen/ /listen/index.html /streams/* /operator/ /operator/index.html / /index.html /app/ /app/* /videofy/ /videofy/index.html /videofy/live/ /videofy/live/index.html
+	@spa_shell path /call/ /call/index.html /listen/ /listen/index.html /streams/* /operator/ /operator/index.html /operator/language-specialists /operator/language-specialists/* / /index.html /app/ /app/* /videofy/ /videofy/index.html /videofy/live/ /videofy/live/index.html /language-specialists/ /language-specialists/index.html /specialist/ /specialist/*
 	header @spa_shell Cache-Control "no-cache, must-revalidate"
 
 	@hashed_assets path /call/assets/* /listen/assets/* /operator/assets/* /assets/*

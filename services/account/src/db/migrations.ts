@@ -746,6 +746,280 @@ const CHANNEL_PROFILES: Migration = {
   `,
 };
 
+/**
+ * 021 -- the Language Specialist programme.
+ *
+ * TEN TABLES, AND THE SHAPE IS THE POLICY. Four of them are append-only with a
+ * trigger to prove it, one carries a CHECK constraint that a future product
+ * decision has to lift on purpose, and none of them holds a global "is a
+ * specialist" flag. Each of those is a rule this programme cannot be run
+ * honestly without, and each is enforced here rather than in a route handler,
+ * because a rule that lives in one of eleven endpoints is a rule that holds
+ * until somebody adds the twelfth.
+ *
+ * WHY QUALIFICATION IS A ROW PER LANGUAGE. The first contributor this was
+ * designed around writes Yoruba and English, has never been assessed in French,
+ * and applied for Hausa last week. A boolean on the account answers "may this
+ * person review?" with one word for four different situations, and the first
+ * consumer to consult it hands them a French packet. The primary key is
+ * (account_id, language) and there is nowhere else to record standing.
+ *
+ * WHY THE CORPUS IS ITS OWN TABLE AND NOT A FLAG ON THE DRAFT. The whole value
+ * of native source is that it was written without knowledge of how the engines
+ * behave, and that property is destroyed silently by one well-meaning edit
+ * after the first results arrive. A draft is meant to be edited; a corpus must
+ * not be. Making them one table with a `frozen` column means the same UPDATE
+ * path serves both, and the day it is called on a frozen row nothing at all
+ * appears to have gone wrong. Two tables, a UNIQUE key on
+ * (account_id, language, revision) and a trigger refusing UPDATE and DELETE
+ * mean a correction can only ever be a NEW revision.
+ *
+ * WHY provider AND model LIVE ON THE CANDIDATE ROW. The reviewer must not learn
+ * which engine produced which line -- automatic checks have already been wrong
+ * three times on Yoruba-adjacent judgements, and a reviewer who knows what a
+ * machine thought is no longer an independent instrument. The identity has to
+ * exist somewhere, so it exists HERE, server-side, behind an opaque candidate
+ * id, and the application builds the reviewer's payload by naming the fields it
+ * copies rather than by deleting the ones it must not.
+ *
+ * WHY voice_rights_granted IS A COLUMN WITH A CHECK THAT PINS IT FALSE. The
+ * permission a contributor gives on the elicitation form is a licence over TEXT
+ * they wrote. It grants no voice right of any kind. Storing the field absent
+ * would leave the boundary depending on whoever adds it later having read the
+ * legal note; storing it pinned means opening a voice programme is a migration
+ * somebody authors deliberately, with the constraint's name in the diff.
+ *
+ * WHAT IS NOT COLLECTED, and it is a design decision rather than an omission:
+ * no home address, no government identifier, no demographics. None of them
+ * helps decide whether a person can tell a good Yoruba translation from a bad
+ * one, and each is a thing that must then be protected, disclosed and deleted.
+ */
+const LANGUAGE_SPECIALISTS: Migration = {
+  name: '021_language_specialists',
+  sql: `
+    CREATE TABLE IF NOT EXISTS specialist_profiles (
+      account_id        text        PRIMARY KEY,
+      applied_at_ms     bigint      NOT NULL,
+      application_state text        NOT NULL DEFAULT 'UNDER_REVIEW'
+        CHECK (application_state IN ('UNDER_REVIEW', 'ACCEPTED', 'DECLINED')),
+      -- The applicant's own words on why they want to do this. Free text, and
+      -- it never appears in a log line.
+      motivation        text        NOT NULL DEFAULT '',
+      -- Optional and unverified. Present so an assignment is not scheduled for
+      -- somebody's three in the morning, and for no other purpose.
+      country           text,
+      time_zone         text,
+      updated_at_ms     bigint      NOT NULL
+    );
+
+    -- Standing, per language. See the note above on why there is no flag.
+    CREATE TABLE IF NOT EXISTS specialist_languages (
+      account_id    text   NOT NULL,
+      language      text   NOT NULL,
+      state         text   NOT NULL
+        CHECK (state IN ('APPLIED', 'ASSESSMENT_PENDING', 'ASSESSMENT_IN_PROGRESS',
+                         'SUBMITTED', 'UNDER_REVIEW', 'QUALIFIED', 'NOT_QUALIFIED',
+                         'REASSESSMENT_ALLOWED', 'SUSPENDED')),
+      applied_at_ms bigint NOT NULL,
+      decided_at_ms bigint,
+      decided_by    text,
+      decision_note text,
+      -- Bumped when an operator allows a reassessment. The corpus revision
+      -- follows it, which is what makes a correction a new attempt rather than
+      -- an edit of the first one.
+      attempt       integer NOT NULL DEFAULT 1,
+      PRIMARY KEY (account_id, language)
+    );
+
+    -- The operator console's first screen is "everyone waiting on a decision".
+    CREATE INDEX IF NOT EXISTS specialist_languages_state_idx
+      ON specialist_languages (state, applied_at_ms DESC);
+
+    -- What a person agreed to, and the bytes they agreed to it in.
+    CREATE TABLE IF NOT EXISTS specialist_consents (
+      consent_id           text   PRIMARY KEY,
+      account_id           text   NOT NULL,
+      language             text   NOT NULL,
+      consent_version      text   NOT NULL,
+      -- One value today. It exists so that a future voice agreement cannot be
+      -- written into these rows and become indistinguishable from this one.
+      scope                text   NOT NULL DEFAULT 'language-text'
+        CHECK (scope IN ('language-text')),
+      -- The version says WHICH document; this says which BYTES. A deployment
+      -- that ships a version number without bumping the text is the mistake
+      -- this guards, and it is not a hypothetical one.
+      consent_text_sha256  text   NOT NULL,
+      accepted_at_ms       bigint NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS specialist_consents_who_idx
+      ON specialist_consents (account_id, language, accepted_at_ms DESC);
+
+    -- The form as it is being typed. MUTABLE, on purpose: refusing a
+    -- half-finished save costs a contributor twenty minutes to a closed tab.
+    CREATE TABLE IF NOT EXISTS specialist_elicitation_drafts (
+      attempt_id    text   PRIMARY KEY,
+      account_id    text   NOT NULL,
+      language      text   NOT NULL,
+      items         jsonb  NOT NULL DEFAULT '[]'::jsonb,
+      updated_at_ms bigint NOT NULL,
+      UNIQUE (account_id, language)
+    );
+
+    -- The corpus. IMMUTABLE, on purpose. See the note above.
+    CREATE TABLE IF NOT EXISTS specialist_source_corpora (
+      attempt_id      text   PRIMARY KEY,
+      account_id      text   NOT NULL,
+      language        text   NOT NULL,
+      revision        integer NOT NULL,
+      items           jsonb  NOT NULL,
+      -- Rows carrying a message. The optional code-switch row may be absent,
+      -- which is a legitimate skip and not a short corpus.
+      source_count    integer NOT NULL,
+      sha256          text   NOT NULL,
+      frozen_at_ms    bigint NOT NULL,
+      -- NOT NULL, and it is the whole consent gate expressed as a constraint:
+      -- there is no way to write a corpus that no permission was given for.
+      consent_id      text   NOT NULL REFERENCES specialist_consents (consent_id),
+      consent_version text   NOT NULL,
+      UNIQUE (account_id, language, revision)
+    );
+
+    CREATE TABLE IF NOT EXISTS specialist_assignments (
+      assignment_id text   PRIMARY KEY,
+      account_id    text   NOT NULL,
+      language      text   NOT NULL,
+      kind          text   NOT NULL
+        CHECK (kind IN ('BLIND_TRANSLATION_REVIEW', 'SOURCE_ELICITATION')),
+      state         text   NOT NULL DEFAULT 'NEW'
+        CHECK (state IN ('NEW', 'IN_PROGRESS', 'SUBMITTED')),
+      created_at_ms bigint NOT NULL,
+      due_at_ms     bigint
+    );
+
+    CREATE INDEX IF NOT EXISTS specialist_assignments_who_idx
+      ON specialist_assignments (account_id, created_at_ms DESC);
+
+    -- The engine identity lives here and is never selected into a reviewer
+    -- payload. See the note above.
+    CREATE TABLE IF NOT EXISTS specialist_review_candidates (
+      candidate_id   text    PRIMARY KEY,
+      assignment_id  text    NOT NULL REFERENCES specialist_assignments (assignment_id),
+      ordinal        integer NOT NULL,
+      direction      text    NOT NULL,
+      category       text    NOT NULL DEFAULT '',
+      source_text    text    NOT NULL,
+      candidate_text text    NOT NULL,
+      provider       text    NOT NULL,
+      model          text    NOT NULL,
+      machine_score  double precision,
+      benchmark_rank integer,
+      expected_winner boolean,
+      UNIQUE (assignment_id, ordinal)
+    );
+
+    CREATE TABLE IF NOT EXISTS specialist_review_verdicts (
+      verdict_id              text    PRIMARY KEY,
+      assignment_id           text    NOT NULL REFERENCES specialist_assignments (assignment_id),
+      candidate_id            text    NOT NULL REFERENCES specialist_review_candidates (candidate_id),
+      account_id              text    NOT NULL,
+      -- Stored as the words rather than as booleans. A column of t/f loses
+      -- which question it answered the moment the criteria are reordered, and
+      -- these are read years later as evidence.
+      meaning_preserved       text    NOT NULL CHECK (meaning_preserved IN ('yes', 'no')),
+      meaning_reversed        text    NOT NULL CHECK (meaning_reversed IN ('yes', 'no')),
+      information_omitted     text    NOT NULL CHECK (information_omitted IN ('yes', 'no')),
+      information_invented    text    NOT NULL CHECK (information_invented IN ('yes', 'no')),
+      names_numbers_corrupted text    NOT NULL CHECK (names_numbers_corrupted IN ('yes', 'no')),
+      naturalness             integer NOT NULL CHECK (naturalness BETWEEN 1 AND 5),
+      grammar                 integer NOT NULL CHECK (grammar BETWEEN 1 AND 5),
+      trust_in_real_chat      text    NOT NULL CHECK (trust_in_real_chat IN ('yes', 'no')),
+      corrected_translation   text,
+      note                    text,
+      submitted_at_ms         bigint  NOT NULL,
+      -- One judgement per candidate. A second is a client retry, and accepting
+      -- it would put two verdicts of the same line into the same evidence.
+      UNIQUE (assignment_id, candidate_id)
+    );
+
+    -- Granted one at a time by a named operator. Nothing derives a row here
+    -- from a qualification state; see the package note on why.
+    CREATE TABLE IF NOT EXISTS specialist_capabilities (
+      account_id    text   NOT NULL,
+      language      text   NOT NULL,
+      capability    text   NOT NULL
+        CHECK (capability IN ('TRANSLATION_REVIEWER', 'TRANSLATION_ADJUDICATOR',
+                              'VOCABULARY_SPECIALIST', 'PRONUNCIATION_SPECIALIST',
+                              'CULTURAL_REVIEWER', 'VOICE_QUALITY_REVIEWER')),
+      granted_by    text   NOT NULL,
+      granted_at_ms bigint NOT NULL,
+      PRIMARY KEY (account_id, language, capability)
+    );
+
+    -- Who decided, when, from what, to what, and why.
+    CREATE TABLE IF NOT EXISTS specialist_decisions (
+      decision_id text   PRIMARY KEY,
+      account_id  text   NOT NULL,
+      language    text   NOT NULL,
+      from_state  text,
+      to_state    text   NOT NULL,
+      decided_by  text   NOT NULL,
+      reason      text   NOT NULL DEFAULT '',
+      at_ms       bigint NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS specialist_decisions_who_idx
+      ON specialist_decisions (account_id, language, at_ms DESC);
+
+    -- Modelled, and closed. See the note above on the CHECK.
+    CREATE TABLE IF NOT EXISTS specialist_voice_participation (
+      account_id              text    PRIMARY KEY,
+      state                   text    NOT NULL DEFAULT 'NOT_INVITED'
+        CHECK (state IN ('NOT_INVITED', 'INVITED', 'AUDITION_PENDING', 'VOICE_APPROVED',
+                         'VOICE_AGREEMENT_REQUIRED', 'ACTIVE', 'WITHDRAWN')),
+      -- Pinned false. Opening a voice programme means writing a migration that
+      -- drops this constraint by name, which is a decision with an author.
+      voice_rights_granted    boolean NOT NULL DEFAULT false
+        CONSTRAINT specialist_voice_rights_not_granted CHECK (voice_rights_granted = false),
+      -- There is no such document today, and a version string here would imply
+      -- there was.
+      voice_agreement_version text    CHECK (voice_agreement_version IS NULL),
+      updated_at_ms           bigint  NOT NULL
+    );
+
+    -- The append-only rule, in the database rather than in a convention.
+    -- Application-level append-only survives until somebody writes a
+    -- well-meaning UPDATE in a console session.
+    CREATE OR REPLACE FUNCTION specialist_records_are_append_only()
+    RETURNS trigger AS $$
+    BEGIN
+      RAISE EXCEPTION
+        '% is append-only: write a new record instead of %', TG_TABLE_NAME, TG_OP;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    DROP TRIGGER IF EXISTS specialist_consents_no_rewrite ON specialist_consents;
+    CREATE TRIGGER specialist_consents_no_rewrite
+      BEFORE UPDATE OR DELETE ON specialist_consents
+      FOR EACH ROW EXECUTE FUNCTION specialist_records_are_append_only();
+
+    DROP TRIGGER IF EXISTS specialist_source_corpora_no_rewrite ON specialist_source_corpora;
+    CREATE TRIGGER specialist_source_corpora_no_rewrite
+      BEFORE UPDATE OR DELETE ON specialist_source_corpora
+      FOR EACH ROW EXECUTE FUNCTION specialist_records_are_append_only();
+
+    DROP TRIGGER IF EXISTS specialist_review_verdicts_no_rewrite ON specialist_review_verdicts;
+    CREATE TRIGGER specialist_review_verdicts_no_rewrite
+      BEFORE UPDATE OR DELETE ON specialist_review_verdicts
+      FOR EACH ROW EXECUTE FUNCTION specialist_records_are_append_only();
+
+    DROP TRIGGER IF EXISTS specialist_decisions_no_rewrite ON specialist_decisions;
+    CREATE TRIGGER specialist_decisions_no_rewrite
+      BEFORE UPDATE OR DELETE ON specialist_decisions
+      FOR EACH ROW EXECUTE FUNCTION specialist_records_are_append_only();
+  `,
+};
+
 /** Applied in this order. Append only. */
 /**
  * Programme vocabulary, and the revision that makes it one coherent state.
@@ -866,4 +1140,5 @@ export const MIGRATIONS: readonly Migration[] = [
   CHANNEL_PROFILES,
   PROGRAMME_VOCABULARY,
   PROGRAMME_SPONSORED_CREATIVE,
+  LANGUAGE_SPECIALISTS,
 ];
