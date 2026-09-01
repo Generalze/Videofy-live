@@ -170,3 +170,60 @@ jobs:
           for component in VideofyConnectionService IncomingCallService IncomingCallActivity VideofyMessagingService; do
             grep -q "$component" "$MERGED"               || (echo "merged manifest is missing $component" && exit 1)
           done
+
+  # ---------------------------------------------------------------------------
+  # MIGRATIONS, AGAINST A REAL POSTGRES.
+  #
+  # A fake pool can prove ORDER and BOOKKEEPING and nothing about whether the
+  # SQL is valid -- a bad column type, a malformed CHECK, an index on a column
+  # that does not exist. Those only appear when a real server parses them, and
+  # the first place that happens must not be a deployment.
+  #
+  # Both paths run, because they fail differently: FRESH is what a new
+  # environment does, UPGRADE is what an existing one does, and PARITY between
+  # them is what proves an upgraded database is not subtly different from a
+  # rebuilt one -- the difference that produces a bug reproducible only in
+  # staging.
+  #
+  # The service container is disposable and the script refuses any URL that
+  # looks like a real deployment.
+  migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: proof
+          POSTGRES_DB: proof
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      # The proof imports the account service's BUILT migrations, so that what
+      # is exercised is what ships rather than a re-read of the source.
+      - name: Build
+        run: npm run build
+
+      - name: Prove fresh, upgrade and parity
+        env:
+          DATABASE_URL: postgres://postgres:proof@127.0.0.1:5432/proof
+        run: npm run test:migrations

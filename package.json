@@ -35,7 +35,8 @@
     "c-ai1:smoke": "npm run build -w @videofy-live/media-ingest && node scripts/c-ai1-provider-smoke.mjs",
     "c-ai1:realtime-proof": "npm run build && node scripts/c-ai1-1d-realtime-proof.mjs",
     "c-ai1:production-acceptance": "npm run build && node scripts/c-ai1-1e-production-acceptance.mjs",
-    "c-ai1:multilingual": "npm run build && node scripts/c-ai1-1f-multilingual-acceptance.mjs"
+    "c-ai1:multilingual": "npm run build && node scripts/c-ai1-1f-multilingual-acceptance.mjs",
+    "test:migrations": "node scripts/migration-proof.mjs"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",
