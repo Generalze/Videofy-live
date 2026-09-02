@@ -17,7 +17,8 @@
  *   Voice rows                     REAL   target-language catalogue (registry state)
  *   Row flag                       REAL   VoiceRow.flag, null in production -> code tag
  *   Standard / Premium chip        REAL   VoiceRow.grade, null in production -> status word
- *   Row chevron (voice picker)     FUTURE disabled; no per-programme voice contract
+ *   Row chevron (voice picker)     REMOVED  no per-programme voice contract exists, and a
+ *                                           control that cannot act must not promise one
  *   View Preflight                 REAL   hash navigation
  *
  * The flag and the grade are drawn only when the row carries them. Nothing
@@ -70,7 +71,6 @@ const GRADE_SKIN: Readonly<Record<VoiceGrade, string | undefined>> = {
   premium: styles.chipPremium,
 };
 
-const VOICE_PICKER_HINT = 'Per-programme voice choice is not available yet; the registry chooses the voice for each language.';
 
 function pct(value: number): number {
   return Math.round(Math.max(0, Math.min(1, value)) * 100);
@@ -270,9 +270,17 @@ function VoiceRowItem({ row }: { readonly row: VoiceRow }): React.ReactElement {
       <Chip tone={tone} className={`${styles.voiceChip} ${skin}`} title={row.reason}>
         {word}
       </Chip>
-      <button type="button" className={styles.voiceMore} disabled aria-disabled="true" title={VOICE_PICKER_HINT} aria-label={`Choose voice for ${row.label}: not available`}>
-        <Icon name="chevron-right" size={18} />
-      </button>
+      {/*
+        * NO CHEVRON. A disabled "choose voice" control sat here, permanently
+        * un-pressable, promising an action nothing in this deployment can
+        * perform: there is no per-programme voice contract, and the registry
+        * picks the voice for each language.
+        *
+        * A control that cannot act must not look like one. It is removed
+        * rather than styled quieter, and the fact it was carrying -- that the
+        * choice is not the operator's -- is stated once for the whole list
+        * instead of implied by every greyed-out row.
+        */}
     </li>
   );
 }
@@ -353,6 +361,16 @@ export function AudioVoicesPage({
               Each target language uses a voice selected by the deployment&rsquo;s registry.
               <br />
               Status reflects current voice availability.
+              {/*
+                * SAID PLAINLY RATHER THAN LEFT TO BE INFERRED. Nothing on this
+                * deployment resolves a commercial grade, so the chip shows
+                * availability instead. Without this line an operator reading
+                * "Available" could reasonably assume a grade had been assessed
+                * and found unremarkable, which is a different claim.
+                */}
+              <br />
+              Voices are not commercially graded on this deployment, and the voice for a
+              language is not an operator choice.
             </p>
             {voices.length === 0 ? (
               <p className={styles.voicesEmpty}>No target languages yet. Add them under Languages and their voices appear here.</p>

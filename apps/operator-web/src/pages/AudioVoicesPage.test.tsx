@@ -85,14 +85,30 @@ describe('the voice rows', () => {
     expect(html).not.toContain('Premium');
   });
 
-  it('renders the per-language voice picker disabled with a reason, never as a working control', () => {
+  it('offers no voice-picker control at all, working or otherwise', () => {
+    /*
+     * A DISABLED CONTROL IS STILL A PROMISE. A permanently un-pressable
+     * "choose voice" chevron sat on every row, and it could never do anything:
+     * there is no per-programme voice contract, and the registry picks the
+     * voice for each language. The earlier version of this test pinned that
+     * control as correctly disabled, which made the wrong answer permanent.
+     *
+     * The fact it was carrying is now stated once, in words, instead of being
+     * implied by a greyed-out affordance on every row.
+     */
     const html = markup();
-    const chevrons = html.match(/<button[^>]*aria-label="Choose voice for [^"]*: not available"[^>]*>/g) ?? [];
-    expect(chevrons).toHaveLength(2);
-    for (const button of chevrons) {
-      expect(button).toContain('disabled=""');
-      expect(button).toContain('Per-programme voice choice is not available yet');
-    }
+    expect(html).not.toMatch(/aria-label="Choose voice for/u);
+    expect(html).not.toMatch(/chevron-right/u);
+    expect(html).toContain('selected by the deployment');
+  });
+
+  it('says outright that no grade was assessed, rather than leaving it to be inferred', () => {
+    /*
+     * The chip shows availability when no commercial grade resolves -- which is
+     * true, and easily read as "assessed and unremarkable". Nothing on this
+     * deployment grades a voice, so the page says so.
+     */
+    expect(markup()).toContain('not commercially graded');
   });
 
   it('explains an empty list rather than inventing languages', () => {
