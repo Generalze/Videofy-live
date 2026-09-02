@@ -72,6 +72,7 @@ import {
   type ConferenceInfo,
   type KnockingSeat,
 } from '../conference/admission';
+import { createDirectCallApi, terminalStateAfterFailedResume } from './directCallApi';
 import type { ConferenceSetup } from '../conference/conferenceSetup';
 
 /** The gateway refuses a knock nobody answers in 60 s; the phone stops waiting at the same moment. */
@@ -892,6 +893,30 @@ export class CallConnection {
   }
 
   /**
+   * Ask the server what happened, when the seat could not be resumed.
+   *
+   * A resume fails for two very different reasons: a blip, or a call that
+   * ended while this phone was away. Only the second is terminal, and nothing
+   * else tells this screen about it -- the `call:direct:state` carrying the
+   * news went to a room this socket had already left, and it is never sent
+   * again. Unreconciled, the call screen sits on Connected for a call that
+   * ended minutes ago on the other phone (founder review, 2 Sep).
+   *
+   * A FAILED READ IS NOT A TERMINAL STATE. `check` answers null for a dead
+   * network exactly as it does for a call that no longer exists, so only an
+   * explicit terminal state from the server ends the call here.
+   */
+  private async reconcileDirectState(): Promise<void> {
+    const api = createDirectCallApi({
+      gatewayUrl: this.options.gatewayUrl,
+      sessionToken: () => this.options.sessionToken,
+    });
+    const state = terminalStateAfterFailedResume(await api.check(this.options.callId));
+    if (state === null) return;
+    this.deliverDirectState({ callId: this.options.callId, state });
+  }
+
+  /**
    * Re-join as the SAME participant after a transport reconnect, then
    * negotiate both voice legs afresh -- the gateway closed its ends of them
    * when the socket dropped. The video mesh is peer-to-peer and survives a
@@ -927,12 +952,14 @@ export class CallConnection {
     });
     if (!ack.ok) {
       this.options.onTransport?.({ kind: 'resume-failed', error: ack.error ?? 'refused' });
+      void this.reconcileDirectState();
       return;
     }
     if (ack.participantId !== credentials.participantId) {
       // A different seat is a different call as far as the telephone is
       // concerned; the gateway will treat the old one as abandoned.
       this.options.onTransport?.({ kind: 'resume-failed', error: 'seat changed' });
+      void this.reconcileDirectState();
       return;
     }
     this.resumeCredentials = { participantId: ack.participantId, resumeToken: ack.resumeToken };

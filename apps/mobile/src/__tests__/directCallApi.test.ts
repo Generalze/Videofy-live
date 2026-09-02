@@ -2,11 +2,15 @@
 /**
  * The three pre-join questions, and the words for every telephone state.
  */
+import { readFileSync } from 'node:fs';
+import { URL, fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import {
   TERMINAL_DIRECT_STATES,
   createDirectCallApi,
   directStateWords,
+  terminalStateAfterFailedResume,
+  type DirectCallCheck,
 } from '../call/directCallApi';
 
 function fakeFetch(routes: Record<string, { status: number; body?: unknown }>) {
@@ -87,5 +91,63 @@ describe('directStateWords', () => {
     expect(directStateWords('no_answer', 'Zoe')).toBe('No answer');
     expect(TERMINAL_DIRECT_STATES.has('connected')).toBe(false);
     expect(TERMINAL_DIRECT_STATES.has('network')).toBe(true);
+  });
+});
+
+/*
+ * The seat that could not be resumed.
+ *
+ * A phone whose socket dropped while the other party hung up is told nothing:
+ * the state that carried the news went to a room it had already left. These
+ * pin the rule that decides whether such a phone may finally close the call.
+ */
+describe('terminalStateAfterFailedResume', () => {
+  const check = (state: string): DirectCallCheck => ({
+    ring: false,
+    state,
+    mode: 'normal',
+    callerAccountId: 'acct_a',
+    callerName: 'Ada',
+  });
+
+  it('ends the call when the server names a terminal state', () => {
+    expect(terminalStateAfterFailedResume(check('ended'))).toBe('ended');
+    expect(terminalStateAfterFailedResume(check('declined'))).toBe('declined');
+    expect(terminalStateAfterFailedResume(check('no_answer'))).toBe('no_answer');
+  });
+
+  it('keeps waiting when the read failed', () => {
+    // Null is a dead network as often as a vanished call. Ending here would
+    // hang up a live call on one lost packet.
+    expect(terminalStateAfterFailedResume(null)).toBeNull();
+  });
+
+  it('keeps waiting while the call is still live', () => {
+    expect(terminalStateAfterFailedResume(check('connected'))).toBeNull();
+    expect(terminalStateAfterFailedResume(check('ringing'))).toBeNull();
+    expect(terminalStateAfterFailedResume(check('reconnecting'))).toBeNull();
+  });
+});
+
+/*
+ * THE SEAM. The rule above is worthless if nothing calls it. This repository
+ * has shipped both halves of a feature with the join missing more than once,
+ * and every unit test passed each time, so the join is asserted here directly.
+ */
+describe('the failed resume is actually reconciled', () => {
+  const source = readFileSync(
+    fileURLToPath(new URL('../call/callConnection.ts', import.meta.url)),
+    'utf8',
+  ).replace(/\r\n/gu, '\n');
+
+  it('asks the server after a resume that failed', () => {
+    expect(source).toContain('reconcileDirectState');
+    // Both ways a resume ends badly: refused, and a seat that came back different.
+    const calls = source.match(/void this\.reconcileDirectState\(\);/gu) ?? [];
+    expect(calls).toHaveLength(2);
+  });
+
+  it('reconciles through the shared rule rather than its own copy', () => {
+    expect(source).toContain('terminalStateAfterFailedResume');
   });
 });

@@ -117,3 +117,16 @@ export const TERMINAL_DIRECT_STATES: ReadonlySet<string> = new Set([
   'network',
   'ended',
 ]);
+
+/**
+ * The state to apply when a seat could not be resumed, or null to keep waiting.
+ *
+ * The same rule `shouldDismissIncoming` follows: a read that failed is not
+ * news. `check` answers null for a dead network exactly as it does for a call
+ * that no longer exists, so only the server explicitly naming a terminal
+ * state ends a call here. Anything else leaves the screen alone to try again.
+ */
+export function terminalStateAfterFailedResume(check: DirectCallCheck | null): string | null {
+  if (check === null) return null;
+  return TERMINAL_DIRECT_STATES.has(check.state) ? check.state : null;
+}

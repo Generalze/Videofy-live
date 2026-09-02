@@ -82,7 +82,7 @@ class IncomingCallService : Service() {
      * signed-out phone rang for a moment before discovering it had no
      * credential (founder review, 29 Aug).
      */
-    startInForeground(buildSilentNotification())
+    startInForeground(SILENT_NOTIFICATION_ID, buildSilentNotification())
     acquireWakeLock()
 
     val store = RingStore(this)
@@ -128,18 +128,67 @@ class IncomingCallService : Service() {
 
   private val expiresAtFor = HashMap<String, Long>()
 
+  /** The in-flight ring watch, so it can be cancelled the moment the ring ends. */
+  private var ringWatch: Runnable? = null
+
   /** The ring itself: CallStyle on the ringtone channel, vibration, the incoming event, the timeout. */
   fun present(callId: String, callerId: String, callerName: String, mode: String) {
     if (ringing != callId) return
     val notification = buildNotification(callId, callerId, callerName, mode, validating = false)
+    /*
+     * A NEW NOTIFICATION, NOT A REWRITE. Android fires a full-screen intent
+     * when a notification ARRIVES and never when an existing one is edited in
+     * place, so the ring cannot reuse the id the silent placeholder is already
+     * showing under -- it would keep the ringtone and the vibration and
+     * quietly lose the screen (founder review, 2 Sep). The placeholder holds
+     * its own id and is dismissed once the ring has taken over as the
+     * service's foreground notification.
+     */
+    startInForeground(NOTIFICATION_ID, notification)
     notificationManager().cancel(SILENT_NOTIFICATION_ID)
-    notificationManager().notify(NOTIFICATION_ID, notification)
     RingStore(this).mark(callId, "t7_presented")
     startVibration()
     VideofyCallModule.emitIncoming(callId, callerId, callerName, mode)
     val expiresAt = expiresAtFor[callId] ?: 0L
     val remaining = if (expiresAt > 0) expiresAt - System.currentTimeMillis() else 30_000L
     handler.postDelayed({ if (ringing == callId) finish(callId, "timeout") }, remaining.coerceIn(3_000L, 45_000L))
+    startRingWatch(callId)
+  }
+
+  /**
+   * Keep asking the server whether this is still a ring, for as long as it rings.
+   *
+   * The pre-ring check happens once, and cannot see a caller who hangs up a
+   * second later. A ringing phone has no other relationship with the call --
+   * it is not in the call room, it holds no seat, it only had a push -- so
+   * without this it rings until its own timeout, long after the caller has
+   * gone (founder review, 2 Sep). The fallback ring screen in JS has always
+   * polled for exactly this reason; the native ring never did.
+   *
+   * A FAILED CHECK IS NOT A DISMISSAL. Only the server saying the call is no
+   * longer ringable stops the ring; an unreachable server leaves it ringing,
+   * which is the same rule `shouldDismissIncoming` follows in JS.
+   */
+  private fun startRingWatch(callId: String) {
+    val tick = object : Runnable {
+      override fun run() {
+        if (ringing != callId) return
+        val again = this
+        executor.execute {
+          val credential = RingStore(this@IncomingCallService).credential()
+          val verdict =
+            if (credential == null) null
+            else CallValidator(credential.gatewayUrl, credential.token).check(callId)
+          handler.post {
+            if (ringing != callId) return@post
+            if (verdict != null && !verdict.ring) finish(callId, verdict.state)
+            else handler.postDelayed(again, RING_POLL_MS)
+          }
+        }
+      }
+    }
+    ringWatch = tick
+    handler.postDelayed(tick, RING_POLL_MS)
   }
 
   private fun stopRinging(callId: String?, reason: String) {
@@ -148,6 +197,8 @@ class IncomingCallService : Service() {
   }
 
   private fun finish(callId: String, reason: String) {
+    ringWatch?.let { handler.removeCallbacks(it) }
+    ringWatch = null
     if (reason == "timeout") VideofyCallModule.emitTimeout(callId)
     // A ring that ends before an answer also ends its Telecom connection.
     if (reason != "answered") TelecomBridge.end(callId, missed = reason == "timeout")
@@ -161,11 +212,11 @@ class IncomingCallService : Service() {
     stopSelf()
   }
 
-  private fun startInForeground(notification: Notification) {
+  private fun startInForeground(id: Int, notification: Notification) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-      startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
+      startForeground(id, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL)
     } else {
-      startForeground(NOTIFICATION_ID, notification)
+      startForeground(id, notification)
     }
   }
 
@@ -266,6 +317,13 @@ class IncomingCallService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
       }
     }
+
+    /**
+     * How often a ringing phone re-asks the server. Short enough that a
+     * cancelled call stops ringing while the caller is still looking at the
+     * screen; long enough not to be a poll storm on a 45-second ring.
+     */
+    private const val RING_POLL_MS = 2_000L
 
     const val ACTION_RING = "com.consummate7.videofy.call.RING"
     const val ACTION_STOP = "com.consummate7.videofy.call.STOP"
