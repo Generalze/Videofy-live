@@ -225,6 +225,8 @@ export function CallScreen({
     failed: 5,
     closed: 6,
   };
+  /** So a terminal state repeated on the wire ends the connection only once. */
+  const endReported = useRef(false);
   const videoStamps = useRef<Record<string, number>>({});
   const stamp = useCallback((point: string) => {
     if (videoStamps.current[point] === undefined) videoStamps.current[point] = Date.now();
@@ -244,6 +246,21 @@ export function CallScreen({
     clockOffset.current = observeServerClock(clockOffset.current, wire.updatedAtMs, Date.now());
     // T11: two-way audio proven by the server -- stamped on the device timeline.
     if (wire.state === 'connected') videofyCall.reportMediaConnected(wire.callId);
+    /*
+     * AND THE OTHER END OF THAT. An answered call deliberately keeps its
+     * Telecom connection alive -- IncomingCallService leaves it running for
+     * exactly that reason -- so `reportCallEnded` is the only thing that ever
+     * closes one, and nothing was calling it. The connection outlived every
+     * answered call: the system's own call timer went on counting behind a
+     * screen that had already said the call was over, and an un-ended
+     * connection blocks the calls that come after it (founder review, 3 Sep).
+     * Reported once, from the authoritative server state, so it does not
+     * depend on which side hung up or on the screen being visible.
+     */
+    if (TERMINAL_DIRECT_STATES.has(wire.state) && !endReported.current) {
+      endReported.current = true;
+      videofyCall.reportCallEnded(wire.callId);
+    }
     setServerState(wire.state);
     setMode(wire.mode);
     if (wire.connectedAtMs !== null) setConnectedAtMs(wire.connectedAtMs);
@@ -411,11 +428,25 @@ export function CallScreen({
      */
     const routerAtStart = router.current;
     const stampsAtStart = videoStamps;
+    const endReportedAtStart = endReported;
     return () => {
       live = false;
       link.leave();
       connection.current = null;
       void routerAtStart.release();
+      /*
+       * LAST CHANCE TO CLOSE THE TELECOM CONNECTION.
+       *
+       * The terminal state normally does this, but a screen can go away
+       * before one arrives -- the person navigates back, the call is
+       * abandoned mid-dial. An answered call's connection is closed by
+       * nothing else, and a connection left open blocks the calls that come
+       * after it, so leaving without one is not survivable.
+       */
+      if (call.kind === 'direct' && !endReportedAtStart.current) {
+        endReportedAtStart.current = true;
+        videofyCall.reportCallEnded(callId);
+      }
       // The device's T4..T11 stamps go to the gateway once, metadata only,
       // so the ring's seconds can be attributed (founder targets: <3 s ring,
       // <2 s answer-to-audio).
