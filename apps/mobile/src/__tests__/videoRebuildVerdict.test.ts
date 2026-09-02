@@ -46,3 +46,23 @@ describe('the video rebuild reports its outcome', () => {
     expect(screen).toContain('PEER_STATE_CODE[event.connectionState]');
   });
 });
+
+/*
+ * Delivered, or painted?
+ *
+ * A phone left sitting on Connected for a call that had ended failed in one
+ * of two unrelated places, and the server cannot tell which: it emitted the
+ * state either way. On the handset that froze, the socket had usually not
+ * even dropped. These two stamps separate the cases on the next test.
+ */
+describe('a terminal state records both its arrival and its render', () => {
+  it('stamps arrival where the state is received', () => {
+    expect(screen).toContain("stamp('terminal_received')");
+  });
+
+  it('stamps the render from an effect, which runs only after one', () => {
+    expect(screen).toContain("stamp('terminal_applied')");
+    // Inside a useEffect, not in the handler: that is the whole point.
+    expect(screen).toMatch(/useEffect\(\(\) => \{\s*if \(serverState !== null && TERMINAL_DIRECT_STATES\.has\(serverState\)\) stamp\('terminal_applied'\);/u);
+  });
+});

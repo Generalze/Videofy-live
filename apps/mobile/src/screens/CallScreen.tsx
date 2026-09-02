@@ -301,7 +301,24 @@ export function CallScreen({
         if (live) setVoice(stats);
       },
       onDirectState: (wire) => {
-        if (live) acceptDirectState(wire);
+        if (!live) return;
+        /*
+         * TWO STAMPS, ONE QUESTION.
+         *
+         * A phone that sat on Connected for a call that had ended could have
+         * failed in either of two completely different places: the state
+         * never arrived, or it arrived and the screen never repainted. The
+         * gateway cannot tell them apart -- it emitted to the room either way
+         * -- and on the handset that froze the socket had usually not even
+         * dropped (founder review, 2 Sep). `received` is stamped here, on
+         * arrival; `applied` is stamped from an effect, which only runs after
+         * a render. A timeline with the first and not the second says the
+         * news reached the phone and the picture did not follow.
+         */
+        if (TERMINAL_DIRECT_STATES.has(String((wire as { state?: unknown }).state ?? ''))) {
+          stamp('terminal_received');
+        }
+        acceptDirectState(wire);
       },
       onEnded: () => {
         // ENDED reaches conferences too; for a direct call the telephone's
@@ -426,6 +443,14 @@ export function CallScreen({
   // The peer's name only exists on a direct call; a conference has a roster.
   const peerName = call.kind === 'direct' ? call.peer.name : '';
   const connectedRowState = connectedRow(serverState, connectedAtMs, peerName);
+  /*
+   * The other half of the pair stamped on arrival. An effect runs only after
+   * React has rendered, so reaching here is evidence the screen actually
+   * repainted on the terminal state rather than merely being told about it.
+   */
+  useEffect(() => {
+    if (serverState !== null && TERMINAL_DIRECT_STATES.has(serverState)) stamp('terminal_applied');
+  }, [serverState, stamp]);
   useEffect(() => {
     if (connectedAtMs === null || terminal) return undefined;
     setNowMs(Date.now());
