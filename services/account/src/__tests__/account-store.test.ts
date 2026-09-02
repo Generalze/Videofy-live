@@ -141,6 +141,24 @@ describe('sign-in does not reveal who has an account', () => {
   });
 });
 
+/**
+ * These tests perform REAL password hashing, many times over.
+ *
+ * Not incidentally slow -- deliberately expensive, because the work being
+ * asserted IS the cost: a key derivation cheap enough to finish inside a
+ * generic five-second budget under load would be a key derivation cheap
+ * enough to brute-force. Measured alone on the development machine, the
+ * lockout test takes about 1.9 s and the reset test about 3.3-4.0 s, and the
+ * second one exceeded the default budget once the suite grew past 5,900 tests
+ * and CPU contention rose.
+ *
+ * The budget is raised; the hashing cost is not touched, no assertion changes,
+ * and nothing is mocked away. The number says out loud that this test is
+ * meant to be expensive, rather than leaving a future reader to conclude it
+ * is flaky.
+ */
+const EXPENSIVE_HASHING_MS = 15_000;
+
 describe('brute force is slowed down', () => {
   it('stops answering after repeated failures, then recovers', async () => {
     let clock = 1_760_000_000_000;
@@ -160,7 +178,7 @@ describe('brute force is slowed down', () => {
 
     clock += 15 * 60 * 1000 + 1;
     expect((await accounts.authenticate({ email: EMAIL, password: PASSWORD })).ok).toBe(true);
-  });
+  }, EXPENSIVE_HASHING_MS);
 
   it('forgets failures once the right password arrives', async () => {
     const accounts = await store();
@@ -176,7 +194,7 @@ describe('brute force is slowed down', () => {
 
     // The counter reset, so nine more failures is still under the limit.
     expect((await accounts.authenticate({ email: EMAIL, password: PASSWORD })).ok).toBe(true);
-  });
+  }, EXPENSIVE_HASHING_MS);
 });
 
 describe('sign out everywhere', () => {

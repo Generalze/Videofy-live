@@ -65,6 +65,20 @@ export interface RoomStore {
   get(roomId: string): RoomRecord | undefined;
   create(record: RoomRecord): Promise<void>;
   update(roomId: string, patch: RoomUpdate): Promise<RoomRecord>;
+  /**
+   * Wait for every queued write to finish touching the filesystem.
+   *
+   * WRITES OUTLIVE THE REQUEST THAT CAUSED THEM. `create` and `update` return
+   * the write they queued, but a caller that does not await it -- or a request
+   * whose response is sent first -- leaves a write in flight against the
+   * registry file. Nothing could previously ask when that finished.
+   *
+   * This CHANGES NO PERSISTENCE SEMANTICS: the same writes happen in the same
+   * order. It only exposes the moment they are done, which is what a shutdown
+   * needs before releasing the directory the file lives in, and what a test
+   * needs before deleting it.
+   */
+  flush(): Promise<void>;
 }
 
 export async function createFileRoomStore(filePath: string): Promise<RoomStore> {
@@ -104,6 +118,17 @@ export async function createFileRoomStore(filePath: string): Promise<RoomStore> 
   }
 
   return {
+    async flush() {
+      /*
+       * Awaited twice on purpose. The first await drains what is queued now;
+       * a write that was mid-flight when we started may itself have chained
+       * another, and settling the queue a second time catches that without
+       * looping forever.
+       */
+      await queue;
+      await queue;
+    },
+
     list() {
       return [...rooms.values()].sort(
         (a, b) => b.createdAt.localeCompare(a.createdAt) || a.roomId.localeCompare(b.roomId),
