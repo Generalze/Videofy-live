@@ -319,11 +319,17 @@ class IncomingCallService : Service() {
     }
 
     /**
-     * How often a ringing phone re-asks the server. Short enough that a
-     * cancelled call stops ringing while the caller is still looking at the
-     * screen; long enough not to be a poll storm on a 45-second ring.
+     * How often a ringing phone re-asks the server.
+     *
+     * Without it the ring runs to its own expiry, so hanging up leaves the
+     * other phone ringing for whatever was left of the 30-second window --
+     * measured at 5 and at 10 seconds on real handsets. One second is what a
+     * telephone feels like; the cost is bounded by that same window, at most
+     * thirty small reads, and only ever while a phone is actually ringing.
+     * The next read is scheduled when the previous one answers, so a slow
+     * network stretches the interval instead of stacking requests on it.
      */
-    private const val RING_POLL_MS = 2_000L
+    private const val RING_POLL_MS = 1_000L
 
     const val ACTION_RING = "com.consummate7.videofy.call.RING"
     const val ACTION_STOP = "com.consummate7.videofy.call.STOP"
