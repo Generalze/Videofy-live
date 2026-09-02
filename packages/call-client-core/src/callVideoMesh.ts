@@ -92,6 +92,11 @@ interface MeshPeer {
   /** Captured at creation; a disposed mesh fails the generation check forever. */
   readonly generation: number;
   sender: RTCRtpSender | null;
+  /**
+   * True while `sender` is the one created empty by the instant-camera
+   * transceiver, before any real track has been negotiated onto it.
+   */
+  senderNegotiatedEmpty: boolean;
   makingOffer: boolean;
   ignoreOffer: boolean;
   settingRemoteAnswer: boolean;
@@ -340,6 +345,7 @@ export class CallVideoMesh {
       pc,
       generation: this.generation,
       sender: null,
+      senderNegotiatedEmpty: false,
       makingOffer: false,
       ignoreOffer: false,
       settingRemoteAnswer: false,
@@ -372,6 +378,7 @@ export class CallVideoMesh {
           direction: 'sendrecv',
           ...(placeholder ? { streams: [placeholder] } : {}),
         }).sender;
+        entry.senderNegotiatedEmpty = true;
       } catch {
         entry.sender = null;
       }
@@ -457,6 +464,24 @@ export class CallVideoMesh {
       // is the difference between video and a camera indicator lying.
       try {
         await entry.sender.replaceTrack(this.localTrack);
+        /*
+         * THE M-LINE WAS NEGOTIATED EMPTY, SO THE FIRST REAL TRACK RENEGOTIATES.
+         *
+         * Instant camera negotiates a sendrecv video m-line before there is
+         * anything to send, so that "Camera on" is a replaceTrack rather than
+         * a round trip. On the phone that transceiver never produced an
+         * encoder: replaceTrack resolved, the sender held the camera track,
+         * the attach reported success and outbound stayed at zero frames --
+         * on both handsets at once, which is why neither side ever saw video
+         * (founder review, 2 Sep). One renegotiation, only on the first real
+         * track and only for a sender that began empty, gives the encoder an
+         * m-line that was described with a track on it. Later toggles are
+         * still a bare replaceTrack.
+         */
+        if (this.localTrack && entry.senderNegotiatedEmpty) {
+          entry.senderNegotiatedEmpty = false;
+          void this.negotiate(entry);
+        }
         return { participantId, outcome: this.localTrack ? 'replaced' : 'cleared' };
       } catch (error) {
         return { participantId, outcome: 'failed', error: error instanceof Error ? error.message : 'replaceTrack rejected' };

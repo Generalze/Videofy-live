@@ -700,3 +700,95 @@ describe('remote camera off', () => {
     expect(h.remoteStreams.at(-1)?.stream).toBeNull();
   });
 });
+
+/*
+ * THE PATH THE PHONES ACTUALLY TAKE.
+ *
+ * Every call starts camera off, and a real RTCPeerConnection has
+ * `addTransceiver`, so on a phone the video m-line is negotiated EMPTY and
+ * "Camera on" becomes a bare replaceTrack. The FakePeerConnection above has
+ * no `addTransceiver`, so every other test in this file silently skips that
+ * branch and exercises the addTrack path instead -- which is why zero
+ * outbound frames on two handsets got past all of them.
+ *
+ * This double has `addTransceiver`, so the production path runs here.
+ */
+class TransceiverPeerConnection extends FakePeerConnection {
+  readonly transceivers: { kind: string; direction: string; sender: FakeSender }[] = [];
+
+  addTransceiver(kind: string, init?: { direction?: string }): { sender: FakeSender } {
+    // A transceiver created with no track: exactly what instant camera makes.
+    const sender = new FakeSender(null);
+    this.senders.push(sender);
+    this.transceivers.push({ kind, direction: init?.direction ?? 'sendrecv', sender });
+    return { sender };
+  }
+}
+
+describe('instant camera, on a peer that can addTransceiver', () => {
+  function transceiverHarness(selfId: string) {
+    const peers = new Map<string, TransceiverPeerConnection>();
+    const offers: CallVideoSdpPayload[] = [];
+    const mesh = new CallVideoMesh({
+      callId: 'call-1',
+      selfParticipantId: selfId,
+      sendOffer: (payload) => offers.push(payload),
+      sendAnswer: () => undefined,
+      sendIce: () => undefined,
+      onRemoteStream: () => undefined,
+      onPeerState: () => undefined,
+      createPeerConnection: (remoteParticipantId) => {
+        const pc = new TransceiverPeerConnection(remoteParticipantId);
+        peers.set(remoteParticipantId, pc);
+        return pc as unknown as RTCPeerConnection;
+      },
+    });
+    return { mesh, peers, offers };
+  }
+
+  it('negotiates an empty sendrecv video m-line before the camera is on', () => {
+    const h = transceiverHarness('a');
+    h.mesh.syncParticipants(['b']);
+    const pc = h.peers.get('b');
+    expect(pc?.transceivers).toHaveLength(1);
+    expect(pc?.transceivers[0]?.kind).toBe('video');
+    expect(pc?.transceivers[0]?.direction).toBe('sendrecv');
+    expect(pc?.transceivers[0]?.sender.track).toBeNull();
+  });
+
+  it('renegotiates when the first real track lands on that empty m-line', async () => {
+    const h = transceiverHarness('a');
+    h.mesh.syncParticipants(['b']);
+    const { track, stream } = localCamera();
+
+    h.mesh.setLocalStream(stream);
+    await flushAsync();
+
+    const pc = h.peers.get('b');
+    // The track did reach the sender...
+    expect(pc?.transceivers[0]?.sender.track).toBe(track);
+    // ...and, because that m-line was described with nothing on it, the
+    // camera is not left attached to an m-line that never carried a track.
+    // Without the offer the sender holds the camera and sends no frames.
+    expect(h.offers).toHaveLength(1);
+    expect(h.offers[0]?.targetParticipantId).toBe('b');
+  });
+
+  it('does not renegotiate again on a later camera toggle', async () => {
+    const h = transceiverHarness('a');
+    h.mesh.syncParticipants(['b']);
+    const first = localCamera();
+    h.mesh.setLocalStream(first.stream);
+    await flushAsync();
+    const afterFirst = h.offers.length;
+
+    // Off, then on again: the m-line has carried a track since the first
+    // attach, so these are bare replaceTracks and cost no round trip.
+    h.mesh.setLocalStream(null);
+    await flushAsync();
+    h.mesh.setLocalStream(localCamera().stream);
+    await flushAsync();
+
+    expect(h.offers).toHaveLength(afterFirst);
+  });
+});
