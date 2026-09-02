@@ -209,6 +209,22 @@ export function CallScreen({
    * are stamped -- first remote stream, first null, peer states, camera
    * on -- and reported with the ring timeline. Times and counts only.
    */
+  /*
+   * The rebuilt peer's connection state, as a number.
+   *
+   * The timeline drops anything that is not a number before it is sent, so a
+   * state posted as a string would vanish on the way to the server and the
+   * verdict would arrive without the one field that explains it.
+   */
+  const PEER_STATE_CODE: Record<string, number> = {
+    unknown: 0,
+    new: 1,
+    connecting: 2,
+    connected: 3,
+    disconnected: 4,
+    failed: 5,
+    closed: 6,
+  };
   const videoStamps = useRef<Record<string, number>>({});
   const stamp = useCallback((point: string) => {
     if (videoStamps.current[point] === undefined) videoStamps.current[point] = Date.now();
@@ -313,6 +329,16 @@ export function CallScreen({
         if (event.kind === 'outbound' || event.kind === 'inbound') {
           videoStamps.current[`video_${event.kind}_frames`] = event.frames;
           videoStamps.current[`video_${event.kind}_bytes`] = event.bytes;
+        }
+        /*
+         * The verdict is the whole point of the rebuild watch, so it travels
+         * with its numbers. A bare timestamp would say the rebuild finished
+         * and still not say whether video ever moved.
+         */
+        if (event.kind === 'rebuild-verdict') {
+          videoStamps.current['video_rebuild_recovered'] = event.recovered ? 1 : 0;
+          videoStamps.current['video_rebuild_frames'] = event.frames;
+          videoStamps.current['video_rebuild_state'] = PEER_STATE_CODE[event.connectionState] ?? 0;
         }
         if (event.kind === 'outbound-silent' || event.kind === 'attach-failed' || event.kind === 'acquisition-failed') {
           setTransportLog((current) => [...current.slice(-4), `${new Date().toLocaleTimeString()} video ${event.kind}`]);

@@ -222,6 +222,13 @@ export type CallVideoDiagnostic =
   | { readonly kind: 'attach-failed'; readonly participantId: string; readonly error: string }
   | { readonly kind: 'outbound'; readonly participantId: string; readonly frames: number; readonly bytes: number }
   | { readonly kind: 'outbound-silent'; readonly participantId: string; readonly rebuilt: boolean }
+  | {
+      readonly kind: 'rebuild-verdict';
+      readonly participantId: string;
+      readonly recovered: boolean;
+      readonly frames: number;
+      readonly connectionState: string;
+    }
   | { readonly kind: 'inbound'; readonly participantId: string; readonly frames: number; readonly bytes: number };
 
 export type CallTransportEvent =
@@ -374,6 +381,53 @@ export class CallConnection {
             const done = mesh.rebuildPeer(row.participantId);
             this.options.onVideoDiagnostic?.({ kind: 'outbound-silent', participantId: row.participantId, rebuilt: done });
           }
+        }
+      }
+    }
+    if (rebuilt.size > 0) await this.verifyRebuiltVideo(mesh, rebuilt);
+  }
+
+  /**
+   * Did the rebuild actually help?
+   *
+   * The rebuild is this code's ONE remedy for a camera that opened and sent
+   * nothing, and until now it was the last thing that happened: the watch
+   * loop ended on the sample that triggered it, so a rebuild that changed
+   * nothing looked exactly like a rebuild that worked. On two Android 9
+   * phones every sample read zero, the peer was rebuilt, and video still
+   * never appeared -- with no record saying so (founder review, 2 Sep).
+   *
+   * A rebuilt peer has to offer, answer and gather again, so it is given
+   * longer than the first watch before its verdict is recorded either way.
+   */
+  private async verifyRebuiltVideo(mesh: CallVideoMesh, rebuilt: ReadonlySet<string>): Promise<void> {
+    for (let sample = 0; sample < 8; sample += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (this.mesh !== mesh || this.camera === null) return;
+      const stats = (await mesh.videoStats()).filter((row) => rebuilt.has(row.participantId));
+      const moving = stats.filter((row) => row.outboundFrames > 0 || row.outboundBytes > 0);
+      // Report the moment it recovers; otherwise keep watching to the end.
+      if (moving.length === stats.length && stats.length > 0) {
+        for (const row of moving) {
+          this.options.onVideoDiagnostic?.({
+            kind: 'rebuild-verdict',
+            participantId: row.participantId,
+            recovered: true,
+            frames: row.outboundFrames,
+            connectionState: row.connectionState,
+          });
+        }
+        return;
+      }
+      if (sample === 7) {
+        for (const row of stats) {
+          this.options.onVideoDiagnostic?.({
+            kind: 'rebuild-verdict',
+            participantId: row.participantId,
+            recovered: row.outboundFrames > 0 || row.outboundBytes > 0,
+            frames: row.outboundFrames,
+            connectionState: row.connectionState,
+          });
         }
       }
     }
