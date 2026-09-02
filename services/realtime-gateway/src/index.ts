@@ -15,6 +15,7 @@ import { createApp } from './app.js';
 import { createChannelIdentityClient } from './channel-identity.js';
 import { loadConfig } from './config.js';
 import { createCallHostAuthority, createDirectCallModeResolver } from './call-host-authority.js';
+import { createCallLiveRouteAuthority } from './call-live-route-authority.js';
 import { Gateway } from './gateway.js';
 import { logger, setLogLevel } from './logger.js';
 
@@ -129,6 +130,22 @@ const channelIdentity = (() => {
   return createChannelIdentityClient({ accountServiceUrl: base, internalToken: token });
 })();
 
+/*
+ * THE CALL-LIVE ROUTE AUTHORITY, built once at boot from the same reviewed
+ * document the programme gate reads. Fail-closed: no document, an unreadable
+ * one, or an unapproved direction all answer "no", and the boot line says
+ * which of those happened rather than leaving a silent deployment.
+ */
+const callLiveRoutes = createCallLiveRouteAuthority({
+  ...(process.env['TRANSLATION_ROUTES_DOCUMENT']
+    ? { documentPath: process.env['TRANSLATION_ROUTES_DOCUMENT'] }
+    : {}),
+});
+logger.info('Call-live translation route authority ready', {
+  scope: 'call-live',
+  detail: callLiveRoutes.description,
+});
+
 const gateway = new Gateway(server, config.corsOrigins, {
   mediaIngestUrl: config.mediaIngestUrl,
   realtimeIngressUrl: config.realtimeIngressUrl,
@@ -181,6 +198,13 @@ const gateway = new Gateway(server, config.corsOrigins, {
       secret: process.env['VIDEOFY_AUTH_SECRET'],
       accountServiceUrl: process.env['ACCOUNT_SERVICE_URL'],
     }),
+    /*
+     * And a translated pair still needs an APPROVED ROUTE. The relationship
+     * says these two people translate; the registry says whether this language
+     * pair has been qualified to carry a live call. Separate facts, and the
+     * call path used to consult only the engine.
+     */
+    callLiveRouteApproved: (source, target) => callLiveRoutes.approved(source, target),
     // Every finished direct call becomes history on the account pair.
     recordDirectCall: async (record) => {
       const base = process.env['ACCOUNT_SERVICE_URL']?.replace(/\/+$/, '');

@@ -350,6 +350,19 @@ export interface CallRuntimeDependencies {
     peerAccountId: string,
   ) => Promise<'normal' | 'translated' | null>;
   /**
+   * May this language pair carry a live TRANSLATED call?
+   *
+   * ABSENT MEANS REFUSED, the same way `authorizeCallHost` treats a missing
+   * gate. A translation engine existing is not the same fact as a DIRECTION
+   * being approved to put a synthetic voice in somebody's ear in real time,
+   * and the `call-live` scope existed in the route registry while the call
+   * path consulted nothing at all.
+   *
+   * Only TRANSLATED direct calls consult it. A normal call produces no
+   * translation, so there is no direction to approve and nothing to refuse.
+   */
+  callLiveRouteApproved?: (sourceLanguage: string, targetLanguage: string) => boolean;
+  /**
    * Call history: every finished direct call is handed to the account service
    * as a metadata record. Optional; absent means no history is kept.
    */
@@ -519,6 +532,10 @@ export class CallRuntime {
   private readonly authorizeCallHost:
     | ((sessionToken: string | null) => Promise<boolean>)
     | undefined;
+  private readonly callLiveRouteApproved:
+    | ((sourceLanguage: string, targetLanguage: string) => boolean)
+    | undefined;
+
   private readonly resolveDirectCallMode:
     | ((sessionToken: string | null, peerAccountId: string) => Promise<'normal' | 'translated' | null>)
     | undefined;
@@ -590,6 +607,7 @@ export class CallRuntime {
     this.verifyVoiceIdentity = dependencies.verifyVoiceIdentity;
     this.authorizeCallHost = dependencies.authorizeCallHost;
     this.resolveDirectCallMode = dependencies.resolveDirectCallMode;
+    this.callLiveRouteApproved = dependencies.callLiveRouteApproved;
     this.directCalls = new DirectCallLifecycle({
       now: () => this.now(),
       onState: (wire, previous) => {
@@ -1063,6 +1081,56 @@ export class CallRuntime {
           )
         : null;
       directOverride = { callType: 'personal', callMode: pairMode ?? 'normal' };
+
+      /*
+       * A TRANSLATED PAIR STILL NEEDS AN APPROVED ROUTE.
+       *
+       * The relationship's mode says these two people translate; it says
+       * nothing about whether THIS LANGUAGE PAIR has been qualified to carry a
+       * live call. Those are separate facts and the call path used to consult
+       * only the first, so an engine being installed was treated as permission
+       * for any direction somebody could name.
+       *
+       * The caller declares what they will speak and what they want to hear.
+       * In a one-to-one translated call both directions get used -- their
+       * speech rendered into what the peer hears, the peer's rendered into
+       * what this caller asked for -- so both are required before a single
+       * word is carried.
+       *
+       * REFUSED BEFORE ANYTHING RINGS. The peer is never woken for a call that
+       * cannot be translated, and nothing is silently downgraded to a normal
+       * call: a translated relationship quietly delivered untranslated is
+       * exactly the failure nobody notices until they act on a sentence that
+       * was never spoken.
+       */
+      if (directOverride.callMode === 'translated') {
+        const speak = String(clientInput.speakLanguage ?? '');
+        const hear = String(clientInput.hearLanguage ?? '');
+        const approved = this.callLiveRouteApproved;
+        const refusedDirection =
+          approved === undefined
+            ? `${speak}->${hear}`
+            : !approved(speak, hear)
+              ? `${speak}->${hear}`
+              : !approved(hear, speak)
+                ? `${hear}->${speak}`
+                : null;
+        if (refusedDirection !== null) {
+          logger.info('Direct translated call refused: route not approved for call-live', {
+            callId: requestedCallId,
+            direction: refusedDirection,
+            authorityPresent: approved !== undefined,
+          });
+          return {
+            ok: false,
+            code: 'translation-route-unavailable',
+            error:
+              'Translated calling is not available for this language pair yet. ' +
+              'You can still call without translation.',
+          };
+        }
+      }
+
       logger.info('Direct call created', {
         callId: requestedCallId,
         callMode: directOverride.callMode,

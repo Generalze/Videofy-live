@@ -405,6 +405,23 @@ export type CallJoinFailureCode =
    * somebody's verification state.
    */
   | 'host-not-authorized'
+  /**
+   * A TRANSLATED call was asked for on a language pair no approved route
+   * covers for live calls.
+   *
+   * Distinct from every other code because nothing is broken and nobody is
+   * unauthorised: the pair simply has no route qualified for `call-live`. A
+   * translation engine being installed is not the same fact as a DIRECTION
+   * being approved to carry somebody's voice in real time, and approval for
+   * messaging or for a programme is not approval for a call -- messaging is
+   * text a reader can re-read and challenge, a live call is a synthetic voice
+   * in somebody's ear with nothing to check it against.
+   *
+   * Deliberately NOT the ringing state 'unavailable', which means the peer's
+   * devices could not be reached. Reusing it would tell somebody their friend
+   * is unreachable when their friend is fine and the language pair is not.
+   */
+  | 'translation-route-unavailable'
   | 'internal';
 
 /**

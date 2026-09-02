@@ -117,6 +117,16 @@ function createHarness(
     sessionToken: string | null,
     peerAccountId: string,
   ) => Promise<'normal' | 'translated' | null>,
+  /**
+   * Which directions this harness treats as approved for a live call.
+   *
+   * CallRuntime refuses every translated direct call when no authority is
+   * supplied -- the fail-closed default -- so a harness that omitted one would
+   * be testing the route gate by accident and reporting it as a broken call.
+   * Tests about translation say which routes are approved; the gate itself is
+   * tested deliberately in call-live-route-authority.test.ts.
+   */
+  callLiveRouteApproved?: ((sourceLanguage: string, targetLanguage: string) => boolean) | null,
 ) {
   let tokenSerial = 0;
   const store = new CallSessionStore({
@@ -207,6 +217,10 @@ function createHarness(
        * reporting it as a broken call.
        */
       authorizeCallHost: authorizeCallHost ?? (async () => true),
+      // `null` wires NO authority, so the fail-closed default is reachable.
+      ...(callLiveRouteApproved === null
+        ? {}
+        : { callLiveRouteApproved: callLiveRouteApproved ?? (() => true) }),
       ...(resolveDirectCallMode ? { resolveDirectCallMode } : {}),
     store,
     emitToRoom,
@@ -393,6 +407,88 @@ describe('CallRuntime join and ingest plan handling', () => {
     expect(snapshot?.callMode).toBe('translated');
     // The peer id is routing input, never room-visible state.
     expect(JSON.stringify(direct.emitToRoom.mock.calls)).not.toContain('directPeerAccountId');
+  });
+
+  /*
+   * THE PAIR'S MODE IS NOT THE ROUTE'S APPROVAL.
+   *
+   * The relationship says these two people translate. It says nothing about
+   * whether this LANGUAGE PAIR has been qualified to carry a live call, and
+   * the call path used to consult only whether an engine existed -- so an
+   * engine being installed was treated as permission for any direction
+   * somebody could name.
+   */
+  it('refuses a translated direct call when the route is not approved for call-live', async () => {
+    const resolver = vi.fn(async () => 'translated' as const);
+    const direct = createHarness(
+      () => 'acct_00000000000000aa',
+      undefined,
+      resolver,
+      // Nothing is approved for a live call.
+      () => false,
+    );
+    const ack = await join(direct, new FakeSocket('socket-a'), {
+      ...JOIN_A,
+      callId: 'ring-refused',
+      callMode: 'normal',
+      callType: 'conference',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+
+    expect(ack.ok).toBe(false);
+    if (ack.ok) throw new Error('unreachable');
+    expect(ack.code).toBe('translation-route-unavailable');
+    // NOT the ringing 'unavailable', which means the peer could not be reached.
+    // Telling somebody their friend is unreachable when the language pair is
+    // the problem sends them to the wrong place entirely.
+    expect(ack.code).not.toBe('unavailable');
+
+    // REFUSED BEFORE ANYTHING EXISTS. No call, so nothing rang and nothing was
+    // silently downgraded to a normal call behind the caller's back.
+    expect(direct.store.snapshot('ring-refused')).toBeNull();
+  });
+
+  it('refuses when no route authority is wired at all', async () => {
+    // Absent means refused, exactly as the host gate treats a missing
+    // authorizer: a privileged surface whose control evaporates on a
+    // misconfiguration is indistinguishable from one that works.
+    const resolver = vi.fn(async () => 'translated' as const);
+    const closed = createHarness(() => 'acct_00000000000000aa', undefined, resolver, null);
+    const ack = await join(closed, new FakeSocket('socket-a'), {
+      ...JOIN_A,
+      callId: 'ring-closed',
+      callMode: 'normal',
+      callType: 'conference',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+    expect(ack.ok).toBe(false);
+    if (ack.ok) throw new Error('unreachable');
+    expect(ack.code).toBe('translation-route-unavailable');
+  });
+
+  it('a NORMAL direct call is unaffected by the route authority', async () => {
+    // A normal call translates nothing, so there is no direction to approve
+    // and the gate has nothing to decide. Refusing here would break ordinary
+    // calling in the name of a translation rule.
+    const resolver = vi.fn(async () => 'normal' as const);
+    const direct = createHarness(
+      () => 'acct_00000000000000aa',
+      undefined,
+      resolver,
+      () => false,
+    );
+    const ack = await join(direct, new FakeSocket('socket-a'), {
+      ...JOIN_A,
+      callId: 'ring-normal',
+      callMode: 'normal',
+      callType: 'conference',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+    expect(ack.ok).toBe(true);
+    expect(direct.store.snapshot('ring-normal')?.callMode).toBe('normal');
   });
 
   it('a direct call whose pair mode cannot be resolved is a NORMAL call', async () => {

@@ -326,6 +326,8 @@ export class Gateway {
         recordDirectCall?: (
           record: import('./direct-call-lifecycle.js').DirectCallOutcomeRecord,
         ) => Promise<void>;
+        /** Approved to translate this direction on a live call. Absent refuses. */
+        callLiveRouteApproved?: (sourceLanguage: string, targetLanguage: string) => boolean;
       };
       operator?: {
         authSecret?: string | undefined;
@@ -525,6 +527,15 @@ export class Gateway {
       ...(options.call?.authorizeHost ? { authorizeCallHost: options.call.authorizeHost } : {}),
       ...(options.call?.resolveDirectMode
         ? { resolveDirectCallMode: options.call.resolveDirectMode }
+        : {}),
+      /*
+       * Whether a language pair may carry a live TRANSLATED call. Absent,
+       * CallRuntime refuses every translated direct call -- the same
+       * fail-closed default as the host gate above. A normal call is
+       * unaffected: it translates nothing, so there is nothing to approve.
+       */
+      ...(options.call?.callLiveRouteApproved
+        ? { callLiveRouteApproved: options.call.callLiveRouteApproved }
         : {}),
       ...(options.call?.recordDirectCall ? { recordDirectCall: options.call.recordDirectCall } : {}),
       // P6.5: the synchronous connect-join gate (jti claim, verify, project,
