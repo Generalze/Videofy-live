@@ -715,6 +715,16 @@ describe('remote camera off', () => {
  */
 class TransceiverPeerConnection extends FakePeerConnection {
   readonly transceivers: { kind: string; direction: string; sender: FakeSender }[] = [];
+  /**
+   * MODELS THE DEFECT, RATHER THAN THE CALL LOG.
+   *
+   * A sender only encodes once an m-line has been DESCRIBED while a track was
+   * on it. That is the whole bug: the phone negotiated an empty video m-line,
+   * `replaceTrack` resolved, the sender held the camera, and the encoder was
+   * never created. A double that reports frames because replaceTrack resolved
+   * would pass the broken code, so this one refuses to.
+   */
+  private describedWithTrack = false;
 
   addTransceiver(kind: string, init?: { direction?: string }): { sender: FakeSender } {
     // A transceiver created with no track: exactly what instant camera makes.
@@ -722,6 +732,22 @@ class TransceiverPeerConnection extends FakePeerConnection {
     this.senders.push(sender);
     this.transceivers.push({ kind, direction: init?.direction ?? 'sendrecv', sender });
     return { sender };
+  }
+
+  override async setLocalDescription(description?: { type: string; sdp: string }): Promise<void> {
+    await super.setLocalDescription(description);
+    if (this.senders.some((sender) => sender.track !== null)) this.describedWithTrack = true;
+  }
+
+  /** Frames flow only for a sender whose m-line was described carrying a track. */
+  async getStats(): Promise<
+    { type: string; kind: string; framesSent?: number; bytesSent?: number; framesReceived?: number; bytesReceived?: number }[]
+  > {
+    const sending = this.describedWithTrack && this.senders.some((sender) => sender.track !== null);
+    return [
+      { type: 'outbound-rtp', kind: 'video', framesSent: sending ? 42 : 0, bytesSent: sending ? 4242 : 0 },
+      { type: 'inbound-rtp', kind: 'video', framesReceived: 0, bytesReceived: 0 },
+    ];
   }
 }
 
@@ -790,5 +816,234 @@ describe('instant camera, on a peer that can addTransceiver', () => {
     await flushAsync();
 
     expect(h.offers).toHaveLength(afterFirst);
+  });
+});
+
+/*
+ * The rest of the production path, one requirement per test.
+ *
+ * V1 only. Nothing here is evidence for the ringing, notification or timer
+ * defects, which have their own tests elsewhere.
+ */
+describe('instant camera: the negotiation is bounded and correct', () => {
+  function h2(selfId: string) {
+    const peers = new Map<string, TransceiverPeerConnection>();
+    const offers: CallVideoSdpPayload[] = [];
+    const answers: CallVideoSdpPayload[] = [];
+    const remoteStreams: { participantId: string; stream: unknown }[] = [];
+    const mesh = new CallVideoMesh({
+      callId: 'call-1',
+      selfParticipantId: selfId,
+      sendOffer: (payload) => offers.push(payload),
+      sendAnswer: (payload) => answers.push(payload),
+      sendIce: () => undefined,
+      onRemoteStream: (participantId, stream) => remoteStreams.push({ participantId, stream }),
+      onPeerState: () => undefined,
+      createPeerConnection: (remoteParticipantId) => {
+        const pc = new TransceiverPeerConnection(remoteParticipantId);
+        peers.set(remoteParticipantId, pc);
+        return pc as unknown as RTCPeerConnection;
+      },
+    });
+    return { mesh, peers, offers, answers, remoteStreams };
+  }
+
+  /** Requirement 4 */
+  it('renegotiates exactly once for the first track, not once per attach call', async () => {
+    const h = h2('a');
+    h.mesh.syncParticipants(['b']);
+    const { stream } = localCamera();
+
+    await h.mesh.setLocalStream(stream);
+    await flushAsync();
+    // Attaching the very same stream again must not buy another round trip.
+    await h.mesh.setLocalStream(stream);
+    await flushAsync();
+
+    expect(h.offers).toHaveLength(1);
+  });
+
+  /** Requirement 6 */
+  it('never creates a second video sender, transceiver or m-line', async () => {
+    const h = h2('a');
+    h.mesh.syncParticipants(['b']);
+    await h.mesh.setLocalStream(localCamera().stream);
+    await flushAsync();
+    await h.mesh.setLocalStream(null);
+    await flushAsync();
+    await h.mesh.setLocalStream(localCamera().stream);
+    await flushAsync();
+
+    const pc = mustTransceiverPeer(h.peers, 'b');
+    expect(pc.transceivers).toHaveLength(1);
+    expect(pc.senders).toHaveLength(1);
+    // addTrack would have made a second m-line; the transceiver path must not.
+    expect(pc.addedTracks).toHaveLength(0);
+  });
+
+  /** Requirement 8 */
+  it('survives the camera going off while the first negotiation is in flight', async () => {
+    const h = h2('a');
+    h.mesh.syncParticipants(['b']);
+    const pc = mustTransceiverPeer(h.peers, 'b');
+
+    let release = (): void => {};
+    pc.setLocalDescriptionGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await h.mesh.setLocalStream(localCamera().stream);
+    // Camera off before the offer this triggered has been described.
+    await h.mesh.setLocalStream(null);
+    release();
+    await flushAsync();
+
+    expect(pc.closed).toBe(false);
+    expect(pc.senders[0]?.track).toBeNull();
+    // And the phone is not left believing it is still sending.
+    const stats = await h.mesh.videoStats();
+    expect(stats[0]?.outboundFrames).toBe(0);
+  });
+
+  /** Requirement 9 */
+  it('publishes the remote stream once the first track has been negotiated', async () => {
+    const h = h2('a');
+    h.mesh.syncParticipants(['b']);
+    await h.mesh.setLocalStream(localCamera().stream);
+    await flushAsync();
+
+    const pc = mustTransceiverPeer(h.peers, 'b');
+    const remote = { id: 'remote-stream' };
+    pc.fireTrack(remote);
+
+    expect(h.remoteStreams).toContainEqual({ participantId: 'b', stream: remote });
+  });
+
+  /** Requirement 11 */
+  it('leaves audio alone: it adds none and ignores a remote audio track', async () => {
+    const h = h2('a');
+    h.mesh.syncParticipants(['b']);
+    await h.mesh.setLocalStream(localCamera().stream);
+    await flushAsync();
+
+    const pc = mustTransceiverPeer(h.peers, 'b');
+    expect(pc.transceivers.every((t) => t.kind === 'video')).toBe(true);
+
+    const before = h.remoteStreams.length;
+    pc.fireTrack({ id: 'their-microphone' }, 'audio');
+    // Call audio rides the gateway legs; the mesh must not adopt it.
+    expect(h.remoteStreams).toHaveLength(before);
+  });
+
+  /** The statistics requirement: the camera becomes eligible to send. */
+  it('has no outbound video before the first track, and outbound after it', async () => {
+    const h = h2('a');
+    h.mesh.syncParticipants(['b']);
+
+    const cold = await h.mesh.videoStats();
+    expect(cold[0]?.outboundFrames).toBe(0);
+    expect(cold[0]?.outboundBytes).toBe(0);
+
+    await h.mesh.setLocalStream(localCamera().stream);
+    await flushAsync();
+
+    const warm = await h.mesh.videoStats();
+    expect(warm[0]?.outboundFrames).toBeGreaterThan(0);
+    expect(warm[0]?.outboundBytes).toBeGreaterThan(0);
+  });
+
+  /** Requirement 10 */
+  it('re-establishes video when the peer is rebuilt after the camera is on', async () => {
+    const h = h2('a');
+    h.mesh.syncParticipants(['b']);
+    await h.mesh.setLocalStream(localCamera().stream);
+    await flushAsync();
+
+    expect(h.mesh.rebuildPeer('b')).toBe(true);
+    await flushAsync();
+
+    // A peer built while the camera is already on takes the negotiated-from-
+    // the-start path, so video must be flowing again rather than silently gone.
+    const stats = await h.mesh.videoStats();
+    expect(stats[0]?.outboundFrames).toBeGreaterThan(0);
+  });
+});
+
+function mustTransceiverPeer(
+  peers: Map<string, TransceiverPeerConnection>,
+  id: string,
+): TransceiverPeerConnection {
+  const pc = peers.get(id);
+  if (!pc) throw new Error(`no fake peer for ${id}`);
+  return pc;
+}
+
+/*
+ * Requirement 7: both people press Camera at the same moment.
+ *
+ * Instant camera makes that collision likely rather than rare -- the first
+ * real track now renegotiates, so two simultaneous activations put two offers
+ * on the wire at once. Perfect negotiation has to absorb that, or the fix for
+ * V1 introduces a worse fault than the one it cures.
+ */
+describe('instant camera: simultaneous activation on both peers', () => {
+  it('resolves glare without a stuck signalling state or a second m-line', async () => {
+    const peersA = new Map<string, TransceiverPeerConnection>();
+    const peersB = new Map<string, TransceiverPeerConnection>();
+    /* eslint-disable prefer-const */
+    let meshA: CallVideoMesh;
+    let meshB: CallVideoMesh;
+    /* eslint-enable prefer-const */
+
+    const make = (
+      selfId: string,
+      peers: Map<string, TransceiverPeerConnection>,
+      to: () => CallVideoMesh,
+    ): CallVideoMesh =>
+      new CallVideoMesh({
+        callId: 'call-1',
+        selfParticipantId: selfId,
+        // Delivered to the other mesh, as the gateway relay would.
+        sendOffer: (payload) => void to().handleOffer(selfId, payload),
+        sendAnswer: (payload) => void to().handleAnswer(selfId, payload),
+        sendIce: () => undefined,
+        onRemoteStream: () => undefined,
+        onPeerState: () => undefined,
+        createPeerConnection: (remoteParticipantId) => {
+          const pc = new TransceiverPeerConnection(remoteParticipantId);
+          peers.set(remoteParticipantId, pc);
+          return pc as unknown as RTCPeerConnection;
+        },
+      });
+
+    meshA = make('a', peersA, () => meshB);
+    meshB = make('b', peersB, () => meshA);
+    meshA.syncParticipants(['b']);
+    meshB.syncParticipants(['a']);
+
+    // Both cameras, same tick.
+    await Promise.all([
+      meshA.setLocalStream(localCamera().stream),
+      meshB.setLocalStream(localCamera().stream),
+    ]);
+    await flushAsync();
+    await flushAsync();
+
+    const pcA = mustTransceiverPeer(peersA, 'b');
+    const pcB = mustTransceiverPeer(peersB, 'a');
+
+    // Neither side is left mid-negotiation, and neither grew a second m-line.
+    expect(pcA.closed).toBe(false);
+    expect(pcB.closed).toBe(false);
+    expect(pcA.transceivers).toHaveLength(1);
+    expect(pcB.transceivers).toHaveLength(1);
+    expect(pcA.senders).toHaveLength(1);
+    expect(pcB.senders).toHaveLength(1);
+    // Both cameras are still attached after the collision.
+    expect(pcA.senders[0]?.track).not.toBeNull();
+    expect(pcB.senders[0]?.track).not.toBeNull();
+
+    meshA.dispose();
+    meshB.dispose();
   });
 });

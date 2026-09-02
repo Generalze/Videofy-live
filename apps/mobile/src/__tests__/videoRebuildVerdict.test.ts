@@ -66,3 +66,31 @@ describe('a terminal state records both its arrival and its render', () => {
     expect(screen).toMatch(/useEffect\(\(\) => \{\s*if \(serverState !== null && TERMINAL_DIRECT_STATES\.has\(serverState\)\) stamp\('terminal_applied'\);/u);
   });
 });
+
+/*
+ * Recovery must be bounded (CTO ruling, 3 Sep).
+ *
+ * The rebuild is a remedy, not a retry loop: a peer that cannot send video is
+ * rebuilt once and then reported on, never rebuilt again and again while the
+ * camera stays on.
+ */
+describe('the rebuild recovery is bounded', () => {
+  it('rebuilds a given peer at most once per camera activation', () => {
+    expect(source).toContain('const rebuilt = new Set<string>();');
+    expect(source).toContain('!rebuilt.has(row.participantId)');
+    expect(source).toContain('rebuilt.add(row.participantId);');
+  });
+
+  it('never rebuilds from inside the verification pass', () => {
+    // The verdict watch observes; if it could rebuild, the two would feed
+    // each other for as long as the camera was on.
+    const verify = source.slice(source.indexOf('private async verifyRebuiltVideo'));
+    expect(verify).not.toContain('rebuildPeer');
+  });
+
+  it('treats an attach that carried no track as a failure, not a success', () => {
+    // `cleared` while turning the camera ON is the same false comfort as a
+    // resolved replaceTrack with no encoder behind it.
+    expect(source).toContain("result.outcome === 'failed' || result.outcome === 'cleared'");
+  });
+});

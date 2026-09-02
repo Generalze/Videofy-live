@@ -348,8 +348,22 @@ export class CallConnection {
     if (mesh !== null) {
       const results = await mesh.setLocalStream(stream as unknown as MediaStream);
       for (const result of results) {
-        if (result.outcome === 'failed') {
-          this.options.onVideoDiagnostic?.({ kind: 'attach-failed', participantId: result.participantId, error: result.error ?? 'unknown' });
+        /*
+         * `cleared` MEANS NOTHING WAS ATTACHED.
+         *
+         * The mesh answers `cleared` when it had no track to put on the
+         * sender. Turning the camera ON and being told `cleared` is a
+         * failure wearing a success's clothes, and it was being reported as
+         * `attached` -- the same species of mistake as trusting a resolved
+         * replaceTrack (CTO ruling, 3 Sep). On this path a stream was just
+         * acquired, so there is no benign reading of it.
+         */
+        if (result.outcome === 'failed' || result.outcome === 'cleared') {
+          this.options.onVideoDiagnostic?.({
+            kind: 'attach-failed',
+            participantId: result.participantId,
+            error: result.error ?? (result.outcome === 'cleared' ? 'attached no track' : 'unknown'),
+          });
           mesh.rebuildPeer(result.participantId);
         } else {
           this.options.onVideoDiagnostic?.({ kind: 'attached', participantId: result.participantId, outcome: result.outcome });
