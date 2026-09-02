@@ -19,6 +19,25 @@
  */
 
 import type { TranslationDecision } from '@videofy-live/translation-routes';
+/*
+ * STATICALLY IMPORTED, because these services are ESM.
+ *
+ * This was a lazy `require(...)` -- "so a deployment with translation off
+ * never pays to read a document it will not consult". Both services declare
+ * `type: module`, so at runtime `require` is not defined at all: the load threw
+ * `require is not defined`, the builder caught it, and the gate failed closed.
+ *
+ * Which is the SAFE direction, and that is exactly why nobody noticed. A gate
+ * that refuses everything looks identical to a deployment with no approved
+ * routes, and the boot line said "FAILED CLOSED" in a deployment that had no
+ * document configured anyway. It was found on staging, in the boot log, not by
+ * anything failing.
+ *
+ * The saving was never real either: this module is a few kilobytes and reads
+ * nothing until it is called. Correctness beats a micro-optimisation that
+ * silently disabled the control it was optimising.
+ */
+import { loadTranslationRouteRegistry } from '@videofy-live/translation-routes/document-file';
 import {
   createTranslationGate,
   type RouteGate,
@@ -141,13 +160,14 @@ function closed(options: WiringOptions, why: string): GateWiring {
 }
 
 function defaultLoad(documentPath: string | undefined): RegistryLoad {
-  // Imported lazily so a deployment with translation off, or a test that
-  // injects its own loader, never pays to read a document it will not consult.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const mod = require('@videofy-live/translation-routes/document-file') as {
-    loadTranslationRouteRegistry: (o: { documentPath?: string }) => RegistryLoad;
-  };
-  return mod.loadTranslationRouteRegistry(
-    documentPath === undefined ? {} : { documentPath },
-  );
+  /*
+   * `path`, NOT `documentPath`. The option this passed did not exist on
+   * LoadOptions, so an explicitly configured document was silently ignored and
+   * the loader fell through to the environment variable. That happens to name
+   * the same file, which is why it never showed -- a wrong argument masked by a
+   * fallback that agreed with it.
+   */
+  return loadTranslationRouteRegistry(
+    documentPath === undefined ? {} : { path: documentPath },
+  ) as RegistryLoad;
 }
