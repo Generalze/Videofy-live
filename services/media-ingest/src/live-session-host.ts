@@ -47,6 +47,7 @@ import {
 import type { StreamingSpeechSynthesisProvider } from './streaming-speech-synthesis-provider.js';
 import type { StreamingTranscriptionProvider } from './streaming-transcription-provider.js';
 import type { VocabularySnapshotClient } from './vocabulary-snapshot-client.js';
+import type { ProgrammePerformanceRegistry } from './programme-performance-registry.js';
 import type { TimestampedTranslationProvider } from './translation-provider.js';
 import type { TranscriptEvent } from './transcript-event.js';
 
@@ -150,6 +151,14 @@ export interface LiveSessionHostDeps {
    * programme has no terms" and "we could not find out" is the whole point.
    */
   readonly vocabulary?: VocabularySnapshotClient;
+  /**
+   * Where this programme's measurements are kept.
+   *
+   * Absent means nothing is counting, which the console must render as "no
+   * samples" rather than as a set of zeroes that would read like a pipeline
+   * performing perfectly.
+   */
+  readonly performance?: ProgrammePerformanceRegistry;
 }
 
 export class LiveSessionHost implements IngressStreamHandler {
@@ -233,6 +242,20 @@ export class LiveSessionHost implements IngressStreamHandler {
         ...(deps.frameSamples === undefined ? {} : { frameSamples: deps.frameSamples }),
         ...(deps.now === undefined ? {} : { now: deps.now }),
         ...(deps.log === undefined ? {} : { log: deps.log }),
+        /*
+         * Counters, but only for a programme. A direct call has no broadcast
+         * to report on, and handing it a recorder would fill the console with
+         * rows for conversations nobody is watching.
+         */
+        ...(deps.performance === undefined || open.context.serviceCategory !== 'programme'
+          ? {}
+          : {
+              performance: deps.performance.for(
+                open.context.programme.runId,
+                open.sourceLanguage ?? 'en',
+                plan.targetLanguage,
+              ),
+            }),
       };
       speech.set(plan.targetLanguage, new LiveTranslationPipeline(translationDeps));
     }

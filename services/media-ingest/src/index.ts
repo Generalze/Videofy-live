@@ -44,6 +44,7 @@ import { setOpusMtDiagnosticLogger } from './translation-provider.js';
 import { attachRealtimeAudioIngress, REALTIME_INGRESS_PATH } from './realtime-ingress-server.js';
 import { createLiveStreamOpener } from './live-session-host.js';
 import { createVocabularySnapshotClient } from './vocabulary-snapshot-client.js';
+import { ProgrammePerformanceRegistry } from './programme-performance-registry.js';
 import {
   SileroSpeechDetector,
   type SpeechProbabilityDetector,
@@ -974,6 +975,15 @@ if (operatorEntitlement.allowedCount === 0) {
 // without one there is nothing to transcribe a stream WITH, and opening the
 // socket anyway would accept a call's audio and produce no captions while
 // every component reported success.
+/**
+ * Every live programme's measured behaviour, for the life of this process.
+ *
+ * One registry, partitioned by run, so two airings of the same programme never
+ * describe each other. Held here rather than per-session because a console
+ * asks about a run that a session may already have closed.
+ */
+const programmePerformance = new ProgrammePerformanceRegistry();
+
 const streamingTranscription = buildStreamingTranscriptionProvider(config);
 
 /**
@@ -1152,6 +1162,8 @@ if (streamingTranscription !== null) {
        * client that says so out loud instead of an absent dependency that
        * quietly resolves to no terms.
        */
+      // Measurements live for the life of the process, partitioned by run.
+      performance: programmePerformance,
       vocabulary: createVocabularySnapshotClient({
         accountUrl: config.accountServiceUrl,
         internalToken: config.internalIngressAuth.token,
