@@ -411,3 +411,51 @@ export function parseMediaStateEvent(raw: unknown): ValidatedMediaStateEvent {
 export function safeParseMediaStateEvent(raw: unknown) {
   return MediaStateEventSchema.safeParse(raw);
 }
+
+/**
+ * A programme run's delivery answer, validated at the gateway boundary.
+ *
+ * Validated because it decides whether the realtime relay is permitted, and a
+ * malformed message that fell through to a default would decide it wrongly in
+ * the permissive direction. The union is preserved rather than flattened: a
+ * ready delayed delivery must carry a manifest, and anything else must carry a
+ * reason, which is the property the contract exists to guarantee.
+ */
+const DeliveryIdentitySchema = {
+  protocolVersion: z.literal(1),
+  programmeRunId: z.string().min(1).max(64),
+};
+
+/*
+ * A plain union rather than a discriminated one: two branches legitimately
+ * share readiness 'ready' (live and delayed), and no single key separates all
+ * three. zod refuses to build a discriminated union over a repeated value, so
+ * the honest shape is the one that actually describes the contract.
+ */
+export const ProgrammeMediaDeliverySchema = z.union([
+  z.object({
+    ...DeliveryIdentitySchema,
+    mode: z.literal('live'),
+    readiness: z.literal('ready'),
+    publicManifestUrl: z.null(),
+    reason: z.null(),
+  }),
+  z.object({
+    ...DeliveryIdentitySchema,
+    mode: z.literal('delayed'),
+    readiness: z.literal('ready'),
+    publicManifestUrl: z.string().min(1),
+    reason: z.null(),
+  }),
+  z.object({
+    ...DeliveryIdentitySchema,
+    mode: z.literal('delayed'),
+    readiness: z.enum(['preparing', 'unavailable']),
+    publicManifestUrl: z.null(),
+    reason: z.string().min(1),
+  }),
+]);
+
+export function safeParseProgrammeMediaDelivery(raw: unknown) {
+  return ProgrammeMediaDeliverySchema.safeParse(raw);
+}

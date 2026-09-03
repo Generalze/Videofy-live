@@ -51,6 +51,7 @@ interface TrackedRun {
 export class ProgrammeTimelineRegistry {
   private readonly runs = new Map<string, TrackedRun>();
   private readonly vocabularies = new Map<string, RunVocabulary>();
+  private readonly sessionRuns = new Map<string, string>();
 
   constructor(
     private readonly maxRuns: number = MAX_TRACKED_TIMELINES,
@@ -210,6 +211,35 @@ export class ProgrammeTimelineRegistry {
   }
 
   /**
+   * Which broadcast a transport session belongs to.
+   *
+   * Needed because the audience-facing delivery routes are keyed by SESSION
+   * while the cursor that governs them is keyed by RUN. Without this mapping
+   * those routes cannot ask whether a segment has been released, and a caller
+   * who guesses a segment id gets material the cursor is still holding.
+   *
+   * A session may be replaced across a reconnect; the run it points at does
+   * not change, which is the whole point of the run identity.
+   */
+  noteSession(sessionId: string, runId: string): void {
+    if (this.runs.has(runId)) this.sessionRuns.set(sessionId, runId);
+  }
+
+  /** The run behind a transport session, or null when there is none. */
+  runForSession(sessionId: string): string | null {
+    const runId = this.sessionRuns.get(sessionId);
+    if (runId === undefined) return null;
+    // A run this process has released is not a run: answering for it would
+    // ungovern its media the moment it was evicted.
+    return this.runs.has(runId) ? runId : null;
+  }
+
+  /** Every run this process is currently tracking. */
+  trackedRuns(): readonly string[] {
+    return [...this.runs.keys()];
+  }
+
+  /**
    * The channel a run belongs to, or null when this process is not running it.
    *
    * Needed by anything that must ask a question about the CHANNEL -- who may
@@ -225,6 +255,9 @@ export class ProgrammeTimelineRegistry {
   release(runId: string): void {
     this.runs.delete(runId);
     this.vocabularies.delete(runId);
+    for (const [sessionId, tracked] of [...this.sessionRuns]) {
+      if (tracked === runId) this.sessionRuns.delete(sessionId);
+    }
     // The journal is settled and removed after; a delete that raced its own
     // writes would leave a broadcast half-remembered.
     void this.store?.release(runId);

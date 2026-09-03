@@ -17,6 +17,7 @@ import type {
   TranscriptionEvent,
   TranslationEvent,
   WebRtcIncomingSignallingEnvelope,
+  ProgrammeMediaDelivery,
 } from '@videofy-live/shared-types';
 import {
   DEFAULT_CHANNEL_ID,
@@ -46,9 +47,11 @@ import {
   WEBRTC_BACKEND_MEDIA_PEER_ID,
   WEBRTC_SIGNALLING_LIMITS,
   WORKER_ROOM,
+  realtimeRelayPermitted,
 } from '@videofy-live/shared-types';
 import {
   safeParseMediaStateEvent,
+  safeParseProgrammeMediaDelivery,
   safeParseGeneratedAudioReadyEvent,
   safeParseTimestampedTranslationEvent,
   safeParseTranscriptionEvent,
@@ -243,6 +246,36 @@ export class Gateway {
    * hiccupping is not a new programme.
    */
   private readonly programmeRuns = new Map<string, ProgrammeRunIdentity>();
+
+  /**
+   * How each run's original media reaches its audience, as the run itself says.
+   *
+   * Not inferred here, and not read off a delay figure. media-ingest owns the
+   * delivery chain and announces the answer; this is the cache that answer
+   * lives in between announcements.
+   */
+  private readonly programmeDelivery = new Map<string, ProgrammeMediaDelivery>();
+
+  /**
+   * Sessions whose original media must NOT be relayed in realtime.
+   *
+   * Derived from the announcements above and kept as a flat set because it is
+   * consulted on every audio and video frame, and a per-frame map walk on the
+   * media path is a cost that shows up as jitter.
+   */
+  private readonly realtimeRelayForbidden = new Set<string>();
+
+  /**
+   * Whether this deployment has ever announced a delayed run.
+   *
+   * THE FAIL-CLOSED SWITCH, and the reason it is conditional. Refusing every
+   * run this gateway has not yet heard about would break every existing live
+   * programme, including those media-ingest is not involved in. But once a
+   * deployment has shown that it does protected broadcasts, an unknown run is
+   * no longer safely assumed to be live -- an announcement can be lost, and
+   * the cost of guessing wrong is the audience hearing the studio.
+   */
+  private sawDelayedDelivery = false;
 
   /*
    * THE DEFAULT CHANNEL, UNDER THE OLD NAME.
@@ -465,6 +498,10 @@ export class Gateway {
           }
         }
         try {
+          // Checked per frame as well as at peer creation. A peer built
+          // before the answer arrived is exactly the leak window, and this
+          // is a set lookup on a path that cannot afford a map walk.
+          if (this.realtimeRelayForbidden.has(context.sessionId)) return;
           this.listenerMediaPeers.fanOutAudioFrame(context.sessionId, data);
         } catch (error) {
           logger.warn('WebRTC listener programme-audio fanout failed', {
@@ -477,7 +514,8 @@ export class Gateway {
       },
       onVideoFrame: (context, frame) => {
         try {
-          this.listenerMediaPeers.fanOutVideoFrame(context.sessionId, frame);
+          if (this.realtimeRelayForbidden.has(context.sessionId)) return;
+        this.listenerMediaPeers.fanOutVideoFrame(context.sessionId, frame);
         } catch (error) {
           logger.warn('WebRTC listener programme-video fanout failed', {
             sessionId: context.sessionId,
@@ -1557,6 +1595,26 @@ export class Gateway {
       this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
     });
 
+    /*
+     * THE ANSWER THAT DECIDES WHETHER THIS GATEWAY MAY RELAY.
+     *
+     * Validated rather than trusted: a malformed message that fell through to
+     * a default would decide it in the permissive direction, and the
+     * permissive direction is an audience hearing a protected studio. An
+     * invalid announcement leaves the previous answer standing, which for a
+     * protected run means it stays refused.
+     */
+    socket.on(SOCKET_EVENTS.INGEST_PROGRAMME_DELIVERY, (raw: unknown) => {
+      const parsed = safeParseProgrammeMediaDelivery(raw);
+      if (!parsed.success) {
+        logger.warn('Ingest sent an invalid programme delivery announcement', {
+          socketId: socket.id,
+        });
+        return;
+      }
+      this.noteProgrammeDelivery(parsed.data as ProgrammeMediaDelivery);
+    });
+
     socket.on(SOCKET_EVENTS.INGEST_STATE, (raw: unknown) => {
       const result = safeParseMediaStateEvent(raw);
       if (!result.success) {
@@ -2004,8 +2062,75 @@ export class Gateway {
     }
   }
 
+  /**
+   * Record a run's delivery answer and act on it immediately.
+   *
+   * Acting immediately matters: a run that becomes delayed while listeners are
+   * already attached has an audience receiving realtime media right now, and
+   * waiting for the next join would leave them there.
+   */
+  private noteProgrammeDelivery(delivery: ProgrammeMediaDelivery): void {
+    this.programmeDelivery.set(delivery.programmeRunId, delivery);
+    if (delivery.mode === 'delayed') this.sawDelayedDelivery = true;
+
+    for (const [sessionId, run] of this.programmeRuns) {
+      if (run.runId !== delivery.programmeRunId) continue;
+      if (realtimeRelayPermitted(delivery)) {
+        this.realtimeRelayForbidden.delete(sessionId);
+        continue;
+      }
+      const wasPermitted = !this.realtimeRelayForbidden.has(sessionId);
+      this.realtimeRelayForbidden.add(sessionId);
+      if (wasPermitted) {
+        /*
+         * Torn down rather than left silent. A peer that exists and is
+         * expected not to carry frames is one bug away from carrying them,
+         * and the bug would be invisible until an audience heard the studio.
+         */
+        this.listenerMediaPeers.closeSession(
+          sessionId,
+          'this programme is delivered through the delayed public media path',
+        );
+        logger.info('Realtime relay withdrawn for a protected programme', {
+          runId: delivery.programmeRunId,
+          readiness: delivery.readiness,
+        });
+      }
+    }
+  }
+
+  /**
+   * May this session's original media go out over the realtime audience path?
+   *
+   * The single question, asked in one place. A session with no programme run
+   * is not a programme and is permitted; a run whose answer says delayed is
+   * refused in every readiness, including `preparing` -- relaying while a
+   * buffer fills would deliver the studio for exactly the window the delay was
+   * configured to cover.
+   */
+  private mayRelayRealtime(sessionId: string): boolean {
+    const run = this.programmeRuns.get(sessionId);
+    if (run === undefined) return true;
+    const delivery = this.programmeDelivery.get(run.runId);
+    if (delivery !== undefined) return realtimeRelayPermitted(delivery);
+    // Unknown. Safe to permit only on a deployment that has never shown it
+    // does protected broadcasts at all.
+    return !this.sawDelayedDelivery;
+  }
+
   private async startListenerDeliveryForSession(sessionId: string | undefined): Promise<void> {
     if (!sessionId) return;
+    if (!this.mayRelayRealtime(sessionId)) {
+      /*
+       * NOT MUTED, NOT PAUSED: no peer is built. The protected audience
+       * receives this programme through the delayed public media path, and a
+       * listener whose client cannot play that path does not watch -- which is
+       * the correct outcome, because the alternative is delivering the very
+       * material the delay withholds.
+       */
+      logger.info('Refused a realtime listener peer for a protected programme', { sessionId });
+      return;
+    }
     const broadcaster = this.backendMediaPeers.getSnapshot(sessionId);
     if (
       !broadcaster ||

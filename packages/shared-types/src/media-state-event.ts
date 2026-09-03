@@ -1,3 +1,4 @@
+import type { ProgrammeMediaDelivery } from './programme-media-delivery.js';
 import type { StreamStatus, VideoSource } from './translation-event.js';
 import type { SessionMonitoringMetadata } from './session-monitoring.js';
 import type { TranslationSessionMetadata } from './timestamped-translation-event.js';
@@ -135,6 +136,20 @@ export interface MediaStateEvent {
   programmeMediaUrl?: string;
   /** How the listener should combine programme video, original audio, captions, and generated audio. */
   programmeMediaMode?: 'live-webrtc' | 'uploaded-stems' | 'viewer-ready';
+  /**
+   * HOW THE ORIGINAL MEDIA REACHES THE AUDIENCE, decided by the run.
+   *
+   * The gateway reads it to decide whether it may relay the broadcaster's
+   * realtime tracks; the listener reads it to decide whether to play those
+   * tracks or the cursor-governed segments; the console reads it to say
+   * whether anything is being held back. None of them derives it separately,
+   * because three derivations of one fact is three chances to disagree -- and
+   * the disagreement that matters is a console saying PROTECTED while the
+   * audience hears the studio live.
+   *
+   * Absent for contexts that have no programme run.
+   */
+  mediaDelivery?: ProgrammeMediaDelivery;
   /** Current lifecycle state of the video stream. */
   streamStatus: StreamStatus;
   /** Where the video feed originates from. */

@@ -5,6 +5,7 @@ export * from './generated-audio-event.js';
 export * from './session-monitoring.js';
 export * from './microphone-capture.js';
 export * from './media-state-event.js';
+export * from './programme-media-delivery.js';
 export * from './audio-sync.js';
 export * from './socket-events.js';
 export * from './webrtc-signalling.js';

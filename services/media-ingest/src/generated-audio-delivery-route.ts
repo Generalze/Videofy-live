@@ -13,12 +13,52 @@ export interface GeneratedAudioDeliveryService {
   ): Promise<GeneratedAudioFile>;
 }
 
+/**
+ * Has the cursor released this piece of translated audio yet?
+ *
+ * `not-governed` is the ordinary answer for a session with no protected run,
+ * and it is not a weakness: a programme that holds nothing back has nothing to
+ * withhold. `not-yet-public` is the one that matters -- segment ids are
+ * sequential and a caller can count, so the manifest of released segments is
+ * necessary and nowhere near sufficient.
+ */
+export type GeneratedAudioRelease = 'public' | 'not-yet-public' | 'not-governed';
+
+export interface GeneratedAudioReleaseGuard {
+  assess(sessionId: string, segmentId: string): GeneratedAudioRelease;
+}
+
+/**
+ * The audience's translated audio, gated on the same cursor as everything else.
+ *
+ * WITHOUT THE GUARD THIS ROUTE WAS A BYPASS. Translated audio is produced from
+ * the original as it arrives, so a protected programme's next forty-five
+ * seconds of speech exist on disk long before the audience may hear them.
+ * Anyone who could guess a segment id could fetch them, which would have made
+ * the delay decorative on the very plane it was already governing.
+ *
+ * The guard is optional at the type level and supplied in production. Absent,
+ * every request is treated as ungoverned, which is the correct behaviour for a
+ * deployment with no protected runs and is stated here rather than left to be
+ * inferred from a missing argument.
+ */
 export function registerGeneratedAudioDeliveryRoute(
   app: express.Express,
   ingest: GeneratedAudioDeliveryService,
+  guard?: GeneratedAudioReleaseGuard,
 ): void {
   app.get('/sessions/:sessionId/generated-audio/segments/:segmentId/audio', async (req, res) => {
     try {
+      const release = guard?.assess(req.params.sessionId, req.params.segmentId) ?? 'not-governed';
+      if (release === 'not-yet-public') {
+        /*
+         * Refused, and told apart from "no such segment" in the status rather
+         * than the body: an operator needs to see somebody counting, and a
+         * caller learns nothing they did not already suppose.
+         */
+        res.status(403).json({ error: 'That segment has not been released yet.' });
+        return;
+      }
       const targetLanguage =
         typeof req.query['language'] === 'string' ? req.query['language'] : undefined;
       const file = await ingest.getGeneratedAudioFile(

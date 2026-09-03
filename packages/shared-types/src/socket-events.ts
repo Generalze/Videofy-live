@@ -72,6 +72,17 @@ export const SOCKET_EVENTS = {
   TRANSLATED_AUDIO_FRAME: 'translated-audio:frame',
   INGEST_GENERATED_AUDIO: 'ingest:generated-audio',
   INGEST_HEALTH: 'ingest:health',
+  /**
+   * A programme run's authoritative delivery answer.
+   *
+   * Its own event rather than a field on the state snapshot, because the
+   * gateway must have it BEFORE it decides whether to relay a broadcaster's
+   * tracks to a listener -- a decision that happens on a listener joining, not
+   * on the next state broadcast. Carrying it separately also means it survives
+   * on its own cadence: it changes when the delivery chain changes, which is
+   * rarely, and not on every video timestamp tick.
+   */
+  INGEST_PROGRAMME_DELIVERY: 'ingest:programme-delivery',
   INGEST_START_STREAM: 'ingest:start_stream',
   INGEST_STOP_STREAM: 'ingest:stop_stream',
 

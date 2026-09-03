@@ -6,6 +6,7 @@ import type {
   TargetLanguageCapability,
   TimestampedTranslationEvent,
   TranscriptionEvent,
+  ProgrammeMediaDelivery,
 } from '@videofy-live/shared-types';
 import { SOCKET_EVENTS } from '@videofy-live/shared-types';
 import type { IngestConfig } from './config.js';
@@ -480,6 +481,30 @@ export class IngestService {
    */
   get connectedToGateway(): boolean {
     return this.gatewayConnected;
+  }
+
+  /**
+   * Tell the gateway how a programme run's original media reaches its audience.
+   *
+   * A dedicated announcement rather than a field on the next state snapshot,
+   * because the gateway needs this BEFORE it decides whether to relay a
+   * broadcaster's tracks to a joining listener -- a decision that happens on a
+   * join, not on the next tick.
+   *
+   * Silently dropped while the socket is down. The gateway's own default is to
+   * refuse the realtime relay for a run it has heard nothing about, so a lost
+   * announcement costs a protected programme its audience rather than costing
+   * a protected programme its protection.
+   */
+  publishProgrammeDelivery(delivery: ProgrammeMediaDelivery): void {
+    if (!this.socket?.connected) return;
+    this.socket.emit(SOCKET_EVENTS.INGEST_PROGRAMME_DELIVERY, delivery);
+    logger.info('Programme delivery announced', {
+      runId: delivery.programmeRunId,
+      mode: delivery.mode,
+      readiness: delivery.readiness,
+      ...(delivery.reason === null ? {} : { reason: delivery.reason }),
+    });
   }
 
   /**

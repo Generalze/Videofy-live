@@ -229,6 +229,13 @@ export class LiveSessionHost implements IngressStreamHandler {
     // not the one most recently saved. They differ the moment somebody edits.
     if (open.context.serviceCategory === 'programme') {
       deps.timelines?.noteVocabulary(open.context.programme.runId, vocabulary.reported);
+      /*
+       * The audience's delivery routes are keyed by session and the cursor
+       * that governs them is keyed by run. This is the join between the two,
+       * and without it those routes cannot tell released material from
+       * material the delay is still holding.
+       */
+      deps.timelines?.noteSession(open.sessionId, open.context.programme.runId);
     }
 
     /*

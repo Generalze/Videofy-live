@@ -78,6 +78,16 @@ export class ProgrammeEgressAuthority {
   }
 
   /**
+   * Is there an initialisation segment for this run?
+   *
+   * Asked before a delivery is called ready: without it no fragment decodes,
+   * so a manifest offered in its absence is one no player can use.
+   */
+  hasInitSegment(runId: string, generation = 0): boolean {
+    return this.initReferences.has(initSegmentId(runId, generation));
+  }
+
+  /**
    * The manifest a viewer may see right now.
    *
    * Built from the authoritative cursor, never from the encoder's playlist.

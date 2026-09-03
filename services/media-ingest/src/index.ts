@@ -59,6 +59,7 @@ import { registerProgrammeEgressRoutes } from './programme-egress-routes.js';
 import { ProgrammeEgressAuthority } from './programme-egress.js';
 import { ProgrammeMediaStore } from './programme-media-store.js';
 import { ProgrammeMediaOrigin } from './programme-media-origin.js';
+import { ProgrammeDeliveryReporter } from './programme-delivery-reporter.js';
 import {
   VISIBILITY_UNRESOLVABLE,
   createChannelVisibilityClient,
@@ -908,7 +909,39 @@ app.post('/internal/voice-cleanups/retry', async (req, res) => {
   });
 });
 
-registerGeneratedAudioDeliveryRoute(app, ingest);
+/*
+ * THE AUDIENCE'S TRANSLATED AUDIO, GATED ON THE SAME CURSOR AS EVERYTHING ELSE.
+ *
+ * Translated audio is produced from the original as it arrives, so a protected
+ * programme's next forty-five seconds of speech sit on disk long before the
+ * audience may hear them. This route had no cursor check, and segment ids are
+ * sequential -- which made the delay decorative on the plane it was already
+ * governing, for anybody willing to count.
+ *
+ * The answer comes from the timeline: a piece of generated audio is public
+ * once the event that announced it has been released. A session with no
+ * protected run is ungoverned, which is the correct answer for a programme
+ * that holds nothing back.
+ */
+registerGeneratedAudioDeliveryRoute(app, ingest, {
+  assess: (sessionId, segmentId) => {
+    const runId = programmeTimelines.runForSession(sessionId);
+    if (runId === null) return 'not-governed';
+    const status = programmeTimelines.status(runId);
+    if (status === null) return 'not-governed';
+    const event = programmeTimelines
+      .timeline(runId)
+      ?.all()
+      .find((entry) => entry.kind === 'generated-audio' && entry.reference === segmentId);
+    /*
+     * An id the timeline has never seen is not withheld, it is unknown, and
+     * the delivery service answers that with its own 404. Reporting it as
+     * withheld would tell a caller that every id they guess exists.
+     */
+    if (event === undefined) return 'not-governed';
+    return event.programmeTimeMs <= status.cursor.publicOutputTimeMs ? 'public' : 'not-yet-public';
+  },
+});
 registerSourceMediaDeliveryRoute(app, ingest);
 registerViewerReadyMediaDeliveryRoute(app, ingest);
 
@@ -1283,6 +1316,45 @@ app.delete('/programmes/:runId/media-origin', operatorOnly, (req, res) => {
     res.status(200).json({ runId, producing: false });
   })();
 });
+
+/*
+ * THE RUN'S OWN ANSWER, published to everybody who must act on it.
+ *
+ * The gateway reads it to decide whether it may relay a broadcaster's tracks;
+ * the listener reads it to decide what to play; the console reads it to say
+ * whether anything is being held back. All three read THIS, rather than each
+ * deriving it -- three derivations of one fact is three chances to disagree,
+ * and the disagreement that matters is a console saying PROTECTED while an
+ * audience hears the studio live.
+ */
+const programmeDelivery = new ProgrammeDeliveryReporter({
+  configuredMode: config.programmeMediaDelivery,
+  originConfigured: config.programmeMediaOriginInput !== null,
+  trackedRuns: () => programmeTimelines.trackedRuns(),
+  facts: (runId) => {
+    const manifest = programmeEgress.manifest(runId);
+    return {
+      originRunning: programmeOrigin.produces(runId),
+      initSegmentReady: programmeEgress.hasInitSegment(runId),
+      // What the CURSOR has released, not what the encoder has produced.
+      publishedSegments: manifest.available ? manifest.segments.length : 0,
+      timelineTracked: programmeTimelines.tracks(runId),
+      bufferState: programmeTimelines.status(runId)?.state ?? null,
+      egressAvailable: manifest.available,
+    };
+  },
+  manifestUrl: (runId) =>
+    `${config.ingestPublicUrl.replace(/\/+$/u, '')}/programmes/${encodeURIComponent(runId)}/playlist.m3u8`,
+  announce: (delivery) => ingest.publishProgrammeDelivery(delivery),
+});
+/*
+ * Polled rather than pushed from every mutation point. The assessment is
+ * cheap, the announcement only happens when the ANSWER changes, and a poll
+ * cannot be forgotten at one of the dozen places that move the chain -- which
+ * is exactly how a stale readiness reaches a gateway.
+ */
+const programmeDeliveryTimer = setInterval(() => programmeDelivery.report(), 2_000);
+programmeDeliveryTimer.unref?.();
 
 logger.info('Programme egress ready', {
   spool: programmeMediaSpool,
