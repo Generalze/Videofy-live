@@ -39,7 +39,7 @@ import {
   type OriginProcess,
   type OriginSpawner,
 } from '../programme-media-origin.js';
-import type { OriginRunResult } from '../media-origin-worker.js';
+import type { OriginRunResult } from '@videofy-live/programme-contribution';
 
 const RUN = { channelId: 'ch_1', programmeId: 'prog_1', runId: 'run_1' };
 const DELAY_MS = 45_000;

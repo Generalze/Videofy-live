@@ -41,7 +41,7 @@ import {
   runOrigin,
   type MediaOriginOptions,
   type OriginRunResult,
-} from './media-origin-worker.js';
+} from '@videofy-live/programme-contribution';
 import type { ProgrammeMediaStore } from './programme-media-store.js';
 import type { ProgrammeTimelineRegistry } from './programme-timeline-registry.js';
 import type { ProgrammeEgressAuthority } from './programme-egress.js';

@@ -26,7 +26,7 @@ import {
   initFileName,
   probeSegment,
   runOrigin,
-} from '../media-origin-worker.js';
+} from '@videofy-live/programme-contribution';
 
 function toolPresent(tool: string): boolean {
   const probe = spawnSync(tool, ['-version'], { stdio: 'ignore' });

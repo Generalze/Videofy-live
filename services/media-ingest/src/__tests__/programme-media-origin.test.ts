@@ -22,7 +22,7 @@ import {
 import { ProgrammeMediaStore } from '../programme-media-store.js';
 import { ProgrammeTimelineRegistry } from '../programme-timeline-registry.js';
 import { ProgrammeEgressAuthority, initSegmentId, renderHlsManifest } from '../programme-egress.js';
-import type { MediaOriginOptions, OriginRunResult } from '../media-origin-worker.js';
+import type { MediaOriginOptions, OriginRunResult } from '@videofy-live/programme-contribution';
 
 const RUN = { channelId: 'ch_1', programmeId: 'prog_1', runId: 'run_1' };
 const DELAY_MS = 45_000;

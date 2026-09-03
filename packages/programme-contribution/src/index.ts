@@ -25,3 +25,19 @@ export {
   type ContributionStatus,
   type ContributionVideoFormat,
 } from './bridge.js';
+export {
+  SEGMENT_SECONDS,
+  buildOriginCommand,
+  initFileName,
+  playlistFileName,
+  probeSegment,
+  runOrigin,
+  type MediaOriginOptions,
+  type OriginRunResult,
+  type ProbedSegment,
+} from './origin.js';
+export {
+  RawContributionEncoder,
+  buildRawOriginCommand,
+  type RawEncoderOptions,
+} from './raw-encoder.js';
