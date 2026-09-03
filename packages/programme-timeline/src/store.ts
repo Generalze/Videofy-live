@@ -32,6 +32,21 @@ export interface PersistedRun {
    * an event at programme time zero is still owed to them.
    */
   readonly releasedThroughMs: number;
+  /**
+   * Whether the journal read back whole.
+   *
+   * A TORN LAST LINE AND A HOLE IN THE MIDDLE ARE DIFFERENT FAULTS. A process
+   * killed mid-write leaves a partial final record; everything before it is
+   * exactly what the audience already received, and dropping the fragment
+   * loses nothing. A record that fails to parse with intact records AFTER it
+   * is a gap: the broadcast is missing a piece somebody may already have been
+   * sent, and replaying it would give the audience a different programme from
+   * the one that aired.
+   *
+   * False does not mean the events are unusable. It means a caller must not
+   * quietly carry on as though the record were complete.
+   */
+  readonly intact: boolean;
 }
 
 export interface TimelineStoreHealth {

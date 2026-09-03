@@ -22,6 +22,7 @@
  * anything a viewer or the Programme timeline depends on.
  */
 
+import { retentionWindowMs } from '@videofy-live/programme-timeline';
 import type { ProgrammeMediaStore } from './programme-media-store.js';
 import type { ProgrammeTimelineRegistry } from './programme-timeline-registry.js';
 
@@ -105,6 +106,29 @@ export class ProgrammeEgressAuthority {
   }
 
   /**
+   * The oldest programme time the retained window must still cover.
+   *
+   * THIS USED TO BE THE OLDEST SEGMENT STILL HELD, which asked whether what
+   * the store holds covers what the store holds -- a question with only one
+   * answer. The retention check underneath is written to catch a hole at the
+   * front of the window, and passing it the front of the window disabled it
+   * entirely: material discarded from under a watching audience read as a
+   * perfectly healthy broadcast.
+   *
+   * The honest question is whether the window a viewer could still be inside
+   * is intact, so this is the cursor less the retention that delay requires.
+   */
+  private earliestNeeded(status: {
+    readonly cursor: { readonly publicOutputTimeMs: number };
+    readonly configuredDelayMs: number;
+  }): number {
+    return Math.max(
+      0,
+      status.cursor.publicOutputTimeMs - retentionWindowMs(status.configuredDelayMs),
+    );
+  }
+
+  /**
    * The manifest a viewer may see right now.
    *
    * Built from the authoritative cursor, never from the encoder's playlist.
@@ -131,7 +155,7 @@ export class ProgrammeEgressAuthority {
     }
 
     const cursor = status.cursor.publicOutputTimeMs;
-    const held = this.media.throughCursor(runId, cursor, this.media.earliestHeldMs(runId) ?? 0);
+    const held = this.media.throughCursor(runId, cursor, this.earliestNeeded(status));
     if (!held.available) {
       // Retention exhausted. Serving what remains would skip the audience
       // forward, which is the downgrade the buffer exists to prevent.
@@ -184,7 +208,7 @@ export class ProgrammeEgressAuthority {
     }
 
     const cursor = status.cursor.publicOutputTimeMs;
-    const published = this.media.throughCursor(runId, cursor, this.media.earliestHeldMs(runId) ?? 0);
+    const published = this.media.throughCursor(runId, cursor, this.earliestNeeded(status));
     if (!published.available) return { allowed: false, refusal: 'output-stopped' };
 
     const found = published.segments.find((segment) => segment.segmentId === segmentId);

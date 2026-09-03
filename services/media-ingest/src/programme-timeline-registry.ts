@@ -123,6 +123,21 @@ export class ProgrammeTimelineRegistry {
     buffer.restoreReleasedThrough(persisted.releasedThroughMs);
     this.runs.set(identity.runId, { identity, timeline, buffer });
     this.evictOldest();
+
+    if (!persisted.intact) {
+      /*
+       * A HOLE IN THE RECORD STOPS THE BROADCAST, VISIBLY.
+       *
+       * The events are kept -- they are the best account of this programme
+       * that exists -- but the output does not resume over a gap. A protected
+       * broadcast whose record is missing a piece cannot tell what the
+       * audience already received, and carrying on would either replay
+       * material they have had or skip material they have not. Failing here
+       * costs the rest of the programme; guessing costs the promise the delay
+       * was made under.
+       */
+      buffer.fail('the recovered timeline has a gap and cannot be resumed safely');
+    }
     return true;
   }
 

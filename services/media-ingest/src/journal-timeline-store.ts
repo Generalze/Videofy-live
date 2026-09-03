@@ -213,23 +213,33 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
     }
 
     const events: ProgrammeTimelineEvent[] = [];
-    for (const line of raw.split('\n')) {
+    /*
+     * A TORN LAST LINE IS NOT A CORRUPT BROADCAST, AND A HOLE IS NOT A TORN
+     * LAST LINE.
+     *
+     * A process killed mid-write leaves a partial FINAL record; everything
+     * before it is exactly what the audience already received, so dropping the
+     * fragment loses nothing. But a record that fails to parse with readable
+     * records AFTER it is a gap in the middle of a broadcast -- material
+     * somebody may already have been sent. Both used to be dropped silently
+     * and identically, so a journal with a hole recovered as though it were
+     * whole and replayed a different programme from the one that aired.
+     */
+    let brokenAt = -1;
+    let lastReadable = -1;
+    const lines = raw.split('\n');
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index] ?? '';
       if (line.trim() === '') continue;
+      lastReadable = index;
       try {
         events.push(JSON.parse(line) as ProgrammeTimelineEvent);
       } catch {
-        /*
-         * A TORN LAST LINE IS NOT A CORRUPT BROADCAST.
-         *
-         * A process killed mid-write leaves a partial record. Everything
-         * before it is intact and is exactly what the audience already
-         * received, so it is kept and the fragment dropped. Refusing the whole
-         * journal over one truncated line would turn a recoverable restart
-         * into a lost programme.
-         */
-        continue;
+        brokenAt = index;
       }
     }
+    // Only the final record may legitimately be torn.
+    const intact = brokenAt === -1 || brokenAt === lastReadable;
 
     let releasedThroughMs = -1;
     const cursorPath = this.pathFor(runId, 'cursor');
@@ -246,7 +256,7 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
       }
     }
 
-    return { runId, events, releasedThroughMs };
+    return { runId, events, releasedThroughMs, intact };
   }
 
   /**
