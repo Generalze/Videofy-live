@@ -1006,13 +1006,19 @@ const programmePerformance = new ProgrammePerformanceRegistry();
  * POSSIBLE AT ALL.
  *
  * The buffer refuses a protective delay unless every time-sensitive plane is
- * held to the cursor. Until a producer existed, none was: original media was
- * forwarded live and the honest setting was metadata only. A deployment that
- * produces programme media governs both planes, and one that does not still
- * governs only metadata -- so a delay configured on such a deployment is
- * refused loudly rather than half applied.
+ * held to the cursor. PRODUCING SEGMENTS IS NOT THE SAME AS HOLDING THE
+ * ORIGINAL: the gateway relays the broadcaster's tracks straight to each
+ * listener, on a path this service's cursor has no part in. A deployment that
+ * ran an encoder and concluded the media plane was governed would hold its
+ * captions while its audience heard the speaker live -- the exact failure the
+ * plane check exists to prevent, dressed as protection.
+ *
+ * So governance follows the DELIVERY mode, and that mode cannot be `delayed`
+ * until the gateway can be told to stop relaying. Both conditions are
+ * required; either alone is a promise nothing keeps.
  */
-const programmeMediaProduced = config.programmeMediaOriginInput !== null;
+const programmeMediaProduced =
+  config.programmeMediaOriginInput !== null && config.programmeMediaDelivery === 'delayed';
 const programmeTimelines = new ProgrammeTimelineRegistry(
   undefined,
   config.programmeSafetyDelayMs,
@@ -1043,9 +1049,11 @@ if (config.programmeSafetyDelayMs === 0) {
 } else {
   logger.error('Programme safety delay is configured and CANNOT be held', {
     delayMs: config.programmeSafetyDelayMs,
+    mediaProduction: config.programmeMediaOriginInput === null ? 'off' : 'on',
+    mediaDelivery: config.programmeMediaDelivery,
     reason:
-      'PROGRAMME_MEDIA_ORIGIN_INPUT is unset, so original media is not held to the cursor; ' +
-      'the buffer will refuse the delay rather than hold captions against live speech',
+      'the original programme media is delivered live and is not held to the cursor, so the ' +
+      'buffer will refuse the delay rather than hold captions against live speech',
   });
 }
 

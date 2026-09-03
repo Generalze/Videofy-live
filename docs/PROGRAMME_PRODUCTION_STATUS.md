@@ -33,6 +33,15 @@ audience through one cursor. The parts:
 \* The mechanism is composed and enforced. What a deployment *governs* is a
 separate setting, and it is the difference between the two modes below.
 
+The central property — **a segment that exists on disk and has not been
+published is refused** — is asserted at the HTTP boundary, against a real
+spool with real bytes. Removing the cursor check from the authority turns that
+test red; it was removed, the test failed, and it was restored.
+
+The second central property — **programme time comes from the media, not a
+clock** — is asserted with uneven segment durations (1.96 s, 2.04 s), because
+the even case passes against the bug.
+
 ### TRUE LIVE and PROTECTED LIVE
 
 These are the only two states an operator needs, and the console derives them
@@ -53,18 +62,29 @@ at the only moment it matters.
 A protective delay is **refused outright** unless every time-sensitive plane
 is held to the cursor. Holding captions while the audience hears the speaker
 immediately is worse than holding nothing: it desynchronises the broadcast and
-still fails to protect it. This is why a delay requires programme media
-production to be configured — without a producer there is no media plane to
-govern, and the buffer fails closed rather than half applying.
+still fails to protect it.
 
-The central property — **a segment that exists on disk and has not been
-published is refused** — is asserted at the HTTP boundary, against a real
-spool with real bytes. Removing the cursor check from the authority turns that
-test red; it was removed, the test failed, and it was restored.
+**As things stand, PROTECTED LIVE cannot be reached, and this is enforced
+rather than merely noted.** The gateway relays the broadcaster's audio and
+video frames straight to each listener peer, on a path the media cursor has no
+part in. Producing segments into a spool does not hold the original back. So
+plane governance follows `PROGRAMME_MEDIA_DELIVERY`, which cannot be set to
+`delayed` — asking for it is logged as an error and ignored, because accepting
+it would produce a console reporting PROTECTED LIVE over an audience hearing
+the speaker immediately. That is worse than having no protection, because
+somebody would rely on it.
 
-The second central property — **programme time comes from the media, not a
-clock** — is asserted with uneven segment durations (1.96 s, 2.04 s), because
-the even case passes against the bug.
+### The one blocking item for PROTECTED LIVE
+
+> The gateway must stop relaying original programme media to listeners for a
+> run in delayed mode, and listeners must receive it through the cursor-
+> governed egress instead. Until then `PROGRAMME_MEDIA_DELIVERY=delayed` stays
+> refused, and every run is TRUE LIVE.
+
+Everything else in the delayed path — timeline, cursor, journal, media store,
+producer, egress, access — is built, composed and proven. This is the last
+join, and it is a cross-service one: the gateway has to be told the mode, and
+the listener has to have a player for the delayed path.
 
 ### What the audience path actually does today
 
@@ -140,7 +160,8 @@ protection.
 | Variable | Effect when unset |
 | --- | --- |
 | `PROGRAMME_MEDIA_ORIGIN_INPUT` | No programme media is produced. The playlist is empty, and no protective delay is possible. Said at boot. |
-| `PROGRAMME_SAFETY_DELAY_MS` | Every run is TRUE LIVE. Set above zero *and* with media production configured to get PROTECTED LIVE. |
+| `PROGRAMME_SAFETY_DELAY_MS` | Every run is TRUE LIVE. Setting it above zero is currently refused by the plane check, because the original is still delivered live. |
+| `PROGRAMME_MEDIA_DELIVERY` | Defaults to `live`. `delayed` is declined at boot until the gateway enforces it. |
 | `ACCOUNT_SERVICE_URL` | Visibility cannot be resolved; **no audience is admitted**. Said at boot. |
 | `INTERNAL_WEBRTC_TOKEN` | Same as above, and the gateway cannot be recognised. |
 | `OPERATOR_CONSOLE_ACCOUNT_IDS` | Nobody may operate a programme, including starting a producer. |
@@ -158,8 +179,12 @@ real device, and no part of it has run on staging. In particular:
 
 - No end-to-end run has been performed with a real broadcaster source through
   the real encoder into a real player.
-- Load behaviour is unmeasured. One encoder per run and many readers per
-  segment is the intended shape, and the shape has not been put under load.
+- The real encoder has not been put under load. The *egress* path has: several
+  hundred requests through a bounded client pool while the cursor advances,
+  asserting both failure directions — nothing served ahead of the cursor, and
+  nothing offered by a manifest then refused. One encoder per broadcast is
+  asserted there too. What is unmeasured is FFmpeg itself, and many concurrent
+  runs on one host.
 - The Programme console pages have not been re-audited against this runtime.
 - Deployment to staging has not happened, and no soak has been run.
 

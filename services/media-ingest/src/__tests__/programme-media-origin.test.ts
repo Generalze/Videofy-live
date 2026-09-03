@@ -325,4 +325,21 @@ describe('the running service composes this producer', () => {
     expect(source).toContain("app.post('/programmes/:runId/media-origin', operatorOnly");
     expect(source).toContain("app.delete('/programmes/:runId/media-origin', operatorOnly");
   });
+
+  it('does not claim the media plane is held merely because an encoder runs', () => {
+    /*
+     * THE ILLUSORY-PROTECTION DEFECT, asserted so it cannot come back.
+     *
+     * The gateway relays the broadcaster's tracks straight to each listener,
+     * on a path this service's cursor has no part in. Producing segments does
+     * not hold the original back. A composition that governed the media plane
+     * on the strength of an encoder would let the console report PROTECTED
+     * LIVE over an audience hearing the speaker immediately -- which is worse
+     * than no protection, because somebody would rely on it.
+     */
+    expect(source).toContain("config.programmeMediaDelivery === 'delayed'");
+    // Both conditions, and the honest fallback when either is missing.
+    expect(source).toContain('config.programmeMediaOriginInput !== null &&');
+    expect(source).toContain('METADATA_PLANE_ONLY');
+  });
 });

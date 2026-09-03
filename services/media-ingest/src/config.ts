@@ -86,6 +86,20 @@ export interface IngestConfig {
    * than holding nothing.
    */
   programmeSafetyDelayMs: number;
+  /**
+   * How listeners receive the ORIGINAL programme media.
+   *
+   * `live` -- the gateway relays the broadcaster's tracks to each listener as
+   * they arrive. Nothing holds them, so a protective delay is impossible and
+   * is refused rather than half applied.
+   *
+   * `delayed` -- listeners receive the original only through the cursor-
+   * governed egress. THE GATEWAY DOES NOT YET ENFORCE THIS, so asking for it
+   * is declined at boot: accepting it would produce a console reporting
+   * PROTECTED LIVE over an audience hearing the speaker immediately, which is
+   * worse than having no protection at all, because somebody would rely on it.
+   */
+  programmeMediaDelivery: 'live' | 'delayed';
   webrtcAudioChunkStagingDir: string;
   /** `off` = batch transcription declared unavailable (CTO ruling 30 Aug 2026). */
   transcriptionProvider: 'off' | 'mock' | 'faster-whisper';
@@ -516,6 +530,30 @@ export function loadConfig(): IngestConfig {
    * deployment until somebody watched the wrong channel.
    */
   /*
+   * HOW THE ORIGINAL REACHES A LISTENER, and why `delayed` is not yet allowed.
+   *
+   * The gateway relays the broadcaster's audio and video frames to each
+   * listener peer as they arrive. That path is independent of the media
+   * cursor, so producing segments into a spool does NOT hold the original
+   * back -- and a deployment that believed otherwise would hold its captions
+   * while its audience heard the speaker live. Declined here, out loud, until
+   * the gateway can be told to stop relaying.
+   */
+  const requestedDelivery = process.env['PROGRAMME_MEDIA_DELIVERY']?.trim().toLowerCase() || 'live';
+  let mediaDelivery: 'live' | 'delayed' = 'live';
+  if (requestedDelivery === 'delayed') {
+    logger.error(
+      'PROGRAMME_MEDIA_DELIVERY=delayed is not supported yet and has been ignored; ' +
+        'the gateway still relays the original programme media live, so a protective ' +
+        'delay cannot be held and will be refused',
+    );
+  } else if (requestedDelivery !== 'live') {
+    logger.warn(
+      `PROGRAMME_MEDIA_DELIVERY="${requestedDelivery}" is not a delivery mode; using live`,
+    );
+  }
+
+  /*
    * The safety delay. Zero -- true live -- is the default and is a choice
    * rather than an omission.
    */
@@ -557,6 +595,7 @@ export function loadConfig(): IngestConfig {
     uploadMaxBytes: readPositiveInt('INGEST_UPLOAD_MAX_BYTES', 2_147_483_648),
     programmeMediaOriginInput: originInputTemplate,
     programmeSafetyDelayMs: safetyDelayMs,
+    programmeMediaDelivery: mediaDelivery,
     audioChunkDir:
       process.env['AUDIO_CHUNK_DIR'] ?? resolve(process.cwd(), '../../uploads/audio-chunks'),
     webrtcAudioChunkStagingDir:

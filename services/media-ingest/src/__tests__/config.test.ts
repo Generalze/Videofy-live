@@ -23,6 +23,7 @@ const SHARED_ENV_KEYS = [
   'DEEPGRAM_API_KEY',
   'PROGRAMME_MEDIA_ORIGIN_INPUT',
   'PROGRAMME_SAFETY_DELAY_MS',
+  'PROGRAMME_MEDIA_DELIVERY',
 ] as const;
 
 let savedEnv: Record<string, string | undefined>;
@@ -517,5 +518,31 @@ describe('programme media production and the safety delay', () => {
   it('refuses a negative delay', () => {
     process.env['PROGRAMME_SAFETY_DELAY_MS'] = '-1000';
     expect(() => loadConfig()).toThrow(/PROGRAMME_SAFETY_DELAY_MS/u);
+  });
+});
+
+/*
+ * The one setting that decides whether a protective delay is even possible,
+ * and the reason it cannot yet be turned on.
+ */
+describe('how the original programme media reaches a listener', () => {
+  it('delivers it live by default', () => {
+    expect(loadConfig().programmeMediaDelivery).toBe('live');
+  });
+
+  it('declines delayed delivery, because nothing enforces it yet', () => {
+    process.env['PROGRAMME_MEDIA_DELIVERY'] = 'delayed';
+    /*
+     * The gateway relays the broadcaster's tracks straight to each listener.
+     * Accepting this would produce a console reporting PROTECTED LIVE over an
+     * audience hearing the speaker immediately -- worse than no protection,
+     * because somebody would rely on it.
+     */
+    expect(loadConfig().programmeMediaDelivery).toBe('live');
+  });
+
+  it('treats an unrecognised mode as live rather than guessing', () => {
+    process.env['PROGRAMME_MEDIA_DELIVERY'] = 'buffered-ish';
+    expect(loadConfig().programmeMediaDelivery).toBe('live');
   });
 });
