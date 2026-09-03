@@ -24,7 +24,10 @@ import {
   type GovernedPlanes,
 } from '@videofy-live/programme-timeline';
 import type { ProgrammeRunIdentity } from '@videofy-live/media-ingress-wire';
-import type { ProgrammeTimelineStore } from '@videofy-live/programme-timeline';
+import type {
+  ProgrammeTimelineEvent,
+  ProgrammeTimelineStore,
+} from '@videofy-live/programme-timeline';
 
 /** How many concurrent broadcasts this process holds an account for. */
 export const MAX_TRACKED_TIMELINES = 32;
@@ -53,6 +56,12 @@ export class ProgrammeTimelineRegistry {
   private readonly vocabularies = new Map<string, RunVocabulary>();
   private readonly sessionRuns = new Map<string, string>();
   private readonly openListeners: ((runId: string) => void)[] = [];
+  private recoveredListener:
+    | ((
+        runId: string,
+        events: readonly ProgrammeTimelineEvent[],
+      ) => Promise<{ readonly missing: readonly string[] }>)
+    | null = null;
 
   constructor(
     private readonly maxRuns: number = MAX_TRACKED_TIMELINES,
@@ -124,6 +133,26 @@ export class ProgrammeTimelineRegistry {
     this.runs.set(identity.runId, { identity, timeline, buffer });
     this.evictOldest();
 
+    /*
+     * THE MEDIA HAS TO COME BACK TOO. The journal survives a restart and the
+     * cursor with it, so a recovered broadcast knows exactly what it published
+     * -- and, until this hook existed, had no idea where any of it was. The
+     * manifest came back well formed and empty, every status green, the
+     * audience served nothing for the rest of the programme.
+     */
+    const media = await this.recoveredListener?.(identity.runId, persisted.events);
+    if (media !== undefined && media.missing.length > 0) {
+      /*
+       * Material this broadcast already published, and cannot serve again.
+       * Failing is the only honest answer: continuing would offer a window
+       * with holes in it, and a viewer who reconnected into one of them would
+       * simply stall.
+       */
+      buffer.fail(
+        `retained media is missing for ${media.missing.length} published segment(s)`,
+      );
+    }
+
     if (!persisted.intact) {
       /*
        * A HOLE IN THE RECORD STOPS THE BROADCAST, VISIBLY.
@@ -151,6 +180,22 @@ export class ProgrammeTimelineRegistry {
    */
   onRunOpened(listener: (runId: string) => void): void {
     this.openListeners.push(listener);
+  }
+
+  /**
+   * Told when a broadcast is recovered, so its media can be put back.
+   *
+   * A hook rather than a dependency: the registry knows about timelines and
+   * cursors and deliberately not about spools, and a registry that reached for
+   * a filesystem would be one that could not be tested without one.
+   */
+  onRecovered(
+    listener: (
+      runId: string,
+      events: readonly ProgrammeTimelineEvent[],
+    ) => Promise<{ readonly missing: readonly string[] }>,
+  ): void {
+    this.recoveredListener = listener;
   }
 
   /**

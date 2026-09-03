@@ -71,6 +71,8 @@ import { ProgrammeEgressAuthority } from './programme-egress.js';
 import { ProgrammeMediaStore } from './programme-media-store.js';
 import { ProgrammeMediaOrigin } from './programme-media-origin.js';
 import { ProgrammeDeliveryReporter } from './programme-delivery-reporter.js';
+import { recoverProgrammeMedia } from './programme-media-recovery.js';
+import { initFileName } from '@videofy-live/programme-contribution';
 import {
   CAMPAIGN_REFRESH_MS,
   NO_CAMPAIGN_SOURCE,
@@ -1542,6 +1544,39 @@ if (advertisingClient.configured) {
  * encoding them anyway would spend a core per broadcast to produce material
  * nothing reads.
  */
+/*
+ * A RECOVERED BROADCAST GETS ITS MEDIA BACK, or stops.
+ *
+ * The journal restores what was published and how far behind the audience is.
+ * Without this the store came back empty, so the manifest was well formed and
+ * listed nothing -- an audience served silence for the rest of the programme
+ * behind an entirely green console.
+ */
+programmeTimelines.onRecovered(async (runId, events) => {
+  const outcome = await recoverProgrammeMedia({
+    runId,
+    directory: join(programmeMediaSpool, runId),
+    events,
+    media: programmeMedia,
+  });
+  // The init objects the restored window still depends on. A fragment whose
+  // init is not registered is a fragment nothing can decode.
+  for (const generation of outcome.generations) {
+    programmeEgress.noteInitSegment(
+      runId,
+      join(programmeMediaSpool, runId, initFileName(generation)),
+      generation,
+    );
+  }
+  logger.info('Recovered programme media', {
+    runId,
+    restored: outcome.restored,
+    missing: outcome.missing.length,
+    generations: outcome.generations,
+  });
+  return { missing: outcome.missing };
+});
+
 programmeTimelines.onRunOpened((runId) => {
   if (config.programmeMediaDelivery !== 'delayed') return;
   if (config.programmeContributionSource === 'webrtc') {
