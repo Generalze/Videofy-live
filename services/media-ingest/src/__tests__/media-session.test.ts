@@ -128,6 +128,24 @@ function wavFixture(): Buffer {
   return Buffer.concat([header, samples]);
 }
 
+/**
+ * Wait for something to become true, rather than for a guessed duration.
+ *
+ * A fixed sleep is a bet on how busy the machine is, and it is lost under a
+ * full suite -- which is exactly when a failure is least welcome and most
+ * likely to be dismissed as noise.
+ */
+async function until(
+  check: () => boolean | Promise<boolean>,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 describe('ProcessingSessionStore', () => {
   it('accepts a valid video upload, extracts audio and stores chunk metadata', async () => {
     const session = await store().createFromUpload(upload(), async () => validVideoProbe);
@@ -1447,13 +1465,24 @@ describe('ProcessingSessionStore', () => {
       voiceIdsByLanguage: { fr: 'fr_FR-siwis-medium' },
     });
 
-    // Warming is fire-and-forget, so give the microtask queue a turn.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    /*
+     * Warming is fire-and-forget, so this waits for it to HAPPEN rather than
+     * for a number of milliseconds to pass. Twenty was enough on an idle
+     * machine and not enough under a full suite, where the probe clip had been
+     * written and not yet deleted -- so this test failed about one run in
+     * three, which is the frequency that teaches people to re-run instead of
+     * look.
+     */
+    await until(() => translated.length === 1 && synthesized.length === 1);
     expect(translated).toEqual(['en->fr']);
     expect(synthesized).toEqual(['fr:fr_FR-siwis-medium']);
 
     // The probe clip is never kept: it exists only to make the model load.
     const ttsDir = join(outputDir, 'call_warm_participant_1_r1', 'tts');
+    await until(async () => {
+      const names = await readdir(ttsDir).catch(() => [] as string[]);
+      return names.every((name) => !name.startsWith('warmup-'));
+    });
     const leftovers = await readdir(ttsDir).catch(() => []);
     expect(leftovers.filter((name) => name.startsWith('warmup-'))).toEqual([]);
 
