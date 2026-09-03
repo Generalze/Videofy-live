@@ -20,7 +20,7 @@
  * The timeline carries ids and a duration.
  */
 
-import type { AdDecision, BreakOrigin } from './advertising.js';
+import type { AdDecision, AdvertisingAuthority, BreakOrigin } from './advertising.js';
 
 /** A campaign as the decision engine sees it. Never exposed beyond C7. */
 export interface Campaign {
@@ -205,4 +205,67 @@ export function withImpression(
   const placed = new Map(history.placedAtByCampaign);
   placed.set(campaignId, [...(placed.get(campaignId) ?? []), programmeTimeMs]);
   return { placedAtByCampaign: placed };
+}
+
+/**
+ * The decision engine, wearing the interface the timeline actually calls.
+ *
+ * Built here rather than left as two halves, because this repository's
+ * recurring defect is precisely a rule that is written, tested and never
+ * reached. `offerBreakOpportunity` asks an `AdvertisingAuthority`; this is one.
+ *
+ * It keeps its own impression history per run, so frequency caps and spacing
+ * survive across breaks within a broadcast and reset for the next airing.
+ */
+export function createC7AdvertisingAuthority(options: {
+  readonly campaigns: () => readonly Campaign[];
+  readonly programmeId: (runId: string) => string;
+  readonly sourceLanguage: (runId: string) => string;
+  readonly region: (runId: string) => string;
+  readonly policyVersion: string;
+  readonly mintDecisionId: () => string;
+  readonly now?: () => number;
+  /** C7's audit: which campaigns lost, and why. Never shown to an operator. */
+  readonly onAudit?: (runId: string, verdicts: readonly CampaignVerdict[]) => void;
+}): AdvertisingAuthority {
+  const histories = new Map<string, ImpressionHistory>();
+  const now = options.now ?? ((): number => Date.now());
+
+  return {
+    async decide(request) {
+      const history = histories.get(request.runId) ?? NO_IMPRESSIONS;
+      const selection = selectAdvertisement(
+        options.campaigns(),
+        {
+          runId: request.runId,
+          programmeId: options.programmeId(request.runId),
+          programmeTimeMs: request.programmeTimeMs,
+          availableMs: request.availableMs,
+          origin: request.origin,
+          sourceLanguage: options.sourceLanguage(request.runId),
+          region: options.region(request.runId),
+          nowMs: now(),
+        },
+        history,
+        options.mintDecisionId,
+        options.policyVersion,
+      );
+
+      options.onAudit?.(request.runId, selection.verdicts);
+      if (selection.decision === null) {
+        /*
+         * The reason reaches C7's audit above and not the caller. An operator
+         * learning that a rival's campaign is frequency-capped would be
+         * learning something commercially useful about somebody else.
+         */
+        return { decided: false, reason: 'no campaign is eligible for this break' };
+      }
+
+      histories.set(
+        request.runId,
+        withImpression(history, selection.decision.campaignId, request.programmeTimeMs),
+      );
+      return { decided: true, decision: selection.decision };
+    },
+  };
 }

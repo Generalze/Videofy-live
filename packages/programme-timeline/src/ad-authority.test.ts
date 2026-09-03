@@ -15,7 +15,10 @@ import {
   withImpression,
   type Campaign,
   type DecisionContext,
+  createC7AdvertisingAuthority,
 } from './ad-authority.js';
+import { ProgrammeTimeline } from './index.js';
+import { offerBreakOpportunity } from './advertising.js';
 
 function campaign(over: Partial<Campaign> = {}): Campaign {
   return {
@@ -221,5 +224,110 @@ describe('two airings of one programme each get their own allowance', () => {
     const first = withImpression(withImpression(NO_IMPRESSIONS, 'camp_a', 0), 'camp_a', 400_000);
     expect(assessCampaign(campaign(), context(), first).eligible).toBe(false);
     expect(assessCampaign(campaign(), context({ runId: 'run_2' }), NO_IMPRESSIONS).eligible).toBe(true);
+  });
+});
+
+/*
+ * THE JOIN. The engine above is worthless if nothing calls it, and a rule
+ * that is written, tested and never reached is this repository's recurring
+ * defect. `offerBreakOpportunity` asks an AdvertisingAuthority; this proves
+ * the engine is one, and that the timeline ends up with the decision.
+ */
+describe('the engine is what the timeline actually asks', () => {
+  function authorityOver(campaigns: readonly Campaign[]): ReturnType<typeof createC7AdvertisingAuthority> {
+    let minted = 0;
+    return createC7AdvertisingAuthority({
+      campaigns: () => campaigns,
+      programmeId: () => 'prog_news',
+      sourceLanguage: () => 'en',
+      region: () => 'NG',
+      policyVersion: 'policy-2026.09',
+      mintDecisionId: () => `dec_${(minted += 1)}`,
+      now: () => 1_000_000,
+    });
+  }
+
+  it('places a decided advert on the timeline through the real entry point', async () => {
+    const timeline = new ProgrammeTimeline({
+      channelId: 'ch_1',
+      programmeId: 'prog_news',
+      runId: 'run_1',
+    });
+    const outcome = await offerBreakOpportunity(authorityOver([campaign()]), timeline, {
+      runId: 'run_1',
+      programmeTimeMs: 600_000,
+      availableMs: 60_000,
+    });
+
+    expect(outcome.decided).toBe(true);
+    const adverts = timeline.all().filter((event) => event.kind === 'advertisement');
+    expect(adverts).toHaveLength(1);
+    expect(adverts[0]?.attributes['campaignId']).toBe('camp_a');
+  });
+
+  it('applies the frequency cap across breaks in one broadcast', async () => {
+    const authority = authorityOver([campaign({ maxPerRun: 1, minSpacingMs: 0 })]);
+    const timeline = new ProgrammeTimeline({
+      channelId: 'ch_1',
+      programmeId: 'prog_news',
+      runId: 'run_1',
+    });
+
+    const first = await offerBreakOpportunity(authority, timeline, {
+      runId: 'run_1',
+      programmeTimeMs: 600_000,
+      availableMs: 60_000,
+    });
+    const second = await offerBreakOpportunity(authority, timeline, {
+      runId: 'run_1',
+      programmeTimeMs: 1_200_000,
+      availableMs: 60_000,
+    });
+
+    expect(first.decided).toBe(true);
+    // The cap survives across breaks because the authority remembers.
+    expect(second.decided).toBe(false);
+    expect(timeline.all().filter((e) => e.kind === 'advertisement')).toHaveLength(1);
+  });
+
+  it('gives a second airing its own allowance', async () => {
+    const authority = authorityOver([campaign({ maxPerRun: 1 })]);
+    const one = new ProgrammeTimeline({ channelId: 'ch_1', programmeId: 'prog_news', runId: 'run_1' });
+    const two = new ProgrammeTimeline({ channelId: 'ch_1', programmeId: 'prog_news', runId: 'run_2' });
+
+    await offerBreakOpportunity(authority, one, { runId: 'run_1', programmeTimeMs: 1, availableMs: 60_000 });
+    const other = await offerBreakOpportunity(authority, two, {
+      runId: 'run_2',
+      programmeTimeMs: 1,
+      availableMs: 60_000,
+    });
+    expect(other.decided).toBe(true);
+  });
+
+  it('tells the operator nothing about why a rival was skipped', async () => {
+    const audited: string[] = [];
+    const authority = createC7AdvertisingAuthority({
+      campaigns: () => [campaign({ campaignId: 'rival', maxPerRun: 0 })],
+      programmeId: () => 'prog_news',
+      sourceLanguage: () => 'en',
+      region: () => 'NG',
+      policyVersion: 'p',
+      mintDecisionId: () => 'dec_1',
+      now: () => 1_000_000,
+      onAudit: (_runId, verdicts) => audited.push(...verdicts.map((v) => v.reason ?? '')),
+    });
+
+    const outcome = await authority.decide({
+      runId: 'run_1',
+      programmeTimeMs: 1,
+      availableMs: 60_000,
+      origin: 'scheduled',
+    });
+
+    expect(outcome.decided).toBe(false);
+    if (outcome.decided) throw new Error('unreachable');
+    // C7 knows precisely why; the caller is told only that there is none.
+    expect(audited).toContain('frequency-cap-reached');
+    expect(outcome.reason).not.toContain('cap');
   });
 });
