@@ -225,6 +225,57 @@ an empty playlist; only the log tells them apart.
 
 ---
 
+## Storage on the actual host, inspected rather than inferred
+
+Read from `c7-eu-01` on 3 September 2026. Every line below is something the
+machine said, not something the code implies.
+
+**It is not containerised.** systemd units on the host, working directory
+`/srv/videofy/app/...`. Docker is installed and runs nothing for Videofy. So
+"survives a container restart" and "survives a container recreation" are not
+open questions here — they are not failure modes this deployment has.
+
+**One filesystem, one disk.** `/dev/sda1`, ext4, 435 GB with 12% used, mounted
+`rw,relatime,discard,errors=remount-ro,commit=30`. `/srv` is not a separate
+mount. `lsblk` shows a single `sda`; `/proc/mdstat` reports no array. There is
+no redundancy of any kind.
+
+**Where the state lives:** `AUDIO_CHUNK_DIR=/srv/videofy/uploads/audio-chunks`,
+which is also the parent of the timeline journals and the programme media
+spool. A write / fsync / read-back probe under that filesystem succeeded and
+was cleaned up.
+
+### What survives what
+
+| Event | Survives? |
+| --- | --- |
+| Process restart | Yes. The state is files on a normal filesystem. |
+| Container restart or recreation | Not applicable — nothing is containerised. |
+| Clean host reboot | Yes. |
+| Unclean host loss (power) | Journal and cursor yes; **up to ~30 s of media, no**. |
+| Loss of the host or its disk | **No. Nothing survives.** |
+
+**The last row is the one to read twice.** There is no RAID, no replica, and
+no backup of the programme spool: `videofy-backup.service` runs
+`backup-database.sh` and covers the account database only. A single-host
+deployment is a perfectly valid choice, and this document says so rather than
+implying a failover that does not exist.
+
+### The asymmetry worth knowing about
+
+`commit=30` means ext4 flushes its journal every thirty seconds. Anything
+written with `fsync` is durable immediately — and the timeline journal does
+fsync, deliberately. **The media segments do not.** FFmpeg writes them and
+nothing forces them to the device, so an unclean power loss can leave a
+timeline that references segments whose bytes are gone.
+
+That fails visibly rather than silently: the egress stats a segment before
+serving it and answers 410 when it is missing. But it is a real inconsistency
+mode, it is asymmetric between the two planes, and closing it means either
+fsyncing segments as they complete or accepting the window explicitly.
+
+---
+
 ## What has NOT been done
 
 Human validation. Nothing in this document has been watched by a person on a
@@ -239,10 +290,9 @@ real device, and no part of it has run on staging. In particular:
   asserted there too. What is unmeasured is FFmpeg itself, and many concurrent
   runs on one host.
 - The route qualification harness is not built.
-- Storage semantics on the Contabo host have not been inspected. Whether the
-  spool, the journal and the cursor survive a container recreation or a host
-  reboot is asserted nowhere, and durability that has not been tested is a
-  claim rather than a property.
+- The media segments are not fsynced, so an unclean host loss can leave the
+  timeline referencing segments whose bytes are gone. It fails visibly, and it
+  is not closed.
 - Storage and buffer failure injection — torn journal tail, corrupt middle
   record, ENOSPC, lost write permission, fsync failure, missing init, invalid
   keyframe, retention exhaustion — is not built.
