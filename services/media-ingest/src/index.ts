@@ -61,6 +61,10 @@ import {
 } from '@videofy-live/speech-activity';
 import { buildTranslationGate } from './translation-gate-wiring.js';
 import { registerQualityRoutes } from './quality-routes.js';
+import {
+  nigerianReadiness,
+  type ProviderReadinessView,
+} from './provider-readiness-wiring.js';
 import { registerProgrammeRuntimeRoutes } from './programme-runtime-routes.js';
 import { registerProgrammeEgressRoutes } from './programme-egress-routes.js';
 import { ProgrammeEgressAuthority } from './programme-egress.js';
@@ -1634,6 +1638,49 @@ logger.info('Programme egress ready', {
   ...(config.programmeMediaOriginInput === null
     ? { note: 'PROGRAMME_MEDIA_ORIGIN_INPUT is unset; the published manifest will be empty' }
     : {}),
+});
+
+/*
+ * THE READINESS LADDER, CLIMBED BY SOMETHING AT LAST.
+ *
+ * Five rungs existed, were tested, were exported -- and nothing constructed
+ * one, so no console could report a rung and no deployment could be refused
+ * for standing on the wrong one. This is the join.
+ *
+ * The rung that matters here is WARM. 9jaLingo's capacity scales to zero: it
+ * answers a probe healthily, because the probe is what woke it, and returns
+ * 503 to the first real request after it sleeps -- which is the request that
+ * opens a broadcast. A deployment that has not set the keeper to always-on
+ * therefore stops at `healthy`, and cannot be reported as approved for live
+ * programmes however green everything else looks.
+ */
+const providerReadiness = (): readonly ProviderReadinessView[] =>
+  nigerianReadiness({
+    nigerian: () => {
+      const state = liveSynthesis.nigerian?.state();
+      if (state === undefined) return null;
+      return { ...state, warm: liveSynthesis.nigerian?.warm === true };
+    },
+    registry: () => translationGate.registry,
+    scope: 'programme-live',
+    sourceLanguage: () => config.transcriptionSourceLanguage,
+  });
+
+app.get('/providers/readiness', operatorOnly, (_req, res) => {
+  /*
+   * Operator-guarded. It names providers, models and review evidence, which
+   * is C7's account of its own supply chain rather than anything a viewer
+   * needs.
+   */
+  res.status(200).json({ providers: providerReadiness() });
+});
+
+logger.info('Provider readiness ladder ready', {
+  providers: providerReadiness().map((view) => ({
+    provider: view.provider,
+    level: view.level,
+    eligible: view.eligibility.eligible,
+  })),
 });
 
 registerQualityRoutes(app, {

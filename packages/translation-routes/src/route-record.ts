@@ -92,6 +92,39 @@ export interface LicenceStatus {
   evidence: string;
 }
 
+/**
+ * What a human review actually established, when one has been done.
+ *
+ * The enum above says WHETHER somebody judged this route. This says what they
+ * judged, and it is a separate field because a verdict without its subject is
+ * not evidence: a model version and a corpus hash are what make a
+ * qualification checkable later, and what make a STALE one visible instead of
+ * inherited when either moves on.
+ *
+ * The shape matches `ReviewEvidence` in `@videofy-live/programme-quality`
+ * without importing it. This package builds before that one, so a dependency
+ * would be a reordering; the mapping lives at the one place that consumes
+ * both, and a structural mismatch there is a compiler error rather than a
+ * silent divergence.
+ */
+export interface RouteReviewEvidence {
+  engine: string;
+  model: string;
+  modelVersion: string;
+  /** Which corpus, by content hash. A renamed corpus is not a new one. */
+  corpusHash: string;
+  corpusVersion: string;
+  /** Who is accountable for the judgement. A person or a named process. */
+  evaluator: string;
+  assessedAt: string;
+  method: string;
+  /** The score, on the scale its method defines. */
+  score: number;
+  scale: string;
+  /** Where the working is kept: a document, a run id, a ticket. */
+  evidenceReference: string;
+}
+
 /** One direction, one model, one set of per-service decisions. */
 export interface TranslationRouteRecord {
   sourceLanguage: string;
@@ -102,6 +135,15 @@ export interface TranslationRouteRecord {
   productionApproved: boolean;
   technicalEvidence: TechnicalEvidence | null;
   humanReviewStatus: HumanReviewStatus;
+  /**
+   * What that review established, when it has been done.
+   *
+   * Optional because most routes have not been reviewed and saying so is the
+   * honest state. Absent means UNASSESSED wherever it is read -- never
+   * "passed by default", which is the one reading that could put an
+   * unreviewed language to air.
+   */
+  reviewEvidence?: RouteReviewEvidence;
   licenceStatus: LicenceStatus;
   serviceScopes: Record<ServiceScope, ScopeApproval>;
 }

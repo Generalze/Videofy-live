@@ -18,7 +18,7 @@
  * the output.
  */
 
-import type { TranslationDecision } from '@videofy-live/translation-routes';
+import type { ServiceScope, TranslationRouteRecord, TranslationDecision } from '@videofy-live/translation-routes';
 /*
  * STATICALLY IMPORTED, because these services are ESM.
  *
@@ -62,6 +62,19 @@ export interface RouteEvidenceSource {
     targetLanguage: string,
     scope: string,
   ): TranslationDecision;
+  /**
+   * The records themselves, for the readiness ladder.
+   *
+   * The gate only ever needs a yes or no, and this interface was that narrow
+   * on purpose. But a rung like "has a human judged this route, and against
+   * which model and corpus" is a question about the RECORD, and the
+   * alternative is reading the document a second time -- two loads of one
+   * file being two answers waiting to disagree after an edit, which is the
+   * reason this interface exists at all.
+   */
+  routes(): readonly TranslationRouteRecord[];
+  /** Which scopes admit this direction. Empty is a refusal, not an absence. */
+  approvedScopes(sourceLanguage: string, targetLanguage: string): readonly ServiceScope[];
 }
 
 export interface GateWiring {

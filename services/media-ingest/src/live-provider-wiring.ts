@@ -232,6 +232,17 @@ export interface LiveSynthesis {
   readonly nigerian: {
     state(): NigerianSynthesisState;
     recordPreflight(preflight: NaijaLingoPreflight): void;
+    /**
+     * Whether capacity is being kept awake continuously.
+     *
+     * ITS OWN FACT, not folded into health. A scale-to-zero deployment is
+     * healthy when probed -- the probe is what woke it -- and returns 503 to
+     * the first real request after it has gone back to sleep. That request is
+     * the one that opens a broadcast, so a readiness ladder that treated a
+     * successful probe as warmth would report the very deployment that fails a
+     * demo as ready.
+     */
+    readonly warm: boolean;
   } | null;
 }
 
@@ -408,6 +419,8 @@ function withNigerianSpecialist(
         recordPreflight: (preflight) => {
           recorded = preflight;
         },
+        // Nothing is kept awake because there is nothing to keep awake.
+        warm: false,
       },
     };
   }
@@ -584,7 +597,19 @@ function withNigerianSpecialist(
         );
       },
     }),
-    nigerian: route,
+    nigerian: {
+      state: () => route.state(),
+      recordPreflight: (preflight) => route.recordPreflight(preflight),
+      /*
+       * The keeper's own answer, not a guess from configuration. Warmth is
+       * what decides whether this provider may be called APPROVED for live
+       * programmes, so it has to come from the thing actually doing the
+       * keeping.
+       */
+      get warm() {
+        return warmKeeper.active;
+      },
+    },
   };
 }
 
