@@ -1,4 +1,6 @@
 /** @owner masterzee001 */
+import { randomUUID } from 'node:crypto';
+import type { ProgrammeRunIdentity } from '@videofy-live/media-ingress-wire';
 import type { Server as HttpServer } from 'node:http';
 import { Server as SocketServer, type Socket } from 'socket.io';
 import {
@@ -232,6 +234,15 @@ export class Gateway {
    * which is also what an unreachable account service degrades to.
    */
   private readonly channelIdentity: ChannelIdentityPort;
+  /**
+   * sessionId -> which broadcast this is.
+   *
+   * Minted when an operator's session binds to their channel and kept for the
+   * life of that session, so a source switch or a reconnect stays the SAME
+   * run. A new run means a new timeline and a new set of adverts; the network
+   * hiccupping is not a new programme.
+   */
+  private readonly programmeRuns = new Map<string, ProgrammeRunIdentity>();
 
   /*
    * THE DEFAULT CHANNEL, UNDER THE OLD NAME.
@@ -1456,6 +1467,23 @@ export class Gateway {
        */
       const channelId = this.operatorChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID;
       this.channels.bindSession(config.sessionId, channelId);
+      /*
+       * AND MINT THE RUN, from server state rather than the operator's payload.
+       *
+       * The channel comes from the socket's admission, not from anything the
+       * console sent, so a client cannot nominate whose programme it is
+       * broadcasting. The programme is the channel's configuration today and
+       * carried separately so it can stop being that without a protocol
+       * change. The run is minted fresh here because THIS airing is not the
+       * last one: its timeline, telemetry and adverts must not inherit them.
+       */
+      if (!this.programmeRuns.has(config.sessionId)) {
+        this.programmeRuns.set(config.sessionId, {
+          channelId,
+          programmeId: channelId,
+          runId: `run_${randomUUID().replace(/-/gu, '').slice(0, 24)}`,
+        });
+      }
       // The broadcast's name, for the directory while it is on air; null
       // when the operator gave none, never a stand-in.
       this.channels.setProgrammeTitle(channelId, config.programmeTitle ?? null);
@@ -2321,11 +2349,16 @@ export class Gateway {
     // Stated here because this is the programme path, rather than left to be
     // deduced from what the session happens to be called.
     const programmeMode = { mediaSessionMode: 'programme' as const };
+    // Resolved, never inferred: absent means the stream will be refused rather
+    // than opened under a channel that did not ask for it.
+    const run = this.programmeRuns.get(context.sessionId);
+    const identity = run === undefined ? {} : { programme: run };
     const config = this.programmeSessionConfigs.get(context.sessionId);
-    if (!config) return { ...context, ...programmeMode };
+    if (!config) return { ...context, ...programmeMode, ...identity };
     return {
       ...context,
       ...programmeMode,
+      ...identity,
       ...(config.programmeSourceType === 'rtmp' && config.rtmpPlaybackUrl
         ? { externalAudioSource: 'rtmp-hls' as const, externalAudioUrl: config.rtmpPlaybackUrl }
         : {}),

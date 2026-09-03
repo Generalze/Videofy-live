@@ -268,8 +268,18 @@ describe('control frames', () => {
     void refused;
     // And the narrowing helper refuses it at runtime rather than defaulting.
     expect(realtimeServiceContext({ serviceCategory: 'programme', mediaMode: 'uploaded' })).toBeNull();
-    expect(realtimeServiceContext({ serviceCategory: 'programme', mediaMode: 'live' })).toEqual({
-      serviceCategory: 'programme', mediaMode: 'live',
+    // A live programme with no run identity is refused for the same reason:
+    // it has no tenant, no vocabulary and no timeline to belong to.
+    expect(realtimeServiceContext({ serviceCategory: 'programme', mediaMode: 'live' })).toBeNull();
+    expect(
+      realtimeServiceContext(
+        { serviceCategory: 'programme', mediaMode: 'live' },
+        { channelId: 'ch_1', programmeId: 'prog_1', runId: 'run_1' },
+      ),
+    ).toEqual({
+      serviceCategory: 'programme',
+      mediaMode: 'live',
+      programme: { channelId: 'ch_1', programmeId: 'prog_1', runId: 'run_1' },
     });
     expect(realtimeServiceContext({ serviceCategory: 'call', mediaMode: 'live' })).toEqual({
       serviceCategory: 'call', mediaMode: 'live',
@@ -419,7 +429,8 @@ describe('translated speech travels back frame by frame', () => {
     });
     const body = JSON.parse(open.subarray(1).toString('utf8')) as Record<string, unknown>;
     expect(body['version']).toBe(INGRESS_PROTOCOL_VERSION);
-    expect(INGRESS_PROTOCOL_VERSION).toBe(2);
+    // Bumped to 3 when a programme OPEN began carrying its run identity.
+    expect(INGRESS_PROTOCOL_VERSION).toBe(3);
     body['version'] = 1;
     const v1 = Buffer.concat([
       Buffer.from([IngressMessageType.OPEN]),
@@ -441,5 +452,80 @@ describe('translated speech travels back frame by frame', () => {
     const result = decodeIngressFrame(translated({ segmentId: 'segmento_café_✓' }));
     if (!result.ok || result.frame.kind !== 'translated-audio') throw new Error('bad');
     expect(result.frame.audio.segmentId).toBe('segmento_café_✓');
+  });
+});
+
+/*
+ * A programme stream says whose it is, or it does not open.
+ *
+ * Before this, ingest learned a sessionId and a streamId and nothing else: it
+ * could not fetch the programme's vocabulary, could not partition a timeline,
+ * and two runs of one channel were indistinguishable. The identity is
+ * therefore part of the OPEN contract rather than something a later message
+ * might supply.
+ */
+describe('programme run identity on the wire', () => {
+  const identity = { channelId: 'ch_abc', programmeId: 'prog_abc', runId: 'run_abc' };
+
+  function decodeOpenWith(programme: unknown): ReturnType<typeof decodeIngressFrame> {
+    const open = encodeOpen({
+      sessionId: 's',
+      streamId: 'st',
+      context: { serviceCategory: 'programme', mediaMode: 'live', programme: identity },
+    });
+    const body = JSON.parse(open.subarray(1).toString('utf8')) as Record<string, unknown>;
+    const context = body['context'] as Record<string, unknown>;
+    if (programme === undefined) delete context['programme'];
+    else context['programme'] = programme;
+    return decodeIngressFrame(
+      Buffer.concat([
+        Buffer.from([IngressMessageType.OPEN]),
+        Buffer.from(JSON.stringify(body), 'utf8'),
+      ]),
+    );
+  }
+
+  it('carries channel, programme and run through a round trip', () => {
+    const open = encodeOpen({
+      sessionId: 's',
+      streamId: 'st',
+      context: { serviceCategory: 'programme', mediaMode: 'live', programme: identity },
+    });
+    expect(decodeIngressFrame(open)).toMatchObject({
+      ok: true,
+      frame: { open: { context: { serviceCategory: 'programme', programme: identity } } },
+    });
+  });
+
+  it('refuses a programme OPEN with no identity at all', () => {
+    expect(decodeOpenWith(undefined)).toMatchObject({ ok: false, code: 'malformed-frame' });
+  });
+
+  it('refuses a partial identity rather than filling in the rest', () => {
+    // Two thirds of a tenant boundary is not a tenant boundary.
+    expect(decodeOpenWith({ channelId: 'ch_abc', programmeId: 'prog_abc' })).toMatchObject({
+      ok: false,
+      code: 'malformed-frame',
+    });
+  });
+
+  it('refuses ids that are not the shape ids take', () => {
+    // A path separator in an id reaches a different programme's vocabulary.
+    expect(
+      decodeOpenWith({ ...identity, programmeId: '../other-programme' }),
+    ).toMatchObject({ ok: false, code: 'malformed-frame' });
+    expect(decodeOpenWith({ ...identity, runId: '' })).toMatchObject({
+      ok: false,
+      code: 'malformed-frame',
+    });
+  });
+
+  it('leaves a call OPEN alone, which has no run to identify', () => {
+    const open = encodeOpen({
+      sessionId: 's',
+      streamId: 'st',
+      context: { serviceCategory: 'call', mediaMode: 'live' },
+    });
+    expect(decodeIngressFrame(open)).toMatchObject({ ok: true });
   });
 });
