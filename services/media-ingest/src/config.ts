@@ -4,7 +4,7 @@ import {
   parseRuntimeProfile,
   type RuntimeProfile,
 } from '@videofy-live/ai-registry';
-import { loadRootEnv, readCsv, readPort, readPositiveInt } from './env.js';
+import { loadRootEnv, readCsv, readNonNegativeInt, readPort, readPositiveInt } from './env.js';
 import {
   resolveInternalIngressAuth,
   resolvePublicIngestUrl,
@@ -76,6 +76,16 @@ export interface IngestConfig {
    * reported at boot rather than discovered as an empty playlist.
    */
   programmeMediaOriginInput: string | null;
+  /**
+   * How far behind the source the audience is held, in milliseconds.
+   *
+   * ZERO IS THE DEFAULT AND IS A REAL CHOICE, not an unfinished one: most
+   * programmes go out true live and should. Above zero, the buffer refuses to
+   * apply the delay unless every time-sensitive plane is held to the cursor --
+   * holding captions while the audience hears the speaker immediately is worse
+   * than holding nothing.
+   */
+  programmeSafetyDelayMs: number;
   webrtcAudioChunkStagingDir: string;
   /** `off` = batch transcription declared unavailable (CTO ruling 30 Aug 2026). */
   transcriptionProvider: 'off' | 'mock' | 'faster-whisper';
@@ -505,6 +515,11 @@ export function loadConfig(): IngestConfig {
    * produce each other's pictures, and the mistake would look like a working
    * deployment until somebody watched the wrong channel.
    */
+  /*
+   * The safety delay. Zero -- true live -- is the default and is a choice
+   * rather than an omission.
+   */
+  const safetyDelayMs = readNonNegativeInt('PROGRAMME_SAFETY_DELAY_MS', 0);
   const originInputRaw = process.env['PROGRAMME_MEDIA_ORIGIN_INPUT']?.trim() || null;
   let originInputTemplate: string | null = null;
   if (originInputRaw !== null) {
@@ -541,6 +556,7 @@ export function loadConfig(): IngestConfig {
     videoSource,
     uploadMaxBytes: readPositiveInt('INGEST_UPLOAD_MAX_BYTES', 2_147_483_648),
     programmeMediaOriginInput: originInputTemplate,
+    programmeSafetyDelayMs: safetyDelayMs,
     audioChunkDir:
       process.env['AUDIO_CHUNK_DIR'] ?? resolve(process.cwd(), '../../uploads/audio-chunks'),
     webrtcAudioChunkStagingDir:

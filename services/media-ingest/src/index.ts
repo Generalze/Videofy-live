@@ -46,6 +46,7 @@ import { createLiveStreamOpener } from './live-session-host.js';
 import { createVocabularySnapshotClient } from './vocabulary-snapshot-client.js';
 import { ProgrammePerformanceRegistry } from './programme-performance-registry.js';
 import { ProgrammeTimelineRegistry } from './programme-timeline-registry.js';
+import { METADATA_PLANE_ONLY } from '@videofy-live/programme-timeline';
 import { JournalTimelineStore } from './journal-timeline-store.js';
 import {
   SileroSpeechDetector,
@@ -1000,9 +1001,21 @@ const programmePerformance = new ProgrammePerformanceRegistry();
  * Each live broadcast's own account of itself, and the cursor the audience
  * receives it through. One per run, resumed across a reconnect.
  */
+/*
+ * WHETHER THE MEDIA PLANE IS GOVERNED, AND THEREFORE WHETHER A DELAY IS
+ * POSSIBLE AT ALL.
+ *
+ * The buffer refuses a protective delay unless every time-sensitive plane is
+ * held to the cursor. Until a producer existed, none was: original media was
+ * forwarded live and the honest setting was metadata only. A deployment that
+ * produces programme media governs both planes, and one that does not still
+ * governs only metadata -- so a delay configured on such a deployment is
+ * refused loudly rather than half applied.
+ */
+const programmeMediaProduced = config.programmeMediaOriginInput !== null;
 const programmeTimelines = new ProgrammeTimelineRegistry(
   undefined,
-  0,
+  config.programmeSafetyDelayMs,
   undefined,
   /*
    * The spool that lets a broadcast outlive this process.
@@ -1013,7 +1026,28 @@ const programmeTimelines = new ProgrammeTimelineRegistry(
    * BEFORE a programme promises a safety delay rather than during it.
    */
   new JournalTimelineStore({ directory: join(config.audioChunkDir, 'timelines') }),
+  programmeMediaProduced ? { metadata: true, media: true } : METADATA_PLANE_ONLY,
 );
+/*
+ * THE MODE, SAID AT BOOT. An operator asking "is this programme protected"
+ * must not have to infer it from two unrelated variables.
+ */
+if (config.programmeSafetyDelayMs === 0) {
+  logger.info('Programme broadcast mode: TRUE LIVE', {
+    reason: 'PROGRAMME_SAFETY_DELAY_MS is zero; nothing is held back',
+  });
+} else if (programmeMediaProduced) {
+  logger.info('Programme broadcast mode: PROTECTED LIVE', {
+    delayMs: config.programmeSafetyDelayMs,
+  });
+} else {
+  logger.error('Programme safety delay is configured and CANNOT be held', {
+    delayMs: config.programmeSafetyDelayMs,
+    reason:
+      'PROGRAMME_MEDIA_ORIGIN_INPUT is unset, so original media is not held to the cursor; ' +
+      'the buffer will refuse the delay rather than hold captions against live speech',
+  });
+}
 
 const streamingTranscription = buildStreamingTranscriptionProvider(config);
 

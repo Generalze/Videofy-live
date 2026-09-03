@@ -25,6 +25,7 @@ import { useQuality } from './useQuality';
 import { useAdvertising } from './useAdvertising';
 import { AdvertisingPage } from './pages/AdvertisingPage';
 import { QualityPage } from './pages/QualityPage';
+import { describeBroadcastMode } from './broadcastMode';
 import { summariseRouteQuality } from './qualitySummary';
 import { OverviewPage } from './pages/OverviewPage';
 import { LiveControlAside, LivePage } from './pages/LivePage';
@@ -1201,6 +1202,12 @@ export default function App(): React.ReactElement {
   const catalogueState: CatalogueState =
     targetLanguageCatalogue !== undefined ? { status: 'ready' } : ingestCatalogue.state;
 
+  /*
+   * What is being held back, derived from the service's runtime rather than
+   * printed as a fixed sentence. Pages 09 and 10 read the SAME value, so they
+   * cannot disagree about whether this broadcast is protected.
+   */
+  const broadcastMode = describeBroadcastMode(programmeRuntime);
   const readinessItems = buildPartnerPreviewReadiness({
     gatewayConnected: connected,
     mediaIngestHealthy: ingestOk,
@@ -1582,9 +1589,23 @@ export default function App(): React.ReactElement {
       </ConsolePage>
 
       {/* ---------------- 09 Preflight ---------------- */}
-      <ConsolePage id="preflight" active={page === 'preflight'} kicker="Step 5" title="Preflight" lede="What is ready and what is not, before anybody is watching. Every line below is the live state of a real service or of your own choices; nothing here is a preset. Route quality analysis and the recommended safety delay are implemented and live on Quality / Delay; the recommendation is ADVISORY. No broadcast safety buffer exists yet, so the programme goes out live and nothing here delays it.">
+      <ConsolePage id="preflight" active={page === 'preflight'} kicker="Step 5" title="Preflight" lede="What is ready and what is not, before anybody is watching. Every line below is the live state of a real service or of your own choices; nothing here is a preset. Route quality analysis and the recommended safety delay are on Quality / Delay; the recommendation is ADVISORY. Whether anything is actually held back is the Broadcast mode line below, read from the service rather than assumed here.">
         <div className={styles.readinessList}>
-          {readinessItems.map((item) => (
+          {[
+            /*
+             * FIRST, because it changes what every line under it means. A
+             * programme that is not being held back is a programme where
+             * nothing can be taken back, and an operator deciding whether to
+             * go on air needs that before anything else on the page.
+             */
+            {
+              id: 'broadcast-mode',
+              label: 'Broadcast mode',
+              state: broadcastMode.state,
+              detail: `${broadcastMode.label}. ${broadcastMode.detail}`,
+            },
+            ...readinessItems,
+          ].map((item) => (
             <div key={item.id} className={styles.readinessItem}>
               <span
                 className={`${styles.readinessState} ${item.state === 'ready' ? styles.readinessReady : item.state === 'blocked' ? styles.readinessBlocked : styles.readinessWarning}`}
@@ -1610,10 +1631,10 @@ export default function App(): React.ReactElement {
           /*
            * THE SAME EVIDENCE PAGE 06 SHOWS, and nothing recomputed here.
            *
-           * The delay is ADVISORY -- a recommendation from route evidence, not
-           * a measurement of an output that is being held back. Nothing delays
-           * the programme, which is why the aside also states the buffer's
-           * absence outright rather than leaving it to be inferred.
+           * The delay chip is ADVISORY -- a recommendation from route
+           * evidence, not a measurement. Beside it, the buffer chip carries
+           * what the service says is actually being held, so the two are read
+           * together and neither can be mistaken for the other.
            */
           <LiveControlAside
             onAir={workflowSummary.status === 'Live'}
@@ -1621,6 +1642,7 @@ export default function App(): React.ReactElement {
             viewers={viewers}
             quality={qualitySummary.quality}
             recommendedDelay={qualitySummary.recommendedDelay}
+            broadcast={broadcastMode.mode === 'unknown' ? null : broadcastMode}
           />
         }
       >

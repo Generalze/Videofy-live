@@ -75,9 +75,29 @@ describe('Preflight tells the truth about all three facts', () => {
     expect(preflight).toMatch(/ADVISORY/u);
   });
 
-  it('says plainly that no buffer exists and the programme goes out live', () => {
-    expect(preflight).toMatch(/No broadcast safety buffer exists/u);
-    expect(preflight).toMatch(/goes out live/u);
+  it('no longer asserts a fixed answer about the buffer', () => {
+    /*
+     * The lede used to say "No broadcast safety buffer exists yet, so the
+     * programme goes out live". True when written; false the day a buffer
+     * shipped. A hard-coded sentence about a live system is a sentence that
+     * eventually lies, and an operator makes go-to-air decisions on it.
+     */
+    expect(preflight).not.toMatch(/No broadcast safety buffer exists/u);
+    expect(preflight).not.toMatch(/nothing here delays it/u);
+  });
+
+  it('points at a line derived from the service instead', () => {
+    expect(preflight).toMatch(/read from the service/u);
+    // And that line exists, at the top of the readiness list, from the ONE
+    // derivation Live Control also reads.
+    expect(APP).toMatch(/describeBroadcastMode\(programmeRuntime\)/u);
+    expect(APP).toMatch(/label: 'Broadcast mode'/u);
+  });
+
+  it('gives both pages the same derivation, so they cannot disagree', () => {
+    // One call, read by Page 09's list and passed to Page 10's aside.
+    expect(APP.match(/describeBroadcastMode\(/gu)).toHaveLength(1);
+    expect(APP).toMatch(/broadcast=\{broadcastMode\./u);
   });
 });
 

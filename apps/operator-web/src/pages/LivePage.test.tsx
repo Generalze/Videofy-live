@@ -202,11 +202,61 @@ describe('LiveControlAside', () => {
     ]) {
       expect(html).toContain('Advisory delay');
       expect(html).toContain('Broadcast buffer');
-      expect(html).toContain('Not active');
-      expect(html).toMatch(/output is NOT delayed|not delayed|goes out live|receive the programme live/u);
       // The two claims that would be false.
       expect(html).not.toMatch(/Current delay/iu);
       expect(html).not.toMatch(/On-air delay/iu);
     }
+  });
+
+  it('says the buffer has not been read rather than claiming it is inactive', () => {
+    const html = renderToStaticMarkup(
+      <LiveControlAside onAir progressLabel="x" viewers={1} recommendedDelay="45 s" />,
+    );
+    /*
+     * "Not active" is a claim about the broadcast; "Not read" is a statement
+     * about our own information. The chip carried the first one hard-coded,
+     * which meant a genuinely protected programme was labelled unprotected.
+     */
+    expect(html).toContain('Not read');
+    expect(html).not.toContain('Not active');
+  });
+
+  it('reports what is actually being held when the service has said', () => {
+    const html = renderToStaticMarkup(
+      <LiveControlAside
+        onAir
+        progressLabel="x"
+        viewers={1}
+        recommendedDelay="45 s"
+        broadcast={{
+          mode: 'protected-live',
+          label: 'Protected live',
+          detail: 'The audience is 45 s behind the source, and that delay is being held now.',
+          state: 'ready',
+        }}
+      />,
+    );
+    expect(html).toContain('Protected live');
+    // Beside the advisory, never instead of it: the two are different facts.
+    expect(html).toContain('Advisory delay');
+  });
+
+  it('shows a configured delay that is NOT being held as a warning', () => {
+    const html = renderToStaticMarkup(
+      <LiveControlAside
+        onAir
+        progressLabel="x"
+        viewers={1}
+        broadcast={{
+          mode: 'unprotected',
+          label: 'Delay not yet held',
+          detail: 'A 45 s delay is configured and is not being held (filling).',
+          state: 'warning',
+        }}
+      />,
+    );
+    // The window in which an operator believes they have a net and does not.
+    expect(html).toContain('Delay not yet held');
+    expect(html).not.toContain('Protected live');
   });
 });

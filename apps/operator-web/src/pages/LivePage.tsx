@@ -29,6 +29,7 @@
  *   Technical diagnostics    REAL     the existing panels, collapsed by default
  */
 import type { PreflightVerdict } from '../partnerPreviewReadiness';
+import type { BroadcastModeView } from '../broadcastMode';
 import React, { useEffect, useRef } from 'react';
 import styles from './LivePage.module.css';
 import type { OperatorWorkflowSummary } from '../operatorWorkflow';
@@ -89,16 +90,22 @@ export interface LivePageProps {
  *
  * THREE SEPARATE FACTS, AND THEY MUST NOT BLUR INTO ONE.
  *
- *   Route quality analysis    IMPLEMENTED -- measured per route, per stage
- *   Recommended delay         IMPLEMENTED, ADVISORY -- what the buffer SHOULD be
- *   Broadcast safety buffer   NOT IMPLEMENTED -- nothing delays the output
+ *   Route quality analysis    measured per route, per stage
+ *   Recommended delay         ADVISORY -- what the buffer SHOULD be
+ *   Broadcast safety buffer   what is being held RIGHT NOW, from the service
  *
  * The chip therefore says "Advisory delay", never "Current delay" and never
  * "On-air delay". An operator who reads a recommendation as an active buffer
- * believes they have seconds in hand to cut away from something, and they have
- * none: the output is live. That is the one misreading on this page that could
- * put an unrecoverable moment to air, so the buffer chip states its absence
- * outright rather than leaving it to be inferred from silence.
+ * believes they have seconds in hand to cut away from something, and may have
+ * none. That is the one misreading on this page that could put an
+ * unrecoverable moment to air, so the buffer chip states the MEASURED state
+ * beside it rather than leaving the difference to be inferred.
+ *
+ * THE BUFFER CHIP USED TO BE THE FIXED WORDS "Not active". That was true when
+ * written and stopped being true the day a buffer shipped, which is what every
+ * hard-coded sentence about a live system eventually does. It now comes from
+ * the runtime, and when the runtime has not been read it says so rather than
+ * asserting either answer.
  *
  * Nothing here computes any of it. The recommendation is programme-quality's,
  * arriving through props exactly as Page 06 receives it.
@@ -109,6 +116,7 @@ export function LiveControlAside({
   viewers,
   quality = null,
   recommendedDelay = null,
+  broadcast = null,
 }: {
   readonly onAir: boolean;
   /** The workflow's own sentence for the programme's state, on the chip's title. */
@@ -122,6 +130,12 @@ export function LiveControlAside({
    * is no buffer to measure.
    */
   readonly recommendedDelay?: string | null | undefined;
+  /**
+   * What the service says is actually being held, or null when the runtime has
+   * not been read. Null renders as "Not read", never as "Not active": one is
+   * an absence of information and the other is a claim about the broadcast.
+   */
+  readonly broadcast?: BroadcastModeView | null | undefined;
 }): React.ReactElement {
   return (
     <>
@@ -158,12 +172,20 @@ export function LiveControlAside({
       />
       <MetricChip
         icon={<Icon name="shield" size={22} />}
-        value="Not active"
+        value={broadcast?.label ?? 'Not read'}
         label="Broadcast buffer"
-        tone="neutral"
+        tone={
+          broadcast === null
+            ? 'neutral'
+            : broadcast.state === 'ready'
+              ? 'success'
+              : broadcast.state === 'blocked'
+                ? 'danger'
+                : 'warn'
+        }
         title={
-          'No broadcast safety buffer exists yet: viewers receive the programme live. ' +
-          'The advisory delay is a recommendation, not a buffer.'
+          broadcast?.detail ??
+          'The runtime has not been read for this programme, so what is being held is unknown.'
         }
       />
     </>
