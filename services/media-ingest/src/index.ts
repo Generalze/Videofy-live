@@ -54,6 +54,14 @@ import {
 import { buildTranslationGate } from './translation-gate-wiring.js';
 import { registerQualityRoutes } from './quality-routes.js';
 import { registerProgrammeRuntimeRoutes } from './programme-runtime-routes.js';
+import { registerProgrammeEgressRoutes } from './programme-egress-routes.js';
+import { ProgrammeEgressAuthority } from './programme-egress.js';
+import { ProgrammeMediaStore } from './programme-media-store.js';
+import {
+  VISIBILITY_UNRESOLVABLE,
+  createChannelVisibilityClient,
+  createProgrammeAudienceAccess,
+} from './programme-audience-access.js';
 import { supportsKeyterms } from './providers/deepgram/nova-streaming-stt.js';
 import {
   buildLiveSynthesis,
@@ -1120,6 +1128,75 @@ logger.info('Translation route gate ready', {
 registerProgrammeRuntimeRoutes(app, {
   performance: programmePerformance,
   timelines: programmeTimelines,
+});
+
+/*
+ * THE AUDIENCE'S DOOR, and the only one.
+ *
+ * The egress authority has existed, tested, and constructed by nothing, since
+ * it was written -- the same unwired seam this repository keeps producing. It
+ * is composed here, once, so there is exactly one place where "what the cursor
+ * has published" becomes "what an HTTP client may fetch".
+ *
+ * The spool sits beside the audio chunks, under a directory of its own. The
+ * routes are given that directory as their containment boundary, so a segment
+ * reference that ever resolved outside it would be refused rather than served.
+ *
+ * NO PRODUCER IS ATTACHED YET. The media origin worker that writes segments
+ * into this store is not wired, so today this store is empty and the manifest
+ * is empty with it. That is said plainly in the boot line below rather than
+ * left for somebody to discover: an empty playlist and a broken encoder look
+ * identical from outside, and only one of them is what this deployment is.
+ */
+const programmeMediaSpool = join(config.audioChunkDir, 'programme-media');
+const programmeMedia = new ProgrammeMediaStore();
+const programmeEgress = new ProgrammeEgressAuthority(programmeTimelines, programmeMedia);
+
+/**
+ * Whether an audience can be admitted at all depends on being able to tell a
+ * public channel from a locked one, and that answer lives with the account
+ * service. Without it, this refuses everybody -- deliberately, and out loud.
+ */
+const channelVisibility =
+  config.accountServiceUrl !== null && config.internalIngressAuth.token !== null
+    ? createChannelVisibilityClient({
+        accountServiceUrl: config.accountServiceUrl,
+        internalToken: config.internalIngressAuth.token,
+      })
+    : VISIBILITY_UNRESOLVABLE;
+
+registerProgrammeEgressRoutes(app, {
+  egress: programmeEgress,
+  access: createProgrammeAudienceAccess({
+    channelOf: (runId) => programmeTimelines.channelOf(runId),
+    visibility: channelVisibility,
+    authenticate,
+    entitlement: operatorEntitlement,
+    internalTokenAllowed: (presented) =>
+      internalIngressRequestAllowed(config.internalIngressAuth, presented),
+  }),
+  spoolRoot: programmeMediaSpool,
+  onFuturePeek: () => {
+    /*
+     * Somebody asked for a segment the cursor has not published. Counted at
+     * warn because guessing sequential names is deliberate; the run is named
+     * so an operator can look, and nothing about the requester is kept.
+     */
+    logger.warn('A request asked for programme media ahead of the public cursor');
+  },
+});
+logger.info('Programme egress ready', {
+  spool: programmeMediaSpool,
+  visibilitySource: channelVisibility === VISIBILITY_UNRESOLVABLE ? 'none' : 'account-service',
+  ...(channelVisibility === VISIBILITY_UNRESOLVABLE
+    ? {
+        warning:
+          'no audience can watch through this service: ACCOUNT_SERVICE_URL or the internal ' +
+          'token is unset, so a public channel cannot be told from a locked one',
+      }
+    : {}),
+  mediaProducerAttached: false,
+  note: 'no media origin worker is attached; the published manifest will be empty',
 });
 
 registerQualityRoutes(app, {

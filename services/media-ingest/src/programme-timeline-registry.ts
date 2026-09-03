@@ -209,6 +209,18 @@ export class ProgrammeTimelineRegistry {
     return this.runs.has(runId);
   }
 
+  /**
+   * The channel a run belongs to, or null when this process is not running it.
+   *
+   * Needed by anything that must ask a question about the CHANNEL -- who may
+   * watch, most of all -- from a request that only ever names the run. Null is
+   * the same answer as "no such broadcast", which is what keeps an access
+   * decision from having to distinguish the two.
+   */
+  channelOf(runId: string): string | null {
+    return this.runs.get(runId)?.identity.channelId ?? null;
+  }
+
   /** The broadcast is over. Its account and its cursor go with it. */
   release(runId: string): void {
     this.runs.delete(runId);
