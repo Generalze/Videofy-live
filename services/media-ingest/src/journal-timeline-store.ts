@@ -21,7 +21,7 @@
  * unwritable spool is discovered before going on air rather than during it.
  */
 
-import { appendFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { FenceGuard } from '@videofy-live/programme-timeline';
 import type {
@@ -126,9 +126,19 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
     return this.queue(event.runId, async () => {
       try {
         await this.ensureDirectory();
+        /*
+         * WRITTEN AND FLUSHED, not merely handed to the page cache.
+         *
+         * The deployment root is mounted commit=30, so an unfsynced write can
+         * be thirty seconds behind the disk when power is lost -- which is most
+         * of a safety buffer. A process restart would survive on the page cache
+         * alone; a host losing power would not, and coming back is the whole
+         * promise of this store.
+         */
         // One JSON object per line: a partial final line after a hard kill is
         // discarded on load rather than corrupting everything before it.
-        await this.io.appendFile(path, `${JSON.stringify(event)}\n`, 'utf8');
+        await this.appendDurably(path, `${JSON.stringify(event)}
+`);
         this.lastFailure = null;
         return true;
       } catch (error) {
@@ -217,6 +227,26 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
   private admitted(runId: string): boolean {
     if (this.fenceToken === null) return true;
     return this.fence.admit(runId, this.fenceToken);
+  }
+
+  /**
+   * Append and flush to the device.
+   *
+   * Falls back to a plain append when the io has been injected: a test double
+   * is not a disk and need not prove one.
+   */
+  private async appendDurably(path: string, line: string): Promise<void> {
+    if (this.io.appendFile !== appendFile) {
+      await this.io.appendFile(path, line, 'utf8');
+      return;
+    }
+    const handle = await open(path, 'a');
+    try {
+      await handle.writeFile(line, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
   }
 
   /** Settle every write already queued for this run. */
