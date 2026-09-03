@@ -8,7 +8,7 @@
  * the media rather than a clock, and that a dead encoder is a failed broadcast
  * rather than a quiet one.
  */
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, URL } from 'node:url';
 import { join } from 'node:path';
@@ -22,6 +22,7 @@ import {
 import { ProgrammeMediaStore } from '../programme-media-store.js';
 import { ProgrammeTimelineRegistry } from '../programme-timeline-registry.js';
 import { ProgrammeEgressAuthority, initSegmentId, renderHlsManifest } from '../programme-egress.js';
+import { initFileName } from '@videofy-live/programme-contribution';
 import type { MediaOriginOptions, OriginRunResult } from '@videofy-live/programme-contribution';
 
 const RUN = { channelId: 'ch_1', programmeId: 'prog_1', runId: 'run_1' };
@@ -67,6 +68,8 @@ function playlistOf(...durations: readonly number[]): string {
 
 interface Rig {
   readonly origin: ProgrammeMediaOrigin;
+  /** Where the encoder writes. Tests reach in to remove or truncate files. */
+  readonly spool: string;
   readonly media: ProgrammeMediaStore;
   readonly timelines: ProgrammeTimelineRegistry;
   readonly egress: ProgrammeEgressAuthority;
@@ -77,6 +80,13 @@ interface Rig {
 
 function rig(delayMs = DELAY_MS): Rig {
   const spoolRoot = mkdtempSync(join(tmpdir(), 'videofy-origin-'));
+  /*
+   * REAL FILES, because the producer now refuses to reference media it cannot
+   * make durable. A fake spawner writes nothing, so a rig that only set
+   * playlist TEXT was describing segments that do not exist -- and the rule
+   * being tested is precisely that such a segment never reaches the timeline.
+   */
+  mkdirSync(join(spoolRoot, 'run_1'), { recursive: true });
   const timelines = new ProgrammeTimelineRegistry(32, delayMs, undefined, undefined, {
     metadata: true,
     media: true,
@@ -101,12 +111,26 @@ function rig(delayMs = DELAY_MS): Rig {
 
   return {
     origin,
+    spool: spoolRoot,
     media,
     timelines,
     egress,
     spawner,
     setPlaylist: (value) => {
       playlist = value;
+      if (value === null) return;
+      // Every generation's init object, and every segment the playlist names.
+      for (const generation of [0, 1]) {
+        writeFileSync(join(spoolRoot, 'run_1', initFileName(generation)), Buffer.from('INIT-BYTES'));
+      }
+      for (const line of value.split(/\r?\n/u)) {
+        const name = line.trim();
+        if (!name.endsWith('.m4s')) continue;
+        writeFileSync(
+          join(spoolRoot, 'run_1', name),
+          Buffer.from(`SEGMENT-${name}`.padEnd(64, '.')),
+        );
+      }
     },
   };
 }
@@ -302,6 +326,91 @@ describe('an encoder that stops', () => {
       .filter((event) => event.kind === 'media');
     expect(events).toHaveLength(3);
     expect(live.origin.produces('run_1')).toBe(false);
+  });
+});
+
+describe('media is durable before anything references it', () => {
+  /*
+   * THE ORDERING RULE. The timeline journal fsyncs; the encoder's segments did
+   * not, and the production host commits its filesystem journal every thirty
+   * seconds. So a durable timeline entry could point at media that existed
+   * only in page cache and vanished -- a broadcast whose own record says it
+   * published something it can no longer produce.
+   *
+   * An orphan is the acceptable direction to fail in. Media on disk that no
+   * timeline mentions costs a cleanup; a reference to media that never landed
+   * costs the audience a hole nothing can fill.
+   */
+  it('refuses to reference a segment the packager listed but never wrote', async () => {
+    const live = rig();
+    await live.origin.start('run_1', 'rtmp://source/live');
+    // The playlist names three segments; only the first two exist on disk.
+    live.setPlaylist(playlistOf(2, 2, 2));
+    rmSync(join(live.spool, 'run_1', 'seg_00002.m4s'));
+
+    await live.origin.collect('run_1');
+    const media = live.timelines
+      .timeline('run_1')
+      ?.all()
+      .filter((event) => event.kind === 'media');
+    expect(media).toHaveLength(2);
+  });
+
+  it('picks the missing segment up once it appears, rather than skipping it', async () => {
+    const live = rig();
+    await live.origin.start('run_1', 'rtmp://source/live');
+    live.setPlaylist(playlistOf(2, 2, 2));
+    rmSync(join(live.spool, 'run_1', 'seg_00002.m4s'));
+    await live.origin.collect('run_1');
+
+    /*
+     * A segment the encoder is still closing is a transient state, not a
+     * fault. Marking it seen on the first miss would drop it from the
+     * broadcast permanently.
+     */
+    writeFileSync(join(live.spool, 'run_1', 'seg_00002.m4s'), Buffer.from('LATE'.padEnd(64, '.')));
+    expect(await live.origin.collect('run_1')).toBe(1);
+  });
+
+  it('refuses a segment that exists but is empty', async () => {
+    const live = rig();
+    await live.origin.start('run_1', 'rtmp://source/live');
+    live.setPlaylist(playlistOf(2, 2));
+    // The packager lists a file when it closes it, but a file can exist and
+    // be empty for a moment -- and publishing that hands a player something
+    // it cannot decode.
+    writeFileSync(join(live.spool, 'run_1', 'seg_00001.m4s'), Buffer.alloc(0));
+
+    await live.origin.collect('run_1');
+    expect(
+      live.timelines.timeline('run_1')?.all().filter((e) => e.kind === 'media'),
+    ).toHaveLength(1);
+  });
+
+  it('refuses every segment when the initialisation object is missing', async () => {
+    const live = rig();
+    await live.origin.start('run_1', 'rtmp://source/live');
+    live.setPlaylist(playlistOf(2, 2));
+    rmSync(join(live.spool, 'run_1', initFileName(0)));
+
+    await live.origin.collect('run_1');
+    /*
+     * A fragment whose init did not survive is a fragment nothing can decode.
+     * The same hole, by another route.
+     */
+    expect(
+      live.timelines.timeline('run_1')?.all().filter((e) => e.kind === 'media'),
+    ).toHaveLength(0);
+  });
+
+  it('records the size it actually synced, not a placeholder', async () => {
+    const live = rig();
+    await live.origin.start('run_1', 'rtmp://source/live');
+    live.setPlaylist(playlistOf(2));
+    await live.origin.collect('run_1');
+    // Retention and diagnostics both read this; zero would make a spool look
+    // empty while it filled a disk.
+    expect(live.media.segmentCount('run_1')).toBe(1);
   });
 });
 

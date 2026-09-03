@@ -39,7 +39,7 @@ import {
   type OriginProcess,
   type OriginSpawner,
 } from '../programme-media-origin.js';
-import type { OriginRunResult } from '@videofy-live/programme-contribution';
+import { initFileName, type OriginRunResult } from '@videofy-live/programme-contribution';
 
 const RUN = { channelId: 'ch_1', programmeId: 'prog_1', runId: 'run_1' };
 const DELAY_MS = 45_000;
@@ -80,7 +80,13 @@ function playlist(count: number): string {
 beforeAll(async () => {
   spool = mkdtempSync(join(tmpdir(), 'videofy-load-'));
   mkdirSync(join(spool, 'run_1'), { recursive: true });
-  writeFileSync(join(spool, 'run_1', 'init.mp4'), Buffer.from('INIT'));
+  /*
+   * The initialisation object, on disk. The producer now refuses to reference
+   * a segment whose init is not durable, because a fragment whose init did not
+   * survive is a fragment nothing can decode -- so a fixture without one is
+   * describing a broadcast that could not play.
+   */
+  writeFileSync(join(spool, 'run_1', initFileName(0)), Buffer.from('INIT'));
   for (let index = 0; index < TOTAL_SEGMENTS; index += 1) {
     writeFileSync(
       join(spool, 'run_1', `seg_${String(index).padStart(5, '0')}.m4s`),
@@ -245,7 +251,18 @@ describe('the cursor holds while it is moving and being read', () => {
      * lands. Guessing the newest name is the obvious move, and it must never
      * work once.
      */
-    const edge = `run_1.g0.${String(TOTAL_SEGMENTS - 1).padStart(5, '0')}`;
+    /*
+     * Derived from what the producer has actually registered rather than from
+     * the fixture's constant. That is what an attacker would do -- ask for the
+     * newest thing that exists -- and it does not go stale when the producer's
+     * pace changes.
+     */
+    const registered = timelines
+      .timeline('run_1')
+      ?.all()
+      .filter((event) => event.kind === 'media') ?? [];
+    const edge = String(registered[registered.length - 1]?.reference ?? '');
+    expect(edge).not.toBe('');
     const attempts = await pool(READERS, () => get(segmentUrl(edge)));
     await advancing;
 

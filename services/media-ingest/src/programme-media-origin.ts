@@ -30,8 +30,7 @@
  * would keep waiting for material that is never coming.
  */
 
-import { readFile } from 'node:fs/promises';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ProgrammeMediaSegment } from '@videofy-live/programme-timeline';
 import {
@@ -316,6 +315,23 @@ export class ProgrammeMediaOrigin {
     let registered = 0;
     for (const entry of parsePlaylist(playlist)) {
       if (running.seen.has(entry.fileName)) continue;
+
+      /*
+       * DURABLE BEFORE REFERENCED. Nothing below this line may run until the
+       * bytes are on the device.
+       *
+       * The timeline journal fsyncs; the encoder's segments did not. With the
+       * host's ext4 committing every thirty seconds, an unclean power loss
+       * could leave a durable timeline entry pointing at media that existed
+       * only in page cache and is now gone -- a broadcast whose own record
+       * says it published something it cannot produce.
+       *
+       * An orphan is the acceptable direction to fail in: media on disk that
+       * no timeline mentions costs a cleanup, while a reference to media that
+       * never landed costs the audience a hole nothing can fill.
+       */
+      const durable = await this.makeDurable(runId, running, entry.fileName);
+      if (!durable) continue;
       running.seen.add(entry.fileName);
 
       const startMs = running.endProgrammeTimeMs;
@@ -342,7 +358,7 @@ export class ProgrammeMediaOrigin {
         hasVideo: true,
         hasAudio: true,
         storageReference: join(running.directory, entry.fileName),
-        bytes: 0,
+        bytes: durable.bytes,
         initGeneration: running.generation,
       };
 
@@ -363,6 +379,106 @@ export class ProgrammeMediaOrigin {
     // The cursor only moves once it has been told what exists.
     if (registered > 0) this.deps.timelines.buffer(runId)?.advance();
     return registered;
+  }
+
+  /**
+   * Force one segment and its initialisation object to the device.
+   *
+   * Returns the segment's size once it is genuinely durable, or null when it
+   * is not yet -- in which case the caller leaves it unseen and tries again on
+   * the next poll, because a segment the encoder is still closing is a
+   * transient state and not a fault.
+   *
+   * THE DIRECTORY IS SYNCED TOO. A file's contents being durable says nothing
+   * about its NAME being durable: the directory entry lives in the parent, and
+   * without that sync a crash can leave bytes on the device that nothing can
+   * find. Not every platform allows opening a directory for sync, and where it
+   * does not this degrades rather than refusing -- the file sync is the part
+   * that matters most, and refusing to broadcast on Windows would be a
+   * peculiar way to be safe.
+   */
+  private async makeDurable(
+    runId: string,
+    running: RunningOrigin,
+    fileName: string,
+  ): Promise<{ readonly bytes: number } | null> {
+    const path = join(running.directory, fileName);
+    const initPath = join(running.directory, initFileName(running.generation));
+    try {
+      const bytes = await this.syncFile(path);
+      /*
+       * A ZERO-LENGTH SEGMENT IS NOT A SEGMENT. The packager lists a file when
+       * it closes it, but a file can exist and be empty for a moment, and
+       * publishing that would hand a player something it cannot decode.
+       */
+      if (bytes === 0) return null;
+      /*
+       * The initialisation object must be durable BEFORE anything that needs
+       * it. A fragment whose init did not survive is a fragment nothing can
+       * decode, which is the same hole by another route.
+       */
+      await this.syncFile(initPath);
+      await this.syncDirectory(running.directory);
+      return { bytes };
+    } catch (error) {
+      /*
+       * ABSENT IS NOT BROKEN, and telling them apart matters more than it
+       * looks. The packager lists a segment as it closes it, and a file can be
+       * named a moment before it is there to open -- so a missing file is a
+       * transient state that the next poll resolves. Failing the broadcast for
+       * that would stop a perfectly healthy programme every time the encoder
+       * was a few milliseconds ahead of the filesystem.
+       */
+      const code = (error as { code?: string }).code;
+      if (code === 'ENOENT') return null;
+
+      /*
+       * Anything else is the device refusing. Failing the broadcast is correct
+       * then: a protected programme whose media cannot be made durable cannot
+       * keep the promise its cursor is making, and continuing would publish
+       * material that may not survive the next minute.
+       */
+      this.deps.timelines
+        .buffer(runId)
+        ?.fail('programme media could not be made durable on this device');
+      logger.error('Programme media could not be made durable', {
+        runId,
+        code: code ?? 'unknown',
+        message: error instanceof Error ? error.message : 'unknown durability failure',
+      });
+      return null;
+    }
+  }
+
+  private async syncFile(path: string): Promise<number> {
+    const handle = await open(path, 'r+');
+    try {
+      // `fdatasync` is enough: the contents and the size are what a reader
+      // needs, and the remaining metadata costs another write for nothing.
+      await handle.datasync();
+      return (await handle.stat()).size;
+    } finally {
+      await handle.close();
+    }
+  }
+
+  private async syncDirectory(directory: string): Promise<void> {
+    let handle;
+    try {
+      handle = await open(directory, 'r');
+    } catch {
+      // Windows will not open a directory this way. The file sync above is
+      // the part that protects the bytes; this protects the name.
+      return;
+    }
+    try {
+      await handle.sync();
+    } catch {
+      // Some filesystems refuse to sync a directory handle. Nothing to do,
+      // and nothing gained by failing a broadcast over it.
+    } finally {
+      await handle.close();
+    }
   }
 
   /** Stop producing for a run, deliberately. */
