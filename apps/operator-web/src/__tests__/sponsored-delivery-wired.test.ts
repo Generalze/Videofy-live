@@ -28,9 +28,24 @@ describe('listener-web actually delivers the creative to its slot', () => {
   });
 
   it('passes what it read into the slot, rather than rendering the default', () => {
-    // `<SponsoredSlot />` with no prop silently falls back to the house
-    // creative forever, which looks exactly like a working advert placement.
-    expect(app).toMatch(/<SponsoredSlot creative=\{sponsored\.creative\}/u);
+    /*
+     * `<SponsoredSlot />` with no prop silently falls back to the house
+     * creative for ever, which looks exactly like a working advert placement.
+     *
+     * Matched across the whole element rather than as one line: the slot now
+     * also carries C7's decided advert, so it is written over several lines,
+     * and an assertion anchored to the old formatting would have been a
+     * formatting test wearing a seam test's clothes.
+     */
+    expect(app).toMatch(/<SponsoredSlot[\s\S]{0,400}creative=\{sponsored\.creative\}/u);
+  });
+
+  it('also passes C7 own decided advert, which the operator cannot choose', () => {
+    // The slot carries two different things: the operator's sponsored creative
+    // and the advert C7 decided and the cursor released. Losing the second
+    // join would leave every C7 impression undelivered and look like a
+    // programme with nothing sold.
+    expect(app).toMatch(/<SponsoredSlot[\s\S]{0,400}c7CreativeUrl=/u);
   });
 
   it('scopes the read to the channel being watched', () => {
@@ -50,7 +65,7 @@ describe('the canonical placement: display, then advert, then controls', () => {
      * the one that was made. Positions are compared rather than matched
      * individually, because each element existing proves nothing about order.
      */
-    const slot = app.indexOf('<SponsoredSlot creative={sponsored.creative}');
+    const slot = app.indexOf('<SponsoredSlot');
     const controls = app.indexOf('className={styles.controlsSection}');
     expect(slot).toBeGreaterThan(-1);
     expect(controls).toBeGreaterThan(-1);
