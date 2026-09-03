@@ -22,6 +22,7 @@ import {
   type BufferStatus,
 } from '@videofy-live/programme-timeline';
 import type { ProgrammeRunIdentity } from '@videofy-live/media-ingress-wire';
+import type { ProgrammeTimelineStore } from '@videofy-live/programme-timeline';
 
 /** How many concurrent broadcasts this process holds an account for. */
 export const MAX_TRACKED_TIMELINES = 32;
@@ -39,7 +40,62 @@ export class ProgrammeTimelineRegistry {
     private readonly maxRuns: number = MAX_TRACKED_TIMELINES,
     private readonly defaultDelayMs = 0,
     private readonly policy?: BufferPolicy,
+    /**
+     * Where broadcasts survive this process. Absent means they do not, and a
+     * programme that promised a safety delay cannot keep that promise across a
+     * restart -- which `durable()` reports so nobody has to guess.
+     */
+    private readonly store?: ProgrammeTimelineStore,
   ) {}
+
+  /**
+   * Can a safety promise made now outlive this process?
+   *
+   * Asked BEFORE going on air. An unwritable spool discovered during a
+   * broadcast is a broadcast that has already promised something it cannot
+   * deliver.
+   */
+  async durable(): Promise<{ readonly durable: boolean; readonly reason: string | null }> {
+    if (this.store === undefined) {
+      return { durable: false, reason: 'no durable timeline store is configured' };
+    }
+    const health = await this.store.health();
+    return { durable: health.writable, reason: health.reason };
+  }
+
+  /**
+   * Bring a broadcast back after the process that was running it went away.
+   *
+   * Replay, not reconstruction: what was written is read back in order and the
+   * cursor is put where it was, so an audience forty seconds into a protected
+   * programme is still forty seconds into it. A run with nothing stored
+   * returns false, and the caller starts a new broadcast rather than pretending
+   * to continue one it cannot account for.
+   */
+  async recover(identity: ProgrammeRunIdentity): Promise<boolean> {
+    if (this.store === undefined) return false;
+    const persisted = await this.store.load(identity.runId);
+    if (persisted === null || persisted.events.length === 0) return false;
+
+    const timeline = new ProgrammeTimeline(identity);
+    for (const event of persisted.events) {
+      timeline.append({
+        programmeTimeMs: event.programmeTimeMs,
+        kind: event.kind,
+        reference: event.reference,
+        durationMs: event.durationMs,
+        attributes: event.attributes,
+      });
+    }
+    const buffer =
+      this.policy === undefined
+        ? new ProgrammeOutputBuffer(timeline, this.defaultDelayMs)
+        : new ProgrammeOutputBuffer(timeline, this.defaultDelayMs, this.policy);
+    buffer.restoreReleasedThrough(persisted.releasedThroughMs);
+    this.runs.set(identity.runId, { identity, timeline, buffer });
+    this.evictOldest();
+    return true;
+  }
 
   /**
    * The timeline for this run, resumed if it already exists.

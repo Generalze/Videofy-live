@@ -141,6 +141,21 @@ export class ProgrammeOutputBuffer {
     return released;
   }
 
+  /**
+   * Put the cursor back where a recovered broadcast left it.
+   *
+   * Only for recovery, and only forwards: an audience that received forty
+   * seconds of programme before the process died has received it, and a
+   * restart that rewound them would replay material they have already heard.
+   * Moving the cursor backwards is never a legitimate operation, so this
+   * refuses to.
+   */
+  restoreReleasedThrough(releasedThroughMs: number): void {
+    if (releasedThroughMs <= this.releasedThroughMs) return;
+    this.releasedThroughMs = releasedThroughMs;
+    this.reassess();
+  }
+
   /** The broadcast has ended; emit what is still held, then stop. */
   drain(): void {
     if (this.state === 'failed') return;

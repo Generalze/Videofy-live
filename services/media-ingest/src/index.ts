@@ -4,7 +4,7 @@ import express from 'express';
 import http from 'http';
 import multer from 'multer';
 import { mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { requireSessionSecret } from '@videofy-live/account-tokens';
 import { internalIngressRequestAllowed } from '@videofy-live/service-env';
@@ -46,6 +46,7 @@ import { createLiveStreamOpener } from './live-session-host.js';
 import { createVocabularySnapshotClient } from './vocabulary-snapshot-client.js';
 import { ProgrammePerformanceRegistry } from './programme-performance-registry.js';
 import { ProgrammeTimelineRegistry } from './programme-timeline-registry.js';
+import { JournalTimelineStore } from './journal-timeline-store.js';
 import {
   SileroSpeechDetector,
   type SpeechProbabilityDetector,
@@ -989,7 +990,20 @@ const programmePerformance = new ProgrammePerformanceRegistry();
  * Each live broadcast's own account of itself, and the cursor the audience
  * receives it through. One per run, resumed across a reconnect.
  */
-const programmeTimelines = new ProgrammeTimelineRegistry();
+const programmeTimelines = new ProgrammeTimelineRegistry(
+  undefined,
+  0,
+  undefined,
+  /*
+   * The spool that lets a broadcast outlive this process.
+   *
+   * Beside the audio spool, because a timeline is the same kind of thing: a
+   * bounded, append-only, per-broadcast artefact this service owns. Without it
+   * a restart mid-programme loses the cursor, and `durable()` reports that
+   * BEFORE a programme promises a safety delay rather than during it.
+   */
+  new JournalTimelineStore({ directory: join(config.audioChunkDir, 'timelines') }),
+);
 
 const streamingTranscription = buildStreamingTranscriptionProvider(config);
 
