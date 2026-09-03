@@ -74,6 +74,30 @@ it would produce a console reporting PROTECTED LIVE over an audience hearing
 the speaker immediately. That is worse than having no protection, because
 somebody would rely on it.
 
+### Where the certification wave got to
+
+Of the four joins the activation order requires, three are done and composed:
+
+1. **The listener can play the delayed path.** `hls.js` for Media Source
+   Extensions, native HLS where the platform has it, one controller over both,
+   and no route from a protected programme back to the realtime feed — not on
+   error, not on an unsupported browser.
+2. **The gateway refuses to relay a protected run.** No listener media peer is
+   built, existing peers are torn down when a run turns protected, and the
+   frame fan-out is checked as well, because a peer created before the answer
+   arrived is the leak window.
+3. **Delivery mode is authoritative, versioned and fail-closed.** One contract,
+   published by the run, read by the gateway, the listener and the console.
+
+The fourth — **real contribution reaching the encoder** — is half done. The
+encoder is now started by the broadcast opening rather than by an operator
+pressing a button, it revisions its initialisation object across a restart
+instead of overwriting one that retained fragments still need, and it
+continues programme time rather than restarting it. What is still missing is
+the transport itself: the broadcaster publishes over WebRTC to the gateway,
+and `PROGRAMME_MEDIA_ORIGIN_INPUT` expects an RTMP or SRT endpoint. Nothing
+bridges the two.
+
 ### The one blocking item for PROTECTED LIVE
 
 > The gateway must stop relaying original programme media to listeners for a
@@ -93,31 +117,24 @@ pattern the rest of this document is about closing.
 
 #### What it needs, concretely
 
-1. **The gateway has to know the mode.** `MediaStateEvent` is the existing
-   channel from media-ingest to the gateway and on to clients; a
-   `mediaDelivery: 'live' | 'delayed'` field on it is the smallest addition
-   that reaches everybody who needs it. It belongs in `shared-types` so an
-   omission is a compiler error rather than an undefined at runtime.
-2. **The gateway has to refuse to relay.** Listener media peers are created in
-   `services/realtime-gateway/src/webrtc-listener-peer-registry.ts`, driven
-   from the backend-media offer path in `gateway.ts`. A run in delayed mode
-   must be refused a listener media peer outright — not muted, not paused:
-   an attached peer that is expected to stay silent is one bug away from
-   carrying a frame.
-3. **The listener has to have a player for the delayed path.** There is none
-   today: `apps/listener-web` is WebRTC-only and contains no HLS anywhere. It
-   needs to fetch the egress playlist, feed fragments through Media Source
-   Extensions, and — critically — resume at the *public* position rather than
-   the live edge after a dropped connection, which the egress already answers
-   with `publicOutputTimeMs`.
-4. **The two must fail closed together.** A viewer whose client cannot play
-   the delayed path must be told so, not silently handed the live feed. The
-   safest ordering is: build the player first, prove it against the existing
-   egress with `delivery` still `live`, and only then let the flag be accepted.
+**A contribution bridge.** The broadcaster publishes over WebRTC to the
+gateway; the media origin runs FFmpeg against whatever
+`PROGRAMME_MEDIA_ORIGIN_INPUT` names, which is an RTMP or SRT endpoint. For a
+protected broadcast those have to be the same media, and today they are not
+connected. Two shapes are plausible and this is a decision rather than a
+detail:
 
-The order matters. Accepting the flag before step 3 turns a working broadcast
-into a blank one; building step 3 first costs nothing, because the egress it
-plays from is already there and already tested.
+- a contribution ingest the broadcaster publishes to directly (RTMP/SRT from
+  the operator console or an encoder), with WebRTC used only for the live
+  path; or
+- a relay that republishes the gateway's received tracks into the origin's
+  input.
+
+Until one exists, `PROGRAMME_MEDIA_DELIVERY=delayed` stays refused at boot and
+every run is TRUE LIVE. Everything downstream of the bridge — encoder,
+segments, store, timeline, cursor, egress, access, gateway refusal, listener
+player — is built, composed and proven, and can be exercised today by pointing
+the template at any RTMP or SRT source.
 
 ### What the audience path actually does today
 
@@ -164,25 +181,28 @@ and an inventory that omits it is worse than none.
 
 | Component | State | Why it is not composed |
 | --- | --- | --- |
-| `createC7AdvertisingAuthority`, `offerBreakOpportunity` | built, tested, not composed | There is no campaign store and no break scheduling surface. Composing a decision engine over an empty campaign list would produce a route that always answers "no advert" and reads as working. |
-| `InMemoryRunWriterLease` | built, tested, not composed | See below. |
+| *(nothing)* | — | Both entries that stood here are now composed. |
 
-### The lease, and the condition attached to it
+### Both are now composed
 
-`JournalTimelineStore` applies `FenceGuard` to every write, but nothing calls
-`writeUnder`, so **the store currently writes unfenced**. That is correct for
-the deployment as it stands — one media-ingest process, systemd, one host —
-and it is the honest behaviour for a deployment that has not adopted leases.
+**The C7 advertising authority** reads campaigns, creatives and impressions
+from persistent storage, decides which advert runs, places it on the timeline,
+and records the impression idempotently so a reconnect does not bill an
+advertiser twice. The operator's only contribution is offering a break; there
+is no column, route or body field by which they select an advertiser, a
+campaign, a creative or a priority.
 
-It stops being correct the moment two writers can exist. Specifically:
+**The writer authority** is a lease on the same volume as the journal it
+protects, with races decided by exclusive create. The store checks the volume
+rather than its own memory, because the process that matters is the one whose
+own fence has only ever seen its own token. Losing a lease fails the
+broadcast; a run this process cannot claim is failed closed before anything is
+written.
 
-> **Before a second media-ingest instance is run anywhere — a second host, a
-> blue/green overlap, a restart that leaves the old process alive — a lease
-> must be acquired per run and passed to `writeUnder`, and the in-memory lease
-> must be replaced with one both processes can see.**
-
-`InMemoryRunWriterLease` cannot see another process and says so in its own
-documentation. Composing it today would produce a fence that fences nothing
+The remaining limit is honest and stated in the code: a file lease coordinates
+writers **on one host**. Two machines with separate disks each see their own
+lease and both win. That is why the single-instance deployment invariant still
+matters, and what would replace it is a coordinator both hosts can see
 across processes, which is worse than no fence, because it would read as
 protection.
 
