@@ -109,9 +109,18 @@ describe('pacing into the encoder', () => {
     const out = sink();
     const bridge = new ProgrammeContributionBridge(out, { monotonic: time.now });
     bridge.begin();
+    /*
+     * Both media, because both is what a contribution carries -- and the
+     * encoder's zero is decided once, for the pair. The pump below settles
+     * that zero, exactly as production does by pumping every 10 ms.
+     */
+    bridge.pushAudio(audioChunk(), AUDIO);
+    bridge.pushVideo(frame(), VIDEO);
+    bridge.pump();
 
     for (let tick = 0; tick < 50; tick += 1) {
       bridge.pushVideo(frame(), VIDEO);
+      bridge.pushAudio(audioChunk(), AUDIO);
       time.advance(40);
       bridge.pump();
     }
@@ -124,6 +133,10 @@ describe('pacing into the encoder', () => {
     const out = sink();
     const bridge = new ProgrammeContributionBridge(out, { monotonic: time.now });
     bridge.begin();
+    bridge.pushAudio(audioChunk(), AUDIO);
+    bridge.pushVideo(frame(), VIDEO);
+    // Settles the encoder's zero for both media together.
+    bridge.pump();
     bridge.pushVideo(frame(), VIDEO);
     time.advance(40);
     bridge.pump();
@@ -146,6 +159,7 @@ describe('pacing into the encoder', () => {
     const out = sink();
     const bridge = new ProgrammeContributionBridge(out, { monotonic: time.now });
     bridge.begin();
+    bridge.pushVideo(frame(), VIDEO);
     bridge.pushAudio(audioChunk(), AUDIO);
     time.advance(10);
     bridge.pump();
@@ -244,6 +258,9 @@ describe('backpressure', () => {
       maxVideoFrames: 4,
     });
     bridge.begin();
+    bridge.pushAudio(audioChunk(), AUDIO);
+    bridge.pushVideo(frame(), VIDEO);
+    bridge.pump();
     for (let i = 0; i < 20; i += 1) bridge.pushVideo(frame(), VIDEO);
     expect(bridge.status().state).toBe('overloaded');
 
@@ -292,7 +309,9 @@ describe('a source that changes shape', () => {
     const out = sink();
     const bridge = new ProgrammeContributionBridge(out, { monotonic: time.now });
     bridge.begin();
+    bridge.pushAudio(audioChunk(), AUDIO);
     bridge.pushVideo(frame(), VIDEO);
+    bridge.pump();
     time.advance(30_000);
     bridge.pump();
 
@@ -307,6 +326,14 @@ describe('a source that changes shape', () => {
      */
     expect(bridge.status().elapsedMs).toBe(30_000);
     const before = out.videoFrames();
+    /*
+     * The new generation decides its own zero, for both media together, and
+     * the pump that settles it writes nothing -- nothing is due at zero. The
+     * frame due after that is the one asserted.
+     */
+    bridge.pushVideo(frame(), { ...VIDEO, width: 640, height: 480 });
+    bridge.pushAudio(audioChunk(), AUDIO);
+    bridge.pump();
     bridge.pushVideo(frame(), { ...VIDEO, width: 640, height: 480 });
     time.advance(40);
     bridge.pump();

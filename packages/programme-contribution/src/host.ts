@@ -27,19 +27,32 @@
 
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import {
-  ProgrammeContributionBridge,
-  RawContributionEncoder,
-  type ContributionAudioFormat,
-  type ContributionStatus,
-  type ContributionVideoFormat,
-} from '@videofy-live/programme-contribution';
-import { logger } from './logger.js';
+import { ProgrammeContributionBridge } from './bridge.js';
+import { RawContributionEncoder } from './raw-encoder.js';
+import type {
+  ContributionAudioFormat,
+  ContributionStatus,
+  ContributionVideoFormat,
+} from './bridge.js';
 
 /** How often paced media is handed to the encoder. Well inside a frame. */
 const PUMP_INTERVAL_MS = 10;
 
+/**
+ * Where this host reports.
+ *
+ * Injected rather than imported, because the host now lives in a package two
+ * services use and each has its own logger. A shared module that reached for
+ * one of them would make the package depend on the service.
+ */
+export interface ContributionHostLog {
+  info(message: string, detail: Record<string, unknown>): void;
+  warn(message: string, detail: Record<string, unknown>): void;
+  error(message: string, detail: Record<string, unknown>): void;
+}
+
 export interface ContributionHostDeps {
+  readonly log?: ContributionHostLog;
   /** The spool this deployment's media service reads segments from. */
   readonly spoolRoot: string;
   /** The frame rate the encoder is told to expect. */
@@ -112,7 +125,7 @@ export class ProgrammeContributionHost {
          */
         existing?.bridge.fail('the protected encoder exited');
         this.deps.onFailed?.(runId, 'the protected encoder exited');
-        logger.error('Protected contribution encoder exited', {
+        this.deps.log?.error('Protected contribution encoder exited', {
           runId,
           exitCode: code,
           detail: stderr.split('\n').slice(-3).join(' | ').slice(0, 500),
@@ -236,7 +249,7 @@ export class ProgrammeContributionHost {
         hosted.encoder = encoder;
         bridge.retarget(encoder);
         bridge.begin();
-        logger.info('Protected contribution encoder started', {
+        this.deps.log?.info('Protected contribution encoder started', {
           runId,
           width: video.width,
           height: video.height,
@@ -245,7 +258,7 @@ export class ProgrammeContributionHost {
       .catch((error: unknown) => {
         bridge.fail('the protected encoder could not be started');
         this.deps.onFailed?.(runId, 'the protected encoder could not be started');
-        logger.error('Protected contribution encoder could not start', {
+        this.deps.log?.error('Protected contribution encoder could not start', {
           runId,
           message: error instanceof Error ? error.message : 'unknown failure',
         });
@@ -272,7 +285,7 @@ export class ProgrammeContributionHost {
       hosted.video = video;
       hosted.bridge.retarget(encoder);
       hosted.bridge.restartGeneration();
-      logger.info('Protected contribution encoder rotated for a format change', {
+      this.deps.log?.info('Protected contribution encoder rotated for a format change', {
         runId,
         generation,
         width: video.width,
@@ -281,7 +294,7 @@ export class ProgrammeContributionHost {
     } catch (error) {
       hosted.bridge.fail('the protected encoder could not be restarted');
       this.deps.onFailed?.(runId, 'the protected encoder could not be restarted');
-      logger.error('Protected contribution encoder could not be rotated', {
+      this.deps.log?.error('Protected contribution encoder could not be rotated', {
         runId,
         message: error instanceof Error ? error.message : 'unknown failure',
       });

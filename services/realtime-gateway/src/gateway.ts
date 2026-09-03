@@ -83,7 +83,7 @@ import {
   type BackendMediaPeerAudioContext,
 } from './webrtc-media-peer-registry.js';
 import { BackendWebRtcListenerPeerRegistry } from './webrtc-listener-peer-registry.js';
-import { ProgrammeContributionHost } from './programme-contribution-host.js';
+import { ProgrammeContributionHost } from '@videofy-live/programme-contribution';
 import {
   HttpMediaTranscriptionSubmissionClient,
   MediaTranscriptionBridge,
@@ -503,6 +503,11 @@ export class Gateway {
               logger.error('Protected contribution failed', { runId, reason });
             },
             onProblem: (message, detail) => logger.warn(message, detail),
+            log: {
+              info: (message, detail) => logger.info(message, detail),
+              warn: (message, detail) => logger.warn(message, detail),
+              error: (message, detail) => logger.error(message, detail),
+            },
           });
 
     this.listenerMediaPeers = new BackendWebRtcListenerPeerRegistry({

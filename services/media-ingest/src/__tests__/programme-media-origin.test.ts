@@ -339,8 +339,22 @@ describe('an encoder that restarts mid-broadcast', () => {
      * replaced -- which arrives as a player dying partway through material it
      * had already been offered, with nothing to attribute it to.
      */
-    expect(live.egress.authorizeSegment('run_1', initSegmentId('run_1', 0)).allowed).toBe(true);
-    expect(live.egress.authorizeSegment('run_1', initSegmentId('run_1', 1)).allowed).toBe(true);
+    const first = live.egress.authorizeSegment('run_1', initSegmentId('run_1', 0));
+    const second = live.egress.authorizeSegment('run_1', initSegmentId('run_1', 1));
+    expect(first.allowed).toBe(true);
+    expect(second.allowed).toBe(true);
+    if (!first.allowed || !second.allowed) throw new Error('unreachable');
+
+    /*
+     * TWO IDS ARE NOT ENOUGH; THEY HAVE TO POINT AT TWO OBJECTS.
+     *
+     * A mutation that made every generation write the same filename left this
+     * test passing, because the ids are minted separately from the paths. The
+     * broadcast would still have offered both -- at the same bytes, the second
+     * encoder having overwritten the first -- and every retained fragment from
+     * before the restart would have stopped decoding.
+     */
+    expect(first.storageReference).not.toBe(second.storageReference);
   });
 
   it('continues the broadcast rather than starting it again', async () => {

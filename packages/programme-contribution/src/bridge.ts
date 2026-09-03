@@ -107,6 +107,15 @@ export interface ContributionBridgeOptions {
   readonly onProblem?: (message: string, detail: Record<string, unknown>) => void;
 }
 
+/**
+ * How long to wait for the second medium before starting with one.
+ *
+ * Long enough to cover the difference between audio and video arriving from a
+ * WebRTC peer; short enough that an audio-only contribution is not held back
+ * noticeably.
+ */
+const ANCHOR_GRACE_MS = 500;
+
 const DEFAULT_MAX_VIDEO_FRAMES = 30;
 const DEFAULT_MAX_AUDIO_CHUNKS = 200;
 
@@ -129,6 +138,21 @@ export class ProgrammeContributionBridge {
    * replay the whole programme into a fresh encoder in one tick.
    */
   private generationStartedAtMs = 0;
+  /**
+   * Whether the encoder's zero has been decided yet.
+   *
+   * IT IS DECIDED ONCE, FOR BOTH MEDIA, and that is the whole reason this
+   * exists. Audio arrives from a WebRTC sink sooner than video does -- audio
+   * negotiates faster and its first block is 10 ms rather than a whole frame
+   * -- so a bridge that started writing each medium as it appeared gave audio
+   * a head start of exactly that difference. Measured on real published media
+   * it was 80 ms: not drift, so it never grew, but a constant lead that no
+   * amount of correct pacing afterwards could remove.
+   *
+   * So nothing is written until both media have been seen, and then both
+   * counters begin from the same instant.
+   */
+  private anchored = false;
   private repeatedFrames = 0;
   private droppedFrames = 0;
   private paddedSamples = 0;
@@ -273,6 +297,7 @@ export class ProgrammeContributionBridge {
   pump(): void {
     if (this.state !== 'running' && this.state !== 'overloaded') return;
     if (!this.output.ready) return;
+    if (!this.anchor()) return;
     // One reading, both media. Two readings is how they separate.
     const sinceGenerationMs = this.clock.elapsedMs() - this.generationStartedAtMs;
     this.pumpVideo(sinceGenerationMs);
@@ -281,6 +306,28 @@ export class ProgrammeContributionBridge {
       this.state = 'running';
       this.detail = null;
     }
+  }
+
+  /**
+   * Decide the encoder's zero, once, for both media.
+   *
+   * Waits for both to have been seen, so neither starts ahead of the other.
+   * A contribution that only ever carries one medium is not held for ever:
+   * after a short grace period it starts with what it has, because a
+   * radio-style programme is a legitimate thing to broadcast and waiting for
+   * video that is never coming would mean broadcasting nothing.
+   */
+  private anchor(): boolean {
+    if (this.anchored) return true;
+    const haveBoth = this.videoFormat !== null && this.audioFormat !== null;
+    const haveEither = this.videoFormat !== null || this.audioFormat !== null;
+    const elapsed = this.clock.elapsedMs();
+    if (!haveBoth && !(haveEither && elapsed - this.generationStartedAtMs > ANCHOR_GRACE_MS)) {
+      return false;
+    }
+    this.generationStartedAtMs = elapsed;
+    this.anchored = true;
+    return true;
   }
 
   private pumpVideo(elapsedMs: number): void {
@@ -360,6 +407,8 @@ export class ProgrammeContributionBridge {
     // The encoder's counters reset because its output restarts at its own
     // zero. The CLOCK does not, which is what keeps the broadcast continuous.
     this.generationStartedAtMs = this.clock.elapsedMs();
+    // The next generation decides its own zero, for both media together.
+    this.anchored = false;
     this.framesWritten = 0;
     this.samplesWritten = 0;
     this.videoQueue.length = 0;

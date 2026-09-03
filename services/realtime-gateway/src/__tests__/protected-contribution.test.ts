@@ -17,7 +17,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath, URL } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { ProgrammeContributionHost } from '../programme-contribution-host.js';
+import { ProgrammeContributionHost } from '@videofy-live/programme-contribution';
 
 const GATEWAY = readFileSync(fileURLToPath(new URL('../gateway.ts', import.meta.url)), 'utf8');
 
@@ -112,7 +112,7 @@ describe('a contribution that comes and goes', () => {
      * lasted two seconds -- and would reset a clock that must not reset.
      */
     const source = readFileSync(
-      fileURLToPath(new URL('../programme-contribution-host.ts', import.meta.url)),
+      fileURLToPath(new URL('../../../../packages/programme-contribution/src/host.ts', import.meta.url)),
       'utf8',
     );
     expect(source).toContain('interrupt(runId: string, reason: string): void {');
@@ -122,7 +122,7 @@ describe('a contribution that comes and goes', () => {
 
   it('rotates the encoder generation on a format change, keeping the run', () => {
     const source = readFileSync(
-      fileURLToPath(new URL('../programme-contribution-host.ts', import.meta.url)),
+      fileURLToPath(new URL('../../../../packages/programme-contribution/src/host.ts', import.meta.url)),
       'utf8',
     );
     // The run, the programme time and the previous initialisation object all
@@ -133,7 +133,7 @@ describe('a contribution that comes and goes', () => {
 
   it('stops protected output when the encoder exits, and offers nothing instead', () => {
     const source = readFileSync(
-      fileURLToPath(new URL('../programme-contribution-host.ts', import.meta.url)),
+      fileURLToPath(new URL('../../../../packages/programme-contribution/src/host.ts', import.meta.url)),
       'utf8',
     );
     expect(source).toContain("bridge.fail('the protected encoder exited')");

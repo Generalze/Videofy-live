@@ -41,3 +41,8 @@ export {
   buildRawOriginCommand,
   type RawEncoderOptions,
 } from './raw-encoder.js';
+export {
+  ProgrammeContributionHost,
+  type ContributionHostDeps,
+  type ContributionHostLog,
+} from './host.js';
