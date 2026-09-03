@@ -144,3 +144,42 @@ function describeProgrammeSource(
   const audio = source.audioDetected ? 'audio' : 'no programme audio';
   return `${source.sourceType} - ${source.status} - ${audio} - ${video}`;
 }
+
+/**
+ * May this programme go live?
+ *
+ * Preflight has always computed an honest answer and nothing has ever asked
+ * it. Going live depended on the source being ready and no service warning
+ * standing -- so a red line saying the gateway is unreachable sat beside a
+ * button that still worked, and the page's own promise that "every line below
+ * is the live state of a real service" was true and useless.
+ *
+ * `blocked` and `warning` already carry the distinction the ruling asks for.
+ * A blocked item is a hard dependency: no gateway, no ingest, no broadcast. A
+ * warning is a capability the programme may legitimately run without -- nobody
+ * is watching yet, or no target language has a voice, which is captions-only
+ * and a real way to broadcast. So warnings inform and blockers refuse.
+ */
+export interface PreflightVerdict {
+  readonly canGoLive: boolean;
+  /** The labels of every hard dependency that is not satisfied. */
+  readonly blockedBy: readonly string[];
+  /** One sentence for the button's tooltip, or null when nothing blocks. */
+  readonly refusal: string | null;
+}
+
+export function preflightVerdict(
+  items: readonly PartnerPreviewReadinessItem[],
+): PreflightVerdict {
+  const blocked = items.filter((item) => item.state === 'blocked');
+  if (blocked.length === 0) return { canGoLive: true, blockedBy: [], refusal: null };
+  const labels = blocked.map((item) => item.label);
+  return {
+    canGoLive: false,
+    blockedBy: labels,
+    refusal:
+      labels.length === 1
+        ? `Not ready: ${labels[0]}.`
+        : `Not ready: ${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}.`,
+  };
+}

@@ -69,6 +69,7 @@ import {
 } from './programmeSessionBinding';
 import {
   buildPartnerPreviewReadiness,
+  preflightVerdict,
   shouldShowMockControls,
 } from './partnerPreviewReadiness';
 import { createBroadcasterSocketOptions, createOperatorSocketOptions, readOperatorSessionToken } from './socketConfig';
@@ -1606,6 +1607,7 @@ export default function App(): React.ReactElement {
             status: generatedAudio?.status ?? null,
             text: generatedAudioEvents[generatedAudioEvents.length - 1]?.translatedText || generatedAudio?.providerStatus || null,
           }}
+          preflight={preflightVerdict(readinessItems)}
           onStart={() => void handleStartInterpretation()}
           onRestart={() => void handleRestartProgrammeSource()}
           onPause={() => void handlePauseProgrammeSource()}

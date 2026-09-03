@@ -173,6 +173,7 @@ export function FixtureConsole(): React.ReactElement {
         }
       >
         <LivePage
+          preflight={{ canGoLive: true, blockedBy: [], refusal: null }}
           workflow={fixtureLiveWorkflow}
           starting={false}
           recording={fixtureRecording}

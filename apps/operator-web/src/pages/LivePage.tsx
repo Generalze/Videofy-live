@@ -28,6 +28,7 @@
  *   wave bars                DECORATION (WaveBars: seeded, aria-hidden)
  *   Technical diagnostics    REAL     the existing panels, collapsed by default
  */
+import type { PreflightVerdict } from '../partnerPreviewReadiness';
 import React, { useEffect, useRef } from 'react';
 import styles from './LivePage.module.css';
 import type { OperatorWorkflowSummary } from '../operatorWorkflow';
@@ -48,6 +49,13 @@ export interface LiveFeedCard {
 
 export interface LivePageProps {
   readonly workflow: OperatorWorkflowSummary;
+  /**
+   * Page 09's verdict, which this page is required to obey.
+   *
+   * Passed in rather than recomputed so the two pages can never disagree
+   * about whether the programme is ready.
+   */
+  readonly preflight: PreflightVerdict;
   /** handleStartInterpretation is in flight. */
   readonly starting: boolean;
   readonly recording: ProgrammeRecorderSnapshot;
@@ -224,6 +232,7 @@ function FeedCard({
 
 export function LivePage({
   workflow,
+  preflight,
   starting,
   recording,
   source,
@@ -257,7 +266,17 @@ export function LivePage({
 
   const onAir = workflow.status === 'Live';
   const completed = workflow.status === 'Completed';
-  const canGoLive = !starting && workflow.canStartInterpretation;
+  /*
+   * PREFLIGHT REFUSES, rather than warning beside a working button.
+   *
+   * Page 09 has always computed which hard dependencies are unsatisfied and
+   * nothing has ever consulted it: a red line saying the gateway is
+   * unreachable sat next to a Go Live that still worked. A blocked dependency
+   * now stops the broadcast; a warning still only informs, because a
+   * captions-only programme with nobody watching yet is a real way to go on
+   * air and must not be prevented.
+   */
+  const canGoLive = !starting && workflow.canStartInterpretation && preflight.canGoLive;
   const sourceSelected = source.sourceType !== 'none';
   const isRecording = recording.state === 'recording';
   const canRecord = isRecording || previewStream !== null;
@@ -284,7 +303,14 @@ export function LivePage({
             icon={<Icon name="broadcast" size={20} />}
             onClick={completed ? onRestart : onStart}
             disabled={completed ? !source.canRestart : !canGoLive}
-            title={completed ? 'Restart the programme from the beginning' : canGoLive ? 'Start interpretation' : (workflow.actionableWarning ?? 'Not ready to go live')}
+            title={
+              completed
+                ? 'Restart the programme from the beginning'
+                : canGoLive
+                  ? 'Start interpretation'
+                  : // The preflight reason first: it names the actual dependency.
+                    (preflight.refusal ?? workflow.actionableWarning ?? 'Not ready to go live')
+            }
           >
             {completed ? 'Restart' : starting ? 'Starting...' : 'Go Live'}
           </Button>

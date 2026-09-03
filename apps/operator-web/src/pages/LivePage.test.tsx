@@ -25,6 +25,8 @@ const IDLE: OperatorWorkflowSummary = {
 function render(overrides: Partial<LivePageProps> = {}): string {
   const props: LivePageProps = {
     workflow: IDLE,
+    // Preflight satisfied unless a test says otherwise.
+    preflight: { canGoLive: true, blockedBy: [], refusal: null },
     starting: false,
     recording: { state: 'idle', startedAtMs: null, error: null },
     source: createInitialProgrammeSourceSnapshot(),
