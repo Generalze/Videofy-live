@@ -1604,6 +1604,41 @@ export class Gateway {
      * invalid announcement leaves the previous answer standing, which for a
      * protected run means it stays refused.
      */
+    /*
+     * An advert C7 decided and the cursor released, forwarded to the channel
+     * that is airing that run. The gateway chooses nothing here -- it does not
+     * know what a campaign is, and a gateway that could pick would be a second
+     * place adverts come from.
+     */
+    socket.on(SOCKET_EVENTS.INGEST_PROGRAMME_ADVERT, (raw: unknown) => {
+      const advert = raw as {
+        runId?: unknown;
+        decisionId?: unknown;
+        creativeId?: unknown;
+        programmeTimeMs?: unknown;
+        durationMs?: unknown;
+      };
+      if (
+        typeof advert.runId !== 'string' ||
+        typeof advert.decisionId !== 'string' ||
+        typeof advert.creativeId !== 'string' ||
+        typeof advert.programmeTimeMs !== 'number' ||
+        typeof advert.durationMs !== 'number'
+      ) {
+        logger.warn('Ingest sent an invalid programme advert', { socketId: socket.id });
+        return;
+      }
+      const channelId = this.channelForRun(advert.runId);
+      if (channelId === null) return;
+      this.io.to(channelListenerRoom(channelId)).emit(SOCKET_EVENTS.PROGRAMME_ADVERT, {
+        runId: advert.runId,
+        decisionId: advert.decisionId,
+        creativeId: advert.creativeId,
+        programmeTimeMs: advert.programmeTimeMs,
+        durationMs: advert.durationMs,
+      });
+    });
+
     socket.on(SOCKET_EVENTS.INGEST_PROGRAMME_DELIVERY, (raw: unknown) => {
       const parsed = safeParseProgrammeMediaDelivery(raw);
       if (!parsed.success) {
@@ -2108,6 +2143,14 @@ export class Gateway {
    * buffer fills would deliver the studio for exactly the window the delay was
    * configured to cover.
    */
+  /** Which channel is airing a run, or null when this gateway is not. */
+  private channelForRun(runId: string): string | null {
+    for (const run of this.programmeRuns.values()) {
+      if (run.runId === runId) return run.channelId;
+    }
+    return null;
+  }
+
   private mayRelayRealtime(sessionId: string): boolean {
     const run = this.programmeRuns.get(sessionId);
     if (run === undefined) return true;

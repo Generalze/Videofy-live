@@ -83,6 +83,16 @@ export const SOCKET_EVENTS = {
    * rarely, and not on every video timestamp tick.
    */
   INGEST_PROGRAMME_DELIVERY: 'ingest:programme-delivery',
+  /**
+   * An advert the cursor has released for a programme run.
+   *
+   * Pushed to viewers rather than fetched by them: a client that asked what to
+   * show could be given a different answer from its neighbour, and two viewers
+   * on different delays must meet the same advert at the same programme moment.
+   */
+  INGEST_PROGRAMME_ADVERT: 'ingest:programme-advert',
+  /** The gateway forwarding that advert on to a channel's listeners. */
+  PROGRAMME_ADVERT: 'programme:advert',
   INGEST_START_STREAM: 'ingest:start_stream',
   INGEST_STOP_STREAM: 'ingest:stop_stream',
 

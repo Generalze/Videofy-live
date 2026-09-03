@@ -31,7 +31,20 @@ import { HOUSE_CREATIVE, type SponsoredCreative } from '@videofy-live/shared-typ
 export type { SponsoredCreative };
 
 
-export function SponsoredSlot({ creative = HOUSE_CREATIVE }: { readonly creative?: SponsoredCreative }): React.ReactElement | null {
+export function SponsoredSlot({
+  creative = HOUSE_CREATIVE,
+  c7CreativeUrl = null,
+}: {
+  readonly creative?: SponsoredCreative;
+  /**
+   * The media of the C7 advert currently running, or null when none is.
+   *
+   * A URL and nothing else. The slot does not know who bought it, what it
+   * cost, or why it won -- a browser is a public place, and a viewer with
+   * developer tools is not an authorised reader of any of that.
+   */
+  readonly c7CreativeUrl?: string | null;
+}): React.ReactElement | null {
   const [dismissed, setDismissed] = useState(false);
   if (dismissed) return null;
   return (
@@ -42,6 +55,14 @@ export function SponsoredSlot({ creative = HOUSE_CREATIVE }: { readonly creative
           ×
         </button>
       </div>
+      {c7CreativeUrl !== null && (
+        /*
+         * Resolved from an id the TIMELINE supplied. A viewer can ask about an
+         * advert they have already been told is theirs, and can choose
+         * nothing: there is no route by which a client picks a creative.
+         */
+        <img className={styles.c7Creative} src={c7CreativeUrl} alt="Advertisement" />
+      )}
       <div className={styles.row}>
         <div className={styles.copy}>
           <p className={styles.headline}>{creative.headline}</p>

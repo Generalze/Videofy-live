@@ -484,6 +484,29 @@ export class IngestService {
   }
 
   /**
+   * An advert the cursor has released, on its way to every viewer of this run.
+   *
+   * Pushed rather than fetched. A client that asked "what should I show" would
+   * be a client that could be given a different answer from its neighbour, and
+   * two viewers on different delays must meet the same advert at the same
+   * programme moment or an impression means nothing.
+   *
+   * IDS AND A DURATION. No advertiser, no priority, no price: this travels to
+   * browsers.
+   */
+  publishProgrammeAdvertisement(advert: {
+    readonly runId: string;
+    readonly decisionId: string;
+    readonly campaignId: string;
+    readonly creativeId: string;
+    readonly programmeTimeMs: number;
+    readonly durationMs: number;
+  }): void {
+    if (!this.socket?.connected) return;
+    this.socket.emit(SOCKET_EVENTS.INGEST_PROGRAMME_ADVERT, advert);
+  }
+
+  /**
    * Tell the gateway how a programme run's original media reaches its audience.
    *
    * A dedicated announcement rather than a field on the next state snapshot,

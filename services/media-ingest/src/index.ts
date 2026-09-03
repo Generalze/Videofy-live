@@ -1651,6 +1651,12 @@ if (streamingTranscription !== null) {
       performance: programmePerformance,
       timelines: programmeTimelines,
       /*
+       * The advert the cursor just released, on its way to the audience. Ids
+       * and a duration only: a viewer with developer tools is not an
+       * authorised reader of what a break is worth.
+       */
+      onAdvertisement: (advert) => ingest.publishProgrammeAdvertisement(advert),
+      /*
        * The cursor has to be advanced by something. In production that is a
        * real interval; a test drives it by hand instead of by waiting.
        */

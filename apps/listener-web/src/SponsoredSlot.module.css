@@ -73,3 +73,17 @@
   text-decoration: none;
   white-space: nowrap;
 }
+
+/*
+ * C7's advert, when one is running. Sized to the slot rather than to itself:
+ * a creative that could set its own dimensions could push the programme off
+ * the screen, and an advert is a guest in this space.
+ */
+.c7Creative {
+  display: block;
+  width: 100%;
+  max-height: 180px;
+  object-fit: contain;
+  border-radius: 8px;
+  margin-bottom: 8px;
+}

@@ -142,6 +142,21 @@ export interface LiveSessionHostDeps {
   readonly minSpokenConfidence?: number | undefined;
   readonly speechPlansFor: (open: IngressOpen) => readonly LiveSpeechPlan[];
   readonly onCaption?: (event: TranscriptEvent) => void;
+  /**
+   * An advert the cursor has just released.
+   *
+   * Carries ids and a duration and nothing commercial: this record travels to
+   * listener clients, and a viewer with developer tools is not an authorised
+   * reader of what a break is worth.
+   */
+  readonly onAdvertisement?: (advert: {
+    readonly runId: string;
+    readonly decisionId: string;
+    readonly campaignId: string;
+    readonly creativeId: string;
+    readonly programmeTimeMs: number;
+    readonly durationMs: number;
+  }) => void;
   readonly onSpoken?: (
     segmentId: string,
     generation: number,
@@ -262,7 +277,31 @@ export class LiveSessionHost implements IngressStreamHandler {
             }),
           );
     const ticker =
-      pump === null ? null : deps.setOutputTimer?.(() => pump.tick(), OUTPUT_TICK_MS) ?? null;
+      pump === null
+        ? null
+        : (deps.setOutputTimer?.(() => {
+            /*
+             * ADVERTS REACH THE AUDIENCE FROM THE TIMELINE, at the cursor,
+             * like everything else. Not fetched by a client and not chosen by
+             * one: two viewers on different delays meet the same advert at the
+             * same programme moment, which is the only way an impression means
+             * anything.
+             */
+            for (const event of pump.tick()) {
+              if (event.kind !== 'advertisement') continue;
+              deps.onAdvertisement?.({
+                runId:
+                  open.context.serviceCategory === 'programme'
+                    ? open.context.programme.runId
+                    : '',
+                decisionId: event.reference,
+                campaignId: String(event.attributes['campaignId'] ?? ''),
+                creativeId: String(event.attributes['creativeId'] ?? ''),
+                programmeTimeMs: event.programmeTimeMs,
+                durationMs: event.durationMs ?? 0,
+              });
+            }
+          }, OUTPUT_TICK_MS) ?? null);
     void ticker;
     /**
      * How many languages this stream will actually be SPOKEN in.

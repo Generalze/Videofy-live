@@ -1,4 +1,11 @@
 import {
+  acceptAdvert,
+  advertBelongsToRun,
+  slotContent,
+  type ActiveAdvert,
+  type ProgrammeAdvertEvent,
+} from './programmeAdvert';
+import {
   decideDelayedPlayback,
   mayBindRealtimeStream,
   unavailableMessage,
@@ -1099,6 +1106,13 @@ export default function App(): React.ReactElement {
       },
     );
 
+    socket.on(SOCKET_EVENTS.PROGRAMME_ADVERT, (raw: unknown) => {
+      const event = raw as ProgrammeAdvertEvent;
+      // A stray event for another broadcast must not displace this viewer's.
+      if (!advertBelongsToRun(event, activeRunIdRef.current)) return;
+      setActiveAdvert((current) => acceptAdvert(current, event, Date.now()));
+    });
+
     socket.on(SOCKET_EVENTS.GENERATED_AUDIO_READY, (event: GeneratedAudioReadyEvent) => {
       const activeSession = activeProcessingSessionIdRef.current;
       if (!shouldAcceptGeneratedAudioForSession(event, activeSession)) {
@@ -1764,6 +1778,50 @@ export default function App(): React.ReactElement {
    */
   const [sponsored, setSponsored] = useState<DeliveredCreative>(HOUSE_DELIVERY);
 
+  /*
+   * THE ADVERT C7 DECIDED, ARRIVING AT THE CURSOR.
+   *
+   * The slot above is the operator's own sponsored creative, which is a
+   * different product surface. THIS is C7's advertising: an event on the
+   * programme timeline, released to every viewer at the same programme moment
+   * however far behind they are. It is pushed rather than fetched, because a
+   * client that asked what to show could be given a different answer from its
+   * neighbour -- and an impression that is not the same for everybody is not
+   * an impression anybody can sell.
+   */
+  const [activeAdvert, setActiveAdvert] = useState<ActiveAdvert | null>(null);
+  const [c7CreativeUrl, setC7CreativeUrl] = useState<string | null>(null);
+  const activeRunIdRef = useRef<string | null>(null);
+  activeRunIdRef.current = mediaState?.programmeRunId ?? null;
+
+  /*
+   * Resolve the creative the timeline named. The viewer asks about an advert
+   * they have already been told is theirs; there is no route by which they
+   * pick one, and the answer carries a URL and a duration and nothing about
+   * who bought it.
+   */
+  useEffect(() => {
+    const creativeId = activeAdvert?.creativeId ?? null;
+    if (creativeId === null) {
+      setC7CreativeUrl(null);
+      return;
+    }
+    let current = true;
+    void fetch(`${ACCOUNT_BASE}/advertising/creatives/${encodeURIComponent(creativeId)}`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((body: { mediaUrl?: string } | null) => {
+        // A late answer for an advert that has already finished must not put
+        // it back on screen.
+        if (current) setC7CreativeUrl(body?.mediaUrl ?? null);
+      })
+      .catch(() => {
+        if (current) setC7CreativeUrl(null);
+      });
+    return () => {
+      current = false;
+    };
+  }, [activeAdvert?.creativeId]);
+
 
   useEffect(() => {
     const channelId = channelSelection.channelId;
@@ -1998,7 +2056,18 @@ export default function App(): React.ReactElement {
           * The creative is the SERVICE's decision, already resolved to
           * programme-or-house; this only renders what it was handed.
           */}
-        <SponsoredSlot creative={sponsored.creative} />
+        {/*
+          C7's advert takes the slot for exactly its own duration, then the
+          slot returns to whatever it was showing. Returning to the house
+          creative is not a failure: it is the ordinary condition of a
+          programme with nothing sold into this moment.
+        */}
+        <SponsoredSlot
+          creative={sponsored.creative}
+          c7CreativeUrl={
+            slotContent(activeAdvert, Date.now()).kind === 'c7' ? c7CreativeUrl : null
+          }
+        />
 
         <section className={styles.controlsSection} aria-label="Language and audio controls">
           <div className={styles.controlGroup}>
