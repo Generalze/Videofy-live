@@ -117,7 +117,14 @@ export class InMemoryTimelineStore implements ProgrammeTimelineStore {
   async load(runId: string): Promise<PersistedRun | null> {
     const run = this.runs.get(runId);
     if (run === undefined) return null;
-    return { runId, events: [...run.events], releasedThroughMs: run.cursor };
+    /*
+     * Always intact. This store never wrote a partial record: it holds objects
+     * in memory, so there is no half-written line to recover from. Saying so
+     * explicitly rather than defaulting it keeps the field meaning the same
+     * thing everywhere -- a durable store answers this from its own file, and
+     * a caller must not have to know which kind it is holding.
+     */
+    return { runId, events: [...run.events], releasedThroughMs: run.cursor, intact: true };
   }
 
   async flush(): Promise<void> {

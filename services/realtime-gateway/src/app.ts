@@ -19,6 +19,15 @@ export interface CreateAppOptions {
    * Lazy, like the others: the app is built before the Gateway exists.
    */
   mediaIngestConnected?: () => boolean;
+  /**
+   * Whether the required Programme media path is actually usable.
+   *
+   * Deliberately separate from the connection above, and deliberately absent
+   * until something authoritative can answer it. TRUE LIVE and PROTECTED LIVE
+   * have different dependencies and will become different facts here; until
+   * then this gateway does not claim either.
+   */
+  programmeMediaCapable?: () => boolean | null;
   internalToken?: string | null;
   /**
    * P6.5: lazy provider for the Connect /v1 router. A closure, not a router,
@@ -256,16 +265,29 @@ export function createApp(options: CreateAppOptions = {}): express.Application {
    * alert on.
    */
   app.get('/health', (_req: Request, res: Response) => {
-    const ingestConnected = options.mediaIngestConnected?.() ?? null;
     res.json({
       status: 'ok',
       service: 'realtime-gateway',
       /**
-       * Null when this build cannot tell. Null is not false: "nobody asked"
-       * and "asked and the answer was no" must not render the same, which is
-       * the mistake that produced the incident this field exists for.
+       * A media ingest is connected to this gateway. A TRANSPORT FACT, and
+       * only that.
        */
-      programmeMediaCapable: ingestConnected,
+      mediaIngestConnected: options.mediaIngestConnected?.() ?? null,
+      /**
+       * Whether a programme could actually be broadcast.
+       *
+       * NOT THE SAME QUESTION, and conflating them would replace one overly
+       * broad health signal with another. An ingest can be connected while its
+       * providers are unready, its encoder absent, its spool unavailable, its
+       * writer lease held elsewhere or its route unqualified -- and a checker
+       * reading "capable" would be told a programme can go out when it cannot.
+       *
+       * Null until an authority answers it. Null is not false: "nobody asked"
+       * and "asked, and the answer was no" must not render the same, which is
+       * precisely the mistake that let a platform report healthy through
+       * 106,722 restarts.
+       */
+      programmeMediaCapable: options.programmeMediaCapable?.() ?? null,
       timestamp: new Date().toISOString(),
     });
   });

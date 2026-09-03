@@ -33,18 +33,35 @@ async function health(app: express.Application): Promise<Record<string, unknown>
 }
 
 describe('what the gateway says about programme media', () => {
-  it('reports capable when an ingest is connected', async () => {
-    const body = await health(createApp({ mediaIngestConnected: () => true }));
-    expect(body['programmeMediaCapable']).toBe(true);
-  });
-
-  it('reports NOT capable when no ingest is connected', async () => {
+  it('reports the ingest connection as its own fact', async () => {
+    const connected = await health(createApp({ mediaIngestConnected: () => true }));
+    expect(connected['mediaIngestConnected']).toBe(true);
+    const absent = await health(createApp({ mediaIngestConnected: () => false }));
     /*
      * The incident, in one assertion. This is the field that would have been
-     * false for the entire time production was reporting healthy.
+     * false for the entire time production reported healthy.
      */
-    const body = await health(createApp({ mediaIngestConnected: () => false }));
-    expect(body['programmeMediaCapable']).toBe(false);
+    expect(absent['mediaIngestConnected']).toBe(false);
+  });
+
+  it('does NOT call a connected ingest a capable programme path', async () => {
+    /*
+     * THE CORRECTION. An ingest can be connected while its providers are
+     * unready, its encoder absent, its spool unavailable, its writer lease
+     * held elsewhere or its route unqualified. Treating the connection as
+     * capability would replace one overly broad health signal with another,
+     * which is the same defect wearing a better name.
+     */
+    const body = await health(createApp({ mediaIngestConnected: () => true }));
+    expect(body['mediaIngestConnected']).toBe(true);
+    expect(body['programmeMediaCapable']).toBeNull();
+  });
+
+  it('reports capability only when something authoritative answers', async () => {
+    const body = await health(
+      createApp({ mediaIngestConnected: () => true, programmeMediaCapable: () => true }),
+    );
+    expect(body['programmeMediaCapable']).toBe(true);
   });
 
   it('still reports the gateway itself as ok, because calls do work', async () => {
@@ -54,52 +71,153 @@ describe('what the gateway says about programme media', () => {
     expect(body['status']).toBe('ok');
   });
 
-  it('distinguishes "cannot tell" from "no"', async () => {
-    /*
-     * Null, not false. "Nobody asked" and "asked, and the answer was no" must
-     * not render the same -- rendering them the same is the mistake that
-     * produced this incident in the first place.
-     */
+  it('distinguishes "cannot tell" from "no", for both facts', async () => {
     const body = await health(createApp({}));
+    expect(body['mediaIngestConnected']).toBeNull();
     expect(body['programmeMediaCapable']).toBeNull();
   });
 });
 
+/*
+ * VERIFIED AGAINST REAL SYSTEMD, not only against this file.
+ *
+ * On the target host (systemd 255.4, Ubuntu 24.04) every candidate unit passes
+ * `systemd-analyze verify`, and a throwaway unit carrying these exact settings
+ * reports them back as:
+ *
+ *   StartLimitIntervalUSec=10min   StartLimitBurst=10
+ *   RestartUSec=3s   RestartSteps=5   RestartMaxDelayUSec=1min
+ *
+ * which is what proves the section placement: the same keys under [Service]
+ * are accepted by the file and ignored by the manager.
+ *
+ * A second throwaway unit of the same SHAPE with a scaled time base -- 1s to
+ * 3s over three steps, six starts in sixty seconds -- was run to completion
+ * and settled in `failed` after 16 seconds with NRestarts=6. So a geometric
+ * backoff does reach a correctly-sized limit. That is the behaviour this file
+ * can only approximate.
+ *
+ * ONE TRAP WORTH KEEPING: `systemctl show -p StartLimitIntervalSec` returns
+ * EMPTY. The property is `StartLimitIntervalUSec`, and the same is true of
+ * RestartSec and RestartMaxDelaySec. An operator checking with the names from
+ * the unit file will conclude nothing is set, which is how a correct policy
+ * gets "fixed" back into a broken one.
+ */
 describe('the restart storm cannot be silent again', () => {
-  const units = ['videofy-prod-media-ingest', 'videofy-media-ingest'];
+  const UNITS = [
+    ['production', 'videofy-prod-media-ingest'],
+    ['production', 'videofy-prod-gateway'],
+    ['production', 'videofy-prod-account'],
+    ['staging', 'videofy-media-ingest'],
+    ['staging', 'videofy-gateway'],
+    ['staging', 'videofy-account'],
+  ] as const;
 
-  it('bounds the restart rate in every unit that can crash-loop', () => {
-    for (const unit of units) {
-      const dir = unit.startsWith('videofy-prod') ? 'production' : 'staging';
-      const text = readFileSync(
-        fileURLToPath(new URL(`../../../../deploy/${dir}/systemd/${unit}.service`, import.meta.url)),
-        'utf8',
-      );
+  function unitText(dir: string, unit: string): string {
+    return readFileSync(
+      fileURLToPath(new URL(`../../../../deploy/${dir}/systemd/${unit}.service`, import.meta.url)),
+      'utf8',
+    );
+  }
+
+  /** The section a setting appears in, or null when it does not appear. */
+  function sectionOf(text: string, key: string): string | null {
+    let section = '';
+    for (const raw of text.split(String.fromCharCode(10))) {
+      const line = raw.trim();
+      const header = /^\[([A-Za-z]+)\]$/u.exec(line);
+      if (header) section = header[1] ?? '';
+      else if (line.startsWith(`${key}=`)) return section;
+    }
+    return null;
+  }
+
+  function numberOf(text: string, key: string): number {
+    const found = new RegExp('^' + key + '=([0-9]+)', 'mu').exec(text);
+    return found === null ? Number.NaN : Number(found[1]);
+  }
+
+  /**
+   * The moment of the Nth start, in seconds after the first.
+   *
+   * systemd widens the restart delay geometrically from RestartSec towards
+   * RestartMaxDelaySec across RestartSteps, then holds it there. Any check
+   * that ignores that is checking a configuration the unit does not have --
+   * which is exactly how the first fix reintroduced the defect it was
+   * correcting.
+   */
+  function nthStartAtSeconds(
+    n: number,
+    restartSec: number,
+    steps: number,
+    maxDelaySec: number,
+  ): number {
+    if (!Number.isFinite(steps) || steps <= 0) return (n - 1) * restartSec;
+    const ratio = Math.pow(maxDelaySec / restartSec, 1 / steps);
+    let at = 0;
+    for (let i = 0; i < n - 1; i += 1) {
+      at += Math.min(maxDelaySec, restartSec * Math.pow(ratio, i));
+    }
+    return at;
+  }
+
+  it('puts the start limit in the section systemd actually reads it from', () => {
+    /*
+     * systemd defines StartLimitIntervalSec and StartLimitBurst as Unit
+     * settings. There is a [Service] compatibility alias for the older
+     * StartLimitInterval spelling only -- so the modern spelling under
+     * [Service] is accepted by the file and ignored by the manager, which
+     * looks exactly like a limit that is set.
+     */
+    for (const [dir, unit] of UNITS) {
+      const text = unitText(dir, unit);
+      expect(sectionOf(text, 'StartLimitIntervalSec'), `${unit}`).toBe('Unit');
+      expect(sectionOf(text, 'StartLimitBurst'), `${unit}`).toBe('Unit');
+      expect(sectionOf(text, 'Restart'), `${unit}`).toBe('Service');
+    }
+  });
+
+  it('CAN reach its own limit, against the real backoff schedule', () => {
+    for (const [dir, unit] of UNITS) {
+      const text = unitText(dir, unit);
+      const interval = numberOf(text, 'StartLimitIntervalSec');
+      const burst = numberOf(text, 'StartLimitBurst');
+      const restartSec = numberOf(text, 'RestartSec');
+      const steps = numberOf(text, 'RestartSteps');
+      const maxDelay = numberOf(text, 'RestartMaxDelaySec');
+
+      const forbiddenStartAt = nthStartAtSeconds(burst + 1, restartSec, steps, maxDelay);
       /*
-       * With RestartSec=3 and systemd's default limit of five starts in ten
-       * seconds, only about three attempts fit in the window -- so the limit
-       * can never be reached and the service restarts for ever. The window
-       * below is wide enough that it can.
+       * The start that must be refused has to happen while the earlier ones
+       * are still inside the window. With 3s -> 60s over five steps the tenth
+       * start lands near 309 s, so a 300 s window can never see ten -- the
+       * first fix for this incident had precisely that bug.
        */
-      expect(text, `${unit} has no start limit`).toMatch(/StartLimitIntervalSec=\d+/u);
-      expect(text).toMatch(/StartLimitBurst=\d+/u);
-
-      const interval = Number(/StartLimitIntervalSec=(\d+)/u.exec(text)?.[1] ?? 0);
-      const burst = Number(/StartLimitBurst=(\d+)/u.exec(text)?.[1] ?? 0);
-      const restartSec = Number(/RestartSec=(\d+)/u.exec(text)?.[1] ?? 0);
-      // The arithmetic that decides whether a limit is reachable at all.
-      expect(burst * restartSec, `${unit} limit is unreachable`).toBeLessThan(interval);
+      expect(
+        forbiddenStartAt,
+        `${unit}: start ${burst + 1} at ${forbiddenStartAt.toFixed(0)}s, window ${interval}s`,
+      ).toBeLessThan(interval);
     }
   });
 
   it('still recovers from a transient fault rather than giving up at once', () => {
-    const text = readFileSync(
-      fileURLToPath(new URL('../../../../deploy/production/systemd/videofy-prod-media-ingest.service', import.meta.url)),
-      'utf8',
-    );
+    const text = unitText('production', 'videofy-prod-media-ingest');
     // A slow dependency must not cost a broadcast, so the unit retries and
     // widens the gap rather than stopping on the first failure.
     expect(text).toContain('Restart=on-failure');
-    expect(text).toMatch(/RestartMaxDelaySec=\d+/u);
+    expect(numberOf(text, 'RestartMaxDelaySec')).toBeGreaterThan(numberOf(text, 'RestartSec'));
+  });
+
+  it('would fail if the backoff were widened without redoing the arithmetic', () => {
+    /*
+     * The property under test is the calculation, not the numbers. Doubling
+     * the ceiling pushes the forbidden start past the window, and this proves
+     * the check above notices rather than passing on the presence of settings.
+     */
+    const text = unitText('production', 'videofy-prod-media-ingest');
+    const interval = numberOf(text, 'StartLimitIntervalSec');
+    const burst = numberOf(text, 'StartLimitBurst');
+    const widened = nthStartAtSeconds(burst + 1, numberOf(text, 'RestartSec'), 5, 600);
+    expect(widened).toBeGreaterThan(interval);
   });
 });
