@@ -247,7 +247,7 @@ export function buildLiveSynthesis(
   config: Pick<IngestConfig, 'streamingSynthesisProvider'>,
   env: LiveProviderEnv = readLiveProviderEnv(),
   /**
-   * A transport for the SPECIALIST only, and it exists for one reason.
+   * The transport for EVERY vendor in this chain, and it exists for one reason.
    *
    * The specialist warms itself up the moment it is built -- that is what stops
    * the first Yoruba sentence of a session being served by the vendor that
@@ -255,10 +255,17 @@ export function buildLiveSynthesis(
    * point, merely constructing this in a test would reach the vendor, which
    * these lanes forbid and which would make the suite depend on somebody else's
    * uptime. Production passes nothing and gets `fetch`.
+   *
+   * IT REACHED ONLY THE SPECIALIST UNTIL NOW, and the consequence was exactly
+   * what the paragraph above says must not happen: a test that made the
+   * specialist fail fell through to the general chain, which used the global
+   * fetch and made a real request to ElevenLabs with a fixture key. It passed,
+   * slowly, and then timed out under load in a full run -- a flake whose real
+   * cause was an outbound call nobody meant to make.
    */
   fetchImpl?: typeof fetch,
 ): LiveSynthesis {
-  const general = buildGeneralSynthesis(config, env);
+  const general = buildGeneralSynthesis(config, env, fetchImpl);
   if (general === null) return { provider: null, nigerian: null };
   return withNigerianSpecialist(general, env, fetchImpl);
 }
@@ -584,6 +591,7 @@ function withNigerianSpecialist(
 function buildGeneralSynthesis(
   config: Pick<IngestConfig, 'streamingSynthesisProvider'>,
   env: LiveProviderEnv,
+  fetchImpl?: typeof fetch,
 ): StreamingSpeechSynthesisProvider | null {
   switch (config.streamingSynthesisProvider) {
     case 'off':
@@ -591,7 +599,7 @@ function buildGeneralSynthesis(
     case 'mock':
       return new MockStreamingSynthesisProvider();
     case 'azure':
-      return buildAzureSynthesis(env);
+      return buildAzureSynthesis(env, fetchImpl);
     /*
      * ELEVENLABS FIRST, AZURE BEHIND IT. The order is a cost and latency
      * decision the deployment can revisit by swapping this list -- what it must
@@ -599,7 +607,7 @@ function buildGeneralSynthesis(
      */
     case 'chain':
       return createFallbackSpeechSynthesisProvider({
-        providers: [buildElevenLabsSynthesis(env), buildAzureSynthesis(env)],
+        providers: [buildElevenLabsSynthesis(env, fetchImpl), buildAzureSynthesis(env, fetchImpl)],
         onObservation: (observation) => {
           /*
            * Logged EVERY time, not only on failure. A chain that works hides an
@@ -632,7 +640,10 @@ function buildGeneralSynthesis(
   }
 }
 
-function buildAzureSynthesis(env: LiveProviderEnv): StreamingSpeechSynthesisProvider {
+function buildAzureSynthesis(
+  env: LiveProviderEnv,
+  fetchImpl?: typeof fetch,
+): StreamingSpeechSynthesisProvider {
   return new AzureStreamingSynthesisProvider({
     apiKey: requireCredential(env.azureSpeechKey, 'AZURE_SPEECH_KEY', 'azure'),
     region: requireCredential(env.azureSpeechRegion, 'AZURE_SPEECH_REGION', 'azure'),
@@ -642,10 +653,14 @@ function buildAzureSynthesis(env: LiveProviderEnv): StreamingSpeechSynthesisProv
       'AZURE_DEFAULT_VOICE_ID',
       'azure',
     ),
+    ...(fetchImpl === undefined ? {} : { fetchImpl }),
   });
 }
 
-function buildElevenLabsSynthesis(env: LiveProviderEnv): StreamingSpeechSynthesisProvider {
+function buildElevenLabsSynthesis(
+  env: LiveProviderEnv,
+  fetchImpl?: typeof fetch,
+): StreamingSpeechSynthesisProvider {
   const voiceId = requireCredential(
     env.elevenLabsVoiceId,
     'ELEVENLABS_DEFAULT_VOICE_ID',
@@ -663,6 +678,7 @@ function buildElevenLabsSynthesis(env: LiveProviderEnv): StreamingSpeechSynthesi
     // voice in every language.
     voiceIds: parseVoiceIdMap(env.elevenLabsVoiceIds),
     defaultVoiceId: voiceId,
+    ...(fetchImpl === undefined ? {} : { fetchImpl }),
   };
   return new ElevenLabsStreamingSynthesisProvider(eleven);
 }
