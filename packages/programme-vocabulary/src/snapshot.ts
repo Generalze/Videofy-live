@@ -24,6 +24,7 @@
  */
 
 import {
+  normaliseKeyterms,
   resolveConsumption,
   type ConsumptionCapabilities,
   type VocabularyConsumption,
@@ -135,8 +136,9 @@ export async function takeSnapshot(
     takenAt: now().toISOString(),
     languages,
     // The recogniser hears the source. A term tagged only for the target
-    // language has no business being offered to it.
-    sttKeyterms: forSource.sttKeyterms,
+    // language has no business being offered to it. Bounded here, so every
+    // consumer of a snapshot receives a list a provider will actually accept.
+    sttKeyterms: normaliseKeyterms(forSource.sttKeyterms),
     // Protection spans the direction: a name must survive whether it appears
     // in the source or is expected in the output.
     doNotTranslate: [...new Set([...forSource.doNotTranslate, ...forTarget.doNotTranslate])],
@@ -221,4 +223,30 @@ export function createRevisionedInMemoryPort(
       return removed;
     },
   };
+}
+
+/**
+ * A short, stable identity for a snapshot, safe to put in a log line.
+ *
+ * Vocabulary is a broadcaster's own material and may be commercially
+ * sensitive, so nothing may log its contents. An operator asking why a name
+ * was misheard still needs to know WHICH vocabulary a session was running, so
+ * diagnostics carry the programme, the revision, the count and this.
+ *
+ * FNV-1a rather than a cryptographic digest: this identifies, it does not
+ * protect, and it must run unchanged in a browser console and a Node service.
+ */
+export function snapshotFingerprint(snapshot: {
+  readonly programmeId: string;
+  readonly revision: number;
+  readonly sttKeyterms: readonly string[];
+}): string {
+  const material = `${snapshot.programmeId}|${snapshot.revision}|${snapshot.sttKeyterms.join('\u0000')}`;
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < material.length; i += 1) {
+    hash ^= material.charCodeAt(i);
+    // The FNV prime, by shifts, so the arithmetic stays in 32 bits.
+    hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
 }

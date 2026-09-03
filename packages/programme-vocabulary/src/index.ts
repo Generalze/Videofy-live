@@ -184,3 +184,48 @@ function base(tag: string): string {
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
+
+/**
+ * Provider-safe bounds for the list handed to a recogniser.
+ *
+ * A recogniser will not accept an unbounded keyterm list, and a programme's
+ * vocabulary is operator-entered, so it can grow without anyone deciding it
+ * should. Bounding it here -- once, centrally -- means no consumer invents its
+ * own ceiling and no request is refused wholesale because one term was absurd.
+ */
+export interface KeytermLimits {
+  readonly maxCount: number;
+  readonly maxTermLength: number;
+}
+
+export const KEYTERM_LIMITS: KeytermLimits = { maxCount: 100, maxTermLength: 80 };
+
+/**
+ * The one place a keyterm list is made fit to send.
+ *
+ * Trimmed, emptied entries dropped, duplicates removed without regard to case,
+ * and cut to the provider's ceiling. Order is preserved rather than sorted:
+ * the store reads `ORDER BY term`, so the input is already deterministic, and
+ * preserving it means the cap keeps a stable, explicable set rather than
+ * whichever terms a second sort happened to favour.
+ *
+ * An over-long term is DROPPED, never truncated. Half a name is a different
+ * word, and teaching a recogniser to expect it is worse than not asking.
+ */
+export function normaliseKeyterms(
+  terms: readonly string[],
+  limits: KeytermLimits = KEYTERM_LIMITS,
+): readonly string[] {
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const raw of terms) {
+    const term = raw.trim();
+    if (term === '' || term.length > limits.maxTermLength) continue;
+    const key = term.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    kept.push(term);
+    if (kept.length >= limits.maxCount) break;
+  }
+  return kept;
+}

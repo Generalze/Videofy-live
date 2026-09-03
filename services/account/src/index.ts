@@ -66,6 +66,7 @@ import {
 import { createPostgresChannelProfiles } from './db/channel-profiles-postgres.js';
 import { registerChannelRoutes } from './channel-routes.js';
 import { registerVocabularyRoutes } from './vocabulary-routes.js';
+import { registerVocabularyInternalRoutes } from './vocabulary-internal-routes.js';
 import { registerSponsoredCreativeRoutes } from './sponsored-creative-routes.js';
 import { createPostgresSponsoredCreative } from './db/programme-sponsored-creative-postgres.js';
 import { createPostgresVocabulary } from './db/programme-vocabulary-postgres.js';
@@ -869,6 +870,19 @@ if (databasePool) {
       const owned = await channelProfiles.mine(accountId);
       return owned !== null && owned.channelId === programmeId;
     },
+    onEvent: (event, detail) => {
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify({ service: 'account', event, ...detail }));
+    },
+  });
+  /*
+   * AND THE MACHINE SIDE OF THE SAME AUTHORITY. Media ingest reads a resolved
+   * snapshot through this, once per recognition session; without it the
+   * operator's vocabulary reaches nothing.
+   */
+  registerVocabularyInternalRoutes(app, {
+    vocabulary: createPostgresVocabulary(databasePool),
+    internalAuth: resolveInternalIngressAuth(process.env),
     onEvent: (event, detail) => {
       // eslint-disable-next-line no-console
       console.log(JSON.stringify({ service: 'account', event, ...detail }));

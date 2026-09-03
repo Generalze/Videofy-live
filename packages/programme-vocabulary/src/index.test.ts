@@ -9,7 +9,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  KEYTERM_LIMITS,
   applyCanonicalRenderings,
+  normaliseKeyterms,
   resolveConsumption,
   type VocabularyEntry,
 } from './index.js';
@@ -166,5 +168,60 @@ describe('do-not-translate feeds the same protection identifiers use', () => {
     // Protecting '' would mask every position in the message.
     const c = resolveConsumption([entry({ term: '   ', doNotTranslate: true })], 'fr');
     expect(c.doNotTranslate).toEqual([]);
+  });
+});
+
+/*
+ * The list a recogniser is actually asked to accept.
+ *
+ * Operator-entered vocabulary grows without anyone deciding it should, and a
+ * provider will refuse an oversized request outright -- losing every term,
+ * including the good ones. Bounding it centrally means no consumer invents its
+ * own ceiling and no single absurd entry costs a programme its whole vocabulary.
+ */
+describe('normaliseKeyterms', () => {
+  it('trims, and drops what is left empty', () => {
+    expect(normaliseKeyterms(['  Abiodun  ', '   ', ''])).toEqual(['Abiodun']);
+  });
+
+  it('removes duplicates regardless of case, keeping the first spelling', () => {
+    // The operator's own capitalisation is the one that survives.
+    expect(normaliseKeyterms(['Lagos', 'lagos', 'LAGOS'])).toEqual(['Lagos']);
+  });
+
+  it('keeps the order it was given, because the store already reads ORDER BY term', () => {
+    expect(normaliseKeyterms(['Abuja', 'Kano', 'Ibadan'])).toEqual(['Abuja', 'Kano', 'Ibadan']);
+  });
+
+  it('drops an over-long term rather than truncating it', () => {
+    // Half a name is a different word; teaching a recogniser to expect it is
+    // worse than not asking for it at all.
+    const long = 'a'.repeat(KEYTERM_LIMITS.maxTermLength + 1);
+    const kept = normaliseKeyterms(['Ngozi', long]);
+    expect(kept).toEqual(['Ngozi']);
+    expect(kept.some((term) => term.startsWith('aaaa'))).toBe(false);
+  });
+
+  it('keeps a term of exactly the maximum length', () => {
+    const edge = 'a'.repeat(KEYTERM_LIMITS.maxTermLength);
+    expect(normaliseKeyterms([edge])).toEqual([edge]);
+  });
+
+  it('stops at the provider ceiling', () => {
+    const many = Array.from({ length: KEYTERM_LIMITS.maxCount + 25 }, (_, i) => `term-${i}`);
+    const kept = normaliseKeyterms(many);
+    expect(kept).toHaveLength(KEYTERM_LIMITS.maxCount);
+    expect(kept[0]).toBe('term-0');
+  });
+
+  it('counts the ceiling in kept terms, not in terms offered', () => {
+    // Duplicates must not consume the budget, or a careless list of repeats
+    // would silently crowd out real vocabulary.
+    const withDupes = ['Lagos', 'lagos', 'Kano', 'KANO', 'Enugu'];
+    expect(normaliseKeyterms(withDupes, { maxCount: 3, maxTermLength: 80 })).toEqual([
+      'Lagos',
+      'Kano',
+      'Enugu',
+    ]);
   });
 });
