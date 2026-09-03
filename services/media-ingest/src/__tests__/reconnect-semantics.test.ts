@@ -38,13 +38,13 @@ function segment(startMs: number): ProgrammeMediaSegment {
   };
 }
 
-function rig(): {
+function rig(policy?: { readonly onLoss: 'fail-closed' | 'continue-unbuffered' }): {
   readonly timelines: ProgrammeTimelineRegistry;
   readonly media: ProgrammeMediaStore;
   readonly egress: ProgrammeEgressAuthority;
   readonly produce: (throughMs: number) => void;
 } {
-  const timelines = new ProgrammeTimelineRegistry(32, DELAY_MS, undefined, undefined, {
+  const timelines = new ProgrammeTimelineRegistry(32, DELAY_MS, policy, undefined, {
     metadata: true,
     media: true,
   });
@@ -120,6 +120,50 @@ describe('a viewer who reconnects resumes where the audience is', () => {
     const manifest = egress.manifest('run_1');
     if (!manifest.available) throw new Error('unreachable');
     expect(manifest.publicOutputTimeMs).toBe(0);
+  });
+
+  it('resumes at the public position while the buffer is DEGRADED', () => {
+    /*
+     * Degraded is only reachable under a deployment that has chosen to keep
+     * going at reduced depth rather than stop. The cursor still governs -- the
+     * audience is less delayed, not undelayed -- which is the trade that
+     * policy names.
+     */
+    const { egress, produce, timelines } = rig({ onLoss: 'continue-unbuffered' });
+    produce(180_000);
+    /*
+     * Degraded is not failed. The programme reached its target, fell back, and
+     * is still going out -- so a viewer returning gets what is public, which
+     * is less than the promise but is genuinely theirs. Refusing here would
+     * take a recoverable broadcast off the air.
+     */
+    timelines.buffer('run_1')?.fail('the encoder fell behind');
+    expect(timelines.status('run_1')?.state).toBe('degraded');
+
+    const manifest = egress.manifest('run_1');
+    expect(manifest.available).toBe(true);
+    if (!manifest.available) throw new Error('unreachable');
+    expect(manifest.publicOutputTimeMs).toBeLessThanOrEqual(180_000);
+    // And still not the live edge, degraded or not.
+    expect(egress.authorizeSegment('run_1', `run_1_seg_${178_500}`).allowed).toBe(false);
+  });
+
+  it('keeps serving the tail while the broadcast is DRAINING', () => {
+    const { egress, produce, timelines } = rig();
+    produce(180_000);
+    timelines.buffer('run_1')?.drain();
+    expect(timelines.status('run_1')?.state).toBe('draining');
+
+    const manifest = egress.manifest('run_1');
+    expect(manifest.available).toBe(true);
+    if (!manifest.available) throw new Error('unreachable');
+    /*
+     * The studio has stopped and the audience has not finished. A viewer who
+     * reconnects during the drain is owed the rest of it -- refusing would
+     * cut off the last forty-five seconds of every protected programme, which
+     * were produced, paid for and promised.
+     */
+    expect(manifest.segments.length).toBeGreaterThan(0);
   });
 
   it('is refused entirely once output has stopped', () => {
