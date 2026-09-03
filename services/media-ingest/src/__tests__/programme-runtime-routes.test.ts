@@ -155,12 +155,26 @@ describe('the runtime view carries no content', () => {
     /*
      * The forbidden thing is CONTENT, not the words for it. A `vocabulary`
      * field is fine and necessary -- it reports a revision, a count and a
-     * state. What may never appear is a term, a transcript, a campaign or a
-     * credential, so the assertion names those rather than banning a heading.
+     * state -- and so is an `advertising` field that reports a count and a
+     * source. What may never appear is a term, a transcript, a campaign's
+     * IDENTITY or a credential, so the assertion names those rather than
+     * banning a heading.
+     *
+     * The distinction matters commercially: "two campaigns are eligible" tells
+     * a broadcaster nothing about anybody, and "campaign_lagos_bank" tells
+     * them who is buying.
      */
-    for (const forbidden of ['transcript', 'keyterm', 'campaign', 'token', 'password']) {
+    for (const forbidden of ['transcript', 'keyterm', 'campaignid', 'creativeid', 'advertiser', 'token', 'password']) {
       expect(serialised).not.toContain(forbidden);
     }
+
+    // And the advertising block carries exactly what it is allowed to.
+    const advertising = (reply.body as { advertising?: Record<string, unknown> }).advertising ?? {};
+    expect(Object.keys(advertising).sort()).toEqual([
+      'campaignSource',
+      'campaignsHeld',
+      'decidedBy',
+    ]);
 
     // And the vocabulary that IS reported carries no terms.
     const vocabulary = reply.body['vocabulary'] as Record<string, unknown>;

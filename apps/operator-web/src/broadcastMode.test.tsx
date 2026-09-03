@@ -30,6 +30,7 @@ function running(safetyBuffer: SafetyBufferView | null): ProgrammeRuntimeResult 
     durability: { durable: true, reason: null },
     vocabulary: { state: 'none', revision: null, termCount: null },
     routes: [],
+    advertising: { decidedBy: 'c7', campaignSource: 'none', campaignsHeld: 0 },
     measuredAtMs: 1_000,
   };
   return { kind: 'runtime', runtime };

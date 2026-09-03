@@ -24,9 +24,20 @@ import type { ProgrammeTimelineRegistry } from './programme-timeline-registry.js
 
 const RUN_ID = /^[A-Za-z0-9_-]{1,64}$/u;
 
+/** What the console may know about C7's advertising. Deliberately thin. */
+export interface AdvertisingRuntimeView {
+  /** Always C7. Stated rather than assumed, because the page must say it. */
+  readonly decidedBy: 'c7';
+  /** Whether a campaign source is attached at all. */
+  readonly campaignSource: 'account-service' | 'none';
+  /** How many campaigns are currently held. Never which, or whose. */
+  readonly campaignsHeld: number;
+}
+
 export interface ProgrammeRuntimeRoutesDeps {
   readonly performance: ProgrammePerformanceRegistry;
   readonly timelines: ProgrammeTimelineRegistry;
+  readonly advertising?: () => AdvertisingRuntimeView;
 }
 
 export function registerProgrammeRuntimeRoutes(
@@ -93,6 +104,26 @@ export function registerProgrammeRuntimeRoutes(
         },
         /** Empty means nothing measured, which is not the same as nothing wrong. */
         routes,
+        /**
+         * WHO DECIDES WHICH ADVERT RUNS, said to the console so it can say it
+         * to an operator.
+         *
+         * Page 07 lets an operator manage their own sponsored creative, and
+         * an operator reading only that page would reasonably conclude the
+         * slot is entirely theirs. It is not: C7 decides advertising, and the
+         * operator's whole contribution is offering a break that would not cut
+         * somebody off mid-sentence.
+         *
+         * Counts and a source. No advertiser, no campaign name, no priority --
+         * this reaches a browser, and a broadcaster who could read who is
+         * buying would be reading something commercially useful about
+         * somebody else.
+         */
+        advertising: deps.advertising?.() ?? {
+          decidedBy: 'c7',
+          campaignSource: 'none',
+          campaignsHeld: 0,
+        },
         measuredAtMs: Date.now(),
       });
     })().catch(() => {

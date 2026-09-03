@@ -1271,6 +1271,16 @@ logger.info('Translation route gate ready', {
 registerProgrammeRuntimeRoutes(app, {
   performance: programmePerformance,
   timelines: programmeTimelines,
+  /*
+   * So the console can tell an operator who decides their adverts. Counts and
+   * a source only: a broadcaster reading which campaigns are held would be
+   * reading something commercially useful about somebody else.
+   */
+  advertising: () => ({
+    decidedBy: 'c7' as const,
+    campaignSource: advertisingClient.configured ? ('account-service' as const) : ('none' as const),
+    campaignsHeld: advertisingClient.campaigns().length,
+  }),
 });
 
 /*

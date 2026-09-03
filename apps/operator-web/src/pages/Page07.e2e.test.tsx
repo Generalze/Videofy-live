@@ -76,6 +76,9 @@ function Console({ programmeId }: { programmeId: string }): React.ReactElement {
   const advertising = useAdvertising({ accountUrl: baseUrl, programmeId });
   return (
     <AdvertisingPage
+      // This suite is about the operator's own creative reaching viewers; C7's
+      // part of the page is unread here, which is a state the page must render.
+      c7={null}
       snapshot={advertising.snapshot}
       unavailable={advertising.unavailable}
       conflict={advertising.conflict}
@@ -416,15 +419,25 @@ describe('G. a creative with no destination', () => {
 });
 
 describe('H. a deployment with no database', () => {
-  it('says advertising cannot be configured, and offers no form to fake it', async () => {
+  it('says the operator own creative cannot be configured, and offers no form to fake it', async () => {
     await new Promise<void>((r) => server!.close(() => r()));
     server = null;
     await serve({ withDatabase: false });
 
     await openConsole();
 
-    expect(container.textContent).toMatch(/Advertising cannot be configured/u);
+    /*
+     * NAMED PRECISELY. "Advertising cannot be configured" was true when this
+     * page was the whole of advertising. It is not: C7 decides adverts and
+     * that is unaffected by whether this deployment can store the operator's
+     * own sponsored message. Saying the broad thing would tell an operator
+     * their programme carries no advertising, which is a different and false
+     * claim.
+     */
+    expect(container.textContent).toMatch(/Your own sponsored creative cannot be configured/u);
     expect(container.textContent).toMatch(/Durable storage is not configured/u);
+    // And C7's part of the page is still stated, because it is still true.
+    expect(container.textContent).toMatch(/decided by C7/u);
     // NO LOCAL FALLBACK. A form here would invite a save that goes nowhere.
     expect(container.querySelector('form')).toBeNull();
     expect(container.querySelector('[name="headline"]')).toBeNull();

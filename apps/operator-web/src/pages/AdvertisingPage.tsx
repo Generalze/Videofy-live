@@ -19,6 +19,12 @@
  * link; it shows what the server said about it. A client-side check would be
  * bypassable and, worse, would suggest the field is safe because the page
  * looked satisfied.
+ *
+ * AND THIS PAGE IS NOT THE WHOLE OF ADVERTISING. It manages the operator's own
+ * sponsored creative -- their message, in their slot. C7 decides which
+ * ADVERTS run in a programme, and an operator reading only the form below
+ * would reasonably conclude the slot is entirely theirs. So the service's own
+ * account of that is stated at the top, read-only, in the service's words.
  */
 import React, { useEffect, useState } from 'react';
 import type {
@@ -27,10 +33,17 @@ import type {
   SponsoredEffectiveState,
 } from '@videofy-live/shared-types';
 import type { AdvertisingSnapshot, CreativeProblemDto } from '../advertisingClient';
+import type { AdvertisingRuntimeView } from '../runtimeClient';
 import type { AdvertisingConflict } from '../useAdvertising';
 import styles from './AdvertisingPage.module.css';
 
 export interface AdvertisingPageProps {
+  /**
+   * What the service says about C7's advertising, or null when the runtime
+   * has not been read. Null renders as "not read", never as "none": one is an
+   * absence of information and the other is a claim about the broadcast.
+   */
+  readonly c7: AdvertisingRuntimeView | null;
   readonly snapshot: AdvertisingSnapshot | null;
   readonly unavailable: boolean;
   readonly conflict: AdvertisingConflict | null;
@@ -42,6 +55,37 @@ export interface AdvertisingPageProps {
     creative: ProgrammeSponsoredCreative,
     expectedRevision: number,
   ) => void;
+}
+
+/**
+ * What C7 decides, said before the form an operator can change.
+ *
+ * READ-ONLY BY CONSTRUCTION. There is no control here, and there is nothing to
+ * add one to: a broadcaster who could choose their advertiser, skip one they
+ * disliked, or read what a campaign pays would make the platform unsellable to
+ * advertisers. The one thing they can contribute is knowledge C7 does not
+ * have -- whether a moment would cut somebody off mid-sentence -- and that is
+ * offered from Live Control, not here.
+ */
+function C7AdvertisingStatus({ c7 }: { readonly c7: AdvertisingRuntimeView | null }): React.ReactElement {
+  return (
+    <section className={styles.c7} aria-label="C7 advertising">
+      <h3 className={styles.c7Title}>C7 advertising</h3>
+      <p className={styles.c7Body}>
+        Adverts in this programme are decided by C7. You cannot choose the
+        advertiser, the campaign or the creative, and you are not shown which
+        campaigns are running or what they pay. Your own sponsored message is
+        the form below.
+      </p>
+      <p className={styles.c7Body}>
+        {c7 === null
+          ? 'The service has not been read yet, so what is attached is unknown.'
+          : c7.campaignSource === 'none'
+            ? 'No campaign source is attached to this deployment, so no advert will be decided.'
+            : `A campaign source is attached, holding ${c7.campaignsHeld} campaign${c7.campaignsHeld === 1 ? '' : 's'} eligible for consideration.`}
+      </p>
+    </section>
+  );
 }
 
 const STATE_LABEL: Record<SponsoredEffectiveState, string> = {
@@ -117,8 +161,9 @@ export function AdvertisingPage(props: AdvertisingPageProps): React.ReactElement
      */
     return (
       <div className={styles.page}>
+        <C7AdvertisingStatus c7={props.c7} />
         <p className={styles.empty}>
-          <strong>Advertising cannot be configured on this deployment.</strong>{' '}
+          <strong>Your own sponsored creative cannot be configured on this deployment.</strong>{' '}
           Durable storage is not configured, so a creative could not be kept and
           would be lost on restart. Viewers continue to see the house creative,
           which needs no storage.
@@ -133,6 +178,7 @@ export function AdvertisingPage(props: AdvertisingPageProps): React.ReactElement
   if (props.snapshot === null) {
     return (
       <div className={styles.page}>
+        <C7AdvertisingStatus c7={props.c7} />
         <p className={styles.empty}>
           {props.loading ? 'Reading advertising configuration…' : 'Not read yet.'}
         </p>
@@ -153,6 +199,7 @@ export function AdvertisingPage(props: AdvertisingPageProps): React.ReactElement
 
   return (
     <div className={styles.page}>
+      <C7AdvertisingStatus c7={props.c7} />
       <div className={styles.header}>
         <p className={styles.revision}>Revision {revision}</p>
         <button type="button" className={styles.secondary} onClick={props.onReload}>

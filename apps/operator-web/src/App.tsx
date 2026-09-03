@@ -1548,6 +1548,9 @@ export default function App(): React.ReactElement {
         lede="The creative in your programme's Sponsored slot, and when it runs. The slot is a reserved placement on every viewer surface: when your own creative is off or outside its times, it shows the house creative rather than nothing."
       >
         <AdvertisingPage
+          c7={
+            programmeRuntime.kind === 'runtime' ? programmeRuntime.runtime.advertising : null
+          }
           snapshot={advertising.snapshot}
           unavailable={advertising.unavailable}
           conflict={advertising.conflict}

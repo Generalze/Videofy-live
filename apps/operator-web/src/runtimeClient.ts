@@ -56,12 +56,29 @@ export interface RunVocabularyView {
   readonly termCount: number | null;
 }
 
+/**
+ * WHO DECIDES WHICH ADVERT RUNS.
+ *
+ * Page 07 lets an operator manage their own sponsored creative, and an
+ * operator reading only that would reasonably conclude the slot is entirely
+ * theirs. It is not. This is what the service says about the part they do not
+ * control, and it carries counts and a source -- never an advertiser, a
+ * campaign name or a priority, because a broadcaster who could read who is
+ * buying would be reading something commercially useful about somebody else.
+ */
+export interface AdvertisingRuntimeView {
+  readonly decidedBy: 'c7';
+  readonly campaignSource: 'account-service' | 'none';
+  readonly campaignsHeld: number;
+}
+
 export interface ProgrammeRuntime {
   readonly runId: string;
   readonly safetyBuffer: SafetyBufferView | null;
   readonly durability: { readonly durable: boolean; readonly reason: string | null };
   readonly vocabulary: RunVocabularyView;
   readonly routes: readonly RoutePerformanceView[];
+  readonly advertising: AdvertisingRuntimeView;
   readonly measuredAtMs: number;
 }
 

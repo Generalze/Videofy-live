@@ -251,3 +251,31 @@
   outline: 2px solid var(--op-teal-border);
   outline-offset: 2px;
 }
+
+/*
+ * C7's part of advertising, stated before the part an operator can change.
+ * Visually distinct because it is not a form and never becomes one: there is
+ * nothing here to edit, and making it look editable would invite an operator
+ * to look for a control that must not exist.
+ */
+.c7 {
+  border: 1px solid var(--op-panel-border-strong);
+  border-radius: var(--op-radius-sm);
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  background: var(--op-panel-raised);
+  color: var(--op-text);
+}
+
+.c7Title {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.c7Body {
+  margin: 0 0 6px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--op-text-secondary);
+}
