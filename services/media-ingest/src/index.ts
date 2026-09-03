@@ -6,6 +6,10 @@ import multer from 'multer';
 import { mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { hostname } from 'node:os';
+import { randomUUID } from 'node:crypto';
+
+/** Bumped when the rules change, so a decision records which rules made it. */
+const ADVERTISING_POLICY_VERSION = 'c7-advertising-2026.09';
 import { writeFile } from 'node:fs/promises';
 import { requireSessionSecret } from '@videofy-live/account-tokens';
 import { internalIngressRequestAllowed } from '@videofy-live/service-env';
@@ -63,6 +67,15 @@ import { ProgrammeEgressAuthority } from './programme-egress.js';
 import { ProgrammeMediaStore } from './programme-media-store.js';
 import { ProgrammeMediaOrigin } from './programme-media-origin.js';
 import { ProgrammeDeliveryReporter } from './programme-delivery-reporter.js';
+import {
+  CAMPAIGN_REFRESH_MS,
+  NO_CAMPAIGN_SOURCE,
+  createC7AdvertisingClient,
+} from './c7-advertising-client.js';
+import {
+  createC7AdvertisingAuthority,
+  offerBreakOpportunity,
+} from '@videofy-live/programme-timeline';
 import {
   VISIBILITY_UNRESOLVABLE,
   createChannelVisibilityClient,
@@ -1407,6 +1420,139 @@ const programmeDelivery = new ProgrammeDeliveryReporter({
  */
 const programmeDeliveryTimer = setInterval(() => programmeDelivery.report(), 2_000);
 programmeDeliveryTimer.unref?.();
+
+/*
+ * C7 DECIDES WHICH ADVERT RUNS. NOBODY ELSE.
+ *
+ * The operator's whole contribution is knowledge C7 does not have: whether a
+ * moment would cut somebody off mid-sentence. They offer an opening; the
+ * engine decides whether to take it and with what. There is no route by which
+ * a broadcaster names an advertiser, a campaign, a creative or a priority, and
+ * that is the founder's ruling made structural rather than checked.
+ */
+const advertisingClient =
+  config.accountServiceUrl !== null && config.internalIngressAuth.token !== null
+    ? createC7AdvertisingClient({
+        accountServiceUrl: config.accountServiceUrl,
+        internalToken: config.internalIngressAuth.token,
+      })
+    : NO_CAMPAIGN_SOURCE;
+
+const advertisingAuthority = createC7AdvertisingAuthority({
+  campaigns: () => advertisingClient.campaigns(),
+  // A run's programme is its channel today. Carried through the run identity
+  // so this stops being true without the engine changing.
+  programmeId: (runId) => programmeTimelines.channelOf(runId) ?? runId,
+  sourceLanguage: () => config.transcriptionSourceLanguage,
+  region: () => process.env['C7_ADVERTISING_REGION']?.trim() || 'NG',
+  policyVersion: ADVERTISING_POLICY_VERSION,
+  mintDecisionId: () => `dec_${randomUUID().replace(/-/gu, '').slice(0, 24)}`,
+  onAudit: (runId, verdicts) => {
+    /*
+     * WHY A CAMPAIGN LOST, kept for C7 and never returned to a caller. An
+     * operator learning that a rival's campaign is frequency-capped would be
+     * learning something commercially useful about somebody else.
+     */
+    logger.debug('C7 advertising verdicts', {
+      runId,
+      verdicts: verdicts.map((verdict) => ({
+        campaignId: verdict.campaignId,
+        eligible: verdict.eligible,
+        reason: verdict.reason,
+      })),
+    });
+  },
+});
+
+if (advertisingClient.configured) {
+  void advertisingClient.refresh().then((refreshed) => {
+    logger.info('C7 advertising ready', {
+      campaigns: advertisingClient.campaigns().length,
+      ...(refreshed ? {} : { warning: 'the campaign list could not be read at boot' }),
+    });
+  });
+  const advertisingTimer = setInterval(() => {
+    void advertisingClient.refresh();
+  }, CAMPAIGN_REFRESH_MS);
+  advertisingTimer.unref?.();
+} else {
+  logger.warn('C7 advertising has no campaign source; no advert will ever be decided', {
+    reason: 'ACCOUNT_SERVICE_URL or the internal token is unset',
+  });
+}
+
+/*
+ * A restart must not hand an advertiser a second impression because this
+ * process forgot the first. Primed before any break can be offered.
+ */
+programmeTimelines.onRunOpened((runId) => {
+  void advertisingClient
+    .impressionsForRun(runId)
+    .then((placed) => advertisingAuthority.primeHistory(runId, placed))
+    .catch(() => undefined);
+});
+
+/**
+ * THE OPERATOR'S ONE CONTRIBUTION: this moment would be a safe break.
+ *
+ * They do not say what runs in it. The reply carries whether an advert was
+ * taken and for how long -- never which campaign lost, or why, which is
+ * commercially useful information about somebody else.
+ */
+app.post('/programmes/:runId/advertising/break', operatorOnly, (req, res) => {
+  void (async () => {
+    const runId = String(req.params['runId'] ?? '');
+    if (!/^[A-Za-z0-9_-]{1,64}$/u.test(runId)) {
+      res.status(400).json({ error: 'Not a run id.' });
+      return;
+    }
+    const timeline = programmeTimelines.timeline(runId);
+    const status = programmeTimelines.status(runId);
+    if (timeline === null || status === null) {
+      res.status(404).json({ error: 'This service is not running that broadcast.' });
+      return;
+    }
+    const availableMs = Number((req.body as { availableMs?: unknown })?.availableMs);
+    if (!Number.isFinite(availableMs) || availableMs <= 0) {
+      res.status(400).json({ error: 'A break needs a length.' });
+      return;
+    }
+
+    const outcome = await offerBreakOpportunity(advertisingAuthority, timeline, {
+      runId,
+      /*
+       * Placed at the INPUT edge, not at the cursor: an advert decided now
+       * belongs where the programme currently is, and every viewer reaches
+       * it at the same programme moment however far behind they are.
+       */
+      programmeTimeMs: status.cursor.programmeTimeMs,
+      availableMs,
+    });
+
+    if (!outcome.decided) {
+      res.status(200).json({ decided: false, reason: outcome.reason });
+      return;
+    }
+    // Written after the decision reached the timeline, so an advert that was
+    // decided and never placed is never billed.
+    await advertisingClient.record({
+      decisionId: outcome.decision.decisionId,
+      runId,
+      campaignId: outcome.decision.campaignId,
+      creativeId: outcome.decision.creativeId,
+      programmeTimeMs: outcome.decision.programmeTimeMs,
+      durationMs: outcome.decision.durationMs,
+      policyVersion: outcome.decision.policyVersion,
+      origin: outcome.decision.origin,
+      decidedAtMs: outcome.decision.decidedAtMs,
+    });
+    res.status(200).json({
+      decided: true,
+      programmeTimeMs: outcome.decision.programmeTimeMs,
+      durationMs: outcome.decision.durationMs,
+    });
+  })();
+});
 
 logger.info('Programme egress ready', {
   spool: programmeMediaSpool,

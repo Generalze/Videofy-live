@@ -1425,6 +1425,95 @@ const PROGRAMME_SPONSORED_CREATIVE: Migration = {
   `,
 };
 
+/**
+ * C7 ADVERTISING. Who advertises, in which programmes, and what actually ran.
+ *
+ * THE OPERATOR IS NOT IN THIS SCHEMA. There is no column by which a broadcaster
+ * selects an advertiser, a campaign, a creative or a commercial priority --
+ * that is the founder's ruling made structural rather than enforced by a check
+ * somebody can later relax. A broadcaster who could choose their advertiser, or
+ * read what a campaign pays, would make the platform unsellable to advertisers.
+ *
+ * IMPRESSIONS ARE IDEMPOTENT BY KEY. A reconnect gives a broadcast a new
+ * transport and the same run; without the uniqueness below, replaying a
+ * decision after a network hiccup would bill an advertiser for an impression
+ * they did not buy. The key is what the decision IS -- this run, this campaign,
+ * this moment in the programme -- so a retry of the same decision collapses
+ * onto the same row and a genuinely second airing does not.
+ *
+ * NO SCHEDULER READS THIS. Windows are compared against the clock when a break
+ * is offered, exactly as the sponsored creative does it. A scheduler would be a
+ * second source of truth that can be late, down, or running twice.
+ */
+const C7_ADVERTISING: Migration = {
+  name: '026_c7_advertising',
+  sql: `
+    CREATE TABLE IF NOT EXISTS c7_ad_campaigns (
+      campaign_id    text        PRIMARY KEY,
+      -- Who is buying. Commercial, and never leaves C7.
+      advertiser     text        NOT NULL,
+      status         text        NOT NULL DEFAULT 'draft',
+      -- Higher wins among the eligible. Commercially sensitive.
+      priority       integer     NOT NULL DEFAULT 0,
+      starts_at      timestamptz NOT NULL,
+      ends_at        timestamptz NOT NULL,
+      -- Empty means every programme, language or region.
+      programme_ids  text[]      NOT NULL DEFAULT '{}',
+      languages      text[]      NOT NULL DEFAULT '{}',
+      regions        text[]      NOT NULL DEFAULT '{}',
+      -- How many times ONE broadcast may carry this campaign, and how close
+      -- together. Two airings each get their own allowance.
+      max_per_run    integer     NOT NULL DEFAULT 1,
+      min_spacing_ms bigint      NOT NULL DEFAULT 300000,
+      created_at     timestamptz NOT NULL DEFAULT now(),
+      updated_at     timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT c7_ad_campaigns_window CHECK (starts_at < ends_at),
+      CONSTRAINT c7_ad_campaigns_status
+        CHECK (status IN ('draft', 'active', 'paused', 'ended')),
+      CONSTRAINT c7_ad_campaigns_cap CHECK (max_per_run >= 0),
+      CONSTRAINT c7_ad_campaigns_spacing CHECK (min_spacing_ms >= 0)
+    );
+
+    CREATE TABLE IF NOT EXISTS c7_ad_creatives (
+      creative_id text        PRIMARY KEY,
+      campaign_id text        NOT NULL
+        REFERENCES c7_ad_campaigns(campaign_id) ON DELETE CASCADE,
+      -- What the audience is shown, and for exactly how long. A creative
+      -- longer than a break is refused rather than trimmed: trimming cuts a
+      -- creative mid-sentence and still bills for it.
+      duration_ms integer     NOT NULL,
+      media_url   text        NOT NULL,
+      status      text        NOT NULL DEFAULT 'active',
+      created_at  timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT c7_ad_creatives_duration CHECK (duration_ms > 0),
+      CONSTRAINT c7_ad_creatives_status CHECK (status IN ('active', 'withdrawn'))
+    );
+
+    CREATE INDEX IF NOT EXISTS c7_ad_creatives_by_campaign
+      ON c7_ad_creatives (campaign_id);
+
+    CREATE TABLE IF NOT EXISTS c7_ad_impressions (
+      decision_id       text        PRIMARY KEY,
+      run_id            text        NOT NULL,
+      campaign_id       text        NOT NULL,
+      creative_id       text        NOT NULL,
+      programme_time_ms bigint      NOT NULL,
+      duration_ms       integer     NOT NULL,
+      policy_version    text        NOT NULL,
+      origin            text        NOT NULL,
+      decided_at        timestamptz NOT NULL,
+      recorded_at       timestamptz NOT NULL DEFAULT now(),
+      -- What the decision IS. A retry after a reconnect collapses onto this
+      -- row; a genuinely second airing has a different run and does not.
+      CONSTRAINT c7_ad_impressions_once
+        UNIQUE (run_id, campaign_id, programme_time_ms)
+    );
+
+    CREATE INDEX IF NOT EXISTS c7_ad_impressions_by_run
+      ON c7_ad_impressions (run_id);
+  `,
+};
+
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
   ORGANIZATIONS,
@@ -1448,6 +1537,7 @@ export const MIGRATIONS: readonly Migration[] = [
   CHANNEL_PROFILES,
   PROGRAMME_VOCABULARY,
   PROGRAMME_SPONSORED_CREATIVE,
+  C7_ADVERTISING,
   LANGUAGE_SPECIALISTS,
   SPECIALIST_INTEGRITY,
   SPECIALIST_SOURCE_PROVENANCE,

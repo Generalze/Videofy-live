@@ -65,6 +65,8 @@ import {
 } from './channel-profiles.js';
 import { createPostgresChannelProfiles } from './db/channel-profiles-postgres.js';
 import { registerChannelRoutes } from './channel-routes.js';
+import { registerC7AdvertisingRoutes } from './c7-advertising-routes.js';
+import { createC7AdvertisingStore } from './db/c7-advertising-postgres.js';
 import { registerVocabularyRoutes } from './vocabulary-routes.js';
 import { registerVocabularyInternalRoutes } from './vocabulary-internal-routes.js';
 import { registerSponsoredCreativeRoutes } from './sponsored-creative-routes.js';
@@ -831,6 +833,24 @@ const channelProfiles = new ChannelProfiles({
     process.env['CHANNEL_MEDIA_DIR'] ?? resolve('data', 'channel-media'),
   ),
 });
+/*
+ * C7'S OWN ADVERTISING SURFACE. Internal, because these responses carry
+ * advertiser names, priorities and caps -- the facts that make the platform
+ * sellable and that a broadcaster reading them would make it unsellable.
+ *
+ * REGISTERED ONLY WITH A REAL DATABASE. Campaigns and impressions are
+ * commercial records; a file-backed development store would answer "no
+ * campaigns" to every decision and read exactly like a working deployment with
+ * nothing sold. Absent, the routes do not exist and the decision engine is
+ * told so at its own boot.
+ */
+if (databasePool !== null) {
+  registerC7AdvertisingRoutes(app, {
+    store: createC7AdvertisingStore(databasePool),
+    internalAuth: resolveInternalIngressAuth(process.env),
+  });
+}
+
 registerChannelRoutes(app, {
   profiles: channelProfiles,
   store,

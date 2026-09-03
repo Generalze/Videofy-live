@@ -217,6 +217,28 @@ export function withImpression(
  * It keeps its own impression history per run, so frequency caps and spacing
  * survive across breaks within a broadcast and reset for the next airing.
  */
+/**
+ * The authority, plus the two things a production composition needs of it.
+ *
+ * A restart mid-broadcast must not hand an advertiser a second impression
+ * because this process forgot the first, and C7 must be able to record what
+ * ran. Both are on the returned object rather than in `decide`, because
+ * `AdvertisingAuthority` is what the timeline asks and it must stay the
+ * narrowest thing that answers that question.
+ */
+export interface C7AdvertisingAuthority extends AdvertisingAuthority {
+  /**
+   * Restore what a broadcast has already carried.
+   *
+   * Called before any break is offered for a run that may have started before
+   * this process did. Without it a restart resets every frequency cap, and an
+   * advertiser is overserved by exactly as many breaks as follow.
+   */
+  primeHistory(runId: string, placedAtByCampaign: ReadonlyMap<string, readonly number[]>): void;
+  /** Let go of a finished broadcast. */
+  forget(runId: string): void;
+}
+
 export function createC7AdvertisingAuthority(options: {
   readonly campaigns: () => readonly Campaign[];
   readonly programmeId: (runId: string) => string;
@@ -227,11 +249,25 @@ export function createC7AdvertisingAuthority(options: {
   readonly now?: () => number;
   /** C7's audit: which campaigns lost, and why. Never shown to an operator. */
   readonly onAudit?: (runId: string, verdicts: readonly CampaignVerdict[]) => void;
-}): AdvertisingAuthority {
+}): C7AdvertisingAuthority {
   const histories = new Map<string, ImpressionHistory>();
   const now = options.now ?? ((): number => Date.now());
 
   return {
+    primeHistory(runId, placedAtByCampaign) {
+      /*
+       * Only when nothing is known here. A live process's own record is more
+       * current than a stored one, and overwriting it would drop impressions
+       * decided since the read that produced this.
+       */
+      if (histories.has(runId)) return;
+      histories.set(runId, { placedAtByCampaign: new Map(placedAtByCampaign) });
+    },
+
+    forget(runId) {
+      histories.delete(runId);
+    },
+
     async decide(request) {
       const history = histories.get(request.runId) ?? NO_IMPRESSIONS;
       const selection = selectAdvertisement(
