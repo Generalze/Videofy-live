@@ -252,4 +252,5 @@ export * from './advertising.js';
 export * from './store.js';
 export * from './media.js';
 export * from './lease.js';
+export * from './ad-authority.js';
 export * from './buffer.js';
