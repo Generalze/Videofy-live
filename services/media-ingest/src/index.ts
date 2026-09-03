@@ -1197,6 +1197,15 @@ if (streamingTranscription !== null) {
       // Measurements live for the life of the process, partitioned by run.
       performance: programmePerformance,
       timelines: programmeTimelines,
+      /*
+       * The cursor has to be advanced by something. In production that is a
+       * real interval; a test drives it by hand instead of by waiting.
+       */
+      setOutputTimer: (tick, everyMs) => {
+        const timer = setInterval(tick, everyMs);
+        timer.unref?.();
+        return () => clearInterval(timer);
+      },
       vocabulary: createVocabularySnapshotClient({
         accountUrl: config.accountServiceUrl,
         internalToken: config.internalIngressAuth.token,

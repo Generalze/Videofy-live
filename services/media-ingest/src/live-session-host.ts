@@ -49,6 +49,17 @@ import type { StreamingTranscriptionProvider } from './streaming-transcription-p
 import type { VocabularySnapshotClient } from './vocabulary-snapshot-client.js';
 import type { ProgrammePerformanceRegistry } from './programme-performance-registry.js';
 import type { ProgrammeTimelineRegistry, RunVocabulary } from './programme-timeline-registry.js';
+import { ProgrammeOutputPump } from './programme-output-pump.js';
+
+/**
+ * How often the public-output cursor is advanced.
+ *
+ * Fine enough that a listener's experience is smooth, coarse enough that a
+ * long programme is not a timer storm. The cursor is derived from the live
+ * edge rather than a wall clock, so a tick that finds nothing new releases
+ * nothing -- which is correct when the source has stalled.
+ */
+const OUTPUT_TICK_MS = 250;
 import type { TimestampedTranslationProvider } from './translation-provider.js';
 import type { TranscriptEvent } from './transcript-event.js';
 
@@ -162,6 +173,11 @@ export interface LiveSessionHostDeps {
   readonly performance?: ProgrammePerformanceRegistry;
   /** Where each run's account of itself is kept. Absent on a call. */
   readonly timelines?: ProgrammeTimelineRegistry;
+  /**
+   * Drives the output cursor. Injectable so a test can advance it by hand
+   * rather than by waiting, and so the host never owns a real timer.
+   */
+  readonly setOutputTimer?: (tick: () => void, everyMs: number) => (() => void) | null;
 }
 
 export class LiveSessionHost implements IngressStreamHandler {
@@ -214,6 +230,33 @@ export class LiveSessionHost implements IngressStreamHandler {
     if (open.context.serviceCategory === 'programme') {
       deps.timelines?.noteVocabulary(open.context.programme.runId, vocabulary.reported);
     }
+
+    /*
+     * THE CURSOR DECIDES WHEN THE AUDIENCE HEARS THIS.
+     *
+     * Present only for a programme with a buffer. Where it exists, captions
+     * and generated audio are held against their timeline reference and
+     * emitted when the cursor reaches them, so the delay the operator was
+     * promised is the delay the audience actually experiences. With no delay
+     * configured the cursor sits at the live edge and everything is released
+     * on the next tick -- one path, not two.
+     */
+    const outputBuffer =
+      open.context.serviceCategory === 'programme'
+        ? (deps.timelines?.buffer(open.context.programme.runId) ?? null)
+        : null;
+    const pump =
+      outputBuffer === null
+        ? null
+        : new ProgrammeOutputPump(outputBuffer, (droppedTotal) =>
+            deps.log?.('programme output payloads dropped; the cursor is not advancing', {
+              sessionId: open.sessionId,
+              droppedTotal,
+            }),
+          );
+    const ticker =
+      pump === null ? null : deps.setOutputTimer?.(() => pump.tick(), OUTPUT_TICK_MS) ?? null;
+    void ticker;
     /**
      * How many languages this stream will actually be SPOKEN in.
      *
@@ -291,7 +334,8 @@ export class LiveSessionHost implements IngressStreamHandler {
       transcription: deps.transcription,
       mintSegmentId: () => deps.mintSegmentId(open),
       onTranscriptEvent: (event) => {
-        deps.onCaption?.(event);
+        if (pump === null) deps.onCaption?.(event);
+        else pump.hold(event.segmentId, { kind: 'caption', emit: () => deps.onCaption?.(event) });
         /*
          * AND ONTO THE PROGRAMME'S OWN ACCOUNT OF ITSELF.
          *
@@ -320,7 +364,14 @@ export class LiveSessionHost implements IngressStreamHandler {
             .onTranscriptEvent(event)
             .then((record) => {
               if (record !== null) {
-                deps.onSpoken?.(record.segmentId, record.generation, targetLanguage);
+                if (pump === null) {
+                  deps.onSpoken?.(record.segmentId, record.generation, targetLanguage);
+                } else {
+                  pump.hold(record.segmentId, {
+                    kind: 'generated-audio',
+                    emit: () => deps.onSpoken?.(record.segmentId, record.generation, targetLanguage),
+                  });
+                }
                 // Placed at the moment it translates, so a listener in Yoruba
                 // hears it against the same instant an English caption shows.
                 timeline?.append({
