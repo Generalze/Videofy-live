@@ -57,6 +57,7 @@ import { registerProgrammeRuntimeRoutes } from './programme-runtime-routes.js';
 import { registerProgrammeEgressRoutes } from './programme-egress-routes.js';
 import { ProgrammeEgressAuthority } from './programme-egress.js';
 import { ProgrammeMediaStore } from './programme-media-store.js';
+import { ProgrammeMediaOrigin } from './programme-media-origin.js';
 import {
   VISIBILITY_UNRESOLVABLE,
   createChannelVisibilityClient,
@@ -1185,6 +1186,62 @@ registerProgrammeEgressRoutes(app, {
     logger.warn('A request asked for programme media ahead of the public cursor');
   },
 });
+/*
+ * THE PRODUCER, and the reason an operator cannot choose what it reads.
+ *
+ * The input is built from a template this deployment owns, with the run id
+ * substituted. An operator asking us to encode an address of their choosing
+ * would be asking us to read whatever sits at that address -- a local file, an
+ * internal host -- and broadcast it to an audience. They say which run to
+ * produce; the deployment says where its media comes from.
+ */
+const programmeOrigin = new ProgrammeMediaOrigin({
+  media: programmeMedia,
+  timelines: programmeTimelines,
+  egress: programmeEgress,
+  spoolRoot: programmeMediaSpool,
+});
+
+app.post('/programmes/:runId/media-origin', operatorOnly, (req, res) => {
+  void (async () => {
+    const runId = String(req.params['runId'] ?? '');
+    if (!/^[A-Za-z0-9_-]{1,64}$/u.test(runId)) {
+      res.status(400).json({ error: 'Not a run id.' });
+      return;
+    }
+    if (config.programmeMediaOriginInput === null) {
+      res.status(503).json({
+        error: 'This deployment produces no programme media: PROGRAMME_MEDIA_ORIGIN_INPUT is unset.',
+      });
+      return;
+    }
+    if (!programmeTimelines.tracks(runId)) {
+      // Producing media for a broadcast this process is not running would
+      // spool bytes nothing could ever publish.
+      res.status(404).json({ error: 'This service is not running that broadcast.' });
+      return;
+    }
+
+    const started = await programmeOrigin.start(
+      runId,
+      config.programmeMediaOriginInput.replace('{runId}', runId),
+    );
+    res.status(started ? 202 : 200).json({ runId, producing: true, started });
+  })();
+});
+
+app.delete('/programmes/:runId/media-origin', operatorOnly, (req, res) => {
+  void (async () => {
+    const runId = String(req.params['runId'] ?? '');
+    if (!/^[A-Za-z0-9_-]{1,64}$/u.test(runId)) {
+      res.status(400).json({ error: 'Not a run id.' });
+      return;
+    }
+    await programmeOrigin.stop(runId);
+    res.status(200).json({ runId, producing: false });
+  })();
+});
+
 logger.info('Programme egress ready', {
   spool: programmeMediaSpool,
   visibilitySource: channelVisibility === VISIBILITY_UNRESOLVABLE ? 'none' : 'account-service',
@@ -1195,8 +1252,15 @@ logger.info('Programme egress ready', {
           'token is unset, so a public channel cannot be told from a locked one',
       }
     : {}),
-  mediaProducerAttached: false,
-  note: 'no media origin worker is attached; the published manifest will be empty',
+  /*
+   * Said out loud because the two states are indistinguishable from outside:
+   * a deployment with no media source and one whose encoder is broken both
+   * serve an empty playlist.
+   */
+  mediaProduction: config.programmeMediaOriginInput === null ? 'off' : 'on',
+  ...(config.programmeMediaOriginInput === null
+    ? { note: 'PROGRAMME_MEDIA_ORIGIN_INPUT is unset; the published manifest will be empty' }
+    : {}),
 });
 
 registerQualityRoutes(app, {

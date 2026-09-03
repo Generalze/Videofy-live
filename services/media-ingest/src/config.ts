@@ -63,6 +63,19 @@ export interface IngestConfig {
   videoSource: 'mock' | 'local-file';
   uploadMaxBytes: number;
   audioChunkDir: string;
+  /**
+   * Where a programme's live media is pulled from, with `{runId}` substituted.
+   *
+   * A TEMPLATE THIS SERVICE OWNS, never a URL a caller supplies. An operator
+   * asking us to run an encoder against an address of their choosing would be
+   * asking us to read whatever that address points at -- a local file, an
+   * internal host -- and broadcast it. The operator says which run to produce;
+   * the deployment says where its media comes from.
+   *
+   * Null means this deployment produces no programme media at all, which is
+   * reported at boot rather than discovered as an empty playlist.
+   */
+  programmeMediaOriginInput: string | null;
   webrtcAudioChunkStagingDir: string;
   /** `off` = batch transcription declared unavailable (CTO ruling 30 Aug 2026). */
   transcriptionProvider: 'off' | 'mock' | 'faster-whisper';
@@ -484,6 +497,25 @@ export function loadConfig(): IngestConfig {
   // service looks perfectly healthy in its own logs. Proven on the staging
   // box: `listen(port, 'localhost')` produced a [::1]-only listener.
   const host = process.env['INGEST_HOST'] ?? '127.0.0.1';
+  /*
+   * The programme media source, as a template with `{runId}` in it.
+   *
+   * REFUSED UNLESS IT NAMES A RUN. A template without the placeholder would
+   * point every broadcast on the host at one source: two programmes would
+   * produce each other's pictures, and the mistake would look like a working
+   * deployment until somebody watched the wrong channel.
+   */
+  const originInputRaw = process.env['PROGRAMME_MEDIA_ORIGIN_INPUT']?.trim() || null;
+  let originInputTemplate: string | null = null;
+  if (originInputRaw !== null) {
+    if (originInputRaw.includes('{runId}')) {
+      originInputTemplate = originInputRaw;
+    } else {
+      logger.warn(
+        'PROGRAMME_MEDIA_ORIGIN_INPUT does not contain {runId}; programme media production is off',
+      );
+    }
+  }
   const publicIngest = resolvePublicIngestUrl(process.env, {
     defaultPort: port,
     serviceName: 'media-ingest',
@@ -508,6 +540,7 @@ export function loadConfig(): IngestConfig {
     eventId: process.env['EVENT_ID'] ?? 'demo-event',
     videoSource,
     uploadMaxBytes: readPositiveInt('INGEST_UPLOAD_MAX_BYTES', 2_147_483_648),
+    programmeMediaOriginInput: originInputTemplate,
     audioChunkDir:
       process.env['AUDIO_CHUNK_DIR'] ?? resolve(process.cwd(), '../../uploads/audio-chunks'),
     webrtcAudioChunkStagingDir:
