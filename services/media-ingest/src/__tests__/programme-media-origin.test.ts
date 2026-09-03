@@ -439,17 +439,35 @@ describe('the running service composes this producer', () => {
     expect(source).not.toContain('req.body.input');
   });
 
-  it('starts the encoder when a broadcast opens, not when somebody presses a button', () => {
+  it('begins producing when a broadcast opens, not when somebody presses a button', () => {
     /*
      * A protected broadcast cannot depend on an operator remembering: the
      * delay begins filling the moment the programme goes on air, and a
      * producer started a minute late is a minute of the broadcast the
      * audience will never be able to reach.
      */
-    expect(source).toContain('Programme media origin started for a new broadcast');
     expect(source).toMatch(
-      /onRunOpened\(\(runId\) => \{[\s\S]{0,400}programmeOrigin\.start\(runId/u,
+      /onRunOpened\(\(runId\) => \{[\s\S]{0,900}programmeOrigin\.(observe|start)\(runId/u,
     );
+  });
+
+  it('collects the gateway encoder rather than starting a second one', () => {
+    /*
+     * THE CANONICAL PATH. The broadcaster published once and the gateway
+     * already holds the decoded frames, so it encodes them there. Spawning
+     * here as well would be a second encode of one programme and a second
+     * contribution path that can drift from the first -- and then there is no
+     * good answer to which feed is the actual programme.
+     */
+    expect(source).toContain("config.programmeContributionSource === 'webrtc'");
+    expect(source).toContain('programmeOrigin.observe(runId)');
+    expect(source).toContain('Collecting protected media the gateway is producing');
+  });
+
+  it('still pulls a professional stream itself when one is named', () => {
+    // SRT from a studio or an OB van, or RTMP for compatibility. The encoder
+    // is ours in that case, and the segments are identical either way.
+    expect(source).toContain('programmeOrigin.start(runId, template.replace');
   });
 
   it('does not encode for a run whose audience receives the tracks directly', () => {
@@ -474,8 +492,13 @@ describe('the running service composes this producer', () => {
      * than no protection, because somebody would rely on it.
      */
     expect(source).toContain("config.programmeMediaDelivery === 'delayed'");
-    // Both conditions, and the honest fallback when either is missing.
-    expect(source).toContain('config.programmeMediaOriginInput !== null &&');
+    /*
+     * Both conditions, and the honest fallback when either is missing. A
+     * WebRTC deployment has an origin without naming one -- the gateway is it
+     * -- so the check is that a source EXISTS, not that a URL was configured.
+     */
+    expect(source).toMatch(/programmeContributionSource === 'webrtc' \|\|/u);
+    expect(source).toContain('config.programmeMediaOriginInput !== null)');
     expect(source).toContain('METADATA_PLANE_ONLY');
   });
 });

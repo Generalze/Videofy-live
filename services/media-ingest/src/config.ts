@@ -100,6 +100,21 @@ export interface IngestConfig {
    * worse than having no protection at all, because somebody would rely on it.
    */
   programmeMediaDelivery: 'live' | 'delayed';
+  /**
+   * Where a protected programme's media comes from.
+   *
+   * `webrtc` is the canonical path and the default: the broadcaster publishes
+   * once, the gateway already holds the decoded frames, and it runs the
+   * encoder there rather than sending raw video between two of our own
+   * services. This service collects the segments from the shared spool and
+   * never spawns an encoder of its own -- a second one would be a second
+   * encode of the same programme.
+   *
+   * `srt` and `rtmp` are for professional contribution, where a studio or an
+   * OB van sends a stream this service pulls itself. SRT is preferred where
+   * the source supports it; RTMP stays for compatibility.
+   */
+  programmeContributionSource: 'webrtc' | 'srt' | 'rtmp';
   webrtcAudioChunkStagingDir: string;
   /** `off` = batch transcription declared unavailable (CTO ruling 30 Aug 2026). */
   transcriptionProvider: 'off' | 'mock' | 'faster-whisper';
@@ -530,6 +545,22 @@ export function loadConfig(): IngestConfig {
    * deployment until somebody watched the wrong channel.
    */
   /*
+   * WHICH CONTRIBUTION PATH THIS DEPLOYMENT USES, read from the input it names.
+   *
+   * No separate switch to get out of step with the URL. A template that says
+   * `srt://` is a deployment pulling a professional stream; one that says
+   * `rtmp://` is the same for compatibility; and no template at all is the
+   * ordinary case -- a browser broadcaster whose frames the gateway already
+   * has, encoded there rather than shipped between services as raw video.
+   */
+  const contributionSource: 'webrtc' | 'srt' | 'rtmp' = (() => {
+    const raw = process.env['PROGRAMME_MEDIA_ORIGIN_INPUT']?.trim().toLowerCase() ?? '';
+    if (raw.startsWith('srt://')) return 'srt';
+    if (raw.startsWith('rtmp://') || raw.startsWith('rtmps://')) return 'rtmp';
+    return 'webrtc';
+  })();
+
+  /*
    * HOW THE ORIGINAL REACHES A LISTENER, and why `delayed` is not yet allowed.
    *
    * The gateway relays the broadcaster's audio and video frames to each
@@ -596,6 +627,7 @@ export function loadConfig(): IngestConfig {
     programmeMediaOriginInput: originInputTemplate,
     programmeSafetyDelayMs: safetyDelayMs,
     programmeMediaDelivery: mediaDelivery,
+    programmeContributionSource: contributionSource,
     audioChunkDir:
       process.env['AUDIO_CHUNK_DIR'] ?? resolve(process.cwd(), '../../uploads/audio-chunks'),
     webrtcAudioChunkStagingDir:

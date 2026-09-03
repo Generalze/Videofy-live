@@ -1087,7 +1087,9 @@ const programmeJournal = new JournalTimelineStore({
  * required; either alone is a promise nothing keeps.
  */
 const programmeMediaProduced =
-  config.programmeMediaOriginInput !== null && config.programmeMediaDelivery === 'delayed';
+  (config.programmeContributionSource === 'webrtc' ||
+    config.programmeMediaOriginInput !== null) &&
+  config.programmeMediaDelivery === 'delayed';
 const programmeTimelines = new ProgrammeTimelineRegistry(
   undefined,
   config.programmeSafetyDelayMs,
@@ -1394,7 +1396,13 @@ app.delete('/programmes/:runId/media-origin', operatorOnly, (req, res) => {
  */
 const programmeDelivery = new ProgrammeDeliveryReporter({
   configuredMode: config.programmeMediaDelivery,
-  originConfigured: config.programmeMediaOriginInput !== null,
+  /*
+   * A WebRTC deployment has an origin without naming one: the gateway is it.
+   * Requiring a template here would report every browser broadcast as having
+   * no media origin, which is the opposite of the truth.
+   */
+  originConfigured:
+    config.programmeContributionSource === 'webrtc' || config.programmeMediaOriginInput !== null,
   trackedRuns: () => programmeTimelines.trackedRuns(),
   facts: (runId) => {
     const manifest = programmeEgress.manifest(runId);
@@ -1496,10 +1504,31 @@ if (advertisingClient.configured) {
  * nothing reads.
  */
 programmeTimelines.onRunOpened((runId) => {
+  if (config.programmeMediaDelivery !== 'delayed') return;
+  if (config.programmeContributionSource === 'webrtc') {
+    /*
+     * THE ENCODER IS THE GATEWAY'S, and this service must not start a second
+     * one. The broadcaster published once; the gateway already holds the
+     * decoded frames and encodes them there. Spawning here as well would be a
+     * second encode of one programme and a second contribution path that can
+     * drift from the first.
+     */
+    if (programmeOrigin.observe(runId)) {
+      logger.info('Collecting protected media the gateway is producing', { runId });
+    }
+    return;
+  }
   const template = config.programmeMediaOriginInput;
-  if (template === null || config.programmeMediaDelivery !== 'delayed') return;
+  if (template === null) return;
+  // Professional contribution: a studio or OB van sends a stream this service
+  // pulls itself, and the encoder is ours.
   void programmeOrigin.start(runId, template.replace('{runId}', runId)).then((started) => {
-    if (started) logger.info('Programme media origin started for a new broadcast', { runId });
+    if (started) {
+      logger.info('Programme media origin started for a new broadcast', {
+        runId,
+        source: config.programmeContributionSource,
+      });
+    }
   });
 });
 

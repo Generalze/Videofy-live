@@ -239,6 +239,64 @@ export class ProgrammeMediaOrigin {
   }
 
   /**
+   * Collect a run whose encoder is somebody else's.
+   *
+   * THE CANONICAL PATH. A browser broadcaster publishes once, over WebRTC, and
+   * the gateway -- which already holds the decoded frames -- runs the encoder.
+   * This service must not spawn a second one: that would be a second encode of
+   * the same programme, and a second contribution path that can drift from the
+   * first.
+   *
+   * So this registers the run and polls the same spool, and everything
+   * downstream is identical. The segments, the generations, the timeline and
+   * the cursor cannot tell which process produced them, which is the point.
+   */
+  observe(runId: string): boolean {
+    if (this.runs.has(runId)) return false;
+    const generation = (this.generations.get(runId) ?? -1) + 1;
+    this.generations.set(runId, generation);
+    const directory = join(this.deps.spoolRoot, runId);
+
+    this.deps.egress.noteInitSegment(runId, join(directory, initFileName(generation)), generation);
+    const running: RunningOrigin = {
+      // Nothing to stop and nothing to wait for: the process belongs to the
+      // gateway, and pretending otherwise would let this service think it
+      // could restart somebody else's encoder.
+      process: { exited: new Promise<OriginRunResult>(() => undefined), stop: () => undefined },
+      directory,
+      seen: new Set<string>(),
+      endProgrammeTimeMs: this.resumeAt.get(runId) ?? 0,
+      timer: null,
+      stopping: false,
+      generation,
+    };
+    this.runs.set(runId, running);
+    running.timer = setInterval(() => {
+      void this.collect(runId);
+    }, this.pollMs);
+    running.timer.unref?.();
+    return true;
+  }
+
+  /**
+   * Follow the encoder into a new generation it started without us.
+   *
+   * The gateway rotates its encoder when the source changes shape. This side
+   * has to notice, or it keeps reading a playlist nothing is writing to any
+   * more and the broadcast quietly stops producing.
+   */
+  advanceGeneration(runId: string): boolean {
+    const running = this.runs.get(runId);
+    if (running === undefined) return false;
+    const generation = running.generation + 1;
+    this.generations.set(runId, generation);
+    if (running.timer !== null) clearInterval(running.timer);
+    this.runs.delete(runId);
+    this.observe(runId);
+    return this.runs.get(runId)?.generation === generation;
+  }
+
+  /**
    * Read the playlist and register whatever has been completed since last time.
    *
    * Public so a test can drive it deterministically rather than waiting on a
