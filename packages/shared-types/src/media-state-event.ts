@@ -102,6 +102,16 @@ export interface WebRtcTranscriptionBridgeMetadata {
 export interface MediaStateEvent {
   /** Stable identifier for the live event. */
   eventId: string;
+  /**
+   * Which BROADCAST this state belongs to, when it belongs to one.
+   *
+   * The console needs it to ask what that run is measurably doing and how much
+   * delay it is really holding -- questions that are about one airing, not
+   * about the programme in general. Optional because this event also describes
+   * contexts that have no run, and a console that receives none must say it
+   * cannot report rather than report about nothing.
+   */
+  programmeRunId?: string;
   /** Unique stream identifier generated when local media is accepted. */
   streamId?: string;
   /**

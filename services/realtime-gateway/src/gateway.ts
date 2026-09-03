@@ -2382,8 +2382,11 @@ export class Gateway {
       retained && retained.processingSessionId === config.sessionId
         ? retained.videoTimestampMs
         : 0;
+    const run = this.programmeRuns.get(config.sessionId);
     const state: MediaStateEvent = {
       eventId: 'Videofy Live Demo Event',
+      // So the console can ask what THIS airing is doing.
+      ...(run === undefined ? {} : { programmeRunId: run.runId }),
       streamId: config.broadcastId,
       processingSessionId: config.sessionId,
       shareableWebRtcSessionId,
