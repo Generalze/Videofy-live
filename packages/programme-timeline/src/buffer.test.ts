@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { ProgrammeTimeline } from './index.js';
-import { ProgrammeOutputBuffer } from './buffer.js';
+import { METADATA_PLANE_ONLY, ProgrammeOutputBuffer } from './buffer.js';
 
 const RUN = { channelId: 'ch_1', programmeId: 'prog_1', runId: 'run_1' };
 
@@ -25,10 +25,32 @@ function authorSeconds(timeline: ProgrammeTimeline, seconds: number, fromMs = 0)
   }
 }
 
+/**
+ * A buffer whose every delivery plane is governed by the cursor.
+ *
+ * These tests are about buffer MECHANICS -- depth, release, states -- so they
+ * declare full governance. Whether a real deployment has it is a separate
+ * question with its own tests at the bottom of this file.
+ */
+const ALL_PLANES = { metadata: true, media: true } as const;
+
+function bufferFor(
+  timeline: ProgrammeTimeline,
+  delayMs: number,
+  policy?: { onLoss: 'fail-closed' | 'continue-unbuffered' },
+): ProgrammeOutputBuffer {
+  return new ProgrammeOutputBuffer(
+    timeline,
+    delayMs,
+    policy ?? { onLoss: 'fail-closed' },
+    ALL_PLANES,
+  );
+}
+
 describe('a configured delay is not a delay that exists', () => {
   it('is filling, and not protected, before the depth is reached', () => {
     const timeline = new ProgrammeTimeline(RUN);
-    const buffer = new ProgrammeOutputBuffer(timeline, 45_000);
+    const buffer = bufferFor(timeline, 45_000);
     authorSeconds(timeline, 12);
     buffer.advance();
 
@@ -43,7 +65,7 @@ describe('a configured delay is not a delay that exists', () => {
 
   it('becomes protected only once the depth reaches the target', () => {
     const timeline = new ProgrammeTimeline(RUN);
-    const buffer = new ProgrammeOutputBuffer(timeline, 10_000);
+    const buffer = bufferFor(timeline, 10_000);
     authorSeconds(timeline, 10);
     buffer.advance();
 
@@ -55,7 +77,7 @@ describe('a configured delay is not a delay that exists', () => {
 
   it('holds exactly the configured depth once running', () => {
     const timeline = new ProgrammeTimeline(RUN);
-    const buffer = new ProgrammeOutputBuffer(timeline, 10_000);
+    const buffer = bufferFor(timeline, 10_000);
     authorSeconds(timeline, 30);
     buffer.advance();
 
@@ -70,7 +92,7 @@ describe('a configured delay is not a delay that exists', () => {
 describe('what the audience receives, and when', () => {
   it('releases only what has aged past the delay', () => {
     const timeline = new ProgrammeTimeline(RUN);
-    const buffer = new ProgrammeOutputBuffer(timeline, 5_000);
+    const buffer = bufferFor(timeline, 5_000);
     authorSeconds(timeline, 8);
 
     const released = buffer.advance();
@@ -86,7 +108,7 @@ describe('what the audience receives, and when', () => {
 
   it('releases each event exactly once', () => {
     const timeline = new ProgrammeTimeline(RUN);
-    const buffer = new ProgrammeOutputBuffer(timeline, 2_000);
+    const buffer = bufferFor(timeline, 2_000);
     authorSeconds(timeline, 5);
 
     const first = buffer.advance().map((e) => e.reference);
@@ -100,7 +122,7 @@ describe('what the audience receives, and when', () => {
 
   it('keeps an advert in the order it was placed against the programme', () => {
     const timeline = new ProgrammeTimeline(RUN);
-    const buffer = new ProgrammeOutputBuffer(timeline, 3_000);
+    const buffer = bufferFor(timeline, 3_000);
     authorSeconds(timeline, 10);
     timeline.append({
       programmeTimeMs: 4_000,
@@ -122,7 +144,7 @@ describe('what the audience receives, and when', () => {
 describe('the cursor never goes backwards', () => {
   it('does not rewind the audience when the delay is increased', () => {
     const timeline = new ProgrammeTimeline(RUN);
-    const buffer = new ProgrammeOutputBuffer(timeline, 2_000);
+    const buffer = bufferFor(timeline, 2_000);
     authorSeconds(timeline, 20);
     buffer.advance();
     const before = buffer.status().cursor.publicOutputTimeMs;
@@ -137,7 +159,7 @@ describe('the cursor never goes backwards', () => {
 
   it('does not skip the audience forward when the delay is reduced', () => {
     const timeline = new ProgrammeTimeline(RUN);
-    const buffer = new ProgrammeOutputBuffer(timeline, 10_000);
+    const buffer = bufferFor(timeline, 10_000);
     authorSeconds(timeline, 30);
     buffer.advance();
 
@@ -154,7 +176,7 @@ describe('the cursor never goes backwards', () => {
 describe('losing the buffer is not a quiet downgrade', () => {
   it('stops the public output by default rather than reverting to live', () => {
     const timeline = new ProgrammeTimeline(RUN);
-    const buffer = new ProgrammeOutputBuffer(timeline, 10_000);
+    const buffer = bufferFor(timeline, 10_000);
     authorSeconds(timeline, 20);
     buffer.advance();
     expect(buffer.status().protected).toBe(true);
@@ -173,7 +195,7 @@ describe('losing the buffer is not a quiet downgrade', () => {
 
   it('can be told to continue unbuffered, which is a different mode', () => {
     const timeline = new ProgrammeTimeline(RUN);
-    const buffer = new ProgrammeOutputBuffer(timeline, 10_000, { onLoss: 'continue-unbuffered' });
+    const buffer = bufferFor(timeline, 10_000, { onLoss: 'continue-unbuffered' });
     authorSeconds(timeline, 20);
     buffer.advance();
     buffer.fail('spool storage unavailable');
@@ -185,7 +207,7 @@ describe('losing the buffer is not a quiet downgrade', () => {
 
   it('tells filling and degraded apart, because they promise different things', () => {
     const timeline = new ProgrammeTimeline(RUN);
-    const buffer = new ProgrammeOutputBuffer(timeline, 10_000);
+    const buffer = bufferFor(timeline, 10_000);
 
     authorSeconds(timeline, 4);
     buffer.advance();
@@ -208,7 +230,7 @@ describe('losing the buffer is not a quiet downgrade', () => {
 describe('no delay configured is an honest state, not a broken one', () => {
   it('is inactive and says the programme goes out live', () => {
     const timeline = new ProgrammeTimeline(RUN);
-    const buffer = new ProgrammeOutputBuffer(timeline, 0);
+    const buffer = bufferFor(timeline, 0);
     authorSeconds(timeline, 5);
     const released = buffer.advance();
 
@@ -217,5 +239,57 @@ describe('no delay configured is an honest state, not a broken one', () => {
     expect(buffer.status().detail).toContain('goes out live');
     // Everything reaches the audience immediately, which is what live means.
     expect(released).toHaveLength(5);
+  });
+});
+
+/*
+ * The plane that is not governed.
+ *
+ * A programme reaches its audience over two paths. Captions, translated audio
+ * and advertising are emitted by this service and can be held. Original audio
+ * and video are forwarded live from the broadcaster's tracks to each listener,
+ * with nowhere to hold them.
+ *
+ * Delaying one and not the other is worse than delaying neither: the audience
+ * hears the speaker now and reads the caption in forty-five seconds, and an
+ * operator has been told the programme is protected.
+ */
+describe('a protective delay requires every plane, or none', () => {
+  it('refuses protection when original media is not held to the cursor', () => {
+    const timeline = new ProgrammeTimeline(RUN);
+    const buffer = new ProgrammeOutputBuffer(timeline, 45_000, undefined, METADATA_PLANE_ONLY);
+
+    const status = buffer.status();
+    expect(status.state).toBe('failed');
+    expect(status.protected).toBe(false);
+    expect(status.detail).toContain('not held to the output cursor');
+  });
+
+  it('refuses it on a later configure too, not only at construction', () => {
+    const timeline = new ProgrammeTimeline(RUN);
+    const buffer = new ProgrammeOutputBuffer(timeline, 0, undefined, METADATA_PLANE_ONLY);
+    expect(buffer.status().state).toBe('inactive');
+
+    buffer.configure(45_000);
+    expect(buffer.status().protected).toBe(false);
+    expect(buffer.status().state).toBe('failed');
+  });
+
+  it('still allows going live, which is a legitimate way to broadcast', () => {
+    const timeline = new ProgrammeTimeline(RUN);
+    const buffer = new ProgrammeOutputBuffer(timeline, 45_000, undefined, METADATA_PLANE_ONLY);
+    // Removing the delay must never be unreachable because protection was once
+    // impossible: unbuffered is a real mode, not a punishment.
+    buffer.configure(0);
+    expect(buffer.status().state).toBe('inactive');
+    expect(buffer.status().detail).toContain('goes out live');
+  });
+
+  it('protects normally once every plane is governed', () => {
+    const timeline = new ProgrammeTimeline(RUN);
+    const buffer = bufferFor(timeline, 10_000);
+    authorSeconds(timeline, 10);
+    buffer.advance();
+    expect(buffer.status().protected).toBe(true);
   });
 });

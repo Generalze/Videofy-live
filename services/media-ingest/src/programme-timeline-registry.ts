@@ -16,10 +16,12 @@
  */
 
 import {
+  METADATA_PLANE_ONLY,
   ProgrammeOutputBuffer,
   ProgrammeTimeline,
   type BufferPolicy,
   type BufferStatus,
+  type GovernedPlanes,
 } from '@videofy-live/programme-timeline';
 import type { ProgrammeRunIdentity } from '@videofy-live/media-ingress-wire';
 import type { ProgrammeTimelineStore } from '@videofy-live/programme-timeline';
@@ -60,6 +62,15 @@ export class ProgrammeTimelineRegistry {
      * restart -- which `durable()` reports so nobody has to guess.
      */
     private readonly store?: ProgrammeTimelineStore,
+    /**
+     * Which delivery planes this deployment actually holds to the cursor.
+     *
+     * Metadata only, today: original media is forwarded live from the
+     * broadcaster's tracks to each listener and there is nowhere to hold it.
+     * A protective delay is therefore refused rather than half applied, and
+     * this is the parameter a deployment changes when that stops being true.
+     */
+    private readonly planes: GovernedPlanes = METADATA_PLANE_ONLY,
   ) {}
 
   /**
@@ -101,10 +112,12 @@ export class ProgrammeTimelineRegistry {
         attributes: event.attributes,
       });
     }
-    const buffer =
-      this.policy === undefined
-        ? new ProgrammeOutputBuffer(timeline, this.defaultDelayMs)
-        : new ProgrammeOutputBuffer(timeline, this.defaultDelayMs, this.policy);
+    const buffer = new ProgrammeOutputBuffer(
+      timeline,
+      this.defaultDelayMs,
+      this.policy,
+      this.planes,
+    );
     buffer.restoreReleasedThrough(persisted.releasedThroughMs);
     this.runs.set(identity.runId, { identity, timeline, buffer });
     this.evictOldest();
@@ -144,10 +157,12 @@ export class ProgrammeTimelineRegistry {
             });
           },
     );
-    const buffer =
-      this.policy === undefined
-        ? new ProgrammeOutputBuffer(timeline, this.defaultDelayMs)
-        : new ProgrammeOutputBuffer(timeline, this.defaultDelayMs, this.policy);
+    const buffer = new ProgrammeOutputBuffer(
+      timeline,
+      this.defaultDelayMs,
+      this.policy,
+      this.planes,
+    );
     tracked.buffer = buffer;
     this.runs.set(identity.runId, { identity, timeline, buffer });
     this.evictOldest();

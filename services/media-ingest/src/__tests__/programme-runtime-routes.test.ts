@@ -97,7 +97,10 @@ describe('a running broadcast reports what is true', () => {
   });
 
   it('reports the buffer as filling, with the depth it is really holding', async () => {
-    const timelines = new ProgrammeTimelineRegistry(32, 45_000);
+    const timelines = new ProgrammeTimelineRegistry(32, 45_000, undefined, undefined, {
+      metadata: true,
+      media: true,
+    });
     const timeline = timelines.open(RUN);
     for (let i = 0; i < 12; i += 1) {
       timeline.append({ programmeTimeMs: i * 1000, kind: 'media', reference: `s${i}`, durationMs: 1000 });

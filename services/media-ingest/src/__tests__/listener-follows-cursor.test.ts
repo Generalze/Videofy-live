@@ -49,7 +49,11 @@ function rig(delayMs: number): {
   readonly pump: ProgrammeOutputPump;
   readonly received: string[];
 } {
-  const registry = new ProgrammeTimelineRegistry(32, delayMs);
+  // These exercise cursor mechanics, so every plane is declared governed.
+  const registry = new ProgrammeTimelineRegistry(32, delayMs, undefined, undefined, {
+    metadata: true,
+    media: true,
+  });
   registry.open(RUN);
   const buffer = registry.buffer('run_1');
   if (buffer === null) throw new Error('no buffer');
@@ -190,5 +194,54 @@ describe('a payload with nothing holding it open', () => {
     // A hole in somebody's broadcast is reported, never absorbed silently.
     expect(dropped).toBeGreaterThan(0);
     expect(loud.pendingCount).toBeLessThanOrEqual(5_000);
+  });
+});
+
+/*
+ * ORIGINAL MEDIA IS NOT ON THE CURSOR, AND THE PRODUCT SAYS SO.
+ *
+ * A programme reaches its audience over two paths. Captions, translated audio
+ * and advertising are emitted by this service and are held against the cursor
+ * by the pump above. Original audio and video are forwarded by the gateway
+ * straight from the broadcaster's tracks onto each listener's peer connection,
+ * in real time, with nowhere to hold them.
+ *
+ * Holding one and not the other is worse than holding neither: the audience
+ * would hear the speaker now and read the caption forty-five seconds later,
+ * while the operator had been told the programme was protected. So the default
+ * deployment refuses protection instead of applying half of it, and these pin
+ * that refusal until the media plane is genuinely governed.
+ */
+describe('a protective delay is refused while original media bypasses the cursor', () => {
+  it('fails closed on the deployment default rather than delaying half a broadcast', () => {
+    // No governance argument: exactly what production constructs today.
+    const registry = new ProgrammeTimelineRegistry(32, 45_000);
+    registry.open(RUN);
+
+    const status = registry.status('run_1');
+    expect(status?.state).toBe('failed');
+    expect(status?.protected).toBe(false);
+    expect(status?.detail).toContain('not held to the output cursor');
+  });
+
+  it('still allows an unbuffered programme, which is a real way to broadcast', () => {
+    const registry = new ProgrammeTimelineRegistry(32, 0);
+    registry.open(RUN);
+    expect(registry.status('run_1')?.state).toBe('inactive');
+  });
+
+  it('protects once a deployment declares the media plane governed', () => {
+    // The single line a deployment changes when original media is genuinely
+    // held. Until then the line above is the honest one.
+    const registry = new ProgrammeTimelineRegistry(32, 10_000, undefined, undefined, {
+      metadata: true,
+      media: true,
+    });
+    const timeline = registry.open(RUN);
+    for (let i = 0; i < 15; i += 1) {
+      timeline.append({ programmeTimeMs: i * 1000, kind: 'media', reference: `m${i}`, durationMs: 1000 });
+    }
+    registry.buffer('run_1')?.advance();
+    expect(registry.status('run_1')?.protected).toBe(true);
   });
 });

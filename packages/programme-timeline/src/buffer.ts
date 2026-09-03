@@ -52,6 +52,31 @@ export interface BufferStatus {
   readonly detail: string;
 }
 
+/**
+ * Which delivery planes the cursor actually governs.
+ *
+ * A programme reaches its audience over two of them. The METADATA plane --
+ * captions, translated audio, advertising, programme state -- is emitted by
+ * this service and can be held against the cursor. The MEDIA plane is the
+ * original audio and video, forwarded by the gateway straight from the
+ * broadcaster's tracks onto each listener's peer connection, in real time,
+ * with nowhere to hold it.
+ *
+ * DELAYING ONE AND NOT THE OTHER IS WORSE THAN DELAYING NEITHER. The audience
+ * would hear the speaker live and read the caption forty-five seconds later,
+ * and an operator would have been told the programme was protected. So a
+ * protective delay is refused unless every time-sensitive plane is governed,
+ * and this flag is how the deployment says whether it is.
+ */
+export interface GovernedPlanes {
+  readonly metadata: boolean;
+  /** True only where original media is actually held to the cursor. */
+  readonly media: boolean;
+}
+
+/** What the current architecture governs: metadata only. */
+export const METADATA_PLANE_ONLY: GovernedPlanes = { metadata: true, media: false };
+
 export interface BufferPolicy {
   /**
    * What happens when the buffer cannot hold its configured depth.
@@ -74,6 +99,12 @@ export const DEFAULT_BUFFER_POLICY: BufferPolicy = { onLoss: 'fail-closed' };
  * would flap between active and degraded on every event.
  */
 export const DEPTH_TOLERANCE_MS = 750;
+
+/** Said in full, because an operator reading it has to know what to do. */
+export const UNGOVERNED_MEDIA_PLANE =
+  'Original programme media is delivered live and is not held to the output cursor, ' +
+  'so a safety delay would hold captions and translated audio while the audience heard ' +
+  'the speaker immediately. Protection is refused rather than half applied.';
 
 /**
  * The rolling output buffer over one run's timeline.
@@ -98,8 +129,22 @@ export class ProgrammeOutputBuffer {
     private readonly timeline: ProgrammeTimeline,
     private configuredDelayMs = 0,
     private readonly policy: BufferPolicy = DEFAULT_BUFFER_POLICY,
+    private readonly planes: GovernedPlanes = METADATA_PLANE_ONLY,
   ) {
     this.state = configuredDelayMs > 0 ? 'filling' : 'inactive';
+    if (configuredDelayMs > 0 && !this.everyPlaneGoverned()) {
+      this.fail(UNGOVERNED_MEDIA_PLANE);
+    }
+  }
+
+  /**
+   * Is every time-sensitive plane actually held to the cursor?
+   *
+   * If not, the buffer cannot honestly claim protection, and says so rather
+   * than delaying half a broadcast.
+   */
+  private everyPlaneGoverned(): boolean {
+    return this.planes.metadata && this.planes.media;
   }
 
   /**
@@ -112,6 +157,20 @@ export class ProgrammeOutputBuffer {
    */
   configure(delayMs: number): void {
     this.configuredDelayMs = Math.max(0, Math.round(delayMs));
+    /*
+     * A delay may always be REMOVED, even from a failed buffer: going live is
+     * a legitimate state and must not be unreachable because protection was
+     * once impossible.
+     */
+    if (this.configuredDelayMs === 0) {
+      this.failure = null;
+      this.state = 'inactive';
+      return;
+    }
+    if (!this.everyPlaneGoverned()) {
+      this.fail(UNGOVERNED_MEDIA_PLANE);
+      return;
+    }
     if (this.state === 'failed') return;
     if (this.configuredDelayMs === 0) {
       this.state = 'inactive';

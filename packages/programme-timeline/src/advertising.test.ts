@@ -21,6 +21,9 @@ import {
 
 const RUN = { channelId: 'ch_1', programmeId: 'prog_1', runId: 'run_1' };
 
+/** These exercise buffered delivery, so every plane is declared governed. */
+const ALL_PLANES = { metadata: true, media: true } as const;
+
 function decision(over: Partial<AdDecision> = {}): AdDecision {
   return {
     decisionId: 'dec_1',
@@ -49,7 +52,7 @@ function authoritySaying(outcome: AdDecision | null): AdvertisingAuthority {
 describe('an advert is a moment in the programme, not a fetch at playback', () => {
   it('is placed at a programme time and carried by the buffer like anything else', () => {
     const timeline = new ProgrammeTimeline(RUN);
-    const buffer = new ProgrammeOutputBuffer(timeline, 45_000);
+    const buffer = new ProgrammeOutputBuffer(timeline, 45_000, undefined, ALL_PLANES);
     for (let i = 0; i < 120; i += 1) {
       timeline.append({ programmeTimeMs: i * 1000, kind: 'media', reference: `s${i}`, durationMs: 1000 });
     }
@@ -69,7 +72,7 @@ describe('an advert is a moment in the programme, not a fetch at playback', () =
   it('reaches a delayed viewer in the same place as an undelayed one', () => {
     const build = (delayMs: number): readonly string[] => {
       const timeline = new ProgrammeTimeline(RUN);
-      const buffer = new ProgrammeOutputBuffer(timeline, delayMs);
+      const buffer = new ProgrammeOutputBuffer(timeline, delayMs, undefined, ALL_PLANES);
       for (let i = 0; i < 200; i += 1) {
         timeline.append({ programmeTimeMs: i * 1000, kind: 'media', reference: `s${i}`, durationMs: 1000 });
       }
