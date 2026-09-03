@@ -21,6 +21,8 @@ const SHARED_ENV_KEYS = [
   'TEXT_TO_SPEECH_SUPPORTED_LANGUAGES',
   'OPUS_MT_LANGUAGE_MODELS',
   'DEEPGRAM_API_KEY',
+  'PROGRAMME_MEDIA_ORIGIN_INPUT',
+  'PROGRAMME_SAFETY_DELAY_MS',
 ] as const;
 
 let savedEnv: Record<string, string | undefined>;
@@ -464,5 +466,56 @@ describe('NLLB-200 fallback model config', () => {
 
     process.env['NLLB200_PYTHON'] = 'C:/nllb/python.exe';
     expect(loadConfig().nllb200PythonExecutable).toBe('C:/nllb/python.exe');
+  });
+});
+
+/*
+ * The two settings that decide whether a programme is protected, and whether
+ * anybody can be shown one. Both default to the safe answer, and both refuse
+ * a value that would produce a broadcast nobody could trust.
+ */
+describe('programme media production and the safety delay', () => {
+  it('produces no media and holds nothing, by default', () => {
+    const config = loadConfig();
+    expect(config.programmeMediaOriginInput).toBeNull();
+    // True live is the default and is a choice, not an omission.
+    expect(config.programmeSafetyDelayMs).toBe(0);
+  });
+
+  it('takes a source template that names the run', () => {
+    process.env['PROGRAMME_MEDIA_ORIGIN_INPUT'] = 'rtmp://127.0.0.1/live/{runId}';
+    expect(loadConfig().programmeMediaOriginInput).toBe('rtmp://127.0.0.1/live/{runId}');
+  });
+
+  it('refuses a template that does not name the run', () => {
+    /*
+     * One source shared by every broadcast on the host means two programmes
+     * carrying each other's pictures -- and it would look like a working
+     * deployment until somebody watched the wrong channel.
+     */
+    process.env['PROGRAMME_MEDIA_ORIGIN_INPUT'] = 'rtmp://127.0.0.1/live/stream';
+    expect(loadConfig().programmeMediaOriginInput).toBeNull();
+  });
+
+  it('accepts a delay of zero rather than treating it as unset', () => {
+    process.env['PROGRAMME_SAFETY_DELAY_MS'] = '0';
+    // Routed through a positive-integer reader, this would be a startup crash
+    // on a perfectly valid configuration.
+    expect(loadConfig().programmeSafetyDelayMs).toBe(0);
+  });
+
+  it('takes a configured delay', () => {
+    process.env['PROGRAMME_SAFETY_DELAY_MS'] = '45000';
+    expect(loadConfig().programmeSafetyDelayMs).toBe(45_000);
+  });
+
+  it('refuses a delay that is not a whole number of milliseconds', () => {
+    process.env['PROGRAMME_SAFETY_DELAY_MS'] = 'about a minute';
+    expect(() => loadConfig()).toThrow(/PROGRAMME_SAFETY_DELAY_MS/u);
+  });
+
+  it('refuses a negative delay', () => {
+    process.env['PROGRAMME_SAFETY_DELAY_MS'] = '-1000';
+    expect(() => loadConfig()).toThrow(/PROGRAMME_SAFETY_DELAY_MS/u);
   });
 });
