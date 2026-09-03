@@ -13,6 +13,12 @@ export interface CreateAppOptions {
    * to requests carrying the internal token when one is configured.
    */
   diagnostics?: () => unknown;
+  /**
+   * Whether a media ingest is connected to this gateway right now.
+   *
+   * Lazy, like the others: the app is built before the Gateway exists.
+   */
+  mediaIngestConnected?: () => boolean;
   internalToken?: string | null;
   /**
    * P6.5: lazy provider for the Connect /v1 router. A closure, not a router,
@@ -234,10 +240,32 @@ export function createApp(options: CreateAppOptions = {}): express.Application {
     });
   }
 
+  /**
+   * PLATFORM UP IS NOT PROGRAMME MEDIA CAPABLE, and this endpoint used to say
+   * otherwise.
+   *
+   * It answered `ok` unconditionally. In production the gateway and the
+   * account service both reported healthy for days while media ingest crash-
+   * looped 106,722 times and no programme could be transcribed, translated or
+   * spoken at all. Every signal an operator checks first was green.
+   *
+   * So the gateway now reports what it can actually see: whether a media
+   * ingest is connected to it. It does not go unhealthy for that -- calls and
+   * signalling genuinely work without it -- but it stops claiming a capability
+   * that is absent, and `programmeMediaCapable: false` is a thing a check can
+   * alert on.
+   */
   app.get('/health', (_req: Request, res: Response) => {
+    const ingestConnected = options.mediaIngestConnected?.() ?? null;
     res.json({
       status: 'ok',
       service: 'realtime-gateway',
+      /**
+       * Null when this build cannot tell. Null is not false: "nobody asked"
+       * and "asked and the answer was no" must not render the same, which is
+       * the mistake that produced the incident this field exists for.
+       */
+      programmeMediaCapable: ingestConnected,
       timestamp: new Date().toISOString(),
     });
   });

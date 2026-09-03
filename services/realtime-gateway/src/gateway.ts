@@ -220,6 +220,17 @@ export class Gateway {
   private readonly operatorAccounts = new Map<string, string>();
   private readonly activeWorkers = new Set<string>();
   private readonly activeIngestClients = new Set<string>();
+
+  /**
+   * Whether any media ingest is connected right now.
+   *
+   * Read by /health so the platform stops reporting a capability it does not
+   * have. A gateway with no ingest can still carry calls and signalling; it
+   * cannot carry a programme.
+   */
+  get mediaIngestConnected(): boolean {
+    return this.activeIngestClients.size > 0;
+  }
   /**
    * One programme per channel.
    *

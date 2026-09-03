@@ -284,6 +284,21 @@ app.use((req, res, next) => {
   next();
 });
 
+/**
+ * WHEN THIS PROCESS LAST STARTED, and how long it has stayed up.
+ *
+ * A crash loop starts successfully every time. Production's media ingest
+ * started successfully 106,722 times while every health check that asked "is
+ * the process alive" got a yes, because each check happened to land inside one
+ * of the three-second lives. So the number that matters is not whether it
+ * started but how long ago -- and a service that has been up for four seconds
+ * is telling you something quite different from one that has been up for a
+ * day.
+ */
+const processStartedAtMs = Date.now();
+/** Below this, a fresh start is indistinguishable from a crash loop. */
+const STABLE_UPTIME_MS = 60_000;
+
 app.get('/health', (_req, res) => {
   // "degraded", not "ok", when the gateway socket is down: the process is alive
   // and will happily accept and transcribe chunks, but nothing it produces can
@@ -302,10 +317,20 @@ app.get('/health', (_req, res) => {
   // is somebody's biometric data still on disk after they asked for it to go —
   // which is worth seeing without having to know to look.
   const strandedVoiceCleanups = voiceProfileStore.pendingCleanups().length;
+  const uptimeMs = Date.now() - processStartedAtMs;
   res.status(connected ? 200 : 503).json({
     status: connected ? 'ok' : 'degraded',
     service: 'media-ingest',
     gatewayConnected: connected,
+    /**
+     * How long this process has been running, and whether that is long enough
+     * to mean anything. A checker that reads `stable: false` is being told
+     * "ask me again shortly", which is the answer a crash loop can never grow
+     * out of.
+     */
+    uptimeMs,
+    stable: uptimeMs >= STABLE_UPTIME_MS,
+    startedAt: new Date(processStartedAtMs).toISOString(),
     /**
      * Whether this deployment can translate speech at all.
      *

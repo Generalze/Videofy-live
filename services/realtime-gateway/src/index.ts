@@ -81,6 +81,8 @@ const app = createApp({
   callStatus: (callId) => gateway.callStatus(callId),
   sessionSecret: process.env['VIDEOFY_AUTH_SECRET'],
   diagnostics: () => gateway.getWebRtcDiagnostics(),
+  // So /health can stop claiming a capability that is absent.
+  mediaIngestConnected: () => gateway.mediaIngestConnected,
   ...(adapterSurface === null
     ? {}
     : {
