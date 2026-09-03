@@ -33,6 +33,28 @@ import { join } from 'node:path';
 /** Media granularity. Small segments; the cursor decides what is public. */
 export const SEGMENT_SECONDS = 2;
 
+/**
+ * The initialisation object for one encoder run.
+ *
+ * Named by generation so a restart writes a NEW one and leaves the previous
+ * one where the fragments that need it can still find it.
+ */
+export function initFileName(generation: number): string {
+  return `init.${generation}.mp4`;
+}
+
+/**
+ * The packager's own playlist for one encoder run.
+ *
+ * Also per generation, and never served to anybody: it lists everything the
+ * encoder has produced, including the whole safety delay's worth of material
+ * the audience must not have. It exists so the supervisor can tell which
+ * segments are finished.
+ */
+export function playlistFileName(generation: number): string {
+  return `playlist.${generation}.m3u8`;
+}
+
 export interface MediaOriginOptions {
   readonly runId: string;
   /** Anything FFmpeg can read: a file, a pipe, an RTMP or SRT endpoint. */
@@ -42,6 +64,18 @@ export interface MediaOriginOptions {
   readonly segmentSeconds?: number;
   /** Extra input flags, for a live source that needs them. */
   readonly inputArgs?: readonly string[];
+  /**
+   * Which initialisation object this encoder run writes.
+   *
+   * A RESTART MUST NOT OVERWRITE THE PREVIOUS ONE. Codec configuration is
+   * carried in the init segment, and a restarted encoder can legitimately
+   * produce different configuration -- a different profile, a different sample
+   * rate. Every fragment still inside the retention window was written against
+   * the OLD one and stops decoding the moment it is replaced, which presents
+   * as an audience whose player dies partway through material it had already
+   * been offered.
+   */
+  readonly initGeneration?: number;
 }
 
 /**
@@ -112,10 +146,10 @@ export function buildOriginCommand(options: MediaOriginOptions): readonly string
      * running the real encoder; a mocked packager cannot have this bug.
      */
     '-hls_fmp4_init_filename',
-    join(options.outputDirectory, 'init.mp4'),
+    join(options.outputDirectory, initFileName(options.initGeneration ?? 0)),
     '-hls_segment_filename',
-    join(options.outputDirectory, 'seg_%05d.m4s'),
-    join(options.outputDirectory, 'playlist.m3u8'),
+    join(options.outputDirectory, `seg_g${options.initGeneration ?? 0}_%05d.m4s`),
+    join(options.outputDirectory, playlistFileName(options.initGeneration ?? 0)),
   ];
 }
 

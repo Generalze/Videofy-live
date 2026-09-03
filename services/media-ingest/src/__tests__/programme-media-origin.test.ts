@@ -21,7 +21,7 @@ import {
 } from '../programme-media-origin.js';
 import { ProgrammeMediaStore } from '../programme-media-store.js';
 import { ProgrammeTimelineRegistry } from '../programme-timeline-registry.js';
-import { ProgrammeEgressAuthority, initSegmentId } from '../programme-egress.js';
+import { ProgrammeEgressAuthority, initSegmentId, renderHlsManifest } from '../programme-egress.js';
 import type { MediaOriginOptions, OriginRunResult } from '../media-origin-worker.js';
 
 const RUN = { channelId: 'ch_1', programmeId: 'prog_1', runId: 'run_1' };
@@ -190,8 +190,11 @@ describe('where a segment sits in the broadcast', () => {
       .timeline('run_1')
       ?.all()
       .find((entry) => entry.kind === 'media');
-    // Two broadcasts on one host must never mint the same segment id.
-    expect(event?.reference).toBe('run_1.00000');
+    // Two broadcasts on one host must never mint the same segment id, and
+    // neither may two encoder runs of the SAME broadcast: a restart's
+    // seg_00000 under the first one's name would hand a viewer different
+    // bytes under a name they had already been offered.
+    expect(event?.reference).toBe('run_1.g0.00000');
   });
 });
 
@@ -299,6 +302,121 @@ describe('an encoder that stops', () => {
       .filter((event) => event.kind === 'media');
     expect(events).toHaveLength(3);
     expect(live.origin.produces('run_1')).toBe(false);
+  });
+});
+
+describe('an encoder that restarts mid-broadcast', () => {
+  /**
+   * Drive one run through two encoder runs, with material from the first still
+   * inside the retention window when the second begins.
+   */
+  async function restarted(): Promise<Rig> {
+    const live = rig();
+    await live.origin.start('run_1', 'rtmp://source/live');
+    live.setPlaylist(playlistOf(...Array.from({ length: 40 }, () => 2)));
+    await live.origin.collect('run_1');
+    await live.origin.stop('run_1');
+
+    /*
+     * The contribution came back. Same broadcast, new encoder -- and enough
+     * material after it that the restart boundary passes the cursor, because
+     * a manifest is only interesting once the audience has reached the part
+     * where the two generations meet.
+     */
+    live.setPlaylist(playlistOf(...Array.from({ length: 40 }, () => 2)));
+    await live.origin.start('run_1', 'rtmp://source/live');
+    await live.origin.collect('run_1');
+    return live;
+  }
+
+  it('writes a NEW initialisation object rather than replacing the old one', async () => {
+    const live = await restarted();
+    /*
+     * THE DEFECT THIS PREVENTS. Codec configuration lives in the init object,
+     * and a restarted encoder can legitimately produce different
+     * configuration. Every fragment still inside the retention window was
+     * written against the old one and stops decoding the moment it is
+     * replaced -- which arrives as a player dying partway through material it
+     * had already been offered, with nothing to attribute it to.
+     */
+    expect(live.egress.authorizeSegment('run_1', initSegmentId('run_1', 0)).allowed).toBe(true);
+    expect(live.egress.authorizeSegment('run_1', initSegmentId('run_1', 1)).allowed).toBe(true);
+  });
+
+  it('continues the broadcast rather than starting it again', async () => {
+    const live = await restarted();
+    const media = live.timelines
+      .timeline('run_1')
+      ?.all()
+      .filter((event) => event.kind === 'media');
+
+    // 40 segments before, 10 after, and the second run picks up where the
+    // first stopped: resetting programme time would place the new material on
+    // top of the old, and every caption and advert positioned against those
+    // moments would point at the wrong thing.
+    expect(media).toHaveLength(80);
+    expect(media?.[40]?.programmeTimeMs).toBe(80_000);
+  });
+
+  it('mints segment ids a restart cannot collide with', async () => {
+    const live = await restarted();
+    const references = live.timelines
+      .timeline('run_1')
+      ?.all()
+      .filter((event) => event.kind === 'media')
+      .map((event) => event.reference);
+
+    // The second encoder run's own seg_00000 under the first one's name would
+    // hand a viewer different bytes under a name they had already been given.
+    expect(new Set(references).size).toBe(references?.length);
+    expect(references?.[0]).toBe('run_1.g0.00000');
+    expect(references?.[40]).toBe('run_1.g1.00000');
+  });
+
+  it('offers each fragment the initialisation object that decodes it', async () => {
+    const live = await restarted();
+    const manifest = live.egress.manifest('run_1');
+    if (!manifest.available) throw new Error('unreachable');
+
+    const first = manifest.segments[0];
+    const acrossTheRestart = manifest.segments.find((entry) => entry.discontinuity);
+    expect(first?.initSegmentId).toBe(initSegmentId('run_1', 0));
+    /*
+     * A single map at the top of the playlist would be silently wrong for one
+     * half of the material a player is being offered, and the failure would
+     * arrive as a decode error partway through rather than as anything
+     * anybody could attribute.
+     */
+    expect(acrossTheRestart?.initSegmentId).toBe(initSegmentId('run_1', 1));
+  });
+
+  it('warns a player where the encoder changed', async () => {
+    const live = await restarted();
+    const manifest = live.egress.manifest('run_1');
+    if (!manifest.available) throw new Error('unreachable');
+    const rendered = renderHlsManifest(manifest, (id) => `/segments/${id}`);
+
+    // Timestamps and codec configuration can both change across a restart, and
+    // a decoder that is not warned treats the jump as corruption.
+    expect(rendered).toContain('#EXT-X-DISCONTINUITY');
+    // Both maps, in the order the fragments need them.
+    expect(rendered.indexOf(initSegmentId('run_1', 0))).toBeLessThan(
+      rendered.indexOf(initSegmentId('run_1', 1)),
+    );
+  });
+
+  it('does not announce a discontinuity at the start of the window', async () => {
+    const live = rig();
+    await live.origin.start('run_1', 'rtmp://source/live');
+    live.setPlaylist(playlistOf(...Array.from({ length: 60 }, () => 2)));
+    await live.origin.collect('run_1');
+    const manifest = live.egress.manifest('run_1');
+    if (!manifest.available) throw new Error('unreachable');
+
+    // A player joining at the first segment has nothing to be discontinuous
+    // with, and saying so would make every join look like a fault.
+    expect(manifest.segments[0]?.discontinuity).toBe(false);
+    expect(manifest.segments.filter((entry) => entry.discontinuity)).toHaveLength(0);
   });
 });
 

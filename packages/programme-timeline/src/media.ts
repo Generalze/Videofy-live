@@ -47,6 +47,20 @@ export interface ProgrammeMediaSegment {
   /** Where the bytes are. Opaque: a path, an object key, a URL. */
   readonly storageReference: string;
   readonly bytes: number;
+  /**
+   * Which initialisation object decodes this segment.
+   *
+   * A restarted encoder can legitimately produce different codec
+   * configuration, and every fragment already inside the retention window was
+   * written against the previous one. Carrying the generation is what lets a
+   * manifest offer BOTH -- the old init for the old fragments, the new one for
+   * the new -- instead of replacing an object that material still in the
+   * window depends on.
+   *
+   * Optional so a store that has never restarted an encoder need not think
+   * about it; absent means the first generation.
+   */
+  readonly initGeneration?: number;
 }
 
 export function segmentDurationMs(segment: ProgrammeMediaSegment): number {

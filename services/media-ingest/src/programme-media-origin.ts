@@ -36,6 +36,8 @@ import { join } from 'node:path';
 import type { ProgrammeMediaSegment } from '@videofy-live/programme-timeline';
 import {
   SEGMENT_SECONDS,
+  initFileName,
+  playlistFileName,
   runOrigin,
   type MediaOriginOptions,
   type OriginRunResult,
@@ -96,6 +98,8 @@ interface RunningOrigin {
   endProgrammeTimeMs: number;
   timer: ReturnType<typeof setInterval> | null;
   stopping: boolean;
+  /** Which encoder run this is for the broadcast. Restarts advance it. */
+  readonly generation: number;
 }
 
 /**
@@ -132,6 +136,10 @@ export function parsePlaylist(playlist: string): readonly PlaylistEntry[] {
 
 export class ProgrammeMediaOrigin {
   private readonly runs = new Map<string, RunningOrigin>();
+  /** The highest encoder generation used for each run, across restarts. */
+  private readonly generations = new Map<string, number>();
+  /** Where the broadcast had reached when its encoder last stopped. */
+  private readonly resumeAt = new Map<string, number>();
   private readonly spawner: OriginSpawner;
   private readonly pollMs: number;
   private readonly read: (path: string) => Promise<string | null>;
@@ -169,18 +177,34 @@ export class ProgrammeMediaOrigin {
     await mkdir(directory, { recursive: true });
 
     /*
+     * A NEW GENERATION FOR EVERY ENCODER RUN, and the previous one is left
+     * exactly where it is.
+     *
+     * A restarted encoder can legitimately produce different codec
+     * configuration, and every fragment still inside the retention window was
+     * written against the old initialisation object. Overwriting it stops
+     * material the audience has already been offered from decoding -- which
+     * arrives as a player dying partway through a broadcast, with nothing to
+     * attribute it to.
+     */
+    const generation = (this.generations.get(runId) ?? -1) + 1;
+    this.generations.set(runId, generation);
+    const programmeTimeMs = this.resumeAt.get(runId) ?? 0;
+
+    /*
      * REGISTERED BEFORE THE ENCODER IS EVEN STARTED. The path is deterministic
      * and nothing can be published before a segment exists, so noting it early
      * costs nothing and removes the window in which a fragment could be
      * offered without the thing that decodes it.
      */
-    this.deps.egress.noteInitSegment(runId, join(directory, 'init.mp4'));
+    this.deps.egress.noteInitSegment(runId, join(directory, initFileName(generation)), generation);
 
     const options: MediaOriginOptions = {
       runId,
       input,
       outputDirectory: directory,
       segmentSeconds: this.segmentSeconds,
+      initGeneration: generation,
       ...(inputArgs === undefined ? {} : { inputArgs }),
     };
     const process = this.spawner.start(options);
@@ -188,9 +212,17 @@ export class ProgrammeMediaOrigin {
       process,
       directory,
       seen: new Set<string>(),
-      endProgrammeTimeMs: 0,
+      /*
+       * A RESTART CONTINUES THE BROADCAST, it does not begin one. Programme
+       * time picks up where the previous encoder run left off; resetting it
+       * would place the new material on top of the old, and every caption and
+       * advert already positioned against those moments would point at the
+       * wrong thing.
+       */
+      endProgrammeTimeMs: programmeTimeMs,
       timer: null,
       stopping: false,
+      generation,
     };
     this.runs.set(runId, running);
 
@@ -217,7 +249,9 @@ export class ProgrammeMediaOrigin {
     const running = this.runs.get(runId);
     if (running === undefined) return 0;
 
-    const playlist = await this.read(join(running.directory, 'playlist.m3u8'));
+    const playlist = await this.read(
+      join(running.directory, playlistFileName(running.generation)),
+    );
     if (playlist === null) return 0;
 
     const timeline = this.deps.timelines.timeline(runId);
@@ -232,7 +266,12 @@ export class ProgrammeMediaOrigin {
         runId,
         // Opaque, and derived from the run so one broadcast's ids can never
         // collide with another's.
-        segmentId: `${runId}.${String(running.seen.size - 1).padStart(5, '0')}`,
+        /*
+         * The generation is in the id, so a restarted encoder's `seg_00000`
+         * can never collide with the first one's -- which would hand a viewer
+         * different bytes under a name they had already been offered.
+         */
+        segmentId: `${runId}.g${running.generation}.${String(running.seen.size - 1).padStart(5, '0')}`,
         startProgrammeTimeMs: startMs,
         endProgrammeTimeMs: endMs,
         /*
@@ -246,10 +285,14 @@ export class ProgrammeMediaOrigin {
         hasAudio: true,
         storageReference: join(running.directory, entry.fileName),
         bytes: 0,
+        initGeneration: running.generation,
       };
 
       if (!this.deps.media.accept(segment)) continue;
       running.endProgrammeTimeMs = endMs;
+      // Remembered outside the running record, so a restart can continue from
+      // here rather than from the beginning of the broadcast.
+      this.resumeAt.set(runId, endMs);
       timeline?.append({
         programmeTimeMs: startMs,
         kind: 'media',

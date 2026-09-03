@@ -8,7 +8,7 @@
  * what a fixture key reaching ElevenLabs actually did here.
  */
 const realFetch = globalThis.fetch;
-globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
   const url = String(input);
   if (/^https?:\/\//u.test(url) && !url.startsWith('http://127.0.0.1') && !url.startsWith('http://localhost')) {
     throw new Error(`A test tried to reach the network: ${url}`);

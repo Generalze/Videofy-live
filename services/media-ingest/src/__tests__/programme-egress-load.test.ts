@@ -245,7 +245,7 @@ describe('the cursor holds while it is moving and being read', () => {
      * lands. Guessing the newest name is the obvious move, and it must never
      * work once.
      */
-    const edge = `run_1.${String(TOTAL_SEGMENTS - 1).padStart(5, '0')}`;
+    const edge = `run_1.g0.${String(TOTAL_SEGMENTS - 1).padStart(5, '0')}`;
     const attempts = await pool(READERS, () => get(segmentUrl(edge)));
     await advancing;
 
@@ -268,7 +268,7 @@ describe('the cursor holds while it is moving and being read', () => {
      */
     const withheldFrom = TOTAL_SEGMENTS - DELAY_MS / SEGMENT_MS;
     for (let index = withheldFrom; index < TOTAL_SEGMENTS; index += 1) {
-      const id = `run_1.${String(index).padStart(5, '0')}`;
+      const id = `run_1.g0.${String(index).padStart(5, '0')}`;
       expect(text).not.toContain(id);
       const reply = await get(segmentUrl(id));
       expect(reply.status).not.toBe(200);

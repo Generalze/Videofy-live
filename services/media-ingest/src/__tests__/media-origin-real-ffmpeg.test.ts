@@ -23,6 +23,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   SEGMENT_SECONDS,
   buildOriginCommand,
+  initFileName,
   probeSegment,
   runOrigin,
 } from '../media-origin-worker.js';
@@ -67,7 +68,7 @@ suite('the production origin command produces playable segments', () => {
 
   it('writes an init segment and several media segments', async () => {
     const names = await readdir(directory);
-    expect(names).toContain('init.mp4');
+    expect(names).toContain(initFileName(0));
     // Ten seconds at two-second granularity.
     expect(produced.length).toBeGreaterThanOrEqual(4);
   });
@@ -88,7 +89,7 @@ suite('the production origin command produces playable segments', () => {
      * and therefore checked.
      */
     for (const name of produced) {
-      const probed = await probeSegment(join(directory, 'init.mp4'), join(directory, name));
+      const probed = await probeSegment(join(directory, initFileName(0)), join(directory, name));
       expect(probed, `could not probe ${name}`).not.toBeNull();
       expect(probed?.startsOnKeyframe, `${name} does not start on a keyframe`).toBe(true);
     }
@@ -96,7 +97,7 @@ suite('the production origin command produces playable segments', () => {
 
   it('gives each segment roughly the intended granularity', async () => {
     const probed = await probeSegment(
-      join(directory, 'init.mp4'),
+      join(directory, initFileName(0)),
       join(directory, produced[0] ?? ''),
     );
     // Not exact: an encoder lands on frame boundaries, not on our arithmetic.
@@ -106,7 +107,7 @@ suite('the production origin command produces playable segments', () => {
 
   it('carries video in every segment', async () => {
     for (const name of produced) {
-      const probed = await probeSegment(join(directory, 'init.mp4'), join(directory, name));
+      const probed = await probeSegment(join(directory, initFileName(0)), join(directory, name));
       expect(probed?.hasVideo, `${name} has no video`).toBe(true);
     }
   }, 120_000);
@@ -190,14 +191,14 @@ suite('two broadcasts on one host do not share an init segment', () => {
       }
 
       // Each run's init lives with its own segments, and nowhere else.
-      expect(await readdir(first)).toContain('init.mp4');
-      expect(await readdir(second)).toContain('init.mp4');
+      expect(await readdir(first)).toContain(initFileName(0));
+      expect(await readdir(second)).toContain(initFileName(0));
 
       // And each one decodes its own run's first fragment.
       for (const directory_ of [first, second]) {
         const segments = (await readdir(directory_)).filter((n) => n.endsWith('.m4s')).sort();
         const probed = await probeSegment(
-          join(directory_, 'init.mp4'),
+          join(directory_, initFileName(0)),
           join(directory_, segments[0] ?? ''),
         );
         expect(probed?.hasVideo).toBe(true);
@@ -219,6 +220,6 @@ suite('two broadcasts on one host do not share an init segment', () => {
     expect(index).toBeGreaterThan(-1);
     // A bare filename here is the defect; the path must carry the run's spool.
     expect(command[index + 1]).toContain('run_1');
-    expect(command[index + 1]).not.toBe('init.mp4');
+    expect(command[index + 1]).not.toBe(initFileName(0));
   });
 });

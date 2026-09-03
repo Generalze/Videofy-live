@@ -43,6 +43,23 @@ export type SegmentAuthorization =
 export interface PublicManifestEntry {
   readonly segmentId: string;
   readonly durationSeconds: number;
+  /**
+   * The initialisation object this segment needs, by opaque id.
+   *
+   * Carried per segment rather than once per manifest because an encoder
+   * restart mid-window leaves fragments from two generations inside the
+   * retention window at the same time, and the older ones do not decode
+   * against the newer init.
+   */
+  readonly initSegmentId: string;
+  /**
+   * True when this segment begins a new encoder run.
+   *
+   * A player is told, because timestamps and codec configuration can both
+   * change across a restart and a decoder that is not warned treats the jump
+   * as corruption.
+   */
+  readonly discontinuity: boolean;
 }
 
 export type PublicManifest =
@@ -125,10 +142,19 @@ export class ProgrammeEgressAuthority {
       available: true,
       runId,
       initSegmentId: initSegmentId(runId),
-      segments: held.segments.map((segment) => ({
-        segmentId: segment.segmentId,
-        durationSeconds: (segment.endProgrammeTimeMs - segment.startProgrammeTimeMs) / 1000,
-      })),
+      segments: held.segments.map((segment, index) => {
+        const generation = segment.initGeneration ?? 0;
+        const previous = index === 0 ? null : (held.segments[index - 1]?.initGeneration ?? 0);
+        return {
+          segmentId: segment.segmentId,
+          durationSeconds: (segment.endProgrammeTimeMs - segment.startProgrammeTimeMs) / 1000,
+          initSegmentId: initSegmentId(runId, generation),
+          // The first segment of the window is not a discontinuity: it is
+          // where the window begins, and a player joining there has nothing
+          // to be discontinuous with.
+          discontinuity: previous !== null && previous !== generation,
+        };
+      }),
       publicOutputTimeMs: cursor,
       // Draining still publishes; only a finished drain is complete.
       complete: status.state === 'draining' && held.segments.length === 0,
@@ -201,9 +227,26 @@ export function renderHlsManifest(
     `#EXT-X-TARGETDURATION:${Math.max(1, Math.ceil(longest))}`,
     '#EXT-X-MEDIA-SEQUENCE:0',
     '#EXT-X-INDEPENDENT-SEGMENTS',
-    `#EXT-X-MAP:URI="${segmentUrl(manifest.initSegmentId)}"`,
   ];
+  /*
+   * EXT-X-MAP IS EMITTED WHERE IT CHANGES, not once at the top.
+   *
+   * An encoder restart mid-window leaves fragments from two generations in the
+   * retention window together, and the older ones do not decode against the
+   * newer initialisation object. A single map at the top would silently be
+   * wrong for one half of the material a player is being offered -- and the
+   * failure arrives as a decode error partway through a broadcast rather than
+   * as anything anyone could attribute.
+   */
+  let mapped: string | null = null;
   for (const segment of manifest.segments) {
+    if (segment.initSegmentId !== mapped) {
+      lines.push(`#EXT-X-MAP:URI="${segmentUrl(segment.initSegmentId)}"`);
+      mapped = segment.initSegmentId;
+    }
+    // Timestamps and codec configuration can both change across a restart, and
+    // a decoder that is not warned treats the jump as corruption.
+    if (segment.discontinuity) lines.push('#EXT-X-DISCONTINUITY');
     lines.push(`#EXTINF:${segment.durationSeconds.toFixed(6)},`);
     lines.push(segmentUrl(segment.segmentId));
   }
