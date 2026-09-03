@@ -337,3 +337,56 @@ describe('the journal is append-ORDERED, not merely append-only', () => {
     expect(second?.events).toHaveLength(20);
   });
 });
+
+/*
+ * The fence, where it actually has to hold: at the disk.
+ *
+ * A lease checked only on acquisition protects nothing. The process that
+ * matters already held the run, stalled past its lease, and woke up still
+ * believing it owned the broadcast. Its writes look entirely ordinary.
+ */
+describe('a fenced process cannot write to a broadcast it has lost', () => {
+  it('accepts writes under the current token', async () => {
+    const store = new JournalTimelineStore({ directory });
+    store.writeUnder(7);
+    expect(await store.append(event())).toBe(true);
+    expect(await store.saveCursor('run_1', 1_000)).toBe(true);
+  });
+
+  it('refuses a write under a superseded token', async () => {
+    const store = new JournalTimelineStore({ directory });
+    // The successor writes first, raising the fence.
+    store.writeUnder(8);
+    expect(await store.append(event({ reference: 'by_successor' }))).toBe(true);
+
+    // The former owner wakes up and carries on where it left off.
+    store.writeUnder(7);
+    expect(await store.append(event({ reference: 'by_ghost' }))).toBe(false);
+
+    const loaded = await store.load('run_1');
+    // Split-brain output prevented, not detected afterwards.
+    expect(loaded?.events.map((e) => e.reference)).toEqual(['by_successor']);
+  });
+
+  it('refuses a fenced process moving the public cursor', async () => {
+    const store = new JournalTimelineStore({ directory });
+    store.writeUnder(8);
+    // A run has a timeline before it has a cursor; `load` describes a
+    // broadcast, and a cursor with no broadcast is not one.
+    await store.append(event());
+    await store.saveCursor('run_1', 40_000);
+
+    store.writeUnder(7);
+    // A fenced process moving the cursor would tell the world an audience had
+    // received material it never did.
+    expect(await store.saveCursor('run_1', 90_000)).toBe(false);
+    expect((await store.load('run_1'))?.releasedThroughMs).toBe(40_000);
+  });
+
+  it('writes unfenced when no lease has been adopted', async () => {
+    // Honest behaviour for a deployment that has not adopted leases: it is
+    // not pretending to an ownership guarantee it does not have.
+    const store = new JournalTimelineStore({ directory });
+    expect(await store.append(event())).toBe(true);
+  });
+});

@@ -23,6 +23,7 @@
 
 import { appendFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { FenceGuard } from '@videofy-live/programme-timeline';
 import type {
   PersistedRun,
   ProgrammeTimelineEvent,
@@ -46,6 +47,29 @@ export interface JournalTimelineStoreOptions {
 }
 
 export class JournalTimelineStore implements ProgrammeTimelineStore {
+  /**
+   * The fence, applied to every write that reaches disk.
+   *
+   * A lease that is checked only when acquired protects nothing: the process
+   * that matters is the one that already held ownership, stalled, lost it, and
+   * woke up still believing. Its writes arrive looking perfectly ordinary, and
+   * this is the only place they can be recognised as coming from a previous
+   * life.
+   */
+  private readonly fence = new FenceGuard();
+  private fenceToken: number | null = null;
+
+  /**
+   * Present the token this process is writing under.
+   *
+   * Called when a lease is acquired or renewed. Until one is presented the
+   * store writes unfenced, which is correct for a deployment that has not
+   * adopted leases -- and is why `fencedBy` is separate from construction
+   * rather than a constructor argument nobody would pass.
+   */
+  writeUnder(fenceToken: number): void {
+    this.fenceToken = fenceToken;
+  }
   private readonly io: NonNullable<JournalTimelineStoreOptions['io']>;
   private ready: Promise<void> | null = null;
   private lastFailure: string | null = null;
@@ -95,6 +119,10 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
       this.lastFailure = 'the run id is not a shape that may become a path';
       return false;
     }
+    if (!this.admitted(event.runId)) {
+      this.lastFailure = 'this process no longer owns the broadcast';
+      return false;
+    }
     return this.queue(event.runId, async () => {
       try {
         await this.ensureDirectory();
@@ -113,6 +141,12 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
   async saveCursor(runId: string, releasedThroughMs: number): Promise<boolean> {
     const path = this.pathFor(runId, 'cursor');
     if (path === null) return false;
+    if (!this.admitted(runId)) {
+      // A fenced process moving the cursor would tell the world an audience
+      // had received material it never did.
+      this.lastFailure = 'this process no longer owns the broadcast';
+      return false;
+    }
     try {
       await this.ensureDirectory();
       // Rewritten rather than appended: only the latest position matters, and
@@ -172,6 +206,17 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
     }
 
     return { runId, events, releasedThroughMs };
+  }
+
+  /**
+   * Is this process still entitled to write to this run?
+   *
+   * Unfenced deployments admit everything, which is the honest behaviour for
+   * one that has not adopted leases.
+   */
+  private admitted(runId: string): boolean {
+    if (this.fenceToken === null) return true;
+    return this.fence.admit(runId, this.fenceToken);
   }
 
   /** Settle every write already queued for this run. */
