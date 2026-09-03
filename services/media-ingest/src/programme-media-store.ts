@@ -72,6 +72,14 @@ export class ProgrammeMediaStore {
       return false;
     }
     const held = this.runs.get(segment.runId) ?? [];
+    /*
+     * A SEGMENT ID IS ACCEPTED ONCE. Recovery rebuilds this index from the
+     * journal, and a recovery that ran twice -- a retried start, a supervisor
+     * that called it again -- would otherwise hold every segment twice, double
+     * every retention calculation and offer each fragment to a player twice.
+     * Idempotent is the only safe shape for an index rebuild.
+     */
+    if (held.some((existing) => existing.segmentId === segment.segmentId)) return true;
     held.push(segment);
     this.runs.set(segment.runId, held);
     return true;

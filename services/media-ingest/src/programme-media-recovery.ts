@@ -25,7 +25,11 @@
 
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ProgrammeMediaSegment, ProgrammeTimelineEvent } from '@videofy-live/programme-timeline';
+import {
+  retentionWindowMs,
+  type ProgrammeMediaSegment,
+  type ProgrammeTimelineEvent,
+} from '@videofy-live/programme-timeline';
 import type { ProgrammeMediaStore } from './programme-media-store.js';
 
 /** What a recovery found, in the terms an operator needs. */
@@ -33,14 +37,46 @@ export interface MediaRecoveryResult {
   /** Segments whose bytes are on the volume and are back in the store. */
   readonly restored: number;
   /**
-   * Segments the timeline references and the volume does not have.
+   * REQUIRED segments the volume does not have.
    *
-   * Any of these is a broken promise: the material was published to an
-   * audience and cannot be served again.
+   * Any of these is a broken promise: the material is inside the window this
+   * broadcast still owes its audience, and it cannot be served.
    */
   readonly missing: readonly string[];
+  /**
+   * References the retention policy was entitled to delete.
+   *
+   * NOT A FAULT, and keeping the two apart is the whole of this type. A
+   * six-hour programme's journal remembers hour one; the spool is required to
+   * hold minutes. A recovery that demanded every reference ever written would
+   * fail on the first restart of any long broadcast -- for material that was
+   * correctly deleted hours earlier.
+   */
+  readonly expired: number;
   /** The init generations the restored segments still depend on. */
   readonly generations: readonly number[];
+  /** The earliest programme time this run must still be able to serve. */
+  readonly requiredFromMs: number;
+}
+
+/**
+ * The earliest programme time a run must still hold media for.
+ *
+ * Derived from the SAME function retention prunes by, so the two cannot drift:
+ * anything retention was entitled to discard is exactly what recovery is
+ * entitled not to find. Two independent definitions of one boundary would
+ * disagree the first time either was tuned.
+ *
+ * Everything at or after this point is required -- including material the
+ * cursor has NOT yet released. A restart that recovered only what was already
+ * public would restore the current manifest and then run out of programme the
+ * moment the cursor advanced.
+ */
+export function requiredMediaFromMs(
+  publicOutputTimeMs: number,
+  configuredDelayMs: number,
+): number {
+  return Math.max(0, publicOutputTimeMs - retentionWindowMs(configuredDelayMs));
 }
 
 /**
@@ -75,13 +111,31 @@ export async function recoverProgrammeMedia(input: {
   readonly directory: string;
   readonly events: readonly ProgrammeTimelineEvent[];
   readonly media: ProgrammeMediaStore;
+  /** Where the audience had reached. Zero when nothing was released. */
+  readonly publicOutputTimeMs: number;
+  readonly configuredDelayMs: number;
 }): Promise<MediaRecoveryResult> {
   const missing: string[] = [];
   const generations = new Set<number>();
   let restored = 0;
+  let expired = 0;
+  const requiredFromMs = requiredMediaFromMs(
+    input.publicOutputTimeMs,
+    input.configuredDelayMs,
+  );
 
   for (const event of input.events) {
     if (event.kind !== 'media') continue;
+    /*
+     * Older than the window this run still owes anybody. Retention was
+     * entitled to delete it, so its absence is the system working -- and
+     * restoring it would put material back that the store is meant to have
+     * let go.
+     */
+    if (event.programmeTimeMs + (event.durationMs ?? 0) <= requiredFromMs) {
+      expired += 1;
+      continue;
+    }
     const fileName = segmentFileName(event.reference);
     if (fileName === null) {
       // A reference this build cannot map is not a reference it may ignore.
@@ -130,5 +184,11 @@ export async function recoverProgrammeMedia(input: {
     if (input.media.accept(segment)) restored += 1;
   }
 
-  return { restored, missing, generations: [...generations].sort((a, b) => a - b) };
+  return {
+    restored,
+    missing,
+    expired,
+    generations: [...generations].sort((a, b) => a - b),
+    requiredFromMs,
+  };
 }

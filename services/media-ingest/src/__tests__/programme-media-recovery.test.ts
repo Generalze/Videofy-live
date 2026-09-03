@@ -22,13 +22,14 @@ import { describe, expect, it } from 'vitest';
 import {
   generationOf,
   recoverProgrammeMedia,
+  requiredMediaFromMs,
   segmentFileName,
 } from '../programme-media-recovery.js';
 import { ProgrammeMediaStore } from '../programme-media-store.js';
 import { ProgrammeTimelineRegistry } from '../programme-timeline-registry.js';
 import { JournalTimelineStore } from '../journal-timeline-store.js';
 import { ProgrammeEgressAuthority } from '../programme-egress.js';
-import type { ProgrammeTimelineEvent } from '@videofy-live/programme-timeline';
+import { retentionWindowMs, type ProgrammeTimelineEvent } from '@videofy-live/programme-timeline';
 
 const RUN = { channelId: 'ch_1', programmeId: 'prog_1', runId: 'run_1' };
 const DELAY_MS = 20_000;
@@ -82,6 +83,8 @@ describe('putting the retained media back', () => {
       directory: join(root, 'run_1'),
       events: [0, 1, 2, 3, 4].map(mediaEvent),
       media,
+      publicOutputTimeMs: 0,
+      configuredDelayMs: DELAY_MS,
     });
     expect(outcome.restored).toBe(5);
     expect(outcome.missing).toEqual([]);
@@ -96,6 +99,8 @@ describe('putting the retained media back', () => {
       directory: join(root, 'run_1'),
       events: [0, 1, 2].map(mediaEvent),
       media,
+      publicOutputTimeMs: 0,
+      configuredDelayMs: DELAY_MS,
     });
     // Not renumbered from zero: a recovered segment belongs where it was
     // broadcast, or every caption and advert around it points at the wrong
@@ -114,6 +119,8 @@ describe('putting the retained media back', () => {
       directory: join(root, 'run_1'),
       events: [0, 1].map(mediaEvent),
       media,
+      publicOutputTimeMs: 0,
+      configuredDelayMs: DELAY_MS,
     });
     // A fragment whose init is not registered is a fragment nothing can
     // decode, so recovery has to say which ones matter.
@@ -130,6 +137,8 @@ describe('putting the retained media back', () => {
       directory: join(root, 'run_1'),
       events: [0, 1].map(mediaEvent),
       media,
+      publicOutputTimeMs: 0,
+      configuredDelayMs: DELAY_MS,
     });
     expect(outcome.restored).toBe(2);
     expect(media.segmentCount('run_1')).toBe(2);
@@ -145,6 +154,8 @@ describe('media the broadcast published and can no longer serve', () => {
       directory: join(root, 'run_1'),
       events: [0, 1, 2, 3].map(mediaEvent),
       media: new ProgrammeMediaStore(),
+      publicOutputTimeMs: 0,
+      configuredDelayMs: DELAY_MS,
     });
     /*
      * The distinction that matters. Absent because the packager is still
@@ -162,6 +173,8 @@ describe('media the broadcast published and can no longer serve', () => {
       directory: join(root, 'run_1'),
       events: [0, 1, 2].map(mediaEvent),
       media: new ProgrammeMediaStore(),
+      publicOutputTimeMs: 0,
+      configuredDelayMs: DELAY_MS,
     });
     // Zero length is what a truncated write leaves behind, and offering it
     // hands a player something it cannot decode.
@@ -201,6 +214,8 @@ describe('what a recovered run does about it', () => {
         directory: join(root, 'run_1'),
         events,
         media,
+        publicOutputTimeMs: Math.max(0, registry.status(runId)?.cursor.publicOutputTimeMs ?? 0),
+        configuredDelayMs: DELAY_MS,
       });
       for (const generation of outcome.generations) {
         egress.noteInitSegment(runId, join(root, 'run_1', 'init.0.mp4'), generation);
@@ -235,5 +250,100 @@ describe('what a recovered run does about it', () => {
      */
     expect(registry.status('run_1')?.state).toBe('failed');
     expect(registry.status('run_1')?.detail).toContain('retained media is missing');
+  });
+});
+
+describe('history the retention policy was entitled to delete', () => {
+  /*
+   * THE BOUNDARY THIS TYPE EXISTS FOR. A six-hour programme's journal
+   * remembers hour one; the spool is required to hold minutes. A recovery that
+   * demanded every reference ever written would fail on the first restart of
+   * any long broadcast -- for material that was correctly deleted hours
+   * earlier, by the very policy that is supposed to keep the disk from
+   * filling.
+   */
+  it('does not miss material older than the window the run still owes', async () => {
+    const root = spoolWith(0);
+    // Two hours of programme in the journal, nothing on the spool.
+    const events = Array.from({ length: 60 }, (_unused, index) => mediaEvent(index));
+    const outcome = await recoverProgrammeMedia({
+      runId: 'run_1',
+      directory: join(root, 'run_1'),
+      events,
+      media: new ProgrammeMediaStore(),
+      // The audience is far past all of it.
+      publicOutputTimeMs: 10_000_000,
+      configuredDelayMs: DELAY_MS,
+    });
+    expect(outcome.missing).toEqual([]);
+    expect(outcome.expired).toBe(60);
+  });
+
+  it('draws the boundary with the same function retention prunes by', async () => {
+    /*
+     * Two independent definitions of one boundary would disagree the first
+     * time either was tuned, and the disagreement would present as a broadcast
+     * that fails to recover for no visible reason.
+     */
+    const cursor = 600_000;
+    expect(requiredMediaFromMs(cursor, DELAY_MS)).toBe(
+      cursor - retentionWindowMs(DELAY_MS),
+    );
+  });
+
+  it('still requires everything inside the window, published or not', async () => {
+    const root = spoolWith(0);
+    const cursor = 600_000;
+    const from = requiredMediaFromMs(cursor, DELAY_MS);
+    // One segment just inside the window, and one after the cursor: material
+    // the audience has not reached yet but will in seconds.
+    const inside: ProgrammeTimelineEvent = { ...mediaEvent(0), programmeTimeMs: from + 1_000 };
+    const future: ProgrammeTimelineEvent = {
+      ...mediaEvent(1),
+      programmeTimeMs: cursor + 10_000,
+    };
+    const outcome = await recoverProgrammeMedia({
+      runId: 'run_1',
+      directory: join(root, 'run_1'),
+      events: [inside, future],
+      media: new ProgrammeMediaStore(),
+      publicOutputTimeMs: cursor,
+      configuredDelayMs: DELAY_MS,
+    });
+    /*
+     * A restart that recovered only what was already public would restore the
+     * current manifest and then run out of programme the moment the cursor
+     * advanced.
+     */
+    expect(outcome.missing).toHaveLength(2);
+    expect(outcome.expired).toBe(0);
+  });
+});
+
+describe('recovery can be run twice', () => {
+  it('rebuilds an index rather than adding a broadcast', async () => {
+    const root = spoolWith(4);
+    const media = new ProgrammeMediaStore();
+    const events = [0, 1, 2, 3].map(mediaEvent);
+    const once = await recoverProgrammeMedia({
+      runId: 'run_1',
+      directory: join(root, 'run_1'),
+      events,
+      media,
+      publicOutputTimeMs: 0,
+      configuredDelayMs: DELAY_MS,
+    });
+    await recoverProgrammeMedia({
+      runId: 'run_1',
+      directory: join(root, 'run_1'),
+      events,
+      media,
+      publicOutputTimeMs: 0,
+      configuredDelayMs: DELAY_MS,
+    });
+    // A retried start would otherwise hold every segment twice, double every
+    // retention calculation and offer each fragment to a player twice.
+    expect(once.restored).toBe(4);
+    expect(media.segmentCount('run_1')).toBe(4);
   });
 });

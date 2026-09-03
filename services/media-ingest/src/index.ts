@@ -1553,11 +1553,20 @@ if (advertisingClient.configured) {
  * behind an entirely green console.
  */
 programmeTimelines.onRecovered(async (runId, events) => {
+  const recovered = programmeTimelines.status(runId);
   const outcome = await recoverProgrammeMedia({
     runId,
     directory: join(programmeMediaSpool, runId),
     events,
     media: programmeMedia,
+    /*
+     * Where the audience had reached, so recovery can tell material this run
+     * still owes them from history the retention policy was entitled to
+     * delete. Demanding every reference ever written would fail the first
+     * restart of any long broadcast.
+     */
+    publicOutputTimeMs: Math.max(0, recovered?.cursor.publicOutputTimeMs ?? 0),
+    configuredDelayMs: recovered?.configuredDelayMs ?? config.programmeSafetyDelayMs,
   });
   // The init objects the restored window still depends on. A fragment whose
   // init is not registered is a fragment nothing can decode.
@@ -1572,6 +1581,10 @@ programmeTimelines.onRecovered(async (runId, events) => {
     runId,
     restored: outcome.restored,
     missing: outcome.missing.length,
+    // Not a fault. Named so an operator can tell "the policy worked" from
+    // "the material is gone".
+    expiredByRetention: outcome.expired,
+    requiredFromMs: outcome.requiredFromMs,
     generations: outcome.generations,
   });
   return { missing: outcome.missing };
