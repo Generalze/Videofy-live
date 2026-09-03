@@ -250,4 +250,5 @@ function inProgrammeOrder(
 /** Advertising is placed on this timeline and nowhere else. */
 export * from './advertising.js';
 export * from './store.js';
+export * from './media.js';
 export * from './buffer.js';
