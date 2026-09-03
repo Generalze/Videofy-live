@@ -136,10 +136,21 @@ export class ProgrammeContributionBridge {
   private detail: string | null = null;
 
   constructor(
-    private readonly output: ContributionOutput,
+    private output: ContributionOutput,
     private readonly options: ContributionBridgeOptions = {},
   ) {
     this.clock = new ContributionClock(options.monotonic);
+  }
+
+  /**
+   * Point this bridge at a different encoder.
+   *
+   * A new generation replaces the destination and nothing else. The clock, the
+   * position and the run all survive, which is what makes a format change a
+   * discontinuity in one broadcast rather than the start of another.
+   */
+  retarget(output: ContributionOutput): void {
+    this.output = output;
   }
 
   status(): ContributionStatus {

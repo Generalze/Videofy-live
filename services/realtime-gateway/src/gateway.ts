@@ -83,6 +83,7 @@ import {
   type BackendMediaPeerAudioContext,
 } from './webrtc-media-peer-registry.js';
 import { BackendWebRtcListenerPeerRegistry } from './webrtc-listener-peer-registry.js';
+import { ProgrammeContributionHost } from './programme-contribution-host.js';
 import {
   HttpMediaTranscriptionSubmissionClient,
   MediaTranscriptionBridge,
@@ -277,6 +278,16 @@ export class Gateway {
    */
   private sawDelayedDelivery = false;
 
+  /**
+   * Where a protected run's contribution is encoded, when this deployment does
+   * protected broadcasts at all.
+   *
+   * Null when no spool is configured, which is the ordinary state of a
+   * deployment that only does TRUE LIVE. Absent rather than inert, so nothing
+   * allocates an encoder path that will never be used.
+   */
+  private readonly contributionHost: ProgrammeContributionHost | null;
+
   /*
    * THE DEFAULT CHANNEL, UNDER THE OLD NAME.
    *
@@ -468,6 +479,32 @@ export class Gateway {
           }
         : {}),
     });
+    /*
+     * PROTECTED CONTRIBUTION, encoded where the frames already are.
+     *
+     * The spool is the media service's, on the same host. Raw broadcast video
+     * must not travel between two of our own services to satisfy a module
+     * layout, so the encoder runs here and the segments land where the cursor,
+     * the store and the egress already look for them.
+     */
+    const spoolRoot = process.env['PROGRAMME_MEDIA_SPOOL']?.trim();
+    this.contributionHost =
+      spoolRoot === undefined || spoolRoot === ''
+        ? null
+        : new ProgrammeContributionHost({
+            spoolRoot,
+            onFailed: (runId, reason) => {
+              /*
+               * A contribution that cannot be encoded stops the protected
+               * output. It does NOT quietly become live: the delay exists for
+               * the moments when something has gone wrong, which is exactly
+               * when a fallback would fire.
+               */
+              logger.error('Protected contribution failed', { runId, reason });
+            },
+            onProblem: (message, detail) => logger.warn(message, detail),
+          });
+
     this.listenerMediaPeers = new BackendWebRtcListenerPeerRegistry({
       onLocalSignal: (envelope) => this.routeBackendWebRtcSignal(envelope),
     });
@@ -497,6 +534,16 @@ export class Gateway {
             });
           }
         }
+        /*
+         * THE SAME RECEIVED MEDIA, ON ITS WAY TO THE PROTECTED ENCODER.
+         *
+         * One broadcaster publish serves both modes: the frames below go to
+         * the realtime audience, and these same frames go to the encoder that
+         * produces protected segments. Nothing is published twice and nothing
+         * is encoded twice, so there is one answer to which feed is the
+         * actual programme.
+         */
+        this.contributeToProtectedRun(context.sessionId, 'audio', data);
         try {
           // Checked per frame as well as at peer creation. A peer built
           // before the answer arrived is exactly the leak window, and this
@@ -513,6 +560,7 @@ export class Gateway {
         }
       },
       onVideoFrame: (context, frame) => {
+        this.contributeToProtectedRun(context.sessionId, 'video', frame);
         try {
           if (this.realtimeRelayForbidden.has(context.sessionId)) return;
         this.listenerMediaPeers.fanOutVideoFrame(context.sessionId, frame);
@@ -2143,6 +2191,39 @@ export class Gateway {
    * buffer fills would deliver the studio for exactly the window the delay was
    * configured to cover.
    */
+  /**
+   * Hand one frame to the protected encoder, if this run has one.
+   *
+   * ONLY FOR A RUN THAT IS ACTUALLY PROTECTED. A live-delivery broadcast has
+   * no use for segments, and encoding them would spend a core per broadcast
+   * producing material nothing reads.
+   *
+   * Nothing here may throw and nothing here may block. This is the gateway's
+   * media callback, and the TRUE LIVE audience is on it: a protected encoder
+   * under pressure must never become a realtime audience's problem.
+   */
+  private contributeToProtectedRun(
+    sessionId: string,
+    kind: 'audio' | 'video',
+    payload: unknown,
+  ): void {
+    const host = this.contributionHost;
+    if (host === null) return;
+    const run = this.programmeRuns.get(sessionId);
+    if (run === undefined) return;
+    const delivery = this.programmeDelivery.get(run.runId);
+    if (delivery === undefined || delivery.mode !== 'delayed') return;
+    try {
+      if (kind === 'audio') host.pushAudio(run.runId, payload as never);
+      else host.pushVideo(run.runId, payload as never);
+    } catch (error) {
+      logger.warn('Protected contribution frame could not be accepted', {
+        runId: run.runId,
+        message: error instanceof Error ? error.message : 'unknown contribution failure',
+      });
+    }
+  }
+
   /** Which channel is airing a run, or null when this gateway is not. */
   private channelForRun(runId: string): string | null {
     for (const run of this.programmeRuns.values()) {
