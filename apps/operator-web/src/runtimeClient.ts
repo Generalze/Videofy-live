@@ -50,10 +50,17 @@ export interface SafetyBufferView {
   };
 }
 
+export interface RunVocabularyView {
+  readonly state: 'active' | 'none' | 'unavailable';
+  readonly revision: number | null;
+  readonly termCount: number | null;
+}
+
 export interface ProgrammeRuntime {
   readonly runId: string;
   readonly safetyBuffer: SafetyBufferView | null;
   readonly durability: { readonly durable: boolean; readonly reason: string | null };
+  readonly vocabulary: RunVocabularyView;
   readonly routes: readonly RoutePerformanceView[];
   readonly measuredAtMs: number;
 }
@@ -118,4 +125,20 @@ export function bufferWords(buffer: SafetyBufferView | null): string {
   return buffer.protected
     ? `Holding ${depth} s against a ${target} s target.`
     : `${depth} s held of a ${target} s target — NOT protected.`;
+}
+
+/**
+ * What the recogniser is running on, in words.
+ *
+ * Three states that must never collapse: terms in use, a programme that has
+ * none, and an authority we could not reach. The last one is the reassuring
+ * lie -- it produces exactly the recognition of the second and means the
+ * operator's carefully entered names never arrived.
+ */
+export function vocabularyWords(vocabulary: RunVocabularyView | null): string {
+  if (vocabulary === null || vocabulary.state === 'unavailable') return 'Unavailable';
+  if (vocabulary.state === 'none') return 'No vocabulary configured';
+  const revision = vocabulary.revision === null ? '?' : String(vocabulary.revision);
+  const count = vocabulary.termCount ?? 0;
+  return `Active revision ${revision} · ${count} keyterm${count === 1 ? '' : 's'}`;
 }

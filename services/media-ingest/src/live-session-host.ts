@@ -48,7 +48,7 @@ import type { StreamingSpeechSynthesisProvider } from './streaming-speech-synthe
 import type { StreamingTranscriptionProvider } from './streaming-transcription-provider.js';
 import type { VocabularySnapshotClient } from './vocabulary-snapshot-client.js';
 import type { ProgrammePerformanceRegistry } from './programme-performance-registry.js';
-import type { ProgrammeTimelineRegistry } from './programme-timeline-registry.js';
+import type { ProgrammeTimelineRegistry, RunVocabulary } from './programme-timeline-registry.js';
 import type { TimestampedTranslationProvider } from './translation-provider.js';
 import type { TranscriptEvent } from './transcript-event.js';
 
@@ -208,6 +208,12 @@ export class LiveSessionHost implements IngressStreamHandler {
       open.context.serviceCategory === 'programme'
         ? deps.timelines?.open(open.context.programme)
         : undefined;
+
+    // Recorded against the run so a console reports the vocabulary IN USE,
+    // not the one most recently saved. They differ the moment somebody edits.
+    if (open.context.serviceCategory === 'programme') {
+      deps.timelines?.noteVocabulary(open.context.programme.runId, vocabulary.reported);
+    }
     /**
      * How many languages this stream will actually be SPOKEN in.
      *
@@ -425,9 +431,17 @@ export function createLiveStreamOpener(deps: LiveSessionHostDeps) {
 async function resolveSessionVocabulary(
   open: IngressOpen,
   deps: LiveSessionHostDeps,
-): Promise<{ readonly keyterms: readonly string[]; readonly state: string }> {
-  if (open.context.serviceCategory !== 'programme') return { keyterms: [], state: 'not-a-programme' };
-  if (deps.vocabulary === undefined) return { keyterms: [], state: 'no-vocabulary-seam' };
+): Promise<{
+  readonly keyterms: readonly string[];
+  readonly state: string;
+  readonly reported: RunVocabulary;
+}> {
+  if (open.context.serviceCategory !== 'programme') {
+    return { keyterms: [], state: 'not-a-programme', reported: UNAVAILABLE_VOCABULARY };
+  }
+  if (deps.vocabulary === undefined) {
+    return { keyterms: [], state: 'no-vocabulary-seam', reported: UNAVAILABLE_VOCABULARY };
+  }
 
   const { programme } = open.context;
   const result = await deps.vocabulary.fetch({
@@ -446,7 +460,7 @@ async function resolveSessionVocabulary(
       runId: programme.runId,
       reason: result.reason,
     });
-    return { keyterms: [], state: 'unavailable' };
+    return { keyterms: [], state: 'unavailable', reported: UNAVAILABLE_VOCABULARY };
   }
 
   // Identity only: never the terms themselves.
@@ -461,5 +475,19 @@ async function resolveSessionVocabulary(
   return {
     keyterms: result.kind === 'ready' ? result.keyterms : [],
     state: result.kind,
+    reported: {
+      // `none` is a programme with no terms; `unavailable` is one we could not
+      // ask about. Identical recognition, opposite meanings.
+      state: result.kind === 'ready' ? 'active' : 'none',
+      revision: result.identity.revision,
+      termCount: result.identity.termCount,
+    },
   };
 }
+
+/** What is reported when nothing could be established about the vocabulary. */
+const UNAVAILABLE_VOCABULARY: RunVocabulary = {
+  state: 'unavailable',
+  revision: null,
+  termCount: null,
+};

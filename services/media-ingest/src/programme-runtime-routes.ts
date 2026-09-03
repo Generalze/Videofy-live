@@ -82,6 +82,15 @@ export function registerProgrammeRuntimeRoutes(
          * they have before rather than during.
          */
         durability,
+        /**
+         * What the recogniser is actually running on. Active, none and
+         * unavailable are three different answers and none of them is blank.
+         */
+        vocabulary: deps.timelines.vocabulary(runId) ?? {
+          state: 'unavailable',
+          revision: null,
+          termCount: null,
+        },
         /** Empty means nothing measured, which is not the same as nothing wrong. */
         routes,
         measuredAtMs: Date.now(),

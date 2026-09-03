@@ -1,3 +1,4 @@
+import { fetchProgrammeRuntime, type ProgrammeRuntimeResult } from './runtimeClient';
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type {
@@ -279,6 +280,36 @@ export default function App(): React.ReactElement {
   const lastGatewayErrorRef = useRef<string | null>(null);
 
   const [mediaState, setMediaState] = useState<MediaStateEvent | null>(null);
+  /*
+   * WHAT THE RUNNING BROADCAST IS ACTUALLY DOING.
+   *
+   * Polled rather than pushed because it is a readout, not a control: a
+   * missed sample costs a stale number for two seconds, where a missed
+   * control would cost an operator their action. The run id arrives on the
+   * media state, so a console with no broadcast asks nothing at all rather
+   * than asking about a run it invented.
+   */
+  const [programmeRuntime, setProgrammeRuntime] = useState<ProgrammeRuntimeResult>({
+    kind: 'no-run',
+  });
+  const programmeRunId = mediaState?.programmeRunId ?? null;
+  useEffect(() => {
+    if (programmeRunId === null) {
+      setProgrammeRuntime({ kind: 'no-run' });
+      return undefined;
+    }
+    let live = true;
+    const read = async (): Promise<void> => {
+      const result = await fetchProgrammeRuntime(INGEST_URL, programmeRunId);
+      if (live) setProgrammeRuntime(result);
+    };
+    void read();
+    const timer = setInterval(() => void read(), 2000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [programmeRunId]);
   const [streamStatus, setStreamStatus] = useState('created');
   const [processingSession, setProcessingSession] = useState<ProcessingSessionDto | null>(null);
 
@@ -1491,6 +1522,7 @@ export default function App(): React.ReactElement {
         lede="What each language route can actually do, what is providing it, and how much delay to budget. Every state below is the service's own answer about a real route; nothing on this page is inferred here."
       >
         <QualityPage
+          runtime={programmeRuntime}
           rows={quality.rows}
           unavailable={quality.unavailable}
           reason={quality.reason}

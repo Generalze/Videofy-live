@@ -148,6 +148,7 @@ function Harness(props: { source: string; targets: readonly string[] }): React.R
   });
   return (
     <QualityPage
+      runtime={{ kind: 'no-run' }}
       rows={quality.rows}
       unavailable={quality.unavailable}
       reason={quality.reason}

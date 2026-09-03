@@ -28,9 +28,24 @@ import type {
   RouteQualityRow,
   StageReport,
 } from '@videofy-live/programme-quality';
+import {
+  bufferWords,
+  stageWords,
+  vocabularyWords,
+  type ProgrammeRuntimeResult,
+} from '../runtimeClient';
 import styles from './QualityPage.module.css';
 
 export interface QualityPageProps {
+  /**
+   * What the running broadcast is measurably doing.
+   *
+   * A DIFFERENT QUESTION from the rows below, and kept a different prop for
+   * that reason. Those describe what a route CAN do -- approved, engine
+   * configured. This describes what it IS doing, and a perfectly configured
+   * route performing terribly must be able to say both at once.
+   */
+  readonly runtime: ProgrammeRuntimeResult;
   /** Null until the service has answered. Never defaulted to an empty list. */
   readonly rows: readonly RouteQualityRow[] | null;
   /** There is no usable answer. WHY is `reason`, and the two differ. */
@@ -185,6 +200,7 @@ export function QualityPage(props: QualityPageProps): React.ReactElement {
 
   return (
     <div className={styles.page}>
+      <ProgrammeRuntimePanels runtime={props.runtime} />
       <div className={styles.header}>
         <p className={styles.lede}>
           One row per DIRECTION. English into French and French into English are
@@ -228,5 +244,66 @@ export function QualityPage(props: QualityPageProps): React.ReactElement {
         </section>
       ))}
     </div>
+  );
+}
+
+/**
+ * Three panels, three separate claims, no adjectives.
+ *
+ * Every string here comes from the client's own vocabulary rather than being
+ * composed on the spot, so a page cannot quietly invent a kinder word than the
+ * evidence supports. When the runtime cannot be read at all the panels say so
+ * instead of rendering zeroes, because a table of zeroes reads as healthy.
+ */
+function ProgrammeRuntimePanels(props: {
+  readonly runtime: ProgrammeRuntimeResult;
+}): React.ReactElement {
+  if (props.runtime.kind !== 'runtime') {
+    const reason =
+      props.runtime.kind === 'no-run'
+        ? 'No broadcast is running, so there is nothing to measure.'
+        : props.runtime.kind === 'not-here'
+          ? 'This media service is not running that broadcast.'
+          : `Runtime status unavailable: ${props.runtime.reason}`;
+    return (
+      <section className={styles.header}>
+        <h3>Runtime</h3>
+        <p className={styles.lede}>{reason}</p>
+      </section>
+    );
+  }
+
+  const { runtime } = props.runtime;
+  return (
+    <section className={styles.header}>
+      <h3>Runtime performance</h3>
+      {runtime.routes.length === 0 ? (
+        <p className={styles.lede}>No samples yet. Nothing has been measured for this broadcast.</p>
+      ) : (
+        runtime.routes.map((route) => (
+          <div key={`${route.sourceLanguage}-${route.targetLanguage}`}>
+            <strong>
+              {route.sourceLanguage} &rarr; {route.targetLanguage}
+            </strong>
+            <p className={styles.lede}>STT {stageWords(route.stt)}</p>
+            <p className={styles.lede}>Translation {stageWords(route.translation)}</p>
+            <p className={styles.lede}>TTS {stageWords(route.tts)}</p>
+            <p className={styles.lede}>End to end {stageWords(route.endToEnd)}</p>
+          </div>
+        ))
+      )}
+
+      <h3>Vocabulary</h3>
+      <p className={styles.lede}>{vocabularyWords(runtime.vocabulary)}</p>
+
+      <h3>Safety buffer</h3>
+      <p className={styles.lede}>{bufferWords(runtime.safetyBuffer)}</p>
+      <p className={styles.lede}>
+        {/* A delay that would not survive a restart is a different promise. */}
+        {runtime.durability.durable
+          ? 'Recoverable across a restart.'
+          : `Would NOT survive a restart: ${runtime.durability.reason ?? 'unknown'}`}
+      </p>
+    </section>
   );
 }

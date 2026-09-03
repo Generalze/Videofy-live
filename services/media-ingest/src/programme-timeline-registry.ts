@@ -27,6 +27,19 @@ import type { ProgrammeTimelineStore } from '@videofy-live/programme-timeline';
 /** How many concurrent broadcasts this process holds an account for. */
 export const MAX_TRACKED_TIMELINES = 32;
 
+/**
+ * The vocabulary a recogniser session pinned, and how sure we are of it.
+ *
+ * `unavailable` is not `none`: one means the authority could not be reached,
+ * the other that this programme has no terms. They produce identical
+ * recognition and mean opposite things.
+ */
+export interface RunVocabulary {
+  readonly state: 'active' | 'none' | 'unavailable';
+  readonly revision: number | null;
+  readonly termCount: number | null;
+}
+
 interface TrackedRun {
   readonly identity: ProgrammeRunIdentity;
   readonly timeline: ProgrammeTimeline;
@@ -35,6 +48,7 @@ interface TrackedRun {
 
 export class ProgrammeTimelineRegistry {
   private readonly runs = new Map<string, TrackedRun>();
+  private readonly vocabularies = new Map<string, RunVocabulary>();
 
   constructor(
     private readonly maxRuns: number = MAX_TRACKED_TIMELINES,
@@ -140,6 +154,23 @@ export class ProgrammeTimelineRegistry {
     return timeline;
   }
 
+  /**
+   * What vocabulary a run's recogniser is actually running on.
+   *
+   * Recorded when the session pinned it, so a console can report the version
+   * IN USE rather than the version most recently saved. Those differ the
+   * moment an operator edits mid-programme, and saying otherwise would show a
+   * revision number nothing was using.
+   */
+  noteVocabulary(runId: string, vocabulary: RunVocabulary): void {
+    const run = this.runs.get(runId);
+    if (run !== undefined) this.vocabularies.set(runId, vocabulary);
+  }
+
+  vocabulary(runId: string): RunVocabulary | null {
+    return this.vocabularies.get(runId) ?? null;
+  }
+
   timeline(runId: string): ProgrammeTimeline | null {
     return this.runs.get(runId)?.timeline ?? null;
   }
@@ -166,6 +197,7 @@ export class ProgrammeTimelineRegistry {
   /** The broadcast is over. Its account and its cursor go with it. */
   release(runId: string): void {
     this.runs.delete(runId);
+    this.vocabularies.delete(runId);
     // The journal is settled and removed after; a delete that raced its own
     // writes would leave a broadcast half-remembered.
     void this.store?.release(runId);

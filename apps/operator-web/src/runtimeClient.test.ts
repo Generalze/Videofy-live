@@ -13,6 +13,7 @@ import {
   bufferWords,
   fetchProgrammeRuntime,
   stageWords,
+  vocabularyWords,
   type SafetyBufferView,
   type StagePerformanceView,
 } from './runtimeClient';
@@ -122,5 +123,33 @@ describe('the safety buffer says what it is really holding', () => {
     // Different from "configured zero": nobody is running one for this
     // broadcast, which an operator may need to fix rather than accept.
     expect(bufferWords(null)).toBe('No safety buffer is running for this broadcast.');
+  });
+});
+
+describe('the vocabulary a recogniser is actually running on', () => {
+  it('names the revision in use and how many terms it carries', () => {
+    expect(vocabularyWords({ state: 'active', revision: 14, termCount: 42 })).toBe(
+      'Active revision 14 · 42 keyterms',
+    );
+  });
+
+  it('counts one term without pluralising it', () => {
+    expect(vocabularyWords({ state: 'active', revision: 3, termCount: 1 })).toContain('1 keyterm');
+  });
+
+  it('tells a programme with no terms from one we could not ask about', () => {
+    /*
+     * The reassuring lie this whole feature exists to prevent: an authority
+     * that could not be reached produces exactly the recognition of a
+     * programme that has no vocabulary, and means the operator's carefully
+     * entered names never arrived.
+     */
+    expect(vocabularyWords({ state: 'none', revision: 0, termCount: 0 })).toBe(
+      'No vocabulary configured',
+    );
+    expect(vocabularyWords({ state: 'unavailable', revision: null, termCount: null })).toBe(
+      'Unavailable',
+    );
+    expect(vocabularyWords(null)).toBe('Unavailable');
   });
 });
