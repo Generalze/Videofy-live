@@ -474,3 +474,21 @@ export function deriveRouteQuality(input: RouteQualityInput): RouteQualityRow {
     recommendedDelay: recommendDelay([stt, translation, tts], overall),
   };
 }
+
+/*
+ * THREE CLAIMS, KEPT APART.
+ *
+ * Everything above this line answers one question: CAN this route operate --
+ * approved, engine configured, provider present. That is readiness, and it is
+ * what this module has always computed, under a name broad enough to be
+ * mistaken for the other two.
+ *
+ * How the route is actually behaving is measured, and lives in ./performance.
+ * Whether its output is any good is judged by people, and lives in ./reviewed.
+ * Neither is derivable from readiness, and readiness is not evidence for
+ * either: a flawlessly configured route can be slow, and a fast one can
+ * produce the wrong language entirely. Re-exported here so a consumer takes
+ * all three from one place and has to name which one it means.
+ */
+export * from './performance.js';
+export * from './reviewed.js';
