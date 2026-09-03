@@ -108,11 +108,33 @@ export class ProgrammeTimelineRegistry {
     const existing = this.runs.get(identity.runId);
     if (existing !== undefined) return existing.timeline;
 
-    const timeline = new ProgrammeTimeline(identity);
+    /*
+     * PERSISTED AS IT IS WRITTEN, or the journal recovery reads is empty.
+     *
+     * A store that is only consulted on restart is not a store; it is a file
+     * nobody wrote to. The sink is fire-and-forget because a live broadcast
+     * cannot wait on a disk -- and when a write fails, the buffer fails
+     * CLOSED, because a safety delay whose record is not being kept is a
+     * delay that will not survive the next restart, and the audience was
+     * promised one that would.
+     */
+    const tracked: { buffer: ProgrammeOutputBuffer | null } = { buffer: null };
+    const store = this.store;
+    const timeline = new ProgrammeTimeline(
+      identity,
+      store === undefined
+        ? undefined
+        : (event) => {
+            void store.append(event).then((stored) => {
+              if (!stored) tracked.buffer?.fail('the programme timeline could not be persisted');
+            });
+          },
+    );
     const buffer =
       this.policy === undefined
         ? new ProgrammeOutputBuffer(timeline, this.defaultDelayMs)
         : new ProgrammeOutputBuffer(timeline, this.defaultDelayMs, this.policy);
+    tracked.buffer = buffer;
     this.runs.set(identity.runId, { identity, timeline, buffer });
     this.evictOldest();
     return timeline;
@@ -144,6 +166,9 @@ export class ProgrammeTimelineRegistry {
   /** The broadcast is over. Its account and its cursor go with it. */
   release(runId: string): void {
     this.runs.delete(runId);
+    // The journal is settled and removed after; a delete that raced its own
+    // writes would leave a broadcast half-remembered.
+    void this.store?.release(runId);
   }
 
   private evictOldest(): void {

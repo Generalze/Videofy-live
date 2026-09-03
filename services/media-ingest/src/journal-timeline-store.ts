@@ -49,6 +49,24 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
   private readonly io: NonNullable<JournalTimelineStoreOptions['io']>;
   private ready: Promise<void> | null = null;
   private lastFailure: string | null = null;
+  /**
+   * One write at a time, per run.
+   *
+   * Callers do not await `append` -- a live broadcast cannot wait on a disk
+   * -- so without this, two events written in the same tick race and the
+   * journal ends up in an order the programme never happened in. An
+   * append-only journal has to be append-ORDERED, or replaying it produces a
+   * different broadcast from the one that aired.
+   */
+  private readonly writes = new Map<string, Promise<unknown>>();
+
+  private queue<T>(runId: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.writes.get(runId) ?? Promise.resolve();
+    const next = previous.then(work, work);
+    // The chain holds only its latest link, never its history.
+    this.writes.set(runId, next.catch(() => undefined));
+    return next;
+  }
 
   constructor(private readonly options: JournalTimelineStoreOptions) {
     this.io = options.io ?? { appendFile, writeFile, readFile, mkdir, rm };
@@ -77,17 +95,19 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
       this.lastFailure = 'the run id is not a shape that may become a path';
       return false;
     }
-    try {
-      await this.ensureDirectory();
-      // One JSON object per line: a partial final line after a hard kill is
-      // discarded on load rather than corrupting everything before it.
-      await this.io.appendFile(path, `${JSON.stringify(event)}\n`, 'utf8');
-      this.lastFailure = null;
-      return true;
-    } catch (error) {
-      this.lastFailure = error instanceof Error ? error.message : 'the journal could not be written';
-      return false;
-    }
+    return this.queue(event.runId, async () => {
+      try {
+        await this.ensureDirectory();
+        // One JSON object per line: a partial final line after a hard kill is
+        // discarded on load rather than corrupting everything before it.
+        await this.io.appendFile(path, `${JSON.stringify(event)}\n`, 'utf8');
+        this.lastFailure = null;
+        return true;
+      } catch (error) {
+        this.lastFailure = error instanceof Error ? error.message : 'the journal could not be written';
+        return false;
+      }
+    });
   }
 
   async saveCursor(runId: string, releasedThroughMs: number): Promise<boolean> {
@@ -154,7 +174,15 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
     return { runId, events, releasedThroughMs };
   }
 
+  /** Settle every write already queued for this run. */
+  async flush(runId: string): Promise<void> {
+    await this.writes.get(runId);
+  }
+
   async release(runId: string): Promise<void> {
+    // Let the queue drain first, or a delete races the writes it is deleting.
+    await this.flush(runId);
+
     for (const suffix of ['journal', 'cursor'] as const) {
       const path = this.pathFor(runId, suffix);
       if (path === null) continue;

@@ -113,7 +113,18 @@ export class ProgrammeTimeline {
   private nextSequence = 1;
   private furthestProgrammeTimeMs = 0;
 
-  constructor(readonly identity: ProgrammeRunIdentity) {}
+  /**
+   * @param sink Called with every event as it is written, for durability.
+   *
+   * Fire-and-forget by design: a live broadcast must not wait on a disk. The
+   * sink reports its own failure through whatever it was given, and the
+   * caller decides whether a safety promise can still be kept -- appending is
+   * not the place to discover that, because the words have already been said.
+   */
+  constructor(
+    readonly identity: ProgrammeRunIdentity,
+    private readonly sink?: (event: ProgrammeTimelineEvent) => void,
+  ) {}
 
   /**
    * Write an event, receiving the one that was actually written.
@@ -151,6 +162,8 @@ export class ProgrammeTimeline {
      */
     const end = written.programmeTimeMs + written.durationMs;
     if (end > this.furthestProgrammeTimeMs) this.furthestProgrammeTimeMs = end;
+    // Durability, if this deployment has any. Never awaited here.
+    this.sink?.(written);
     return written;
   }
 

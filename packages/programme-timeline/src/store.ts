@@ -55,6 +55,15 @@ export interface ProgrammeTimelineStore {
   saveCursor(runId: string, releasedThroughMs: number): Promise<boolean>;
   /** Everything known about a run, or null if this store has never seen it. */
   load(runId: string): Promise<PersistedRun | null>;
+  /**
+   * Wait until everything already handed to this store has been written.
+   *
+   * Appends are deliberately not awaited by their callers -- a live broadcast
+   * cannot wait on a disk -- which means that at any instant some events are
+   * in flight. Before a broadcast is released, and before anything reads back
+   * what was written, somebody has to be able to ask.
+   */
+  flush(runId: string): Promise<void>;
   /** Forget a finished broadcast. */
   release(runId: string): Promise<void>;
   /** Can this store still be written to? Checked before a promise is made. */
@@ -96,6 +105,10 @@ export class InMemoryTimelineStore implements ProgrammeTimelineStore {
     return { runId, events: [...run.events], releasedThroughMs: run.cursor };
   }
 
+  async flush(): Promise<void> {
+    // Memory has no in-flight state to settle.
+  }
+
   async release(runId: string): Promise<void> {
     this.runs.delete(runId);
   }
@@ -122,6 +135,9 @@ export const NO_TIMELINE_STORE: ProgrammeTimelineStore = {
   },
   async load() {
     return null;
+  },
+  async flush() {
+    /* nothing was ever in flight */
   },
   async release() {
     /* nothing was stored */
