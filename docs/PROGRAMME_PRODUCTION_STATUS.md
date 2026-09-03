@@ -83,8 +83,41 @@ somebody would rely on it.
 
 Everything else in the delayed path — timeline, cursor, journal, media store,
 producer, egress, access — is built, composed and proven. This is the last
-join, and it is a cross-service one: the gateway has to be told the mode, and
-the listener has to have a player for the delayed path.
+join, and it is a cross-service one.
+
+It is left unbuilt deliberately rather than half built. A gateway that refused
+to relay, with no player on the other side, is a black screen for the whole
+audience; and building the server half behind a flag that stays declined would
+be another component that cannot be exercised end to end, which is the exact
+pattern the rest of this document is about closing.
+
+#### What it needs, concretely
+
+1. **The gateway has to know the mode.** `MediaStateEvent` is the existing
+   channel from media-ingest to the gateway and on to clients; a
+   `mediaDelivery: 'live' | 'delayed'` field on it is the smallest addition
+   that reaches everybody who needs it. It belongs in `shared-types` so an
+   omission is a compiler error rather than an undefined at runtime.
+2. **The gateway has to refuse to relay.** Listener media peers are created in
+   `services/realtime-gateway/src/webrtc-listener-peer-registry.ts`, driven
+   from the backend-media offer path in `gateway.ts`. A run in delayed mode
+   must be refused a listener media peer outright — not muted, not paused:
+   an attached peer that is expected to stay silent is one bug away from
+   carrying a frame.
+3. **The listener has to have a player for the delayed path.** There is none
+   today: `apps/listener-web` is WebRTC-only and contains no HLS anywhere. It
+   needs to fetch the egress playlist, feed fragments through Media Source
+   Extensions, and — critically — resume at the *public* position rather than
+   the live edge after a dropped connection, which the egress already answers
+   with `publicOutputTimeMs`.
+4. **The two must fail closed together.** A viewer whose client cannot play
+   the delayed path must be told so, not silently handed the live feed. The
+   safest ordering is: build the player first, prove it against the existing
+   egress with `delivery` still `live`, and only then let the flag be accepted.
+
+The order matters. Accepting the flag before step 3 turns a working broadcast
+into a blank one; building step 3 first costs nothing, because the egress it
+plays from is already there and already tested.
 
 ### What the audience path actually does today
 
