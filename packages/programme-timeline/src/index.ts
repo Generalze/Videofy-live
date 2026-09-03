@@ -233,3 +233,7 @@ function inProgrammeOrder(
       : a.programmeTimeMs - b.programmeTimeMs,
   );
 }
+
+/** Advertising is placed on this timeline and nowhere else. */
+export * from './advertising.js';
+export * from './buffer.js';
