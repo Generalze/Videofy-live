@@ -53,6 +53,7 @@ import {
 } from '@videofy-live/speech-activity';
 import { buildTranslationGate } from './translation-gate-wiring.js';
 import { registerQualityRoutes } from './quality-routes.js';
+import { registerProgrammeRuntimeRoutes } from './programme-runtime-routes.js';
 import { supportsKeyterms } from './providers/deepgram/nova-streaming-stt.js';
 import {
   buildLiveSynthesis,
@@ -1111,6 +1112,16 @@ logger.info('Translation route gate ready', {
  * console is told exactly what the gate would decide -- not a second reading of
  * the document that can disagree with it after an edit.
  */
+/*
+ * What each live broadcast is measurably doing, and whether its safety
+ * promise would survive this process. The console reads truth from here
+ * rather than inferring it from configuration.
+ */
+registerProgrammeRuntimeRoutes(app, {
+  performance: programmePerformance,
+  timelines: programmeTimelines,
+});
+
 registerQualityRoutes(app, {
   registry: translationGate.registry,
   catalogue: () => ingest.targetLanguageCatalogue,
