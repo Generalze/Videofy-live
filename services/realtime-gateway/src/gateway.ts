@@ -2508,10 +2508,19 @@ export class Gateway {
         ? retained.videoTimestampMs
         : 0;
     const run = this.programmeRuns.get(config.sessionId);
+    const delivery = run === undefined ? undefined : this.programmeDelivery.get(run.runId);
     const state: MediaStateEvent = {
       eventId: 'Videofy Live Demo Event',
       // So the console can ask what THIS airing is doing.
       ...(run === undefined ? {} : { programmeRunId: run.runId }),
+      /*
+       * The run's own delivery answer, carried to every client rather than
+       * left for each to work out. A listener uses it to decide whether to
+       * play the realtime tracks or the cursor-governed segments, and it must
+       * be the SAME answer this gateway is acting on -- otherwise a client
+       * waits for realtime media a gateway has already decided not to send.
+       */
+      ...(delivery === undefined ? {} : { mediaDelivery: delivery }),
       streamId: config.broadcastId,
       processingSessionId: config.sessionId,
       shareableWebRtcSessionId,

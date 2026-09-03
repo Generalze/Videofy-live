@@ -1,3 +1,17 @@
+import {
+  decideDelayedPlayback,
+  mayBindRealtimeStream,
+  unavailableMessage,
+} from './delayedProgrammeBinding';
+import {
+  DelayedProgrammePlayer,
+  type MediaElementLike,
+} from './delayedProgrammePlayer';
+import {
+  probePlaybackCapabilities,
+  type DelayedPlaybackState,
+} from './delayedProgrammePlayback';
+import { createHlsClient, hlsClientSupported } from './hlsClientAdapter';
 /** @owner masterzee001 */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
@@ -452,12 +466,36 @@ export default function App(): React.ReactElement {
     }
   }, []);
 
+  /*
+   * HOW THIS PROGRAMME REACHES THIS VIEWER, as the run itself says.
+   *
+   * Read, never derived. A viewer who could form their own opinion about
+   * whether a programme is protected would be a viewer who could choose the
+   * undelayed one.
+   */
+  const delayedDecision = decideDelayedPlayback(mediaState?.mediaDelivery);
+  const delayedDecisionRef = useRef(delayedDecision);
+  delayedDecisionRef.current = delayedDecision;
+  const delayedManifestUrl =
+    delayedDecision.kind === 'delayed' ? delayedDecision.manifestUrl : null;
+  const delayedRunId =
+    delayedDecision.kind === 'delayed' ? delayedDecision.programmeRunId : null;
+  const delayedPlayerRef = useRef<DelayedProgrammePlayer | null>(null);
+  const [delayedPlaybackState, setDelayedPlaybackState] = useState<DelayedPlaybackState>('idle');
+
   const bindRemoteProgrammeStream = useCallback(
     (
       stream: MediaStream,
       transport: ListenerWebRtcTransportController | null = listenerTransportRef.current,
     ): boolean => {
       if (programmeMediaUrlRef.current) return false;
+      /*
+       * A PROTECTED PROGRAMME NEVER GETS THE REALTIME STREAM ON ITS ELEMENT.
+       * Two sources on one element is the least of it: on a protected run the
+       * realtime one is exactly what the audience must not have, and this is
+       * the single place it would otherwise be attached.
+       */
+      if (!mayBindRealtimeStream(delayedDecisionRef.current)) return false;
       const video = videoRef.current;
       if (!video) return false;
       mockFeedRef.current?.stop();
@@ -672,6 +710,60 @@ export default function App(): React.ReactElement {
     listenerTransport.updatedAt,
     mediaState?.programmeMediaUrl,
   ]);
+
+  /*
+   * THE PROTECTED PATH. Attached only when the run says its media is ready to
+   * be delivered that way, and torn down the moment it stops saying so --
+   * including when it becomes unavailable, because a player left running on a
+   * withdrawn programme keeps an audience watching something that was pulled.
+   */
+  useEffect(() => {
+    const video = videoRef.current;
+    if (delayedDecision.kind !== 'delayed' || !video) {
+      delayedPlayerRef.current?.detach();
+      return;
+    }
+
+    let player = delayedPlayerRef.current;
+    if (player === null) {
+      const capabilities = probePlaybackCapabilities(
+        () => document.createElement('video'),
+        typeof MediaSource === 'undefined' ? undefined : MediaSource,
+      );
+      player = new DelayedProgrammePlayer({
+        capabilities,
+        ...(hlsClientSupported() ? { createHlsClient: () => createHlsClient() } : {}),
+        fetchManifest: async (url) => {
+          try {
+            // Same credentials as every other request to this service; nothing
+            // that grants access is carried in the URL.
+            const response = await fetch(url, { credentials: 'include' });
+            return response.ok ? await response.text() : null;
+          } catch {
+            return null;
+          }
+        },
+        setInterval: (handler, ms) => window.setInterval(handler, ms),
+        clearInterval: (handle) => window.clearInterval(handle as number),
+      });
+      player.watch(setDelayedPlaybackState);
+      delayedPlayerRef.current = player;
+    }
+
+    void player.attach({
+      element: video as unknown as MediaElementLike,
+      manifestUrl: delayedManifestUrl ?? '',
+      programmeRunId: delayedRunId ?? '',
+    });
+
+    return () => {
+      delayedPlayerRef.current?.detach();
+    };
+    // Extracted rather than inlined: the effect must re-run when the manifest
+    // or the run changes, and a conditional expression in the array cannot be
+    // checked statically -- which is how a run switch silently stops
+    // re-attaching and leaves a viewer on the previous broadcast.
+  }, [delayedDecision.kind, delayedManifestUrl, delayedRunId]);
 
   useEffect(() => {
     if (!videoRef.current) {
@@ -1797,6 +1889,27 @@ export default function App(): React.ReactElement {
             {(buffering || uploadedStartGate.buffering) && (
               <span className={styles.bufferingBadge} aria-live="polite">
                 Buffering…
+              </span>
+            )}
+            {/*
+              A protected programme that cannot be delivered yet says so, in
+              the run's own words. It is never quietly replaced by the realtime
+              feed: the delay exists for the moments when something has gone
+              wrong, which is exactly when a fallback would fire.
+            */}
+            {unavailableMessage(delayedDecision) !== null && (
+              <span className={styles.bufferingBadge} role="status" aria-live="polite">
+                {`Protected programme unavailable: ${unavailableMessage(delayedDecision) ?? ''}`}
+              </span>
+            )}
+            {delayedDecision.kind === 'delayed' && delayedPlaybackState === 'rebuffering' && (
+              <span className={styles.bufferingBadge} aria-live="polite">
+                Reconnecting to the protected programme…
+              </span>
+            )}
+            {delayedDecision.kind === 'delayed' && delayedPlaybackState === 'failed' && (
+              <span className={styles.bufferingBadge} role="alert">
+                The protected programme could not be played on this device.
               </span>
             )}
           </div>
