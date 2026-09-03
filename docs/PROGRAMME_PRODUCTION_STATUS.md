@@ -238,7 +238,17 @@ real device, and no part of it has run on staging. In particular:
   nothing offered by a manifest then refused. One encoder per broadcast is
   asserted there too. What is unmeasured is FFmpeg itself, and many concurrent
   runs on one host.
+- The route qualification harness is not built.
+- Storage semantics on the Contabo host have not been inspected. Whether the
+  spool, the journal and the cursor survive a container recreation or a host
+  reboot is asserted nowhere, and durability that has not been tested is a
+  claim rather than a property.
+- Storage and buffer failure injection — torn journal tail, corrupt middle
+  record, ENOSPC, lost write permission, fsync failure, missing init, invalid
+  keyframe, retention exhaustion — is not built.
 - The Programme console pages have not been re-audited against this runtime.
+  Pages 06 to 10 in particular describe a delivery model that has since
+  changed.
 - Deployment to staging has not happened, and no soak has been run.
 
 **This subsystem is not certified.** The word for its current state is
