@@ -148,8 +148,19 @@ describe('the runtime view carries no content', () => {
 
     const reply = await get(appWith(performance, timelines), '/programmes/run_1/runtime');
     const serialised = JSON.stringify(reply.body).toLowerCase();
-    for (const forbidden of ['transcript', 'keyterm', 'vocabulary', 'campaign', 'token', 'password']) {
+
+    /*
+     * The forbidden thing is CONTENT, not the words for it. A `vocabulary`
+     * field is fine and necessary -- it reports a revision, a count and a
+     * state. What may never appear is a term, a transcript, a campaign or a
+     * credential, so the assertion names those rather than banning a heading.
+     */
+    for (const forbidden of ['transcript', 'keyterm', 'campaign', 'token', 'password']) {
       expect(serialised).not.toContain(forbidden);
     }
+
+    // And the vocabulary that IS reported carries no terms.
+    const vocabulary = reply.body['vocabulary'] as Record<string, unknown>;
+    expect(Object.keys(vocabulary).sort()).toEqual(['revision', 'state', 'termCount']);
   });
 });
