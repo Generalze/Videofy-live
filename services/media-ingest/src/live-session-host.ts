@@ -46,6 +46,7 @@ import {
 } from './live-translation-pipeline.js';
 import type { StreamingSpeechSynthesisProvider } from './streaming-speech-synthesis-provider.js';
 import type { StreamingTranscriptionProvider } from './streaming-transcription-provider.js';
+import type { VocabularySnapshotClient } from './vocabulary-snapshot-client.js';
 import type { TimestampedTranslationProvider } from './translation-provider.js';
 import type { TranscriptEvent } from './transcript-event.js';
 
@@ -141,6 +142,14 @@ export interface LiveSessionHostDeps {
   readonly timers?: LiveStreamPipelineDeps['timers'];
   readonly now?: () => number;
   readonly log?: (line: string, detail?: Record<string, unknown>) => void;
+  /**
+   * Where a programme's vocabulary comes from.
+   *
+   * Absent means this deployment has no vocabulary seam, which is a stated
+   * condition rather than an empty word list: the difference between "this
+   * programme has no terms" and "we could not find out" is the whole point.
+   */
+  readonly vocabulary?: VocabularySnapshotClient;
 }
 
 export class LiveSessionHost implements IngressStreamHandler {
@@ -158,6 +167,23 @@ export class LiveSessionHost implements IngressStreamHandler {
   ): Promise<LiveSessionHost> {
     const plans = deps.synthesis === null ? [] : deps.speechPlansFor(open);
     const synthesis = deps.synthesis;
+
+    /*
+     * THE PROGRAMME'S OWN WORDS, FETCHED ONCE AND PINNED.
+     *
+     * Read here because this is where the recogniser is about to be opened,
+     * and a recogniser takes its vocabulary at the handshake: it cannot be
+     * handed new terms afterwards. So this snapshot belongs to this session
+     * for the whole of its life, and an edit made mid-programme applies to the
+     * NEXT one. Saying otherwise would show an operator a version number that
+     * nothing was using.
+     *
+     * A call has no vocabulary and no programme to fetch one for. A programme
+     * whose vocabulary could not be READ gets none either -- and is logged as
+     * unavailable rather than empty, because those look identical in the terms
+     * they produce and mean opposite things.
+     */
+    const vocabulary = await resolveSessionVocabulary(open, deps);
     /**
      * How many languages this stream will actually be SPOKEN in.
      *
@@ -215,6 +241,7 @@ export class LiveSessionHost implements IngressStreamHandler {
       sessionId: open.sessionId,
       streamId: open.streamId,
       context: open.context,
+      ...(vocabulary.keyterms.length === 0 ? {} : { keyterms: vocabulary.keyterms }),
       sourceLanguage: open.sourceLanguage,
       sourceLanguageMode: open.sourceLanguageMode,
       transcription: deps.transcription,
@@ -320,5 +347,56 @@ export function createLiveStreamOpener(deps: LiveSessionHostDeps) {
       });
       return null;
     }
+  };
+}
+
+/**
+ * The vocabulary this session will run on, and how sure we are of it.
+ *
+ * Three outcomes, kept apart on purpose: a programme with terms, a programme
+ * with none, and a programme whose terms could not be fetched. The last is not
+ * the second. A console that showed "vocabulary active" for a failed read
+ * would be telling an operator their carefully entered names are in use while
+ * the recogniser has never seen them.
+ */
+async function resolveSessionVocabulary(
+  open: IngressOpen,
+  deps: LiveSessionHostDeps,
+): Promise<{ readonly keyterms: readonly string[]; readonly state: string }> {
+  if (open.context.serviceCategory !== 'programme') return { keyterms: [], state: 'not-a-programme' };
+  if (deps.vocabulary === undefined) return { keyterms: [], state: 'no-vocabulary-seam' };
+
+  const { programme } = open.context;
+  const result = await deps.vocabulary.fetch({
+    programmeId: programme.programmeId,
+    sourceLanguage: open.sourceLanguage ?? 'en',
+    // Resolution differs per direction; the first target is the one the
+    // recogniser's own snapshot is taken against.
+    targetLanguage: deps.speechPlansFor(open)[0]?.targetLanguage ?? open.sourceLanguage ?? 'en',
+  });
+
+  if (result.kind === 'unavailable') {
+    // Loud, and never mistaken for an empty vocabulary.
+    deps.log?.('programme vocabulary UNAVAILABLE; the recogniser runs without it', {
+      sessionId: open.sessionId,
+      programmeId: programme.programmeId,
+      runId: programme.runId,
+      reason: result.reason,
+    });
+    return { keyterms: [], state: 'unavailable' };
+  }
+
+  // Identity only: never the terms themselves.
+  deps.log?.('programme vocabulary pinned for this recogniser session', {
+    sessionId: open.sessionId,
+    programmeId: programme.programmeId,
+    runId: programme.runId,
+    revision: result.identity.revision,
+    termCount: result.identity.termCount,
+    fingerprint: result.identity.fingerprint,
+  });
+  return {
+    keyterms: result.kind === 'ready' ? result.keyterms : [],
+    state: result.kind,
   };
 }

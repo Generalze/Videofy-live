@@ -43,6 +43,7 @@ import {
 import { setOpusMtDiagnosticLogger } from './translation-provider.js';
 import { attachRealtimeAudioIngress, REALTIME_INGRESS_PATH } from './realtime-ingress-server.js';
 import { createLiveStreamOpener } from './live-session-host.js';
+import { createVocabularySnapshotClient } from './vocabulary-snapshot-client.js';
 import {
   SileroSpeechDetector,
   type SpeechProbabilityDetector,
@@ -1143,6 +1144,20 @@ if (streamingTranscription !== null) {
       synthesis: streamingSynthesis,
       mintSegmentId: () => `seg_${crypto.randomUUID()}`,
       speechPlansFor: (open) => ingest.liveSpeechPlansFor(open.sessionId),
+      /*
+       * THE OPERATOR'S VOCABULARY, ON ITS WAY TO THE RECOGNISER.
+       *
+       * Built here rather than inside the host so the host stays testable
+       * without a network, and so a deployment with no seam configured gets a
+       * client that says so out loud instead of an absent dependency that
+       * quietly resolves to no terms.
+       */
+      vocabulary: createVocabularySnapshotClient({
+        accountUrl: config.accountServiceUrl,
+        internalToken: config.internalIngressAuth.token,
+        sttKeyterms: true,
+        log: (line, detail) => logger.info(line, detail),
+      }),
       ...(createSpeechDetector === null
         ? {}
         : { speech: { createDetector: createSpeechDetector } }),

@@ -52,6 +52,13 @@ export interface IngestConfig {
    * first.
    */
   internalIngressAuth: InternalIngressAuthResolution;
+  /**
+   * The account service, which owns programme vocabulary.
+   *
+   * Null means this deployment has no vocabulary seam, and a programme runs
+   * without one -- reported as unavailable, never as an empty word list.
+   */
+  accountServiceUrl: string | null;
   eventId: string;
   videoSource: 'mock' | 'local-file';
   uploadMaxBytes: number;
@@ -497,6 +504,7 @@ export function loadConfig(): IngestConfig {
     // process may start — index.ts does — so an absent token is reported here
     // rather than thrown, and refused there.
     internalIngressAuth: resolveInternalIngressAuth(),
+    accountServiceUrl: process.env['ACCOUNT_SERVICE_URL']?.trim() || null,
     eventId: process.env['EVENT_ID'] ?? 'demo-event',
     videoSource,
     uploadMaxBytes: readPositiveInt('INGEST_UPLOAD_MAX_BYTES', 2_147_483_648),
