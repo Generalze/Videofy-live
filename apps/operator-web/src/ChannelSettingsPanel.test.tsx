@@ -230,3 +230,26 @@ describe('the channel identity block', () => {
     expect(markup({ identity: identityProps({ status: 'unset' }) })).not.toContain('Copy channel link');
   });
 });
+
+/*
+ * THE CONTROL THAT DOES NOT REACH EVERYWHERE.
+ *
+ * A join code is checked by the realtime gateway. A programme delivered with a
+ * safety delay reaches its audience through the media service, which has never
+ * held a code and refuses a locked channel rather than enforcing a control it
+ * cannot check. An operator who set "locked" and switched to protected
+ * delivery would otherwise find their audience gone with every page healthy.
+ */
+describe('what a join code does not cover', () => {
+  it('says a locked channel admits nobody to a protected broadcast', () => {
+    const html = markup({ draft: { displayName: 'Sunday Service', visibility: 'locked' } });
+    expect(html).toMatch(/safety delay cannot check codes/u);
+    // And points at the tier that does work, rather than only refusing.
+    expect(html).toMatch(/use private/u);
+  });
+
+  it('says nothing of the sort for a channel that is not locked', () => {
+    const html = markup({ draft: { displayName: 'Sunday Service', visibility: 'public' } });
+    expect(html).not.toMatch(/cannot check codes/u);
+  });
+});

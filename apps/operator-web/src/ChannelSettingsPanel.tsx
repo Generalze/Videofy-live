@@ -177,6 +177,26 @@ export function ChannelSettingsPanel({
                 Generate a code
               </button>
               {codeProblem ? <p role="alert">{codeProblem.message}</p> : null}
+              {/*
+                THE ONE PLACE THIS CONTROL DOES NOT REACH.
+                
+                A join code is checked by the realtime gateway, which holds it.
+                A programme delivered with a safety delay reaches its audience
+                through the media service instead, and that service has never
+                held a code -- so it refuses a locked channel outright rather
+                than enforcing a control it cannot check.
+                
+                An operator who set "locked" and switched a programme to
+                protected delivery would otherwise find their audience simply
+                gone, with every page reporting healthy. Saying it here costs a
+                sentence; discovering it costs a broadcast.
+              */}
+              <p role="note">
+                A code admits viewers to a live programme. A programme delivered
+                with a safety delay cannot check codes yet, so a locked channel
+                admits nobody to a protected broadcast — use private, which the
+                link alone opens.
+              </p>
             </div>
           ) : null}
 
