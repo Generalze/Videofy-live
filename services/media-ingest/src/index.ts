@@ -5,6 +5,7 @@ import http from 'http';
 import multer from 'multer';
 import { mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { hostname } from 'node:os';
 import { writeFile } from 'node:fs/promises';
 import { requireSessionSecret } from '@videofy-live/account-tokens';
 import { internalIngressRequestAllowed } from '@videofy-live/service-env';
@@ -48,6 +49,8 @@ import { ProgrammePerformanceRegistry } from './programme-performance-registry.j
 import { ProgrammeTimelineRegistry } from './programme-timeline-registry.js';
 import { METADATA_PLANE_ONLY } from '@videofy-live/programme-timeline';
 import { JournalTimelineStore } from './journal-timeline-store.js';
+import { FileRunWriterLease } from './file-run-writer-lease.js';
+import { ProgrammeWriterOwnership } from './programme-writer-ownership.js';
 import {
   SileroSpeechDetector,
   type SpeechProbabilityDetector,
@@ -1030,6 +1033,26 @@ if (operatorEntitlement.allowedCount === 0) {
  */
 const programmePerformance = new ProgrammePerformanceRegistry();
 
+/*
+ * WHO IS ALLOWED TO WRITE A BROADCAST, and where that is enforced.
+ *
+ * The lease lives on the same volume as the journal it protects, because that
+ * is the only place two writers on this host are guaranteed to both look. A
+ * lease held in a process cannot see another process, and composing one would
+ * have produced a fence that fences nothing -- protection in appearance only.
+ *
+ * The store consults it on an interval as well as holding its own guard. The
+ * process that matters is the one that stalled, lost the lease and woke up
+ * still believing: its own guard has only ever seen its own token and admits
+ * it for ever. Asking the volume asks something a successor has written to.
+ */
+const programmeTimelineDirectory = join(config.audioChunkDir, 'timelines');
+const programmeWriterLease = new FileRunWriterLease(programmeTimelineDirectory);
+const programmeJournal = new JournalTimelineStore({
+  directory: programmeTimelineDirectory,
+  sharedFence: { highestIssued: (runId) => programmeWriterLease.highestIssued(runId) },
+});
+
 /**
  * Each live broadcast's own account of itself, and the cursor the audience
  * receives it through. One per run, resumed across a reconnect.
@@ -1064,7 +1087,7 @@ const programmeTimelines = new ProgrammeTimelineRegistry(
    * a restart mid-programme loses the cursor, and `durable()` reports that
    * BEFORE a programme promises a safety delay rather than during it.
    */
-  new JournalTimelineStore({ directory: join(config.audioChunkDir, 'timelines') }),
+  programmeJournal,
   programmeMediaProduced ? { metadata: true, media: true } : METADATA_PLANE_ONLY,
 );
 /*
@@ -1089,6 +1112,35 @@ if (config.programmeSafetyDelayMs === 0) {
       'buffer will refuse the delay rather than hold captions against live speech',
   });
 }
+
+/*
+ * CLAIMED BEFORE THE FIRST EVENT IS WRITTEN, and given up when a run ends.
+ *
+ * A run this process cannot claim is a run somebody else is writing, and
+ * losing a lease mid-broadcast fails the buffer rather than warning: a
+ * superseded process that carried on would be producing a second version of a
+ * broadcast somebody else is also producing, and nothing downstream can
+ * reconcile two of those afterwards.
+ */
+const programmeOwnership = new ProgrammeWriterOwnership({
+  lease: programmeWriterLease,
+  owner: { processId: String(process.pid), hostId: hostname() },
+  writeUnder: (fenceToken) => programmeJournal.writeUnder(fenceToken),
+  surrender: (runId, reason) => programmeTimelines.buffer(runId)?.fail(reason),
+  log: (message, detail) => logger.warn(message, detail),
+});
+programmeTimelines.onRunOpened((runId) => {
+  void programmeOwnership.claim(runId).then((owned) => {
+    if (!owned) {
+      /*
+       * FAILED CLOSED. The broadcast stops here rather than being written by
+       * two processes: an audience receiving one of two divergent versions is
+       * worse than an audience told the programme has stopped.
+       */
+      programmeTimelines.buffer(runId)?.fail('another process is already writing this broadcast');
+    }
+  });
+});
 
 const streamingTranscription = buildStreamingTranscriptionProvider(config);
 

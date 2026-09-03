@@ -37,6 +37,17 @@ const SAFE_RUN_ID = /^[A-Za-z0-9_-]{1,64}$/u;
 export interface JournalTimelineStoreOptions {
   readonly directory: string;
   /** Injectable so tests can drive a failing disk without one. */
+  /**
+   * The authority that says which token is current for a run.
+   *
+   * Absent means the deployment has not adopted leases and the store writes
+   * unfenced, which is honest for a single-writer deployment. Present, it is
+   * consulted on an interval so a superseded process stops writing without
+   * waiting for its own lease renewal to fail.
+   */
+  readonly sharedFence?: { highestIssued(runId: string): Promise<number | null> };
+  /** How often the shared fence is re-read. Bounds the exposure window. */
+  readonly revalidateMs?: number;
   readonly io?: {
     readonly appendFile: typeof appendFile;
     readonly writeFile: typeof writeFile;
@@ -58,6 +69,15 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
    */
   private readonly fence = new FenceGuard();
   private fenceToken: number | null = null;
+  /**
+   * Set once the volume has shown a higher token, and never cleared.
+   *
+   * A process that has been superseded does not become valid again by waiting,
+   * and a store that re-admitted itself after a transient read failure would
+   * be exactly the split-brain writer the fence exists to stop.
+   */
+  private fencedOut = false;
+  private readonly fenceCheckedAt = new Map<string, number>();
 
   /**
    * Present the token this process is writing under.
@@ -71,6 +91,7 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
     this.fenceToken = fenceToken;
   }
   private readonly io: NonNullable<JournalTimelineStoreOptions['io']>;
+  private readonly revalidateMs: number;
   private ready: Promise<void> | null = null;
   private lastFailure: string | null = null;
   /**
@@ -94,6 +115,7 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
 
   constructor(private readonly options: JournalTimelineStoreOptions) {
     this.io = options.io ?? { appendFile, writeFile, readFile, mkdir, rm };
+    this.revalidateMs = options.revalidateMs ?? 1_000;
   }
 
   /**
@@ -119,11 +141,20 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
       this.lastFailure = 'the run id is not a shape that may become a path';
       return false;
     }
-    if (!this.admitted(event.runId)) {
-      this.lastFailure = 'this process no longer owns the broadcast';
-      return false;
-    }
+    /*
+     * QUEUED SYNCHRONOUSLY, and the fence checked INSIDE the queue.
+     *
+     * Awaiting anything before `queue` returns control to the caller with
+     * nothing enqueued, so two events written in the same tick are ordered by
+     * whichever microtask resolves first -- and `flush` has nothing to wait
+     * for. An append-only journal has to be append-ORDERED, or replaying it
+     * produces a different broadcast from the one that aired.
+     */
     return this.queue(event.runId, async () => {
+      if (!(await this.admitted(event.runId))) {
+        this.lastFailure = 'this process no longer owns the broadcast';
+        return false;
+      }
       try {
         await this.ensureDirectory();
         /*
@@ -151,7 +182,7 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
   async saveCursor(runId: string, releasedThroughMs: number): Promise<boolean> {
     const path = this.pathFor(runId, 'cursor');
     if (path === null) return false;
-    if (!this.admitted(runId)) {
+    if (!(await this.admitted(runId))) {
       // A fenced process moving the cursor would tell the world an audience
       // had received material it never did.
       this.lastFailure = 'this process no longer owns the broadcast';
@@ -223,10 +254,38 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
    *
    * Unfenced deployments admit everything, which is the honest behaviour for
    * one that has not adopted leases.
+   *
+   * WHERE A LOCAL FENCE IS NOT ENOUGH. A stalled writer's own guard has only
+   * ever seen its own token, so it admits itself for ever -- the process that
+   * matters is precisely the one that cannot detect its own supersession. So
+   * the volume is asked as well, because that is what a successor has already
+   * written to, and once it reports a higher token this store is out
+   * permanently: waiting does not restore authority.
    */
-  private admitted(runId: string): boolean {
+  private async admitted(runId: string): Promise<boolean> {
     if (this.fenceToken === null) return true;
-    return this.fence.admit(runId, this.fenceToken);
+    if (this.fencedOut) return false;
+    if (!this.fence.admit(runId, this.fenceToken)) return false;
+
+    const shared = this.options.sharedFence;
+    if (shared === undefined) return true;
+    const at = Date.now();
+    const checkedAt = this.fenceCheckedAt.get(runId) ?? 0;
+    /*
+     * Re-read on an interval rather than on every append. A live broadcast
+     * writes several events a second and a stat per event is a cost with no
+     * matching risk: the exposure this bounds is the window between losing a
+     * lease and noticing, and a second of it is shorter than any lease TTL.
+     */
+    if (at - checkedAt < this.revalidateMs) return true;
+    this.fenceCheckedAt.set(runId, at);
+    const highest = await shared.highestIssued(runId).catch(() => null);
+    if (highest !== null && highest > this.fenceToken) {
+      this.fencedOut = true;
+      this.lastFailure = 'another process has taken ownership of this broadcast';
+      return false;
+    }
+    return true;
   }
 
   /**

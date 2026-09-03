@@ -52,6 +52,7 @@ export class ProgrammeTimelineRegistry {
   private readonly runs = new Map<string, TrackedRun>();
   private readonly vocabularies = new Map<string, RunVocabulary>();
   private readonly sessionRuns = new Map<string, string>();
+  private readonly openListeners: ((runId: string) => void)[] = [];
 
   constructor(
     private readonly maxRuns: number = MAX_TRACKED_TIMELINES,
@@ -126,6 +127,18 @@ export class ProgrammeTimelineRegistry {
   }
 
   /**
+   * Told when a broadcast starts being tracked here.
+   *
+   * The hook exists so ownership can be claimed at the one moment it matters
+   * -- before anything is written -- without the registry knowing what a lease
+   * is. A registry that reached for a lease directly would be a registry that
+   * could not be tested without one.
+   */
+  onRunOpened(listener: (runId: string) => void): void {
+    this.openListeners.push(listener);
+  }
+
+  /**
    * The timeline for this run, resumed if it already exists.
    *
    * Resumed rather than replaced: the identity is what says whether this is
@@ -167,6 +180,10 @@ export class ProgrammeTimelineRegistry {
     tracked.buffer = buffer;
     this.runs.set(identity.runId, { identity, timeline, buffer });
     this.evictOldest();
+    // Announced only for a run that is genuinely new here: a reconnect
+    // returned above, and re-claiming ownership on every reconnect would be
+    // asking a question that was already answered.
+    for (const listener of this.openListeners) listener(identity.runId);
     return timeline;
   }
 
