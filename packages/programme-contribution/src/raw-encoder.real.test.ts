@@ -88,9 +88,21 @@ describe.skipIf(!canRun)('the real encoder, fed by the real bridge', () => {
       bridge.pushAudio(syntheticAudio(audioIndex++), AUDIO);
       at = ms;
       bridge.pump();
-      // Let the pipe drain, or the encoder is written to faster than it reads
-      // and the bounded queue does its job instead of the test doing its.
-      if (ms % 200 === 0) await new Promise((done) => setImmediate(done));
+      /*
+       * WAIT ON REAL BACKPRESSURE, not on a fixed cadence.
+       *
+       * Yielding every fixed number of simulated milliseconds makes the
+       * outcome depend on how fast this machine happens to be: under load the
+       * encoder falls behind, the bounded queue does its job, frames are
+       * dropped and the fixture produces fewer segments than it asserts. That
+       * is the queue working correctly and the test measuring the wrong thing
+       * -- it passed alone and failed in a full run, which is the signature.
+       */
+      let waited = 0;
+      while (!encoder.ready && waited < 200) {
+        await new Promise((done) => setTimeout(done, 1));
+        waited += 1;
+      }
     }
     await encoder.stop();
   }, 120_000);
