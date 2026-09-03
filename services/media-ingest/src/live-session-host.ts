@@ -48,6 +48,7 @@ import type { StreamingSpeechSynthesisProvider } from './streaming-speech-synthe
 import type { StreamingTranscriptionProvider } from './streaming-transcription-provider.js';
 import type { VocabularySnapshotClient } from './vocabulary-snapshot-client.js';
 import type { ProgrammePerformanceRegistry } from './programme-performance-registry.js';
+import type { ProgrammeTimelineRegistry } from './programme-timeline-registry.js';
 import type { TimestampedTranslationProvider } from './translation-provider.js';
 import type { TranscriptEvent } from './transcript-event.js';
 
@@ -159,6 +160,8 @@ export interface LiveSessionHostDeps {
    * performing perfectly.
    */
   readonly performance?: ProgrammePerformanceRegistry;
+  /** Where each run's account of itself is kept. Absent on a call. */
+  readonly timelines?: ProgrammeTimelineRegistry;
 }
 
 export class LiveSessionHost implements IngressStreamHandler {
@@ -193,6 +196,18 @@ export class LiveSessionHost implements IngressStreamHandler {
      * they produce and mean opposite things.
      */
     const vocabulary = await resolveSessionVocabulary(open, deps);
+
+    /*
+     * The one account of this broadcast, if it is a broadcast at all.
+     *
+     * A call has no timeline: nothing is delayed, nothing is advertised into
+     * it, and there is no audience receiving a cursor. Absent here means
+     * exactly that rather than an empty programme.
+     */
+    const timeline =
+      open.context.serviceCategory === 'programme'
+        ? deps.timelines?.open(open.context.programme)
+        : undefined;
     /**
      * How many languages this stream will actually be SPOKEN in.
      *
@@ -271,6 +286,22 @@ export class LiveSessionHost implements IngressStreamHandler {
       mintSegmentId: () => deps.mintSegmentId(open),
       onTranscriptEvent: (event) => {
         deps.onCaption?.(event);
+        /*
+         * AND ONTO THE PROGRAMME'S OWN ACCOUNT OF ITSELF.
+         *
+         * Written at the moment it happened in the broadcast, not the moment
+         * we finished producing it -- a caption belongs where the words were
+         * spoken. Everything a viewer will eventually receive goes through
+         * here, which is what lets one cursor delay all of it coherently
+         * instead of four independent paths drifting apart.
+         */
+        timeline?.append({
+          programmeTimeMs: event.startMs,
+          kind: 'caption',
+          reference: event.segmentId,
+          durationMs: Math.max(0, event.endMs - event.startMs),
+          attributes: { language: open.sourceLanguage ?? 'unknown', final: event.kind === 'final' },
+        });
         // ONE final, EVERY language. Fanned out here rather than by
         // transcribing per language: the speaker said the sentence once.
         for (const [targetLanguage, pipeline] of speech) {
@@ -284,6 +315,15 @@ export class LiveSessionHost implements IngressStreamHandler {
             .then((record) => {
               if (record !== null) {
                 deps.onSpoken?.(record.segmentId, record.generation, targetLanguage);
+                // Placed at the moment it translates, so a listener in Yoruba
+                // hears it against the same instant an English caption shows.
+                timeline?.append({
+                  programmeTimeMs: event.startMs,
+                  kind: 'generated-audio',
+                  reference: record.segmentId,
+                  durationMs: Math.max(0, event.endMs - event.startMs),
+                  attributes: { language: targetLanguage, generation: record.generation },
+                });
               }
             })
             .catch((error: unknown) => {

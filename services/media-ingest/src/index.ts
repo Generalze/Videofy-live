@@ -45,6 +45,7 @@ import { attachRealtimeAudioIngress, REALTIME_INGRESS_PATH } from './realtime-in
 import { createLiveStreamOpener } from './live-session-host.js';
 import { createVocabularySnapshotClient } from './vocabulary-snapshot-client.js';
 import { ProgrammePerformanceRegistry } from './programme-performance-registry.js';
+import { ProgrammeTimelineRegistry } from './programme-timeline-registry.js';
 import {
   SileroSpeechDetector,
   type SpeechProbabilityDetector,
@@ -984,6 +985,12 @@ if (operatorEntitlement.allowedCount === 0) {
  */
 const programmePerformance = new ProgrammePerformanceRegistry();
 
+/**
+ * Each live broadcast's own account of itself, and the cursor the audience
+ * receives it through. One per run, resumed across a reconnect.
+ */
+const programmeTimelines = new ProgrammeTimelineRegistry();
+
 const streamingTranscription = buildStreamingTranscriptionProvider(config);
 
 /**
@@ -1164,6 +1171,7 @@ if (streamingTranscription !== null) {
        */
       // Measurements live for the life of the process, partitioned by run.
       performance: programmePerformance,
+      timelines: programmeTimelines,
       vocabulary: createVocabularySnapshotClient({
         accountUrl: config.accountServiceUrl,
         internalToken: config.internalIngressAuth.token,

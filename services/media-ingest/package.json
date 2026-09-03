@@ -26,7 +26,8 @@
     "multer": "^2.2.0",
     "socket.io-client": "^4.7.5",
     "ws": "^8.18.0",
-    "@videofy-live/programme-quality": "*"
+    "@videofy-live/programme-quality": "*",
+    "@videofy-live/programme-timeline": "*"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
