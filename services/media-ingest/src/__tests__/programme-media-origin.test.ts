@@ -439,6 +439,24 @@ describe('the running service composes this producer', () => {
     expect(source).not.toContain('req.body.input');
   });
 
+  it('starts the encoder when a broadcast opens, not when somebody presses a button', () => {
+    /*
+     * A protected broadcast cannot depend on an operator remembering: the
+     * delay begins filling the moment the programme goes on air, and a
+     * producer started a minute late is a minute of the broadcast the
+     * audience will never be able to reach.
+     */
+    expect(source).toContain('Programme media origin started for a new broadcast');
+    expect(source).toMatch(
+      /onRunOpened\(\(runId\) => \{[\s\S]{0,400}programmeOrigin\.start\(runId/u,
+    );
+  });
+
+  it('does not encode for a run whose audience receives the tracks directly', () => {
+    // A core per broadcast, spent producing material nothing reads.
+    expect(source).toContain("config.programmeMediaDelivery !== 'delayed'");
+  });
+
   it('keeps the control route behind the operator guard', () => {
     expect(source).toContain("app.post('/programmes/:runId/media-origin', operatorOnly");
     expect(source).toContain("app.delete('/programmes/:runId/media-origin', operatorOnly");

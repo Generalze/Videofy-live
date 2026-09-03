@@ -1482,6 +1482,28 @@ if (advertisingClient.configured) {
 }
 
 /*
+ * THE CONTRIBUTION STARTS THE ENCODER, not a person.
+ *
+ * An operator route exists for recovery and for a run that needs producing by
+ * hand, but a protected broadcast cannot depend on somebody remembering to
+ * press it: the delay begins filling the moment the programme goes on air, and
+ * a producer started a minute late is a minute of the broadcast the audience
+ * will never be able to reach.
+ *
+ * ONLY WHEN THE MEDIA IS ACTUALLY WANTED. A live-delivery run has no use for
+ * segments -- its audience receives the broadcaster's tracks directly -- and
+ * encoding them anyway would spend a core per broadcast to produce material
+ * nothing reads.
+ */
+programmeTimelines.onRunOpened((runId) => {
+  const template = config.programmeMediaOriginInput;
+  if (template === null || config.programmeMediaDelivery !== 'delayed') return;
+  void programmeOrigin.start(runId, template.replace('{runId}', runId)).then((started) => {
+    if (started) logger.info('Programme media origin started for a new broadcast', { runId });
+  });
+});
+
+/*
  * A restart must not hand an advertiser a second impression because this
  * process forgot the first. Primed before any break can be offered.
  */
