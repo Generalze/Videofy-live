@@ -65,7 +65,23 @@ export interface InterpretationAudioMixerOptions {
   onStateChange?: (state: InterpretationMixState) => void;
 }
 
-const DEFAULT_ORIGINAL_LEVEL = 0.2;
+/**
+ * THE ORIGINAL LEVEL IS A LEVEL (founder ruling 29 Aug 2026). The slider
+ * sets how loud the original programme is, full stop: 100 / 50 / 0 must be
+ * audibly and measurably distinct whether or not translated speech is
+ * playing, and on the original channel too. Before this it was a DUCK
+ * DEPTH -- applied only while a translated clip was mid-playback and
+ * silently 1 the rest of the time -- so the control did nothing between
+ * phrases and nothing at all on the original programme.
+ *
+ * Ducking still happens, on top: while translated speech is audible the
+ * original drops to level x DUCK_RATIO, matching the language-router policy
+ * (recipient-output-policy.ts DEFAULT_DUCKED_ORIGINAL_VOLUME), and comes
+ * back to the level -- never to 1 -- when the phrase ends. The translated
+ * track's own gain is untouched by any of this.
+ */
+const DEFAULT_ORIGINAL_LEVEL = 1;
+const DUCK_RATIO = 0.25;
 const DEFAULT_TRANSLATED_LEVEL = 1;
 
 const initialMixState: InterpretationMixState = {
@@ -378,13 +394,21 @@ export class InterpretationAudioMixerController {
 
   private effectiveOriginalLevel(): number {
     if (!this.mixState.enabled) return 1;
+    const level = this.mixState.originalLevel;
     // Passthrough: this viewer listens to the original programme (original
-    // channel or captions-only language) â€” never duck or mute it.
-    if (this.mixState.originalPassthrough) return 1;
+    // channel or captions-only language). It follows the level and is never
+    // ducked -- there is no translated speech to make room for.
+    if (this.mixState.originalPassthrough) return level;
     if (this.mixState.mode === 'replacement') return 0;
-    // Sidechain ducking: duck the original to the configured level only while
-    // translated speech is audible so music and effects stay at full volume.
-    return this.speechActiveCount > 0 ? this.mixState.originalLevel : 1;
+    // Sidechain ducking on top of the level: while translated speech is
+    // audible the original makes room; between phrases it returns to the
+    // level the person chose, not to full volume.
+    return this.speechActiveCount > 0 ? level * DUCK_RATIO : level;
+  }
+
+  /** What the original gain is being driven to right now (for diagnostics). */
+  effectiveOriginalGain(): number {
+    return this.effectiveOriginalLevel();
   }
 
   private currentTranslatedDirectVolume(): number {

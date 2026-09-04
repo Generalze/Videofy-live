@@ -145,6 +145,7 @@ import {
   readAccountSession,
   writeAccountSession,
   type AccountSession,
+  readAccountUrl,
 } from './accountSession';
 
 const ACK_TIMEOUT_MS = 8_000;
@@ -210,6 +211,18 @@ export default function App() {
   const [audioOutputs, setAudioOutputs] = useState<CallAudioOutputDevice[]>([]);
   const [audioOutputId, setAudioOutputId] = useState<string | null>(null);
   /** W7: last-known peer transport states, for resume-time health checks. */
+  /**
+   * Voice-leg diagnostics, rendered in the call header. Field debugging of
+   * "call connected but no audio" burned a day because the page could not say
+   * WHICH link was broken: the receive transport, the slot binding, or the
+   * element playback. Each is now named. `remoteVoiceHeard` is the element's
+   * own verdict (the `playing` event), never an expectation.
+   */
+  const [voiceLegs, setVoiceLegs] = useState<{
+    publish: RTCPeerConnectionState;
+    receive: RTCPeerConnectionState;
+  }>({ publish: 'new', receive: 'new' });
+  const [remoteVoiceHeard, setRemoteVoiceHeard] = useState(false);
   const peerStatesRef = useRef<{ publish: RTCPeerConnectionState; receive: RTCPeerConnectionState }>(
     { publish: 'new', receive: 'new' },
   );
@@ -230,6 +243,7 @@ export default function App() {
     return invited ? { ...initial, callCode: normalizeCallCode(invited) } : initial;
   });
   const [inviteCopied, setInviteCopied] = useState(false);
+
 
   const copyInviteLink = useCallback(() => {
     const link = buildInviteLink(
@@ -271,6 +285,52 @@ export default function App() {
   const [accountSession, setAccountSession] = useState<AccountSession | null>(() =>
     readAccountSession(defaultSessionStorage()),
   );
+
+  /*
+   * A RESTORED SESSION PRELOADS THE FORM TOO. The voice-gender preload used
+   * to fire only inside the sign-in handler, so a returning visitor with a
+   * stored session got none of their preferences -- and the new account
+   * default language would have repeated that gap. /me is fetched once on
+   * mount; the account's default language becomes the call's opening speak
+   * AND hear, and their chosen voice arrives with it. A signed-out visitor
+   * skips all of it and keeps the form's own defaults.
+   */
+  useEffect(() => {
+    const token = accountSession?.token;
+    if (!token) return;
+    let cancelled = false;
+    void fetch(`${readAccountUrl()}/me`, { headers: { authorization: `Bearer ${token}` } })
+      .then(async (response) => (response.ok ? response.json() : null))
+      .then(
+        (
+          body: {
+            profile?: {
+              defaultLanguage?: string | null;
+              spokenLanguage?: string | null;
+              listeningLanguage?: string | null;
+            };
+          } | null,
+        ) => {
+          if (cancelled || body === null) return;
+          const valid = (value: unknown): value is 'en' | 'es' | 'fr' =>
+            value === 'en' || value === 'es' || value === 'fr';
+          const primary = body.profile?.defaultLanguage;
+          const speak = body.profile?.spokenLanguage ?? primary;
+          const hear = body.profile?.listeningLanguage ?? primary;
+          if (valid(speak) || valid(hear)) {
+            setForm((current) => ({
+              ...current,
+              ...(valid(speak) ? { speakLanguage: speak } : {}),
+              ...(valid(hear) ? { hearLanguage: hear } : {}),
+            }));
+          }
+        },
+      )
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [accountSession?.token]);
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
   const enrollmentFlowRef = useRef<VoiceEnrollmentFlow | null>(null);
@@ -528,8 +588,10 @@ export default function App() {
       // W4 Path B, re-sourced. The single anonymous remote element it used to
       // come from is gone; this covers EVERY speaker instead of whichever
       // stream happened to land on the shared one.
-      onRemoteOriginalAudibleChange: (audible) =>
-        reportPlaybackRef.current('remote-original', audible ? 'start' : 'end', null),
+      onRemoteOriginalAudibleChange: (audible) => {
+        setRemoteVoiceHeard(audible);
+        reportPlaybackRef.current('remote-original', audible ? 'start' : 'end', null);
+      },
     });
     // The binder decides WHO; the controller decides how it is heard. Keeping
     // them apart is what lets attribution fail closed without silencing
@@ -954,6 +1016,22 @@ export default function App() {
    * Both paths are unlocked because they are separate elements: the remote
    * WebRTC stream and the generated clips have their own permissions.
    */
+  /*
+   * While playback is blocked, ANY click on the page is a usable gesture.
+   * The "Enable audio" button stays (it names the problem), but a person who
+   * clicks anything else -- mute, a speaker chip, the transcript -- has just
+   * handed the browser the same permission, and wasting it keeps the call
+   * silent for no reason. Field case: a two-device call where the remote
+   * element was created seconds after the join click and its play() was
+   * refused; the fix must not depend on the person noticing a small chip.
+   */
+  useEffect(() => {
+    if (!playbackBlocked) return;
+    const retry = (): void => handleEnableAudioRef.current();
+    document.addEventListener('click', retry);
+    return () => document.removeEventListener('click', retry);
+  }, [playbackBlocked]);
+
   const handleEnableAudio = (): void => {
     // Unlocks BOTH playback families in the one gesture: the translated-clip
     // player and every per-speaker original element. They are separate media
@@ -964,6 +1042,9 @@ export default function App() {
       setPlaybackBlocked(queueRef.current?.getState().status === 'blocked');
     });
   };
+
+  const handleEnableAudioRef = useRef(handleEnableAudio);
+  handleEnableAudioRef.current = handleEnableAudio;
 
   const ensureMicStream = async (): Promise<MediaStream> => {
     const existing = micStreamRef.current;
@@ -1029,6 +1110,7 @@ export default function App() {
       iceServers,
       onConnectionStateChange: (state) => {
         peerStatesRef.current.publish = state;
+        setVoiceLegs((current) => ({ ...current, publish: state }));
       },
       sendOffer: (sdp) =>
         emitSdpOffer(
@@ -1049,6 +1131,7 @@ export default function App() {
       iceServers,
       onConnectionStateChange: (state) => {
         peerStatesRef.current.receive = state;
+        setVoiceLegs((current) => ({ ...current, receive: state }));
       },
       sendOffer: (sdp) =>
         emitSdpOffer(
@@ -1232,6 +1315,30 @@ export default function App() {
     });
     socket.on(CALL_EVENTS.PUBLISH_ICE, (payload: CallIcePayload) => {
       void publishPeerRef.current?.addRemoteCandidate(payload?.candidate);
+    });
+    /*
+     * THE TELEPHONE'S WORDS (founder ruling 2026-08-28). For a direct call the
+     * server owns the state -- calling, ringing, connecting, connected, busy,
+     * no answer, network -- and the status line repeats it verbatim instead
+     * of inferring anything from tiles or push results.
+     */
+    socket.on(CALL_EVENTS.DIRECT_STATE, (wire: { state?: unknown; peerAccountId?: unknown }) => {
+      if (typeof wire?.state !== 'string') return;
+      const words: Record<string, string> = {
+        calling: 'Calling…',
+        ringing: 'Ringing…',
+        answered: 'Answered',
+        connecting: 'Connecting…',
+        connected: 'Connected',
+        reconnecting: 'Network issue — reconnecting…',
+        busy: 'They are busy',
+        declined: 'Call declined',
+        no_answer: 'No answer',
+        unavailable: 'They couldn’t be reached',
+        network: 'Call ended because of a network problem',
+        ended: 'Call ended',
+      };
+      setStatusNote(words[wire.state] ?? wire.state);
     });
     socket.on(
       CALL_EVENTS.RECEIVE_TRACKS,
@@ -1744,6 +1851,8 @@ export default function App() {
           phase={phase}
           statusNote={statusNote}
           playbackBlocked={playbackBlocked}
+          voiceLegs={voiceLegs}
+          remoteVoiceHeard={remoteVoiceHeard}
           translatedAudioUnavailable={translatedAudioUnavailable}
           remoteSpeakers={remoteSpeakers}
           onSpeakerMutedChange={(id, muted) => speakerAudioRef.current?.setMuted(id, muted)}

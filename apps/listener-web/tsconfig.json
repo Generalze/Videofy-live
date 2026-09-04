@@ -11,6 +11,7 @@
     "outDir": "./dist",
     "paths": {
       "@videofy-live/shared-types": ["../../packages/shared-types/src/index.ts"],
+      "@videofy-live/language-catalogue": ["../../packages/language-catalogue/src/index.ts"],
       "@videofy-live/language-router": ["../../services/language-router/src/index.ts"]
     }
   },

@@ -12,8 +12,10 @@ import {
   provisionRouteCredentials,
 } from './adapter-route-policy.js';
 import { createApp } from './app.js';
+import { createChannelIdentityClient } from './channel-identity.js';
 import { loadConfig } from './config.js';
-import { createCallHostAuthority } from './call-host-authority.js';
+import { createCallHostAuthority, createDirectCallModeResolver } from './call-host-authority.js';
+import { createCallLiveRouteAuthority } from './call-live-route-authority.js';
 import { Gateway } from './gateway.js';
 import { logger, setLogLevel } from './logger.js';
 
@@ -74,7 +76,22 @@ const adapterSurface =
       })();
 
 const app = createApp({
+  directCalls: () => gateway.directCalls,
+  publicCalls: () => gateway.listPublicCalls(),
+  callStatus: (callId) => gateway.callStatus(callId),
+  sessionSecret: process.env['VIDEOFY_AUTH_SECRET'],
   diagnostics: () => gateway.getWebRtcDiagnostics(),
+  // So /health can stop claiming a capability that is absent.
+  mediaIngestConnected: () => gateway.mediaIngestConnected,
+  /*
+   * Three facts, because they can disagree and the disagreement is the useful
+   * part: a pinned LIVE policy with media ingest down is trueLiveCapable and
+   * not protectedLiveCapable, and a fresh gateway that has been told nothing
+   * is neither.
+   */
+  deliveryAuthorityKnown: () => gateway.deliveryAuthorityKnown,
+  trueLiveCapable: () => gateway.trueLiveCapable,
+  protectedLiveCapable: () => gateway.protectedLiveCapable,
   ...(adapterSurface === null
     ? {}
     : {
@@ -103,6 +120,43 @@ if (channelIdSalt === undefined || channelIdSalt.length === 0) {
   );
 }
 
+/*
+ * WHERE CHANNEL IDENTITY PERSISTS. Founder directive (A, 30 Aug 2026): a
+ * channel's profile lives outside gateway memory, in the account service,
+ * read over the same internal routes recordDirectCall uses. Without both the
+ * address and the credential the gateway still runs -- on in-memory names,
+ * which a restart forgets -- and says so at boot rather than at the first
+ * operator connect.
+ */
+const channelIdentity = (() => {
+  const base = process.env['ACCOUNT_SERVICE_URL'];
+  const token = process.env['INTERNAL_WEBRTC_TOKEN'];
+  if (!base || !token) {
+    logger.warn(
+      'Channel identity is not persisted: ACCOUNT_SERVICE_URL or INTERNAL_WEBRTC_TOKEN is not set. ' +
+        'Channel names, categories and visibility live in gateway memory until both are set.',
+    );
+    return undefined;
+  }
+  return createChannelIdentityClient({ accountServiceUrl: base, internalToken: token });
+})();
+
+/*
+ * THE CALL-LIVE ROUTE AUTHORITY, built once at boot from the same reviewed
+ * document the programme gate reads. Fail-closed: no document, an unreadable
+ * one, or an unapproved direction all answer "no", and the boot line says
+ * which of those happened rather than leaving a silent deployment.
+ */
+const callLiveRoutes = createCallLiveRouteAuthority({
+  ...(process.env['TRANSLATION_ROUTES_DOCUMENT']
+    ? { documentPath: process.env['TRANSLATION_ROUTES_DOCUMENT'] }
+    : {}),
+});
+logger.info('Call-live translation route authority ready', {
+  scope: 'call-live',
+  detail: callLiveRoutes.description,
+});
+
 const gateway = new Gateway(server, config.corsOrigins, {
   mediaIngestUrl: config.mediaIngestUrl,
   realtimeIngressUrl: config.realtimeIngressUrl,
@@ -124,6 +178,7 @@ const gateway = new Gateway(server, config.corsOrigins, {
   webRtcTranscriptionStagingDir: config.webRtcTranscriptionStagingDir,
   webRtcPartialCaptionIntervalMs: config.webRtcPartialCaptionIntervalMs,
   callTranscriptLogDir: config.callTranscriptLogDir,
+  channelIdentity,
   connect: {
     authSecret: config.connectAuthSecret,
     projectsPath: config.connectProjectsPath,
@@ -132,11 +187,47 @@ const gateway = new Gateway(server, config.corsOrigins, {
    * Who may START a call. Joining one is untouched: a guest invited to a call
    * has no C7 account and should not need one.
    */
+  // Followers who asked are told when a channel goes live (account fans out the push).
+  onChannelLive: async (channelId, live, displayName) => {
+    const base = process.env['ACCOUNT_SERVICE_URL']?.replace(/\/+$/, '');
+    const token = process.env['INTERNAL_WEBRTC_TOKEN'];
+    if (!base || !token) return;
+    const response = await fetch(`${base}/internal/channels/${encodeURIComponent(channelId)}/live`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-Videofy-Internal-Token': token },
+      body: JSON.stringify({ live, displayName }),
+    });
+    if (!response.ok) throw new Error(`account service answered ${response.status}`);
+  },
   call: {
     authorizeHost: createCallHostAuthority({
       secret: process.env['VIDEOFY_AUTH_SECRET'],
       accountServiceUrl: process.env['ACCOUNT_SERVICE_URL'],
     }),
+    // Direct calls follow the account pair's Normal/Translated relationship.
+    resolveDirectMode: createDirectCallModeResolver({
+      secret: process.env['VIDEOFY_AUTH_SECRET'],
+      accountServiceUrl: process.env['ACCOUNT_SERVICE_URL'],
+    }),
+    /*
+     * And a translated pair still needs an APPROVED ROUTE. The relationship
+     * says these two people translate; the registry says whether this language
+     * pair has been qualified to carry a live call. Separate facts, and the
+     * call path used to consult only the engine.
+     */
+    callLiveRouteApproved: (source, target) => callLiveRoutes.approved(source, target),
+    // Every finished direct call becomes history on the account pair.
+    recordDirectCall: async (record) => {
+      const base = process.env['ACCOUNT_SERVICE_URL']?.replace(/\/+$/, '');
+      const token = process.env['INTERNAL_WEBRTC_TOKEN'];
+      if (!base || !token) return;
+      const response = await fetch(`${base}/internal/calls`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-Videofy-Internal-Token': token },
+        body: JSON.stringify(record),
+      });
+      if (!response.ok) throw new Error(`account service answered ${response.status}`);
+    },
   },
   operator: {
     // The SAME secret the account service signs sessions with. A separate
@@ -145,18 +236,32 @@ const gateway = new Gateway(server, config.corsOrigins, {
     // nothing explains.
     authSecret: process.env['VIDEOFY_AUTH_SECRET'],
     /*
-     * OPEN, BUT NOT ANONYMOUS.
+     * BROADCASTING IS GRANTED, NOT AMBIENT.
      *
-     * Any verified C7 account may operate a programme today. That is a
-     * deliberate product decision taken while there is nothing to subscribe
-     * to, not an oversight -- and it is NOT a bypass of authentication: a
-     * caller with no valid session token is refused either way.
-     *
-     * When pricing exists this becomes true and takes an entitlement check,
-     * which is a one-line change here rather than a rewrite, because the
-     * accountId is already resolved.
+     * The founder's ruling (2026-08-27): the operator console must not be
+     * open to every C7 account. Until pricing carries the grant, the
+     * population is an env allowlist -- the same fail-closed pattern the
+     * billing tariff uses for platform operators. Unset or empty means
+     * NOBODY can operate, which is the honest default for a broadcast
+     * surface: a deployment that forgets the variable notices in minutes;
+     * one that silently opens to everybody notices in a headline.
      */
-    requireEntitlement: false,
+    requireEntitlement: true,
+    hasEntitlement: (() => {
+      const raw = process.env['OPERATOR_CONSOLE_ACCOUNT_IDS'] ?? '';
+      const allowed = new Set(
+        raw
+          .split(',')
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0),
+      );
+      if (allowed.size === 0) {
+        logger.warn(
+          'OPERATOR_CONSOLE_ACCOUNT_IDS is not set: the operator console refuses every account.',
+        );
+      }
+      return (accountId: string) => allowed.has(accountId);
+    })(),
     /*
      * PER-DEPLOYMENT, AND STABLE FOREVER AFTER.
      *

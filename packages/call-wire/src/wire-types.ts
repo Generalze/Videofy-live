@@ -39,6 +39,13 @@ export type CallType = 'personal' | 'conference';
 export type CallMode = 'normal' | 'translated';
 
 /**
+ * Conference setup (29 Aug): who may enter. `private` = the code alone, as
+ * before; `public` = also listed by GET /calls/public; `restricted` = the
+ * host admits every joiner after themselves (call:knock / call:admit).
+ */
+export type CallPrivacy = 'public' | 'private' | 'restricted';
+
+/**
  * Structural RTCIceCandidateInit for both signalling directions. Structural on
  * purpose: this package compiles without DOM libs, and the gateway's
  * normalized relay shape (null-filled sdpMid/sdpMLineIndex, usernameFragment
@@ -70,6 +77,26 @@ export interface CallJoinPayload {
    */
   callType?: CallType;
   callMode?: CallMode;
+  /**
+   * CONFERENCE SETUP (29 Aug), consulted ONLY when this join CREATES a
+   * conference and ignored otherwise. `title` 1..80 chars after trimming;
+   * `privacy` defaults to 'private'; `targetLanguages` at most 8 codes
+   * matching ^[a-z]{2,3}(-[A-Z]{2})?$ -- the languages the host offers
+   * listeners, echoed on call:state for the client to show.
+   */
+  title?: string;
+  privacy?: CallPrivacy;
+  targetLanguages?: string[];
+  /**
+   * DIRECT CALL (founder ruling 2026-08-28): the C7 account this call is
+   * placed TO. Consulted only when this join CREATES the call. Its presence
+   * makes the call `personal`, and the gateway resolves the pair's
+   * conversation mode (normal | translated) from the account service and
+   * LOCKS it into the session -- `callMode` from the client is ignored for
+   * a direct call, because the relationship, not the caller's form, owns
+   * that answer. Never echoed into call:state.
+   */
+  directPeerAccountId?: string;
   /**
    * Absent means the speaker stated their language and it is final. `auto`
    * treats `speakLanguage` as a starting guess the first utterance may correct.
@@ -259,6 +286,16 @@ export interface CallStateWirePayload {
   ownerParticipantId: string;
   /** Owner-switchable transcript-download policy; default true. */
   transcriptDownloadAllowed?: boolean;
+  /**
+   * Conference setup (29 Aug). Optional so a client built before this wave
+   * still typechecks. `title` is null for personal calls and untitled rooms;
+   * `knocking` lists the seats waiting for the host in a restricted
+   * conference and is empty everywhere else.
+   */
+  title?: string | null;
+  privacy?: CallPrivacy;
+  targetLanguages?: string[];
+  knocking?: { participantId: string; displayName: string }[];
   participants: {
     participantId: string;
     /**
@@ -274,6 +311,13 @@ export interface CallStateWirePayload {
     speakLanguage: CallLanguage;
     hearLanguage: CallLanguage;
     joined: boolean;
+    /**
+     * The seat's verified C7 account, when they joined signed in. DERIVED
+     * SERVER-SIDE from the session token, never accepted from the client.
+     * Present so tiles can show the person's profile picture; an anonymous
+     * seat has none and renders initials, honestly.
+     */
+    accountId?: string;
     /**
      * Connect (P6.5): the partner-supplied opaque identity, present only for
      * seats joined through a Connect token. Never interpreted by Videofy.
@@ -361,7 +405,78 @@ export type CallJoinFailureCode =
    * somebody's verification state.
    */
   | 'host-not-authorized'
+  /**
+   * A TRANSLATED call was asked for on a language pair no approved route
+   * covers for live calls.
+   *
+   * Distinct from every other code because nothing is broken and nobody is
+   * unauthorised: the pair simply has no route qualified for `call-live`. A
+   * translation engine being installed is not the same fact as a DIRECTION
+   * being approved to carry somebody's voice in real time, and approval for
+   * messaging or for a programme is not approval for a call -- messaging is
+   * text a reader can re-read and challenge, a live call is a synthetic voice
+   * in somebody's ear with nothing to check it against.
+   *
+   * Deliberately NOT the ringing state 'unavailable', which means the peer's
+   * devices could not be reached. Reusing it would tell somebody their friend
+   * is unreachable when their friend is fine and the language pair is not.
+   */
+  | 'translation-route-unavailable'
   | 'internal';
+
+/**
+ * The server-owned state of a DIRECT (person-to-person) call, as broadcast on
+ * `call:direct:state` and carried in the join ack. Ids, names, mode, state and
+ * times -- never audio, never content. `connectedAtMs` is the authoritative
+ * origin of the call timer: it is set at the FIRST two-way connection and
+ * survives every reconnect, so the clock on both phones agrees and never
+ * restarts.
+ */
+/**
+ * THE TWELVE STATES A DIRECT CALL CAN BE IN. The server's vocabulary, and the
+ * only one.
+ *
+ * This was `string`, and a second vocabulary grew beside it in the mobile app
+ * with `dialing` and `failed` -- words the server never sends -- while lacking
+ * `ringing`, `reconnecting`, `busy`, `declined`, `no_answer` and `network`,
+ * which it does. Nothing caught the divergence because `string` accepts
+ * anything, so the two lists could drift for as long as nobody read them side
+ * by side.
+ *
+ * Naming the union makes the compiler the thing that notices. A client
+ * rendering a state the server cannot produce, or omitting one it can, is now
+ * a build failure rather than a surprise in front of a caller.
+ *
+ * The definition lives with the WIRE because that is what both sides agree on;
+ * the gateway's DirectCallLifecycle is where the transitions are decided.
+ */
+export type DirectCallWireState =
+  | 'calling'
+  | 'ringing'
+  | 'answered'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'busy'
+  | 'declined'
+  | 'no_answer'
+  | 'unavailable'
+  | 'network'
+  | 'ended';
+
+export interface DirectCallStateWire {
+  callId: string;
+  state: DirectCallWireState;
+  mode: CallMode;
+  callerAccountId: string;
+  peerAccountId: string;
+  callerName: string;
+  updatedAtMs: number;
+  expiresAtMs: number;
+  answeredAtMs: number | null;
+  connectedAtMs: number | null;
+  endedByAccountId: string | null;
+}
 
 export type CallJoinAck =
   | {
@@ -370,6 +485,20 @@ export type CallJoinAck =
       /** Private resume credential: only ever in this ack, never in call:state/logs. */
       resumeToken: string;
       snapshot: CallStateWirePayload;
+      /**
+       * 'pending' when this join KNOCKED on a restricted conference: the
+       * joiner is not in the call yet, has no media, and `snapshot` carries
+       * the room's title and setup with an EMPTY roster -- the roster is not
+       * theirs to see until the host says so. The answer arrives as
+       * call:admission on this socket. Absent means joined, as before.
+       */
+      admission?: 'pending';
+      /**
+       * Present for direct calls: the telephone's CURRENT state at the moment
+       * of this join or resume, so a socket that arrives after a transition
+       * already fired is never left holding an old word.
+       */
+      directState?: DirectCallStateWire;
       /**
        * Present only when a session token was offered and did not verify. The
        * join itself succeeded — an expired sign-in must not stop somebody
@@ -386,6 +515,38 @@ export type CallJoinAck =
 export interface CallLeaveAck {
   ok: boolean;
 }
+
+/** call:knock -- to the HOST's private room: somebody is waiting. */
+export interface CallKnockEvent {
+  callId: string;
+  participantId: string;
+  displayName: string;
+}
+
+/** call:admit -- the host's answer to a knock. Bound to the host's own seat. */
+export interface CallAdmitPayload {
+  callId: string;
+  participantId: string;
+  /** The knocking seat being answered. */
+  targetParticipantId: string;
+  admit: boolean;
+}
+
+export type CallAdmitAck =
+  | { ok: true }
+  | {
+      ok: false;
+      error: 'unknown-call' | 'unknown-participant' | 'not-owner' | 'not-knocking' | 'invalid-input';
+    };
+
+/**
+ * call:admission -- to the JOINER's private room. Admitted carries the
+ * snapshot they may now see; refused (including the 60 s timeout) is
+ * followed by the gateway disconnecting the socket from the call.
+ */
+export type CallAdmissionEvent =
+  | { callId: string; admitted: true; snapshot: CallStateWirePayload }
+  | { callId: string; admitted: false; reason: 'refused' | 'timeout' };
 
 export interface CallSdpAck {
   ok: boolean;

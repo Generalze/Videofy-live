@@ -16,10 +16,11 @@
   },
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "test": "npm run build && vitest run"
+    "typecheck": "npm run build -w @videofy-live/language-catalogue && tsc --noEmit",
+    "test": "npm run build -w @videofy-live/language-catalogue && npm run build && vitest run"
   },
   "dependencies": {
+    "@videofy-live/language-catalogue": "*",
     "zod": "^3.23.8"
   },
   "devDependencies": {

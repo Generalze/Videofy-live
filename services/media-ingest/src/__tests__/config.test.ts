@@ -21,6 +21,9 @@ const SHARED_ENV_KEYS = [
   'TEXT_TO_SPEECH_SUPPORTED_LANGUAGES',
   'OPUS_MT_LANGUAGE_MODELS',
   'DEEPGRAM_API_KEY',
+  'PROGRAMME_MEDIA_ORIGIN_INPUT',
+  'PROGRAMME_SAFETY_DELAY_MS',
+  'PROGRAMME_MEDIA_DELIVERY',
 ] as const;
 
 let savedEnv: Record<string, string | undefined>;
@@ -342,7 +345,7 @@ describe('MMS text-to-speech config', () => {
     process.env['TEXT_TO_SPEECH_PROVIDER'] = 'espeak';
 
     expect(() => loadConfig()).toThrow(
-      /TEXT_TO_SPEECH_PROVIDER must be "mock", "piper", or "piper\+mms"/,
+      /TEXT_TO_SPEECH_PROVIDER must be "mock", "piper", "piper\+mms" or "streaming"/,
     );
   });
 });
@@ -464,5 +467,110 @@ describe('NLLB-200 fallback model config', () => {
 
     process.env['NLLB200_PYTHON'] = 'C:/nllb/python.exe';
     expect(loadConfig().nllb200PythonExecutable).toBe('C:/nllb/python.exe');
+  });
+});
+
+/*
+ * The two settings that decide whether a programme is protected, and whether
+ * anybody can be shown one. Both default to the safe answer, and both refuse
+ * a value that would produce a broadcast nobody could trust.
+ */
+describe('programme media production and the safety delay', () => {
+  it('produces no media and holds nothing, by default', () => {
+    const config = loadConfig();
+    expect(config.programmeMediaOriginInput).toBeNull();
+    // True live is the default and is a choice, not an omission.
+    expect(config.programmeSafetyDelayMs).toBe(0);
+  });
+
+  it('takes a source template that names the run', () => {
+    process.env['PROGRAMME_MEDIA_ORIGIN_INPUT'] = 'rtmp://127.0.0.1/live/{runId}';
+    expect(loadConfig().programmeMediaOriginInput).toBe('rtmp://127.0.0.1/live/{runId}');
+  });
+
+  it('refuses a template that does not name the run', () => {
+    /*
+     * One source shared by every broadcast on the host means two programmes
+     * carrying each other's pictures -- and it would look like a working
+     * deployment until somebody watched the wrong channel.
+     */
+    process.env['PROGRAMME_MEDIA_ORIGIN_INPUT'] = 'rtmp://127.0.0.1/live/stream';
+    expect(loadConfig().programmeMediaOriginInput).toBeNull();
+  });
+
+  it('accepts a delay of zero rather than treating it as unset', () => {
+    process.env['PROGRAMME_SAFETY_DELAY_MS'] = '0';
+    // Routed through a positive-integer reader, this would be a startup crash
+    // on a perfectly valid configuration.
+    expect(loadConfig().programmeSafetyDelayMs).toBe(0);
+  });
+
+  it('takes a configured delay, together with the delivery that can honour it', () => {
+    process.env['PROGRAMME_MEDIA_DELIVERY'] = 'delayed';
+    process.env['PROGRAMME_SAFETY_DELAY_MS'] = '45000';
+    expect(loadConfig().programmeSafetyDelayMs).toBe(45_000);
+  });
+
+  it('REFUSES A DELAY THE DELIVERY MODE CANNOT HOLD', () => {
+    /*
+     * With live delivery the gateway relays the broadcaster's tracks as they
+     * arrive, so nothing is held back however large this number is. Accepting
+     * the pair would report a protective delay to an operator while the
+     * audience heard the studio immediately -- worse than no protection,
+     * because somebody would rely on it. They are one decision, so they are
+     * refused together rather than half applied.
+     */
+    process.env['PROGRAMME_SAFETY_DELAY_MS'] = '45000';
+    process.env['PROGRAMME_MEDIA_DELIVERY'] = 'live';
+    expect(() => loadConfig()).toThrow(/cannot be held while the gateway relays/u);
+  });
+
+  it('refuses a delay that is not a whole number of milliseconds', () => {
+    process.env['PROGRAMME_SAFETY_DELAY_MS'] = 'about a minute';
+    expect(() => loadConfig()).toThrow(/PROGRAMME_SAFETY_DELAY_MS/u);
+  });
+
+  it('refuses a negative delay', () => {
+    process.env['PROGRAMME_SAFETY_DELAY_MS'] = '-1000';
+    expect(() => loadConfig()).toThrow(/PROGRAMME_SAFETY_DELAY_MS/u);
+  });
+});
+
+/*
+ * The one setting that decides whether a protective delay is even possible,
+ * and the reason it cannot yet be turned on.
+ */
+describe('how the original programme media reaches a listener', () => {
+  it('delivers it live by default', () => {
+    expect(loadConfig().programmeMediaDelivery).toBe('live');
+  });
+
+  it('ACCEPTS DELAYED DELIVERY, NOW THAT THE GATEWAY ENFORCES IT', () => {
+    /*
+     * This used to be asserted the other way round: `delayed` was logged as an
+     * error and quietly became `live`. That was the correct fail-safe while
+     * the gateway had no way to stop relaying, and a lie once it did -- an
+     * operator who asks for protection and reads a running service must not
+     * have to find the refusal in journald. The refusal is gone, not softened.
+     */
+    process.env['PROGRAMME_MEDIA_DELIVERY'] = 'delayed';
+    expect(loadConfig().programmeMediaDelivery).toBe('delayed');
+  });
+
+  it('refuses a blank mode rather than defaulting it', () => {
+    // The same blank-is-not-a-choice doctrine as every provider selector: a
+    // half-filled environment file is a mistake to report, not a default to
+    // infer.
+    process.env['PROGRAMME_MEDIA_DELIVERY'] = '';
+    expect(() => loadConfig()).toThrow(/present but empty/u);
+  });
+
+  it('REFUSES AN UNRECOGNISED MODE RATHER THAN GUESSING LIVE', () => {
+    /*
+     * Guessing live is the dangerous direction: a typo in the one setting that
+     * turns protection on would silently produce an unprotected broadcast.
+     */
+    process.env['PROGRAMME_MEDIA_DELIVERY'] = 'buffered-ish';
+    expect(() => loadConfig()).toThrow(/must be "live" or "delayed"/u);
   });
 });

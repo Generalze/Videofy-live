@@ -101,7 +101,7 @@ describe('CallScreen caption language', () => {
 
 describe('CallScreen', () => {
   it('identifies the call and the people on it, marking which one is you', () => {
-    const html = render();
+    const html = render({ callType: 'conference' });
 
     expect(html).toContain('calm-river-42');
     expect(html).toContain('Alice');
@@ -113,6 +113,7 @@ describe('CallScreen', () => {
 
   it('tells a lone participant how to bring the other person in', () => {
     const html = render({
+      callType: 'conference',
       participants: [participant({ participantId: 'p1', displayName: 'Alice' })],
     });
 
@@ -553,6 +554,19 @@ describe('call type identity', () => {
 
   it('defaults to the personal call title', () => {
     expect(render({})).toContain('Videofy Call');
+  });
+
+  /*
+   * DIRECT CALLS SHOW NO CODE (founder ruling 2026-08-28). The session id
+   * is internal; a code implies something to share, and that belongs to
+   * conferences alone.
+   */
+  it('never shows a code on a personal call, and shows it on a conference', () => {
+    const personal = render({ callType: 'personal', callCode: 'ring-9d0c8d1670' });
+    expect(personal).not.toContain('ring-9d0c8d1670');
+    expect(personal).not.toMatch(/share the (call|conference) code/u);
+    const conference = render({ callType: 'conference', callCode: 'calm-river-42' });
+    expect(conference).toContain('calm-river-42');
   });
 });
 

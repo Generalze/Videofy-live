@@ -1,0 +1,259 @@
+/*
+ * 06 Quality / Delay.
+ *
+ * EVERY COLOUR COMES FROM THE OPERATOR DESIGN AUTHORITY. No hex, no theme, and
+ * no --quality-* family: a second palette is how a console ends up with two
+ * answers to "what is a panel".
+ *
+ * The four states map onto four EXISTING semantic families, chosen so that no
+ * two states an operator must distinguish share a colour:
+ *   ready          ok      -- it works
+ *   degraded       warn    -- it works and is worse than we want
+ *   review-pending violet  -- nobody qualified has looked; quality is UNKNOWN
+ *   unavailable    danger  -- it will not run
+ * Violet rather than a paler warn for pending is the load-bearing choice here.
+ * Degraded and pending are not degrees of the same thing, and a shared hue
+ * would invite reading "pending" as "nearly fine" -- which is exactly the
+ * mistake that put confident wrong Yoruba on air elsewhere.
+ */
+.page {
+  display: grid;
+  gap: 21px;
+  margin-top: 0;
+  font-family: var(--op-font);
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.lede {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--op-text-secondary);
+}
+
+.reload {
+  flex: none;
+  padding: 8px 14px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-panel-border-strong);
+  background: var(--op-panel-raised);
+  color: var(--op-text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.reload:hover {
+  border-color: var(--op-teal-border);
+}
+
+.reload:focus-visible {
+  outline: 2px solid var(--op-teal-border);
+  outline-offset: 2px;
+}
+
+.empty {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: var(--op-radius-md);
+  background: var(--op-panel-raised);
+  border: 1px solid var(--op-panel-border);
+  color: var(--op-text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+  max-width: 68ch;
+}
+
+/* ---- one direction ---- */
+
+.row {
+  display: grid;
+  gap: 14px;
+  padding: 16px 18px;
+  border-radius: var(--op-radius-md);
+  background: var(--op-panel);
+  border: 1px solid var(--op-panel-border);
+}
+
+.rowHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--op-hairline);
+}
+
+.direction {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--op-text);
+  /* Language tags are data; they line up. */
+  font-variant-numeric: tabular-nums;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.scope {
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--op-text-faint);
+}
+
+/* ---- the three stages, side by side and never merged ---- */
+
+.stages {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px;
+}
+
+.stage {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 12px 14px;
+  border-radius: var(--op-radius-sm);
+  background: var(--op-panel-raised);
+  border: 1px solid var(--op-panel-border);
+}
+
+.stageHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.stageName {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--op-text-secondary);
+}
+
+.provider {
+  margin: 0;
+  font-size: 13px;
+  color: var(--op-text);
+  word-break: break-word;
+}
+
+.latency,
+.notMeasured {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--op-text-secondary);
+}
+
+/* Stated plainly rather than left blank, which scans as "fast". */
+.notMeasured {
+  color: var(--op-text-muted);
+  font-variant-numeric: normal;
+}
+
+.notMeasured small,
+.evidence {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--op-text-faint);
+  font-variant-numeric: normal;
+}
+
+.reason {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--op-text-secondary);
+}
+
+/* ---- the delay, with its workings ---- */
+
+.delay {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: var(--op-radius-sm);
+  background: var(--op-panel-sunken);
+  border: 1px solid var(--op-panel-border);
+}
+
+.delayHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.delayLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--op-text-secondary);
+}
+
+.delayValue {
+  font-size: 18px;
+  color: var(--op-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.delayWhy {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--op-text-faint);
+  max-width: 78ch;
+}
+
+/* ---- state badges ---- */
+
+.badge {
+  flex: none;
+  padding: 3px 9px;
+  border-radius: var(--op-radius-pill);
+  border: 1px solid transparent;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.ready {
+  background: var(--op-ok-soft);
+  border-color: var(--op-ok-border);
+  color: var(--op-ok-text);
+}
+
+.degraded {
+  background: var(--op-warn-soft);
+  border-color: var(--op-warn-border);
+  color: var(--op-warn-text);
+}
+
+/* Its own family. Not a paler warning. */
+.pending {
+  background: var(--op-violet-soft);
+  border-color: var(--op-violet-border);
+  color: var(--op-violet-text);
+}
+
+.unavailable {
+  background: var(--op-danger-soft);
+  border-color: var(--op-danger-border);
+  color: var(--op-danger-text);
+}

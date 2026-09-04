@@ -35,12 +35,23 @@ export VITE_VIEWER_BASE=/listen
 # doc) and is required for networks that block UDP outright.
 export VITE_WEBRTC_ICE_SERVERS='[{"urls":["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]}]'
 
+# The origin the share cards name. Declared before the first build, because
+# every app is stamped with it now, not the ecosystem site alone.
+PUBLIC_ORIGIN="${PUBLIC_ORIGIN:-https://staging.consummate7.com}"
+
 build_app() {
   local app="$1" base="$2"
   echo "--- $app (base $base) ---"
   # --base must match the path Caddy serves the app from, or every asset URL in
   # index.html points somewhere that does not exist.
   npx vite build "apps/$app" --base="$base" --outDir dist-staging --emptyOutDir
+  # Crawler-readable og:* for this app's own shell. Stamped for EVERY app: the
+  # generator used to run for ecosystem-web alone, which is exactly why /call/,
+  # /listen/ and /operator/ shared as bare URLs. The ecosystem site is skipped
+  # here only because it is stamped route-by-route from its own table, below.
+  if [ "$app" != "ecosystem-web" ]; then
+    node scripts/generate-route-html.mjs "apps/$app/dist-staging" "$PUBLIC_ORIGIN" --app "$base"
+  fi
   rm -rf "${WWW_DIR:?}/$app"
   mkdir -p "$WWW_DIR/$app"
   cp -r "apps/$app/dist-staging/." "$WWW_DIR/$app/"
@@ -55,7 +66,6 @@ build_app ecosystem-web /
 # The origin is supplied here rather than compiled into the app: og:url and
 # og:image must be absolute, and a hostname in the source follows the code
 # everywhere it is ever deployed.
-PUBLIC_ORIGIN="${PUBLIC_ORIGIN:-https://staging.consummate7.com}"
 node scripts/generate-route-html.mjs "apps/ecosystem-web/dist-staging" "$PUBLIC_ORIGIN"
 rm -rf "${WWW_DIR:?}/ecosystem-web"
 mkdir -p "$WWW_DIR/ecosystem-web"

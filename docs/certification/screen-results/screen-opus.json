@@ -1,0 +1,2309 @@
+{
+ "engine": "opus",
+ "load_seconds": {
+  "opus:yo": 1.9,
+  "opus:ha": 1.2,
+  "opus:ig": 1.2
+ },
+ "peak_rss_mb": 1300.6,
+ "rows": [
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "money",
+   "source": "The price is two thousand naira per bag.",
+   "output": "Wọ́n máa ń ná ẹgbẹ̀rún méjì naira nínú àpò kọ̀ọ̀kan.",
+   "latency_ms": 350.9,
+   "defects": [
+    "lost:2000"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "money",
+   "source": "Wọ́n máa ń ná ẹgbẹ̀rún méjì naira nínú àpò kọ̀ọ̀kan.",
+   "output": "Each bag cost 2,000 tons.",
+   "latency_ms": 185.0,
+   "defects": [
+    "lost:naira"
+   ],
+   "roundtrip_chrf": 10.4,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "money",
+   "source": "Please send 45,000 naira to my account today.",
+   "output": "Jọ̀wọ́ fi ẹgbẹ̀rún márùndínlógójì [45,000] naira ránṣẹ́ sí mi lónìí.",
+   "latency_ms": 423.1,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "money",
+   "source": "Jọ̀wọ́ fi ẹgbẹ̀rún márùndínlógójì [45,000] naira ránṣẹ́ sí mi lónìí.",
+   "output": "Please send me 7,500 letters today.",
+   "latency_ms": 218.7,
+   "defects": [
+    "lost:45,000",
+    "lost:45000"
+   ],
+   "roundtrip_chrf": 36.6,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "money",
+   "source": "I have received the money you sent.",
+   "output": "Mo ti gba owó tí ẹ fi ránṣẹ́ sí mi.",
+   "latency_ms": 192.5,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "money",
+   "source": "Mo ti gba owó tí ẹ fi ránṣẹ́ sí mi.",
+   "output": "I have received the money you sent to me.",
+   "latency_ms": 183.9,
+   "defects": [],
+   "roundtrip_chrf": 93.9,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "money",
+   "source": "I have not received the money you sent.",
+   "output": "Èmi kò rí owó tẹ́ ẹ fi ránṣẹ́ gbà.",
+   "latency_ms": 174.8,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "money",
+   "source": "Èmi kò rí owó tẹ́ ẹ fi ránṣẹ́ gbà.",
+   "output": "I don't receive the money you send.",
+   "latency_ms": 160.4,
+   "defects": [],
+   "roundtrip_chrf": 61.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "money",
+   "source": "Your balance is 12,500 naira.",
+   "output": "Ẹgbẹ̀rún méjìlá, ọgọ́rùn - ún márùn - ún ó lé ọgọ́rùn - ún [12,500] naira ni ẹ fi wà ní ìwọ̀ntúnwọ̀nsì.",
+   "latency_ms": 641.8,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "money",
+   "source": "Ẹgbẹ̀rún méjìlá, ọgọ́rùn - ún márùn - ún ó lé ọgọ́rùn - ún [12,500] naira ni ẹ fi wà ní ìwọ̀ntúnwọ̀nsì.",
+   "output": "A total of 12 thousand people are balanced.",
+   "latency_ms": 192.8,
+   "defects": [
+    "lost:12,500",
+    "lost:12500"
+   ],
+   "roundtrip_chrf": 25.2,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "phone",
+   "source": "Call me on 08031234567 when you arrive.",
+   "output": "Ẹ pè mí ní 08031,32367 nígbà tẹ́ ẹ bá débẹ̀.",
+   "latency_ms": 567.4,
+   "defects": [
+    "lost:08031234567"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "phone",
+   "source": "Ẹ pè mí ní 08031,32367 nígbà tẹ́ ẹ bá débẹ̀.",
+   "output": "I'm called 1,024 when you arrive.",
+   "latency_ms": 175.2,
+   "defects": [
+    "lost:08031234567"
+   ],
+   "roundtrip_chrf": 47.3,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "account",
+   "source": "Transfer to account 0123456789 at First Bank.",
+   "output": "Báńkì Kìíní ni wọ́n kó o lọ sí 01234567.89.",
+   "latency_ms": 364.4,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "account",
+   "source": "Báńkì Kìíní ni wọ́n kó o lọ sí 01234567.89.",
+   "output": "You were transferred to 3: 03,424.",
+   "latency_ms": 215.9,
+   "defects": [
+    "lost:0123456789"
+   ],
+   "roundtrip_chrf": 21.2,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "otp",
+   "source": "Your verification code is 483920. Do not share it.",
+   "output": "Ọ̀ọ́dúnrún ó lé ọgọ́rùn - ún mẹ́ta [43920] ni ọ̀rọ̀ tó o kọ sílẹ̀ jẹ́ ká mọ̀ pé òótọ́ lọ̀rọ̀ náà.",
+   "latency_ms": 840.9,
+   "defects": [
+    "lost:483920",
+    "negation-lost",
+    "omission(1/2 sentences)"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "otp",
+   "source": "Ọ̀ọ́dúnrún ó lé ọgọ́rùn - ún mẹ́ta [43920] ni ọ̀rọ̀ tó o kọ sílẹ̀ jẹ́ ká mọ̀ pé òótọ́ lọ̀rọ̀ náà.",
+   "output": "Your written words prove that they are true.",
+   "latency_ms": 519.7,
+   "defects": [
+    "lost:483920",
+    "negation-lost",
+    "omission(1/2 sentences)"
+   ],
+   "roundtrip_chrf": 15.2,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "url",
+   "source": "Read more at https://consummate7.com/help before you call.",
+   "output": "Ka púpọ̀ síhttps://consolence7.com/help kí o tó tẹ̀wé.",
+   "latency_ms": 564.2,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "url",
+   "source": "Ka púpọ̀ síhttps://consolence7.com/help kí o tó tẹ̀wé.",
+   "output": "Think of a number of them before printing.",
+   "latency_ms": 189.0,
+   "defects": [
+    "lost:https://consummate7.com/help"
+   ],
+   "roundtrip_chrf": 14.7,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "datetime",
+   "source": "The event starts at four thirty on the fifteenth of March.",
+   "output": "Ìṣẹ̀lẹ̀ náà bẹ̀rẹ̀ ní nǹkan bí ọgbọ̀n ọdún sí ìkẹẹ̀ẹ́dógún oṣù March.",
+   "latency_ms": 497.3,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "datetime",
+   "source": "Ìṣẹ̀lẹ̀ náà bẹ̀rẹ̀ ní nǹkan bí ọgbọ̀n ọdún sí ìkẹẹ̀ẹ́dógún oṣù March.",
+   "output": "The events began in March between 30 and 15.",
+   "latency_ms": 239.3,
+   "defects": [],
+   "roundtrip_chrf": 25.4,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "datetime",
+   "source": "The meeting has been moved to 15 March at 4:30.",
+   "output": "A ti gbé ìpàdé náà lọ sí 15 March ní 4:30.",
+   "latency_ms": 233.4,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "datetime",
+   "source": "A ti gbé ìpàdé náà lọ sí 15 March ní 4:30.",
+   "output": "The meeting had been taken to March 15 at 4: 55.",
+   "latency_ms": 248.1,
+   "defects": [
+    "lost:4:30"
+   ],
+   "roundtrip_chrf": 46.4,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "entity",
+   "source": "My name is Zoe and I work in Lagos.",
+   "output": "Zoe lorúkọ mi, èmi sì ń ṣiṣẹ́ ní Èkó.",
+   "latency_ms": 294.3,
+   "defects": [
+    "lost:Lagos"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "entity",
+   "source": "Zoe lorúkọ mi, èmi sì ń ṣiṣẹ́ ní Èkó.",
+   "output": "My name was Ian, and I worked in Smyrna.",
+   "latency_ms": 199.2,
+   "defects": [
+    "lost:Zoe",
+    "lost:Lagos"
+   ],
+   "roundtrip_chrf": 39.9,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "entity",
+   "source": "Adebayo travelled from Abeokuta to Kano last night.",
+   "output": "Adebaya rìnrìn àjò láti Abeokuta lọ sí Kano lálẹ́ ọjọ́ tó kọjá.",
+   "latency_ms": 390.9,
+   "defects": [
+    "lost:Adebayo"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "entity",
+   "source": "Adebaya rìnrìn àjò láti Abeokuta lọ sí Kano lálẹ́ ọjọ́ tó kọjá.",
+   "output": "The wife of Abeo traveled from Abeo to Ano on the last night.",
+   "latency_ms": 330.9,
+   "defects": [
+    "lost:Adebayo",
+    "lost:Abeokuta",
+    "lost:Kano"
+   ],
+   "roundtrip_chrf": 52.3,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "negation",
+   "source": "Do not send the payment yet.",
+   "output": "Má tíì fi owó náà ránṣẹ́.",
+   "latency_ms": 447.2,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "negation",
+   "source": "Má tíì fi owó náà ránṣẹ́.",
+   "output": "Do not send it.",
+   "latency_ms": 132.7,
+   "defects": [],
+   "roundtrip_chrf": 37.4,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "negation",
+   "source": "I did not say that I would not come.",
+   "output": "Mi ò sọ pé mi ò ní wá.",
+   "latency_ms": 181.5,
+   "defects": [
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "negation",
+   "source": "Mi ò sọ pé mi ò ní wá.",
+   "output": "I didn't say that I wouldn't come.",
+   "latency_ms": 290.5,
+   "defects": [
+    "negation-lost"
+   ],
+   "roundtrip_chrf": 71.5,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "negation",
+   "source": "She has not arrived at the office.",
+   "output": "Kò tíì dé ọ́fíìsì.",
+   "latency_ms": 184.2,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "negation",
+   "source": "Kò tíì dé ọ́fíìsì.",
+   "output": "He had not yet come to the office.",
+   "latency_ms": 145.1,
+   "defects": [],
+   "roundtrip_chrf": 41.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "health",
+   "source": "Take one tablet twice a day after eating.",
+   "output": "Gbé wàláà kan lẹ́ẹ̀mejì lójúmọ́ lẹ́yìn tó bá jẹun.",
+   "latency_ms": 360.0,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "health",
+   "source": "Gbé wàláà kan lẹ́ẹ̀mejì lójúmọ́ lẹ́yìn tó bá jẹun.",
+   "output": "Keep a tablet twice a day after eating.",
+   "latency_ms": 224.5,
+   "defects": [],
+   "roundtrip_chrf": 81.2,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "health",
+   "source": "Do not give this medicine to a child under five years old.",
+   "output": "Má ṣe fún ọmọ tí kò tíì pé ọmọ ọdún márùn - ún ní oògùn yìí.",
+   "latency_ms": 292.8,
+   "defects": [
+    "lost:five",
+    "lost:5"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "health",
+   "source": "Má ṣe fún ọmọ tí kò tíì pé ọmọ ọdún márùn - ún ní oògùn yìí.",
+   "output": "Do not give this medication to a 5 - year - old child.",
+   "latency_ms": 235.2,
+   "defects": [
+    "lost:five"
+   ],
+   "roundtrip_chrf": 51.1,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "agriculture",
+   "source": "The rains will start next month, so prepare the land now.",
+   "output": "Òjò yóò bẹ̀rẹ̀ sí rọ̀ lóṣù tó ń bọ̀, nítorí náà múra ilẹ̀ náà sílẹ̀ nísinsìnyí.",
+   "latency_ms": 499.4,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "agriculture",
+   "source": "Òjò yóò bẹ̀rẹ̀ sí rọ̀ lóṣù tó ń bọ̀, nítorí náà múra ilẹ̀ náà sílẹ̀ nísinsìnyí.",
+   "output": "The coming month will begin to rain, so prepare the land now.",
+   "latency_ms": 208.4,
+   "defects": [],
+   "roundtrip_chrf": 56.7,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "business",
+   "source": "We need to sign the agreement before the end of the month.",
+   "output": "A ní láti fọwọ́ sí àdéhùn náà kí oṣù náà tó parí.",
+   "latency_ms": 275.8,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "business",
+   "source": "A ní láti fọwọ́ sí àdéhùn náà kí oṣù náà tó parí.",
+   "output": "It was to be signed before the month's end.",
+   "latency_ms": 217.9,
+   "defects": [],
+   "roundtrip_chrf": 36.6,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "broadcast",
+   "source": "Good morning everyone, and welcome to this broadcast.",
+   "output": "Ẹ káàbọ̀ láàárọ̀, kẹ́ ẹ sì gba ìròyìn náà tọwọ́tẹsẹ̀.",
+   "latency_ms": 436.6,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "broadcast",
+   "source": "Ẹ káàbọ̀ láàárọ̀, kẹ́ ẹ sì gba ìròyìn náà tọwọ́tẹsẹ̀.",
+   "output": "Welcome the morning, and accept the news warmly.",
+   "latency_ms": 209.7,
+   "defects": [],
+   "roundtrip_chrf": 33.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "conversation",
+   "source": "How are you doing this evening?",
+   "output": "Báwo lo ṣe ń ṣe lálẹ́ yìí?",
+   "latency_ms": 231.3,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "conversation",
+   "source": "Báwo lo ṣe ń ṣe lálẹ́ yìí?",
+   "output": "How are you doing this night?",
+   "latency_ms": 400.2,
+   "defects": [],
+   "roundtrip_chrf": 70.2,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "conversation",
+   "source": "Please send me the address before you leave.",
+   "output": "Jọ̀wọ́ fi àdírẹ́sì náà ránṣẹ́ sí mi kó o tó lọ.",
+   "latency_ms": 381.4,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "conversation",
+   "source": "Jọ̀wọ́ fi àdírẹ́sì náà ránṣẹ́ sí mi kó o tó lọ.",
+   "output": "Please send me the address before you leave.",
+   "latency_ms": 160.2,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "multi",
+   "source": "I am on my way. Please wait for me at the gate. I will be there soon.",
+   "output": "Mo ń bá ọ̀nà mi lọ; jọ̀wọ́ dúró dè mí ní ẹnubodè, èmi yóò sì wà níbẹ̀ láìpẹ́.",
+   "latency_ms": 809.1,
+   "defects": [
+    "omission(1/3 sentences)"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "multi",
+   "source": "Mo ń bá ọ̀nà mi lọ; jọ̀wọ́ dúró dè mí ní ẹnubodè, èmi yóò sì wà níbẹ̀ láìpẹ́.",
+   "output": "I am going my way; please wait for me in the gate, and I shall soon be there.",
+   "latency_ms": 427.6,
+   "defects": [
+    "omission(1/3 sentences)"
+   ],
+   "roundtrip_chrf": 53.9,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "multi",
+   "source": "The meeting is cancelled. We will meet tomorrow instead.",
+   "output": "A ti dá ìpàdé náà dúró, kàkà bẹ́ẹ̀ a óò pàdé lọ́la.",
+   "latency_ms": 344.1,
+   "defects": [
+    "omission(1/2 sentences)"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "multi",
+   "source": "A ti dá ìpàdé náà dúró, kàkà bẹ́ẹ̀ a óò pàdé lọ́la.",
+   "output": "The meeting has been stopped, but we will meet tomorrow.",
+   "latency_ms": 197.9,
+   "defects": [
+    "omission(1/2 sentences)"
+   ],
+   "roundtrip_chrf": 55.5,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "long",
+   "source": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure somebody is at the shop to receive them, and call me if there is any problem with the delivery.",
+   "output": "Ẹ ṣeun gan - an fún ohun tẹ́ ẹ fi ránṣẹ́, mo ti bá ẹni tó ń ta ọjà náà sọ̀rọ̀ láàárọ̀ ọjọ́ Friday, ẹ jọ̀wọ́ ẹ rí i dájú pé ẹnì kan wà ní ṣọ́ọ̀bù náà láti gbà wọ́n, ké sí mi lórí fóònù bí ìṣòro bá wà níbẹ̀.",
+   "latency_ms": 1516.5,
+   "defects": [
+    "omission(1/3 sentences)"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "long",
+   "source": "Ẹ ṣeun gan - an fún ohun tẹ́ ẹ fi ránṣẹ́, mo ti bá ẹni tó ń ta ọjà náà sọ̀rọ̀ láàárọ̀ ọjọ́ Friday, ẹ jọ̀wọ́ ẹ rí i dájú pé ẹnì kan wà ní ṣọ́ọ̀bù náà láti gbà wọ́n, ké sí mi lórí fóònù bí ìṣòro bá wà níbẹ̀.",
+   "output": "Thank you very much for what you sent, and I have talked with the owner on Friday morning morning, and please make sure that there is someone in the shop to receive them, calling me on the phone if there is a problem.",
+   "latency_ms": 772.5,
+   "defects": [
+    "omission(1/3 sentences)"
+   ],
+   "roundtrip_chrf": 51.4,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": [],
+   "roundtrip_chrf": 0.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "emoji-only",
+   "source": "👍👍",
+   "output": "Ş",
+   "latency_ms": 56.7,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "emoji-only",
+   "source": "Ş",
+   "output": "Jehovah's Witnesses",
+   "latency_ms": 96.4,
+   "defects": [],
+   "roundtrip_chrf": 0.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "number-only",
+   "source": "45000",
+   "output": "45000",
+   "latency_ms": 54.8,
+   "defects": [
+    "passthrough"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "number-only",
+   "source": "45000",
+   "output": "45,000",
+   "latency_ms": 76.3,
+   "defects": [],
+   "roundtrip_chrf": 39.8,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "code-only",
+   "source": "OTP-483920",
+   "output": "OTP-483920",
+   "latency_ms": 155.6,
+   "defects": [
+    "passthrough"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "code-only",
+   "source": "OTP-483920",
+   "output": "THAT is where we refer",
+   "latency_ms": 136.6,
+   "defects": [
+    "invented-from-non-linguistic('THAT is where we refer')",
+    "lost:483920"
+   ],
+   "roundtrip_chrf": 1.4,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "punctuation",
+   "source": "???!!!",
+   "output": "??!",
+   "latency_ms": 98.3,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "punctuation",
+   "source": "??!",
+   "output": "?",
+   "latency_ms": 61.1,
+   "defects": [],
+   "roundtrip_chrf": 20.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "mixed",
+   "source": "Abeg send the money before 5pm 🙏",
+   "output": "Wọ́n bẹ̀rẹ̀ sí fi owó náà ránṣẹ́ ṣáájú 5pm ☞",
+   "latency_ms": 347.9,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "mixed",
+   "source": "Wọ́n bẹ̀rẹ̀ sí fi owó náà ránṣẹ́ ṣáájú 5pm ☞",
+   "output": "The money began to be sent before 5CC",
+   "latency_ms": 187.5,
+   "defects": [],
+   "roundtrip_chrf": 55.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "emoji-text",
+   "source": "Congratulations on the new baby 🎉 we are very happy for you.",
+   "output": "A dúpẹ́ lọ́wọ́ rẹ gan - an fún ọmọ tuntun náà.",
+   "latency_ms": 428.7,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "emoji-text",
+   "source": "A dúpẹ́ lọ́wọ́ rẹ gan - an fún ọmọ tuntun náà.",
+   "output": "We thank you very much for the new baby.",
+   "latency_ms": 157.2,
+   "defects": [],
+   "roundtrip_chrf": 29.5,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->yo",
+   "category": "hashtag",
+   "source": "Join us tonight #VideofyLive for the broadcast.",
+   "output": "Ẹ wá dara pọ̀ mọ́ wa ní alẹ́ ọjọ́ kejì ìṣẹ́jú alẹ́, ìyẹn ni pé ká lọ gbọ́ ìròyìn náà lórí rédíò.",
+   "latency_ms": 825.5,
+   "defects": [
+    "lost:#VideofyLive"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "yo->en",
+   "category": "hashtag",
+   "source": "Ẹ wá dara pọ̀ mọ́ wa ní alẹ́ ọjọ́ kejì ìṣẹ́jú alẹ́, ìyẹn ni pé ká lọ gbọ́ ìròyìn náà lórí rédíò.",
+   "output": "Then join us on the second night, the news on the radio.",
+   "latency_ms": 301.8,
+   "defects": [
+    "lost:#VideofyLive"
+   ],
+   "roundtrip_chrf": 24.5,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "money",
+   "source": "The price is two thousand naira per bag.",
+   "output": "To, abin da yake misãlinsa, kamar falalen dũtse ne, a kansa akwai turɓãya, sai wãbilin hadari ya sãme shi, sai ya bar shi ƙanƙara.",
+   "latency_ms": 614.1,
+   "defects": [
+    "lost:2000",
+    "lost:naira"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "money",
+   "source": "To, abin da yake misãlinsa, kamar falalen dũtse ne, a kansa akwai turɓãya, sai wãbilin hadari ya sãme shi, sai ya bar shi ƙanƙara.",
+   "output": "The likeness of him is as the likeness of a smooth rock upon which is dust, and a heavy rain smites it, leaving it bare.",
+   "latency_ms": 420.9,
+   "defects": [
+    "lost:2000",
+    "lost:naira"
+   ],
+   "roundtrip_chrf": 18.1,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "money",
+   "source": "Please send 45,000 naira to my account today.",
+   "output": "Don Allah ka aiko mini da ' yan'uwa guda 4 kaina a yau, sai ka aika mini littafin nan \"Ku Tsare Kanku Cikin Ƙaunar Allah! \"",
+   "latency_ms": 531.2,
+   "defects": [
+    "lost:45,000",
+    "lost:45000"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "money",
+   "source": "Don Allah ka aiko mini da ' yan'uwa guda 4 kaina a yau, sai ka aika mini littafin nan \"Ku Tsare Kanku Cikin Ƙaunar Allah! \"",
+   "output": "Please send me one brothers and sisters today, so send me the book \"Keep Yourselves in God's Love! \"",
+   "latency_ms": 365.2,
+   "defects": [
+    "lost:45,000",
+    "lost:45000"
+   ],
+   "roundtrip_chrf": 27.3,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "money",
+   "source": "I have received the money you sent.",
+   "output": "Na samu kuɗin da ka aiko mini.",
+   "latency_ms": 144.4,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "money",
+   "source": "Na samu kuɗin da ka aiko mini.",
+   "output": "I received the money you sent me.",
+   "latency_ms": 136.1,
+   "defects": [],
+   "roundtrip_chrf": 80.2,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "money",
+   "source": "I have not received the money you sent.",
+   "output": "Ban karɓi kuɗin da ka aiko mini ba.",
+   "latency_ms": 186.2,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "money",
+   "source": "Ban karɓi kuɗin da ka aiko mini ba.",
+   "output": "I did not accept the money you sent to me.",
+   "latency_ms": 175.5,
+   "defects": [],
+   "roundtrip_chrf": 49.7,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "money",
+   "source": "Your balance is 12,500 naira.",
+   "output": "Yanayinka goma sha biyu ne.",
+   "latency_ms": 388.9,
+   "defects": [
+    "lost:12,500",
+    "lost:12500"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "money",
+   "source": "Yanayinka goma sha biyu ne.",
+   "output": "IT WAS 12 years old.",
+   "latency_ms": 127.4,
+   "defects": [
+    "lost:12,500",
+    "lost:12500"
+   ],
+   "roundtrip_chrf": 10.9,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "phone",
+   "source": "Call me on 08031234567 when you arrive.",
+   "output": "Ka yi mini kira a kan shekara ta fiye da haka sa'ad da ka isa wurin.",
+   "latency_ms": 359.6,
+   "defects": [
+    "lost:08031234567"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "phone",
+   "source": "Ka yi mini kira a kan shekara ta fiye da haka sa'ad da ka isa wurin.",
+   "output": "Ask me over the next year when you arrive there.",
+   "latency_ms": 162.9,
+   "defects": [
+    "lost:08031234567"
+   ],
+   "roundtrip_chrf": 37.9,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "account",
+   "source": "Transfer to account 0123456789 at First Bank.",
+   "output": "Mun yi bincike a kan shekara ta 0 daga shekara ta 3 kaina zuwa fiye da hakan.",
+   "latency_ms": 334.4,
+   "defects": [
+    "lost:0123456789"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "account",
+   "source": "Mun yi bincike a kan shekara ta 0 daga shekara ta 3 kaina zuwa fiye da hakan.",
+   "output": "We studied about 0 from 33 C.E. to more than that.",
+   "latency_ms": 402.1,
+   "defects": [
+    "lost:0123456789",
+    "addition(3/1 sentences)"
+   ],
+   "roundtrip_chrf": 12.8,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "otp",
+   "source": "Your verification code is 483920. Do not share it.",
+   "output": "Ka kafa tsarin da za ka bi don ka yi amfani da shi a matsayin wanda kake son ka yi amfani da shi.",
+   "latency_ms": 621.1,
+   "defects": [
+    "lost:483920",
+    "negation-lost",
+    "omission(1/2 sentences)"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "otp",
+   "source": "Ka kafa tsarin da za ka bi don ka yi amfani da shi a matsayin wanda kake son ka yi amfani da shi.",
+   "output": "Set a routine that you can follow to use as the one you want to use.",
+   "latency_ms": 458.0,
+   "defects": [
+    "lost:483920",
+    "negation-lost",
+    "omission(1/2 sentences)"
+   ],
+   "roundtrip_chrf": 12.9,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "url",
+   "source": "Read more at https://consummate7.com/help before you call.",
+   "output": "Ka ƙara karatu sa'ad da ake waya.",
+   "latency_ms": 483.5,
+   "defects": [
+    "lost:https://consummate7.com/help"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "url",
+   "source": "Ka ƙara karatu sa'ad da ake waya.",
+   "output": "Learn more about it.",
+   "latency_ms": 165.5,
+   "defects": [
+    "lost:https://consummate7.com/help"
+   ],
+   "roundtrip_chrf": 10.6,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "datetime",
+   "source": "The event starts at four thirty on the fifteenth of March.",
+   "output": "Abin da ya faru ya soma ne bayan ƙarfe huɗu na watan Maris.",
+   "latency_ms": 207.8,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "datetime",
+   "source": "Abin da ya faru ya soma ne bayan ƙarfe huɗu na watan Maris.",
+   "output": "The incident began at the end of four o'clock in March.",
+   "latency_ms": 240.4,
+   "defects": [],
+   "roundtrip_chrf": 24.4,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "datetime",
+   "source": "The meeting has been moved to 15 March at 4:30.",
+   "output": "An yi taron a ranar 15 ga Maris a watan Maris, 4 ga Maris.",
+   "latency_ms": 336.8,
+   "defects": [
+    "lost:4:30",
+    "lost:March"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "datetime",
+   "source": "An yi taron a ranar 15 ga Maris a watan Maris, 4 ga Maris.",
+   "output": "The assembly was held on March 15, March 4, March.",
+   "latency_ms": 202.0,
+   "defects": [
+    "lost:4:30"
+   ],
+   "roundtrip_chrf": 18.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "entity",
+   "source": "My name is Zoe and I work in Lagos.",
+   "output": "Sunana shi ne Abababa kuma ina aiki a yaren kurame.",
+   "latency_ms": 231.6,
+   "defects": [
+    "lost:Zoe",
+    "lost:Lagos"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "entity",
+   "source": "Sunana shi ne Abababa kuma ina aiki a yaren kurame.",
+   "output": "My name is to give birth and to work in sign language.",
+   "latency_ms": 215.5,
+   "defects": [
+    "lost:Zoe",
+    "lost:Lagos"
+   ],
+   "roundtrip_chrf": 42.5,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "entity",
+   "source": "Adebayo travelled from Abeokuta to Kano last night.",
+   "output": "Da Ãdãwa suka yi tafiya daga garin Arano zuwa Kano dare da rana.",
+   "latency_ms": 266.0,
+   "defects": [
+    "lost:Adebayo",
+    "lost:Abeokuta"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "entity",
+   "source": "Da Ãdãwa suka yi tafiya daga garin Arano zuwa Kano dare da rana.",
+   "output": "And 'Ad journeyed from the town of Carmel to Kano by day and by night.",
+   "latency_ms": 355.5,
+   "defects": [
+    "lost:Adebayo",
+    "lost:Abeokuta"
+   ],
+   "roundtrip_chrf": 31.4,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "negation",
+   "source": "Do not send the payment yet.",
+   "output": "Kuma kada ku ƙõsa ga rubũta shi, ƙarami ya kasance kõ babba, zuwa ajalinsa.",
+   "latency_ms": 272.0,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "negation",
+   "source": "Kuma kada ku ƙõsa ga rubũta shi, ƙarami ya kasance kõ babba, zuwa ajalinsa.",
+   "output": "Do not refuse to write it down whether it be small or large, until its term.",
+   "latency_ms": 261.2,
+   "defects": [],
+   "roundtrip_chrf": 20.7,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "negation",
+   "source": "I did not say that I would not come.",
+   "output": "Ban ce ba zan zo ba.",
+   "latency_ms": 116.6,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "negation",
+   "source": "Ban ce ba zan zo ba.",
+   "output": "I didn't say I would come.",
+   "latency_ms": 167.7,
+   "defects": [
+    "negation-lost"
+   ],
+   "roundtrip_chrf": 40.5,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "negation",
+   "source": "She has not arrived at the office.",
+   "output": "Ba ta isa ofishin Shaidun Jehobah ba.",
+   "latency_ms": 118.4,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "negation",
+   "source": "Ba ta isa ofishin Shaidun Jehobah ba.",
+   "output": "She did not reach the branch office of Jehovah's Witnesses.",
+   "latency_ms": 183.0,
+   "defects": [],
+   "roundtrip_chrf": 29.7,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "health",
+   "source": "Take one tablet twice a day after eating.",
+   "output": "Sũ zuwa ga kãfirci a rãnar nan, sun fi kusa daga gare su zuwa ga ĩmãni.",
+   "latency_ms": 415.4,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "health",
+   "source": "Sũ zuwa ga kãfirci a rãnar nan, sun fi kusa daga gare su zuwa ga ĩmãni.",
+   "output": "They were nearer to disbelief on that day than to faith.",
+   "latency_ms": 167.8,
+   "defects": [],
+   "roundtrip_chrf": 18.5,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "health",
+   "source": "Do not give this medicine to a child under five years old.",
+   "output": "Kada ka ba yaro magani sa'ad da yake ɗan shekara biyar.",
+   "latency_ms": 195.9,
+   "defects": [
+    "lost:five",
+    "lost:5"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "health",
+   "source": "Kada ka ba yaro magani sa'ad da yake ɗan shekara biyar.",
+   "output": "Do not give birth to a child when he is five years old.",
+   "latency_ms": 220.6,
+   "defects": [
+    "lost:5"
+   ],
+   "roundtrip_chrf": 55.1,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "agriculture",
+   "source": "The rains will start next month, so prepare the land now.",
+   "output": "Za a soma ruwan sama bayan wata guda, saboda haka, za a shirya ƙasar yanzu.",
+   "latency_ms": 550.0,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "agriculture",
+   "source": "Za a soma ruwan sama bayan wata guda, saboda haka, za a shirya ƙasar yanzu.",
+   "output": "After a month of rain, the earth would be organized.",
+   "latency_ms": 203.0,
+   "defects": [],
+   "roundtrip_chrf": 22.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "business",
+   "source": "We need to sign the agreement before the end of the month.",
+   "output": "Muna bukatar mu yi yarjejeniya kafin ƙarshen wata.",
+   "latency_ms": 159.7,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "business",
+   "source": "Muna bukatar mu yi yarjejeniya kafin ƙarshen wata.",
+   "output": "Before the end of the month, we had to make a written agreement.",
+   "latency_ms": 211.2,
+   "defects": [],
+   "roundtrip_chrf": 63.2,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "broadcast",
+   "source": "Good morning everyone, and welcome to this broadcast.",
+   "output": "Sai ya wãyi gari a cikin birnin yanã mai tsõro, yanã sauna.",
+   "latency_ms": 235.6,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "broadcast",
+   "source": "Sai ya wãyi gari a cikin birnin yanã mai tsõro, yanã sauna.",
+   "output": "So he was in the city, fearful and vigilant.",
+   "latency_ms": 195.4,
+   "defects": [],
+   "roundtrip_chrf": 13.3,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "conversation",
+   "source": "How are you doing this evening?",
+   "output": "Ta yaya kake yin wannan yamma?",
+   "latency_ms": 113.7,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "conversation",
+   "source": "Ta yaya kake yin wannan yamma?",
+   "output": "How are you doing this evening?",
+   "latency_ms": 387.7,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "conversation",
+   "source": "Please send me the address before you leave.",
+   "output": "Don me Ka wajabta yãƙi a kaina?",
+   "latency_ms": 205.4,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "conversation",
+   "source": "Don me Ka wajabta yãƙi a kaina?",
+   "output": "Why have You ordained fighting for me?",
+   "latency_ms": 130.6,
+   "defects": [],
+   "roundtrip_chrf": 15.1,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "multi",
+   "source": "I am on my way. Please wait for me at the gate. I will be there soon.",
+   "output": "Ina kan hanya, ina jirana a ƙofa, sai in isa wajen nan da nan.",
+   "latency_ms": 276.0,
+   "defects": [
+    "omission(1/3 sentences)"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "multi",
+   "source": "Ina kan hanya, ina jirana a ƙofa, sai in isa wajen nan da nan.",
+   "output": "I was on my way, waiting at my door, and I immediately arrived there.",
+   "latency_ms": 271.0,
+   "defects": [
+    "omission(1/3 sentences)"
+   ],
+   "roundtrip_chrf": 28.3,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "multi",
+   "source": "The meeting is cancelled. We will meet tomorrow instead.",
+   "output": "Sa'an nan kuma lalle Mũ ne Mafi sani ga waɗanda suke sũ ne mafiya cancantar ƙõnuwa da ita.",
+   "latency_ms": 394.0,
+   "defects": [
+    "omission(1/2 sentences)"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "multi",
+   "source": "Sa'an nan kuma lalle Mũ ne Mafi sani ga waɗanda suke sũ ne mafiya cancantar ƙõnuwa da ita.",
+   "output": "We know best who deserves most to be burned therein.",
+   "latency_ms": 204.7,
+   "defects": [
+    "omission(1/2 sentences)"
+   ],
+   "roundtrip_chrf": 15.7,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "long",
+   "source": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure somebody is at the shop to receive them, and call me if there is any problem with the delivery.",
+   "output": "Na yi maka bayani mai daɗi game da abin da kake faɗa kuma ina samun kuɗi sosai a ranar Jumma'a. Don Allah ka tabbata cewa ka je ka sauke karatu, kuma ka kira ni da duk wata matsala da za ka fuskanta.",
+   "latency_ms": 746.5,
+   "defects": [
+    "lost:Friday",
+    "omission(2/3 sentences)"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "long",
+   "source": "Na yi maka bayani mai daɗi game da abin da kake faɗa kuma ina samun kuɗi sosai a ranar Jumma'a. Don Allah ka tabbata cewa ka je ka sauke karatu, kuma ka kira ni da duk wata matsala da za ka fuskanta.",
+   "output": "I have given you an interesting explanation of what you say and have a lot of money on Friday, so to speak, make sure that you have graduated from school, and call me with whatever challenges you face.",
+   "latency_ms": 713.4,
+   "defects": [
+    "omission(1/3 sentences)"
+   ],
+   "roundtrip_chrf": 29.3,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": [],
+   "roundtrip_chrf": 0.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "emoji-only",
+   "source": "👍👍",
+   "output": "keyboard- key- name",
+   "latency_ms": 125.1,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "emoji-only",
+   "source": "keyboard- key- name",
+   "output": "Esc",
+   "latency_ms": 79.5,
+   "defects": [],
+   "roundtrip_chrf": 0.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "number-only",
+   "source": "45000",
+   "output": "45 Abin da Muka Koya Daga Wurin Yesu - Game da Rayuwar ' Yan Adam",
+   "latency_ms": 261.9,
+   "defects": [
+    "invented-from-non-linguistic('45 Abin da Muka Koya Daga Wurin Yesu - G')",
+    "lost:45000"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "number-only",
+   "source": "45 Abin da Muka Koya Daga Wurin Yesu - Game da Rayuwar ' Yan Adam",
+   "output": "45 What We Learn From Jesus - About Mankind's Life",
+   "latency_ms": 201.5,
+   "defects": [
+    "invented-from-non-linguistic('45 What We Learn From Jesus - About Mank')",
+    "lost:45000"
+   ],
+   "roundtrip_chrf": 5.1,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "code-only",
+   "source": "OTP-483920",
+   "output": "@ item Text character set",
+   "latency_ms": 147.9,
+   "defects": [
+    "invented-from-non-linguistic('@ item Text character set')",
+    "lost:483920"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "code-only",
+   "source": "@ item Text character set",
+   "output": "Western European",
+   "latency_ms": 52.7,
+   "defects": [
+    "lost:483920"
+   ],
+   "roundtrip_chrf": 4.5,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "punctuation",
+   "source": "???!!!",
+   "output": "???",
+   "latency_ms": 104.2,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "punctuation",
+   "source": "???",
+   "output": "???",
+   "latency_ms": 113.0,
+   "defects": [],
+   "roundtrip_chrf": 43.7,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "mixed",
+   "source": "Abeg send the money before 5pm 🙏",
+   "output": "Wani ɗan sanda ya aika kuɗin kafin ya kai kuɗin.",
+   "latency_ms": 180.2,
+   "defects": [
+    "lost:5"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "mixed",
+   "source": "Wani ɗan sanda ya aika kuɗin kafin ya kai kuɗin.",
+   "output": "A police officer sent the money before taking the money.",
+   "latency_ms": 187.2,
+   "defects": [
+    "lost:5"
+   ],
+   "roundtrip_chrf": 47.5,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "emoji-text",
+   "source": "Congratulations on the new baby 🎉 we are very happy for you.",
+   "output": "Wata ' yar'uwa mai suna Mia ta ce: \"Mun yi farin ciki sosai a gare ki.",
+   "latency_ms": 663.8,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "emoji-text",
+   "source": "Wata ' yar'uwa mai suna Mia ta ce: \"Mun yi farin ciki sosai a gare ki.",
+   "output": "\" We were very happy to you, \" says Mia.",
+   "latency_ms": 263.2,
+   "defects": [],
+   "roundtrip_chrf": 27.1,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ha",
+   "category": "hashtag",
+   "source": "Join us tonight #VideofyLive for the broadcast.",
+   "output": "Ka shirya mana yadda za mu halarci taron.",
+   "latency_ms": 196.0,
+   "defects": [
+    "lost:#VideofyLive"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ha->en",
+   "category": "hashtag",
+   "source": "Ka shirya mana yadda za mu halarci taron.",
+   "output": "Prepare for us how to attend.",
+   "latency_ms": 197.1,
+   "defects": [
+    "lost:#VideofyLive"
+   ],
+   "roundtrip_chrf": 13.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "money",
+   "source": "The price is two thousand naira per bag.",
+   "output": "Ọnụ ego ya bụ puku dollar abụọ n'ime akpa ọ bụla.",
+   "latency_ms": 241.1,
+   "defects": [
+    "lost:2000",
+    "lost:naira"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "money",
+   "source": "Ọnụ ego ya bụ puku dollar abụọ n'ime akpa ọ bụla.",
+   "output": "The price was 2,000 dollars per bag.",
+   "latency_ms": 161.5,
+   "defects": [
+    "lost:naira"
+   ],
+   "roundtrip_chrf": 37.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "money",
+   "source": "Please send 45,000 naira to my account today.",
+   "output": "Biko ziga mmadụ 45,000 n'ihe ndekọ m taa.",
+   "latency_ms": 284.9,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "money",
+   "source": "Biko ziga mmadụ 45,000 n'ihe ndekọ m taa.",
+   "output": "Please send 45,000 people to my report today.",
+   "latency_ms": 181.8,
+   "defects": [],
+   "roundtrip_chrf": 55.7,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "money",
+   "source": "I have received the money you sent.",
+   "output": "Enwetawo m ego ahụ i zigara m.",
+   "latency_ms": 170.5,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "money",
+   "source": "Enwetawo m ego ahụ i zigara m.",
+   "output": "I have received the money you sent me.",
+   "latency_ms": 156.9,
+   "defects": [],
+   "roundtrip_chrf": 95.3,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "money",
+   "source": "I have not received the money you sent.",
+   "output": "E nyeghị m ego ahụ i zitere m.",
+   "latency_ms": 155.2,
+   "defects": [
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "money",
+   "source": "E nyeghị m ego ahụ i zitere m.",
+   "output": "I didn't have the money you sent me.",
+   "latency_ms": 180.8,
+   "defects": [
+    "negation-lost"
+   ],
+   "roundtrip_chrf": 52.3,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "money",
+   "source": "Your balance is 12,500 naira.",
+   "output": "Otú i si ele ihe anya dị puku iri na abụọ, narị ise na iri ise.",
+   "latency_ms": 328.4,
+   "defects": [
+    "lost:12,500",
+    "lost:12500"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "money",
+   "source": "Otú i si ele ihe anya dị puku iri na abụọ, narị ise na iri ise.",
+   "output": "Your attitude is limited to 125,000.",
+   "latency_ms": 126.0,
+   "defects": [],
+   "roundtrip_chrf": 18.9,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "phone",
+   "source": "Call me on 08031234567 when you arrive.",
+   "output": "Mgbe ị rutere, kpọọ m na 0312 (onye dị otu narị puku na puku iri anọ na puku isii).",
+   "latency_ms": 411.9,
+   "defects": [
+    "lost:08031234567"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "phone",
+   "source": "Mgbe ị rutere, kpọọ m na 0312 (onye dị otu narị puku na puku iri anọ na puku isii).",
+   "output": "When you arrive, call me in 003 (U.S.).",
+   "latency_ms": 296.2,
+   "defects": [
+    "lost:08031234567",
+    "addition(3/1 sentences)"
+   ],
+   "roundtrip_chrf": 49.3,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "account",
+   "source": "Transfer to account 0123456789 at First Bank.",
+   "output": "IHE ndekọ e nwetara n'aka mmadụ 01279 n'Ụlọ Akụ̀ Ndị Mbụ.",
+   "latency_ms": 366.8,
+   "defects": [
+    "lost:0123456789"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "account",
+   "source": "IHE ndekọ e nwetara n'aka mmadụ 01279 n'Ụlọ Akụ̀ Ndị Mbụ.",
+   "output": "THE report from 012 was found at First Bank.",
+   "latency_ms": 233.7,
+   "defects": [
+    "lost:0123456789"
+   ],
+   "roundtrip_chrf": 36.8,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "otp",
+   "source": "Your verification code is 483920. Do not share it.",
+   "output": "Ihe ị ga - eme bụ nke ị na - agaghị echefu echefu, ya bụ, nke fọrọ nke nta ka o ruo otu narị na iri anọ na asatọ.",
+   "latency_ms": 444.6,
+   "defects": [
+    "lost:483920",
+    "negation-lost",
+    "omission(1/2 sentences)"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "otp",
+   "source": "Ihe ị ga - eme bụ nke ị na - agaghị echefu echefu, ya bụ, nke fọrọ nke nta ka o ruo otu narị na iri anọ na asatọ.",
+   "output": "You can do something that you will never forget, that is, nearly 180.",
+   "latency_ms": 398.5,
+   "defects": [
+    "lost:483920",
+    "omission(1/2 sentences)"
+   ],
+   "roundtrip_chrf": 17.9,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "url",
+   "source": "Read more at https://consummate7.com/help before you call.",
+   "output": "I nwekwara ike ịgụkwu ihe ndị ọzọ n'akwụkwọ anyị tupu gị akpọọ mmadụ ka o nyere gị aka.",
+   "latency_ms": 402.3,
+   "defects": [
+    "lost:https://consummate7.com/help"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "url",
+   "source": "I nwekwara ike ịgụkwu ihe ndị ọzọ n'akwụkwọ anyị tupu gị akpọọ mmadụ ka o nyere gị aka.",
+   "output": "You can also read more information in our publications before inviting someone to help you.",
+   "latency_ms": 286.8,
+   "defects": [
+    "lost:https://consummate7.com/help"
+   ],
+   "roundtrip_chrf": 32.7,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "datetime",
+   "source": "The event starts at four thirty on the fifteenth of March.",
+   "output": "Ihe omume ahụ malitere n'abalị iri atọ n'ọnwa Mach.",
+   "latency_ms": 552.3,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "datetime",
+   "source": "Ihe omume ahụ malitere n'abalị iri atọ n'ọnwa Mach.",
+   "output": "That event began on March 30, in March.",
+   "latency_ms": 129.6,
+   "defects": [],
+   "roundtrip_chrf": 20.2,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "datetime",
+   "source": "The meeting has been moved to 15 March at 4:30.",
+   "output": "Ọ bụ n'abalị iri na ise n'ọnwa Mach ka e mere ka ọmụmụ ihe ahụ gaa n'abalị iri na ise n'ọnwa Mach.",
+   "latency_ms": 474.3,
+   "defects": [
+    "lost:15",
+    "lost:4:30",
+    "lost:March"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "datetime",
+   "source": "Ọ bụ n'abalị iri na ise n'ọnwa Mach ka e mere ka ọmụmụ ihe ahụ gaa n'abalị iri na ise n'ọnwa Mach.",
+   "output": "It was March 15, that the meeting was held on March 15.",
+   "latency_ms": 219.2,
+   "defects": [
+    "lost:4:30"
+   ],
+   "roundtrip_chrf": 35.5,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "entity",
+   "source": "My name is Zoe and I work in Lagos.",
+   "output": "Aha m bụ Christianse, mụnwa na - arụkwa ọrụ na Lagos.",
+   "latency_ms": 264.8,
+   "defects": [
+    "lost:Zoe"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "entity",
+   "source": "Aha m bụ Christianse, mụnwa na - arụkwa ọrụ na Lagos.",
+   "output": "My name was Christianse, and I worked in Lagos.",
+   "latency_ms": 226.6,
+   "defects": [
+    "lost:Zoe"
+   ],
+   "roundtrip_chrf": 55.2,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "entity",
+   "source": "Adebayo travelled from Abeokuta to Kano last night.",
+   "output": "Ọ bụ n'abalị bọtara ụbọchị e mere ya, ya esi n'obodo Abekara gawa n'ebe a na - ere ihe ndị mgbe ochie a na - ere ihe ndị e ji esi nri.",
+   "latency_ms": 600.4,
+   "defects": [
+    "lost:Adebayo",
+    "lost:Abeokuta",
+    "lost:Kano"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "entity",
+   "source": "Ọ bụ n'abalị bọtara ụbọchị e mere ya, ya esi n'obodo Abekara gawa n'ebe a na - ere ihe ndị mgbe ochie a na - ere ihe ndị e ji esi nri.",
+   "output": "It was the night before it was held, and he left the city of Abeta and went to an ancient food store.",
+   "latency_ms": 395.0,
+   "defects": [
+    "lost:Adebayo",
+    "lost:Abeokuta",
+    "lost:Kano"
+   ],
+   "roundtrip_chrf": 19.8,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "negation",
+   "source": "Do not send the payment yet.",
+   "output": "Unu ezipụla ụgwọ ahụ a kwụrụ unu n'oge ahụ.",
+   "latency_ms": 213.1,
+   "defects": [
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "negation",
+   "source": "Unu ezipụla ụgwọ ahụ a kwụrụ unu n'oge ahụ.",
+   "output": "Do not send out the reward back to you at that time.",
+   "latency_ms": 215.4,
+   "defects": [],
+   "roundtrip_chrf": 36.1,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "negation",
+   "source": "I did not say that I would not come.",
+   "output": "ekwughị m na agaghị m abịa.",
+   "latency_ms": 310.5,
+   "defects": [
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "negation",
+   "source": "ekwughị m na agaghị m abịa.",
+   "output": "I didn't say that I wouldn't come.",
+   "latency_ms": 201.4,
+   "defects": [
+    "negation-lost"
+   ],
+   "roundtrip_chrf": 71.5,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "negation",
+   "source": "She has not arrived at the office.",
+   "output": "Ọ bịabeghị n'ọfịs ahụ.",
+   "latency_ms": 180.3,
+   "defects": [
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "negation",
+   "source": "Ọ bịabeghị n'ọfịs ahụ.",
+   "output": "He had not come to the office.",
+   "latency_ms": 149.3,
+   "defects": [],
+   "roundtrip_chrf": 42.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "health",
+   "source": "Take one tablet twice a day after eating.",
+   "output": "Were otu mbadamba nkume ugboro abụọ kwa ụbọchị mgbe i risịrị nri.",
+   "latency_ms": 230.1,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "health",
+   "source": "Were otu mbadamba nkume ugboro abụọ kwa ụbọchị mgbe i risịrị nri.",
+   "output": "Take one tablet twice each day after a meal.",
+   "latency_ms": 163.0,
+   "defects": [],
+   "roundtrip_chrf": 68.4,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "health",
+   "source": "Do not give this medicine to a child under five years old.",
+   "output": "Enyela nwatakịrị na - erubeghị afọ ise ọgwụ a.",
+   "latency_ms": 198.8,
+   "defects": [
+    "lost:five",
+    "lost:5",
+    "negation-lost"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "health",
+   "source": "Enyela nwatakịrị na - erubeghị afọ ise ọgwụ a.",
+   "output": "Don't give this medication to a child under five years of age.",
+   "latency_ms": 202.4,
+   "defects": [
+    "lost:5"
+   ],
+   "roundtrip_chrf": 74.3,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "agriculture",
+   "source": "The rains will start next month, so prepare the land now.",
+   "output": "Mmiri ozuzo ahụ ga - amalite n'ọnwa sochirinụ, ya mere kwadebe ala ahụ ugbu a.",
+   "latency_ms": 393.9,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "agriculture",
+   "source": "Mmiri ozuzo ahụ ga - amalite n'ọnwa sochirinụ, ya mere kwadebe ala ahụ ugbu a.",
+   "output": "The rain would begin the following month, so prepare the land now.",
+   "latency_ms": 177.1,
+   "defects": [],
+   "roundtrip_chrf": 63.6,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "business",
+   "source": "We need to sign the agreement before the end of the month.",
+   "output": "Ọ dị anyị mkpa ịbịanye aka ná nkwekọrịta ahụ tupu ngwụsị ọnwa.",
+   "latency_ms": 389.8,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "business",
+   "source": "Ọ dị anyị mkpa ịbịanye aka ná nkwekọrịta ahụ tupu ngwụsị ọnwa.",
+   "output": "We need to sign the treaty before the end of the month.",
+   "latency_ms": 177.4,
+   "defects": [],
+   "roundtrip_chrf": 77.2,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "broadcast",
+   "source": "Good morning everyone, and welcome to this broadcast.",
+   "output": "N'ụtụtụ, onye ọ bụla na - ege ntị n'ozi ọma a, na - anabatakwa ya.",
+   "latency_ms": 529.6,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "broadcast",
+   "source": "N'ụtụtụ, onye ọ bụla na - ege ntị n'ozi ọma a, na - anabatakwa ya.",
+   "output": "In the morning, everyone listens to and accepts the good news.",
+   "latency_ms": 190.1,
+   "defects": [],
+   "roundtrip_chrf": 36.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "conversation",
+   "source": "How are you doing this evening?",
+   "output": "Olee otú i si eme ná mgbede a?",
+   "latency_ms": 219.0,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "conversation",
+   "source": "Olee otú i si eme ná mgbede a?",
+   "output": "How are you doing this evening?",
+   "latency_ms": 111.6,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "conversation",
+   "source": "Please send me the address before you leave.",
+   "output": "Biko ziganụ m adres ahụ tupu unu alaa.",
+   "latency_ms": 215.1,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "conversation",
+   "source": "Biko ziganụ m adres ahụ tupu unu alaa.",
+   "output": "Please send me the address before you leave.",
+   "latency_ms": 411.3,
+   "defects": [],
+   "roundtrip_chrf": 100.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "multi",
+   "source": "I am on my way. Please wait for me at the gate. I will be there soon.",
+   "output": "Biko, chere m n'ọnụ ụzọ ámá: m ga - anọ n'ebe ahụ n'isi nso.",
+   "latency_ms": 394.1,
+   "defects": [
+    "omission(1/3 sentences)"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "multi",
+   "source": "Biko, chere m n'ọnụ ụzọ ámá: m ga - anọ n'ebe ahụ n'isi nso.",
+   "output": "Please wait at the gate: I'll be there soon.",
+   "latency_ms": 207.8,
+   "defects": [
+    "omission(1/3 sentences)"
+   ],
+   "roundtrip_chrf": 54.2,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "multi",
+   "source": "The meeting is cancelled. We will meet tomorrow instead.",
+   "output": "Anyị ga - akwụsị ịbịa ọmụmụ ihe ahụ n'ihi na anyị ga - ezute echi.",
+   "latency_ms": 357.3,
+   "defects": [
+    "omission(1/2 sentences)"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "multi",
+   "source": "Anyị ga - akwụsị ịbịa ọmụmụ ihe ahụ n'ihi na anyị ga - ezute echi.",
+   "output": "We will stop attending that meeting because we will meet tomorrow.",
+   "latency_ms": 162.5,
+   "defects": [
+    "omission(1/2 sentences)"
+   ],
+   "roundtrip_chrf": 51.4,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "long",
+   "source": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure somebody is at the shop to receive them, and call me if there is any problem with the delivery.",
+   "output": "Unu emeela maka ozi unu. Agwara m ndị na - ere ihe na ngwá ahịa ndị a ga - abịa n'ụtụtụ Friday. Biko, hụ na mmadụ nọ n'ụlọ ahịa ahụ ịnara ha, ma jụọ m ma è nwere nsogbu dị n'ihe ọmụmụ ahụ.",
+   "latency_ms": 868.9,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "long",
+   "source": "Unu emeela maka ozi unu. Agwara m ndị na - ere ihe na ngwá ahịa ndị a ga - abịa n'ụtụtụ Friday. Biko, hụ na mmadụ nọ n'ụlọ ahịa ahụ ịnara ha, ma jụọ m ma è nwere nsogbu dị n'ihe ọmụmụ ahụ.",
+   "output": "Thank you for your ministry, and I told the merchants that these items would come on Friday morning. Please see if someone was in the shop to accept them, and ask if there was any problem in the study.",
+   "latency_ms": 628.4,
+   "defects": [
+    "omission(2/3 sentences)"
+   ],
+   "roundtrip_chrf": 46.9,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": [],
+   "roundtrip_chrf": 0.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "emoji-only",
+   "source": "👍👍",
+   "output": "Nnyemaka ngwaọrụ",
+   "latency_ms": 58.9,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "emoji-only",
+   "source": "Nnyemaka ngwaọrụ",
+   "output": "PUBLISHERS",
+   "latency_ms": 54.8,
+   "defects": [],
+   "roundtrip_chrf": 0.0,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "number-only",
+   "source": "45000",
+   "output": "enyi m nwoke dị narị puku anọ na iri ise",
+   "latency_ms": 167.8,
+   "defects": [
+    "invented-from-non-linguistic('enyi m nwoke dị narị puku anọ na iri ise')",
+    "lost:45000"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "number-only",
+   "source": "enyi m nwoke dị narị puku anọ na iri ise",
+   "output": "With my boyfriend, there were 450",
+   "latency_ms": 136.1,
+   "defects": [
+    "invented-from-non-linguistic('With my boyfriend, there were 450')",
+    "lost:45000"
+   ],
+   "roundtrip_chrf": 13.6,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "code-only",
+   "source": "OTP-483920",
+   "output": "Kèánáhụ́chāghị́ányá",
+   "latency_ms": 139.3,
+   "defects": [
+    "lost:483920"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "code-only",
+   "source": "Kèánáhụ́chāghị́ányá",
+   "output": "%l:%M %p (%A)",
+   "latency_ms": 138.0,
+   "defects": [
+    "lost:483920"
+   ],
+   "roundtrip_chrf": 1.6,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "punctuation",
+   "source": "???!!!",
+   "output": "?!",
+   "latency_ms": 89.1,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "punctuation",
+   "source": "?!",
+   "output": "!?",
+   "latency_ms": 56.2,
+   "defects": [],
+   "roundtrip_chrf": 19.2,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "mixed",
+   "source": "Abeg send the money before 5pm 🙏",
+   "output": "Onye na - ere ahịa na - ezitere ya ego ahụ tupu ya agawa n'ebe a na - edebe ihe n'Ịntanet",
+   "latency_ms": 817.3,
+   "defects": [
+    "lost:5"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "mixed",
+   "source": "Onye na - ere ahịa na - ezitere ya ego ahụ tupu ya agawa n'ebe a na - edebe ihe n'Ịntanet",
+   "output": "A businessman sends the money before going to the Web site",
+   "latency_ms": 190.1,
+   "defects": [
+    "lost:5"
+   ],
+   "roundtrip_chrf": 50.6,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "emoji-text",
+   "source": "Congratulations on the new baby 🎉 we are very happy for you.",
+   "output": "Obi na - adị anyị ezigbo ụtọ ma anyị cheta nwa ọhụrụ anyị mụrụ ọhụrụ.",
+   "latency_ms": 313.3,
+   "defects": []
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "emoji-text",
+   "source": "Obi na - adị anyị ezigbo ụtọ ma anyị cheta nwa ọhụrụ anyị mụrụ ọhụrụ.",
+   "output": "How happy we are when we think of our newborn baby!",
+   "latency_ms": 174.3,
+   "defects": [],
+   "roundtrip_chrf": 25.8,
+   "provisional": true
+  },
+  {
+   "engine": "opus",
+   "direction": "en->ig",
+   "category": "hashtag",
+   "source": "Join us tonight #VideofyLive for the broadcast.",
+   "output": "Anyị na - aga n'ebe a na - akpọsa ngwá ahịa n'ebe a na - akpọsa ngwá ahịa.",
+   "latency_ms": 517.1,
+   "defects": [
+    "lost:#VideofyLive"
+   ]
+  },
+  {
+   "engine": "opus",
+   "direction": "ig->en",
+   "category": "hashtag",
+   "source": "Anyị na - aga n'ebe a na - akpọsa ngwá ahịa n'ebe a na - akpọsa ngwá ahịa.",
+   "output": "We go to the advertising station.",
+   "latency_ms": 136.9,
+   "defects": [
+    "lost:#VideofyLive"
+   ],
+   "roundtrip_chrf": 15.3,
+   "provisional": true
+  }
+ ]
+}

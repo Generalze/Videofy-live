@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      TEST-ONLY ENTRY. This page is built by scripts/operator-visual-diff.mjs
+      into dist-visual/ and is never served to an operator. It exists so the
+      visual harness measures LAYOUT rather than whatever disconnected state
+      the console happens to be in when the screenshot is taken. It carries
+      no production code path: the console ships from ../index.html.
+    -->
+    <title>Videofy Live Operator - visual fixture</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./visual-main.tsx"></script>
+  </body>
+</html>

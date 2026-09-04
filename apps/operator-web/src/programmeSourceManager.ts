@@ -1,5 +1,28 @@
 export type ProgrammeSourceType = 'none' | 'camera' | 'screen' | 'uploaded-video' | 'direct-url' | 'rtmp';
 
+/**
+ * Capture ceilings for LIVE WebRTC sources.
+ *
+ * The programme video path decodes every broadcaster frame on the server and
+ * re-encodes it per listener in software, on a CPU-only host. Feeding that
+ * pipeline a 30fps 1080p camera does not produce 1080p for viewers -- it
+ * produces an encoder that falls behind, which a viewer experiences as BOTH
+ * complaints at once: smeared quality and video arriving long after the
+ * audio. A bounded input is what keeps the encoder realtime, which is what
+ * actually looks better. Screen shares keep more pixels (text must stay
+ * readable) and give up motion instead.
+ */
+const CAMERA_VIDEO_CONSTRAINTS: MediaTrackConstraints = {
+  width: { ideal: 960, max: 1280 },
+  height: { ideal: 540, max: 720 },
+  frameRate: { ideal: 15, max: 20 },
+};
+const SCREEN_VIDEO_CONSTRAINTS: MediaTrackConstraints = {
+  width: { max: 1600 },
+  height: { max: 900 },
+  frameRate: { ideal: 10, max: 12 },
+};
+
 export type RtmpProgrammeState =
   | 'idle'
   | 'waiting-for-stream'
@@ -141,6 +164,10 @@ const UPLOADED_VIDEO_MIME_TYPES = new Set([
   'video/x-quicktime',
 ]);
 const DIRECT_STREAM_EXTENSIONS = new Set(['mp4', 'webm', 'm3u8']);
+/** The accepted upload formats, for the operator to read: the same list UPLOADED_VIDEO_EXTENSIONS validates. */
+export const UPLOADED_VIDEO_FORMATS: readonly string[] = ['MP4', 'WebM', 'MOV'];
+/** The accepted direct-URL formats: the same list DIRECT_STREAM_EXTENSIONS validates. */
+export const DIRECT_STREAM_FORMATS: readonly string[] = ['MP4', 'WebM', 'HLS (.m3u8)'];
 const SAFE_RTMP_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const LOCAL_RTMP_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 const NATIVE_HLS_MIME_TYPES = ['application/vnd.apple.mpegurl', 'application/x-mpegURL'];
@@ -375,9 +402,14 @@ function joinUrlPath(basePath: string, ...segments: string[]): string {
   return `/${encoded.join('/')}`;
 }
 
+/**
+ * LENGTH ONLY. A stream key is the credential that lets anyone publish into
+ * the programme, and its first and last characters were once shown as a
+ * "which key is this" hint. Founder ruling (29 Aug 2026): no token prefix is
+ * ever printed, and a display string is one copy-paste away from a log.
+ */
 function redactStreamKey(streamKey: string): string {
-  if (streamKey.length <= 4) return '****';
-  return `${streamKey.slice(0, 2)}...${streamKey.slice(-2)}`;
+  return `**** (${streamKey.length} characters)`;
 }
 
 export class ProgrammeSourceManager {
@@ -474,7 +506,9 @@ export class ProgrammeSourceManager {
     try {
       stream = await this.mediaDevices!.getUserMedia({
         audio: input.audioDeviceId ? { deviceId: { exact: input.audioDeviceId } } : true,
-        video: input.videoDeviceId ? { deviceId: { exact: input.videoDeviceId } } : true,
+        video: input.videoDeviceId
+          ? { deviceId: { exact: input.videoDeviceId }, ...CAMERA_VIDEO_CONSTRAINTS }
+          : CAMERA_VIDEO_CONSTRAINTS,
       });
       this.assertUsableTracks(stream, { requireVideo: true });
       this.attachPreviewElement(previewElement ?? null, stream);
@@ -509,15 +543,41 @@ export class ProgrammeSourceManager {
     });
     let stream: MediaStream | null = null;
     try {
-      stream = await this.mediaDevices!.getDisplayMedia({ video: true, audio: true });
+      stream = await this.mediaDevices!.getDisplayMedia({
+        video: SCREEN_VIDEO_CONSTRAINTS,
+        audio: true,
+      });
       this.assertUsableTracks(stream, { requireVideo: true });
+      /*
+       * WINDOW SHARES HAVE NO AUDIO -- not a bug here, a platform rule: on
+       * Windows, Chrome and Edge offer audio only for tabs and full screens,
+       * and even those only when the person ticks the share-audio box. The
+       * old behaviour surfaced a reason and then the transport refused to
+       * start at all ('missing-audio-track'), so sharing a window meant no
+       * broadcast, full stop. A broadcaster sharing a window is almost always
+       * NARRATING it, so the honest fallback is their microphone, said in the
+       * audio label rather than silently. Mic refusal falls back to the old
+       * video-only state with its reason intact.
+       */
+      let audioFromMicrophone = false;
+      if (stream.getAudioTracks().length === 0) {
+        try {
+          const microphone = await this.mediaDevices!.getUserMedia({ audio: true });
+          for (const track of microphone.getAudioTracks()) stream.addTrack(track);
+          audioFromMicrophone = stream.getAudioTracks().length > 0;
+        } catch {
+          // No microphone permission: the broadcast stays video-only below.
+        }
+      }
       this.attachPreviewElement(previewElement ?? null, stream);
       this.installStream('screen', 'Screen or browser tab', stream, {
-        audioSourceLabel: stream.getAudioTracks()[0]?.label || 'Screen audio',
+        audioSourceLabel: audioFromMicrophone
+          ? 'Microphone (screen shared without audio)'
+          : stream.getAudioTracks()[0]?.label || 'Screen audio',
         videoSourceLabel: stream.getVideoTracks()[0]?.label || 'Screen or browser tab',
         audioMissingReason:
           stream.getAudioTracks().length === 0
-            ? 'Browser or platform did not provide screen-share audio.'
+            ? 'No screen audio was shared and the microphone was refused. Share a tab or full screen with audio, or allow the microphone.'
             : null,
         canPause: true,
         canResume: true,

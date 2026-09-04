@@ -1,3 +1,4 @@
+import type { ChannelCategory } from './channel-category.js';
 import type { SourceLanguageMode } from './language-controls.js';
 
 /**
@@ -71,6 +72,46 @@ export const SOCKET_EVENTS = {
   TRANSLATED_AUDIO_FRAME: 'translated-audio:frame',
   INGEST_GENERATED_AUDIO: 'ingest:generated-audio',
   INGEST_HEALTH: 'ingest:health',
+  /**
+   * A programme run's authoritative delivery answer.
+   *
+   * Its own event rather than a field on the state snapshot, because the
+   * gateway must have it BEFORE it decides whether to relay a broadcaster's
+   * tracks to a listener -- a decision that happens on a listener joining, not
+   * on the next state broadcast. Carrying it separately also means it survives
+   * on its own cadence: it changes when the delivery chain changes, which is
+   * rarely, and not on every video timestamp tick.
+   */
+  INGEST_PROGRAMME_DELIVERY: 'ingest:programme-delivery',
+  /*
+   * The deployment's delivery policy, sent on connection and before any run.
+   *
+   * Separate from the per-run announcement above because it answers a
+   * different question at a different time: not "what is this run doing" but
+   * "what does this deployment do", which the gateway needs BEFORE the first
+   * protected run exists in order not to relay it.
+   */
+  INGEST_PROGRAMME_POLICY: 'ingest:programme-policy',
+  /*
+   * The broadcast is over: let the audience have what is still held.
+   *
+   * Gateway to ingest, because only the gateway sees the broadcaster go. A
+   * protected programme holds its last forty-five seconds behind the cursor,
+   * and without this nothing ever releases them: the run stayed `active` with
+   * a frozen live edge for ever, and the closing seconds -- produced and
+   * promised -- reached nobody.
+   */
+  PROGRAMME_RUN_ENDED: 'programme:run-ended',
+  /**
+   * An advert the cursor has released for a programme run.
+   *
+   * Pushed to viewers rather than fetched by them: a client that asked what to
+   * show could be given a different answer from its neighbour, and two viewers
+   * on different delays must meet the same advert at the same programme moment.
+   */
+  INGEST_PROGRAMME_ADVERT: 'ingest:programme-advert',
+  /** The gateway forwarding that advert on to a channel's listeners. */
+  PROGRAMME_ADVERT: 'programme:advert',
   INGEST_START_STREAM: 'ingest:start_stream',
   INGEST_STOP_STREAM: 'ingest:stop_stream',
 
@@ -111,17 +152,21 @@ export function languageRoom(targetLanguage: string): string {
 export const DEFAULT_CHANNEL_ID = 'main';
 
 /**
- * Who can reach a channel.
+ * Who can reach a channel. The founder's ruling (2026-08-27) named the tiers:
  *
- *   public   - listed in the directory, open to anybody.
- *   unlisted - not listed, but joinable by anybody holding the link. A doorbell
- *              without a sign, not a lock.
- *   private  - not listed, and the link alone is not enough: a join code must
- *              be presented too. This is the only one of the three that is an
- *              access control, which is why the other two are not called
- *              private -- somebody would eventually build on that promise.
+ *   public  - listed in the directory, open to anybody who knows the channel.
+ *   private - not listed; the operator's invite link is what admits a viewer.
+ *             A doorbell without a sign, not a lock.
+ *   locked  - not listed, and the link alone is not enough: a join code must
+ *             be presented too (or an access link that carries it). This is
+ *             the only tier that is an access CONTROL, which is why the other
+ *             two are not called locked -- somebody would eventually build on
+ *             that promise.
+ *
+ * ('private' was previously spelled 'unlisted' and 'locked' was 'private';
+ * the semantics did not change, only the names people see.)
  */
-export type ChannelVisibility = 'public' | 'unlisted' | 'private';
+export type ChannelVisibility = 'public' | 'private' | 'locked';
 
 /** What a listener is given when choosing where to listen. */
 export interface ChannelSummary {
@@ -129,6 +174,95 @@ export interface ChannelSummary {
   readonly displayName: string;
   readonly live: boolean;
   readonly visibility: ChannelVisibility;
+  /**
+   * The operator's declared category, or null when none is chosen.
+   *
+   * Founder ruling (29 Aug 2026): "Channel categories: explicit server
+   * field. Do not infer semantic categories from follows, visibility or live
+   * status." A client that groups channels reads THIS and nothing else; null
+   * means uncategorised, not an invitation to guess.
+   */
+  readonly category: ChannelCategory | null;
+  /**
+   * The channel's unique human-readable handle, or null when no persisted
+   * identity exists for it (the platform channel, or a channel the account
+   * service has not answered for).
+   *
+   * Founder directive (A, 30 Aug 2026): "unique human-readable @handle;
+   * public canonical route /streams/<handle> with opaque links still
+   * working." The opaque `channelId` stays the identifier everything joins
+   * by; the handle is what a person reads and shares.
+   */
+  readonly handle: string | null;
+  /** A public account path such as /channels/<id>/avatar, or null when none is set. */
+  readonly avatarUrl: string | null;
+  /**
+   * The title of the programme on air, when the channel is live AND a title
+   * is known; null otherwise -- never a made-up name.
+   *
+   * Founder directive (A, 30 Aug 2026): CHANNEL (persistent identity) and
+   * PROGRAMME (one broadcast) are separate things. This is the one programme
+   * fact a directory row carries, so discovery can say what is on without
+   * confusing it with who the channel is.
+   */
+  readonly currentProgramme: string | null;
+}
+
+/**
+ * What an operator sends on operator:channel-settings.
+ *
+ * Every field is optional and an absent field means "leave it alone", which
+ * is what lets the console change visibility without resending a join code
+ * it does not have. `code: null` clears the code; `category: null` clears the
+ * category. A category off the controlled list is refused whole: the gateway
+ * answers ERROR "Choose a category from the list." and applies nothing.
+ */
+export interface OperatorChannelSettingsPayload {
+  displayName?: string;
+  visibility?: ChannelVisibility;
+  code?: string | null;
+  /** One primary category in v1 (founder ruling, 29 Aug 2026), or null for none. */
+  category?: ChannelCategory | null;
+}
+
+/**
+ * The persisted identity of the channel an operator is on, as the gateway
+ * read it from the account service.
+ *
+ * Founder directive (A, 30 Aug 2026): "the operator shell always shows
+ * avatar, displayName, @handle, category, channel status." These are those
+ * fields, and nothing a console would have to invent.
+ */
+export interface ChannelAssignedProfile {
+  readonly handle: string;
+  readonly displayName: string;
+  readonly category: ChannelCategory | null;
+  readonly avatarUrl: string | null;
+}
+
+/** What the gateway answers with on channel:assigned. */
+export interface ChannelAssignedPayload {
+  /** The operator's own channel id, as the gateway derived it. */
+  channelId: string;
+  /**
+   * The channel they are publishing to now.
+   *
+   * Founder directive (A, 30 Aug 2026): an entitled operator lands on their
+   * own channel at connect, so at connect this equals `channelId`. It differs
+   * only after an explicit move to the platform channel.
+   */
+  active: string;
+  /** Whether a join code is SET on the active channel; never the code itself. */
+  hasCode?: boolean;
+  /** The active channel's category, so a reloaded console shows the truth. */
+  category?: ChannelCategory | null;
+  /**
+   * The active channel's persisted identity; null when none exists (the
+   * platform channel, or an account service that did not answer -- in which
+   * case the console keeps whatever it last showed rather than a fallback
+   * name).
+   */
+  profile?: ChannelAssignedProfile | null;
 }
 
 export const OPERATOR_ROOM = 'operators';
@@ -143,6 +277,13 @@ export interface OperatorProgrammeSessionConfig {
   sessionId: string;
   broadcastId: string;
   sourceRevision: number;
+  /**
+   * What this broadcast is called, if the operator named it. Surfaces to
+   * listeners as ChannelSummary.currentProgramme while the channel is live;
+   * absent means the directory says nothing about the programme rather than
+   * guessing a name.
+   */
+  programmeTitle?: string;
   programmeSourceType?: string;
   rtmpPlaybackUrl?: string;
   targetLanguage: string;

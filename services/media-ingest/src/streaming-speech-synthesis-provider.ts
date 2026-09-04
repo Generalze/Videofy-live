@@ -57,6 +57,36 @@ export interface StreamingSynthesisOptions {
   readonly signal?: AbortSignal;
 }
 
+/**
+ * This sentence was spoken, but not by the vendor that should have spoken it.
+ *
+ * THE ONE FAILURE NO SERVER SIGNAL CAN SEE. A listening test on 2026-08-26
+ * established that the general vendors return HTTP 200 and fluent-sounding
+ * audio for Yoruba, Hausa and Igbo, and that the audio is wrong -- a
+ * multilingual voice reading unfamiliar orthography with the phonology it
+ * already has. Status, byte count and latency are all normal. Only a speaker of
+ * the language can tell, and by then it is in front of whoever was listening.
+ *
+ * So the fall-through has to leave a mark. Without one, a specialist that has
+ * quietly stopped answering is INDISTINGUISHABLE from a specialist that is
+ * working: audio plays either way. This field is that mark, and the surfaces
+ * that report synthesis are required to show it rather than to average it away.
+ *
+ * ABSENT MEANS NOT DEGRADED. It is optional so that the ninety languages this
+ * does not concern say nothing, rather than every provider having to assert a
+ * negative it cannot know.
+ */
+export interface SynthesisDegradation {
+  /** Base subtag actually requested, e.g. `yo`. */
+  readonly language: string;
+  /** The provider that SHOULD have served it, by name. */
+  readonly expectedProvider: string;
+  /** The provider that did. */
+  readonly servedBy: string;
+  /** Why, in words an operator can act on. Never a credential or a value. */
+  readonly reason: string;
+}
+
 export interface StreamingSynthesisResult {
   /** Total samples produced. Zero is a failure, not a silent success. */
   readonly samples: number;
@@ -70,6 +100,14 @@ export interface StreamingSynthesisResult {
   readonly totalMs: number;
   /** True when synthesis stopped early because the caller aborted. */
   readonly aborted: boolean;
+  /**
+   * Set ONLY when a specialist language was served by its fallback.
+   *
+   * Undefined is the ordinary case and means nothing is known to be wrong; it
+   * is not a claim that the rendering is good. Nothing infers quality from a
+   * status code here or anywhere else.
+   */
+  readonly degraded?: SynthesisDegradation | undefined;
 }
 
 export interface StreamingSpeechSynthesisProvider {

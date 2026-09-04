@@ -1,0 +1,327 @@
+{
+ "engine": "opus-en-pt-dedicated",
+ "modelId": "Helsinki-NLP/opus-mt-tc-big-en-pt",
+ "peak_rss_mb": 869.9,
+ "wrongLanguageCount": 0,
+ "rows": [
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "money",
+   "source": "The price is two thousand naira per bag.",
+   "output": "O preço é de dois mil naira por saco.",
+   "latency_ms": 575.2,
+   "defects": [
+    "quantity-unverified:2000"
+   ]
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "money",
+   "source": "Please send 45,000 naira to my account today.",
+   "output": "Por favor, envie 45.000 naira para a minha conta hoje.",
+   "latency_ms": 322.9,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "money",
+   "source": "I have received the money you sent.",
+   "output": "Recebi o dinheiro que você enviou.",
+   "latency_ms": 183.4,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "money",
+   "source": "I have not received the money you sent.",
+   "output": "Eu não recebi o dinheiro que você enviou.",
+   "latency_ms": 206.2,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "money",
+   "source": "Your balance is 12,500 naira.",
+   "output": "Seu saldo é de 12.500 naira.",
+   "latency_ms": 256.5,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "phone",
+   "source": "Call me on 08031234567 when you arrive.",
+   "output": "Ligue-me no 08031234567 quando chegar.",
+   "latency_ms": 326.6,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "account",
+   "source": "Transfer to account 0123456789 at First Bank.",
+   "output": "Transferência para a conta 0123456789 no First Bank.",
+   "latency_ms": 327.8,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "otp",
+   "source": "Your verification code is 483920. Do not share it.",
+   "output": "O seu código de verificação é 483920. Não o partilhe.",
+   "latency_ms": 351.0,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "url",
+   "source": "Read more at https://consummate7.com/help before you call.",
+   "output": "Leia mais em https://consummate7.com/help antes de ligar.",
+   "latency_ms": 465.5,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "datetime",
+   "source": "The event starts at four thirty on the fifteenth of March.",
+   "output": "O evento começa às quatro e meia do dia 15 de março.",
+   "latency_ms": 324.2,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "datetime",
+   "source": "The meeting has been moved to 15 March at 4:30.",
+   "output": "A reunião foi transferida para 15 de março às 4:30.",
+   "latency_ms": 617.4,
+   "defects": [
+    "lexical-unverified:March"
+   ]
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "entity",
+   "source": "My name is Zoe and I work in Lagos.",
+   "output": "Meu nome é Zoe e eu trabalho em Lagos.",
+   "latency_ms": 268.9,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "entity",
+   "source": "Adebayo travelled from Abeokuta to Kano last night.",
+   "output": "Adebayo viajou de Abeokuta para Kano ontem à noite.",
+   "latency_ms": 364.9,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "negation",
+   "source": "Do not send the payment yet.",
+   "output": "Não envie o pagamento ainda.",
+   "latency_ms": 156.8,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "negation",
+   "source": "I did not say that I would not come.",
+   "output": "Eu não disse que não viria.",
+   "latency_ms": 188.9,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "negation",
+   "source": "She has not arrived at the office.",
+   "output": "Ela não chegou ao escritório.",
+   "latency_ms": 165.3,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "health",
+   "source": "Take one tablet twice a day after eating.",
+   "output": "Tome um comprimido duas vezes por dia depois de comer.",
+   "latency_ms": 239.2,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "health",
+   "source": "Do not give this medicine to a child under five years old.",
+   "output": "Não dê este medicamento a uma criança com menos de cinco anos de idade.",
+   "latency_ms": 330.4,
+   "defects": [
+    "lexical-unverified:five",
+    "quantity-unverified:5"
+   ]
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "agriculture",
+   "source": "The rains will start next month, so prepare the land now.",
+   "output": "As chuvas começarão no próximo mês, então prepare a terra agora.",
+   "latency_ms": 328.4,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "business",
+   "source": "We need to sign the agreement before the end of the month.",
+   "output": "Precisamos assinar o acordo antes do final do mês.",
+   "latency_ms": 254.6,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "broadcast",
+   "source": "Good morning everyone, and welcome to this broadcast.",
+   "output": "Bom dia a todos, e bem-vindos a esta transmissão.",
+   "latency_ms": 286.4,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "conversation",
+   "source": "How are you doing this evening?",
+   "output": "Como estás esta noite?",
+   "latency_ms": 144.3,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "conversation",
+   "source": "Please send me the address before you leave.",
+   "output": "Por favor, envie-me o endereço antes de sair.",
+   "latency_ms": 179.7,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "multi",
+   "source": "I am on my way. Please wait for me at the gate. I will be there soon.",
+   "output": "Estou a caminho. Por favor, espere por mim no portão. Eu estarei lá em breve.",
+   "latency_ms": 609.5,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "multi",
+   "source": "The meeting is cancelled. We will meet tomorrow instead.",
+   "output": "A reunião está cancelada. Em vez disso, nos encontraremos amanhã.",
+   "latency_ms": 224.2,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "long",
+   "source": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure somebody is at the shop to receive them, and call me if there is any problem with the delivery.",
+   "output": "Obrigado pela sua mensagem. Falei com o fornecedor e as mercadorias chegarão na manhã de sexta-feira. Por favor, certifique-se de que alguém esteja na loja para recebê-las e ligue-me se houver algum problema com a entrega.",
+   "latency_ms": 833.3,
+   "defects": [
+    "lexical-unverified:Friday"
+   ]
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "emoji-only",
+   "source": "👍👍",
+   "output": "",
+   "latency_ms": 136.9,
+   "defects": [
+    "empty-output"
+   ]
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "number-only",
+   "source": "45000",
+   "output": "45000",
+   "latency_ms": 49.0,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "code-only",
+   "source": "OTP-483920",
+   "output": "OTP-483920",
+   "latency_ms": 141.9,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "punctuation",
+   "source": "???!!!",
+   "output": "????!!!",
+   "latency_ms": 128.8,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "mixed",
+   "source": "Abeg send the money before 5pm 🙏",
+   "output": "Abeg enviar o dinheiro antes 17:00",
+   "latency_ms": 209.1,
+   "defects": [
+    "quantity-unverified:5"
+   ]
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "emoji-text",
+   "source": "Congratulations on the new baby 🎉 we are very happy for you.",
+   "output": "Parabéns pelo novo bebê  estamos muito felizes por você.",
+   "latency_ms": 238.2,
+   "defects": []
+  },
+  {
+   "engine": "opus-en-pt-dedicated",
+   "direction": "en->pt",
+   "category": "hashtag",
+   "source": "Join us tonight #VideofyLive for the broadcast.",
+   "output": "Junte-se a nós hoje à noite #VideofyLive para a transmissão.",
+   "latency_ms": 358.3,
+   "defects": []
+  }
+ ]
+}

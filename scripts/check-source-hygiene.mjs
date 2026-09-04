@@ -13,7 +13,7 @@
  *
  * So it is checked mechanically rather than remembered.
  *
- * Two families are refused:
+ * Three families are refused:
  *
  * CONTROL CHARACTERS other than tab, newline and carriage return. NUL is the
  * one that has actually bitten, and the rest share its defect: they survive
@@ -63,13 +63,15 @@ function describe(code) {
 // containing a NUL passed every gate right up until it was committed -- and was
 // only caught on the next run, with the damage already in history. A guard that
 // clears exactly the change you are about to make is the one that matters.
-const tracked = execFileSync(
+const everyPath = execFileSync(
   'git',
   ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
   { encoding: 'utf8' },
 )
-  .split('\u0000')
-  .filter((path) => path !== '' && TEXT.test(path));
+  .split(String.fromCharCode(0))
+  .filter((path) => path !== '');
+
+const tracked = everyPath.filter((path) => TEXT.test(path));
 
 const findings = [];
 for (const path of tracked) {
@@ -96,6 +98,60 @@ for (const path of tracked) {
   }
 }
 
+/*
+ * COMPILER OUTPUT MUST NOT LIVE BESIDE ITS SOURCE.
+ *
+ * A stray `tsc` run emitted .js, .d.ts and their .map files next to the
+ * TypeScript they came from, and they were committed. Nothing broke, which is
+ * the problem: a compiled copy in `src` goes stale in silence, and an editor or
+ * a bundler that resolves the .js ahead of the .ts sends somebody hunting a bug
+ * in code that is no longer the code being run.
+ *
+ * DETECTED BY PAIRING, NOT BANNED BY EXTENSION. Authored JavaScript is
+ * legitimate and this repository has plenty of it; so are ambient declarations
+ * like vite-env.d.ts and hls-light.d.ts, which describe things that have no
+ * TypeScript source at all. What is never legitimate is an artefact whose
+ * corresponding SOURCE FILE sits in the same directory -- that pairing is what
+ * makes it output rather than something a person wrote.
+ */
+const SOURCE_DIR = /(^|\/)src\//;
+
+/** The TypeScript file this path would have been compiled FROM, if any. */
+function sourceOf(path) {
+  const suffix = ['.d.ts.map', '.js.map', '.d.ts', '.js'].find((end) => path.endsWith(end));
+  if (suffix === undefined) return null;
+  const stem = path.slice(0, -suffix.length);
+  return [stem + '.ts', stem + '.tsx'];
+}
+
+const present = new Set(everyPath);
+const emitted = [];
+for (const path of everyPath) {
+  if (!SOURCE_DIR.test(path)) continue;
+  const candidates = sourceOf(path);
+  if (candidates === null) continue;
+  const origin = candidates.find((candidate) => present.has(candidate));
+  if (origin !== undefined) emitted.push({ path, origin });
+}
+
+if (emitted.length > 0) {
+  console.error(
+    `source hygiene: ${emitted.length} compiler artefact(s) beside their source`,
+  );
+  for (const { path, origin } of emitted.slice(0, 40)) {
+    console.error(`  ${path}  <- emitted from ${origin}`);
+  }
+  console.error(
+    [
+      '',
+      'Delete them and keep build output in the package dist directory. A',
+      'compiled copy in src goes stale without a word, and whichever of the two',
+      'a tool happens to resolve is the one somebody will end up debugging.',
+    ].join('\n'),
+  );
+  process.exit(1);
+}
+
 if (findings.length > 0) {
   console.error(`source hygiene: ${findings.length} forbidden character(s)\n`);
   for (const finding of findings.slice(0, 40)) console.error(`  ${finding}`);
@@ -107,4 +163,7 @@ if (findings.length > 0) {
   process.exit(1);
 }
 
-console.log(`source hygiene: ${tracked.length} files, no forbidden characters`);
+console.log(
+  `source hygiene: ${tracked.length} files, no forbidden characters, ` +
+    'no compiler artefacts beside source',
+);

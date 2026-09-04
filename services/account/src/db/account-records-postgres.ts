@@ -41,6 +41,9 @@ interface AccountRow {
   password_hash: string;
   token_version: number;
   voice_gender: string | null;
+  default_language: string | null;
+  spoken_language: string | null;
+  listening_language: string | null;
   created_at: Date;
   updated_at: Date;
   trust: unknown;
@@ -60,6 +63,9 @@ interface AccountRow {
   username_key: string | null;
   display_name: string | null;
   discovery_mode: string | null;
+  availability: string | null;
+  bio: string | null;
+  notifications_enabled: boolean | null;
 }
 
 /**
@@ -88,6 +94,9 @@ function optional<T>(value: T | null | undefined): { present: false } | { presen
  */
 function toRecord(row: AccountRow): AccountRecord {
   const voiceGender = optional(row.voice_gender);
+  const defaultLanguage = optional(row.default_language);
+  const spokenLanguage = optional(row.spoken_language);
+  const listeningLanguage = optional(row.listening_language);
   const trust = optional(row.trust);
   const emailChallenge = optional(row.email_challenge);
   const phoneChallenge = optional(row.phone_challenge);
@@ -110,6 +119,15 @@ function toRecord(row: AccountRow): AccountRecord {
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
     ...(voiceGender.present ? { voiceGender: voiceGender.value as 'male' | 'female' } : {}),
+    ...(defaultLanguage.present
+      ? { defaultLanguage: defaultLanguage.value }
+      : {}),
+    ...(spokenLanguage.present
+      ? { spokenLanguage: spokenLanguage.value }
+      : {}),
+    ...(listeningLanguage.present
+      ? { listeningLanguage: listeningLanguage.value }
+      : {}),
     ...(trust.present ? { trust: trust.value as NonNullable<AccountRecord['trust']> } : {}),
     ...(emailChallenge.present
       ? { emailChallenge: emailChallenge.value as NonNullable<AccountRecord['emailChallenge']> }
@@ -125,6 +143,15 @@ function toRecord(row: AccountRow): AccountRecord {
     ...(row.username_key === null ? {} : { usernameKey: row.username_key }),
     ...(row.display_name === null ? {} : { displayName: row.display_name }),
     ...(row.discovery_mode === null ? {} : { discoveryMode: row.discovery_mode }),
+    // Only the three known values come back; the CHECK constraint guarantees
+    // it, and the cast records that the guarantee lives in the schema.
+    ...(row.availability === null
+      ? {}
+      : { availability: row.availability as NonNullable<AccountRecord['availability']> }),
+    ...(row.bio === null ? {} : { bio: row.bio }),
+    ...(row.notifications_enabled === null
+      ? {}
+      : { notificationsEnabled: row.notifications_enabled }),
     ...(pendingIdentityChange.present
       ? {
           pendingIdentityChange: pendingIdentityChange.value as NonNullable<
@@ -174,18 +201,21 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
        */
       await queryable.query(
         `INSERT INTO accounts (
-           account_id, email, password_hash, token_version, voice_gender,
+           account_id, email, password_hash, token_version, voice_gender, default_language, spoken_language, listening_language,
            created_at, updated_at, trust, email_challenge, phone_challenge,
            phone_number, identity_case, seen_callback_events,
            password_reset_challenge, consents, mfa, step_up_at_ms, step_up_method,
            pending_identity_change, username, username_key, display_name,
-           discovery_mode
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+           discovery_mode, availability, bio, notifications_enabled
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
          ON CONFLICT (account_id) DO UPDATE SET
            email                = EXCLUDED.email,
            password_hash        = EXCLUDED.password_hash,
            token_version        = EXCLUDED.token_version,
            voice_gender         = EXCLUDED.voice_gender,
+           default_language     = EXCLUDED.default_language,
+           spoken_language      = EXCLUDED.spoken_language,
+           listening_language   = EXCLUDED.listening_language,
            updated_at           = EXCLUDED.updated_at,
            trust                = EXCLUDED.trust,
            email_challenge      = EXCLUDED.email_challenge,
@@ -202,13 +232,19 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
            username                 = EXCLUDED.username,
            username_key             = EXCLUDED.username_key,
            display_name             = EXCLUDED.display_name,
-           discovery_mode           = EXCLUDED.discovery_mode`,
+           discovery_mode           = EXCLUDED.discovery_mode,
+           availability             = EXCLUDED.availability,
+           bio                      = EXCLUDED.bio,
+           notifications_enabled    = EXCLUDED.notifications_enabled`,
         [
           record.accountId,
           record.email,
           record.passwordHash,
           record.tokenVersion,
           record.voiceGender ?? null,
+          record.defaultLanguage ?? null,
+          record.spokenLanguage ?? null,
+          record.listeningLanguage ?? null,
           record.createdAt,
           record.updatedAt,
           // Undefined must become SQL NULL explicitly. Passed as undefined, the
@@ -229,6 +265,12 @@ async function upsertOn(queryable: Queryable, record: AccountRecord): Promise<vo
           record.usernameKey ?? null,
           record.displayName ?? null,
           record.discoveryMode ?? null,
+          // NOT NULL with defaults in the schema, so an absent value is
+          // written as the default rather than as NULL -- an old record
+          // saved through here must read back exactly as it behaved.
+          record.availability ?? 'auto',
+          record.bio ?? null,
+          record.notificationsEnabled ?? true,
         ],
       );
 }
@@ -251,12 +293,12 @@ export function createPostgresAccountRecords(pool: Pool): AccountRecordPort {
          * the same shape; a test now compares the two lists so this cannot
          * happen again quietly.
          */
-        `SELECT account_id, email, password_hash, token_version, voice_gender,
+        `SELECT account_id, email, password_hash, token_version, voice_gender, default_language, spoken_language, listening_language,
                 created_at, updated_at, trust, email_challenge, phone_challenge,
                 phone_number, identity_case, seen_callback_events,
                 password_reset_challenge, consents, mfa, step_up_at_ms, step_up_method,
                 pending_identity_change, username, username_key, display_name,
-                discovery_mode
+                discovery_mode, availability, bio, notifications_enabled
            FROM accounts
           ORDER BY created_at, account_id`,
       );

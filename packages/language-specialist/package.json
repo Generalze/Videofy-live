@@ -1,0 +1,25 @@
+{
+  "name": "@videofy-live/language-specialist",
+  "version": "0.1.0",
+  "private": true,
+  "author": "masterzee001",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "description": "C7 Language Specialist domain: per-language qualification states, the contributor text licence, the 15-item source elicitation, corpus freezing, and the blind review contract.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "scripts": {
+    "build": "npm --prefix ../.. run build -w @videofy-live/language-catalogue && tsc",
+    "typecheck": "npm --prefix ../.. run build -w @videofy-live/language-catalogue && tsc --noEmit",
+    "test": "npm --prefix ../.. run build -w @videofy-live/language-catalogue && vitest run"
+  },
+  "dependencies": {
+    "@videofy-live/language-catalogue": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
+  }
+}

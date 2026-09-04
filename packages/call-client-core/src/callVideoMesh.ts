@@ -47,6 +47,32 @@ export interface CallVideoMeshOptions {
   iceServers?: RTCIceServer[];
   /** Injectable for tests; defaults to RTCPeerConnection with `iceServers`. */
   createPeerConnection?: (remoteParticipantId: string) => RTCPeerConnection;
+  /**
+   * THE SECOND PLATFORM SEAM. A video track negotiated EMPTY (camera off at
+   * setup, `replaceTrack` later) arrives at the far side with no stream
+   * attached -- the offer carried no msid -- so a stream must be built
+   * around the bare track. Browsers have a global `MediaStream`; Hermes
+   * does not, and react-native-webrtc exports its own class. Without this
+   * the phone received every remote video track and rendered none of them.
+   */
+  createMediaStream?: (tracks: MediaStreamTrack[]) => MediaStream;
+}
+
+/** What happened when the local video track was handed to one peer. */
+export interface CallVideoAttachResult {
+  participantId: string;
+  outcome: 'replaced' | 'added' | 'cleared' | 'failed';
+  error?: string;
+}
+
+/** Per-peer video RTP counters, from getStats. Zero outbound after a camera on is the fault. */
+export interface CallVideoPeerStats {
+  participantId: string;
+  connectionState: string;
+  outboundFrames: number;
+  outboundBytes: number;
+  inboundFrames: number;
+  inboundBytes: number;
 }
 
 export interface CallVideoMeshDiagnostics {
@@ -66,6 +92,11 @@ interface MeshPeer {
   /** Captured at creation; a disposed mesh fails the generation check forever. */
   readonly generation: number;
   sender: RTCRtpSender | null;
+  /**
+   * True while `sender` is the one created empty by the instant-camera
+   * transceiver, before any real track has been negotiated onto it.
+   */
+  senderNegotiatedEmpty: boolean;
   makingOffer: boolean;
   ignoreOffer: boolean;
   settingRemoteAnswer: boolean;
@@ -98,17 +129,73 @@ export class CallVideoMesh {
    * negotiates; afterwards `replaceTrack` swaps the payload with no
    * renegotiation. A simple on/off toggle is `setCameraEnabled`, not this.
    */
-  setLocalStream(stream: MediaStream | null): void {
-    if (this.disposed) return;
+  /**
+   * Hand the camera to every peer and SAY WHAT HAPPENED. `replaceTrack` used
+   * to be fire-and-forget with its rejection swallowed, so a phone could
+   * open the camera, show "Camera on", and transmit nothing with no error
+   * anywhere (founder review, 29 Aug). Each peer's outcome is returned; the
+   * caller watches the outbound counters and rebuilds a silent peer.
+   */
+  async setLocalStream(stream: MediaStream | null): Promise<CallVideoAttachResult[]> {
+    if (this.disposed) return [];
     this.localStream = stream;
     const track = stream?.getVideoTracks()[0] ?? null;
     if (track) {
       track.enabled = this.cameraEnabled;
     }
     this.localTrack = track;
+    return Promise.all([...this.peers.values()].map((entry) => this.attachLocalTrack(entry)));
+  }
+
+  /**
+   * Video RTP counters per peer, so "camera on" can be PROVEN rather than
+   * assumed: frames/bytes sent on this side, received on the other.
+   */
+  async videoStats(): Promise<CallVideoPeerStats[]> {
+    const out: CallVideoPeerStats[] = [];
     for (const entry of this.peers.values()) {
-      this.attachLocalTrack(entry);
+      if (entry.closed) continue;
+      const row: CallVideoPeerStats = {
+        participantId: entry.participantId,
+        connectionState: String(entry.pc.connectionState ?? 'unknown'),
+        outboundFrames: 0,
+        outboundBytes: 0,
+        inboundFrames: 0,
+        inboundBytes: 0,
+      };
+      try {
+        const report = await entry.pc.getStats();
+        report.forEach((stat: { type?: string; kind?: string; mediaType?: string; framesSent?: number; framesEncoded?: number; bytesSent?: number; framesReceived?: number; framesDecoded?: number; bytesReceived?: number }) => {
+          const kind = stat.kind ?? stat.mediaType;
+          if (kind !== 'video') return;
+          if (stat.type === 'outbound-rtp') {
+            row.outboundFrames += stat.framesSent ?? stat.framesEncoded ?? 0;
+            row.outboundBytes += stat.bytesSent ?? 0;
+          } else if (stat.type === 'inbound-rtp') {
+            row.inboundFrames += stat.framesReceived ?? stat.framesDecoded ?? 0;
+            row.inboundBytes += stat.bytesReceived ?? 0;
+          }
+        });
+      } catch {
+        // A peer that cannot report stats is reported with zeros; the caller decides.
+      }
+      out.push(row);
     }
+    return out;
+  }
+
+  /**
+   * Tear down ONE peer and build it again with the real camera track attached
+   * at creation (the addTrack path, which negotiates). Audio is untouched --
+   * it rides the gateway legs -- so only this peer's video renegotiates.
+   */
+  rebuildPeer(participantId: string): boolean {
+    if (this.disposed) return false;
+    const entry = this.peers.get(participantId);
+    if (!entry) return false;
+    this.closePeer(entry, { notify: true });
+    this.createPeer(participantId);
+    return true;
   }
 
   /**
@@ -258,6 +345,7 @@ export class CallVideoMesh {
       pc,
       generation: this.generation,
       sender: null,
+      senderNegotiatedEmpty: false,
       makingOffer: false,
       ignoreOffer: false,
       settingRemoteAnswer: false,
@@ -266,7 +354,41 @@ export class CallVideoMesh {
       seenRemoteCandidates: new Set<string>(),
       closed: false,
     };
+    /*
+     * INSTANT CAMERA (founder ruling 2026-08-28). Every call starts camera
+     * OFF, so there is no local track to add here -- but a video m-line is
+     * negotiated NOW, empty, so that "Camera on" later is a replaceTrack on
+     * an existing sender: the far side sees video within a frame instead of
+     * waiting through a renegotiation. Guarded for platforms and test doubles
+     * that cannot addTransceiver; those fall back to first-attach negotiation.
+     */
+    if (!this.localTrack && typeof pc.addTransceiver === 'function') {
+      try {
+        /*
+         * WITH A STREAM, EVEN THOUGH THERE IS NO TRACK. The stream ids on the
+         * sender put an msid on the m-line, so the far side's ontrack carries
+         * a real, platform-native stream (`event.streams[0]`) -- the same
+         * object shape it received when cameras were on at setup, which is
+         * the path proven to render on the phone. Without it the far side
+         * had to build a stream around a bare track, and on the phone that
+         * rendered nothing. `createMediaStream` is the platform seam.
+         */
+        const placeholder = this.options.createMediaStream ? this.options.createMediaStream([]) : null;
+        entry.sender = pc.addTransceiver('video', {
+          direction: 'sendrecv',
+          ...(placeholder ? { streams: [placeholder] } : {}),
+        }).sender;
+        entry.senderNegotiatedEmpty = true;
+      } catch {
+        entry.sender = null;
+      }
+    }
     this.peers.set(participantId, entry);
+    // A rebuilt peer, or one created while the camera is already on, takes
+    // the real track now -- the negotiated-from-the-start path.
+    if (this.localTrack && this.localStream) {
+      void this.attachLocalTrack(entry);
+    }
 
     pc.onicecandidate = (event) => {
       if (!this.live(entry)) return;
@@ -285,7 +407,15 @@ export class CallVideoMesh {
       // Mesh peers carry video only; call audio stays on its own transports.
       if (!this.live(entry) || event.track.kind !== 'video') return;
       const track = event.track;
-      const stream = event.streams[0] ?? new MediaStream([track]);
+      // No stream on the event means the track was negotiated empty; wrap it
+      // with the platform's own MediaStream (injected), or the global one.
+      const stream =
+        event.streams[0] ??
+        (this.options.createMediaStream
+          ? this.options.createMediaStream([track])
+          : typeof MediaStream === 'undefined'
+            ? null
+            : new MediaStream([track]));
 
       /**
        * CAMERA OFF MUST CLEAR THE TILE.
@@ -325,18 +455,48 @@ export class CallVideoMesh {
     this.attachLocalTrack(entry);
   }
 
-  private attachLocalTrack(entry: MeshPeer): void {
-    if (entry.closed) return;
+  private async attachLocalTrack(entry: MeshPeer): Promise<CallVideoAttachResult> {
+    const participantId = entry.participantId;
+    if (entry.closed) return { participantId, outcome: 'failed', error: 'peer closed' };
     if (entry.sender) {
       // replaceTrack never renegotiates: the m-line stays, only the payload
-      // changes (or stops, when the track is null).
-      void entry.sender.replaceTrack(this.localTrack).catch(() => undefined);
-      return;
+      // changes (or stops, when the track is null). AWAITED: a rejection here
+      // is the difference between video and a camera indicator lying.
+      try {
+        await entry.sender.replaceTrack(this.localTrack);
+        /*
+         * THE M-LINE WAS NEGOTIATED EMPTY, SO THE FIRST REAL TRACK RENEGOTIATES.
+         *
+         * Instant camera negotiates a sendrecv video m-line before there is
+         * anything to send, so that "Camera on" is a replaceTrack rather than
+         * a round trip. On the phone that transceiver never produced an
+         * encoder: replaceTrack resolved, the sender held the camera track,
+         * the attach reported success and outbound stayed at zero frames --
+         * on both handsets at once, which is why neither side ever saw video
+         * (founder review, 2 Sep). One renegotiation, only on the first real
+         * track and only for a sender that began empty, gives the encoder an
+         * m-line that was described with a track on it. Later toggles are
+         * still a bare replaceTrack.
+         */
+        if (this.localTrack && entry.senderNegotiatedEmpty) {
+          entry.senderNegotiatedEmpty = false;
+          void this.negotiate(entry);
+        }
+        return { participantId, outcome: this.localTrack ? 'replaced' : 'cleared' };
+      } catch (error) {
+        return { participantId, outcome: 'failed', error: error instanceof Error ? error.message : 'replaceTrack rejected' };
+      }
     }
     if (this.localTrack && this.localStream) {
       // First attach negotiates: addTrack fires negotiationneeded.
-      entry.sender = entry.pc.addTrack(this.localTrack, this.localStream);
+      try {
+        entry.sender = entry.pc.addTrack(this.localTrack, this.localStream);
+        return { participantId, outcome: 'added' };
+      } catch (error) {
+        return { participantId, outcome: 'failed', error: error instanceof Error ? error.message : 'addTrack rejected' };
+      }
     }
+    return { participantId, outcome: 'cleared' };
   }
 
   private async negotiate(entry: MeshPeer): Promise<void> {

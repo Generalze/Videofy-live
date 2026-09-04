@@ -34,7 +34,51 @@ interface Harness {
 
 const cleanups: Array<() => Promise<void>> = [];
 
+/**
+ * Remove a directory that a just-closed process may still be letting go of.
+ *
+ * WINDOWS RELEASES A HANDLE SLIGHTLY AFTER THE OWNER LETS IT GO. Even with
+ * every resource deterministically closed first, a removal issued in the same
+ * tick can still see ENOTEMPTY or EBUSY for a few milliseconds. That is a
+ * property of the filesystem, not a missing await, so it is retried with
+ * backoff -- AFTER the deterministic close, never instead of it.
+ *
+ * The retry is bounded and the final attempt THROWS. Swallowing the error
+ * would leave temporary directories accumulating in the runner's temp space
+ * and would hide a genuine leak behind a green suite.
+ */
+async function removeWhenReleased(dir: string): Promise<void> {
+  const delaysMs = [0, 10, 25, 50, 100, 250];
+  for (let attempt = 0; attempt < delaysMs.length; attempt += 1) {
+    if (delaysMs[attempt]! > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delaysMs[attempt]));
+    }
+    try {
+      await rm(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      // Only the "still held" family is worth waiting on. Anything else is a
+      // real failure and is raised immediately.
+      const retryable = code === 'ENOTEMPTY' || code === 'EBUSY' || code === 'EPERM';
+      if (!retryable || attempt === delaysMs.length - 1) throw error;
+    }
+  }
+}
+
 afterEach(async () => {
+  /*
+   * LIFO, and the ORDER IS THE FIX. Cleanups are pushed as the harness
+   * acquires them -- directory, then store, then server -- so popping runs:
+   *
+   *   close the server        stop accepting work
+   *   flush the store         await persistence still touching the file
+   *   remove the directory    nothing holds it any more
+   *
+   * The registry is written temp-then-rename by a queued writer that outlives
+   * the request causing it, so a teardown that only closed the server could
+   * delete the directory while a write was still landing in it.
+   */
   while (cleanups.length > 0) {
     await cleanups.pop()?.();
   }
@@ -52,7 +96,8 @@ async function startApp(
   let registry = options.registry;
   if (registry === undefined) {
     const dir = await mkdtemp(path.join(tmpdir(), 'ref-app-'));
-    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    // Pushed FIRST so it is popped LAST, after the store and the server.
+    cleanups.push(() => removeWhenReleased(dir));
     registry = path.join(dir, 'connect-reference-rooms.json');
   }
   const fake = options.fake ?? new FakeVideofy();
@@ -62,6 +107,9 @@ async function startApp(
     fetch: fake.fetch,
   });
   const baseStore = await createFileRoomStore(registry);
+  // Between the directory and the server: pending writes are awaited after the
+  // server stops accepting work and before the directory goes.
+  cleanups.push(() => baseStore.flush());
   const roomStore = options.decorateStore ? options.decorateStore(baseStore) : baseStore;
   const logLines: string[] = [];
   const clock = { now: START_AT };

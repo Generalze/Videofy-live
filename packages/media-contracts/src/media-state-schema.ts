@@ -1,5 +1,13 @@
 import { z } from 'zod';
 
+/** The capability resolver's four words, as the wire carries them. */
+export const TargetLanguageCapabilityStateSchema = z.enum([
+  'available',
+  'qualified',
+  'limited',
+  'unavailable',
+]);
+
 export const StreamStatusSchema = z.enum([
   'created',
   'validating',
@@ -65,6 +73,70 @@ export const SessionMonitoringSchema = z.object({
   ),
 });
 
+/**
+ * A programme run's delivery answer, validated at the gateway boundary.
+ *
+ * Validated because it decides whether the realtime relay is permitted, and a
+ * malformed message that fell through to a default would decide it wrongly in
+ * the permissive direction. The union is preserved rather than flattened: a
+ * ready delayed delivery must carry a manifest, and anything else must carry a
+ * reason, which is the property the contract exists to guarantee.
+ */
+const DeliveryIdentitySchema = {
+  protocolVersion: z.literal(1),
+  programmeRunId: z.string().min(1).max(64),
+};
+
+/*
+ * A plain union rather than a discriminated one: two branches legitimately
+ * share readiness 'ready' (live and delayed), and no single key separates all
+ * three. zod refuses to build a discriminated union over a repeated value, so
+ * the honest shape is the one that actually describes the contract.
+ */
+export const ProgrammeMediaDeliverySchema = z.union([
+  z.object({
+    ...DeliveryIdentitySchema,
+    mode: z.literal('live'),
+    readiness: z.literal('ready'),
+    publicManifestUrl: z.null(),
+    reason: z.null(),
+  }),
+  z.object({
+    ...DeliveryIdentitySchema,
+    mode: z.literal('delayed'),
+    readiness: z.literal('ready'),
+    publicManifestUrl: z.string().min(1),
+    reason: z.null(),
+  }),
+  z.object({
+    ...DeliveryIdentitySchema,
+    mode: z.literal('delayed'),
+    readiness: z.enum(['preparing', 'unavailable']),
+    publicManifestUrl: z.null(),
+    reason: z.string().min(1),
+  }),
+]);
+
+export function safeParseProgrammeMediaDelivery(raw: unknown) {
+  return ProgrammeMediaDeliverySchema.safeParse(raw);
+}
+
+/**
+ * The deployment's policy, which arrives before any run does.
+ *
+ * Validated as strictly as the per-run answer. A malformed policy must be
+ * refused rather than coerced, because the value it carries decides whether an
+ * unannounced programme run may be relayed at all.
+ */
+export const ProgrammeDeliveryPolicySchema = z.object({
+  protocolVersion: z.literal(1),
+  deliveryMode: z.enum(['live', 'delayed']),
+});
+
+export function safeParseProgrammeDeliveryPolicy(raw: unknown) {
+  return ProgrammeDeliveryPolicySchema.safeParse(raw);
+}
+
 export const MediaStateEventSchema = z.object({
   eventId: z.string().min(1),
   streamId: z.string().min(1).optional(),
@@ -72,6 +144,16 @@ export const MediaStateEventSchema = z.object({
   shareableWebRtcSessionId: z.string().min(3).optional(),
     programmeMediaUrl: z.string().url().optional(),
     programmeMediaMode: z.enum(['live-webrtc', 'uploaded-stems', 'viewer-ready']).optional(),
+    /*
+     * Which BROADCAST this state describes, and how its original media reaches
+     * the audience. Both were being stripped: this schema drops keys it does
+     * not name, so a run id and a delivery answer that media-ingest sent
+     * arrived at the gateway as nothing. A client that never learns the
+     * delivery mode falls back to realtime by default, which is the one
+     * outcome a protected programme must not produce.
+     */
+    programmeRunId: z.string().min(1).max(64).optional(),
+    mediaDelivery: ProgrammeMediaDeliverySchema.optional(),
   streamStatus: StreamStatusSchema,
   videoSource: VideoSourceSchema,
   media: z
@@ -316,6 +398,28 @@ export const MediaStateEventSchema = z.object({
       z.object({
         language: z.string().min(2).max(16),
         label: z.string().min(1),
+        /*
+         * CAPABILITY FACTS TRAVEL WITH THE ROW. They were being computed by
+         * media-ingest, sent on GET /languages/catalogue, and then dropped
+         * here -- so a console reading the catalogue off a RUNNING session saw
+         * rows with no capability state and fell back to guessing from
+         * `translationAvailable`. Optional because an older ingest does not
+         * send them; never invented when absent.
+         */
+        nativeName: z.string().min(1).optional(),
+        state: TargetLanguageCapabilityStateSchema.optional(),
+        sourceState: TargetLanguageCapabilityStateSchema.optional(),
+        targetState: TargetLanguageCapabilityStateSchema.optional(),
+        captionsOnly: z.boolean().optional(),
+        degraded: z.boolean().optional(),
+        reason: z.string().min(1).optional(),
+        providers: z
+          .object({
+            stt: z.string().min(1).optional(),
+            mt: z.string().min(1).optional(),
+            tts: z.string().min(1).optional(),
+          })
+          .optional(),
         translationAvailable: z.boolean(),
         voiceAvailable: z.boolean(),
         textOnly: z.boolean(),
@@ -381,3 +485,4 @@ export function parseMediaStateEvent(raw: unknown): ValidatedMediaStateEvent {
 export function safeParseMediaStateEvent(raw: unknown) {
   return MediaStateEventSchema.safeParse(raw);
 }
+

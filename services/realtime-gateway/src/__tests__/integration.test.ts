@@ -193,6 +193,20 @@ describe('gateway Socket.IO integration', () => {
       reconnectionDelayMax: 100,
     });
     clients.push(socket);
+    /*
+     * These suites exercise the PLATFORM channel, where a listener that never
+     * names a channel sits. An operator now lands on their own channel at
+     * connect (founder directive A, 30 Aug 2026), so the operator here moves
+     * to the platform channel first. Buffered before connect, it is the first
+     * message the gateway handles from this socket; re-sent on a reconnect,
+     * because a fresh connection lands afresh.
+     */
+    if (role === 'operator') {
+      socket.emit(SOCKET_EVENTS.JOIN_CHANNEL, { channelId: 'main' });
+      socket.io.on('reconnect', () => {
+        socket.emit(SOCKET_EVENTS.JOIN_CHANNEL, { channelId: 'main' });
+      });
+    }
     return socket;
   }
 
@@ -497,6 +511,127 @@ describe('gateway Socket.IO integration', () => {
     await expect(retained).resolves.toEqual(preferences);
   });
 
+  it('TELLS THE OPERATOR WHICH RUN IT JUST STARTED', async () => {
+    /*
+     * The acknowledgement used to carry only {action, accepted, timestamp}. The
+     * run is minted server-side, so the console that started a programme was
+     * never told which one it was and could not link its own broadcast to a
+     * timeline, a manifest or a recording. Identity had to be discovered
+     * afterwards by reading the deployment, which is forensics rather than a
+     * contract.
+     */
+    const operator = client('operator');
+    await waitForConnect(operator);
+    const ack = waitForEvent<{ action: string; accepted: boolean; programmeRunId?: string }>(
+      operator,
+      SOCKET_EVENTS.CONTROL_ACK,
+    );
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+      sessionId: 'wrs_runid_first',
+      broadcastId: 'broadcast_runid_first',
+      sourceRevision: 1,
+      targetLanguage: 'fr',
+      targetLanguages: ['fr'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+    });
+    const received = await ack;
+    expect(received.accepted).toBe(true);
+    // Server-generated, and shaped like the server's own minting.
+    expect(received.programmeRunId).toMatch(/^run_[0-9a-f]{24}$/u);
+  });
+
+  it('gives the same run to a reconnecting operator reconfiguring the same airing', async () => {
+    /*
+     * The run is the AIRING, not the message. A console that drops and
+     * reconfigures is still describing the same broadcast, and handing it a
+     * fresh id would orphan the timeline it already has.
+     */
+    const first = client('operator');
+    await waitForConnect(first);
+    const firstAck = waitForEvent<{ programmeRunId?: string }>(first, SOCKET_EVENTS.CONTROL_ACK);
+    const payload = {
+      sessionId: 'wrs_runid_same',
+      broadcastId: 'broadcast_runid_same',
+      sourceRevision: 1,
+      targetLanguage: 'fr',
+      targetLanguages: ['fr'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual' as const,
+    };
+    first.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, payload);
+    const one = await firstAck;
+
+    const secondAck = waitForEvent<{ programmeRunId?: string }>(first, SOCKET_EVENTS.CONTROL_ACK);
+    first.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, { ...payload, sourceRevision: 2 });
+    const two = await secondAck;
+
+    expect(one.programmeRunId).toBeTruthy();
+    expect(two.programmeRunId).toBe(one.programmeRunId);
+  });
+
+  it('mints a new run for a different airing', async () => {
+    const operator = client('operator');
+    await waitForConnect(operator);
+    const base = {
+      broadcastId: 'broadcast_runid_new',
+      sourceRevision: 1,
+      targetLanguage: 'fr',
+      targetLanguages: ['fr'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual' as const,
+    };
+    const ackA = waitForEvent<{ programmeRunId?: string }>(operator, SOCKET_EVENTS.CONTROL_ACK);
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, { ...base, sessionId: 'wrs_runid_a' });
+    const a = await ackA;
+    const ackB = waitForEvent<{ programmeRunId?: string }>(operator, SOCKET_EVENTS.CONTROL_ACK);
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, { ...base, sessionId: 'wrs_runid_b' });
+    const b = await ackB;
+    // Its timeline, telemetry and adverts must inherit nothing from the last.
+    expect(a.programmeRunId).not.toBe(b.programmeRunId);
+  });
+
+  it('IGNORES A RUN ID THE CLIENT TRIES TO SUPPLY', async () => {
+    /*
+     * The server is the sole authority. A console that could name the run
+     * could name somebody else's, and every downstream artefact -- timeline,
+     * spool directory, manifest -- is keyed by it.
+     */
+    const operator = client('operator');
+    await waitForConnect(operator);
+    const ack = waitForEvent<{ programmeRunId?: string }>(operator, SOCKET_EVENTS.CONTROL_ACK);
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+      sessionId: 'wrs_runid_client',
+      broadcastId: 'broadcast_runid_client',
+      sourceRevision: 1,
+      targetLanguage: 'fr',
+      targetLanguages: ['fr'],
+      sourceLanguage: 'en',
+      sourceLanguageMode: 'manual',
+      programmeRunId: 'run_chosen_by_the_client',
+      runId: 'run_chosen_by_the_client',
+    });
+    const received = await ack;
+    expect(received.programmeRunId).not.toBe('run_chosen_by_the_client');
+    expect(received.programmeRunId).toMatch(/^run_[0-9a-f]{24}$/u);
+  });
+
+  it('discloses no run identity for an invalid configuration', async () => {
+    // A refusal must not leak the identity of anything, nor acknowledge a
+    // programme that was never started.
+    const operator = client('operator');
+    await waitForConnect(operator);
+    const refusal = waitForEvent<{ message: string }>(operator, SOCKET_EVENTS.ERROR);
+    operator.emit(SOCKET_EVENTS.OPERATOR_PROGRAMME_SESSION_CONFIG, {
+      sessionId: 'wrs_runid_invalid',
+      // No broadcastId, no languages: refused by the parser.
+      sourceRevision: 1,
+    });
+    const error = await refusal;
+    expect(error.message).toMatch(/Invalid programme session configuration/u);
+    expect(JSON.stringify(error)).not.toMatch(/run_/u);
+  });
+
   it('stores operator programme-session language config for WebRTC processing', async () => {
     const operator = client('operator');
     const ingest = client('ingest');
@@ -778,6 +913,9 @@ describe('gateway public media ingest URL', () => {
         reconnection: false,
       });
       sockets.push(socket);
+      // The platform channel, as above: an operator lands on their own
+      // channel at connect and this suite listens on the platform one.
+      if (role === 'operator') socket.emit(SOCKET_EVENTS.JOIN_CHANNEL, { channelId: 'main' });
       return socket;
     };
 

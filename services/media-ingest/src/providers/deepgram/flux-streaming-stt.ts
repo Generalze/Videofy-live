@@ -81,6 +81,44 @@ export interface DeepgramFluxStreamingConfig {
   readonly log?: (line: string, detail?: Record<string, unknown>) => void;
 }
 
+/**
+ * WHY A FLUX SESSION CAN BE REFUSED FOR ITS LANGUAGE.
+ *
+ * Flux takes no `language` parameter. Listen v2 accepts `language_hint`, and
+ * only on a *multi* model; a single-language model such as `flux-general-en`
+ * transcribes whatever it is given AS ENGLISH. The adapter used to ignore
+ * `options.sourceLanguage` entirely, and the consequence was measured on
+ * 2026-08-30: a session declaring `sourceLanguage: 'yo'` opened successfully
+ * and returned fluent English, and `'zz-not-a-language'` opened too.
+ *
+ * That is the exact failure this platform exists to refuse -- a vendor
+ * answering a Nigerian language with confident, wrong output and every success
+ * signal intact. Nova refuses the same request with HTTP 400 at connect, so the
+ * two adapters failed in OPPOSITE directions on identical input. This makes
+ * Flux fail the same way Nova does: closed, before a byte of audio is accepted.
+ *
+ * `auto-detect` is a deliberate exemption. A session that has not claimed a
+ * language is not making a claim the adapter can contradict.
+ */
+function assertFluxCanServeLanguage(model: string, options: StreamingTranscriptionOptions): void {
+  const requested = options.sourceLanguage?.trim().toLowerCase();
+  if (requested === undefined || requested === '') return;
+  if (options.sourceLanguageMode === 'auto-detect') return;
+  // A multi model carries the request through as `language_hint`.
+  if (model.includes('multi')) return;
+  // Single-language Flux models are named for the language they serve:
+  // `flux-general-en` serves English. Accept the bare tag and any region of it.
+  const served = model.split('-').pop() ?? '';
+  const base = requested.split(/[-_]/)[0] ?? requested;
+  if (served !== '' && base === served) return;
+  throw new Error(
+    `Deepgram Flux model ${model} cannot transcribe "${options.sourceLanguage}". ` +
+      `Listen v2 has no per-session language parameter for a single-language model, ` +
+      `so this session would be transcribed as "${served || 'the model default'}" and ` +
+      `returned as if it were correct. Use a *-multi Flux model, or deepgram-nova.`,
+  );
+}
+
 export class DeepgramFluxStreamingProvider implements StreamingTranscriptionProvider {
   readonly name: string;
 
@@ -97,6 +135,9 @@ export class DeepgramFluxStreamingProvider implements StreamingTranscriptionProv
   }
 
   async openStream(options: StreamingTranscriptionOptions): Promise<StreamingTranscriptionSession> {
+    // Before the socket, not after: a refused language must cost no audio and
+    // no vendor call, exactly as Nova's connect-time 400 does.
+    assertFluxCanServeLanguage(this.config.model, options);
     return await DeepgramFluxSession.open(this.config, options, this.name);
   }
 }
@@ -160,8 +201,17 @@ class DeepgramFluxSession implements StreamingTranscriptionSession {
     if (this.config.eagerEotThreshold !== undefined) {
       params.set('eager_eot_threshold', String(this.config.eagerEotThreshold));
     }
-    if (this.config.languageHint !== undefined && this.config.model.includes('multi')) {
-      params.set('language_hint', this.config.languageHint);
+    if (this.config.model.includes('multi')) {
+      // The SESSION's declared language outranks the deployment default: a
+      // deployment-wide hint that silently overrode a per-call language is the
+      // same defect in a quieter form.
+      const hint =
+        this.options.sourceLanguageMode === 'auto-detect'
+          ? this.config.languageHint
+          : (this.options.sourceLanguage?.trim() || undefined) ?? this.config.languageHint;
+      if (hint !== undefined) {
+        params.set('language_hint', hint);
+      }
     }
     return `${base}?${params.toString()}`;
   }

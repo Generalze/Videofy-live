@@ -11,13 +11,45 @@
  * credential sitting in a file that outlives the session it belonged to.
  */
 import type express from 'express';
+import { lookupLanguage } from '@videofy-live/language-catalogue';
 import {
   bearerToken,
   issueSessionToken,
-  SESSION_LIFETIME_SECONDS,
+  sessionLifetimeSeconds,
+  type SessionClass,
   verifySessionToken,
 } from '@videofy-live/account-tokens';
 import type { AccountRecord, AccountStore } from './account-store.js';
+
+/**
+ * WHICH LANGUAGES AN ACCOUNT MAY CHOOSE: the shared catalogue, and nothing
+ * narrower.
+ *
+ * This used to be `'en' | 'es' | 'fr'`, hard-written in two route handlers.
+ * The consequence was not a missing feature but an invisible one: media ingest
+ * published a ninety-eight language catalogue, the operator console showed it,
+ * and a phone offering any of the other ninety-five would have been answered
+ * with a 400 that looks, on a device, like a tap that did nothing.
+ *
+ * The catalogue is the authority; a code outside it is still refused, so this
+ * is a widening and not an opening. Whether a language WORKS is a separate
+ * question, answered by the capability resolver -- an account may hold a
+ * preference for a language this deployment cannot yet speak, and that is a
+ * capability warning to show, not a reason to refuse the preference.
+ */
+const UNSUPPORTED_LANGUAGE_MESSAGE = 'Pick a language from the catalogue.';
+
+/**
+ * The catalogue KEY for whatever the caller sent, or null.
+ *
+ * Normalising rather than merely validating, because a device hands over its
+ * locale: `en-GB` and `en` are the same language, and storing both would make
+ * `profile.spokenLanguage === row.code` false for half the phones on earth.
+ * The catalogue's own aliases apply too, so `tl` is stored as `fil`.
+ */
+function accountLanguageKey(value: unknown): string | null {
+  return typeof value === 'string' ? (lookupLanguage(value)?.code ?? null) : null;
+}
 import type { VerificationService } from './verification.js';
 import {
   STEP_UP_FRESHNESS_MS,
@@ -40,6 +72,7 @@ import {
   USERNAME_REFUSAL_MESSAGES,
 } from '@videofy-live/account-trust';
 import type { ContactStore } from './contact-store.js';
+import type { PresenceRegistry } from './presence.js';
 import type { IdentityChangeService } from './identity-change-service.js';
 import { recordSecurity } from './security-log.js';
 import { correlationIdOf } from './request-context.js';
@@ -57,6 +90,13 @@ import {
 
 export interface AccountRouteDependencies {
   readonly store: AccountStore;
+  /**
+   * Accounts that carry the official C7 badge -- the platform's own voice.
+   * Env-driven and read-only at runtime, like the platform-operator
+   * allowlist: a badge that any code path could grant is a badge that will
+   * eventually be granted by a bug. Empty set means nobody is official.
+   */
+  readonly officialAccounts?: ReadonlySet<string>;
   /** Present once organizations exist; the shell renders without it. */
   readonly organizations?: {
     organizationsFor(accountId: string): readonly {
@@ -103,6 +143,11 @@ export interface AccountRouteDependencies {
   readonly identityChange?: IdentityChangeService;
   /** Absent means the contact routes 404 rather than pretending to have a graph. */
   readonly contacts?: ContactStore;
+  /**
+   * Presence, shown to accepted contacts only. Absent means the contact
+   * list and profiles simply omit it -- never a made-up 'away'.
+   */
+  readonly presence?: PresenceRegistry;
 }
 
 interface Body {
@@ -123,6 +168,16 @@ function credentials(body: unknown): { email: string; password: string } | null 
   const candidate = (body ?? {}) as Body;
   if (typeof candidate.email !== 'string' || typeof candidate.password !== 'string') return null;
   return { email: candidate.email, password: candidate.password };
+}
+
+/**
+ * Which session class a sign-in asks for. `client: 'device'` is the phone
+ * (a long, renewable session that lasts until sign-out -- founder ruling
+ * 29 Aug 2026); anything else, including nothing, is a browser session.
+ */
+function requestedSessionClass(body: unknown): SessionClass {
+  const candidate = (body ?? {}) as { client?: unknown };
+  return candidate.client === 'device' ? 'device' : 'browser';
 }
 
 /**
@@ -281,6 +336,7 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
     accountId: string,
     version: number,
     voiceGender: 'male' | 'female' | undefined,
+    sessionClass: SessionClass = 'browser',
   ) => ({
     accountId,
     token: issueSessionToken({
@@ -288,8 +344,9 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       accountId,
       version,
       nowSeconds: nowSeconds(),
+      sessionClass,
     }),
-    expiresInSeconds: SESSION_LIFETIME_SECONDS,
+    expiresInSeconds: sessionLifetimeSeconds(sessionClass),
     // Returned so the call form can default to the voice this person chose,
     // instead of everybody starting out sounding female.
     ...(voiceGender ? { voiceGender } : {}),
@@ -375,6 +432,7 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
               result.account.accountId,
               result.account.tokenVersion,
               result.account.voiceGender,
+              requestedSessionClass(req.body),
             ),
           );
       })
@@ -415,10 +473,35 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
             result.account.accountId,
             result.account.tokenVersion,
             result.account.voiceGender,
+            requestedSessionClass(req.body),
           ),
         );
       })
       .catch(() => res.status(500).json({ error: 'You could not be signed in.' }));
+  });
+
+  /**
+   * A fresh token of the SAME class, for a session that is still valid.
+   *
+   * This is what makes a device session last until sign-out: the phone renews
+   * while it is used, and a token that stops being renewed simply ages out.
+   * The class comes from the presented token, never the body, so a browser
+   * token cannot renew itself into a device one. The version check is the
+   * same one `/sessions/current` makes: a revoked session cannot renew.
+   */
+  app.post('/sessions/renew', (req, res) => {
+    const token = bearerToken(req.header('authorization'));
+    const verified = token ? verifySessionToken({ secret: deps.secret, token, nowSeconds: nowSeconds() }) : null;
+    if (!verified?.ok) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    const account = deps.store.get(verified.claims.accountId);
+    if (!account || account.tokenVersion !== verified.claims.version) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    res.status(200).json(session(account.accountId, account.tokenVersion, account.voiceGender, verified.claims.sessionClass));
   });
 
   /**
@@ -559,6 +642,17 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
         res.status(401).json({ error: 'Sign in to continue.' });
         return;
       }
+      /*
+       * SWITCHED OFF, per the 30 Aug 2026 production ruling: "a missing
+       * provider must refuse the capability honestly ... NEVER a silent fall
+       * back to a synthetic/mock provider in production". 503 rather than 404:
+       * the endpoint exists and will work the day an SMS vendor is bought, and
+       * a person who reads "not available yet" is being told the truth.
+       */
+      if (!verification.channelAvailable('phone')) {
+        res.status(503).json({ error: 'Phone verification is not available yet.' });
+        return;
+      }
       const phone = (req.body as { phone?: unknown } | undefined)?.phone;
       if (typeof phone !== 'string' || phone.length > 32) {
         res.status(400).json({ error: 'Enter a phone number in international format.' });
@@ -589,6 +683,12 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
             res.status(409).json({ error: 'That number is already verified.' });
             return;
           }
+          // Belt and braces: the check above already refused, and this is what
+          // answers if the channel is switched off between the two.
+          if (outcome.reason === 'unavailable') {
+            res.status(503).json({ error: 'Phone verification is not available yet.' });
+            return;
+          }
           res.status(502).json({ error: 'The code could not be sent. Try again shortly.' });
         })
         .catch(() => res.status(500).json({ error: 'The code could not be sent.' }));
@@ -598,6 +698,16 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       const caller = callerAccountId(req);
       if (caller === null) {
         res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      /*
+       * SWITCHED OFF (C7_IDENTITY_PROVIDER=off), the honest-refusal half of the
+       * 30 Aug 2026 ruling. Nothing is started, no case is minted, and the
+       * account's identity component stays untouched at `unverified` -- being
+       * offered no check is not the same as failing one.
+       */
+      if (!verification.identityAvailable()) {
+        res.status(503).json({ error: 'Identity verification is not available yet.' });
         return;
       }
       void verification
@@ -639,6 +749,17 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       const caller = callerAccountId(req);
       if (caller === null) {
         res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      /*
+       * SWITCHED OFF, per the 30 Aug 2026 production ruling: "a missing
+       * provider must refuse the capability honestly ... NEVER a silent fall
+       * back to a synthetic/mock provider in production". 503 rather than 404:
+       * the endpoint exists and will work the day an SMS vendor is bought, and
+       * a person who reads "not available yet" is being told the truth.
+       */
+      if (!verification.channelAvailable('phone')) {
+        res.status(503).json({ error: 'Phone verification is not available yet.' });
         return;
       }
       const code = (req.body as { code?: unknown } | undefined)?.code;
@@ -1178,6 +1299,75 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
   });
 
   /**
+   * The language this person's calls enter with. Speak and hear both preload
+   * from it on the join screen; either can still be changed per call.
+   */
+  app.post('/accounts/default-language', (req, res) => {
+    const caller = callerAccountId(req);
+    if (caller === null) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    const requested = accountLanguageKey(
+      (req.body as { defaultLanguage?: unknown } | undefined)?.defaultLanguage,
+    );
+    if (requested === null) {
+      res.status(400).json({ error: UNSUPPORTED_LANGUAGE_MESSAGE });
+      return;
+    }
+    void deps.store
+      .setDefaultLanguage(caller.accountId, requested)
+      .then((record) => {
+        if (!record) {
+          res.status(401).json({ error: 'Sign in to continue.' });
+          return;
+        }
+        res.status(200).json({ defaultLanguage: record.defaultLanguage ?? null });
+      })
+      .catch(() => res.status(500).json({ error: 'That could not be saved.' }));
+  });
+
+  /**
+   * Refine the finer language facts independently: the language you SPEAK
+   * and the language you PREFER TO HEAR. The primary route above seeds both;
+   * this one never touches the primary.
+   */
+  app.post('/accounts/languages', (req, res) => {
+    const caller = callerAccountId(req);
+    if (caller === null) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    const body = (req.body ?? {}) as { spokenLanguage?: unknown; listeningLanguage?: unknown };
+    const spoken = accountLanguageKey(body.spokenLanguage);
+    const listening = accountLanguageKey(body.listeningLanguage);
+    if (
+      (body.spokenLanguage !== undefined && spoken === null) ||
+      (body.listeningLanguage !== undefined && listening === null) ||
+      (body.spokenLanguage === undefined && body.listeningLanguage === undefined)
+    ) {
+      res.status(400).json({ error: UNSUPPORTED_LANGUAGE_MESSAGE });
+      return;
+    }
+    void deps.store
+      .setLanguages(caller.accountId, {
+        ...(spoken === null ? {} : { spokenLanguage: spoken }),
+        ...(listening === null ? {} : { listeningLanguage: listening }),
+      })
+      .then((record) => {
+        if (!record) {
+          res.status(401).json({ error: 'Sign in to continue.' });
+          return;
+        }
+        res.status(200).json({
+          spokenLanguage: record.spokenLanguage ?? null,
+          listeningLanguage: record.listeningLanguage ?? null,
+        });
+      })
+      .catch(() => res.status(500).json({ error: 'That could not be saved.' }));
+  });
+
+  /**
    * Choose whether your handle can be found at all.
    *
    * OFF IS THE DEFAULT and stays the default: this endpoint is how somebody
@@ -1293,13 +1483,29 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
           accountId: otherAccountId,
           username: other?.username ?? null,
           displayName: other?.displayName ?? null,
+          official: deps.officialAccounts?.has(otherAccountId) ?? false,
+          // The language they SPEAK: what a call with them sounds like.
+          // Public, like the username. Never the listening preference.
+          spokenLanguage: other?.spokenLanguage ?? other?.defaultLanguage ?? null,
+        };
+      };
+      // Presence ONLY on accepted contacts. A pending request is not yet a
+      // relationship that earns knowing whether somebody is around.
+      const presence = deps.presence;
+      const describeContact = (otherAccountId: string) => {
+        const other = deps.store.get(otherAccountId);
+        return {
+          ...describe(otherAccountId),
+          ...(presence && other
+            ? { presence: presence.stateOf(otherAccountId, other.availability) }
+            : {}),
         };
       };
 
       res.status(200).json({
         contacts: contacts
           .contactsOf(caller.accountId)
-          .map((edge) => describe(contacts.other(edge, caller.accountId))),
+          .map((edge) => describeContact(contacts.other(edge, caller.accountId))),
         /*
          * Only requests somebody else sent. A request you sent is not something
          * you can act on, and listing it as answerable invites a client to
@@ -1326,6 +1532,66 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
      * The route to a private account is an invite they issued, which is consent
      * given in advance rather than requested after the fact.
      */
+    /*
+     * ANOTHER PERSON'S PROFILE, AS THIS VIEWER MAY SEE IT (founder ruling
+     * 29 Aug). The same door as adding them: a stranger who is not
+     * discoverable answers 404 exactly like a nonexistent account, so this
+     * route is not an oracle for who is on the platform. A contact, a
+     * pending request in either direction, or somebody you blocked is
+     * always visible to you. What is shown: the two identity fields, the
+     * platform badge, discoverability, the language they SPEAK (what a call
+     * sounds like) -- never the language they prefer to listen in -- and
+     * the relationship from the viewer's side.
+     */
+    app.get('/profiles/:accountId', (req, res) => {
+      const caller = callerAccountId(req);
+      if (caller === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const targetId = String(req.params['accountId'] ?? '');
+      const target = deps.store.get(targetId);
+      const edge = targetId === caller.accountId ? null : contacts.edgeBetween(caller.accountId, targetId);
+      const relationship: 'contact' | 'requested' | 'incoming' | 'blocked' | 'none' =
+        edge === null
+          ? 'none'
+          : edge.state === 'accepted'
+            ? 'contact'
+            : edge.state === 'pending'
+              ? edge.requestedBy === caller.accountId
+                ? 'requested'
+                : 'incoming'
+              : edge.blockedBy === caller.accountId
+                ? 'blocked'
+                : 'none';
+      // Blocked BY them reads as no relationship, and their visibility falls
+      // back to discoverability -- being blocked must not be detectable here.
+      const visible =
+        target !== undefined &&
+        target !== null &&
+        (targetId === caller.accountId ||
+          relationship !== 'none' ||
+          readDiscoveryMode(target.discoveryMode) === 'discoverable');
+      if (!visible) {
+        res.status(404).json({ error: 'Not found.' });
+        return;
+      }
+      res.status(200).json({
+        accountId: targetId,
+        username: target.username ?? null,
+        displayName: target.displayName ?? null,
+        official: deps.officialAccounts?.has(targetId) ?? false,
+        discoverable: readDiscoveryMode(target.discoveryMode) === 'discoverable',
+        spokenLanguage: target.spokenLanguage ?? target.defaultLanguage ?? null,
+        bio: target.bio ?? '',
+        relationship,
+        // Presence is a contact's privilege; a stranger's profile has none.
+        ...(relationship === 'contact' && deps.presence
+          ? { presence: deps.presence.stateOf(targetId, target.availability) }
+          : {}),
+      });
+    });
+
     app.post('/contacts/request', (req, res) => {
       const caller = callerAccountId(req);
       if (caller === null) {
@@ -1635,12 +1901,20 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
       profile: {
         username: account.username ?? null,
         displayName: account.displayName ?? null,
+        defaultLanguage: account.defaultLanguage ?? null,
+        spokenLanguage: account.spokenLanguage ?? account.defaultLanguage ?? null,
+        listeningLanguage: account.listeningLanguage ?? account.defaultLanguage ?? null,
+        /** The platform's own badge; env-granted, never client-settable. */
+        official: deps.officialAccounts?.has(caller.accountId) ?? false,
         /*
          * Reported as the resolved answer, not the raw stored string. A client
          * deciding for itself what counts as discoverable is a second
          * implementation of a privacy rule.
          */
         discoverable: readDiscoveryMode(account.discoveryMode) === 'discoverable',
+        bio: account.bio ?? '',
+        availability: account.availability ?? 'auto',
+        notificationsEnabled: account.notificationsEnabled !== false,
       },
       /*
        * What this person still has to accept. Derived, never stored: publishing

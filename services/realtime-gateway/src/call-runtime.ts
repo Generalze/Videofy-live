@@ -13,9 +13,11 @@ import {
   type CallPreregisterResult,
   type CallSnapshot,
   type CallType,
+  type PublicConferenceListing,
 } from '@videofy-live/call-session';
 import {
   CALL_EVENTS,
+  CallAdmitPayloadSchema,
   CallAudioModePayloadSchema,
   CallBoundPayloadSchema,
   CallCaptionLanguagePayloadSchema,
@@ -29,6 +31,9 @@ import {
   CallVideoIcePayloadSchema,
   CallVideoSdpPayloadSchema,
   type CallJoinAck,
+  type CallAdmitAck,
+  type CallAdmissionEvent,
+  type CallKnockEvent,
   type CallSdpAck,
   type CallEndAck,
   type CallSetModeAck,
@@ -55,6 +60,12 @@ import type { MediaAudioDataLike } from './media-transcription-chunker.js';
 import type { BackendMediaPeerAudioContext } from './webrtc-media-peer-registry.js';
 import type { MediaTranscriptionBridgeContext } from './media-transcription-bridge.js';
 import type { CallReceivePeersLike, CallReceivePeerHandlers } from './call-receive-peers.js';
+import {
+  DirectCallLifecycle,
+  TERMINAL_STATES,
+  type DirectCallOutcomeRecord,
+  type DirectCallWire,
+} from './direct-call-lifecycle.js';
 import { CallTranscriptLog } from './call-transcript-log.js';
 import type { CallTranslatedAudioFramePayload } from '@videofy-live/call-session';
 import { CallPlaybackLedger, generatedClipId } from './call-playback-ledger.js';
@@ -124,6 +135,14 @@ export const CALL_PARTICIPANT_ROLE = 'call-participant';
 /** Seats not resumed within this window are auto-left (design note hardening). */
 export const DEFAULT_CALL_DISCONNECT_GRACE_MS = 120_000;
 
+/**
+ * How long a knock on a restricted conference waits for the host (29 Aug).
+ * A minute: long enough for a host mid-sentence to notice, short enough that
+ * a joiner is not left staring at a spinner for a room nobody is minding.
+ * Expiry is a REFUSAL, not a limbo -- the joiner is told and disconnected.
+ */
+export const CALL_KNOCK_TIMEOUT_MS = 60_000;
+
 export function callRoom(callId: string): string {
   return `call:${callId}`;
 }
@@ -139,6 +158,12 @@ export interface CallSocketLike {
   leave(room: string): void | Promise<void>;
   emit(event: string, payload: unknown): void;
   on(event: string, handler: (...args: never[]) => void): void;
+  /**
+   * Present on real Socket.IO sockets. A refused knocker is disconnected from
+   * the call through this; absent (bare test socket) the bindings are still
+   * released, which is the part that matters for authority.
+   */
+  disconnect?(close?: boolean): void;
   /**
    * P6.5: present on real Socket.IO sockets. The handshake Origin header is
    * what connect-join authorization compares against a project's
@@ -315,6 +340,34 @@ export interface CallRuntimeDependencies {
    */
   authorizeCallHost?: (sessionToken: string | null) => Promise<boolean>;
   /**
+   * DIRECT CALLS inherit the account pair's conversation mode. Resolved at
+   * creation with the caller's session, locked into the session; the
+   * client's own callMode is ignored for a direct call. Absent means every
+   * direct call is a NORMAL call.
+   */
+  resolveDirectCallMode?: (
+    sessionToken: string | null,
+    peerAccountId: string,
+  ) => Promise<'normal' | 'translated' | null>;
+  /**
+   * May this language pair carry a live TRANSLATED call?
+   *
+   * ABSENT MEANS REFUSED, the same way `authorizeCallHost` treats a missing
+   * gate. A translation engine existing is not the same fact as a DIRECTION
+   * being approved to put a synthetic voice in somebody's ear in real time,
+   * and the `call-live` scope existed in the route registry while the call
+   * path consulted nothing at all.
+   *
+   * Only TRANSLATED direct calls consult it. A normal call produces no
+   * translation, so there is no direction to approve and nothing to refuse.
+   */
+  callLiveRouteApproved?: (sourceLanguage: string, targetLanguage: string) => boolean;
+  /**
+   * Call history: every finished direct call is handed to the account service
+   * as a metadata record. Optional; absent means no history is kept.
+   */
+  recordDirectCall?: (record: DirectCallOutcomeRecord) => Promise<void>;
+  /**
    * P7.0A: a sink for governance audit events.
    *
    * Optional, and the journal line above is emitted either way. This is the
@@ -399,6 +452,18 @@ interface CallParticipantRuntimeState {
   reapTimer: ReturnType<typeof setTimeout> | null;
 }
 
+/**
+ * A seat waiting for the host's answer. Held OUTSIDE `participants`: a
+ * knocker has no media, no reaper and no ingest, so none of that machinery
+ * should be able to find them until they are admitted.
+ */
+interface CallKnockRuntimeState {
+  callId: string;
+  participantId: string;
+  socket: CallSocketLike;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 interface CallIngestRegistryEntry {
   callId: string;
   participantId: string;
@@ -467,6 +532,18 @@ export class CallRuntime {
   private readonly authorizeCallHost:
     | ((sessionToken: string | null) => Promise<boolean>)
     | undefined;
+  private readonly callLiveRouteApproved:
+    | ((sourceLanguage: string, targetLanguage: string) => boolean)
+    | undefined;
+
+  private readonly resolveDirectCallMode:
+    | ((sessionToken: string | null, peerAccountId: string) => Promise<'normal' | 'translated' | null>)
+    | undefined;
+  /** The telephone. See direct-call-lifecycle.ts. */
+  readonly directCalls: DirectCallLifecycle;
+  /** Knocks awaiting the host, keyed by participantKey. */
+  private readonly knocks = new Map<string, CallKnockRuntimeState>();
+  private readonly directProbes = new Map<string, ReturnType<typeof setInterval>>();
   private readonly governanceAudit: ((event: GovernanceAuditEvent) => void) | undefined;
   private readonly connectAuthority: CallConnectJoinAuthority | undefined;
   private readonly setTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
@@ -529,6 +606,32 @@ export class CallRuntime {
     this.now = dependencies.now ?? (() => Date.now());
     this.verifyVoiceIdentity = dependencies.verifyVoiceIdentity;
     this.authorizeCallHost = dependencies.authorizeCallHost;
+    this.resolveDirectCallMode = dependencies.resolveDirectCallMode;
+    this.callLiveRouteApproved = dependencies.callLiveRouteApproved;
+    this.directCalls = new DirectCallLifecycle({
+      now: () => this.now(),
+      onState: (wire, previous) => {
+        // Both sides read the same truth; the callee before joining reads it
+        // over HTTP (pre-join check), everybody in the room reads it here.
+        this.emitToRoom(callRoom(wire.callId), CALL_EVENTS.DIRECT_STATE, wire);
+        logger.info('Direct call state', {
+          callId: wire.callId,
+          from: previous,
+          to: wire.state,
+          mode: wire.mode,
+        });
+        if (TERMINAL_STATES.has(wire.state)) this.stopDirectProbe(wire.callId);
+        if (wire.state === 'connecting') this.startDirectProbe(wire);
+      },
+      onOutcome: (record) => {
+        void dependencies.recordDirectCall?.(record).catch((error: unknown) => {
+          logger.warn('Direct call record not stored', {
+            callId: record.callId,
+            message: error instanceof Error ? error.message : 'unknown',
+          });
+        });
+      },
+    });
     this.governanceAudit = dependencies.governanceAudit;
     this.connectAuthority = dependencies.connectAuthority;
     this.playbackLedger = dependencies.playbackLedger ?? new CallPlaybackLedger({ nowMs: this.now });
@@ -574,6 +677,19 @@ export class CallRuntime {
     this.onGuarded(socket, CALL_EVENTS.LEAVE, (raw, ack) => {
       this.deliverAck(ack, this.handleLeave(socket, raw));
     });
+    this.onGuarded(socket, CALL_EVENTS.DIRECT_RING_RESULT, (raw, ack) => {
+      const payload = raw as { callId?: unknown; reachedDevices?: unknown } | null;
+      const binding = this.socketBindings.get(socket.id);
+      if (
+        binding &&
+        typeof payload?.callId === 'string' &&
+        payload.callId === binding.callId &&
+        typeof payload.reachedDevices === 'number'
+      ) {
+        this.directCalls.noteRingDispatch(payload.callId, Math.max(-1, Math.floor(payload.reachedDevices)));
+      }
+      this.deliverAck(ack, { ok: true });
+    });
     this.onGuarded(socket, CALL_EVENTS.END, (raw, ack) => {
       this.deliverAck(ack, this.handleEndCall(socket, raw));
     });
@@ -596,6 +712,9 @@ export class CallRuntime {
     });
     this.onGuarded(socket, CALL_EVENTS.SET_TRANSCRIPT_POLICY, (raw, ack) => {
       this.deliverAck(ack, this.handleSetTranscriptPolicy(socket, raw));
+    });
+    this.onGuarded(socket, CALL_EVENTS.ADMIT, async (raw, ack) => {
+      this.deliverAck(ack, await this.handleAdmit(socket, raw));
     });
     this.onGuarded(socket, CALL_EVENTS.GOVERNANCE, (raw, ack) => {
       this.deliverAck(ack, this.handleGovernance(socket, raw));
@@ -939,8 +1058,89 @@ export class CallRuntime {
     const voiceIdentityRejected =
       typeof sessionToken === 'string' && sessionToken.length > 0 && verifiedOwnerId === null;
 
+    /*
+     * A DIRECT CALL IS PERSONAL AND ITS MODE IS THE PAIR'S (founder ruling
+     * 2026-08-28). Only at creation -- the store locks callMode afterwards,
+     * and a second joiner naming a peer changes nothing. The client's
+     * callType/callMode are overridden, not trusted: the relationship owns
+     * this answer. The peer id itself never reaches the store.
+     */
+    const { directPeerAccountId, ...joinInput } = clientInput as CallJoinInput & {
+      directPeerAccountId?: unknown;
+    };
+    const creating =
+      typeof requestedCallId === 'string' &&
+      !isResumeAttempt &&
+      this.store.snapshot(requestedCallId) === null;
+    let directOverride: { callType: 'personal'; callMode: 'normal' | 'translated' } | null = null;
+    if (creating && typeof directPeerAccountId === 'string' && directPeerAccountId.length > 0) {
+      const pairMode = this.resolveDirectCallMode
+        ? await this.resolveDirectCallMode(
+            typeof sessionToken === 'string' ? sessionToken : null,
+            directPeerAccountId,
+          )
+        : null;
+      directOverride = { callType: 'personal', callMode: pairMode ?? 'normal' };
+
+      /*
+       * A TRANSLATED PAIR STILL NEEDS AN APPROVED ROUTE.
+       *
+       * The relationship's mode says these two people translate; it says
+       * nothing about whether THIS LANGUAGE PAIR has been qualified to carry a
+       * live call. Those are separate facts and the call path used to consult
+       * only the first, so an engine being installed was treated as permission
+       * for any direction somebody could name.
+       *
+       * The caller declares what they will speak and what they want to hear.
+       * In a one-to-one translated call both directions get used -- their
+       * speech rendered into what the peer hears, the peer's rendered into
+       * what this caller asked for -- so both are required before a single
+       * word is carried.
+       *
+       * REFUSED BEFORE ANYTHING RINGS. The peer is never woken for a call that
+       * cannot be translated, and nothing is silently downgraded to a normal
+       * call: a translated relationship quietly delivered untranslated is
+       * exactly the failure nobody notices until they act on a sentence that
+       * was never spoken.
+       */
+      if (directOverride.callMode === 'translated') {
+        const speak = String(clientInput.speakLanguage ?? '');
+        const hear = String(clientInput.hearLanguage ?? '');
+        const approved = this.callLiveRouteApproved;
+        const refusedDirection =
+          approved === undefined
+            ? `${speak}->${hear}`
+            : !approved(speak, hear)
+              ? `${speak}->${hear}`
+              : !approved(hear, speak)
+                ? `${hear}->${speak}`
+                : null;
+        if (refusedDirection !== null) {
+          logger.info('Direct translated call refused: route not approved for call-live', {
+            callId: requestedCallId,
+            direction: refusedDirection,
+            authorityPresent: approved !== undefined,
+          });
+          return {
+            ok: false,
+            code: 'translation-route-unavailable',
+            error:
+              'Translated calling is not available for this language pair yet. ' +
+              'You can still call without translation.',
+          };
+        }
+      }
+
+      logger.info('Direct call created', {
+        callId: requestedCallId,
+        callMode: directOverride.callMode,
+        resolved: pairMode !== null,
+      });
+    }
+
     const result = this.store.createOrJoin({
-      ...(clientInput as CallJoinInput),
+      ...joinInput,
+      ...(directOverride ?? {}),
       // Always present, never conditional. Passing the key only when a token
       // verified would let a resume keep whichever account was attached to that
       // seat before — the shared-browser defect, rebuilt on top of real
@@ -953,6 +1153,31 @@ export class CallRuntime {
     });
     if (!result.ok) {
       return { ok: false, code: result.code, error: result.message };
+    }
+    if (directOverride !== null && typeof directPeerAccountId === 'string' && verifiedOwnerId !== null) {
+      // The telephone starts the moment the call exists. BUSY is asked of
+      // the store -- one connected seat per account, anywhere -- and decided
+      // before anybody is rung.
+      this.directCalls.create({
+        callId: (raw as { callId: string }).callId,
+        callerAccountId: verifiedOwnerId,
+        peerAccountId: directPeerAccountId,
+        callerName: (joinInput as { displayName?: string }).displayName ?? 'Caller',
+        mode: directOverride.callMode,
+        peerBusy: this.store.hasConnectedAccount(directPeerAccountId),
+      });
+    } else if (!creating && verifiedOwnerId !== null) {
+      /*
+       * A verified join into an EXISTING direct call: ANSWERED -- keyed on
+       * the call being tracked, NOT on the client omitting a field. The
+       * first version required directPeerAccountId to be absent; the phone
+       * sends it for every direct call, so the callee was never marked
+       * answered, the 30s no-answer timer killed live two-way calls, and
+       * both screens read "Ringing…" until then (field evidence 28 Aug:
+       * eight calls, thousands of routed frames each, all "no_answer").
+       * peerJoined ignores accounts that are not the peer.
+       */
+      this.directCalls.peerJoined((raw as { callId: string }).callId, verifiedOwnerId);
     }
     return this.completeJoin(socket, (raw as { callId: string }).callId, result, voiceIdentityRejected);
   }
@@ -1044,6 +1269,9 @@ export class CallRuntime {
     voiceIdentityRejected: boolean,
   ): Promise<CallJoinAck> {
     const participantId = result.participantId;
+    if (result.admission === 'pending') {
+      return this.completeKnock(socket, callId, result);
+    }
 
     const previous = this.socketBindings.get(socket.id);
     if (previous && (previous.callId !== callId || previous.participantId !== participantId)) {
@@ -1062,6 +1290,12 @@ export class CallRuntime {
     const existingState = this.participants.get(key);
     if (existingState) {
       // A successful resume cancels the pending disconnect reaper.
+      logger.info('Call seat resumed', {
+        callId,
+        participantId,
+        reaperWasArmed: existingState.reapTimer !== null,
+        newSocket: existingState.socketId !== socket.id,
+      });
       this.cancelReap(existingState);
       if (existingState.socketId && existingState.socketId !== socket.id) {
         // Resume from a new socket: the replaced socket's later disconnect
@@ -1121,11 +1355,15 @@ export class CallRuntime {
     }
 
     // resumeToken travels ONLY in this private ack, never in call:state/logs.
+    // The telephone's CURRENT state rides the ack, so a socket that joins or
+    // resumes after a transition already fired is never left with an old word.
+    const directState = this.directCalls.get(callId);
     return {
       ok: true,
       participantId,
       resumeToken: result.resumeToken,
       snapshot: wireSnapshot,
+      ...(directState === null ? {} : { directState }),
       // Only ever `true`, and only in this private ack. A field that named the
       // account, the reason, or the expiry would be handing a prober exactly
       // the information the single rejection path exists to withhold.
@@ -1133,8 +1371,178 @@ export class CallRuntime {
     };
   }
 
-  handleLeave(socket: CallSocketLike, raw: unknown): { ok: boolean } {
+  /**
+   * RESTRICTED ADMISSION (29 Aug): the store seated this join as knocking.
+   * The socket is bound (so LEAVE and disconnect find the seat) and joins its
+   * OWN private room only -- never the call room, which is where the roster,
+   * captions and audio go. The host hears the knock in their private room;
+   * the ack tells the joiner to wait; a timer refuses them if nobody answers.
+   */
+  private completeKnock(
+    socket: CallSocketLike,
+    callId: string,
+    result: CallJoinResult,
+  ): CallJoinAck {
+    const participantId = result.participantId;
+    const key = participantKey(callId, participantId);
+    this.socketBindings.set(socket.id, { callId, participantId });
+    void socket.join(callParticipantRoom(callId, participantId));
+    const timer = this.setTimer(() => {
+      try {
+        this.expireKnock(callId, participantId);
+      } catch (error) {
+        logger.error('Call knock expiry failed', {
+          callId,
+          participantId,
+          message: error instanceof Error ? error.message : 'unknown knock expiry failure',
+        });
+      }
+    }, CALL_KNOCK_TIMEOUT_MS);
+    this.knocks.set(key, { callId, participantId, socket, timer });
+    logger.info('Call knock', {
+      callId,
+      participantId,
+      hostParticipantId: result.snapshot.ownerParticipantId,
+    });
+    const knocker = result.snapshot.knocking.find((seat) => seat.participantId === participantId);
+    const knock: CallKnockEvent = {
+      callId,
+      participantId,
+      displayName: knocker?.displayName ?? '',
+    };
+    this.emitToRoom(
+      callParticipantRoom(callId, result.snapshot.ownerParticipantId),
+      CALL_EVENTS.KNOCK,
+      knock,
+    );
+    // The room's roster view gains a knocking entry.
+    this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, toWireCallState(result.snapshot));
+    return {
+      ok: true,
+      participantId,
+      resumeToken: result.resumeToken,
+      // Title and setup, so the waiting screen can say what it is waiting
+      // for; the roster is withheld until the host admits them.
+      snapshot: { ...toWireCallState(result.snapshot), participants: [], knocking: [] },
+      admission: 'pending',
+    };
+  }
+
+  /** The host answers a knock. Only the store knows who the host is. */
+  async handleAdmit(socket: CallSocketLike, raw: unknown): Promise<CallAdmitAck> {
     const binding = this.requireBinding(socket, raw);
+    if (!binding) return { ok: false, error: 'unknown-participant' };
+    const parsed = CallAdmitPayloadSchema.safeParse(raw);
+    if (!parsed.success) return { ok: false, error: 'invalid-input' };
+    const { targetParticipantId, admit } = parsed.data;
+    const { callId } = binding;
+    if (!admit) {
+      const refused = this.store.refuseKnock(callId, binding.participantId, targetParticipantId);
+      if (!refused.ok) return { ok: false, error: refused.reason };
+      logger.info('Call knock refused by host', { callId, participantId: targetParticipantId });
+      this.dismissKnocker(callId, targetParticipantId, 'refused');
+      this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, toWireCallState(refused.snapshot));
+      return { ok: true };
+    }
+    const knock = this.knocks.get(participantKey(callId, targetParticipantId));
+    const admitted = this.store.admitKnock(callId, binding.participantId, targetParticipantId);
+    if (!admitted.ok) return { ok: false, error: admitted.reason };
+    if (!admitted.admitted) return { ok: false, error: 'not-knocking' };
+    logger.info('Call knock admitted by host', { callId, participantId: targetParticipantId });
+    if (knock) {
+      this.clearTimer(knock.timer);
+      this.knocks.delete(participantKey(callId, targetParticipantId));
+    }
+    // From here on this IS a join: the same bookkeeping completeJoin does for
+    // a seat that walked straight in, in the same order.
+    this.participants.set(participantKey(callId, targetParticipantId), {
+      callId,
+      participantId: targetParticipantId,
+      socketId: knock?.socket.id ?? null,
+      connected: knock !== undefined,
+      mediaRevision: admitted.mediaRevision,
+      languageRevision: admitted.languageRevision,
+      currentIngestSessionId: null,
+      publishSerial: 0,
+      reapTimer: null,
+    });
+    if (knock) void knock.socket.join(callRoom(callId));
+    const wireSnapshot = toWireCallState(admitted.snapshot);
+    const admission: CallAdmissionEvent = { callId, admitted: true, snapshot: wireSnapshot };
+    this.emitToRoom(
+      callParticipantRoom(callId, targetParticipantId),
+      CALL_EVENTS.ADMISSION,
+      admission,
+    );
+    this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, wireSnapshot);
+    this.statsFor(callId).participantIds.add(targetParticipantId);
+    const joined = admitted.snapshot.participants.find(
+      (participant) => participant.participantId === targetParticipantId,
+    );
+    this.transcriptLog.append({
+      kind: 'join',
+      callId,
+      participantId: targetParticipantId,
+      displayName: joined?.displayName ?? '',
+      speakLanguage: joined?.speakLanguage ?? '',
+      hearLanguage: joined?.hearLanguage ?? '',
+    });
+    await this.applyIngestPlans(callId, admitted.snapshot, admitted.ingestPlans);
+    return { ok: true };
+  }
+
+  /** Nobody answered within the window: refused, exactly as if the host had said no. */
+  private expireKnock(callId: string, participantId: string): void {
+    const withdrawn = this.store.withdrawKnock(callId, participantId);
+    logger.info('Call knock expired', { callId, participantId, removed: withdrawn.removed });
+    this.dismissKnocker(callId, participantId, 'timeout');
+    if (withdrawn.callEnded) {
+      this.teardownCall(callId, 'knock expired on an empty call');
+      return;
+    }
+    const snapshot = this.store.snapshot(callId);
+    if (snapshot) this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, toWireCallState(snapshot));
+  }
+
+  /**
+   * Tell a knocker no and put them out. Bindings are released BEFORE the
+   * socket is disconnected so its disconnect event finds nothing to reap.
+   */
+  private dismissKnocker(
+    callId: string,
+    participantId: string,
+    reason: 'refused' | 'timeout',
+  ): void {
+    const key = participantKey(callId, participantId);
+    const knock = this.knocks.get(key);
+    if (!knock) return;
+    this.clearTimer(knock.timer);
+    this.knocks.delete(key);
+    const admission: CallAdmissionEvent = { callId, admitted: false, reason };
+    this.emitToRoom(callParticipantRoom(callId, participantId), CALL_EVENTS.ADMISSION, admission);
+    this.socketBindings.delete(knock.socket.id);
+    void knock.socket.leave(callParticipantRoom(callId, participantId));
+    knock.socket.disconnect?.(true);
+  }
+
+  /** A knock abandoned by the knocker (socket gone, or LEAVE): no answer owed. */
+  private forgetKnock(callId: string, participantId: string): boolean {
+    const key = participantKey(callId, participantId);
+    const knock = this.knocks.get(key);
+    if (!knock) return false;
+    this.clearTimer(knock.timer);
+    this.knocks.delete(key);
+    return true;
+  }
+
+  /** GET /calls/public: every public conference with someone in it. */
+  listPublicCalls(): PublicConferenceListing[] {
+    return this.store.listPublicConferences();
+  }
+
+  handleLeave(socket: CallSocketLike, raw: unknown): { ok: boolean } {
+    // 'allow': a knocker withdrawing is the one act its binding permits.
+    const binding = this.requireBinding(socket, raw, 'allow');
     if (!binding) return { ok: false };
     return this.finalizeLeave(binding.callId, binding.participantId, socket, 'participant left the call');
   }
@@ -1163,6 +1571,12 @@ export class CallRuntime {
       callId: binding.callId,
       participantId: binding.participantId,
     });
+    // The telephone hears WHO hung up, before the room is dismantled.
+    this.directCalls.ended(
+      binding.callId,
+      snapshotBefore?.participants.find((p) => p.participantId === binding.participantId)
+        ?.accountId ?? null,
+    );
     this.emitToRoom(callRoom(binding.callId), CALL_EVENTS.ENDED, {
       callId: binding.callId,
       endedByParticipantId: binding.participantId,
@@ -1187,6 +1601,27 @@ export class CallRuntime {
     if (!binding) return;
     this.socketBindings.delete(socketId);
     const { callId, participantId } = binding;
+    if (this.forgetKnock(callId, participantId)) {
+      // A knocker who left before being answered: nothing to keep for resume.
+      const withdrawn = this.store.withdrawKnock(callId, participantId);
+      logger.info('Call knock abandoned', { callId, participantId });
+      if (withdrawn.callEnded) {
+        this.teardownCall(callId, 'knocker left an empty call');
+        return;
+      }
+      const knockSnapshot = this.store.snapshot(callId);
+      if (knockSnapshot) {
+        this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, toWireCallState(knockSnapshot));
+      }
+      return;
+    }
+    // Metadata only. This line is how a call that "died at two minutes" is
+    // told apart from one that lost its socket at zero and was reaped at 120.
+    logger.info('Call socket disconnected; seat kept for resume', {
+      callId,
+      participantId,
+      graceMs: this.disconnectGraceMs,
+    });
     this.store.markDisconnected(callId, participantId);
     const state = this.participants.get(participantKey(callId, participantId));
     if (state) {
@@ -2358,6 +2793,10 @@ export class CallRuntime {
     const key = participantKey(callId, participantId);
     const state = this.participants.get(key);
     if (state) this.cancelReap(state);
+    // A knocker may LEAVE too; the store's leave releases the seat and the
+    // timer must not fire a refusal at somebody who already walked away.
+    this.forgetKnock(callId, participantId);
+    const snapshotBeforeLeave = this.store.snapshot(callId);
     const result = this.store.leave(callId, participantId);
     this.detachParticipantTransport(callId, participantId, reason);
     for (const [ingestSessionId, entry] of [...this.ingestRegistry]) {
@@ -2377,7 +2816,39 @@ export class CallRuntime {
       void socket.leave(callParticipantRoom(callId, participantId));
     }
     this.transcriptLog.append({ kind: 'leave', callId, participantId, reason });
-    if (result.callEnded) {
+    /*
+     * A PERSONAL CALL IS A TELEPHONE CALL: when either party leaves -- hung
+     * up by the app, killed by the OS, or reaped after the disconnect grace
+     * -- it is over for the other party too. The store keeps seats until the
+     * last one goes, which is right for a conference and wrong here: it left
+     * the remaining phone alone in a room reading "guest left".
+     */
+    const personalPartner =
+      !result.callEnded && result.snapshot?.callType === 'personal' ? result.snapshot : null;
+    if (personalPartner !== null) {
+      const departed = snapshotBeforeLeave?.participants.find(
+        (p) => p.participantId === participantId,
+      );
+      logger.info('Personal call ended because a party left', { callId, participantId, reason });
+      this.directCalls.ended(callId, departed?.accountId ?? null);
+      this.emitToRoom(callRoom(callId), CALL_EVENTS.ENDED, {
+        callId,
+        endedByParticipantId: participantId,
+        endedByDisplayName: departed?.displayName ?? '',
+      });
+      // The store still holds the other seat; in a personal call any party
+      // may end it, and the one who left has just done so by leaving.
+      for (const remaining of personalPartner.participants) {
+        const ended = this.store.endCallByParticipant(callId, remaining.participantId);
+        if (ended.ok) {
+          for (const ingestSessionId of ended.retiredIngestSessionIds) {
+            this.retireIngestEntry(ingestSessionId, 'personal call: a party left');
+          }
+        }
+        break;
+      }
+      this.teardownCall(callId, `personal call: a party left (${reason})`);
+    } else if (result.callEnded) {
       this.teardownCall(callId, 'call ended');
     } else if (result.snapshot) {
       this.emitToRoom(callRoom(callId), CALL_EVENTS.STATE, toWireCallState(result.snapshot));
@@ -2404,6 +2875,10 @@ export class CallRuntime {
   }
 
   private teardownCall(callId: string, reason: string): void {
+    // Whoever was still waiting at the door is told no: the room is gone.
+    for (const knock of [...this.knocks.values()]) {
+      if (knock.callId === callId) this.dismissKnocker(callId, knock.participantId, 'refused');
+    }
     for (const [key, state] of [...this.participants]) {
       if (state.callId !== callId) continue;
       this.cancelReap(state);
@@ -2419,6 +2894,69 @@ export class CallRuntime {
     // every revision of this call have been harvested.
     this.appendCallSummary(callId, reason);
     logger.info('Call torn down', { callId, reason });
+    // The telephone hangs up with the session. The record lingers briefly so
+    // a stale push can still be answered 'expired' instead of ringing.
+    this.directCalls.ended(callId);
+    this.stopDirectProbe(callId);
+    setTimeout(() => this.directCalls.forget(callId), 120_000).unref?.();
+  }
+
+  /**
+   * CONNECTED is proven by the server: frames routed in BOTH directions
+   * between the two seats. Sampled once a second while connecting or
+   * connected; a direction going quiet after connection opens the recovery
+   * window (network), and returning frames close it.
+   */
+  private startDirectProbe(wire: DirectCallWire): void {
+    this.stopDirectProbe(wire.callId);
+    /*
+     * CONNECTED THE MOMENT BOTH DIRECTIONS HAVE CARRIED A FRAME. The first
+     * version needed two consecutive one-second samples with rising counts
+     * in both directions, so the word "Connected" -- and the timer -- came
+     * one to two seconds after the audio actually flowed (measured 29 Aug:
+     * answer-to-audio 4.8 s on the wire, 2 s of it this probe). Now: any
+     * frames both ways = connected; a stall is a full interval with no new
+     * frames in EITHER direction, checked every 250 ms but judged over a
+     * whole second so a jittery link is not mistaken for a drop.
+     */
+    let lastCounts: [number, number] = [0, 0];
+    let lastProgressAtMs = this.now();
+    let everTwoWay = false;
+    const STALL_MS = 1000;
+    const timer = setInterval(() => {
+      const snapshot = this.store.snapshot(wire.callId);
+      if (!snapshot) return;
+      const caller = snapshot.participants.find((p) => p.accountId === wire.callerAccountId);
+      const peer = snapshot.participants.find((p) => p.accountId === wire.peerAccountId);
+      if (!caller || !peer) return;
+      const counts: [number, number] = [
+        this.receivePeers.routedFrames?.(wire.callId, caller.participantId) ?? 0,
+        this.receivePeers.routedFrames?.(wire.callId, peer.participantId) ?? 0,
+      ];
+      const progressed = counts[0] > lastCounts[0] && counts[1] > lastCounts[1];
+      const now = this.now();
+      if (progressed) lastProgressAtMs = now;
+      lastCounts = counts;
+      if (!everTwoWay) {
+        if (counts[0] > 0 && counts[1] > 0) {
+          everTwoWay = true;
+          this.directCalls.noteTwoWayAudio(wire.callId, true);
+        }
+        return;
+      }
+      if (now - lastProgressAtMs >= STALL_MS) this.directCalls.noteTwoWayAudio(wire.callId, false);
+      else if (progressed) this.directCalls.noteTwoWayAudio(wire.callId, true);
+    }, 250);
+    timer.unref?.();
+    this.directProbes.set(wire.callId, timer);
+  }
+
+  private stopDirectProbe(callId: string): void {
+    const timer = this.directProbes.get(callId);
+    if (timer !== undefined) {
+      clearInterval(timer);
+      this.directProbes.delete(callId);
+    }
   }
 
   /**
@@ -2484,6 +3022,11 @@ export class CallRuntime {
   /** Arm (or re-arm) the disconnect grace reaper for a disconnected seat. */
   private scheduleReap(state: CallParticipantRuntimeState): void {
     this.cancelReap(state);
+    logger.info('Call disconnect reaper armed', {
+      callId: state.callId,
+      participantId: state.participantId,
+      graceMs: this.disconnectGraceMs,
+    });
     state.reapTimer = this.setTimer(() => {
       state.reapTimer = null;
       try {
@@ -2502,6 +3045,10 @@ export class CallRuntime {
     if (!state.reapTimer) return;
     this.clearTimer(state.reapTimer);
     state.reapTimer = null;
+    logger.info('Call disconnect reaper cancelled', {
+      callId: state.callId,
+      participantId: state.participantId,
+    });
   }
 
   /** Grace expired without a resume: the seat is auto-left and fully cleaned. */
@@ -2525,10 +3072,22 @@ export class CallRuntime {
   /**
    * A socket may only signal for the identity it joined with; payloads naming
    * another call/participant are rejected before touching any peer state.
+   *
+   * A KNOCKING seat is bound (so the host's answer can reach it) but is NOT
+   * in the call: until admitted it may neither negotiate a receive peer,
+   * relay video signalling to a seated member, nor touch call state. The
+   * one thing a knocker may do through its binding is LEAVE.
    */
-  private requireBinding(socket: CallSocketLike, raw: unknown): CallSocketBinding | null {
+  private requireBinding(
+    socket: CallSocketLike,
+    raw: unknown,
+    knocking: 'refuse' | 'allow' = 'refuse',
+  ): CallSocketBinding | null {
     const binding = this.socketBindings.get(socket.id);
     if (!binding) return null;
+    if (knocking === 'refuse' && this.store.isKnocking(binding.callId, binding.participantId)) {
+      return null;
+    }
     // The schema checks object-ness only; the id EQUALITY below is this
     // runtime's check, because only the runtime knows the socket's binding.
     const parsed = CallBoundPayloadSchema.safeParse(raw);
@@ -2759,6 +3318,7 @@ function toWireCallState(snapshot: CallSnapshot): CallStateWirePayload {
     // defect recorded a few lines below.
     conferenceRole: participant.conferenceRole,
     ...(participant.subject === undefined ? {} : { subject: participant.subject }),
+    ...(participant.accountId === undefined ? {} : { accountId: participant.accountId }),
   }));
   return {
     callId: snapshot.callId,
@@ -2770,6 +3330,13 @@ function toWireCallState(snapshot: CallSnapshot): CallStateWirePayload {
     // the store snapshot but never crossed the wire, so the owner's toggle
     // was invisible to every client.
     transcriptDownloadAllowed: snapshot.transcriptDownloadAllowed,
+    // Conference setup (29 Aug): all four cross the wire for the same reason
+    // the policy above does -- state a client cannot see is state it cannot
+    // act on.
+    title: snapshot.title,
+    privacy: snapshot.privacy,
+    targetLanguages: [...snapshot.targetLanguages],
+    knocking: snapshot.knocking.map((seat) => ({ ...seat })),
     participants,
   };
 }

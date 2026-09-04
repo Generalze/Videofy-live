@@ -1,0 +1,380 @@
+/** @author masterzee001 */
+/**
+ * One timeline and one output buffer per broadcast, held by run.
+ *
+ * The same partition rule as the performance registry, for the same reason: a
+ * channel can air the same programme twice, and the second airing's timeline
+ * is not a continuation of the first. Keying on the programme would splice two
+ * broadcasts together; keying on the transport session would start a new
+ * broadcast every time a stream reconnected.
+ *
+ * A RECONNECT MUST NOT BEGIN A SECOND BROADCAST. `open` returns the existing
+ * timeline when one is already held for that run, so a dropped stream that
+ * comes back keeps writing to the account it was already writing to, and the
+ * audience's cursor does not reset to the beginning of a broadcast they are
+ * already halfway through.
+ */
+
+import {
+  METADATA_PLANE_ONLY,
+  ProgrammeOutputBuffer,
+  ProgrammeTimeline,
+  type BufferPolicy,
+  type BufferStatus,
+  type GovernedPlanes,
+} from '@videofy-live/programme-timeline';
+import type { ProgrammeRunIdentity } from '@videofy-live/media-ingress-wire';
+import type {
+  ProgrammeTimelineEvent,
+  ProgrammeTimelineStore,
+} from '@videofy-live/programme-timeline';
+
+/** How many concurrent broadcasts this process holds an account for. */
+export const MAX_TRACKED_TIMELINES = 32;
+
+/**
+ * The vocabulary a recogniser session pinned, and how sure we are of it.
+ *
+ * `unavailable` is not `none`: one means the authority could not be reached,
+ * the other that this programme has no terms. They produce identical
+ * recognition and mean opposite things.
+ */
+export interface RunVocabulary {
+  readonly state: 'active' | 'none' | 'unavailable';
+  readonly revision: number | null;
+  readonly termCount: number | null;
+}
+
+interface TrackedRun {
+  readonly identity: ProgrammeRunIdentity;
+  readonly timeline: ProgrammeTimeline;
+  readonly buffer: ProgrammeOutputBuffer;
+}
+
+export class ProgrammeTimelineRegistry {
+  private readonly runs = new Map<string, TrackedRun>();
+  private readonly vocabularies = new Map<string, RunVocabulary>();
+  private readonly sessionRuns = new Map<string, string>();
+  private readonly openListeners: ((runId: string) => void)[] = [];
+  private recoveredListener:
+    | ((
+        runId: string,
+        events: readonly ProgrammeTimelineEvent[],
+      ) => Promise<{ readonly missing: readonly string[] }>)
+    | null = null;
+
+  constructor(
+    private readonly maxRuns: number = MAX_TRACKED_TIMELINES,
+    private readonly defaultDelayMs = 0,
+    private readonly policy?: BufferPolicy,
+    /**
+     * Where broadcasts survive this process. Absent means they do not, and a
+     * programme that promised a safety delay cannot keep that promise across a
+     * restart -- which `durable()` reports so nobody has to guess.
+     */
+    private readonly store?: ProgrammeTimelineStore,
+    /**
+     * Which delivery planes this deployment actually holds to the cursor.
+     *
+     * Metadata only, today: original media is forwarded live from the
+     * broadcaster's tracks to each listener and there is nowhere to hold it.
+     * A protective delay is therefore refused rather than half applied, and
+     * this is the parameter a deployment changes when that stops being true.
+     */
+    private readonly planes: GovernedPlanes = METADATA_PLANE_ONLY,
+  ) {}
+
+  /**
+   * Can a safety promise made now outlive this process?
+   *
+   * Asked BEFORE going on air. An unwritable spool discovered during a
+   * broadcast is a broadcast that has already promised something it cannot
+   * deliver.
+   */
+  async durable(): Promise<{ readonly durable: boolean; readonly reason: string | null }> {
+    if (this.store === undefined) {
+      return { durable: false, reason: 'no durable timeline store is configured' };
+    }
+    const health = await this.store.health();
+    return { durable: health.writable, reason: health.reason };
+  }
+
+  /**
+   * Bring a broadcast back after the process that was running it went away.
+   *
+   * Replay, not reconstruction: what was written is read back in order and the
+   * cursor is put where it was, so an audience forty seconds into a protected
+   * programme is still forty seconds into it. A run with nothing stored
+   * returns false, and the caller starts a new broadcast rather than pretending
+   * to continue one it cannot account for.
+   */
+  async recover(identity: ProgrammeRunIdentity): Promise<boolean> {
+    if (this.store === undefined) return false;
+    const persisted = await this.store.load(identity.runId);
+    if (persisted === null || persisted.events.length === 0) return false;
+
+    const timeline = new ProgrammeTimeline(identity);
+    for (const event of persisted.events) {
+      timeline.append({
+        programmeTimeMs: event.programmeTimeMs,
+        kind: event.kind,
+        reference: event.reference,
+        durationMs: event.durationMs,
+        attributes: event.attributes,
+      });
+    }
+    const buffer = new ProgrammeOutputBuffer(
+      timeline,
+      this.defaultDelayMs,
+      this.policy,
+      this.planes,
+      /*
+       * THE CURSOR, PERSISTED AS IT MOVES.
+       *
+       * `saveCursor` existed on every store implementation and was called by
+       * nothing, so a restart recovered the media byte-exact and sent the
+       * audience back to the beginning. Fire-and-forget for the same reason
+       * the events are: a live broadcast cannot wait on a disk.
+       */
+      (releasedThroughMs) => void this.store?.saveCursor(identity.runId, releasedThroughMs),
+    );
+    buffer.restoreReleasedThrough(persisted.releasedThroughMs);
+    this.runs.set(identity.runId, { identity, timeline, buffer });
+    this.evictOldest();
+
+    /*
+     * THE MEDIA HAS TO COME BACK TOO. The journal survives a restart and the
+     * cursor with it, so a recovered broadcast knows exactly what it published
+     * -- and, until this hook existed, had no idea where any of it was. The
+     * manifest came back well formed and empty, every status green, the
+     * audience served nothing for the rest of the programme.
+     */
+    const media = await this.recoveredListener?.(identity.runId, persisted.events);
+    if (media !== undefined && media.missing.length > 0) {
+      /*
+       * Material this broadcast already published, and cannot serve again.
+       * Failing is the only honest answer: continuing would offer a window
+       * with holes in it, and a viewer who reconnected into one of them would
+       * simply stall.
+       */
+      buffer.fail(
+        `retained media is missing for ${media.missing.length} published segment(s)`,
+      );
+    }
+
+    if (!persisted.intact) {
+      /*
+       * A HOLE IN THE RECORD STOPS THE BROADCAST, VISIBLY.
+       *
+       * The events are kept -- they are the best account of this programme
+       * that exists -- but the output does not resume over a gap. A protected
+       * broadcast whose record is missing a piece cannot tell what the
+       * audience already received, and carrying on would either replay
+       * material they have had or skip material they have not. Failing here
+       * costs the rest of the programme; guessing costs the promise the delay
+       * was made under.
+       */
+      buffer.fail('the recovered timeline has a gap and cannot be resumed safely');
+    }
+    return true;
+  }
+
+  /**
+   * Told when a broadcast starts being tracked here.
+   *
+   * The hook exists so ownership can be claimed at the one moment it matters
+   * -- before anything is written -- without the registry knowing what a lease
+   * is. A registry that reached for a lease directly would be a registry that
+   * could not be tested without one.
+   */
+  onRunOpened(listener: (runId: string) => void): void {
+    this.openListeners.push(listener);
+  }
+
+  /**
+   * Told when a broadcast is recovered, so its media can be put back.
+   *
+   * A hook rather than a dependency: the registry knows about timelines and
+   * cursors and deliberately not about spools, and a registry that reached for
+   * a filesystem would be one that could not be tested without one.
+   */
+  onRecovered(
+    listener: (
+      runId: string,
+      events: readonly ProgrammeTimelineEvent[],
+    ) => Promise<{ readonly missing: readonly string[] }>,
+  ): void {
+    this.recoveredListener = listener;
+  }
+
+  /**
+   * The timeline for this run, resumed if it already exists.
+   *
+   * Resumed rather than replaced: the identity is what says whether this is
+   * the same broadcast, and a stream that dropped and returned is the same
+   * broadcast by definition.
+   */
+  open(identity: ProgrammeRunIdentity): ProgrammeTimeline {
+    const existing = this.runs.get(identity.runId);
+    if (existing !== undefined) return existing.timeline;
+
+    /*
+     * PERSISTED AS IT IS WRITTEN, or the journal recovery reads is empty.
+     *
+     * A store that is only consulted on restart is not a store; it is a file
+     * nobody wrote to. The sink is fire-and-forget because a live broadcast
+     * cannot wait on a disk -- and when a write fails, the buffer fails
+     * CLOSED, because a safety delay whose record is not being kept is a
+     * delay that will not survive the next restart, and the audience was
+     * promised one that would.
+     */
+    const tracked: { buffer: ProgrammeOutputBuffer | null } = { buffer: null };
+    const store = this.store;
+    /*
+     * WHOSE BROADCAST THIS IS, written once, before any event.
+     *
+     * The journal recorded events and not identity, so a restarted service
+     * could read back a run's whole timeline and still not know which channel
+     * aired it -- and visibility is resolved per channel, so no audience could
+     * be admitted to it. Fire-and-forget for the same reason the events are:
+     * a live broadcast cannot wait on a disk. A run whose identity did not
+     * reach the volume is one recovery will decline rather than guess at.
+     */
+    void store?.saveIdentity?.(identity);
+    const timeline = new ProgrammeTimeline(
+      identity,
+      store === undefined
+        ? undefined
+        : (event) => {
+            void store.append(event).then((stored) => {
+              if (!stored) tracked.buffer?.fail('the programme timeline could not be persisted');
+            });
+          },
+    );
+    const buffer = new ProgrammeOutputBuffer(
+      timeline,
+      this.defaultDelayMs,
+      this.policy,
+      this.planes,
+      /*
+       * THE CURSOR, PERSISTED AS IT MOVES.
+       *
+       * `saveCursor` existed on every store implementation and was called by
+       * nothing, so a restart recovered the media byte-exact and sent an
+       * audience forty-three seconds in back to the beginning. Fire-and-forget
+       * for the same reason the events are: a live broadcast cannot wait on a
+       * disk.
+       */
+      (releasedThroughMs) => void store?.saveCursor(identity.runId, releasedThroughMs),
+    );
+    tracked.buffer = buffer;
+    this.runs.set(identity.runId, { identity, timeline, buffer });
+    this.evictOldest();
+    // Announced only for a run that is genuinely new here: a reconnect
+    // returned above, and re-claiming ownership on every reconnect would be
+    // asking a question that was already answered.
+    for (const listener of this.openListeners) listener(identity.runId);
+    return timeline;
+  }
+
+  /**
+   * What vocabulary a run's recogniser is actually running on.
+   *
+   * Recorded when the session pinned it, so a console can report the version
+   * IN USE rather than the version most recently saved. Those differ the
+   * moment an operator edits mid-programme, and saying otherwise would show a
+   * revision number nothing was using.
+   */
+  noteVocabulary(runId: string, vocabulary: RunVocabulary): void {
+    const run = this.runs.get(runId);
+    if (run !== undefined) this.vocabularies.set(runId, vocabulary);
+  }
+
+  vocabulary(runId: string): RunVocabulary | null {
+    return this.vocabularies.get(runId) ?? null;
+  }
+
+  timeline(runId: string): ProgrammeTimeline | null {
+    return this.runs.get(runId)?.timeline ?? null;
+  }
+
+  buffer(runId: string): ProgrammeOutputBuffer | null {
+    return this.runs.get(runId)?.buffer ?? null;
+  }
+
+  /**
+   * What the buffer for this run is doing, or null when nothing is tracked.
+   *
+   * Null rather than an idle-looking status: a console must be able to tell
+   * "this process is not running that broadcast" from "that broadcast is
+   * holding no delay", which look identical if both answer with zeroes.
+   */
+  status(runId: string): BufferStatus | null {
+    return this.runs.get(runId)?.buffer.status() ?? null;
+  }
+
+  tracks(runId: string): boolean {
+    return this.runs.has(runId);
+  }
+
+  /**
+   * Which broadcast a transport session belongs to.
+   *
+   * Needed because the audience-facing delivery routes are keyed by SESSION
+   * while the cursor that governs them is keyed by RUN. Without this mapping
+   * those routes cannot ask whether a segment has been released, and a caller
+   * who guesses a segment id gets material the cursor is still holding.
+   *
+   * A session may be replaced across a reconnect; the run it points at does
+   * not change, which is the whole point of the run identity.
+   */
+  noteSession(sessionId: string, runId: string): void {
+    if (this.runs.has(runId)) this.sessionRuns.set(sessionId, runId);
+  }
+
+  /** The run behind a transport session, or null when there is none. */
+  runForSession(sessionId: string): string | null {
+    const runId = this.sessionRuns.get(sessionId);
+    if (runId === undefined) return null;
+    // A run this process has released is not a run: answering for it would
+    // ungovern its media the moment it was evicted.
+    return this.runs.has(runId) ? runId : null;
+  }
+
+  /** Every run this process is currently tracking. */
+  trackedRuns(): readonly string[] {
+    return [...this.runs.keys()];
+  }
+
+  /**
+   * The channel a run belongs to, or null when this process is not running it.
+   *
+   * Needed by anything that must ask a question about the CHANNEL -- who may
+   * watch, most of all -- from a request that only ever names the run. Null is
+   * the same answer as "no such broadcast", which is what keeps an access
+   * decision from having to distinguish the two.
+   */
+  channelOf(runId: string): string | null {
+    return this.runs.get(runId)?.identity.channelId ?? null;
+  }
+
+  /** The broadcast is over. Its account and its cursor go with it. */
+  release(runId: string): void {
+    this.runs.delete(runId);
+    this.vocabularies.delete(runId);
+    for (const [sessionId, tracked] of [...this.sessionRuns]) {
+      if (tracked === runId) this.sessionRuns.delete(sessionId);
+    }
+    // The journal is settled and removed after; a delete that raced its own
+    // writes would leave a broadcast half-remembered.
+    void this.store?.release(runId);
+  }
+
+  private evictOldest(): void {
+    while (this.runs.size > this.maxRuns) {
+      const oldest = this.runs.keys().next();
+      if (oldest.done === true) return;
+      this.runs.delete(oldest.value);
+    }
+  }
+}

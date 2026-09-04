@@ -48,6 +48,13 @@
 	# ICE servers (STUN + a time-limited TURN credential) for call video.
 	# Call video is a peer-to-peer mesh, so the browser must be told how to
 	# traverse NAT before it can connect to another participant.
+	# The direct-call telephone: pre-join check, ringing ack, decline, and
+	# the conference status/public listing. Gateway-owned; a device asks these
+	# BEFORE it is in a socket room. (Was live on the box but missing here.)
+	handle /calls/* {
+		reverse_proxy 127.0.0.1:3001
+	}
+
 	handle /webrtc/* {
 		reverse_proxy 127.0.0.1:3001
 	}
@@ -109,7 +116,7 @@
 	# with no Cache-Control at all and fell straight back into heuristic caching.
 	# A fix that names its subjects individually has to be revisited every time a
 	# subject is added, and that revisit is what was missed.
-	@spa_shell path /call/ /call/index.html /listen/ /listen/index.html /operator/ /operator/index.html / /index.html /app/ /app/* /videofy/ /videofy/index.html /videofy/live/ /videofy/live/index.html
+	@spa_shell path /call/ /call/index.html /listen/ /listen/index.html /streams/* /operator/ /operator/index.html / /index.html /app/ /app/* /videofy/ /videofy/index.html /videofy/live/ /videofy/live/index.html
 	header @spa_shell Cache-Control "no-cache, must-revalidate"
 
 	# /assets/* is the ecosystem site's own bundle directory, served from the root.
@@ -128,6 +135,41 @@
 		uri strip_prefix /listen
 		try_files {path} /index.html
 		file_server
+	}
+
+	# /streams/<handle> is the public canonical channel page (founder directive
+	# A, 30 Aug 2026). It is SERVER-RENDERED by the account service, and this is
+	# the one route in the file that is not a static file or a plain proxy, so
+	# here is why.
+	#
+	# It was served as the listener bundle, exactly like /listen/. That bundle's
+	# head is <title>Videofy Live - Viewer</title> and nothing else -- no og:*,
+	# no image, no canonical -- and every crawler that matters (WhatsApp above
+	# all) reads the HTML and never executes a line of JavaScript. So the ONE
+	# link this product is shared by -- what the operator console's Copy channel
+	# link, Share and QR all produce -- previewed as a naked URL, which is what
+	# the founder reported on 30 Aug 2026.
+	#
+	# The page is per-channel: its title is the channel's display name and its
+	# picture is the channel's avatar. No static file can be that. The account
+	# service already owns channel identity, so it renders the page by injecting
+	# a real head into the listener shell it reads off disk -- the body is still
+	# the same viewer application, and a person following the link is unaffected.
+	#
+	# REWRITTEN to /share/streams/*, not proxied as-is, because the account
+	# service already answers GET /streams/:handle with the profile JSON that the
+	# viewer itself fetches through /auth. The rewrite gives the HTML page its own
+	# address upstream, so that JSON route keeps working unchanged.
+	#
+	# The bundle is still built with --base=/listen/, so the shell this returns
+	# loads its hashed assets from /listen/assets/*, which the block above serves
+	# statically. One build, one copy of the app.
+	#
+	# Opaque listener links (/listen/c/<id>, ?c=, ?channel=) do not come through
+	# here at all and are untouched.
+	handle /streams/* {
+		rewrite * /share{uri}
+		reverse_proxy 127.0.0.1:3006
 	}
 
 	handle /operator/* {

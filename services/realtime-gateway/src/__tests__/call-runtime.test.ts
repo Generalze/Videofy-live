@@ -113,6 +113,20 @@ interface FakeChunkTiming {
 function createHarness(
   verifyVoiceIdentity?: (token: string) => string | null,
   authorizeCallHost?: (sessionToken: string | null) => Promise<boolean>,
+  resolveDirectCallMode?: (
+    sessionToken: string | null,
+    peerAccountId: string,
+  ) => Promise<'normal' | 'translated' | null>,
+  /**
+   * Which directions this harness treats as approved for a live call.
+   *
+   * CallRuntime refuses every translated direct call when no authority is
+   * supplied -- the fail-closed default -- so a harness that omitted one would
+   * be testing the route gate by accident and reporting it as a broken call.
+   * Tests about translation say which routes are approved; the gate itself is
+   * tested deliberately in call-live-route-authority.test.ts.
+   */
+  callLiveRouteApproved?: ((sourceLanguage: string, targetLanguage: string) => boolean) | null,
 ) {
   let tokenSerial = 0;
   const store = new CallSessionStore({
@@ -203,6 +217,11 @@ function createHarness(
        * reporting it as a broken call.
        */
       authorizeCallHost: authorizeCallHost ?? (async () => true),
+      // `null` wires NO authority, so the fail-closed default is reachable.
+      ...(callLiveRouteApproved === null
+        ? {}
+        : { callLiveRouteApproved: callLiveRouteApproved ?? (() => true) }),
+      ...(resolveDirectCallMode ? { resolveDirectCallMode } : {}),
     store,
     emitToRoom,
     ingestControl,
@@ -361,6 +380,148 @@ function generatedAudioEvent(
 }
 
 describe('CallRuntime join and ingest plan handling', () => {
+  /*
+   * DIRECT CALLS (founder ruling 2026-08-28): a join that names the peer
+   * account creates a PERSONAL call whose mode is the account pair's
+   * conversation mode, resolved server-side with the caller's session. The
+   * client's own callMode is ignored; a later chat-mode flip does not touch
+   * the active call, because the store locks callMode at creation.
+   */
+  it('a direct call is personal and takes the pair mode, not the client form', async () => {
+    const resolver = vi.fn(async (_token: string | null, peer: string) =>
+      peer === 'acct_00000000000000bb' ? ('translated' as const) : null,
+    );
+    const direct = createHarness(() => 'acct_00000000000000aa', undefined, resolver);
+    const ack = await join(direct, new FakeSocket('socket-a'), {
+      ...JOIN_A,
+      callId: 'ring-abc',
+      callMode: 'normal',
+      callType: 'conference',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+    expect(ack.ok).toBe(true);
+    expect(resolver).toHaveBeenCalledWith('ana-token', 'acct_00000000000000bb');
+    const snapshot = direct.store.snapshot('ring-abc');
+    expect(snapshot?.callType).toBe('personal');
+    expect(snapshot?.callMode).toBe('translated');
+    // The peer id is routing input, never room-visible state.
+    expect(JSON.stringify(direct.emitToRoom.mock.calls)).not.toContain('directPeerAccountId');
+  });
+
+  /*
+   * THE PAIR'S MODE IS NOT THE ROUTE'S APPROVAL.
+   *
+   * The relationship says these two people translate. It says nothing about
+   * whether this LANGUAGE PAIR has been qualified to carry a live call, and
+   * the call path used to consult only whether an engine existed -- so an
+   * engine being installed was treated as permission for any direction
+   * somebody could name.
+   */
+  it('refuses a translated direct call when the route is not approved for call-live', async () => {
+    const resolver = vi.fn(async () => 'translated' as const);
+    const direct = createHarness(
+      () => 'acct_00000000000000aa',
+      undefined,
+      resolver,
+      // Nothing is approved for a live call.
+      () => false,
+    );
+    const ack = await join(direct, new FakeSocket('socket-a'), {
+      ...JOIN_A,
+      callId: 'ring-refused',
+      callMode: 'normal',
+      callType: 'conference',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+
+    expect(ack.ok).toBe(false);
+    if (ack.ok) throw new Error('unreachable');
+    expect(ack.code).toBe('translation-route-unavailable');
+    // NOT the ringing 'unavailable', which means the peer could not be reached.
+    // Telling somebody their friend is unreachable when the language pair is
+    // the problem sends them to the wrong place entirely.
+    expect(ack.code).not.toBe('unavailable');
+
+    // REFUSED BEFORE ANYTHING EXISTS. No call, so nothing rang and nothing was
+    // silently downgraded to a normal call behind the caller's back.
+    expect(direct.store.snapshot('ring-refused')).toBeNull();
+  });
+
+  it('refuses when no route authority is wired at all', async () => {
+    // Absent means refused, exactly as the host gate treats a missing
+    // authorizer: a privileged surface whose control evaporates on a
+    // misconfiguration is indistinguishable from one that works.
+    const resolver = vi.fn(async () => 'translated' as const);
+    const closed = createHarness(() => 'acct_00000000000000aa', undefined, resolver, null);
+    const ack = await join(closed, new FakeSocket('socket-a'), {
+      ...JOIN_A,
+      callId: 'ring-closed',
+      callMode: 'normal',
+      callType: 'conference',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+    expect(ack.ok).toBe(false);
+    if (ack.ok) throw new Error('unreachable');
+    expect(ack.code).toBe('translation-route-unavailable');
+  });
+
+  it('a NORMAL direct call is unaffected by the route authority', async () => {
+    // A normal call translates nothing, so there is no direction to approve
+    // and the gate has nothing to decide. Refusing here would break ordinary
+    // calling in the name of a translation rule.
+    const resolver = vi.fn(async () => 'normal' as const);
+    const direct = createHarness(
+      () => 'acct_00000000000000aa',
+      undefined,
+      resolver,
+      () => false,
+    );
+    const ack = await join(direct, new FakeSocket('socket-a'), {
+      ...JOIN_A,
+      callId: 'ring-normal',
+      callMode: 'normal',
+      callType: 'conference',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+    expect(ack.ok).toBe(true);
+    expect(direct.store.snapshot('ring-normal')?.callMode).toBe('normal');
+  });
+
+  it('a direct call whose pair mode cannot be resolved is a NORMAL call', async () => {
+    const direct = createHarness(() => 'acct_00000000000000aa', undefined, async () => null);
+    await join(direct, new FakeSocket('socket-a'), {
+      ...JOIN_A,
+      callId: 'ring-def',
+      callMode: 'translated',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+    expect(direct.store.snapshot('ring-def')?.callMode).toBe('normal');
+  });
+
+  it('the second joiner naming a peer changes nothing: mode is locked at creation', async () => {
+    const resolver = vi.fn<() => Promise<'normal' | 'translated' | null>>(async () => 'translated');
+    const direct = createHarness(() => 'acct_00000000000000aa', undefined, resolver);
+    await join(direct, new FakeSocket('socket-a'), {
+      ...JOIN_A,
+      callId: 'ring-ghi',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+    resolver.mockResolvedValue('normal' as const);
+    await join(direct, new FakeSocket('socket-b'), {
+      ...JOIN_B,
+      callId: 'ring-ghi',
+      directPeerAccountId: 'acct_00000000000000aa',
+    });
+    expect(direct.store.snapshot('ring-ghi')?.callMode).toBe('translated');
+    expect(resolver).toHaveBeenCalledTimes(1);
+  });
+
   let harness: Harness;
 
   beforeEach(() => {
@@ -383,6 +544,11 @@ describe('CallRuntime join and ingest plan handling', () => {
       ownerParticipantId: 'participant_1',
       // Review fix: the transcript policy now actually crosses the wire.
       transcriptDownloadAllowed: true,
+      // Conference setup (29 Aug): the defaults, on the wire.
+      title: null,
+      privacy: 'private',
+      targetLanguages: [],
+      knocking: [],
       participants: [
         {
           participantId: 'participant_1',
@@ -564,14 +730,29 @@ describe('CallRuntime join and ingest plan handling', () => {
     expect(delivered).toEqual([1, 1]);
   });
 
-  it('never puts a voice owner or a session token in anything the room can see', async () => {
+  it('never puts a token in anything the room can see; identity crosses as accountId only', async () => {
+    /*
+     * REVISED PIN (2026-08-28). The original banned 'acct_' outright, from
+     * the era when account identity existed only as private voice-owner
+     * state. The product now DELIBERATELY publishes the seat's verified
+     * accountId in call:state -- it is what lets tiles show the person's
+     * face and name, the founder's prominence ruling -- so the pin narrows
+     * to what must actually stay private: the session token, the resume
+     * token, and the voiceOwnerId FIELD (voice policy must never be
+     * readable off the wire even though it holds the same value).
+     */
     const verified = createHarness(() => 'acct_aaaaaaaaaaaaaaaa');
     await join(verified, new FakeSocket('socket-a'), { ...JOIN_A, sessionToken: 'ana-token' });
     await join(verified, new FakeSocket('socket-b'), { ...JOIN_B });
 
     const emitted = JSON.stringify(verified.emitToRoom.mock.calls);
-    expect(emitted).not.toContain('acct_');
     expect(emitted).not.toContain('ana-token');
+    expect(emitted).not.toContain('sessionToken');
+    expect(emitted).not.toContain('resumeToken');
+    expect(emitted).not.toContain('voiceOwnerId');
+    // And the deliberate disclosure is pinned too: the verified seat's
+    // account travels, the anonymous seat's does not.
+    expect(emitted).toContain('"accountId":"acct_aaaaaaaaaaaaaaaa"');
   });
 
   it('runs a same-language pair STT-only: empty targets, no voices, no synthetic language (W5)', async () => {
@@ -1162,6 +1343,74 @@ describe('CallRuntime lifecycle: disconnect, reaper, leave, resume', () => {
         ?.participants.find((participant) => participant.participantId === 'participant_1')
         ?.connected,
     ).toBe(true);
+  });
+
+  /*
+   * THE TWO-MINUTE HYPOTHESIS, closed from both ends.
+   *
+   * The founder saw calls die at about two minutes, which is the disconnect
+   * grace. The grace is not a call limit -- it is the window a dropped seat is
+   * held open FOR a resume -- so the question was never whether 120 seconds is
+   * too short. It was whether the reaper can arm on a call that never dropped,
+   * and whether a resumed seat can still be reaped by the socket it replaced.
+   *
+   * Enlarging the grace would have hidden either fault rather than fixing it.
+   */
+  it('A: a healthy connected socket never arms the disconnect reaper', async () => {
+    // Nothing has disconnected. A timer existing at all here would mean a live
+    // call is already counting down towards being reaped.
+    expect(harness.timers.filter((timer) => !timer.cleared)).toHaveLength(0);
+
+    // Ordinary traffic on a healthy call must not arm one either.
+    harness.emitToRoom.mockClear();
+    await join(harness, new FakeSocket('socket-c'), {
+      ...JOIN_B,
+      resumeParticipantId: 'participant_2',
+      resumeToken: 'resume-token-2',
+    });
+    expect(harness.timers.filter((timer) => !timer.cleared)).toHaveLength(0);
+    expect(harness.runtime.getDiagnostics().participantCount).toBe(2);
+  });
+
+  it('B: the replaced socket disconnecting cannot reap the resumed seat', async () => {
+    /*
+     * THE OLD SOCKET IS STILL BOUND WHEN THE NEW ONE RESUMES.
+     *
+     * A first draft of this test disconnected socket-a, resumed, and then
+     * disconnected socket-a again -- and passed whether or not the runtime
+     * protected anything, because the first disconnect had already removed
+     * that socket's binding. It proved nothing.
+     *
+     * The real ordering on a phone changing network is the opposite: the new
+     * socket connects and resumes the seat BEFORE the dead one is noticed, so
+     * the old binding is still live when its disconnect finally lands. If that
+     * late event still resolved to the participant it would mark a working
+     * seat disconnected and arm a fresh reaper underneath it -- a call dying
+     * about two minutes after a network change, with nothing in the logs but a
+     * routine disconnect.
+     */
+    const resumed = await join(harness, new FakeSocket('socket-a2'), {
+      ...JOIN_A,
+      resumeParticipantId: 'participant_1',
+      resumeToken: 'resume-token-1',
+    });
+    expect(resumed.ok).toBe(true);
+    expect(harness.timers.filter((timer) => !timer.cleared)).toHaveLength(0);
+
+    // NOW the socket it replaced reports its disconnect.
+    harness.runtime.handleSocketDisconnect('socket-a');
+
+    expect(harness.runtime.getDiagnostics().participantCount).toBe(2);
+    const seat = harness.store
+      .snapshot('demo')
+      ?.participants.find((participant) => participant.participantId === 'participant_1');
+    expect(seat?.connected).toBe(true);
+    // No countdown was started against the resumed seat.
+    expect(harness.timers.filter((timer) => !timer.cleared)).toHaveLength(0);
+
+    // Even firing every timer that ever existed leaves the call intact.
+    firePendingTimers(harness);
+    expect(harness.runtime.getDiagnostics().participantCount).toBe(2);
   });
 
   it('tears everything down and returns all counts to baseline when the last participant leaves', async () => {
@@ -1805,5 +2054,90 @@ describe('starting a call requires authority', () => {
       expect(ack.error.toLowerCase()).not.toContain('capability');
       expect(ack.error.toLowerCase()).not.toContain('session.host');
     }
+  });
+});
+
+describe('CallRuntime: a personal call is a telephone call', () => {
+  const identity = (token: string): string | null =>
+    token === 'ana-token'
+      ? 'acct_00000000000000aa'
+      : token === 'beto-token'
+        ? 'acct_00000000000000bb'
+        : null;
+
+  async function connectedPair() {
+    const harness = createHarness(identity, undefined, async () => 'normal');
+    const socketA = new FakeSocket('socket-a');
+    const socketB = new FakeSocket('socket-b');
+    const ackA = await join(harness, socketA, {
+      ...JOIN_A,
+      callId: 'ring-pair',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+    const ackB = await join(harness, socketB, {
+      ...JOIN_B,
+      callId: 'ring-pair',
+      directPeerAccountId: 'acct_00000000000000aa',
+      sessionToken: 'beto-token',
+    });
+    expect(ackA.ok && ackB.ok).toBe(true);
+    harness.emitToRoom.mockClear();
+    return { harness, socketA, socketB, ackA, ackB };
+  }
+
+  it('the callee joining is ANSWERED even though their join names the caller as the peer', async () => {
+    const { harness } = await connectedPair();
+    expect(harness.runtime.directCalls.get('ring-pair')?.state).toBe('connecting');
+    expect(harness.runtime.directCalls.get('ring-pair')?.answeredAtMs).not.toBeNull();
+  });
+
+  it('the join ack carries the telephone state, so a late socket never holds an old word', async () => {
+    const { ackB } = await connectedPair();
+    expect(ackB.ok && ackB.directState?.state).toBe('connecting');
+  });
+
+  it('when either party LEAVES, the call ends for the other party too', async () => {
+    const { harness, socketB, ackB } = await connectedPair();
+    const ack = vi.fn();
+    await socketB.trigger(
+      CALL_EVENTS.LEAVE,
+      { callId: 'ring-pair', participantId: ackB.ok ? ackB.participantId : '' },
+      ack,
+    );
+    const ended = roomEmissions(harness, CALL_EVENTS.ENDED);
+    expect(ended).toHaveLength(1);
+    expect(harness.store.snapshot('ring-pair')).toBeNull();
+    expect(harness.runtime.directCalls.get('ring-pair')?.state).toBe('ended');
+    expect(harness.runtime.directCalls.get('ring-pair')?.endedByAccountId).toBe(
+      'acct_00000000000000bb',
+    );
+  });
+
+  it('a seat reaped after the disconnect grace ends the call for the party still there', async () => {
+    const { harness } = await connectedPair();
+    harness.runtime.handleSocketDisconnect('socket-a');
+    expect(harness.store.snapshot('ring-pair')).not.toBeNull();
+    firePendingTimers(harness);
+    expect(harness.store.snapshot('ring-pair')).toBeNull();
+    expect(roomEmissions(harness, CALL_EVENTS.ENDED)).toHaveLength(1);
+  });
+
+  it('a resume within the grace keeps the SAME seat and the call alive', async () => {
+    const { harness, ackA } = await connectedPair();
+    harness.runtime.handleSocketDisconnect('socket-a');
+    const again = new FakeSocket('socket-a2');
+    const resumed = await join(harness, again, {
+      ...JOIN_A,
+      callId: 'ring-pair',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+      resumeParticipantId: ackA.ok ? ackA.participantId : '',
+      resumeToken: ackA.ok ? ackA.resumeToken : '',
+    });
+    expect(resumed.ok && resumed.participantId).toBe(ackA.ok ? ackA.participantId : 'x');
+    firePendingTimers(harness);
+    expect(harness.store.snapshot('ring-pair')).not.toBeNull();
+    expect(roomEmissions(harness, CALL_EVENTS.ENDED)).toHaveLength(0);
   });
 });

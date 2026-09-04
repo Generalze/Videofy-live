@@ -15,6 +15,12 @@ on:
     branches:
       - main
       - copilot/initial-repo-foundation
+      # RELEASE CANDIDATES MUST BE QUALIFIED WHERE THEY LIVE. The P8 branches
+      # were never in this list, so the integration that became the accepted
+      # baseline had no CI run at all -- the last green build belonged to a
+      # pre-merge commit on a different branch. A candidate nobody can point a
+      # pipeline at is a candidate nobody has tested.
+      - 'p8/**'
 
 jobs:
   validate:
@@ -34,6 +40,14 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
+      # BUILD BEFORE TEST. Workspace tests import sibling packages through
+      # their built dist/ (subpath exports like media-adapter-port/platform);
+      # on a clean runner nothing is built yet, so test-first failed to load
+      # a module that exists. Locally it only ever passed because dist/ was
+      # already there. Build order itself is verified by check-build-order.
+      - name: Build
+        run: npm run build
+
       - name: Run TypeScript tests
         run: npm test
 
@@ -42,9 +56,6 @@ jobs:
 
       - name: Run type-check
         run: npm run typecheck
-
-      - name: Build
-        run: npm run build
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -64,3 +75,186 @@ jobs:
 
       - name: Run cross-process integration smoke
         run: npm run test:integration
+
+  # ---------------------------------------------------------------------------
+  # THE ANDROID NATIVE GATE.
+  #
+  # COMPILE VALIDATION, NOT A BUILD. It exists to catch the things that used to
+  # be discovered by spending an EAS build: a Kotlin syntax error, a manifest
+  # that will not merge, a native module the autolinker never sees. Those are
+  # cheap here and expensive there.
+  #
+  # It deliberately does NOT run `assemble`: packaging an APK is slower, needs
+  # signing decisions, and proves nothing extra about whether the sources
+  # compile. No EAS is invoked, no artefact is published, nothing is deployed.
+  #
+  # It runs on an ephemeral runner because the development machine has no JDK
+  # and no Android SDK, and provisioning multi-gigabyte toolchains on a laptop
+  # to satisfy a gate is the wrong trade.
+  android-native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # A CLEAN INSTALL FROM THE LOCKFILE. A checkout must not need a prior
+      # `npm install` to discover a workspace; if it does, that is a release
+      # defect and this is where it surfaces.
+      - name: Install Node dependencies
+        run: npm ci
+
+      # The mobile app imports built workspace packages; prebuild reads the
+      # config, which reads those.
+      - name: Build workspace packages
+        run: npm run build
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # Does the Expo config parse and resolve at all? A malformed app.json or
+      # a plugin that cannot be found fails here, in seconds, rather than
+      # halfway through a native build.
+      - name: Validate Expo configuration
+        working-directory: apps/mobile
+        run: npx --yes expo config --type prebuild > /dev/null
+
+      # Generates android/ from app.json, the config plugins and the local
+      # modules. This is where an unlinked native module would go missing.
+      - name: Expo prebuild (Android)
+        working-directory: apps/mobile
+        run: npx --yes expo prebuild --platform android --no-install --clean
+
+      # THE NATIVE MODULE MUST ACTUALLY BE THERE. Prebuild succeeding is not
+      # the same as the autolinker having found our Kotlin: a module that is
+      # never linked compiles nothing and fails silently on a device instead.
+      #
+      # ASKED OF THE AUTOLINKER, not of settings.gradle. A first version of
+      # this step grepped settings.gradle for the module name and failed --
+      # not because the module was unlinked, but because Expo SDK 57 resolves
+      # modules at configuration time through useExpoModules(), so no
+      # individual name is ever written there. The resolver is the authority,
+      # and it names the exact class the app expects to call.
+      - name: Verify the Videofy call module was linked
+        working-directory: apps/mobile
+        run: |
+          set -e
+          npx --yes expo-modules-autolinking resolve --platform android --json > autolink.json
+          node -e "
+            const d = require('./autolink.json');
+            const found = (d.modules || []).find((m) => m.packageName === 'videofy-call');
+            if (!found) { console.error('videofy-call was not autolinked'); process.exit(1); }
+            const classes = found.projects.flatMap((p) => (p.modules || []).map((m) => m.classifier));
+            const expected = 'com.consummate7.videofy.call.VideofyCallModule';
+            if (!classes.includes(expected)) {
+              console.error('autolinked, but ' + expected + ' is missing; found: ' + classes.join(', '));
+              process.exit(1);
+            }
+            console.log('videofy-call linked: ' + classes.join(', '));
+          "
+
+      # Kotlin and Java compilation plus the manifest merge, without packaging.
+      - name: Compile Android sources and merge manifests
+        working-directory: apps/mobile/android
+        run: ./gradlew --no-daemon compileDebugKotlin compileDebugJavaWithJavac processDebugManifest
+
+      # AND OUR KOTLIN WAS AMONG WHAT COMPILED. A green Gradle run proves the
+      # app compiled; it does not by itself prove our module was part of it.
+      # These are the classes that make a call ring.
+      - name: Verify the call module's classes were produced
+        working-directory: apps/mobile
+        run: |
+          set -e
+          for klass in VideofyCallModule VideofyConnectionService IncomingCallService IncomingCallActivity VideofyMessagingService; do
+            found=$(find . -path ./node_modules -prune -o -name "$klass.class" -print 2>/dev/null | head -1)
+            test -n "$found" || (echo "no compiled class for $klass" && exit 1)
+            echo "compiled: $klass"
+          done
+
+      # The merged manifest is what the device actually reads. These four are
+      # what make a call ring like a telephone rather than appear as a tray
+      # notification, and a merge that silently dropped one would be invisible
+      # until a physical device failed to ring.
+      - name: Verify the merged manifest keeps the telephone permissions
+        working-directory: apps/mobile/android
+        run: |
+          set -e
+          MERGED=$(find app/build/intermediates -name AndroidManifest.xml -path "*debug*" | head -1)
+          test -n "$MERGED" || (echo "no merged manifest was produced" && exit 1)
+          echo "merged manifest: $MERGED"
+          for permission in USE_FULL_SCREEN_INTENT MANAGE_OWN_CALLS FOREGROUND_SERVICE_PHONE_CALL POST_NOTIFICATIONS; do
+            grep -q "$permission" "$MERGED"               || (echo "merged manifest is missing $permission" && exit 1)
+          done
+          for component in VideofyConnectionService IncomingCallService IncomingCallActivity VideofyMessagingService; do
+            grep -q "$component" "$MERGED"               || (echo "merged manifest is missing $component" && exit 1)
+          done
+
+  # ---------------------------------------------------------------------------
+  # MIGRATIONS, AGAINST A REAL POSTGRES.
+  #
+  # A fake pool can prove ORDER and BOOKKEEPING and nothing about whether the
+  # SQL is valid -- a bad column type, a malformed CHECK, an index on a column
+  # that does not exist. Those only appear when a real server parses them, and
+  # the first place that happens must not be a deployment.
+  #
+  # Both paths run, because they fail differently: FRESH is what a new
+  # environment does, UPGRADE is what an existing one does, and PARITY between
+  # them is what proves an upgraded database is not subtly different from a
+  # rebuilt one -- the difference that produces a bug reproducible only in
+  # staging.
+  #
+  # The service container is disposable and the script refuses any URL that
+  # looks like a real deployment.
+  migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: proof
+          POSTGRES_DB: proof
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      # The proof imports the account service's BUILT migrations, so that what
+      # is exercised is what ships rather than a re-read of the source.
+      - name: Build
+        run: npm run build
+
+      - name: Prove fresh, upgrade and parity
+        env:
+          DATABASE_URL: postgres://postgres:proof@127.0.0.1:5432/proof
+        run: npm run test:migrations

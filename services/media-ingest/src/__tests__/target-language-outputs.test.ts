@@ -4,8 +4,34 @@ import type {
   TextToSpeechSessionMetadata,
   TranslationSessionMetadata,
 } from '@videofy-live/shared-types';
+import { LANGUAGE_CATALOGUE } from '@videofy-live/language-catalogue';
 import { describe, expect, it } from 'vitest';
-import { buildTargetLanguageCatalogue } from '../language-controls.js';
+import {
+  buildTargetLanguageCatalogue,
+  configuredCapabilityProviderIds,
+} from '../language-controls.js';
+
+/**
+ * The catalogue is a DEPLOYMENT's answer, so these tests say which providers
+ * the deployment has rather than inheriting whatever credentials the machine
+ * running the suite happens to hold. A test that read the ambient environment
+ * would pass or fail for reasons that have nothing to do with the code.
+ */
+const FULLY_CREDENTIALLED = [
+  'deepgram',
+  'elevenlabs',
+  'azure',
+  'google-cloud',
+  'naijalingo',
+  'faster-whisper',
+  'opus-mt',
+  'm2m100',
+  'nllb-200',
+  'piper',
+  'mms-tts',
+];
+
+const WITHOUT_THE_SPECIALIST = FULLY_CREDENTIALLED.filter((id) => id !== 'naijalingo');
 import {
   buildTargetLanguageOutputs,
   capRecentEvents,
@@ -20,24 +46,32 @@ describe('target language outputs', () => {
       supportedVoiceLanguages: ['en', 'es'],
     });
 
-    expect(catalogue.map((item) => item.language)).toEqual([
-      'en',
-      'yo',
-      'pt',
-      'es',
-      'fr',
-      'zh',
-      'ar',
-      'ru',
-      'el',
-      'la',
-    ]);
+    // The P6.1 preview set keeps exactly the availability it had before the
+    // catalogue replaced the private candidate list.
+    const pinned: Record<string, TargetLanguageCapability['availability']> = {
+      en: 'voice-available',
+      yo: 'experimental',
+      pt: 'text-only',
+      es: 'voice-available',
+      fr: 'text-only',
+      zh: 'experimental',
+      ar: 'experimental',
+      ru: 'experimental',
+      el: 'experimental',
+      la: 'experimental',
+    };
+    for (const [language, availability] of Object.entries(pinned)) {
+      expect(catalogue.find((item) => item.language === language), language).toMatchObject({
+        availability,
+      });
+    }
     expect(catalogue.find((item) => item.language === 'es')).toMatchObject({
       availability: 'voice-available',
       voiceAvailable: true,
     });
     expect(catalogue.find((item) => item.language === 'en')).toMatchObject({
       label: 'English',
+      nativeName: 'English',
       availability: 'voice-available',
       voiceAvailable: true,
     });
@@ -46,14 +80,6 @@ describe('target language outputs', () => {
       textOnly: true,
     });
     expect(catalogue.find((item) => item.language === 'yo')).toMatchObject({
-      availability: 'experimental',
-      translationAvailable: false,
-    });
-    expect(catalogue.find((item) => item.language === 'ar')).toMatchObject({
-      availability: 'experimental',
-      translationAvailable: false,
-    });
-    expect(catalogue.find((item) => item.language === 'la')).toMatchObject({
       availability: 'experimental',
       translationAvailable: false,
     });
@@ -66,6 +92,129 @@ describe('target language outputs', () => {
       label: 'Greek',
       availability: 'experimental',
       translationAvailable: false,
+    });
+    expect(catalogue.find((item) => item.language === 'la')).toMatchObject({
+      label: 'Latin',
+      availability: 'experimental',
+      translationAvailable: false,
+    });
+  });
+
+  it('lists every catalogue language, unavailable ones included, in catalogue order', () => {
+    const catalogue = buildTargetLanguageCatalogue({
+      supportedTranslationLanguages: ['en', 'es'],
+      supportedVoiceLanguages: ['en'],
+      configuredProviderIds: FULLY_CREDENTIALLED,
+    });
+
+    const catalogueCodes = LANGUAGE_CATALOGUE.map((language) => language.code);
+    expect(catalogue.slice(0, catalogueCodes.length).map((item) => item.language)).toEqual(
+      catalogueCodes,
+    );
+    expect(new Set(catalogue.map((item) => item.language)).size).toBe(catalogue.length);
+
+    /*
+     * PRESENT AND NOT SELECTABLE, which is now a smaller set than it was.
+     * Welsh used to be here because the resolver's MT stage was a ten-entry
+     * array; with the engines declared, Welsh is a vendor claim -- `limited`,
+     * selectable, and labelled beta. Venda is the honest example: no
+     * translation engine in this deployment lists it at all.
+     */
+    const venda = catalogue.find((item) => item.language === 've');
+    expect(venda).toMatchObject({
+      label: 'Venda',
+      nativeName: 'Tshivenḓa',
+      availability: 'unavailable',
+      translationAvailable: false,
+      voiceAvailable: false,
+      state: 'unavailable',
+      targetState: 'unavailable',
+    });
+    expect(venda?.reason).toMatch(/No provider/);
+
+    const welsh = catalogue.find((item) => item.language === 'cy');
+    expect(welsh).toMatchObject({ label: 'Welsh', nativeName: 'Cymraeg', state: 'limited' });
+
+    // The resolver's evidence rides alongside the deployment's own answer.
+    expect(catalogue.find((item) => item.language === 'es')).toMatchObject({
+      state: 'available',
+      providers: { stt: 'deepgram', mt: 'opus-mt' },
+    });
+    expect(catalogue.find((item) => item.language === 'de')).toMatchObject({
+      state: 'limited',
+      availability: 'experimental',
+      translationAvailable: false,
+    });
+
+    // A language the chain can translate and cannot speak is captions-only.
+    // It is a product state, and the row says so rather than reading blank.
+    expect(catalogue.find((item) => item.language === 'wo')).toMatchObject({
+      captionsOnly: true,
+      // No voice at all, so the conservative target word is `unavailable`;
+      // `captionsOnly` is what makes the row offerable and honest.
+      targetState: 'unavailable',
+    });
+  });
+
+  it('tells the truth about the Nigerian languages when 9jaLingo is not configured', () => {
+    /*
+     * THE FINDING THIS WHOLE WAVE EXISTS FOR (2026-08-26, founder-confirmed).
+     * With only the general vendors credentialled, Hausa, Igbo, Yoruba and
+     * Nigerian Pidgin are still SERVED -- and served wrongly, with every
+     * server signal green. The row must carry the warning, because nothing
+     * downstream can hear the difference.
+     */
+    const catalogue = buildTargetLanguageCatalogue({
+      supportedTranslationLanguages: ['yo', 'ha', 'ig'],
+      supportedVoiceLanguages: ['yo', 'ha', 'ig'],
+      configuredProviderIds: WITHOUT_THE_SPECIALIST,
+    });
+    for (const language of ['ha', 'ig', 'yo']) {
+      const row = catalogue.find((item) => item.language === language);
+      expect(row?.degraded, language).toBe(true);
+      expect(row?.providers?.tts, language).toBe('azure');
+      expect(row?.reason, language).toMatch(/DEGRADED/);
+      expect(row?.state, language).not.toBe('available');
+    }
+
+    const withSpecialist = buildTargetLanguageCatalogue({
+      supportedTranslationLanguages: ['yo'],
+      supportedVoiceLanguages: ['yo'],
+      configuredProviderIds: [...WITHOUT_THE_SPECIALIST, 'naijalingo'],
+    });
+    const yoruba = withSpecialist.find((item) => item.language === 'yo');
+    expect(yoruba?.degraded).toBeUndefined();
+    expect(yoruba?.providers?.tts).toBe('naijalingo');
+  });
+
+  it('reads which providers are configured from NAMES, never from values', () => {
+    const ids = configuredCapabilityProviderIds({
+      DEEPGRAM_API_KEY: 'anything-at-all',
+      AZURE_SPEECH_KEY: 'anything-at-all',
+      AZURE_SPEECH_REGION: 'northeurope',
+      // Set but empty is the NORMAL state of a deployment template, and it
+      // means "not configured" rather than "configured with nothing".
+      NAIJALINGO_API_KEY: '   ',
+    });
+    expect(ids).toContain('deepgram');
+    expect(ids).toContain('azure');
+    expect(ids).not.toContain('naijalingo');
+    expect(ids).not.toContain('elevenlabs');
+    // Local engines ship in the image; a credential is the thing that is absent.
+    expect(ids).toContain('opus-mt');
+    expect(ids).toContain('faster-whisper');
+  });
+
+  it('keeps a language this deployment enables even when the catalogue does not list it', () => {
+    const catalogue = buildTargetLanguageCatalogue({
+      supportedTranslationLanguages: ['tlh'],
+      supportedVoiceLanguages: [],
+    });
+
+    expect(catalogue.find((item) => item.language === 'tlh')).toMatchObject({
+      label: 'tlh',
+      availability: 'text-only',
+      state: 'unavailable',
     });
   });
 

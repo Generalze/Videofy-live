@@ -1,0 +1,63 @@
+{
+  "expo": {
+    "name": "Videofy Live",
+    "slug": "consummate7",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "videofy",
+    "userInterfaceStyle": "automatic",
+    "backgroundColor": "#0b0f14",
+    "newArchEnabled": true,
+    "android": {
+      "package": "com.consummate7.videofy",
+      "googleServicesFile": "./google-services.json",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.INTERNET",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+        "android.permission.USE_FULL_SCREEN_INTENT",
+        "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
+        "android.permission.MANAGE_OWN_CALLS",
+        "android.permission.VIBRATE",
+        "android.permission.WAKE_LOCK"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0b0f14"
+      }
+    },
+    "plugins": [
+      "expo-dev-client",
+      "expo-audio",
+      "expo-notifications",
+      "@config-plugins/react-native-webrtc",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0b0f14",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "dark": {
+            "backgroundColor": "#0b0f14",
+            "image": "./assets/splash-icon.png"
+          },
+          "android": {
+            "backgroundColor": "#0b0f14"
+          }
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "778ce47d-efbf-47b5-ab34-bab38ada4a88"
+      }
+    },
+    "owner": "consummate7s-team",
+    "icon": "./assets/icon.png"
+  }
+}

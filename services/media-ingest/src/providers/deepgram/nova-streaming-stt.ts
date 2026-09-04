@@ -41,6 +41,43 @@ import type {
   StreamingTranscriptionSession,
 } from '../../streaming-transcription-provider.js';
 
+/**
+ * The `utterance_end_ms` used when a SESSION asks for endpointing and the
+ * deployment has not named a value.
+ *
+ * This exists because the option was dead. `LiveStreamPipeline.open` sets
+ * `requestEndpointing: true` on every live session, and no adapter read it --
+ * so Nova was never sent `utterance_end_ms`, never sent `vad_events`, and never
+ * emitted a single `endpoint` signal in production. The platform's
+ * candidate-boundary path was inert while the source said it was asking for
+ * boundaries (measured 2026-08-30: 0 endpoint signals across 38 live samples).
+ *
+ * 1000 ms is the vendor's minimum. It is chosen deliberately low because an
+ * endpoint here is only a CANDIDATE: the segment coordinator runs it through
+ * the same stabilization window as local VAD, resumed speech cancels it, and a
+ * second corroborating signal cannot restart the window. A boundary the
+ * platform declines to act on costs nothing; a boundary it never hears about
+ * cannot be declined.
+ *
+ * An explicit `utteranceEndMs` in config still wins -- this is the floor for a
+ * deployment that asked for endpointing without naming a number.
+ */
+export const DEFAULT_UTTERANCE_END_MS = 1000;
+
+/**
+ * Does this model accept `keyterm`?
+ *
+ * Nova-3 does. Nova-2 and earlier take the older `keywords` parameter with
+ * different semantics, and an unrecognised parameter is IGNORED rather than
+ * rejected -- so a deployment on the wrong model would boost nothing while the
+ * console showed the term as consumed. Exported so the capability reported to
+ * an operator is derived from the same rule that builds the request, and cannot
+ * drift from it.
+ */
+export function supportsKeyterms(model: string): boolean {
+  return /^nova-3/u.test(model.trim().toLowerCase());
+}
+
 export interface DeepgramNovaStreamingConfig {
   readonly apiKey: string;
   /** e.g. `nova-3` or `flux-general-en`. Recorded per-model in the registry. */
@@ -120,14 +157,37 @@ class DeepgramNovaSession implements StreamingTranscriptionSession {
     if (this.config.endpointingMs !== undefined) {
       params.set('endpointing', String(this.config.endpointingMs));
     }
-    if (this.config.utteranceEndMs !== undefined) {
-      // Asking for UtteranceEnd gives a boundary signal that survives a noisy
-      // channel where silence detection alone would not fire.
-      params.set('utterance_end_ms', String(this.config.utteranceEndMs));
+    // Asking for UtteranceEnd gives a boundary signal that survives a noisy
+    // channel where silence detection alone would not fire. The SESSION may ask
+    // for it (`requestEndpointing`) even when the deployment names no value;
+    // before this, such a request was silently discarded.
+    const utteranceEndMs =
+      this.config.utteranceEndMs ??
+      (this.options.requestEndpointing === true ? DEFAULT_UTTERANCE_END_MS : undefined);
+    if (utteranceEndMs !== undefined) {
+      params.set('utterance_end_ms', String(utteranceEndMs));
       params.set('vad_events', 'true');
     }
     if (this.options.sourceLanguage !== undefined && this.options.sourceLanguageMode !== 'auto-detect') {
       params.set('language', this.options.sourceLanguage);
+    }
+
+    /*
+     * PROGRAMME VOCABULARY as Deepgram keyterms.
+     *
+     * `keyterm` is a NOVA-3 parameter. Earlier models take the older `keywords`
+     * form with different semantics, and sending `keyterm` to them is silently
+     * ignored -- which would leave an operator believing a presenter's name was
+     * boosted when nothing was. So it is gated on the model actually in use and
+     * the capability is reported honestly elsewhere; see
+     * `supportsKeyterms` below, which is what the console reads.
+     *
+     * Repeated, one parameter per term, because that is the wire format.
+     */
+    if (supportsKeyterms(this.config.model)) {
+      for (const term of this.options.keyterms ?? []) {
+        if (term.trim() !== '') params.append('keyterm', term);
+      }
     }
     return `${base}?${params.toString()}`;
   }

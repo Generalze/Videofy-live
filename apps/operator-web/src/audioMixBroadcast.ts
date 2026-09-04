@@ -4,7 +4,7 @@ export interface AudioMixBroadcastInput {
   connected: boolean;
   /**
    * True only after an explicit operator interaction with the mix controls
-   * (sliders, audio-mode toggle, subtitles checkbox, or the demo preset).
+   * (sliders, audio-mode toggle, or the subtitles checkbox).
    */
   operatorHasAdjustedMix: boolean;
   mode: AudioModePreferences['mode'];

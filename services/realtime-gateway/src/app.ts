@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import express, { type NextFunction, type Request, type Response } from 'express';
+import { requireSessionSecret, verifySessionToken } from '@videofy-live/account-tokens';
 import { CONNECT_API_BASE_PATH, buildErrorEnvelope } from '@videofy-live/connect-contracts';
 import { ADAPTER_CONTROL_BASE_PATH } from './adapter-control-routes.js';
 import { buildIceServers, readTurnConfig } from './ice-credentials.js';
@@ -12,6 +13,24 @@ export interface CreateAppOptions {
    * to requests carrying the internal token when one is configured.
    */
   diagnostics?: () => unknown;
+  /**
+   * Whether a media ingest is connected to this gateway right now.
+   *
+   * Lazy, like the others: the app is built before the Gateway exists.
+   */
+  mediaIngestConnected?: () => boolean;
+  /**
+   * Whether the required Programme media path is actually usable.
+   *
+   * Deliberately separate from the connection above, and deliberately absent
+   * until something authoritative can answer it. TRUE LIVE and PROTECTED LIVE
+   * have different dependencies and will become different facts here; until
+   * then this gateway does not claim either.
+   */
+  programmeMediaCapable?: () => boolean | null;
+  deliveryAuthorityKnown?: () => boolean | null;
+  trueLiveCapable?: () => boolean | null;
+  protectedLiveCapable?: () => boolean | null;
   internalToken?: string | null;
   /**
    * P6.5: lazy provider for the Connect /v1 router. A closure, not a router,
@@ -26,9 +45,166 @@ export interface CreateAppOptions {
    * app is built first. Absent when the deployment runs no transport adapters.
    */
   adapterControlRouter?: () => express.Router;
+  /**
+   * The direct-call lifecycle, lazily (the app is built before the Gateway).
+   * Serves the callee's PRE-JOIN CHECK ("should I ring for this push?"), the
+   * RINGING acknowledgement and DECLINE -- the three things a device must be
+   * able to say before it is in the call's socket room.
+   */
+  directCalls?: () => DirectCallsHttpLike;
+  /** The account session secret, to verify the Bearer token on those routes. */
+  sessionSecret?: string | undefined;
+  /**
+   * Conference setup (29 Aug): the public conference listing, lazily for
+   * the same reason as the rest. Absent means the route is not mounted.
+   */
+  publicCalls?: () => PublicCallListing[];
+  /**
+   * Conference status (29 Aug): whether a call id is live, ended or never
+   * seen, lazily like the rest. Absent means the route is not mounted.
+   */
+  callStatus?: (callId: string) => ConferenceStatus;
+}
+
+/** What GET /calls/:callId/status answers, and nothing more. */
+export type ConferenceStatus = 'active' | 'ended' | 'unknown';
+
+/** The shape of a call id worth asking the store about; anything else is 'unknown'. */
+const CALL_ID_SHAPE = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** One row of GET /calls/public; what a stranger may know before joining. */
+export interface PublicCallListing {
+  callId: string;
+  title: string | null;
+  participantCount: number;
+  createdAtMs: number;
+}
+
+export interface DirectCallsHttpLike {
+  get(callId: string): { state: string; mode: string; callerAccountId: string; callerName: string; peerAccountId: string; expiresAtMs: number } | null;
+  shouldRing(callId: string, accountId: string): 'ring' | 'expired' | 'unknown';
+  ringingAck(callId: string, accountId: string): boolean;
+  answering(callId: string, accountId: string): boolean;
+  decline(callId: string, accountId: string): boolean;
 }
 
 export function createApp(options: CreateAppOptions = {}): express.Application {
+  const directCallRoutes = (app: express.Application): void => {
+    const provider = options.directCalls;
+    let secret: Buffer | null = null;
+    try {
+      secret = requireSessionSecret(options.sessionSecret, 'VIDEOFY_AUTH_SECRET');
+    } catch {
+      secret = null;
+    }
+    if (!provider || secret === null) return;
+    const sessionSecret = secret;
+    const accountOf = (req: Request): string | null => {
+      const header = req.header('authorization') ?? '';
+      const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+      if (token.length === 0) return null;
+      const verified = verifySessionToken({
+        secret: sessionSecret,
+        token,
+        nowSeconds: Math.floor(Date.now() / 1000),
+      });
+      return verified.ok ? verified.claims.accountId : null;
+    };
+    const CALL_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+    /*
+     * THE PRE-JOIN CHECK. A push is only a wake-up; the device asks the
+     * server whether the call is still live before it rings. A stale push
+     * after NO ANSWER / DECLINED / ENDED gets 'expired' and stays silent.
+     * Only the peer of the call is answered at all; everybody else sees the
+     * same 404, so call ids are not probeable.
+     */
+    app.get('/calls/direct/:callId', (req: Request, res: Response) => {
+      const accountId = accountOf(req);
+      if (accountId === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const callId = String(req.params['callId'] ?? '');
+      const lifecycle = provider();
+      const verdict = CALL_ID.test(callId) ? lifecycle.shouldRing(callId, accountId) : 'unknown';
+      const record = lifecycle.get(callId);
+      if (verdict === 'unknown' || record === null || (record.peerAccountId !== accountId && record.callerAccountId !== accountId)) {
+        res.status(404).json({ error: 'No such call.' });
+        return;
+      }
+      res.json({ ring: verdict === 'ring', ...record });
+    });
+
+    app.post('/calls/direct/:callId/ringing', (req: Request, res: Response) => {
+      const accountId = accountOf(req);
+      if (accountId === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const callId = String(req.params['callId'] ?? '');
+      const live = CALL_ID.test(callId) && provider().ringingAck(callId, accountId);
+      res.json({ live });
+    });
+
+    app.post('/calls/direct/:callId/decline', (req: Request, res: Response) => {
+      const accountId = accountOf(req);
+      if (accountId === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const callId = String(req.params['callId'] ?? '');
+      const declined = CALL_ID.test(callId) && provider().decline(callId, accountId);
+      res.json({ declined });
+    });
+    // The person tapped Answer on the device: hold the ringing window while
+    // the app comes up (native receiver, coherent wave 29 Aug).
+    app.post('/calls/direct/:callId/answering', (req: Request, res: Response) => {
+      const accountId = accountOf(req);
+      if (accountId === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const callId = String(req.params['callId'] ?? '');
+      const held = CALL_ID.test(callId) && provider().answering(callId, accountId);
+      res.json({ held });
+    });
+    /*
+     * The device's side of the ring timeline (T4 push received .. T11 media
+     * connected), reported once per call by either party. Ids and times
+     * only; joined with the gateway's own stamps in one log line so a slow
+     * ring can be attributed to its stage.
+     */
+    app.post('/calls/direct/:callId/timing', (req: Request, res: Response) => {
+      const accountId = accountOf(req);
+      if (accountId === null) {
+        res.status(401).json({ error: 'Sign in to continue.' });
+        return;
+      }
+      const callId = String(req.params['callId'] ?? '');
+      if (!CALL_ID.test(callId)) {
+        res.status(404).json({ error: 'No such call.' });
+        return;
+      }
+      const body = (req.body ?? {}) as { role?: unknown; stamps?: unknown; reportedAtMs?: unknown };
+      const stamps: Record<string, number> = {};
+      if (body.stamps !== null && typeof body.stamps === 'object') {
+        for (const [key, value] of Object.entries(body.stamps as Record<string, unknown>)) {
+          if (/^[a-z0-9_]{1,40}$/.test(key) && typeof value === 'number' && Number.isFinite(value)) {
+            stamps[key] = value;
+          }
+        }
+      }
+      const record = provider().get(callId);
+      logger.info('Direct call device timeline', {
+        callId,
+        role: body.role === 'caller' ? 'caller' : 'callee',
+        stamps,
+        server: record === null ? null : { state: record.state, expiresAtMs: record.expiresAtMs },
+      });
+      res.json({ recorded: true });
+    });
+  };
   const app = express();
 
   app.use(express.json());
@@ -38,10 +214,113 @@ export function createApp(options: CreateAppOptions = {}): express.Application {
     next();
   });
 
+  directCallRoutes(app);
+
+  /*
+   * PUBLIC CONFERENCES. Deliberately unauthenticated: a public room is one a
+   * stranger may find, and the listing carries only what the room itself
+   * would show them on arrival -- title and headcount, never who is inside.
+   * Private and restricted rooms are never in it, so nothing here is probeable.
+   */
+  if (options.publicCalls) {
+    const provide = options.publicCalls;
+    app.get('/calls/public', (_req: Request, res: Response) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ calls: provide() });
+    });
+  }
+
+  /*
+   * CONFERENCE STATUS. Founder ruling (29 Aug 2026): "An ended conference is
+   * terminal. The Recent row should show Ended and must not silently recreate
+   * a room under that old code." A client holding an old code asks here
+   * before joining, and shows Ended instead of opening a fresh room.
+   *
+   * Unauthenticated, so it answers with the status word and NOTHING else --
+   * no title, no roster, no timestamps. A private room's code must not turn
+   * into a lookup oracle for what is inside it. A malformed id is 'unknown'
+   * rather than 400 for the same reason: the shape of the answer never
+   * changes with the input.
+   */
+  if (options.callStatus) {
+    const provide = options.callStatus;
+    app.get('/calls/:callId/status', (req: Request, res: Response) => {
+      res.setHeader('Cache-Control', 'no-store');
+      const callId = req.params['callId'] ?? '';
+      const status: ConferenceStatus = CALL_ID_SHAPE.test(callId) ? provide(callId) : 'unknown';
+      res.json({ status });
+    });
+  }
+
+  /**
+   * PLATFORM UP IS NOT PROGRAMME MEDIA CAPABLE, and this endpoint used to say
+   * otherwise.
+   *
+   * It answered `ok` unconditionally. In production the gateway and the
+   * account service both reported healthy for days while media ingest crash-
+   * looped 106,722 times and no programme could be transcribed, translated or
+   * spoken at all. Every signal an operator checks first was green.
+   *
+   * So the gateway now reports what it can actually see: whether a media
+   * ingest is connected to it. It does not go unhealthy for that -- calls and
+   * signalling genuinely work without it -- but it stops claiming a capability
+   * that is absent, and `programmeMediaCapable: false` is a thing a check can
+   * alert on.
+   */
   app.get('/health', (_req: Request, res: Response) => {
     res.json({
       status: 'ok',
       service: 'realtime-gateway',
+      /**
+       * A media ingest is connected to this gateway. A TRANSPORT FACT, and
+       * only that.
+       */
+      mediaIngestConnected: options.mediaIngestConnected?.() ?? null,
+      /**
+       * Whether a programme could actually be broadcast.
+       *
+       * NOT THE SAME QUESTION, and conflating them would replace one overly
+       * broad health signal with another. An ingest can be connected while its
+       * providers are unready, its encoder absent, its spool unavailable, its
+       * writer lease held elsewhere or its route unqualified -- and a checker
+       * reading "capable" would be told a programme can go out when it cannot.
+       *
+       * Null until an authority answers it. Null is not false: "nobody asked"
+       * and "asked, and the answer was no" must not render the same, which is
+       * precisely the mistake that let a platform report healthy through
+       * 106,722 restarts.
+       */
+      programmeMediaCapable: options.programmeMediaCapable?.() ?? null,
+      /**
+       * Has anything authoritative ever said what this deployment does?
+       *
+       * SEPARATE FROM CONNECTIVITY, and the distinction is now load-bearing.
+       * The policy decides what an unclassified programme session may do, so a
+       * gateway that has never been told is one where no programme may relay
+       * anything. It is not the same fact as `mediaIngestConnected`: a policy
+       * once established stays established for this process, and its sender
+       * going offline does not un-say it.
+       */
+      deliveryAuthorityKnown: options.deliveryAuthorityKnown?.() ?? null,
+      /**
+       * Could a TRUE LIVE programme go out right now?
+       *
+       * A pinned live policy survives its announcer disconnecting: the route
+       * this answers about is the broadcaster's own WebRTC path, which does
+       * not run through media ingest. Reporting it false because ingest is
+       * down would withdraw a capability that is genuinely still there.
+       */
+      trueLiveCapable: options.trueLiveCapable?.() ?? null,
+      /**
+       * Could a PROTECTED programme go out right now?
+       *
+       * The other half, and it does depend on media ingest: the spool, the
+       * cursor and the egress all live there. One broad `programmeMediaCapable`
+       * could not say that one of these is true while the other is false,
+       * which is exactly the state a deployment is in when ingest drops
+       * mid-broadcast.
+       */
+      protectedLiveCapable: options.protectedLiveCapable?.() ?? null,
       timestamp: new Date().toISOString(),
     });
   });

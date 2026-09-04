@@ -94,6 +94,19 @@ export interface StreamingTranscriptionOptions {
   readonly sourceLanguageMode?: 'manual' | 'auto-detect';
   /** Ask the provider to report utterance boundaries, where it can. */
   readonly requestEndpointing?: boolean;
+  /**
+   * Programme vocabulary offered to the recogniser, so it hears the word at all.
+   *
+   * SOURCE-LANGUAGE TERMS ONLY. The recogniser hears the source; a term tagged
+   * for the target language has no business here, and the snapshot that
+   * produces this list has already made that distinction.
+   *
+   * A provider that has no such mechanism must IGNORE this rather than
+   * approximate it, and report the capability as unsupported so the console can
+   * say so. Silently dropping it while the operator believes it is applied is
+   * the failure this whole feature exists to avoid.
+   */
+  readonly keyterms?: readonly string[];
   readonly onSignal: (signal: StreamingTranscriptionSignal) => void;
   readonly onError: (error: Error) => void;
   /** The transport dropped. The platform decides what that means for a segment. */

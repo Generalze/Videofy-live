@@ -1,3 +1,4 @@
+/** @author masterzee001 */
 /**
  * One voice, several vendors behind it.
  *
@@ -35,7 +36,24 @@ export interface FallbackSynthesisObservation {
   readonly servedBy: string | null;
   /** Providers that failed before producing anything, in the order tried. */
   readonly fellThrough: readonly string[];
+  /**
+   * First audio, measured from the SERVING provider's start.
+   *
+   * Useful for judging that vendor and misleading about the product: during a
+   * measured fall-through it read 62 ms while the listener had actually waited
+   * 527 ms, because the whole cost of the failed first attempt sits outside
+   * this clock. Kept under its own name because it answers a real question --
+   * just a narrower one than it looks like.
+   */
   readonly timeToFirstChunkMs: number | null;
+  /**
+   * First audio, measured from when the SENTENCE entered the chain.
+   *
+   * This is what somebody actually waited. It differs from the field above by
+   * exactly the time spent on providers that failed before speaking, which is
+   * the number a fall-through is expensive in and the one that was invisible.
+   */
+  readonly listenerWaitedMs: number | null;
   readonly totalMs: number;
   readonly samples: number;
 }
@@ -68,6 +86,13 @@ export function createFallbackSpeechSynthesisProvider(
       const startedAt = Date.now();
       const fellThrough: string[] = [];
       let lastResult: StreamingSynthesisResult | null = null;
+      /*
+       * CHAIN-WIDE, and set once. The first chunk any provider emits is the
+       * moment the listener stopped waiting, whichever attempt produced it, so
+       * this clock must not restart when a provider falls through -- restarting
+       * it is precisely how the cost of a failed attempt disappeared.
+       */
+      let firstChunkAt: number | null = null;
 
       for (const provider of providers) {
         /*
@@ -83,6 +108,7 @@ export function createFallbackSpeechSynthesisProvider(
             ...request,
             onChunk: (chunk) => {
               emitted = true;
+              firstChunkAt ??= Date.now();
               request.onChunk(chunk);
             },
             /*
@@ -109,6 +135,7 @@ export function createFallbackSpeechSynthesisProvider(
             servedBy: provider.name,
             fellThrough,
             timeToFirstChunkMs: attempt.timeToFirstChunkMs,
+            listenerWaitedMs: firstChunkAt === null ? null : firstChunkAt - startedAt,
             totalMs: Date.now() - startedAt,
             samples: attempt.samples,
           });
@@ -133,6 +160,7 @@ export function createFallbackSpeechSynthesisProvider(
             servedBy: provider.name,
             fellThrough,
             timeToFirstChunkMs: result.timeToFirstChunkMs,
+            listenerWaitedMs: firstChunkAt === null ? null : firstChunkAt - startedAt,
             totalMs: Date.now() - startedAt,
             samples: result.samples,
           });
@@ -151,6 +179,7 @@ export function createFallbackSpeechSynthesisProvider(
           servedBy: provider.name,
           fellThrough,
           timeToFirstChunkMs: attempt.timeToFirstChunkMs,
+          listenerWaitedMs: firstChunkAt === null ? null : firstChunkAt - startedAt,
           totalMs: Date.now() - startedAt,
           samples: attempt.samples,
         });
@@ -167,6 +196,7 @@ export function createFallbackSpeechSynthesisProvider(
         servedBy: null,
         fellThrough,
         timeToFirstChunkMs: null,
+        listenerWaitedMs: null,
         totalMs: Date.now() - startedAt,
         samples: 0,
       });

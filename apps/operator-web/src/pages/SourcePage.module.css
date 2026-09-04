@@ -1,0 +1,550 @@
+/*
+ * Source page, to the golden master 02-source-reference.png at 1586 x 992.
+ * Numbers are read off the master: the 702px preview column beside the setup
+ * column, six tiles across it, the dashed drop zone, 35px status chips.
+ *
+ * WHICH COLUMN FLEXES, AND WHY. The master's content box runs 300..1561; the
+ * shell's runs 320..1558, because the founder's SS13 correction gives
+ * 01-overview the rail width and the content origin, and 01 disagrees with 02
+ * by 20px on the left. So the page has 23px less to lay out in than the
+ * master had, and one of the two columns has to give it up. The setup column
+ * keeps the master's 525px: it is the one whose contents are sized in the
+ * master -- six tiles, a two-up device row, a drop zone whose caption wraps
+ * where the master wraps it -- and holding it keeps all of that on the
+ * master's own measurements. The preview column takes the slack, which is
+ * what a flexible column is for; its stage keeps the master's proportion
+ * rather than its width. Measured both ways: this way is the better match.
+ * The setup column's left edge still sits 18px right of the master's; that
+ * offset is the shell's content origin and is not this page's to move.
+ */
+
+/* The page becomes two columns: the shell's header sits in the left one. */
+:global(#page-source) {
+  grid-template-columns: minmax(0, 525px) minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
+  column-gap: 21px;
+  row-gap: 22px;
+  align-items: start;
+  /* The master's preview column stops 8px short of the banner's right edge. */
+  padding-right: 8px;
+}
+:global(#page-source) > header {
+  grid-column: 1;
+  grid-row: 1;
+  /* The master's eyebrow sits 22px under the banner, 8px closer than the shared page gap. */
+  margin-top: -8px;
+}
+/* The master wraps this page's lede inside the 525px column, narrower than the shared header. */
+:global(#page-source) > header > div {
+  max-width: 420px;
+  gap: 5px;
+}
+:global(#page-source) > header > div > p {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.left {
+  grid-column: 1;
+  grid-row: 2;
+  display: grid;
+  gap: 26px;
+  min-width: 0;
+}
+.right {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  display: grid;
+  gap: 16px;
+  align-content: start;
+  min-width: 0;
+  /* The master's preview panel top edge sits 41px under the alert banner. */
+  margin-top: 15px;
+}
+
+/* ------------------------------------------------------------------ Tiles */
+/* Six tiles across 525px: the chosen one is 88px wide, the rest share the remainder with 5px gaps. */
+.tiles {
+  display: flex;
+  gap: 5px;
+}
+.tile {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 165px;
+  padding: 13px 0 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: #0a1324;
+  color: var(--op-text);
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.tile:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+}
+.tile:focus-visible {
+  outline: 2px solid var(--op-violet);
+  outline-offset: 2px;
+}
+.tileChosen,
+.tileChosen:hover {
+  flex: 0 0 88px;
+  /* Sampled off the master's chosen tile: a #0a9490 edge over a foot that
+     warms to #063945, not the brighter #14b8a6 the earlier pass used. */
+  border-color: #0a9490;
+  background: linear-gradient(180deg, #0a1324 0%, #0a1324 45%, #063945 100%);
+  box-shadow: 0 0 0 1px rgba(10, 148, 144, 0.25), 0 8px 24px rgba(6, 57, 69, 0.45);
+}
+/*
+ * The master draws every unchosen tile's icon in the console's violet and the
+ * chosen one's in a cyan (#33e2f5 averaged off 02), not in the text colour.
+ */
+.tileIcon {
+  display: inline-flex;
+  color: var(--op-violet-text);
+  margin-bottom: 9px;
+}
+.tileChosen .tileIcon {
+  color: #33e2f5;
+}
+.tileTitle {
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+  min-height: 32px;
+  letter-spacing: -0.03em;
+  /*
+   * The master breaks these labels "Screen /" + "window" and "Meeting" +
+   * "through OBS". Our face is narrower per character than the one the master
+   * was drawn with, so at the tile's full width both would sit on one line.
+   * The inset gives the label the master's measure; the caption below keeps
+   * the tile's full width, which is where the master runs it edge to edge.
+   */
+  padding-inline: 5px;
+}
+.tileSubtitle {
+  margin-top: 5px;
+  font-size: 9.5px;
+  line-height: 16px;
+  letter-spacing: -0.02em;
+  color: #7d8598;
+}
+
+/* ------------------------------------------------------------- Type panel */
+.typePanel {
+  border-radius: 10px;
+  background: #0a1324;
+  border-color: rgba(255, 255, 255, 0.05);
+}
+.typeBody {
+  display: grid;
+  gap: 12px;
+  padding: 22px 24px 24px;
+}
+.typeTitle {
+  margin: 0;
+  font-size: 16.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.typeLede {
+  margin: -13px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--op-text-muted);
+}
+.typeActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.dropZone {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 16px 14px;
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.012);
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.dropZoneOver {
+  border-color: var(--op-teal);
+  background: var(--op-teal-soft);
+}
+.dropZoneDisabled {
+  opacity: 0.6;
+}
+.dropIcon {
+  display: inline-flex;
+  color: var(--op-violet-text);
+  margin-bottom: 3px;
+}
+.dropText {
+  font-size: 14px;
+  color: var(--op-text);
+}
+.dropOr {
+  font-size: 12px;
+  color: var(--op-text-muted);
+}
+.browseButton {
+  /* The master's is 129 x 36. */
+  height: 36px;
+  min-height: 36px;
+  padding: 0 26px;
+}
+.dropHint {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--op-text-muted);
+}
+.fileInput {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ----------------------------------------------------------------- Fields */
+.deviceGrid,
+.rtmpGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 9px;
+}
+.field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.fieldLabel {
+  font-size: 13px;
+  color: var(--op-text-secondary);
+}
+.selectWrap {
+  position: relative;
+  display: block;
+}
+.select,
+.input {
+  width: 100%;
+  height: 37px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #0a1324;
+  color: var(--op-text);
+  font: inherit;
+  font-size: 15px;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.select {
+  padding-right: 36px;
+}
+.select:disabled,
+.input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.select:focus-visible,
+.input:focus-visible {
+  outline: 2px solid var(--op-violet);
+  outline-offset: 1px;
+}
+.selectChevron {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--op-text);
+}
+.input::placeholder {
+  color: var(--op-text-faint);
+}
+
+/* ---------------------------------------------------------------- Primary */
+.primaryRow {
+  display: flex;
+  gap: 12px;
+  margin-top: 2px;
+}
+.recordButton {
+  min-width: 229px;
+  height: 52px;
+  border-radius: 8px;
+  /* Sampled across the master's button: #5326b7 at its left edge, #2a4bd0 at
+     its right. It runs violet into blue, not violet into violet. */
+  background: linear-gradient(90deg, #5326b7 0%, #2a4bd0 100%);
+  box-shadow: 0 10px 28px rgba(58, 47, 190, 0.35);
+}
+.errorNote {
+  margin: 0;
+  padding: 12px 16px;
+  border-radius: var(--op-radius-md);
+  border: 1px solid var(--op-danger-border);
+  background: var(--op-danger-soft);
+  color: var(--op-danger-text);
+  font-size: 14px;
+}
+.warningNote {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-warn-border);
+  background: var(--op-warn-soft);
+  color: var(--op-warn-text);
+  font-size: 13px;
+}
+
+/* ---------------------------------------------------------------- Preview */
+.previewPanel {
+  display: grid;
+  gap: 16px;
+  padding: 18px 18px 19px 17px;
+  border-radius: 10px;
+  background: #0a1324;
+  border-color: rgba(255, 255, 255, 0.05);
+}
+.previewHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.previewTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.fullscreenButton {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.09);
+}
+.previewStage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 665 / 386;
+  border-radius: 6px;
+  overflow: hidden;
+  /*
+   * Sampled across the master's idle stage, row by row and column by column.
+   * It is not one ellipse: the light lies almost flat along the foot (at the
+   * bottom edge it is still two thirds as bright 250px out from the centre)
+   * and falls away quickly going up (half gone 26px above the foot). One
+   * radial cannot be both, so there are two -- a narrow rim and the wash it
+   * throws up the stage -- over the same field.
+   */
+  background:
+    /* the rim: flat along the foot, gone 26px above it */
+    radial-gradient(
+      55% 6.7% at 50% 100%,
+      rgba(8, 200, 182, 0.44) 0%,
+      rgba(8, 200, 182, 0.38) 15%,
+      rgba(8, 200, 182, 0.2) 50%,
+      rgba(8, 200, 182, 0.05) 80%,
+      rgba(8, 200, 182, 0) 100%
+    ),
+    /* the wash: the long tail up the stage, alpha per stop off the master */
+    radial-gradient(
+      75% 40% at 50% 100%,
+      rgba(10, 150, 145, 0.48) 0%,
+      rgba(10, 150, 145, 0.42) 10%,
+      rgba(10, 150, 145, 0.37) 18%,
+      rgba(10, 150, 145, 0.3) 30%,
+      rgba(10, 150, 145, 0.2) 43%,
+      rgba(10, 150, 145, 0.15) 50%,
+      rgba(10, 150, 145, 0.06) 69%,
+      rgba(10, 150, 145, 0) 100%
+    ),
+    linear-gradient(180deg, #131b35 0%, #121e38 40%, #102133 100%);
+}
+.preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: transparent;
+  display: block;
+}
+.previewStage[data-has-source='true'] .preview {
+  background: #020617;
+}
+.previewIdle {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(146, 158, 190, 0.42);
+  pointer-events: none;
+}
+.seekRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+.seek {
+  width: 100%;
+  accent-color: var(--op-teal);
+}
+.seekTime {
+  font-size: 12px;
+  color: var(--op-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 35px;
+  padding: 0 20px 0 18px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #0a1324;
+  font-size: 13px;
+  color: var(--op-text);
+  white-space: nowrap;
+  overflow: hidden;
+}
+/*
+ * A chip whose subject is not yet detected keeps the master's dim violet-grey
+ * icon (#aca2bd, averaged off 02's "Not ready" chip) rather than the text
+ * white. The master tints its first three chips teal, but it drew them beside
+ * "Video waiting" and "Audio waiting"; painting a waiting chip like a ready
+ * one would be inventing a status, so the teal stays on the ones that are on.
+ */
+.chipIcon {
+  flex-shrink: 0;
+  color: #aca2bd;
+}
+.chip[data-on='true'] .chipIcon {
+  color: var(--op-teal);
+}
+
+/* ---------------------------------------------------------------- Details */
+.details {
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  background: #0a1324;
+  box-shadow: var(--op-shadow-panel);
+}
+.detailsSummary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 19px 20px 20px 15px;
+  list-style: none;
+  cursor: pointer;
+  border-bottom: 1px solid transparent;
+}
+.detailsSummary::-webkit-details-marker {
+  display: none;
+}
+.details[open] .detailsSummary {
+  border-bottom-color: rgba(255, 255, 255, 0.07);
+}
+.detailsIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: #5d6675;
+}
+.detailsTitle {
+  font-size: 16px;
+  font-weight: 600;
+  flex: 1;
+}
+.detailsChevron {
+  display: inline-flex;
+  color: var(--op-text);
+  transition: transform 120ms ease;
+}
+.details:not([open]) .detailsChevron {
+  transform: rotate(180deg);
+}
+.detailsBody {
+  /* The master indents the body text past the summary's icon, not past its edge. */
+  padding: 23px 20px 39px 33px;
+}
+.detailsEmpty {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 600;
+}
+.detailsActions {
+  margin-top: 16px;
+  display: flex;
+  gap: 10px;
+}
+.detailsHint {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--op-text-muted);
+}
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 14px 20px;
+  margin: 0;
+}
+.metric dt {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--op-text-muted);
+}
+.metric dd {
+  margin: 4px 0 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1180px) {
+  :global(#page-source) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  :global(#page-source) > header,
+  .left,
+  .right {
+    grid-column: 1;
+    grid-row: auto;
+  }
+  .right {
+    margin-top: 0;
+  }
+  .tiles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}

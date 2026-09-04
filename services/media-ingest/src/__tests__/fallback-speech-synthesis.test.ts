@@ -230,6 +230,61 @@ describe('what it tells the deployment', () => {
     expect(observations[0]?.servedBy).toBeNull();
   });
 
+  it('reports what the LISTENER waited, not only what the serving vendor took', async () => {
+    /*
+     * MEASURED 2026-08-30: during a driven fall-through the observation said
+     * 62 ms while the listener had actually waited 527 ms. `timeToFirstChunkMs`
+     * starts at the SERVING provider, so the entire cost of the failed first
+     * attempt sat outside it -- a chain paying for a dead primary looked exactly
+     * as fast as a healthy one, which is the opposite of what this signal is for.
+     */
+    const slowToFail = provider('primary', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      throw new Error('primary is down');
+    });
+    const observations: {
+      timeToFirstChunkMs: number | null;
+      listenerWaitedMs: number | null;
+    }[] = [];
+    const chain = createFallbackSpeechSynthesisProvider({
+      providers: [slowToFail, speaks('azure')],
+      onObservation: (observation) => observations.push(observation),
+    });
+
+    await chain.synthesize(request());
+
+    const seen = observations[0];
+    // The serving vendor's own clock still reports the vendor.
+    expect(seen?.timeToFirstChunkMs).toBe(10);
+    // The listener's clock includes the failed attempt it waited through.
+    expect(seen?.listenerWaitedMs).toBeGreaterThanOrEqual(35);
+    expect(seen?.listenerWaitedMs).toBeGreaterThan(seen?.timeToFirstChunkMs ?? 0);
+  });
+
+  it('the two clocks agree when nothing fell through', async () => {
+    const observations: { listenerWaitedMs: number | null }[] = [];
+    const chain = createFallbackSpeechSynthesisProvider({
+      providers: [speaks('elevenlabs'), speaks('azure')],
+      onObservation: (observation) => observations.push(observation),
+    });
+
+    await chain.synthesize(request());
+    // No failed attempt to pay for, so the wait is a few milliseconds at most.
+    expect(observations[0]?.listenerWaitedMs).toBeLessThan(35);
+  });
+
+  it('nobody waited for audio that never came', async () => {
+    const observations: { listenerWaitedMs: number | null }[] = [];
+    const chain = createFallbackSpeechSynthesisProvider({
+      providers: [throwsBeforeSpeaking('a'), throwsBeforeSpeaking('b')],
+      onObservation: (observation) => observations.push(observation),
+    });
+
+    await chain.synthesize(request());
+    // Null, not zero. Zero would read as "instant audio".
+    expect(observations[0]?.listenerWaitedMs).toBeNull();
+  });
+
   it('names itself by the chain it is', () => {
     const chain = createFallbackSpeechSynthesisProvider({
       providers: [speaks('elevenlabs'), speaks('azure')],

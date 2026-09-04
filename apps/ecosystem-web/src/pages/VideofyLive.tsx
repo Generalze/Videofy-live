@@ -9,6 +9,7 @@
  * here claims to be a recording of a real call, and no fabricated participant
  * is presented as a customer.
  */
+import { hasSession } from '../session';
 import { Reveal } from '../components';
 import {
   COMMUNICATION_SURFACES,
@@ -212,6 +213,20 @@ function ConvergenceFigure() {
   );
 }
 
+/*
+ * THE FUNNEL, NOT A TRAPDOOR. "Start a live conversation" used to drop
+ * everybody -- signed in or not -- straight onto the call product. Signed
+ * out, the honest primary action is joining C7; the call page would only
+ * refuse to host anyway, one screen later and with less explanation. JOINING
+ * somebody else's call stays open to everybody by design, so that door
+ * remains, named for what it is.
+ */
+function primaryCta(): { href: string; label: string } {
+  return hasSession()
+    ? { href: '/call/', label: 'Start a live conversation' }
+    : { href: '/#join', label: 'Join C7 to start calls' };
+}
+
 export function VideofyLive() {
   return (
     <>
@@ -230,12 +245,17 @@ export function VideofyLive() {
             conferences and live programmes.
           </p>
           <div className="hero-actions">
-            <a className="button button-primary" href="/call/">
-              Start a live conversation
+            <a className="button button-primary" href={primaryCta().href}>
+              {primaryCta().label}
             </a>
             <a className="button button-ghost" href="#experiences">
               Explore how it works
             </a>
+            {!hasSession() && (
+              <a className="button button-ghost" href="/call/">
+                Have an invite? Join a call
+              </a>
+            )}
           </div>
         </div>
       </header>
@@ -314,8 +334,8 @@ export function VideofyLive() {
             ))}
           </div>
           <div className="truth-cta">
-            <a className="button button-primary" href="/call/">
-              Start a live conversation
+            <a className="button button-primary" href={primaryCta().href}>
+              {primaryCta().label}
             </a>
             <a className="button button-ghost" href="/listen/">
               Open the programme viewer

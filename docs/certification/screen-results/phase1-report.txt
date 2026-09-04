@@ -1,0 +1,111 @@
+================================================================================================
+C7 PHASE-1 TRANSLATION SCREEN — integrity first, metrics diagnostic only
+================================================================================================
+
+engine     direction        n  bad  CATA  med ms  p95 ms  top defect classes
+------------------------------------------------------------------------------------------------
+opus       en->ha          34   16     7     262     621  unverified(human):19, identifier-corrupted:4, hallucination:2
+opus       en->ig          34   15     6     313     600  unverified(human):17, identifier-corrupted:4, negation-lost:1
+opus       en->yo          34    9     2     360     826  unverified(human):6, identifier-corrupted:2, passthrough:2
+opus       ha->en          34   16     7     202     421  unverified(human):16, identifier-corrupted:4, negation-lost:2 *
+opus       ig->en          34   15     7     181     398  unverified(human):11, identifier-corrupted:4, negation-lost:2 *
+opus       yo->en          34   14     7     199     428  unverified(human):14, identifier-corrupted:4, negation-lost:2 *
+m2m100     en->ha          34    7     1    2114    2997  unverified(human):4, passthrough:2, empty-output:1
+m2m100     en->ig          34    4     4    2407    3608  negation-lost:2, omission:1, unverified(human):1
+m2m100     en->yo          34    4     3    2678    6890  unverified(human):2, repetition-loop:2, empty-output:1
+m2m100     ha->en          34    5     2    1813    2506  unverified(human):4, negation-lost:1, empty-output:1 *
+m2m100     ig->en          34    6     4    1629    2464  negation-lost:3, unverified(human):2, empty-output:1 *
+m2m100     yo->en          34    8     5    1898    6010  unverified(human):4, negation-lost:2, repetition-loop:2 *
+
+* X->en runs over the engine's own output: round-trip self-consistency,
+  NOT reverse quality. C7 has no native-authored corpus yet.
+
+================================================================================================
+CATASTROPHIC-ERROR RATE, en->X only (the ranking key)
+================================================================================================
+  m2m100       8 catastrophic / 102 cases =   7.8%   peak RSS 5409 MB
+  opus        15 catastrophic / 102 cases =  14.7%   peak RSS 1301 MB
+
+================================================================================================
+EVERY CATASTROPHIC FAILURE, en->X
+================================================================================================
+
+  opus en->yo [phone]  identifier-corrupted:08031234567
+    EN   'Call me on 08031234567 when you arrive.'
+    OUT  'Ẹ pè mí ní 08031,32367 nígbà tẹ́ ẹ bá débẹ̀.'
+
+  opus en->yo [otp]  identifier-corrupted:483920
+    EN   'Your verification code is 483920. Do not share it.'
+    OUT  'Ọ̀ọ́dúnrún ó lé ọgọ́rùn - ún mẹ́ta [43920] ni ọ̀rọ̀ tó o kọ sílẹ̀ jẹ́ ká mọ̀ pé òótọ́ lọ̀rọ̀ náà.'
+
+  opus en->ha [phone]  identifier-corrupted:08031234567
+    EN   'Call me on 08031234567 when you arrive.'
+    OUT  "Ka yi mini kira a kan shekara ta fiye da haka sa'ad da ka isa wurin."
+
+  opus en->ha [account]  identifier-corrupted:0123456789
+    EN   'Transfer to account 0123456789 at First Bank.'
+    OUT  'Mun yi bincike a kan shekara ta 0 daga shekara ta 3 kaina zuwa fiye da hakan.'
+
+  opus en->ha [otp]  identifier-corrupted:483920, negation-lost
+    EN   'Your verification code is 483920. Do not share it.'
+    OUT  'Ka kafa tsarin da za ka bi don ka yi amfani da shi a matsayin wanda kake son ka yi amfani da shi.'
+
+  opus en->ha [number-only]  invented-from-non-linguistic('45 Abin da Muka Koya Daga Wurin Yesu - G')
+    EN   '45000'
+    OUT  "45 Abin da Muka Koya Daga Wurin Yesu - Game da Rayuwar ' Yan Adam"
+
+  opus en->ha [code-only]  invented-from-non-linguistic('@ item Text character set'), identifier-corrupted:483920
+    EN   'OTP-483920'
+    OUT  '@ item Text character set'
+
+  opus en->ig [phone]  identifier-corrupted:08031234567
+    EN   'Call me on 08031234567 when you arrive.'
+    OUT  'Mgbe ị rutere, kpọọ m na 0312 (onye dị otu narị puku na puku iri anọ na puku isii).'
+
+  opus en->ig [account]  identifier-corrupted:0123456789
+    EN   'Transfer to account 0123456789 at First Bank.'
+    OUT  "IHE ndekọ e nwetara n'aka mmadụ 01279 n'Ụlọ Akụ̀ Ndị Mbụ."
+
+  opus en->ig [otp]  identifier-corrupted:483920
+    EN   'Your verification code is 483920. Do not share it.'
+    OUT  'Ihe ị ga - eme bụ nke ị na - agaghị echefu echefu, ya bụ, nke fọrọ nke nta ka o ruo otu narị na iri anọ na asatọ.'
+
+  opus en->ig [negation]  negation-lost
+    EN   'Do not send the payment yet.'
+    OUT  "Unu ezipụla ụgwọ ahụ a kwụrụ unu n'oge ahụ."
+
+  opus en->ig [number-only]  invented-from-non-linguistic('enyi m nwoke dị narị puku anọ na iri ise')
+    EN   '45000'
+    OUT  'enyi m nwoke dị narị puku anọ na iri ise'
+
+  opus en->ig [code-only]  identifier-corrupted:483920
+    EN   'OTP-483920'
+    OUT  'Kèánáhụ́chāghị́ányá'
+
+  m2m100 en->yo [emoji-only]  empty-output
+    EN   '👍👍'
+    OUT  ''
+
+  m2m100 en->yo [code-only]  repetition-loop(Oṣuwọn)
+    EN   'OTP-483920'
+    OUT  'Oṣuwọn Oṣuwọn Oṣuwọn 483920'
+
+  m2m100 en->yo [hashtag]  repetition-loop(lẹhinna)
+    EN   'Join us tonight #VideofyLive for the broadcast.'
+    OUT  'Tẹle wa lẹhinna lẹhinna lẹhinna lẹhinna lẹhinna lẹhinna lẹhinna lẹhinna lẹhinna lẹhinna lẹhinna.'
+
+  m2m100 en->ha [punctuation]  empty-output
+    EN   '???!!!'
+    OUT  ''
+
+  m2m100 en->ig [money]  negation-lost
+    EN   'I have not received the money you sent.'
+    OUT  'Ọ bụ ezie na m na-enweta ego ị na-enweta.'
+
+  m2m100 en->ig [otp]  negation-lost, omission(1/2 clauses, 56% length)
+    EN   'Your verification code is 483920. Do not share it.'
+    OUT  'Usoro nchịkọta gị bụ 483920.'
+
+  m2m100 en->ig [emoji-only]  empty-output
+    EN   '👍👍'
+    OUT  ''

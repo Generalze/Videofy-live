@@ -24,6 +24,7 @@
  * retry semantics is visible in the number, so a failover cannot be mistaken
  * for a new sentence.
  */
+import type { RoutePerformanceRecorder } from '@videofy-live/programme-quality';
 import { speakSegment, type SpeakSegmentOutcome } from './speak-segment.js';
 import { TranslatedAudioDelivery, cancellationPolicyForService } from './translated-audio-delivery.js';
 import type { StreamingSpeechSynthesisProvider } from './streaming-speech-synthesis-provider.js';
@@ -54,6 +55,14 @@ export interface LiveTranslationPipelineDeps {
   readonly frameSamples?: number;
   readonly now?: () => number;
   readonly log?: (line: string, detail?: Record<string, unknown>) => void;
+  /**
+   * Where this route's measurements go, when it belongs to a programme.
+   *
+   * Optional because a direct call has no programme to report on, and absent
+   * must mean "nobody is counting" rather than a set of zeroes that would read
+   * as a pipeline performing perfectly.
+   */
+  readonly performance?: RoutePerformanceRecorder;
 }
 
 export interface SpokenSegmentRecord {
@@ -160,6 +169,15 @@ export class LiveTranslationPipeline {
     this.generations.set(event.segmentId, generation);
 
     let translatedText: string;
+    /*
+     * MEASURED HERE, WHERE THE WORK HAPPENS.
+     *
+     * The provider already timed itself; what was missing was anybody keeping
+     * the numbers. A console cannot answer "how is this programme behaving"
+     * from a route document, and inferring behaviour from configuration is
+     * exactly the conflation this split exists to end.
+     */
+    const translationStartedAt = this.deps.now?.() ?? Date.now();
     try {
       const result = await this.deps.translation.translate({
         sessionId: this.deps.sessionId,
@@ -173,7 +191,19 @@ export class LiveTranslationPipeline {
         endMs: event.endMs,
       });
       translatedText = result.translatedText;
+      this.deps.performance?.for('translation').record(
+        'success',
+        (this.deps.now?.() ?? Date.now()) - translationStartedAt,
+        this.deps.now?.() ?? Date.now(),
+      );
     } catch (error) {
+      // How long it took to fail is a real number, and a rising one is the
+      // first sign of a provider going under.
+      this.deps.performance?.for('translation').record(
+        'error',
+        (this.deps.now?.() ?? Date.now()) - translationStartedAt,
+        this.deps.now?.() ?? Date.now(),
+      );
       // One sentence untranslated on a call that is still running. The caption
       // stands on its own; taking the session down would be worse.
       this.deps.log?.('translation failed', {
@@ -186,6 +216,7 @@ export class LiveTranslationPipeline {
 
     const controller = new AbortController();
     this.inFlight.set(event.segmentId, controller);
+    const synthesisStartedAt = this.deps.now?.() ?? Date.now();
     try {
       const outcome = await speakSegment({
         provider: this.deps.synthesis,
@@ -209,6 +240,17 @@ export class LiveTranslationPipeline {
         outcome,
       };
       this.spoken.push(record);
+      /*
+       * SPEECH IN TO SPEECH OUT, and the synthesis leg on its own.
+       *
+       * End to end is not the sum of the stages -- they overlap and they queue
+       * -- and it is the one a listener actually experiences, so it is
+       * measured against the moment this sentence was spoken rather than
+       * against the moment we got round to it.
+       */
+      const finishedAt = this.deps.now?.() ?? Date.now();
+      this.deps.performance?.for('tts').record('success', finishedAt - synthesisStartedAt, finishedAt);
+      this.deps.performance?.recordEndToEnd('success', finishedAt - translationStartedAt, finishedAt);
       return record;
     } finally {
       if (this.inFlight.get(event.segmentId) === controller) {

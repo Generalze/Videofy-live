@@ -1,3 +1,4 @@
+import { fetchProgrammeRuntime, type ProgrammeRuntimeResult } from './runtimeClient';
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type {
@@ -5,12 +6,32 @@ import type {
   AudioMixPreferences,
   MediaStateEvent,
   MicrophoneCaptureMetadata,
+  TargetLanguageCapability,
   TimestampedTranslationEvent,
   TranscriptionEvent,
   WebRtcSignallingClientSnapshot,
 } from '@videofy-live/shared-types';
-import { SOCKET_EVENTS, WebRtcSignallingClient } from '@videofy-live/shared-types';
+import { SOCKET_EVENTS, WebRtcSignallingClient, type ChannelCategory } from '@videofy-live/shared-types';
 import styles from './App.module.css';
+import { ConsolePage, ConsoleShell } from './ConsoleShell';
+import { useOperatorPage } from './consolePages';
+import { readAccountUrl, updateMyChannel, useChannelIdentity, type ChannelIdentityPatch } from './premium/channelIdentity';
+import { readSession, signOut, subscribe as subscribeToSession } from './premium/operatorSession';
+import type { LanguageRow } from './languageRows';
+import { LanguagesPage, type CatalogueState } from './pages/LanguagesPage';
+import { VocabularyPage } from './pages/VocabularyPage';
+import { useVocabulary } from './useVocabulary';
+import { useQuality } from './useQuality';
+import { useAdvertising } from './useAdvertising';
+import { AdvertisingPage } from './pages/AdvertisingPage';
+import { QualityPage } from './pages/QualityPage';
+import { describeBroadcastMode } from './broadcastMode';
+import { summariseRouteQuality } from './qualitySummary';
+import { OverviewPage } from './pages/OverviewPage';
+import { LiveControlAside, LivePage } from './pages/LivePage';
+import { AudioVoicesAside, AudioVoicesPage } from './pages/AudioVoicesPage';
+import { buildVoiceRows } from './voiceRows';
+import { navigate } from './router';
 import { ChannelSettingsPanel } from './ChannelSettingsPanel';
 import {
   browserRandomBytes,
@@ -22,7 +43,8 @@ import {
 import { BroadcasterCapturePanel } from './BroadcasterCapturePanel';
 import { BroadcasterSignallingPanel } from './BroadcasterSignallingPanel';
 import { BroadcasterWebRtcTransportPanel } from './BroadcasterWebRtcTransportPanel';
-import { ProgrammeSourcePanel } from './ProgrammeSourcePanel';
+import { SourcePage } from './pages/SourcePage';
+import { ProgrammeRecorder, downloadRecording, type ProgrammeRecorderSnapshot } from './programmeRecorder';
 import {
   BroadcasterCaptureController,
   createInitialBroadcasterCaptureSnapshot,
@@ -49,12 +71,14 @@ import {
 } from './programmeSessionBinding';
 import {
   buildPartnerPreviewReadiness,
+  preflightVerdict,
   shouldShowMockControls,
 } from './partnerPreviewReadiness';
-import { createBroadcasterSocketOptions, createOperatorSocketOptions } from './socketConfig';
+import { createBroadcasterSocketOptions, createOperatorSocketOptions, readOperatorSessionToken } from './socketConfig';
 import {
   createProcessingSession,
   IngestClientError,
+  fetchTargetLanguageCatalogue,
   refreshProcessingSessionFromMediaState,
   updateSourceLanguageControl,
   type ProcessingSessionDto,
@@ -64,10 +88,7 @@ import { deliverProgrammeSessionConfig } from './programmeSessionConfigDelivery'
 import {
   type BrowserMicrophoneStatus,
 } from './microphoneCapture';
-import {
-  DEFAULT_TARGET_LANGUAGE,
-  toggleTargetLanguage,
-} from './targetLanguageSelection';
+import { toggleTargetLanguage } from './targetLanguageSelection';
 import {
   buildOperatorWorkflowSummary,
   requiresProgrammeWebRtcTransport,
@@ -89,25 +110,69 @@ const VIEWER_ORIGIN = resolveViewerOrigin(
   import.meta.env['VITE_VIEWER_BASE'] ?? 'http://localhost:5173',
   window.location.origin,
 );
+/** The account service, for the persisted channel identity in the shell (GET /channels/mine). */
+const ACCOUNT_URL = readAccountUrl();
+/*
+ * Where /streams/<handle> is served (founder directive A, 30 Aug 2026: the
+ * public canonical route). On staging every surface sits behind one origin
+ * and the console lives under /operator/, so the public site is this
+ * origin's root.
+ */
+const PUBLIC_ORIGIN = window.location.origin;
 const PROGRAMME_MEDIA_READY_TIMEOUT_MS = 20_000;
 
-const SOURCE_LANGUAGE_OPTIONS = [
-  { code: 'en', label: 'English' },
-  { code: 'fr', label: 'French' },
-  { code: 'es', label: 'Spanish' },
-  { code: 'pt', label: 'Portuguese' },
-];
-const LANGUAGE_OPTIONS = [
-  { code: 'es', label: 'Spanish' },
-  { code: 'fr', label: 'French' },
-  { code: 'pt', label: 'Portuguese' },
-  { code: 'ar', label: 'Arabic' },
-  { code: 'ru', label: 'Russian' },
-  { code: 'el', label: 'Greek' },
-  { code: 'yo', label: 'Yoruba' },
-  { code: 'zh', label: 'Chinese (Simplified)' },
-  { code: 'la', label: 'Latin' },
-] as const;
+/*
+ * NO PRESET LANGUAGE LISTS (founder ruling 29 Aug). The operator chooses
+ * from the deployment's target-language catalogue -- built by media-ingest
+ * from the shared catalogue and the capability resolver -- and every row
+ * carries its capability state. Before a session exists the catalogue is
+ * what the last media state carried; until then the search says it is
+ * loading rather than offering a guess.
+ */
+function capabilityWord(value: string | undefined): LanguageRow['state'] | undefined {
+  return value === 'qualified' || value === 'available' || value === 'limited' || value === 'unavailable'
+    ? value
+    : undefined;
+}
+
+function catalogueRows(
+  catalogue:
+    | readonly {
+        language: string;
+        label: string;
+        availability: string;
+        translationAvailable: boolean;
+        textOnly?: boolean;
+        state?: string;
+        sourceState?: string;
+        targetState?: string;
+        captionsOnly?: boolean;
+        degraded?: boolean;
+        nativeName?: string;
+        reason?: string;
+      }[]
+    | undefined,
+): readonly LanguageRow[] {
+  if (catalogue === undefined) return [];
+  return catalogue.map((entry) => {
+    const state: LanguageRow['state'] =
+      capabilityWord(entry.state) ?? (entry.translationAvailable ? 'available' : 'unavailable');
+    return {
+      code: entry.language,
+      label: entry.label,
+      nativeName: entry.nativeName,
+      state,
+      // Absent on an older ingest; the row helpers fall back to `state`
+      // rather than inventing a per-direction answer.
+      sourceState: capabilityWord(entry.sourceState),
+      targetState: capabilityWord(entry.targetState),
+      captionsOnly: entry.captionsOnly,
+      degraded: entry.degraded,
+      textOnly: entry.textOnly,
+      reason: entry.reason ?? entry.availability,
+    };
+  });
+}
 
 function createRequestedProgrammeSessionId(): string {
   return `wrs_${crypto.randomUUID()}`;
@@ -140,21 +205,6 @@ function logSocketDiagnostics(event: string, details: SocketDiagnostics): void {
   if (import.meta.env.DEV) {
     console.info('[Videofy Live operator socket]', event, details);
   }
-}
-
-function StatusDot({ ok }: { ok: boolean }): React.ReactElement {
-  return (
-    <span
-      style={{
-        display: 'inline-block',
-        width: 8,
-        height: 8,
-        borderRadius: '50%',
-        background: ok ? 'var(--color-success)' : 'var(--color-error)',
-        marginRight: 6,
-      }}
-    />
-  );
 }
 
 function MetricCard({
@@ -197,6 +247,8 @@ export default function App(): React.ReactElement {
   const [ownChannelId, setOwnChannelId] = useState<string | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<string>('main');
   const [channelHasCode, setChannelHasCode] = useState(false);
+  /** The category the gateway reports for the channel (founder ruling 29 Aug: an explicit field, one primary). */
+  const [channelReportedCategory, setChannelReportedCategory] = useState<ChannelCategory | null>(null);
   /*
    * The code this session generated, kept only in memory. The gateway reports
    * that a code EXISTS and never what it is, so after a reload this is null and
@@ -210,8 +262,55 @@ export default function App(): React.ReactElement {
   const socketRef = useRef<Socket | null>(null);
   const broadcasterSocketRef = useRef<Socket | null>(null);
   const [connected, setConnected] = useState(false);
+  /*
+   * THE SESSION, AS THE SOCKET SEES IT. The operator socket carries the C7
+   * token at connect time and never after, so a sign-in (this tab's dialog
+   * or another tab) must rebuild the socket. This counter changes with the
+   * session and `connect` depends on it; the effect below tears the old
+   * socket down and dials again with the new credential.
+   */
+  const [sessionVersion, setSessionVersion] = useState(0);
+  useEffect(() => subscribeToSession(() => setSessionVersion((current) => current + 1)), []);
+  /*
+   * The gateway's own refusal, verbatim, for the Gateway pill. It arrives as
+   * a socket "error" event immediately followed by a server disconnect (the
+   * gateway refuses BEFORE the operator room), or as a connect_error from
+   * the handshake. It names no secret. Cleared by the next connect.
+   */
+  const [gatewayRefusal, setGatewayRefusal] = useState<string | null>(null);
+  const lastGatewayErrorRef = useRef<string | null>(null);
 
   const [mediaState, setMediaState] = useState<MediaStateEvent | null>(null);
+  /*
+   * WHAT THE RUNNING BROADCAST IS ACTUALLY DOING.
+   *
+   * Polled rather than pushed because it is a readout, not a control: a
+   * missed sample costs a stale number for two seconds, where a missed
+   * control would cost an operator their action. The run id arrives on the
+   * media state, so a console with no broadcast asks nothing at all rather
+   * than asking about a run it invented.
+   */
+  const [programmeRuntime, setProgrammeRuntime] = useState<ProgrammeRuntimeResult>({
+    kind: 'no-run',
+  });
+  const programmeRunId = mediaState?.programmeRunId ?? null;
+  useEffect(() => {
+    if (programmeRunId === null) {
+      setProgrammeRuntime({ kind: 'no-run' });
+      return undefined;
+    }
+    let live = true;
+    const read = async (): Promise<void> => {
+      const result = await fetchProgrammeRuntime(INGEST_URL, programmeRunId);
+      if (live) setProgrammeRuntime(result);
+    };
+    void read();
+    const timer = setInterval(() => void read(), 2000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [programmeRunId]);
   const [streamStatus, setStreamStatus] = useState('created');
   const [processingSession, setProcessingSession] = useState<ProcessingSessionDto | null>(null);
 
@@ -222,9 +321,25 @@ export default function App(): React.ReactElement {
     TimestampedTranslationEvent[]
   >([]);
   const [sourceLanguage, setSourceLanguage] = useState('en');
-  const [sourceLanguageMode, setSourceLanguageMode] = useState<'manual' | 'auto-detect'>('manual');
-  const [sessionTargetLanguage, setSessionTargetLanguage] = useState(DEFAULT_TARGET_LANGUAGE);
-  const [targetLanguages, setTargetLanguages] = useState<string[]>([DEFAULT_TARGET_LANGUAGE]);
+  /*
+   * AUTO-DETECT BY DEFAULT (Languages master 03: Auto-detect is the active
+   * segment on a fresh console). Safe to start a session in: media-ingest's
+   * language control holds the default language ("en") in `detecting` until
+   * the first transcribed chunk reconciles it (language-controls.ts), and
+   * media-session treats an undecided source as unknown rather than refusing
+   * a matching target. Manual stays one click away.
+   */
+  const [sourceLanguageMode, setSourceLanguageMode] = useState<'manual' | 'auto-detect'>('auto-detect');
+  // NO EN->ES PRESET (founder ruling, 30 Aug 2026): no target until the operator adds one.
+  const [sessionTargetLanguage, setSessionTargetLanguage] = useState('');
+  const [targetLanguages, setTargetLanguages] = useState<string[]>([]);
+  /*
+   * The deployment's target-language catalogue, read from media-ingest
+   * (GET /languages/catalogue) so the Languages page has real capability
+   * states BEFORE a programme exists. Re-read whenever ingest's health flips,
+   * so an ingest that comes up later fills the page without a reload.
+   */
+  const [ingestCatalogue, setIngestCatalogue] = useState<{ state: CatalogueState; rows?: TargetLanguageCapability[] }>({ state: { status: 'loading' } });
 
   const [microphoneStatus, setMicrophoneStatus] = useState<BrowserMicrophoneStatus>('idle');
 
@@ -326,22 +441,32 @@ export default function App(): React.ReactElement {
 
   const connect = useCallback((): void => {
     if (socketRef.current) return;
+    // sessionVersion is read so a session change rebuilds the options.
+    void sessionVersion;
     const socket = io(GATEWAY_URL, createOperatorSocketOptions());
     socketRef.current = socket;
+
+    socket.on(SOCKET_EVENTS.ERROR, (payload: { message?: unknown }) => {
+      lastGatewayErrorRef.current = typeof payload?.message === 'string' ? payload.message : null;
+    });
 
     socket.on(SOCKET_EVENTS.CHANNEL_ASSIGNED, (assignment: {
       channelId: string;
       active: string;
       hasCode?: boolean;
+      category?: ChannelCategory | null;
     }) => {
       setOwnChannelId(assignment.channelId);
       setActiveChannelId(assignment.active);
       if (assignment.hasCode !== undefined) setChannelHasCode(assignment.hasCode);
+      if (assignment.category !== undefined) setChannelReportedCategory(assignment.category);
     });
 
     socket.on(SOCKET_EVENTS.CONNECTED, () => {
       setConnected(true);
       setGatewayOk(true);
+      setGatewayRefusal(null);
+      lastGatewayErrorRef.current = null;
       updateSocketDiagnostics('connect', {
         connected: true,
         transport: socket.io.engine.transport.name,
@@ -352,6 +477,8 @@ export default function App(): React.ReactElement {
     socket.on(SOCKET_EVENTS.DISCONNECTED, (reason: string) => {
       setConnected(false);
       setGatewayOk(false);
+      // The server hanging up right after an error event is the gateway turning the operator away.
+      if (reason === 'io server disconnect' && lastGatewayErrorRef.current !== null) setGatewayRefusal(lastGatewayErrorRef.current);
       void broadcasterCaptureControllerRef.current?.handleSignallingTeardown(
         `gateway disconnected: ${reason}`,
       );
@@ -364,6 +491,7 @@ export default function App(): React.ReactElement {
     socket.on('connect_error', (error: Error) => {
       setConnected(false);
       setGatewayOk(false);
+      setGatewayRefusal(error.message);
       updateSocketDiagnostics('connect_error', {
         connected: false,
         lastConnectError: error.message,
@@ -425,7 +553,7 @@ export default function App(): React.ReactElement {
       if (event.service === 'speech-worker') setWorkerOk(ok);
     });
 
-  }, [updateSocketDiagnostics]);
+  }, [sessionVersion, updateSocketDiagnostics]);
 
   useEffect(
     () => () => {
@@ -752,6 +880,34 @@ export default function App(): React.ReactElement {
     targetLanguages,
   ]);
 
+  /**
+   * Programme recording: the operator's own copy of what they broadcast.
+   * Client-side MediaRecorder over the SOURCE stream; see programmeRecorder.
+   */
+  const [recording, setRecording] = useState<ProgrammeRecorderSnapshot>({
+    state: 'idle',
+    startedAtMs: null,
+    error: null,
+  });
+  const recorderRef = useRef<ProgrammeRecorder | null>(null);
+  if (recorderRef.current === null) recorderRef.current = new ProgrammeRecorder(setRecording);
+
+  const handleToggleRecording = useCallback(async (): Promise<void> => {
+    const recorder = recorderRef.current;
+    if (!recorder) return;
+    if (recorder.getSnapshot().state === 'recording') {
+      const blob = await recorder.stop();
+      if (blob) downloadRecording(blob, 'videofy-programme');
+      return;
+    }
+    const stream = programmeSourceManagerRef.current?.getStream();
+    if (!stream) {
+      setMediaError('Start the programme source before recording.');
+      return;
+    }
+    recorder.start(stream);
+  }, []);
+
   const handleStartInterpretation = useCallback(async (): Promise<void> => {
     const source = programmeSourceManagerRef.current?.getSnapshot() ?? programmeSource;
     if (source.sourceType === 'none') {
@@ -774,6 +930,10 @@ export default function App(): React.ReactElement {
       setMediaError('Media ingest is unavailable. Start media ingest before interpretation.');
       return;
     }
+    if (targetLanguages.length === 0) {
+      setMediaError('Add at least one target language on the Languages page before interpretation.');
+      return;
+    }
 
     setInterpretationStarting(true);
     try {
@@ -781,7 +941,7 @@ export default function App(): React.ReactElement {
     } finally {
       setInterpretationStarting(false);
     }
-  }, [connected, handleStartProgrammeSource, ingestOk, programmeSource]);
+  }, [connected, handleStartProgrammeSource, ingestOk, programmeSource, targetLanguages.length]);
 
   const handlePauseProgrammeSource = useCallback(async (): Promise<void> => {
     await programmeSourceManagerRef.current?.pause().catch(() => undefined);
@@ -960,6 +1120,23 @@ export default function App(): React.ReactElement {
     };
   }, [connect]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setIngestCatalogue((current) => (current.rows === undefined ? { state: { status: 'loading' } } : current));
+    fetchTargetLanguageCatalogue(INGEST_URL)
+      .then((rows) => {
+        if (!cancelled) setIngestCatalogue({ state: { status: 'ready' }, rows });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        const detail = error instanceof Error ? error.message : 'Media ingest is not reachable.';
+        setIngestCatalogue((current) => (current.rows === undefined ? { state: { status: 'unavailable', detail } } : current));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ingestOk]);
+
   const handleOriginalMixChange = useCallback((value: number): void => {
     audioMixAdjustedRef.current = true;
     setOriginalMix(value);
@@ -1021,8 +1198,16 @@ export default function App(): React.ReactElement {
 
 
   const targetLanguageCatalogue =
-    processingSession?.targetLanguageCatalogue ?? mediaState?.targetLanguageCatalogue;
+    processingSession?.targetLanguageCatalogue ?? mediaState?.targetLanguageCatalogue ?? ingestCatalogue.rows;
+  const catalogueState: CatalogueState =
+    targetLanguageCatalogue !== undefined ? { status: 'ready' } : ingestCatalogue.state;
 
+  /*
+   * What is being held back, derived from the service's runtime rather than
+   * printed as a fixed sentence. Pages 09 and 10 read the SAME value, so they
+   * cannot disagree about whether this broadcast is protected.
+   */
+  const broadcastMode = describeBroadcastMode(programmeRuntime);
   const readinessItems = buildPartnerPreviewReadiness({
     gatewayConnected: connected,
     mediaIngestHealthy: ingestOk,
@@ -1033,6 +1218,8 @@ export default function App(): React.ReactElement {
     translation: timestampedTranslation,
     generatedAudio,
     selectedTargetLanguages: targetLanguages,
+    sourceLanguage,
+    sourceLanguageMode,
   });
   const workflowSummary = buildOperatorWorkflowSummary({
     connected,
@@ -1052,34 +1239,8 @@ export default function App(): React.ReactElement {
     starting: interpretationStarting,
     mediaError,
   });
-  const sourceLanguageLabel =
-    SOURCE_LANGUAGE_OPTIONS.find((languageOption) => languageOption.code === sourceLanguage)?.label ??
-    sourceLanguage.toUpperCase();
-  const targetLanguageLabel = sessionTargetLanguage.toUpperCase();
-  const compactStatusItems = [
-    programmeSource.videoDetected ? 'Video live' : 'Video waiting',
-    programmeSource.audioDetected ? 'Audio detected' : 'Audio waiting',
-    transcription?.status ? `Transcription ${transcription.status}` : 'Transcription waiting',
-    timestampedTranslation?.status
-      ? `${targetLanguageLabel} ${timestampedTranslation.status}`
-      : `${targetLanguageLabel} waiting`,
-    `${mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0} viewer${
-      (mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0) === 1 ? '' : 's'
-    }`,
-  ];
-  const applyEnglishSpanishDemoPreset = useCallback(() => {
-    setSourceLanguage('en');
-    setSourceLanguageMode('auto-detect');
-    setSessionTargetLanguage(DEFAULT_TARGET_LANGUAGE);
-    setTargetLanguages([DEFAULT_TARGET_LANGUAGE]);
-    audioMixAdjustedRef.current = true;
-    setOperatorAudioMode('interpretation');
-    setOriginalMix(0.2);
-    setTranslatedMix(1);
-    setSubtitlesEnabled(true);
-    setMediaError(null);
-  }, []);
-
+  const languageRows = catalogueRows(targetLanguageCatalogue);
+  const voiceRows = buildVoiceRows(targetLanguages, targetLanguageCatalogue);
 
   const handleTargetLanguageToggle = useCallback(
     (language: string, checked: boolean): void => {
@@ -1105,6 +1266,9 @@ export default function App(): React.ReactElement {
     setChannelDraft((current) => ({ ...current, code }));
   };
 
+  const page = useOperatorPage();
+  const viewers = mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0;
+
   const handleSaveChannelSettings = (): void => {
     socketRef.current?.emit(
       SOCKET_EVENTS.OPERATOR_CHANNEL_SETTINGS,
@@ -1116,19 +1280,308 @@ export default function App(): React.ReactElement {
      * channel -- what is in hand for building a link is tracked separately.
      */
     setChannelDraft((current) => {
-      const { code: _sent, ...rest } = current;
+      const rest = { ...current };
+      delete rest.code;
+      // The category, likewise: once sent, the picker shows what the gateway reports back.
+      delete rest.category;
       return rest;
     });
   };
 
+  const services = [
+    { label: 'Realtime Gateway', ok: gatewayOk, detail: gatewayOk ? 'Connected' : 'Disconnected' },
+    { label: 'Media Ingest', ok: ingestOk, detail: ingestOk ? 'Healthy' : 'Unavailable', tone: 'warn' as const },
+    ...(shouldShowMockControls(mediaState)
+      ? [{ label: 'Speech Worker', ok: workerOk, detail: workerOk ? 'Healthy' : 'Unavailable', tone: 'warn' as const }]
+      : []),
+  ];
+  /*
+   * The channel identity in the shell is the PERSISTED profile from the
+   * account service, re-read when the gateway reports the channel changed
+   * (a new assignment, or a saved category coming back), so a renamed
+   * channel shows its new name without a reload.
+   */
+  /*
+   * PAGE 05 STATE. The programme is the operator's own channel -- the same
+   * identity the rest of the console already administers -- so vocabulary is
+   * scoped to it without inventing a second notion of "which programme".
+   */
+  const vocabulary = useVocabulary({
+    accountUrl: ACCOUNT_URL,
+    ingestUrl: INGEST_URL,
+    programmeId: ownChannelId,
+  });
+
+  /*
+   * PAGE 06 STATE. The DIRECTIONS this programme is actually configured for --
+   * the operator's chosen source language and their selected targets -- not
+   * every route the deployment could theoretically run. A page listing installed
+   * providers would tell an operator a language is available when this
+   * programme is not set up to use it.
+   */
+  const quality = useQuality({
+    ingestUrl: INGEST_URL,
+    sourceLanguage,
+    targetLanguages,
+  });
+
+  /*
+   * PAGE 07 STATE. Scoped to the operator's own channel, the same programme
+   * identity Pages 05 and 06 use. Advertising is configured per programme;
+   * there is no global creative anywhere in this product.
+   */
+  /*
+   * ONE READING OF THE ROUTE EVIDENCE, shared by Page 06 and Live Control.
+   *
+   * The weakest route decides the word, exactly as the weakest STAGE decides a
+   * route: an operator glancing at the chip must not see "Ready" while one of
+   * their languages cannot go to air. The delay is the LARGEST recommendation
+   * across routes, because a buffer sized for the fastest route protects
+   * nothing on the slowest.
+   */
+  const qualitySummary = summariseRouteQuality(quality.rows);
+
+  const advertising = useAdvertising({
+    accountUrl: ACCOUNT_URL,
+    programmeId: ownChannelId,
+  });
+
+  const channelIdentity = useChannelIdentity({
+    accountUrl: ACCOUNT_URL,
+    reloadKey: `${activeChannelId}:${channelReportedCategory ?? ''}`,
+  });
+  /*
+   * Live / Off air: the listener directory calls a channel live while a
+   * programme's media state exists on it, which from this console is a
+   * workflow that is Starting or Live. Unknown while the gateway is away.
+   */
+  const channelLive = connected ? workflowSummary.status === 'Live' || workflowSummary.status === 'Starting' : null;
+  /*
+   * Edit channel (Access page): PUT /channels/mine with the changed fields.
+   * The saved profile is re-read into the shell, and the gateway's own copy
+   * of the name and category (what the listener directory shows for a live
+   * programme) is brought into line through the existing settings event, so
+   * a rename does not leave two names for one channel.
+   */
+  /** Sign out of C7 here: the account service revokes, the browser forgets, and the shell and socket follow. */
+  const handleSignOut = useCallback((): void => {
+    void signOut({ accountUrl: ACCOUNT_URL, token: readSession()?.token ?? null });
+  }, []);
+  const handleSaveChannelIdentity = useCallback(
+    async (patch: ChannelIdentityPatch) => {
+      const result = await updateMyChannel({ accountUrl: ACCOUNT_URL, token: readOperatorSessionToken(), patch });
+      if (result.ok) {
+        channelIdentity.reload();
+        const mirrored: ChannelSettingsDraft = {
+          displayName: result.profile.displayName,
+          visibility: channelDraft.visibility,
+          category: result.profile.category,
+        };
+        setChannelDraft((current) => ({ ...current, displayName: result.profile.displayName, category: result.profile.category }));
+        if (ownChannelId !== null && activeChannelId === ownChannelId && (patch.displayName !== undefined || patch.category !== undefined)) {
+          socketRef.current?.emit(SOCKET_EVENTS.OPERATOR_CHANNEL_SETTINGS, toSettingsPayload(mirrored));
+        }
+      }
+      return result;
+    },
+    [activeChannelId, channelDraft.visibility, channelIdentity, ownChannelId],
+  );
+
+
+
   return (
-    <div className={styles.root}>
-      <aside className={styles.sidebar}>
+    <ConsoleShell
+      page={page}
+      services={services}
+      status={{
+        viewers,
+        warning: recording.error ?? workflowSummary.actionableWarning ?? mediaError ?? null,
+      }}
+      header={{ gatewayConnected: connected, gatewayRefusal }}
+      identity={channelIdentity.state}
+      channelLive={channelLive}
+      accountUrl={ACCOUNT_URL}
+      publicOrigin={PUBLIC_ORIGIN}
+      onReloadIdentity={channelIdentity.reload}
+      onSignOut={handleSignOut}
+    >
+      {/* ---------------- 01 Overview: presentation in pages/OverviewPage.tsx, every value from the state above ---------------- */}
+      <OverviewPage
+        active={page === 'overview'}
+        workflow={{
+          status: workflowSummary.status,
+          canStartInterpretation: workflowSummary.canStartInterpretation,
+          actionableWarning: workflowSummary.actionableWarning,
+        }}
+        starting={interpretationStarting}
+        onGoLive={() => void handleStartInterpretation()}
+        source={{ videoDetected: programmeSource.videoDetected, audioDetected: programmeSource.audioDetected }}
+        transcription={
+          transcription === null
+            ? null
+            : { status: transcription.status, progressPct: transcription.progressPct, text: currentTranscription?.sourceText ?? null }
+        }
+        translation={
+          timestampedTranslation === null
+            ? null
+            : { status: timestampedTranslation.status, progressPct: timestampedTranslation.progressPct, text: currentTranslation?.translatedText ?? null }
+        }
+        generatedVoice={
+          generatedAudio === null
+            ? null
+            : {
+                status: generatedAudio.status,
+                progressPct: generatedAudio.progressPct,
+                text: generatedAudioEvents[generatedAudioEvents.length - 1]?.translatedText ?? null,
+              }
+        }
+        viewers={viewers}
+      />
+
+      {/* ---------------- 02 Source: ALWAYS MOUNTED (its <video> is the programme for file/URL sources) ---------------- */}
+      <ConsolePage id="source" active={page === 'source'} kicker="Step 1 of 6" title="Source" lede="Choose how you want to send your programme to Videofy Live. Select a source type and configure the details.">
+        <SourcePage
+          source={programmeSource}
+          recording={recording}
+          onRefreshDevices={handleRefreshProgrammeDevices}
+          onSelectCamera={(input, preview) => void handleSelectProgrammeCamera(input, preview)}
+          onSelectScreen={(preview) => void handleSelectProgrammeScreen(preview)}
+          onSelectUploadedVideo={(file, preview) => handleSelectUploadedProgrammeVideo(file, preview)}
+          onSelectDirectStreamUrl={(url, preview) => handleSelectDirectProgrammeUrl(url, preview)}
+          onSelectRtmpSource={(input, preview) => handleSelectRtmpProgrammeSource(input, preview)}
+          onSeek={(ms) => void handleSeekProgrammeSource(ms)}
+          onClear={() => void handleClearProgrammeSource()}
+          onToggleRecording={() => void handleToggleRecording()}
+        />
+      </ConsolePage>
+
+      {/* ---------------- 03 Languages ---------------- */}
+      <ConsolePage id="languages" active={page === 'languages'} kicker="Step 2 of 6" title="Languages" lede="Choose the source language of your programme and the target languages you want to make available to your audience.">
+        <LanguagesPage
+          rows={languageRows}
+          catalogue={catalogueState}
+          sourceLanguage={sourceLanguage}
+          sourceLanguageMode={sourceLanguageMode}
+          onSourceLanguageChange={(next) => {
+            setSourceLanguage(next.value);
+            setSourceLanguageMode(next.mode);
+          }}
+          sourceLanguageControl={processingSession?.sourceLanguageControl}
+          onSourceLanguageAction={(action, language) => void handleSourceLanguageAction(action, language)}
+          commandRunning={sessionCommandRunning}
+          targetLanguages={targetLanguages}
+          onToggleTarget={handleTargetLanguageToggle}
+          locked={Boolean(processingSession)}
+          lockedReason="Languages are fixed while a programme session is running. End the programme to change them."
+          onBack={() => navigate('source')}
+          onContinue={() => navigate('audio')}
+        />
+      </ConsolePage>
+
+      {/* ---------------- 04 Audio & Voices ---------------- */}
+      <ConsolePage
+        id="audio"
+        active={page === 'audio'}
+        kicker="Step 3 of 6"
+        title="Audio & Voices"
+        lede="Choose how viewers hear the programme: the original under interpretation, or replaced by it. Voices are set per language by the deployment's registry."
+        aside={<AudioVoicesAside />}
+      >
+        <AudioVoicesPage
+          mode={operatorAudioMode}
+          onModeChange={handleOperatorAudioModeChange}
+          originalMix={originalMix}
+          translatedMix={translatedMix}
+          onOriginalMixChange={handleOriginalMixChange}
+          onTranslatedMixChange={handleTranslatedMixChange}
+          subtitlesEnabled={subtitlesEnabled}
+          onSubtitlesEnabledChange={handleSubtitlesEnabledChange}
+          viewers={viewers}
+          voices={voiceRows}
+          onViewPreflight={() => navigate('preflight')}
+        />
+      </ConsolePage>
+
+      {/* ---------------- 05 Programme Vocabulary ---------------- */}
+      <ConsolePage id="vocabulary" active={page === 'vocabulary'} title="Programme Vocabulary">
+        <VocabularyPage
+          snapshot={vocabulary.snapshot}
+          unavailable={vocabulary.unavailable}
+          conflict={vocabulary.conflict}
+          saving={vocabulary.saving}
+          onReload={() => {
+            void vocabulary.reload();
+          }}
+          onSave={(entry, expectedRevision) => {
+            void vocabulary.save(entry, expectedRevision);
+          }}
+          onDelete={(entryId, expectedRevision) => {
+            void vocabulary.remove(entryId, expectedRevision);
+          }}
+        />
+      </ConsolePage>
+
+      {/* ---------------- 06 Quality / Delay ---------------- */}
+      <ConsolePage
+        id="quality"
+        active={page === 'quality'}
+        title="Quality / Delay"
+        lede="What each language route can actually do, what is providing it, and how much delay to budget. Every state below is the service's own answer about a real route; nothing on this page is inferred here."
+      >
+        <QualityPage
+          runtime={programmeRuntime}
+          rows={quality.rows}
+          unavailable={quality.unavailable}
+          reason={quality.reason}
+          loading={quality.loading}
+          onReload={() => {
+            void quality.reload();
+          }}
+        />
+      </ConsolePage>
+
+      {/* ---------------- 07 Advertising ---------------- */}
+      <ConsolePage
+        id="advertising"
+        active={page === 'advertising'}
+        title="Advertising"
+        lede="The creative in your programme's Sponsored slot, and when it runs. The slot is a reserved placement on every viewer surface: when your own creative is off or outside its times, it shows the house creative rather than nothing."
+      >
+        <AdvertisingPage
+          c7={
+            programmeRuntime.kind === 'runtime' ? programmeRuntime.runtime.advertising : null
+          }
+          snapshot={advertising.snapshot}
+          unavailable={advertising.unavailable}
+          conflict={advertising.conflict}
+          problems={advertising.problems}
+          saving={advertising.saving}
+          loading={advertising.loading}
+          onReload={() => {
+            void advertising.reload();
+          }}
+          onSave={(creative, expectedRevision) => {
+            void advertising.save(creative, expectedRevision);
+          }}
+        />
+      </ConsolePage>
+
+      {/* ---------------- 08 Access ---------------- */}
+      <ConsolePage id="access" active={page === 'access'} kicker="Step 4" title="Access" lede="Who can watch: public, private by link, or locked with a code; and which channel the programme goes out on.">
         <ChannelSettingsPanel
+          identity={{
+            identity: channelIdentity.state,
+            live: channelLive,
+            accountUrl: ACCOUNT_URL,
+            publicOrigin: PUBLIC_ORIGIN,
+            onSaveIdentity: handleSaveChannelIdentity,
+            onReloadIdentity: channelIdentity.reload,
+          }}
           ownChannelId={ownChannelId}
           activeChannelId={activeChannelId}
           draft={channelDraft}
           hasExistingCode={channelHasCode}
+          reportedCategory={channelReportedCategory}
           codeInHand={channelCodeInHand}
           viewerOrigin={VIEWER_ORIGIN}
           onDraftChange={setChannelDraft}
@@ -1136,620 +1589,149 @@ export default function App(): React.ReactElement {
           onSave={handleSaveChannelSettings}
           onMoveToOwnChannel={handleMoveToOwnChannel}
         />
-        <div className={styles.brand}>
-          <span className={styles.brandIcon}>▶</span>
-          <div>
-            <div className={styles.brandName}>Videofy Live</div>
-            <div className={styles.brandRole}>Operator</div>
-          </div>
+      </ConsolePage>
+
+      {/* ---------------- 09 Preflight ---------------- */}
+      <ConsolePage id="preflight" active={page === 'preflight'} kicker="Step 5" title="Preflight" lede="What is ready and what is not, before anybody is watching. Every line below is the live state of a real service or of your own choices; nothing here is a preset. Route quality analysis and the recommended safety delay are on Quality / Delay; the recommendation is ADVISORY. Whether anything is actually held back is the Broadcast mode line below, read from the service rather than assumed here.">
+        <div className={styles.readinessList}>
+          {[
+            /*
+             * FIRST, because it changes what every line under it means. A
+             * programme that is not being held back is a programme where
+             * nothing can be taken back, and an operator deciding whether to
+             * go on air needs that before anything else on the page.
+             */
+            {
+              id: 'broadcast-mode',
+              label: 'Broadcast mode',
+              state: broadcastMode.state,
+              detail: `${broadcastMode.label}. ${broadcastMode.detail}`,
+            },
+            ...readinessItems,
+          ].map((item) => (
+            <div key={item.id} className={styles.readinessItem}>
+              <span
+                className={`${styles.readinessState} ${item.state === 'ready' ? styles.readinessReady : item.state === 'blocked' ? styles.readinessBlocked : styles.readinessWarning}`}
+                aria-label={`${item.label} ${item.state}`}
+              />
+              <span>
+                <strong>{item.label}</strong>
+                <small>{item.detail}</small>
+              </span>
+            </div>
+          ))}
         </div>
+      </ConsolePage>
 
-        <section className={styles.sideSection}>
-          <h3 className={styles.sideTitle}>Services</h3>
-          <div className={styles.serviceRow}>
-            <StatusDot ok={gatewayOk} />
-            <span>Realtime Gateway</span>
-          </div>
-          <div className={styles.serviceRow}>
-            <StatusDot ok={ingestOk} />
-            <span>Media Ingest</span>
-          </div>
-          {shouldShowMockControls(mediaState) && (
-            <div className={styles.serviceRow}>
-              <StatusDot ok={workerOk} />
-              <span>Speech Worker</span>
-            </div>
-          )}
-        </section>
-
-        <section className={styles.sideSection}>
-          <h3 className={styles.sideTitle}>Languages</h3>
-          <div className={styles.langConfig}>
-            <label className={styles.configLabel}>Source</label>
-            <select
-              className={styles.configSelect}
-              value={sourceLanguage}
-              onChange={(e) => {
-                setSourceLanguage(e.target.value);
-                setSourceLanguageMode('manual');
-              }}
-            >
-              {SOURCE_LANGUAGE_OPTIONS.map((languageOption) => (
-                <option key={`p5-source-${languageOption.code}`} value={languageOption.code}>
-                  {languageOption.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className={styles.langConfig}>
-            <label className={styles.configLabel}>Detection</label>
-            <select
-              className={styles.configSelect}
-              value={sourceLanguageMode}
-              onChange={(event) =>
-                setSourceLanguageMode(event.target.value as 'manual' | 'auto-detect')
-              }
-            >
-              <option value="manual">Manual</option>
-              <option value="auto-detect">Auto-detect Beta</option>
-            </select>
-          </div>
-          <p className={styles.mockNote}>
-            {processingSession?.sourceLanguageControl
-              ? `Source ${processingSession.sourceLanguageControl.activeLanguage.toUpperCase()} · ${processingSession.sourceLanguageControl.status} · rev ${processingSession.sourceLanguageControl.revision}`
-              : sourceLanguageMode === 'manual'
-                ? `Manual ${sourceLanguage.toUpperCase()}`
-                : 'Auto-detect requires confirmation when confidence is low.'}
-          </p>
-          {processingSession?.sourceLanguageControl && (
-            <div className={styles.mockButtons}>
-              <button
-                type="button"
-                className={styles.mockBtn}
-                onClick={() => void handleSourceLanguageAction('confirm')}
-                disabled={sessionCommandRunning}
-              >
-                Confirm
-              </button>
-              <button
-                type="button"
-                className={styles.mockBtn}
-                onClick={() => void handleSourceLanguageAction('reject')}
-                disabled={sessionCommandRunning}
-              >
-                Reject
-              </button>
-              <button
-                type="button"
-                className={styles.mockBtn}
-                onClick={() => void handleSourceLanguageAction('override', sourceLanguage)}
-                disabled={sessionCommandRunning}
-              >
-                Override
-              </button>
-              <button
-                type="button"
-                className={styles.mockBtn}
-                onClick={() =>
-                  void handleSourceLanguageAction(
-                    processingSession.sourceLanguageControl?.locked ? 'unlock' : 'lock',
-                  )
-                }
-                disabled={sessionCommandRunning}
-              >
-                {processingSession.sourceLanguageControl.locked ? 'Unlock' : 'Lock'}
-              </button>
-            </div>
-          )}
-          <div className={styles.langConfig}>
-            <label className={styles.configLabel}>Target channels</label>
-            <div className={styles.targetLangs}>
-              {LANGUAGE_OPTIONS.map((language) => {
-                const capability = targetLanguageCatalogue?.find(
-                  (candidate) => candidate.language === language.code,
-                );
-                const unavailable = Boolean(capability && !capability.translationAvailable);
-                return (
-                <label
-                  key={language.code}
-                  className={styles.langCheckbox}
-                  title={capability?.availability ?? 'Capability is loading'}
-                >
-                  <input
-                    type="checkbox"
-                    checked={targetLanguages.includes(language.code)}
-                    disabled={unavailable || Boolean(processingSession)}
-                    onChange={(e) =>
-                      handleTargetLanguageToggle(language.code, e.target.checked)
-                    }
-                  />
-                  {language.label}
-                  {capability?.textOnly ? ' - captions only' : ''}
-                  {unavailable ? ' - unavailable' : ''}
-                </label>
-                );
-              })}
-            </div>
-            {targetLanguageCatalogue && (
-              <div className={styles.extractionMeta}>
-                {targetLanguageCatalogue.map((target) => (
-                  <span key={target.language}>
-                    {target.label}: {target.availability}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className={styles.sideSection}>
-          <h3 className={styles.sideTitle}>Preview readiness</h3>
-          <button
-            type="button"
-            className={`${styles.mockBtn} ${styles.actionBtn}`}
-            onClick={applyEnglishSpanishDemoPreset}
-          >
-            EN to ES preset
-          </button>
-          <div className={styles.readinessList}>
-            {readinessItems.map((item) => (
-              <div key={item.id} className={styles.readinessItem}>
-                <span
-                  className={`${styles.readinessState} ${
-                    item.state === 'ready'
-                      ? styles.readinessReady
-                      : item.state === 'blocked'
-                        ? styles.readinessBlocked
-                        : styles.readinessWarning
-                  }`}
-                  aria-label={`${item.label} ${item.state}`}
-                />
-                <span>
-                  <strong>{item.label}</strong>
-                  <small>{item.detail}</small>
-                </span>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className={styles.sideSection}>
-          <h3 className={styles.sideTitle}>Mix</h3>
-          <div className={styles.mixControl}>
-            <label className={styles.configLabel}>Original {Math.round(originalMix * 100)}%</label>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={originalMix}
-              onChange={(e) => handleOriginalMixChange(Number(e.target.value))}
-              className={styles.slider}
-            />
-          </div>
-          <div className={styles.mixControl}>
-            <label className={styles.configLabel}>
-              Translated {Math.round(translatedMix * 100)}%
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={translatedMix}
-              onChange={(e) => handleTranslatedMixChange(Number(e.target.value))}
-              className={styles.slider}
-            />
-          </div>
-          <label className={styles.checkboxRow}>
-            <input
-              type="checkbox"
-              checked={subtitlesEnabled}
-              onChange={(e) => handleSubtitlesEnabledChange(e.target.checked)}
-            />
-            Subtitles enabled
-          </label>
-        </section>
-      </aside>
-
-      <main className={styles.main}>
-        <section className={styles.heroConsole} aria-labelledby="operator-session-title">
-          <div className={styles.heroTopline}>
-            <span className={styles.statusPill}>{workflowSummary.status}</span>
-            <span>{mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0} viewers</span>
-            <span>{sourceLanguageLabel}</span>
-            <span>{targetLanguageLabel}</span>
-          </div>
-          <div className={styles.heroGrid}>
-            <div>
-              <p className={styles.kicker}>Videofy Live Operator</p>
-              <h1 id="operator-session-title" className={styles.heroTitle}>
-                Start interpretation from one programme source.
-              </h1>
-              <p className={styles.heroCopy}>
-                Select video, choose languages, then start. Videofy handles signalling,
-                transport, transcription, translation, speech generation, and viewer delivery.
-              </p>
-            </div>
-            <div className={styles.heroActions}>
-              {workflowSummary.status === 'Completed' ? (
-                <button
-                  type="button"
-                  className={styles.primaryAction}
-                  onClick={() => void handleRestartProgrammeSource()}
-                >
-                  Restart
-                </button>
-              ) : workflowSummary.canResume ? (
-                <>
-                  <button
-                    type="button"
-                    className={styles.primaryAction}
-                    onClick={() => void handleResumeProgrammeSource()}
-                  >
-                    Resume
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.dangerAction}
-                    onClick={() => void handleStopProgrammeSource()}
-                  >
-                    End
-                  </button>
-                </>
-              ) : workflowSummary.canPause ? (
-                <>
-                  <button
-                    type="button"
-                    className={styles.primaryAction}
-                    onClick={() => void handlePauseProgrammeSource()}
-                  >
-                    Pause
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.dangerAction}
-                    onClick={() => void handleStopProgrammeSource()}
-                  >
-                    End
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  className={styles.primaryAction}
-                  onClick={() => void handleStartInterpretation()}
-                  disabled={interpretationStarting || !workflowSummary.canStartInterpretation}
-                >
-                  {interpretationStarting ? 'Starting...' : 'Start Interpretation'}
-                </button>
-              )}
-            </div>
-          </div>
-          {workflowSummary.actionableWarning && (
-            <p className={styles.readinessWarningBanner} role="status">
-              {workflowSummary.actionableWarning}
-            </p>
-          )}
-          <div className={styles.compactStatusStrip}>
-            {compactStatusItems.map((item) => (
-              <span key={item}>{item}</span>
-            ))}
-          </div>
-        </section>
-
-        <section className={styles.workflowGrid}>
-          <ProgrammeSourcePanel
-            source={programmeSource}
-            onRefreshDevices={handleRefreshProgrammeDevices}
-            onSelectCamera={(input, preview) => void handleSelectProgrammeCamera(input, preview)}
-            onSelectScreen={(preview) => void handleSelectProgrammeScreen(preview)}
-            onSelectUploadedVideo={(file, preview) =>
-              handleSelectUploadedProgrammeVideo(file, preview)
-            }
-            onSelectDirectStreamUrl={(url, preview) =>
-              handleSelectDirectProgrammeUrl(url, preview)
-            }
-            onSelectRtmpSource={(input, preview) =>
-              handleSelectRtmpProgrammeSource(input, preview)
-            }
-            onStart={() => void handleStartInterpretation()}
-            onPause={() => void handlePauseProgrammeSource()}
-            onResume={() => void handleResumeProgrammeSource()}
-            onSeek={(ms) => void handleSeekProgrammeSource(ms)}
-            onRestart={() => void handleRestartProgrammeSource()}
-            onStop={() => void handleStopProgrammeSource()}
-            onClear={() => void handleClearProgrammeSource()}
+      {/* ---------------- 10 Live Control ---------------- */}
+      <ConsolePage
+        id="live"
+        active={page === 'live'}
+        kicker={workflowSummary.status === 'Live' ? 'On air' : 'Off air'}
+        title="Live Control"
+        lede="Manage the live programme. Control playback, recording and monitor real-time outputs."
+        aside={
+          /*
+           * THE SAME EVIDENCE PAGE 06 SHOWS, and nothing recomputed here.
+           *
+           * The delay chip is ADVISORY -- a recommendation from route
+           * evidence, not a measurement. Beside it, the buffer chip carries
+           * what the service says is actually being held, so the two are read
+           * together and neither can be mistaken for the other.
+           */
+          <LiveControlAside
+            onAir={workflowSummary.status === 'Live'}
+            progressLabel={workflowSummary.progressLabel}
+            viewers={viewers}
+            quality={qualitySummary.quality}
+            recommendedDelay={qualitySummary.recommendedDelay}
+            broadcast={broadcastMode.mode === 'unknown' ? null : broadcastMode}
           />
-
-          <section className={`${styles.card} ${styles.setupCard}`} aria-labelledby="interpretation-setup-title">
-            <div className={styles.sectionHeader}>
-              <div>
-                <p className={styles.kicker}>Step 2</p>
-                <h2 id="interpretation-setup-title" className={styles.sectionTitle}>
-                  Interpretation setup
-                </h2>
-              </div>
-              <button
-                type="button"
-                className={styles.secondaryAction}
-                onClick={applyEnglishSpanishDemoPreset}
-              >
-                EN to ES preset
-              </button>
+        }
+      >
+        <LivePage
+          workflow={workflowSummary}
+          starting={interpretationStarting}
+          recording={recording}
+          source={programmeSource}
+          previewStream={programmeSourceManagerRef.current?.getStream() ?? null}
+          targetLanguages={targetLanguages}
+          activeLanguages={mediaState?.translatedLanguages ?? null}
+          audioMode={operatorAudioMode}
+          transcript={{ status: transcription?.status ?? null, text: currentTranscription?.sourceText || null }}
+          translation={{ status: timestampedTranslation?.status ?? null, text: currentTranslation?.translatedText || null }}
+          generatedVoice={{
+            status: generatedAudio?.status ?? null,
+            text: generatedAudioEvents[generatedAudioEvents.length - 1]?.translatedText || generatedAudio?.providerStatus || null,
+          }}
+          preflight={preflightVerdict(readinessItems)}
+          onStart={() => void handleStartInterpretation()}
+          onRestart={() => void handleRestartProgrammeSource()}
+          onPause={() => void handlePauseProgrammeSource()}
+          onResume={() => void handleResumeProgrammeSource()}
+          onEnd={() => void handleStopProgrammeSource()}
+          onToggleRecording={() => void handleToggleRecording()}
+          diagnostics={
+            <div className={styles.diagnosticsGrid}>
+    <BroadcasterSignallingPanel
+      signalling={broadcasterSignalling}
+      captureState={programmeSource.sourceType === 'none' ? broadcasterCapture.status : programmeSource.status}
+      mediaTransportState={broadcasterTransport.state}
+      onCreateSession={() => void handleCreateBroadcasterSession()}
+      onCloseSession={() => void handleCloseBroadcasterSession()}
+      onRecoverSession={() => void handleRecoverBroadcasterSession()}
+    />
+    <BroadcasterCapturePanel
+      capture={broadcasterCapture}
+      signallingConnected={broadcasterSignalling.connected}
+      onRequestPermission={() => void handleRequestBroadcasterPermission()}
+      onStartCapture={() => void handleStartBroadcasterCapture()}
+      onStopCapture={() => void handleStopBroadcasterCapture()}
+      onRetry={() => void handleRetryBroadcasterCapture()}
+      onSelectDevice={(deviceId) => void handleSelectBroadcasterDevice(deviceId)}
+    />
+    <BroadcasterWebRtcTransportPanel
+      capture={broadcasterCapture}
+      programmeSource={programmeSource}
+      signallingSessionReady={Boolean(broadcasterSignalling.connected && broadcasterSignalling.sessionId)}
+      transport={broadcasterTransport}
+      transcriptionBridge={mediaState?.webrtcTranscriptionBridge ?? null}
+      onStartTransport={() => void handleStartBroadcasterTransport()}
+      onStopTransport={() => void handleStopBroadcasterTransport()}
+      onRecoverTransport={() => void handleRecoverBroadcasterTransport()}
+    />
+    <section className={styles.card}>
+      <h2 className={styles.cardTitle}>Processing diagnostics</h2>
+      <section className={styles.metricsGrid}>
+        <MetricCard label="Stream status" value={streamStatus} />
+        <MetricCard label="Extraction" value={extraction?.status ?? '-'} />
+        <MetricCard label="Chunks" value={extraction?.chunkCount ?? 0} />
+        <MetricCard label="Transcription" value={transcription?.status ?? '-'} />
+        <MetricCard label="Translation" value={timestampedTranslation?.status ?? '-'} />
+        <MetricCard label="Generated audio" value={generatedAudio?.status ?? '-'} />
+        <MetricCard label="Session ID" value={mediaState?.processingSessionId ?? processingSession?.id ?? '-'} />
+        <MetricCard label="Source audio" value={mediaState?.sourceAudioActive ? 'Active' : 'Inactive'} />
+      </section>
+      {mediaError && (
+        <p className={styles.ingestError} role="alert">
+          {mediaError}
+        </p>
+      )}
+      {import.meta.env.DEV && (
+        <dl className={styles.devDiagnosticsGrid} aria-label="Development socket diagnostics">
+          <div><dt>Gateway URL</dt><dd>{GATEWAY_URL}</dd></div>
+          <div><dt>Connected</dt><dd>{socketDiagnostics.connected ? 'true' : 'false'}</dd></div>
+          <div><dt>Transport</dt><dd>{socketDiagnostics.transport}</dd></div>
+          <div><dt>Last connect_error</dt><dd>{socketDiagnostics.lastConnectError}</dd></div>
+          <div><dt>Reconnect attempts</dt><dd>{socketDiagnostics.reconnectAttempts}</dd></div>
+          <div><dt>Disconnect reason</dt><dd>{socketDiagnostics.disconnectReason}</dd></div>
+        </dl>
+      )}
+    </section>
             </div>
-            <div className={styles.setupGrid}>
-              <div className={styles.langConfig}>
-                <label className={styles.configLabel}>Source language</label>
-                <select
-                  className={styles.configSelect}
-                  value={sourceLanguage}
-                  onChange={(e) => {
-                    setSourceLanguage(e.target.value);
-                    setSourceLanguageMode('manual');
-                  }}
-                >
-                  {SOURCE_LANGUAGE_OPTIONS.map((languageOption) => (
-                    <option key={`standard-source-${languageOption.code}`} value={languageOption.code}>
-                      {languageOption.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <label className={styles.toggleRow}>
-                <input
-                  type="checkbox"
-                  checked={sourceLanguageMode === 'auto-detect'}
-                  onChange={(event) =>
-                    setSourceLanguageMode(event.target.checked ? 'auto-detect' : 'manual')
-                  }
-                />
-                Auto-detect source
-              </label>
-              <div className={styles.langConfig}>
-                <span className={styles.configLabel}>Viewer languages</span>
-                <div className={styles.targetLangs} aria-label="Viewer language channels">
-                  {LANGUAGE_OPTIONS.map((language) => {
-                    const capability = targetLanguageCatalogue?.find(
-                      (candidate) => candidate.language === language.code,
-                    );
-                    const unavailable = Boolean(
-                      capability && !capability.translationAvailable,
-                    );
-                    return (
-                      <label
-                        key={`standard-target-${language.code}`}
-                        className={styles.langCheckbox}
-                        title={capability?.availability ?? 'Capability is loading'}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={targetLanguages.includes(language.code)}
-                          disabled={unavailable || Boolean(processingSession)}
-                          onChange={(event) =>
-                            handleTargetLanguageToggle(language.code, event.target.checked)
-                          }
-                        />
-                        <span>
-                          {language.label}
-                          {capability?.textOnly ? ' - captions only' : ''}
-                          {unavailable ? ' - unavailable' : ''}
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-              {(mediaState?.connectedListeners ?? broadcasterSignalling.listenerCount ?? 0) > 0 && (
-                <div className={styles.modeToggle} role="group" aria-label="Operator audio mode">
-                  <button
-                    type="button"
-                    className={operatorAudioMode === 'interpretation' ? styles.modeToggleActive : ''}
-                    onClick={() => handleOperatorAudioModeChange('interpretation')}
-                    aria-pressed={operatorAudioMode === 'interpretation'}
-                  >
-                    Interpretation
-                  </button>
-                  <button
-                    type="button"
-                    className={operatorAudioMode === 'replacement' ? styles.modeToggleActive : ''}
-                    onClick={() => handleOperatorAudioModeChange('replacement')}
-                    aria-pressed={operatorAudioMode === 'replacement'}
-                  >
-                    Replacement
-                  </button>
-                </div>
-              )}
-              <div className={styles.mixControl}>
-                <label className={styles.configLabel}>Original audio {Math.round(originalMix * 100)}%</label>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={originalMix}
-                  onChange={(e) => handleOriginalMixChange(Number(e.target.value))}
-                  className={styles.slider}
-                />
-              </div>
-              <div className={styles.mixControl}>
-                <label className={styles.configLabel}>
-                  Translated audio {Math.round(translatedMix * 100)}%
-                </label>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={translatedMix}
-                  onChange={(e) => handleTranslatedMixChange(Number(e.target.value))}
-                  className={styles.slider}
-                />
-              </div>
-            </div>
-            <div className={styles.readinessListCompact}>
-              {readinessItems.map((item) => (
-                <span key={item.id} className={styles.readinessChip}>
-                  {item.label}: {item.state}
-                </span>
-              ))}
-            </div>
-          </section>
-        </section>
-
-        <section className={styles.outputGrid}>
-          <section className={styles.card}>
-            <div className={styles.sectionHeader}>
-              <div>
-                <p className={styles.kicker}>Step 3</p>
-                <h2 className={styles.sectionTitle}>Transcript</h2>
-              </div>
-              <span className={styles.statusPill}>{transcription?.status ?? 'waiting'}</span>
-            </div>
-            <div className={styles.progressTrack} aria-label="Transcription progress">
-              <div
-                className={styles.progressFill}
-                style={{ width: `${Math.max(0, Math.min(100, transcription?.progressPct ?? 0))}%` }}
-              />
-            </div>
-            <p className={styles.liveText}>
-              {currentTranscription?.sourceText ||
-                currentTranscription?.status ||
-                'Transcript will appear when programme audio is detected.'}
-            </p>
-          </section>
-
-          <section className={styles.card}>
-            <div className={styles.sectionHeader}>
-              <div>
-                <p className={styles.kicker}>Step 4</p>
-                <h2 className={styles.sectionTitle}>Translation</h2>
-              </div>
-              <span className={styles.statusPill}>{timestampedTranslation?.status ?? 'waiting'}</span>
-            </div>
-            <div className={styles.progressTrack} aria-label="Translation progress">
-              <div
-                className={styles.progressFill}
-                style={{
-                  width: `${Math.max(0, Math.min(100, timestampedTranslation?.progressPct ?? 0))}%`,
-                }}
-              />
-            </div>
-            <p className={styles.liveText}>
-              {currentTranslation?.translatedText ||
-                currentTranslation?.status ||
-                'Translated text will appear after transcription.'}
-            </p>
-          </section>
-
-          <section className={styles.card}>
-            <div className={styles.sectionHeader}>
-              <div>
-                <p className={styles.kicker}>Step 5</p>
-                <h2 className={styles.sectionTitle}>Generated voice</h2>
-              </div>
-              <span className={styles.statusPill}>{generatedAudio?.status ?? 'waiting'}</span>
-            </div>
-            <div className={styles.progressTrack} aria-label="Text-to-speech progress">
-              <div
-                className={styles.progressFill}
-                style={{ width: `${Math.max(0, Math.min(100, generatedAudio?.progressPct ?? 0))}%` }}
-              />
-            </div>
-            <p className={styles.liveText}>
-              {generatedAudioEvents[generatedAudioEvents.length - 1]?.translatedText ||
-                generatedAudio?.providerStatus ||
-                'Translated speech will be delivered to viewers after translation.'}
-            </p>
-          </section>
-        </section>
-
-        <details className={styles.technicalDiagnostics}>
-          <summary>Technical diagnostics</summary>
-          <div className={styles.diagnosticsGrid}>
-            <BroadcasterSignallingPanel
-              signalling={broadcasterSignalling}
-              captureState={
-                programmeSource.sourceType === 'none'
-                  ? broadcasterCapture.status
-                  : programmeSource.status
-              }
-              mediaTransportState={broadcasterTransport.state}
-              onCreateSession={() => void handleCreateBroadcasterSession()}
-              onCloseSession={() => void handleCloseBroadcasterSession()}
-              onRecoverSession={() => void handleRecoverBroadcasterSession()}
-            />
-            <BroadcasterCapturePanel
-              capture={broadcasterCapture}
-              signallingConnected={broadcasterSignalling.connected}
-              onRequestPermission={() => void handleRequestBroadcasterPermission()}
-              onStartCapture={() => void handleStartBroadcasterCapture()}
-              onStopCapture={() => void handleStopBroadcasterCapture()}
-              onRetry={() => void handleRetryBroadcasterCapture()}
-              onSelectDevice={(deviceId) => void handleSelectBroadcasterDevice(deviceId)}
-            />
-            <BroadcasterWebRtcTransportPanel
-              capture={broadcasterCapture}
-              programmeSource={programmeSource}
-              signallingSessionReady={Boolean(
-                broadcasterSignalling.connected && broadcasterSignalling.sessionId,
-              )}
-              transport={broadcasterTransport}
-              transcriptionBridge={mediaState?.webrtcTranscriptionBridge ?? null}
-              onStartTransport={() => void handleStartBroadcasterTransport()}
-              onStopTransport={() => void handleStopBroadcasterTransport()}
-              onRecoverTransport={() => void handleRecoverBroadcasterTransport()}
-            />
-            <section className={styles.card}>
-              <h2 className={styles.cardTitle}>Processing diagnostics</h2>
-              <section className={styles.metricsGrid}>
-                <MetricCard label="Stream status" value={streamStatus} />
-                <MetricCard label="Extraction" value={extraction?.status ?? '-'} />
-                <MetricCard label="Chunks" value={extraction?.chunkCount ?? 0} />
-                <MetricCard label="Transcription" value={transcription?.status ?? '-'} />
-                <MetricCard label="Translation" value={timestampedTranslation?.status ?? '-'} />
-                <MetricCard label="Generated audio" value={generatedAudio?.status ?? '-'} />
-                <MetricCard label="Session ID" value={mediaState?.processingSessionId ?? processingSession?.id ?? '-'} />
-                <MetricCard label="Source audio" value={mediaState?.sourceAudioActive ? 'Active' : 'Inactive'} />
-              </section>
-              {mediaError && (
-                <p className={styles.ingestError} role="alert">
-                  {mediaError}
-                </p>
-              )}
-              {import.meta.env.DEV && (
-                <dl className={styles.devDiagnosticsGrid} aria-label="Development socket diagnostics">
-                  <div>
-                    <dt>Gateway URL</dt>
-                    <dd>{GATEWAY_URL}</dd>
-                  </div>
-                  <div>
-                    <dt>Connected</dt>
-                    <dd>{socketDiagnostics.connected ? 'true' : 'false'}</dd>
-                  </div>
-                  <div>
-                    <dt>Transport</dt>
-                    <dd>{socketDiagnostics.transport}</dd>
-                  </div>
-                  <div>
-                    <dt>Last connect_error</dt>
-                    <dd>{socketDiagnostics.lastConnectError}</dd>
-                  </div>
-                  <div>
-                    <dt>Reconnect attempts</dt>
-                    <dd>{socketDiagnostics.reconnectAttempts}</dd>
-                  </div>
-                  <div>
-                    <dt>Disconnect reason</dt>
-                    <dd>{socketDiagnostics.disconnectReason}</dd>
-                  </div>
-                </dl>
-              )}
-            </section>
-          </div>
-        </details>
-
-      </main>
-    </div>
+          }
+        />
+      </ConsolePage>
+    </ConsoleShell>
   );
 }

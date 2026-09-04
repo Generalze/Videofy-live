@@ -30,6 +30,7 @@ import {
   type IngressFinish,
   type IngressOpen,
   type IngressTranslatedAudio,
+  isProgrammeRunIdentity,
   type RealtimeServiceContext,
   TRANSLATED_AUDIO_HEADER_BYTES,
   TRANSLATED_AUDIO_RESERVED_MASK,
@@ -336,6 +337,20 @@ export function decodeIngressFrame(buffer: Buffer): IngressDecodeResult {
         // happened to pick.
         return refuse('uploaded-is-not-realtime', `${serviceCategory}/uploaded`);
       }
+      /*
+       * A PROGRAMME MUST SAY WHOSE IT IS.
+       *
+       * Channel, programme and run, all three, validated before a single frame
+       * of audio is accepted. Ingest previously learned none of them, so a
+       * programme's own vocabulary could not be fetched, its timeline could
+       * not be partitioned, and two runs of one channel would have been
+       * indistinguishable. Refused rather than defaulted: a default tenant is
+       * somebody else's tenant.
+       */
+      const programme = (rawContext as Record<string, unknown>)['programme'];
+      if (serviceCategory === 'programme' && !isProgrammeRunIdentity(programme)) {
+        return refuse('malformed-frame', 'a programme OPEN requires channelId, programmeId and runId');
+      }
       if (body['version'] !== INGRESS_PROTOCOL_VERSION) {
         return refuse(
           'protocol-version-mismatch',
@@ -352,7 +367,9 @@ export function decodeIngressFrame(buffer: Buffer): IngressDecodeResult {
             version: INGRESS_PROTOCOL_VERSION,
             sessionId,
             streamId,
-            context: { serviceCategory, mediaMode } as RealtimeServiceContext,
+            context: (serviceCategory === 'programme'
+              ? { serviceCategory, mediaMode, programme }
+              : { serviceCategory, mediaMode }) as RealtimeServiceContext,
             ...(sourceLanguage === null ? {} : { sourceLanguage }),
             ...(mode === 'manual' || mode === 'auto-detect' ? { sourceLanguageMode: mode } : {}),
           },

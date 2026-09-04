@@ -111,10 +111,82 @@ export interface CallJoinInput {
    */
   callType?: CallType;
   callMode?: CallMode;
+  /**
+   * CONFERENCE SETUP (founder canon 29 Aug). All three are consulted ONLY
+   * when this join CREATES a conference; on an existing call they are
+   * ignored exactly like callType/callMode, and a personal call carries none
+   * of them (title null, privacy 'private', no target languages).
+   *
+   * `title`: 1..80 characters after trimming, shown in the room and in the
+   * public listing. `privacy`: who may walk in -- see CallPrivacy.
+   * `targetLanguages`: the languages the host OFFERS listeners; stored and
+   * carried on the wire, see the seam note on CallState.targetLanguages.
+   */
+  title?: string;
+  privacy?: CallPrivacy;
+  targetLanguages?: string[];
   resumeParticipantId?: string;
   /** Required alongside resumeParticipantId; issued privately by the join ack. */
   resumeToken?: string;
 }
+
+/**
+ * Who may enter a conference.
+ *
+ * `private` is today's behaviour: anyone holding the code joins. `public`
+ * is private plus a listing (`listPublicConferences`), so a stranger can find
+ * it. `restricted` means the code alone is not enough: a joiner other than
+ * the host is seated as KNOCKING and the host admits or refuses them.
+ */
+export type CallPrivacy = 'public' | 'private' | 'restricted';
+
+/** Admission outcome of a non-host join into a restricted conference. */
+export type CallAdmission = 'joined' | 'pending';
+
+/**
+ * Whether a call id names a live call, one that has ended, or nothing.
+ *
+ * Founder ruling (29 Aug 2026): "An ended conference is terminal. The Recent
+ * row should show Ended and must not silently recreate a room under that old
+ * code." Telling 'ended' from 'unknown' is what lets a client show Ended
+ * instead of quietly opening a new room under the old code.
+ */
+export type CallStatus = 'active' | 'ended' | 'unknown';
+
+/** How many ended call ids are remembered; the oldest is forgotten first. */
+export const ENDED_CALL_MEMORY = 1000;
+
+/** Hard cap on offered listening languages: a menu, not a catalogue. */
+export const MAX_TARGET_LANGUAGES = 8;
+/** BCP-47 primary subtag with an optional region: en, yo, pt-BR. */
+export const TARGET_LANGUAGE_PATTERN = /^[a-z]{2,3}(-[A-Z]{2})?$/;
+const MAX_TITLE_LENGTH = 80;
+
+/** One entry of `listPublicConferences`: what a stranger may know before joining. */
+export interface PublicConferenceListing {
+  callId: string;
+  title: string | null;
+  participantCount: number;
+  createdAtMs: number;
+}
+
+/**
+ * Outcome of the host answering a knock. On admit the seat is joined: other
+ * speakers' plans are recomputed exactly as for an ordinary join, so the
+ * gateway applies them through the same path.
+ */
+export type CallAdmitResult =
+  | {
+      ok: true;
+      admitted: true;
+      participantId: string;
+      mediaRevision: number;
+      languageRevision: number;
+      snapshot: CallSnapshot;
+      ingestPlans: CallIngestPlan[];
+    }
+  | { ok: true; admitted: false; participantId: string; snapshot: CallSnapshot }
+  | { ok: false; reason: 'unknown-call' | 'unknown-participant' | 'not-owner' | 'not-knocking' };
 
 /** One media-ingest work order per speaking participant; ids are collision-safe vs programme ids. */
 export interface CallIngestPlan {
@@ -275,6 +347,12 @@ export interface CallJoinResult {
   snapshot: CallSnapshot;
   /** One per joined (connected) participant, all recomputed after this join. */
   ingestPlans: CallIngestPlan[];
+  /**
+   * 'pending' when this join KNOCKED on a restricted conference: the seat is
+   * held, nobody else was re-planned, and `ingestPlans` is empty until the
+   * host admits (see admitKnock). Absent means joined, as before.
+   */
+  admission?: 'pending';
 }
 
 export interface CallJoinFailure {
@@ -304,6 +382,18 @@ export interface CallSnapshot {
    * affordance, not DRM: captions already reached every participant's screen.
    */
   transcriptDownloadAllowed: boolean;
+  /** Conference setup: null for personal calls and untitled conferences. */
+  title: string | null;
+  /** Conference setup: 'private' unless the creating join said otherwise. */
+  privacy: CallPrivacy;
+  /** Conference setup: the host's offered listening languages; empty when none were offered. */
+  targetLanguages: string[];
+  /**
+   * Seats waiting for the host's answer in a restricted conference. They are
+   * NOT in `participants`: nobody plans for them, nobody hears them, and they
+   * do not count toward the lifecycle quorum. Empty on every other call.
+   */
+  knocking: { participantId: string; displayName: string }[];
   /**
    * P7.0A — legacy. `transcriptDownloadAllowed` is a single call-global switch
    * held by the owner, which cannot express the model P7.0B needs: per-role
@@ -323,6 +413,8 @@ export interface CallSnapshot {
     connected: boolean;
     /** Opaque partner identity (P6.5 R8); present only on seats that joined with one. */
     subject?: string;
+    /** Verified C7 account for this seat, when signed in. Server-derived. */
+    accountId?: string;
   }[];
 }
 
@@ -513,6 +605,13 @@ interface CallParticipantState {
    * account can be Chairman here and Participant next door.
    */
   conferenceRole: ConferenceRole;
+  /**
+   * 'admitted' for every seat on every call except one: a non-host join into
+   * a RESTRICTED conference starts 'knocking'. A knocking seat holds capacity
+   * (so admission cannot fail on a full call) but is invisible to planning,
+   * routing, the roster and the quorum until the host admits it.
+   */
+  admission: 'admitted' | 'knocking';
 }
 
 interface CallState {
@@ -531,6 +630,21 @@ interface CallState {
   transcriptDownloadAllowed: boolean;
   /** P6.5: opaque host-side tag from preregistration; never in snapshots, plans, or logs. */
   projectTag?: string;
+  /** Conference setup (29 Aug): stamped once by the creating join. */
+  title: string | null;
+  privacy: CallPrivacy;
+  /**
+   * SEAM, documented deliberately. These are the languages the host OFFERS
+   * listeners. They are stored and carried on the wire so a client can show
+   * the menu, but plan building (buildIngestPlan) still derives every target
+   * from what connected listeners actually chose (`hearLanguage`), which is
+   * typed as CallLanguage ('en' | 'es' | 'fr') end to end -- media-ingest,
+   * voices, routing. Feeding an offered 'yo' into that pipeline would build a
+   * plan the engine cannot honour and a voice table with no entry. Joining
+   * the two halves is the job of the wave that widens CallLanguage; until
+   * then a listener's own choice remains the only planning authority.
+   */
+  targetLanguages: string[];
   /** Monotonic per-call serial so a departed participant's id is never reused. */
   nextParticipantSerial: number;
   participants: Map<string, CallParticipantState>;
@@ -538,6 +652,12 @@ interface CallState {
 
 export class CallSessionStore {
   private readonly calls = new Map<string, CallState>();
+  /**
+   * Tombstones: ended call ids and when they ended, oldest first (a Map keeps
+   * insertion order). Bounded at ENDED_CALL_MEMORY so a long-running process
+   * does not remember every room ever opened.
+   */
+  private readonly endedCalls = new Map<string, number>();
   private readonly maxParticipants: number;
   private readonly now: () => string;
   private readonly createResumeToken: () => string;
@@ -646,8 +766,23 @@ export class CallSessionStore {
       // Everyone starts as a Participant. The creating join is promoted to
       // Chairman immediately below, once the owner seat is known.
       conferenceRole: 'participant',
+      admission: 'admitted',
     };
     call.participants.set(participant.participantId, state);
+    /*
+     * RESTRICTED: the code alone does not seat anyone but the host. The
+     * first join (the creating one, or the first into a preregistered call)
+     * is the host and walks in; everyone after them knocks. Nobody else is
+     * re-planned -- a knocker has no media -- and the ack says 'pending'.
+     */
+    if (
+      call.ownerParticipantId !== '' &&
+      call.callType === 'conference' &&
+      call.privacy === 'restricted'
+    ) {
+      state.admission = 'knocking';
+      return { ...this.joinResult(call, state), ingestPlans: [], admission: 'pending' };
+    }
     if (call.ownerParticipantId === '') {
       // Owner = whoever's join created the call — including the FIRST join
       // into a preregistered call, which arrives on the existing-call path
@@ -698,23 +833,23 @@ export class CallSessionStore {
     // recompute — the live sessions still carry the targets planned when it
     // was present.
     const before = new Map<string, string>();
-    if (call.callMode === 'translated') {
+    if (call.callMode === 'translated' && departing.admission === 'admitted') {
       const wasConnected = departing.connected;
       departing.connected = true;
       for (const state of call.participants.values()) {
-        if (state === departing || !state.connected) continue;
+        if (state === departing || !isSeated(state)) continue;
         before.set(state.participant.participantId, planSignature(call, state));
       }
       departing.connected = wasConnected;
     }
     call.participants.delete(participantId);
     if (call.participants.size === 0) {
-      this.calls.delete(callId);
+      this.retire(callId);
       return { ok: true, callEnded: true, snapshot: null, ingestPlans: [] };
     }
     const ingestPlans: CallIngestPlan[] = [];
     for (const state of call.participants.values()) {
-      if (!state.connected) continue;
+      if (!isSeated(state)) continue;
       const baseline = before.get(state.participant.participantId);
       if (baseline === undefined || baseline === planSignature(call, state)) continue;
       state.participant = parseParticipant({
@@ -739,7 +874,7 @@ export class CallSessionStore {
     const retiredIngestSessionIds = [...call.participants.values()].map(
       (state) => buildIngestPlan(call, state).ingestSessionId,
     );
-    this.calls.delete(callId);
+    this.retire(callId);
     return { ok: true, snapshot, retiredIngestSessionIds };
   }
 
@@ -1046,7 +1181,7 @@ export class CallSessionStore {
     const before = new Map<string, string>();
     if (call.callMode === 'translated') {
       for (const speaker of call.participants.values()) {
-        if (!speaker.connected) continue;
+        if (!isSeated(speaker)) continue;
         before.set(speaker.participant.participantId, planSignature(call, speaker));
       }
     }
@@ -1059,7 +1194,7 @@ export class CallSessionStore {
       });
     }
     for (const speaker of call.participants.values()) {
-      if (!speaker.connected) continue;
+      if (!isSeated(speaker)) continue;
       const baseline = before.get(speaker.participant.participantId);
       if (baseline === undefined || baseline === planSignature(call, speaker)) continue;
       speaker.participant = parseParticipant({
@@ -1222,14 +1357,14 @@ export class CallSessionStore {
     const before = new Map<string, string>();
     if (call.callMode === 'translated') {
       for (const speaker of call.participants.values()) {
-        if (!speaker.connected) continue;
+        if (!isSeated(speaker)) continue;
         before.set(speaker.participant.participantId, planSignature(call, speaker));
       }
     }
     state.participant = parseParticipant({ ...state.participant, audioMode });
     const ingestPlans: CallIngestPlan[] = [];
     for (const speaker of call.participants.values()) {
-      if (!speaker.connected) continue;
+      if (!isSeated(speaker)) continue;
       const baseline = before.get(speaker.participant.participantId);
       if (baseline === undefined || baseline === planSignature(call, speaker)) continue;
       speaker.participant = parseParticipant({
@@ -1311,10 +1446,58 @@ export class CallSessionStore {
   }
 
   /**
+   * Founder ruling (29 Aug 2026): "An ended conference is terminal." Answers
+   * 'active' while the call is in the map, 'ended' while its tombstone is
+   * remembered, and 'unknown' for an id never seen (or forgotten).
+   */
+  callStatus(callId: string): CallStatus {
+    if (this.calls.has(callId)) return 'active';
+    return this.endedCalls.has(callId) ? 'ended' : 'unknown';
+  }
+
+  /** When a remembered call ended, in epoch ms; null when it is not remembered. */
+  endedAtMs(callId: string): number | null {
+    return this.endedCalls.get(callId) ?? null;
+  }
+
+  /**
+   * The one way a call leaves the map. Every removal writes a tombstone, so
+   * 'ended' is answered the same whether the last seat left, the host ended
+   * the call, or the last knock was withdrawn from an otherwise empty room.
+   */
+  private retire(callId: string): void {
+    this.calls.delete(callId);
+    const parsed = Date.parse(this.now());
+    // Re-inserting moves the id to the newest end, so a room that was reused
+    // and ended again is not forgotten early on account of its first ending.
+    this.endedCalls.delete(callId);
+    this.endedCalls.set(callId, Number.isNaN(parsed) ? Date.now() : parsed);
+    while (this.endedCalls.size > ENDED_CALL_MEMORY) {
+      const oldest = this.endedCalls.keys().next().value;
+      if (oldest === undefined) break;
+      this.endedCalls.delete(oldest);
+    }
+  }
+
+  /**
    * R8's one-connected-per-subject rule INPUT; enforcement is the gateway's.
    * A disconnected-in-grace seat does not count, so the recovery path — a
    * fresh join while the old seat awaits its reap — stays open.
    */
+  /**
+   * Does this account hold a CONNECTED seat in any call? The direct-call
+   * BUSY answer (founder ruling 2026-08-28: one active call per account) --
+   * decided at creation, before anybody rings, never guessed from presence.
+   */
+  hasConnectedAccount(accountId: string): boolean {
+    for (const call of this.calls.values()) {
+      for (const state of call.participants.values()) {
+        if (state.connected && state.accountId === accountId) return true;
+      }
+    }
+    return false;
+  }
+
   hasConnectedSubject(callId: string, subject: string): boolean {
     const call = this.calls.get(callId);
     if (!call) return false;
@@ -1322,6 +1505,102 @@ export class CallSessionStore {
       if (state.connected && state.subject === subject) return true;
     }
     return false;
+  }
+
+  /**
+   * The host admits a knocker. The seat becomes an ordinary joined seat:
+   * everyone else's mediaRevision moves and fresh plans come back, exactly
+   * the shape createOrJoin returns, so the gateway applies admission through
+   * the join path rather than a second one that could drift from it.
+   *
+   * Host = the call owner (the Chair; the pointer follows a chair transfer).
+   */
+  admitKnock(callId: string, hostParticipantId: string, participantId: string): CallAdmitResult {
+    const gate = this.knockGate(callId, hostParticipantId, participantId);
+    if (!gate.ok) return gate;
+    const { call, state } = gate;
+    state.admission = 'admitted';
+    bumpOtherConnectedParticipants(call, state);
+    return {
+      ok: true,
+      admitted: true,
+      participantId,
+      mediaRevision: state.participant.mediaRevision,
+      languageRevision: state.participant.languageRevision,
+      snapshot: buildSnapshot(call),
+      ingestPlans: connectedIngestPlans(call),
+    };
+  }
+
+  /** The host refuses a knocker: the seat is released, nothing is re-planned. */
+  refuseKnock(callId: string, hostParticipantId: string, participantId: string): CallAdmitResult {
+    const gate = this.knockGate(callId, hostParticipantId, participantId);
+    if (!gate.ok) return gate;
+    gate.call.participants.delete(participantId);
+    return { ok: true, admitted: false, participantId, snapshot: buildSnapshot(gate.call) };
+  }
+
+  /**
+   * A knock withdrawn WITHOUT the host: the joiner left, or the gateway's
+   * 60-second patience ran out. No authority check because nobody is being
+   * refused anything -- a seat that was never granted is simply released.
+   * True when a knocking seat was removed; the call ends if it was the last seat.
+   */
+  withdrawKnock(callId: string, participantId: string): { removed: boolean; callEnded: boolean } {
+    const call = this.calls.get(callId);
+    const state = call?.participants.get(participantId);
+    if (!call || !state || state.admission !== 'knocking') {
+      return { removed: false, callEnded: false };
+    }
+    call.participants.delete(participantId);
+    if (call.participants.size === 0) {
+      this.retire(callId);
+      return { removed: true, callEnded: true };
+    }
+    return { removed: true, callEnded: false };
+  }
+
+  /** True while this seat is waiting for the host's answer. */
+  isKnocking(callId: string, participantId: string): boolean {
+    return this.calls.get(callId)?.participants.get(participantId)?.admission === 'knocking';
+  }
+
+  /**
+   * What a stranger may see: every PUBLIC conference with someone in it.
+   * Personal calls and private/restricted conferences are never listed;
+   * an empty preregistered call is not a room anybody can walk into yet.
+   */
+  listPublicConferences(): PublicConferenceListing[] {
+    const listings: PublicConferenceListing[] = [];
+    for (const call of this.calls.values()) {
+      if (call.callType !== 'conference' || call.privacy !== 'public') continue;
+      const participantCount = [...call.participants.values()].filter(isSeated).length;
+      if (participantCount === 0) continue;
+      listings.push({
+        callId: call.callId,
+        title: call.title,
+        participantCount,
+        createdAtMs: Date.parse(call.createdAtIso),
+      });
+    }
+    return listings;
+  }
+
+  private knockGate(
+    callId: string,
+    hostParticipantId: string,
+    participantId: string,
+  ):
+    | { ok: true; call: CallState; state: CallParticipantState }
+    | { ok: false; reason: 'unknown-call' | 'unknown-participant' | 'not-owner' | 'not-knocking' } {
+    const call = this.calls.get(callId);
+    if (!call) return { ok: false, reason: 'unknown-call' };
+    if (!call.participants.has(hostParticipantId)) return { ok: false, reason: 'unknown-participant' };
+    if (hostParticipantId !== call.ownerParticipantId) return { ok: false, reason: 'not-owner' };
+    const state = call.participants.get(participantId);
+    if (!state) return { ok: false, reason: 'unknown-participant' };
+    if (state.admission !== 'knocking') return { ok: false, reason: 'not-knocking' };
+    return { ok: true, call, state };
   }
 
   private resume(input: CallJoinInput, resumeParticipantId: string): CallJoinResult | CallJoinFailure {
@@ -1332,6 +1611,9 @@ export class CallSessionStore {
     if (!call || !state || input.resumeToken !== state.resumeToken) {
       return resumeRejected();
     }
+    // A knock is not a seat to come back to: it was never admitted, and the
+    // gateway's timeout will have withdrawn it. Knock again instead.
+    if (state.admission === 'knocking') return resumeRejected();
     if (
       toCallLanguage(state.participant.sourceLanguage) !== input.speakLanguage ||
       toCallLanguage(state.participant.preferredLanguage) !== input.hearLanguage
@@ -1422,7 +1704,16 @@ export class CallSessionStore {
 
   private createCall(input: CallJoinInput): CallState {
     // The creating join's choice, defaulted; joiners' values are ignored.
-    return this.mintCall(input.callId, input.callType ?? 'conference', input.callMode ?? 'translated');
+    const callType = input.callType ?? 'conference';
+    const call = this.mintCall(input.callId, callType, input.callMode ?? 'translated');
+    // Conference setup applies to conferences only: a personal call has no
+    // title, is never listed, and never makes the other party knock.
+    if (callType === 'conference') {
+      call.title = input.title === undefined ? null : input.title.trim();
+      call.privacy = input.privacy ?? 'private';
+      call.targetLanguages = [...new Set(input.targetLanguages ?? [])];
+    }
+    return call;
   }
 
   /** Single construction site for both creation paths: implicit join and preregister. */
@@ -1442,6 +1733,9 @@ export class CallSessionStore {
       // an empty owner refuses every owner-gated change.
       ownerParticipantId: '',
       transcriptDownloadAllowed: true,
+      title: null,
+      privacy: 'private',
+      targetLanguages: [],
       nextParticipantSerial: 1,
       participants: new Map(),
       ...(projectTag === undefined ? {} : { projectTag }),
@@ -1472,7 +1766,7 @@ function resumeRejected(): CallJoinFailure {
  */
 function bumpOtherConnectedParticipants(call: CallState, joined: CallParticipantState): void {
   for (const state of call.participants.values()) {
-    if (state === joined || !state.connected) {
+    if (state === joined || !isSeated(state)) {
       continue;
     }
     state.participant = parseParticipant({
@@ -1501,7 +1795,7 @@ function applyCallMode(call: CallState, mode: CallMode): CallModeChangeResult {
   }
   call.callMode = mode;
   for (const participant of call.participants.values()) {
-    if (!participant.connected) continue;
+    if (!isSeated(participant)) continue;
     participant.participant = parseParticipant({
       ...participant.participant,
       mediaRevision: participant.participant.mediaRevision + 1,
@@ -1553,6 +1847,37 @@ function validateJoinInput(input: CallJoinInput): string | null {
   if (input.callMode !== undefined && input.callMode !== 'normal' && input.callMode !== 'translated') {
     return 'The call mode must be normal or translated.';
   }
+  // Conference setup (29 Aug). Validated on EVERY join, consulted only by the
+  // creating one -- same discipline as callType: a malformed value is a bug
+  // or a tampered payload whether or not it would have been read.
+  if (
+    input.title !== undefined &&
+    (typeof input.title !== 'string' ||
+      input.title.trim().length === 0 ||
+      input.title.trim().length > MAX_TITLE_LENGTH)
+  ) {
+    return `A title must be between 1 and ${MAX_TITLE_LENGTH} characters.`;
+  }
+  if (
+    input.privacy !== undefined &&
+    input.privacy !== 'public' &&
+    input.privacy !== 'private' &&
+    input.privacy !== 'restricted'
+  ) {
+    return 'The privacy must be public, private, or restricted.';
+  }
+  if (input.targetLanguages !== undefined) {
+    if (!Array.isArray(input.targetLanguages) || input.targetLanguages.length > MAX_TARGET_LANGUAGES) {
+      return `Target languages must be a list of at most ${MAX_TARGET_LANGUAGES} entries.`;
+    }
+    if (
+      input.targetLanguages.some(
+        (language) => typeof language !== 'string' || !TARGET_LANGUAGE_PATTERN.test(language),
+      )
+    ) {
+      return 'Each target language must be a language code such as en, yo, or pt-BR.';
+    }
+  }
   if (
     input.resumeParticipantId !== undefined &&
     !ParticipantIdSchema.safeParse(input.resumeParticipantId).success
@@ -1602,12 +1927,18 @@ function normalizeDisplayName(displayName: string): string {
 /** Work orders for every connected participant, recomputed from current state. */
 function connectedIngestPlans(call: CallState): CallIngestPlan[] {
   return [...call.participants.values()]
-    .filter((state) => state.connected)
+    .filter((state) => isSeated(state))
     .map((state) => buildIngestPlan(call, state));
 }
 
+/** A seat that is present AND admitted: the only kind planning and routing see. */
+function isSeated(state: CallParticipantState): boolean {
+  return state.connected && state.admission === 'admitted';
+}
+
 function buildSnapshot(call: CallState): CallSnapshot {
-  const participants = [...call.participants.values()];
+  const seats = [...call.participants.values()];
+  const participants = seats.filter((state) => state.admission === 'admitted');
   return {
     callId: call.callId,
     lifecycleState: lifecycleStateOf(participants),
@@ -1615,6 +1946,15 @@ function buildSnapshot(call: CallState): CallSnapshot {
     callMode: call.callMode,
     ownerParticipantId: call.ownerParticipantId,
     transcriptDownloadAllowed: call.transcriptDownloadAllowed,
+    title: call.title,
+    privacy: call.privacy,
+    targetLanguages: [...call.targetLanguages],
+    knocking: seats
+      .filter((state) => state.admission === 'knocking')
+      .map((state) => ({
+        participantId: state.participant.participantId,
+        displayName: state.participant.displayName,
+      })),
     participants: participants.map((state) => ({
       participantId: state.participant.participantId,
       displayName: state.participant.displayName,
@@ -1623,6 +1963,7 @@ function buildSnapshot(call: CallState): CallSnapshot {
       connected: state.connected,
       conferenceRole: state.conferenceRole,
       ...(state.subject === undefined ? {} : { subject: state.subject }),
+      ...(state.accountId ? { accountId: state.accountId } : {}),
     })),
   };
 }
@@ -1654,9 +1995,7 @@ function buildIngestPlan(call: CallState, speaker: CallParticipantState): CallIn
     // caption the original words, and only when somebody wants captions.
     const captionsWanted =
       (speaker.connected && speaker.captionsEnabled) ||
-      [...call.participants.values()].some(
-        (state) => state !== speaker && state.connected && state.captionsEnabled,
-      );
+      connectedOtherParticipants(call, speaker).some((state) => state.captionsEnabled);
     const scopedIdentity = `${call.callId}_${speaker.participant.participantId}_r${speaker.participant.mediaRevision}`;
     return {
       ingestSessionId: `call_${scopedIdentity}`,
@@ -1778,7 +2117,7 @@ function connectedOtherParticipants(
   call: CallState,
   speaker: CallParticipantState,
 ): CallParticipantState[] {
-  return [...call.participants.values()].filter((state) => state !== speaker && state.connected);
+  return [...call.participants.values()].filter((state) => state !== speaker && isSeated(state));
 }
 
 function isCallLanguage(value: unknown): value is CallLanguage {

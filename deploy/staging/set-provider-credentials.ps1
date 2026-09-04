@@ -124,7 +124,14 @@ printf '%s' '$payload' | base64 -d > "`$TMP"
 # Replace rather than append: these keys already exist in the file, empty.
 # Appending would leave two definitions and let the empty one win depending on
 # read order -- which looks exactly like a credential that was never set.
-while IFS= read -r line; do
+# `|| [ -n "`$line" ]` IS THE WHOLE POINT: `read` returns false on a final line
+# with no trailing newline, so a plain `while read` SKIPS IT. The payload is
+# built with -join, which puts no newline after the last entry, so the last key
+# was never deleted and the append left two definitions of it. It was
+# TRANSLATION_PROVIDER, and it was survivable only because both copies happened
+# to agree -- had a credential been last in the list, this would have left two
+# definitions of a credential instead.
+while IFS= read -r line || [ -n "`$line" ]; do
   [ -n "`$line" ] || continue
   key="`${line%%=*}"
   sed -i "/^`${key}=/d" "`$ENV_FILE"
@@ -181,7 +188,27 @@ if pairs:
 
 Write-Host ''
 Write-Host 'Sending...' -ForegroundColor DarkGray
-$remote | ssh $Server 'sudo bash -s'
+<#
+  BASE64, LIKE THE PAYLOAD ABOVE, AND FOR THE SAME REASON.
+
+  PowerShell writes this here-string with CRLF line endings, and piping it
+  straight into bash sends them intact: `set -euo pipefail` arrives as
+  `pipefail
+`, and bash answers `invalid option name` -- with the CR winding
+  the cursor back so the error prints as garbage. Nothing is written, and the
+  message names neither the script nor the cause.
+
+  AND `-i` (--ignore-garbage) IS LOAD-BEARING. PowerShell 5.1 prepends a UTF-8
+  BOM to piped output -- `od -c` on the receiving end shows `357 273 277` before
+  the first character -- and appends CRLF. Plain `base64 -d` rejects the whole
+  stream as invalid input because of three bytes it never asked for.
+  `--ignore-garbage` skips the BOM and the line endings and decodes the rest,
+  which makes the transport indifferent to whatever the local shell does on the
+  way out.
+#>
+$remoteLf = $remote -replace "`r`n", "`n"
+$remoteB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($remoteLf))
+$remoteB64 | ssh $Server 'base64 -d -i | sudo bash -s'
 $sshExit = $LASTEXITCODE
 
 # Drop the plaintext copies as soon as they are no longer needed, whether or

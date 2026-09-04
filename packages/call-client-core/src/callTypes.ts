@@ -89,6 +89,9 @@ export type CallType = 'personal' | 'conference';
  */
 export type CallMode = 'normal' | 'translated';
 
+/** Conference setup (29 Aug): who may enter; mirrors call-wire's CallPrivacy. */
+export type CallPrivacy = 'public' | 'private' | 'restricted';
+
 /** Pre-join microphone preview state (UI only, never sent to the gateway). */
 export type MicPermissionState = 'idle' | 'requesting' | 'granted' | 'denied';
 
@@ -107,6 +110,14 @@ export interface CallJoinPayload {
    */
   callType?: CallType;
   callMode?: CallMode;
+  /**
+   * Conference setup (29 Aug), consulted only by the creating join: a
+   * 1..80 character title, the privacy tier (default private) and up to 8
+   * offered listening languages (`en`, `yo`, `pt-BR`).
+   */
+  title?: string;
+  privacy?: CallPrivacy;
+  targetLanguages?: string[];
   /**
    * Absent means the speaker stated their language and it is final. `auto`
    * treats `speakLanguage` as a starting guess the first utterance may correct.
@@ -179,6 +190,12 @@ export interface CallParticipantSummary {
   speakLanguage: CallLanguage;
   hearLanguage: CallLanguage;
   joined: boolean;
+  /**
+   * The seat's verified C7 account, when they joined signed in. DERIVED
+   * SERVER-SIDE from the session token, never client-supplied. What lets a
+   * tile show the person's profile picture; anonymous seats have none.
+   */
+  accountId?: string;
 }
 
 /** Sanitized session snapshot; parsed defensively, no engineering internals rendered. */
@@ -194,6 +211,13 @@ export interface CallStateSnapshot {
   ownerParticipantId?: string;
   /** Owner-switchable; default true. Governs the download affordance only. */
   transcriptDownloadAllowed?: boolean;
+  /** Conference setup (29 Aug): null for personal calls and untitled rooms. */
+  title?: string | null;
+  privacy?: CallPrivacy;
+  /** The host's offered listening languages; a menu for the client, empty when none. */
+  targetLanguages?: string[];
+  /** Seats waiting for the host's answer in a restricted conference. */
+  knocking?: { participantId: string; displayName: string }[];
 }
 
 /** Owner-only: whether anyone on the call may download the transcript. */
@@ -254,7 +278,57 @@ export type CallJoinFailureCode =
   | 'invalid-input'
   | 'call-full'
   | 'duplicate-display-name'
+  /*
+   * THE THREE BELOW WERE MISSING, and the gateway has been sending them all
+   * along. `call-runtime.ts` returns `host-not-authorized` when an unverified
+   * account tries to CREATE a call, and the other two when a requested
+   * capability is unavailable -- but a client typed against this union could not
+   * match on any of them, so the one refusal a person most needs explained
+   * ("verify your email first") fell through to a generic message.
+   *
+   * A type that under-describes the wire is worse than no type: it reads as a
+   * complete list and quietly makes the real cases unreachable.
+   */
+  | 'host-not-authorized'
+  | 'call-captions-unavailable'
+  | 'translation-engine-unavailable'
   | 'internal';
+
+/**
+ * The telephone's state for a direct call; see call-wire's DirectCallStateWire.
+ *
+ * The state union is RE-DECLARED here rather than imported because this package
+ * does not depend on call-wire, and a parity test asserts the two lists are
+ * identical -- so a word added on one side and forgotten on the other fails the
+ * build instead of reaching a caller.
+ */
+export type DirectCallSnapshotState =
+  | 'calling'
+  | 'ringing'
+  | 'answered'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'busy'
+  | 'declined'
+  | 'no_answer'
+  | 'unavailable'
+  | 'network'
+  | 'ended';
+
+export interface DirectCallStateSnapshot {
+  callId: string;
+  state: DirectCallSnapshotState;
+  mode: CallMode;
+  callerAccountId: string;
+  peerAccountId: string;
+  callerName: string;
+  updatedAtMs: number;
+  expiresAtMs: number;
+  answeredAtMs: number | null;
+  connectedAtMs: number | null;
+  endedByAccountId: string | null;
+}
 
 export type CallJoinAck =
   | {
@@ -262,6 +336,16 @@ export type CallJoinAck =
       participantId: string;
       resumeToken: string;
       snapshot?: CallStateSnapshot;
+      /**
+       * Conference setup (29 Aug): 'pending' when this join KNOCKED on a
+       * restricted conference. The seat exists, has no media, and is not in
+       * the call; `snapshot` carries the title and setup with an empty
+       * roster. The answer arrives as call:admission on this socket. Absent
+       * means joined, as before. Mirrors call-wire's CallJoinAck.
+       */
+      admission?: 'pending';
+      /** Direct calls only: the state at the moment of this join or resume. */
+      directState?: DirectCallStateSnapshot;
       /**
        * Present only when a session token was offered and not accepted. The
        * call joined normally and will use a standard voice.

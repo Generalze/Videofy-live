@@ -20,7 +20,12 @@ import {
   type LivePathDecision,
   type LivePathProfile,
 } from './live-path-policy.js';
-import type { IngressTranslatedAudio } from '@videofy-live/media-ingress-wire';
+import {
+  isProgrammeRunIdentity,
+  type IngressTranslatedAudio,
+  type ProgrammeRunIdentity,
+  type RealtimeServiceContext,
+} from '@videofy-live/media-ingress-wire';
 import { logger } from './logger.js';
 
 /**
@@ -67,10 +72,20 @@ export type MediaSessionMode = 'programme' | 'live-conversation';
  */
 export function serviceContextForMode(
   mode: MediaSessionMode,
-): { serviceCategory: 'call'; mediaMode: 'live' } | { serviceCategory: 'programme'; mediaMode: 'live' } {
-  return mode === 'live-conversation'
-    ? { serviceCategory: 'call', mediaMode: 'live' }
-    : { serviceCategory: 'programme', mediaMode: 'live' };
+  programme?: ProgrammeRunIdentity | undefined,
+): RealtimeServiceContext | null {
+  if (mode === 'live-conversation') return { serviceCategory: 'call', mediaMode: 'live' };
+  /*
+   * A PROGRAMME WITHOUT ITS RUN IDENTITY DOES NOT OPEN.
+   *
+   * Null rather than a context with a placeholder tenant. Ingest would accept
+   * the stream, transcribe it perfectly, and belong to nobody: no vocabulary,
+   * no timeline partition, no way to tell two runs of one channel apart. The
+   * caller refuses to open instead, which is loud, rather than broadcasting
+   * something that half works.
+   */
+  if (programme === undefined || !isProgrammeRunIdentity(programme)) return null;
+  return { serviceCategory: 'programme', mediaMode: 'live', programme };
 }
 
 /**
@@ -165,6 +180,15 @@ export interface MediaTranscriptionBridgeContext {
    * now asks every producer the question instead.
    */
   mediaSessionMode: MediaSessionMode;
+  /**
+   * Which broadcast this is, resolved from authoritative server state.
+   *
+   * Required in practice for a programme and meaningless for a call, which is
+   * why the WIRE type makes it part of the programme variant and this internal
+   * context leaves it optional: the strictness belongs at the boundary that
+   * crosses services, and the opener above fails closed without it.
+   */
+  programme?: ProgrammeRunIdentity;
   externalAudioSource?: 'rtmp-hls';
   externalAudioUrl?: string;
   targetLanguage?: string;
@@ -642,18 +666,48 @@ export class MediaTranscriptionBridge {
     if (ingress === null || session.liveIngressOpening !== null) return;
     const context = session.context;
     const openSender = ingress.createSender ?? ((o) => LiveIngressSender.open(o));
-    session.liveIngressOpening = openSender({
+    /*
+     * THE SESSION RECORD TRAVELS FIRST. The ingress `open` carries no target
+     * languages; they ride only in the /internal/media/sessions record --
+     * which, on the pure live path, nothing else ever created: the lazy
+     * create in processNext belongs to the batch chunker the live path
+     * replaced. Media-ingest resolved its speech plans at open against a
+     * session that did not exist, planned zero languages, and a fully
+     * configured live programme transcribed perfectly while translating
+     * nothing. Creating the record before the sender opens is what makes the
+     * plan resolution see the operator's languages.
+     */
+    session.liveIngressOpening = (async () => {
+      if (!session.created) {
+        await this.client.createSession(session.context);
+        session.created = true;
+      }
+    })()
+      .then(() => {
+      const serviceContext = serviceContextForMode(context.mediaSessionMode, context.programme);
+      if (serviceContext === null) {
+        logger.warn('live ingress refused: a programme stream has no run identity', {
+          sessionId: context.sessionId,
+          broadcastId: context.broadcastId,
+        });
+        return;
+      }
+      return openSender({
       url: ingress.url,
       token: ingress.token,
       sessionId: context.sessionId,
       streamId: context.broadcastId,
-      context: serviceContextForMode(context.mediaSessionMode),
+      context: serviceContext,
       sourceLanguage: context.sourceLanguage,
       sourceLanguageMode: context.sourceLanguageMode,
       onTranslatedAudio: (frame) => ingress.onTranslatedAudio?.(context, frame),
       log: (line, detail) => logger.debug(line, { ...detail, sessionId: context.sessionId }),
+    });
     })
-      .then((sender: LiveIngressSender) => {
+      .then((sender: LiveIngressSender | undefined) => {
+        // Undefined means the open was refused above -- a programme with no
+        // run identity -- and there is no sender to adopt.
+        if (sender === undefined) return;
         if (session.closed) {
           void sender.abort('session closed before the stream opened');
           return;

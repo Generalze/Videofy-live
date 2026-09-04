@@ -1,0 +1,487 @@
+/*
+ * Premium primitives, to the golden masters (1586 x 992). Values in px where
+ * the masters fix them; the tokens in tokens.css carry colour and depth.
+ */
+
+/* ---------------------------------------------------------------- Eyebrow */
+.eyebrow {
+  margin: 0;
+  font-size: var(--op-eyebrow-size);
+  font-weight: 600;
+  letter-spacing: var(--op-eyebrow-tracking);
+  text-transform: uppercase;
+  line-height: 1.2;
+}
+.eyebrow-teal {
+  color: var(--op-teal);
+}
+.eyebrow-muted {
+  color: var(--op-text-muted);
+}
+.eyebrow-violet {
+  color: var(--op-violet-text);
+}
+
+/* ------------------------------------------------------------------ Panel */
+.panel {
+  position: relative;
+  border: 1px solid var(--op-panel-border);
+  border-radius: var(--op-radius-lg);
+  background: var(--op-panel);
+  background-image: var(--op-gradient-glass);
+  box-shadow: var(--op-shadow-panel);
+  color: var(--op-text);
+  min-width: 0;
+}
+.panel-sunken {
+  background: var(--op-panel-sunken);
+  box-shadow: none;
+}
+.panel-glass {
+  background: rgba(255, 255, 255, 0.025);
+  backdrop-filter: blur(10px);
+}
+.panel-pad-none {
+  padding: 0;
+}
+.panel-pad-sm {
+  padding: 16px;
+}
+.panel-pad-md {
+  padding: 22px 24px;
+}
+.panel-pad-lg {
+  padding: 28px;
+}
+.panelHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.panelHeading {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.panelTitle {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--op-text);
+}
+.panelActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* ------------------------------------------------------------------ Tones */
+.tone-neutral {
+  --tone-fg: var(--op-text-secondary);
+  --tone-bg: rgba(255, 255, 255, 0.05);
+  --tone-border: rgba(255, 255, 255, 0.12);
+  --tone-solid: var(--op-text-muted);
+}
+.tone-violet {
+  --tone-fg: var(--op-violet-text);
+  --tone-bg: var(--op-violet-soft);
+  --tone-border: var(--op-violet-border);
+  --tone-solid: var(--op-violet);
+}
+.tone-teal {
+  --tone-fg: var(--op-teal-text);
+  --tone-bg: var(--op-teal-soft);
+  --tone-border: var(--op-teal-border);
+  --tone-solid: var(--op-teal);
+}
+.tone-success {
+  --tone-fg: var(--op-ok-text);
+  --tone-bg: var(--op-ok-soft);
+  --tone-border: var(--op-ok-border);
+  --tone-solid: var(--op-ok);
+}
+.tone-warn {
+  --tone-fg: var(--op-warn-text);
+  --tone-bg: var(--op-warn-soft);
+  --tone-border: var(--op-warn-border);
+  --tone-solid: var(--op-warn);
+}
+.tone-danger {
+  --tone-fg: var(--op-danger-text);
+  --tone-bg: var(--op-danger-soft);
+  --tone-border: var(--op-danger-border);
+  --tone-solid: var(--op-danger);
+}
+.tone-info {
+  --tone-fg: var(--op-info);
+  --tone-bg: rgba(96, 165, 250, 0.14);
+  --tone-border: rgba(96, 165, 250, 0.45);
+  --tone-solid: var(--op-info);
+}
+
+/* ------------------------------------------------------------------ Chips */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: var(--op-radius-pill);
+  border: 1px solid var(--tone-border);
+  background: var(--tone-bg);
+  color: var(--tone-fg);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+.chip-md {
+  padding: 7px 12px;
+  font-size: 13px;
+}
+.chip-sm {
+  padding: 5px 9px;
+  font-size: 11px;
+}
+.chipCaps {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+.chipIcon {
+  display: inline-flex;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: var(--op-radius-pill);
+  border: 1px solid var(--tone-border);
+  background: var(--tone-bg);
+  color: var(--tone-fg);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+.pill-md {
+  padding: 8px 14px;
+  font-size: 13px;
+}
+.pill-sm {
+  padding: 5px 10px;
+  font-size: 11px;
+}
+
+.dot {
+  display: inline-block;
+  border-radius: 50%;
+  background: var(--tone-solid);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tone-solid) 22%, transparent);
+  flex-shrink: 0;
+}
+.dot-neutral {
+  --tone-solid: var(--op-text-muted);
+}
+.dot-violet {
+  --tone-solid: var(--op-violet);
+}
+.dot-teal {
+  --tone-solid: var(--op-teal);
+}
+.dot-success {
+  --tone-solid: var(--op-ok);
+}
+.dot-warn {
+  --tone-solid: var(--op-warn);
+}
+.dot-danger {
+  --tone-solid: var(--op-danger);
+}
+.dot-info {
+  --tone-solid: var(--op-info);
+}
+.dotPulse {
+  animation: op-pulse 1.8s ease-in-out infinite;
+}
+@keyframes op-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--tone-solid) 22%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--tone-solid) 10%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dotPulse {
+    animation: none;
+  }
+}
+
+/* ------------------------------------------------------------- PageHeader */
+.pageHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 32px;
+}
+/*
+ * The masters' page opening: an 11px caps eyebrow, a 38px title and a 15px
+ * lede that wraps near 500px. The five masters differ (title 34..40px, lede
+ * wrapping at 380..600px); these are the medians.
+ */
+.pageHeaderText {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  max-width: 500px;
+}
+.pageTitle {
+  margin: 0;
+  font-size: 38px;
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--op-text);
+}
+.pageLede {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--op-text-muted);
+}
+.pageActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+}
+.pageAside {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* ----------------------------------------------------------------- Button */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-radius: var(--op-radius-md);
+  border: 1px solid transparent;
+  font: inherit;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: filter 120ms ease, background-color 120ms ease, border-color 120ms ease;
+}
+.button:disabled,
+.button[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.45;
+  filter: none;
+}
+.button:focus-visible {
+  outline: 2px solid var(--op-violet);
+  outline-offset: 2px;
+}
+.button-md {
+  padding: 0 22px;
+  height: 46px;
+  font-size: 15px;
+}
+.button-sm {
+  padding: 0 14px;
+  height: 36px;
+  font-size: 13px;
+}
+.button-lg {
+  padding: 0 32px;
+  height: 56px;
+  font-size: 17px;
+}
+.button-primary {
+  background: var(--op-gradient-primary);
+  color: #fff;
+  box-shadow: var(--op-shadow-primary);
+}
+.button-primary:not(:disabled):hover {
+  filter: brightness(1.08);
+}
+.button-secondary {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--op-panel-border-strong);
+  color: var(--op-text);
+}
+.button-secondary:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.button-outline {
+  background: transparent;
+  border-color: var(--op-panel-border-strong);
+  color: var(--op-text);
+}
+.button-ghost {
+  background: transparent;
+  color: var(--op-text-secondary);
+}
+.button-ghost:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--op-text);
+}
+.button-danger {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: rgba(239, 68, 68, 0.55);
+  color: #fca5a5;
+}
+.button-danger:not(:disabled):hover {
+  background: rgba(239, 68, 68, 0.22);
+}
+.button-danger-outline {
+  background: transparent;
+  border-color: rgba(239, 68, 68, 0.6);
+  color: #f87171;
+}
+.button-danger-outline:not(:disabled):hover {
+  background: rgba(239, 68, 68, 0.1);
+}
+.buttonIcon {
+  display: inline-flex;
+  line-height: 0;
+}
+
+/* -------------------------------------------------------------- NoticeBar */
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 20px;
+  border-radius: var(--op-radius-md);
+  border: 1px solid var(--op-panel-border);
+  background: var(--op-panel);
+  font-size: 15px;
+  color: var(--op-text-secondary);
+}
+.notice-danger {
+  border-color: var(--op-danger-border);
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.14), rgba(239, 68, 68, 0.06));
+  color: var(--op-text);
+}
+.notice-warn {
+  border-color: var(--op-warn-border);
+  background: var(--op-warn-soft);
+  color: var(--op-text);
+}
+.notice-info {
+  border-color: rgba(96, 165, 250, 0.4);
+  background: rgba(96, 165, 250, 0.08);
+}
+.noticeIcon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--op-text-muted);
+}
+.notice-danger .noticeIcon {
+  color: var(--op-danger-text);
+}
+.noticeBody {
+  flex: 1;
+  min-width: 0;
+}
+.noticeAction {
+  flex-shrink: 0;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+/* --------------------------------------------------------------- IconTile */
+.iconTile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--op-radius-md);
+  border: 1px solid var(--tone-border);
+  background: var(--tone-bg);
+  color: var(--tone-fg);
+  flex-shrink: 0;
+}
+
+/* ------------------------------------------------------------- MetricChip */
+.metric {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 20px;
+  border-radius: var(--op-radius-md);
+  border: 1px solid var(--op-panel-border);
+  background: var(--op-panel);
+  color: var(--op-text);
+  min-height: 62px;
+}
+.metric.tone-success {
+  border-color: var(--op-ok-border);
+  background: var(--op-ok-soft);
+}
+.metric.tone-teal {
+  border-color: var(--op-teal-border);
+  background: var(--op-teal-soft);
+}
+.metricIcon {
+  display: inline-flex;
+  color: var(--tone-fg);
+}
+.metricText {
+  display: grid;
+  line-height: 1.15;
+}
+.metricValue {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--tone-fg, var(--op-text));
+}
+.metric.tone-neutral .metricValue {
+  color: var(--op-text);
+}
+.metricLabel {
+  font-size: 13px;
+  color: var(--op-text-muted);
+}
+
+/* --------------------------------------------------------------- WaveBars */
+.wave {
+  display: block;
+  width: 100%;
+}
+
+/* ---------------------------------------------------------------- Divider */
+.divider {
+  display: block;
+  height: 1px;
+  width: 100%;
+  background: var(--op-hairline);
+}
+.dividerVertical {
+  display: inline-block;
+  width: 1px;
+  height: 24px;
+  background: var(--op-panel-border-strong);
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

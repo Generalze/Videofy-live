@@ -86,7 +86,7 @@ export interface TranscriptionProvider {
 }
 
 export interface TranscriptionProviderConfig {
-  providerName: 'mock' | 'faster-whisper';
+  providerName: 'off' | 'mock' | 'faster-whisper';
   sourceLanguage: string;
   timeoutMs: number;
   fasterWhisper: FasterWhisperConfig;
@@ -121,6 +121,32 @@ export interface FasterWhisperProviderOptions extends FasterWhisperConfig {
   createWorker?: PythonWorkerFactory;
 }
 
+/**
+ * Batch transcription, declared unavailable.
+ *
+ * CTO ruling 30 Aug 2026: batch and live transcription are separate
+ * capabilities, and a deployment may run the live path while the batch path is
+ * not approved. This is what `TRANSCRIPTION_PROVIDER=off` mounts.
+ *
+ * IT REFUSES; IT NEVER INVENTS. The whole point of choosing `off` over `mock`
+ * is that a mock transcriber answers with fabricated words and every success
+ * signal a real one has, so nothing downstream can tell the difference and a
+ * viewer reads invented speech attributed to a real person. This throws a
+ * typed, 503-shaped error that names the capability, and callers surface it as
+ * "not available" rather than as a failure of the file somebody uploaded.
+ */
+export class UnavailableTranscriptionProvider implements TranscriptionProvider {
+  readonly name = 'off';
+
+  async transcribe(): Promise<TranscriptionProviderResult> {
+    throw new MediaIngestError(
+      'Transcription of uploaded media is not available on this deployment.',
+      'transcription-unavailable',
+      503,
+    );
+  }
+}
+
 export function createTranscriptionProvider(
   config: TranscriptionProviderConfig,
 ): TranscriptionProvider {
@@ -129,6 +155,9 @@ export function createTranscriptionProvider(
   }
   if (config.providerName === 'faster-whisper') {
     return new FasterWhisperTranscriptionProvider(config.fasterWhisper);
+  }
+  if (config.providerName === 'off') {
+    return new UnavailableTranscriptionProvider();
   }
   throw new MediaIngestError(
     `Unsupported transcription provider: ${config.providerName}.`,

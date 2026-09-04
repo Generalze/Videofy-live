@@ -30,7 +30,8 @@ export const MAX_ENROLLMENT_BYTES = 5 * 1024 * 1024;
  * bytes are stored as supplied and never executed or interpreted here, and the
  * validating engine downstream is the real authority on what it can read.
  */
-const ACCEPTED_MIME_PREFIXES = ['audio/webm', 'audio/ogg', 'audio/wav', 'audio/mpeg'];
+// audio/mp4 and x-m4a: the phone (expo-audio on Android) records AAC-in-MP4; there is no Opus encoder there.
+const ACCEPTED_MIME_PREFIXES = ['audio/webm', 'audio/ogg', 'audio/wav', 'audio/mpeg', 'audio/mp4', 'audio/x-m4a'];
 
 export interface VoiceEnrollmentRouteDependencies {
   readonly store: VoiceProfileStore;
@@ -53,6 +54,36 @@ export function registerVoiceEnrollmentRoute(
   app: express.Express,
   deps: VoiceEnrollmentRouteDependencies,
 ): void {
+  /**
+   * What the phone's "My C7 Voice" row says on a fresh launch: whether this
+   * person has a voice on file and whether it is usable for calls. The
+   * caller's own profiles only, from the verified identity; nothing about
+   * where the recording lives leaves the service.
+   */
+  app.get('/voice-profiles/mine', (req, res) => {
+    const ownerId = deps.authenticate(req);
+    if (!ownerId) {
+      res.status(401).json({ error: 'Sign in to see your voice.' });
+      return;
+    }
+    const usable = deps.store.usableForOwner(ownerId);
+    const newest = deps.store
+      .profilesForOwner(ownerId)
+      .filter((profile) => profile.consent.revokedAt === null)
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0];
+    if (newest === undefined) {
+      res.status(200).json({ enrolled: false, personalVoiceReady: false });
+      return;
+    }
+    res.status(200).json({
+      enrolled: true,
+      voiceProfileId: newest.voiceProfileId,
+      state: newest.state,
+      personalVoiceReady: usable !== null,
+      updatedAt: newest.updatedAt,
+    });
+  });
+
   app.post(
     '/voice-profiles/:voiceProfileId/enrollment',
     // Raw audio, capped. express.json elsewhere does not apply to this route.

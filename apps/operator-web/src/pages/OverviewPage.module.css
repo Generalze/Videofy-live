@@ -1,0 +1,487 @@
+/*
+ * 01 Overview, to the golden master at 1586 x 992. Pixel values are read off
+ * the master: the 88px status strip, the 267px feed cards, the 67px note
+ * bar, the 194 x 54 Go Live button, the rising pipeline on the right.
+ */
+.body {
+  display: grid;
+  gap: 18px;
+  margin-top: 2px;
+  /*
+   * 01 draws the alert's left border on x=320 and every body panel's on
+   * x=322, with both right edges on 1558. A left margin (not padding) keeps
+   * the right edge where the shell put it and moves only the left.
+   */
+  margin-left: 2px;
+}
+
+/*
+ * The master's opening, measured: kicker cap at y230, title 40px on a 48px
+ * pitch, lede 16px on 25px wrapping at 456px, 27px above the 54px button.
+ * The shared PageHeader is the median of five masters; this page corrects
+ * it locally through its own section id, without touching the shell.
+ */
+:global(#page-overview) {
+  padding-top: 8px;
+}
+/*
+ * 01 indents the opening 12px inside the panels below it: the eyebrow, the
+ * title, the lede and the button all start on x=332 while the strip, the
+ * cards and the note start on x=322.
+ */
+:global(#page-overview) > header > div:first-child {
+  gap: 0;
+  max-width: 470px;
+  padding-left: 12px;
+}
+/* 01's eyebrow is 14px, not the five-master median of 11: "WELCOME" is 75px wide with a 10px cap. */
+:global(#page-overview) > header > div:first-child > p:first-child {
+  font-size: 14px;
+}
+:global(#page-overview) > header h2 {
+  margin-top: 11px;
+  font-size: 40px;
+  line-height: 48px;
+}
+/*
+ * The lede wraps after "readiness;". 01's typeface sets that line 455px
+ * wide; ours is narrower and would pull "then" up onto it, so the paragraph
+ * carries its own measure -- wide enough for the line the master draws,
+ * too narrow for the word the master puts on the next one.
+ */
+:global(#page-overview) > header h2 + p {
+  margin-top: 12px;
+  max-width: 452px;
+  /*
+   * 01 sets the lede 455px wide; ours is a narrower face and reaches 426 at
+   * 16px. 17px would close that -- but the opening column is only ~460 wide
+   * once the pipeline has taken its half of the header, so 17px spills the
+   * lede onto a third line and pushes the whole body 25px down. The two
+   * lines in the right places are worth more than the two lines' width.
+   */
+  font-size: 16px;
+  line-height: 25px;
+  color: var(--op-text-secondary);
+}
+:global(#page-overview) > header h2 + p + div {
+  margin-top: 26px;
+}
+
+/* ---------------------------------------------------------------- Go Live */
+.goLive {
+  min-width: 194px;
+  height: 54px;
+  padding: 0 30px 0 50px;
+  gap: 30px;
+  justify-content: space-between;
+  font-size: 17px;
+  border-radius: var(--op-radius-sm);
+  background: linear-gradient(90deg, #4a2fd0 0%, #3b24c0 55%, #3a4fe0 100%);
+  box-shadow: 0 12px 34px rgba(69, 43, 195, 0.4);
+}
+/* Disabled is still disabled (cursor, no hover); it just stays legible. */
+.goLive:disabled {
+  opacity: 0.6;
+}
+
+/* --------------------------------------------------------------- Pipeline */
+/*
+ * The decorative pipeline, measured off 01 rather than styled by feel. The
+ * master draws five AXIS-ALIGNED rectangles (their left and right borders
+ * sit on the same x at every height, so nothing is rotated in perspective),
+ * each one taller than the last and each rising to the right:
+ *
+ *   tile       x            y            w    h
+ *   SOURCE      889..978     323..416     90    94
+ *   LANGUAGES  1000..1089    303..410     90   108
+ *   AUDIO      1113..1206    285..406     94   122
+ *   QUALITY    1231..1336    266..406    106   141
+ *   ON AIR     1385..1539    245..418    155   174
+ *
+ * The gaps are 21, 23, 24 and 48. Widths, heights, the extra margins and the
+ * bottom offsets below reproduce exactly that.
+ */
+.pipeline {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 21px;
+  width: 760px;
+  height: 210px;
+  padding: 0 0 8px 66px;
+  margin: -8px -24px 0 0;
+}
+.pipelineGround {
+  position: absolute;
+  inset: auto 0 -30px 0;
+  height: 120px;
+  background:
+    radial-gradient(60% 55% at 50% 100%, rgba(45, 212, 191, 0.16), transparent 70%),
+    repeating-linear-gradient(90deg, rgba(45, 212, 191, 0.12) 0 1px, transparent 1px 34px);
+  mask-image: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.7) 60%, transparent);
+  pointer-events: none;
+}
+/*
+ * The teal thread. In 01 it is only ever seen in the gaps -- it passes
+ * behind every tile -- and it crosses each gap at that tile pair's mid
+ * height: y=368 at x=860 rising to y=326 at x=1360, which is 4.8 degrees.
+ */
+.pipelineLine {
+  position: absolute;
+  z-index: 1;
+  left: 14px;
+  right: 198px;
+  top: 74.1%;
+  height: 3px;
+  transform: rotate(-5.07deg);
+  transform-origin: 0 50%;
+  background: repeating-linear-gradient(90deg, rgba(168, 250, 252, 0.95) 0 3px, transparent 3px 7px);
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 100%);
+  box-shadow: 0 0 12px rgba(94, 234, 212, 0.55);
+  pointer-events: none;
+}
+.pipelineLine::before,
+.pipelineLine::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--op-teal);
+  box-shadow: 0 0 10px var(--op-teal);
+}
+/* 01 puts a brighter node in each gap; these two land in the second and fourth. */
+.pipelineLine::before {
+  left: 28%;
+}
+.pipelineLine::after {
+  left: 70%;
+}
+/*
+ * 01 lights each tile from the top left: its top border reads about
+ * (110,145,195) and its right and bottom borders fall away to (25,65,85)
+ * and (8,24,40). The fill is a near-flat (19,26,43) to (12,22,38), bluer
+ * than the ground but nothing like the saturated navy an earlier wave used.
+ */
+.tile {
+  position: relative;
+  z-index: 2;
+  display: block;
+  width: 90px;
+  height: 94px;
+  margin-bottom: 2px;
+  border-radius: 12px;
+  border: 1px solid;
+  border-color: rgba(146, 182, 226, 0.72) rgba(96, 170, 200, 0.3) rgba(80, 150, 190, 0.18)
+    rgba(146, 182, 226, 0.62);
+  background: linear-gradient(180deg, rgba(21, 29, 46, 0.96), rgba(12, 22, 40, 0.96));
+  box-shadow: 0 18px 32px rgba(0, 0, 0, 0.45);
+  color: #76ddff;
+  text-decoration: none;
+  transition: border-color 120ms ease, filter 120ms ease;
+}
+.tile:hover {
+  filter: brightness(1.12);
+  border-color: rgba(45, 212, 191, 0.5);
+}
+.tile:focus-visible {
+  outline: 2px solid var(--op-teal);
+  outline-offset: 2px;
+}
+.tile[data-step='2'] {
+  width: 90px;
+  height: 108px;
+  margin-bottom: 8px;
+}
+.tile[data-step='3'] {
+  width: 94px;
+  height: 122px;
+  margin-left: 2px;
+  margin-bottom: 12px;
+}
+.tile[data-step='4'] {
+  width: 106px;
+  height: 141px;
+  margin-left: 3px;
+  margin-bottom: 12px;
+}
+.tile[data-final='true'] {
+  width: 155px;
+  height: 174px;
+  margin-left: 27px;
+  margin-bottom: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: #8ef6ff;
+}
+.tile[data-final='true']::before {
+  content: '';
+  position: absolute;
+  left: -20.7px;
+  top: -0.5px;
+  width: 175px;
+  height: 180px;
+  border-radius: 12px;
+  border: 1px solid rgba(60, 200, 196, 0.85);
+  background: linear-gradient(180deg, #0b1f2b, #071722);
+  box-shadow: 0 0 26px rgba(45, 212, 191, 0.22), 0 18px 34px rgba(0, 0, 0, 0.5);
+  transform: perspective(326px) rotateY(-30deg);
+}
+.tileIcon {
+  position: absolute;
+  top: 41.5%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  line-height: 0;
+  color: inherit;
+}
+.tileLabel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 13.3%;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  text-transform: uppercase;
+  color: #dbe4f5;
+  text-align: center;
+  white-space: nowrap;
+}
+.tile[data-final='true'] .tileLabel {
+  /* 01 centres ON AIR on x=1457.5, five left of the plate's own middle. */
+  padding-right: 10px;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  color: #b6fbff;
+}
+
+/* ----------------------------------------------------------- Status strip */
+.strip {
+  display: grid;
+  grid-template-columns: 247fr 219fr 259fr 252fr 259fr;
+  height: 88px;
+  overflow: hidden;
+}
+.cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 0 24px 0 46px;
+  min-width: 0;
+}
+/*
+ * 01 separates the cells with a 44px hairline centred in the 88px strip
+ * (x=569 runs y540..582), not with a border down the full height.
+ */
+/*
+ * 01 tightens each cell's left inset as the strip runs right -- its text
+ * starts 132, 125, 122 and 119px into cells one to four. It is a drawing and
+ * the four are not the same number; they are reproduced as drawn.
+ */
+.cell:nth-child(2) {
+  padding-left: 38px;
+}
+.cell:nth-child(3) {
+  padding-left: 34px;
+}
+.cell:nth-child(4) {
+  padding-left: 33px;
+}
+.cell + .cell::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 1px;
+  height: 44px;
+  transform: translateY(-50%);
+  background: rgba(120, 150, 210, 0.28);
+}
+/* The master rings each cell's dot with a soft teal halo -- the DOT, not whatever comes first. */
+.cell > :first-child:not(.cellIcon) {
+  box-shadow: 0 0 0 6px rgba(45, 212, 191, 0.14);
+}
+.cellIcon {
+  display: inline-flex;
+  line-height: 0;
+  color: var(--op-teal-text);
+}
+.ccBadge {
+  display: inline-grid;
+  place-items: center;
+  width: 31px;
+  height: 23px;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  line-height: 1;
+}
+.cellViewers .cellIcon {
+  color: var(--op-text);
+}
+.cellText {
+  display: grid;
+  gap: 4px;
+  padding-top: 3px;
+  line-height: 1.15;
+}
+.cellLabel {
+  font-size: 16px;
+  color: var(--op-text);
+}
+.cellWord {
+  font-size: 15px;
+  color: var(--op-text-muted);
+}
+.cellViewers {
+  gap: 14px;
+  padding-left: 47px;
+}
+/*
+ * 01 sets "Viewers" on the same line as every other cell's second word
+ * ("Waiting"), 11px below the middle, and tucks it close to the count.
+ */
+.cellViewers .cellWord {
+  margin-left: -10px;
+  transform: translateY(11px);
+}
+.viewersBox {
+  display: inline-grid;
+  place-items: center;
+  min-width: 41px;
+  height: 44px;
+  padding: 0 8px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.035);
+  background: rgba(255, 255, 255, 0.012);
+  font-size: 25px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--op-text);
+}
+
+/* ------------------------------------------------------------------ Cards */
+/*
+ * 01's three cards are NOT equal thirds: their borders land on x 322/717,
+ * 734/1126 and 1143/1564. The master is a drawing and its third card
+ * overruns the strip's right edge by six; the weights below reproduce the
+ * two gaps and the first two cards exactly and let the third finish on the
+ * content edge the shell owns.
+ */
+.cards {
+  display: grid;
+  grid-template-columns: 396fr 393fr 416fr;
+  gap: 16px;
+}
+.card {
+  display: flex;
+  flex-direction: column;
+  height: 266px;
+  padding: 32px 28px 0 27px;
+  overflow: hidden;
+}
+.cardHead {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+.cardTitleBlock {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+}
+.cardTitle {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  color: var(--op-text);
+}
+.progress {
+  width: 135px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.progressFill {
+  display: block;
+  height: 100%;
+  background: var(--op-gradient-primary);
+  transition: width 240ms ease;
+}
+.cardPill {
+  margin-top: 1px;
+}
+.cardText {
+  margin: 22px 0 0;
+  max-width: 300px;
+  /* 17px here matches 01's 290px opening line but reads worse against it overall. */
+  font-size: 16px;
+  line-height: 26px;
+  color: var(--op-text-secondary);
+}
+.cardText strong {
+  font-weight: 600;
+  color: var(--op-text);
+}
+.cardWave {
+  /* 01 bleeds the spectrum to both card borders; the card's 27px inset is cancelled. */
+  margin: auto -28px 0 -27px;
+  padding-bottom: 8px;
+  opacity: 0.35;
+  /* The master draws the spectrum as 2px dots on a 5.33px vertical pitch. */
+  mask-image: repeating-linear-gradient(180deg, #000 0 2px, transparent 2px 5.33px);
+}
+
+/* ----------------------------------------------------------------- Notice */
+.body .notice {
+  min-height: 67px;
+  gap: 10px;
+  padding: 13px 39px 13px 24px;
+  border-radius: var(--op-radius-lg);
+}
+.preflight {
+  height: 39px;
+  min-width: 215px;
+  padding: 0 18px 0 24px;
+  font-size: 15px;
+  font-weight: 500;
+  gap: 10px;
+  justify-content: space-between;
+  border-color: var(--op-violet-border);
+  background: rgba(99, 91, 255, 0.15);
+}
+.preflight:hover {
+  background: rgba(99, 91, 255, 0.16);
+}
+
+@media (max-width: 1280px) {
+  .pipeline {
+    display: none;
+  }
+  .strip {
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    height: auto;
+  }
+  .cell {
+    padding: 14px 20px;
+  }
+  .cards {
+    grid-template-columns: 1fr;
+  }
+  .card {
+    height: auto;
+    padding-bottom: 12px;
+  }
+}

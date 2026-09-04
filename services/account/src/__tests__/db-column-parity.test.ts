@@ -23,6 +23,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { CHANNEL_CATEGORIES, CHANNEL_VISIBILITIES } from '@videofy-live/shared-types';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -108,5 +109,259 @@ describe('contacts', () => {
     const read = selectColumns(sql, 'contact_invites');
 
     expect(written.filter((column) => !read.includes(column))).toEqual([]);
+  });
+});
+
+/**
+ * The tariff port cannot have the accounts bug, because both statements
+ * interpolate ONE `COLUMNS` constant -- there is no second list to drift from.
+ * So this checks the two seams that constant still has: the table it claims to
+ * describe, and the placeholders it is bound against.
+ */
+describe('billing tariffs', () => {
+  const sql = source('tariff-records-postgres.ts');
+
+  /** The shared constant, which both the SELECT and the INSERT interpolate. */
+  function sharedColumns(): string[] {
+    const match = /const COLUMNS =\s*([\s\S]*?);/u.exec(sql);
+    if (match === null) throw new Error('no COLUMNS constant found');
+    return splitColumns(match[1]!.replace(/['`\n]/g, ' '));
+  }
+
+  /** Columns the migration actually creates. */
+  function migrationColumns(): string[] {
+    const migrations = readFileSync(join(here, '..', 'db', 'migrations.ts'), 'utf8');
+    const start = migrations.indexOf('CREATE TABLE IF NOT EXISTS billing_tariffs (');
+    if (start < 0) throw new Error('billing_tariffs is not created by any migration');
+    const open = migrations.indexOf('(', start);
+    const close = migrations.indexOf(');', open);
+    return migrations
+      .slice(open + 1, close)
+      .split('\n')
+      .map((line) => line.trim().replace(/--.*$/u, '').trim())
+      .map((line) => /^([a-z_]+)\s+(integer|bigint|text|jsonb)/u.exec(line)?.[1] ?? '')
+      .filter((name) => name.length > 0);
+  }
+
+  it('names only columns the table has', () => {
+    const declared = migrationColumns();
+    expect(sharedColumns().filter((column) => !declared.includes(column))).toEqual([]);
+  });
+
+  /*
+   * The other direction. A column added to the migration and forgotten here is
+   * exactly the accounts bug -- written by nothing, read by nothing, and
+   * invisible until someone needs the value.
+   */
+  it('reads every column the table has', () => {
+    const used = sharedColumns();
+    expect(migrationColumns().filter((column) => !used.includes(column))).toEqual([]);
+  });
+
+  /*
+   * A column list and a VALUES list of different lengths is a runtime error on
+   * the first publish, which is a poor place to find out.
+   */
+  it('binds exactly one placeholder per column', () => {
+    const placeholders = [...sql.matchAll(/\$(\d+)/gu)].map((match) => Number(match[1]));
+    expect(Math.max(...placeholders)).toBe(sharedColumns().length);
+  });
+});
+
+/** Same one-list guarantee as the tariff port; same two seams left to check. */
+describe('devices', () => {
+  const sql = source('device-records-postgres.ts');
+
+  function sharedColumns(): string[] {
+    const match = /const COLUMNS =\s*([\s\S]*?);/u.exec(sql);
+    if (match === null) throw new Error('no COLUMNS constant found');
+    return splitColumns(match[1]!.replace(/['`\n]/g, ' '));
+  }
+
+  function migrationColumns(): string[] {
+    const migrations = readFileSync(join(here, '..', 'db', 'migrations.ts'), 'utf8');
+    const start = migrations.indexOf('CREATE TABLE IF NOT EXISTS devices (');
+    if (start < 0) throw new Error('devices is not created by any migration');
+    const open = migrations.indexOf('(', start);
+    const close = migrations.indexOf(');', open);
+    return migrations
+      .slice(open + 1, close)
+      .split('\n')
+      .map((line) => line.trim().replace(/--.*$/u, '').trim())
+      .map((line) => /^([a-z_]+)\s+(integer|bigint|text|jsonb)/u.exec(line)?.[1] ?? '')
+      .filter((name) => name.length > 0);
+  }
+
+  /* Guard against a vacuous pass: empty lists would satisfy both filters. */
+  it('actually found columns to compare', () => {
+    expect(sharedColumns().length).toBeGreaterThan(0);
+    expect(migrationColumns().length).toBeGreaterThan(0);
+  });
+
+  it('names only columns the table has', () => {
+    const declared = migrationColumns();
+    expect(sharedColumns().filter((column) => !declared.includes(column))).toEqual([]);
+  });
+
+  it('reads every column the table has', () => {
+    const used = sharedColumns();
+    expect(migrationColumns().filter((column) => !used.includes(column))).toEqual([]);
+  });
+
+  it('binds exactly one placeholder per column on insert', () => {
+    const insert = sql.slice(sql.indexOf('INSERT INTO devices'), sql.indexOf('ON CONFLICT'));
+    const placeholders = [...insert.matchAll(/\$(\d+)/gu)].map((match) => Number(match[1]));
+    expect(Math.max(...placeholders)).toBe(sharedColumns().length);
+  });
+});
+
+/**
+ * The two social tables, and the three account columns 017 added. Same
+ * one-list guarantee; `boolean` joins the column types because both tables
+ * have one, and a regex that did not know the type would silently drop the
+ * column from the comparison -- a vacuous pass wearing a green tick.
+ */
+describe.each([
+  { table: 'channel_follows', file: 'channel-follows-postgres.ts' },
+  { table: 'reports', file: 'reports-postgres.ts' },
+  { table: 'channel_profiles', file: 'channel-profiles-postgres.ts' },
+])('$table', ({ table, file }) => {
+  const sql = source(file);
+
+  function sharedColumns(): string[] {
+    const match = /const COLUMNS =\s*([\s\S]*?);/u.exec(sql);
+    if (match === null) throw new Error('no COLUMNS constant found');
+    return splitColumns(match[1]!.replace(/['`\n]/g, ' '));
+  }
+
+  function migrationColumns(): string[] {
+    const migrations = readFileSync(join(here, '..', 'db', 'migrations.ts'), 'utf8');
+    const start = migrations.indexOf(`CREATE TABLE IF NOT EXISTS ${table} (`);
+    if (start < 0) throw new Error(`${table} is not created by any migration`);
+    const open = migrations.indexOf('(', start);
+    const close = migrations.indexOf(');', open);
+    return migrations
+      .slice(open + 1, close)
+      .split('\n')
+      .map((line) => line.trim().replace(/--.*$/u, '').trim())
+      .map((line) => /^([a-z_]+)\s+(integer|bigint|text|jsonb|boolean)/u.exec(line)?.[1] ?? '')
+      .filter((name) => name.length > 0);
+  }
+
+  it('actually found columns to compare', () => {
+    expect(sharedColumns().length).toBeGreaterThan(0);
+    expect(migrationColumns().length).toBeGreaterThan(0);
+  });
+
+  it('names only columns the table has', () => {
+    const declared = migrationColumns();
+    expect(sharedColumns().filter((column) => !declared.includes(column))).toEqual([]);
+  });
+
+  it('reads every column the table has', () => {
+    const used = sharedColumns();
+    expect(migrationColumns().filter((column) => !used.includes(column))).toEqual([]);
+  });
+
+  it('binds exactly one placeholder per column on insert', () => {
+    const insert = sql.slice(sql.indexOf(`INSERT INTO ${table}`), sql.indexOf('ON CONFLICT'));
+    const placeholders = [...insert.matchAll(/\$(\d+)/gu)].map((match) => Number(match[1]));
+    expect(Math.max(...placeholders)).toBe(sharedColumns().length);
+  });
+});
+
+describe('accounts, after 017', () => {
+  const sql = source('account-records-postgres.ts');
+
+  it('writes and reads the profile extras', () => {
+    for (const column of ['availability', 'bio', 'notifications_enabled']) {
+      expect(insertColumns(sql, 'accounts')).toContain(column);
+      expect(selectColumns(sql, 'accounts')).toContain(column);
+    }
+  });
+});
+
+/** Same one-list guarantee as tariffs and devices. */
+describe('messages', () => {
+  const sql = source('message-records-postgres.ts');
+
+  function sharedColumns(): string[] {
+    const match = /const COLUMNS =\s*([\s\S]*?);/u.exec(sql);
+    if (match === null) throw new Error('no COLUMNS constant found');
+    return splitColumns(match[1]!.replace(/['`\n]/g, ' '));
+  }
+
+  function migrationColumns(): string[] {
+    const migrations = readFileSync(join(here, '..', 'db', 'migrations.ts'), 'utf8');
+    const start = migrations.indexOf('CREATE TABLE IF NOT EXISTS messages (');
+    if (start < 0) throw new Error('messages is not created by any migration');
+    const open = migrations.indexOf('(', start);
+    const close = migrations.indexOf(');', open);
+    const created = migrations
+      .slice(open + 1, close)
+      .split('\n')
+      .map((line) => line.trim().replace(/--.*$/u, '').trim())
+      .map((line) => /^([a-z_]+)\s+(integer|bigint|text|jsonb)/u.exec(line)?.[1] ?? '')
+      .filter((name) => name.length > 0);
+    /*
+     * Columns added by later append-only migrations: the messages table grew
+     * its translated renderings via ALTER TABLE in 012_conversation_modes,
+     * and a parity check that reads only the CREATE would flag every honest
+     * addition forever.
+     */
+    const altered = [...migrations.matchAll(/ALTER TABLE messages[^;]*;/gu)]
+      .flatMap((statement) => [...statement[0].matchAll(/ADD COLUMN IF NOT EXISTS ([a-z_]+)/gu)])
+      .map((match) => match[1] ?? '')
+      .filter((name) => name.length > 0);
+    return [...created, ...altered];
+  }
+
+  it('actually found columns to compare', () => {
+    expect(sharedColumns().length).toBeGreaterThan(0);
+    expect(migrationColumns().length).toBeGreaterThan(0);
+  });
+
+  it('names only columns the table has', () => {
+    const declared = migrationColumns();
+    expect(sharedColumns().filter((column) => !declared.includes(column))).toEqual([]);
+  });
+
+  it('reads every column the table has', () => {
+    const used = sharedColumns();
+    expect(migrationColumns().filter((column) => !used.includes(column))).toEqual([]);
+  });
+
+  it('binds exactly one placeholder per column on insert', () => {
+    const insert = sql.slice(sql.indexOf('INSERT INTO messages'), sql.indexOf('async conversation'));
+    const placeholders = [...insert.matchAll(/\$(\d+)/gu)].map((match) => Number(match[1]));
+    expect(Math.max(...placeholders)).toBe(sharedColumns().length);
+  });
+});
+
+/**
+ * Migration 020 names the controlled category and visibility lists LITERALLY
+ * in its CHECK constraints, because SQL cannot import them. This holds the
+ * two copies equal: a category added to shared-types and not to the check
+ * would be accepted by every validator and refused by the database, which is
+ * a 500 on the day an operator picks it.
+ */
+describe('channel_profiles controlled lists', () => {
+  const migrations = readFileSync(join(here, '..', 'db', 'migrations.ts'), 'utf8');
+  const table = migrations.slice(migrations.indexOf('CREATE TABLE IF NOT EXISTS channel_profiles ('));
+
+  function quotedList(after: string): string[] {
+    const start = table.indexOf(after);
+    if (start < 0) throw new Error(`no ${after} in the channel_profiles migration`);
+    const open = table.indexOf('(', start + after.length - 1);
+    const close = table.indexOf(')', open);
+    return [...table.slice(open + 1, close).matchAll(/'([a-z]+)'/gu)].map((match) => match[1] ?? '');
+  }
+
+  it('checks category against exactly the shared-types list', () => {
+    expect(quotedList('category IN (')).toEqual(CHANNEL_CATEGORIES.map((entry) => entry.id));
+  });
+
+  it('checks visibility against exactly the shared-types tiers', () => {
+    expect(quotedList('visibility IN (')).toEqual([...CHANNEL_VISIBILITIES]);
   });
 });

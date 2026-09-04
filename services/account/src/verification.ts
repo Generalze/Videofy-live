@@ -30,6 +30,8 @@ import {
   type IdentityCase,
   type IdentitySession,
   type IdentityVerificationProvider,
+  deliveryAvailable,
+  identityProviderAvailable,
 } from '@videofy-live/account-trust';
 import type { AccountStore } from './account-store.js';
 
@@ -51,7 +53,16 @@ export type RequestOutcome =
   | { readonly ok: false; readonly reason: 'already-verified' }
   | { readonly ok: false; readonly reason: 'throttled'; readonly retryAfterMs: number }
   | { readonly ok: false; readonly reason: 'invalid-target' }
-  | { readonly ok: false; readonly reason: 'delivery-failed' };
+  | { readonly ok: false; readonly reason: 'delivery-failed' }
+  /**
+   * The channel is switched OFF on this deployment.
+   *
+   * Distinct from 'delivery-failed' on purpose: that one means a vendor was
+   * asked and did not deliver, and a retry is reasonable. This one means there
+   * is no vendor, and retrying will never help -- so the route answers 503
+   * rather than 502, and nothing at all is written to the account.
+   */
+  | { readonly ok: false; readonly reason: 'unavailable' };
 
 export type ConfirmOutcome =
   | { readonly ok: true; readonly state: AccountTrustState }
@@ -89,6 +100,16 @@ export class VerificationService {
     token: string,
     provider: VerificationDeliveryProvider,
   ): Promise<RequestOutcome> {
+    /*
+     * REFUSED BEFORE ANYTHING IS WRITTEN.
+     *
+     * An off channel must leave no trace: no challenge record, no pending
+     * transition, nothing for a later reader to mistake for a check that was
+     * started. Checked first for exactly that reason -- the persist happens
+     * below, and reaching it would already be too late.
+     */
+    if (!deliveryAvailable(provider)) return { ok: false, reason: 'unavailable' };
+
     const account = this.deps.store.get(accountId);
     if (!account) return { ok: false, reason: 'unknown-account' };
     if (target === null) return { ok: false, reason: 'invalid-target' };
@@ -218,25 +239,63 @@ export class VerificationService {
    * waiting for a code. Surfaced so the caller can say so instead of showing a
    * success it cannot honour.
    */
-  deliverabilityOf(channel: 'email' | 'phone'): 'real' | 'synthetic' {
+  deliverabilityOf(channel: 'email' | 'phone'): 'real' | 'synthetic' | 'disabled' {
     const provider = channel === 'email' ? this.deps.emailProvider : this.deps.phoneProvider;
+    if (!deliveryAvailable(provider)) return 'disabled';
     return provider.synthetic ? 'synthetic' : 'real';
   }
 
+  /**
+   * Whether this channel is offered at all.
+   *
+   * The routes ask this BEFORE doing any work, so an off channel answers 503
+   * ("not available yet") instead of walking a flow that ends in a delivery
+   * error. Two different sentences to the person, and only one of them is true.
+   */
+  channelAvailable(channel: 'email' | 'phone'): boolean {
+    const provider = channel === 'email' ? this.deps.emailProvider : this.deps.phoneProvider;
+    return deliveryAvailable(provider);
+  }
+
+  /** Whether identity checks are offered at all on this deployment. */
+  identityAvailable(): boolean {
+    const provider = this.deps.identityProvider;
+    return provider !== undefined && identityProviderAvailable(provider);
+  }
+
   /** Whether identity checks can actually complete here. */
-  identityDeliverability(): 'real' | 'synthetic' | 'absent' {
-    if (!this.deps.identityProvider) return 'absent';
-    return this.deps.identityProvider.synthetic ? 'synthetic' : 'real';
+  identityDeliverability(): 'real' | 'synthetic' | 'absent' | 'disabled' {
+    const provider = this.deps.identityProvider;
+    if (!provider) return 'absent';
+    if (!identityProviderAvailable(provider)) return 'disabled';
+    return provider.synthetic ? 'synthetic' : 'real';
   }
 
   async startIdentityVerification(
     accountId: string,
   ): Promise<
     | { ok: true; session: IdentitySession }
-    | { ok: false; reason: 'unknown-account' | 'already-verified' | 'not-configured' | 'in-progress' }
+    | {
+        ok: false;
+        reason:
+          | 'unknown-account'
+          | 'already-verified'
+          | 'not-configured'
+          | 'unavailable'
+          | 'in-progress';
+      }
   > {
     const provider = this.deps.identityProvider;
     if (!provider) return { ok: false, reason: 'not-configured' };
+    /*
+     * Switched off: refuse before a case id is minted.
+     *
+     * Nothing is stored, so the identity component stays exactly where it was
+     * -- `unverified`, never `pending` and never `verified`. An off switch
+     * decides whether the capability is offered; it has no opinion about
+     * anybody's trust, and trust derivation is untouched by it.
+     */
+    if (!identityProviderAvailable(provider)) return { ok: false, reason: 'unavailable' };
 
     const account = this.deps.store.get(accountId);
     if (!account) return { ok: false, reason: 'unknown-account' };
@@ -307,6 +366,17 @@ export class VerificationService {
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
     const secret = this.deps.identityCallbackSecret;
     if (!secret) return { ok: false, reason: 'not-configured' };
+    /*
+     * With identity switched off, no case was ever created, so no honest
+     * callback can exist. Refused here rather than left to fail as
+     * 'unknown-case', because an endpoint that can move an account's identity
+     * state should be shut, not merely unlucky.
+     */
+    const provider = this.deps.identityProvider;
+    if (provider && !identityProviderAvailable(provider)) {
+      this.deps.onEvent?.('identity.callback_rejected', { reason: 'unavailable' });
+      return { ok: false, reason: 'unavailable' };
+    }
 
     // Signature is checked against the account's own seen-event list, which
     // requires knowing the account -- so validate signature and shape first

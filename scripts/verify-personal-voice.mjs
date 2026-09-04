@@ -143,7 +143,9 @@ const signUp = await fetch(`${ACCOUNT_BASE}/accounts`, {
 });
 const account = await signUp.json().catch(() => ({}));
 if (signUp.status !== 201 || !account.token) {
-  console.error('Could not create an account:', signUp.status, account);
+  // Field names only: the body of a sign-up that half-worked holds a session
+  // token, and this line goes to a terminal that gets pasted into tickets.
+  console.error('Could not create an account:', signUp.status, Object.keys(account));
   console.error('Is the account service running with VIDEOFY_AUTH_SECRET set?');
   process.exit(2);
 }

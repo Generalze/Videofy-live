@@ -1,0 +1,37 @@
+{
+  "name": "@videofy-live/translation-routes",
+  "version": "0.1.0",
+  "private": true,
+  "author": "masterzee001",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "description": "The directional translation route registry: which source->target route production may invoke, for which service, and why not when the answer is no.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./document-file": {
+      "types": "./dist/document-file.d.ts",
+      "import": "./dist/document-file.js"
+    },
+    "./routes/translation-routes.seed.json": "./routes/translation-routes.seed.json"
+  },
+  "files": [
+    "dist",
+    "routes"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.9"
+  }
+}

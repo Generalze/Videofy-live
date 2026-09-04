@@ -1,0 +1,279 @@
+/*
+ * 05 Programme Vocabulary.
+ *
+ * EVERY COLOUR COMES FROM THE OPERATOR DESIGN AUTHORITY. An earlier draft of
+ * this file carried its own navy palette in hex, which is how a console ends up
+ * with two answers to "what is a panel" and a page that drifts out of the
+ * system the first time a token changes. No --vocabulary-* tokens are defined
+ * here, and no theme.
+ *
+ * The three consumer states map onto existing semantic families rather than new
+ * ones: teal for consumed (something reads it), warn for unsupported (set, and
+ * nothing on this deployment can read it), and the raised panel for unconsumed
+ * (not filled in -- the ordinary case, and deliberately the quietest). Conflict
+ * uses the danger family, because it is an interruption rather than a note.
+ */
+.page {
+  display: grid;
+  gap: 21px;
+  margin-top: 0;
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--op-text);
+}
+
+.revision {
+  margin: 0;
+  font-size: 13px;
+  color: var(--op-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.effective {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: var(--op-radius-md);
+  background: var(--op-panel-raised);
+  border: 1px solid var(--op-panel-border);
+  color: var(--op-text-secondary);
+  font-size: 13px;
+}
+
+/* An interruption, not a footnote: it stops the operator. */
+.conflict {
+  padding: 14px 16px;
+  border-radius: var(--op-radius-md);
+  background: var(--op-danger-soft);
+  border: 1px solid var(--op-danger-border);
+  color: var(--op-danger-text);
+  display: grid;
+  gap: 8px;
+}
+.conflict p { margin: 0; font-size: 14px; }
+.conflictDetail { opacity: 0.85; font-size: 13px; }
+.reload {
+  justify-self: start;
+  padding: 7px 14px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-danger-border);
+  background: transparent;
+  color: var(--op-danger-text);
+  font-family: var(--op-font);
+  font-size: 13px;
+  cursor: pointer;
+}
+.reload:hover { background: var(--op-danger-soft); }
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--op-panel);
+  border: 1px solid var(--op-panel-border);
+  border-radius: var(--op-radius-md);
+  overflow: hidden;
+  font-size: 13px;
+}
+.table th {
+  text-align: left;
+  padding: 10px 14px;
+  background: var(--op-panel-raised);
+  color: var(--op-text-muted);
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--op-panel-border);
+}
+.table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--op-hairline);
+  vertical-align: top;
+  color: var(--op-text);
+}
+.table tr:last-child td { border-bottom: none; }
+
+/* A disabled term reaches no consumer, and reads that way. */
+.disabled { opacity: 0.55; }
+
+.term { display: block; font-weight: 600; color: var(--op-text); }
+.kind {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--op-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.notes {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--op-text-faint);
+  font-style: italic;
+}
+.language { color: var(--op-text-secondary); }
+.none { color: var(--op-text-faint); }
+
+.states { display: grid; gap: 5px; }
+
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 3px 8px;
+  border-radius: var(--op-radius-sm);
+  font-size: 11px;
+  border: 1px solid transparent;
+  width: fit-content;
+}
+.chipState {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+.chipConsumer { color: inherit; opacity: 0.82; }
+
+/* Something reads it. */
+.consumed {
+  background: var(--op-teal-soft);
+  border-color: var(--op-teal-border);
+  color: var(--op-teal-text);
+}
+/* Set, and nothing on this deployment can read it. The one that must never be
+   mistaken for consumed, so it takes the warn family rather than a shade of
+   the same colour. */
+.unsupported {
+  background: var(--op-warn-soft);
+  border-color: var(--op-warn-border);
+  color: var(--op-warn-text);
+}
+/* Not filled in. The ordinary state, and the quietest. */
+.unconsumed {
+  background: var(--op-panel-raised);
+  border-color: var(--op-panel-border);
+  color: var(--op-text-muted);
+}
+
+.delete {
+  padding: 5px 11px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-panel-border-strong);
+  background: transparent;
+  color: var(--op-text-secondary);
+  font-family: var(--op-font);
+  font-size: 12px;
+  cursor: pointer;
+}
+.delete:hover { background: var(--op-panel-raised); }
+.delete:disabled { opacity: 0.5; cursor: default; }
+
+.empty, .loading {
+  padding: 22px 14px;
+  color: var(--op-text-muted);
+  text-align: center;
+}
+
+.unavailable {
+  padding: 14px 16px;
+  border-radius: var(--op-radius-md);
+  background: var(--op-panel-raised);
+  border: 1px solid var(--op-panel-border);
+  color: var(--op-text-secondary);
+  font-size: 14px;
+  margin: 0;
+}
+
+.footnote {
+  margin: 0;
+  font-size: 12px;
+  color: var(--op-text-faint);
+}
+
+/* ---- Add / edit form ---------------------------------------------------- */
+
+.form {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: var(--op-radius-md);
+  background: var(--op-panel);
+  border: 1px solid var(--op-panel-border);
+}
+.formTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--op-text);
+}
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px 14px;
+}
+.field { display: grid; gap: 4px; font-size: 12px; color: var(--op-text-muted); }
+.field input,
+.field select {
+  padding: 7px 9px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-panel-border-strong);
+  background: var(--op-panel-raised);
+  color: var(--op-text);
+  font-family: var(--op-font);
+  font-size: 13px;
+}
+.formToggles { display: flex; flex-wrap: wrap; gap: 14px; }
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--op-text-secondary);
+}
+.formActions { display: flex; gap: 10px; }
+.save {
+  padding: 7px 16px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-teal-border);
+  background: var(--op-teal-soft);
+  color: var(--op-teal-text);
+  font-family: var(--op-font);
+  font-size: 13px;
+  cursor: pointer;
+}
+/* Disabled while a write is in flight, so one submit cannot become two. */
+.save:disabled { opacity: 0.5; cursor: default; }
+.cancel {
+  padding: 7px 14px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-panel-border-strong);
+  background: transparent;
+  color: var(--op-text-secondary);
+  font-family: var(--op-font);
+  font-size: 13px;
+  cursor: pointer;
+}
+.rowActions { display: flex; gap: 8px; }
+.edit {
+  padding: 5px 11px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-panel-border-strong);
+  background: transparent;
+  color: var(--op-text-secondary);
+  font-family: var(--op-font);
+  font-size: 12px;
+  cursor: pointer;
+}
+.edit:hover { background: var(--op-panel-raised); }
+.edit:disabled { opacity: 0.5; cursor: default; }

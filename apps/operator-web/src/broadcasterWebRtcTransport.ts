@@ -287,7 +287,28 @@ export class BroadcasterWebRtcTransportController {
       this.attachedAudioTrack = tracks.audioTrack;
       if (tracks.videoTrack) {
         tracks.videoTrack.addEventListener?.('ended', this.handleVideoTrackEnded);
-        peer.addTrack(tracks.videoTrack, stream!);
+        /*
+         * Under CPU pressure the browser's default is to HALVE the resolution
+         * and keep the frame rate -- measured on staging as 320x240 arriving
+         * from a 640x480 source. The programme is one talking source, not a
+         * sports feed: viewers notice smearing long before they notice a
+         * lower frame rate, so degradation gives up motion, not pixels.
+         */
+        try {
+          (tracks.videoTrack as { contentHint?: string }).contentHint = 'detail';
+        } catch {
+          /* a browser without contentHint keeps its default */
+        }
+        const videoSender = peer.addTrack(tracks.videoTrack, stream!);
+        try {
+          const parameters = videoSender.getParameters?.();
+          if (parameters) {
+            parameters.degradationPreference = 'maintain-resolution';
+            void videoSender.setParameters?.(parameters);
+          }
+        } catch {
+          /* parameters are advisory; an older browser just keeps defaults */
+        }
         this.attachedVideoTrack = tracks.videoTrack;
       }
       this.update({

@@ -1,4 +1,5 @@
 @import '@videofy-live/design-system/tokens.css';
+@import './premium/tokens.css';
 
 *,
 *::before,
@@ -14,32 +15,47 @@
    * values. Call and the Viewer already resolve their palette this way; the
    * operator was the last surface still holding its own colours, which is how
    * three products drift apart one shade at a time.
+   *
+   * The premium console (premium/tokens.css) sits on top: its ground, glass
+   * and accents are read off the golden masters, and the aliases below now
+   * point at those so the pages built before the redesign inherit the same
+   * ground rather than the old surface greys.
    */
-  --color-brand: var(--vf-border-accent);
-  --color-brand-light: var(--vf-text-accent);
-  --color-bg: var(--vf-surface-canvas);
-  --color-surface: var(--vf-surface-1);
-  --color-surface-raised: var(--vf-surface-2);
-  --color-border: var(--vf-border-default);
-  --color-text: var(--vf-text-primary);
-  --color-text-muted: var(--vf-text-muted);
+  --color-brand: var(--op-violet);
+  --color-brand-light: var(--op-violet-text);
+  --color-bg: var(--op-bg);
+  --color-surface: var(--op-panel);
+  --color-surface-raised: var(--op-panel-raised);
+  --color-border: var(--op-panel-border);
+  --color-text: var(--op-text);
+  --color-text-muted: var(--op-text-muted);
   --color-success: var(--vf-status-success-solid);
   --color-warn: var(--vf-status-warn-solid);
   --color-error: var(--vf-status-danger-solid);
   --radius-sm: var(--vf-radius-sm);
   --radius-md: var(--vf-radius-md);
   --radius-lg: var(--vf-radius-lg);
-  font-family: var(--vf-font-family-sans);
+  /*
+   * No webfont is bundled (the design system deliberately ships none, and the
+   * console is served from staging with no runtime font fetch). The masters
+   * use a geometric sans; this stack takes Inter where it is installed and
+   * Segoe UI Variable / the platform UI face otherwise.
+   */
+  font-family: var(--op-font);
+  color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body {
-  background-color: var(--color-bg);
-  color: var(--color-text);
+  background-color: var(--op-bg);
+  color: var(--op-text);
   min-height: 100vh;
 }
 
 button,
 select,
-input {
+input,
+textarea {
   font-family: inherit;
 }

@@ -100,6 +100,24 @@ describe('live audio goes to the ingress, and nowhere near a WAV file', () => {
     expect(r.calls.filter((c) => c.startsWith('submitChunk'))).toHaveLength(0);
   });
 
+  it('PIN: the session record reaches media-ingest before the ingress opens', async () => {
+    // The record is the ONLY carrier of the target languages: the ingress
+    // `open` names none, and media-ingest resolves its speech plans at open.
+    // The lazy create in the chunker path never runs on the live path -- the
+    // staging defect was exactly this create not happening at all, so a live
+    // programme with configured languages planned zero translation pipelines.
+    const r = bridgeWithIngress();
+    const context = callContext({ targetLanguages: ['es'] });
+    r.bridge.handleFrame(context, frame());
+    await new Promise((done) => setTimeout(done, 10));
+    expect(r.calls.filter((c) => c === 'createSession')).toHaveLength(1);
+    // And still exactly once when more audio flows.
+    r.bridge.handleFrame(context, frame());
+    await new Promise((done) => setTimeout(done, 10));
+    expect(r.calls.filter((c) => c === 'createSession')).toHaveLength(1);
+    expect(r.pushed.length).toBe(2);
+  });
+
   it('PIN: audio captured before the stream opened is not lost', async () => {
     const r = bridgeWithIngress();
     const context = callContext();
@@ -125,7 +143,12 @@ describe('live audio goes to the ingress, and nowhere near a WAV file', () => {
 
   it('PIN: a live programme takes the same realtime path as a call', async () => {
     const r = bridgeWithIngress();
-    const context = callContext({ sessionId: 'prog_1', mediaSessionMode: 'programme' });
+    const context = callContext({
+      sessionId: 'prog_1',
+      mediaSessionMode: 'programme',
+      // A programme stream carries whose broadcast it is, or it is refused.
+      programme: { channelId: 'ch_1', programmeId: 'prog_1', runId: 'run_1' },
+    });
     for (let i = 0; i < 4; i += 1) r.bridge.handleFrame(context, frame());
     await new Promise((done) => setTimeout(done, 10));
     expect(r.pushed.length).toBe(4);
@@ -139,9 +162,16 @@ describe('the service context is declared, never inferred', () => {
       serviceCategory: 'call',
       mediaMode: 'live',
     });
-    expect(serviceContextForMode('programme')).toEqual({
+    expect(
+      serviceContextForMode('programme', {
+        channelId: 'ch_1',
+        programmeId: 'prog_1',
+        runId: 'run_1',
+      }),
+    ).toEqual({
       serviceCategory: 'programme',
       mediaMode: 'live',
+      programme: { channelId: 'ch_1', programmeId: 'prog_1', runId: 'run_1' },
     });
   });
 
@@ -149,9 +179,13 @@ describe('the service context is declared, never inferred', () => {
     // `mediaMode` is 'live' for every value the mapping accepts, because
     // uploaded programmes are excluded upstream and take the batch path with
     // their complete file. If that ever changes, this is where it breaks.
+    const run = { channelId: 'ch_1', programmeId: 'prog_1', runId: 'run_1' };
     for (const mode of ['live-conversation', 'programme'] as const) {
-      expect(serviceContextForMode(mode).mediaMode).toBe('live');
+      expect(serviceContextForMode(mode, run)?.mediaMode).toBe('live');
     }
+    // And a programme with no run identity does not get a context at all.
+    expect(serviceContextForMode('programme')).toBeNull();
+    expect(serviceContextForMode('live-conversation')).not.toBeNull();
   });
 });
 
@@ -160,7 +194,8 @@ describe('the old live behaviour cannot come back by accident', () => {
     // A source pin, deliberately. Behaviour tests prove the live path works;
     // this proves nobody reordered the branch so that live audio falls through
     // to the chunker again while every other test still passes.
-    const source = readFileSync(resolve(here, '../media-transcription-bridge.ts'), 'utf8');
+    const raw = readFileSync(resolve(here, '../media-transcription-bridge.ts'), 'utf8');
+    const source = raw.split('\r\n').join('\n');
     const liveBranch = source.indexOf('if (this.realtimeIngress !== null) {\n      this.pushLive(');
     const chunkerPush = source.indexOf('session.chunker.pushFrame(');
     expect(liveBranch).toBeGreaterThan(0);

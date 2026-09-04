@@ -1,0 +1,68 @@
+[Unit]
+Description=Videofy Live account service (production)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+# THE RESTART STORM THIS UNIT ONCE PRODUCED, AND WHY IT COULD.
+#
+# With Restart=on-failure and RestartSec=3, systemd's DEFAULT rate limit --
+# 5 starts in 10 seconds -- can never be reached: only about three attempts fit
+# in the window. So a service that fails instantly at startup restarts for
+# ever, silently. This unit did exactly that 106,722 times while the platform
+# reported healthy, because nothing above it distinguished "the process was
+# started" from "the process is running".
+#
+# AND THE FIRST FIX HAD THE SAME BUG. 300 seconds and 10 starts looks generous
+# until the geometric backoff below is included: 3s, 5.5s, 9.9s, 18.1s, 33s,
+# then 60s repeating, which puts the tenth start at about 309 seconds. Ten
+# starts do not fit in 300, so the limit was unreachable for a second time.
+#
+# 600 seconds fits that schedule with room to spare. These four numbers --
+# interval, burst, RestartSec, RestartMaxDelaySec -- are one calculation, and
+# the test beside them recomputes it rather than trusting the comment.
+#
+# They live in [Unit] because that is where systemd's parser defines them.
+# There is a [Service] compatibility alias for the older StartLimitInterval
+# spelling only, so the modern spelling in [Service] is silently ignored.
+StartLimitIntervalSec=600
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=videofy
+Group=videofy
+WorkingDirectory=/srv/videofy-prod/app/services/account
+# Names come from this file; VALUES never appear in the unit, in the repository,
+# or in journald. 0640 root:videofy: the service user reads it, nobody else.
+EnvironmentFile=/etc/videofy-prod/account.env
+ExecStart=/usr/bin/node dist/index.js
+
+KillSignal=SIGTERM
+TimeoutStopSec=25
+
+Restart=on-failure
+# The backoff the start limit in [Unit] is calculated against. Changing any of
+# these three without redoing that arithmetic can make the limit unreachable
+# again -- which is the whole defect, not a detail of it.
+RestartSec=3
+RestartSteps=5
+RestartMaxDelaySec=60
+
+# Least privilege, and PRODUCTION'S OWN directories only. Staging's state,
+# uploads and media are not listed, so a production process cannot write
+# there even by misconfiguration. /var/lib/videofy/models is read-only.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/videofy-prod/state /srv/videofy-prod/uploads /var/lib/videofy-prod/avatars /var/lib/videofy-prod/message-media /var/lib/videofy-prod/channel-media
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=videofy-prod-account
+
+[Install]
+WantedBy=multi-user.target

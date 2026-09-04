@@ -1,3 +1,4 @@
+/** @author masterzee001 */
 /**
  * Who may operate a programme.
  *
@@ -8,30 +9,75 @@
  * open door, and it is the reason a boot guard has been holding this service
  * out of production.
  *
- * TWO GATES, AND ONLY ONE OF THEM NEEDS PRICING.
+ * TWO GATES.
  *
- *   1. AUTHENTICATION — a valid C7 session token. Needs no commercial decision
- *      and closes the actual hole.
- *   2. ENTITLEMENT — a subscription that includes programme operation. Needs
- *      prices to exist, and slots in later against the entitlement model that
- *      workspace-authority already has.
+ *   1. AUTHENTICATION -- a valid C7 session token. Closes the actual hole.
+ *   2. ENTITLEMENT -- the account is one that may broadcast. Until pricing
+ *      carries the grant, that population is the OPERATOR_CONSOLE_ACCOUNT_IDS
+ *      allowlist the process wires in; an empty list refuses everybody.
  *
- * So the console is OPEN, and no longer ANONYMOUS. Any verified C7 account may
- * operate today; the second gate closes when there is something to subscribe to.
+ * WHAT A REFUSED CALLER IS TOLD, AND WHY THE LINE SITS WHERE IT DOES.
+ *
+ * The signature is the line. Everything on the unverified side of it -- no
+ * token, a forged one, an expired one, one signed by somebody else, a server
+ * with no secret -- collapses into ONE reason and ONE message, because telling
+ * those apart is exactly the feedback a guesser wants. On the verified side
+ * there is one more refusal: a real, current session for an account that is
+ * simply not enabled. That caller already knows who they are; the only fact
+ * the distinct message adds is that this account cannot operate, which they
+ * would otherwise discover by being told to sign in when they already have.
+ * The founder's screenshot (30 Aug 2026) was that exact confusion.
  *
  * ONE PROGRAMME AT A TIME, TODAY. The gateway holds a single
  * `latestProgrammeMediaState` and one set of audio-mode preferences, so two
  * operators would overwrite each other rather than run two programmes. This
  * module therefore establishes WHO an operator is, and deliberately does not
- * pretend to scope them to a channel — that scoping is a later change, and the
+ * pretend to scope them to a channel -- that scoping is a later change, and the
  * accountId this resolves is exactly what it will key on.
  */
 import type { Socket } from 'socket.io';
 import { requireSessionSecret, verifySessionToken } from '@videofy-live/account-tokens';
 
+/**
+ * Why an operator was refused. The first three sit on the unverified side of
+ * the signature and are indistinguishable to the caller; `not-entitled` is
+ * only ever produced for a token that verified.
+ */
+export type OperatorRefusalReason =
+  'no-token' | 'invalid-token' | 'not-configured' | 'not-entitled';
+
 export type OperatorAdmission =
   | { readonly ok: true; readonly accountId: string }
-  | { readonly ok: false; readonly reason: 'no-token' | 'invalid-token' | 'not-configured' };
+  | { readonly ok: false; readonly reason: OperatorRefusalReason };
+
+/** The one message every unverified refusal gets. */
+export const OPERATOR_SIGN_IN_MESSAGE = 'Sign in to a C7 account with programme access to operate.';
+/** Told only to the holder of a VALID session for the account it describes. */
+export const OPERATOR_NOT_ENTITLED_MESSAGE =
+  'This account is not enabled for the operator console.';
+
+/**
+ * What the socket is sent before it is closed.
+ *
+ * `code` is for the console to branch on and `message` is for a person to
+ * read; they are a fixed pair, so the code adds nothing the message did not
+ * already say. Neither field can carry the token or the account id: they are
+ * chosen from two constants by a four-valued reason, and nothing else.
+ */
+export interface OperatorRefusalNotice {
+  readonly code: 'sign-in-required' | 'not-entitled';
+  readonly message: string;
+}
+
+export function operatorRefusalNotice(reason: OperatorRefusalReason): OperatorRefusalNotice {
+  if (reason === 'not-entitled') {
+    return { code: 'not-entitled', message: OPERATOR_NOT_ENTITLED_MESSAGE };
+  }
+  // no-token, invalid-token and not-configured: one answer, on purpose. A
+  // server with no secret is a server whose signatures cannot be checked, and
+  // "your token could not be verified" is all a caller may learn from that.
+  return { code: 'sign-in-required', message: OPERATOR_SIGN_IN_MESSAGE };
+}
 
 export interface OperatorAuthorityOptions {
   readonly secret: string | undefined;
@@ -39,9 +85,9 @@ export interface OperatorAuthorityOptions {
   /**
    * Whether an authenticated account additionally needs an entitlement.
    *
-   * FALSE until pricing exists, and that is a deliberate, recorded product
-   * decision rather than an oversight: the console is open to any verified
-   * account for now. It is NOT a bypass of authentication — a caller with no
+   * The process sets this TRUE and supplies the allowlist as the checker. It
+   * remains optional so a deployment with nothing to gate on can run an open
+   * console knowingly; it is NOT a bypass of authentication -- a caller with no
    * valid token is refused either way.
    */
   readonly requireEntitlement?: boolean;
@@ -99,8 +145,18 @@ export function createOperatorAuthority(options: OperatorAuthorityOptions) {
       const accountId = verified.claims.accountId;
 
       if (options.requireEntitlement === true) {
+        /*
+         * BELOW THE SIGNATURE, SO THIS REASON IS SAFE TO BE DISTINCT. The
+         * account id was read out of a token that just verified, which means
+         * the caller holds a current session for it and already knows who they
+         * are. "Not enabled" tells them nothing about anybody else and
+         * nothing about the signing key; it stops a signed-in founder being
+         * told to sign in. The checker is consulted ONLY here, so an
+         * unverified account id never reaches it and cannot be probed
+         * through it.
+         */
         const entitled = options.hasEntitlement?.(accountId) ?? false;
-        if (!entitled) return { ok: false, reason: 'invalid-token' };
+        if (!entitled) return { ok: false, reason: 'not-entitled' };
       }
 
       return { ok: true, accountId };

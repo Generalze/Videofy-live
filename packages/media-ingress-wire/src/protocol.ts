@@ -41,7 +41,7 @@
  * frames being read as the new shape: a v1 OPEN is refused, so a v1 connection
  * never reaches the point of sending audio at all.
  */
-export const INGRESS_PROTOCOL_VERSION = 2;
+export const INGRESS_PROTOCOL_VERSION = 3;
 
 export const IngressMessageType = {
   /** Client opens one stream on this connection. JSON payload. */
@@ -177,9 +177,60 @@ export type IngressErrorCode =
  * cannot be written at a call site at all. The decoder refuses it too, because
  * a peer is not bound by our type system.
  */
+/**
+ * Who is broadcasting, what is being broadcast, and which run this is.
+ *
+ * THREE IDENTITIES, DELIBERATELY NOT ONE.
+ *
+ * `channelId` is the tenant: whose broadcast this is, and the boundary that
+ * must never be crossed. `programmeId` is the configuration being run --
+ * vocabulary, languages, voices and advertising policy all key on it, and it
+ * outlives any single broadcast. `runId` is THIS execution: two airings of the
+ * same programme are two broadcasts, and their timelines, buffers, telemetry
+ * and adverts must never mix. Collapsing any pair of these reads fine until
+ * the day a channel runs the same programme twice at once.
+ *
+ * A `sessionId` and a `streamId` are transport facts and belong to neither.
+ * A stream can drop and be replaced within one run; a run does not become a
+ * second broadcast because the network did something.
+ */
+export interface ProgrammeRunIdentity {
+  readonly channelId: string;
+  readonly programmeId: string;
+  readonly runId: string;
+}
+
+/**
+ * A programme stream MUST identify its run; a call stream has no such thing.
+ *
+ * Expressed in the union rather than as an optional field, so a producer that
+ * forgets is a compiler error and not a programme whose vocabulary silently
+ * belongs to nobody. That was the actual state of this system before: ingest
+ * had no idea which programme it was transcribing.
+ */
 export type RealtimeServiceContext =
   | { readonly serviceCategory: 'call'; readonly mediaMode: 'live' }
-  | { readonly serviceCategory: 'programme'; readonly mediaMode: 'live' };
+  | {
+      readonly serviceCategory: 'programme';
+      readonly mediaMode: 'live';
+      readonly programme: ProgrammeRunIdentity;
+    };
+
+/** The shape ids must take on the wire: opaque, bounded, and safe in a path. */
+export const PROGRAMME_IDENTITY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
+
+export function isProgrammeRunIdentity(value: unknown): value is ProgrammeRunIdentity {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate['channelId'] === 'string' &&
+    typeof candidate['programmeId'] === 'string' &&
+    typeof candidate['runId'] === 'string' &&
+    PROGRAMME_IDENTITY_PATTERN.test(candidate['channelId']) &&
+    PROGRAMME_IDENTITY_PATTERN.test(candidate['programmeId']) &&
+    PROGRAMME_IDENTITY_PATTERN.test(candidate['runId'])
+  );
+}
 
 /** The full platform context, as the registry defines it. */
 export interface AnyServiceContext {
@@ -197,11 +248,15 @@ export interface AnyServiceContext {
  */
 export function realtimeServiceContext(
   context: AnyServiceContext,
+  programme?: ProgrammeRunIdentity,
 ): RealtimeServiceContext | null {
   if (context.mediaMode !== 'live') return null;
-  return context.serviceCategory === 'call'
-    ? { serviceCategory: 'call', mediaMode: 'live' }
-    : { serviceCategory: 'programme', mediaMode: 'live' };
+  if (context.serviceCategory === 'call') return { serviceCategory: 'call', mediaMode: 'live' };
+  // A programme without a run identity is not a programme this system can
+  // serve: it has no vocabulary, no timeline and no tenant. Refused here
+  // rather than defaulted, because a default would be somebody else's.
+  if (programme === undefined || !isProgrammeRunIdentity(programme)) return null;
+  return { serviceCategory: 'programme', mediaMode: 'live', programme };
 }
 
 export interface IngressOpen {

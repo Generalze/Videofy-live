@@ -1,7 +1,7 @@
 /**
  * An operator's own channel.
  *
- * The rule that carries the most weight here is the one about a private channel
+ * The rule that carries the most weight here is the one about a locked channel
  * with no code: the gateway refuses everybody in that state, deliberately, and
  * the console has to say so before an operator goes hunting for a bug.
  */
@@ -11,6 +11,7 @@ import {
   generateJoinCode,
   resolveViewerOrigin,
   shareableViewerLink,
+  shownCategory,
   toSettingsPayload,
   validateSettings,
   VISIBILITY_DESCRIPTIONS,
@@ -33,30 +34,30 @@ describe('checking a settings draft', () => {
   });
 
   /*
-   * THE ONE THAT MATTERS. A private channel with no code refuses every viewer,
+   * THE ONE THAT MATTERS. A locked channel with no code refuses every viewer,
    * including its owner. Safe, but baffling if nobody says so.
    */
-  it('refuses a private channel with no code at all', () => {
-    const problems = validateSettings(draft({ visibility: 'private' }), false);
+  it('refuses a locked channel with no code at all', () => {
+    const problems = validateSettings(draft({ visibility: 'locked' }), false);
     expect(problems[0]?.field).toBe('code');
     expect(problems[0]?.message).toContain('including you');
   });
 
-  it('accepts a private channel that already has a code set', () => {
-    expect(validateSettings(draft({ visibility: 'private' }), true)).toEqual([]);
+  it('accepts a locked channel that already has a code set', () => {
+    expect(validateSettings(draft({ visibility: 'locked' }), true)).toEqual([]);
   });
 
-  it('accepts a private channel that is being given a code now', () => {
-    expect(validateSettings(draft({ visibility: 'private', code: 'good-code' }), false)).toEqual([]);
+  it('accepts a locked channel that is being given a code now', () => {
+    expect(validateSettings(draft({ visibility: 'locked', code: 'good-code' }), false)).toEqual([]);
   });
 
-  it('refuses a private channel whose code is being cleared', () => {
-    const problems = validateSettings(draft({ visibility: 'private', code: null }), true);
+  it('refuses a locked channel whose code is being cleared', () => {
+    const problems = validateSettings(draft({ visibility: 'locked', code: null }), true);
     expect(problems[0]?.field).toBe('code');
   });
 
   it('refuses a code short enough to guess', () => {
-    const problems = validateSettings(draft({ visibility: 'private', code: 'abc' }), false);
+    const problems = validateSettings(draft({ visibility: 'locked', code: 'abc' }), false);
     expect(problems.some((problem) => problem.message.includes('guessable'))).toBe(true);
   });
 
@@ -122,15 +123,15 @@ describe('the link an operator hands out', () => {
     );
   });
 
-  it('carries the code for a private channel', () => {
-    expect(shareableViewerLink(ORIGIN, 'abc123', 'private', 'GOODCODE99')).toBe(
+  it('carries the code for a locked channel', () => {
+    expect(shareableViewerLink(ORIGIN, 'abc123', 'locked', 'GOODCODE99')).toBe(
       'https://watch.example.com/c/abc123?code=GOODCODE99',
     );
   });
 
   /* An empty `?code=` would imply there is a code to find. */
-  it('adds no code parameter to an unlisted channel', () => {
-    expect(shareableViewerLink(ORIGIN, 'abc123', 'unlisted', 'GOODCODE99')).toBe(
+  it('adds no code parameter to an private channel', () => {
+    expect(shareableViewerLink(ORIGIN, 'abc123', 'private', 'GOODCODE99')).toBe(
       'https://watch.example.com/c/abc123',
     );
   });
@@ -143,13 +144,13 @@ describe('the link an operator hands out', () => {
 });
 
 describe('whether a working link can still be built', () => {
-  it('can always share a public or unlisted channel', () => {
+  it('can always share a public or private channel', () => {
     expect(canShareCodedLink('public', null)).toBe(true);
-    expect(canShareCodedLink('unlisted', null)).toBe(true);
+    expect(canShareCodedLink('private', null)).toBe(true);
   });
 
-  it('can share a private channel while the code is still in hand', () => {
-    expect(canShareCodedLink('private', 'GOODCODE99')).toBe(true);
+  it('can share a locked channel while the code is still in hand', () => {
+    expect(canShareCodedLink('locked', 'GOODCODE99')).toBe(true);
   });
 
   /*
@@ -157,19 +158,19 @@ describe('whether a working link can still be built', () => {
    * the console cannot rebuild a link that carries it, and must say so rather
    * than hand out one that will not work.
    */
-  it('cannot share a private channel whose code it no longer holds', () => {
-    expect(canShareCodedLink('private', null)).toBe(false);
+  it('cannot share a locked channel whose code it no longer holds', () => {
+    expect(canShareCodedLink('locked', null)).toBe(false);
   });
 });
 
 describe('the words shown next to each choice', () => {
-  /* The unlisted/private distinction is the one people get wrong. */
-  it('says the link alone is enough for unlisted', () => {
-    expect(VISIBILITY_DESCRIPTIONS.unlisted).toContain('only thing needed');
+  /* The private/locked distinction is the one people get wrong. */
+  it('says the link alone is enough for private', () => {
+    expect(VISIBILITY_DESCRIPTIONS.private).toContain('only thing needed');
   });
 
-  it('says the link is not enough for private', () => {
-    expect(VISIBILITY_DESCRIPTIONS.private).toContain('not enough');
+  it('says the link is not enough for locked', () => {
+    expect(VISIBILITY_DESCRIPTIONS.locked).toContain('not enough');
   });
 });
 
@@ -200,5 +201,27 @@ describe('resolving where the viewer app lives', () => {
     expect(shareableViewerLink(origin, 'abc123', 'public', null)).toBe(
       'https://c7.example.com/listen/c/abc123',
     );
+  });
+});
+
+/*
+ * Founder ruling (29 Aug 2026): one primary category in v1, an explicit
+ * server field. The console sends it only when the operator touched it, so an
+ * unrelated rename cannot clear a category set in an earlier session.
+ */
+describe('the category on the wire', () => {
+  it('is left out when the operator did not touch it', () => {
+    expect(toSettingsPayload(draft())).not.toHaveProperty('category');
+  });
+
+  it('is sent as null to clear it, and as the id to set it', () => {
+    expect(toSettingsPayload(draft({ category: null })).category).toBeNull();
+    expect(toSettingsPayload(draft({ category: 'faith' })).category).toBe('faith');
+  });
+
+  it('shows the unsaved choice over what the gateway reported', () => {
+    expect(shownCategory(draft(), 'news')).toBe('news');
+    expect(shownCategory(draft({ category: null }), 'news')).toBeNull();
+    expect(shownCategory(draft({ category: 'sport' }), 'news')).toBe('sport');
   });
 });

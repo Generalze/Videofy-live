@@ -25,13 +25,25 @@
  *     transcription  Deepgram      primary
  *     translation    Google        primary
  *     tts            ElevenLabs    primary,  Azure fallback
- *     Nigerian tts   9jaLingo      specialist, ahead of the primary
+ *     Nigerian tts   9jaLingo      specialist,  Azure fallback  (ONLY those two)
  *     local models   degraded      only where the profile permits it
  *
  * A specialist is not a better provider; it is a provider for a case the
- * primary does not serve. 9jaLingo goes ahead of ElevenLabs for Hausa, Igbo,
- * Yoruba and Nigerian Pidgin and behind it for everything else, which is what
- * "specialist" has to mean if it is to mean anything.
+ * primary does not serve.
+ *
+ * THE NIGERIAN CHAIN REPLACES THE GENERAL ONE; it does not sit on top of it.
+ * That is a founder ruling of 2026-08-30 and it is narrower than what this
+ * module used to do, which was to put 9jaLingo in front of the ordinary
+ * ElevenLabs-then-Azure list. The reason is the 2026-08-26 listening test:
+ * BOTH general vendors return HTTP 200 with fluent-sounding, wrong Yoruba,
+ * Hausa and Igbo, so "one more vendor behind the specialist" is not extra
+ * safety, it is a third chance to serve confident nonsense. One named fallback
+ * is enough to avoid silence, and every use of it is labelled degraded.
+ *
+ * THIS FILE IS THE SINGLE SOURCE OF THAT RULE. `media-ingest`'s
+ * `live-provider-wiring` imports the constants below rather than restating
+ * them -- it already depends on this package -- so the language list and the
+ * fallback order cannot drift apart between the planner and the live path.
  */
 import {
   capabilitySupported,
@@ -68,6 +80,48 @@ export interface RouteResult {
  * commercial decision, made where languages are configured, not here.
  */
 export const NIGERIAN_SPECIALIST_LANGUAGES: readonly string[] = ['ha', 'ig', 'yo', 'pcm'];
+
+/** The specialist itself. Matches the registry's `providerId`. */
+export const NIGERIAN_SPECIALIST_PROVIDER_ID = 'naijalingo';
+
+/**
+ * The ONE named fallback for those four languages.
+ *
+ * AZURE, EXPLICITLY, by founder ruling of 2026-08-30 -- not ElevenLabs, and not
+ * "whatever the general chain resolves to". Naming it here rather than
+ * inheriting the general order is the difference between a decision and an
+ * accident: a later change to the general chain must not silently change who
+ * speaks Yoruba.
+ *
+ * It is a DEGRADED rendering and every path that uses it says so. Azure returns
+ * HTTP 200 and plausible audio for these languages and pronounces them wrongly;
+ * the only reason it is here at all is that a listener hearing imperfect Yoruba
+ * is better served than a listener hearing silence.
+ */
+export const NIGERIAN_FALLBACK_PROVIDER_ID = 'azure';
+
+/** Best first. The whole chain for ha/ig/yo/pcm, and nothing after it. */
+export const NIGERIAN_TTS_ROUTE_ORDER: readonly string[] = [
+  NIGERIAN_SPECIALIST_PROVIDER_ID,
+  NIGERIAN_FALLBACK_PROVIDER_ID,
+];
+
+/**
+ * Was this Nigerian-language audio produced by something other than the
+ * specialist?
+ *
+ * The question every surface that reports synthesis has to be able to ask.
+ * Answering it wrongly is the failure this whole wave exists to prevent: audio
+ * plays either way, every server signal is green, and only a speaker of the
+ * language can hear that the wrong vendor answered.
+ */
+export function isDegradedNigerianSynthesis(
+  language: string | undefined,
+  providerId: string,
+): boolean {
+  if (!isNigerianSpecialistLanguage(language)) return false;
+  return providerId !== NIGERIAN_SPECIALIST_PROVIDER_ID;
+}
 
 export function isNigerianSpecialistLanguage(language: string | undefined): boolean {
   if (language === undefined) return false;
@@ -116,12 +170,22 @@ export function resolveCommercialRoute(input: CommercialRouteInput): RouteResult
   const policy = executionPolicyFor(input.service);
   const where = serviceContextKey(input.service);
 
-  const plan: RoutePlanEntry[] = [...ROUTE_PLAN[input.capability]];
-  if (input.capability === 'tts' && isNigerianSpecialistLanguage(input.language)) {
-    // Ahead of the primary, and only for these languages. A specialist that
-    // outranked the primary everywhere would just be a different primary.
-    plan.unshift({ providerId: 'naijalingo', role: 'specialist' });
-  }
+  /*
+   * REPLACED, NOT PREPENDED, for the four Nigerian languages.
+   *
+   * The old behaviour put 9jaLingo in front of the general list and left
+   * ElevenLabs in it. That reads as caution and is the opposite: ElevenLabs
+   * answers those languages with confident, wrong audio, so leaving it in the
+   * chain buys a second wrong rendering rather than a second chance. The
+   * founder ruling of 2026-08-30 is 9jaLingo, then Azure, then nothing.
+   */
+  const plan: RoutePlanEntry[] =
+    input.capability === 'tts' && isNigerianSpecialistLanguage(input.language)
+      ? [
+          { providerId: NIGERIAN_SPECIALIST_PROVIDER_ID, role: 'specialist' },
+          { providerId: NIGERIAN_FALLBACK_PROVIDER_ID, role: 'fallback' },
+        ]
+      : [...ROUTE_PLAN[input.capability]];
 
   for (const entry of plan) {
     const provider = findCommercialProvider(entry.providerId);

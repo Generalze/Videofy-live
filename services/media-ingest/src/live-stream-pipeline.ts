@@ -52,6 +52,15 @@ export interface LiveStreamPipelineDeps {
   readonly context: RealtimeServiceContext;
   readonly sourceLanguage?: string | undefined;
   readonly sourceLanguageMode?: 'manual' | 'auto-detect' | undefined;
+  /**
+   * The programme's vocabulary, resolved for the source language.
+   *
+   * Pinned for the life of this recogniser session. A session cannot be handed
+   * new terms once it is open -- the provider took them when it connected --
+   * so an edit made mid-programme belongs to the NEXT session, and the console
+   * says exactly that rather than implying an effect that has not happened.
+   */
+  readonly keyterms?: readonly string[] | undefined;
   readonly transcription: StreamingTranscriptionProvider;
   /** Platform-owned identity. Never a vendor value. */
   readonly mintSegmentId: () => string;
@@ -117,6 +126,10 @@ export class LiveStreamPipeline implements IngressStreamHandler {
       // Ask for boundaries where the provider can offer them. They are inputs
       // to our segmentation, never a substitute for it.
       requestEndpointing: true,
+      // The operator's vocabulary reaches the recogniser here, or nowhere.
+      ...(deps.keyterms === undefined || deps.keyterms.length === 0
+        ? {}
+        : { keyterms: deps.keyterms }),
       onSignal: (signal) => pipeline.coordinator.noteProviderSignal(signal),
       onError: (error) => {
         deps.log?.('streaming transcription error', { message: error.message });

@@ -1,0 +1,13 @@
+[Unit]
+Description=Nightly backup of the C7 PRODUCTION account database
+
+[Timer]
+# Half an hour after staging's 03:12, so the two dumps never contend for the
+# same disk at the same minute; still off the hour for the same reason
+# staging is.
+OnCalendar=*-*-* 03:42:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

@@ -15,10 +15,15 @@
   "dependencies": {
     "@videofy-live/account-tokens": "*",
     "@videofy-live/ai-registry": "*",
+    "@videofy-live/language-catalogue": "*",
     "@videofy-live/media-ingress-wire": "*",
+    "@videofy-live/programme-contribution": "*",
+    "@videofy-live/programme-quality": "*",
+    "@videofy-live/programme-timeline": "*",
     "@videofy-live/service-env": "*",
     "@videofy-live/shared-types": "*",
     "@videofy-live/speech-activity": "*",
+    "@videofy-live/translation-routes": "*",
     "express": "^4.19.2",
     "google-auth-library": "^11.0.0",
     "multer": "^2.2.0",
@@ -26,6 +31,7 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@roamhq/wrtc": "^0.10.0",
     "@types/express": "^4.17.21",
     "@types/multer": "^2.2.0",
     "@types/node": "^22.0.0",

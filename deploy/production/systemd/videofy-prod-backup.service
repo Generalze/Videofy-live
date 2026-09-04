@@ -1,0 +1,17 @@
+[Unit]
+Description=Back up the C7 PRODUCTION account database
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+# The SAME script staging uses (/usr/local/bin/backup-database.sh), pointed at
+# production's env file and dump directory. Only PATHS are set here; the
+# script reads DATABASE_URL itself, so the password never enters systemd's
+# unit state where `systemctl show` would print it.
+Environment=ENV_FILE=/etc/videofy-prod/account.env
+Environment=BACKUP_DIR=/srv/videofy-prod/backups
+ExecStart=/usr/local/bin/backup-database.sh
+User=root
+Nice=10
+IOSchedulingClass=idle

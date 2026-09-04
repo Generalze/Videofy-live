@@ -742,6 +742,12 @@ select {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--vf-state-recovering) 22%, transparent);
 }
 
+.voice-diagnostic {
+  color: #d9a441;
+  font-size: 0.8rem;
+  font-family: ui-monospace, monospace;
+}
+
 .enable-audio-button {
   background: var(--vf-surface-accent);
   border: var(--vf-border-width-hairline) solid var(--vf-border-accent);
@@ -803,6 +809,13 @@ select {
 .participant-tile.is-speaking {
   border-color: transparent;
   box-shadow: var(--vf-media-speaking-ring), var(--vf-elevation-3);
+}
+
+.participant-avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
 }
 
 .participant-avatar {

@@ -3,10 +3,12 @@ import type {
   GeneratedAudioEvent,
   GeneratedAudioReadyEvent,
   MediaStateEvent,
+  TargetLanguageCapability,
   TimestampedTranslationEvent,
   TranscriptionEvent,
+  ProgrammeMediaDelivery,
 } from '@videofy-live/shared-types';
-import { SOCKET_EVENTS } from '@videofy-live/shared-types';
+import { SOCKET_EVENTS, programmeDeliveryPolicy } from '@videofy-live/shared-types';
 import type { IngestConfig } from './config.js';
 import { MockProvider, type MediaProvider } from './providers/index.js';
 import { logger } from './logger.js';
@@ -37,6 +39,10 @@ import {
   createTextToSpeechProvider,
   type TextToSpeechProvider,
 } from './text-to-speech-provider.js';
+import { GatedTranslationProvider, type GateObserver } from './gated-translation-provider.js';
+import { buildTranslationGate, type GateWiring } from './translation-gate-wiring.js';
+import type { StreamingBackedTextToSpeechOptions } from './streaming-backed-text-to-speech-provider.js';
+import type { StreamingSpeechSynthesisProvider } from './streaming-speech-synthesis-provider.js';
 import {
   buildTargetLanguageOutputs,
   capRecentEvents,
@@ -288,6 +294,24 @@ export function programmeTimestampMs(
  * knowledge, not the media pipeline.
  */
 export interface IngestServiceDependencies {
+  /**
+   * The gateway saw the broadcaster go.
+   *
+   * Injected because this service does not own the programme registry; the
+   * composition root joins the two. Without it a protected run never drains
+   * and its closing seconds are never released.
+   */
+  onProgrammeRunEnded?: (runId: string) => void;
+  /**
+   * Whether a speaker of the language has judged its route fit to broadcast.
+   *
+   * Injected because the answer lives in the route document, which this
+   * service does not read. Absent means nobody asked, and the catalogue
+   * refuses a programme route for Yoruba, Igbo, Hausa and Nigerian Pidgin on
+   * that basis -- for those four a working chain and a fluent-sounding sample
+   * are exactly the evidence that must not be read as readiness.
+   */
+  programmeRouteQualified?: (language: string) => boolean;
   wrapTextToSpeechProvider?: (standard: TextToSpeechProvider) => TextToSpeechProvider;
   /**
    * The owner's CURRENT personal voice, or null. Called per utterance.
@@ -297,6 +321,22 @@ export interface IngestServiceDependencies {
    * Both are injected, so this service still has no idea voice profiles exist.
    */
   resolvePersonalVoiceId?: (ownerId: string) => string | null;
+  /**
+   * The live synthesis stack, for TEXT_TO_SPEECH_PROVIDER=streaming.
+   *
+   * Uploaded programmes and live calls speak with one voice stack or they drift
+   * apart, and they had: the specialist routing that keeps Yoruba out of a
+   * general vendor's mouth existed only on the live side, so an uploaded
+   * programme reached none of it. Injected rather than built here because
+   * building it warms a vendor.
+   */
+  streamingSynthesisProvider?: StreamingSpeechSynthesisProvider;
+  /** Injected in tests; production builds it from the route document. */
+  translationGate?: GateWiring;
+  /** Told every gate decision, so billing and /health see what the caller saw. */
+  onTranslationOutcome?: GateObserver;
+  /** Told when an uploaded segment was served by a fallback vendor. */
+  onSynthesisDegraded?: StreamingBackedTextToSpeechOptions['onDegraded'];
 }
 
 export class IngestService {
@@ -316,6 +356,8 @@ export class IngestService {
   private readonly sessions: ProcessingSessionStore;
   /** The same translation provider the batch path uses. See the constructor. */
   private readonly liveTranslationProvider: TimestampedTranslationProvider;
+  /** For /health and the boot line: which directions this deployment may translate. */
+  private readonly translationGateWiring: GateWiring;
 
   /**
    * The standard provider, optionally wrapped.
@@ -353,12 +395,44 @@ export class IngestService {
           timeoutMs: config.transcriptionTimeoutMs,
         },
       });
-    const translationProvider = buildTranslationProvider(config);
+    /*
+     * THE GATE WRAPS THE PROVIDER, so every execution path gets it.
+     *
+     * There are two paths today -- the live pipeline and the internal-text
+     * route -- and adding a check to each would leave the rule true only until
+     * somebody adds a third. Wrapping the provider makes the gate unavoidable:
+     * to translate you must hold a provider, and the provider you hold asks the
+     * registry first. Refused routes never reach the engine at all.
+     *
+     * SCOPE. This gate is `programme-live`. A call-scoped session is therefore
+     * REFUSED by it rather than silently approved under a programme's approval
+     * -- fail-closed, and the honest state until call scope is wired
+     * separately. Approving one scope with another's evidence is the exact
+     * thing the directional registry exists to prevent.
+     */
+    const rawTranslationProvider = buildTranslationProvider(config);
+    const gateWiring =
+      deps.translationGate ??
+      buildTranslationGate({
+        scope: 'programme-live',
+        ...(config.translationRoutesDocument
+          ? { documentPath: config.translationRoutesDocument }
+          : {}),
+      });
+    const translationProvider = new GatedTranslationProvider({
+      inner: rawTranslationProvider,
+      gate: gateWiring.gate,
+      ...(deps.onTranslationOutcome ? { onOutcome: deps.onTranslationOutcome } : {}),
+    });
+    this.translationGateWiring = gateWiring;
     // Held so the LIVE path can use the same instance. A second provider would
     // mean two model loads, two warm-up costs, and two sets of behaviour to
     // reason about for one product.
     this.liveTranslationProvider = translationProvider;
     this.sessions = new ProcessingSessionStore({
+      ...(deps.programmeRouteQualified === undefined
+        ? {}
+        : { programmeRouteQualified: deps.programmeRouteQualified }),
       outputBaseDir: config.audioChunkDir,
       webRtcStagingDir: config.webrtcAudioChunkStagingDir,
       transcriptionProvider,
@@ -370,6 +444,12 @@ export class IngestService {
       translationModelIds,
       textToSpeechProvider: this.buildTextToSpeechProvider({
         providerName: config.textToSpeechProvider,
+        ...(deps.streamingSynthesisProvider === undefined
+          ? {}
+          : { streaming: deps.streamingSynthesisProvider }),
+        ...(deps.onSynthesisDegraded === undefined
+          ? {}
+          : { onDegraded: deps.onSynthesisDegraded }),
         timeoutMs: config.textToSpeechTimeoutMs,
         supportedLanguages: config.textToSpeechSupportedLanguages,
         defaultVoiceId: config.textToSpeechDefaultVoiceId,
@@ -425,6 +505,69 @@ export class IngestService {
   }
 
   /**
+   * An advert the cursor has released, on its way to every viewer of this run.
+   *
+   * Pushed rather than fetched. A client that asked "what should I show" would
+   * be a client that could be given a different answer from its neighbour, and
+   * two viewers on different delays must meet the same advert at the same
+   * programme moment or an impression means nothing.
+   *
+   * IDS AND A DURATION. No advertiser, no priority, no price: this travels to
+   * browsers.
+   */
+  publishProgrammeAdvertisement(advert: {
+    readonly runId: string;
+    readonly decisionId: string;
+    readonly campaignId: string;
+    readonly creativeId: string;
+    readonly programmeTimeMs: number;
+    readonly durationMs: number;
+  }): void {
+    if (!this.socket?.connected) return;
+    this.socket.emit(SOCKET_EVENTS.INGEST_PROGRAMME_ADVERT, advert);
+  }
+
+  /**
+   * Tell the gateway how a programme run's original media reaches its audience.
+   *
+   * A dedicated announcement rather than a field on the next state snapshot,
+   * because the gateway needs this BEFORE it decides whether to relay a
+   * broadcaster's tracks to a joining listener -- a decision that happens on a
+   * join, not on the next tick.
+   *
+   * Silently dropped while the socket is down. The gateway's own default is to
+   * refuse the realtime relay for a run it has heard nothing about, so a lost
+   * announcement costs a protected programme its audience rather than costing
+   * a protected programme its protection.
+   */
+  /**
+   * Tell the gateway what this DEPLOYMENT does, before any run exists.
+   *
+   * The per-run announcement below cannot close the first-run window: it
+   * arrives after the run does. This is a fact about configuration, so it can
+   * be stated on connection, and it is what lets the gateway hold the realtime
+   * fanout closed for the very first protected broadcast rather than for every
+   * one after it.
+   */
+  publishProgrammeDeliveryPolicy(): void {
+    if (!this.socket?.connected) return;
+    const policy = programmeDeliveryPolicy(this.config.programmeMediaDelivery);
+    this.socket.emit(SOCKET_EVENTS.INGEST_PROGRAMME_POLICY, policy);
+    logger.info('Programme delivery policy announced', { deliveryMode: policy.deliveryMode });
+  }
+
+  publishProgrammeDelivery(delivery: ProgrammeMediaDelivery): void {
+    if (!this.socket?.connected) return;
+    this.socket.emit(SOCKET_EVENTS.INGEST_PROGRAMME_DELIVERY, delivery);
+    logger.info('Programme delivery announced', {
+      runId: delivery.programmeRunId,
+      mode: delivery.mode,
+      readiness: delivery.readiness,
+      ...(delivery.reason === null ? {} : { reason: delivery.reason }),
+    });
+  }
+
+  /**
    * Per-pair translation readiness, resolved once at startup. A dead pair is
    * invisible at call level — speech is still recognised and the speaker still
    * sees their own captions — so it has to be reported somewhere an operator
@@ -432,6 +575,18 @@ export class IngestService {
    */
   get translationPairAvailability(): LanguagePairAvailability[] {
     return this.languagePairAvailability;
+  }
+
+  /**
+   * The deployment's target-language catalogue with every language's
+   * capability state, BEFORE any programme exists. The same rows a media
+   * state carries; here so the operator console can show the catalogue
+   * without waiting for a processing session (founder directive, 30 Aug
+   * 2026: "the catalogue must be available before a programme starts
+   * through a real capability-catalogue read").
+   */
+  get targetLanguageCatalogue(): TargetLanguageCapability[] {
+    return this.sessions.getTargetLanguageCatalogue();
   }
 
   async start(): Promise<void> {
@@ -473,6 +628,21 @@ export class IngestService {
     this.socket.on(SOCKET_EVENTS.CONNECTED, () => {
       logger.info('Connected to gateway');
       this.gatewayConnected = true;
+      /*
+       * FIRST, AND ON EVERY RECONNECTION.
+       *
+       * The gateway refuses to relay a programme run whose delivery answer it
+       * has not heard, and this is what tells it which runs those are. Sent
+       * before anything else on the socket because a broadcaster can publish
+       * the moment the services are up: on a protected deployment, a gateway
+       * that has not been told the policy holds the fanout closed, and every
+       * second it waits is a second an audience is not being served.
+       *
+       * A reconnection is a NEW gateway process as far as this is concerned --
+       * it may have restarted and forgotten -- so the policy is restated
+       * rather than assumed to have survived.
+       */
+      this.publishProgrammeDeliveryPolicy();
       this.socket?.emit(SOCKET_EVENTS.INGEST_HEALTH, { status: 'healthy' });
       this.emitState();
       this.emitGeneratedAudioReadySnapshot();
@@ -496,6 +666,18 @@ export class IngestService {
     this.socket.on(SOCKET_EVENTS.INGEST_STOP_STREAM, () => {
       logger.info('Operator requested mock stream stop');
       void this.stopMockStream();
+    });
+
+    this.socket.on(SOCKET_EVENTS.PROGRAMME_RUN_ENDED, (raw: unknown) => {
+      /*
+       * The broadcast is over. A protected programme is still holding its last
+       * forty-five seconds behind the cursor, and they are owed to the
+       * audience: without this the run stayed `active` with a frozen live edge
+       * indefinitely and those seconds reached nobody.
+       */
+      const runId = (raw as { runId?: unknown } | null)?.runId;
+      if (typeof runId !== 'string' || runId === '') return;
+      this.deps.onProgrammeRunEnded?.(runId);
     });
 
     if (this.config.videoSource === 'mock') {
@@ -618,12 +800,24 @@ export class IngestService {
      */
     const session = this.sessions.get(sessionId);
     if (session === null) return [];
+    /*
+     * Voices resolve through the SAME rule the batch path uses -- session
+     * override, per-language map, provider default -- because the live
+     * providers are multilingual: the default voice speaks Spanish as
+     * Spanish. Consulting only the session's own override map (which
+     * programme sessions never carry) made every target "a language with no
+     * voice", and planSpeechTargets correctly, silently, planned nothing.
+     */
+    const voiceIdsByLanguage: Record<string, string> = {};
+    for (const targetLanguage of session.targetLanguages) {
+      const voiceId = this.sessions.voiceIdForLanguage(session, targetLanguage);
+      if (voiceId) voiceIdsByLanguage[targetLanguage] = voiceId;
+    }
     // The rule itself lives in `planSpeechTargets`, which is pure and pinned.
-    // This method's only job is finding the session.
     return planSpeechTargets({
       targetLanguages: session.targetLanguages,
       textOnlyLanguages: session.generatedAudio?.textOnlyLanguages,
-      voiceIdsByLanguage: session.voiceIdsByLanguage,
+      voiceIdsByLanguage,
     });
   }
 

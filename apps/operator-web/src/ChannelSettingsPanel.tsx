@@ -1,17 +1,32 @@
+/** @author masterzee001 */
 import React from 'react';
-import type { ChannelVisibility } from '@videofy-live/shared-types';
+import {
+  CHANNEL_CATEGORIES,
+  isChannelCategory,
+  type ChannelCategory,
+  type ChannelVisibility,
+} from '@videofy-live/shared-types';
 import {
   canShareCodedLink,
+  NO_CATEGORY_LABEL,
   shareableViewerLink,
+  shownCategory,
   validateSettings,
-  VISIBILITY_DESCRIPTIONS,
+  VISIBILITY_DESCRIPTIONS, VISIBILITY_LABELS,
   type ChannelSettingsDraft,
 } from './channelSettings';
+import { ChannelIdentityCard, type ChannelIdentityCardProps } from './ChannelIdentityCard';
 import styles from './App.module.css';
 
-const VISIBILITIES: readonly ChannelVisibility[] = ['public', 'unlisted', 'private'];
+const VISIBILITIES: readonly ChannelVisibility[] = ['public', 'private', 'locked'];
 
 interface ChannelSettingsPanelProps {
+  /**
+   * The persisted identity (avatar, name, @handle, category, visibility)
+   * and how to edit, view, copy, share and QR-encode it. Founder directive
+   * (30 Aug 2026): the Access page shows the channel identity block.
+   */
+  identity: ChannelIdentityCardProps;
   /** The operator's own channel id, as the gateway derived it. */
   ownChannelId: string | null;
   /** The channel they are publishing to now, which is 'main' until they move. */
@@ -21,6 +36,12 @@ interface ChannelSettingsPanelProps {
   hasExistingCode: boolean;
   /** The code this session generated, still in memory and therefore shareable. */
   codeInHand: string | null;
+  /**
+   * The active channel's category as the gateway last reported it on
+   * channel:assigned. Shown until the operator picks something else. Omitted
+   * means the console does not track it yet, and the picker starts empty.
+   */
+  reportedCategory?: ChannelCategory | null;
   viewerOrigin: string;
   onDraftChange: (draft: ChannelSettingsDraft) => void;
   onGenerateCode: () => void;
@@ -37,11 +58,13 @@ interface ChannelSettingsPanelProps {
  * is a settings decision, and only applies once you have moved.
  */
 export function ChannelSettingsPanel({
+  identity,
   ownChannelId,
   activeChannelId,
   draft,
   hasExistingCode,
   codeInHand,
+  reportedCategory = null,
   viewerOrigin,
   onDraftChange,
   onGenerateCode,
@@ -53,13 +76,16 @@ export function ChannelSettingsPanel({
   const codeProblem = problems.find((problem) => problem.field === 'code');
   const nameProblem = problems.find((problem) => problem.field === 'displayName');
   const canShare = canShareCodedLink(draft.visibility, codeInHand);
+  const category = shownCategory(draft, reportedCategory);
   const link = onOwnChannel
     ? shareableViewerLink(viewerOrigin, activeChannelId, draft.visibility, codeInHand)
     : null;
 
   return (
+    <>
+    <ChannelIdentityCard {...identity} />
     <section className={styles.broadcasterPanel} aria-labelledby="channel-settings-heading">
-      <h3 id="channel-settings-heading">Your channel</h3>
+      <h3 id="channel-settings-heading">Programme access</h3>
 
       {!onOwnChannel ? (
         <div>
@@ -89,6 +115,35 @@ export function ChannelSettingsPanel({
             {nameProblem ? <p role="alert">{nameProblem.message}</p> : null}
           </div>
 
+          <div>
+            <label htmlFor="channel-category">Category</label>
+            {/*
+             * Founder ruling (29 Aug 2026): "explicit server field ... a
+             * controlled channel-side category field, one primary category in
+             * v1." The options come from the one controlled list in
+             * shared-types, so the console and the gateway cannot disagree
+             * about what a category is; "No category" is a real choice.
+             */}
+            <select
+              id="channel-category"
+              value={category ?? ''}
+              onChange={(event) =>
+                onDraftChange({
+                  ...draft,
+                  category: isChannelCategory(event.target.value) ? event.target.value : null,
+                })
+              }
+            >
+              <option value="">{NO_CATEGORY_LABEL}</option>
+              {CHANNEL_CATEGORIES.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.label}
+                </option>
+              ))}
+            </select>
+            <p>Viewers can browse programmes by category. Pick the one that fits this channel best.</p>
+          </div>
+
           <fieldset>
             <legend>Who can watch</legend>
             {VISIBILITIES.map((visibility) => (
@@ -101,14 +156,14 @@ export function ChannelSettingsPanel({
                   onChange={() => onDraftChange({ ...draft, visibility })}
                 />
                 <label htmlFor={`visibility-${visibility}`}>
-                  {visibility}
+                  {VISIBILITY_LABELS[visibility]}
                   <span> — {VISIBILITY_DESCRIPTIONS[visibility]}</span>
                 </label>
               </div>
             ))}
           </fieldset>
 
-          {draft.visibility === 'private' ? (
+          {draft.visibility === 'locked' ? (
             <div>
               <label htmlFor="channel-code">Join code</label>
               <input
@@ -122,6 +177,26 @@ export function ChannelSettingsPanel({
                 Generate a code
               </button>
               {codeProblem ? <p role="alert">{codeProblem.message}</p> : null}
+              {/*
+                THE ONE PLACE THIS CONTROL DOES NOT REACH.
+                
+                A join code is checked by the realtime gateway, which holds it.
+                A programme delivered with a safety delay reaches its audience
+                through the media service instead, and that service has never
+                held a code -- so it refuses a locked channel outright rather
+                than enforcing a control it cannot check.
+                
+                An operator who set "locked" and switched a programme to
+                protected delivery would otherwise find their audience simply
+                gone, with every page reporting healthy. Saying it here costs a
+                sentence; discovering it costs a broadcast.
+              */}
+              <p role="note">
+                A code admits viewers to a live programme. A programme delivered
+                with a safety delay cannot check codes yet, so a locked channel
+                admits nobody to a protected broadcast — use private, which the
+                link alone opens.
+              </p>
             </div>
           ) : null}
 
@@ -147,5 +222,6 @@ export function ChannelSettingsPanel({
         </>
       )}
     </section>
+    </>
   );
 }

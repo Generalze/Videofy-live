@@ -18,6 +18,8 @@ const EXPECTED_EVENT_NAMES = {
   RECEIVE_OFFER: 'call:receive:offer',
   RECEIVE_ICE: 'call:receive:ice',
   RECEIVE_TRACKS: 'call:receive:tracks',
+  DIRECT_STATE: 'call:direct:state',
+  DIRECT_RING_RESULT: 'call:direct:ring-result',
   SET_CAPTION_LANGUAGE: 'call:caption-language',
   CAPTURE_SETTINGS: 'call:capture-settings',
   PLAYBACK: 'call:playback',
@@ -33,6 +35,9 @@ const EXPECTED_EVENT_NAMES = {
   GOVERNANCE: 'call:governance',
   VIDEO_ANSWER: 'call:video:answer',
   VIDEO_ICE: 'call:video:ice',
+  KNOCK: 'call:knock',
+  ADMIT: 'call:admit',
+  ADMISSION: 'call:admission',
 } as const;
 
 // Compile-time byte-identity, both directions: a drifted key OR value fails

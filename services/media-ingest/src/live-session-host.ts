@@ -46,6 +46,20 @@ import {
 } from './live-translation-pipeline.js';
 import type { StreamingSpeechSynthesisProvider } from './streaming-speech-synthesis-provider.js';
 import type { StreamingTranscriptionProvider } from './streaming-transcription-provider.js';
+import type { VocabularySnapshotClient } from './vocabulary-snapshot-client.js';
+import type { ProgrammePerformanceRegistry } from './programme-performance-registry.js';
+import type { ProgrammeTimelineRegistry, RunVocabulary } from './programme-timeline-registry.js';
+import { ProgrammeOutputPump } from './programme-output-pump.js';
+
+/**
+ * How often the public-output cursor is advanced.
+ *
+ * Fine enough that a listener's experience is smooth, coarse enough that a
+ * long programme is not a timer storm. The cursor is derived from the live
+ * edge rather than a wall clock, so a tick that finds nothing new releases
+ * nothing -- which is correct when the source has stalled.
+ */
+const OUTPUT_TICK_MS = 250;
 import type { TimestampedTranslationProvider } from './translation-provider.js';
 import type { TranscriptEvent } from './transcript-event.js';
 
@@ -128,6 +142,21 @@ export interface LiveSessionHostDeps {
   readonly minSpokenConfidence?: number | undefined;
   readonly speechPlansFor: (open: IngressOpen) => readonly LiveSpeechPlan[];
   readonly onCaption?: (event: TranscriptEvent) => void;
+  /**
+   * An advert the cursor has just released.
+   *
+   * Carries ids and a duration and nothing commercial: this record travels to
+   * listener clients, and a viewer with developer tools is not an authorised
+   * reader of what a break is worth.
+   */
+  readonly onAdvertisement?: (advert: {
+    readonly runId: string;
+    readonly decisionId: string;
+    readonly campaignId: string;
+    readonly creativeId: string;
+    readonly programmeTimeMs: number;
+    readonly durationMs: number;
+  }) => void;
   readonly onSpoken?: (
     segmentId: string,
     generation: number,
@@ -141,6 +170,29 @@ export interface LiveSessionHostDeps {
   readonly timers?: LiveStreamPipelineDeps['timers'];
   readonly now?: () => number;
   readonly log?: (line: string, detail?: Record<string, unknown>) => void;
+  /**
+   * Where a programme's vocabulary comes from.
+   *
+   * Absent means this deployment has no vocabulary seam, which is a stated
+   * condition rather than an empty word list: the difference between "this
+   * programme has no terms" and "we could not find out" is the whole point.
+   */
+  readonly vocabulary?: VocabularySnapshotClient;
+  /**
+   * Where this programme's measurements are kept.
+   *
+   * Absent means nothing is counting, which the console must render as "no
+   * samples" rather than as a set of zeroes that would read like a pipeline
+   * performing perfectly.
+   */
+  readonly performance?: ProgrammePerformanceRegistry;
+  /** Where each run's account of itself is kept. Absent on a call. */
+  readonly timelines?: ProgrammeTimelineRegistry;
+  /**
+   * Drives the output cursor. Injectable so a test can advance it by hand
+   * rather than by waiting, and so the host never owns a real timer.
+   */
+  readonly setOutputTimer?: (tick: () => void, everyMs: number) => (() => void) | null;
 }
 
 export class LiveSessionHost implements IngressStreamHandler {
@@ -158,6 +210,99 @@ export class LiveSessionHost implements IngressStreamHandler {
   ): Promise<LiveSessionHost> {
     const plans = deps.synthesis === null ? [] : deps.speechPlansFor(open);
     const synthesis = deps.synthesis;
+
+    /*
+     * THE PROGRAMME'S OWN WORDS, FETCHED ONCE AND PINNED.
+     *
+     * Read here because this is where the recogniser is about to be opened,
+     * and a recogniser takes its vocabulary at the handshake: it cannot be
+     * handed new terms afterwards. So this snapshot belongs to this session
+     * for the whole of its life, and an edit made mid-programme applies to the
+     * NEXT one. Saying otherwise would show an operator a version number that
+     * nothing was using.
+     *
+     * A call has no vocabulary and no programme to fetch one for. A programme
+     * whose vocabulary could not be READ gets none either -- and is logged as
+     * unavailable rather than empty, because those look identical in the terms
+     * they produce and mean opposite things.
+     */
+    const vocabulary = await resolveSessionVocabulary(open, deps);
+
+    /*
+     * The one account of this broadcast, if it is a broadcast at all.
+     *
+     * A call has no timeline: nothing is delayed, nothing is advertised into
+     * it, and there is no audience receiving a cursor. Absent here means
+     * exactly that rather than an empty programme.
+     */
+    const timeline =
+      open.context.serviceCategory === 'programme'
+        ? deps.timelines?.open(open.context.programme)
+        : undefined;
+
+    // Recorded against the run so a console reports the vocabulary IN USE,
+    // not the one most recently saved. They differ the moment somebody edits.
+    if (open.context.serviceCategory === 'programme') {
+      deps.timelines?.noteVocabulary(open.context.programme.runId, vocabulary.reported);
+      /*
+       * The audience's delivery routes are keyed by session and the cursor
+       * that governs them is keyed by run. This is the join between the two,
+       * and without it those routes cannot tell released material from
+       * material the delay is still holding.
+       */
+      deps.timelines?.noteSession(open.sessionId, open.context.programme.runId);
+    }
+
+    /*
+     * THE CURSOR DECIDES WHEN THE AUDIENCE HEARS THIS.
+     *
+     * Present only for a programme with a buffer. Where it exists, captions
+     * and generated audio are held against their timeline reference and
+     * emitted when the cursor reaches them, so the delay the operator was
+     * promised is the delay the audience actually experiences. With no delay
+     * configured the cursor sits at the live edge and everything is released
+     * on the next tick -- one path, not two.
+     */
+    const outputBuffer =
+      open.context.serviceCategory === 'programme'
+        ? (deps.timelines?.buffer(open.context.programme.runId) ?? null)
+        : null;
+    const pump =
+      outputBuffer === null
+        ? null
+        : new ProgrammeOutputPump(outputBuffer, (droppedTotal) =>
+            deps.log?.('programme output payloads dropped; the cursor is not advancing', {
+              sessionId: open.sessionId,
+              droppedTotal,
+            }),
+          );
+    const ticker =
+      pump === null
+        ? null
+        : (deps.setOutputTimer?.(() => {
+            /*
+             * ADVERTS REACH THE AUDIENCE FROM THE TIMELINE, at the cursor,
+             * like everything else. Not fetched by a client and not chosen by
+             * one: two viewers on different delays meet the same advert at the
+             * same programme moment, which is the only way an impression means
+             * anything.
+             */
+            for (const event of pump.tick()) {
+              if (event.kind !== 'advertisement') continue;
+              deps.onAdvertisement?.({
+                runId:
+                  open.context.serviceCategory === 'programme'
+                    ? open.context.programme.runId
+                    : '',
+                decisionId: event.reference,
+                campaignId: String(event.attributes['campaignId'] ?? ''),
+                creativeId: String(event.attributes['creativeId'] ?? ''),
+                programmeTimeMs: event.programmeTimeMs,
+                durationMs: event.durationMs ?? 0,
+              });
+            }
+          }, OUTPUT_TICK_MS) ?? null);
+    void ticker;
     /**
      * How many languages this stream will actually be SPOKEN in.
      *
@@ -207,6 +352,20 @@ export class LiveSessionHost implements IngressStreamHandler {
         ...(deps.frameSamples === undefined ? {} : { frameSamples: deps.frameSamples }),
         ...(deps.now === undefined ? {} : { now: deps.now }),
         ...(deps.log === undefined ? {} : { log: deps.log }),
+        /*
+         * Counters, but only for a programme. A direct call has no broadcast
+         * to report on, and handing it a recorder would fill the console with
+         * rows for conversations nobody is watching.
+         */
+        ...(deps.performance === undefined || open.context.serviceCategory !== 'programme'
+          ? {}
+          : {
+              performance: deps.performance.for(
+                open.context.programme.runId,
+                open.sourceLanguage ?? 'en',
+                plan.targetLanguage,
+              ),
+            }),
       };
       speech.set(plan.targetLanguage, new LiveTranslationPipeline(translationDeps));
     }
@@ -215,12 +374,30 @@ export class LiveSessionHost implements IngressStreamHandler {
       sessionId: open.sessionId,
       streamId: open.streamId,
       context: open.context,
+      ...(vocabulary.keyterms.length === 0 ? {} : { keyterms: vocabulary.keyterms }),
       sourceLanguage: open.sourceLanguage,
       sourceLanguageMode: open.sourceLanguageMode,
       transcription: deps.transcription,
       mintSegmentId: () => deps.mintSegmentId(open),
       onTranscriptEvent: (event) => {
-        deps.onCaption?.(event);
+        if (pump === null) deps.onCaption?.(event);
+        else pump.hold(event.segmentId, { kind: 'caption', emit: () => deps.onCaption?.(event) });
+        /*
+         * AND ONTO THE PROGRAMME'S OWN ACCOUNT OF ITSELF.
+         *
+         * Written at the moment it happened in the broadcast, not the moment
+         * we finished producing it -- a caption belongs where the words were
+         * spoken. Everything a viewer will eventually receive goes through
+         * here, which is what lets one cursor delay all of it coherently
+         * instead of four independent paths drifting apart.
+         */
+        timeline?.append({
+          programmeTimeMs: event.startMs,
+          kind: 'caption',
+          reference: event.segmentId,
+          durationMs: Math.max(0, event.endMs - event.startMs),
+          attributes: { language: open.sourceLanguage ?? 'unknown', final: event.kind === 'final' },
+        });
         // ONE final, EVERY language. Fanned out here rather than by
         // transcribing per language: the speaker said the sentence once.
         for (const [targetLanguage, pipeline] of speech) {
@@ -233,7 +410,23 @@ export class LiveSessionHost implements IngressStreamHandler {
             .onTranscriptEvent(event)
             .then((record) => {
               if (record !== null) {
-                deps.onSpoken?.(record.segmentId, record.generation, targetLanguage);
+                if (pump === null) {
+                  deps.onSpoken?.(record.segmentId, record.generation, targetLanguage);
+                } else {
+                  pump.hold(record.segmentId, {
+                    kind: 'generated-audio',
+                    emit: () => deps.onSpoken?.(record.segmentId, record.generation, targetLanguage),
+                  });
+                }
+                // Placed at the moment it translates, so a listener in Yoruba
+                // hears it against the same instant an English caption shows.
+                timeline?.append({
+                  programmeTimeMs: event.startMs,
+                  kind: 'generated-audio',
+                  reference: record.segmentId,
+                  durationMs: Math.max(0, event.endMs - event.startMs),
+                  attributes: { language: targetLanguage, generation: record.generation },
+                });
               }
             })
             .catch((error: unknown) => {
@@ -322,3 +515,76 @@ export function createLiveStreamOpener(deps: LiveSessionHostDeps) {
     }
   };
 }
+
+/**
+ * The vocabulary this session will run on, and how sure we are of it.
+ *
+ * Three outcomes, kept apart on purpose: a programme with terms, a programme
+ * with none, and a programme whose terms could not be fetched. The last is not
+ * the second. A console that showed "vocabulary active" for a failed read
+ * would be telling an operator their carefully entered names are in use while
+ * the recogniser has never seen them.
+ */
+async function resolveSessionVocabulary(
+  open: IngressOpen,
+  deps: LiveSessionHostDeps,
+): Promise<{
+  readonly keyterms: readonly string[];
+  readonly state: string;
+  readonly reported: RunVocabulary;
+}> {
+  if (open.context.serviceCategory !== 'programme') {
+    return { keyterms: [], state: 'not-a-programme', reported: UNAVAILABLE_VOCABULARY };
+  }
+  if (deps.vocabulary === undefined) {
+    return { keyterms: [], state: 'no-vocabulary-seam', reported: UNAVAILABLE_VOCABULARY };
+  }
+
+  const { programme } = open.context;
+  const result = await deps.vocabulary.fetch({
+    programmeId: programme.programmeId,
+    sourceLanguage: open.sourceLanguage ?? 'en',
+    // Resolution differs per direction; the first target is the one the
+    // recogniser's own snapshot is taken against.
+    targetLanguage: deps.speechPlansFor(open)[0]?.targetLanguage ?? open.sourceLanguage ?? 'en',
+  });
+
+  if (result.kind === 'unavailable') {
+    // Loud, and never mistaken for an empty vocabulary.
+    deps.log?.('programme vocabulary UNAVAILABLE; the recogniser runs without it', {
+      sessionId: open.sessionId,
+      programmeId: programme.programmeId,
+      runId: programme.runId,
+      reason: result.reason,
+    });
+    return { keyterms: [], state: 'unavailable', reported: UNAVAILABLE_VOCABULARY };
+  }
+
+  // Identity only: never the terms themselves.
+  deps.log?.('programme vocabulary pinned for this recogniser session', {
+    sessionId: open.sessionId,
+    programmeId: programme.programmeId,
+    runId: programme.runId,
+    revision: result.identity.revision,
+    termCount: result.identity.termCount,
+    fingerprint: result.identity.fingerprint,
+  });
+  return {
+    keyterms: result.kind === 'ready' ? result.keyterms : [],
+    state: result.kind,
+    reported: {
+      // `none` is a programme with no terms; `unavailable` is one we could not
+      // ask about. Identical recognition, opposite meanings.
+      state: result.kind === 'ready' ? 'active' : 'none',
+      revision: result.identity.revision,
+      termCount: result.identity.termCount,
+    },
+  };
+}
+
+/** What is reported when nothing could be established about the vocabulary. */
+const UNAVAILABLE_VOCABULARY: RunVocabulary = {
+  state: 'unavailable',
+  revision: null,
+  termCount: null,
+};

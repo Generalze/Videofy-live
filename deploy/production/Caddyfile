@@ -1,0 +1,207 @@
+# Videofy Live -- the edge for BOTH environments on c7-eu-01.
+#
+# One Caddyfile, two site blocks, one routing definition. The routing is a
+# snippet, imported once per environment with that environment's loopback
+# ports and web root. A production proxy copied from staging and edited by hand
+# is a proxy whose forty lines can each drift; a snippet has one copy to be
+# wrong in, and `caddy validate` reads it before anything is restarted.
+#
+# TLS. Certificates come from Let's Encrypt over HTTP-01, exactly as staging's
+# did (they are in /var/lib/caddy/.local/share/caddy/certificates/acme-v02...).
+# Cloudflare proxies port 80 to the origin, so the challenge passes through the
+# orange cloud as long as Cloudflare's SSL mode is Full (strict); the FIRST
+# issuance is simplest with the record grey-clouded for a minute, which is how
+# staging's was obtained. There is no Cloudflare origin certificate here.
+#
+# Site addresses are placeholders read from /etc/default/caddy (the drop-in in
+# systemd/caddy.service.d/videofy.conf makes Caddy read that file):
+#
+#   VIDEOFY_SITE_ADDRESS        staging     unset -> :80 plain HTTP
+#   VIDEOFY_PROD_SITE_ADDRESS   production  unset -> consummate7.com
+#
+# Caddy runs with `admin off`, so `systemctl reload caddy` cannot work (the
+# packaged reload talks to the admin socket). Apply changes with
+# `caddy validate` and then `systemctl restart caddy`; the restart is a few
+# milliseconds and open WebSockets reconnect on their own.
+{
+	admin off
+}
+
+# args: gateway_port  ingest_port  account_port  www_root  log_name
+(videofy_site) {
+	encode zstd gzip
+
+	log {
+		output file /var/log/caddy/{args[4]}.log
+		format json
+	}
+
+	# --- REFUSED AT THE EDGE ------------------------------------------------
+	# `/internal/` is the server-only prefix: the internal media API AND the
+	# realtime ingress WebSocket at /internal/media/ingress/v1. Refused by
+	# prefix, so a future internal route cannot quietly fall outside a list.
+	handle /internal/* {
+		respond "not found" 404
+	}
+
+	# --- realtime gateway ---------------------------------------------------
+	handle /socket.io/* {
+		reverse_proxy 127.0.0.1:{args[0]}
+	}
+
+	handle /health {
+		reverse_proxy 127.0.0.1:{args[0]}
+	}
+
+	# The direct-call telephone: pre-join check, ringing ack, decline, and the
+	# conference status/public listing. A device asks these BEFORE it is in a
+	# socket room.
+	handle /calls/* {
+		reverse_proxy 127.0.0.1:{args[0]}
+	}
+
+	# ICE servers (STUN + a time-limited TURN credential) for call video.
+	handle /webrtc/* {
+		reverse_proxy 127.0.0.1:{args[0]}
+	}
+
+	# --- account service ----------------------------------------------------
+	# Prefix-mounted because account and media-ingest BOTH define `/sessions`.
+	handle_path /auth/* {
+		# handle_path strips the prefix first, so this matcher sees the path the
+		# upstream would receive; the top-level deny never sees /auth/internal.
+		# Provider callbacks are deliberately NOT under /internal: they are
+		# machine-to-machine, reachable from the vendor, authenticated by
+		# signature rather than by being hard to find.
+		@authInternal path /internal/*
+		respond @authInternal "not found" 404
+
+		reverse_proxy 127.0.0.1:{args[2]}
+	}
+
+	# --- media-ingest, browser-facing routes ONLY ---------------------------
+	handle_path /media/* {
+		@internal path /internal/*
+		respond @internal "not found" 404
+
+		reverse_proxy 127.0.0.1:{args[1]} {
+			# Programme uploads are large; streaming must not be buffered.
+			flush_interval -1
+		}
+	}
+
+	# --- the Language Specialist portal ------------------------------------
+	# Two NEW public shell paths and one new operator path were added to the
+	# matchers above at the same time as the routes themselves:
+	#
+	#   /language-specialists/          the public recruitment page, served by
+	#                                   ecosystem-web through the root handler's
+	#                                   `try_files {path}/index.html`, so it gets
+	#                                   its own generated Open Graph card.
+	#   /specialist/*                   the signed-in portal, one shell for every
+	#                                   path beneath it.
+	#   /operator/language-specialists  the operator console, served by the
+	#                                   /operator/* handler's index.html fallback.
+	#
+	# The comment on those matchers says they are LISTS that must be extended
+	# whenever a public path is added, and that forgetting is exactly how the
+	# stale-shell bug came back for the ecosystem site. The API these pages call
+	# is /auth/specialists/* and /auth/admin/language-specialists/*, which the
+	# existing account-service block already carries -- no new proxy rule.
+
+	# --- static single-page apps -------------------------------------------
+	# The shell is revalidated on every load (a shell with no Cache-Control is
+	# heuristically cached for hours and keeps naming the PREVIOUS bundle);
+	# the hashed assets are immutable. Both matchers are lists and must be
+	# extended whenever a public path is added -- that omission is exactly how
+	# the bug came back for the ecosystem site.
+	@spa_shell path /call/ /call/index.html /listen/ /listen/index.html /streams/* /operator/ /operator/index.html /operator/language-specialists /operator/language-specialists/* / /index.html /app/ /app/* /videofy/ /videofy/index.html /videofy/live/ /videofy/live/index.html /language-specialists/ /language-specialists/index.html /specialist/ /specialist/*
+	header @spa_shell Cache-Control "no-cache, must-revalidate"
+
+	@hashed_assets path /call/assets/* /listen/assets/* /operator/assets/* /assets/*
+	header @hashed_assets Cache-Control "public, max-age=31536000, immutable"
+
+	handle /call/* {
+		root * {args[3]}/call-web
+		uri strip_prefix /call
+		try_files {path} /index.html
+		file_server
+	}
+
+	handle /listen/* {
+		root * {args[3]}/listener-web
+		uri strip_prefix /listen
+		try_files {path} /index.html
+		file_server
+	}
+
+	# /streams/<handle> is the public canonical channel page (founder directive
+	# A, 30 Aug 2026). It is SERVER-RENDERED by the account service, and this is
+	# the one route in the file that is not a static file or a plain proxy, so
+	# here is why.
+	#
+	# It was served as the listener bundle, exactly like /listen/. That bundle's
+	# head is <title>Videofy Live - Viewer</title> and nothing else -- no og:*,
+	# no image, no canonical -- and every crawler that matters (WhatsApp above
+	# all) reads the HTML and never executes a line of JavaScript. So the ONE
+	# link this product is shared by -- what the operator console's Copy channel
+	# link, Share and QR all produce -- previewed as a naked URL, which is what
+	# the founder reported on 30 Aug 2026.
+	#
+	# The page is per-channel: its title is the channel's display name and its
+	# picture is the channel's avatar. No static file can be that. The account
+	# service already owns channel identity, so it renders the page by injecting
+	# a real head into the listener shell it reads off disk -- the body is still
+	# the same viewer application, and a person following the link is unaffected.
+	#
+	# REWRITTEN to /share/streams/*, not proxied as-is, because the account
+	# service already answers GET /streams/:handle with the profile JSON that the
+	# viewer itself fetches through /auth. The rewrite gives the HTML page its own
+	# address upstream, so that JSON route keeps working unchanged.
+	#
+	# The bundle is still built with --base=/listen/, so the shell this returns
+	# loads its hashed assets from /listen/assets/*, which the block above serves
+	# statically. One build, one copy of the app.
+	#
+	# Opaque listener links (/listen/c/<id>, ?c=, ?channel=) do not come through
+	# here at all and are untouched.
+	handle /streams/* {
+		rewrite * /share{uri}
+		reverse_proxy 127.0.0.1:{args[2]}
+	}
+
+	handle /operator/* {
+		root * {args[3]}/operator-web
+		uri strip_prefix /operator
+		try_files {path} /index.html
+		file_server
+	}
+
+	# The ROOT is the C7 ecosystem site; Videofy lives at /call/.
+	# `{path}/index.html` is tried BEFORE the shell fallback so /videofy/ and
+	# /videofy/live/ serve their own generated files with their own Open Graph
+	# tags rather than previewing as the homepage.
+	handle {
+		root * {args[3]}/ecosystem-web
+		try_files {path} {path}/index.html /index.html
+		file_server
+	}
+}
+
+# --- staging: unchanged behaviour, same ports, same web root, same log file ---
+{$VIDEOFY_SITE_ADDRESS::80} {
+	import videofy_site 3001 3002 3006 /srv/videofy/www videofy
+}
+
+# --- production ---------------------------------------------------------------
+{$VIDEOFY_PROD_SITE_ADDRESS:consummate7.com} {
+	import videofy_site 3101 3102 3106 /srv/videofy-prod/www videofy-prod
+}
+
+# One canonical origin. Session cookies, verification links (C7_PUBLIC_ORIGIN)
+# and shared channel links all name the apex; www exists only to send people
+# there. Needs its own A/CNAME record at Cloudflare and its own certificate,
+# which Caddy obtains the same way.
+www.consummate7.com {
+	redir https://consummate7.com{uri} permanent
+}

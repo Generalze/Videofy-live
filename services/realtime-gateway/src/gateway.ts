@@ -1,4 +1,8 @@
 /** @owner masterzee001 */
+import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
+import { ProgrammeRelayAuthority } from './programme-relay-authority.js';
+import type { ProgrammeRunIdentity } from '@videofy-live/media-ingress-wire';
 import type { Server as HttpServer } from 'node:http';
 import { Server as SocketServer, type Socket } from 'socket.io';
 import {
@@ -15,6 +19,8 @@ import type {
   TranscriptionEvent,
   TranslationEvent,
   WebRtcIncomingSignallingEnvelope,
+  ProgrammeMediaDelivery,
+  ProgrammeDeliveryPolicy,
 } from '@videofy-live/shared-types';
 import {
   DEFAULT_CHANNEL_ID,
@@ -25,19 +31,32 @@ import {
   channelRoom,
   type ChannelVisibility,
 } from './programme-channels.js';
+import { diffLiveTransitions } from './channel-live-transitions.js';
+import {
+  NULL_CHANNEL_IDENTITY,
+  type ChannelIdentityPort,
+  type ChannelProfile,
+} from './channel-identity.js';
 import {
   INGEST_ROOM,
   createShareableWebRtcSessionId,
+  isChannelCategory,
   languageRoom,
   OPERATOR_ROOM,
+  type ChannelAssignedPayload,
+  type OperatorChannelSettingsPayload,
   SOCKET_EVENTS,
   type TranslatedAudioFramePayload,
   WEBRTC_BACKEND_MEDIA_PEER_ID,
   WEBRTC_SIGNALLING_LIMITS,
   WORKER_ROOM,
+  realtimeRelayPermitted,
+  relayPermittedWithoutRunAnswer,
 } from '@videofy-live/shared-types';
 import {
   safeParseMediaStateEvent,
+  safeParseProgrammeMediaDelivery,
+  safeParseProgrammeDeliveryPolicy,
   safeParseGeneratedAudioReadyEvent,
   safeParseTimestampedTranslationEvent,
   safeParseTranscriptionEvent,
@@ -69,12 +88,13 @@ import {
   type BackendMediaPeerAudioContext,
 } from './webrtc-media-peer-registry.js';
 import { BackendWebRtcListenerPeerRegistry } from './webrtc-listener-peer-registry.js';
+import { ProgrammeContributionHost } from '@videofy-live/programme-contribution';
 import {
   HttpMediaTranscriptionSubmissionClient,
   MediaTranscriptionBridge,
   type MediaTranscriptionBridgeContext,
 } from './media-transcription-bridge.js';
-import { CallSessionStore } from '@videofy-live/call-session';
+import { CallSessionStore, type CallStatus } from '@videofy-live/call-session';
 import type { Router } from 'express';
 import {
   ConnectJoinGate,
@@ -86,7 +106,11 @@ import {
   type ConnectCallFacade,
   type ConnectProjectRegistry,
 } from '@videofy-live/connect-control';
-import { createOperatorAuthority, type OperatorAuthority } from './operator-authority.js';
+import {
+  createOperatorAuthority,
+  operatorRefusalNotice,
+  type OperatorAuthority,
+} from './operator-authority.js';
 import { CallRuntime, CALL_PARTICIPANT_ROLE } from './call-runtime.js';
 import { CallReceivePeerManager } from './call-receive-peers.js';
 import { CallTranscriptLog } from './call-transcript-log.js';
@@ -148,6 +172,31 @@ export class Gateway {
    */
   private readonly programmeSourceRevisions = new Map<string, number>();
   private readonly callRuntime: CallRuntime;
+  /**
+   * The one call store, kept in hand for GET /calls/:callId/status. The
+   * runtime owns every mutation; this reference only answers whether a call
+   * id is live, ended or never seen.
+   */
+  private readonly callSessionStore: CallSessionStore;
+
+  /** The direct-call telephone, for the HTTP pre-join / ringing / decline routes. */
+  get directCalls(): CallRuntime['directCalls'] {
+    return this.callRuntime.directCalls;
+  }
+
+  /** The public conference listing, for GET /calls/public. */
+  listPublicCalls(): ReturnType<CallRuntime['listPublicCalls']> {
+    return this.callRuntime.listPublicCalls();
+  }
+
+  /**
+   * Conference status, for GET /calls/:callId/status. Founder ruling (29 Aug
+   * 2026): "An ended conference is terminal. The Recent row should show Ended
+   * and must not silently recreate a room under that old code."
+   */
+  callStatus(callId: string): CallStatus {
+    return this.callSessionStore.callStatus(callId);
+  }
   private readonly mediaIngestUrl: string;
   /**
    * Whether media-ingest can genuinely translate speech.
@@ -176,6 +225,56 @@ export class Gateway {
   private readonly operatorAccounts = new Map<string, string>();
   private readonly activeWorkers = new Set<string>();
   private readonly activeIngestClients = new Set<string>();
+
+  /**
+   * Whether any media ingest is connected right now.
+   *
+   * Read by /health so the platform stops reporting a capability it does not
+   * have. A gateway with no ingest can still carry calls and signalling; it
+   * cannot carry a programme.
+   */
+  /**
+   * Whether anything authoritative has said what this deployment does.
+   *
+   * A DIFFERENT FACT FROM CONNECTIVITY. The policy is pinned for this process
+   * once established, so its announcer going offline does not un-say it -- and
+   * a gateway that has never been told is one where no programme relays.
+   */
+  get deliveryAuthorityKnown(): boolean {
+    return this.relay.authorityKnown;
+  }
+
+  /**
+   * Could a TRUE LIVE programme go out right now?
+   *
+   * The broadcaster's own WebRTC path, which does not run through media
+   * ingest -- so a pinned live policy survives its announcer disconnecting.
+   * Null while nobody has established what this deployment does: "nobody
+   * asked" and "asked, and no" must not render the same.
+   */
+  get trueLiveCapable(): boolean | null {
+    if (!this.relay.authorityKnown) return null;
+    if (!this.relay.admissionAllowed()) return false;
+    return this.relay.deliveryMode === 'live';
+  }
+
+  /**
+   * Could a PROTECTED programme go out right now?
+   *
+   * This one DOES depend on media ingest: the spool, the cursor and the egress
+   * all live there. One broad capability field could not say that true live is
+   * possible while protected live is not, which is the state a deployment is
+   * in the moment ingest drops.
+   */
+  get protectedLiveCapable(): boolean | null {
+    if (!this.relay.authorityKnown) return null;
+    if (!this.relay.admissionAllowed()) return false;
+    return this.relay.deliveryMode === 'delayed' && this.mediaIngestConnected;
+  }
+
+  get mediaIngestConnected(): boolean {
+    return this.activeIngestClients.size > 0;
+  }
   /**
    * One programme per channel.
    *
@@ -188,6 +287,50 @@ export class Gateway {
   /** The channel each operator MAY move to: derived from their account, theirs alone. */
   private readonly operatorOwnChannels = new Map<string, string>();
   private readonly channelSalt: string;
+  /**
+   * Where channel identity persists (founder directive A, 30 Aug 2026).
+   * Injected so tests run without HTTP; absent means in-memory values only,
+   * which is also what an unreachable account service degrades to.
+   */
+  private readonly channelIdentity: ChannelIdentityPort;
+  /**
+   * sessionId -> which broadcast this is.
+   *
+   * Minted when an operator's session binds to their channel and kept for the
+   * life of that session, so a source switch or a reconnect stays the SAME
+   * run. A new run means a new timeline and a new set of adverts; the network
+   * hiccupping is not a new programme.
+   */
+  private readonly programmeRuns = new Map<string, ProgrammeRunIdentity>();
+
+  /**
+   * How each run's original media reaches its audience, as the run itself says.
+   *
+   * Not inferred here, and not read off a delay figure. media-ingest owns the
+   * delivery chain and announces the answer; this is the cache that answer
+   * lives in between announcements.
+   */
+  /**
+   * Who may relay a programme's original media, and why.
+   *
+   * The per-run answers, the deployment policy and the hot-path refusal set
+   * were three private fields here, which made the decision testable only by
+   * reading this file. The leak they hid -- the first protected run after a
+   * fresh process -- is exactly the kind a source-text assertion agrees with
+   * and an audience does not, so the decision now lives somewhere frames can
+   * be counted through it.
+   */
+  private readonly relay = new ProgrammeRelayAuthority();
+
+  /**
+   * Where a protected run's contribution is encoded, when this deployment does
+   * protected broadcasts at all.
+   *
+   * Null when no spool is configured, which is the ordinary state of a
+   * deployment that only does TRUE LIVE. Absent rather than inert, so nothing
+   * allocates an encoder path that will never be used.
+   */
+  private readonly contributionHost: ProgrammeContributionHost | null;
 
   /*
    * THE DEFAULT CHANNEL, UNDER THE OLD NAME.
@@ -261,9 +404,29 @@ export class Gateway {
        * operator supplies a secret and a token, which is the same thing a real
        * client does.
        */
+      /**
+       * A channel went live, or stopped. Called on every transition the
+       * public directory shows; the account service fans the live one out
+       * to followers who asked to be told. Omitted means nobody is told.
+       */
+      onChannelLive?: (channelId: string, live: boolean, displayName: string) => Promise<void>;
+      /**
+       * The persistent channel identity source. Omitted -- tests, embedders
+       * -- means channels keep in-memory names and nothing is persisted.
+       */
+      channelIdentity?: ChannelIdentityPort | undefined;
       /** Call-level authority. Omitted means no account may start a call. */
       call?: {
         authorizeHost?: (sessionToken: string | null) => Promise<boolean>;
+        resolveDirectMode?: (
+          sessionToken: string | null,
+          peerAccountId: string,
+        ) => Promise<'normal' | 'translated' | null>;
+        recordDirectCall?: (
+          record: import('./direct-call-lifecycle.js').DirectCallOutcomeRecord,
+        ) => Promise<void>;
+        /** Approved to translate this direction on a live call. Absent refuses. */
+        callLiveRouteApproved?: (sourceLanguage: string, targetLanguage: string) => boolean;
       };
       operator?: {
         authSecret?: string | undefined;
@@ -281,7 +444,9 @@ export class Gateway {
       };
     } = {},
   ) {
+    this.channelLiveHook = options.onChannelLive ?? null;
     this.channelSalt = options.operator?.channelSalt ?? 'videofy-live-channel';
+    this.channelIdentity = options.channelIdentity ?? NULL_CHANNEL_IDENTITY;
     this.operatorAuthority = createOperatorAuthority({
       secret: options.operator?.authSecret,
       ...(options.operator?.requireEntitlement === undefined
@@ -358,6 +523,49 @@ export class Gateway {
           }
         : {}),
     });
+    /*
+     * PROTECTED CONTRIBUTION, encoded where the frames already are.
+     *
+     * The spool is the media service's, on the same host. Raw broadcast video
+     * must not travel between two of our own services to satisfy a module
+     * layout, so the encoder runs here and the segments land where the cursor,
+     * the store and the egress already look for them.
+     */
+    /*
+     * THE SAME VARIABLE THE MEDIA SERVICE READS, resolved the same way.
+     *
+     * The media service used to derive its spool from the audio chunk
+     * directory while this one read this variable, so the two could name
+     * different directories and nothing would say so: the encoder would fill a
+     * spool the cursor never polled, and the manifest would stay empty behind
+     * a healthy encoder. One name, and absolute, because the two services run
+     * with different working directories.
+     */
+    const configuredSpool = process.env['PROGRAMME_MEDIA_SPOOL']?.trim();
+    const spoolRoot =
+      configuredSpool === undefined || configuredSpool === '' ? null : resolve(configuredSpool);
+    this.contributionHost =
+      spoolRoot === null
+        ? null
+        : new ProgrammeContributionHost({
+            spoolRoot,
+            onFailed: (runId, reason) => {
+              /*
+               * A contribution that cannot be encoded stops the protected
+               * output. It does NOT quietly become live: the delay exists for
+               * the moments when something has gone wrong, which is exactly
+               * when a fallback would fire.
+               */
+              logger.error('Protected contribution failed', { runId, reason });
+            },
+            onProblem: (message, detail) => logger.warn(message, detail),
+            log: {
+              info: (message, detail) => logger.info(message, detail),
+              warn: (message, detail) => logger.warn(message, detail),
+              error: (message, detail) => logger.error(message, detail),
+            },
+          });
+
     this.listenerMediaPeers = new BackendWebRtcListenerPeerRegistry({
       onLocalSignal: (envelope) => this.routeBackendWebRtcSignal(envelope),
     });
@@ -387,7 +595,21 @@ export class Gateway {
             });
           }
         }
+        /*
+         * THE SAME RECEIVED MEDIA, ON ITS WAY TO THE PROTECTED ENCODER.
+         *
+         * One broadcaster publish serves both modes: the frames below go to
+         * the realtime audience, and these same frames go to the encoder that
+         * produces protected segments. Nothing is published twice and nothing
+         * is encoded twice, so there is one answer to which feed is the
+         * actual programme.
+         */
+        this.contributeToProtectedRun(context.sessionId, 'audio', data);
         try {
+          // Checked per frame as well as at peer creation. A peer built
+          // before the answer arrived is exactly the leak window, and this
+          // is a set lookup on a path that cannot afford a map walk.
+          if (!this.relay.mayRelayFrames(context.sessionId)) return;
           this.listenerMediaPeers.fanOutAudioFrame(context.sessionId, data);
         } catch (error) {
           logger.warn('WebRTC listener programme-audio fanout failed', {
@@ -399,8 +621,10 @@ export class Gateway {
         }
       },
       onVideoFrame: (context, frame) => {
+        this.contributeToProtectedRun(context.sessionId, 'video', frame);
         try {
-          this.listenerMediaPeers.fanOutVideoFrame(context.sessionId, frame);
+          if (!this.relay.mayRelayFrames(context.sessionId)) return;
+        this.listenerMediaPeers.fanOutVideoFrame(context.sessionId, frame);
         } catch (error) {
           logger.warn('WebRTC listener programme-video fanout failed', {
             sessionId: context.sessionId,
@@ -425,8 +649,9 @@ export class Gateway {
     // transcription bridge with call-scoped contexts; owns its own peer
     // registry so call publish peers never mix with programme callbacks.
     const callVoiceIdentityVerifier = createCallVoiceIdentityVerifier();
+    this.callSessionStore = new CallSessionStore();
     this.callRuntime = new CallRuntime({
-      store: new CallSessionStore(),
+      store: this.callSessionStore,
       emitToRoom: (room, event, payload) => {
         this.io.to(room).emit(event, payload);
       },
@@ -458,6 +683,19 @@ export class Gateway {
        * as connectAuthority directly below.
        */
       ...(options.call?.authorizeHost ? { authorizeCallHost: options.call.authorizeHost } : {}),
+      ...(options.call?.resolveDirectMode
+        ? { resolveDirectCallMode: options.call.resolveDirectMode }
+        : {}),
+      /*
+       * Whether a language pair may carry a live TRANSLATED call. Absent,
+       * CallRuntime refuses every translated direct call -- the same
+       * fail-closed default as the host gate above. A normal call is
+       * unaffected: it translates nothing, so there is nothing to approve.
+       */
+      ...(options.call?.callLiveRouteApproved
+        ? { callLiveRouteApproved: options.call.callLiveRouteApproved }
+        : {}),
+      ...(options.call?.recordDirectCall ? { recordDirectCall: options.call.recordDirectCall } : {}),
       // P6.5: the synchronous connect-join gate (jti claim, verify, project,
       // origin, live-registry). Always constructed — with a missing secret or
       // registry it refuses every connect join, which is the fail-closed
@@ -613,12 +851,21 @@ export class Gateway {
          */
         const admission = this.operatorAuthority.admit(socket);
         if (!admission.ok) {
+          // The reason is a four-valued enum, never the token or the account.
           logger.warn('Operator refused', { socketId: socket.id, reason: admission.reason });
-          socket.emit(SOCKET_EVENTS.ERROR, {
-            // One message for every refusal. Distinguishing "no token" from
-            // "bad token" tells somebody probing which half they got right.
-            message: 'Sign in to a C7 account with programme access to operate.',
-          });
+          /*
+           * TWO MESSAGES, SPLIT AT THE SIGNATURE. Everything unverified -- no
+           * token, forged, expired, or a server with no secret -- gets one
+           * answer, because distinguishing "no token" from "bad token" tells
+           * somebody probing which half they got right. A token that DID
+           * verify for an account that is not enabled gets told so: that
+           * caller already knows who they are, and "sign in" to somebody who
+           * has is the console lying to its own operator.
+           *
+           * Emitted before the disconnect so the console can show it; the
+           * notice is built from constants and cannot carry either secret.
+           */
+          socket.emit(SOCKET_EVENTS.ERROR, operatorRefusalNotice(admission.reason));
           socket.disconnect(true);
           return;
         }
@@ -637,28 +884,36 @@ export class Gateway {
         const operatorChannelId = channelIdForAccount(admission.accountId, this.channelSalt);
         this.operatorOwnChannels.set(socket.id, operatorChannelId);
         /*
-         * OPT IN, DO NOT ASSUME. An operator publishes to the DEFAULT channel
-         * until they ask for their own.
+         * AUTO-LAND. Founder directive (A, 30 Aug 2026): "every entitled
+         * operator lands automatically on their own persistent channel;
+         * 'Move to my channel' leaves the normal workflow; main stays a
+         * special C7/platform channel."
          *
-         * Moving them automatically would have been the obvious thing and is
-         * wrong: every listener client that predates channels is on the
-         * default channel, so an automatic move publishes each operator's
-         * programme somewhere none of their audience is listening. The
-         * personalised channel is a thing an operator chooses, and the choice
-         * is what makes it safe to ship before every client understands it.
+         * This used to be opt-in, because listener clients that predated
+         * channels all sat on the default channel. Every listener surface
+         * now chooses a channel, so landing on the default would publish an
+         * operator's programme to an audience that is not theirs. The move
+         * to the platform channel remains for whoever operates it today
+         * (JOIN_CHANNEL 'main'); nothing in the ordinary path needs it.
+         *
+         * Claimed HERE, synchronously, so ownership is enforced from the
+         * first message. The persisted identity is read next, and the
+         * connect-time assignment waits for it: a console that showed a
+         * fallback name for two seconds and then corrected it would be
+         * showing exactly what the directive forbids.
          */
-        this.operatorChannels.set(socket.id, DEFAULT_CHANNEL_ID);
-        void socket.join(channelOperatorRoom(DEFAULT_CHANNEL_ID));
-        socket.emit(SOCKET_EVENTS.CHANNEL_ASSIGNED, {
-          channelId: operatorChannelId,
-          active: DEFAULT_CHANNEL_ID,
-        });
+        this.channels.claim(operatorChannelId, admission.accountId);
+        this.operatorChannels.set(socket.id, operatorChannelId);
+        void socket.join(channelOperatorRoom(operatorChannelId));
         this.handleOperatorSocket(socket);
-        // The accountId is logged; nothing identifying is. It is an opaque id,
-        // and it is the thing an incident would need.
+        void this.landOperator(socket, admission.accountId, operatorChannelId);
+        // PRESENCE ONLY. The account id here was read out of a verified session
+        // token, and the founder ruling (29 Aug 2026) is that no "account
+        // identifier derived from a token" is ever printed. An incident joins
+        // on socketId; the account behind it lives in the account service.
         logger.info('Operator connected', {
           socketId: socket.id,
-          accountId: admission.accountId,
+          authenticated: true,
         });
         break;
       }
@@ -724,6 +979,8 @@ export class Gateway {
      */
     void socket.join(channelListenerRoom(state.channelId));
     socket.emit(SOCKET_EVENTS.CHANNEL_DIRECTORY, this.channels.directory());
+    // Lazily: a stale name is corrected by a second directory, not a delay.
+    this.refreshChannelProfiles();
     socket.emit(SOCKET_EVENTS.AUDIO_MODE_PREFERENCES, this.channels.audio(state.channelId));
     if (
       this.latestProgrammeMediaState &&
@@ -763,7 +1020,7 @@ export class Gateway {
           channelId: request.channelId,
         });
         socket.emit(SOCKET_EVENTS.ERROR, {
-          message: 'This programme is private. Check the link and code you were given.',
+          message: 'This programme is locked. Check the link and code you were given.',
         });
         return;
       }
@@ -876,26 +1133,31 @@ export class Gateway {
    */
   private parseChannelSettings(
     raw: unknown,
-  ): { displayName?: string; visibility?: ChannelVisibility; code?: string | null } | null {
-    if (!raw || typeof raw !== 'object') return null;
-    const candidate = raw as { displayName?: unknown; visibility?: unknown; code?: unknown };
-    const settings: { displayName?: string; visibility?: ChannelVisibility; code?: string | null } =
-      {};
+  ): { ok: true; settings: OperatorChannelSettingsPayload } | { ok: false; message: string } {
+    const invalid = { ok: false, message: 'Invalid channel settings' } as const;
+    if (!raw || typeof raw !== 'object') return invalid;
+    const candidate = raw as {
+      displayName?: unknown;
+      visibility?: unknown;
+      code?: unknown;
+      category?: unknown;
+    };
+    const settings: OperatorChannelSettingsPayload = {};
 
     if (candidate.displayName !== undefined) {
-      if (typeof candidate.displayName !== 'string') return null;
+      if (typeof candidate.displayName !== 'string') return invalid;
       const trimmed = candidate.displayName.trim();
-      if (trimmed.length === 0 || trimmed.length > 80) return null;
+      if (trimmed.length === 0 || trimmed.length > 80) return invalid;
       settings.displayName = trimmed;
     }
 
     if (candidate.visibility !== undefined) {
       if (
         candidate.visibility !== 'public' &&
-        candidate.visibility !== 'unlisted' &&
-        candidate.visibility !== 'private'
+        candidate.visibility !== 'private' &&
+        candidate.visibility !== 'locked'
       ) {
-        return null;
+        return invalid;
       }
       settings.visibility = candidate.visibility;
     }
@@ -909,13 +1171,31 @@ export class Gateway {
          * code on a channel anybody can reach by link is a formality, and this
          * is the only thing standing in front of a private programme.
          */
-        if (typeof candidate.code !== 'string') return null;
-        if (candidate.code.length < 6 || candidate.code.length > 64) return null;
+        if (typeof candidate.code !== 'string') return invalid;
+        if (candidate.code.length < 6 || candidate.code.length > 64) return invalid;
         settings.code = candidate.code;
       }
     }
 
-    return settings;
+    /*
+     * Founder ruling (29 Aug 2026): "Add a controlled channel-side category
+     * field, one primary category in v1." Controlled means the list is the
+     * whole truth: a value off it is refused by name, and because the refusal
+     * happens before anything is applied, the rest of the same message is
+     * left unapplied too. A console cannot half-save.
+     */
+    if (candidate.category !== undefined) {
+      const category = candidate.category;
+      if (category === null) {
+        settings.category = null;
+      } else if (isChannelCategory(category)) {
+        settings.category = category;
+      } else {
+        return { ok: false, message: 'Choose a category from the list.' };
+      }
+    }
+
+    return { ok: true, settings };
   }
 
   /** A channel join request, from a client that may have sent anything. */
@@ -1110,9 +1390,28 @@ export class Gateway {
     this.backendMediaPeers.closeSession(sessionId, reason);
     this.listenerMediaPeers.closeSession(sessionId, reason);
     this.webRtcTranscriptionBridge.endSessionsForSessionId(sessionId, reason);
+    /*
+     * TELL THE MEDIA SERVICE THE BROADCAST IS OVER.
+     *
+     * Only this side sees the broadcaster go, and a protected programme holds
+     * its last forty-five seconds behind the cursor. Nothing released them:
+     * the run stayed `active` with a frozen live edge indefinitely, and the
+     * closing seconds -- produced, and owed to the audience -- reached nobody.
+     *
+     * Sent before the run binding is dropped, so the id is still known.
+     */
+    const endedRun = this.programmeRuns.get(sessionId);
+    if (endedRun !== undefined) {
+      this.io.to(INGEST_ROOM).emit(SOCKET_EVENTS.PROGRAMME_RUN_ENDED, { runId: endedRun.runId });
+      logger.info('Programme run ended', { runId: endedRun.runId, reason });
+    }
+    this.programmeRuns.delete(sessionId);
+    this.relay.releaseSession(sessionId);
     this.programmeSessionConfigs.delete(sessionId);
     this.generatedAudioStore.resetSession(sessionId);
     this.invalidateProgrammeMediaState(sessionId);
+    // After the state is cleared THROUGH the binding, the binding itself goes.
+    this.channels.releaseSession(sessionId);
   }
 
   /**
@@ -1120,7 +1419,17 @@ export class Gateway {
    * uploaded programmes (which retain a playable programmeMediaUrl) replayable.
    */
   private invalidateProgrammeMediaState(sessionId: string): void {
-    const state = this.latestProgrammeMediaState;
+    /*
+     * THE SESSION'S OWN CHANNEL, not the default. This used to read and write
+     * `latestProgrammeMediaState` -- the DEFAULT_CHANNEL_ID accessor -- so a
+     * broadcaster on their own channel could stop, disconnect, even leave for
+     * the day, and their channel kept advertising `live: true` in the public
+     * directory forever: the per-channel state set at config time was never
+     * the state this cleanup touched. The operator's "turn my channel off" is
+     * ending the broadcast; this is what makes ending actually turn it off.
+     */
+    const channelId = this.channels.channelForSession(sessionId);
+    const state = this.channels.mediaState(channelId);
     if (!state) return;
     const referencesSession =
       state.processingSessionId === sessionId ||
@@ -1128,11 +1437,11 @@ export class Gateway {
     if (!referencesSession) return;
     if (state.programmeMediaUrl) {
       if (!isTerminalMediaState(state.streamStatus)) {
-        this.latestProgrammeMediaState = { ...state, streamStatus: 'completed' };
+        this.channels.setMediaState(channelId, { ...state, streamStatus: 'completed' });
       }
       return;
     }
-    this.latestProgrammeMediaState = null;
+    this.channels.setMediaState(channelId, null);
   }
 
   private handleOperatorSocket(socket: Socket): void {
@@ -1173,25 +1482,25 @@ export class Gateway {
         void socket.leave(channelOperatorRoom(previous));
         void socket.join(channelOperatorRoom(requested));
       }
-      /*
-       * Claiming only on the move, not at connect. Claiming at connect would
-       * put an idle channel in the listener directory for every operator who
-       * ever signed in.
-       */
-      if (requested !== DEFAULT_CHANNEL_ID) {
-        this.channels.claim(requested, accountId);
-      }
       this.operatorChannels.set(socket.id, requested);
-      socket.emit(SOCKET_EVENTS.CHANNEL_ASSIGNED, {
-        channelId: this.operatorOwnChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID,
-        active: requested,
-      });
-      this.broadcastChannelDirectory();
+      /*
+       * THE PLATFORM CHANNEL has no persisted identity to read: it is a
+       * special C7 channel (founder directive A, 30 Aug 2026), operable by
+       * whoever operates it today and widened to nobody. Any other channel
+       * is claimed and its profile read, exactly as at connect.
+       */
+      if (requested === DEFAULT_CHANNEL_ID) {
+        this.emitChannelAssigned(socket, requested);
+        this.broadcastChannelDirectory();
+      } else {
+        this.channels.claim(requested, accountId);
+        void this.landOperator(socket, accountId, requested);
+      }
       logger.info('Operator moved channel', { socketId: socket.id, channelId: requested });
     });
 
     /*
-     * NAMING AND GATING A CHANNEL: how a programme becomes public, unlisted or
+     * NAMING AND GATING A CHANNEL: how a programme becomes public, private or
      * private.
      *
      * Applied to the channel the operator is CURRENTLY ON, and only if they
@@ -1200,12 +1509,15 @@ export class Gateway {
      * which is a denial of service dressed as a settings change.
      */
     socket.on(SOCKET_EVENTS.OPERATOR_CHANNEL_SETTINGS, (raw: unknown) => {
-      const settings = this.parseChannelSettings(raw);
+      const parsed = this.parseChannelSettings(raw);
       const accountId = this.operatorAccounts.get(socket.id);
-      if (!settings || accountId === undefined) {
-        socket.emit(SOCKET_EVENTS.ERROR, { message: 'Invalid channel settings' });
+      if (!parsed.ok || accountId === undefined) {
+        socket.emit(SOCKET_EVENTS.ERROR, {
+          message: parsed.ok ? 'Invalid channel settings' : parsed.message,
+        });
         return;
       }
+      const settings = parsed.settings;
 
       const channelId = this.operatorChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID;
       if (channelId === DEFAULT_CHANNEL_ID || !this.channels.mayOperate(channelId, accountId)) {
@@ -1224,22 +1536,24 @@ export class Gateway {
       if (settings.code !== undefined) {
         this.channels.setAccessCode(channelId, settings.code);
       }
+      if (settings.category !== undefined) {
+        this.channels.setCategory(channelId, settings.category);
+      }
 
-      socket.emit(SOCKET_EVENTS.CHANNEL_ASSIGNED, {
-        channelId: this.operatorOwnChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID,
-        active: channelId,
-        /*
-         * Whether a code is SET, never the code. The operator's own client
-         * already has whatever they just typed; echoing it back would put a
-         * live join code into logs and transcripts for no gain.
-         */
-        hasCode: this.channels.hasAccessCode(channelId),
-      });
-      this.broadcastChannelDirectory();
+      /*
+       * MIRROR, THEN RE-READ. Founder directive (A, 30 Aug 2026): identity
+       * persists outside gateway memory. Visibility is written to the
+       * account from here; name and category are accepted here too, but the
+       * console saves those to the account directly (lane A3), so the ack
+       * re-reads the profile and answers with what the account now holds.
+       * An empty settings message is therefore a legitimate "re-read".
+       */
+      void this.acknowledgeChannelSettings(socket, channelId, settings);
       logger.info('Operator updated channel settings', {
         socketId: socket.id,
         channelId,
         visibility: settings.visibility,
+        category: settings.category,
       });
     });
 
@@ -1295,11 +1609,17 @@ export class Gateway {
         return;
       }
       this.programmeSessionConfigs.set(config.sessionId, config);
-      socket.emit(SOCKET_EVENTS.CONTROL_ACK, {
-        action: 'programme-session-config',
-        accepted: true,
-        timestamp: new Date().toISOString(),
-      });
+      /*
+       * THE ACKNOWLEDGEMENT MOVED BELOW THE RUN BINDING, deliberately.
+       *
+       * It used to fire here, before the policy check and before the run was
+       * minted, so an operator could be told `accepted: true` for a programme
+       * the gateway then refused to start. And it carried no run identity at
+       * all: the run is minted server-side and the console that started it was
+       * never told which one it was, so it could not link its own programme to
+       * a timeline, a manifest or a recording. Acknowledging before the thing
+       * exists is acknowledging an intention, not a fact.
+       */
       logger.info('Operator programme session configuration accepted', {
         sessionId: config.sessionId,
         broadcastId: config.broadcastId,
@@ -1317,7 +1637,72 @@ export class Gateway {
        */
       const channelId = this.operatorChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID;
       this.channels.bindSession(config.sessionId, channelId);
+      /*
+       * AND MINT THE RUN, from server state rather than the operator's payload.
+       *
+       * The channel comes from the socket's admission, not from anything the
+       * console sent, so a client cannot nominate whose programme it is
+       * broadcasting. The programme is the channel's configuration today and
+       * carried separately so it can stop being that without a protocol
+       * change. The run is minted fresh here because THIS airing is not the
+       * last one: its timeline, telemetry and adverts must not inherit them.
+       */
+      if (!this.relay.admissionAllowed()) {
+        /*
+         * Two policies are in circulation, so nobody can say what a new
+         * programme would be. Refused rather than started under whichever
+         * answer arrived last.
+         */
+        logger.error('Refused a new programme: the delivery policy is in conflict', {
+          sessionId: config.sessionId,
+        });
+        socket.emit(SOCKET_EVENTS.ERROR, {
+          message: 'This gateway has conflicting programme delivery policies; no programme may start.',
+        });
+        return;
+      }
+      let boundRunId = this.programmeRuns.get(config.sessionId)?.runId ?? null;
+      if (boundRunId === null) {
+        const runId = `run_${randomUUID().replace(/-/gu, '').slice(0, 24)}`;
+        boundRunId = runId;
+        this.programmeRuns.set(config.sessionId, {
+          channelId,
+          programmeId: channelId,
+          runId,
+        });
+        /*
+         * THE PATH IS CLOSED HERE, AT THE RUN'S FIRST INSTANT.
+         *
+         * Not when the delivery announcement arrives -- that is later, and on
+         * a protected deployment "later" is a window in which a broadcaster
+         * can publish and frames can reach realtime listeners. The policy
+         * already says what this deployment does, so the refusal is made true
+         * before there is anything to refuse.
+         */
+        this.relay.admitSession(config.sessionId, runId);
+      }
+      // The broadcast's name, for the directory while it is on air; null
+      // when the operator gave none, never a stand-in.
+      this.channels.setProgrammeTitle(channelId, config.programmeTitle ?? null);
       this.broadcastProgrammeSessionConfig(config, channelId);
+      /*
+       * NOW the operator is told, and told WHICH RUN.
+       *
+       * Server-generated, from server state: the client cannot supply it,
+       * cannot choose it, and is not consulted about it. A reconnect that
+       * reconfigures the same session receives the same id, because the run is
+       * the airing rather than the message -- and a new airing mints a new one
+       * so its timeline, telemetry and adverts inherit nothing.
+       *
+       * Only on the accepted path. Every refusal above returns before this,
+       * so an unauthorised or invalid request learns no run identity at all.
+       */
+      socket.emit(SOCKET_EVENTS.CONTROL_ACK, {
+        action: 'programme-session-config',
+        accepted: true,
+        timestamp: new Date().toISOString(),
+        programmeRunId: boundRunId,
+      });
     });
 
     socket.on(SOCKET_EVENTS.OPERATOR_CONTROL, (raw: unknown) => {
@@ -1385,6 +1770,75 @@ export class Gateway {
   private handleIngestSocket(socket: Socket): void {
     socket.on(SOCKET_EVENTS.INGEST_HEALTH, () => {
       this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
+    });
+
+    /*
+     * THE ANSWER THAT DECIDES WHETHER THIS GATEWAY MAY RELAY.
+     *
+     * Validated rather than trusted: a malformed message that fell through to
+     * a default would decide it in the permissive direction, and the
+     * permissive direction is an audience hearing a protected studio. An
+     * invalid announcement leaves the previous answer standing, which for a
+     * protected run means it stays refused.
+     */
+    /*
+     * An advert C7 decided and the cursor released, forwarded to the channel
+     * that is airing that run. The gateway chooses nothing here -- it does not
+     * know what a campaign is, and a gateway that could pick would be a second
+     * place adverts come from.
+     */
+    socket.on(SOCKET_EVENTS.INGEST_PROGRAMME_ADVERT, (raw: unknown) => {
+      const advert = raw as {
+        runId?: unknown;
+        decisionId?: unknown;
+        creativeId?: unknown;
+        programmeTimeMs?: unknown;
+        durationMs?: unknown;
+      };
+      if (
+        typeof advert.runId !== 'string' ||
+        typeof advert.decisionId !== 'string' ||
+        typeof advert.creativeId !== 'string' ||
+        typeof advert.programmeTimeMs !== 'number' ||
+        typeof advert.durationMs !== 'number'
+      ) {
+        logger.warn('Ingest sent an invalid programme advert', { socketId: socket.id });
+        return;
+      }
+      const channelId = this.channelForRun(advert.runId);
+      if (channelId === null) return;
+      this.io.to(channelListenerRoom(channelId)).emit(SOCKET_EVENTS.PROGRAMME_ADVERT, {
+        runId: advert.runId,
+        decisionId: advert.decisionId,
+        creativeId: advert.creativeId,
+        programmeTimeMs: advert.programmeTimeMs,
+        durationMs: advert.durationMs,
+      });
+    });
+
+    socket.on(SOCKET_EVENTS.INGEST_PROGRAMME_DELIVERY, (raw: unknown) => {
+      const parsed = safeParseProgrammeMediaDelivery(raw);
+      if (!parsed.success) {
+        logger.warn('Ingest sent an invalid programme delivery announcement', {
+          socketId: socket.id,
+        });
+        return;
+      }
+      this.noteProgrammeDelivery(parsed.data as ProgrammeMediaDelivery);
+    });
+
+    socket.on(SOCKET_EVENTS.INGEST_PROGRAMME_POLICY, (raw: unknown) => {
+      const parsed = safeParseProgrammeDeliveryPolicy(raw);
+      if (!parsed.success) {
+        /*
+         * Refused, and the previous policy stands. Coercing a malformed policy
+         * would decide whether unannounced runs may be relayed on the strength
+         * of a message we could not read.
+         */
+        logger.warn('Ingest sent an invalid programme delivery policy', { socketId: socket.id });
+        return;
+      }
+      this.noteDeliveryPolicy(parsed.data as ProgrammeDeliveryPolicy);
     });
 
     socket.on(SOCKET_EVENTS.INGEST_STATE, (raw: unknown) => {
@@ -1834,8 +2288,184 @@ export class Gateway {
     }
   }
 
+  /**
+   * Record a run's delivery answer and act on it immediately.
+   *
+   * Acting immediately matters: a run that becomes delayed while listeners are
+   * already attached has an audience receiving realtime media right now, and
+   * waiting for the next join would leave them there.
+   */
+  private noteProgrammeDelivery(delivery: ProgrammeMediaDelivery): void {
+    if (!this.relay.noteDelivery(delivery)) {
+      logger.error('Refused to downgrade a protected programme to live delivery', {
+        runId: delivery.programmeRunId,
+      });
+      return;
+    }
+
+    for (const [sessionId, run] of this.programmeRuns) {
+      if (run.runId !== delivery.programmeRunId) continue;
+      const permitted = this.relay.decide(run.runId).permitted;
+      const wasPermitted = this.relay.applyToSession(sessionId, permitted);
+      if (permitted) {
+        /*
+         * A live run whose answer arrives after its listeners did. They were
+         * refused a peer while the authority was unknown -- correctly, since
+         * an unannounced run on a protected deployment must not be relayed --
+         * so the peer is built now rather than at the next join, which for a
+         * listener already watching would be never.
+         */
+        void this.startListenerDeliveryForSession(sessionId);
+        continue;
+      }
+      if (wasPermitted) {
+        /*
+         * Torn down rather than left silent. A peer that exists and is
+         * expected not to carry frames is one bug away from carrying them,
+         * and the bug would be invisible until an audience heard the studio.
+         */
+        this.listenerMediaPeers.closeSession(
+          sessionId,
+          'this programme is delivered through the delayed public media path',
+        );
+        logger.info('Realtime relay withdrawn for a protected programme', {
+          runId: delivery.programmeRunId,
+          readiness: delivery.readiness,
+        });
+      }
+    }
+  }
+
+  /**
+   * May this session's original media go out over the realtime audience path?
+   *
+   * The single question, asked in one place. A session with no programme run
+   * is not a programme and is permitted; a run whose answer says delayed is
+   * refused in every readiness, including `preparing` -- relaying while a
+   * buffer fills would deliver the studio for exactly the window the delay was
+   * configured to cover.
+   */
+  /**
+   * Hand one frame to the protected encoder, if this run has one.
+   *
+   * ONLY FOR A RUN THAT IS ACTUALLY PROTECTED. A live-delivery broadcast has
+   * no use for segments, and encoding them would spend a core per broadcast
+   * producing material nothing reads.
+   *
+   * Nothing here may throw and nothing here may block. This is the gateway's
+   * media callback, and the TRUE LIVE audience is on it: a protected encoder
+   * under pressure must never become a realtime audience's problem.
+   */
+  private contributeToProtectedRun(
+    sessionId: string,
+    kind: 'audio' | 'video',
+    payload: unknown,
+  ): void {
+    const host = this.contributionHost;
+    if (host === null) return;
+    const run = this.programmeRuns.get(sessionId);
+    if (run === undefined) return;
+    const delivery = this.relay.deliveryFor(run.runId);
+    if (delivery === undefined || delivery.mode !== 'delayed') return;
+    try {
+      if (kind === 'audio') host.pushAudio(run.runId, payload as never);
+      else host.pushVideo(run.runId, payload as never);
+    } catch (error) {
+      logger.warn('Protected contribution frame could not be accepted', {
+        runId: run.runId,
+        message: error instanceof Error ? error.message : 'unknown contribution failure',
+      });
+    }
+  }
+
+  /** Which channel is airing a run, or null when this gateway is not. */
+  private channelForRun(runId: string): string | null {
+    for (const run of this.programmeRuns.values()) {
+      if (run.runId === runId) return run.channelId;
+    }
+    return null;
+  }
+
+  private mayRelayRealtime(sessionId: string): boolean {
+    const run = this.programmeRuns.get(sessionId);
+    if (run === undefined) {
+      /*
+       * THE SECOND HALF OF THE SAME FAIL-OPEN, and it read as reasonable:
+       * a session with no programme run "must be an ordinary call". It is not.
+       * This path serves the BACKEND PROGRAMME MEDIA peers only -- ordinary
+       * calls have their own runtime and their own receive peers -- so an
+       * unbound session here is a programme whose run has not been minted
+       * yet, which is precisely the window a broadcaster can publish into.
+       *
+       * Inferring "not a programme" from a missing map entry made the absence
+       * of state into permission. A programme media session with no run is
+       * UNCLASSIFIED, and it is the deployment policy that decides what an
+       * unclassified session may do -- not the fact that nobody has written
+       * anything down about it yet.
+       */
+      return this.relay.decideUnbound().permitted;
+    }
+    /*
+     * The run's own answer when there is one, and otherwise the deployment
+     * policy that was sent before any run existed -- so a lost or late
+     * announcement on a protected deployment fails closed instead of relaying
+     * until it turns up.
+     */
+    return this.relay.decide(run.runId).permitted;
+  }
+
+  /**
+   * Record what this deployment does with every programme it airs.
+   *
+   * Arrives on connection, so it is in place before the first run exists.
+   * Announced out loud because it changes what an unannounced run is allowed
+   * to do, and an operator reading the log should not have to infer it.
+   */
+  private noteDeliveryPolicy(policy: ProgrammeDeliveryPolicy): void {
+    const accepted = this.relay.notePolicy(policy);
+    if (accepted) {
+      logger.info('Programme delivery policy established for this gateway', {
+        deliveryMode: policy.deliveryMode,
+      });
+      return;
+    }
+    const conflict = this.relay.conflict;
+    if (conflict !== null) {
+      /*
+       * TWO ANSWERS ABOUT ONE DEPLOYMENT. A reconnecting media-ingest, or a
+       * stale instance of one, offering a different mode does not get to
+       * change what every unclassified session means underneath a running
+       * broadcast. Loud, sticky, and new programmes refused until somebody
+       * deploys deliberately -- runs already protected stay protected.
+       */
+      logger.error('Programme delivery policy CONFLICT: refusing new programme admission', {
+        pinned: conflict.pinned,
+        offered: conflict.offered,
+      });
+    }
+  }
+
   private async startListenerDeliveryForSession(sessionId: string | undefined): Promise<void> {
     if (!sessionId) return;
+    if (!this.mayRelayRealtime(sessionId)) {
+      /*
+       * NOT MUTED, NOT PAUSED: no peer is built. The protected audience
+       * receives this programme through the delayed public media path, and a
+       * listener whose client cannot play that path does not watch -- which is
+       * the correct outcome, because the alternative is delivering the very
+       * material the delay withholds.
+       */
+      logger.info('Refused a realtime listener peer for a protected programme', { sessionId });
+      return;
+    }
+    /*
+     * POSITIVELY OPEN THE FRAME PATH, here and nowhere implicit.
+     *
+     * The per-frame set is default-closed, so a session relays only once
+     * something has decided it may. That decision is this one: a peer is being
+     * built for this session because the authority permits it.
+     */
+    this.relay.applyToSession(sessionId, true);
     const broadcaster = this.backendMediaPeers.getSnapshot(sessionId);
     if (
       !broadcaster ||
@@ -2179,11 +2809,16 @@ export class Gateway {
     // Stated here because this is the programme path, rather than left to be
     // deduced from what the session happens to be called.
     const programmeMode = { mediaSessionMode: 'programme' as const };
+    // Resolved, never inferred: absent means the stream will be refused rather
+    // than opened under a channel that did not ask for it.
+    const run = this.programmeRuns.get(context.sessionId);
+    const identity = run === undefined ? {} : { programme: run };
     const config = this.programmeSessionConfigs.get(context.sessionId);
-    if (!config) return { ...context, ...programmeMode };
+    if (!config) return { ...context, ...programmeMode, ...identity };
     return {
       ...context,
       ...programmeMode,
+      ...identity,
       ...(config.programmeSourceType === 'rtmp' && config.rtmpPlaybackUrl
         ? { externalAudioSource: 'rtmp-hls' as const, externalAudioUrl: config.rtmpPlaybackUrl }
         : {}),
@@ -2207,8 +2842,20 @@ export class Gateway {
       retained && retained.processingSessionId === config.sessionId
         ? retained.videoTimestampMs
         : 0;
+    const run = this.programmeRuns.get(config.sessionId);
+    const delivery = run === undefined ? undefined : this.relay.deliveryFor(run.runId);
     const state: MediaStateEvent = {
       eventId: 'Videofy Live Demo Event',
+      // So the console can ask what THIS airing is doing.
+      ...(run === undefined ? {} : { programmeRunId: run.runId }),
+      /*
+       * The run's own delivery answer, carried to every client rather than
+       * left for each to work out. A listener uses it to decide whether to
+       * play the realtime tracks or the cursor-governed segments, and it must
+       * be the SAME answer this gateway is acting on -- otherwise a client
+       * waits for realtime media a gateway has already decided not to send.
+       */
+      ...(delivery === undefined ? {} : { mediaDelivery: delivery }),
       streamId: config.broadcastId,
       processingSessionId: config.sessionId,
       shareableWebRtcSessionId,
@@ -2242,7 +2889,137 @@ export class Gateway {
    * and do not choose a channel from this list.
    */
   private broadcastChannelDirectory(): void {
-    this.io.to('listeners').emit(SOCKET_EVENTS.CHANNEL_DIRECTORY, this.channels.directory());
+    const directory = this.channels.directory();
+    this.io.to('listeners').emit(SOCKET_EVENTS.CHANNEL_DIRECTORY, directory);
+    this.reportLiveTransitions(directory);
+    this.refreshChannelProfiles();
+  }
+
+  /**
+   * HYDRATE LAZILY. Every known channel's profile is read through the
+   * identity port, which answers from its cache for a minute at a time, so
+   * this costs one request per minute per gateway rather than one per
+   * broadcast. Only when a read CHANGES something shown is the directory
+   * sent again -- and that second broadcast finds everything cached and
+   * unchanged, so it cannot loop.
+   *
+   * Founder directive (A, 30 Aug 2026): "C7 Streams discovery uses persisted
+   * identity (name, avatar, handle, category, live status, current
+   * programme)." This is how a directory row comes to carry it.
+   */
+  private refreshChannelProfiles(): void {
+    void this.hydrateChannels(this.channels.knownChannelIds()).then((changed) => {
+      if (changed) this.broadcastChannelDirectory();
+    });
+  }
+
+  /**
+   * Land an operator on a channel: read its persisted identity, then tell
+   * the console where it is and what the channel is called, then tell
+   * listeners. In that order, so nobody is shown a fallback name for a
+   * channel that has a real one.
+   */
+  private async landOperator(socket: Socket, accountId: string, channelId: string): Promise<void> {
+    this.channels.beginHydration(channelId);
+    const profile = await this.channelIdentity.claim(channelId, accountId).catch(() => null);
+    if (profile) this.channels.applyProfile(channelId, profile);
+    this.channels.endHydration(channelId);
+    // The socket may have gone, or moved, while the account service answered.
+    if (this.operatorAccounts.get(socket.id) !== accountId) return;
+    if (this.operatorChannels.get(socket.id) !== channelId) return;
+    this.emitChannelAssigned(socket, channelId);
+    this.broadcastChannelDirectory();
+  }
+
+  private emitChannelAssigned(socket: Socket, active: string): void {
+    const payload: ChannelAssignedPayload = {
+      channelId: this.operatorOwnChannels.get(socket.id) ?? DEFAULT_CHANNEL_ID,
+      active,
+      /*
+       * Whether a code is SET, never the code. The operator's own client
+       * already has whatever they just typed; echoing it back would put a
+       * live join code into logs and transcripts for no gain.
+       */
+      hasCode: this.channels.hasAccessCode(active),
+      // The category is server truth (founder ruling, 29 Aug 2026), so a
+      // console arriving after a reload learns it here rather than guessing.
+      category: this.channels.category(active),
+      // The persisted identity, or null; never a fallback name.
+      profile: this.channels.profileFor(active),
+    };
+    socket.emit(SOCKET_EVENTS.CHANNEL_ASSIGNED, payload);
+  }
+
+  /**
+   * Mirror a visibility change to the account, re-read the profile, and
+   * only then acknowledge -- so the ack carries what is persisted, not what
+   * was hoped. A failed mirror leaves the in-memory value in force and the
+   * account behind; the next successful settings ack catches it up.
+   */
+  private async acknowledgeChannelSettings(
+    socket: Socket,
+    channelId: string,
+    settings: OperatorChannelSettingsPayload,
+  ): Promise<void> {
+    let profile: ChannelProfile | null = null;
+    if (settings.visibility !== undefined) {
+      profile = await this.channelIdentity
+        .setVisibility(channelId, settings.visibility)
+        .catch(() => null);
+    }
+    if (profile === null) {
+      this.channelIdentity.invalidate(channelId);
+      const read = await this.channelIdentity
+        .profiles([channelId])
+        .catch(() => new Map<string, ChannelProfile>());
+      profile = read.get(channelId) ?? null;
+    }
+    if (profile) this.channels.applyProfile(channelId, profile);
+    if (this.operatorChannels.get(socket.id) !== channelId) return;
+    this.emitChannelAssigned(socket, channelId);
+    this.broadcastChannelDirectory();
+  }
+
+  /** Apply whatever profiles the port knows for these channels; true if anything shown changed. */
+  private async hydrateChannels(channelIds: readonly string[]): Promise<boolean> {
+    // The platform channel has no persisted identity; asking would be noise.
+    const wanted = channelIds.filter((channelId) => channelId !== DEFAULT_CHANNEL_ID);
+    if (wanted.length === 0) return false;
+    const profiles = await this.channelIdentity
+      .profiles(wanted)
+      .catch(() => new Map<string, ChannelProfile>());
+    let changed = false;
+    for (const [channelId, profile] of profiles) {
+      if (this.channels.applyProfile(channelId, profile)) changed = true;
+    }
+    return changed;
+  }
+
+  private readonly channelLiveHook: ((channelId: string, live: boolean, displayName: string) => Promise<void>) | null;
+  private readonly lastLiveByChannel = new Map<string, boolean>();
+
+  /**
+   * Followers are told when a channel GOES live, once per transition (see
+   * channel-live-transitions.ts). The hook's failure is logged and never
+   * reaches the broadcast.
+   */
+  private reportLiveTransitions(directory: readonly { channelId: string; live: boolean; displayName: string }[]): void {
+    const hook = this.channelLiveHook;
+    for (const channel of diffLiveTransitions(this.lastLiveByChannel, directory)) {
+      if (hook === null) continue;
+      void hook(channel.channelId, channel.live, channel.displayName).catch((error: unknown) => {
+        console.warn(
+          JSON.stringify({
+            service: 'realtime-gateway',
+            level: 'warn',
+            message: 'channel-live hook failed',
+            channelId: channel.channelId,
+            live: channel.live,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      });
+    }
   }
 
   private publishMediaState(channelId: string, state: MediaStateEvent): void {
@@ -2289,10 +3066,21 @@ export class Gateway {
         ? candidate.rtmpPlaybackUrl
         : undefined;
     if (programmeSourceType === 'rtmp' && !rtmpPlaybackUrl) return null;
+    /*
+     * A title is decoration, so a bad one is dropped rather than refusing the
+     * whole configuration: a programme must never fail to start over its
+     * name. Trimmed, bounded and free of control characters, because it is
+     * shown to every listener in the directory.
+     */
+    const programmeTitle =
+      typeof candidate.programmeTitle === 'string'
+        ? sanitiseProgrammeTitle(candidate.programmeTitle)
+        : null;
     return {
       sessionId: candidate.sessionId,
       broadcastId: candidate.broadcastId,
       sourceRevision,
+      ...(programmeTitle ? { programmeTitle } : {}),
       ...(programmeSourceType ? { programmeSourceType } : {}),
       ...(rtmpPlaybackUrl ? { rtmpPlaybackUrl } : {}),
       targetLanguage: candidate.targetLanguage,
@@ -2426,6 +3214,17 @@ function canDeliverUploadedStems(state: MediaStateEvent): boolean {
       (output) => output.captionsAvailable || output.audioAvailable,
     ) ?? false)
   );
+}
+
+/** A programme title fit for a directory row, or null when nothing is left. */
+function sanitiseProgrammeTitle(value: string): string | null {
+  let cleaned = '';
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    cleaned += code < 0x20 || code === 0x7f ? ' ' : char;
+  }
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+  return cleaned.length > 0 ? cleaned.slice(0, 120) : null;
 }
 
 function isSafeIdentifier(value: unknown): value is string {

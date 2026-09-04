@@ -63,6 +63,13 @@ describe('Python worker to Node gateway smoke', () => {
         // simply never satisfied it, so the process died before /health existed
         // and the failure read as a timeout rather than as a refusal.
         INTERNAL_WEBRTC_TOKEN: 'f'.repeat(64),
+        // The operator console is GRANTED, not ambient (founder ruling,
+        // 2026-08-27): the gateway refuses any operator not on this list, and
+        // an empty list refuses everybody. The smoke's operator token names
+        // this account, so it is granted here the way production grants --
+        // through the environment -- and the refusal path stays exercised by
+        // the operator-authority unit tests.
+        OPERATOR_CONSOLE_ACCOUNT_IDS: 'acct_a1b2c3d4e5f60718',
       },
       stdio: 'pipe',
     });
@@ -133,6 +140,10 @@ describe('Python worker to Node gateway smoke', () => {
       reconnectionDelayMax: 100,
     });
     sockets.push(socket);
+    // The listeners here never name a channel, so they sit on the platform
+    // channel; an operator lands on their own at connect (founder directive
+    // A, 30 Aug 2026) and is moved there first.
+    if (role === 'operator') socket.emit(SOCKET_EVENTS.JOIN_CHANNEL, { channelId: 'main' });
     return socket;
   }
 });

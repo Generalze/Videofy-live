@@ -7,7 +7,11 @@
  * shareable link looks like, with no React and no socket in the way, because
  * those rules are the part worth being sure about.
  */
-import type { ChannelVisibility } from '@videofy-live/shared-types';
+import type {
+  ChannelCategory,
+  ChannelVisibility,
+  OperatorChannelSettingsPayload,
+} from '@videofy-live/shared-types';
 
 /** The gateway refuses anything shorter; saying so here avoids a pointless round trip. */
 export const MIN_CODE_LENGTH = 6;
@@ -19,6 +23,28 @@ export interface ChannelSettingsDraft {
   readonly visibility: ChannelVisibility;
   /** Null means "clear the code"; undefined means "leave whatever is set alone". */
   readonly code?: string | null;
+  /**
+   * Undefined means "leave whatever is set alone"; null means "no category".
+   * Founder ruling (29 Aug 2026): one primary category in v1, chosen here by
+   * the operator and never inferred from follows, visibility or live status.
+   */
+  readonly category?: ChannelCategory | null;
+}
+
+/** What the picker says for a channel with no category. */
+export const NO_CATEGORY_LABEL = 'No category';
+
+/**
+ * What the category picker shows: the operator's unsaved choice if they made
+ * one, otherwise what the gateway last reported for this channel. Without the
+ * fallback a reloaded console would show "No category" over a channel that
+ * has one, and an operator would "fix" it by choosing again.
+ */
+export function shownCategory(
+  draft: ChannelSettingsDraft,
+  reported: ChannelCategory | null,
+): ChannelCategory | null {
+  return draft.category === undefined ? reported : draft.category;
 }
 
 export type SettingsProblem =
@@ -29,19 +55,30 @@ export type SettingsProblem =
  * What each choice actually does, in the words the operator needs.
  *
  * Written here rather than in the component because the distinction between
- * unlisted and private is the one people get wrong, and it should read the same
+ * private and locked is the one people get wrong, and it should read the same
  * everywhere it appears.
  */
 export const VISIBILITY_DESCRIPTIONS: Record<ChannelVisibility, string> = {
   public: 'Listed for everyone. Anyone can find and watch this programme.',
-  unlisted: 'Not listed. Anyone with the link can watch — the link is the only thing needed.',
-  private: 'Not listed, and the link is not enough on its own. Viewers must also enter the code.',
+  private: 'Not listed. Anyone with your invite link can watch — the link is the only thing needed.',
+  locked: 'Not listed, and the link is not enough on its own. Viewers must also enter the code.',
+};
+
+/**
+ * What the operator SEES. "Private" alone oversells a bearer link -- anyone
+ * it is forwarded to gets in -- so the label says the mechanism out loud
+ * (external review, adopted 2026-08-28). The wire value stays 'private'.
+ */
+export const VISIBILITY_LABELS: Record<ChannelVisibility, string> = {
+  public: 'Public',
+  private: 'Private · Link-only',
+  locked: 'Locked',
 };
 
 /**
  * Check a draft before sending it.
  *
- * A PRIVATE CHANNEL WITH NO CODE IS THE ONE THAT MATTERS. The gateway refuses
+ * A LOCKED CHANNEL WITH NO CODE IS THE ONE THAT MATTERS. The gateway refuses
  * every viewer in that state rather than admitting them, which is the safe way
  * round, but an operator who sees "private" on their screen and an empty
  * audience deserves to be told why before they go looking for a bug.
@@ -75,10 +112,10 @@ export function validateSettings(
 
   const willHaveCode =
     draft.code === undefined ? hasExistingCode : draft.code !== null && draft.code.length > 0;
-  if (draft.visibility === 'private' && !willHaveCode) {
+  if (draft.visibility === 'locked' && !willHaveCode) {
     problems.push({
       field: 'code',
-      message: 'A private channel needs a code. Without one, nobody can join — including you.',
+      message: 'A locked channel needs a code. Without one, nobody can join — including you.',
     });
   }
 
@@ -92,13 +129,14 @@ export function validateSettings(
  * on every unrelated settings change would put a live join code on the wire
  * each time somebody renamed their channel.
  */
-export function toSettingsPayload(
-  draft: ChannelSettingsDraft,
-): { displayName: string; visibility: ChannelVisibility; code?: string | null } {
+export function toSettingsPayload(draft: ChannelSettingsDraft): OperatorChannelSettingsPayload {
   return {
     displayName: draft.displayName.trim(),
     visibility: draft.visibility,
     ...(draft.code === undefined ? {} : { code: draft.code }),
+    // Sent only when touched, for the same reason as the code: an untouched
+    // draft must leave the server's category alone, not clear it.
+    ...(draft.category === undefined ? {} : { category: draft.category }),
   };
 }
 
@@ -171,10 +209,10 @@ export function shareableViewerLink(
   const base = `${viewerOrigin.replace(/\/$/, '')}/c/${encodeURIComponent(channelId)}`;
   /*
    * The code rides in the link only for a private channel, and only when the
-   * operator has one to include. For public and unlisted there is nothing to
+   * operator has one to include. For public and private there is nothing to
    * carry, and a `?code=` on the end would imply otherwise.
    */
-  if (visibility !== 'private' || code === null || code.length === 0) return base;
+  if (visibility !== 'locked' || code === null || code.length === 0) return base;
   return `${base}?code=${encodeURIComponent(code)}`;
 }
 
@@ -187,5 +225,5 @@ export function shareableViewerLink(
  * silently given a link that will not let anybody in.
  */
 export function canShareCodedLink(visibility: ChannelVisibility, codeInHand: string | null): boolean {
-  return visibility !== 'private' || (codeInHand !== null && codeInHand.length > 0);
+  return visibility !== 'locked' || (codeInHand !== null && codeInHand.length > 0);
 }

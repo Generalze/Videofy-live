@@ -1,3 +1,4 @@
+/** @author masterzee001 */
 /**
  * The way into the ecosystem.
  *
@@ -12,7 +13,8 @@
  * The authenticated shell is intentionally small until there is something real
  * to put behind it.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { writeSession, type SessionStorageLike } from './session';
 
 const ACCOUNT_URL = (
   (import.meta.env['VITE_ACCOUNT_URL'] as string | undefined) ?? 'http://localhost:3006'
@@ -20,13 +22,88 @@ const ACCOUNT_URL = (
 
 type Mode = 'create' | 'signin' | 'reset';
 
-interface SessionResult {
+export interface SessionResult {
   readonly accountId?: string;
   readonly token?: string;
+  /*
+   * Returned by the account service so the call form can start somebody on the
+   * voice they chose at sign-up instead of defaulting everybody to the same
+   * one. Declared here because it is passed straight through to the session the
+   * call app reads -- dropping it silently would be a preference quietly lost.
+   */
+  readonly voiceGender?: 'male' | 'female';
 }
 
-export function JoinC7() {
-  const [mode, setMode] = useState<Mode>('create');
+/**
+ * What each mode sends to the account service.
+ *
+ * EXTRACTED SO THE SEAM IS TESTABLE. Registration was impossible for everybody
+ * because this object was built inline as `{ email, password }` while the form
+ * above it collected a C7 username, explained what it was for, and bound it to
+ * state. `POST /accounts` requires the username and answers "Choose a C7
+ * username." without it -- which reads as a complaint about the field the person
+ * has just filled in, so the natural response is to keep editing a value that
+ * was never the problem. Both halves were correct; nothing joined them.
+ *
+ * Sign-in deliberately does NOT carry one. An account is identified by its
+ * address, and accepting a username there would be a second way to name the
+ * same person for no benefit.
+ */
+export function joinRequestBody(
+  mode: 'create' | 'signin',
+  email: string,
+  password: string,
+  username: string,
+): Record<string, string> {
+  return mode === 'create' ? { email, password, username } : { email, password };
+}
+
+/**
+ * Store what the account service answered, in the ONE place sessions live.
+ *
+ * Through `session.ts` and nowhere else. This form used to write the two keys
+ * itself, which is how the site and the operator console came to disagree
+ * about whether somebody was signed in: each surface owned its own copy of
+ * the key names and shape. A body without a token or an account id is not a
+ * session -- nothing is written and the caller hears so -- because a
+ * half-written session (bare token, no id) looks signed in here and signed
+ * out everywhere else, which is exactly the defect being closed.
+ *
+ * Extracted, and given an injectable storage, so the seam between the sign-in
+ * answer and what the shared readers expect is pinned by a test rather than
+ * rediscovered in a screenshot.
+ */
+export function persistJoinSession(
+  body: SessionResult,
+  storage?: SessionStorageLike | null,
+): boolean {
+  if (typeof body.token !== 'string' || body.token.length === 0) return false;
+  if (typeof body.accountId !== 'string' || body.accountId.length === 0) return false;
+  writeSession(
+    {
+      accountId: body.accountId,
+      token: body.token,
+      ...(body.voiceGender === 'male' || body.voiceGender === 'female'
+        ? { voiceGender: body.voiceGender }
+        : {}),
+    },
+    storage,
+  );
+  return true;
+}
+
+/**
+ * `sessionEnded` is the shell telling this form WHY somebody is looking at
+ * it: their stored session was refused by the server. The form opens on
+ * sign-in and says so once, because "Create C7 account" offered to a person
+ * who was signed in a minute ago reads as the site having forgotten them.
+ */
+export function JoinC7({ sessionEnded = false }: { readonly sessionEnded?: boolean } = {}) {
+  const [mode, setMode] = useState<Mode>(sessionEnded ? 'signin' : 'create');
+  useEffect(() => {
+    // The verdict arrives asynchronously, after the first render.
+    if (sessionEnded) setMode('signin');
+  }, [sessionEnded]);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   /*
@@ -67,7 +144,7 @@ export function JoinC7() {
       const response = await fetch(`${ACCOUNT_URL}/${mode === 'create' ? 'accounts' : 'sessions'}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify(joinRequestBody(mode, email, password, username)),
       });
       const body = (await response.json().catch(() => ({}))) as SessionResult & { error?: string };
       if (!response.ok) {
@@ -79,17 +156,48 @@ export function JoinC7() {
       }
       setSession(body);
       setPassword('');
-      // Kept so the registered shell can bootstrap. localStorage is readable by
-      // any script on this origin, which is why the token is short-lived and
-      // why `sign out everywhere` invalidates it server-side rather than
-      // relying on the browser having forgotten it.
-      try {
-        if (typeof body.token === 'string') window.localStorage.setItem('c7.session', body.token);
-      } catch {
-        /* storage unavailable; the session simply does not persist */
-      }
+      /*
+       * Kept so the registered shell can bootstrap. localStorage is readable
+       * by any script on this origin, which is why the token is short-lived
+       * and why `sign out everywhere` invalidates it server-side rather than
+       * relying on the browser having forgotten it.
+       *
+       * Written through session.ts, under BOTH keys and in the shape call-web
+       * and operator-web read. Signing in here once never reached /call/
+       * because this form stored a bare token under one key while call-web
+       * read a `{accountId, token}` object under another; the fix for that
+       * lived here, and the fix for the next disagreement would have too.
+       * Now there is one writer, and this is a call to it.
+       */
+      persistJoinSession(body);
+      /*
+       * THE FLOW, FINALLY. Signing in used to leave somebody exactly where
+       * they were -- on a marketing page, session stored, nothing changed on
+       * screen -- and "did that work?" is not a question a login should leave
+       * open. Success lands on the dashboard, which is what the person asked
+       * for by signing in. A full navigation rather than a route change so the
+       * shell boots from the freshly stored session.
+       */
+      window.location.assign('/app/');
+      return;
     } catch {
-      setError('Could not reach C7 right now.');
+      /*
+       * NAME THE HOST IT TRIED. "Could not reach C7 right now" is true and
+       * useless: it reads as an outage, and the two times it has appeared the
+       * service was answering 201 and 401 to the same request from a terminal.
+       * Both were the bundle addressing somewhere else -- a build that never
+       * received VITE_ACCOUNT_URL and compiled in localhost, and a tab still
+       * running the JavaScript it loaded before the fix. Either is obvious the
+       * moment the message says where it went, and neither is guessable while
+       * it does not. The origin is public; it is in every request this page
+       * makes.
+       */
+      const target = new URL(ACCOUNT_URL, window.location.origin).origin;
+      setError(
+        target === window.location.origin
+          ? 'Could not reach C7 right now.'
+          : `Could not reach C7 at ${target}. If that is not where C7 lives, reload the page (Ctrl+Shift+R) to pick up the current version.`,
+      );
     } finally {
       setBusy(false);
     }
@@ -142,6 +250,12 @@ export function JoinC7() {
                   Sign in
                 </button>
               </div>
+
+              {sessionEnded ? (
+                <p className="join-note" role="status">
+                  Your session has ended — sign in again.
+                </p>
+              ) : null}
 
               {resetAsked ? (
                 <p className="join-note" role="status">

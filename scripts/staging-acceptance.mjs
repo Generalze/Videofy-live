@@ -4,6 +4,14 @@
  *
  *   node scripts/staging-acceptance.mjs http://169.58.215.77
  *
+ *   env (names; values are never printed):
+ *     STREAM_HANDLE            a channel handle expected to exist (default: meakzoe);
+ *                              set to "-" to skip the public channel checks.
+ *     C7_SESSION_TOKEN_FILE    a file holding a VERIFIED account's session token;
+ *                              with it the authenticated call-creation path is
+ *                              exercised. Without it only the anonymous refusal
+ *                              is asserted, which is the fail-closed half.
+ *
  * This deliberately talks to the public edge only. Every check here is a fact
  * about the deployment: the reverse proxy, the private-port policy, the
  * WebSocket upgrade, the call runtime. A check that passed by reaching a
@@ -31,6 +39,12 @@ function record(name, ok, detail) {
 
 async function status(path) {
   const response = await fetch(`${base}${path}`, { redirect: 'manual' });
+  return response.status;
+}
+
+/** The programme-control routes are POST; a GET at the same path is Express's 404, not the guard. */
+async function postStatus(path) {
+  const response = await fetch(`${base}${path}`, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/json' }, body: '{}' });
   return response.status;
 }
 
@@ -167,7 +181,62 @@ async function httpChecks() {
   }
 }
 
-function connectSocket(label) {
+/**
+ * The public, unauthenticated routes the phone and the listener page read
+ * before anybody signs in: the canonical /streams/<handle> resolution, the
+ * public conference listing and the status word for a held call code.
+ */
+async function publicRouteChecks() {
+  console.log('\nPublic channel and conference routes');
+  const handle = process.env['STREAM_HANDLE'] ?? 'meakzoe';
+  if (handle === '-') {
+    console.log('  SKIP  /auth/streams/<handle> (STREAM_HANDLE=-)');
+  } else {
+    try {
+      const response = await fetch(`${base}/auth/streams/${encodeURIComponent(handle)}`);
+      const body = await response.json().catch(() => null);
+      const keys = Object.keys(body ?? {}).sort();
+      record(
+        `/auth/streams/${handle} resolves to a public profile`,
+        response.status === 200 && typeof body?.channelId === 'string' && body?.handle === handle,
+        `HTTP ${response.status}, keys=${keys.join(',') || '(none)'}`,
+      );
+      // The public shape must never carry the owner: the handle route exists so
+      // links do not expose account ids.
+      record(
+        'public channel profile carries no owner id',
+        !keys.some((key) => /owner|account/i.test(key)),
+        keys.join(','),
+      );
+      const shell = await status(`/streams/${encodeURIComponent(handle)}`);
+      record('/streams/<handle> serves the listener shell', shell === 200, `HTTP ${shell}`);
+    } catch (error) {
+      record(`/auth/streams/${handle}`, false, String(error?.message ?? error));
+    }
+  }
+  try {
+    const missing = await status('/auth/streams/no-such-handle-xyz');
+    record('/auth/streams/<unknown> answers 404', missing === 404, `HTTP ${missing}`);
+    const publicCalls = await fetch(`${base}/calls/public`);
+    const listing = await publicCalls.json().catch(() => null);
+    record(
+      '/calls/public lists public conferences',
+      publicCalls.status === 200 && Array.isArray(listing?.calls),
+      `HTTP ${publicCalls.status}, ${listing?.calls?.length ?? '?'} rooms`,
+    );
+    const statusResponse = await fetch(`${base}/calls/ZZZZZZ/status`);
+    const word = await statusResponse.json().catch(() => null);
+    record(
+      '/calls/:id/status answers a status word and nothing else',
+      statusResponse.status === 200 && typeof word?.status === 'string' && Object.keys(word).length === 1,
+      `HTTP ${statusResponse.status}, status=${word?.status}`,
+    );
+  } catch (error) {
+    record('public conference routes', false, String(error?.message ?? error));
+  }
+}
+
+function connectSocket(label, token) {
   return new Promise((resolve, reject) => {
     const socket = io(base, {
       // The gateway routes by CONNECTION ROLE, not by which events you send.
@@ -175,6 +244,7 @@ function connectSocket(label) {
       // `call:join` is simply never dispatched -- no error, no response, which
       // is a confusing silence to debug from the client side.
       query: { role: 'call-participant' },
+      ...(token ? { auth: { token } } : {}),
       // websocket ONLY. Allowing a polling fallback would let this pass while
       // the proxy silently failed to carry an upgrade -- which is precisely the
       // failure a reverse proxy in front of a realtime service tends to have.
@@ -230,8 +300,14 @@ async function socketChecks() {
     // Auth must be checked BEFORE existence. A 404 for a well-formed but
     // non-existent id means there is no authentication layer at all, and the
     // only thing protecting a live programme is knowing its session id.
+    //
+    // These two checks FAILED ON PURPOSE from 2026-08-23 to 2026-08-30, while
+    // programme control was anonymous and media-ingest refused to boot in
+    // production. Programme control now demands a verified C7 session plus
+    // the OPERATOR_CONSOLE_ACCOUNT_IDS allowlist; a deployment where either
+    // check fails again has regressed, not merely fallen behind.
     const fake = 'ps_00000000-0000-0000-0000-000000000000';
-    const pause = await status(`/media/sessions/${fake}/pause`);
+    const pause = await postStatus(`/media/sessions/${fake}/pause`);
     record(
       'programme control demands authentication before existence',
       pause === 401 || pause === 403,
@@ -257,9 +333,51 @@ async function socketChecks() {
   }
 
   console.log('\nRealtime transport');
+  /*
+   * ONLY A VERIFIED ACCOUNT MAY CREATE A CALL (gateway call-runtime,
+   * 'host-not-authorized'). An anonymous join of a fresh code must therefore
+   * be refused, and that refusal is asserted first. The creation path itself
+   * runs only when a verified session token is supplied by file name.
+   */
+  const tokenFile = process.env['C7_SESSION_TOKEN_FILE'];
+  let hostToken = null;
+  if (tokenFile) {
+    try {
+      hostToken = (await import('node:fs')).readFileSync(tokenFile, 'utf8').trim() || null;
+    } catch {
+      record('C7_SESSION_TOKEN_FILE readable', false, 'could not read the named file');
+    }
+  }
+  try {
+    const anonymous = await connectSocket('anonymous');
+    const probeId = `stg${anonymous.id.replace(/[^a-z0-9]/gi, '').slice(0, 6)}`.toUpperCase();
+    const refused = await joinCall(anonymous, {
+      callId: probeId,
+      displayName: 'Anonymous',
+      speakLanguage: 'en',
+      hearLanguage: 'en',
+      captionsEnabled: false,
+      voiceGender: 'female',
+      audioMode: 'translated',
+      callType: 'personal',
+      callMode: 'normal',
+    });
+    anonymous.close();
+    record(
+      'anonymous call creation is refused (host-not-authorized)',
+      refused.kind === 'error' && refused.data?.code === 'host-not-authorized',
+      refused.kind === 'error' ? `code=${refused.data?.code}` : refused.kind,
+    );
+  } catch (error) {
+    record('anonymous call creation is refused (host-not-authorized)', false, String(error?.message ?? error));
+  }
+  if (hostToken === null) {
+    console.log('  SKIP  call created and joined through the edge (no C7_SESSION_TOKEN_FILE; needs a verified account)');
+    return;
+  }
   let speaker;
   try {
-    speaker = await connectSocket('speaker');
+    speaker = await connectSocket('speaker', hostToken);
     record('websocket upgrade through the proxy', true, `transport=${speaker.io.engine.transport.name}`);
   } catch (error) {
     record('websocket upgrade through the proxy', false, String(error?.message ?? error));
@@ -378,6 +496,7 @@ async function socketChecks() {
 
 console.log(`Videofy Live — staging acceptance against ${base}`);
 await httpChecks();
+await publicRouteChecks();
 await socketChecks();
 
 const passed = results.length - failed;

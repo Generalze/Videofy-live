@@ -10,6 +10,7 @@ import type {
 } from '@videofy-live/shared-types';
 import {
   SOCKET_EVENTS,
+  programmeDeliveryPolicy,
   WEBRTC_SIGNALLING_PROTOCOL_VERSION,
   WEBRTC_BACKEND_MEDIA_PEER_ID,
   WebRtcSignallingClient,
@@ -171,6 +172,20 @@ describe('gateway WebRTC signalling integration', () => {
       reconnection: false,
     });
     clients.push(socket);
+    /*
+     * These suites exercise the PLATFORM channel, where a listener that never
+     * names a channel sits. An operator now lands on their own channel at
+     * connect (founder directive A, 30 Aug 2026), so the operator here moves
+     * to the platform channel first. Buffered before connect, it is the first
+     * message the gateway handles from this socket; re-sent on a reconnect,
+     * because a fresh connection lands afresh.
+     */
+    if (role === 'operator') {
+      socket.emit(SOCKET_EVENTS.JOIN_CHANNEL, { channelId: 'main' });
+      socket.io.on('reconnect', () => {
+        socket.emit(SOCKET_EVENTS.JOIN_CHANNEL, { channelId: 'main' });
+      });
+    }
     return socket;
   }
 
@@ -793,6 +808,24 @@ describe('gateway WebRTC signalling integration', () => {
   }, 10_000);
 
   it('offers backend programme media to joined listeners as soon as broadcaster tracks arrive', async () => {
+    /*
+     * THE DEPLOYMENT MUST SAY WHAT IT DOES BEFORE ANY ORIGINAL MEDIA GOES OUT.
+     *
+     * This test used to pass with no delivery authority at all, which was the
+     * fail-open: an unclassified backend media session relayed by default, so
+     * a broadcaster frame arriving before the run was bound reached the
+     * audience. Absence of a policy is now refusal, and a real deployment
+     * announces one the moment media-ingest connects -- so the test does what
+     * the deployment does rather than relying on the gap that leaked.
+     */
+    const policyIngest = client('ingest');
+    await waitForConnect(policyIngest);
+    policyIngest.emit(SOCKET_EVENTS.INGEST_PROGRAMME_POLICY, programmeDeliveryPolicy('live'));
+    // The policy is processed on the gateway's socket handler; giving it a
+    // turn of the loop is not a timing fix, it is ordering the announcement
+    // before the join exactly as a deployment does.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
     const { broadcaster } = await createSession();
     const listener = client('listener');
     await waitForConnect(listener);

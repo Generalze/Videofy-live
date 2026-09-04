@@ -29,6 +29,18 @@ export function readPositiveInt(name: string, fallback: number): number {
   return readInt(name, fallback, 1);
 }
 
+/**
+ * An integer that may legitimately be zero.
+ *
+ * Separate from `readPositiveInt` because zero is a real answer for some
+ * settings -- a safety delay of none is a choice an operator makes -- and
+ * routing those through a reader whose floor is one turns a valid
+ * configuration into a startup crash.
+ */
+export function readNonNegativeInt(name: string, fallback: number): number {
+  return readInt(name, fallback, 0);
+}
+
 export function readCsv(name: string, fallback: string): string[] {
   const raw = process.env[name] ?? fallback;
   const values = raw

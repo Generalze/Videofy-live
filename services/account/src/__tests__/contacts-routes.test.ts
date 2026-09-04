@@ -273,3 +273,46 @@ describe('removing', () => {
     expect(app.contacts.mayReach(alice.accountId, bob.accountId)).toBe(false);
   });
 });
+
+describe('another person\u2019s profile', () => {
+  it('shows a discoverable stranger, and only what they speak -- never what they listen in', async () => {
+    const viewer = await person('viewer');
+    const other = await person('other', { discoverable: true });
+    const response = await call('GET', `/profiles/${other.accountId}`, undefined, viewer.token);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body['relationship']).toBe('none');
+    expect(body['discoverable']).toBe(true);
+    expect(body).not.toHaveProperty('listeningLanguage');
+    expect(body).not.toHaveProperty('email');
+  });
+
+  it('answers a private stranger exactly like a nonexistent one', async () => {
+    const viewer = await person('viewer');
+    const hidden = await person('hidden', { discoverable: false });
+    const missing = await call('GET', '/profiles/acct_0000000000000000', undefined, viewer.token);
+    const privateOne = await call('GET', `/profiles/${hidden.accountId}`, undefined, viewer.token);
+    expect(privateOne.status).toBe(404);
+    expect(await privateOne.text()).toBe(await missing.text());
+  });
+
+  it('shows a private person once there is a relationship, from the viewer\u2019s side', async () => {
+    const viewer = await person('viewer', { discoverable: true });
+    const hidden = await person('hidden', { discoverable: false });
+    // The private person asks the viewer: incoming for the viewer, requested for them.
+    const asked = await call('POST', '/contacts/request', { username: 'c7viewer' }, hidden.token);
+    expect(asked.status).toBe(202);
+    const mine = (await (await call('GET', `/profiles/${hidden.accountId}`, undefined, viewer.token)).json()) as Record<string, unknown>;
+    expect(mine['relationship']).toBe('incoming');
+    const theirs = (await (await call('GET', `/profiles/${viewer.accountId}`, undefined, hidden.token)).json()) as Record<string, unknown>;
+    expect(theirs['relationship']).toBe('requested');
+    await call('POST', '/contacts/accept', { accountId: hidden.accountId }, viewer.token);
+    const now = (await (await call('GET', `/profiles/${hidden.accountId}`, undefined, viewer.token)).json()) as Record<string, unknown>;
+    expect(now['relationship']).toBe('contact');
+  });
+
+  it('requires signing in', async () => {
+    const other = await person('other', { discoverable: true });
+    expect((await call('GET', `/profiles/${other.accountId}`)).status).toBe(401);
+  });
+});

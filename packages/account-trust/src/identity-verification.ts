@@ -67,6 +67,18 @@ export interface IdentitySession {
 export interface IdentityVerificationProvider {
   readonly name: string;
   readonly synthetic: boolean;
+  /**
+   * Whether identity checks can be started at all on this deployment.
+   *
+   * ABSENT MEANS AVAILABLE, so every provider written before this field keeps
+   * its meaning; only an explicitly OFF provider sets `false`.
+   *
+   * OFF is not a weaker kind of verified. An account whose identity component
+   * is untouched stays `unverified`, exactly as it would with no provider at
+   * all -- the switch decides whether the capability is offered, never what a
+   * trust component says.
+   */
+  readonly available?: boolean;
   createVerificationSession(input: {
     accountId: string;
     /** Correlates the provider's callback back to this account. */
@@ -249,6 +261,64 @@ export function applyCallback(
       completedAtMs: terminal ? nowMs : identityCase.completedAtMs,
       reviewOpenedAtMs:
         callback.status === 'review' ? (identityCase.reviewOpenedAtMs ?? nowMs) : identityCase.reviewOpenedAtMs,
+    },
+  };
+}
+
+/**
+ * Whether identity verification may be offered.
+ *
+ * One reader for the optional field, so "absent means available" is decided
+ * here rather than re-derived differently at each call site.
+ */
+export function identityProviderAvailable(provider: IdentityVerificationProvider): boolean {
+  return provider.available !== false;
+}
+
+/**
+ * What an OFF identity provider throws when anybody asks it to do work.
+ *
+ * Typed, so "C7 has not bought a KYC vendor yet" is distinguishable from "the
+ * vendor returned a 500" -- the caller's answer differs, and a bare Error would
+ * make both a 500.
+ */
+export class IdentityVerificationUnavailableError extends Error {
+  constructor(readonly provider: string) {
+    super(
+      `identity verification is switched off on this deployment (provider "${provider}"). ` +
+        `No session was created, no provider reference was stored, and no account was ` +
+        `marked verified.`,
+    );
+    this.name = 'IdentityVerificationUnavailableError';
+  }
+}
+
+/**
+ * Identity verification, explicitly OFF.
+ *
+ * The production ruling (30 Aug 2026): "a missing provider must refuse the
+ * capability honestly or fail startup where the capability is mandatory --
+ * NEVER a silent fall back to a synthetic/mock provider in production". KYC is
+ * not mandatory for launch, so this is the honest refusal.
+ *
+ * `synthetic: false` is what lets it pass `assertIdentityProviderAllowed`, and
+ * it is not a loophole: the synthetic provider is refused because it MINTS a
+ * case, a reference and a redirect that certify nobody. This one mints nothing
+ * at all. Every operation throws, so a call site that skipped the availability
+ * check fails loudly rather than storing a reference for a check that will
+ * never be answered.
+ */
+export function createUnavailableIdentityProvider(): IdentityVerificationProvider {
+  const name = 'off-identity';
+  return {
+    name,
+    synthetic: false,
+    available: false,
+    async createVerificationSession() {
+      throw new IdentityVerificationUnavailableError(name);
+    },
+    async getVerificationStatus() {
+      throw new IdentityVerificationUnavailableError(name);
     },
   };
 }

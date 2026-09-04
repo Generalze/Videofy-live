@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CallSessionStore,
+  ENDED_CALL_MEMORY,
   STANDARD_CALL_VOICES,
   type CallJoinInput,
   type CallJoinResult,
@@ -519,9 +520,16 @@ describe('CallSessionStore snapshots', () => {
       'callId',
       'callMode',
       'callType',
+      // Conference setup (29 Aug): title, privacy, offered languages and the
+      // knocking list are DELIBERATE additions -- all public room state, and
+      // none carries a forbidden substring.
+      'knocking',
       'lifecycleState',
       'ownerParticipantId',
       'participants',
+      'privacy',
+      'targetLanguages',
+      'title',
       'transcriptDownloadAllowed',
     ]);
     expect(snapshot.participants.map((participant) => Object.keys(participant).sort())).toEqual([
@@ -1342,5 +1350,59 @@ describe('W5 leave reconciliation', () => {
     expect(result.ingestPlans).toEqual([]);
     expect(planRevision(store, 'call-1', ana.participantId)).toBe(3);
     expect(store.ingestPlan('call-1', ana.participantId)?.targetLanguages).toEqual(['fr']);
+  });
+});
+
+/*
+ * Founder ruling (29 Aug 2026): "An ended conference is terminal. The Recent
+ * row should show Ended and must not silently recreate a room under that old
+ * code." The store tells 'ended' from 'unknown' so a client can show Ended.
+ */
+describe('an ended call is remembered', () => {
+  it('is unknown before, active while seated, ended after the host ends it', () => {
+    const store = new CallSessionStore({ now: () => '2026-08-29T10:00:00.000Z' });
+    expect(store.callStatus('call-1')).toBe('unknown');
+    expect(store.endedAtMs('call-1')).toBeNull();
+
+    mustJoin(store);
+    expect(store.callStatus('call-1')).toBe('active');
+
+    expect(store.endCall('call-1').ok).toBe(true);
+    expect(store.callStatus('call-1')).toBe('ended');
+    expect(store.endedAtMs('call-1')).toBe(Date.parse('2026-08-29T10:00:00.000Z'));
+    expect(store.callStatus('call-2')).toBe('unknown');
+  });
+
+  it('remembers a call that ended because its last seat left', () => {
+    const store = new CallSessionStore();
+    const zoe = mustJoin(store);
+    const left = store.leave('call-1', zoe.participantId);
+    expect(left.callEnded).toBe(true);
+    expect(store.callStatus('call-1')).toBe('ended');
+  });
+
+  it('remembers a restricted room whose last knock was withdrawn after the host left', () => {
+    const store = new CallSessionStore();
+    const host = mustJoin(store, { displayName: 'Host', privacy: 'restricted' });
+    const knock = mustJoin(store, { displayName: 'Guest' });
+    expect(knock.admission).toBe('pending');
+
+    expect(store.leave('call-1', host.participantId).callEnded).toBe(false);
+    expect(store.callStatus('call-1')).toBe('active');
+
+    expect(store.withdrawKnock('call-1', knock.participantId).callEnded).toBe(true);
+    expect(store.callStatus('call-1')).toBe('ended');
+  });
+
+  it('forgets the oldest once more than ENDED_CALL_MEMORY have ended', () => {
+    const store = new CallSessionStore();
+    for (let index = 0; index <= ENDED_CALL_MEMORY; index += 1) {
+      const callId = `call-${index}`;
+      mustJoin(store, { callId });
+      expect(store.endCall(callId).ok).toBe(true);
+    }
+    expect(store.callStatus('call-0')).toBe('unknown');
+    expect(store.callStatus('call-1')).toBe('ended');
+    expect(store.callStatus(`call-${ENDED_CALL_MEMORY}`)).toBe('ended');
   });
 });

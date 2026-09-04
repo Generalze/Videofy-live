@@ -38,6 +38,16 @@ export const CALL_EVENTS = {
    * state for no reason.
    */
   RECEIVE_TRACKS: 'call:receive:tracks',
+  /**
+   * DIRECT CALL LIFECYCLE (founder ruling 2026-08-28): the server-owned
+   * telephone state -- calling, ringing, answered, connecting, connected,
+   * reconnecting, busy, declined, no_answer, unavailable, network, ended --
+   * broadcast to the call room on every transition. Words on screens come
+   * from THIS, never from a push result or a video tile.
+   */
+  DIRECT_STATE: 'call:direct:state',
+  /** The caller reports the account service's ring dispatch (devices reached). */
+  DIRECT_RING_RESULT: 'call:direct:ring-result',
   SET_CAPTION_LANGUAGE: 'call:caption-language',
   /**
    * INTERNAL INSTRUMENTATION — W1: the capture settings the browser actually
@@ -91,6 +101,17 @@ export const CALL_EVENTS = {
   VIDEO_OFFER: 'call:video:offer',
   VIDEO_ANSWER: 'call:video:answer',
   VIDEO_ICE: 'call:video:ice',
+  /**
+   * RESTRICTED ADMISSION (founder canon 29 Aug). KNOCK goes to the HOST's
+   * private room when somebody joins a restricted conference: {participantId,
+   * displayName}. ADMIT is the host's answer {participantId, admit}. ADMISSION
+   * goes to the JOINER's private room: {admitted: true, snapshot} and they are
+   * in, or {admitted: false} and they are disconnected from the call. A knock
+   * nobody answers within 60 seconds is refused.
+   */
+  KNOCK: 'call:knock',
+  ADMIT: 'call:admit',
+  ADMISSION: 'call:admission',
 } as const;
 
 export type CallEventName = (typeof CALL_EVENTS)[keyof typeof CALL_EVENTS];

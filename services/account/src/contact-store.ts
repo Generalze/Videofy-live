@@ -144,6 +144,20 @@ export class ContactStore {
     );
   }
 
+  /**
+   * Every edge this account is part of, in ANY state.
+   *
+   * For the one caller that needs "is there anything at all between us":
+   * suggestions must exclude a pending request, an accepted contact and a
+   * block in either direction alike, and asking three filtered lists would
+   * be three ways to forget one.
+   */
+  edgesOf(accountId: string): readonly ContactEdge[] {
+    return [...this.edges.values()].filter(
+      (edge) => edge.lowAccountId === accountId || edge.highAccountId === accountId,
+    );
+  }
+
   /** Requests this account sent and nobody has answered. */
   sentBy(accountId: string): readonly ContactEdge[] {
     return [...this.edges.values()].filter(

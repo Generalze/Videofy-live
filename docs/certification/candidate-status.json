@@ -1,0 +1,118 @@
+{
+ "_comment": "Quality and infrastructure are INDEPENDENT states, per CTO ruling 31 Aug 2026. A model must not lose the quality ranking because one VPS cannot run it, and must not be promoted because it is cheap.",
+ "asOf": "2026-08-31",
+ "host": "c7-eu-01 (8 vCPU, 23 GB RAM, CPU-only)",
+ "candidates": {
+  "opus": {
+   "licence": "CC-BY-4.0",
+   "commercial": true,
+   "qualityStatus": "PHASE1-MEASURED",
+   "infrastructureStatus": "VIABLE",
+   "peakRssMb": 1301,
+   "medianLatencyMs": [
+    262,
+    360
+   ],
+   "productionApproved": false
+  },
+  "m2m100": {
+   "licence": "MIT",
+   "commercial": true,
+   "qualityStatus": "PHASE1-MEASURED",
+   "infrastructureStatus": "VIABLE",
+   "peakRssMb": 5409,
+   "medianLatencyMs": [
+    2114,
+    2678
+   ],
+   "productionApproved": false
+  },
+  "madlad": {
+   "licence": "Apache-2.0",
+   "commercial": true,
+   "qualityStatus": "PHASE1-MEASURED-STRONGEST",
+   "infrastructureStatus": "NOT VIABLE on c7-eu-01",
+   "infrastructureNote": "21188 MB peak on a 23 GB box that also runs production; Yoruba p95 34.4 s. If human review makes it a route's quality winner, mark QUALITY QUALIFIED / INFRASTRUCTURE BLOCKED and leave optimisation to a separate decision. No quantisation/ONNX/GPU work authorised.",
+   "peakRssMb": 21188,
+   "medianLatencyMs": [
+    4876,
+    5881
+   ],
+   "productionApproved": false
+  },
+  "translategemma": {
+   "licence": "Gemma terms",
+   "commercial": "permitted, revocable",
+   "qualityStatus": "EXCLUDED-PHASE1 (narrow)",
+   "infrastructureStatus": "STAGED (benchmark venv only)",
+   "revision": "10042cb0e6e7fdce748996a71dc3dc432a4e0c89",
+   "runtime": "python 3.12.3 / torch 2.13.0+cpu / transformers 5.16.1",
+   "languageSupport": {
+    "yo": "NOT SUPPORTED",
+    "ha": "NOT SUPPORTED",
+    "ig": "NOT SUPPORTED",
+    "pcm": "REFUSED by chat template (absence, not failure)"
+   },
+   "note": "The licence was never the problem -- Gemma permits commercial hosted use. Devanagari is the dominant intrusion where Yoruba was requested (Cyrillic and Gujarati also appear); Hausa returned Arabic script; Igbo produced one output of three in 100% Latin script using Igbo-specific orthographic characters -- validity HUMAN-UNVERIFIED -- plus an Arabic/Thai mix and a 75 s repetition loop. Controls fr/es/pt AND Swahili were correct in the same run, ruling out the harness.",
+   "productionApproved": false,
+   "exclusionScope": "Excluded for C7 Hausa, Igbo, Yoruba and Nigerian Pidgin translation using the tested official TranslateGemma chat-template path and exact benchmark configuration (revision 10042cb0, transformers 5.16.1, torch 2.13.0+cpu, greedy decoding, float32 CPU). NOT a claim that the model can never translate these languages under other prompts, decoding strategies, precisions or future revisions."
+  },
+  "nllb": {
+   "licence": "CC-BY-NC-4.0",
+   "commercial": false,
+   "qualityStatus": "REFERENCE ONLY",
+   "infrastructureStatus": "n/a",
+   "productionApproved": false
+  },
+  "toucan": {
+   "licence": "non-commercial as published",
+   "commercial": false,
+   "qualityStatus": "NOT MEASURED",
+   "infrastructureStatus": "NOT STAGED",
+   "note": "Commercial licence enquiry SENT by the founder to the three UBC-NLP authors listed in the published ACL paper. Silence is not permission.",
+   "productionApproved": false,
+   "licenceRequestStatus": "AWAITING LICENSOR RESPONSE"
+  }
+ },
+ "routes": {
+  "_comment": "No route is promoted. Recommendations are candidates for human review only.",
+  "humanReviewStatus": "V2 forward packs are FINAL; TranslateGemma entered the top two for no direction so no V3 is required. ORDERING IS BINDING, per language: native-source elicitation -> contributor licence accepted -> corpus frozen with sha256 -> ONLY THEN send that reviewer V2. V2 must never precede elicitation for a given reviewer. Reverse directions remain UNMEASURED."
+ },
+ "_vocabulary": "See evidence-vocabulary.md. Absence (NOT OFFERED / REFUSED / NOT ADDRESSABLE) is never written as failure. Script observation is never written as language validation. Anything unread by a qualified speaker is HUMAN-UNVERIFIED.",
+ "pidginTruth": {
+  "productTruth": "Nigerian Pidgin translation is currently unsupported.",
+  "phrasing": "No commercially cleared candidate currently provides validated Nigerian Pidgin translation support.",
+  "states": {
+   "translategemma": "REFUSED",
+   "opus": "NOT OFFERED",
+   "m2m100": "NOT OFFERED",
+   "madlad": "NOT ADDRESSABLE (<2pcm> is not a single token)"
+  },
+  "note": "All four are ABSENCE, not failure. Pidgin has not been tried and found wanting; nothing cleared can accept the request.",
+  "productionApproved": false
+ },
+ "humanReview": {
+  "status": "NOT_REVIEWED",
+  "allowedStates": [
+   "NOT_REVIEWED",
+   "SINGLE_REVIEWER",
+   "DUAL_BLIND_REVIEW"
+  ],
+  "proceedRule": "One qualified reviewer is enough to proceed and must be recorded as SINGLE_REVIEWER. Do not block first-pass measurement waiting for reviewer #2.",
+  "adjudicationRule": "Disagreement is ADJUDICATED, never averaged, where it concerns meaning reversal, negation, money, identifiers, omission or invention.",
+  "perLanguageSequence": [
+   "elicitation",
+   "permission=YES",
+   "freeze corpus",
+   "record sha256",
+   "send forward V2",
+   "run shortlisted reverse candidates on frozen source",
+   "blind reverse outputs",
+   "collect human review"
+  ]
+ },
+ "machineDiscovery": {
+  "status": "CLOSED",
+  "note": "No further general model discovery. The next wave is human evidence."
+ }
+}

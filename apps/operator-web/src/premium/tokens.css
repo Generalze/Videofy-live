@@ -1,0 +1,156 @@
+/*
+ * Operator premium tokens.
+ *
+ * Founder directive (LOCKED, 30 Aug 2026), OPERATOR PREMIUM UI GOLDEN
+ * MASTERS: the PNGs in docs/design/VIDEOFY OPERATOR UI AND IMPLEMENTATION
+ * CONTRACT/ are immutable visual acceptance references at 1586 x 992.
+ *
+ * ONE MASTER OWNS THE GLOBAL SHELL (founder directive, 30 Aug 2026, SS13
+ * OPERATOR GOLDEN-MASTER CORRECTION). The five masters were generated
+ * independently and disagree about the shared chrome; averaging them, which
+ * an earlier wave did, matches none of them. 01-overview-reference.png is
+ * the authority for the rail, the top bar, the ground, the global spacing
+ * and the alert geometry. Every global value below is measured off 01 with
+ * a pixel scan, and where 02, 03, 04 or 10 disagree, 01 wins and they are
+ * expected to disagree. Only page-body values may be read off the other
+ * four.
+ *
+ * These sit on top of the shared Videofy design system rather than
+ * replacing it -- every status colour and radius still resolves through a
+ * --vf-* token where one exists -- so the console cannot drift a shade away
+ * from the viewer.
+ *
+ * Nothing here is a sample value: colours, radii and shadows are visual
+ * constants, never state.
+ */
+:root {
+  /*
+   * Ground and surfaces, sampled off 01 as the median of a 9x9 patch clear
+   * of any ink: the content ground at (900,250), the rail at (150,300), the
+   * top bar at (400,20). The masters carry film grain, so a single pixel
+   * read is noise; the patch median is the flat colour under it.
+   */
+  --op-bg: #020a1a;
+  --op-bg-rail: #081326;
+  --op-bg-topbar: #030817;
+  --op-panel: rgba(15, 20, 36, 0.86);
+  --op-panel-raised: rgba(20, 26, 46, 0.9);
+  --op-panel-sunken: rgba(8, 11, 20, 0.7);
+  /*
+   * 01's hairline: the divider row at y=89 reads rgb(25,31,48) over the
+   * rgb(2,10,26) ground, which is white at 0.09. The services card border
+   * over the rail reads the same alpha.
+   */
+  --op-panel-border: rgba(255, 255, 255, 0.09);
+  --op-panel-border-strong: rgba(255, 255, 255, 0.13);
+  --op-hairline: rgba(255, 255, 255, 0.09);
+
+  /*
+   * NO ILLUMINATION ON THE GROUND. An earlier wave gave the content a teal
+   * and a violet radial. 01 has neither: its four content corners read
+   * (2,9,23), (3,9,24), (2,10,26) and (2,10,25) -- the same flat ground as
+   * its centre. The glow tokens stay defined for panels that want a wash,
+   * but the ground no longer paints them.
+   */
+  --op-glow-teal: rgba(45, 212, 191, 0.14);
+  --op-glow-violet: rgba(99, 91, 255, 0.16);
+
+  /* Accents */
+  --op-violet: #635bff;
+  --op-violet-strong: #4f46e5;
+  /*
+   * The active rail item in 01 fills rgb(19,26,61) over the rgb(8,19,38)
+   * rail. Solving for #635bff gives alpha 0.11 on all three channels, which
+   * is how we know the accent really is the violet and not a flat indigo.
+   * Its border reads rgb(47,53,112) at the top edge: alpha 0.40.
+   */
+  --op-violet-soft: rgba(99, 91, 255, 0.11);
+  --op-violet-border: rgba(99, 91, 255, 0.4);
+  --op-violet-text: #c7c3ff;
+  --op-blue: #3b6cf6;
+  --op-teal: #2dd4bf;
+  --op-teal-soft: rgba(45, 212, 191, 0.14);
+  --op-teal-border: rgba(45, 212, 191, 0.45);
+  --op-teal-text: #5eead4;
+
+  /* Text */
+  --op-text: #f2f4f8;
+  --op-text-secondary: #b8bfd0;
+  --op-text-muted: #8b93a7;
+  --op-text-faint: #5f6785;
+
+  /* Status */
+  --op-ok: var(--vf-status-success-solid, #22c55e);
+  --op-ok-text: #4ade80;
+  --op-ok-soft: rgba(34, 197, 94, 0.14);
+  --op-ok-border: rgba(34, 197, 94, 0.45);
+  --op-warn: var(--vf-status-warn-solid, #f5a524);
+  --op-warn-text: #fbbf24;
+  --op-warn-soft: rgba(245, 165, 36, 0.14);
+  --op-warn-border: rgba(245, 165, 36, 0.45);
+  --op-danger: var(--vf-status-danger-solid, #ef4444);
+  --op-danger-text: #f87171;
+  --op-danger-soft: rgba(239, 68, 68, 0.12);
+  --op-danger-border: rgba(239, 68, 68, 0.5);
+  --op-info: #60a5fa;
+
+  /* Geometry */
+  --op-radius-sm: 8px;
+  --op-radius-md: 12px;
+  --op-radius-lg: 16px;
+  --op-radius-pill: 999px;
+  /*
+   * GLOBAL SHELL GEOMETRY, MEASURED OFF 01 ALONE (founder directive, 30 Aug
+   * 2026, SS13). Not an average: the earlier medians (rail 280, top bar 84,
+   * banner 72) matched no master at all.
+   *
+   *   rail        column median flips from rgb(8,18,36) to rgb(2,10,26)
+   *               between x=295 and x=296, on every quiet row. Rail 0..295.
+   *   top bar     the rail's own background begins at y=89 and the content
+   *               column's 1px divider occupies that same row, spanning
+   *               x 296..1585 only. So the bar is 89 rows and the divider
+   *               belongs to the content column, not to the bar.
+   *   content     the alert box's left border lands on x=320 (296 + 24) and
+   *               its right border on x=1558, so the right inset is 27, not
+   *               24. 01 is asymmetric; it is not corrected to taste.
+   *   top offset  the alert's top border lands on y=109, which is 19 below
+   *               the divider row.
+   */
+  --op-topbar-height: 89px;
+  --op-rail-width: 296px;
+  --op-content-padding: 24px;
+  --op-content-padding-right: 27px;
+  --op-content-padding-top: 19px;
+
+  /*
+   * Rail rhythm, from 01's ink bands. Item boxes at y=148, 200, 252, 304,
+   * 356, 408, 460 and then 554, 606, 658: a 44px item on a 52px pitch, so
+   * an 8px gap. The active pill spans x 26..277, which puts 26 of padding
+   * on the left of the rail and 18 on the right.
+   */
+  --op-rail-pad-left: 26px;
+  --op-rail-pad-right: 18px;
+  --op-rail-pad-top: 26px;
+  --op-rail-item-height: 44px;
+  --op-rail-item-gap: 8px;
+
+  /*
+   * The alert banner: 01 draws it x 320..1558, y 109..190. 1239 x 82.
+   */
+  --op-banner-height: 82px;
+
+  /* Depth */
+  --op-shadow-panel: 0 18px 40px rgba(0, 0, 0, 0.35), 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+  --op-shadow-pop: 0 24px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --op-shadow-primary: 0 10px 30px rgba(99, 91, 255, 0.35);
+
+  /* Gradients */
+  --op-gradient-primary: linear-gradient(90deg, #6d4df7 0%, #3b6cf6 100%);
+  --op-gradient-ring: conic-gradient(from 200deg, #6d4df7, #3b6cf6, #2dd4bf, #6d4df7);
+  --op-gradient-glass: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0));
+
+  /* Type */
+  --op-font: var(--vf-font-family-sans, 'Inter', 'Segoe UI', system-ui, sans-serif);
+  --op-eyebrow-size: 11px;
+  --op-eyebrow-tracking: 0.12em;
+}

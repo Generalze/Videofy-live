@@ -1,0 +1,59 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    The native incoming-call layer.
+
+    THE MESSAGING SERVICE OUTRANKS expo-notifications' (priority -1) so that a
+    data-only call push reaches VideofyMessagingService first in every app
+    state; everything that is not a call is handed straight on to the Expo
+    delegate, so chat notifications and token rotation are untouched.
+
+    The full-screen intent and the phone-call foreground service are what
+    make a call ring on a locked phone like a telephone rather than appear
+    as a tray notification.
+  -->
+  <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+  <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+  <uses-permission android:name="android.permission.VIBRATE" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+  <application>
+    <service
+      android:name="com.consummate7.videofy.call.VideofyMessagingService"
+      android:exported="false">
+      <intent-filter android:priority="1">
+        <action android:name="com.google.firebase.MESSAGING_EVENT" />
+      </intent-filter>
+    </service>
+
+    <service
+      android:name="com.consummate7.videofy.call.IncomingCallService"
+      android:exported="false"
+      android:foregroundServiceType="phoneCall" />
+
+    <activity
+      android:name="com.consummate7.videofy.call.IncomingCallActivity"
+      android:exported="false"
+      android:excludeFromRecents="true"
+      android:launchMode="singleTask"
+      android:showWhenLocked="true"
+      android:turnScreenOn="true"
+      android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+
+    <receiver
+      android:name="com.consummate7.videofy.call.CallActionReceiver"
+      android:exported="false" />
+
+    <!-- Telecom phase 2: the self-managed ConnectionService. -->
+    <service
+      android:name="com.consummate7.videofy.call.VideofyConnectionService"
+      android:exported="true"
+      android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+      <intent-filter>
+        <action android:name="android.telecom.ConnectionService" />
+      </intent-filter>
+    </service>
+  </application>
+</manifest>

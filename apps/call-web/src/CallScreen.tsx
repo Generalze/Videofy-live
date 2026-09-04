@@ -1,6 +1,7 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type JSX } from 'react';
 import type { CallCaptionEntry } from '@videofy-live/call-client-core';
 import { CALL_AUDIO_MODES, CALL_LANGUAGES, languageLabel } from './callFormState';
+import { defaultSessionStorage, readAccountSession, readAccountUrl } from './accountSession';
 import { downloadTranscript, translationDisclosureFor } from '@videofy-live/call-client-core';
 import type {
   CallAudioMode,
@@ -63,6 +64,10 @@ export interface CallScreenProps {
    * it is the ONLY state that offers "Enable audio".
    */
   playbackBlocked: boolean;
+  /** Transport truth for the two voice legs, so silence can name its link. */
+  voiceLegs?: { publish: RTCPeerConnectionState; receive: RTCPeerConnectionState };
+  /** The element's own `playing` verdict for any remote original. */
+  remoteVoiceHeard?: boolean;
   /**
    * Translated audio could not be fetched or decoded. A tap cannot fix it, so
    * offering one would be a button that does nothing — which is worse than
@@ -188,8 +193,19 @@ export function CallScreen(props: CallScreenProps) {
     <main className="call-screen">
       <header className="call-header">
         <h1 className="call-title">
-          {props.callType === 'conference' ? 'Videofy Conference' : 'Videofy Call'} ·{' '}
-          <span>{props.callCode}</span>
+          {/*
+           * A DIRECT (personal) call shows no code: its session id is
+           * internal implementation data, and a code implies something to
+           * share. Codes are the CONFERENCE's concept (founder ruling
+           * 2026-08-28).
+           */}
+          {props.callType === 'conference' ? (
+            <>
+              Videofy Conference · <span>{props.callCode}</span>
+            </>
+          ) : (
+            'Videofy Call'
+          )}
         </h1>
         <div className="call-status" role="status">
           <span className={statusDotClass(props.phase)} aria-hidden="true" />
@@ -202,6 +218,7 @@ export function CallScreen(props: CallScreenProps) {
               Enable audio
             </button>
           ) : null}
+          {voiceDiagnostic(props)}
           {!props.playbackBlocked && props.translatedAudioUnavailable ? (
             <span className="translated-audio-unavailable" role="alert">
               Translated audio unavailable
@@ -282,7 +299,9 @@ export function CallScreen(props: CallScreenProps) {
         {others.length === 0 ? (
           <p className="participant-waiting">
             {/* Capacity-neutral: a conference is not "the other person". */}
-            Waiting for someone to join — share the call code {props.callCode}.
+            {props.callType === 'conference'
+              ? `Waiting for someone to join — share the conference code ${props.callCode}.`
+              : 'Waiting for them to join…'}
           </p>
         ) : null}
       </section>
@@ -688,9 +707,7 @@ function ParticipantTile(props: {
           />
         </button>
       ) : (
-        <span className="participant-avatar" aria-hidden="true">
-          {initials(participant.displayName)}
-        </span>
+        <ParticipantFace participant={participant} />
       )}
       <span className="participant-name">
         <span
@@ -837,4 +854,82 @@ function statusText(phase: CallConnectionPhase, note: string | null): string {
     default:
       return 'Connecting…';
   }
+}
+
+/**
+ * One line that names the broken link when a call is silent.
+ *
+ * Rendered ONLY when something is actually wrong: a dead voice leg, or a bound
+ * remote speaker whose element never reached `playing`. A healthy call shows
+ * nothing -- this is a debugging surface, not decoration. The wording names the
+ * link, because "no audio" without a link name costs a day of guessing.
+ */
+function voiceDiagnostic(props: CallScreenProps): JSX.Element | null {
+  const legs = props.voiceLegs;
+  if (!legs) return null;
+  const dead = (state: RTCPeerConnectionState): boolean =>
+    state === 'failed' || state === 'disconnected' || state === 'closed';
+  const boundSpeakers = props.remoteSpeakers?.length ?? 0;
+  const audibleExpected = (props.remoteSpeakers ?? []).some(
+    (speaker) => !speaker.muted && !speaker.originalSuppressed && speaker.volume > 0,
+  );
+  const unheard = audibleExpected && props.remoteVoiceHeard === false && !props.playbackBlocked;
+  if (!dead(legs.publish) && !dead(legs.receive) && !unheard) return null;
+  const parts: string[] = [];
+  if (dead(legs.publish)) parts.push(`your voice link is ${legs.publish}`);
+  if (dead(legs.receive)) parts.push(`their voice link is ${legs.receive}`);
+  if (unheard) parts.push(`${boundSpeakers} voice${boundSpeakers === 1 ? '' : 's'} connected but not playing`);
+  return (
+    <span className="voice-diagnostic" role="status">
+      {parts.join(' · ')}
+    </span>
+  );
+}
+
+/**
+ * The person's face where their video is not: their profile picture when the
+ * seat is a signed-in account, their initials when it is not.
+ *
+ * The avatar route requires a session and an <img src> carries no headers,
+ * so the image is fetched with the viewer's own token into an object URL --
+ * the same pattern the dashboard uses. A viewer without a session (or a
+ * seat without an account) keeps the initials, honestly.
+ */
+function ParticipantFace({
+  participant,
+}: {
+  readonly participant: { readonly displayName: string; readonly accountId?: string };
+}): JSX.Element {
+  const [pictureUrl, setPictureUrl] = useState<string | null>(null);
+  const accountId = participant.accountId;
+  useEffect(() => {
+    if (!accountId) return;
+    const token = readAccountSession(defaultSessionStorage())?.token;
+    if (!token) return;
+    let objectUrl: string | null = null;
+    let cancelled = false;
+    void fetch(`${readAccountUrl()}/avatars/${accountId}`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+      .then(async (response) => (response.ok ? response.blob() : null))
+      .then((blob) => {
+        if (blob === null || cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setPictureUrl(objectUrl);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
+    };
+  }, [accountId]);
+  return (
+    <span className="participant-avatar" aria-hidden="true">
+      {pictureUrl !== null ? (
+        <img className="participant-avatar-image" src={pictureUrl} alt="" />
+      ) : (
+        initials(participant.displayName)
+      )}
+    </span>
+  );
 }

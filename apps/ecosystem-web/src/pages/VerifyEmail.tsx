@@ -1,3 +1,4 @@
+/** @author masterzee001 */
 /**
  * The page the verification link lands on.
  *
@@ -20,23 +21,14 @@
  * should not outlive the tab that received it.
  */
 import { useEffect, useState } from 'react';
+import { readSessionToken } from '../session';
 
 const ACCOUNT_URL = (
   (import.meta.env['VITE_ACCOUNT_URL'] as string | undefined) ?? 'http://localhost:3006'
 ).replace(/\/+$/, '');
 
-/** Where the sign-in flow stores the session. Shared with the shell. */
-const SESSION_KEY = 'c7.session';
 /** Where a token waits while somebody signs in to finish. */
 const PENDING_KEY = 'c7.pending-email-token';
-
-function storedToken(): string | null {
-  try {
-    return window.localStorage.getItem(SESSION_KEY) ?? null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * The token from the link, or the one stashed before a sign-in.
@@ -78,8 +70,14 @@ type Outcome =
   | { readonly kind: 'verified' }
   | { readonly kind: 'failed'; readonly message: string };
 
+type ResendState = 'idle' | 'sending' | 'sent';
+
 export function VerifyEmail({ onDone }: { readonly onDone: () => void }) {
   const [outcome, setOutcome] = useState<Outcome>({ kind: 'working' });
+  const [resendState, setResendState] = useState<ResendState>('idle');
+  // Through session.ts, like every other reader: a private copy of the key
+  // name here is how surfaces come to disagree about who is signed in.
+  const sessionToken = readSessionToken();
 
   useEffect(() => {
     const token = linkToken();
@@ -88,7 +86,7 @@ export function VerifyEmail({ onDone }: { readonly onDone: () => void }) {
       return;
     }
 
-    const session = storedToken();
+    const session = readSessionToken();
     if (session === null) {
       // Hold it so finishing does not mean returning to the inbox.
       rememberToken(token);
@@ -199,11 +197,46 @@ export function VerifyEmail({ onDone }: { readonly onDone: () => void }) {
             <h1 className="app-title">That link did not work</h1>
             <p className="section-lede">{outcome.message}</p>
             <p className="section-lede">
-              Verification links can be used once and expire after about thirty minutes. Sign in
-              and request a new one.
+              Verification links can be used once and expire after about thirty minutes.
             </p>
+            {/*
+              THE DEAD END THIS REMOVES: somebody clicks an expired link, is
+              told to "sign in and request a new one", and has no idea where
+              that button lives. When this browser holds a session, the new
+              link is one click from the failure itself. Without a session the
+              old advice stands, because the resend endpoint is authenticated
+              and must stay that way -- an open resend is a mail cannon.
+            */}
+            {resendState === 'sent' ? (
+              <p className="section-lede">A new link is on its way. It lasts thirty minutes.</p>
+            ) : sessionToken !== null ? (
+              <p>
+                <button
+                  type="button"
+                  className="button button-primary"
+                  disabled={resendState === 'sending'}
+                  onClick={() => {
+                    setResendState('sending');
+                    void fetch(`${ACCOUNT_URL}/verification/email`, {
+                      method: 'POST',
+                      headers: {
+                        'content-type': 'application/json',
+                        authorization: `Bearer ${sessionToken}`,
+                      },
+                      body: JSON.stringify({}),
+                    })
+                      .then((response) => setResendState(response.ok ? 'sent' : 'idle'))
+                      .catch(() => setResendState('idle'));
+                  }}
+                >
+                  {resendState === 'sending' ? 'Sending…' : 'Send me a new link'}
+                </button>
+              </p>
+            ) : (
+              <p className="section-lede">Sign in and request a new one from your account page.</p>
+            )}
             <p>
-              <button type="button" className="button button-primary" onClick={onDone}>
+              <button type="button" className="button" onClick={onDone}>
                 Go to C7
               </button>
             </p>

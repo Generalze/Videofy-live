@@ -1,0 +1,36 @@
+========================================================================================================
+C7 ROUTE DECISION TABLE — Phase 1 evidence, per direction
+========================================================================================================
+cata = catastrophic (identifier / negation / omission / invention / loop)
+pass = returned untranslated.  unv = needs a human to judge.  All 34-case samples.
+
+
+FORWARD  en->X
+--------------------------------------------------------------------------------------------------------
+direction  |                 m2m100 |                 madlad |                   opus | recommendation
+           |  cata pass unv  med ms |  cata pass unv  med ms |  cata pass unv  med ms |
+--------------------------------------------------------------------------------------------------------
+en->ha     |    1    0    4   2114 |    1    0    6   4876 |    7    0   19    262 | m2m100
+en->ig     |    4    0    1   2407 |    0    2    3   5012 |    6    0   17    313 | madlad  (needs a bigger host)
+en->yo     |    3    0    2   2678 |    4    0    6   5881 |    2    0    6    360 | opus
+
+REVERSE  X->en  (provisional: round-trip only)
+--------------------------------------------------------------------------------------------------------
+direction  |                 m2m100 |                 madlad |                   opus | recommendation
+           |  cata pass unv  med ms |  cata pass unv  med ms |  cata pass unv  med ms |
+--------------------------------------------------------------------------------------------------------
+ha->en     |    2    0    4   1813 |    2    0    2   4300 |    7    0   16    202 | m2m100
+ig->en     |    4    0    2   1629 |    3    0    3   4015 |    7    0   11    181 | madlad  (needs a bigger host)
+yo->en     |    5    0    4   1898 |    1    0    5   4230 |    7    0   14    199 | madlad  (needs a bigger host)
+
+========================================================================================================
+RESOURCE AND LICENCE
+========================================================================================================
+  m2m100   peak RSS     5409 MB   fits this VPS            MIT / commercial OK
+  madlad   peak RSS    21188 MB   TOO LARGE for this VPS   Apache-2.0 / commercial OK
+  opus     peak RSS     1301 MB   fits this VPS            CC-BY-4.0 / commercial OK
+
+========================================================================================================
+STATUS: every recommendation above is a CANDIDATE FOR HUMAN REVIEW.
+No route is promoted. No route is productionApproved. Human verdict pending.
+========================================================================================================

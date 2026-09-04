@@ -1,0 +1,530 @@
+/*
+ * The console shell, to 01-overview-reference.png at 1586 x 992.
+ *
+ * ONE MASTER OWNS THE SHELL (founder directive, 30 Aug 2026, SS13 OPERATOR
+ * GOLDEN-MASTER CORRECTION). 01 owns the rail, the top bar, the ground, the
+ * global spacing, the alert geometry and the content origin. The other four
+ * masters were generated independently and disagree with it; they are not
+ * consulted for any global value and their disagreement is expected, not a
+ * defect to average away.
+ *
+ * What 01 measures, and how:
+ *   rail            x 0..295. The column median flips from rgb(8,18,36) to
+ *                   rgb(2,10,26) between 295 and 296 on every quiet row.
+ *   top bar         y 0..88, full width. The rail's own background starts at
+ *                   y=89, and the 1px divider on that row runs x 296..1585
+ *                   only -- so the divider belongs to the content column.
+ *   content origin  x=320, y=109: where the alert's border lands.
+ *   alert           1239 x 82 at (320,109), radius 8.
+ *   rail rhythm     44px items on a 52px pitch, first at y=148.
+ *   services card   x 26..264, y 734..898.
+ *   footer          ink y 929..950.
+ *
+ * Every page stays MOUNTED (the Source page's <video> is the programme
+ * itself for uploaded and direct-URL sources); pages are toggled with
+ * [hidden], never conditionally rendered.
+ */
+.shell {
+  display: grid;
+  grid-template-columns: var(--op-rail-width) minmax(0, 1fr);
+  grid-template-rows: var(--op-topbar-height) minmax(0, 1fr);
+  min-height: 100vh;
+  background: var(--op-bg);
+  color: var(--op-text);
+  font-family: var(--op-font);
+}
+
+/* ------------------------------------------------------------------ topbar */
+.topbar {
+  grid-column: 1 / -1;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: var(--op-topbar-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /*
+   * 01 puts the brand ring's left edge on x=25 and the avatar's right edge
+   * on x=1538, so the bar is inset 25 and 47.
+   */
+  padding: 0 47px 0 25px;
+  background: var(--op-bg-topbar);
+  /*
+   * NO BORDER HERE. In 01 the divider row (y=89) is drawn across the content
+   * column only -- x 296..1585 -- because the rail's background already owns
+   * x 0..295 on that row. A border-bottom on the bar would paint the rail's
+   * first row too. The content column carries it instead (see .main).
+   */
+}
+.brand {
+  display: flex;
+  align-items: center;
+  /* 01: the ring's ink ends on x=77 and the wordmark's starts on x=98. */
+  gap: 20px;
+}
+.brandRing {
+  position: relative;
+  /* 01 inks the ring x 25..77, y 20..71. */
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--op-bg-topbar);
+  flex-shrink: 0;
+}
+.brandRing::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  padding: 2px;
+  background: var(--op-gradient-ring);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+.brandMark {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--op-text);
+}
+.brandName {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--op-text);
+}
+
+.topbarRight {
+  display: flex;
+  align-items: center;
+  /* 01's dividers sit ~20 clear of the ink on either side. */
+  gap: 20px;
+}
+.topbarDivider {
+  width: 1px;
+  height: 24px;
+  background: var(--op-panel-border-strong);
+}
+.viewers {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--op-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.viewers svg {
+  color: var(--op-text-muted);
+}
+.langSelect {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--op-radius-sm);
+  background: transparent;
+  color: var(--op-text);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+}
+.langSelect:disabled {
+  cursor: default;
+  opacity: 1;
+}
+.langSelect svg {
+  color: var(--op-text-muted);
+}
+.gatewayPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  border-radius: var(--op-radius-md);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--op-hairline);
+  font-size: 14px;
+}
+.gatewayWord {
+  color: var(--op-text);
+  font-weight: 500;
+}
+.gatewayState {
+  color: var(--op-text-muted);
+}
+.bell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: var(--op-radius-md);
+  background: transparent;
+  color: var(--op-text-secondary);
+}
+.bell:disabled {
+  cursor: default;
+  opacity: 1;
+}
+.identity {
+  position: relative;
+}
+
+/* -------------------------------------------------------------------- rail */
+.rail {
+  position: sticky;
+  top: var(--op-topbar-height);
+  height: calc(100vh - var(--op-topbar-height));
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  /*
+   * 01's active pill spans x 26..277 inside a 296px rail: 26 on the left,
+   * 18 on the right. Asymmetric, and left asymmetric.
+   */
+  padding: var(--op-rail-pad-top) var(--op-rail-pad-right) 28px var(--op-rail-pad-left);
+  /*
+   * FLAT, NOT A GRADIENT. 01's rail reads rgb(8,18,36) at y=300 and
+   * rgb(8,20,39) at y=920 -- one colour under the grain. The old
+   * rail-to-ground gradient faded the bottom third to the content ground,
+   * which 01 does not do. And no right border: x=295 reads rgb(8,17,35),
+   * darker than the rail, not a lighter hairline.
+   */
+  background: var(--op-bg-rail);
+}
+.nav {
+  display: grid;
+  gap: 0;
+}
+/* 44px items on a 52px pitch: 01's item tops are 148, 200, 252, 304, 356, 408, 460. */
+.section {
+  display: grid;
+  gap: var(--op-rail-item-gap);
+}
+/*
+ * 01's second label inks y 526..537 against a first group that ends at
+ * y=504, and its first item box starts at y=554.
+ */
+.section + .section {
+  margin-top: 18px;
+}
+.sectionLabel {
+  /*
+   * Placed, not guessed: the rail's 26px top padding plus this box and its
+   * 9px tail plus the section's 8px gap put the first item box on y=148,
+   * which is where 01 draws it.
+   */
+  margin: 0 0 9px;
+  padding: 0 0 0 22px;
+  font-size: 13px;
+  line-height: 16px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--op-text-muted);
+}
+.navItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  /* 01: pill y 148..191. */
+  height: var(--op-rail-item-height);
+  /* 01: the row's ink starts on x=46, 20 inside the pill's own left edge. */
+  padding: 0 14px 0 20px;
+  border-radius: var(--op-radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--op-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 15px;
+  text-align: left;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.navItem:hover {
+  color: var(--op-text);
+  background: rgba(255, 255, 255, 0.04);
+}
+.navItem:focus-visible {
+  outline: 2px solid var(--op-violet);
+  outline-offset: 1px;
+}
+.navItemActive,
+.navItemActive:hover {
+  color: var(--op-violet-text);
+  background: var(--op-violet-soft);
+  border-color: var(--op-violet-border);
+}
+.navIcon {
+  display: inline-flex;
+  color: currentColor;
+  flex-shrink: 0;
+}
+.navNumber {
+  font-size: 12px;
+  color: var(--op-text-muted);
+  font-variant-numeric: tabular-nums;
+  margin-left: 4px;
+}
+.navItemActive .navNumber {
+  color: var(--op-violet-text);
+}
+.navLabel {
+  white-space: nowrap;
+}
+.navItem[data-not-yet='true'] .navLabel {
+  color: var(--op-text-muted);
+}
+
+/*
+ * 01 draws the card at x 26..264, y 734..898 -- 32 under the last rail item
+ * and 13 narrower than the nav above it, which is why it carries a right
+ * margin of its own rather than sitting on the rail's padding.
+ *
+ * Its HEIGHT is not pinned. The card lists the real service lights, and 01
+ * happens to show two; a deployment with three would be taller. Pinning
+ * 165px would be inventing operational data to satisfy a screenshot.
+ */
+.servicesCard {
+  margin-top: 31px;
+  margin-right: 13px;
+  padding: 18px 18px 21px;
+  border-radius: 10px;
+  border: 1px solid var(--op-panel-border);
+  background: rgba(255, 255, 255, 0.02);
+}
+.servicesCard .sectionLabel {
+  margin-bottom: 15px;
+}
+.services {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 18px;
+}
+.serviceRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.serviceRow > :first-child {
+  margin-top: 6px;
+}
+.serviceText {
+  display: grid;
+  gap: 6px;
+  line-height: 1.25;
+}
+.serviceLabel {
+  font-size: 13px;
+  color: var(--op-text);
+}
+.serviceDetail {
+  font-size: 12px;
+  color: var(--op-text-muted);
+}
+/* 01 inks the footer row at y 929..950, 30 under the card, starting on x=40. */
+.railFooter {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 30px;
+  padding: 0 0 0 14px;
+  font-size: 14px;
+  color: var(--op-text-muted);
+}
+.versionPill {
+  padding: 3px 8px;
+  border-radius: var(--op-radius-pill);
+  border: 1px solid var(--op-violet-border);
+  color: var(--op-violet-text);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* -------------------------------------------------------------------- main */
+.main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  /*
+   * 01's content origin: the alert's left border on x=320 (296 + 24) and its
+   * top border on y=109 (89 + the divider row + 19). The right inset is 27,
+   * not 24 -- 01 is asymmetric and is reproduced as drawn.
+   */
+  padding: var(--op-content-padding-top) var(--op-content-padding-right) var(--op-content-padding-right)
+    var(--op-content-padding);
+  gap: 26px;
+  /*
+   * The divider under the top bar. It lives here rather than on the bar
+   * because 01 draws it across x 296..1585 only.
+   */
+  border-top: 1px solid var(--op-hairline);
+  /*
+   * FLAT GROUND. 01's four content corners read (2,9,23), (3,9,24),
+   * (2,10,26) and (2,10,25) -- the same colour as its centre. The teal and
+   * violet radials an earlier wave painted here are not in the master.
+   */
+  background: var(--op-bg);
+}
+/*
+ * 01 draws the alert 1239 x 82 at (320,109). Its border reads rgb(149,37,29)
+ * and its fill rgb(30,14,23) over the rgb(2,10,26) ground, which is one red
+ * at two alphas -- a FLAT fill, not the left-to-right gradient an earlier
+ * wave used. The corner reaches full width six rows in, so the radius is 8.
+ */
+.gatewayBanner {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: var(--op-banner-height);
+  padding: 10px 18px 10px 20px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid var(--op-danger-border);
+  background: rgba(228, 52, 31, 0.12);
+}
+.bannerIcon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid var(--op-danger-border);
+  background: rgba(239, 68, 68, 0.18);
+  color: var(--op-danger-text);
+  flex-shrink: 0;
+}
+.bannerText {
+  flex: 1;
+  display: grid;
+  gap: 2px;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--op-text);
+}
+.bannerText strong {
+  font-weight: 600;
+}
+.bannerAction {
+  padding: 0 20px;
+  height: 38px;
+  border-radius: var(--op-radius-sm);
+  border: 1px solid rgba(239, 68, 68, 0.6);
+  background: transparent;
+  color: #f87171;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.bannerAction:hover {
+  background: rgba(239, 68, 68, 0.12);
+}
+.bannerClose {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: var(--op-radius-sm);
+  background: transparent;
+  color: var(--op-text-secondary);
+  cursor: pointer;
+}
+.bannerClose:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--op-text);
+}
+.warning {
+  margin: 0;
+  padding: 12px 16px;
+  border-radius: var(--op-radius-md);
+  border: 1px solid var(--op-warn-border);
+  background: var(--op-warn-soft);
+  color: var(--op-warn-text);
+  font-size: 14px;
+}
+
+.pages {
+  min-width: 0;
+}
+.page[hidden] {
+  display: none;
+}
+.page {
+  display: grid;
+  gap: 24px;
+}
+
+/* Shared page-level helpers the App composes with. */
+.pageActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.twoUp {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 24px;
+  align-items: start;
+}
+.note {
+  color: var(--op-text-muted);
+  font-size: 14px;
+  margin: 0;
+}
+
+@media (max-width: 1024px) {
+  .shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+  .topbar {
+    position: static;
+    height: auto;
+    padding: 12px 16px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .rail {
+    position: static;
+    height: auto;
+    padding: 16px;
+    border-bottom: 1px solid var(--op-hairline);
+  }
+  .nav {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .section {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .section + .section {
+    margin-top: 0;
+  }
+  .sectionLabel {
+    width: 100%;
+  }
+  .navItem {
+    width: auto;
+  }
+  .servicesCard {
+    margin-top: 16px;
+  }
+  .main {
+    padding: 16px;
+    border-top: 0;
+  }
+}

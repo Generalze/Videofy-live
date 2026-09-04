@@ -4,7 +4,25 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Videofy Live - Viewer</title>
+    <meta name="theme-color" content="#0b0b10" />
+    <!--
+      TITLE AND DESCRIPTION ARE THE SHARE CARD.
+
+      Crawlers -- WhatsApp above all -- read this file and never run a line
+      of JavaScript, so whatever React sets at runtime is invisible to them.
+      scripts/generate-route-html.mjs reads these two values at deploy time
+      and adds the tags that need the deployment's origin (canonical,
+      og:url, the absolute og:image); it REFUSES to build without them.
+
+      The per-channel page /streams/<handle> is server-rendered by the
+      account service instead (services/account/src/share-routes.ts), which
+      injects the channel's own name and picture into this same shell.
+    -->
+    <title>Videofy Live - Watch live, in your language</title>
+    <meta
+      name="description"
+      content="Join a live programme and hear it in the language you choose, translated as it is spoken."
+    />
   </head>
   <body>
     <div id="root"></div>

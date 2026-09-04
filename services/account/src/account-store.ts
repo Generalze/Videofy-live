@@ -19,6 +19,7 @@
 import { createAccountId, type AccountId } from '@videofy-live/participant-contracts';
 import {
   INITIAL_TRUST,
+  readDiscoveryMode,
   readTrust,
   recordConsent,
   resolveTrustState,
@@ -50,9 +51,40 @@ import {
  */
 export type AccountVoiceGender = 'male' | 'female';
 
+/**
+ * The language this person's calls ENTER with -- speak and hear preload on
+ * the join form, both changeable per call. Matches call-client-core's
+ * CallLanguage union; kept as its own type because account and call are
+ * separate bounded contexts that happen to agree today.
+ */
+/**
+ * A LANGUAGE CATALOGUE CODE, validated at the route.
+ *
+ * This was `'en' | 'es' | 'fr'`, and the union was the whole reason the phone's
+ * Profile offered three languages: a wider picker would have been refused with
+ * a 400 that looked, on the device, like a tap that did nothing. The catalogue
+ * (packages/language-catalogue) is the authority on what a code may be, and
+ * `routes.ts` checks every value against it before it reaches a store.
+ *
+ * Deliberately NOT a union of the ninety-eight codes: the catalogue grows, and
+ * a type that had to be regenerated each time it did would be copied wrongly.
+ */
+export type AccountDefaultLanguage = string;
+
 export interface AccountRecord {
   readonly accountId: AccountId;
   readonly voiceGender?: AccountVoiceGender;
+  readonly defaultLanguage?: AccountDefaultLanguage;
+  /**
+   * Language is THREE independent facts (external review, adopted
+   * 2026-08-28): what someone SPEAKS and what they PREFER TO HEAR are
+   * different questions -- the call layer has kept them apart since P6.4,
+   * and the account layer now agrees. `defaultLanguage` remains the
+   * PRIMARY: the onboarding answer that seeds both, and the fallback when a
+   * finer fact is unset. A UI language joins only when any UI is localized.
+   */
+  readonly spokenLanguage?: AccountDefaultLanguage;
+  readonly listeningLanguage?: AccountDefaultLanguage;
   /** Normalised: lowercased and trimmed. The stored form IS the lookup key. */
   readonly email: string;
   readonly passwordHash: string;
@@ -167,7 +199,25 @@ export interface AccountRecord {
    * version -- resolves to private rather than to findable.
    */
   readonly discoveryMode?: string;
+  /**
+   * A standing override on presence (founder directive 2026-08-29). 'auto'
+   * lets the heartbeat speak; 'busy' and 'away' say so regardless of it.
+   * Presence itself is never stored -- see presence.ts.
+   */
+  readonly availability?: AccountAvailability;
+  /** Free text about the person, capped at BIO_MAX_LENGTH. Public on the profile. */
+  readonly bio?: string;
+  /**
+   * Whether message-class pushes reach this person at all. Absent means yes:
+   * the column defaults to true and a record written before it existed must
+   * keep behaving as it did.
+   */
+  readonly notificationsEnabled?: boolean;
 }
+
+export type AccountAvailability = 'auto' | 'busy' | 'away';
+export const ACCOUNT_AVAILABILITIES: readonly AccountAvailability[] = ['auto', 'busy', 'away'];
+export const BIO_MAX_LENGTH = 160;
 
 export interface AccountRecordPort {
   /**
@@ -721,6 +771,95 @@ export class AccountStore {
       return 'username-previously-used';
     }
     return null;
+  }
+
+  /**
+   * The PRIMARY language: the onboarding gesture. Seeds speak and hear
+   * together; refinements go through setLanguages.
+   */
+  async setDefaultLanguage(
+    accountId: string,
+    defaultLanguage: AccountDefaultLanguage,
+  ): Promise<AccountRecord | null> {
+    return this.withMutationLock<AccountRecord | null>(accountId, async (current) => {
+      if (!current) return { record: null, result: null };
+      const updated: AccountRecord = {
+        ...current,
+        defaultLanguage,
+        spokenLanguage: defaultLanguage,
+        listeningLanguage: defaultLanguage,
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      return { record: updated, result: updated };
+    });
+  }
+
+  /** Refine one language fact without touching the others. */
+  async setLanguages(
+    accountId: string,
+    languages: {
+      readonly spokenLanguage?: AccountDefaultLanguage;
+      readonly listeningLanguage?: AccountDefaultLanguage;
+    },
+  ): Promise<AccountRecord | null> {
+    return this.withMutationLock<AccountRecord | null>(accountId, async (current) => {
+      if (!current) return { record: null, result: null };
+      const updated: AccountRecord = {
+        ...current,
+        ...(languages.spokenLanguage === undefined
+          ? {}
+          : { spokenLanguage: languages.spokenLanguage }),
+        ...(languages.listeningLanguage === undefined
+          ? {}
+          : { listeningLanguage: languages.listeningLanguage }),
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      return { record: updated, result: updated };
+    });
+  }
+
+  /**
+   * Bio, availability override and the notification switch, in one write.
+   *
+   * One method rather than three because a client saves the profile form
+   * as a whole, and three round trips through the mutation lock for one
+   * form is three chances for an interleaved save to leave a mixed record.
+   * Only the fields given change; the rest are carried over untouched.
+   */
+  async setProfileExtras(
+    accountId: string,
+    extras: {
+      readonly bio?: string;
+      readonly availability?: AccountAvailability;
+      readonly notificationsEnabled?: boolean;
+    },
+  ): Promise<AccountRecord | null> {
+    return this.withMutationLock<AccountRecord | null>(accountId, async (current) => {
+      if (!current) return { record: null, result: null };
+      const updated: AccountRecord = {
+        ...current,
+        ...(extras.bio === undefined ? {} : { bio: extras.bio }),
+        ...(extras.availability === undefined ? {} : { availability: extras.availability }),
+        ...(extras.notificationsEnabled === undefined
+          ? {}
+          : { notificationsEnabled: extras.notificationsEnabled }),
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      return { record: updated, result: updated };
+    });
+  }
+
+  /**
+   * Every account that has opted into being found, for suggestions.
+   *
+   * THE ONLY ENUMERATION THIS STORE OFFERS, and it is filtered before it
+   * leaves: a private account is not in the list at all, so nothing built
+   * on top of this can leak one by forgetting to check.
+   */
+  discoverableAccounts(): readonly AccountRecord[] {
+    return [...this.byId.values()].filter(
+      (record) => readDiscoveryMode(record.discoveryMode) === 'discoverable',
+    );
   }
 
   /** Set the label shown in calls. Carries no uniqueness and resolves to nobody. */

@@ -141,7 +141,13 @@ describe('the platform decides what an utterance is', () => {
   it('a programme stabilises where a call would finalise at once', async () => {
     const call = await rig();
     const programme = await rig({
-      context: { serviceCategory: 'programme', mediaMode: 'live' },
+      context: {
+        serviceCategory: 'programme',
+        mediaMode: 'live',
+        // A programme stream identifies its run; the wire will not carry one
+        // without it, so a fixture that omits it is testing an impossibility.
+        programme: { channelId: 'ch_1', programmeId: 'prog_1', runId: 'run_1' },
+      },
       stabilizationMs: 10_000,
     });
     for (const r of [call, programme]) {

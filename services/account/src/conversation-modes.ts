@@ -1,0 +1,40 @@
+/** @author masterzee001 */
+/**
+ * Which conversations are in TRANSLATED mode.
+ *
+ * One flag per pair, keyed by the same sorted (low, high) identity contacts
+ * and messages already use -- there is deliberately no conversations table,
+ * and this store does not create one: it records only the pairs that turned
+ * translation ON (absence means normal, the free default on every channel).
+ *
+ * EITHER PARTICIPANT MAY FLIP IT, and the flip is visible to both: unlike a
+ * call -- where the mode locks at creation because speech is billed per
+ * second as it happens -- a message is translated once at send time, so a
+ * mode change simply changes what happens to the NEXT message. `setBy`
+ * records who last flipped it, which is what the eventual billing ruling
+ * will need (the payer question is deliberately unanswered here).
+ */
+
+export interface ConversationModeRecord {
+  readonly lowAccountId: string;
+  readonly highAccountId: string;
+  readonly mode: 'normal' | 'translated';
+  readonly setByAccountId: string;
+  readonly updatedAtMs: number;
+}
+
+export interface ConversationModePort {
+  get(lowAccountId: string, highAccountId: string): Promise<ConversationModeRecord | null>;
+  set(record: ConversationModeRecord): Promise<void>;
+}
+
+export function createInMemoryConversationModePort(): ConversationModePort {
+  const rows = new Map<string, ConversationModeRecord>();
+  const key = (low: string, high: string): string => `${low}\u0000${high}`;
+  return {
+    get: async (low, high) => rows.get(key(low, high)) ?? null,
+    set: async (record) => {
+      rows.set(key(record.lowAccountId, record.highAccountId), record);
+    },
+  };
+}

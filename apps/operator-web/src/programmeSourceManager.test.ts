@@ -37,10 +37,12 @@ function track(
 }
 
 function stream(tracks: MediaStreamTrack[]) {
+  // The caller's array IS the track list: several tests mutate it afterwards.
   return {
     getTracks: vi.fn(() => tracks),
     getAudioTracks: vi.fn(() => tracks.filter((item) => item.kind === 'audio')),
     getVideoTracks: vi.fn(() => tracks.filter((item) => item.kind === 'video')),
+    addTrack: vi.fn((track: MediaStreamTrack) => tracks.push(track)),
   } as unknown as MediaStream;
 }
 
@@ -242,9 +244,38 @@ describe('ProgrammeSourceManager', () => {
     });
   });
 
-  it('selects screen capture without falsely claiming missing platform audio', async () => {
+  /*
+   * A window share carries no audio on Windows -- a platform rule, not a bug
+   * -- and the transport refuses to start without an audio track, so the old
+   * behaviour made sharing a window mean NO BROADCAST AT ALL. A broadcaster
+   * sharing a window is narrating it: their microphone is the honest
+   * fallback, named in the audio label rather than adopted silently.
+   */
+  it('falls back to the microphone when the screen share has no audio', async () => {
     const source = stream([track('video', 'screen_video')]);
-    const manager = new ProgrammeSourceManager({ mediaDevices: mediaDevices({ display: source }) });
+    const manager = new ProgrammeSourceManager({
+      mediaDevices: mediaDevices({
+        display: source,
+        user: stream([track('audio', 'mic_audio')]),
+      }),
+    });
+
+    await manager.selectScreen(videoElement(source));
+
+    expect(manager.getSnapshot()).toMatchObject({
+      sourceType: 'screen',
+      audioDetected: true,
+      videoDetected: true,
+      audioMissingReason: null,
+      audioSourceLabel: 'Microphone (screen shared without audio)',
+    });
+  });
+
+  it('stays video-only, with the reason stated, when the microphone is refused too', async () => {
+    const source = stream([track('video', 'screen_video')]);
+    const manager = new ProgrammeSourceManager({
+      mediaDevices: mediaDevices({ display: source, rejectUser: new Error('denied') }),
+    });
 
     await manager.selectScreen(videoElement(source));
 
@@ -253,7 +284,8 @@ describe('ProgrammeSourceManager', () => {
       audioDetected: false,
       videoDetected: true,
       previewReady: true,
-      audioMissingReason: 'Browser or platform did not provide screen-share audio.',
+      audioMissingReason:
+        'No screen audio was shared and the microphone was refused. Share a tab or full screen with audio, or allow the microphone.',
       browserLimitation: 'Screen or tab audio depends on browser, operating system, and platform support.',
     });
   });
@@ -465,7 +497,7 @@ describe('ProgrammeSourceManager', () => {
       }),
     ).toMatchObject({
       publishUrl: 'rtmp://localhost:1935/live',
-      streamKeyRedacted: 'vi...mo',
+      streamKeyRedacted: '**** (12 characters)',
       streamPath: 'live/videofy-demo',
       hlsPlaybackUrl: 'http://localhost:8888/live/videofy-demo/index.m3u8',
     });

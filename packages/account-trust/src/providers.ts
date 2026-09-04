@@ -70,6 +70,19 @@ export interface DeliveryResult {
 export interface VerificationDeliveryProvider {
   readonly name: string;
   readonly synthetic: boolean;
+  /**
+   * Whether this channel can deliver at all on this deployment.
+   *
+   * ABSENT MEANS AVAILABLE, which is why it is optional: every provider that
+   * existed before this field was added really could deliver, and making it
+   * required would have forced a `true` onto each of them for no information.
+   *
+   * `false` is the honest OFF state -- a channel the founder has not bought a
+   * vendor for yet. It is NOT synthetic: synthetic pretends to deliver and
+   * reports success, which is the lie production refuses. An unavailable
+   * provider says so, refuses every send, and lets the route answer 503.
+   */
+  readonly available?: boolean;
   send(message: VerificationMessage): Promise<DeliveryResult>;
   /**
    * Warn an address that it has been replaced.
@@ -104,6 +117,66 @@ export function createSyntheticProvider(
     async notify(notice) {
       noticeSink?.(notice);
       return { delivered: true, reference: null, synthetic: true };
+    },
+  };
+}
+
+/**
+ * Whether a delivery provider can be asked to send anything.
+ *
+ * One reader for the optional field, so "absent means available" is decided
+ * here rather than re-derived -- and derived differently -- at each call site.
+ */
+export function deliveryAvailable(provider: VerificationDeliveryProvider): boolean {
+  return provider.available !== false;
+}
+
+/**
+ * What an OFF channel throws when somebody asks it to deliver.
+ *
+ * Typed rather than a bare Error so a caller can tell "this deployment has no
+ * SMS vendor" apart from "the vendor's API failed", which are the same string
+ * and very different situations.
+ */
+export class DeliveryChannelUnavailableError extends Error {
+  constructor(
+    readonly channel: 'email' | 'phone',
+    readonly provider: string,
+  ) {
+    super(
+      `${channel} delivery is switched off on this deployment (provider "${provider}"). ` +
+        `Nothing was sent and nothing was marked verified.`,
+    );
+    this.name = 'DeliveryChannelUnavailableError';
+  }
+}
+
+/**
+ * A channel that is explicitly OFF, and says so.
+ *
+ * The production ruling (30 Aug 2026) requires that "a missing provider must
+ * refuse the capability honestly or fail startup where the capability is
+ * mandatory -- NEVER a silent fall back to a synthetic/mock provider in
+ * production". This is the honest-refusal half.
+ *
+ * `synthetic: false` is deliberate and is not a loophole: nothing here reports
+ * a delivery. Every operation throws, so a call site that forgets to check
+ * `available` fails loudly instead of recording a verification that never
+ * happened. It is selected only by an EXPLICIT `off`, never by a default.
+ */
+export function createUnavailableProvider(
+  channel: 'email' | 'phone',
+): VerificationDeliveryProvider {
+  const name = `off-${channel}`;
+  return {
+    name,
+    synthetic: false,
+    available: false,
+    async send() {
+      throw new DeliveryChannelUnavailableError(channel, name);
+    },
+    async notify() {
+      throw new DeliveryChannelUnavailableError(channel, name);
     },
   };
 }

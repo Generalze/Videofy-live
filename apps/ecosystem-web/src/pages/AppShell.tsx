@@ -1,3 +1,4 @@
+/** @author masterzee001 */
 /**
  * The registered C7 home, at `/app/`.
  *
@@ -15,6 +16,10 @@ import { useEffect, useState } from 'react';
 import { internalLink, type Route } from '../router';
 import { ProfilePanel, type Profile } from '../ProfilePanel';
 import { VerificationPanel } from '../VerificationPanel';
+import { expireSession, readSessionToken } from '../session';
+import { ContactsPanel } from '../ContactsPanel';
+import { MessagesPanel } from '../MessagesPanel';
+import { createAccountApi, type ContactPerson, type IncomingRing } from '../accountApi';
 
 const ACCOUNT_URL = (
   (import.meta.env['VITE_ACCOUNT_URL'] as string | undefined) ?? 'http://localhost:3006'
@@ -61,15 +66,6 @@ interface Bootstrap {
   readonly capabilities: readonly string[];
   /** The handle people add you by, and the name they see. Kept apart. */
   readonly profile: Profile;
-}
-
-/** The token the sign-in flow stored. Absent means "not signed in here". */
-function storedToken(): string | null {
-  try {
-    return window.localStorage.getItem('c7.session') ?? null;
-  } catch {
-    return null;
-  }
 }
 
 const ROLE_LABEL: Record<string, string> = {
@@ -145,15 +141,87 @@ function SignedOut({ navigate }: { readonly navigate: (route: Route, hash?: stri
 
 export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?: string) => void }) {
   const [state, setState] = useState<'loading' | 'signed-out' | 'ready' | 'error'>('loading');
+  /*
+   * WHICH PART OF THE ACCOUNT IS ON SCREEN. The shell used to pour
+   * verification prompts, identity settings and products onto one page, so
+   * "signed in" landed somewhere that read as a settings form. A dashboard is
+   * what signing in is FOR; profile and verification are places you go, not
+   * things that ambush you.
+   */
+  const [view, setView] = useState<
+    'overview' | 'contacts' | 'messages' | 'profile' | 'verification'
+  >('overview');
+  /** Set when Contacts says "Message": Messages opens on that thread. */
+  const [chatPartner, setChatPartner] = useState<ContactPerson | null>(null);
   const [me, setMe] = useState<Bootstrap | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [organization, setOrganization] = useState<OrganizationDetail | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  /**
+   * Incoming rings. The dashboard is a laptop's only ring surface -- there is
+   * no push channel in a browser tab -- so while somebody is signed in here,
+   * the shell polls and a call banner outranks whatever tab is open.
+   */
+  const [incomingRings, setIncomingRings] = useState<readonly IncomingRing[]>([]);
+  const [callNotice, setCallNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    const token = storedToken();
+    if (state !== 'ready') return;
+    const token = readSessionToken();
+    if (token === null) return;
+    const api = createAccountApi(ACCOUNT_URL, token);
+    let cancelled = false;
+    const poll = async (): Promise<void> => {
+      const result = await api.rings();
+      if (!cancelled && result.ok) setIncomingRings(result.value);
+    };
+    void poll();
+    const timer = setInterval(() => void poll(), 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [state]);
+
+  /** Ring them, then open the call. Codes stay for conferences. */
+  const callContact = (person: ContactPerson): void => {
+    const token = readSessionToken();
+    if (token === null) return;
+    setCallNotice(null);
+    void createAccountApi(ACCOUNT_URL, token)
+      .ring(person.accountId)
+      .then((result) => {
+        if (!result.ok) {
+          setCallNotice(result.error);
+          return;
+        }
+        if (result.value.reachedDevices === 0) {
+          // Their dashboard may still pick it up; the caller should know the
+          // phone will not ring rather than sit waiting in an empty call.
+          setCallNotice('No phone is registered for them — they will only see this if their C7 dashboard is open.');
+        }
+        window.open(`/call/?call=${encodeURIComponent(result.value.callId)}`, '_blank', 'noopener');
+      });
+  };
+
+  const answerRing = (ring: IncomingRing, join: boolean): void => {
+    const token = readSessionToken();
+    setIncomingRings((current) => current.filter((entry) => entry.callId !== ring.callId));
+    if (token !== null) void createAccountApi(ACCOUNT_URL, token).dismissRing(ring.callId);
+    if (join) window.open(`/call/?call=${encodeURIComponent(ring.callId)}`, '_blank', 'noopener');
+  };
+
+  useEffect(() => {
+    const token = readSessionToken();
     if (token === null) {
+      /*
+       * THE RESTRICTED AREA RESTRICTS. Arriving here without a session used
+       * to park somebody on a static signed-out page; the coherent answer is
+       * the join flow itself. replace() rather than assign() so Back does not
+       * bounce them straight into the gate again.
+       */
       setState('signed-out');
+      window.location.replace('/#join');
       return;
     }
     let cancelled = false;
@@ -161,7 +229,15 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
       .then(async (response) => {
         if (cancelled) return;
         if (response.status === 401) {
+          /*
+           * A token the server refuses must not linger looking signed-in: the
+           * nav and every product surface read these keys, and a stale one
+           * keeps doors half-open. Clear both -- as an EXPIRY, so the join
+           * page that follows can say why -- then join the flow.
+           */
+          expireSession();
           setState('signed-out');
+          window.location.replace('/#join');
           return;
         }
         if (!response.ok) {
@@ -184,7 +260,7 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
   const current = me?.workspaces.find((workspace) => workspace.workspaceId === selected) ?? null;
 
   useEffect(() => {
-    const token = storedToken();
+    const token = readSessionToken();
     const organizationId = current?.organizationId;
     if (token === null || organizationId === undefined) {
       setOrganization(null);
@@ -231,7 +307,14 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
     );
   }
 
-  const verified = me.trust.state === 'verified';
+  /*
+   * THE SERVER'S OWN ANSWER, not a re-derivation. `capabilities` comes from
+   * grantedCapabilities on /me; gating the product grid on full verification
+   * here is exactly how the dashboard became a verification nag -- an
+   * email-verified account could host calls and was shown a checklist instead.
+   */
+  const canHost = me.capabilities.includes('session.host');
+  const emailVerified = me.trust.email === 'verified';
   const restricted =
     me.trust.state === 'restricted' ||
     me.trust.state === 'suspended' ||
@@ -240,6 +323,25 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
   return (
     <section className="app">
       <div className="shell">
+        {incomingRings.map((ring) => (
+          <div key={ring.callId} className="ring-banner" role="alert">
+            <span className="ring-banner-text">
+              <strong>{ring.fromName}</strong> is calling you
+            </span>
+            <span className="contact-actions">
+              <button
+                type="button"
+                className="button button-primary button-small"
+                onClick={() => answerRing(ring, true)}
+              >
+                Join call
+              </button>
+              <button type="button" className="button button-small" onClick={() => answerRing(ring, false)}>
+                Dismiss
+              </button>
+            </span>
+          </div>
+        ))}
         <header className="app-head">
           <div>
             <p className="hero-eyebrow">Your C7 account</p>
@@ -276,79 +378,176 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
           </div>
         ) : null}
 
-        {current?.kind === 'organization' ? (
-          <div className="app-grid">
-            <article className="app-card app-card-lead">
-              <p className="domain-field">Organization</p>
-              <h2 className="app-card-title">{organization?.displayName ?? current.displayName}</h2>
-              <p className="app-card-body">
-                {/* Package and standing, stated plainly. An unverified
-                    organization says so rather than looking finished. */}
-                {organization ? (
-                  <>
-                    {organization.packageId === 'enterprise' ? 'Enterprise' : 'Corporate'} ·{' '}
-                    {organization.state === 'verified'
-                      ? 'Verified'
-                      : 'Verification required'}
-                    {current.role ? ` · You are ${ROLE_LABEL[current.role] ?? current.role}` : ''}
-                  </>
-                ) : (
-                  'Loading…'
-                )}
-              </p>
-            </article>
+        {/*
+          THE SHELL'S OWN ROOMS. Overview is the dashboard -- products and
+          standing. Profile is identity. Verification is the checklist, visited
+          on purpose. One page trying to be all three is what made signing in
+          land on what read as a settings form.
+        */}
+        <nav className="app-tabs" aria-label="Account sections">
+          {(
+            [
+              ['overview', 'Overview'],
+              ['messages', 'Messages'],
+              ['contacts', 'Contacts'],
+              ['profile', 'Profile'],
+              ['verification', 'Verification'],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              className={`app-tab${view === key ? ' app-tab-active' : ''}`}
+              onClick={() => setView(key)}
+            >
+              {label}
+              {key === 'verification' && !emailVerified ? (
+                <span className="app-tab-dot" aria-label="action needed" />
+              ) : null}
+            </button>
+          ))}
+        </nav>
 
-            {organization?.seats ? <SeatPanel seats={organization.seats} /> : null}
+        {view === 'overview' && !emailVerified ? (
+          <div className="app-notice">
+            <p className="app-card-body">
+              Verify your email to start calls, conferences and organizations. You can already
+              join calls and message contacts.{' '}
+              <button type="button" className="app-inline-link" onClick={() => setView('verification')}>
+                Verify now
+              </button>
+            </p>
+          </div>
+        ) : null}
 
-            <article className="app-card">
-              <p className="domain-field">Requires attention</p>
-              {organization && organization.state !== 'verified' ? (
+        {view === 'overview' ? (
+          current?.kind === 'organization' ? (
+            <div className="app-grid">
+              <article className="app-card app-card-lead">
+                <p className="domain-field">Organization</p>
+                <h2 className="app-card-title">
+                  {organization?.displayName ?? current.displayName}
+                </h2>
                 <p className="app-card-body">
-                  Complete organization verification to invite staff and activate products.
+                  {organization ? (
+                    <>
+                      {organization.packageId === 'enterprise' ? 'Enterprise' : 'Corporate'} ·{' '}
+                      {organization.state === 'verified' ? 'Verified' : 'Verification required'}
+                      {current.role ? ` · You are ${ROLE_LABEL[current.role] ?? current.role}` : ''}
+                    </>
+                  ) : (
+                    'Loading…'
+                  )}
                 </p>
-              ) : (
-                <p className="app-empty">Nothing right now.</p>
-              )}
-            </article>
-          </div>
-        ) : verified ? (
-          <div className="app-grid">
-            <article className="app-card app-card-lead">
-              <p className="domain-field">Available to you</p>
-              <h2 className="app-card-title">VIDEOFY-LIVE</h2>
-              <p className="app-card-body">
-                Real-time multilingual communication for calls, conferences and live programmes.
-              </p>
-              <div className="hero-actions">
-                <a className="button button-primary" href="/call/">
-                  Start a call
-                </a>
-                <a className="button button-ghost" href="/listen/">
-                  Programme viewer
-                </a>
-              </div>
-            </article>
+              </article>
 
-            <article className="app-card">
-              <p className="domain-field">Recent activity</p>
-              {/* An honest empty state. Inventing activity to fill a panel is
-                  how a dashboard starts lying on its first day. */}
-              <p className="app-empty">No recent activity yet.</p>
-            </article>
+              {organization?.seats ? <SeatPanel seats={organization.seats} /> : null}
 
-            <article className="app-card">
-              <p className="domain-field">Early access</p>
-              <p className="app-empty">Nothing open right now.</p>
-            </article>
-          </div>
-        ) : (
+              <article className="app-card">
+                <p className="domain-field">Requires attention</p>
+                {organization && organization.state !== 'verified' ? (
+                  <p className="app-card-body">
+                    Complete organization verification to invite staff and activate products.
+                  </p>
+                ) : (
+                  <p className="app-empty">Nothing right now.</p>
+                )}
+              </article>
+            </div>
+          ) : (
+            <div className="app-grid">
+              <article className="app-card app-card-lead">
+                <p className="domain-field">Available to you</p>
+                <h2 className="app-card-title">VIDEOFY-LIVE</h2>
+                <p className="app-card-body">
+                  Real-time multilingual communication for calls, conferences and live
+                  programmes.
+                </p>
+                <div className="hero-actions">
+                  {canHost ? (
+                    <a className="button button-primary" href="/call/">
+                      Start a call
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      className="button button-primary"
+                      onClick={() => setView('verification')}
+                    >
+                      Verify email to start calls
+                    </button>
+                  )}
+                  <a className="button button-ghost" href="/call/">
+                    Join a call
+                  </a>
+                  <a className="button button-ghost" href="/listen/">
+                    Programme viewer
+                  </a>
+                </div>
+              </article>
+
+              <article className="app-card">
+                <p className="domain-field">Run a programme</p>
+                <p className="app-card-body">
+                  Broadcast with live translated audio for your audience.
+                </p>
+                <div className="hero-actions">
+                  <a className="button button-ghost" href="/operator/">
+                    Operator console
+                  </a>
+                </div>
+              </article>
+
+              <article className="app-card">
+                <p className="domain-field">Recent activity</p>
+                {/* An honest empty state. Inventing activity to fill a panel is
+                    how a dashboard starts lying on its first day. */}
+                <p className="app-empty">No recent activity yet.</p>
+              </article>
+            </div>
+          )
+        ) : null}
+
+        {view === 'contacts' ? (
+          <ContactsPanel
+            accountUrl={ACCOUNT_URL}
+            token={readSessionToken() ?? ''}
+            onMessage={(person) => {
+              setChatPartner(person);
+              setView('messages');
+            }}
+            onCall={callContact}
+          />
+        ) : null}
+        {callNotice !== null ? <p className="contact-notice">{callNotice}</p> : null}
+
+        {view === 'messages' ? (
+          <MessagesPanel
+            accountUrl={ACCOUNT_URL}
+            token={readSessionToken() ?? ''}
+            selfId={me.accountId}
+            initialPartner={chatPartner}
+            onCall={callContact}
+          />
+        ) : null}
+
+        {view === 'profile' ? (
+          <ProfilePanel
+            token={readSessionToken() ?? ''}
+            accountId={me.accountId}
+            profile={me.profile}
+            onChanged={() => setRefreshKey((key) => key + 1)}
+          />
+        ) : null}
+
+        {view === 'verification' ? (
           <div className="app-verify">
-            <h2 className="app-notice-title">Complete verification to activate C7 products</h2>
+            <h2 className="app-notice-title">Verification</h2>
             <p className="section-lede">
-              Your account exists. These three steps establish that it belongs to you.
+              Your account exists. These steps establish that it belongs to you.
             </p>
             <VerificationPanel
-              token={storedToken() ?? ''}
+              token={readSessionToken() ?? ''}
               email={me.email}
               emailState={me.trust.email}
               phoneState={me.trust.phone}
@@ -358,22 +557,13 @@ export function AppShell({ navigate }: { readonly navigate: (route: Route, hash?
               onChanged={() => setRefreshKey((key) => key + 1)}
             />
             <p className="app-note">
-              Until this is complete you can manage your account and security, and explore C7. You
-              cannot yet host calls, create conferences or create an organization.
+              Verifying your email unlocks starting calls, conferences and organizations. Phone
+              and identity checks unlock commercial products. You can already join calls and
+              manage your account.
             </p>
           </div>
-        )}
+        ) : null}
 
-        {/*
-          * Shown whatever the verification state is. Your identity is not a
-          * reward for finishing verification -- it is the thing you arrive
-          * wanting to see, and the handle is what you hand out to be added.
-          */}
-        <ProfilePanel
-          token={storedToken() ?? ''}
-          profile={me.profile}
-          onChanged={() => setRefreshKey((key) => key + 1)}
-        />
       </div>
     </section>
   );

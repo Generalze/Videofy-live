@@ -52,6 +52,9 @@ export default defineConfig(({ mode }) => {
         '@videofy-live/shared-types': fileURLToPath(
           new URL('../../packages/shared-types/src/index.ts', import.meta.url),
         ),
+        '@videofy-live/language-catalogue': fileURLToPath(
+          new URL('../../packages/language-catalogue/src/index.ts', import.meta.url),
+        ),
         '@videofy-live/language-router': fileURLToPath(
           new URL('../../services/language-router/src/index.ts', import.meta.url),
         ),
