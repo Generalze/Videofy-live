@@ -287,10 +287,13 @@ for u in $UNITS; do
           delay = delay * ratio
           if (c > 0 && delay > c) delay = c
         }
-        if (elapsed > w) printf "unreachable %.0fs>%.0fs
-", elapsed, w
-        else printf "ok %.0fs<=%.0fs
-", elapsed, w
+        # print, not printf: no format string, so no newline escape to get
+        # wrong. The first attempt here carried a raw newline into the awk
+        # string literal and the whole check died as a syntax error -- which
+        # the case below correctly treated as a failed deploy, for the wrong
+        # reason.
+        if (elapsed > w) print "unreachable " int(elapsed) "s>" int(w) "s"
+        else print "ok " int(elapsed) "s<=" int(w) "s"
       }'
   )"
   case "$SCHEDULE" in
