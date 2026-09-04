@@ -157,3 +157,70 @@ describe('a run comes back whole', () => {
     expect(await store.listRuns()).toEqual([]);
   });
 });
+
+describe('the audience keeps their place across a restart', () => {
+  it('PERSISTS THE CURSOR AS IT MOVES, not only the media', async () => {
+    /*
+     * THE DEFECT THIS EXISTS FOR. `saveCursor` was implemented on every store
+     * and called by nothing, so a restart recovered 67 segments byte-exact and
+     * sent an audience forty-three seconds into the broadcast back to its
+     * beginning. The buffer then reported "holding 134 s of the 45 s target --
+     * not yet protected" while serving an empty manifest: it was measuring
+     * from zero because zero was all it had been told.
+     *
+     * `restoreReleasedThrough` had always existed, so the READ side was wired
+     * and the write side was not.
+     */
+    const store = new JournalTimelineStore({ directory });
+    await store.saveIdentity(IDENTITY);
+    // A run exists once it has aired something; a cursor with no timeline is
+    // not a broadcast, and `load` correctly reports nothing for one.
+    await store.append({
+      runId: IDENTITY.runId,
+      sequence: 1,
+      programmeTimeMs: 42_000,
+      kind: 'media',
+      reference: `${IDENTITY.runId}.g0.00021`,
+      durationMs: 2000,
+      attributes: {},
+    });
+    expect(await store.saveCursor(IDENTITY.runId, 43_000)).toBe(true);
+    await store.flush(IDENTITY.runId);
+
+    const persisted = await store.load(IDENTITY.runId);
+    // Not minus one, which is what "nothing has been released" looks like and
+    // is exactly what a restarted audience was being given.
+    expect(persisted?.releasedThroughMs).toBe(43_000);
+  });
+
+  it('reports no release as minus one, which is not the same as zero', async () => {
+    /*
+     * An event at programme time zero is still owed to the audience. A store
+     * that answered 0 for "nothing released yet" would skip it.
+     */
+    const store = new JournalTimelineStore({ directory });
+    await store.saveIdentity(IDENTITY);
+    await store.append({
+      runId: IDENTITY.runId,
+      sequence: 1,
+      programmeTimeMs: 0,
+      kind: 'media',
+      reference: `${IDENTITY.runId}.g0.00000`,
+      durationMs: 2000,
+      attributes: {},
+    });
+    await store.flush(IDENTITY.runId);
+    const persisted = await store.load(IDENTITY.runId);
+    expect(persisted?.releasedThroughMs).toBe(-1);
+  });
+
+  it('wires the cursor writer where it cannot be forgotten', () => {
+    /*
+     * On BOTH paths: a run opened fresh and a run recovered from disk. The
+     * recovered one matters most -- it is the one that has an audience with a
+     * position to lose.
+     */
+    const wired = REGISTRY.match(/saveCursor\(identity\.runId, releasedThroughMs\)/gu) ?? [];
+    expect(wired).toHaveLength(2);
+  });
+});

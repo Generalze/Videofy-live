@@ -130,6 +130,22 @@ export class ProgrammeOutputBuffer {
     private configuredDelayMs = 0,
     private readonly policy: BufferPolicy = DEFAULT_BUFFER_POLICY,
     private readonly planes: GovernedPlanes = METADATA_PLANE_ONLY,
+    /**
+     * Told whenever the audience is allowed further into the programme.
+     *
+     * THE CURSOR WAS NEVER PERSISTED, and a restart therefore sent an audience
+     * forty-three seconds into a broadcast back to its beginning: the media
+     * recovered byte-exact, the position did not, and the buffer reported
+     * "holding 134 s of the 45 s target -- not yet protected" while serving an
+     * empty manifest.
+     *
+     * `restoreReleasedThrough` above has always existed, so the READ side was
+     * wired and the write side was not. It is a callback here rather than the
+     * caller's responsibility because every place that advances the cursor
+     * would otherwise have to remember, and this repository's recurring defect
+     * is precisely the join nobody owns.
+     */
+    private readonly onReleased?: (releasedThroughMs: number) => void,
   ) {
     this.state = configuredDelayMs > 0 ? 'filling' : 'inactive';
     if (configuredDelayMs > 0 && !this.everyPlaneGoverned()) {
@@ -195,7 +211,11 @@ export class ProgrammeOutputBuffer {
     // Never backwards. An audience does not un-see a programme.
     const to = Math.max(this.releasedThroughMs, target);
     const released = this.timeline.between(this.releasedThroughMs, to);
+    const moved = to !== this.releasedThroughMs;
     this.releasedThroughMs = to;
+    // Only when it actually moved: a tick that releases nothing is the normal
+    // case and must not cost a write.
+    if (moved) this.onReleased?.(to);
     this.reassess();
     return released;
   }

@@ -128,6 +128,15 @@ export class ProgrammeTimelineRegistry {
       this.defaultDelayMs,
       this.policy,
       this.planes,
+      /*
+       * THE CURSOR, PERSISTED AS IT MOVES.
+       *
+       * `saveCursor` existed on every store implementation and was called by
+       * nothing, so a restart recovered the media byte-exact and sent the
+       * audience back to the beginning. Fire-and-forget for the same reason
+       * the events are: a live broadcast cannot wait on a disk.
+       */
+      (releasedThroughMs) => void this.store?.saveCursor(identity.runId, releasedThroughMs),
     );
     buffer.restoreReleasedThrough(persisted.releasedThroughMs);
     this.runs.set(identity.runId, { identity, timeline, buffer });
@@ -247,6 +256,16 @@ export class ProgrammeTimelineRegistry {
       this.defaultDelayMs,
       this.policy,
       this.planes,
+      /*
+       * THE CURSOR, PERSISTED AS IT MOVES.
+       *
+       * `saveCursor` existed on every store implementation and was called by
+       * nothing, so a restart recovered the media byte-exact and sent an
+       * audience forty-three seconds in back to the beginning. Fire-and-forget
+       * for the same reason the events are: a live broadcast cannot wait on a
+       * disk.
+       */
+      (releasedThroughMs) => void store?.saveCursor(identity.runId, releasedThroughMs),
     );
     tracked.buffer = buffer;
     this.runs.set(identity.runId, { identity, timeline, buffer });
