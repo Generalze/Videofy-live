@@ -170,6 +170,8 @@ export class RawContributionEncoder implements ContributionOutput {
   private stopping = false;
   private readonly pendingAudio: Buffer[] = [];
   private pendingAudioBytes = 0;
+  /** Startup audio discarded while the encoder had not yet connected. */
+  private droppedPendingAudio = 0;
 
   constructor(private readonly options: RawEncoderOptions) {}
 
@@ -262,11 +264,26 @@ export class RawContributionEncoder implements ContributionOutput {
        */
       this.pendingAudio.push(block);
       this.pendingAudioBytes += block.byteLength;
-      if (this.pendingAudioBytes > MAX_PENDING_AUDIO_BYTES) {
-        this.options.onProblem?.('the encoder never accepted audio; the programme cannot proceed', {
-          runId: this.options.runId,
-        });
-        this.audioReady = false;
+      while (this.pendingAudioBytes > MAX_PENDING_AUDIO_BYTES) {
+        /*
+         * DROP, NEVER LATCH READINESS. Setting `audioReady = false` here
+         * rebuilt the deadlock the `ready` comment above describes, by another
+         * route: readiness gates the bridge's pump, the pump is what writes
+         * VIDEO, and FFmpeg only reaches its audio input after it has read
+         * video. So refusing until audio is accepted refused the one thing
+         * that would let audio be accepted.
+         *
+         * On staging that stalled a whole 120-second broadcast: encoder
+         * started, socket ESTABLISHED, bridge receiving 1,501 frames, and not
+         * one byte in the spool -- with every component reporting healthy.
+         *
+         * The oldest block goes, because this backlog is the encoder's startup
+         * and the audience joins at the cursor, not at the first sample.
+         */
+        const dropped = this.pendingAudio.shift();
+        if (dropped === undefined) break;
+        this.pendingAudioBytes -= dropped.byteLength;
+        this.droppedPendingAudio += 1;
       }
       return;
     }
@@ -302,8 +319,33 @@ export class RawContributionEncoder implements ContributionOutput {
       this.audioSocket = socket;
       // Everything written while the encoder was still describing its video
       // input, in the order it was produced.
-      for (const block of this.pendingAudio.splice(0)) socket.write(block);
+      let accepted = true;
+      for (const block of this.pendingAudio.splice(0)) accepted = socket.write(block);
       this.pendingAudioBytes = 0;
+      if (this.droppedPendingAudio > 0) {
+        this.options.onProblem?.('startup audio was discarded before the encoder connected', {
+          runId: this.options.runId,
+          blocks: this.droppedPendingAudio,
+        });
+      }
+      /*
+       * THE LATCH HAS TO BE RELEASED HERE, and forgetting to release it
+       * stalled a whole broadcast without one component reporting a fault.
+       *
+       * The bounded buffer above sets `audioReady = false` when the encoder
+       * has not connected yet -- correct, and it made the flag sticky. A
+       * `drain` only fires after a write returns false, and these writes never
+       * fill the socket, so `drain` never came and the flag never cleared.
+       * `ready` stayed false for ever, `pump` returned on every tick, both
+       * queues filled, frames dropped, and ffmpeg sat connected and idle
+       * receiving nothing. The encoder had "started", the socket was
+       * established, the bridge was receiving frames: every signal green, no
+       * media at all.
+       *
+       * The connection IS the condition that was being waited for, so it is
+       * the moment the refusal stops being true.
+       */
+      this.audioReady = accepted;
       socket.on('drain', () => {
         this.audioReady = true;
       });

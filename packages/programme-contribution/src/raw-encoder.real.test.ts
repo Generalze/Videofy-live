@@ -199,3 +199,51 @@ describe.skipIf(canRun)('the real encoder fixture', () => {
     expect(canRun).toBe(false);
   });
 });
+
+/**
+ * Audio that arrives before the encoder has connected its input.
+ *
+ * THE SHAPE OF A BROADCAST THAT STALLED WITH EVERY SIGNAL GREEN. FFmpeg opens
+ * its second input only after it has finished describing the first, so a
+ * publisher at 100 chunks a second overflows the bounded pending buffer in
+ * about a second -- before the socket exists. That overflow set `audioReady`
+ * false, correctly. Nothing set it back.
+ *
+ * `drain` only fires after a write returns false, and these writes never fill
+ * the socket, so `drain` never came. `ready` stayed false for ever, the
+ * bridge's pump returned on every tick, both queues filled, frames dropped,
+ * and FFmpeg sat connected and idle. The encoder had "started", the socket was
+ * ESTABLISHED, the bridge was receiving frames -- and the spool stayed empty
+ * for the whole broadcast.
+ *
+ * The connection is the condition that was being waited for, so it is the
+ * moment the refusal must stop being true.
+ */
+describe.skipIf(!ffmpegPresent)('audio that arrives before the encoder connects', () => {
+  it('BECOMES READY AGAIN ONCE THE ENCODER CONNECTS', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'contribution-latch-'));
+    const encoder = new RawContributionEncoder({
+      runId: 'run_latch',
+      outputDirectory: directory,
+      video: VIDEO,
+      audio: AUDIO,
+      segmentSeconds: SEGMENT_SECONDS,
+    });
+
+    /*
+     * Enough audio to cross the bound before start() is even called, which is
+     * exactly what a live publisher does: it does not wait to be asked.
+     */
+    const block = new Int16Array(AUDIO.sampleRate / 100);
+    for (let i = 0; i < 400; i += 1) encoder.writeAudio(block);
+    expect(encoder.ready).toBe(false);
+
+    await encoder.start();
+    // The socket exists now. A publisher that is still refused here is a
+    // broadcast that will never produce a byte.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(encoder.ready).toBe(true);
+
+    await encoder.stop();
+  }, 30_000);
+});
