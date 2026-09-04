@@ -62,6 +62,25 @@ export interface ServiceSelectionReport {
   readonly service: ProviderServiceContext;
   /** True only when the provider may serve as PRIMARY for this service. */
   readonly eligibleAsPrimary: boolean;
+  /**
+   * May a deployment BOOT on this provider, as distinct from route to it now.
+   *
+   * TWO DIFFERENT QUESTIONS, AND CONFLATING THEM DEADLOCKED PRODUCTION.
+   * `eligibleAsPrimary` answers "may this provider receive traffic", which
+   * correctly requires observed health -- and health cannot exist until the
+   * process has started and probed. So a startup gate that asked the traffic
+   * question could never be satisfied: the service had to start to obtain
+   * health, and needed health to be allowed to start.
+   *
+   * This answers only what is knowable BEFORE the process runs: the provider
+   * is registered, its integration stage is high enough, its credential NAMES
+   * are present, and it declares an execution capability this service context
+   * requires. No runtime health, because there is none yet.
+   *
+   * It is deliberately NOT a weaker form of traffic eligibility. Nothing may
+   * route to a provider on the strength of this alone.
+   */
+  readonly startableForService: boolean;
   /** True when it may sit behind a primary as a fallback. */
   readonly eligibleAsFallback: boolean;
   readonly issues: readonly ServiceSelectionIssue[];
@@ -118,6 +137,9 @@ export function evaluateServiceSelection(
       providerId: input.providerId,
       service: input.service,
       eligibleAsPrimary: false,
+      // A provider nobody registered is not startable either. Only health is
+      // excluded from startability, never identity.
+      startableForService: false,
       eligibleAsFallback: false,
       missingCredentials: [],
       issues: [
@@ -228,6 +250,13 @@ export function evaluateServiceSelection(
     providerId: provider.providerId,
     service: input.service,
     eligibleAsPrimary: blockingIssues.length === 0,
+    /*
+     * The same blocking issues, minus the one that cannot be known yet. Health
+     * is the ONLY issue excluded: a provider that is unregistered, below the
+     * required stage, missing a credential name, or incapable of the execution
+     * mode this service needs is not startable either, and stays refused here.
+     */
+    startableForService: blockingIssues.every((issue) => issue.code === 'health-not-serving'),
     eligibleAsFallback:
       usable &&
       fallbackModeOk &&
@@ -254,6 +283,21 @@ export function assertServiceSelectionReady(input: EvaluateServiceSelectionInput
  * Returns the reasons it is not, rather than a bare boolean, because
  * "commercial-cloud refused to start" without a reason is what the previous
  * blanket `throw` in media-ingest gave an operator.
+ *
+ * ASKS THE STATIC QUESTION, AND THAT IS THE WHOLE FIX. This called
+ * `evaluateServiceSelection` and read `eligibleAsPrimary`, which is a TRAFFIC
+ * verdict and therefore requires observed health. Health is produced by
+ * probing, probing requires the process to be running, and the process could
+ * not start until the gate passed -- so `commercial-cloud` could never
+ * bootstrap. Production sat in a 133,247-restart loop and the honest-looking
+ * message said "no certified provider is available" while four certified
+ * providers were registered with recorded benchmark evidence.
+ *
+ * The health rule itself is untouched and still correct: an unprobed provider
+ * must not receive traffic. What changed is that a deployment may now BOOT on
+ * evidence that exists before it runs -- registration, integration stage,
+ * credential names, declared execution capability -- and routing still waits
+ * for a real probe.
  */
 export function commercialProfileBlockers(input: {
   readonly minimumStage: ProviderIntegrationStage;
@@ -278,7 +322,7 @@ export function commercialProfileBlockers(input: {
             ? {}
             : { externalAuthResolved: input.externalAuthResolved }),
           isPresent: input.isPresent,
-        }).eligibleAsPrimary,
+        }).startableForService,
     );
     if (eligible.length === 0) {
       blockers.push(
