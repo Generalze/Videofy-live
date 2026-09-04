@@ -44,9 +44,15 @@ const ENTRY = fileURLToPath(
  * without making it impossible, and a gate that fails for reasons unrelated to
  * what it guards trains everybody to re-run CI.
  *
- * Binding zero and reading back what the kernel chose, then releasing it, is
- * the same question the service is about to ask. Paired with waiting for each
- * child to actually exit, there is no window for two probes to collide.
+ * Binding zero and reading back what the kernel chose narrows the window, and
+ * DOES NOT CLOSE IT: between this process closing the socket and the child
+ * binding it, anything on the machine may take it. That is a TOCTOU race and
+ * calling it impossible would be the same overconfidence that shipped the
+ * counter. So the probe also RETRIES on EADDRINUSE with a fresh port, which
+ * turns a collision from a failed candidate into a slower one.
+ *
+ * Waiting for each child to actually exit is the other half: resolving on the
+ * kill signal returns while the process still holds its socket.
  */
 async function freePort(): Promise<number> {
   const server = createServer();
@@ -84,7 +90,22 @@ interface BootResult {
   readonly output: string;
 }
 
-async function boot(extraEnv: Record<string, string> = {}): Promise<BootResult> {
+/**
+ * Boot once, retrying only a port collision.
+ *
+ * Deliberately narrow: EADDRINUSE is the one failure that says nothing about
+ * the artefact. Every other exit is the answer this test exists to report, and
+ * retrying those would be a gate re-rolling until it liked the result.
+ */
+async function boot(extraEnv: Record<string, string> = {}, attempt = 0): Promise<BootResult> {
+  const result = await bootOnce(extraEnv);
+  if (!result.listening && attempt < 4 && result.output.includes('EADDRINUSE')) {
+    return boot(extraEnv, attempt + 1);
+  }
+  return result;
+}
+
+async function bootOnce(extraEnv: Record<string, string> = {}): Promise<BootResult> {
   const port = await freePort();
   return new Promise<BootResult>((resolve) => {
     /*

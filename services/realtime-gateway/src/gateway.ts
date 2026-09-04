@@ -233,6 +233,45 @@ export class Gateway {
    * have. A gateway with no ingest can still carry calls and signalling; it
    * cannot carry a programme.
    */
+  /**
+   * Whether anything authoritative has said what this deployment does.
+   *
+   * A DIFFERENT FACT FROM CONNECTIVITY. The policy is pinned for this process
+   * once established, so its announcer going offline does not un-say it -- and
+   * a gateway that has never been told is one where no programme relays.
+   */
+  get deliveryAuthorityKnown(): boolean {
+    return this.relay.authorityKnown;
+  }
+
+  /**
+   * Could a TRUE LIVE programme go out right now?
+   *
+   * The broadcaster's own WebRTC path, which does not run through media
+   * ingest -- so a pinned live policy survives its announcer disconnecting.
+   * Null while nobody has established what this deployment does: "nobody
+   * asked" and "asked, and no" must not render the same.
+   */
+  get trueLiveCapable(): boolean | null {
+    if (!this.relay.authorityKnown) return null;
+    if (!this.relay.admissionAllowed()) return false;
+    return this.relay.deliveryMode === 'live';
+  }
+
+  /**
+   * Could a PROTECTED programme go out right now?
+   *
+   * This one DOES depend on media ingest: the spool, the cursor and the egress
+   * all live there. One broad capability field could not say that true live is
+   * possible while protected live is not, which is the state a deployment is
+   * in the moment ingest drops.
+   */
+  get protectedLiveCapable(): boolean | null {
+    if (!this.relay.authorityKnown) return null;
+    if (!this.relay.admissionAllowed()) return false;
+    return this.relay.deliveryMode === 'delayed' && this.mediaIngestConnected;
+  }
+
   get mediaIngestConnected(): boolean {
     return this.activeIngestClients.size > 0;
   }
@@ -1585,6 +1624,20 @@ export class Gateway {
        * change. The run is minted fresh here because THIS airing is not the
        * last one: its timeline, telemetry and adverts must not inherit them.
        */
+      if (!this.relay.admissionAllowed()) {
+        /*
+         * Two policies are in circulation, so nobody can say what a new
+         * programme would be. Refused rather than started under whichever
+         * answer arrived last.
+         */
+        logger.error('Refused a new programme: the delivery policy is in conflict', {
+          sessionId: config.sessionId,
+        });
+        socket.emit(SOCKET_EVENTS.ERROR, {
+          message: 'This gateway has conflicting programme delivery policies; no programme may start.',
+        });
+        return;
+      }
       if (!this.programmeRuns.has(config.sessionId)) {
         const runId = `run_${randomUUID().replace(/-/gu, '').slice(0, 24)}`;
         this.programmeRuns.set(config.sessionId, {
@@ -2326,9 +2379,26 @@ export class Gateway {
    * to do, and an operator reading the log should not have to infer it.
    */
   private noteDeliveryPolicy(policy: ProgrammeDeliveryPolicy): void {
-    const changed = this.relay.notePolicy(policy);
-    if (changed) {
-      logger.info('Programme delivery policy received', { deliveryMode: policy.deliveryMode });
+    const accepted = this.relay.notePolicy(policy);
+    if (accepted) {
+      logger.info('Programme delivery policy established for this gateway', {
+        deliveryMode: policy.deliveryMode,
+      });
+      return;
+    }
+    const conflict = this.relay.conflict;
+    if (conflict !== null) {
+      /*
+       * TWO ANSWERS ABOUT ONE DEPLOYMENT. A reconnecting media-ingest, or a
+       * stale instance of one, offering a different mode does not get to
+       * change what every unclassified session means underneath a running
+       * broadcast. Loud, sticky, and new programmes refused until somebody
+       * deploys deliberately -- runs already protected stay protected.
+       */
+      logger.error('Programme delivery policy CONFLICT: refusing new programme admission', {
+        pinned: conflict.pinned,
+        offered: conflict.offered,
+      });
     }
   }
 

@@ -355,3 +355,80 @@ from the trend rather than awaited as ENOSPC.
 reliably free space, and it would put an audience closer to live than the
 people relying on the protection were told. When the volume cannot hold the
 promise, the promise fails loudly and the delay stays where it is.
+
+---
+
+## Certification history: what each red gate actually caught
+
+Kept because the *cause* matters as much as the colour, and two of these are
+easy to remember wrongly.
+
+### `0702202` — CI #88 red
+
+```text
+CI failure          service-boots.test.ts, EADDRINUSE on a fixed port
+first-run no-leak   PASSED, all 13 tests, in the same run
+relay fail-open     found by a later code audit, NOT by this CI failure
+```
+
+The boot harness collided on a port because the previous probe's child had not
+released its socket. It says nothing about the product. The Programme relay
+defect below was real, serious, and discovered independently by reading the
+code — treating the red gate as evidence of it would have been luck rather
+than method.
+
+A gate that fails for reasons unrelated to what it guards is worse than no
+gate: it teaches everybody to re-run CI.
+
+### The relay fail-open, found by audit
+
+Two defaults, both of which read as reasonable:
+
+```text
+mayRelayFrames()    absence from the FORBIDDEN set = permission
+mayRelayRealtime()  absence of a programme run     = "an ordinary call"
+```
+
+So an unclassified backend media session relayed by default, and a broadcaster
+frame arriving before the operator configuration reached the audience. The
+window was the one a safety delay exists to cover.
+
+**And the test written to catch it could not.** It called `admitSession` and
+then produced frames, proving "unknown delivery after admission is safe" and
+never "media arriving before admission is safe". That is the second test in
+this wave to agree with the defect it was guarding; the first asserted
+`toContain('return !this.sawDelayedDelivery;')`.
+
+The correction moves the invariant to the media boundary rather than expecting
+the announcement to win a race: the set lists what has been positively OPENED,
+an unbound session is classified by the deployment policy, and before any
+classification the answer is no.
+
+### Two locks, at different scopes
+
+```text
+DEPLOYMENT POLICY   pinned for the gateway process
+                    a contradicting one is a FAULT, not a change
+                    new programme admission refused while in conflict
+                    active protected runs stay protected
+
+RUN DELIVERY MODE   pinned for the programmeRunId, both directions
+                    readiness may change; the mode may not
+```
+
+### Connection liveness is not delivery authority
+
+```text
+media-ingest disconnects
+→ a pinned LIVE policy is NOT erased
+→ trueLiveCapable stays true (that route never ran through ingest)
+→ protectedLiveCapable becomes false (spool, cursor and egress live there)
+
+gateway restarts with no policy reacquired
+→ deliveryAuthorityKnown false
+→ no programme original media relays at all
+```
+
+Accepted deliberately: losing programme availability is preferable to exposing
+a protected broadcast at realtime. `/health` reports the three facts separately
+because they disagree, and the disagreement is the useful part.

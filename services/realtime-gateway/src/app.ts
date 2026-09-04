@@ -28,6 +28,9 @@ export interface CreateAppOptions {
    * then this gateway does not claim either.
    */
   programmeMediaCapable?: () => boolean | null;
+  deliveryAuthorityKnown?: () => boolean | null;
+  trueLiveCapable?: () => boolean | null;
+  protectedLiveCapable?: () => boolean | null;
   internalToken?: string | null;
   /**
    * P6.5: lazy provider for the Connect /v1 router. A closure, not a router,
@@ -288,6 +291,36 @@ export function createApp(options: CreateAppOptions = {}): express.Application {
        * 106,722 restarts.
        */
       programmeMediaCapable: options.programmeMediaCapable?.() ?? null,
+      /**
+       * Has anything authoritative ever said what this deployment does?
+       *
+       * SEPARATE FROM CONNECTIVITY, and the distinction is now load-bearing.
+       * The policy decides what an unclassified programme session may do, so a
+       * gateway that has never been told is one where no programme may relay
+       * anything. It is not the same fact as `mediaIngestConnected`: a policy
+       * once established stays established for this process, and its sender
+       * going offline does not un-say it.
+       */
+      deliveryAuthorityKnown: options.deliveryAuthorityKnown?.() ?? null,
+      /**
+       * Could a TRUE LIVE programme go out right now?
+       *
+       * A pinned live policy survives its announcer disconnecting: the route
+       * this answers about is the broadcaster's own WebRTC path, which does
+       * not run through media ingest. Reporting it false because ingest is
+       * down would withdraw a capability that is genuinely still there.
+       */
+      trueLiveCapable: options.trueLiveCapable?.() ?? null,
+      /**
+       * Could a PROTECTED programme go out right now?
+       *
+       * The other half, and it does depend on media ingest: the spool, the
+       * cursor and the egress all live there. One broad `programmeMediaCapable`
+       * could not say that one of these is true while the other is false,
+       * which is exactly the state a deployment is in when ingest drops
+       * mid-broadcast.
+       */
+      protectedLiveCapable: options.protectedLiveCapable?.() ?? null,
       timestamp: new Date().toISOString(),
     });
   });

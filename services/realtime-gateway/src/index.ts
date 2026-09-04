@@ -83,6 +83,15 @@ const app = createApp({
   diagnostics: () => gateway.getWebRtcDiagnostics(),
   // So /health can stop claiming a capability that is absent.
   mediaIngestConnected: () => gateway.mediaIngestConnected,
+  /*
+   * Three facts, because they can disagree and the disagreement is the useful
+   * part: a pinned LIVE policy with media ingest down is trueLiveCapable and
+   * not protectedLiveCapable, and a fresh gateway that has been told nothing
+   * is neither.
+   */
+  deliveryAuthorityKnown: () => gateway.deliveryAuthorityKnown,
+  trueLiveCapable: () => gateway.trueLiveCapable,
+  protectedLiveCapable: () => gateway.protectedLiveCapable,
   ...(adapterSurface === null
     ? {}
     : {

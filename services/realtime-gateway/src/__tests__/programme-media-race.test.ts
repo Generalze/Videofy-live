@@ -210,3 +210,100 @@ describe('a deployment that protects nothing still works', () => {
     expect(new ProgrammeRelayAuthority().decideUnbound().refusal).toBe('no-delivery-authority');
   });
 });
+
+describe('the deployment policy is pinned for this gateway process', () => {
+  it('accepts the first authoritative answer', () => {
+    const authority = new ProgrammeRelayAuthority();
+    expect(authority.notePolicy(programmeDeliveryPolicy('delayed'))).toBe(true);
+    expect(authority.deliveryMode).toBe('delayed');
+    expect(authority.authorityKnown).toBe(true);
+  });
+
+  it('takes the same answer again without complaint', () => {
+    /*
+     * Restated on every reconnection, precisely so a restarted gateway learns
+     * it. Repetition is the normal case, not a conflict.
+     */
+    const authority = new ProgrammeRelayAuthority();
+    authority.notePolicy(programmeDeliveryPolicy('delayed'));
+    expect(authority.notePolicy(programmeDeliveryPolicy('delayed'))).toBe(false);
+    expect(authority.admissionAllowed()).toBe(true);
+    expect(authority.conflict).toBeNull();
+  });
+
+  it('REFUSES TO HOT-SWITCH ON A CONTRADICTING POLICY', () => {
+    /*
+     * A reconnecting media-ingest, or a stale instance of one, does not get to
+     * change what every unclassified session means underneath a running
+     * broadcast. The policy decides whether an unbound session may relay, so
+     * switching it live is switching the safety rule live.
+     */
+    const authority = new ProgrammeRelayAuthority();
+    authority.notePolicy(programmeDeliveryPolicy('delayed'));
+    expect(authority.notePolicy(programmeDeliveryPolicy('live'))).toBe(false);
+    // The pinned answer stands. It did not become live.
+    expect(authority.deliveryMode).toBe('delayed');
+    expect(authority.decideUnbound().permitted).toBe(false);
+  });
+
+  it('refuses new programme admission while two answers are in circulation', () => {
+    const authority = new ProgrammeRelayAuthority();
+    authority.notePolicy(programmeDeliveryPolicy('live'));
+    expect(authority.admissionAllowed()).toBe(true);
+    authority.notePolicy(programmeDeliveryPolicy('delayed'));
+    expect(authority.admissionAllowed()).toBe(false);
+    expect(authority.conflict).toEqual({ pinned: 'live', offered: 'delayed' });
+  });
+
+  it('keeps the conflict visible rather than letting a well-behaved message clear it', () => {
+    /*
+     * Sticky on purpose. Clearing it when the next correct announcement
+     * arrives would let the fault vanish while the deployment that caused it
+     * is still out there, and nobody would ever see it.
+     */
+    const authority = new ProgrammeRelayAuthority();
+    authority.notePolicy(programmeDeliveryPolicy('delayed'));
+    authority.notePolicy(programmeDeliveryPolicy('live'));
+    authority.notePolicy(programmeDeliveryPolicy('delayed'));
+    expect(authority.conflict).not.toBeNull();
+    expect(authority.admissionAllowed()).toBe(false);
+  });
+
+  it('leaves a run already bound to DELAYED protected through a conflict', () => {
+    // Nothing new starts, and nothing already protected is released.
+    const authority = new ProgrammeRelayAuthority();
+    authority.notePolicy(programmeDeliveryPolicy('delayed'));
+    authority.noteDelivery(delivery('delayed'));
+    authority.notePolicy(programmeDeliveryPolicy('live'));
+    expect(authority.decide(RUN).permitted).toBe(false);
+  });
+});
+
+describe('connection liveness is not delivery authority', () => {
+  it('KEEPS A PINNED LIVE POLICY WHEN ITS ANNOUNCER GOES AWAY', () => {
+    /*
+     * media-ingest disconnecting does not un-say what it said. The route this
+     * governs is the broadcaster's own WebRTC path, which does not run through
+     * media ingest at all -- withdrawing it because the announcer dropped
+     * would take away a capability that is genuinely still there.
+     *
+     * Nothing in this authority observes a socket, which is the point: there
+     * is no code path by which a disconnect can reach the policy.
+     */
+    const authority = new ProgrammeRelayAuthority();
+    authority.notePolicy(programmeDeliveryPolicy('live'));
+    authority.admitSession(SESSION, RUN);
+    // Time passes; the announcer is gone. No API here is told, and none is
+    // needed: the answer is a property of the deployment, not of the socket.
+    expect(authority.mayRelayFrames(SESSION)).toBe(true);
+    expect(authority.decideUnbound().permitted).toBe(true);
+  });
+
+  it('never opens a protected deployment because its announcer went away', () => {
+    const authority = new ProgrammeRelayAuthority();
+    authority.notePolicy(programmeDeliveryPolicy('delayed'));
+    authority.admitSession(SESSION, RUN);
+    expect(authority.mayRelayFrames(SESSION)).toBe(false);
+    expect(authority.decideUnbound().permitted).toBe(false);
+  });
+});

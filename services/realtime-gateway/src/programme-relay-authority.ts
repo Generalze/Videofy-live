@@ -66,10 +66,60 @@ export class ProgrammeRelayAuthority {
    */
   private readonly open = new Set<string>();
 
+  /**
+   * Pin what this deployment does, for the life of this gateway process.
+   *
+   * THE POLICY IS NOW SAFETY-CRITICAL, because it is what decides an unbound
+   * session. So the first authoritative announcement establishes it and a
+   * later contradicting one is a FAULT rather than a change: a reconnecting
+   * media-ingest, or a stale instance of one, must not be able to alter the
+   * meaning of every unclassified session underneath a running broadcast.
+   *
+   * Repeating the same answer is fine and expected -- it is restated on every
+   * reconnection precisely so a restarted gateway learns it.
+   *
+   * Returns whether this announcement was accepted. A refusal leaves the
+   * pinned policy exactly as it was and raises a conflict that refuses new
+   * programme admission until somebody deploys deliberately.
+   */
   notePolicy(policy: ProgrammeDeliveryPolicy): boolean {
-    const changed = this.policy?.deliveryMode !== policy.deliveryMode;
-    this.policy = policy;
-    return changed;
+    if (this.policy === null) {
+      this.policy = policy;
+      return true;
+    }
+    if (this.policy.deliveryMode === policy.deliveryMode) return false;
+    this.policyConflict = { pinned: this.policy.deliveryMode, offered: policy.deliveryMode };
+    return false;
+  }
+
+  /**
+   * A contradicting policy this process refused, or null.
+   *
+   * Deliberately sticky. Clearing it when a well-behaved announcement arrives
+   * would let the fault disappear while the deployment that caused it is still
+   * out there, and the operator would never see it.
+   */
+  private policyConflict: { readonly pinned: string; readonly offered: string } | null = null;
+
+  get conflict(): { readonly pinned: string; readonly offered: string } | null {
+    return this.policyConflict;
+  }
+
+  /**
+   * May a NEW programme be admitted at all?
+   *
+   * False while two answers about this deployment are in circulation. Runs
+   * already protected stay protected -- their mode is pinned to the run -- but
+   * nothing new starts until the disagreement is resolved by a deliberate
+   * deployment rather than by whichever service reconnected last.
+   */
+  admissionAllowed(): boolean {
+    return this.policyConflict === null;
+  }
+
+  /** Whether anything authoritative has ever established what this does. */
+  get authorityKnown(): boolean {
+    return this.policy !== null;
   }
 
   get deliveryMode(): ProgrammeDeliveryPolicy['deliveryMode'] | null {
