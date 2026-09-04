@@ -48,12 +48,23 @@ export class ProgrammeRelayAuthority {
   private policy: ProgrammeDeliveryPolicy | null = null;
   private readonly delivery = new Map<string, ProgrammeMediaDelivery>();
   /**
-   * Sessions whose original media must not be relayed.
+   * Sessions POSITIVELY CLEARED to relay their original media.
+   *
+   * THE SET USED TO HOLD THE OPPOSITE, and that was the remaining leak. When
+   * it listed the forbidden, a session nobody had classified yet was relayable
+   * by default -- so a broadcaster frame that arrived before the run was bound
+   * went straight to the audience. `admitSession` closed the path only after
+   * the binding, which is a race the announcement was expected to win, and
+   * expecting to win a race is not a safety property.
+   *
+   * Inverted, the question the media path asks is "has anything positively
+   * opened this?" and the answer before any classification is no. There is no
+   * window left for a frame to arrive in.
    *
    * A set rather than a lookup, because this is consulted on every audio and
    * video frame and a map walk on the media path shows up as jitter.
    */
-  private readonly forbidden = new Set<string>();
+  private readonly open = new Set<string>();
 
   notePolicy(policy: ProgrammeDeliveryPolicy): boolean {
     const changed = this.policy?.deliveryMode !== policy.deliveryMode;
@@ -76,7 +87,15 @@ export class ProgrammeRelayAuthority {
    */
   noteDelivery(delivery: ProgrammeMediaDelivery): boolean {
     const known = this.delivery.get(delivery.programmeRunId);
-    if (known !== undefined && known.mode === 'delayed' && delivery.mode === 'live') return false;
+    /*
+     * SYMMETRIC. Only the delayed-to-live direction was refused, on the
+     * grounds that the other way round leaks nothing -- which is true and is
+     * not the point. A run that can change what it is has no fixed answer, and
+     * an audience told they were watching live being silently moved behind a
+     * 45-second buffer is its own kind of broken promise. Readiness may change
+     * as often as it likes; the MODE is decided once.
+     */
+    if (known !== undefined && known.mode !== delivery.mode) return false;
     this.delivery.set(delivery.programmeRunId, delivery);
     return true;
   }
@@ -87,6 +106,25 @@ export class ProgrammeRelayAuthority {
 
   forgetRun(runId: string): void {
     this.delivery.delete(runId);
+  }
+
+  /**
+   * The decision for a session no run has been bound to yet.
+   *
+   * UNCLASSIFIED, NOT "NOT A PROGRAMME". This path carries backend programme
+   * media, so a session with no run is one whose operator configuration has
+   * not arrived -- which is exactly the window a broadcaster can publish into.
+   * Deciding it from the deployment POLICY rather than from the absence of a
+   * map entry is what makes the window safe: a deployment that protects its
+   * programmes refuses, a deployment that does not have never had anything to
+   * protect, and a gateway nobody has told anything refuses.
+   */
+  decideUnbound(): RelayDecision {
+    if (relayPermittedWithoutRunAnswer(this.policy)) return PERMITTED;
+    return {
+      permitted: false,
+      refusal: this.policy === null ? 'no-delivery-authority' : 'awaiting-delivery-authority',
+    };
   }
 
   /**
@@ -109,9 +147,14 @@ export class ProgrammeRelayAuthority {
     };
   }
 
-  /** The per-frame question. Hot path: one set lookup and nothing else. */
+  /**
+   * The per-frame question. Hot path: one set lookup and nothing else.
+   *
+   * An unbound session answers NO. That is the whole correction: absence of
+   * positive LIVE authority is not permission to broadcast live.
+   */
   mayRelayFrames(sessionId: string): boolean {
-    return !this.forbidden.has(sessionId);
+    return this.open.has(sessionId);
   }
 
   /**
@@ -123,12 +166,10 @@ export class ProgrammeRelayAuthority {
    */
   applyToSession(sessionId: string, permitted: boolean): boolean {
     if (permitted) {
-      this.forbidden.delete(sessionId);
+      this.open.add(sessionId);
       return false;
     }
-    const wasPermitted = !this.forbidden.has(sessionId);
-    this.forbidden.add(sessionId);
-    return wasPermitted;
+    return this.open.delete(sessionId);
   }
 
   /**
@@ -139,11 +180,11 @@ export class ProgrammeRelayAuthority {
    * announcement. This is the other half of the first-run fix: the policy says
    * what to do, and this makes it true before a frame can arrive.
    */
-  admitSession(sessionId: string, runId: string): void {
-    this.applyToSession(sessionId, this.decide(runId).permitted);
+  admitSession(sessionId: string, runId: string): boolean {
+    return this.applyToSession(sessionId, this.decide(runId).permitted);
   }
 
   releaseSession(sessionId: string): void {
-    this.forbidden.delete(sessionId);
+    this.open.delete(sessionId);
   }
 }

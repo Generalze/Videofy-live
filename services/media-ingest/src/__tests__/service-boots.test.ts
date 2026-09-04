@@ -19,6 +19,7 @@
  * reach the point where it is listening.
  */
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
 import { existsSync } from 'node:fs';
 import { fileURLToPath, URL } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -34,7 +35,30 @@ const ENTRY = fileURLToPath(
  * sparse deployment takes, and a fixture that sets everything would only
  * prove the richest configuration works.
  */
-let nextPort = 34_100;
+/**
+ * A port the operating system has just confirmed is free.
+ *
+ * A COUNTER WAS NOT ENOUGH, and it failed in CI rather than here: the previous
+ * probe's child is killed, its socket is not released instantly, and the next
+ * spawn lands on EADDRINUSE. Incrementing a number makes that less likely
+ * without making it impossible, and a gate that fails for reasons unrelated to
+ * what it guards trains everybody to re-run CI.
+ *
+ * Binding zero and reading back what the kernel chose, then releasing it, is
+ * the same question the service is about to ask. Paired with waiting for each
+ * child to actually exit, there is no window for two probes to collide.
+ */
+async function freePort(): Promise<number> {
+  const server = createServer();
+  return new Promise<number>((resolve, reject) => {
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address !== null ? address.port : 0;
+      server.close(() => (port > 0 ? resolve(port) : reject(new Error('no port'))));
+    });
+  });
+}
 
 const MINIMAL_ENV = {
   NODE_ENV: 'test',
@@ -61,6 +85,7 @@ interface BootResult {
 }
 
 async function boot(extraEnv: Record<string, string> = {}): Promise<BootResult> {
+  const port = await freePort();
   return new Promise<BootResult>((resolve) => {
     /*
      * A DISTINCT PORT PER PROBE. The service reads INGEST_PORT and defaults to
@@ -70,7 +95,7 @@ async function boot(extraEnv: Record<string, string> = {}): Promise<BootResult> 
      * and failed in the full suite, which is the signature of exactly this.
      */
     const child = spawn(process.execPath, [ENTRY], {
-      env: { ...process.env, ...MINIMAL_ENV, INGEST_PORT: String((nextPort += 1)), ...extraEnv },
+      env: { ...process.env, ...MINIMAL_ENV, INGEST_PORT: String(port), ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
@@ -79,8 +104,17 @@ async function boot(extraEnv: Record<string, string> = {}): Promise<BootResult> 
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (child.exitCode !== null || child.signalCode !== null) {
+        resolve({ listening, exitCode, output });
+        return;
+      }
+      /*
+       * WAIT FOR THE CHILD TO ACTUALLY GO. Resolving on the kill signal
+       * returns while the process still holds its socket, and the next probe
+       * spawns into it. That is the EADDRINUSE that failed CI.
+       */
+      child.once('exit', () => resolve({ listening, exitCode, output }));
       child.kill('SIGKILL');
-      resolve({ listening, exitCode, output });
     };
     const read = (chunk: Buffer) => {
       output += chunk.toString('utf8');

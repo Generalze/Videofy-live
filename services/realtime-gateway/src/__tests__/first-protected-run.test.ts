@@ -149,12 +149,25 @@ describe('a gateway nobody has told anything', () => {
     expect(authority.decide(RUN).refusal).toBe('no-delivery-authority');
   });
 
-  it('does not govern a session that is not a programme at all', () => {
-    // An ordinary call. This authority never governed those and must not
-    // start: failing closed over calls would break the product to protect a
-    // subsystem they do not use.
+  it('REFUSES A SESSION NOTHING HAS CLASSIFIED YET', () => {
+    /*
+     * THIS TEST ASSERTED THE OPPOSITE AND WAS WRONG. It read
+     * `mayRelayFrames('an-ordinary-call')` as true, on the reasoning that a
+     * session with no programme run must be an ordinary call. But this path
+     * carries backend PROGRAMME media -- calls have their own runtime and
+     * their own receive peers -- so an unclassified session here is a
+     * programme whose operator configuration has not arrived, which is exactly
+     * the window a broadcaster can publish into. The set listed the forbidden,
+     * so anything unlisted relayed, and my own first-run test called
+     * admitSession BEFORE producing frames and therefore never met the race it
+     * was written to catch.
+     *
+     * The set now lists what has been positively opened. Before any
+     * classification the answer is no, and there is no window left to arrive
+     * in.
+     */
     const authority = new ProgrammeRelayAuthority();
-    expect(authority.mayRelayFrames('an-ordinary-call')).toBe(true);
+    expect(authority.mayRelayFrames('nothing-has-classified-this')).toBe(false);
   });
 });
 

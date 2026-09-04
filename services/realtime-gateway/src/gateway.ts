@@ -2292,8 +2292,23 @@ export class Gateway {
 
   private mayRelayRealtime(sessionId: string): boolean {
     const run = this.programmeRuns.get(sessionId);
-    // Not a programme at all: an ordinary call, which this never governed.
-    if (run === undefined) return true;
+    if (run === undefined) {
+      /*
+       * THE SECOND HALF OF THE SAME FAIL-OPEN, and it read as reasonable:
+       * a session with no programme run "must be an ordinary call". It is not.
+       * This path serves the BACKEND PROGRAMME MEDIA peers only -- ordinary
+       * calls have their own runtime and their own receive peers -- so an
+       * unbound session here is a programme whose run has not been minted
+       * yet, which is precisely the window a broadcaster can publish into.
+       *
+       * Inferring "not a programme" from a missing map entry made the absence
+       * of state into permission. A programme media session with no run is
+       * UNCLASSIFIED, and it is the deployment policy that decides what an
+       * unclassified session may do -- not the fact that nobody has written
+       * anything down about it yet.
+       */
+      return this.relay.decideUnbound().permitted;
+    }
     /*
      * The run's own answer when there is one, and otherwise the deployment
      * policy that was sent before any run existed -- so a lost or late
@@ -2330,6 +2345,14 @@ export class Gateway {
       logger.info('Refused a realtime listener peer for a protected programme', { sessionId });
       return;
     }
+    /*
+     * POSITIVELY OPEN THE FRAME PATH, here and nowhere implicit.
+     *
+     * The per-frame set is default-closed, so a session relays only once
+     * something has decided it may. That decision is this one: a peer is being
+     * built for this session because the authority permits it.
+     */
+    this.relay.applyToSession(sessionId, true);
     const broadcaster = this.backendMediaPeers.getSnapshot(sessionId);
     if (
       !broadcaster ||
