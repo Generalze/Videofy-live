@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 
 /** Bumped when the rules change, so a decision records which rules made it. */
 const ADVERTISING_POLICY_VERSION = 'c7-advertising-2026.09';
-import { writeFile } from 'node:fs/promises';
+import { readdir, writeFile } from 'node:fs/promises';
 import { requireSessionSecret } from '@videofy-live/account-tokens';
 import { internalIngressRequestAllowed } from '@videofy-live/service-env';
 import { loadConfig } from './config.js';
@@ -1904,6 +1904,58 @@ app.post('/programmes/:runId/advertising/break', operatorOnly, (req, res) => {
     });
   })();
 });
+
+/*
+ * BRINGING BACK THE BROADCASTS THIS PROCESS WAS ALREADY RUNNING.
+ *
+ * THE ENTRY POINT EXISTED AND NOTHING CALLED IT. `recover()` was written,
+ * tested and exported; the media recovery beneath it was written, tested and
+ * exported; `onRecovered` was registered above. And no boot path invoked any
+ * of it, so a restarted service came back not knowing a single run it held
+ * media for -- 72 segments on the volume, a well-formed EMPTY manifest, and
+ * every health signal green. That is the same shape as the retention policy
+ * that pruned an index and no bytes: complete halves, an unjoined seam.
+ *
+ * ONLY RUNS THAT STILL HOLD MEDIA. A finished broadcast whose retention has
+ * expired must not be resurrected: there is nothing left to serve, and putting
+ * it back would offer an audience a programme that ended. The spool is the
+ * honest test, because it is what an audience would actually be served from.
+ */
+async function recoverRunsFromDisk(): Promise<void> {
+  const store = programmeJournal;
+  if (store.listRuns === undefined || programmeMediaSpool === null) return;
+  let recovered = 0;
+  let declined = 0;
+  for (const identity of await store.listRuns()) {
+    let held = 0;
+    try {
+      const entries = await readdir(join(programmeMediaSpool, identity.runId));
+      held = entries.filter((name: string) => name.endsWith('.m4s')).length;
+    } catch {
+      held = 0;
+    }
+    if (held === 0) {
+      declined += 1;
+      continue;
+    }
+    const ok = await programmeTimelines.recover(identity);
+    if (ok) recovered += 1;
+    else declined += 1;
+  }
+  if (recovered > 0 || declined > 0) {
+    logger.info('Recovered broadcasts from the journal', {
+      recovered,
+      /*
+       * Named rather than silent: a run declined because its media has expired
+       * is the retention policy working, and one declined because its journal
+       * or identity is unreadable is a fault. Both are counted here so the
+       * difference is visible in the run-by-run lines above.
+       */
+      declined,
+    });
+  }
+}
+await recoverRunsFromDisk();
 
 logger.info('Programme egress ready', {
   spool: programmeMediaSpool,

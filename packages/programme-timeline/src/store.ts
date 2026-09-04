@@ -19,6 +19,7 @@
  * was. Nothing is inferred about what might have been meant.
  */
 
+import type { ProgrammeRunIdentity } from '@videofy-live/media-ingress-wire';
 import type { ProgrammeTimelineEvent } from './index.js';
 
 /** What a store knows about one run, enough to rebuild it exactly. */
@@ -64,6 +65,28 @@ export interface TimelineStoreHealth {
  * promise can no longer be kept, which is the moment to fail closed.
  */
 export interface ProgrammeTimelineStore {
+  /**
+   * Write down WHOSE broadcast this is, once, when the run opens.
+   *
+   * THE JOURNAL RECORDED EVENTS AND NOT IDENTITY, and recovery needs both. A
+   * recovered run must say which channel aired it or no audience can be
+   * admitted to it: visibility is resolved per channel, and `channelOf` on a
+   * run nobody can place returns null. Every unit test supplied the identity
+   * directly, which is exactly why they all passed while a restarted service
+   * could not name a single run it held media for.
+   *
+   * Optional on the interface so a store that keeps nothing stays valid; a
+   * deployment whose store cannot record this simply cannot recover, and says
+   * so rather than guessing a channel.
+   */
+  saveIdentity?(identity: ProgrammeRunIdentity): Promise<boolean>;
+  /**
+   * The runs this store still holds, and who they belong to.
+   *
+   * Enumeration is what a restart needs and `load(runId)` cannot give: at boot
+   * nothing knows which runs to ask about.
+   */
+  listRuns?(): Promise<readonly ProgrammeRunIdentity[]>;
   /** Persist one event. False means it was NOT stored and the promise is broken. */
   append(event: ProgrammeTimelineEvent): Promise<boolean>;
   /** Record how far the audience has been allowed to reach. */

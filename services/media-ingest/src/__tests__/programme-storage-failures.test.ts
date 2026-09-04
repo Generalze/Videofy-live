@@ -152,6 +152,9 @@ describe('a spool that stops accepting writes', () => {
         },
         mkdir: async () => undefined,
         rm: async () => undefined,
+      // Enumeration is part of the store's io surface; a fake that omits it
+      // would not be the shape the store actually talks to.
+      readdir: async () => [],
       },
     });
   }

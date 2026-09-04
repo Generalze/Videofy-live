@@ -221,6 +221,17 @@ export class ProgrammeTimelineRegistry {
      */
     const tracked: { buffer: ProgrammeOutputBuffer | null } = { buffer: null };
     const store = this.store;
+    /*
+     * WHOSE BROADCAST THIS IS, written once, before any event.
+     *
+     * The journal recorded events and not identity, so a restarted service
+     * could read back a run's whole timeline and still not know which channel
+     * aired it -- and visibility is resolved per channel, so no audience could
+     * be admitted to it. Fire-and-forget for the same reason the events are:
+     * a live broadcast cannot wait on a disk. A run whose identity did not
+     * reach the volume is one recovery will decline rather than guess at.
+     */
+    void store?.saveIdentity?.(identity);
     const timeline = new ProgrammeTimeline(
       identity,
       store === undefined

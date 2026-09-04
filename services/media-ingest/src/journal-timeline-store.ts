@@ -21,7 +21,8 @@
  * unwritable spool is discovered before going on air rather than during it.
  */
 
-import { appendFile, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, open, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import type { ProgrammeRunIdentity } from '@videofy-live/media-ingress-wire';
 import { join } from 'node:path';
 import { FenceGuard } from '@videofy-live/programme-timeline';
 import type {
@@ -52,6 +53,7 @@ export interface JournalTimelineStoreOptions {
     readonly appendFile: typeof appendFile;
     readonly writeFile: typeof writeFile;
     readonly readFile: typeof readFile;
+    readonly readdir: typeof readdir;
     readonly mkdir: typeof mkdir;
     readonly rm: typeof rm;
   };
@@ -114,7 +116,7 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
   }
 
   constructor(private readonly options: JournalTimelineStoreOptions) {
-    this.io = options.io ?? { appendFile, writeFile, readFile, mkdir, rm };
+    this.io = options.io ?? { appendFile, writeFile, readFile, readdir, mkdir, rm };
     this.revalidateMs = options.revalidateMs ?? 1_000;
   }
 
@@ -125,7 +127,7 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
    * broadcast's journal, and the wire already validates the shape -- this is
    * the second check, at the boundary that would actually be harmed.
    */
-  private pathFor(runId: string, suffix: 'journal' | 'cursor'): string | null {
+  private pathFor(runId: string, suffix: 'journal' | 'cursor' | 'identity'): string | null {
     if (!SAFE_RUN_ID.test(runId)) return null;
     return join(this.options.directory, `${runId}.${suffix}`);
   }
@@ -133,6 +135,82 @@ export class JournalTimelineStore implements ProgrammeTimelineStore {
   private async ensureDirectory(): Promise<void> {
     this.ready ??= this.io.mkdir(this.options.directory, { recursive: true }).then(() => undefined);
     await this.ready;
+  }
+
+  /**
+   * Write down whose broadcast this is, once, when the run opens.
+   *
+   * A SIDECAR RATHER THAN A HEADER RECORD, so the event journal keeps exactly
+   * the shape it already had and an existing journal stays readable. A run
+   * without one is simply not recoverable: recovery refuses rather than
+   * guessing a channel, because guessing wrong would admit an audience to
+   * somebody else's programme.
+   */
+  async saveIdentity(identity: ProgrammeRunIdentity): Promise<boolean> {
+    const path = this.pathFor(identity.runId, 'identity');
+    if (path === null) return false;
+    if (!(await this.admitted(identity.runId))) return false;
+    return this.queue(identity.runId, async () => {
+      try {
+        await this.ensureDirectory();
+        await this.appendDurably(
+          path,
+          `${JSON.stringify({
+            channelId: identity.channelId,
+            programmeId: identity.programmeId,
+            runId: identity.runId,
+          })}${String.fromCharCode(10)}`,
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  /**
+   * Every run this store still holds, with the channel that aired it.
+   *
+   * What a restart needs and `load` cannot give: at boot nothing knows which
+   * runs to ask about. A journal whose identity sidecar is missing or
+   * unreadable is omitted -- it cannot be recovered, and reporting it as a run
+   * would produce a broadcast no audience could be admitted to.
+   */
+  async listRuns(): Promise<readonly ProgrammeRunIdentity[]> {
+    try {
+      await this.ensureDirectory();
+      const entries = await this.io.readdir(this.options.directory);
+      const found: ProgrammeRunIdentity[] = [];
+      for (const entry of entries) {
+        if (!entry.endsWith('.identity')) continue;
+        const runId = entry.slice(0, -'.identity'.length);
+        if (!SAFE_RUN_ID.test(runId)) continue;
+        const path = this.pathFor(runId, 'identity');
+        if (path === null) continue;
+        try {
+          const raw = await this.io.readFile(path, 'utf8');
+          const first = raw.split(String.fromCharCode(10)).find((line) => line.trim() !== '');
+          if (first === undefined) continue;
+          const parsed = JSON.parse(first) as Partial<ProgrammeRunIdentity>;
+          if (
+            typeof parsed.channelId === 'string' &&
+            typeof parsed.programmeId === 'string' &&
+            parsed.runId === runId
+          ) {
+            found.push({
+              channelId: parsed.channelId,
+              programmeId: parsed.programmeId,
+              runId,
+            });
+          }
+        } catch {
+          // Unreadable identity: not recoverable, and not reported as a run.
+        }
+      }
+      return found;
+    } catch {
+      return [];
+    }
   }
 
   async append(event: ProgrammeTimelineEvent): Promise<boolean> {
