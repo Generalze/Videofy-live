@@ -443,14 +443,34 @@ describe('commercial provider records', () => {
 });
 
 describe('fail-closed commercial resolution', () => {
-  it('PIN: no commercial service is startable today, and it says why', () => {
+  it('PIN: a commercial deployment with certified providers CAN boot', () => {
+    /*
+     * THIS TEST USED TO REQUIRE THE DEFECT, AND IT IS REPLACED RATHER THAN
+     * NUDGED GREEN.
+     *
+     * It asserted three blockers, with the comment "nothing is certified and
+     * no capability is verified". That was true when it was written. Providers
+     * were certified afterwards -- Deepgram, ElevenLabs, Azure and 9jaLingo
+     * all carry recorded benchmark evidence -- and the test kept passing for a
+     * DIFFERENT reason than the one it stated: it omits health, health
+     * defaults to `unknown`, and the startup gate was asking a traffic
+     * question that `unknown` can never satisfy.
+     *
+     * So the assertion outlived its condition and became a false safety
+     * signal, reporting fail-closed correctness while pinning a deadlock in
+     * which `commercial-cloud` could never start at all. Production sat in a
+     * 133,247-restart loop behind it.
+     */
     const blockers = commercialProfileBlockers({ minimumStage: 'certified', isPresent: present });
-    // Nothing is certified and no capability is verified, so all three service
-    // contexts are blocked. This is the fail-closed behaviour §21.6 specified
-    // and nothing called until now.
-    expect(blockers).toHaveLength(3);
-    expect(blockers.join('\n')).toContain('call:live');
-    expect(blockers.join('\n')).toContain('programme:uploaded');
+    expect(blockers).toEqual([]);
+  });
+
+  it('still refuses to boot when the required credentials are absent', () => {
+    // The fail-closed behaviour the old test MEANT to protect, asserted
+    // against a condition that actually produces it.
+    const blockers = commercialProfileBlockers({ minimumStage: 'certified', isPresent: absent });
+    expect(blockers.length).toBeGreaterThan(0);
+    expect(blockers.join(' ')).toContain('call:live');
   });
 
   it('PIN: an unregistered provider is refused, not defaulted', () => {
@@ -767,5 +787,139 @@ describe('Deepgram evidence is recorded per dialect', () => {
     expect(flux).toHaveLength(1);
     expect(flux[0]?.sampleCount).toBe(1);
     expect(flux[0]?.observedAt).toBe('2026-08-22');
+  });
+});
+
+/**
+ * Booting and routing are different questions.
+ *
+ * THE DEADLOCK THIS MATRIX EXISTS FOR. The startup gate asked whether a
+ * provider could receive TRAFFIC, which requires observed health; health comes
+ * from probing; probing requires the process to be running; and the process
+ * could not start until the gate passed. `commercial-cloud` could therefore
+ * never bootstrap, and production sat in a 133,247-restart loop behind an
+ * error that said "no certified provider is available" while four certified
+ * providers were registered.
+ *
+ * The correction is a separation, not a relaxation: startup asks only what is
+ * knowable before the process runs, and traffic still waits for a real probe.
+ */
+describe('booting is not routing', () => {
+  // The default fixture already is what production has: certified, credentialled
+  // and streaming-capable. The only thing varying below is health.
+  const certified = () => provider({ integrationStage: 'certified' });
+
+  const evaluate = (health?: Parameters<typeof evaluateServiceSelection>[0]['health']) =>
+    evaluateServiceSelection({
+      providerId: 'test-vendor',
+      provider: certified(),
+      service: CALL,
+      minimumStage: 'certified',
+      isPresent: present,
+      ...(health === undefined ? {} : { health }),
+    });
+
+  it('STARTS WITHOUT HEALTH, AND DOES NOT ROUTE WITHOUT IT', () => {
+    // The exact production state: certified, credentialled, capable, unprobed.
+    const report = evaluate();
+    expect(report.startableForService).toBe(true);
+    expect(report.eligibleAsPrimary).toBe(false);
+  });
+
+  it('routes once a probe reports healthy', () => {
+    const report = evaluate('healthy');
+    expect(report.startableForService).toBe(true);
+    expect(report.eligibleAsPrimary).toBe(true);
+  });
+
+  it('routes while degraded, because degraded still serves', () => {
+    const report = evaluate('degraded');
+    expect(report.startableForService).toBe(true);
+    expect(report.eligibleAsPrimary).toBe(healthAcceptsTraffic('degraded'));
+  });
+
+  it('DOES NOT ROUTE TO AN UNAVAILABLE PROVIDER, BUT STILL BOOTS', () => {
+    /*
+     * A vendor that is down does not stop the deployment existing. It stops
+     * the deployment sending anybody to that vendor -- which is the whole
+     * point of keeping the two questions apart.
+     */
+    const report = evaluate('unavailable');
+    expect(report.startableForService).toBe(true);
+    expect(report.eligibleAsPrimary).toBe(false);
+  });
+
+  it('does not route to a rate-limited provider either', () => {
+    expect(evaluate('rate-limited').eligibleAsPrimary).toBe(false);
+  });
+
+  it('CHANGING HEALTH ALONE NEVER CHANGES STARTABILITY', () => {
+    /*
+     * The invariant that protects this separation from being collapsed again.
+     * If a future change makes startability depend on health, this fails --
+     * whatever else still passes.
+     */
+    const states = [undefined, 'unknown', 'healthy', 'degraded', 'rate-limited', 'unavailable'] as const;
+    const answers = new Set(states.map((health) => evaluate(health).startableForService));
+    expect(answers).toEqual(new Set([true]));
+  });
+
+  it('refuses to start on a provider below the required stage', () => {
+    const report = evaluateServiceSelection({
+      providerId: 'test-vendor',
+      provider: provider({ integrationStage: 'configured' }),
+      service: CALL,
+      minimumStage: 'certified',
+      isPresent: present,
+      health: 'healthy',
+    });
+    expect(report.startableForService).toBe(false);
+    expect(report.eligibleAsPrimary).toBe(false);
+  });
+
+  it('refuses to start on a provider nobody registered', () => {
+    const report = evaluateServiceSelection({
+      providerId: 'some-vendor-nobody-added',
+      service: CALL,
+      minimumStage: 'certified',
+      isPresent: present,
+      health: 'healthy',
+    });
+    expect(report.startableForService).toBe(false);
+    expect(report.eligibleAsPrimary).toBe(false);
+  });
+
+  it('REFUSES TO START WHEN A REQUIRED CREDENTIAL NAME IS ABSENT', () => {
+    // Knowable before the process runs, so it belongs to the startup question
+    // and must keep failing there.
+    const report = evaluateServiceSelection({
+      providerId: 'test-vendor',
+      provider: certified(),
+      service: CALL,
+      minimumStage: 'certified',
+      isPresent: absent,
+      health: 'healthy',
+    });
+    expect(report.startableForService).toBe(false);
+  });
+
+  it('refuses to start when the execution capability the service needs is undeclared', () => {
+    /*
+     * A live call needs streaming transcription. A provider that only does
+     * batch cannot serve it, and that is a structural fact rather than an
+     * operational one -- so it stops the boot, not merely the routing.
+     */
+    const report = evaluateServiceSelection({
+      providerId: 'test-vendor',
+      provider: provider({
+        integrationStage: 'certified',
+        capabilities: { transcription: { ...UNVERIFIED_TRANSCRIPTION, batch: 'yes', streaming: 'no' } },
+      }),
+      service: CALL,
+      minimumStage: 'certified',
+      isPresent: present,
+      health: 'healthy',
+    });
+    expect(report.startableForService).toBe(false);
   });
 });
