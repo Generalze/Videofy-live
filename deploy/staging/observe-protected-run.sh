@@ -69,7 +69,11 @@ while :; do
     # 3. What the audience can actually fetch, which is not the same question:
     #    a manifest is the cursor's answer, not the encoder's.
     playlist="$(curl -s --max-time 4 "${INGEST}/programmes/${run_id}/playlist.m3u8" 2>/dev/null)"
-    public_segs=$(printf '%s' "${playlist}" | grep -c '\.m4s' 2>/dev/null || echo 0)
+    # grep -c can emit more than one line, and a two-line value is a syntax
+    # error in the numeric test below rather than a count. Reduced to a single
+    # integer here so the comparison is comparing a number.
+    public_segs=$(printf '%s' "${playlist}" | grep -c '\.m4s' 2>/dev/null | head -n 1)
+    public_segs=${public_segs:-0}
     if [ -z "${first_public_at}" ] && [ "${public_segs}" -gt 0 ]; then
       first_public_at="$(date -u +%H:%M:%S)"
       first_public_count="${public_segs}"
