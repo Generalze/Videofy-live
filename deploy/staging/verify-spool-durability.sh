@@ -82,11 +82,27 @@ pass "the spool is owned by the service identity ${USER_NAME}"
 
 # 6. The service's OWN probe. This is the only step that proves anything about
 #    the sandbox, because it is the only one that runs inside it.
+#
+#    READ FROM A CURSOR TAKEN BEFORE THE RESTART, never from a time window. A
+#    "--since 2 minutes ago" grep matches the PREVIOUS boot's line, so this
+#    check would pass without the service having restarted at all -- a
+#    verification that verifies the last verification. The cursor is a position
+#    in the journal, so nothing written before it can be read after it.
+CURSOR="$(journalctl -u "${UNIT}" -n 1 -o export 2>/dev/null | sed -n 's/^__CURSOR=//p' | tail -n 1)"
 systemctl restart "${UNIT}"
-if ! timeout 60 bash -c "until journalctl -u ${UNIT} --since '-2 min' | grep -q 'Programme media spool'; do sleep 2; done"; then
-  fail "the service did not report its spool within 60 s"
+probe_line() {
+  if [ -n "${CURSOR}" ]; then
+    journalctl -u "${UNIT}" --after-cursor "${CURSOR}" 2>/dev/null | grep 'Programme media spool' | tail -n 1
+  else
+    # No prior line to anchor to, so there is no stale line to mistake either.
+    journalctl -u "${UNIT}" --since '-1 min' 2>/dev/null | grep 'Programme media spool' | tail -n 1
+  fi
+}
+if ! timeout 60 bash -c "until journalctl -u ${UNIT} ${CURSOR:+--after-cursor \"${CURSOR}\"} 2>/dev/null | grep -q 'Programme media spool'; do sleep 2; done"; then
+  fail "the service did not report its spool within 60 s of THIS restart"
 fi
-PROBE="$(journalctl -u "${UNIT}" --since '-2 min' | grep 'Programme media spool' | tail -n 1)"
+PROBE="$(probe_line)"
+[ -n "${PROBE}" ] || fail "no spool report after this restart"
 printf '      %s\n' "${PROBE}"
 for fact in '"configured":true' '"pathExists":true' '"writable":true' '"durable":true'; do
   case "${PROBE}" in
