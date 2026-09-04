@@ -42,7 +42,7 @@ describe('the same received media reaches the protected encoder', () => {
       "this.contributeToProtectedRun(context.sessionId, 'audio'",
     );
     const audioGuard = GATEWAY.indexOf(
-      'if (this.realtimeRelayForbidden.has(context.sessionId)) return;',
+      'if (!this.relay.mayRelayFrames(context.sessionId)) return;',
     );
     expect(audioContribution).toBeGreaterThan(-1);
     expect(audioContribution).toBeLessThan(audioGuard);
@@ -55,7 +55,7 @@ describe('the same received media reaches the protected encoder', () => {
   });
 
   it('reads the run own answer rather than deciding for itself', () => {
-    expect(GATEWAY).toContain('const delivery = this.programmeDelivery.get(run.runId);');
+    expect(GATEWAY).toContain('const delivery = this.relay.deliveryFor(run.runId);');
   });
 
   it('never lets the contribution path throw into a media callback', () => {

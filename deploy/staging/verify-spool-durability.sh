@@ -91,11 +91,12 @@ pass "the spool is owned by the service identity ${USER_NAME}"
 CURSOR="$(journalctl -u "${UNIT}" -n 1 -o export 2>/dev/null | sed -n 's/^__CURSOR=//p' | tail -n 1)"
 systemctl restart "${UNIT}"
 probe_line() {
+  want="${1:-Programme media spool}"
   if [ -n "${CURSOR}" ]; then
-    journalctl -u "${UNIT}" --after-cursor "${CURSOR}" 2>/dev/null | grep 'Programme media spool' | tail -n 1
+    journalctl -u "${UNIT}" --after-cursor "${CURSOR}" 2>/dev/null | grep "${want}" | tail -n 1
   else
     # No prior line to anchor to, so there is no stale line to mistake either.
-    journalctl -u "${UNIT}" --since '-1 min' 2>/dev/null | grep 'Programme media spool' | tail -n 1
+    journalctl -u "${UNIT}" --since '-1 min' 2>/dev/null | grep "${want}" | tail -n 1
   fi
 }
 if ! timeout 60 bash -c "until journalctl -u ${UNIT} ${CURSOR:+--after-cursor \"${CURSOR}\"} 2>/dev/null | grep -q 'Programme media spool'; do sleep 2; done"; then
@@ -115,4 +116,27 @@ case "${PROBE}" in
   *) fail "the spool is writable and has no room for the retention window" ;;
 esac
 
+# 7. THE AUDIENCE DOOR. Found bolted shut on the first staging deploy: the
+#    gateway had ACCOUNT_SERVICE_URL and media-ingest did not, so programme
+#    egress refused EVERY viewer while every service reported healthy. The only
+#    sign was one warning in journald, which is not a place a deploy looks.
+#
+#    Checked against the INSTALLED environment, never against a template. A
+#    template is what we intended; this file is what the service reads.
+ACCOUNT_URL="$(sed -n 's/^ACCOUNT_SERVICE_URL=//p' "${ENV_FILE}" 2>/dev/null | tail -n 1)"
+[ -n "${ACCOUNT_URL}" ] ||
+  fail "ACCOUNT_SERVICE_URL is unset in ${ENV_FILE}: programme egress cannot tell a public channel from a locked one, so NO audience is admitted"
+pass "ACCOUNT_SERVICE_URL is set, so a public channel can be told from a locked one"
+
+EGRESS="$(probe_line 'Programme egress ready')"
+case "${EGRESS}" in
+  *'"visibilitySource":"account-service"'*)
+    pass "the service resolves channel visibility from the account service" ;;
+  '')
+    fail "the service did not report programme egress readiness after this restart" ;;
+  *)
+    fail "the service reports no visibility source: programme audience readiness is FALSE" ;;
+esac
+
 printf '\nSTAGING SPOOL: PROVEN UNDER SYSTEMD\n'
+printf 'STAGING PROGRAMME AUDIENCE: ADMISSIBLE\n'

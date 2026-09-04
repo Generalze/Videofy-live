@@ -83,6 +83,15 @@ export const SOCKET_EVENTS = {
    * rarely, and not on every video timestamp tick.
    */
   INGEST_PROGRAMME_DELIVERY: 'ingest:programme-delivery',
+  /*
+   * The deployment's delivery policy, sent on connection and before any run.
+   *
+   * Separate from the per-run announcement above because it answers a
+   * different question at a different time: not "what is this run doing" but
+   * "what does this deployment do", which the gateway needs BEFORE the first
+   * protected run exists in order not to relay it.
+   */
+  INGEST_PROGRAMME_POLICY: 'ingest:programme-policy',
   /**
    * An advert the cursor has released for a programme run.
    *

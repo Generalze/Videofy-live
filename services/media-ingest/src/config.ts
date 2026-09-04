@@ -590,28 +590,35 @@ export function loadConfig(): IngestConfig {
   })();
 
   /*
-   * HOW THE ORIGINAL REACHES A LISTENER, and why `delayed` is not yet allowed.
+   * HOW THE ORIGINAL REACHES A LISTENER.
    *
-   * The gateway relays the broadcaster's audio and video frames to each
-   * listener peer as they arrive. That path is independent of the media
-   * cursor, so producing segments into a spool does NOT hold the original
-   * back -- and a deployment that believed otherwise would hold its captions
-   * while its audience heard the speaker live. Declined here, out loud, until
-   * the gateway can be told to stop relaying.
+   * `live` -- the gateway relays the broadcaster's tracks to each listener as
+   * they arrive. `delayed` -- listeners receive the original only through the
+   * cursor-governed egress, and the gateway relays nothing.
+   *
+   * THIS USED TO ACCEPT `delayed` AND THEN QUIETLY USE `live`. It logged an
+   * error and carried on, because the gateway could not yet be told to stop
+   * relaying. That was a correct fail-safe while the mechanism was missing and
+   * is a lie now that it exists: an operator who asks for protection and reads
+   * a running service must not have to find the refusal in journald. It is
+   * gone, not replaced with a gentler version of itself.
+   *
+   * Blank is not a choice, on the same doctrine as every provider selector: a
+   * half-filled environment file is a mistake to report, not a default to
+   * infer.
    */
-  const requestedDelivery = process.env['PROGRAMME_MEDIA_DELIVERY']?.trim().toLowerCase() || 'live';
-  let mediaDelivery: 'live' | 'delayed' = 'live';
-  if (requestedDelivery === 'delayed') {
-    logger.error(
-      'PROGRAMME_MEDIA_DELIVERY=delayed is not supported yet and has been ignored; ' +
-        'the gateway still relays the original programme media live, so a protective ' +
-        'delay cannot be held and will be refused',
-    );
-  } else if (requestedDelivery !== 'live') {
-    logger.warn(
-      `PROGRAMME_MEDIA_DELIVERY="${requestedDelivery}" is not a delivery mode; using live`,
+  const deliveryChoices = ['live', 'delayed'] as const;
+  const requestedDelivery = selectorOrDefault(
+    'PROGRAMME_MEDIA_DELIVERY',
+    'live',
+    deliveryChoices,
+  ).toLowerCase();
+  if (!(deliveryChoices as readonly string[]).includes(requestedDelivery)) {
+    throw new Error(
+      `PROGRAMME_MEDIA_DELIVERY must be "live" or "delayed"; received "${requestedDelivery}".`,
     );
   }
+  const mediaDelivery = requestedDelivery as 'live' | 'delayed';
 
   /*
    * WHERE THE PROTECTED COPY LIVES, named rather than inferred.
@@ -633,6 +640,23 @@ export function loadConfig(): IngestConfig {
    * rather than an omission.
    */
   const safetyDelayMs = readNonNegativeInt('PROGRAMME_SAFETY_DELAY_MS', 0);
+  /*
+   * A DELAY THE DELIVERY MODE CANNOT HONOUR IS NOT A DELAY.
+   *
+   * With `live` delivery the gateway relays the broadcaster's tracks as they
+   * arrive, so nothing is held back however large this number is. A deployment
+   * configured that way would report a protective delay to an operator while
+   * its audience heard the studio immediately -- which is worse than having no
+   * protection, because somebody would rely on it. The two settings are one
+   * decision, so they are refused together rather than half applied.
+   */
+  if (safetyDelayMs > 0 && mediaDelivery !== 'delayed') {
+    throw new Error(
+      `PROGRAMME_SAFETY_DELAY_MS is ${safetyDelayMs} and PROGRAMME_MEDIA_DELIVERY is "live". ` +
+        'A protective delay cannot be held while the gateway relays the original live: ' +
+        'set PROGRAMME_MEDIA_DELIVERY=delayed, or set the delay to 0 for true live.',
+    );
+  }
   const originInputRaw = process.env['PROGRAMME_MEDIA_ORIGIN_INPUT']?.trim() || null;
   let originInputTemplate: string | null = null;
   if (originInputRaw !== null) {

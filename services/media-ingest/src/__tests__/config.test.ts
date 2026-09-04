@@ -505,9 +505,24 @@ describe('programme media production and the safety delay', () => {
     expect(loadConfig().programmeSafetyDelayMs).toBe(0);
   });
 
-  it('takes a configured delay', () => {
+  it('takes a configured delay, together with the delivery that can honour it', () => {
+    process.env['PROGRAMME_MEDIA_DELIVERY'] = 'delayed';
     process.env['PROGRAMME_SAFETY_DELAY_MS'] = '45000';
     expect(loadConfig().programmeSafetyDelayMs).toBe(45_000);
+  });
+
+  it('REFUSES A DELAY THE DELIVERY MODE CANNOT HOLD', () => {
+    /*
+     * With live delivery the gateway relays the broadcaster's tracks as they
+     * arrive, so nothing is held back however large this number is. Accepting
+     * the pair would report a protective delay to an operator while the
+     * audience heard the studio immediately -- worse than no protection,
+     * because somebody would rely on it. They are one decision, so they are
+     * refused together rather than half applied.
+     */
+    process.env['PROGRAMME_SAFETY_DELAY_MS'] = '45000';
+    process.env['PROGRAMME_MEDIA_DELIVERY'] = 'live';
+    expect(() => loadConfig()).toThrow(/cannot be held while the gateway relays/u);
   });
 
   it('refuses a delay that is not a whole number of milliseconds', () => {
@@ -530,19 +545,32 @@ describe('how the original programme media reaches a listener', () => {
     expect(loadConfig().programmeMediaDelivery).toBe('live');
   });
 
-  it('declines delayed delivery, because nothing enforces it yet', () => {
-    process.env['PROGRAMME_MEDIA_DELIVERY'] = 'delayed';
+  it('ACCEPTS DELAYED DELIVERY, NOW THAT THE GATEWAY ENFORCES IT', () => {
     /*
-     * The gateway relays the broadcaster's tracks straight to each listener.
-     * Accepting this would produce a console reporting PROTECTED LIVE over an
-     * audience hearing the speaker immediately -- worse than no protection,
-     * because somebody would rely on it.
+     * This used to be asserted the other way round: `delayed` was logged as an
+     * error and quietly became `live`. That was the correct fail-safe while
+     * the gateway had no way to stop relaying, and a lie once it did -- an
+     * operator who asks for protection and reads a running service must not
+     * have to find the refusal in journald. The refusal is gone, not softened.
      */
-    expect(loadConfig().programmeMediaDelivery).toBe('live');
+    process.env['PROGRAMME_MEDIA_DELIVERY'] = 'delayed';
+    expect(loadConfig().programmeMediaDelivery).toBe('delayed');
   });
 
-  it('treats an unrecognised mode as live rather than guessing', () => {
+  it('refuses a blank mode rather than defaulting it', () => {
+    // The same blank-is-not-a-choice doctrine as every provider selector: a
+    // half-filled environment file is a mistake to report, not a default to
+    // infer.
+    process.env['PROGRAMME_MEDIA_DELIVERY'] = '';
+    expect(() => loadConfig()).toThrow(/present but empty/u);
+  });
+
+  it('REFUSES AN UNRECOGNISED MODE RATHER THAN GUESSING LIVE', () => {
+    /*
+     * Guessing live is the dangerous direction: a typo in the one setting that
+     * turns protection on would silently produce an unprotected broadcast.
+     */
     process.env['PROGRAMME_MEDIA_DELIVERY'] = 'buffered-ish';
-    expect(loadConfig().programmeMediaDelivery).toBe('live');
+    expect(() => loadConfig()).toThrow(/must be "live" or "delayed"/u);
   });
 });

@@ -106,34 +106,41 @@ describe('the gateway applies it where it matters', () => {
   });
 
   it('checks the frame path too, for a peer built before the answer arrived', () => {
-    expect(GATEWAY).toContain('if (this.realtimeRelayForbidden.has(context.sessionId)) return;');
+    expect(GATEWAY).toContain('if (!this.relay.mayRelayFrames(context.sessionId)) return;');
     // Both media kinds. Video alone would still show the studio.
     expect(
-      GATEWAY.match(/this\.realtimeRelayForbidden\.has\(context\.sessionId\)/gu),
+      GATEWAY.match(/!this\.relay\.mayRelayFrames\(context\.sessionId\)/gu),
     ).toHaveLength(2);
   });
 
   it('tears down peers that already exist when a run turns protected', () => {
     expect(GATEWAY).toContain('this.listenerMediaPeers.closeSession(');
-    expect(GATEWAY).toMatch(/noteProgrammeDelivery[\s\S]{0,900}closeSession/u);
+    expect(GATEWAY).toMatch(/noteProgrammeDelivery[\s\S]{0,2000}closeSession/u);
   });
 
   it('reads the run own answer instead of deriving one', () => {
-    expect(GATEWAY).toContain('realtimeRelayPermitted(delivery)');
+    expect(GATEWAY).toContain('this.relay.decide(run.runId).permitted');
     // No second opinion formed from configuration or from a delay figure.
     expect(GATEWAY).not.toMatch(/PROGRAMME_SAFETY_DELAY_MS/u);
     expect(GATEWAY).not.toMatch(/PROGRAMME_MEDIA_DELIVERY/u);
   });
 
-  it('fails closed for an unknown run once the deployment has shown it does protected runs', () => {
+  it('fails closed for an unknown run from the DEPLOYMENT policy, not from history', () => {
     /*
-     * Conditional on purpose. Refusing every unheard-of run would break every
-     * existing live programme; refusing none would let a lost announcement
-     * become an audience hearing the studio. Once a deployment has announced a
-     * delayed run, an unknown one is no longer safely assumed to be live.
+     * THIS ASSERTION USED TO PIN THE LEAK IN PLACE. It required
+     * `return !this.sawDelayedDelivery`, which permits an unannounced run
+     * until a delayed one has already been seen -- so the FIRST protected
+     * broadcast of every fresh gateway process was relayed for the window
+     * between the broadcaster publishing and the announcement landing. The
+     * test agreed with the code and both were wrong; only counting frames on a
+     * fresh process found it, which `first-protected-run.test.ts` now does.
+     *
+     * The policy arrives on connection, before any run exists, so the first
+     * run is judged on the same evidence as the thousandth.
      */
-    expect(GATEWAY).toContain('return !this.sawDelayedDelivery;');
-    expect(GATEWAY).toContain("if (delivery.mode === 'delayed') this.sawDelayedDelivery = true;");
+    expect(GATEWAY).not.toContain('sawDelayedDelivery');
+    expect(GATEWAY).toContain('safeParseProgrammeDeliveryPolicy(raw)');
+    expect(GATEWAY).toContain('this.relay.admitSession(config.sessionId, runId);');
   });
 
   it('validates the announcement rather than trusting it', () => {

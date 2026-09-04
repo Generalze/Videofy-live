@@ -1,6 +1,7 @@
 /** @owner masterzee001 */
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
+import { ProgrammeRelayAuthority } from './programme-relay-authority.js';
 import type { ProgrammeRunIdentity } from '@videofy-live/media-ingress-wire';
 import type { Server as HttpServer } from 'node:http';
 import { Server as SocketServer, type Socket } from 'socket.io';
@@ -19,6 +20,7 @@ import type {
   TranslationEvent,
   WebRtcIncomingSignallingEnvelope,
   ProgrammeMediaDelivery,
+  ProgrammeDeliveryPolicy,
 } from '@videofy-live/shared-types';
 import {
   DEFAULT_CHANNEL_ID,
@@ -49,10 +51,12 @@ import {
   WEBRTC_SIGNALLING_LIMITS,
   WORKER_ROOM,
   realtimeRelayPermitted,
+  relayPermittedWithoutRunAnswer,
 } from '@videofy-live/shared-types';
 import {
   safeParseMediaStateEvent,
   safeParseProgrammeMediaDelivery,
+  safeParseProgrammeDeliveryPolicy,
   safeParseGeneratedAudioReadyEvent,
   safeParseTimestampedTranslationEvent,
   safeParseTranscriptionEvent,
@@ -267,28 +271,17 @@ export class Gateway {
    * delivery chain and announces the answer; this is the cache that answer
    * lives in between announcements.
    */
-  private readonly programmeDelivery = new Map<string, ProgrammeMediaDelivery>();
-
   /**
-   * Sessions whose original media must NOT be relayed in realtime.
+   * Who may relay a programme's original media, and why.
    *
-   * Derived from the announcements above and kept as a flat set because it is
-   * consulted on every audio and video frame, and a per-frame map walk on the
-   * media path is a cost that shows up as jitter.
+   * The per-run answers, the deployment policy and the hot-path refusal set
+   * were three private fields here, which made the decision testable only by
+   * reading this file. The leak they hid -- the first protected run after a
+   * fresh process -- is exactly the kind a source-text assertion agrees with
+   * and an audience does not, so the decision now lives somewhere frames can
+   * be counted through it.
    */
-  private readonly realtimeRelayForbidden = new Set<string>();
-
-  /**
-   * Whether this deployment has ever announced a delayed run.
-   *
-   * THE FAIL-CLOSED SWITCH, and the reason it is conditional. Refusing every
-   * run this gateway has not yet heard about would break every existing live
-   * programme, including those media-ingest is not involved in. But once a
-   * deployment has shown that it does protected broadcasts, an unknown run is
-   * no longer safely assumed to be live -- an announcement can be lost, and
-   * the cost of guessing wrong is the audience hearing the studio.
-   */
-  private sawDelayedDelivery = false;
+  private readonly relay = new ProgrammeRelayAuthority();
 
   /**
    * Where a protected run's contribution is encoded, when this deployment does
@@ -577,7 +570,7 @@ export class Gateway {
           // Checked per frame as well as at peer creation. A peer built
           // before the answer arrived is exactly the leak window, and this
           // is a set lookup on a path that cannot afford a map walk.
-          if (this.realtimeRelayForbidden.has(context.sessionId)) return;
+          if (!this.relay.mayRelayFrames(context.sessionId)) return;
           this.listenerMediaPeers.fanOutAudioFrame(context.sessionId, data);
         } catch (error) {
           logger.warn('WebRTC listener programme-audio fanout failed', {
@@ -591,7 +584,7 @@ export class Gateway {
       onVideoFrame: (context, frame) => {
         this.contributeToProtectedRun(context.sessionId, 'video', frame);
         try {
-          if (this.realtimeRelayForbidden.has(context.sessionId)) return;
+          if (!this.relay.mayRelayFrames(context.sessionId)) return;
         this.listenerMediaPeers.fanOutVideoFrame(context.sessionId, frame);
         } catch (error) {
           logger.warn('WebRTC listener programme-video fanout failed', {
@@ -1593,11 +1586,22 @@ export class Gateway {
        * last one: its timeline, telemetry and adverts must not inherit them.
        */
       if (!this.programmeRuns.has(config.sessionId)) {
+        const runId = `run_${randomUUID().replace(/-/gu, '').slice(0, 24)}`;
         this.programmeRuns.set(config.sessionId, {
           channelId,
           programmeId: channelId,
-          runId: `run_${randomUUID().replace(/-/gu, '').slice(0, 24)}`,
+          runId,
         });
+        /*
+         * THE PATH IS CLOSED HERE, AT THE RUN'S FIRST INSTANT.
+         *
+         * Not when the delivery announcement arrives -- that is later, and on
+         * a protected deployment "later" is a window in which a broadcaster
+         * can publish and frames can reach realtime listeners. The policy
+         * already says what this deployment does, so the refusal is made true
+         * before there is anything to refuse.
+         */
+        this.relay.admitSession(config.sessionId, runId);
       }
       // The broadcast's name, for the directory while it is on air; null
       // when the operator gave none, never a stand-in.
@@ -1725,6 +1729,20 @@ export class Gateway {
         return;
       }
       this.noteProgrammeDelivery(parsed.data as ProgrammeMediaDelivery);
+    });
+
+    socket.on(SOCKET_EVENTS.INGEST_PROGRAMME_POLICY, (raw: unknown) => {
+      const parsed = safeParseProgrammeDeliveryPolicy(raw);
+      if (!parsed.success) {
+        /*
+         * Refused, and the previous policy stands. Coercing a malformed policy
+         * would decide whether unannounced runs may be relayed on the strength
+         * of a message we could not read.
+         */
+        logger.warn('Ingest sent an invalid programme delivery policy', { socketId: socket.id });
+        return;
+      }
+      this.noteDeliveryPolicy(parsed.data as ProgrammeDeliveryPolicy);
     });
 
     socket.on(SOCKET_EVENTS.INGEST_STATE, (raw: unknown) => {
@@ -2182,17 +2200,28 @@ export class Gateway {
    * waiting for the next join would leave them there.
    */
   private noteProgrammeDelivery(delivery: ProgrammeMediaDelivery): void {
-    this.programmeDelivery.set(delivery.programmeRunId, delivery);
-    if (delivery.mode === 'delayed') this.sawDelayedDelivery = true;
+    if (!this.relay.noteDelivery(delivery)) {
+      logger.error('Refused to downgrade a protected programme to live delivery', {
+        runId: delivery.programmeRunId,
+      });
+      return;
+    }
 
     for (const [sessionId, run] of this.programmeRuns) {
       if (run.runId !== delivery.programmeRunId) continue;
-      if (realtimeRelayPermitted(delivery)) {
-        this.realtimeRelayForbidden.delete(sessionId);
+      const permitted = this.relay.decide(run.runId).permitted;
+      const wasPermitted = this.relay.applyToSession(sessionId, permitted);
+      if (permitted) {
+        /*
+         * A live run whose answer arrives after its listeners did. They were
+         * refused a peer while the authority was unknown -- correctly, since
+         * an unannounced run on a protected deployment must not be relayed --
+         * so the peer is built now rather than at the next join, which for a
+         * listener already watching would be never.
+         */
+        void this.startListenerDeliveryForSession(sessionId);
         continue;
       }
-      const wasPermitted = !this.realtimeRelayForbidden.has(sessionId);
-      this.realtimeRelayForbidden.add(sessionId);
       if (wasPermitted) {
         /*
          * Torn down rather than left silent. A peer that exists and is
@@ -2240,7 +2269,7 @@ export class Gateway {
     if (host === null) return;
     const run = this.programmeRuns.get(sessionId);
     if (run === undefined) return;
-    const delivery = this.programmeDelivery.get(run.runId);
+    const delivery = this.relay.deliveryFor(run.runId);
     if (delivery === undefined || delivery.mode !== 'delayed') return;
     try {
       if (kind === 'audio') host.pushAudio(run.runId, payload as never);
@@ -2263,12 +2292,29 @@ export class Gateway {
 
   private mayRelayRealtime(sessionId: string): boolean {
     const run = this.programmeRuns.get(sessionId);
+    // Not a programme at all: an ordinary call, which this never governed.
     if (run === undefined) return true;
-    const delivery = this.programmeDelivery.get(run.runId);
-    if (delivery !== undefined) return realtimeRelayPermitted(delivery);
-    // Unknown. Safe to permit only on a deployment that has never shown it
-    // does protected broadcasts at all.
-    return !this.sawDelayedDelivery;
+    /*
+     * The run's own answer when there is one, and otherwise the deployment
+     * policy that was sent before any run existed -- so a lost or late
+     * announcement on a protected deployment fails closed instead of relaying
+     * until it turns up.
+     */
+    return this.relay.decide(run.runId).permitted;
+  }
+
+  /**
+   * Record what this deployment does with every programme it airs.
+   *
+   * Arrives on connection, so it is in place before the first run exists.
+   * Announced out loud because it changes what an unannounced run is allowed
+   * to do, and an operator reading the log should not have to infer it.
+   */
+  private noteDeliveryPolicy(policy: ProgrammeDeliveryPolicy): void {
+    const changed = this.relay.notePolicy(policy);
+    if (changed) {
+      logger.info('Programme delivery policy received', { deliveryMode: policy.deliveryMode });
+    }
   }
 
   private async startListenerDeliveryForSession(sessionId: string | undefined): Promise<void> {
@@ -2661,7 +2707,7 @@ export class Gateway {
         ? retained.videoTimestampMs
         : 0;
     const run = this.programmeRuns.get(config.sessionId);
-    const delivery = run === undefined ? undefined : this.programmeDelivery.get(run.runId);
+    const delivery = run === undefined ? undefined : this.relay.deliveryFor(run.runId);
     const state: MediaStateEvent = {
       eventId: 'Videofy Live Demo Event',
       // So the console can ask what THIS airing is doing.

@@ -121,6 +121,22 @@ export function safeParseProgrammeMediaDelivery(raw: unknown) {
   return ProgrammeMediaDeliverySchema.safeParse(raw);
 }
 
+/**
+ * The deployment's policy, which arrives before any run does.
+ *
+ * Validated as strictly as the per-run answer. A malformed policy must be
+ * refused rather than coerced, because the value it carries decides whether an
+ * unannounced programme run may be relayed at all.
+ */
+export const ProgrammeDeliveryPolicySchema = z.object({
+  protocolVersion: z.literal(1),
+  deliveryMode: z.enum(['live', 'delayed']),
+});
+
+export function safeParseProgrammeDeliveryPolicy(raw: unknown) {
+  return ProgrammeDeliveryPolicySchema.safeParse(raw);
+}
+
 export const MediaStateEventSchema = z.object({
   eventId: z.string().min(1),
   streamId: z.string().min(1).optional(),

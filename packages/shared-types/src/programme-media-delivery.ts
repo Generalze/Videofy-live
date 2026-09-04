@@ -174,3 +174,45 @@ export function assessProgrammeDelivery(input: {
 export function realtimeRelayPermitted(delivery: ProgrammeMediaDelivery): boolean {
   return delivery.mode === 'live';
 }
+
+/**
+ * What this DEPLOYMENT does, as distinct from what one run is doing.
+ *
+ * THE FIRST PROTECTED RUN IS THE ONE AT RISK. A run's delivery answer arrives
+ * after the run exists, so a gateway that has only ever inferred protection
+ * from a previous announcement has nothing to go on the first time -- and
+ * "nothing to go on" was resolved as permit, which relays the studio for the
+ * window between the broadcaster publishing and the announcement landing.
+ * That window is exactly what a safety delay exists to cover, so a deployment
+ * would leak precisely the moment it was built to protect.
+ *
+ * This is the policy, sent when the services connect and before any run
+ * exists. It is a fact about configuration rather than a guess about history,
+ * so the first protected run is governed on the same evidence as the
+ * thousandth.
+ */
+export interface ProgrammeDeliveryPolicy {
+  readonly protocolVersion: typeof PROGRAMME_MEDIA_DELIVERY_PROTOCOL_VERSION;
+  /** What this deployment is configured to do with every programme it airs. */
+  readonly deliveryMode: ProgrammeDeliveryMode;
+}
+
+export function programmeDeliveryPolicy(
+  deliveryMode: ProgrammeDeliveryMode,
+): ProgrammeDeliveryPolicy {
+  return { protocolVersion: PROGRAMME_MEDIA_DELIVERY_PROTOCOL_VERSION, deliveryMode };
+}
+
+/**
+ * May a run whose own answer has not arrived yet be relayed realtime?
+ *
+ * `null` is a gateway that has not been told the policy at all, and it is
+ * refused. A programme run with no delivery authority of any kind is one
+ * nobody has established the rules for, and permitting it is the same bet
+ * that produced the first-run leak -- taken again, with less information.
+ */
+export function relayPermittedWithoutRunAnswer(
+  policy: ProgrammeDeliveryPolicy | null,
+): boolean {
+  return policy !== null && policy.deliveryMode === 'live';
+}

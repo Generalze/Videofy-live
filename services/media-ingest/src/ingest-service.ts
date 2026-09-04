@@ -8,7 +8,7 @@ import type {
   TranscriptionEvent,
   ProgrammeMediaDelivery,
 } from '@videofy-live/shared-types';
-import { SOCKET_EVENTS } from '@videofy-live/shared-types';
+import { SOCKET_EVENTS, programmeDeliveryPolicy } from '@videofy-live/shared-types';
 import type { IngestConfig } from './config.js';
 import { MockProvider, type MediaProvider } from './providers/index.js';
 import { logger } from './logger.js';
@@ -519,6 +519,22 @@ export class IngestService {
    * announcement costs a protected programme its audience rather than costing
    * a protected programme its protection.
    */
+  /**
+   * Tell the gateway what this DEPLOYMENT does, before any run exists.
+   *
+   * The per-run announcement below cannot close the first-run window: it
+   * arrives after the run does. This is a fact about configuration, so it can
+   * be stated on connection, and it is what lets the gateway hold the realtime
+   * fanout closed for the very first protected broadcast rather than for every
+   * one after it.
+   */
+  publishProgrammeDeliveryPolicy(): void {
+    if (!this.socket?.connected) return;
+    const policy = programmeDeliveryPolicy(this.config.programmeMediaDelivery);
+    this.socket.emit(SOCKET_EVENTS.INGEST_PROGRAMME_POLICY, policy);
+    logger.info('Programme delivery policy announced', { deliveryMode: policy.deliveryMode });
+  }
+
   publishProgrammeDelivery(delivery: ProgrammeMediaDelivery): void {
     if (!this.socket?.connected) return;
     this.socket.emit(SOCKET_EVENTS.INGEST_PROGRAMME_DELIVERY, delivery);
@@ -591,6 +607,21 @@ export class IngestService {
     this.socket.on(SOCKET_EVENTS.CONNECTED, () => {
       logger.info('Connected to gateway');
       this.gatewayConnected = true;
+      /*
+       * FIRST, AND ON EVERY RECONNECTION.
+       *
+       * The gateway refuses to relay a programme run whose delivery answer it
+       * has not heard, and this is what tells it which runs those are. Sent
+       * before anything else on the socket because a broadcaster can publish
+       * the moment the services are up: on a protected deployment, a gateway
+       * that has not been told the policy holds the fanout closed, and every
+       * second it waits is a second an audience is not being served.
+       *
+       * A reconnection is a NEW gateway process as far as this is concerned --
+       * it may have restarted and forgotten -- so the policy is restated
+       * rather than assumed to have survived.
+       */
+      this.publishProgrammeDeliveryPolicy();
       this.socket?.emit(SOCKET_EVENTS.INGEST_HEALTH, { status: 'healthy' });
       this.emitState();
       this.emitGeneratedAudioReadySnapshot();
