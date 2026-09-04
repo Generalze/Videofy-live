@@ -219,7 +219,13 @@ export class ProgrammeContributionHost {
     const bridge = new ProgrammeContributionBridge(
       // Replaced the moment the encoder exists; until then everything is held
       // in the bridge's bounded queues rather than written into nothing.
-      { writeVideo: () => undefined, writeAudio: () => undefined, ready: false },
+      {
+        writeVideo: () => undefined,
+        writeAudio: () => undefined,
+        ready: false,
+        videoReady: false,
+        audioReady: false,
+      },
       {
         ...(this.deps.onProblem === undefined ? {} : { onProblem: this.deps.onProblem }),
       },

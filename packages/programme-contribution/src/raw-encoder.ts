@@ -164,8 +164,8 @@ export class RawContributionEncoder implements ContributionOutput {
   private child: ChildProcess | null = null;
   private audioServer: Server | null = null;
   private audioSocket: Socket | null = null;
-  private videoReady = true;
-  private audioReady = true;
+  private videoAccepting = true;
+  private audioAccepting = true;
   private stderr = '';
   private stopping = false;
   private readonly pendingAudio: Buffer[] = [];
@@ -191,7 +191,23 @@ export class RawContributionEncoder implements ContributionOutput {
      * does. Both media still begin at the same programme position because the
      * bridge decides that, not the order two sockets happened to open in.
      */
-    return this.child !== null && this.videoReady && this.audioReady;
+    return this.child !== null && this.videoAccepting && this.audioAccepting;
+  }
+
+  /** Whether the video pipe is accepting. Asked independently of audio. */
+  get videoReady(): boolean {
+    return this.child !== null && this.videoAccepting;
+  }
+
+  /**
+   * Whether audio may be written.
+   *
+   * True while the encoder has not connected yet: the pending buffer holds
+   * that audio, and refusing it would stop the bridge from producing the very
+   * frames FFmpeg needs before it will open the audio input at all.
+   */
+  get audioReady(): boolean {
+    return this.child !== null && this.audioAccepting;
   }
 
   /**
@@ -228,16 +244,16 @@ export class RawContributionEncoder implements ContributionOutput {
       this.stderr = `${this.stderr}${chunk.toString()}`.slice(-8_000);
     });
     child.stdin?.on('drain', () => {
-      this.videoReady = true;
+      this.videoAccepting = true;
     });
     child.stdin?.on('error', () => {
       // The encoder went away mid-write. Reported through exit, not thrown at
       // a media callback.
-      this.videoReady = false;
+      this.videoAccepting = false;
     });
     child.on('close', (code) => {
       this.child = null;
-      this.videoReady = false;
+      this.videoAccepting = false;
       if (!this.stopping) this.options.onExit?.(code, this.stderr);
     });
 
@@ -248,7 +264,7 @@ export class RawContributionEncoder implements ContributionOutput {
     if (stdin === undefined || stdin === null) return;
     // `write` returning false is the kernel saying the pipe is full. Honoured
     // rather than ignored, or this becomes an unbounded buffer in Node.
-    this.videoReady = stdin.write(frame);
+    this.videoAccepting = stdin.write(frame);
   }
 
   writeAudio(samples: Int16Array): void {
@@ -287,7 +303,7 @@ export class RawContributionEncoder implements ContributionOutput {
       }
       return;
     }
-    this.audioReady = socket.write(block);
+    this.audioAccepting = socket.write(block);
   }
 
   /** Stop cleanly: close the inputs so the encoder finishes its last segment. */
@@ -345,12 +361,12 @@ export class RawContributionEncoder implements ContributionOutput {
        * The connection IS the condition that was being waited for, so it is
        * the moment the refusal stops being true.
        */
-      this.audioReady = accepted;
+      this.audioAccepting = accepted;
       socket.on('drain', () => {
-        this.audioReady = true;
+        this.audioAccepting = true;
       });
       socket.on('error', () => {
-        this.audioReady = false;
+        this.audioAccepting = false;
       });
     });
     this.audioServer = server;

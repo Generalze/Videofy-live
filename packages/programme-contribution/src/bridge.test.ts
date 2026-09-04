@@ -36,11 +36,21 @@ function sink(): ContributionOutput & {
   readonly videoFrames: () => number;
   readonly audioSamples: () => number;
   ready: boolean;
+  videoReady: boolean;
+  audioReady: boolean;
 } {
   let videoFrames = 0;
   let audioSamples = 0;
   return {
     ready: true,
+    /*
+     * Per medium, because one flag for both deadlocks: a full video pipe would
+     * withhold the audio the encoder is waiting for before it will drain that
+     * pipe. Tests that set only `ready` would no longer describe the shape the
+     * bridge actually talks to.
+     */
+    videoReady: true,
+    audioReady: true,
     writeVideo() {
       videoFrames += 1;
     },
@@ -273,6 +283,8 @@ describe('backpressure', () => {
     const time = clock();
     const out = sink();
     out.ready = false;
+    out.videoReady = false;
+    out.audioReady = false;
     const bridge = new ProgrammeContributionBridge(out, { monotonic: time.now });
     bridge.begin();
     bridge.pushVideo(frame(), VIDEO);
@@ -372,5 +384,59 @@ describe('a contribution that goes away', () => {
     bridge.fail('the encoder exited');
     bridge.begin();
     expect(bridge.status().state).toBe('failed');
+  });
+});
+
+describe('one medium falling behind does not silence the other', () => {
+  /*
+   * THE DEADLOCK THAT STALLED A LIVE BROADCAST WITH EVERY SIGNAL GREEN.
+   *
+   * A 640x360 I420 frame is 345,600 bytes and a pipe's high-water mark is
+   * 64 KB, so the very first video write returns false. With one `ready` for
+   * both media that stopped the pump entirely -- including audio -- and FFmpeg
+   * blocks initialising its audio input, so it never drains the video pipe, so
+   * `drain` never fires. Encoder started, socket ESTABLISHED, both queues
+   * full, 1,501 frames received, and not one byte in the spool.
+   *
+   * Video being behind is not a reason to withhold audio.
+   */
+  it('KEEPS WRITING AUDIO WHILE THE VIDEO PIPE IS FULL', () => {
+    const time = clock();
+    const out = sink();
+    const bridge = new ProgrammeContributionBridge(out, { monotonic: time.now });
+    bridge.begin();
+    bridge.pushVideo(frame(), VIDEO);
+    bridge.pushAudio(audioChunk(), AUDIO);
+    // Settle the encoder's zero for both media, as production does.
+    bridge.pump();
+
+    // The video pipe is full; the audio socket is not.
+    out.videoReady = false;
+    const framesBefore = out.videoFrames();
+    for (let i = 0; i < 10; i += 1) bridge.pushAudio(audioChunk(), AUDIO);
+    time.advance(200);
+    bridge.pump();
+
+    expect(out.videoFrames()).toBe(framesBefore);
+    expect(out.audioSamples()).toBeGreaterThan(0);
+  });
+
+  it('keeps writing video while audio is not being accepted', () => {
+    const time = clock();
+    const out = sink();
+    const bridge = new ProgrammeContributionBridge(out, { monotonic: time.now });
+    bridge.begin();
+    bridge.pushVideo(frame(), VIDEO);
+    bridge.pushAudio(audioChunk(), AUDIO);
+    bridge.pump();
+
+    out.audioReady = false;
+    const samplesBefore = out.audioSamples();
+    for (let i = 0; i < 6; i += 1) bridge.pushVideo(frame(), VIDEO);
+    time.advance(200);
+    bridge.pump();
+
+    expect(out.audioSamples()).toBe(samplesBefore);
+    expect(out.videoFrames()).toBeGreaterThan(0);
   });
 });

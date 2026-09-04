@@ -61,6 +61,22 @@ export interface ContributionOutput {
   writeAudio(samples: Int16Array): void;
   /** True while the destination is accepting without buffering unboundedly. */
   readonly ready: boolean;
+  /**
+   * Backpressure PER MEDIUM, because one `ready` for both deadlocks.
+   *
+   * A 640x360 I420 frame is 345,600 bytes and a pipe's high-water mark is
+   * 64 KB, so the very first video write returns false. With a single flag
+   * that stopped the pump entirely -- including audio -- and FFmpeg blocks
+   * initialising its audio input, so it never drains the video pipe, so
+   * `drain` never fires. Encoder alive, socket connected, both queues full,
+   * not one byte produced.
+   *
+   * Video being behind is not a reason to withhold audio. They are two
+   * transports and they fall behind independently; the bridge keeps them
+   * aligned by the clock, not by refusing to write either.
+   */
+  readonly videoReady: boolean;
+  readonly audioReady: boolean;
 }
 
 export type ContributionState =
@@ -296,12 +312,17 @@ export class ProgrammeContributionBridge {
    */
   pump(): void {
     if (this.state !== 'running' && this.state !== 'overloaded') return;
-    if (!this.output.ready) return;
+    /*
+     * EACH MEDIUM ASKED SEPARATELY. A single gate here meant a full video pipe
+     * withheld the audio FFmpeg was waiting for before it would drain that
+     * pipe -- a deadlock in which every component reported itself healthy.
+     */
+    if (!this.output.videoReady && !this.output.audioReady) return;
     if (!this.anchor()) return;
     // One reading, both media. Two readings is how they separate.
     const sinceGenerationMs = this.clock.elapsedMs() - this.generationStartedAtMs;
-    this.pumpVideo(sinceGenerationMs);
-    this.pumpAudio(sinceGenerationMs);
+    if (this.output.videoReady) this.pumpVideo(sinceGenerationMs);
+    if (this.output.audioReady) this.pumpAudio(sinceGenerationMs);
     if (this.state === 'overloaded' && this.videoQueue.length === 0 && this.audioQueue.length === 0) {
       this.state = 'running';
       this.detail = null;
