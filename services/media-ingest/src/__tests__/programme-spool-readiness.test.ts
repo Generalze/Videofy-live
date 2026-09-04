@@ -288,6 +288,22 @@ describe('one directory, one name', () => {
     expect(spoolOf(gatewayEnv)).toBeTruthy();
   });
 
+  it('creates the spool as the service identity, in both installers', async () => {
+    /*
+     * A directory the operator can write and the unit cannot is the exact
+     * failure the explicit path was introduced to avoid, and an installer that
+     * creates it as root reproduces it perfectly.
+     */
+    const staging = await repoFile('deploy/staging/install.sh');
+    const production = await repoFile('deploy/production/install.sh');
+    expect(staging).toContain('install -d -o videofy -g videofy -m 0750 "$STATE_DIR/programme-media"');
+    expect(production).toContain(
+      'install -d -o "$SVC" -g "$SVC" -m 0750 "$VIDEOFY_STATE_DIR/programme-media"',
+    );
+    // Each environment's own state tree, never one shared directory.
+    expect(production).not.toContain('/srv/videofy/state/programme-media');
+  });
+
   it('keeps the spool inside the paths systemd leaves writable', async () => {
     const unit = await repoFile('deploy/staging/systemd/videofy-media-ingest.service');
     expect(unit).toContain('ProtectSystem=strict');

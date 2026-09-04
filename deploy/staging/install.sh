@@ -31,6 +31,14 @@ fi
 
 install -d -o videofy -g videofy -m 0750 "$STATE_DIR" "$UPLOAD_DIR" \
   "$UPLOAD_DIR/webrtc-staging" "$UPLOAD_DIR/audio-chunks" "$STATE_DIR/call-transcripts"
+
+# The protected buffer, created here so the first protected run does not
+# discover a missing directory on air. It sits under the STATE tree because
+# ProtectSystem=strict leaves only {state,uploads} writable to the service, and
+# it is owned by the service identity because the service, not the operator, is
+# what has to write it -- a directory an operator can write and the unit cannot
+# is the exact failure this placement avoids.
+install -d -o videofy -g videofy -m 0750 "$STATE_DIR/programme-media"
 # Written by the deployer (build-apps.sh runs unprivileged), read by Caddy.
 install -d -o "$DEPLOY_OWNER" -g root -m 0755 "$WWW_DIR"
 # Caddy runs as its own user and must be able to WRITE here, not merely

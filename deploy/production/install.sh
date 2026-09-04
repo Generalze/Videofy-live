@@ -47,6 +47,11 @@ install -d -o "$SVC" -g "$SVC" -m 0750 \
   "$VIDEOFY_STATE_DIR" "$VIDEOFY_STATE_DIR/call-transcripts" \
   "$VIDEOFY_UPLOAD_DIR" "$VIDEOFY_UPLOAD_DIR/webrtc-staging" \
   "$VIDEOFY_UPLOAD_DIR/audio-chunks" "$VIDEOFY_UPLOAD_DIR/media-ingest"
+# The protected buffer, on THIS environment's own state tree. Staging and
+# production share a host, and one spool between them would let a rehearsal
+# overwrite the only unaired copy of a real broadcast. Created here so the
+# first protected run does not discover a missing directory on air.
+install -d -o "$SVC" -g "$SVC" -m 0750 "$VIDEOFY_STATE_DIR/programme-media"
 install -d -o root -g root -m 0755 "$VIDEOFY_MEDIA_DIR"
 install -d -o "$SVC" -g "$SVC" -m 0750 \
   "$VIDEOFY_MEDIA_DIR/avatars" "$VIDEOFY_MEDIA_DIR/message-media" "$VIDEOFY_MEDIA_DIR/channel-media"
