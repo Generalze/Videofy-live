@@ -22,6 +22,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath, URL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { JournalTimelineStore } from '../journal-timeline-store.js';
+import { ProgrammeTimeline, ProgrammeOutputBuffer } from '@videofy-live/programme-timeline';
 
 const INDEX = readFileSync(fileURLToPath(new URL('../index.ts', import.meta.url)), 'utf8');
 const REGISTRY = readFileSync(
@@ -222,5 +223,92 @@ describe('the audience keeps their place across a restart', () => {
      */
     const wired = REGISTRY.match(/saveCursor\(identity\.runId, releasedThroughMs\)/gu) ?? [];
     expect(wired).toHaveLength(2);
+  });
+});
+
+describe('a broadcast that ends gives the audience the rest of it', () => {
+  it('RELEASES WHAT THE BUFFER STILL HELD WHEN THE RUN ENDS', () => {
+    /*
+     * THE LAST FORTY-FIVE SECONDS WERE NEVER DELIVERED. `drain()` set the
+     * state to draining and nothing else, so the cursor went on subtracting
+     * the delay from a live edge that had stopped moving. On staging a
+     * finished run sat at live 168,200 / public 123,200 indefinitely: the
+     * closing seconds were encoded, made durable, counted -- and reached
+     * nobody. Ending a programme has to mean the audience gets the end of it,
+     * or the delay is just a way of losing the ending.
+     */
+    const timeline = new ProgrammeTimeline(IDENTITY);
+    const buffer = new ProgrammeOutputBuffer(timeline, 45_000, undefined, {
+      metadata: true,
+      media: true,
+    });
+    for (let i = 0; i < 50; i += 1) {
+      timeline.append({
+        programmeTimeMs: i * 2000,
+        kind: 'media',
+        reference: `${IDENTITY.runId}.g0.${String(i).padStart(5, '0')}`,
+        durationMs: 2000,
+      });
+    }
+    buffer.advance();
+    const whileLive = buffer.status().cursor.publicOutputTimeMs;
+    // Live: the audience is held the configured distance behind.
+    expect(buffer.status().cursor.bufferDepthMs).toBe(45_000);
+
+    buffer.drain();
+    buffer.advance();
+    const afterDraining = buffer.status().cursor.publicOutputTimeMs;
+
+    expect(afterDraining).toBeGreaterThan(whileLive);
+    // Nothing is still being withheld once the broadcast is over.
+    expect(buffer.status().cursor.bufferDepthMs).toBe(0);
+  });
+
+  it('never moves the audience backwards while draining', () => {
+    // An audience does not un-see a programme, and ending one must not be a
+    // way of replaying material they already had.
+    const timeline = new ProgrammeTimeline(IDENTITY);
+    const buffer = new ProgrammeOutputBuffer(timeline, 45_000, undefined, {
+      metadata: true,
+      media: true,
+    });
+    for (let i = 0; i < 50; i += 1) {
+      timeline.append({
+        programmeTimeMs: i * 2000,
+        kind: 'media',
+        reference: `${IDENTITY.runId}.g0.${String(i).padStart(5, '0')}`,
+        durationMs: 2000,
+      });
+    }
+    buffer.advance();
+    const before = buffer.status().cursor.publicOutputTimeMs;
+    buffer.drain();
+    buffer.advance();
+    expect(buffer.status().cursor.publicOutputTimeMs).toBeGreaterThanOrEqual(before);
+  });
+
+  it('says the broadcast ended rather than claiming it is still protected', () => {
+    const timeline = new ProgrammeTimeline(IDENTITY);
+    const buffer = new ProgrammeOutputBuffer(timeline, 45_000, undefined, {
+      metadata: true,
+      media: true,
+    });
+    timeline.append({
+      programmeTimeMs: 0,
+      kind: 'media',
+      reference: `${IDENTITY.runId}.g0.00000`,
+      durationMs: 2000,
+    });
+    buffer.drain();
+    expect(buffer.status().state).toBe('draining');
+  });
+
+  it('joins the gateway signal to the drain', () => {
+    /*
+     * Only the gateway sees the broadcaster go, and only this service holds
+     * the buffer. Both halves existed; the join is what was missing.
+     */
+    expect(INDEX).toContain('onProgrammeRunEnded: (runId) => {');
+    expect(INDEX).toContain('buffer.drain();');
   });
 });

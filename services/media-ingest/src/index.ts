@@ -207,6 +207,30 @@ const streamingSynthesis = liveSynthesis.provider;
 
 const ingest = new IngestService(config, {
   /*
+   * THE BROADCAST IS OVER: LET THE AUDIENCE HAVE THE REST OF IT.
+   *
+   * A protected programme holds its last forty-five seconds behind the cursor.
+   * Nothing ended a run, so the buffer stayed `active` with a frozen live edge
+   * indefinitely and those closing seconds -- produced, and owed -- reached
+   * nobody. `ProgrammeOutputBuffer.drain` and `registry.release` both existed
+   * and were called by nothing.
+   *
+   * Drained, then advanced once so the remainder is actually released. The run
+   * is NOT released from memory here: an audience is still forty-five seconds
+   * behind and has to be able to fetch what was just published.
+   */
+  onProgrammeRunEnded: (runId) => {
+    const buffer = programmeTimelines.buffer(runId);
+    if (buffer === null) return;
+    buffer.drain();
+    const released = buffer.advance();
+    logger.info('Programme run ended; draining what the buffer still held', {
+      runId,
+      releasedEvents: released.length,
+      publicOutputTimeMs: programmeTimelines.status(runId)?.cursor.publicOutputTimeMs ?? null,
+    });
+  },
+  /*
    * WHO HAS ACTUALLY JUDGED THIS LANGUAGE, asked of the route document.
    *
    * A closure rather than a value because the document is loaded further down

@@ -207,7 +207,17 @@ export class ProgrammeOutputBuffer {
     if (this.state === 'failed') return [];
 
     const edge = this.timeline.liveEdgeMs();
-    const target = Math.max(0, edge - this.configuredDelayMs);
+    /*
+     * A DRAINING BROADCAST RELEASES EVERYTHING IT STILL HOLDS.
+     *
+     * `drain()` set the state and nothing else, so the cursor went on
+     * subtracting the delay from a live edge that had stopped moving -- and
+     * the last forty-five seconds, which were produced and promised, were
+     * never released to anybody. Ending a programme has to mean the audience
+     * gets the rest of it, or the delay is a way of losing the ending.
+     */
+    const target =
+      this.state === 'draining' ? edge : Math.max(0, edge - this.configuredDelayMs);
     // Never backwards. An audience does not un-see a programme.
     const to = Math.max(this.releasedThroughMs, target);
     const released = this.timeline.between(this.releasedThroughMs, to);

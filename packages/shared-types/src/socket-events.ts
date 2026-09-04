@@ -92,6 +92,16 @@ export const SOCKET_EVENTS = {
    * protected run exists in order not to relay it.
    */
   INGEST_PROGRAMME_POLICY: 'ingest:programme-policy',
+  /*
+   * The broadcast is over: let the audience have what is still held.
+   *
+   * Gateway to ingest, because only the gateway sees the broadcaster go. A
+   * protected programme holds its last forty-five seconds behind the cursor,
+   * and without this nothing ever releases them: the run stayed `active` with
+   * a frozen live edge for ever, and the closing seconds -- produced and
+   * promised -- reached nobody.
+   */
+  PROGRAMME_RUN_ENDED: 'programme:run-ended',
   /**
    * An advert the cursor has released for a programme run.
    *

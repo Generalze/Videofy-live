@@ -295,6 +295,14 @@ export function programmeTimestampMs(
  */
 export interface IngestServiceDependencies {
   /**
+   * The gateway saw the broadcaster go.
+   *
+   * Injected because this service does not own the programme registry; the
+   * composition root joins the two. Without it a protected run never drains
+   * and its closing seconds are never released.
+   */
+  onProgrammeRunEnded?: (runId: string) => void;
+  /**
    * Whether a speaker of the language has judged its route fit to broadcast.
    *
    * Injected because the answer lives in the route document, which this
@@ -658,6 +666,18 @@ export class IngestService {
     this.socket.on(SOCKET_EVENTS.INGEST_STOP_STREAM, () => {
       logger.info('Operator requested mock stream stop');
       void this.stopMockStream();
+    });
+
+    this.socket.on(SOCKET_EVENTS.PROGRAMME_RUN_ENDED, (raw: unknown) => {
+      /*
+       * The broadcast is over. A protected programme is still holding its last
+       * forty-five seconds behind the cursor, and they are owed to the
+       * audience: without this the run stayed `active` with a frozen live edge
+       * indefinitely and those seconds reached nobody.
+       */
+      const runId = (raw as { runId?: unknown } | null)?.runId;
+      if (typeof runId !== 'string' || runId === '') return;
+      this.deps.onProgrammeRunEnded?.(runId);
     });
 
     if (this.config.videoSource === 'mock') {

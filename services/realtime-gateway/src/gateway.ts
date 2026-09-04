@@ -1390,6 +1390,23 @@ export class Gateway {
     this.backendMediaPeers.closeSession(sessionId, reason);
     this.listenerMediaPeers.closeSession(sessionId, reason);
     this.webRtcTranscriptionBridge.endSessionsForSessionId(sessionId, reason);
+    /*
+     * TELL THE MEDIA SERVICE THE BROADCAST IS OVER.
+     *
+     * Only this side sees the broadcaster go, and a protected programme holds
+     * its last forty-five seconds behind the cursor. Nothing released them:
+     * the run stayed `active` with a frozen live edge indefinitely, and the
+     * closing seconds -- produced, and owed to the audience -- reached nobody.
+     *
+     * Sent before the run binding is dropped, so the id is still known.
+     */
+    const endedRun = this.programmeRuns.get(sessionId);
+    if (endedRun !== undefined) {
+      this.io.to(INGEST_ROOM).emit(SOCKET_EVENTS.PROGRAMME_RUN_ENDED, { runId: endedRun.runId });
+      logger.info('Programme run ended', { runId: endedRun.runId, reason });
+    }
+    this.programmeRuns.delete(sessionId);
+    this.relay.releaseSession(sessionId);
     this.programmeSessionConfigs.delete(sessionId);
     this.generatedAudioStore.resetSession(sessionId);
     this.invalidateProgrammeMediaState(sessionId);
