@@ -58,6 +58,11 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+# PROGRAMME_MEDIA_SPOOL LIVES UNDER /srv/videofy/state/programme-media, and that is
+# why the state tree is here. The protected buffer is the only durable copy of
+# a broadcast that has not aired yet; if it is moved outside these paths the
+# service can still start, and the first protected run fails on air with a
+# read-only filesystem.
 ReadWritePaths=/srv/videofy/state /srv/videofy/uploads
 ProtectKernelTunables=true
 ProtectControlGroups=true

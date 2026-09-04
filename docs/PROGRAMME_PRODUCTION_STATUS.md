@@ -215,6 +215,9 @@ protection.
 | `PROGRAMME_MEDIA_ORIGIN_INPUT` | No programme media is produced. The playlist is empty, and no protective delay is possible. Said at boot. |
 | `PROGRAMME_SAFETY_DELAY_MS` | Every run is TRUE LIVE. Setting it above zero is currently refused by the plane check, because the original is still delivered live. |
 | `PROGRAMME_MEDIA_DELIVERY` | Defaults to `live`. `delayed` is declined at boot until the gateway enforces it. |
+| `PROGRAMME_MEDIA_SPOOL` | **No protected media is held.** There is no fallback: the spool used to be derived from `AUDIO_CHUNK_DIR`, which falls back to a path relative to the working directory — under `ProtectSystem=strict` that lands in the read-only code tree. Both the gateway and this service read this one variable. |
+| `PROGRAMME_SPOOL_BITRATE_BPS` | Capacity is checked against 3.5 Mbit/s. An estimate, and named as one: the encoder is constant-quality, so the real figure only exists once a run produces one. |
+| `PROGRAMME_SPOOL_CONCURRENT_RUNS` | One protected broadcast. The disk requirement multiplies by this. |
 | `ACCOUNT_SERVICE_URL` | Visibility cannot be resolved; **no audience is admitted**. Said at boot. |
 | `INTERNAL_WEBRTC_TOKEN` | Same as above, and the gateway cannot be recognised. |
 | `OPERATOR_CONSOLE_ACCOUNT_IDS` | Nobody may operate a programme, including starting a producer. |
@@ -303,3 +306,52 @@ real device, and no part of it has run on staging. In particular:
 
 **This subsystem is not certified.** The word for its current state is
 "engineered and internally verified", which is a different and lesser claim.
+
+---
+
+## Retention: what is deleted, what is kept, and what is merely absent
+
+Three states that used to be one, and telling them apart is the whole of this
+section.
+
+| Case | Meaning | Response |
+| --- | --- | --- |
+| Referenced, inside the required window, missing | The material was published to somebody and is gone | **Protection fails** |
+| Referenced, older than the window | Retention was entitled to delete it | Normal; counted as `expiredByRetention` |
+| On the volume, referenced by nothing | A durable write whose journal append never happened | Orphan; swept after recovery, never before |
+
+The required window is derived from the same `retentionWindowMs` the retention
+policy prunes by, so the two cannot drift. It extends **past the cursor**: a
+restart that recovered only what was already public would restore the current
+manifest and run out the moment the cursor advanced.
+
+**Two halves of this policy were unwired until 4 September 2026.** `prune`
+existed, was tested, and was called by nothing outside its own tests; and every
+deployment constructed the store with the sink whose `discard` returns true
+without touching a file. The window never shrank, in memory or on the volume,
+and a long broadcast filled the disk behind a green console. Both halves are
+now joined and the join is asserted against the filesystem.
+
+**Initialisation objects are reference-counted, never aged.** A fragment
+decodes only with the init object of its generation, and that object is by
+definition the oldest file in its directory. Deleting generation G while one
+retained fragment still names it destroys the retained window instead of
+trimming it — discovered by an audience mid-reconnect.
+
+**Orphan cleanup is never "delete what is not in memory".** After a restart
+nothing is in memory, and that rule would delete the entire retained window of
+every recovered broadcast a moment before its audience needed it. The sweep
+refuses to run on a run recovery has not reconstructed, takes the authoritative
+reference set as its input, and leaves anything inside a ten-minute grace
+period alone.
+
+**Capacity is a separate fact from writability.** Fifty megabytes free is
+writable and is not a forty-five second safety buffer. It is checked at startup
+against `bitrate x retention seconds x concurrent runs x margin`, and again
+every thirty seconds while a run is live, with the exhaustion horizon projected
+from the trend rather than awaited as ENOSPC.
+
+**The one remedy that is never taken is shortening the delay.** It would
+reliably free space, and it would put an audience closer to live than the
+people relying on the protection were told. When the volume cannot hold the
+promise, the promise fails loudly and the delay stays where it is.

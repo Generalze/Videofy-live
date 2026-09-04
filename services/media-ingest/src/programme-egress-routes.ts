@@ -74,8 +74,12 @@ export interface ProgrammeEgressRoutesDeps {
    *
    * Every resolved reference must sit inside it. Passing the spool root is
    * what turns the containment check from a comment into a check.
+   *
+   * Null is a deployment that holds no protected media. Segment bytes are
+   * then refused outright rather than resolved against a guessed directory:
+   * without a containment root there is nothing to contain them to.
    */
-  readonly spoolRoot: string;
+  readonly spoolRoot: string | null;
   /** Counted for an operator: somebody asking for material not yet published. */
   readonly onFuturePeek?: (runId: string) => void;
 }
@@ -112,7 +116,7 @@ export function registerProgrammeEgressRoutes(
   app: express.Express,
   deps: ProgrammeEgressRoutesDeps,
 ): void {
-  const spoolRoot = resolve(deps.spoolRoot);
+  const spoolRoot = deps.spoolRoot === null ? null : resolve(deps.spoolRoot);
 
   const admit = async (req: express.Request, res: express.Response): Promise<string | null> => {
     const runId = String(req.params['runId'] ?? '');
@@ -190,6 +194,12 @@ export function registerProgrammeEgressRoutes(
         return;
       }
 
+      if (spoolRoot === null) {
+        // Nothing to serve from, and nothing to check a path against. 503
+        // rather than 404: the segment is not absent, this deployment is.
+        res.status(503).json({ error: 'This deployment holds no programme media.' });
+        return;
+      }
       const path = resolve(authorization.storageReference);
       if (path !== spoolRoot && !path.startsWith(`${spoolRoot}${sep}`)) {
         /*

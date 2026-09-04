@@ -1,5 +1,6 @@
 /** @owner masterzee001 */
 import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
 import type { ProgrammeRunIdentity } from '@videofy-live/media-ingress-wire';
 import type { Server as HttpServer } from 'node:http';
 import { Server as SocketServer, type Socket } from 'socket.io';
@@ -498,9 +499,21 @@ export class Gateway {
      * layout, so the encoder runs here and the segments land where the cursor,
      * the store and the egress already look for them.
      */
-    const spoolRoot = process.env['PROGRAMME_MEDIA_SPOOL']?.trim();
+    /*
+     * THE SAME VARIABLE THE MEDIA SERVICE READS, resolved the same way.
+     *
+     * The media service used to derive its spool from the audio chunk
+     * directory while this one read this variable, so the two could name
+     * different directories and nothing would say so: the encoder would fill a
+     * spool the cursor never polled, and the manifest would stay empty behind
+     * a healthy encoder. One name, and absolute, because the two services run
+     * with different working directories.
+     */
+    const configuredSpool = process.env['PROGRAMME_MEDIA_SPOOL']?.trim();
+    const spoolRoot =
+      configuredSpool === undefined || configuredSpool === '' ? null : resolve(configuredSpool);
     this.contributionHost =
-      spoolRoot === undefined || spoolRoot === ''
+      spoolRoot === null
         ? null
         : new ProgrammeContributionHost({
             spoolRoot,

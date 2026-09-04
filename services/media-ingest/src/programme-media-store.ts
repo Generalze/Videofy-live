@@ -132,6 +132,23 @@ export class ProgrammeMediaStore {
     return gone.size;
   }
 
+  /**
+   * The ids of the segments this run still holds.
+   *
+   * What the retained window actually needs, which is the only safe authority
+   * for deciding that an initialisation object is finished with. Reading the
+   * directory instead would count orphans as references and keep every
+   * generation ever produced.
+   */
+  retainedSegmentIds(runId: string): readonly string[] {
+    return (this.runs.get(runId) ?? []).map((segment) => segment.segmentId);
+  }
+
+  /** What this run is currently holding on the volume, in bytes. */
+  retainedBytes(runId: string): number {
+    return (this.runs.get(runId) ?? []).reduce((total, segment) => total + segment.bytes, 0);
+  }
+
   /** How far back this run's media currently reaches. Null when it holds none. */
   earliestHeldMs(runId: string): number | null {
     const held = this.runs.get(runId);

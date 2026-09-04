@@ -101,6 +101,35 @@ export interface IngestConfig {
    */
   programmeMediaDelivery: 'live' | 'delayed';
   /**
+   * The directory a protected broadcast's media is spooled to.
+   *
+   * EXPLICIT, OR NOTHING. This was derived from the audio chunk directory,
+   * which itself falls back to a path relative to the working directory -- so
+   * the location of a protected broadcast's only durable copy depended on
+   * where the process happened to be started from. Under `ProtectSystem=strict`
+   * that derived path sits inside the read-only code tree, and the first
+   * protected run would have discovered it as a write failure on air.
+   *
+   * The gateway reads the SAME variable to decide where its contribution
+   * encoder writes. One name, one directory: a spool the encoder fills and the
+   * cursor never looks at is two services agreeing about nothing.
+   *
+   * Null means this deployment holds no protected media, said at boot.
+   */
+  programmeMediaSpool: string | null;
+  /**
+   * What a protected run is expected to write, in bits per second.
+   *
+   * AN ESTIMATE, AND NAMED AS ONE. The encoder runs at constant quality, not
+   * constant rate, so no exact figure exists before a run produces one. This
+   * is what capacity is checked against BEFORE a broadcast starts; the runtime
+   * monitor then measures what is actually retained and degrades on the real
+   * number rather than on this one.
+   */
+  programmeSpoolBitrateBps: number;
+  /** How many protected broadcasts this deployment may hold at once. */
+  programmeSpoolConcurrentRuns: number;
+  /**
    * Where a protected programme's media comes from.
    *
    * `webrtc` is the canonical path and the default: the broadcaster publishes
@@ -585,6 +614,21 @@ export function loadConfig(): IngestConfig {
   }
 
   /*
+   * WHERE THE PROTECTED COPY LIVES, named rather than inferred.
+   *
+   * Resolved to an absolute path so that a relative value cannot quietly mean
+   * two different directories in two services with different working
+   * directories -- which is precisely the failure this variable replaces.
+   */
+  const spoolRaw = process.env['PROGRAMME_MEDIA_SPOOL']?.trim() || null;
+  const spoolDirectory = spoolRaw === null ? null : resolve(spoolRaw);
+  if (spoolDirectory === null) {
+    logger.warn(
+      'PROGRAMME_MEDIA_SPOOL is unset; this deployment holds no protected programme media',
+    );
+  }
+
+  /*
    * The safety delay. Zero -- true live -- is the default and is a choice
    * rather than an omission.
    */
@@ -627,6 +671,9 @@ export function loadConfig(): IngestConfig {
     programmeMediaOriginInput: originInputTemplate,
     programmeSafetyDelayMs: safetyDelayMs,
     programmeMediaDelivery: mediaDelivery,
+    programmeMediaSpool: spoolDirectory,
+    programmeSpoolBitrateBps: readPositiveInt('PROGRAMME_SPOOL_BITRATE_BPS', 3_500_000),
+    programmeSpoolConcurrentRuns: readPositiveInt('PROGRAMME_SPOOL_CONCURRENT_RUNS', 1),
     programmeContributionSource: contributionSource,
     audioChunkDir:
       process.env['AUDIO_CHUNK_DIR'] ?? resolve(process.cwd(), '../../uploads/audio-chunks'),

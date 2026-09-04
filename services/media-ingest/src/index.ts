@@ -72,6 +72,14 @@ import { ProgrammeMediaStore } from './programme-media-store.js';
 import { ProgrammeMediaOrigin } from './programme-media-origin.js';
 import { ProgrammeDeliveryReporter } from './programme-delivery-reporter.js';
 import { recoverProgrammeMedia } from './programme-media-recovery.js';
+import {
+  assessSpool,
+  spoolPermitsProtectedRun,
+  PROGRAMME_SPOOL_MARGIN,
+  type SpoolReadiness,
+} from './programme-spool-readiness.js';
+import { ProgrammeSpoolKeeper, type SpoolPressure } from './programme-spool-keeper.js';
+import { FileSegmentSink } from './programme-spool-retention.js';
 import { initFileName } from '@videofy-live/programme-contribution';
 import {
   CAMPAIGN_REFRESH_MS,
@@ -301,6 +309,17 @@ const processStartedAtMs = Date.now();
 /** Below this, a fresh start is indistinguishable from a crash loop. */
 const STABLE_UPTIME_MS = 60_000;
 
+/*
+ * WHAT THE SPOOL PROBE FOUND, held where the health route can read it.
+ *
+ * Assigned after the probe runs, further down. Declared here because the route
+ * is registered before the probe and answers requests long afterwards, and a
+ * health surface that could not see this would be reporting on a protected
+ * deployment while knowing nothing about the only place its protection lives.
+ */
+let programmeSpoolFacts: SpoolReadiness | null = null;
+let programmeSpoolPressure: SpoolPressure | null = null;
+
 app.get('/health', (_req, res) => {
   // "degraded", not "ok", when the gateway socket is down: the process is alive
   // and will happily accept and transcribe chunks, but nothing it produces can
@@ -358,6 +377,31 @@ app.get('/health', (_req, res) => {
      * reporting a working product while shipping a broken one.
      */
     ...(nigerianSynthesis === null ? {} : { nigerianLanguageSynthesis: nigerianSynthesis() }),
+    /*
+     * SIX FACTS, NOT ONE, and never collapsed into `media: true`.
+     *
+     * Each has a different fix: nobody named a path, the path is not there,
+     * this process cannot write it under systemd, the volume will not make a
+     * write durable, there is no room for the window, or a recovery found the
+     * retained media broken. `recoveryIntact` is null until a recovery has
+     * actually happened, which is not the same as passing one.
+     *
+     * Booleans only. The byte counts are on the operator surface: how much
+     * disk this host has left is not a fact for an unauthenticated caller.
+     */
+    ...(programmeSpoolFacts === null
+      ? {}
+      : {
+          programmeMediaSpool: {
+            configured: programmeSpoolFacts.configured,
+            pathExists: programmeSpoolFacts.pathExists,
+            writable: programmeSpoolFacts.writable,
+            durable: programmeSpoolFacts.durable,
+            capacitySufficient: programmeSpoolFacts.capacitySufficient,
+            recoveryIntact: programmeSpoolFacts.recoveryIntact,
+            ...(programmeSpoolPressure === null ? {} : { pressure: programmeSpoolPressure.state }),
+          },
+        }),
     ...(unavailablePairs.length > 0 ? { unavailableTranslationPairs: unavailablePairs } : {}),
     ...(strandedVoiceCleanups > 0 ? { strandedVoiceCleanups } : {}),
     timestamp: new Date().toISOString(),
@@ -1117,10 +1161,60 @@ const programmeJournal = new JournalTimelineStore({
  * until the gateway can be told to stop relaying. Both conditions are
  * required; either alone is a promise nothing keeps.
  */
+/*
+ * THE SPOOL, TAKEN FROM CONFIGURATION AND THEN ACTUALLY TRIED.
+ *
+ * `assessSpool` below writes a probe, forces it to the device, syncs the
+ * directory entry, reads the bytes back and removes it -- from THIS process,
+ * under whatever sandbox systemd has put it in. A path that looks writable
+ * from a shell and is read-only to the unit is the failure this replaces, and
+ * configuration alone cannot tell the two apart.
+ */
+const programmeMediaSpool = config.programmeMediaSpool;
+const programmeSpool = await assessSpool({
+  directory: programmeMediaSpool,
+  capacity: {
+    bytesPerSecond: config.programmeSpoolBitrateBps / 8,
+    maxDelayMs: config.programmeSafetyDelayMs,
+    concurrentRuns: config.programmeSpoolConcurrentRuns,
+    marginFactor: PROGRAMME_SPOOL_MARGIN,
+  },
+});
+/*
+ * SIX FACTS, NOT ONE, because each has a different fix: nobody named a path,
+ * the path is not there, the unit cannot write it, the volume will not make a
+ * write durable, there is no room for the promise, or a recovery found the
+ * retained media broken.
+ */
+logger.info('Programme media spool', {
+  configured: programmeSpool.configured,
+  pathExists: programmeSpool.pathExists,
+  writable: programmeSpool.writable,
+  durable: programmeSpool.durable,
+  capacitySufficient: programmeSpool.capacitySufficient,
+  recoveryIntact: programmeSpool.recoveryIntact,
+  requiredMegabytes: Math.round(programmeSpool.requiredBytes / 1_048_576),
+  freeMegabytes:
+    programmeSpool.freeBytes === null ? null : Math.round(programmeSpool.freeBytes / 1_048_576),
+  detail: programmeSpool.detail,
+});
+programmeSpoolFacts = programmeSpool;
+if (!spoolPermitsProtectedRun(programmeSpool)) {
+  logger.error('Protected programme media is unavailable on this deployment', {
+    reason: programmeSpool.detail,
+  });
+}
+
 const programmeMediaProduced =
   (config.programmeContributionSource === 'webrtc' ||
     config.programmeMediaOriginInput !== null) &&
-  config.programmeMediaDelivery === 'delayed';
+  config.programmeMediaDelivery === 'delayed' &&
+  /*
+   * A DELAY NOBODY CAN STORE IS NOT A DELAY. Declaring the media plane
+   * governed on a spool that cannot hold the material would put PROTECTED
+   * LIVE on a console over a broadcast with nowhere to keep the buffer.
+   */
+  spoolPermitsProtectedRun(programmeSpool);
 const programmeTimelines = new ProgrammeTimelineRegistry(
   undefined,
   config.programmeSafetyDelayMs,
@@ -1332,8 +1426,25 @@ registerProgrammeRuntimeRoutes(app, {
  * left for somebody to discover: an empty playlist and a broken encoder look
  * identical from outside, and only one of them is what this deployment is.
  */
-const programmeMediaSpool = join(config.audioChunkDir, 'programme-media');
-const programmeMedia = new ProgrammeMediaStore();
+/*
+ * THE SINK THAT ACTUALLY DELETES, and the reason it had to be built.
+ *
+ * Every deployment constructed this store with no sink at all, which defaults
+ * to the one whose `discard` returns true without touching a file. So
+ * retention removed segments from an index and left every byte on the volume
+ * for the life of the broadcast. Without a spool there is nothing to delete
+ * from and nothing to contain a deletion to, so the keeper-less default
+ * stands.
+ */
+const programmeMedia = new ProgrammeMediaStore(
+  programmeMediaSpool === null
+    ? undefined
+    : new FileSegmentSink({
+        spoolRoot: programmeMediaSpool,
+        onProblem: (message, detail) => logger.warn(message, detail),
+      }),
+  (message, detail) => logger.warn(message, detail),
+);
 const programmeEgress = new ProgrammeEgressAuthority(programmeTimelines, programmeMedia);
 
 /**
@@ -1384,6 +1495,55 @@ const programmeOrigin = new ProgrammeMediaOrigin({
   egress: programmeEgress,
   spoolRoot: programmeMediaSpool,
 });
+
+/*
+ * RETENTION, ACTUALLY RUN.
+ *
+ * `ProgrammeMediaStore.prune` was written, tested, and called by nothing
+ * outside its own tests -- so the retained window never shrank on a real
+ * deployment, in memory or on the volume. This is the caller, and it also
+ * watches what the volume has left while it works.
+ *
+ * It never shortens the delay. Reducing the safety buffer would reliably free
+ * space and would put a broadcast to air closer to live than the people
+ * relying on it were told; the promise fails loudly instead.
+ */
+const programmeSpoolKeeper =
+  programmeMediaSpool === null
+    ? null
+    : new ProgrammeSpoolKeeper({
+        spoolRoot: programmeMediaSpool,
+        media: programmeMedia,
+        timelines: programmeTimelines,
+        capacity: {
+          bytesPerSecond: config.programmeSpoolBitrateBps / 8,
+          maxDelayMs: config.programmeSafetyDelayMs,
+          concurrentRuns: config.programmeSpoolConcurrentRuns,
+          marginFactor: PROGRAMME_SPOOL_MARGIN,
+        },
+        onPressure: (pressure) => {
+          programmeSpoolPressure = pressure;
+          if (pressure.state !== 'failed') return;
+          /*
+           * The volume can no longer hold what the delay promises. Every
+           * protected run fails rather than quietly holding less: an audience
+           * told they are watching a protected broadcast must not be moved
+           * closer to live to save disk.
+           */
+          for (const runId of programmeTimelines.trackedRuns()) {
+            programmeTimelines.buffer(runId)?.fail(pressure.detail ?? 'the spool is full');
+          }
+          logger.error('Protected programme output failed: the spool cannot hold the window', {
+            detail: pressure.detail,
+          });
+        },
+        log: {
+          info: (message, detail) => logger.info(message, detail ?? {}),
+          warn: (message, detail) => logger.warn(message, detail ?? {}),
+          error: (message, detail) => logger.error(message, detail ?? {}),
+        },
+      });
+programmeSpoolKeeper?.start();
 
 app.post('/programmes/:runId/media-origin', operatorOnly, (req, res) => {
   void (async () => {
@@ -1553,6 +1713,22 @@ if (advertisingClient.configured) {
  * behind an entirely green console.
  */
 programmeTimelines.onRecovered(async (runId, events) => {
+  if (programmeMediaSpool === null) {
+    /*
+     * FAIL CLOSED, NOT QUIETLY EMPTY. This deployment holds no spool, so any
+     * media the journal references -- written by a deployment that did -- is
+     * unreachable. Reporting nothing missing would hand back a recovered run
+     * whose material provably cannot be served.
+     */
+    const referenced = events.filter((event) => event.kind === 'media');
+    if (referenced.length > 0) {
+      logger.error('A recovered broadcast references media and this deployment has no spool', {
+        runId,
+        referenced: referenced.length,
+      });
+    }
+    return { missing: referenced.map((event) => event.reference) };
+  }
   const recovered = programmeTimelines.status(runId);
   const outcome = await recoverProgrammeMedia({
     runId,
@@ -1577,6 +1753,13 @@ programmeTimelines.onRecovered(async (runId, events) => {
       generation,
     );
   }
+  /*
+   * Only now may anything be deleted as an orphan. Before recovery rebuilt
+   * this run, "not referenced" only meant "not yet read" -- and a sweep on
+   * that basis would delete the entire retained window a moment before the
+   * audience needed it.
+   */
+  programmeSpoolKeeper?.noteRecovered(runId);
   logger.info('Recovered programme media', {
     runId,
     restored: outcome.restored,
@@ -1586,8 +1769,22 @@ programmeTimelines.onRecovered(async (runId, events) => {
     expiredByRetention: outcome.expired,
     requiredFromMs: outcome.requiredFromMs,
     generations: outcome.generations,
+    missingInits: outcome.missingInits,
   });
-  return { missing: outcome.missing };
+  /*
+   * A MISSING INITIALISATION OBJECT FAILS THE BROADCAST TOO.
+   *
+   * Every fragment of a generation decodes only with that generation's init,
+   * so one absent init is not a smaller fault than an absent fragment -- it is
+   * a larger one. Reported through the same channel so the buffer fails
+   * closed, and named distinctly so an operator can see which it was.
+   */
+  return {
+    missing: [
+      ...outcome.missing,
+      ...outcome.missingInits.map((generation) => `${runId}.init.g${generation}`),
+    ],
+  };
 });
 
 programmeTimelines.onRunOpened((runId) => {

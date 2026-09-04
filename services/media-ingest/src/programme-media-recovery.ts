@@ -25,6 +25,7 @@
 
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { initFileName } from '@videofy-live/programme-contribution';
 import {
   retentionWindowMs,
   type ProgrammeMediaSegment,
@@ -55,6 +56,14 @@ export interface MediaRecoveryResult {
   readonly expired: number;
   /** The init generations the restored segments still depend on. */
   readonly generations: readonly number[];
+  /**
+   * Generations whose initialisation object is absent or empty.
+   *
+   * SEPARATE FROM `missing`, because the fix is different and the blast radius
+   * is larger: one absent init makes every retained fragment of that
+   * generation undecodable, however many of them came back.
+   */
+  readonly missingInits: readonly number[];
   /** The earliest programme time this run must still be able to serve. */
   readonly requiredFromMs: number;
 }
@@ -184,10 +193,31 @@ export async function recoverProgrammeMedia(input: {
     if (input.media.accept(segment)) restored += 1;
   }
 
+  /*
+   * THE INIT OBJECTS THE RESTORED WINDOW DEPENDS ON.
+   *
+   * A fragment decodes only with the initialisation object of its generation,
+   * so a window whose fragments are all present and whose init is missing is
+   * not a recovered window -- it is a set of files no player can open. This
+   * used to be inferred from the segment names and never checked, which meant
+   * recovery could report every segment restored and hand the audience
+   * material that could not be decoded.
+   */
+  const missingInits: number[] = [];
+  for (const generation of generations) {
+    const path = join(input.directory, initFileName(generation));
+    try {
+      if ((await stat(path)).size === 0) missingInits.push(generation);
+    } catch {
+      missingInits.push(generation);
+    }
+  }
+
   return {
     restored,
     missing,
     expired,
+    missingInits: missingInits.sort((a, b) => a - b),
     generations: [...generations].sort((a, b) => a - b),
     requiredFromMs,
   };

@@ -79,8 +79,15 @@ export interface ProgrammeMediaOriginDeps {
   readonly media: ProgrammeMediaStore;
   readonly timelines: ProgrammeTimelineRegistry;
   readonly egress: ProgrammeEgressAuthority;
-  /** The one directory runs may write into. Each gets a subdirectory of it. */
-  readonly spoolRoot: string;
+  /**
+   * The one directory runs may write into. Each gets a subdirectory of it.
+   *
+   * Null is a deployment with no spool, which cannot produce or collect
+   * protected media at all. Both entry points refuse rather than inventing a
+   * directory: a broadcast written somewhere nobody agreed on is worse than
+   * one that never started.
+   */
+  readonly spoolRoot: string | null;
   readonly spawner?: OriginSpawner;
   /** How often the playlist is re-read. Half a segment, by default. */
   readonly pollMs?: number;
@@ -171,6 +178,7 @@ export class ProgrammeMediaOrigin {
    */
   async start(runId: string, input: string, inputArgs?: readonly string[]): Promise<boolean> {
     if (this.runs.has(runId)) return false;
+    if (this.deps.spoolRoot === null) return false;
 
     const directory = join(this.deps.spoolRoot, runId);
     await mkdir(directory, { recursive: true });
@@ -252,6 +260,7 @@ export class ProgrammeMediaOrigin {
    */
   observe(runId: string): boolean {
     if (this.runs.has(runId)) return false;
+    if (this.deps.spoolRoot === null) return false;
     const generation = (this.generations.get(runId) ?? -1) + 1;
     this.generations.set(runId, generation);
     const directory = join(this.deps.spoolRoot, runId);

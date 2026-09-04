@@ -347,3 +347,88 @@ describe('recovery can be run twice', () => {
     expect(media.segmentCount('run_1')).toBe(4);
   });
 });
+
+describe('the corruption cases, each answered differently', () => {
+  const recover = (root: string, count: number, publicOutputTimeMs = count * SEGMENT_MS) =>
+    recoverProgrammeMedia({
+      runId: RUN.runId,
+      directory: join(root, 'run_1'),
+      events: Array.from({ length: count }, (_, index) => mediaEvent(index)),
+      media: new ProgrammeMediaStore(),
+      publicOutputTimeMs,
+      configuredDelayMs: DELAY_MS,
+    });
+
+  it('FAILS WHEN A REQUIRED INITIALISATION OBJECT IS GONE', async () => {
+    /*
+     * Every fragment of a generation decodes only with that generation's init.
+     * A window whose fragments all came back and whose init did not is not a
+     * recovered window; it is a set of files no player can open -- and
+     * recovery used to report it as entirely restored.
+     */
+    const root = spoolWith(4);
+    rmSync(join(root, 'run_1', 'init.0.mp4'));
+    const outcome = await recover(root, 4);
+    expect(outcome.restored).toBe(4);
+    expect(outcome.missingInits).toEqual([0]);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('fails on an initialisation object truncated to nothing', async () => {
+    // What a power loss mid-write leaves. Present, and useless.
+    const root = spoolWith(4);
+    writeFileSync(join(root, 'run_1', 'init.0.mp4'), Buffer.alloc(0));
+    const outcome = await recover(root, 4);
+    expect(outcome.missingInits).toEqual([0]);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('is content when the init is present and has bytes', async () => {
+    const root = spoolWith(4);
+    expect((await recover(root, 4)).missingInits).toEqual([]);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('NEVER IMPORTS A SEGMENT BELONGING TO ANOTHER RUN', async () => {
+    /*
+     * Structural rather than checked: recovery only ever looks inside the
+     * directory of the run it was asked about, and the file name it derives
+     * carries no path. A neighbouring broadcast's material on the same volume
+     * is invisible to it, which is the property that matters when two runs
+     * share a spool root.
+     */
+    const root = spoolWith(2);
+    mkdirSync(join(root, 'run_2'), { recursive: true });
+    writeFileSync(join(root, 'run_2', 'seg_g0_00007.m4s'), Buffer.from('SOMEBODY ELSE'));
+    const media = new ProgrammeMediaStore();
+    await recoverProgrammeMedia({
+      runId: RUN.runId,
+      directory: join(root, 'run_1'),
+      events: [mediaEvent(0), mediaEvent(1)],
+      media,
+      publicOutputTimeMs: 2 * SEGMENT_MS,
+      configuredDelayMs: DELAY_MS,
+    });
+    const restored = media.retainedSegmentIds(RUN.runId);
+    expect(restored).toHaveLength(2);
+    for (const segmentId of restored) expect(segmentId.startsWith('run_1.')).toBe(true);
+    // And nothing was attributed to the other run at all.
+    expect(media.retainedSegmentIds('run_2')).toEqual([]);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('ignores an orphan the timeline never committed', async () => {
+    /*
+     * The safe failure direction: media is made durable before its reference
+     * is appended, so a process that died between the two leaves bytes nothing
+     * points at. Those are not part of the broadcast and must not be
+     * resurrected into it.
+     */
+    const root = spoolWith(2);
+    writeFileSync(join(root, 'run_1', 'seg_g0_09999.m4s'), Buffer.from('ORPHAN'));
+    const outcome = await recover(root, 2);
+    expect(outcome.restored).toBe(2);
+    expect(outcome.missing).toEqual([]);
+    rmSync(root, { recursive: true, force: true });
+  });
+});
