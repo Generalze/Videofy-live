@@ -210,7 +210,23 @@ suite('two broadcasts on one host do not share an init segment', () => {
     }
   }, 180_000);
 
-  it('never resolves the init segment against the working directory', () => {
+  it('keeps each run own init segment separate, by WHERE the encoder runs', () => {
+    /*
+     * THIS TEST USED TO REQUIRE THE DEFECT. It asserted the init filename must
+     * carry the run's spool path -- "a bare filename here is the defect" --
+     * and that absolute path is exactly what stopped the encoder writing
+     * anything at all on the deployment host.
+     *
+     * FFmpeg 6.1.1 resolves `hls_fmp4_init_filename` against the PLAYLIST's
+     * directory and 8.1.2 against the WORKING directory, so no single spelling
+     * of the argument is portable. Proven on the host with synthetic inputs:
+     * absolute fails with "Failed to open segment" and writes nothing.
+     *
+     * The isolation this test exists to protect is real and is now provided by
+     * running the encoder IN the run's own directory, so both interpretations
+     * land there. The sibling test above proves it with a real encoder: two
+     * runs, two directories, each with its own decodable init.
+     */
     const command = buildOriginCommand({
       runId: 'run_1',
       input: 'in.ts',
@@ -218,8 +234,14 @@ suite('two broadcasts on one host do not share an init segment', () => {
     });
     const index = command.indexOf('-hls_fmp4_init_filename');
     expect(index).toBeGreaterThan(-1);
-    // A bare filename here is the defect; the path must carry the run's spool.
-    expect(command[index + 1]).toContain('run_1');
-    expect(command[index + 1]).not.toBe(initFileName(0));
+    expect(command[index + 1]).toBe(initFileName(0));
+    /*
+     * The segment pattern and the playlist ARE resolved against the working
+     * directory by every version, so they stay absolute and carry the run.
+     * The two arguments look inconsistent and are not.
+     */
+    const segments = command.indexOf('-hls_segment_filename');
+    expect(command[segments + 1]).toContain('run_1');
+    expect(command[command.length - 1]).toContain('run_1');
   });
 });

@@ -146,7 +146,21 @@ export function buildRawOriginCommand(
      * retention window were written against.
      */
     '-hls_fmp4_init_filename',
-    join(options.outputDirectory, initFileName(generation)),
+    /*
+     * RELATIVE, AND THE COMMENT HERE USED TO SAY THE OPPOSITE.
+     *
+     * FFmpeg resolves `hls_fmp4_init_filename` against the PLAYLIST's
+     * directory, not the working directory, so an absolute path produces
+     * "Failed to open segment" and the encoder writes nothing at all -- no
+     * init object, no fragments, no playlist. `hls_segment_filename` below IS
+     * resolved against the working directory and must stay absolute, which is
+     * exactly why the two look inconsistent and are not.
+     *
+     * Proven on the deployment host with synthetic inputs: absolute fails with
+     * "Nothing was written into output file"; relative writes the init object
+     * and the fragments into the playlist's directory, which is this one.
+     */
+    initFileName(generation),
     '-hls_segment_filename',
     join(options.outputDirectory, `seg_g${generation}_%05d.m4s`),
     join(options.outputDirectory, playlistFileName(generation)),
@@ -235,6 +249,19 @@ export class RawContributionEncoder implements ContributionOutput {
 
     const child = spawn(this.options.ffmpegExecutable ?? 'ffmpeg', [...args], {
       stdio: ['pipe', 'ignore', 'pipe'],
+      /*
+       * THE ENCODER RUNS IN THE DIRECTORY IT WRITES INTO, and that is what
+       * makes the init filename portable.
+       *
+       * FFmpeg 6.1.1 resolves `hls_fmp4_init_filename` against the PLAYLIST's
+       * directory; 8.1.2 resolves it against the WORKING directory. So neither
+       * absolute nor relative is correct everywhere: an absolute path writes
+       * nothing at all on the deployment host, and a bare name lands in
+       * whatever directory the service happened to start in on a newer build.
+       *
+       * Running here makes both interpretations the same place.
+       */
+      cwd: this.options.outputDirectory,
     });
     this.child = child;
 
