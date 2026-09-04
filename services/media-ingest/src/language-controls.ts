@@ -6,6 +6,7 @@ import type {
   TargetLanguageCapability,
 } from '@videofy-live/shared-types';
 import {
+  NIGERIAN_SPECIALIST_LANGUAGES,
   SELF_HOSTED_ENGINES,
   resolveLanguageCapabilities,
   type LanguageCapability,
@@ -177,6 +178,16 @@ export function buildTargetLanguageCatalogue(input: {
    * still tells the truth about the specialist.
    */
   configuredProviderIds?: readonly string[];
+  /**
+   * Whether a language's route has been JUDGED fit to broadcast, by somebody
+   * who reads it.
+   *
+   * Injected rather than derived, because the answer lives in the route
+   * document and this function has no business reading one. Absent means
+   * nobody asked, which is not the same as yes: the four Nigerian specialist
+   * languages are refused a programme route without it.
+   */
+  programmeRouteQualified?: (language: string) => boolean;
 }): TargetLanguageCapability[] {
   const chain = new Map(
     resolveLanguageCapabilities({
@@ -221,8 +232,87 @@ export function buildTargetLanguageCatalogue(input: {
       voiceId: input.voiceIds?.get(candidate.language) ?? null,
       license: TARGET_LICENSE_NOTES[candidate.language] ?? DEFAULT_TARGET_LICENSE_NOTE,
       commercialUse: 'unknown',
+      programmeRoute: programmeRouteFor({
+        language: candidate.language,
+        degraded: evidence?.degraded === true,
+        voiceAvailable,
+        translationAvailable,
+        qualified: input.programmeRouteQualified?.(candidate.language) ?? false,
+      }),
     };
   });
+}
+
+/**
+ * Re-decide the programme route with a qualification answer that arrived later.
+ *
+ * The catalogue is built when the session store is constructed, and the route
+ * document is loaded further down the composition root -- so at build time the
+ * honest answer to "has anybody judged this" is no. Rather than leave that
+ * stale, the verdict is re-applied when the catalogue is READ, which is also
+ * when a review that landed since boot should start counting.
+ */
+export function applyProgrammeRoute(
+  capabilities: readonly TargetLanguageCapability[],
+  qualified: (language: string) => boolean,
+): TargetLanguageCapability[] {
+  return capabilities.map((capability) => ({
+    ...capability,
+    programmeRoute: programmeRouteFor({
+      language: capability.language,
+      degraded: capability.degraded === true,
+      voiceAvailable: capability.voiceAvailable,
+      translationAvailable: capability.translationAvailable,
+      qualified: qualified(capability.language),
+    }),
+  }));
+}
+
+/**
+ * Whether a language may carry a programme, as opposed to being technically
+ * speakable.
+ *
+ * THE FOUR NIGERIAN LANGUAGES ARE DECIDED BY QUALIFICATION, NOT CAPABILITY.
+ * Azure will return HTTP 200 and fluent-sounding Yoruba with the wrong
+ * pronunciation, and only a speaker can hear the difference -- so a working
+ * chain is exactly the evidence that must not be read as readiness. Without a
+ * qualified specialist, or an independently qualified route through the
+ * general vendor, the answer is no: a configured provider may exist, a
+ * technical fallback may exist, and linguistic qualification is still absent.
+ *
+ * Every other language keeps the existing rule, because for those a working
+ * chain has never been the thing in dispute. Widening qualification to all of
+ * them is a policy change, not a bug fix, and would silently withdraw
+ * languages that are in service today.
+ */
+function programmeRouteFor(input: {
+  readonly language: string;
+  readonly degraded: boolean;
+  readonly voiceAvailable: boolean;
+  readonly translationAvailable: boolean;
+  readonly qualified: boolean;
+}): { readonly available: boolean; readonly reason: string | null } {
+  if (NIGERIAN_SPECIALIST_LANGUAGES.includes(input.language)) {
+    if (input.degraded) {
+      return {
+        available: false,
+        reason:
+          'served by a general voice vendor rather than the 9jaLingo specialist: ' +
+          'the audio plays and the pronunciation is wrong',
+      };
+    }
+    if (!input.qualified) {
+      return {
+        available: false,
+        reason:
+          'no speaker of this language has judged the route fit to broadcast; ' +
+          'a configured provider and a working chain are not a linguistic qualification',
+      };
+    }
+    return { available: true, reason: null };
+  }
+  if (input.voiceAvailable || input.translationAvailable) return { available: true, reason: null };
+  return { available: false, reason: 'no provider on this deployment serves this language' };
 }
 
 export function defaultAiProviderStatus(): AiProviderStatusMetadata {

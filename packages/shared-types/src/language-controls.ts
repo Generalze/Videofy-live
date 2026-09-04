@@ -80,6 +80,25 @@ export interface TargetLanguageCapability {
   voiceId: string | null;
   license: string;
   commercialUse: 'allowed' | 'unknown' | 'restricted';
+  /**
+   * Whether this language may carry a PROGRAMME.
+   *
+   * A DIFFERENT QUESTION FROM `availability`, and the distinction is the whole
+   * point. `availability` says whether the chain can produce audio; this says
+   * whether anyone who reads the language has judged that audio fit to
+   * broadcast. For Yoruba, Igbo, Hausa and Nigerian Pidgin a general vendor
+   * returns HTTP 200 and fluent-sounding speech with the wrong pronunciation,
+   * so "the chain produced audio" is precisely the evidence that must not be
+   * accepted as readiness.
+   *
+   * Absent means this catalogue was built without asking. Every surface that
+   * gates a broadcast must treat absent as false rather than as unrestricted.
+   */
+  programmeRoute?: {
+    readonly available: boolean;
+    /** Why not, in words an operator can act on. Null when available. */
+    readonly reason: string | null;
+  };
 }
 
 export type TargetLanguageOutputStatus =

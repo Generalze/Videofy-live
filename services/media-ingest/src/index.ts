@@ -63,6 +63,7 @@ import { buildTranslationGate } from './translation-gate-wiring.js';
 import { registerQualityRoutes } from './quality-routes.js';
 import {
   nigerianReadiness,
+  nigerianRouteQualified,
   type ProviderReadinessView,
 } from './provider-readiness-wiring.js';
 import { registerProgrammeRuntimeRoutes } from './programme-runtime-routes.js';
@@ -205,6 +206,21 @@ const liveSynthesis = buildLiveSynthesis(config);
 const streamingSynthesis = liveSynthesis.provider;
 
 const ingest = new IngestService(config, {
+  /*
+   * WHO HAS ACTUALLY JUDGED THIS LANGUAGE, asked of the route document.
+   *
+   * A closure rather than a value because the document is loaded further down
+   * this file, and because a review that lands later should start counting
+   * without a restart. For Yoruba, Igbo, Hausa and Pidgin the answer decides
+   * whether the language may carry a programme at all: Azure returns HTTP 200
+   * and fluent-sounding audio with the wrong pronunciation, so a working chain
+   * is precisely the evidence that must not be read as readiness.
+   */
+  programmeRouteQualified: (language) => {
+    const registry = translationGate.registry;
+    if (registry === null) return false;
+    return nigerianRouteQualified(registry, config.transcriptionSourceLanguage, language);
+  },
   /*
    * THE JOIN. Without this line the batch factory has no stack to speak with,
    * TEXT_TO_SPEECH_PROVIDER=streaming refuses at boot, and the deployment falls

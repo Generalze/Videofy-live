@@ -65,6 +65,7 @@ import {
 import {
   applySourceLanguageAction,
   applySourceLanguageDetection,
+  applyProgrammeRoute,
   buildTargetLanguageCatalogue,
   createInitialSourceLanguageControl,
   defaultAiProviderStatus,
@@ -271,6 +272,16 @@ export type AudioExtractor = (input: AudioExtractionInput) => Promise<AudioExtra
 export type AudioCleanup = (outputBaseDir: string, sessionId: string) => Promise<void>;
 
 export interface ProcessingSessionStoreOptions {
+  /**
+   * Whether a speaker of the language has judged its route fit to broadcast.
+   *
+   * Threaded from the composition root, where the route document lives.
+   * Absent means nobody asked, and the catalogue refuses a programme route for
+   * the four Nigerian specialist languages on that basis: a working chain is
+   * exactly the evidence that must not be mistaken for a qualification when a
+   * general vendor returns fluent-sounding audio with wrong pronunciation.
+   */
+  programmeRouteQualified?: (language: string) => boolean;
   outputBaseDir: string;
   webRtcStagingDir?: string;
   onSessionChange?: (session: ProcessingSession) => void;
@@ -523,6 +534,7 @@ export class ProcessingSessionStore {
   private readonly warmedTranslationPairs = new Set<string>();
   private readonly warmedVoices = new Set<string>();
   private readonly targetLanguageCatalogue: TargetLanguageCapability[];
+  private readonly programmeRouteQualified: ((language: string) => boolean) | undefined;
   private readonly onGeneratedAudioReady: (event: GeneratedAudioEvent, session: ProcessingSession) => void;
   private readonly generatedAudioReadyKeysBySession = new Map<string, Set<string>>();
   private readonly transcriptionSequences = new Map<string, number>();
@@ -545,6 +557,7 @@ export class ProcessingSessionStore {
   private readonly targetLanguageTallies = new Map<string, MutableSessionLanguageTallies>();
 
   constructor(options: ProcessingSessionStoreOptions) {
+    this.programmeRouteQualified = options.programmeRouteQualified;
     this.outputBaseDir = options.outputBaseDir;
     this.webRtcStagingDir = options.webRtcStagingDir ?? resolve(process.cwd(), '../../uploads/webrtc-staging');
     this.onSessionChange = options.onSessionChange ?? (() => undefined);
@@ -609,6 +622,9 @@ export class ProcessingSessionStore {
           this.textToSpeechVoiceIds.get(language) ?? this.textToSpeechVoiceId,
         ]),
       ),
+      ...(options.programmeRouteQualified === undefined
+        ? {}
+        : { programmeRouteQualified: options.programmeRouteQualified }),
     });
   }
 
@@ -2269,7 +2285,16 @@ export class ProcessingSessionStore {
   }
 
   getTargetLanguageCatalogue(): TargetLanguageCapability[] {
-    return this.targetLanguageCatalogue.map((capability) => ({ ...capability }));
+    const copy = this.targetLanguageCatalogue.map((capability) => ({ ...capability }));
+    /*
+     * Asked at READ time, not at construction. The route document is loaded
+     * after this store is built, so a verdict frozen at construction would say
+     * "nobody has judged this" for the life of the process -- and would never
+     * notice a review that landed since boot.
+     */
+    return this.programmeRouteQualified === undefined
+      ? copy
+      : applyProgrammeRoute(copy, this.programmeRouteQualified);
   }
 
   /**

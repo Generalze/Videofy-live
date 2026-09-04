@@ -294,6 +294,16 @@ export function programmeTimestampMs(
  * knowledge, not the media pipeline.
  */
 export interface IngestServiceDependencies {
+  /**
+   * Whether a speaker of the language has judged its route fit to broadcast.
+   *
+   * Injected because the answer lives in the route document, which this
+   * service does not read. Absent means nobody asked, and the catalogue
+   * refuses a programme route for Yoruba, Igbo, Hausa and Nigerian Pidgin on
+   * that basis -- for those four a working chain and a fluent-sounding sample
+   * are exactly the evidence that must not be read as readiness.
+   */
+  programmeRouteQualified?: (language: string) => boolean;
   wrapTextToSpeechProvider?: (standard: TextToSpeechProvider) => TextToSpeechProvider;
   /**
    * The owner's CURRENT personal voice, or null. Called per utterance.
@@ -412,6 +422,9 @@ export class IngestService {
     // reason about for one product.
     this.liveTranslationProvider = translationProvider;
     this.sessions = new ProcessingSessionStore({
+      ...(deps.programmeRouteQualified === undefined
+        ? {}
+        : { programmeRouteQualified: deps.programmeRouteQualified }),
       outputBaseDir: config.audioChunkDir,
       webRtcStagingDir: config.webrtcAudioChunkStagingDir,
       transcriptionProvider,

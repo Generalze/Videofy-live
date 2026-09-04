@@ -155,6 +155,30 @@ function reviewedFor(
  * different question from `healthy`. The shape is general so the next one
  * costs a caller rather than a redesign.
  */
+/**
+ * Has somebody who reads this language judged its route fit to broadcast?
+ *
+ * THE SAME FUNCTION THE LADDER USES, exported rather than reimplemented. A
+ * second definition of "qualified" would disagree with the first the moment
+ * either learned something -- and the disagreement that matters is a console
+ * reporting a language as unreviewed while the catalogue offers it to an
+ * operator as ready to air.
+ *
+ * `approved` is required alongside it: a review is somebody's judgement, and
+ * approval is the route document admitting that judgement for this scope.
+ * Neither alone puts a language on air.
+ */
+export function nigerianRouteQualified(
+  registry: RouteEvidence | null,
+  sourceLanguage: string,
+  targetLanguage: string,
+  scope = 'programme-live',
+): boolean {
+  if (registry === null) return false;
+  if (!reviewedFor(registry, sourceLanguage, targetLanguage, scope).assessed) return false;
+  return registry.approvedScopes(sourceLanguage, targetLanguage).includes(scope);
+}
+
 export function nigerianReadiness(deps: ReadinessWiringDeps): readonly ProviderReadinessView[] {
   const state = deps.nigerian();
   if (state === null) return [];
