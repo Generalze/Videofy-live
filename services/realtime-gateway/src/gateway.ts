@@ -1592,11 +1592,17 @@ export class Gateway {
         return;
       }
       this.programmeSessionConfigs.set(config.sessionId, config);
-      socket.emit(SOCKET_EVENTS.CONTROL_ACK, {
-        action: 'programme-session-config',
-        accepted: true,
-        timestamp: new Date().toISOString(),
-      });
+      /*
+       * THE ACKNOWLEDGEMENT MOVED BELOW THE RUN BINDING, deliberately.
+       *
+       * It used to fire here, before the policy check and before the run was
+       * minted, so an operator could be told `accepted: true` for a programme
+       * the gateway then refused to start. And it carried no run identity at
+       * all: the run is minted server-side and the console that started it was
+       * never told which one it was, so it could not link its own programme to
+       * a timeline, a manifest or a recording. Acknowledging before the thing
+       * exists is acknowledging an intention, not a fact.
+       */
       logger.info('Operator programme session configuration accepted', {
         sessionId: config.sessionId,
         broadcastId: config.broadcastId,
@@ -1638,8 +1644,10 @@ export class Gateway {
         });
         return;
       }
-      if (!this.programmeRuns.has(config.sessionId)) {
+      let boundRunId = this.programmeRuns.get(config.sessionId)?.runId ?? null;
+      if (boundRunId === null) {
         const runId = `run_${randomUUID().replace(/-/gu, '').slice(0, 24)}`;
+        boundRunId = runId;
         this.programmeRuns.set(config.sessionId, {
           channelId,
           programmeId: channelId,
@@ -1660,6 +1668,24 @@ export class Gateway {
       // when the operator gave none, never a stand-in.
       this.channels.setProgrammeTitle(channelId, config.programmeTitle ?? null);
       this.broadcastProgrammeSessionConfig(config, channelId);
+      /*
+       * NOW the operator is told, and told WHICH RUN.
+       *
+       * Server-generated, from server state: the client cannot supply it,
+       * cannot choose it, and is not consulted about it. A reconnect that
+       * reconfigures the same session receives the same id, because the run is
+       * the airing rather than the message -- and a new airing mints a new one
+       * so its timeline, telemetry and adverts inherit nothing.
+       *
+       * Only on the accepted path. Every refusal above returns before this,
+       * so an unauthorised or invalid request learns no run identity at all.
+       */
+      socket.emit(SOCKET_EVENTS.CONTROL_ACK, {
+        action: 'programme-session-config',
+        accepted: true,
+        timestamp: new Date().toISOString(),
+        programmeRunId: boundRunId,
+      });
     });
 
     socket.on(SOCKET_EVENTS.OPERATOR_CONTROL, (raw: unknown) => {
