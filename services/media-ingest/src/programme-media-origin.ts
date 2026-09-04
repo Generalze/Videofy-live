@@ -30,7 +30,7 @@
  * would keep waiting for material that is never coming.
  */
 
-import { mkdir, open, readFile } from 'node:fs/promises';
+import { access, mkdir, open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ProgrammeMediaSegment } from '@videofy-live/programme-timeline';
 import {
@@ -297,7 +297,14 @@ export class ProgrammeMediaOrigin {
     const running = this.runs.get(runId);
     if (running === undefined) return false;
     const generation = running.generation + 1;
-    this.generations.set(runId, generation);
+    /*
+     * The CURRENT generation is left in place, because `observe` below adds
+     * one. Setting the next one here made a rotation jump two generations at
+     * once -- the run landed on an init object the encoder never wrote -- and
+     * the method then reported failure because the number it checked for was
+     * not the number it had produced. It was never called, so nothing noticed.
+     */
+    this.generations.set(runId, running.generation);
     if (running.timer !== null) clearInterval(running.timer);
     this.runs.delete(runId);
     this.observe(runId);
@@ -387,6 +394,54 @@ export class ProgrammeMediaOrigin {
 
     // The cursor only moves once it has been told what exists.
     if (registered > 0) this.deps.timelines.buffer(runId)?.advance();
+
+    /*
+     * HAS THE ENCODER MOVED ON WITHOUT US?
+     *
+     * `advanceGeneration` existed, said in its own comment that this side
+     * "has to notice, or it keeps reading a playlist nothing is writing to any
+     * more and the broadcast quietly stops producing" -- and was called by
+     * nothing. On staging that is exactly what happened: the gateway rotated
+     * its encoder for a format change, wrote init.1 and forty segments of
+     * generation 1, and the timeline froze at the instant of the rotation. The
+     * cursor stopped, the manifest kept offering only the old generation, and
+     * the spool filled behind an audience that could never advance.
+     *
+     * Checked AFTER the loop above, so everything already completed in the old
+     * generation is registered first: those fragments are inside the retained
+     * window and were written against the old initialisation object, and
+     * abandoning them at the boundary would lose the seconds either side of a
+     * format change.
+     *
+     * The encoder's own next playlist is the signal, and it is authoritative:
+     * FFmpeg writes it only once it is producing that generation. Nothing has
+     * to cross a service boundary, which matters because the gateway owns the
+     * encoder on the WebRTC path and this service owns it on the professional
+     * one -- and both write into this same directory.
+     */
+    /*
+     * Asked of the FILESYSTEM, not of the injected playlist reader. Whether
+     * the encoder has started another generation is a fact about what exists
+     * on disk -- FFmpeg writes that playlist only once it is producing into it
+     * -- while the reader's job is the CONTENT of the generation being
+     * followed. Conflating them would make any reader that answers the same
+     * text for every path report a rotation on every poll.
+     */
+    const nextExists = await access(
+      join(running.directory, playlistFileName(running.generation + 1)),
+    ).then(
+      () => true,
+      () => false,
+    );
+    if (nextExists) {
+      /*
+       * Advance and return. The next poll reads the new generation, which is
+       * half a segment away -- and NOT recursing here means a reader that
+       * answers the same playlist for every path (a test double, a
+       * misconfiguration) cannot spin this into an unbounded loop.
+       */
+      this.advanceGeneration(runId);
+    }
     return registered;
   }
 

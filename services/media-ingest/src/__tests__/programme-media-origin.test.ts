@@ -22,7 +22,7 @@ import {
 import { ProgrammeMediaStore } from '../programme-media-store.js';
 import { ProgrammeTimelineRegistry } from '../programme-timeline-registry.js';
 import { ProgrammeEgressAuthority, initSegmentId, renderHlsManifest } from '../programme-egress.js';
-import { initFileName } from '@videofy-live/programme-contribution';
+import { initFileName, playlistFileName } from '@videofy-live/programme-contribution';
 import type { MediaOriginOptions, OriginRunResult } from '@videofy-live/programme-contribution';
 
 const RUN = { channelId: 'ch_1', programmeId: 'prog_1', runId: 'run_1' };
@@ -76,6 +76,8 @@ interface Rig {
   readonly spawner: ReturnType<typeof fakeSpawner>;
   /** What the packager's playlist currently says. */
   setPlaylist: (playlist: string | null) => void;
+  /** Make the next generation's playlist exist on disk, as FFmpeg would. */
+  rotateEncoder: (generation: number) => void;
 }
 
 function rig(delayMs = DELAY_MS): Rig {
@@ -116,6 +118,14 @@ function rig(delayMs = DELAY_MS): Rig {
     timelines,
     egress,
     spawner,
+    /*
+     * Make the encoder appear to have rotated: its next generation's playlist
+     * exists on disk, which is the only signal the producer has and the only
+     * one FFmpeg actually gives.
+     */
+    rotateEncoder: (generation: number) => {
+      writeFileSync(join(spoolRoot, 'run_1', playlistFileName(generation)), '#EXTM3U');
+    },
     setPlaylist: (value) => {
       playlist = value;
       if (value === null) return;
@@ -623,5 +633,78 @@ describe('the running service composes this producer', () => {
     expect(source).toMatch(/programmeContributionSource === 'webrtc' \|\|/u);
     expect(source).toContain('config.programmeMediaOriginInput !== null)');
     expect(source).toContain('METADATA_PLANE_ONLY');
+  });
+});
+
+describe('following an encoder that rotated without us', () => {
+  /*
+   * THE BROADCAST THAT QUIETLY STOPPED PRODUCING.
+   *
+   * The gateway rotates its encoder when the source changes shape. On staging
+   * it did exactly that -- init.1 written, forty segments of generation 1
+   * accumulating -- and this side kept polling playlist.0. The timeline froze
+   * at the instant of the rotation: `live` stuck at 73,720 ms across sixteen
+   * seconds while the spool grew from 62 to 69 segments, the cursor stopped at
+   * 28,720 ms, and the manifest offered only the old generation to an audience
+   * that could never advance past it.
+   *
+   * `advanceGeneration` existed and described this failure in its own comment.
+   * Nothing called it.
+   */
+  it('REGISTERS THE OLD GENERATION BEFORE FOLLOWING THE NEW ONE', async () => {
+    const live = rig();
+    live.origin.observe('run_1');
+    live.setPlaylist(playlistOf(2, 2));
+
+    // The encoder has moved on: its next playlist now exists on disk.
+    live.rotateEncoder(1);
+    const registered = await live.origin.collect('run_1');
+
+    /*
+     * Both old fragments still reach the timeline. They are inside the
+     * retained window and were written against the OLD initialisation object,
+     * so abandoning them at the boundary would lose the seconds either side of
+     * a format change.
+     */
+    expect(registered).toBe(2);
+    rmSync(live.spool, { recursive: true, force: true });
+  });
+
+  it('REGISTERS THE NEW GENERATION AGAINST ITS OWN INIT OBJECT', async () => {
+    /*
+     * The assertion that matters, and the one a segment COUNT cannot make: a
+     * producer that never followed the rotation goes on registering material
+     * as generation 0, so it keeps counting up while every fragment is
+     * attributed to an initialisation object that no longer describes it. The
+     * count looks healthy either way; the generation is what differs.
+     */
+    const live = rig();
+    live.origin.observe('run_1');
+    live.setPlaylist(playlistOf(2));
+    await live.origin.collect('run_1');
+
+    live.rotateEncoder(1);
+    // This poll registers what is left of generation 0 and then follows.
+    await live.origin.collect('run_1');
+    live.setPlaylist(playlistOf(2, 2, 2));
+    await live.origin.collect('run_1');
+
+    const ids = live.media.retainedSegmentIds('run_1');
+    expect(ids.some((id) => id.includes('.g1.'))).toBe(true);
+    rmSync(live.spool, { recursive: true, force: true });
+  });
+
+  it('STAYS PUT WHILE NO NEXT GENERATION EXISTS', async () => {
+    // The ordinary case, and the one a false positive would ruin: advancing
+    // when the encoder has not rotated abandons the playlist it IS writing.
+    const live = rig();
+    live.origin.observe('run_1');
+    live.setPlaylist(playlistOf(2));
+    
+    await live.origin.collect('run_1');
+    const again = await live.origin.collect('run_1');
+    // Nothing new, and no rotation: the same generation is still being read.
+    expect(again).toBe(0);
+    rmSync(live.spool, { recursive: true, force: true });
   });
 });

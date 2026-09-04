@@ -49,6 +49,18 @@ const OPERATOR_TOKEN = process.env['C7_OPERATOR_TOKEN'] ?? '';
 
 const WIDTH = 640;
 const HEIGHT = 360;
+/*
+ * A SECOND SIZE, for the encoder-rotation case.
+ *
+ * A generation transition is triggered by the SOURCE CHANGING SHAPE, which is
+ * what a broadcaster switching camera or renegotiating actually does. Faking
+ * it by killing FFmpeg would exercise the failure path instead: that reports
+ * the encoder exited and fails the contribution, which is correct and is a
+ * different test.
+ */
+const ROTATE_WIDTH = 480;
+const ROTATE_HEIGHT = 270;
+const ROTATE_AT = Number(args['rotate-at'] ?? 0);
 const FRAME_RATE = 15;
 const SAMPLE_RATE = 48_000;
 const CHANNELS = 1;
@@ -71,6 +83,7 @@ const measured = {
   sourceAudioChunks: 0,
   listenerOriginalMediaOffers: 0,
   listenerSignallingEvents: [],
+  rotatedAt: null,
   errors: [],
 };
 
@@ -120,21 +133,21 @@ function connect(role, auth) {
  * that shifts every frame, so two recordings of the same second are
  * distinguishable. "Video arrived" is not the claim being tested.
  */
-function videoFrame(index) {
-  const data = new Uint8Array((WIDTH * HEIGHT * 3) / 2);
+function videoFrame(index, width = WIDTH, height = HEIGHT) {
+  const data = new Uint8Array((width * height * 3) / 2);
   const shift = (index * 3) % 255;
-  for (let y = 0; y < HEIGHT; y += 1) {
-    const row = y * WIDTH;
-    for (let x = 0; x < WIDTH; x += 1) data[row + x] = (x + y + shift) % 255;
+  for (let y = 0; y < height; y += 1) {
+    const row = y * width;
+    for (let x = 0; x < width; x += 1) data[row + x] = (x + y + shift) % 255;
   }
-  const barRow = Math.floor(HEIGHT / 2);
-  for (let x = 0; x < index % WIDTH; x += 1) {
-    for (let y = barRow; y < barRow + 8; y += 1) data[y * WIDTH + x] = 235;
+  const barRow = Math.floor(height / 2);
+  for (let x = 0; x < index % width; x += 1) {
+    for (let y = barRow; y < barRow + 8; y += 1) data[y * width + x] = 235;
   }
   // Flat chroma: colour carries nothing here, and a decoder reading noise in
   // it would be reading our own artefact rather than the transport.
-  data.fill(128, WIDTH * HEIGHT);
-  return { width: WIDTH, height: HEIGHT, data, rotation: 0 };
+  data.fill(128, width * height);
+  return { width, height, data, rotation: 0 };
 }
 
 /** A tone that says which second it is, so gaps and repeats are audible. */
@@ -321,9 +334,25 @@ async function publish(sessionId, broadcastId, seconds) {
    * protective delay exists to cover.
    */
   measured.firstSourceFrameAt = stamp();
+  const startedAt = Date.now();
   const video = setInterval(() => {
     try {
-      videoSource.onFrame(videoFrame(measured.sourceVideoFrames));
+      /*
+       * The source changes shape once, part way through, when asked. That is
+       * the trigger a real broadcaster provides for a new init generation, and
+       * the retained fragments written against the OLD one must stay
+       * decodable afterwards.
+       */
+      const rotated = ROTATE_AT > 0 && Date.now() - startedAt >= ROTATE_AT * 1000;
+      if (rotated && !measured.rotatedAt) {
+        measured.rotatedAt = stamp();
+        log('SOURCE CHANGED SHAPE', { from: `${WIDTH}x${HEIGHT}`, to: `${ROTATE_WIDTH}x${ROTATE_HEIGHT}` });
+      }
+      videoSource.onFrame(
+        rotated
+          ? videoFrame(measured.sourceVideoFrames, ROTATE_WIDTH, ROTATE_HEIGHT)
+          : videoFrame(measured.sourceVideoFrames),
+      );
       measured.sourceVideoFrames += 1;
     } catch {
       /* closing */
