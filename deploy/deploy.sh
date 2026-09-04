@@ -141,6 +141,36 @@ fi
 # another user and must still traverse and read it (no secrets live here).
 sudo -n chmod -R a+rX "$APP_DIR"
 
+# STEP 4b -- RECONCILE THE UNIT FILES.
+#
+# A DEPLOY USED TO SHIP CODE AND NOT UNITS, and nothing said so. The restart
+# limiter written to stop a crash storm -- 600 s / 10 starts, geometric backoff
+# -- sat in this repository for days while systemd on the box ran the defaults
+# it was written to replace: 10 s / 5 starts, which RestartSec=3 makes
+# unreachable. Staging then crash-looped 118 times in minutes under exactly the
+# limiter that was supposed to be impossible, and the repo said it was fixed.
+#
+# install.sh puts these in place, and a deploy does not run install.sh. So the
+# unit is compared with what this SHA carries, installed when it differs, and
+# the daemon reloaded. Same class as the spool directory and the env keys: a
+# repository change is not a host change until something copies it.
+UNIT_SRC="deploy/$ENV_NAME/systemd"
+UNIT_CHANGED=no
+if [ -d "$UNIT_SRC" ]; then
+  for unit in $UNITS; do
+    src="$UNIT_SRC/$unit.service"
+    [ -f "$src" ] || continue
+    if ! sudo -n cmp -s "$src" "/etc/systemd/system/$unit.service"; then
+      echo "[$ENV_NAME] unit $unit.service differs from this SHA; installing"
+      sudo -n install -o root -g root -m 0644 "$src" "/etc/systemd/system/$unit.service"
+      UNIT_CHANGED=yes
+    fi
+  done
+  [ "$UNIT_CHANGED" = yes ] && sudo -n systemctl daemon-reload
+else
+  echo "DEPLOY FAILED: $SHA carries no $UNIT_SRC, so the units cannot be reconciled"; exit 1
+fi
+
 # STEP 5 -- ACTIVATE.
 # shellcheck disable=SC2086
 sudo -n systemctl enable -q $UNITS 2>/dev/null || true
@@ -205,7 +235,77 @@ for u in $UNITS; do
   fi
 done
 [ "$STALE" -eq 0 ] || exit 1
-echo "[$ENV_NAME] running release $RUNNING (verified: tree and every process started after checkout)"
+
+# STEP 7b -- WHAT SYSTEMD IS ACTUALLY ENFORCING, read back from systemd.
+#
+# Copying a unit file is not the same as systemd running it, and the check that
+# was missing is this one: I verified the limiter against a throwaway unit and
+# never asked what the REAL unit was configured with. It was the defaults, for
+# days, while the repository said otherwise.
+#
+# So the restart limiter is read from the running daemon and required to be
+# reachable: with geometric backoff the Nth start lands far later than N times
+# RestartSec, and a window shorter than that schedule is a limit that can never
+# fire -- which is how a service restarts for ever while looking supervised.
+for u in $UNITS; do
+  BURST="$(systemctl show -p StartLimitBurst --value "$u")"
+  WINDOW_US="$(systemctl show -p StartLimitIntervalUSec --value "$u")"
+  BASE_US="$(systemctl show -p RestartUSec --value "$u")"
+  STEPS="$(systemctl show -p RestartSteps --value "$u")"
+  MAXDELAY_US="$(systemctl show -p RestartMaxDelayUSec --value "$u")"
+  # The delay grows geometrically from RestartSec to RestartMaxDelaySec over
+  # RestartSteps steps, so the ratio is (max/base)^(1/steps) -- NOT a doubling.
+  # With 3 s, 60 s and 5 steps that is about 1.82: 3, 5.5, 10, 18, 33, then 60
+  # repeating, which puts the tenth start near 309 s. A 300 s window would make
+  # the limit unreachable, and this is the arithmetic that catches it.
+  SCHEDULE="$(
+    awk -v burst="$BURST" -v window="$WINDOW_US" -v base="$BASE_US"         -v steps="$STEPS" -v cap="$MAXDELAY_US" '
+      function secs(t,   n, u, total, i, parts) {
+        if (t == "" || t == "infinity") return -1
+        total = 0
+        while (match(t, /[0-9.]+(us|ms|min|s|h)/)) {
+          part = substr(t, RSTART, RLENGTH)
+          n = part + 0
+          if (part ~ /us$/) total += n / 1000000
+          else if (part ~ /ms$/) total += n / 1000
+          else if (part ~ /min$/) total += n * 60
+          else if (part ~ /h$/) total += n * 3600
+          else total += n
+          t = substr(t, RSTART + RLENGTH)
+        }
+        return total
+      }
+      BEGIN {
+        w = secs(window); b = secs(base); c = secs(cap)
+        if (b <= 0) b = 0.1
+        if (w < 0) { print "unbounded"; exit }
+        ratio = 1
+        if (steps > 0 && c > 0 && c > b) ratio = exp(log(c / b) / steps)
+        delay = b; elapsed = 0
+        for (i = 1; i < burst; i++) {
+          elapsed += delay
+          delay = delay * ratio
+          if (c > 0 && delay > c) delay = c
+        }
+        if (elapsed > w) printf "unreachable %.0fs>%.0fs
+", elapsed, w
+        else printf "ok %.0fs<=%.0fs
+", elapsed, w
+      }'
+  )"
+  case "$SCHEDULE" in
+    ok*) ;;
+    *)
+      echo "DEPLOY FAILED: $u restart limiter is $SCHEDULE"
+      echo "  burst=$BURST window=$WINDOW_US base=$BASE_US steps=$STEPS maxdelay=$MAXDELAY_US"
+      echo "  The Nth start lands after the window closes, so the limit can never fire"
+      echo "  and a failing service restarts for ever while looking supervised."
+      exit 1 ;;
+  esac
+  echo "[$ENV_NAME] $u restart limiter reachable ($SCHEDULE, burst=$BURST)"
+done
+
+echo "[$ENV_NAME] running release $RUNNING (verified: tree, processes, and the limiter systemd is enforcing)"
 
 printf '%s %s previous=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$RUNNING" "$PREVIOUS" >> "$ROOT/releases.log" 2>/dev/null || true
 rm -f "$BUNDLE"

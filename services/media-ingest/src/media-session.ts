@@ -622,9 +622,14 @@ export class ProcessingSessionStore {
           this.textToSpeechVoiceIds.get(language) ?? this.textToSpeechVoiceId,
         ]),
       ),
-      ...(options.programmeRouteQualified === undefined
-        ? {}
-        : { programmeRouteQualified: options.programmeRouteQualified }),
+      /*
+       * DELIBERATELY NOT PASSED HERE. The builder evaluates this immediately,
+       * and the route document is loaded further down the composition root --
+       * so asking now reaches a module-level const that does not exist yet and
+       * the service dies at import with a ReferenceError. The verdict is
+       * applied in `getTargetLanguageCatalogue`, which runs when somebody
+       * reads the catalogue and therefore long after the document is loaded.
+       */
     });
   }
 

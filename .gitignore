@@ -266,3 +266,7 @@ firebase/
 *-firebase-adminsdk-*.json
 *service-account*.json
 *.p8
+
+# The boot probe's throwaway directories. The test spawns the real artefact,
+# which creates its upload and spool directories as any deployment would.
+services/media-ingest/.boot-probe/
