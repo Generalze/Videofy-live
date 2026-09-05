@@ -1,0 +1,31 @@
+{
+  "name": "@videofy-live/programme-replay",
+  "version": "0.1.0",
+  "private": true,
+  "author": "masterzee001",
+  "license": "SEE LICENSE IN ../../LICENSE.md",
+  "description": "Programme Replay/VOD: retention policy, visibility, archive lifecycle. Media infrastructure only - no live wiring, no storage backend, no AI.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@videofy-live/media-ingress-wire": "*",
+    "@videofy-live/programme-timeline": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.9"
+  }
+}
