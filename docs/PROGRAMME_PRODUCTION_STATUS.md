@@ -432,3 +432,74 @@ gateway restarts with no policy reacquired
 Accepted deliberately: losing programme availability is preferable to exposing
 a protected broadcast at realtime. `/health` reports the three facts separately
 because they disagree, and the disagreement is the useful part.
+
+## Production media-ingest incident recovery, 2026-09-05
+
+`videofy-prod-media-ingest` had accumulated **133,247 restarts** and was
+`inactive`. Two independent causes, both real, both now closed.
+
+### Cause 1 — a service that could never bootstrap
+
+`commercial-cloud` could not start because the startup gate asked
+`eligibleAsPrimary`, which answers a *routing* question. A provider whose only
+blocking issue is `health-not-serving` has never been probed, so it can never
+become eligible, so the service that would probe it can never start. Nothing
+about that loop is health-related; it is a definition error.
+
+The fix separates the two questions in `services/ai-registry/src/service-selection.ts`:
+
+```text
+startableForService   may this process BOOT with the provider configured?
+                      true when every blocking issue is health-not-serving
+eligibleAsPrimary     may live traffic be ROUTED to it right now?
+                      unchanged -- still requires a real probe result
+```
+
+Booting is not routing. `CHANGING HEALTH ALONE NEVER CHANGES STARTABILITY`
+pins it.
+
+### Cause 2 — a guard staging structurally could not reach
+
+The candidate refused to boot on
+`TRANSLATION_ROUTES_DOCUMENT is required in production`. The guard is inside an
+`isProduction` branch, so staging — `C7_ENVIRONMENT=staging` — never evaluates
+it. **A fully certified staging wave proved nothing about this line.** Only
+booting the candidate build against the real production env file, on a
+throwaway port, before touching the service, could find it.
+
+It was found by exactly that gate, before any production mutation.
+
+The correction names the reviewed registry. It approves nothing: all 14 routes
+are `productionApproved: false`, every scope `unapproved` or `refused`,
+`approvedDirections: 0`. Translation output does not change; the fail-closed
+gate is simply in the path, and a future approval needs no code or env change.
+
+### Two trees, deliberately
+
+```text
+videofy-prod-media-ingest  /srv/videofy-prod/release-980619e   980619e
+videofy-prod-gateway       /srv/videofy-prod/app               56db846
+videofy-prod-account       /srv/videofy-prod/app               56db846
+```
+
+Gateway and account were not authorised to restart. Moving `app/` forward would
+leave newer code on disk beneath running processes, so an unplanned crash would
+bring them up on a version nobody validated. media-ingest is redirected by a
+drop-in instead; `/srv/videofy-prod/DEPLOY-STATE.md` records it on the box.
+
+`git rev-parse HEAD` in `app/` answers for the gateway and account only. It is
+not the answer to "what version is production".
+
+### The restart limiter was absent, not merely wrong
+
+The unit carried **no `StartLimit` block at all** and no backoff — that is how
+133,247 restarts were reachable. Corrected to match staging, and verified by
+reading it back from systemd rather than from the file:
+
+```text
+StartLimitIntervalSec=600   StartLimitBurst=10
+RestartSec=3  RestartSteps=5  RestartMaxDelaySec=60   ratio (60/3)^(1/5) = 1.82
+```
+
+Ten failures inside ten minutes now stop the unit instead of hammering the
+providers.
