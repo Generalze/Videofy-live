@@ -61,3 +61,15 @@ export * from './outcome.js';
 export * from './archive.js';
 /** An implementation with no storage, for tests and for development. */
 export * from './memory-archive.js';
+/*
+ * `FilesystemReplayArchive` IS DELIBERATELY NOT HERE.
+ *
+ * It lives behind `@videofy-live/programme-replay/filesystem`, because the
+ * moment a durable archive is reachable from this root every importer of the
+ * Replay CONTRACTS drags `node:fs/promises` along with them -- including the
+ * ones that have no filesystem to offer. The domain stays portable; storage is
+ * asked for by name.
+ *
+ * `recording.ts` is absent for a different reason: it is how the archives
+ * agree with each other, not something a caller should be building against.
+ */

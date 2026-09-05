@@ -4,7 +4,7 @@
   "private": true,
   "author": "masterzee001",
   "license": "SEE LICENSE IN ../../LICENSE.md",
-  "description": "Programme Replay/VOD: retention policy, visibility, archive lifecycle. Media infrastructure only - no live wiring, no storage backend, no AI.",
+  "description": "Programme Replay/VOD: retention policy, visibility, archive lifecycle. Storage-neutral contracts at the root; the Node filesystem archive lives behind the ./filesystem subpath.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,6 +12,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./filesystem": {
+      "types": "./dist/filesystem.d.ts",
+      "default": "./dist/filesystem.js"
     }
   },
   "scripts": {

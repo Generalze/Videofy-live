@@ -25,6 +25,7 @@ import { initFileName, playlistFileName } from '@videofy-live/programme-contribu
 import type { MediaOriginOptions, OriginRunResult } from '@videofy-live/programme-contribution';
 import type { ProgrammeRunIdentity } from '@videofy-live/media-ingress-wire';
 import type { ProgrammeMediaSegment } from '@videofy-live/programme-timeline';
+import { FilesystemReplayArchive } from '@videofy-live/programme-replay/filesystem';
 import {
   InMemoryReplayArchive,
   replayRefused,
@@ -1235,5 +1236,169 @@ describe('an encoder that has been replaced cannot act on its successor', () => 
     expect((await record(archive, 'run_1'))?.status).toBe('available');
     expect(archive.calls.filter((c) => c === 'finalise:run_1')).toHaveLength(1);
     live.cleanup();
+  });
+});
+
+
+/* ================================ the durable archive, wired to a broadcast */
+
+describe('a broadcast recorded onto a durable archive', () => {
+  /** A fixed instant, so a persisted record reads the same on every machine. */
+  const STARTED = 1_700_000_000_000;
+
+  /**
+   * The whole point of the two waves together, proven end to end.
+   *
+   * WP-R1-B made the producer offer its canonical segments to an archive
+   * without ever waiting for one. WP-R1-C made an archive that owns the bytes
+   * rather than remembering where somebody else keeps them. Neither claim is
+   * worth much alone: the first is only safe if the archive really is
+   * independent, and the second is only useful if the live path actually feeds
+   * it. So this suite runs the real producer against the real filesystem
+   * archive, and then deletes the spool.
+   */
+  async function durableArchive(): Promise<{
+    readonly archive: FilesystemReplayArchive;
+    readonly root: string;
+  }> {
+    const root = mkdtempSync(join(tmpdir(), 'videofy-capture-archive-'));
+    const { archive } = await FilesystemReplayArchive.open(root, () => STARTED);
+    return { archive, root };
+  }
+
+  it('copies the broadcast out of the spool, then survives losing it', async () => {
+    const { archive, root } = await durableArchive();
+    await beginKeep(archive, 'run_1');
+    const live = rig(archive);
+    await live.origin.start('run_1', 'rtmp://source/live');
+    live.setPlaylist('run_1', playlistOf(2, 2, 2));
+
+    expect(await live.origin.collect('run_1')).toBe(3);
+    await waitFor(async () => ((await archive.describe('run_1'))?.segments.length ?? 0) === 3);
+
+    const held = await archive.describe('run_1');
+    expect(held?.segments).toHaveLength(3);
+    expect(held?.initialisations).toHaveLength(1);
+    // Every reference is the archive's own, not the spool's.
+    for (const kept of held?.segments ?? []) {
+      expect(kept.storageReference.startsWith(root)).toBe(true);
+    }
+
+    // The live spool is destroyed, exactly as pruning and release will destroy
+    // it in production.
+    live.cleanup();
+
+    const finalised = await archive.finalise('run_1');
+    expect(finalised.ok).toBe(true);
+    if (!finalised.ok) throw new Error('unreachable');
+    expect(finalised.value.status).toBe('available');
+    for (const kept of finalised.value.segments) {
+      expect(statSync(kept.storageReference).size).toBe(kept.bytes);
+      expect(readFileSync(kept.storageReference).length).toBe(kept.bytes);
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('finalises through stop(), with the whole broadcast in it', async () => {
+    const { archive, root } = await durableArchive();
+    await beginKeep(archive, 'run_1');
+    const live = rig(archive);
+    await live.origin.start('run_1', 'rtmp://source/live');
+    live.setPlaylist('run_1', playlistOf(2, 2, 2, 2));
+
+    // Never polled while running: the final read is what saves the tail.
+    await live.origin.stop('run_1');
+
+    const held = await archive.describe('run_1');
+    expect(held?.status).toBe('available');
+    expect(held?.segments).toHaveLength(4);
+    live.cleanup();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('does not make the live path wait for a durable write', async () => {
+    /*
+     * A real filesystem is slower than a Map, which is precisely why the live
+     * path must not be waiting on it. `collect` returns having registered
+     * every segment in the store and on the timeline; the copying is still
+     * going on behind it.
+     */
+    const { archive, root } = await durableArchive();
+    await beginKeep(archive, 'run_1');
+    const live = rig(archive);
+    await live.origin.start('run_1', 'rtmp://source/live');
+    live.setPlaylist('run_1', playlistOf(...Array.from({ length: 24 }, () => 2)));
+
+    expect(await live.origin.collect('run_1')).toBe(24);
+    // The broadcast is already fully published.
+    expect(live.mediaEvents('run_1')).toBe(24);
+    expect(live.media.segmentCount('run_1')).toBe(24);
+    expect(live.timelines.status('run_1')?.state).not.toBe('failed');
+
+    await waitFor(async () => ((await archive.describe('run_1'))?.segments.length ?? 0) === 24);
+    live.cleanup();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('keeps broadcasting when the archive root is taken away', async () => {
+    // A filesystem failure is a Replay failure and nothing more.
+    const { archive, root } = await durableArchive();
+    await beginKeep(archive, 'run_1');
+    const live = rig(archive);
+    await live.origin.start('run_1', 'rtmp://source/live');
+    live.setPlaylist('run_1', playlistOf(2, 2));
+
+    rmSync(root, { recursive: true, force: true });
+
+    expect(await live.origin.collect('run_1')).toBe(2);
+    await settle();
+
+    // The broadcast is untouched.
+    expect(live.mediaEvents('run_1')).toBe(2);
+    expect(live.media.segmentCount('run_1')).toBe(2);
+    expect(live.timelines.status('run_1')?.state).not.toBe('failed');
+
+    /*
+     * AND THE RECORDING NEVER BECOMES AVAILABLE.
+     *
+     * It also does not become `failed`, and that is not an oversight: the
+     * archive is gone, so writing down that the recording failed is exactly as
+     * impossible as writing down the recording. The last durable truth about
+     * this run is that it was recording, and the archive reports the last
+     * durable truth rather than a status it could not persist -- which is the
+     * same discipline that keeps metadata from ever naming media nobody wrote.
+     *
+     * What matters at this seam is the live half, and it is untouched.
+     */
+    const held = await archive.describe('run_1');
+    expect(held?.status).not.toBe('available');
+    expect(held?.status).toBe('recording');
+
+    // Every refusal it produced was containable, which is why live survived.
+    const refused = await archive.retainSegment('run_1', {
+      ...live.media.accepted[0]!,
+    });
+    expect(refused.ok).toBe(false);
+    if (refused.ok) throw new Error('unreachable');
+    expect(refused.failure.liveImpact).toBe('none');
+    live.cleanup();
+  });
+
+  it('records a run onto disk that a later process can read back', async () => {
+    const { archive, root } = await durableArchive();
+    await beginKeep(archive, 'run_1');
+    const live = rig(archive);
+    await live.origin.start('run_1', 'rtmp://source/live');
+    live.setPlaylist('run_1', playlistOf(2, 2));
+    await live.origin.stop('run_1');
+    live.cleanup();
+
+    // A different process opens the same root and finds the broadcast.
+    const { archive: reopened } = await FilesystemReplayArchive.open(root, () => STARTED);
+    const held = await reopened.describe('run_1');
+    expect(held?.status).toBe('available');
+    expect(held?.segments).toHaveLength(2);
+    expect(held?.identity.runId).toBe('run_1');
+    rmSync(root, { recursive: true, force: true });
   });
 });

@@ -16,7 +16,7 @@
  * and the imports rather than remembered, because a single import statement is
  * all it would take.
  */
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -149,6 +149,61 @@ describe('a replay failure never has to end a broadcast', () => {
 const PERMITTED_DEPENDENCIES = ['@videofy-live/media-ingress-wire', '@videofy-live/programme-timeline'];
 
 /**
+ * The storage boundary, stated as a boundary rather than as a permission.
+ *
+ * WP-R1-A held that NOTHING here imported a node builtin, which was true while
+ * the package was contracts and an in-memory double. WP-R1-C added a durable
+ * archive, which cannot own bytes without a filesystem -- and the tempting
+ * response, "the package may now import fs", would have thrown away the
+ * property that mattered. It was never "no builtins". It was that anyone
+ * importing the Replay CONTRACTS gets contracts, and does not quietly acquire
+ * a filesystem dependency they have no use for and may not even have.
+ *
+ * So the boundary is drawn instead of moved. There are two entrypoints: the
+ * root, whose whole reachable graph is storage-neutral, and `./filesystem`,
+ * which is the only way to a durable archive. The tests below pin both halves
+ * -- that the root cannot reach storage, and that storage reaches for nothing
+ * beyond the three builtins it genuinely needs.
+ */
+const ROOT_ENTRY = 'index.ts';
+const FILESYSTEM_ENTRY = 'filesystem.ts';
+const STORAGE_MODULES = [FILESYSTEM_ENTRY, 'filesystem-archive.ts'];
+const PERMITTED_NODE_BUILTINS = ['node:crypto', 'node:fs/promises', 'node:path'];
+
+/**
+ * Source with its comments removed.
+ *
+ * The scans below look for import statements, and this file's own subject
+ * matter means the prose is full of things that LOOK like them -- a doc
+ * comment showing a caller how to reach the filesystem subpath reads exactly
+ * like an import of it. Stripping comments first is the difference between
+ * asserting about code and asserting about writing.
+ */
+function withoutComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+}
+
+/** Every module reachable from an entrypoint by following its own imports. */
+function graphFrom(entry: string): readonly string[] {
+  const seen = new Set<string>();
+  const pending = [entry];
+  while (pending.length > 0) {
+    const file = pending.pop();
+    if (file === undefined || seen.has(file)) continue;
+    seen.add(file);
+    const source = withoutComments(readFileSync(join(SOURCE_DIRECTORY, file), 'utf8'));
+    for (const match of source.matchAll(/\bfrom\s+'(\.[^']+)'/g)) {
+      const specifier = match[1];
+      if (specifier === undefined) continue;
+      // Source is written with the emitted '.js' extension; the file is '.ts'.
+      const next = specifier.replace(/^\.\//u, '').replace(/\.js$/u, '.ts');
+      if (!seen.has(next)) pending.push(next);
+    }
+  }
+  return [...seen];
+}
+
+/**
  * Packages a Replay contract must never reach for.
  *
  * Listed by name as well as covered by the allow-list above, so the intent is
@@ -174,19 +229,24 @@ function manifest(): {
   };
 }
 
-/** The module specifiers imported by the package's own source, tests aside. */
-function importedModules(): readonly string[] {
+/**
+ * Every module specifier the package's own source imports, and who imports it.
+ *
+ * Paired with its file because the interesting rules are now per-module: the
+ * contracts may not touch a disk and storage may.
+ */
+function importedModules(): readonly (readonly [string, string])[] {
   const files = readdirSync(SOURCE_DIRECTORY).filter(
     (name) => name.endsWith('.ts') && !name.endsWith('.test.ts'),
   );
   expect(files.length).toBeGreaterThan(0);
 
-  const specifiers: string[] = [];
+  const specifiers: (readonly [string, string])[] = [];
   for (const file of files) {
-    const source = readFileSync(join(SOURCE_DIRECTORY, file), 'utf8');
+    const source = withoutComments(readFileSync(join(SOURCE_DIRECTORY, file), 'utf8'));
     for (const match of source.matchAll(/\bfrom\s+'([^']+)'/g)) {
       const specifier = match[1];
-      if (specifier !== undefined) specifiers.push(specifier);
+      if (specifier !== undefined) specifiers.push([file, specifier]);
     }
   }
   return specifiers;
@@ -208,20 +268,91 @@ describe('replay recording is media infrastructure, not an AI capability', () =>
     }
   });
 
-  it('imports nothing beyond its own modules and those two contracts', () => {
+  it('imports nothing beyond its own modules, those two contracts, and a disk', () => {
     // A single import statement is all it would take for a channel to need a
     // certified provider before it could keep its own video.
-    for (const specifier of importedModules()) {
+    for (const [file, specifier] of importedModules()) {
       if (specifier.startsWith('.')) continue;
-      expect(PERMITTED_DEPENDENCIES).toContain(specifier);
+      if (specifier.startsWith('node:')) continue;
+      expect(
+        PERMITTED_DEPENDENCIES,
+        `${file} imports ${specifier}`,
+      ).toContain(specifier);
     }
   });
 
-  it('imports no runtime at all: no node builtins, no sockets, no disk', () => {
-    // The contracts are pure. Storage arrives behind the port, in a later
-    // wave, in a package that is allowed to touch a filesystem.
-    for (const specifier of importedModules()) {
-      expect(specifier.startsWith('node:')).toBe(false);
+  it('keeps every contract module free of any runtime at all', () => {
+    // The contracts are pure: no sockets, no disk, no clock but the one a
+    // caller passes in. Only storage is allowed to know what a filesystem is.
+    for (const [file, specifier] of importedModules()) {
+      if (!specifier.startsWith('node:')) continue;
+      expect(STORAGE_MODULES, `${file} imports ${specifier}`).toContain(file);
     }
+  });
+
+  it('lets storage reach only for the builtins it genuinely needs', () => {
+    // Not a socket, not a child process, not an HTTP client. A durable archive
+    // copies bytes and hashes a name; anything else in this list would be a
+    // question worth asking out loud.
+    for (const [file, specifier] of importedModules()) {
+      if (!specifier.startsWith('node:')) continue;
+      expect(PERMITTED_NODE_BUILTINS, `${file} imports ${specifier}`).toContain(specifier);
+    }
+  });
+});
+
+/* ------------------------------------------- the root is storage-neutral */
+
+describe('the root entrypoint gives you contracts, not a filesystem', () => {
+  it('reaches no storage module at all', () => {
+    /*
+     * THE REGRESSION THIS EXISTS FOR is a one-line re-export. Adding the
+     * durable archive back to the barrel would read as tidiness and would
+     * quietly give every importer of the Replay contracts a hard dependency on
+     * `node:fs` -- including the ones running somewhere without one.
+     */
+    const reachable = graphFrom(ROOT_ENTRY);
+    for (const storage of STORAGE_MODULES) {
+      expect(reachable, `the root entry reaches ${storage}`).not.toContain(storage);
+    }
+  });
+
+  it('reaches no node builtin through anything it imports', () => {
+    for (const file of graphFrom(ROOT_ENTRY)) {
+      const source = withoutComments(readFileSync(join(SOURCE_DIRECTORY, file), 'utf8'));
+      for (const match of source.matchAll(/\bfrom\s+'(node:[^']+)'/g)) {
+        expect.fail(`${file} imports ${String(match[1])} but is reachable from the root entry`);
+      }
+    }
+  });
+
+  it('names the filesystem archive only behind its own subpath', () => {
+    const reachable = graphFrom(FILESYSTEM_ENTRY);
+    expect(reachable).toContain('filesystem-archive.ts');
+
+    const exported = JSON.parse(readFileSync(join(PACKAGE_ROOT, 'package.json'), 'utf8')) as {
+      exports?: Record<string, unknown>;
+    };
+    expect(Object.keys(exported.exports ?? {}).sort()).toEqual(['.', './filesystem']);
+  });
+
+  it('keeps the adapter out of the built root bundle too', () => {
+    /*
+     * The source graph is the rule; this reads what was actually emitted, in
+     * case a build ever resolves things differently from the way they are
+     * written.
+     */
+    const built = join(PACKAGE_ROOT, 'dist', 'index.js');
+    if (!existsSync(built)) {
+      // Nothing has been compiled in this working tree. The source-graph tests
+      // above still hold, and this assertion is not silently skipped: it says
+      // so.
+      expect(graphFrom(ROOT_ENTRY)).not.toContain('filesystem-archive.ts');
+      return;
+    }
+    const emitted = withoutComments(readFileSync(built, 'utf8'));
+    expect(emitted).not.toContain('filesystem-archive');
+    expect(emitted).not.toContain('node:fs');
+    expect(existsSync(join(PACKAGE_ROOT, 'dist', 'filesystem.js'))).toBe(true);
   });
 });
