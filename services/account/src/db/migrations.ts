@@ -1671,6 +1671,86 @@ const PROGRAMME_AIRINGS: Migration = {
   `,
 };
 
+/**
+ * 028 -- channel replay settings.
+ *
+ * WHERE THE DEFAULTS LIVE, and why they are not in the Replay domain. That
+ * package refuses to invent a policy: it has no default retention and no
+ * default visibility, because "the operator chose not to keep this" and
+ * "nobody has decided yet" are different facts and only one is safe to act on.
+ * Somebody still has to decide, and this table is where a channel's standing
+ * answer is kept.
+ *
+ * NO ROW MEANS UNCONFIGURED, and that is the useful answer rather than a
+ * missing one. A channel with no row does not resolve to "keep nothing" or to
+ * "keep everything"; it resolves to a refusal, so a configuration that failed
+ * to load can never quietly become a decision about somebody's broadcast.
+ *
+ * `allow_overrides` IS POLICY, not a convenience flag. A channel publishing
+ * under a retention promise needs a per-programme override to be REFUSED rather
+ * than quietly honoured, and that refusal has to survive a restart.
+ *
+ * DAYS HERE, AN INSTANT LATER. What is stored is what an operator set -- "keep
+ * these for thirty days" -- and the conversion into an expiry happens against
+ * the broadcast's own start, so two programmes configured identically and aired
+ * an hour apart expire an hour apart.
+ *
+ * ALSO TIGHTENS 027. A `replay` airing could syntactically carry
+ * `replay_policy = 'none'`, which the typed projection cannot produce but the
+ * table permitted. Added here as an additive constraint rather than by editing
+ * a migration that has already run.
+ */
+const CHANNEL_REPLAY_SETTINGS: Migration = {
+  name: '028_channel_replay_settings',
+  sql: `
+    CREATE TABLE IF NOT EXISTS channel_replay_settings (
+      -- One channel, one standing answer.
+      channel_id            text        PRIMARY KEY,
+      default_policy        text        NOT NULL,
+      -- Days, as the operator set them. Required by expire, meaningless
+      -- otherwise -- and refused rather than ignored on the other policies,
+      -- because somebody who set one believed the recording would be released.
+      default_duration_days integer,
+      default_visibility    text        NOT NULL,
+      -- False means a programme asking to differ is refused, not overruled.
+      allow_overrides       boolean     NOT NULL DEFAULT true,
+      created_at            timestamptz NOT NULL DEFAULT now(),
+      updated_at            timestamptz NOT NULL DEFAULT now(),
+
+      CONSTRAINT channel_replay_settings_policy
+        CHECK (default_policy IN ('keep', 'expire', 'none')),
+      -- The REPLAY tiers, which are not the channel access tiers: a replay is a
+      -- stored object rather than a door, so its middle tier is 'unlisted'.
+      CONSTRAINT channel_replay_settings_visibility
+        CHECK (default_visibility IN ('public', 'unlisted', 'private')),
+      CONSTRAINT channel_replay_settings_duration_belongs_to_expire
+        CHECK (
+          (default_policy = 'expire' AND default_duration_days IS NOT NULL)
+          OR (default_policy <> 'expire' AND default_duration_days IS NULL)
+        ),
+      CONSTRAINT channel_replay_settings_duration_is_usable
+        CHECK (
+          default_duration_days IS NULL
+          OR (default_duration_days >= 1 AND default_duration_days <= 3650)
+        )
+    );
+
+    /*
+     * A recorded airing carries a policy that keeps something.
+     *
+     * 027 allowed 'none' here syntactically. The typed projection cannot
+     * produce it -- a 'none' disposition has no summary at all -- but a table
+     * that permits a shape the application forbids is a table that will hold
+     * one eventually, by some other route.
+     */
+    ALTER TABLE programme_airings
+      DROP CONSTRAINT IF EXISTS programme_airings_replay_policy_keeps_something;
+    ALTER TABLE programme_airings
+      ADD CONSTRAINT programme_airings_replay_policy_keeps_something
+      CHECK (replay_disposition <> 'replay' OR replay_policy IN ('keep', 'expire'));
+  `,
+};
+
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
   ORGANIZATIONS,
@@ -1699,4 +1779,5 @@ export const MIGRATIONS: readonly Migration[] = [
   SPECIALIST_INTEGRITY,
   SPECIALIST_SOURCE_PROVENANCE,
   PROGRAMME_AIRINGS,
+  CHANNEL_REPLAY_SETTINGS,
 ];
