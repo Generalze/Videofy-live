@@ -59,6 +59,8 @@ export * from './media.js';
 export * from './outcome.js';
 /** The archive port, and the record it keeps. */
 export * from './archive.js';
+/** Turning a finished recording into a seekable playlist. Storage-neutral. */
+export * from './playback.js';
 /** An implementation with no storage, for tests and for development. */
 export * from './memory-archive.js';
 /*

@@ -35,9 +35,9 @@
  * from "where a replay is kept".
  */
 
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { ProgrammeMediaSegment } from '@videofy-live/programme-timeline';
 import type {
   ProgrammeReplayArchive,
@@ -55,6 +55,11 @@ import {
   type ReplayOutcome,
 } from './outcome.js';
 import { isReplayPolicy, isReplayVisibility } from './policy.js';
+import {
+  replayInitialisationPath,
+  replayRunKey,
+  replaySegmentPath,
+} from './filesystem-layout.js';
 import {
   beginFinalisation,
   finalisationComplaint,
@@ -110,22 +115,6 @@ export interface ReplayArchiveOpening {
    * are unaffected.
    */
   readonly corrupt: readonly CorruptReplayRun[];
-}
-
-/* ------------------------------------------------------------ path safety */
-
-/**
- * A filesystem name derived from an identity, never the identity itself.
- *
- * A run id is opaque to this package and arrives from the wire. Pasting one
- * into a path is how `..` becomes a directory traversal and how a colon
- * becomes an alternate data stream on Windows. Hashing sidesteps every one of
- * those questions and is stable across restarts, which is what recovery needs.
- * The ORIGINAL id is still written inside the metadata, because that is what a
- * human needs to read.
- */
-function keyOf(value: string): string {
-  return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
 /* ------------------------------------------------------------ persistence */
@@ -278,7 +267,7 @@ export class FilesystemReplayArchive implements ProgrammeReplayArchive {
       const damaged = this.refusalIfDamaged(runId);
       if (damaged !== null) return { ok: false, failure: damaged };
 
-      const key = keyOf(runId);
+      const key = replayRunKey(runId);
       const judgement = judgeBegin(request, {
         declined: this.declined.has(runId),
         existingStatus: this.runs.get(key)?.status ?? null,
@@ -324,7 +313,7 @@ export class FilesystemReplayArchive implements ProgrammeReplayArchive {
 
       const owned = await this.own(
         key,
-        join('init', `g${initialisation.generation}.bin`),
+        replayInitialisationPath(this.root, runId, initialisation.generation),
         initialisation.storageReference,
         initialisation.bytes,
       );
@@ -354,7 +343,7 @@ export class FilesystemReplayArchive implements ProgrammeReplayArchive {
 
       const owned = await this.own(
         key,
-        join('media', `${keyOf(segment.segmentId)}.bin`),
+        replaySegmentPath(this.root, runId, segment.segmentId),
         segment.storageReference,
         segment.bytes,
       );
@@ -489,7 +478,7 @@ export class FilesystemReplayArchive implements ProgrammeReplayArchive {
   }
 
   async describe(runId: string): Promise<ReplayRecord | null> {
-    const state = this.runs.get(keyOf(runId));
+    const state = this.runs.get(replayRunKey(runId));
     return state === undefined ? null : snapshotOf(state);
   }
 
@@ -505,7 +494,7 @@ export class FilesystemReplayArchive implements ProgrammeReplayArchive {
    * recording of every other programme on the box.
    */
   private withRun<T>(runId: string, work: () => Promise<T>): Promise<T> {
-    const key = keyOf(runId);
+    const key = replayRunKey(runId);
     const previous = this.chains.get(key) ?? Promise.resolve();
     const next = previous.then(work, work);
     // Never let a rejection poison the chain: a later link must still run.
@@ -520,7 +509,7 @@ export class FilesystemReplayArchive implements ProgrammeReplayArchive {
   }
 
   private refusalIfDamaged(runId: string): ReplayFailure | null {
-    const damaged = this.damaged.get(keyOf(runId));
+    const damaged = this.damaged.get(replayRunKey(runId));
     if (damaged === undefined) return null;
     return {
       reason: 'archive-unavailable',
@@ -537,7 +526,7 @@ export class FilesystemReplayArchive implements ProgrammeReplayArchive {
     if (this.declined.has(runId)) {
       return replayRefused('policy-forbids-replay', `run ${runId} is configured to keep no replay`);
     }
-    const key = keyOf(runId);
+    const key = replayRunKey(runId);
     const state = this.runs.get(key);
     if (state === undefined) {
       return replayRefused('unknown-replay', `no replay was begun for run ${runId}`);
@@ -556,12 +545,11 @@ export class FilesystemReplayArchive implements ProgrammeReplayArchive {
    */
   private async own(
     key: string,
-    relative: string,
+    destination: string,
     sourceReference: string,
     declaredBytes: number,
   ): Promise<ReplayOutcome<string>> {
     const runDirectory = join(this.root, 'runs', key);
-    const destination = join(runDirectory, relative);
     const temporary = join(runDirectory, 'tmp', `${randomUUID()}.part`);
 
     let copied: number;
@@ -597,7 +585,7 @@ export class FilesystemReplayArchive implements ProgrammeReplayArchive {
       await discard(temporary);
       return replayRefused(
         'archive-unavailable',
-        `the replay archive could not publish ${relative}: ${describe(error)}`,
+        `the replay archive could not publish this object: ${describe(error)}`,
       );
     }
     return replayOk(destination);
@@ -655,13 +643,34 @@ export class FilesystemReplayArchive implements ProgrammeReplayArchive {
     return replayOk(snapshotOf(next));
   }
 
-  /** The first retained object this state names that is not really there. */
+  /**
+   * The first retained object this state names that is not really there, or is
+   * not the object it is supposed to be.
+   *
+   * TWO QUESTIONS, NOT ONE. "Does a file of the right length exist at this
+   * path" was never sufficient: every other object in this run is also a file
+   * of some length inside this run, so a reference edited to name a NEIGHBOUR
+   * -- the run's own init object, or its next fragment -- passes that check
+   * completely and serves the wrong material under the right name. So each
+   * reference is also required to BE the canonical path for the logical object
+   * it belongs to, derived here from ids rather than read from the metadata
+   * under suspicion.
+   */
   private async missingObject(state: RecordingState): Promise<string | null> {
+    const runId = state.identity.runId;
     for (const entry of state.initialisations) {
+      const canonical = replayInitialisationPath(this.root, runId, entry.offered.generation);
+      if (resolve(entry.archiveReference) !== resolve(canonical)) {
+        return `initialisation generation ${entry.offered.generation}: its reference is not the canonical archive path for it`;
+      }
       const complaint = await verify(entry.archiveReference, entry.offered.bytes);
       if (complaint !== null) return `initialisation generation ${entry.offered.generation}: ${complaint}`;
     }
     for (const entry of state.segments) {
+      const canonical = replaySegmentPath(this.root, runId, entry.offered.segmentId);
+      if (resolve(entry.archiveReference) !== resolve(canonical)) {
+        return `segment ${entry.offered.segmentId}: its reference is not the canonical archive path for it`;
+      }
       const complaint = await verify(entry.archiveReference, entry.offered.bytes);
       if (complaint !== null) return `segment ${entry.offered.segmentId}: ${complaint}`;
     }
@@ -671,7 +680,7 @@ export class FilesystemReplayArchive implements ProgrammeReplayArchive {
   /* ------------------------------------------------------------- recovery */
 
   private async rememberDeclined(runId: string): Promise<ReplayFailure | null> {
-    const target = join(this.root, 'declined', `${keyOf(runId)}.json`);
+    const target = join(this.root, 'declined', `${replayRunKey(runId)}.json`);
     try {
       await writeFile(
         target,
@@ -745,6 +754,25 @@ export class FilesystemReplayArchive implements ProgrammeReplayArchive {
           runKey: key,
           runId: runIdIn(raw),
           reason: loaded,
+        });
+        continue;
+      }
+
+      /*
+       * THE RECORD MUST AGREE WITH WHERE IT IS KEPT.
+       *
+       * The directory is named for the run it holds. A state file claiming a
+       * DIFFERENT run id is either a restore into the wrong place or an edit,
+       * and either way the identity inside it is the thing every later
+       * decision keys on -- including which material a viewer may reach. It is
+       * cheaper and far safer to refuse the run here than to discover the
+       * disagreement one authorisation later.
+       */
+      if (replayRunKey(loaded.identity.runId) !== key) {
+        this.damaged.set(key, {
+          runKey: key,
+          runId: loaded.identity.runId,
+          reason: 'the durable state claims a different run from the directory holding it',
         });
         continue;
       }

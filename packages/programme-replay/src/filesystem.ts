@@ -20,6 +20,16 @@
  */
 
 export {
+  replayInitialisationDirectory,
+  replayInitialisationPath,
+  replayObjectKey,
+  replayRunDirectory,
+  replayRunKey,
+  replaySegmentDirectory,
+  replaySegmentPath,
+} from './filesystem-layout.js';
+
+export {
   FilesystemReplayArchive,
   REPLAY_ARCHIVE_SCHEMA_VERSION,
   type CorruptReplayRun,

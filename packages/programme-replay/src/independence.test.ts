@@ -167,7 +167,7 @@ const PERMITTED_DEPENDENCIES = ['@videofy-live/media-ingress-wire', '@videofy-li
  */
 const ROOT_ENTRY = 'index.ts';
 const FILESYSTEM_ENTRY = 'filesystem.ts';
-const STORAGE_MODULES = [FILESYSTEM_ENTRY, 'filesystem-archive.ts'];
+const STORAGE_MODULES = [FILESYSTEM_ENTRY, 'filesystem-archive.ts', 'filesystem-layout.ts'];
 const PERMITTED_NODE_BUILTINS = ['node:crypto', 'node:fs/promises', 'node:path'];
 
 /**
