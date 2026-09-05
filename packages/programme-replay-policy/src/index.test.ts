@@ -20,6 +20,7 @@ import {
   overrideIsEmpty,
   resolveReplayPolicy,
   validateChannelReplaySettings,
+  validateProgrammeReplayOverride,
   type ChannelReplaySettings,
   type ProgrammeReplayOverride,
 } from './index.js';
@@ -458,5 +459,80 @@ describe('a duration belongs to a policy, and does not outlive it', () => {
         );
       }
     }
+  });
+});
+
+/* ============================================== an override, shaped correctly */
+
+describe('an override is checked for shape before it is asked to resolve', () => {
+  /*
+   * TWO DIFFERENT QUESTIONS, and the tests below keep them apart on purpose.
+   * Shape says the values are values. Resolution says they make sense against a
+   * particular channel. A store needs the first before it can write a row; an
+   * operator needs the second before they go on air.
+   */
+  it('accepts an empty override', () => {
+    // "Nothing to say" is a valid thing to say; what a caller does with it --
+    // store it, or delete the row -- is a storage decision, not a validity one.
+    expect(validateProgrammeReplayOverride({})).toBeNull();
+    expect(overrideIsEmpty({})).toBe(true);
+  });
+
+  it('accepts each field on its own', () => {
+    expect(validateProgrammeReplayOverride({ policy: 'keep' })).toBeNull();
+    expect(validateProgrammeReplayOverride({ visibility: 'private' })).toBeNull();
+    expect(validateProgrammeReplayOverride({ durationDays: 7 })).toBeNull();
+    expect(validateProgrammeReplayOverride({ durationDays: null })).toBeNull();
+  });
+
+  it('refuses a policy or visibility it does not recognise', () => {
+    expect(
+      validateProgrammeReplayOverride({ policy: 'forever' as unknown as 'keep' }),
+    ).toContain('unknown replay policy');
+    expect(
+      validateProgrammeReplayOverride({ visibility: 'locked' as unknown as 'public' }),
+    ).toContain('unknown replay visibility');
+  });
+
+  it('refuses a channel access tier offered as a replay tier', () => {
+    // `locked` is a CHANNEL tier and has no meaning for a stored object. A
+    // store that accepted it would hold a value nothing downstream can read.
+    expect(validateProgrammeReplayOverride({ visibility: 'locked' as never })).not.toBeNull();
+  });
+
+  it('refuses a duration that is not a whole usable number of days', () => {
+    for (const days of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(validateProgrammeReplayOverride({ durationDays: days }), String(days)).not.toBeNull();
+    }
+    expect(validateProgrammeReplayOverride({ durationDays: MAX_REPLAY_DURATION_DAYS })).toBeNull();
+    expect(
+      validateProgrammeReplayOverride({ durationDays: MAX_REPLAY_DURATION_DAYS + 1 }),
+    ).toContain('at most');
+  });
+
+  it('does not judge the pairing, which is what resolution is for', () => {
+    /*
+     * `keep` with a duration is SHAPED fine and RESOLVES to a refusal. Making
+     * shape validation reject it would put the same rule in two places and let
+     * them drift; the refusal an operator sees still comes from the resolver.
+     */
+    expect(validateProgrammeReplayOverride({ policy: 'keep', durationDays: 7 })).toBeNull();
+    const outcome = resolveReplayPolicy(settings(), { policy: 'keep', durationDays: 7 }, STARTED);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error('unreachable');
+    expect(outcome.refusal).toBe('invalid-override');
+  });
+
+  it('a shaped override on a channel that forbids overrides is still refused', () => {
+    // Shape is not permission. The channel decides whether anybody may differ.
+    expect(validateProgrammeReplayOverride({ policy: 'none' })).toBeNull();
+    const outcome = resolveReplayPolicy(
+      settings({ allowOverrides: false }),
+      { policy: 'none' },
+      STARTED,
+    );
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error('unreachable');
+    expect(outcome.refusal).toBe('overrides-forbidden');
   });
 });

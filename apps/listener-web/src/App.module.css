@@ -1185,3 +1185,45 @@
   align-self: flex-start;
   margin-top: 0.25rem;
 }
+
+/*
+ * PAST BROADCASTS.
+ *
+ * Two kinds of row, and they are styled the same on purpose. A broadcast with
+ * something to watch carries a link; one without carries a date alone -- and
+ * dimming the second, or marking it, would be the disclosure the whole feature
+ * avoids. An operator who hid a recording has told this page nothing.
+ */
+.channelReplays {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+}
+
+.channelReplays h2 {
+  font-size: 1.05rem;
+  margin: 0;
+}
+
+.channelReplays ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.channelReplays li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.channelReplays a {
+  color: var(--color-brand-light);
+}

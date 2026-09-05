@@ -1751,6 +1751,77 @@ const CHANNEL_REPLAY_SETTINGS: Migration = {
   `,
 };
 
+/**
+ * 029 -- one programme's departure from its channel's standing answer.
+ *
+ * WHY A TABLE AND NOT THREE COLUMNS ON A PROGRAMME ROW. There is no programme
+ * row. A programme is an identity the platform already carries -- vocabulary
+ * and sponsored creative are keyed the same way -- and inventing a programmes
+ * table to hang three nullable columns off would be a schema decision made for
+ * the convenience of one feature.
+ *
+ * ABSENT IS NOT THE SAME AS CLEARED, and this is the only subtle thing here.
+ * The override's duration has THREE states, not two: not stated at all (inherit
+ * whatever the channel says), stated as nothing (there is deliberately no
+ * duration), and stated as a number. A single nullable integer can hold two of
+ * those, so `duration_days_stated` carries the third. Collapsing them would
+ * make "use the channel's thirty days" and "expire with no duration, which is
+ * incoherent and must be refused" the same stored row, and one of those is a
+ * recording that quietly lives forever.
+ *
+ * NO ROW MEANS THIS PROGRAMME ASKED FOR NOTHING, which resolves to the
+ * channel's defaults. That is deliberately unlike an unconfigured CHANNEL,
+ * which resolves to a refusal: a channel must decide, a programme need not.
+ *
+ * THE VALUES ARE CHECKED, THE COMBINATION IS NOT. Whether `keep` may carry a
+ * duration, or whether this channel permits overrides at all, is decided by
+ * `resolveReplayPolicy` against settings this table cannot see. A CHECK
+ * constraint asserting half of that rule would be a second, partial copy of a
+ * decision that has one home.
+ */
+const PROGRAMME_REPLAY_OVERRIDES: Migration = {
+  name: '029_programme_replay_overrides',
+  sql: `
+    CREATE TABLE IF NOT EXISTS programme_replay_overrides (
+      -- One programme, one departure. Re-saving replaces it.
+      programme_id          text        PRIMARY KEY,
+      -- Whose programme it is. Carried rather than joined for, because the
+      -- join that answers "may this caller change it" is the one that gets
+      -- skipped on the day somebody is in a hurry.
+      channel_id            text        NOT NULL,
+      -- Null in all three means: not overridden, inherit the channel's.
+      policy                text,
+      visibility            text,
+      -- See above: stated-as-nothing and not-stated are different answers.
+      duration_days         integer,
+      duration_days_stated  boolean     NOT NULL DEFAULT false,
+      created_at            timestamptz NOT NULL DEFAULT now(),
+      updated_at            timestamptz NOT NULL DEFAULT now(),
+
+      CONSTRAINT programme_replay_overrides_policy
+        CHECK (policy IS NULL OR policy IN ('keep', 'expire', 'none')),
+      -- REPLAY tiers, which are not the channel access tiers: there is no
+      -- 'locked' here, because a stored object is not a door.
+      CONSTRAINT programme_replay_overrides_visibility
+        CHECK (visibility IS NULL OR visibility IN ('public', 'unlisted', 'private')),
+      CONSTRAINT programme_replay_overrides_duration_is_usable
+        CHECK (
+          duration_days IS NULL
+          OR (duration_days >= 1 AND duration_days <= 3650)
+        ),
+      -- A duration that was never stated cannot have a value; otherwise the
+      -- discriminator and the column would be free to disagree.
+      CONSTRAINT programme_replay_overrides_duration_needs_stating
+        CHECK (duration_days_stated OR duration_days IS NULL)
+    );
+
+    -- Every read is by programme; this is for the channel-wide sweep an
+    -- operator console makes when it lists what departs from the default.
+    CREATE INDEX IF NOT EXISTS programme_replay_overrides_by_channel
+      ON programme_replay_overrides (channel_id);
+  `,
+};
+
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
   ORGANIZATIONS,
@@ -1780,4 +1851,5 @@ export const MIGRATIONS: readonly Migration[] = [
   SPECIALIST_SOURCE_PROVENANCE,
   PROGRAMME_AIRINGS,
   CHANNEL_REPLAY_SETTINGS,
+  PROGRAMME_REPLAY_OVERRIDES,
 ];

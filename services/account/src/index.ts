@@ -65,6 +65,10 @@ import {
 } from './channel-profiles.js';
 import { createPostgresChannelProfiles } from './db/channel-profiles-postgres.js';
 import { registerChannelRoutes } from './channel-routes.js';
+import { registerReplayRoutes } from './replay-routes.js';
+import { createPostgresChannelReplaySettings } from './db/channel-replay-settings-postgres.js';
+import { createPostgresProgrammeReplayOverrides } from './db/programme-replay-overrides-postgres.js';
+import { createPostgresAiringCatalogue } from './db/programme-airings-postgres.js';
 import { registerC7AdvertisingRoutes } from './c7-advertising-routes.js';
 import { createC7AdvertisingStore } from './db/c7-advertising-postgres.js';
 import { registerVocabularyRoutes } from './vocabulary-routes.js';
@@ -959,6 +963,91 @@ if (databasePool) {
       'each capability as absent rather than accepting configuration it would ' +
       'lose on restart. Viewers still receive the house creative, which needs ' +
       'no storage.',
+  }));
+}
+
+/*
+ * PROGRAMME REPLAY: what an operator sets, and what an audience may see.
+ *
+ * REGISTERED ONLY WITH A REAL DATABASE, for the same reason as vocabulary and
+ * the sponsored creative -- and one sharper one. A file-backed or in-memory
+ * store here would answer "this channel has decided nothing" to every read and
+ * read exactly like a working deployment, while every broadcast that went out
+ * under it kept whatever the media service was told last. Retention that
+ * silently forgets what an operator chose is worse than retention that is
+ * plainly absent.
+ *
+ * THE AUTHORITY IS THE ONE THAT ALREADY EXISTS. The owner is found by session
+ * through the same caller resolver as every other route; a programme is
+ * administered by whoever owns the channel it belongs to, which is the answer
+ * vocabulary and the sponsored creative already give to the same question.
+ * Nothing here introduces a second account auth system.
+ *
+ * CHANNEL VISIBILITY IS SUPPLIED, NOT DECIDED HERE. `replay-routes.ts` maps the
+ * channel tiers onto the single question it needs -- does the platform publish
+ * this channel -- and Replay visibility can then only narrow what survives it.
+ */
+if (databasePool) {
+  const replayCaller = createCallerResolver({
+    store,
+    secret,
+    nowSeconds: () => Math.floor(Date.now() / 1000),
+  });
+  registerReplayRoutes(app, {
+    settings: createPostgresChannelReplaySettings(databasePool),
+    overrides: createPostgresProgrammeReplayOverrides(databasePool),
+    airings: createPostgresAiringCatalogue(databasePool),
+    callerAccountId: replayCaller,
+    /*
+     * The PUBLIC page cursor is sealed with a key derived from this, so the
+     * token a viewer pages with cannot be read back into the run id of the
+     * airing it points at. Derived rather than used directly, so a cursor is
+     * never interchangeable with a session token.
+     */
+    cursorSecret: secret,
+    ownChannel: async (accountId) => {
+      const owned = await channelProfiles.mine(accountId);
+      return owned === null
+        ? null
+        : { channelId: owned.channelId, visibility: owned.visibility };
+    },
+    channelById: async (channelId) => {
+      const profile = await channelProfiles.byId(channelId);
+      return profile === null
+        ? null
+        : { channelId: profile.channelId, visibility: profile.visibility };
+    },
+    channelByHandle: async (handle) => {
+      const profile = await channelProfiles.byHandle(handle);
+      return profile === null
+        ? null
+        : { channelId: profile.channelId, visibility: profile.visibility };
+    },
+    mayAdminister: async (accountId, programmeId) => {
+      const owned = await channelProfiles.mine(accountId);
+      return owned !== null && owned.channelId === programmeId;
+    },
+    onEvent: (event, detail) => {
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify({ service: 'account', event, ...detail }));
+    },
+  });
+  // eslint-disable-next-line no-console
+  console.log(JSON.stringify({
+    service: 'account',
+    message: 'Programme replay settings and history routes ready',
+    persistence: 'postgres',
+  }));
+} else {
+  // eslint-disable-next-line no-console
+  console.warn(JSON.stringify({
+    service: 'account',
+    level: 'warn',
+    message:
+      'Programme replay settings and history are UNAVAILABLE: no database. The ' +
+      'routes are not registered, so the console reports the capability as ' +
+      'absent rather than accepting retention settings it would lose on ' +
+      'restart -- and no broadcast is recorded on the strength of one.',
   }));
 }
 

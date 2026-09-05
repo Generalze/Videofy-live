@@ -63,6 +63,8 @@ export * from './archive.js';
 export * from './playback.js';
 /** The history a broadcast leaves behind, whether or not it was recorded. */
 export * from './airing.js';
+/** Who may be told what about that history, and what a public answer looks like. */
+export * from './audience.js';
 /** An implementation with no storage, for tests and for development. */
 export * from './memory-archive.js';
 /*

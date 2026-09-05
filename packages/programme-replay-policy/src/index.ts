@@ -342,3 +342,77 @@ export interface ChannelReplaySettingsStore {
   read(channelId: string): Promise<ChannelReplaySettings | null>;
   save(settings: ChannelReplaySettings): Promise<SettingsOutcome<ChannelReplaySettings>>;
 }
+
+/* ------------------------------------------------- the programme's override */
+
+/**
+ * Whether an override is SHAPED like one, before it is asked to resolve.
+ *
+ * TWO CHECKS, AND THEY ARE NOT THE SAME CHECK. This one says the values are
+ * values: a known policy, a known visibility, a whole number of days inside the
+ * bound. `resolveReplayPolicy` says the override MAKES SENSE AGAINST A
+ * PARTICULAR CHANNEL -- whether overrides are permitted at all, whether the
+ * pair of policy and duration is coherent, whether an inherited duration
+ * survives. Neither subsumes the other, and a caller storing an override wants
+ * both: the shape so the row is storable, and the resolution so an operator is
+ * told now rather than the next time they go on air.
+ *
+ * AN EMPTY OVERRIDE IS NOT A PROBLEM HERE. It is a perfectly valid statement of
+ * "nothing to say", and what a caller does with it -- store it, or delete the
+ * row -- is a storage decision rather than a validity one.
+ */
+export function validateProgrammeReplayOverride(
+  override: ProgrammeReplayOverride,
+): SettingsProblem {
+  if (override.policy !== undefined && !isReplayPolicy(override.policy)) {
+    return `unknown replay policy ${JSON.stringify(override.policy)}`;
+  }
+  if (override.visibility !== undefined && !isReplayVisibility(override.visibility)) {
+    return `unknown replay visibility ${JSON.stringify(override.visibility)}`;
+  }
+  const days = override.durationDays;
+  if (days !== undefined && days !== null) {
+    if (!Number.isInteger(days)) {
+      return `a retention duration must be a whole number of days, not ${String(days)}`;
+    }
+    if (days < 1) return 'a retention duration must be at least one day';
+    if (days > MAX_REPLAY_DURATION_DAYS) {
+      return `a retention duration allows at most ${MAX_REPLAY_DURATION_DAYS} days; use keep to retain indefinitely`;
+    }
+  }
+  return null;
+}
+
+/**
+ * A stored override, and the channel it belongs to.
+ *
+ * THE CHANNEL IS CARRIED, NOT DERIVED. An override is authorised against the
+ * channel that owns the programme, and a store that held only the programme id
+ * would make the reader join somewhere else to find out whose it was -- which
+ * is the join that gets skipped on the day somebody is in a hurry.
+ */
+export interface ProgrammeReplayOverrideRecord {
+  readonly programmeId: string;
+  readonly channelId: string;
+  readonly override: ProgrammeReplayOverride;
+}
+
+/**
+ * Where per-programme overrides are kept.
+ *
+ * `read` RETURNING NULL MEANS "THIS PROGRAMME ASKED FOR NOTHING", which
+ * resolves to the channel's defaults -- unlike a channel with no settings,
+ * which resolves to a refusal. The asymmetry is the point: a channel must
+ * decide, a programme need not.
+ *
+ * `clear` IS IDEMPOTENT AND SUCCEEDS ON A PROGRAMME THAT HAD NO OVERRIDE.
+ * Removing something that is not there is the state the caller asked for, and
+ * an operator pressing "use the channel default" twice has not made a mistake.
+ */
+export interface ProgrammeReplayOverrideStore {
+  read(programmeId: string): Promise<ProgrammeReplayOverrideRecord | null>;
+  save(
+    record: ProgrammeReplayOverrideRecord,
+  ): Promise<SettingsOutcome<ProgrammeReplayOverrideRecord>>;
+  clear(programmeId: string): Promise<SettingsOutcome<null>>;
+}

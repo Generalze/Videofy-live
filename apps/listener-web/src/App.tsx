@@ -37,6 +37,13 @@ import {
 } from '@videofy-live/shared-types';
 import styles from './App.module.css';
 import { ChannelDirectory } from './ChannelDirectory';
+import { ChannelReplayList } from './ChannelReplayList';
+import {
+  NO_HISTORY,
+  fetchReplayHistory,
+  type ReplayHistory,
+  type ReplayHistoryCursor,
+} from './replayCatalogue';
 import { SponsoredSlot } from './SponsoredSlot';
 import {
   HOUSE_DELIVERY,
@@ -129,6 +136,17 @@ import {
 const GATEWAY_URL = import.meta.env['VITE_GATEWAY_URL'] ?? 'http://localhost:3001';
 /** The account service: /streams/<handle> and channel pictures resolve there (staging: /auth). */
 const ACCOUNT_BASE = readAccountBase({ VITE_ACCOUNT_URL: import.meta.env['VITE_ACCOUNT_URL'] });
+
+/*
+ * WHERE A REPLAY IS WATCHED: the media service, not the account service.
+ *
+ * EMPTY BY DEFAULT, WHICH MEANS RELATIVE. An absent value produces
+ * `/replays/<run>/playlist.m3u8`, served by whatever fronts this page --
+ * exactly as the live manifest the gateway hands out is relative today. A
+ * hostname is only needed where the media service is on a different origin,
+ * and inventing one here would break every deployment where it is not.
+ */
+const REPLAY_INGEST_BASE = import.meta.env['VITE_INGEST_URL'] ?? '';
 const VIEWER_PLAYBACK_WATCHDOG_MS = 1_000;
 const VIEWER_PLAYBACK_STAGNANT_CHECKS = 4;
 const VIEWER_PLAYBACK_MIN_READY_STATE = 2;
@@ -1777,6 +1795,16 @@ export default function App(): React.ReactElement {
    * the next one would be delivering an advert nobody bought.
    */
   const [sponsored, setSponsored] = useState<DeliveredCreative>(HOUSE_DELIVERY);
+  /*
+   * THIS CHANNEL'S PAST BROADCASTS, when it publishes any.
+   *
+   * `NO_HISTORY` is the answer for a channel that does not publish one AND for
+   * a channel that does not exist -- the service gives the same 404 for both,
+   * on purpose, and this page keeps them together by having nothing to tell
+   * them apart with.
+   */
+  const [replayHistory, setReplayHistory] = useState<ReplayHistory>(NO_HISTORY);
+  const [replayLoadingMore, setReplayLoadingMore] = useState(false);
 
   /*
    * THE ADVERT C7 DECIDED, ARRIVING AT THE CURSOR.
@@ -1842,6 +1870,56 @@ export default function App(): React.ReactElement {
     };
   }, [channelSelection.channelId]);
 
+  useEffect(() => {
+    const channelId = channelSelection.channelId;
+    if (channelId === null) {
+      setReplayHistory(NO_HISTORY);
+      return;
+    }
+    let current = true;
+    void fetchReplayHistory(ACCOUNT_BASE, channelId, {
+      doFetch: (url, init) => fetch(url, init),
+    }).then((history) => {
+      // A late answer for a channel the viewer has already left must not
+      // replace the one they are on now.
+      if (current) setReplayHistory(history);
+    });
+    return () => {
+      current = false;
+    };
+  }, [channelSelection.channelId]);
+
+  const handleLoadMoreReplays = (): void => {
+    const channelId = channelSelection.channelId;
+    const after: ReplayHistoryCursor | null = replayHistory.next;
+    if (channelId === null || after === null || replayLoadingMore) return;
+    setReplayLoadingMore(true);
+    void fetchReplayHistory(ACCOUNT_BASE, channelId, {
+      after,
+      doFetch: (url, init) => fetch(url, init),
+    }).then((page) => {
+      setReplayLoadingMore(false);
+      /*
+       * KEYED BY RUN ID. A double press, or a retried request, must not put the
+       * same broadcast on screen twice.
+       */
+      setReplayHistory((held) => {
+        /*
+         * DE-DUPLICATED BY WHEN, not by run id: a public airing carries none.
+         * The instant a broadcast started is unique enough for a list a person
+         * is reading, and the alternative -- asking the service for an
+         * identifier -- would be asking it to disclose the thing it is hiding.
+         */
+        const seen = new Set(held.airings.map((airing) => airing.startedAtMs));
+        return {
+          airings: [...held.airings, ...page.airings.filter((a) => !seen.has(a.startedAtMs))],
+          next: page.next,
+          available: held.available,
+        };
+      });
+    });
+  };
+
   const handleChooseChannel = (channelId: string): void => {
     const next = { channelId, code: null, codeFromUrl: false };
     setChannelSelection(next);
@@ -1869,6 +1947,15 @@ export default function App(): React.ReactElement {
         streams={streamsResolution}
         doorChannel={doorChannel}
         onRetryStreams={() => setStreamsAttempt((attempt) => attempt + 1)}
+      />
+      <ChannelReplayList
+        available={replayHistory.available}
+        airings={replayHistory.airings}
+        hasMore={replayHistory.next !== null}
+        loadingMore={replayLoadingMore}
+        ingestBase={REPLAY_INGEST_BASE}
+        nowMs={Date.now()}
+        onLoadMore={handleLoadMoreReplays}
       />
       <header className={styles.header}>
         <div className={styles.brand}>
