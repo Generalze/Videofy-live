@@ -49,6 +49,26 @@ export type ReplayFailureReason =
   | 'no-media-retained'
   /** The archive itself could not be read or written. */
   | 'archive-unavailable'
+  /**
+   * The programme's own media could not be made durable, so the source of the
+   * recording is incomplete.
+   *
+   * DELIBERATELY NOT `archive-unavailable`. That reason says the archive could
+   * not be written and the material was fine; this one says the material was
+   * never there to write. They call for opposite responses -- retry the
+   * archive, versus never trust this recording again -- and an operator
+   * looking at a failed replay has no other way to tell which happened.
+   */
+  | 'source-media-unavailable'
+  /**
+   * The encoder producing this broadcast stopped without being asked to.
+   *
+   * A recording that ends here is TRUNCATED, and the difference between this
+   * and an ordinary finish is the whole point of having the reason: a
+   * deliberate stop finalises a complete replay, and an encoder that died
+   * leaves one that must never be called available.
+   */
+  | 'media-origin-failed'
   /** The move asked for is not one this state permits. */
   | 'lifecycle-transition-refused'
   /** No replay was ever begun for this run. */
@@ -64,6 +84,8 @@ export const REPLAY_FAILURE_REASONS: readonly ReplayFailureReason[] = [
   'initialisation-conflict',
   'no-media-retained',
   'archive-unavailable',
+  'source-media-unavailable',
+  'media-origin-failed',
   'lifecycle-transition-refused',
   'unknown-replay',
 ];

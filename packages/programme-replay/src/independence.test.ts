@@ -49,6 +49,26 @@ describe('a replay failure never has to end a broadcast', () => {
     }
   });
 
+  it('separates a source that was never there from an archive that would not take it', () => {
+    /*
+     * The two failures a live producer can hand this package, and the reason
+     * they are not one reason. `archive-unavailable` means the bytes were fine
+     * and the store refused; `source-media-unavailable` means the programme's
+     * own media could not be made durable, so there was nothing to store. An
+     * operator retries the first and never trusts the second.
+     */
+    expect(REPLAY_FAILURE_REASONS).toContain('source-media-unavailable');
+    expect(REPLAY_FAILURE_REASONS).toContain('archive-unavailable');
+    expect(replayFailure('source-media-unavailable', 'x').reason).not.toBe('archive-unavailable');
+  });
+
+  it('separates an encoder that died from a broadcast that ended', () => {
+    // A truncated recording and a complete one must not reach the same status
+    // by the same route, so the reason for the truncation has a name.
+    expect(REPLAY_FAILURE_REASONS).toContain('media-origin-failed');
+    expect(replayFailure('media-origin-failed', 'x').liveImpact).toBe('none');
+  });
+
   it('turns a throwing archive into an ordinary refusal', async () => {
     // The failure this guards against: a durable implementation written later
     // that throws inside a live segment handler.
