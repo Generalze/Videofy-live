@@ -61,6 +61,8 @@ export * from './outcome.js';
 export * from './archive.js';
 /** Turning a finished recording into a seekable playlist. Storage-neutral. */
 export * from './playback.js';
+/** The history a broadcast leaves behind, whether or not it was recorded. */
+export * from './airing.js';
 /** An implementation with no storage, for tests and for development. */
 export * from './memory-archive.js';
 /*

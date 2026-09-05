@@ -1514,6 +1514,163 @@ const C7_ADVERTISING: Migration = {
   `,
 };
 
+/**
+ * 027 -- programme airings.
+ *
+ * WHAT THIS TABLE IS FOR, and what it deliberately is not. A broadcast that
+ * went out is a historical fact about a channel; its recording is optional
+ * media that may never have existed and may already have been released. Those
+ * are two different lifetimes, and keeping them in one row would mean deleting
+ * a month-old replay deletes the evidence that the programme ever aired.
+ *
+ *     MEDIA MAY EXPIRE. HISTORY DOES NOT DISAPPEAR WITH IT.
+ *
+ * So the row is the AIRING. `replay_disposition` says whether a recording was
+ * ever kept, and the replay columns describe it when one was.
+ *
+ * NOT A MAP OF THE ARCHIVE. There is deliberately no storage reference, no
+ * archive root, no object key and no segment list anywhere below. This database
+ * describes broadcasts; finding their bytes is the media archive's job, and a
+ * product table that also held paths would be an archive-path leak with a
+ * schema. `replay_bytes` and the counts are a size, which is what a history
+ * page shows, not a way to reach anything.
+ *
+ * NOT AN AUTHORITY EITHER. A row saying `available` records what the archive
+ * last reported. Playback asks the archive; if the two disagree, the archive
+ * wins, because it is the thing that holds the media.
+ *
+ * COLUMNS RATHER THAN A JSONB BLOB, because these are exactly the fields a
+ * history query filters and orders on -- channel, programme, when, and what
+ * became of the recording -- and because the CHECK constraints below are how
+ * "an airing that kept nothing carries no replay state" stops being a comment
+ * and starts being true.
+ */
+const PROGRAMME_AIRINGS: Migration = {
+  name: '027_programme_airings',
+  sql: `
+    CREATE TABLE IF NOT EXISTS programme_airings (
+      -- One airing, one row. A reconnect or a retried report collapses onto
+      -- this key; a genuinely second broadcast of the same programme has a
+      -- different run and does not.
+      run_id                 text        PRIMARY KEY,
+      -- Whose broadcast it was. Immutable after the first write: the
+      -- application refuses to move a run between channels, because a
+      -- programme does not change who aired it.
+      channel_id             text        NOT NULL,
+      programme_id           text        NOT NULL,
+      started_at_ms          bigint      NOT NULL,
+      -- Null while it is still on air.
+      ended_at_ms            bigint,
+
+      -- 'none'   the operator chose to keep no recording.
+      -- 'replay' a recording exists, or existed. The columns below describe it.
+      replay_disposition     text        NOT NULL,
+      replay_status          text,
+      replay_policy          text,
+      replay_visibility      text,
+      replay_expires_at_ms   bigint,
+      replay_finalised_at_ms bigint,
+      replay_failure_reason  text,
+      -- A SENTENCE THE APPLICATION CHOSE, never the archive's own detail. The
+      -- text a replay failure carries is written where the failure happened
+      -- and can name a spool file; a product database is queried by other
+      -- things, backed up elsewhere, and read by people who should never learn
+      -- the shape of a volume. The reason is mapped to fixed wording before it
+      -- reaches here.
+      replay_failure_summary text,
+      replay_bytes           bigint,
+      replay_segment_count   integer,
+      replay_init_count      integer,
+
+      created_at             timestamptz NOT NULL DEFAULT now(),
+      updated_at             timestamptz NOT NULL DEFAULT now(),
+
+      CONSTRAINT programme_airings_disposition
+        CHECK (replay_disposition IN ('none', 'replay')),
+
+      /*
+       * AN AIRING THAT KEPT NOTHING CARRIES NO REPLAY STATE.
+       *
+       * Without this, a bug could write status 'deleted' against a programme
+       * that never had a recording, and the history page would say a replay was
+       * removed when none was ever made. The two are different facts and the
+       * database refuses to blur them.
+       */
+      CONSTRAINT programme_airings_none_is_empty
+        CHECK (
+          replay_disposition <> 'none'
+          OR (
+            replay_status IS NULL
+            AND replay_policy IS NULL
+            AND replay_visibility IS NULL
+            AND replay_expires_at_ms IS NULL
+            AND replay_finalised_at_ms IS NULL
+            AND replay_failure_reason IS NULL
+            AND replay_failure_summary IS NULL
+            AND replay_bytes IS NULL
+            AND replay_segment_count IS NULL
+            AND replay_init_count IS NULL
+          )
+        ),
+
+      -- And a recorded airing carries the state that describes it.
+      CONSTRAINT programme_airings_replay_is_described
+        CHECK (
+          replay_disposition <> 'replay'
+          OR (
+            replay_status IS NOT NULL
+            AND replay_policy IS NOT NULL
+            AND replay_visibility IS NOT NULL
+            AND replay_bytes IS NOT NULL
+            AND replay_segment_count IS NOT NULL
+            AND replay_init_count IS NOT NULL
+          )
+        ),
+
+      CONSTRAINT programme_airings_status
+        CHECK (
+          replay_status IS NULL
+          OR replay_status IN (
+            'recording', 'processing', 'available', 'failed', 'expired', 'deleted'
+          )
+        ),
+      CONSTRAINT programme_airings_policy
+        CHECK (replay_policy IS NULL OR replay_policy IN ('keep', 'expire', 'none')),
+      -- The REPLAY tiers, which are not the channel tiers. A replay is a stored
+      -- object rather than a door, so its middle tier is 'unlisted'.
+      CONSTRAINT programme_airings_visibility
+        CHECK (
+          replay_visibility IS NULL
+          OR replay_visibility IN ('public', 'unlisted', 'private')
+        ),
+      -- An expiry belongs to exactly one policy.
+      CONSTRAINT programme_airings_expiry_needs_policy
+        CHECK (replay_expires_at_ms IS NULL OR replay_policy = 'expire'),
+      CONSTRAINT programme_airings_counts_are_sane
+        CHECK (
+          (replay_bytes IS NULL OR replay_bytes >= 0)
+          AND (replay_segment_count IS NULL OR replay_segment_count >= 0)
+          AND (replay_init_count IS NULL OR replay_init_count >= 0)
+        )
+    );
+
+    /*
+     * The two history questions, and the ordering they are answered in.
+     *
+     * DESC on the time and the run together, because that pair is the keyset a
+     * page resumes from: ordering by time alone leaves two airings that began
+     * in the same millisecond in an order the database is free to change
+     * between queries, which is how a viewer paging through history sees one
+     * broadcast twice and never sees another.
+     */
+    CREATE INDEX IF NOT EXISTS programme_airings_by_channel
+      ON programme_airings (channel_id, started_at_ms DESC, run_id DESC);
+
+    CREATE INDEX IF NOT EXISTS programme_airings_by_programme
+      ON programme_airings (programme_id, started_at_ms DESC, run_id DESC);
+  `,
+};
+
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
   ORGANIZATIONS,
@@ -1541,4 +1698,5 @@ export const MIGRATIONS: readonly Migration[] = [
   LANGUAGE_SPECIALISTS,
   SPECIALIST_INTEGRITY,
   SPECIALIST_SOURCE_PROVENANCE,
+  PROGRAMME_AIRINGS,
 ];

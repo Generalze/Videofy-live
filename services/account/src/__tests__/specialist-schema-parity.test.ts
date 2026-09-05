@@ -302,9 +302,18 @@ describe('the rules that live in the database', () => {
 });
 
 describe('the migration is appended, never reordered', () => {
-  it('runs last, after every migration that shipped before it', () => {
+  it('runs after every migration that shipped before it', () => {
+    /*
+     * STATED AS A POSITION, not as the end of the list. This used to assert
+     * that the array ENDED here, which was true until a later wave appended one
+     * -- and appending is precisely the correct operation. What must never
+     * happen is this migration moving earlier, or something being inserted in
+     * front of the ones already applied somewhere, and that is what is checked.
+     */
     const order = migrations.slice(migrations.indexOf('export const MIGRATIONS'));
-    expect(order.trimEnd().endsWith('SPECIALIST_SOURCE_PROVENANCE,\n];')).toBe(true);
+    const entries = [...order.matchAll(/^ {2}([A-Z0-9_]+),$/gmu)].map((match) => match[1] ?? '');
+    expect(entries[0]).toBe('ACCOUNTS');
+    expect(entries.indexOf('SPECIALIST_SOURCE_PROVENANCE')).toBe(25);
   });
 
   it('PIN: 025 follows 024, and 024 is not edited either', () => {
