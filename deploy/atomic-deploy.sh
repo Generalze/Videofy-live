@@ -168,7 +168,7 @@ ship_engine() {
   else
     cp -r deploy/lib "$staged/deploy/lib" || return 1
   fi
-  find "$staged" -type f \( -name '*.sh' -o -name '*.mjs' -o -name '*.py' \)     -exec sed -i 's/\r$//' {} + || return 1
+  shipment_normalise "$staged" || return 1
   tar -czf "$local_tar" -C "$staged" deploy/lib || { rm -rf "$staged"; return 1; }
   rm -rf "$staged"
   scp -q "$local_tar" "$VIDEOFY_SSH_HOST:$local_tar" || { rm -f "$local_tar"; return 1; }
@@ -210,6 +210,28 @@ if [ "$ACTION" = "state" ]; then
   "
   exit 0
 fi
+
+# Ask the host whether it is provisioned at all, BEFORE trying to lock it.
+#
+# Ordered first so a half-provisioned host says so in its own words instead of
+# surfacing as lock contention -- which is exactly what happened on the first
+# live preparation and sent the operator looking for a deployment that was not
+# running.
+assert_atomic_bootstrap() {
+  local state
+  # The predicate is shipped inline with `declare -f` rather than sourced,
+  # because this runs BEFORE any machinery has been installed on the host.
+  # shellcheck disable=SC2029
+  state="$(ssh "$VIDEOFY_SSH_HOST" "
+    $(declare -f atomic_bootstrap_state)
+    atomic_bootstrap_state '$VIDEOFY_ROOT'
+  " 2>/dev/null)"
+  if [ "$state" != "ok" ]; then
+    atomic_bootstrap_refusal "$VIDEOFY_ROOT" "${state:-unreachable}" "$ENV_NAME"
+    return 1
+  fi
+  return 0
+}
 
 # ---------------------------------------------------- the transaction lock
 #
@@ -362,6 +384,7 @@ if [ "$ACTION" = "rollback" ]; then
   # LOCK FIRST, THEN MACHINERY. A caller that loses the race must not have
   # written anything on the host by the time it finds out.
   assert_engine_is_committed || exit 1
+  assert_atomic_bootstrap || exit 1
   transaction_begin hold_transaction_lock ship_engine || exit 1
   echo "[$ENV_NAME] rolling back to $TARGET"
   if ! remote_rollback "$TARGET"; then
@@ -391,6 +414,7 @@ fi
 echo "[$ENV_NAME] candidate $SHA (prepare-only: $PREPARE_ONLY)"
 
 assert_engine_is_committed || exit 1
+assert_atomic_bootstrap || exit 1
 transaction_begin hold_transaction_lock ship_engine || exit 1
 
 BUNDLE="/tmp/videofy-atomic-$ENV_NAME-$TXN.bundle"

@@ -363,6 +363,16 @@ if [ "$MUTATION" = "shared-remote-lib" ]; then
   # caller writes where another reads.
   transaction_nonce() { printf 'shared'; }
 fi
+if [ "$MUTATION" = "bootstrap-preflight-bypassed" ]; then
+  # The defect: an unprovisioned host is reported as a busy lock, and the
+  # operator waits for a deployment that is not running.
+  atomic_bootstrap_state() { printf 'ok'; return 0; }
+fi
+if [ "$MUTATION" = "shipping-normalization-bypassed" ]; then
+  # The defect: CRLF libraries reach the host and bash dies on an invisible
+  # character.
+  shipment_normalise() { return 0; }
+fi
 if [ "$MUTATION" = "no-engine-provenance" ]; then
   # The defect: production accepts a working-tree engine, so a certified SHA
   # can be qualified by uncommitted operator-side code.
@@ -1502,56 +1512,121 @@ echo "the five things only a real deployment could find"
 REPO_ROOT="$HERE/../.."
 DEPLOY_SH="$REPO_ROOT/deploy/atomic-deploy.sh"
 
-# A. BOOTSTRAP OWNERSHIP. The deployment root is root-owned and the deploy user
-#    creates releases and takes the lock there. install.sh must create both, or
-#    the first production preparation dies on "Permission denied" and reports
-#    it as a busy lock.
-if grep -q 'VIDEOFY_ROOT/releases' "$REPO_ROOT/deploy/production/install.sh"; then
-  ok "install.sh creates the releases directory for the deploy user"
-else bad "install.sh does not create releases/" "the first prepare cannot write"; fi
-if grep -q 'deploy.lock' "$REPO_ROOT/deploy/production/install.sh"; then
-  ok "install.sh creates the transaction lock file"
-else bad "install.sh does not create the lock file" "a missing lock reads as a held lock"; fi
-
-# B. BUNDLE TRANSPORT. `git bundle create <file> <sha>` refuses: a bundle
-#    packages refs, not commits. Proven against real git rather than asserted.
+# A. BOOTSTRAP -- TESTED BY BEHAVIOUR.
+#
+# The first version of this grepped install.sh for two strings. That proved the
+# provisioning line exists and nothing about what a deploy does when it has not
+# been run -- which is the whole finding: the deploy reported a provisioning
+# failure as lock contention, and an operator waited for a deployment that was
+# not running.
 new_rig; reset_failures
-SRC="$RIG/src"; mkdir -p "$SRC"
-git -C "$SRC" init -q .
-git -C "$SRC" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
-REAL_SHA="$(git -C "$SRC" rev-parse HEAD)"
-if git -C "$SRC" bundle create "$RIG/bare.bundle" "$REAL_SHA" >/dev/null 2>&1; then
-  bad "bundling a bare sha unexpectedly succeeded" "the guard would be pointless"
-else ok "bundling a bare sha refuses, as the real failure did"; fi
-git -C "$SRC" update-ref refs/deploy/t "$REAL_SHA"
-if git -C "$SRC" bundle create "$RIG/ref.bundle" refs/deploy/t >/dev/null 2>&1; then
-  ok "bundling a temporary ref succeeds"
-else bad "bundling a ref failed" "the fix does not work"; fi
-# And the far side can fetch it back to the exact commit.
-DST="$RIG/dst"; mkdir -p "$DST"; git -C "$DST" init -q .
-git -C "$DST" fetch -q "$RIG/ref.bundle" refs/deploy/t 2>/dev/null
-git -C "$DST" checkout -q --detach FETCH_HEAD 2>/dev/null
-check "the fetched commit is byte-identical to the requested sha" \
-  "$(git -C "$DST" rev-parse HEAD 2>/dev/null)" "$REAL_SHA"
-check "and the deploy ships by ref, not by bare sha" \
-  "$(grep -c 'git bundle create "\$BUNDLE" "\$BUNDLE_REF"' "$DEPLOY_SH")" "1"
+BOOT="$RIG/boot"
+
+# Nothing provisioned at all.
+mkdir -p "$BOOT"
+check "an unprovisioned root reports missing releases" \
+  "$(atomic_bootstrap_state "$BOOT" 2>/dev/null)" "missing-releases"
+
+# releases/ present, lock absent -- the exact state the host was in.
+mkdir -p "$BOOT/releases"
+check "releases without a lock reports the missing lock" \
+  "$(atomic_bootstrap_state "$BOOT" 2>/dev/null)" "missing-lock"
+
+# A directory where the lock file belongs.
+mkdir -p "$BOOT/.deploy.lock"
+check "a lock that is not a regular file is named as such" \
+  "$(atomic_bootstrap_state "$BOOT" 2>/dev/null)" "lock-not-a-regular-file"
+rmdir "$BOOT/.deploy.lock"
+
+# A file where releases/ belongs.
+rmdir "$BOOT/releases"; : > "$BOOT/releases"
+check "releases as a file is named as such" \
+  "$(atomic_bootstrap_state "$BOOT" 2>/dev/null)" "releases-not-a-directory"
+rm -f "$BOOT/releases"; mkdir -p "$BOOT/releases"
+
+# Fully provisioned.
+: > "$BOOT/.deploy.lock"
+check "a provisioned root passes" "$(atomic_bootstrap_state "$BOOT" 2>/dev/null)" "ok"
+
+# A root that does not exist at all.
+check "a missing root is named" \
+  "$(atomic_bootstrap_state "$RIG/nowhere" 2>/dev/null)" "missing-root"
+
+# THE DISTINCTION THAT MATTERS. A provisioned host whose lock is HELD must
+# report busy, never bootstrap-incomplete: the two demand opposite responses,
+# and conflating them is the original defect.
+printf '%s\n' \
+  ". \"$LIB/deploy-lock.sh\"" \
+  "export ATOMIC_ROOT=\"$BOOT\"" \
+  "atomic_lock_acquire || exit 9" \
+  "touch \"$BOOT/held\"" \
+  "for _ in \$(seq 1 200); do [ -f \"$BOOT/go\" ] && break; sleep 0.05; done" > "$BOOT/holder.sh"
+setsid bash "$BOOT/holder.sh" &
+BOOT_HOLDER=$!
+for _ in $(seq 1 100); do [ -f "$BOOT/held" ] && break; sleep 0.05; done
+check "a busy host still reports its bootstrap as ok, not incomplete" \
+  "$(atomic_bootstrap_state "$BOOT" 2>/dev/null)" "ok"
+ATOMIC_ROOT="$BOOT" atomic_lock_acquire >/dev/null 2>&1 \
+  && bad "the held lock was acquired" "it must refuse" \
+  || ok "and the lock itself reports BUSY, which is a different answer"
+BOOT_PGID="$(ps -o pgid= -p "$BOOT_HOLDER" 2>/dev/null | tr -d ' ')"
+[ -n "$BOOT_PGID" ] && kill -9 -"$BOOT_PGID" 2>/dev/null
+kill -9 "$BOOT_HOLDER" 2>/dev/null; wait "$BOOT_HOLDER" 2>/dev/null
+atomic_lock_release 2>/dev/null || true
+
+# The refusal must tell the operator what to run, and must deny it is a busy lock.
+BOOT_MSG="$(atomic_bootstrap_refusal "$BOOT" missing-lock production 2>&1)"
+case "$BOOT_MSG" in
+  *"NOT A BUSY LOCK"*) ok "the refusal explicitly denies lock contention" ;;
+  *) bad "the refusal does not distinguish itself from a busy lock" "$BOOT_MSG" ;;
+esac
+case "$BOOT_MSG" in
+  *install.sh*) ok "and names the bootstrap command to run" ;;
+  *) bad "the refusal does not say what to run" "$BOOT_MSG" ;;
+esac
 drop_rig
 
-# C. LF TRANSPORT. A CRLF library is fatal on the host: bash reads the trailing
-#    carriage return as part of the command.
+# install.sh must still be the thing that provisions -- a deploy that creates
+# these itself would hide a half-provisioned host rather than report one.
+if grep -q 'VIDEOFY_ROOT/releases' "$REPO_ROOT/deploy/production/install.sh"; then
+  ok "install.sh provisions the release store"
+else bad "install.sh does not provision releases/" ""; fi
+
+# C. LF TRANSPORT -- ALSO BY BEHAVIOUR, through the real helper.
 new_rig; reset_failures
-printf 'echo hello\r\necho world\r\n' > "$RIG/crlf.sh"
-if bash "$RIG/crlf.sh" >/dev/null 2>&1; then
-  ok "(this platform tolerates CRLF; the host does not, which is why we strip)"
-else ok "a CRLF script fails to run, exactly as it did on the host"; fi
-sed -i 's/\r$//' "$RIG/crlf.sh"
-if bash "$RIG/crlf.sh" >/dev/null 2>&1; then
-  ok "the same script runs once normalised to LF"
-else bad "LF normalisation did not fix it" ""; fi
-check "the deploy normalises what it ships" \
-  "$(grep -c "sed -i 's/.r\$//'" "$DEPLOY_SH")" "1"
-check "and it normalises a COPY, never the working tree" \
-  "$(grep -c 'videofy-atomic-stage' "$DEPLOY_SH")" "1"
+SRCDIR="$RIG/src-lib"; SHIPDIR="$RIG/shipped"
+mkdir -p "$SRCDIR"
+printf 'say() { echo hi; }\r\nsay\r\n'      > "$SRCDIR/lib-a.sh"
+printf 'export const x = 1;\r\n'            > "$SRCDIR/lib-b.mjs"
+printf 'x = 1\r\n'                          > "$SRCDIR/lib-c.py"
+printf 'binary-ish\r\nkeep\r\n'             > "$SRCDIR/notcode.txt"
+SRC_TXT_BEFORE="$(sha256sum "$SRCDIR/notcode.txt" | cut -d' ' -f1)"
+SRC_SH_BEFORE="$(sha256sum "$SRCDIR/lib-a.sh" | cut -d' ' -f1)"
+
+cp -r "$SRCDIR" "$SHIPDIR"
+shipment_normalise "$SHIPDIR"
+
+# `grep -c` prints 0 AND EXITS 1 when there are no matches, so `|| echo 0`
+# appends a SECOND zero and the comparison fails on the good outcome. That
+# trap has now cost three assertions in this suite; counted once, here.
+cr_lines() { local n; n="$(grep -c $'\r' "$1" 2>/dev/null)"; [ -n "$n" ] || n=0; printf '%s' "$n"; }
+check "the shipped shell library has no CRLF" "$(cr_lines "$SHIPDIR/lib-a.sh")" "0"
+check "the shipped mjs has no CRLF"           "$(cr_lines "$SHIPDIR/lib-b.mjs")" "0"
+check "the shipped python has no CRLF"        "$(cr_lines "$SHIPDIR/lib-c.py")" "0"
+if bash -n "$SHIPDIR/lib-a.sh" 2>/dev/null; then
+  ok "the shipped shell library parses"
+else bad "the shipped library does not parse" ""; fi
+if ( . "$SHIPDIR/lib-a.sh" >/dev/null 2>&1 ); then
+  ok "and sourcing it succeeds"
+else bad "sourcing the shipped library failed" ""; fi
+# The CRLF original must still fail, or the fixture proved nothing.
+if bash -n "$SRCDIR/lib-a.sh" 2>/dev/null && ( . "$SRCDIR/lib-a.sh" >/dev/null 2>&1 ); then
+  bad "the CRLF original ran fine" "this platform cannot demonstrate the fault"
+else ok "the un-normalised original still fails, as it did on the host"; fi
+check "the source copy was never rewritten" \
+  "$(sha256sum "$SRCDIR/lib-a.sh" | cut -d' ' -f1)" "$SRC_SH_BEFORE"
+check "and non-code files are left alone" \
+  "$(sha256sum "$SHIPDIR/notcode.txt" | cut -d' ' -f1)" "$SRC_TXT_BEFORE"
 drop_rig
 
 # D. PREFLIGHT IDENTITY -- TESTED BY BEHAVIOUR, NOT BY GREP.

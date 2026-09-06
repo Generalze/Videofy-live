@@ -95,3 +95,72 @@ engine_is_committed() {
   printf '%s' "$head"
   return 0
 }
+
+# Is this host set up for atomic releases at all?
+#
+# THE FIRST LIVE PREPARATION DIED ON THIS AND SAID THE WRONG THING. The
+# deployment root is root-owned, so the deploy identity could not create
+# `.deploy.lock`; the failure surfaced from `flock` and was reported as
+# "another deployment operation holds the lock". An operator reading that waits
+# for a deployment that does not exist. The cause and the message had nothing
+# to do with each other.
+#
+# So the bootstrap is checked FIRST, as its own question, and answered in its
+# own words. Provisioning stays in `install.sh`: a deploy that silently creates
+# the paths it needs would hide a half-provisioned host instead of reporting
+# one, and it would need write access to the root to do it -- which is exactly
+# the permission we are deliberately not granting.
+#
+# Prints a single machine-readable word so a caller can tell the cases apart.
+atomic_bootstrap_state() {
+  local root="$1"
+  [ -n "$root" ] || { printf 'missing-root'; return 1; }
+  [ -d "$root" ] || { printf 'missing-root'; return 1; }
+  if [ ! -e "$root/releases" ]; then printf 'missing-releases'; return 1; fi
+  if [ ! -d "$root/releases" ]; then printf 'releases-not-a-directory'; return 1; fi
+  if [ ! -w "$root/releases" ]; then printf 'releases-not-writable'; return 1; fi
+  if [ ! -e "$root/.deploy.lock" ]; then printf 'missing-lock'; return 1; fi
+  if [ ! -f "$root/.deploy.lock" ]; then printf 'lock-not-a-regular-file'; return 1; fi
+  # Openable for append is what `flock` needs; -w alone would pass on a file
+  # the deploy identity cannot actually open.
+  if ! ( exec 8>>"$root/.deploy.lock" ) 2>/dev/null; then
+    printf 'lock-not-openable'; return 1
+  fi
+  printf 'ok'
+  return 0
+}
+
+# The refusal an operator can act on, kept next to the check that produces it.
+atomic_bootstrap_refusal() {
+  local root="$1" state="$2" env_name="${3:-production}"
+  echo "REFUSED: ATOMIC DEPLOYMENT BOOTSTRAP INCOMPLETE ($state)." >&2
+  echo "  $root is not provisioned for atomic releases." >&2
+  case "$state" in
+    missing-root)             echo "  The deployment root does not exist." >&2 ;;
+    missing-releases)         echo "  $root/releases does not exist." >&2 ;;
+    releases-not-a-directory) echo "  $root/releases exists but is not a directory." >&2 ;;
+    releases-not-writable)    echo "  $root/releases is not writable by the deploy identity." >&2 ;;
+    missing-lock)             echo "  $root/.deploy.lock does not exist." >&2 ;;
+    lock-not-a-regular-file)  echo "  $root/.deploy.lock is not a regular file." >&2 ;;
+    lock-not-openable)        echo "  $root/.deploy.lock cannot be opened by the deploy identity." >&2 ;;
+  esac
+  echo "  THIS IS NOT A BUSY LOCK. Nothing else is deploying; the host was never" >&2
+  echo "  set up. Run the production bootstrap, which creates these as the deploy" >&2
+  echo "  owner without making the root itself writable:" >&2
+  echo "    sudo bash deploy/$env_name/install.sh" >&2
+}
+
+# Make a shipment safe to execute on the host, whatever wrote it.
+#
+# A COPY IS NORMALISED, NEVER THE SOURCE. This repository is worked on from
+# Windows, where git's autocrlf materialises shell libraries with CRLF; bash on
+# the host reads the trailing carriage return as part of the command and dies
+# naming an invisible character. Rewriting the working tree to fix that would
+# make deploying a mutation of the developer's checkout, which is its own kind
+# of surprise.
+shipment_normalise() {
+  local dir="$1"
+  [ -d "$dir" ] || return 1
+  find "$dir" -type f \( -name '*.sh' -o -name '*.mjs' -o -name '*.py' \) \
+    -exec sed -i 's/\r$//' {} +
+}
