@@ -1514,6 +1514,387 @@ const C7_ADVERTISING: Migration = {
   `,
 };
 
+/**
+ * 027 -- programme airings.
+ *
+ * WHAT THIS TABLE IS FOR, and what it deliberately is not. A broadcast that
+ * went out is a historical fact about a channel; its recording is optional
+ * media that may never have existed and may already have been released. Those
+ * are two different lifetimes, and keeping them in one row would mean deleting
+ * a month-old replay deletes the evidence that the programme ever aired.
+ *
+ *     MEDIA MAY EXPIRE. HISTORY DOES NOT DISAPPEAR WITH IT.
+ *
+ * So the row is the AIRING. `replay_disposition` says whether a recording was
+ * ever kept, and the replay columns describe it when one was.
+ *
+ * NOT A MAP OF THE ARCHIVE. There is deliberately no storage reference, no
+ * archive root, no object key and no segment list anywhere below. This database
+ * describes broadcasts; finding their bytes is the media archive's job, and a
+ * product table that also held paths would be an archive-path leak with a
+ * schema. `replay_bytes` and the counts are a size, which is what a history
+ * page shows, not a way to reach anything.
+ *
+ * NOT AN AUTHORITY EITHER. A row saying `available` records what the archive
+ * last reported. Playback asks the archive; if the two disagree, the archive
+ * wins, because it is the thing that holds the media.
+ *
+ * COLUMNS RATHER THAN A JSONB BLOB, because these are exactly the fields a
+ * history query filters and orders on -- channel, programme, when, and what
+ * became of the recording -- and because the CHECK constraints below are how
+ * "an airing that kept nothing carries no replay state" stops being a comment
+ * and starts being true.
+ */
+const PROGRAMME_AIRINGS: Migration = {
+  name: '027_programme_airings',
+  sql: `
+    CREATE TABLE IF NOT EXISTS programme_airings (
+      -- One airing, one row. A reconnect or a retried report collapses onto
+      -- this key; a genuinely second broadcast of the same programme has a
+      -- different run and does not.
+      run_id                 text        PRIMARY KEY,
+      -- Whose broadcast it was. Immutable after the first write: the
+      -- application refuses to move a run between channels, because a
+      -- programme does not change who aired it.
+      channel_id             text        NOT NULL,
+      programme_id           text        NOT NULL,
+      started_at_ms          bigint      NOT NULL,
+      -- Null while it is still on air.
+      ended_at_ms            bigint,
+
+      -- 'none'   the operator chose to keep no recording.
+      -- 'replay' a recording exists, or existed. The columns below describe it.
+      replay_disposition     text        NOT NULL,
+      replay_status          text,
+      replay_policy          text,
+      replay_visibility      text,
+      replay_expires_at_ms   bigint,
+      replay_finalised_at_ms bigint,
+      replay_failure_reason  text,
+      -- A SENTENCE THE APPLICATION CHOSE, never the archive's own detail. The
+      -- text a replay failure carries is written where the failure happened
+      -- and can name a spool file; a product database is queried by other
+      -- things, backed up elsewhere, and read by people who should never learn
+      -- the shape of a volume. The reason is mapped to fixed wording before it
+      -- reaches here.
+      replay_failure_summary text,
+      replay_bytes           bigint,
+      replay_segment_count   integer,
+      replay_init_count      integer,
+
+      created_at             timestamptz NOT NULL DEFAULT now(),
+      updated_at             timestamptz NOT NULL DEFAULT now(),
+
+      CONSTRAINT programme_airings_disposition
+        CHECK (replay_disposition IN ('none', 'replay')),
+
+      /*
+       * AN AIRING THAT KEPT NOTHING CARRIES NO REPLAY STATE.
+       *
+       * Without this, a bug could write status 'deleted' against a programme
+       * that never had a recording, and the history page would say a replay was
+       * removed when none was ever made. The two are different facts and the
+       * database refuses to blur them.
+       */
+      CONSTRAINT programme_airings_none_is_empty
+        CHECK (
+          replay_disposition <> 'none'
+          OR (
+            replay_status IS NULL
+            AND replay_policy IS NULL
+            AND replay_visibility IS NULL
+            AND replay_expires_at_ms IS NULL
+            AND replay_finalised_at_ms IS NULL
+            AND replay_failure_reason IS NULL
+            AND replay_failure_summary IS NULL
+            AND replay_bytes IS NULL
+            AND replay_segment_count IS NULL
+            AND replay_init_count IS NULL
+          )
+        ),
+
+      -- And a recorded airing carries the state that describes it.
+      CONSTRAINT programme_airings_replay_is_described
+        CHECK (
+          replay_disposition <> 'replay'
+          OR (
+            replay_status IS NOT NULL
+            AND replay_policy IS NOT NULL
+            AND replay_visibility IS NOT NULL
+            AND replay_bytes IS NOT NULL
+            AND replay_segment_count IS NOT NULL
+            AND replay_init_count IS NOT NULL
+          )
+        ),
+
+      CONSTRAINT programme_airings_status
+        CHECK (
+          replay_status IS NULL
+          OR replay_status IN (
+            'recording', 'processing', 'available', 'failed', 'expired', 'deleted'
+          )
+        ),
+      CONSTRAINT programme_airings_policy
+        CHECK (replay_policy IS NULL OR replay_policy IN ('keep', 'expire', 'none')),
+      -- The REPLAY tiers, which are not the channel tiers. A replay is a stored
+      -- object rather than a door, so its middle tier is 'unlisted'.
+      CONSTRAINT programme_airings_visibility
+        CHECK (
+          replay_visibility IS NULL
+          OR replay_visibility IN ('public', 'unlisted', 'private')
+        ),
+      -- An expiry belongs to exactly one policy.
+      CONSTRAINT programme_airings_expiry_needs_policy
+        CHECK (replay_expires_at_ms IS NULL OR replay_policy = 'expire'),
+      CONSTRAINT programme_airings_counts_are_sane
+        CHECK (
+          (replay_bytes IS NULL OR replay_bytes >= 0)
+          AND (replay_segment_count IS NULL OR replay_segment_count >= 0)
+          AND (replay_init_count IS NULL OR replay_init_count >= 0)
+        )
+    );
+
+    /*
+     * The two history questions, and the ordering they are answered in.
+     *
+     * DESC on the time and the run together, because that pair is the keyset a
+     * page resumes from: ordering by time alone leaves two airings that began
+     * in the same millisecond in an order the database is free to change
+     * between queries, which is how a viewer paging through history sees one
+     * broadcast twice and never sees another.
+     */
+    CREATE INDEX IF NOT EXISTS programme_airings_by_channel
+      ON programme_airings (channel_id, started_at_ms DESC, run_id DESC);
+
+    CREATE INDEX IF NOT EXISTS programme_airings_by_programme
+      ON programme_airings (programme_id, started_at_ms DESC, run_id DESC);
+  `,
+};
+
+/**
+ * 028 -- channel replay settings.
+ *
+ * WHERE THE DEFAULTS LIVE, and why they are not in the Replay domain. That
+ * package refuses to invent a policy: it has no default retention and no
+ * default visibility, because "the operator chose not to keep this" and
+ * "nobody has decided yet" are different facts and only one is safe to act on.
+ * Somebody still has to decide, and this table is where a channel's standing
+ * answer is kept.
+ *
+ * NO ROW MEANS UNCONFIGURED, and that is the useful answer rather than a
+ * missing one. A channel with no row does not resolve to "keep nothing" or to
+ * "keep everything"; it resolves to a refusal, so a configuration that failed
+ * to load can never quietly become a decision about somebody's broadcast.
+ *
+ * `allow_overrides` IS POLICY, not a convenience flag. A channel publishing
+ * under a retention promise needs a per-programme override to be REFUSED rather
+ * than quietly honoured, and that refusal has to survive a restart.
+ *
+ * DAYS HERE, AN INSTANT LATER. What is stored is what an operator set -- "keep
+ * these for thirty days" -- and the conversion into an expiry happens against
+ * the broadcast's own start, so two programmes configured identically and aired
+ * an hour apart expire an hour apart.
+ *
+ * ALSO TIGHTENS 027. A `replay` airing could syntactically carry
+ * `replay_policy = 'none'`, which the typed projection cannot produce but the
+ * table permitted. Added here as an additive constraint rather than by editing
+ * a migration that has already run.
+ */
+const CHANNEL_REPLAY_SETTINGS: Migration = {
+  name: '028_channel_replay_settings',
+  sql: `
+    CREATE TABLE IF NOT EXISTS channel_replay_settings (
+      -- One channel, one standing answer.
+      channel_id            text        PRIMARY KEY,
+      default_policy        text        NOT NULL,
+      -- Days, as the operator set them. Required by expire, meaningless
+      -- otherwise -- and refused rather than ignored on the other policies,
+      -- because somebody who set one believed the recording would be released.
+      default_duration_days integer,
+      default_visibility    text        NOT NULL,
+      -- False means a programme asking to differ is refused, not overruled.
+      allow_overrides       boolean     NOT NULL DEFAULT true,
+      created_at            timestamptz NOT NULL DEFAULT now(),
+      updated_at            timestamptz NOT NULL DEFAULT now(),
+
+      CONSTRAINT channel_replay_settings_policy
+        CHECK (default_policy IN ('keep', 'expire', 'none')),
+      -- The REPLAY tiers, which are not the channel access tiers: a replay is a
+      -- stored object rather than a door, so its middle tier is 'unlisted'.
+      CONSTRAINT channel_replay_settings_visibility
+        CHECK (default_visibility IN ('public', 'unlisted', 'private')),
+      CONSTRAINT channel_replay_settings_duration_belongs_to_expire
+        CHECK (
+          (default_policy = 'expire' AND default_duration_days IS NOT NULL)
+          OR (default_policy <> 'expire' AND default_duration_days IS NULL)
+        ),
+      CONSTRAINT channel_replay_settings_duration_is_usable
+        CHECK (
+          default_duration_days IS NULL
+          OR (default_duration_days >= 1 AND default_duration_days <= 3650)
+        )
+    );
+
+    /*
+     * A recorded airing carries a policy that keeps something.
+     *
+     * 027 allowed 'none' here syntactically. The typed projection cannot
+     * produce it -- a 'none' disposition has no summary at all -- but a table
+     * that permits a shape the application forbids is a table that will hold
+     * one eventually, by some other route.
+     */
+    ALTER TABLE programme_airings
+      DROP CONSTRAINT IF EXISTS programme_airings_replay_policy_keeps_something;
+    ALTER TABLE programme_airings
+      ADD CONSTRAINT programme_airings_replay_policy_keeps_something
+      CHECK (replay_disposition <> 'replay' OR replay_policy IN ('keep', 'expire'));
+  `,
+};
+
+/**
+ * 029 -- one programme's departure from its channel's standing answer.
+ *
+ * WHY A TABLE AND NOT THREE COLUMNS ON A PROGRAMME ROW. There is no programme
+ * row. A programme is an identity the platform already carries -- vocabulary
+ * and sponsored creative are keyed the same way -- and inventing a programmes
+ * table to hang three nullable columns off would be a schema decision made for
+ * the convenience of one feature.
+ *
+ * ABSENT IS NOT THE SAME AS CLEARED, and this is the only subtle thing here.
+ * The override's duration has THREE states, not two: not stated at all (inherit
+ * whatever the channel says), stated as nothing (there is deliberately no
+ * duration), and stated as a number. A single nullable integer can hold two of
+ * those, so `duration_days_stated` carries the third. Collapsing them would
+ * make "use the channel's thirty days" and "expire with no duration, which is
+ * incoherent and must be refused" the same stored row, and one of those is a
+ * recording that quietly lives forever.
+ *
+ * NO ROW MEANS THIS PROGRAMME ASKED FOR NOTHING, which resolves to the
+ * channel's defaults. That is deliberately unlike an unconfigured CHANNEL,
+ * which resolves to a refusal: a channel must decide, a programme need not.
+ *
+ * THE VALUES ARE CHECKED, THE COMBINATION IS NOT. Whether `keep` may carry a
+ * duration, or whether this channel permits overrides at all, is decided by
+ * `resolveReplayPolicy` against settings this table cannot see. A CHECK
+ * constraint asserting half of that rule would be a second, partial copy of a
+ * decision that has one home.
+ */
+const PROGRAMME_REPLAY_OVERRIDES: Migration = {
+  name: '029_programme_replay_overrides',
+  sql: `
+    CREATE TABLE IF NOT EXISTS programme_replay_overrides (
+      -- One programme, one departure. Re-saving replaces it.
+      programme_id          text        PRIMARY KEY,
+      -- Whose programme it is. Carried rather than joined for, because the
+      -- join that answers "may this caller change it" is the one that gets
+      -- skipped on the day somebody is in a hurry.
+      channel_id            text        NOT NULL,
+      -- Null in all three means: not overridden, inherit the channel's.
+      policy                text,
+      visibility            text,
+      -- See above: stated-as-nothing and not-stated are different answers.
+      duration_days         integer,
+      duration_days_stated  boolean     NOT NULL DEFAULT false,
+      created_at            timestamptz NOT NULL DEFAULT now(),
+      updated_at            timestamptz NOT NULL DEFAULT now(),
+
+      CONSTRAINT programme_replay_overrides_policy
+        CHECK (policy IS NULL OR policy IN ('keep', 'expire', 'none')),
+      -- REPLAY tiers, which are not the channel access tiers: there is no
+      -- 'locked' here, because a stored object is not a door.
+      CONSTRAINT programme_replay_overrides_visibility
+        CHECK (visibility IS NULL OR visibility IN ('public', 'unlisted', 'private')),
+      CONSTRAINT programme_replay_overrides_duration_is_usable
+        CHECK (
+          duration_days IS NULL
+          OR (duration_days >= 1 AND duration_days <= 3650)
+        ),
+      -- A duration that was never stated cannot have a value; otherwise the
+      -- discriminator and the column would be free to disagree.
+      CONSTRAINT programme_replay_overrides_duration_needs_stating
+        CHECK (duration_days_stated OR duration_days IS NULL)
+    );
+
+    -- Every read is by programme; this is for the channel-wide sweep an
+    -- operator console makes when it lists what departs from the default.
+    CREATE INDEX IF NOT EXISTS programme_replay_overrides_by_channel
+      ON programme_replay_overrides (channel_id);
+  `,
+};
+
+/**
+ * 030 -- requests to remove a recording, as durable work.
+ *
+ * WHY A QUEUE AND NOT A COLUMN. "This should be deleted" is a REQUEST, not a
+ * state of the recording: it arrives from somewhere else, it may be about a
+ * broadcast that is still on air, and it has to survive the process that
+ * received it dying two milliseconds later. A boolean on some other row would
+ * lose the attempt count, lose the ordering, and give two workers no way to
+ * avoid each other.
+ *
+ * AT-LEAST-ONCE, WHICH IS WHY EVERYTHING DOWNSTREAM IS IDEMPOTENT. A worker can
+ * remove a recording and die before recording that it did; the next pass has to
+ * be able to repeat the instruction rather than raise an incident about work
+ * that is already done. `ProgrammeReplayArchive.delete` is retry-safe for
+ * exactly this reason, and this table is shaped to lean on it.
+ *
+ * ONE RUN, ONE OUTSTANDING REQUEST. The unique index is partial -- it applies
+ * only while a request is unfinished -- so asking twice collapses onto one row,
+ * and a run deleted last year can be asked about again if it ever returns.
+ *
+ * `claim_expires_at` IS A LEASE, NOT A LOCK. Row locks vanish when a connection
+ * does, which is the correct behaviour inside one transaction and useless
+ * across a worker that was killed between claiming and settling. The lease
+ * makes an abandoned claim reclaimable after a bounded wait, without anybody
+ * having to notice the worker died.
+ *
+ * NOTHING HERE HOLDS A PATH. Same rule as every other Replay table: a run id,
+ * and never an object key, a bucket, an endpoint or a spool file.
+ */
+const PROGRAMME_REPLAY_DELETIONS: Migration = {
+  name: '030_programme_replay_deletions',
+  sql: `
+    CREATE TABLE IF NOT EXISTS programme_replay_deletions (
+      request_id        text        PRIMARY KEY,
+      run_id            text        NOT NULL,
+      requested_at_ms   bigint      NOT NULL,
+      -- 'pending' waiting to be claimed; 'done' finished with. A deferred or
+      -- retried request goes back to 'pending' with a later visible_at_ms,
+      -- because those are the same state to a claimer.
+      state             text        NOT NULL DEFAULT 'pending',
+      -- Not before this instant. Deferral and back-off both move it.
+      visible_at_ms     bigint      NOT NULL,
+      attempts          integer     NOT NULL DEFAULT 0,
+      -- Held by whichever worker claimed it, until this passes. See above:
+      -- a lease survives the worker not surviving.
+      claim_expires_at  bigint,
+      -- Why the last attempt did not finish. A sentence, never a driver's text.
+      last_detail       text,
+      created_at        timestamptz NOT NULL DEFAULT now(),
+      updated_at        timestamptz NOT NULL DEFAULT now(),
+
+      CONSTRAINT programme_replay_deletions_state
+        CHECK (state IN ('pending', 'done')),
+      CONSTRAINT programme_replay_deletions_attempts
+        CHECK (attempts >= 0)
+    );
+
+    /*
+     * ONE OUTSTANDING REQUEST PER RUN. Partial, so it constrains only the work
+     * that is still outstanding: asking twice for the same run collapses onto
+     * one row, and a run that was deleted long ago can be asked about again.
+     */
+    CREATE UNIQUE INDEX IF NOT EXISTS programme_replay_deletions_one_per_run
+      ON programme_replay_deletions (run_id)
+      WHERE state = 'pending';
+
+    -- The claim query's index: due work, oldest first.
+    CREATE INDEX IF NOT EXISTS programme_replay_deletions_due
+      ON programme_replay_deletions (visible_at_ms)
+      WHERE state = 'pending';
+  `,
+};
+
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
   ORGANIZATIONS,
@@ -1541,4 +1922,8 @@ export const MIGRATIONS: readonly Migration[] = [
   LANGUAGE_SPECIALISTS,
   SPECIALIST_INTEGRITY,
   SPECIALIST_SOURCE_PROVENANCE,
+  PROGRAMME_AIRINGS,
+  CHANNEL_REPLAY_SETTINGS,
+  PROGRAMME_REPLAY_OVERRIDES,
+  PROGRAMME_REPLAY_DELETIONS,
 ];

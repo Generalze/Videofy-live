@@ -41,7 +41,9 @@ import {
   type MediaOriginOptions,
   type OriginRunResult,
 } from '@videofy-live/programme-contribution';
+import type { ProgrammeReplayArchive } from '@videofy-live/programme-replay';
 import type { ProgrammeMediaStore } from './programme-media-store.js';
+import { ProgrammeReplayCapture } from './programme-replay-capture.js';
 import type { ProgrammeTimelineRegistry } from './programme-timeline-registry.js';
 import type { ProgrammeEgressAuthority } from './programme-egress.js';
 import { initSegmentId } from './programme-egress.js';
@@ -93,6 +95,19 @@ export interface ProgrammeMediaOriginDeps {
   readonly pollMs?: number;
   readonly readPlaylist?: (path: string) => Promise<string | null>;
   readonly segmentSeconds?: number;
+  /**
+   * Where finished broadcasts are kept, when this deployment keeps any.
+   *
+   * OPTIONAL, AND ABSENT IS THE DEFAULT. A producer constructed without it
+   * behaves exactly as it did before Replay existed: nothing is offered,
+   * nothing is queued, and no code path below can reach an archive. Replay is
+   * a capability this producer GAINS, never one it assumes.
+   *
+   * Supplying it does not start recording anything either. The archive only
+   * keeps a run that some caller has explicitly begun a recording for; this
+   * file never calls `begin`, and has no policy of its own to apply.
+   */
+  readonly replay?: ProgrammeReplayArchive;
 }
 
 interface RunningOrigin {
@@ -106,6 +121,20 @@ interface RunningOrigin {
   stopping: boolean;
   /** Which encoder run this is for the broadcast. Restarts advance it. */
   readonly generation: number;
+}
+
+/**
+ * What one segment being made durable established, for everyone who needs it.
+ *
+ * The fragment's size is what the live segment records. The initialisation
+ * object's size and path are what a replay records, and they are here because
+ * this is where they were already known -- the init is synced on the same pass
+ * so that no fragment is ever referenced before the thing that decodes it.
+ */
+interface DurableMedia {
+  readonly bytes: number;
+  readonly initBytes: number;
+  readonly initReference: string;
 }
 
 /**
@@ -150,8 +179,11 @@ export class ProgrammeMediaOrigin {
   private readonly pollMs: number;
   private readonly read: (path: string) => Promise<string | null>;
   private readonly segmentSeconds: number;
+  /** Null on every deployment that keeps no replays, which is the default. */
+  private readonly replay: ProgrammeReplayCapture | null;
 
   constructor(private readonly deps: ProgrammeMediaOriginDeps) {
+    this.replay = deps.replay === undefined ? null : new ProgrammeReplayCapture(deps.replay);
     this.spawner = deps.spawner ?? FFMPEG_ORIGIN;
     this.segmentSeconds = deps.segmentSeconds ?? SEGMENT_SECONDS;
     this.pollMs = deps.pollMs ?? Math.max(250, (this.segmentSeconds * 1000) / 2);
@@ -239,8 +271,18 @@ export class ProgrammeMediaOrigin {
     // Nothing about a broadcast should keep a process alive on its own.
     running.timer.unref?.();
 
+    /*
+     * THE CALLBACK CARRIES THE RUN IT BELONGS TO, not just its name.
+     *
+     * A run id outlives the encoder that owns it. `advanceGeneration` removes
+     * this record and installs a REPLACEMENT under the same id, so a callback
+     * that looked itself up by id alone would wake up holding authority over a
+     * generation it has never seen -- and would use it: collect its playlist,
+     * clear its timer, delete it, fail the broadcast, and end its recording.
+     * A dead encoder ending its own successor is the shape of the bug.
+     */
     void process.exited.then((result) => {
-      void this.finish(runId, result);
+      void this.finish(runId, running, result);
     });
     return true;
   }
@@ -379,6 +421,27 @@ export class ProgrammeMediaOrigin {
       };
 
       if (!this.deps.media.accept(segment)) continue;
+
+      /*
+       * THE CAPTURE SEAM. Only a segment the canonical live path has ACCEPTED
+       * is offered, so Replay can never hold media the broadcast itself
+       * rejected -- and it is offered as the very same object, not a copy
+       * described again, because two descriptions of one fragment disagree
+       * eventually and the disagreement surfaces as a viewer's player giving
+       * up.
+       *
+       * The call returns immediately. Everything it schedules runs on a
+       * per-run chain that nothing below waits for, so the live registration,
+       * the timeline append and the cursor advance that follow are unaffected
+       * by an archive that is slow, broken or absent.
+       */
+      this.replay?.offer(runId, segment, {
+        runId,
+        generation: running.generation,
+        storageReference: durable.initReference,
+        bytes: durable.initBytes,
+      });
+
       running.endProgrammeTimeMs = endMs;
       // Remembered outside the running record, so a restart can continue from
       // here rather than from the beginning of the broadcast.
@@ -465,7 +528,7 @@ export class ProgrammeMediaOrigin {
     runId: string,
     running: RunningOrigin,
     fileName: string,
-  ): Promise<{ readonly bytes: number } | null> {
+  ): Promise<DurableMedia | null> {
     const path = join(running.directory, fileName);
     const initPath = join(running.directory, initFileName(running.generation));
     try {
@@ -481,9 +544,15 @@ export class ProgrammeMediaOrigin {
        * it. A fragment whose init did not survive is a fragment nothing can
        * decode, which is the same hole by another route.
        */
-      await this.syncFile(initPath);
+      /*
+       * The init's SIZE is kept now rather than measured again later. It was
+       * already being read here and thrown away, and a replay has to record
+       * how big its initialisation material is; asking the filesystem a second
+       * time would be a second answer that can disagree with this one.
+       */
+      const initBytes = await this.syncFile(initPath);
       await this.syncDirectory(running.directory);
-      return { bytes };
+      return { bytes, initBytes, initReference: initPath };
     } catch (error) {
       /*
        * ABSENT IS NOT BROKEN, and telling them apart matters more than it
@@ -510,6 +579,20 @@ export class ProgrammeMediaOrigin {
         code: code ?? 'unknown',
         message: error instanceof Error ? error.message : 'unknown durability failure',
       });
+      /*
+       * AND THE RECORDING IS OVER TOO, for a different reason than the
+       * broadcast's. The live buffer failed because it cannot keep the promise
+       * its cursor is making; the replay fails because its SOURCE has a hole
+       * in it, and a recording with a hole must never become available.
+       *
+       * Not awaited: this is the live durability handler, and it has just
+       * failed a broadcast. Whether an archive answers is not its business.
+       */
+      this.replay?.failSource(
+        runId,
+        'source-media-unavailable',
+        `programme media could not be made durable on this device (${code ?? 'unknown'})`,
+      );
       return null;
     }
   }
@@ -556,6 +639,13 @@ export class ProgrammeMediaOrigin {
     // are as much a part of the broadcast as any other.
     await this.collect(runId);
     this.runs.delete(runId);
+    /*
+     * AFTER the final collect, so the last fragments are already offered, and
+     * awaited so the queued offers land before the recording is checked. This
+     * is the only place in the class that waits on Replay, and it is safe to:
+     * the broadcast is over by the time it runs.
+     */
+    await this.replay?.finalise(runId);
   }
 
   /** Whether a producer is running for this broadcast. */
@@ -563,14 +653,47 @@ export class ProgrammeMediaOrigin {
     return this.runs.has(runId);
   }
 
-  private async finish(runId: string, result: OriginRunResult): Promise<void> {
+  private async finish(
+    runId: string,
+    expected: RunningOrigin,
+    result: OriginRunResult,
+  ): Promise<void> {
     const running = this.runs.get(runId);
-    if (running === undefined) return;
+    /*
+     * OWNERSHIP IS BY INSTANCE, checked before anything at all happens.
+     *
+     * `undefined` means the run is already over and somebody else finished it.
+     * A DIFFERENT instance means this encoder was superseded: the broadcast
+     * rotated to a new generation while this process was dying, and everything
+     * below -- the timer, the final collect, the deletion, the buffer failure,
+     * the recording's fate -- belongs to the generation that replaced it.
+     *
+     * Not a generation-number comparison: the instance IS the identity, and
+     * comparing numbers would need every future path that mints one to keep
+     * this rule in mind. Returning here costs a stale callback nothing except
+     * the authority it should never have had.
+     */
+    if (running === undefined || running !== expected) return;
     if (running.timer !== null) clearInterval(running.timer);
     await this.collect(runId);
     this.runs.delete(runId);
 
-    if (running.stopping || result.ok) return;
+    /*
+     * A DELIBERATE STOP IS `stop`'S TO FINISH, not this callback's.
+     *
+     * Both run when an operator ends a programme -- `stop` asks the encoder to
+     * exit, and the exit resolves this. Whichever arrives first deletes the
+     * run and the other finds it gone, so ownership cannot be decided by who
+     * got there first. If this side finalised, it could do so while `stop` is
+     * still awaiting the final `collect`, and the recording would be checked
+     * without the last fragments of the broadcast in it. `stop` always reaches
+     * its own finalise, so it is the one that owns this.
+     */
+    if (running.stopping) return;
+    if (result.ok) {
+      await this.replay?.finalise(runId);
+      return;
+    }
     /*
      * THE ENCODER DIED AND NOBODY ASKED IT TO. The buffer is failed rather
      * than left holding a cursor that will never advance again: an audience
@@ -585,5 +708,17 @@ export class ProgrammeMediaOrigin {
       // at the end, and the whole of it is not ours to keep.
       detail: result.stderr.split('\n').slice(-3).join(' | ').slice(0, 500),
     });
+    /*
+     * AND THE RECORDING IS TRUNCATED. Failed rather than finalised: an encoder
+     * that died mid-programme leaves a recording that stops in the middle, and
+     * `finalise` would happily call that available because every segment it
+     * holds is individually valid. The difference between a broadcast that
+     * ended and one that broke is not visible in the media, only here.
+     */
+    await this.replay?.abandon(
+      runId,
+      'media-origin-failed',
+      `the media origin stopped unexpectedly (exit ${String(result.exitCode)})`,
+    );
   }
 }

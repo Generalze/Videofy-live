@@ -19,6 +19,7 @@
     "@videofy-live/media-ingress-wire": "*",
     "@videofy-live/programme-contribution": "*",
     "@videofy-live/programme-quality": "*",
+    "@videofy-live/programme-replay": "*",
     "@videofy-live/programme-timeline": "*",
     "@videofy-live/service-env": "*",
     "@videofy-live/shared-types": "*",
