@@ -167,6 +167,29 @@ if [ -d "$UNIT_SRC" ]; then
     fi
   done
   [ "$UNIT_CHANGED" = yes ] && sudo -n systemctl daemon-reload
+
+  # A DROP-IN SURVIVES THIS RECONCILIATION. The loop above rewrites the base
+  # unit; it does not read /etc/systemd/system/<unit>.service.d/. On 2026-09-05
+  # a media-ingest drop-in pinned WorkingDirectory to a release tree so the
+  # service could move without restarting the gateway. That is correct for an
+  # incident and WRONG the moment a deploy moves everything else forward: the
+  # base unit would say app/, the drop-in would still say the old release, and
+  # the deploy would report success while media-ingest ran stale code.
+  #
+  # systemd is the authority, not the file: ask what WorkingDirectory actually
+  # resolves to and refuse the deploy when it is not inside this tree.
+  for unit in $UNITS; do
+    WD="$(systemctl show "$unit" -p WorkingDirectory --value 2>/dev/null | sed 's/^.*path=//; s/ ;.*$//')"
+    case "$WD" in
+      "") continue;;
+      "$APP_DIR"/*) ;;
+      *) echo "DEPLOY FAILED: $unit resolves WorkingDirectory to $WD, outside $APP_DIR."
+         echo "  A drop-in is pinning it to another tree and would survive this deploy,"
+         echo "  leaving $unit on stale code while everything else moves to $SHA."
+         echo "  Remove the drop-in in /etc/systemd/system/$unit.service.d/ and re-run."
+         exit 1;;
+    esac
+  done
 else
   echo "DEPLOY FAILED: $SHA carries no $UNIT_SRC, so the units cannot be reconciled"; exit 1
 fi
