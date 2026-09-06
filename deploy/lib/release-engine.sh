@@ -72,6 +72,17 @@ release_is_complete() {
   # rollback cannot disagree about what "complete" means. A tampered or
   # truncated release stops being a release for every one of them at once.
   release_integrity_holds "$dir" || return 1
+  #
+  # AND NO LINK MAY REACH OUT OF THE RELEASE.
+  #
+  # Manifest equality is not enough on its own: a symlink whose TARGET STRING
+  # never changes can still point at mutable bytes outside the release, and
+  # those bytes are nobody's version of anything. An immutable release that
+  # depends on external state is not immutable, it just looks it.
+  #
+  # Checked here rather than at the call sites so sealing, reuse, publication
+  # and rollback cannot disagree about what a valid release is.
+  release_symlinks_stay_inside "$dir" >/dev/null 2>&1 || return 1
   return 0
 }
 
@@ -127,16 +138,19 @@ release_manifest_of() {
 # npm workspace links are relative and land back inside the release, which is
 # why this can be an assertion rather than an allowlist.
 release_symlinks_stay_inside() {
-  local dir="$1" entry target resolved escapes=0
-  local root
+  local dir="$1" entry resolved escapes=0 root
   root="$(cd "$dir" && pwd -P)" || return 1
   while IFS= read -r -d '' entry; do
-    target="$(cd "$(dirname "$dir/$entry")" && cd "$(dirname "$(readlink "$dir/$entry")")" 2>/dev/null && pwd -P)" || continue
-    resolved="$target"
+    # `-m` canonicalises without requiring the target to exist, so a link that
+    # escapes to something absent is still caught rather than skipped -- and a
+    # link is resolved in ONE call instead of a subshell per entry, which
+    # matters when node_modules holds thousands of them.
+    resolved="$(readlink -m -- "$dir/$entry" 2>/dev/null)"
+    [ -n "$resolved" ] || { escapes=1; continue; }
     case "$resolved/" in
       "$root"/*) ;;
       *)
-        echo "REFUSED: $entry points outside the release, at $resolved" >&2
+        echo "REFUSED: $entry escapes the release, resolving to $resolved" >&2
         escapes=1 ;;
     esac
   done < <(cd "$dir" && find . -type l -not -path './.git/*' -print0)
@@ -298,6 +312,14 @@ release_prepare() {
     return 1
   fi
 
+  # CHECKED BEFORE THE MARKER IS WRITTEN. A release that reaches outside itself
+  # must never acquire the one property that makes it usable, so this refuses
+  # while the candidate is still just a directory.
+  if ! release_symlinks_stay_inside "$candidate"; then
+    echo "release preparation FAILED: a symlink escapes the release" >&2
+    echo "  candidate left at $candidate; nothing was published" >&2
+    return 1
+  fi
   release_seal "$candidate" "$sha" "$ref" "${USER:-unknown}"
   # Sealed first, then named. A candidate that becomes `releases/<sha>` is
   # already complete at the instant it acquires the name, so no reader can see

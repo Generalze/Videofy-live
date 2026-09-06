@@ -371,10 +371,13 @@ release that had just failed*.
 
 Rollback follows the identical rule and finalises after its own smoke.
 
-**`DEPLOY_SKIP_SMOKE=1` is refused outright for production.** It used to return
-success with a caveat in the log, so a skipped smoke still produced a normal
-`DEPLOYED` line and a success record. Staging keeps the escape hatch, labelled
-`NOT provenance-complete`.
+**`DEPLOY_SKIP_SMOKE=1` is refused outright for production, before anything is
+built, published or restarted.** It first returned success with a caveat in the
+log, so a skipped smoke still produced a normal `DEPLOYED` line; then it was
+refused inside the smoke, which meant production took a cutover and a rollback
+to deliver an answer that was knowable at the start. The operator gets the same
+refusal either way — the difference is whether production moved to hear it.
+Staging keeps the escape hatch, labelled `NOT provenance-complete`.
 
 ## The seal covers the namespace, not only file contents
 
@@ -386,8 +389,15 @@ which code executes while every ordinary file hash stays byte-identical.
 
 Targets are recorded **as written, unresolved**: resolving them would follow the
 link out of the release and hash whatever it points at today, which is the
-opposite of sealing. `release_symlinks_stay_inside` separately asserts no link
-escapes the release, so the sealed set is closed.
+opposite of sealing.
+
+Manifest equality alone is still not enough. A link whose target *string* never
+changes can point at mutable bytes outside the release, and those bytes are
+nobody's version of anything — an immutable release that depends on external
+state is not immutable, it only looks it. So containment is part of release
+**validity**, not a separate advisory check: an escaping link fails the seal
+before the marker is written, and fails `release_is_complete` afterwards, so
+such a release can never be reused, published or rolled back to.
 
 ## A corrupt ACTIVE release is an incident, not a redeploy
 
@@ -415,6 +425,35 @@ facts to make.
 `<root>/.deploy.lock` for the whole transaction. `state` is read-only and never
 locks, because a diagnostic that blocks during a deployment is useless exactly
 when it is needed.
+
+**The transaction spans two machines, so the lock does too.** The box prepares,
+publishes, restarts and verifies; the *caller* then runs the public smoke and
+only afterwards asks the box to finalise. If the lock died when the box's SSH
+command exited, a second deployment could acquire it and publish during that
+smoke — and the first would finalise `DEPLOY-STATE` naming a release that was no
+longer current.
+
+So the lock is taken by a session whose lifetime is **the SSH connection**: the
+remote shell flocks the file, answers `LOCK_HELD`, then blocks reading stdin.
+It releases when the caller closes the pipe — on success, on failure, on
+Ctrl-C — or when the caller dies and the connection drops. No timer, no lease,
+nothing to clean up. Inner operations run with `ATOMIC_LOCK_EXTERNAL=1`, which
+is not a way to skip the lock: the holder took the same `flock`, and a second
+caller cannot.
+
+```
+hold lock ── prepare ─ publish ─ restart ─ health ─ running proof
+                                                   ─ PUBLIC SMOKE (caller)
+                                                   ─ finalise
+          ── release
+```
+
+**Finalisation proves the world did not move.** A lock proves ownership, not
+that nothing changed, so before recording success the box re-checks that
+`current` still names the expected SHA, that the release still matches its
+seal, and that the processes are still running it. A stale finalise **refuses**
+rather than overwriting `DEPLOY-STATE` — otherwise every later rollback would
+read a wrong release as the last good one.
 
 Atomic publication makes any single *instant* unambiguous; it does nothing for
 two multi-step transactions interleaving. Two deploys would publish over each

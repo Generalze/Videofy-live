@@ -40,6 +40,20 @@ videofy_env "$ENV_NAME"
 
 REMOTE_LIB="/tmp/videofy-atomic-$ENV_NAME"
 
+# REFUSED BEFORE ANYTHING MUTATES, not after activation.
+#
+# This check used to live inside the smoke, which runs after the release has
+# been published and the services restarted -- so "production smoke cannot be
+# skipped" meant deploy-then-roll-back rather than refuse. The operator gets
+# the same answer either way; the difference is whether production took a
+# cutover and a rollback to deliver it.
+if [ "${DEPLOY_SKIP_SMOKE:-0}" = "1" ] && [ "$ENV_NAME" = "production" ]; then
+  echo "REFUSED: DEPLOY_SKIP_SMOKE=1 is not permitted for production." >&2
+  echo "  A production deployment is complete when the public edge answers, or" >&2
+  echo "  it is not complete. Nothing has been built, published or restarted." >&2
+  exit 1
+fi
+
 # THE FOUNDER-LOCKED PRODUCTION RULE, PRESERVED.
 #
 # Production accepts ONLY a full 40-character lowercase SHA. A branch name is a
@@ -101,6 +115,72 @@ scp -q "/tmp/videofy-atomic-lib.tgz" "$VIDEOFY_SSH_HOST:/tmp/videofy-atomic-lib.
 ssh "$VIDEOFY_SSH_HOST" "rm -rf '$REMOTE_LIB' && mkdir -p '$REMOTE_LIB' && \
   tar -xzf /tmp/videofy-atomic-lib.tgz -C /tmp && mv /tmp/deploy/lib/* '$REMOTE_LIB/' && rm -rf /tmp/deploy"
 
+# ---------------------------------------------------- the transaction lock
+#
+# HELD ACROSS THE CALLER-SIDE SMOKE, which is the whole point.
+#
+# The box cannot hold it: its SSH command exits when activation finishes, and
+# the smoke runs here afterwards. If the lock died with that command, a second
+# deployment could acquire it and publish while this one was still smoking --
+# and this one would then finalise DEPLOY-STATE naming a release that is no
+# longer current.
+#
+# So the lock is taken by a session whose lifetime is THIS SSH CONNECTION. The
+# remote shell flocks the file and then blocks reading stdin; it releases when
+# stdin closes, which happens when this script finishes, is interrupted, or
+# dies. There is no timer, no lease and nothing to clean up: if the caller
+# vanishes the connection drops, the remote shell gets EOF or SIGHUP, and the
+# kernel releases the lock with the process.
+LOCK_HELD=no
+
+hold_transaction_lock() {
+  # A coprocess so the descriptor stays open for as long as this script runs.
+  # Closing LOCKHOLD[1] is what tells the far end to let go.
+  coproc LOCKHOLD { ssh "$VIDEOFY_SSH_HOST" bash -s "$VIDEOFY_ROOT" "$ENV_NAME"; }
+  cat >&"${LOCKHOLD[1]}" <<'HOLD'
+ROOT="$1"; ENV_NAME="$2"
+LOCK="$ROOT/.deploy.lock"
+mkdir -p "$ROOT" 2>/dev/null || true
+exec 9>>"$LOCK" || { echo LOCK_ERROR; exit 1; }
+if ! flock -n 9; then
+  echo LOCK_BUSY
+  command -v fuser >/dev/null 2>&1 && fuser -v "$LOCK" 2>&1 | sed 's/^/  /'
+  exit 1
+fi
+printf 'pid=%s at=%s env=%s caller-transaction
+' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ENV_NAME" >&9
+echo LOCK_HELD
+# Blocks until the caller closes the pipe, or the connection dies.
+cat >/dev/null
+HOLD
+  local answer=""
+  # The far end answers once, before it starts waiting.
+  IFS= read -r -t 60 answer <&"${LOCKHOLD[0]}" || true
+  if [ "$answer" != "LOCK_HELD" ]; then
+    echo "REFUSED: could not take the deployment transaction lock ($answer)." >&2
+    echo "  prepare, deploy and rollback are one transaction each and cannot" >&2
+    echo "  interleave. Another operation owns it; wait, or inspect with:" >&2
+    echo "    bash deploy/atomic-deploy.sh $ENV_NAME state" >&2
+    while IFS= read -r -t 2 answer <&"${LOCKHOLD[0]}"; do echo "  $answer" >&2; done
+    return 1
+  fi
+  LOCK_HELD=yes
+  # Every remote operation from here on inherits ownership rather than
+  # competing for it.
+  export ATOMIC_LOCK_EXTERNAL=1
+  return 0
+}
+
+release_transaction_lock() {
+  [ "$LOCK_HELD" = yes ] || return 0
+  exec {LOCKHOLD[1]}>&- 2>/dev/null || true
+  LOCK_HELD=no
+}
+
+# Released however this script ends -- success, failure, or Ctrl-C. And if the
+# script is killed outright, the connection drops and the kernel does it.
+trap 'release_transaction_lock' EXIT
+
 # The public smoke, run from HERE rather than on the box, because the thing
 # being tested is the path a visitor takes: through Cloudflare, through Caddy,
 # to the service. Reusing deploy/production/smoke.sh rather than restating what
@@ -142,8 +222,12 @@ remote_finalize() {
   ssh "$VIDEOFY_SSH_HOST" "
     export ATOMIC_ROOT='$VIDEOFY_ROOT' ATOMIC_RELEASES='$VIDEOFY_ROOT/releases'
     export ATOMIC_CURRENT='$VIDEOFY_ROOT/current' ATOMIC_WWW='$VIDEOFY_ROOT/www'
-    export ATOMIC_ENV='$ENV_NAME'
+    export ATOMIC_ENV='$ENV_NAME' ATOMIC_LOCK_EXTERNAL=1
+    export ATOMIC_UNITS='$VIDEOFY_UNITS'
+    export ACCOUNT_PORT='$VIDEOFY_ACCOUNT_PORT' GATEWAY_PORT='$VIDEOFY_GATEWAY_PORT' INGEST_PORT='$VIDEOFY_INGEST_PORT'
     . $REMOTE_LIB/atomic-release.sh
+    . $REMOTE_LIB/activation.sh
+    ATOMIC_FN_RUNNING=activation_running_release
     atomic_finalize '$sha' '$previous'
   "
 }
@@ -160,6 +244,8 @@ ACCOUNT_PORT="$6"; GATEWAY_PORT="$7"; INGEST_PORT="$8"
 export ATOMIC_ROOT="$ROOT" ATOMIC_RELEASES="$ROOT/releases"
 export ATOMIC_CURRENT="$ROOT/current" ATOMIC_WWW="$ROOT/www" ATOMIC_ENV="$ENV_NAME"
 export ATOMIC_UNITS="$(printf '%s' "$UNITS_CSV" | tr ',' ' ')"
+# The caller owns the transaction for the whole rollback, smoke included.
+export ATOMIC_LOCK_EXTERNAL=1
 . "$LIB/atomic-release.sh"
 . "$LIB/activation.sh"
 ATOMIC_FN_RESTART=activation_restart
@@ -175,6 +261,7 @@ ROLLBACK
 
 if [ "$ACTION" = "rollback" ]; then
   TARGET="$(resolve_sha "${3:?usage: atomic-deploy.sh <env> rollback <sha>}")"
+  hold_transaction_lock || exit 1
   echo "[$ENV_NAME] rolling back to $TARGET"
   if ! remote_rollback "$TARGET"; then
     echo "ROLLBACK FAILED. The state above is what the host reports."
@@ -201,6 +288,8 @@ else
   SHA="$(resolve_sha "$ACTION")"
 fi
 echo "[$ENV_NAME] candidate $SHA (prepare-only: $PREPARE_ONLY)"
+
+hold_transaction_lock || exit 1
 
 BUNDLE="/tmp/videofy-atomic-$ENV_NAME.bundle"
 git bundle create "$BUNDLE" "$SHA" 2>&1 | grep -v '^warning' || true
@@ -230,6 +319,9 @@ export ATOMIC_WWW="$ROOT/www"
 export ATOMIC_ENV="$ENV_NAME"
 export ATOMIC_UNITS="$(printf '%s' "$UNITS_CSV" | tr ',' ' ')"
 export ATOMIC_ENV_FILE="$ENV_DIR/media-ingest.env"
+# The caller holds the transaction lock across this activation AND the public
+# smoke that follows it, so nothing here competes for it.
+export ATOMIC_LOCK_EXTERNAL=1
 export ACCOUNT_PORT GATEWAY_PORT INGEST_PORT PUBLIC_ORIGIN
 
 . "$LIB/atomic-release.sh"

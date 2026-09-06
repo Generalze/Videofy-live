@@ -329,6 +329,18 @@ fi
 if [ "$MUTATION" = "no-deploy-lock" ]; then
   atomic_lock_acquire() { return 0; }
 fi
+if [ "$MUTATION" = "lock-not-held-through-smoke" ]; then
+  # The defect: external ownership is ignored, so the lock is only held for as
+  # long as each individual operation runs -- and a competing transaction can
+  # slip in during the caller-side smoke.
+  atomic_lock_acquire() { return 0; }
+fi
+if [ "$MUTATION" = "stale-finalize-allowed" ]; then
+  atomic_finalize() { atomic_record_state "$1" "$2"; echo "DEPLOYED $1"; }
+fi
+if [ "$MUTATION" = "no-symlink-containment" ]; then
+  release_symlinks_stay_inside() { return 0; }
+fi
 if [ "$MUTATION" = "no-dropin-guard" ]; then
   assert_units_resolve_through_pointer() { return 0; }
 fi
@@ -549,7 +561,15 @@ release_prepare "$ATOMIC_RELEASES" "$B" refs/test build_body >/dev/null 2>&1
 MISSES=0
 : > "$RIG/observations"
 ( while [ ! -f "$RIG/stop" ]; do
-    [ -e "$ATOMIC_CURRENT/BUILT_SHA" ] || echo miss
+    if [ ! -e "$ATOMIC_CURRENT/BUILT_SHA" ]; then
+      # RECORD WHAT WAS SEEN, not just that something was. A bare count turns a
+      # rare miss into a mystery nobody can act on; these three facts say
+      # whether the POINTER was absent (a real gap), whether it pointed at a
+      # release that was not there, or whether the observer simply raced its
+      # own `readlink`.
+      printf 'miss link=[%s] linkexists=[%s] targetdir=[%s]
+'         "$(readlink "$ATOMIC_CURRENT" 2>/dev/null || echo NOLINK)"         "$([ -L "$ATOMIC_CURRENT" ] && echo yes || echo no)"         "$([ -d "$ATOMIC_CURRENT/" ] && echo yes || echo no)"
+    fi
   done > "$RIG/observations" ) &
 OBSERVER=$!
 for _ in $(seq 1 30); do
@@ -564,6 +584,7 @@ wait "$OBSERVER" 2>/dev/null
 # SECOND zero and the comparison would fail on the good outcome.
 MISSES="$(grep -c miss "$RIG/observations" 2>/dev/null)"
 [ -n "$MISSES" ] || MISSES=0
+[ "$MISSES" -gt 0 ] && { echo "    observations:"; head -3 "$RIG/observations" | sed "s/^/      /"; }
 check "no observation found the pointer missing" "$MISSES" "0"
 drop_rig
 
@@ -676,7 +697,7 @@ release_prepare "$ATOMIC_RELEASES" "$B" refs/test build_body >/dev/null 2>&1
 : > "$RIG/split"
 ( while [ ! -f "$RIG/stop" ]; do
     [ "$(readlink "$ATOMIC_WWW" 2>/dev/null)" = "$ATOMIC_CURRENT/www" ] || echo split
-  done > "$RIG/split" ) &
+  done > "$RIG/split" ) &  # observer for the structural-pointer check
 SPLITOBS=$!
 for _ in $(seq 1 30); do
   release_publish "$ATOMIC_RELEASES" "$B" "$ATOMIC_CURRENT" >/dev/null 2>&1
@@ -1172,6 +1193,186 @@ deploy "$A" >/dev/null 2>&1
 if release_state "$ATOMIC_RELEASES" "$ATOMIC_CURRENT" "$ATOMIC_WWW" >/dev/null 2>&1; then
   ok "state reads without taking the lock"
 else bad "state failed" ""; fi
+drop_rig
+
+# ============================== the lock spans the whole transaction
+
+echo ""
+echo "the transaction lock covers smoke and finalisation, not just activation"
+
+# THE DEFECT: the box released the lock when its activation command exited, and
+# the caller then ran the public smoke and finalised with no lock at all. A
+# second deployment could publish in that window, and the first would finalise
+# DEPLOY-STATE naming a release that was no longer current.
+#
+# Modelled here by holding the lock in an OUTER process for the whole
+# transaction -- exactly what the caller-side holder session does -- and
+# checking that a competing operation is refused while the smoke is running.
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+
+# An outer owner, whose lifetime is the whole transaction.
+printf '%s\n' \
+  ". \"$LIB/deploy-lock.sh\"" \
+  "export ATOMIC_ROOT=\"$ATOMIC_ROOT\"" \
+  "atomic_lock_acquire || exit 9" \
+  "touch \"$RIG/owned\"" \
+  "for _ in \$(seq 1 400); do [ -f \"$RIG/done\" ] && break; sleep 0.05; done" > "$RIG/owner.sh"
+atomic_lock_release 2>/dev/null || true
+ATOMIC_LOCK_HELD=0
+setsid bash "$RIG/owner.sh" &
+OWNER_PID=$!
+for _ in $(seq 1 100); do [ -f "$RIG/owned" ] && break; sleep 0.05; done
+check "the transaction owner holds the lock" \
+  "$([ -f "$RIG/owned" ] && echo yes || echo no)" "yes"
+
+# The inner operations run under the owner's authority, exactly as the remote
+# half does when the caller holds the lock.
+ATOMIC_LOCK_EXTERNAL=1
+BUILD_SHA="$B"
+if atomic_prepare_only "$B" "$B" >/dev/null 2>&1; then
+  ok "an operation under the transaction owner proceeds"
+else bad "the owned operation was refused" "external ownership not honoured"; fi
+unset ATOMIC_LOCK_EXTERNAL
+
+# A DIFFERENT transaction -- one that does not own it -- must still be refused
+# for the whole window, which is what "spans the smoke" means.
+if atomic_prepare_only "$C" "$C" >/dev/null 2>&1; then
+  bad "a competing prepare ran during the transaction" "it must refuse"
+else ok "a competing prepare is refused for the whole transaction"; fi
+if deploy "$C" >/dev/null 2>&1; then
+  bad "a competing deploy ran during the transaction" "it must refuse"
+else ok "a competing deploy is refused for the whole transaction"; fi
+if atomic_rollback_transition "$A" >/dev/null 2>&1; then
+  bad "a competing rollback ran during the transaction" "it must refuse"
+else ok "a competing rollback is refused for the whole transaction"; fi
+
+# KILLED MID-SMOKE: the lock must come back through process-tree ownership, and
+# no success may have been fabricated in the meantime.
+OWNER_PGID="$(ps -o pgid= -p "$OWNER_PID" 2>/dev/null | tr -d ' ')"
+[ -n "$OWNER_PGID" ] && kill -9 -"$OWNER_PGID" 2>/dev/null
+kill -9 "$OWNER_PID" 2>/dev/null
+wait "$OWNER_PID" 2>/dev/null
+for _ in $(seq 1 40); do
+  flock -n "$ATOMIC_ROOT/.deploy.lock" true 2>/dev/null && break
+  sleep 0.05
+done
+check "a transaction killed mid-smoke recorded no success" "$(recorded_active)" "$A"
+BUILD_SHA="$C"
+if atomic_prepare_only "$C" "$C" >/dev/null 2>&1; then
+  ok "the lock returns after the owning transaction is killed"
+else bad "the lock survived the transaction being killed" "stale lock"; fi
+atomic_lock_release 2>/dev/null || true
+drop_rig
+
+# ============================== a stale finalise refuses
+
+echo ""
+echo "finalisation proves the world did not move"
+
+# Finalisation runs after the caller's smoke, which takes time. A lock proves
+# ownership, not that nothing changed -- so the record is written only if the
+# release it names is still the live one, still intact, and still running.
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+BUILD_SHA="$B"
+release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+# B was never published: current still names A.
+if atomic_finalize "$B" "$A" >/dev/null 2>&1; then
+  bad "finalised a release that is not current" "it must refuse"
+else ok "finalising a release that is not current refuses"; fi
+check "and DEPLOY-STATE still names A" "$(recorded_active)" "$A"
+
+# Published, then corrupted before finalisation.
+release_publish "$ATOMIC_RELEASES" "$B" "$ATOMIC_CURRENT" >/dev/null 2>&1
+printf 'tampered' > "$ATOMIC_RELEASES/$B/BUILT_SHA"
+if atomic_finalize "$B" "$A" >/dev/null 2>&1; then
+  bad "finalised a release whose bytes changed" "it must refuse"
+else ok "finalising a corrupted release refuses"; fi
+check "DEPLOY-STATE still names A after that too" "$(recorded_active)" "$A"
+drop_rig
+
+# Published and intact, but the processes are running something else.
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+BUILD_SHA="$B"
+release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+release_publish "$ATOMIC_RELEASES" "$B" "$ATOMIC_CURRENT" >/dev/null 2>&1
+if atomic_finalize "$B" "$A" >/dev/null 2>&1; then
+  bad "finalised while the processes ran the old release" "it must refuse"
+else ok "finalising without the processes on the release refuses"; fi
+check "and nothing was recorded" "$(recorded_active)" "$A"
+drop_rig
+
+# ============================== symlink containment is release authority
+
+echo ""
+echo "a release that reaches outside itself is not a release"
+
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+# An escaping link present at build time must stop the seal being written.
+escaping_build() {
+  build_body "$1" || return 1
+  ln -sfn /etc/passwd "$1/node_modules/@videofy-live/outside"
+  return 0
+}
+BUILD_SHA="$B"
+if release_prepare "$ATOMIC_RELEASES" "$B" "$B" escaping_build >/dev/null 2>&1; then
+  bad "a release with an escaping link was sealed" "it must refuse"
+else ok "an escaping link stops the release being sealed"; fi
+check "no marker was written" \
+  "$([ -f "$ATOMIC_RELEASES/$B/RELEASE.json" ] && echo yes || echo no)" "no"
+check "and the pointer never moved" "$(simulate_restart)" "$A"
+drop_rig
+
+# A relative escape is refused on the same terms as an absolute one.
+new_rig; reset_failures
+relative_escape_build() {
+  build_body "$1" || return 1
+  ln -sfn ../../../../etc "$1/node_modules/@videofy-live/up"
+  return 0
+}
+BUILD_SHA="$B"
+if release_prepare "$ATOMIC_RELEASES" "$B" "$B" relative_escape_build >/dev/null 2>&1; then
+  bad "a relative ../../ escape was sealed" "it must refuse"
+else ok "a relative escape is refused too"; fi
+drop_rig
+
+# Added after sealing: the release stops being valid for every use.
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+BUILD_SHA="$B"
+release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+ln -sfn /etc "$ATOMIC_RELEASES/$B/node_modules/@videofy-live/late"
+if release_is_complete "$ATOMIC_RELEASES/$B"; then
+  bad "an escaping link added after sealing was ignored" "still valid"
+else ok "an escaping link added after sealing invalidates the release"; fi
+if release_publish "$ATOMIC_RELEASES" "$B" "$ATOMIC_CURRENT" >/dev/null 2>&1; then
+  bad "an escaped release was published" "publish succeeded"
+else ok "an escaped release cannot be published"; fi
+if atomic_rollback_transition "$B" >/dev/null 2>&1; then
+  bad "an escaped release was rolled back to" "rollback succeeded"
+else ok "an escaped release cannot be rolled back to"; fi
+drop_rig
+
+# An internal link repointed OUTSIDE after sealing.
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+BUILD_SHA="$B"
+release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+ln -sfn /etc/hostname "$ATOMIC_RELEASES/$B/node_modules/@videofy-live/pkg"
+if release_is_complete "$ATOMIC_RELEASES/$B"; then
+  bad "an internal link repointed outside was ignored" "still valid"
+else ok "an internal link repointed outside invalidates the release"; fi
+drop_rig
+
+# And the ordinary case still passes: relative workspace links stay inside.
+new_rig; reset_failures
+BUILD_SHA="$A"
+release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+check "a relative internal workspace symlink is fine" \
+  "$(release_is_complete "$ATOMIC_RELEASES/$A" && echo yes || echo no)" "yes"
 drop_rig
 
 # ============================================================ report

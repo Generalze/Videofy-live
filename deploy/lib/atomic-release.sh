@@ -204,6 +204,34 @@ atomic_deploy() {
 # the record still cannot be written before it passes.
 atomic_finalize() {
   local sha="$1" previous="$2"
+  #
+  # A STALE FINALIZE MUST REFUSE, NOT OVERWRITE.
+  #
+  # This runs after the caller's public smoke, which takes time. If anything
+  # has moved underneath it -- another transaction published, the release was
+  # corrupted, a service is running something else -- then recording success
+  # would write a DEPLOY-STATE that names a release which is not current, and
+  # every later rollback would read that as the last good one.
+  #
+  # The transaction lock is what makes this rare. These checks are what make it
+  # impossible, because a lock proves ownership and not that the world stood
+  # still.
+  local live
+  live="$(pointer_sha "$ATOMIC_CURRENT" "$ATOMIC_RELEASES")"
+  if [ "$live" != "$sha" ]; then
+    echo "REFUSED to finalise $sha: current now names $live." >&2
+    echo "  Something published while this transaction was verifying. NOTHING has" >&2
+    echo "  been recorded; DEPLOY-STATE still describes the last completed deploy." >&2
+    return 1
+  fi
+  if ! release_is_complete "$(release_dir "$ATOMIC_RELEASES" "$sha")"; then
+    echo "REFUSED to finalise $sha: its bytes no longer match the seal." >&2
+    return 1
+  fi
+  if [ -n "${ATOMIC_FN_RUNNING:-}" ] && ! "$ATOMIC_FN_RUNNING" "$sha"; then
+    echo "REFUSED to finalise $sha: the processes are not running it." >&2
+    return 1
+  fi
   atomic_record_state "$sha" "$previous"
   echo "DEPLOYED $sha"
 }

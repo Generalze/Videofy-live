@@ -49,6 +49,22 @@ atomic_lock_path() {
 # arguments the operator chose before any of it happened. Refusing now, loudly,
 # is the honest answer: whoever is deploying should decide what to do next.
 atomic_lock_acquire() {
+  # THE TRANSACTION MAY BE OWNED BY AN OUTER PROCESS.
+  #
+  # A production deployment spans two machines: the box prepares, publishes,
+  # restarts and verifies, and the CALLER runs the public smoke and only then
+  # asks the box to finalise. If the box released the lock when its SSH command
+  # exited, a second deployment could acquire it and publish during that smoke
+  # -- and the first would then finalise DEPLOY-STATE naming a release that is
+  # no longer current.
+  #
+  # So the caller holds the lock for the whole transaction, in a session whose
+  # lifetime is the SSH connection, and tells the inner operations that
+  # ownership is already established. This is not a way to skip the lock: the
+  # holder took the same flock, and a second caller cannot take it.
+  if [ "${ATOMIC_LOCK_EXTERNAL:-0}" = "1" ]; then
+    return 0
+  fi
   local path
   path="$(atomic_lock_path)" || return 1
   # 9 is high enough not to collide with anything the deploy scripts use, and
