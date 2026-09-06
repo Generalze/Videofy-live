@@ -36,10 +36,25 @@ describe('the policy is on the wire', () => {
   });
 
   it('is restated on every reconnection rather than assumed to have survived', () => {
-    // A reconnection may be a NEW gateway process that has forgotten
-    // everything. Announcing once at boot would leave it refusing for ever.
-    const handler = INGEST.slice(INGEST.indexOf('SOCKET_EVENTS.CONNECTED'));
-    expect(handler.slice(0, 900)).toContain('publishProgrammeDeliveryPolicy');
+    /*
+     * A reconnection may be a NEW gateway process that has forgotten
+     * everything. Announcing once at boot would leave it refusing for ever, so
+     * the call has to be INSIDE the connection handler rather than anywhere in
+     * the file.
+     *
+     * BOUNDED BY THE NEXT HANDLER REGISTRATION, not by a character count. This
+     * assertion used to slice a fixed 900 characters, which made it a measure
+     * of how much PROSE sat above the call rather than of where the call was:
+     * writing the comment that explains "on every reconnection" pushed the
+     * thing it described past the window, and the test failed for documenting
+     * the behaviour it exists to protect. The handler's real end is where the
+     * next `this.socket.on(` begins.
+     */
+    const fromConnected = INGEST.slice(INGEST.indexOf('SOCKET_EVENTS.CONNECTED'));
+    const nextRegistration = fromConnected.indexOf('this.socket.on(', 1);
+    expect(nextRegistration).toBeGreaterThan(0);
+    const handler = fromConnected.slice(0, nextRegistration);
+    expect(handler).toContain('this.publishProgrammeDeliveryPolicy();');
   });
 
   it('carries the configured mode, not a hard-coded one', () => {
