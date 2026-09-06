@@ -442,11 +442,28 @@ is not a way to skip the lock: the holder took the same `flock`, and a second
 caller cannot.
 
 ```
-hold lock ── prepare ─ publish ─ restart ─ health ─ running proof
+resolve arguments
+hold lock ── ship this transaction's machinery
+          ── prepare ─ publish ─ restart ─ health ─ running proof
                                                    ─ PUBLIC SMOKE (caller)
                                                    ─ finalise
-          ── release
+          ── release, remove machinery
 ```
+
+**The lock comes before anything is installed on the host.** An earlier version
+shipped `deploy/lib` to a shared remote path and *then* tried to lock — so a
+caller about to lose the race had already replaced the executable machinery the
+winner was running from. Serialising the release pointer buys nothing if the
+code doing the serialising can be swapped underneath it. `transaction_begin`
+makes the order structural: the shipping callback is unreachable until the lock
+is held.
+
+**And each transaction runs from machinery only it can write.** The remote
+library directory carries a per-invocation nonce
+(`/tmp/videofy-atomic-<env>-<nonce>`), so even a caller that somehow ran out of
+order could not write where another reads. It is removed when the command ends.
+`state` ships into its own private directory, takes no lock, and cleans up —
+inspecting the system must never disturb a transaction.
 
 **Finalisation proves the world did not move.** A lock proves ownership, not
 that nothing changed, so before recording success the box re-checks that

@@ -38,7 +38,17 @@ videofy_env "$ENV_NAME"
 : "${VIDEOFY_ROOT:?environment did not set VIDEOFY_ROOT}"
 : "${VIDEOFY_SSH_HOST:?environment did not set VIDEOFY_SSH_HOST}"
 
-REMOTE_LIB="/tmp/videofy-atomic-$ENV_NAME"
+# PRIVATE TO THIS TRANSACTION, not shared between callers.
+#
+# This used to be one path per environment, which meant every invocation --
+# including one that was about to be refused for not owning the lock -- wrote
+# the executable deployment libraries the winning transaction was running from.
+# A unique directory means a losing caller cannot reach the winner's machinery
+# even if it somehow ran out of order.
+. deploy/lib/transaction.sh
+TXN="$(transaction_nonce)"
+REMOTE_LIB="/tmp/videofy-atomic-$ENV_NAME-$TXN"
+REMOTE_BUNDLE="/tmp/videofy-atomic-$ENV_NAME-$TXN.bundle"
 
 # REFUSED BEFORE ANYTHING MUTATES, not after activation.
 #
@@ -94,9 +104,51 @@ resolve_sha() {
   fi
 }
 
+
+# ---------------------------------------------------------- ship the engine
+
+# The libraries go to /tmp, never under the deployment root: a deployment
+# mechanism that installs itself into the tree it deploys is one more thing
+# that can be half-updated when something fails.
+#
+# CALLED ONLY AFTER THE LOCK IS HELD -- see `transaction_begin`. Shipping first
+# and locking second let a caller that was about to lose overwrite the winner's
+# executable machinery before finding out.
+ship_engine() {
+  local local_tar="/tmp/videofy-atomic-lib-$TXN.tgz"
+  tar -czf "$local_tar" deploy/lib || return 1
+  scp -q "$local_tar" "$VIDEOFY_SSH_HOST:$local_tar" || { rm -f "$local_tar"; return 1; }
+  rm -f "$local_tar"
+  # Unpacked via a staging directory that is also private, so two transactions
+  # cannot meet in a shared extraction path either.
+  # shellcheck disable=SC2029
+  ssh "$VIDEOFY_SSH_HOST" "
+    set -e
+    rm -rf '$REMOTE_LIB' '$REMOTE_LIB.stage'
+    mkdir -p '$REMOTE_LIB' '$REMOTE_LIB.stage'
+    tar -xzf '$local_tar' -C '$REMOTE_LIB.stage'
+    mv '$REMOTE_LIB.stage'/deploy/lib/* '$REMOTE_LIB/'
+    rm -rf '$REMOTE_LIB.stage' '$local_tar'
+  "
+}
+
+# Removed however this command ends, so /tmp does not fill with the machinery
+# of every deployment ever run. Never removes another transaction's directory:
+# the name contains this invocation's nonce.
+cleanup_transaction_tooling() {
+  [ -n "${REMOTE_LIB:-}" ] || return 0
+  ssh "$VIDEOFY_SSH_HOST" "rm -rf '$REMOTE_LIB' '$REMOTE_LIB.stage' '$REMOTE_BUNDLE'" 2>/dev/null || true
+}
+
 # ---------------------------------------------------------------- read-only
 
 if [ "$ACTION" = "state" ]; then
+  # READ-ONLY, AND IT TAKES NO LOCK. A diagnostic that blocks because a
+  # deployment is running is useless at the moment it is most needed. It ships
+  # into its own private directory and removes it again, so inspecting state
+  # cannot disturb a transaction's machinery.
+  trap 'cleanup_transaction_tooling' EXIT
+  ship_engine || { echo "could not install the inspection engine on the host" >&2; exit 1; }
   # shellcheck disable=SC2029
   ssh "$VIDEOFY_SSH_HOST" "
     . $REMOTE_LIB/release-engine.sh 2>/dev/null || { echo 'engine not installed on host'; exit 1; }
@@ -104,16 +156,6 @@ if [ "$ACTION" = "state" ]; then
   "
   exit 0
 fi
-
-# ---------------------------------------------------------- ship the engine
-
-# The libraries go to /tmp, never under the deployment root: a deployment
-# mechanism that installs itself into the tree it deploys is one more thing
-# that can be half-updated when something fails.
-tar -czf "/tmp/videofy-atomic-lib.tgz" deploy/lib
-scp -q "/tmp/videofy-atomic-lib.tgz" "$VIDEOFY_SSH_HOST:/tmp/videofy-atomic-lib.tgz"
-ssh "$VIDEOFY_SSH_HOST" "rm -rf '$REMOTE_LIB' && mkdir -p '$REMOTE_LIB' && \
-  tar -xzf /tmp/videofy-atomic-lib.tgz -C /tmp && mv /tmp/deploy/lib/* '$REMOTE_LIB/' && rm -rf /tmp/deploy"
 
 # ---------------------------------------------------- the transaction lock
 #
@@ -179,7 +221,7 @@ release_transaction_lock() {
 
 # Released however this script ends -- success, failure, or Ctrl-C. And if the
 # script is killed outright, the connection drops and the kernel does it.
-trap 'release_transaction_lock' EXIT
+trap 'release_transaction_lock; cleanup_transaction_tooling' EXIT
 
 # The public smoke, run from HERE rather than on the box, because the thing
 # being tested is the path a visitor takes: through Cloudflare, through Caddy,
@@ -261,7 +303,9 @@ ROLLBACK
 
 if [ "$ACTION" = "rollback" ]; then
   TARGET="$(resolve_sha "${3:?usage: atomic-deploy.sh <env> rollback <sha>}")"
-  hold_transaction_lock || exit 1
+  # LOCK FIRST, THEN MACHINERY. A caller that loses the race must not have
+  # written anything on the host by the time it finds out.
+  transaction_begin hold_transaction_lock ship_engine || exit 1
   echo "[$ENV_NAME] rolling back to $TARGET"
   if ! remote_rollback "$TARGET"; then
     echo "ROLLBACK FAILED. The state above is what the host reports."
@@ -289,12 +333,13 @@ else
 fi
 echo "[$ENV_NAME] candidate $SHA (prepare-only: $PREPARE_ONLY)"
 
-hold_transaction_lock || exit 1
+transaction_begin hold_transaction_lock ship_engine || exit 1
 
-BUNDLE="/tmp/videofy-atomic-$ENV_NAME.bundle"
+BUNDLE="/tmp/videofy-atomic-$ENV_NAME-$TXN.bundle"
 git bundle create "$BUNDLE" "$SHA" 2>&1 | grep -v '^warning' || true
 [ -s "$BUNDLE" ] || { echo "DEPLOY FAILED: empty bundle"; exit 1; }
-scp -q "$BUNDLE" "$VIDEOFY_SSH_HOST:/tmp/videofy-atomic.bundle"
+scp -q "$BUNDLE" "$VIDEOFY_SSH_HOST:$REMOTE_BUNDLE"
+rm -f "$BUNDLE"
 
 # Captured BEFORE the deployment: after a successful activation the box has
 # recorded nothing, so this is still the last completed release.
@@ -306,11 +351,12 @@ REMOTE_STATUS=0
 ssh "$VIDEOFY_SSH_HOST" bash -s \
   "$ENV_NAME" "$SHA" "$VIDEOFY_ROOT" "$REMOTE_LIB" "$VIDEOFY_PUBLIC_ORIGIN" \
   "$(printf '%s' "$VIDEOFY_UNITS" | tr ' ' ',')" "$VIDEOFY_ENV_DIR" \
-  "$VIDEOFY_ACCOUNT_PORT" "$VIDEOFY_GATEWAY_PORT" "$VIDEOFY_INGEST_PORT" "$PREPARE_ONLY" <<'REMOTE' || REMOTE_STATUS=$?
+  "$VIDEOFY_ACCOUNT_PORT" "$VIDEOFY_GATEWAY_PORT" "$VIDEOFY_INGEST_PORT" "$PREPARE_ONLY" \
+  "$REMOTE_BUNDLE" <<'REMOTE' || REMOTE_STATUS=$?
 set -euo pipefail
 ENV_NAME="$1"; SHA="$2"; ROOT="$3"; LIB="$4"; PUBLIC_ORIGIN="$5"
 UNITS_CSV="$6"; ENV_DIR="$7"; ACCOUNT_PORT="$8"; GATEWAY_PORT="$9"; INGEST_PORT="${10}"
-PREPARE_ONLY="${11}"
+PREPARE_ONLY="${11}"; REMOTE_BUNDLE="${12}"
 
 export ATOMIC_ROOT="$ROOT"
 export ATOMIC_RELEASES="$ROOT/releases"
@@ -332,7 +378,7 @@ prepare() {
   candidate="$1"
   echo "preparing $SHA in $candidate"
   git init -q "$candidate"
-  git -C "$candidate" fetch -q /tmp/videofy-atomic.bundle "$SHA"
+  git -C "$candidate" fetch -q "$REMOTE_BUNDLE" "$SHA"
   git -C "$candidate" checkout -q --detach "$SHA"
   actual="$(git -C "$candidate" rev-parse HEAD)"
   [ "$actual" = "$SHA" ] || { echo "REFUSED: candidate is $actual, expected $SHA"; return 1; }

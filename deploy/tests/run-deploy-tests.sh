@@ -226,6 +226,8 @@ reset_failures() {
 
 # shellcheck source=../lib/atomic-release.sh
 . "$LIB/atomic-release.sh"
+# shellcheck source=../lib/transaction.sh
+. "$LIB/transaction.sh"
 
 # Mutations disable exactly one guard, to prove the suite can see it go.
 if [ "$MUTATION" = "no-seal-check" ]; then
@@ -340,6 +342,21 @@ if [ "$MUTATION" = "stale-finalize-allowed" ]; then
 fi
 if [ "$MUTATION" = "no-symlink-containment" ]; then
   release_symlinks_stay_inside() { return 0; }
+fi
+if [ "$MUTATION" = "ship-before-lock" ]; then
+  # The defect: machinery is installed first and ownership checked afterwards,
+  # so a caller that loses has already overwritten the winner's libraries.
+  transaction_begin() {
+    local lock_fn="$1" ship_fn="$2"
+    "$ship_fn" || return 1
+    "$lock_fn" || return 1
+    return 0
+  }
+fi
+if [ "$MUTATION" = "shared-remote-lib" ]; then
+  # The defect: every transaction computes the SAME machinery directory, so one
+  # caller writes where another reads.
+  transaction_nonce() { printf 'shared'; }
 fi
 if [ "$MUTATION" = "no-dropin-guard" ]; then
   assert_units_resolve_through_pointer() { return 0; }
@@ -1373,6 +1390,93 @@ BUILD_SHA="$A"
 release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
 check "a relative internal workspace symlink is fine" \
   "$(release_is_complete "$ATOMIC_RELEASES/$A" && echo yes || echo no)" "yes"
+drop_rig
+
+# ============================== the transaction bootstrap
+
+echo ""
+echo "nothing is installed on the host before the lock is owned"
+
+# THE DEFECT: the deploy shipped its libraries to a SHARED remote path and only
+# then tried to take the lock. A caller about to lose the race had already
+# replaced the executable machinery the winner was running from -- so
+# serialising the release pointer bought nothing, because the code doing the
+# serialising could be swapped underneath it.
+new_rig; reset_failures
+
+SHIPPED=""
+record_ship() { SHIPPED="$SHIPPED ship"; return 0; }
+lock_ok()   { return 0; }
+lock_busy() { echo "REFUSED: another deployment operation holds the lock." >&2; return 1; }
+
+SHIPPED=""
+if transaction_begin lock_busy record_ship >/dev/null 2>&1; then
+  bad "a losing caller was allowed to proceed" "transaction_begin returned 0"
+else ok "a caller that cannot take the lock is refused"; fi
+check "and it shipped NOTHING to the host" "$(echo $SHIPPED)" ""
+
+SHIPPED=""
+if transaction_begin lock_ok record_ship >/dev/null 2>&1; then
+  ok "a caller that owns the lock proceeds"
+else bad "the winning caller was refused" ""; fi
+check "and only then does it ship" "$(echo $SHIPPED)" "ship"
+
+# A failing ship is a failed transaction, not a half-installed one.
+ship_fails() { return 1; }
+if transaction_begin lock_ok ship_fails >/dev/null 2>&1; then
+  bad "a failed install reported success" ""
+else ok "a transaction whose machinery will not install refuses"; fi
+drop_rig
+
+echo ""
+echo "each transaction runs from machinery only it can write"
+
+# Two callers, modelled the way the real ones behave: each computes its own
+# private remote directory from a nonce, and the loser is refused before it can
+# write anything at all.
+new_rig; reset_failures
+B_LIB="$RIG/lib-$(transaction_nonce)"
+C_LIB="$RIG/lib-$(transaction_nonce)"
+check "two transactions choose different machinery directories" \
+  "$([ "$B_LIB" != "$C_LIB" ] && echo different || echo SAME)" "different"
+
+# B installs its machinery under the lock and records its exact contents.
+mkdir -p "$B_LIB"; printf 'engine-B' > "$B_LIB/release-engine.sh"
+B_BEFORE="$(sha256sum "$B_LIB/release-engine.sh" | cut -d' ' -f1)"
+
+# C arrives with DIFFERENT library contents and loses the lock.
+C_SHIPPED=""
+c_ship() { C_SHIPPED="shipped"; mkdir -p "$C_LIB"; printf 'engine-C' > "$C_LIB/release-engine.sh"; return 0; }
+if transaction_begin lock_busy c_ship >/dev/null 2>&1; then
+  bad "the losing caller installed its machinery" "it must refuse first"
+else ok "the losing caller is refused before installing anything"; fi
+check "the loser wrote nothing at all" "$C_SHIPPED" ""
+check "B's machinery is byte-identical" \
+  "$(sha256sum "$B_LIB/release-engine.sh" | cut -d' ' -f1)" "$B_BEFORE"
+check "and the loser created no directory B could consume" \
+  "$([ -e "$C_LIB" ] && echo created || echo none)" "none"
+
+# Even when C DOES own a lock later, it cannot reach B's directory, because the
+# name it computes is its own.
+transaction_begin lock_ok c_ship >/dev/null 2>&1
+check "C installs only into its own directory" \
+  "$(cat "$C_LIB/release-engine.sh" 2>/dev/null)" "engine-C"
+check "B's machinery is still untouched" \
+  "$(cat "$B_LIB/release-engine.sh" 2>/dev/null)" "engine-B"
+drop_rig
+
+# The real script must not contain a host write before the lock. Checked
+# against the file because the ordering IS the property, and a comment saying
+# so is not the same as the call sequence saying so.
+new_rig; reset_failures
+SCRIPT="$HERE/../atomic-deploy.sh"
+FIRST_SHIP="$(grep -n 'transaction_begin hold_transaction_lock ship_engine' "$SCRIPT" | head -1 | cut -d: -f1)"
+BARE_SHIP="$(grep -nE '^[[:space:]]*ship_engine([^(]|$)' "$SCRIPT" | grep -v transaction_begin | head -1 | cut -d: -f1)"
+check "mutating paths install machinery only through transaction_begin" \
+  "$([ -n "$FIRST_SHIP" ] && echo yes || echo no)" "yes"
+# The one bare call is `state`, which is read-only and takes no lock.
+check "the only unlocked ship is the read-only state path" \
+  "$(sed -n "$((BARE_SHIP-8)),${BARE_SHIP}p" "$SCRIPT" | grep -c 'READ-ONLY')" "1"
 drop_rig
 
 # ============================================================ report
