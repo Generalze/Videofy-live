@@ -83,6 +83,26 @@ PUBLIC_ORIGIN="$7"; UNITS_CSV="$8"; ACCOUNT_PORT="$9"; GATEWAY_PORT="${10}"; ING
 UNITS="$(printf '%s' "$UNITS_CSV" | tr ',' ' ')"
 BUNDLE="/tmp/videofy-$ENV_NAME.bundle"
 
+# ONCE A HOST IS CONVERGED, THIS SCRIPT IS THE WRONG ONE.
+#
+# Everything below checks the target SHA out into the LIVE tree and only then
+# builds, reconciles units and runs its gates -- so an external restart during
+# a deploy, or during one that is about to refuse, can start a service on code
+# that passed nothing. On this host that is not hypothetical: unattended
+# upgrades stopped and started the production gateway at 06:19 on 2026-09-05
+# with nobody watching.
+#
+# `deploy/atomic-deploy.sh` fixes that by building into a release nothing
+# points at and moving a pointer once. The moment a host has that pointer,
+# using this script again would take the environment backwards silently -- so
+# it refuses rather than competing with the model that replaced it.
+if [ -e "$ROOT/current" ] || [ -L "$ROOT/current" ]; then
+  echo "DEPLOY FAILED: $ROOT/current exists, so this host uses atomic releases."
+  echo "  This script mutates the live tree before its gates run. Use:"
+  echo "    bash deploy/atomic-deploy.sh $ENV_NAME <ref>"
+  exit 1
+fi
+
 [ -d "$APP_DIR/.git" ] || { echo "DEPLOY FAILED: $APP_DIR is not a git tree; run deploy/$ENV_NAME/install.sh first"; exit 1; }
 cd "$APP_DIR"
 PREVIOUS="$(git rev-parse HEAD 2>/dev/null || echo none)"
