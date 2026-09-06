@@ -4,31 +4,47 @@
 # The order the steps go in, which is the entire correctness argument.
 #
 # Every expensive, fallible or slow thing happens while the running system
-# cannot see it. Then the gates run, still invisibly. Then two renames make the
-# whole thing real at once. There is no step between "unqualified" and
-# "serving" for an external restart to land in, because the pointer a service
-# resolves is not touched until every gate has already passed.
+# cannot see it. Then the gates run, still invisibly. Then ONE rename makes the
+# whole thing real -- the API and the site together, because `www` resolves
+# through `current` rather than being a second release pointer.
 #
 #   PREPARE      candidate dir nothing points at   restart -> OLD release
 #   BUILD        inside the candidate              restart -> OLD release
 #   WEB BUILD    inside the candidate              restart -> OLD release
 #   GATE  config preflight, real production rules  restart -> OLD release
 #   GATE  effective systemd units and drop-ins     restart -> OLD release
-#   SEAL         RELEASE.json written last         restart -> OLD release
+#   SEAL         manifest, then marker, last       restart -> OLD release
 #   -------------------------------------------------- the authorised boundary
-#   PUBLISH      ONE rename of `current`           restart -> NEW release
+#   PUBLISH      one rename of `current`           restart -> NEW release
 #   RESTART      planned, deliberate               restart -> NEW release
-#   VERIFY       health, running-release, smoke    restart -> NEW release
+#   HEALTH       loopback                          restart -> NEW release
+#   RUNNING      processes prove their release     restart -> NEW release
+#   SMOKE        through the public edge           restart -> NEW release
 #
-# A failure anywhere above the line leaves both pointers where they were, so
-# the deployment is not an event the running system can observe. A failure
-# BELOW the line is a rollback, which is another rename to a release that is
-# still on disk and still qualified.
+# A failure anywhere above the line leaves the pointer where it was, so the
+# deployment is not an event the running system can observe. A failure BELOW
+# the line is a ROLLBACK -- and a rollback here is a complete version
+# transition, not merely a pointer move. See `atomic_rollback_transition`.
 #
 # WHAT THIS DELIBERATELY DOES NOT DO: install systemd units, reload the daemon,
 # remove a drop-in, touch Caddy, run a migration, or disable a timer. Each of
 # those was available to the old model as a side effect of an ordinary release,
 # and each is how a refused deploy left something behind.
+#
+# CALLBACKS ARE READ FROM NAMED GLOBALS rather than passed positionally. Nine
+# positional parameters is how a caller silently swaps two of them and bash
+# says nothing; naming them also stops `release_prepare`'s own locals from
+# shadowing them, which caused an infinite recursion the first time this file
+# used a closure.
+#
+#   ATOMIC_FN_BUILD      build the release into $1 (the candidate directory)
+#   ATOMIC_FN_PREFLIGHT  evaluate this environment's startup rules on $1
+#   ATOMIC_FN_RESTART    restart every intended service, in order
+#   ATOMIC_FN_HEALTH     loopback health for every service
+#   ATOMIC_FN_RUNNING    prove the processes are executing $1 (a sha)
+#   ATOMIC_FN_SMOKE      public smoke through the real edge
+#   ATOMIC_UNITS         the units this environment owns
+#   ATOMIC_ENV_FILE      the real environment file for the preflight
 
 # shellcheck source=./release-paths.sh
 . "$(dirname "${BASH_SOURCE[0]}")/release-paths.sh"
@@ -46,45 +62,66 @@
 # proved nothing about it. The only thing that could find it was starting the
 # candidate against the real production environment file, and the only safe
 # place to do that is here, before anything points at the candidate.
-#
-# It runs the candidate in a validation mode that exercises the startup
-# configuration gates and then exits, so it never binds the service port, never
-# joins the gateway, never advertises itself to routing and never becomes a
-# second consumer of live work.
 atomic_gate_candidate() {
-  local candidate="$1" env_file="$2" preflight_cmd="$3"; shift 3
-  local units="$*"
+  local candidate="$1"
   local failed=0
 
-  if [ -n "$preflight_cmd" ]; then
+  if [ -n "${ATOMIC_FN_PREFLIGHT:-}" ]; then
     echo "gate: production configuration preflight"
-    if ! "$preflight_cmd" "$candidate" "$env_file"; then
+    if ! "$ATOMIC_FN_PREFLIGHT" "$candidate" "${ATOMIC_ENV_FILE:-}"; then
       echo "REFUSED: the candidate does not satisfy this environment's own startup rules." >&2
       echo "  Staging cannot prove these: they live behind an isProduction branch." >&2
       failed=1
     fi
   fi
 
-  if [ -n "$units" ]; then
+  if [ -n "${ATOMIC_UNITS:-}" ]; then
     echo "gate: effective systemd configuration"
     # shellcheck disable=SC2086
-    assert_units_resolve_through_pointer "$ATOMIC_CURRENT" $units || failed=1
+    assert_units_resolve_through_pointer "$ATOMIC_CURRENT" $ATOMIC_UNITS || failed=1
     # shellcheck disable=SC2086
-    assert_restart_limiter $units || failed=1
+    assert_restart_limiter $ATOMIC_UNITS || failed=1
   fi
 
   return "$failed"
 }
 
-# The whole deployment, in the one order that keeps the invariant.
+# Build and seal a release WITHOUT publishing it.
 #
-# ATOMIC_ROOT / ATOMIC_RELEASES / ATOMIC_CURRENT / ATOMIC_WWW must be set and
-# are validated before anything is written through them, because a guard built
-# from an empty variable is a guard that passes.
+# EXPOSED AS A REAL OPERATION because the one-time convergence has to build the
+# first release before `current` exists, and an earlier draft of the runbook
+# told the operator to "run the preparation alone" while offering no command
+# for it. An operator following that would source internals and improvise, and
+# an improvised first release is the one nothing later can verify.
+#
+# It moves no pointer, touches no unit, restarts nothing.
+atomic_prepare_only() {
+  local sha="$1" ref="$2"
+  assert_safe_path 'RELEASES_DIR' "$ATOMIC_RELEASES" || return 1
+  assert_full_sha 'requested sha' "$sha" || return 1
+
+  __atomic_prepare_body() {
+    "$ATOMIC_FN_BUILD" "$1" || return 1
+    # The UNIT gate is deliberately skipped here and only here: before
+    # convergence the units still name the app tree, so requiring them to
+    # resolve through `current` would make it impossible to build the very
+    # release the convergence needs. The CONFIGURATION gate still runs, because
+    # that one is about the release rather than about the host's systemd.
+    if [ -n "${ATOMIC_FN_PREFLIGHT:-}" ]; then
+      echo "gate: production configuration preflight"
+      "$ATOMIC_FN_PREFLIGHT" "$1" "${ATOMIC_ENV_FILE:-}" || return 1
+    fi
+    return 0
+  }
+  release_prepare "$ATOMIC_RELEASES" "$sha" "$ref" __atomic_prepare_body || return 1
+  echo "PREPARED $sha"
+  echo "  nothing points at it: current -> $(pointer_target "$ATOMIC_CURRENT")"
+  return 0
+}
+
+# The whole deployment, in the one order that keeps the invariant.
 atomic_deploy() {
-  local sha="$1" ref="$2" prepare_body="$3" env_file="$4" preflight_cmd="$5"
-  local restart_cmd="$6" verify_cmd="$7"; shift 7
-  local units="$*"
+  local sha="$1" ref="$2"
 
   assert_release_paths "$ATOMIC_ROOT" "$ATOMIC_RELEASES" "$ATOMIC_CURRENT" "$ATOMIC_WWW" || return 1
   assert_full_sha 'requested sha' "$sha" || return 1
@@ -96,24 +133,12 @@ atomic_deploy() {
   # ---------------------------------------------------------------- prepare
   # Everything below happens inside a directory nothing resolves. An external
   # restart at any point here boots `$previous`, unchanged.
-  # CAPTURED IN DISTINCTLY NAMED GLOBALS, not in the locals above.
-  #
-  # bash scopes dynamically, and `release_prepare` declares its own
-  # `local prepare_body` -- which it sets to this very function. Read from
-  # inside the callback, `$prepare_body` therefore resolved to
-  # `__atomic_prepare_body` itself and recursed until the shell died. A
-  # closure that reads a name its caller also uses is not a closure.
-  __ATOMIC_BUILD_FN="$prepare_body"
-  __ATOMIC_ENV_FILE="$env_file"
-  __ATOMIC_PREFLIGHT_FN="$preflight_cmd"
-  __ATOMIC_UNITS="$units"
   __atomic_prepare_body() {
-    "$__ATOMIC_BUILD_FN" "$1" || return 1
+    "$ATOMIC_FN_BUILD" "$1" || return 1
     # The gates run INSIDE preparation, so a candidate that fails one is never
     # sealed and therefore can never be published, rolled back to, or mistaken
     # for a release by a later deploy.
-    # shellcheck disable=SC2086
-    atomic_gate_candidate "$1" "$__ATOMIC_ENV_FILE" "$__ATOMIC_PREFLIGHT_FN" $__ATOMIC_UNITS || return 1
+    atomic_gate_candidate "$1" || return 1
     return 0
   }
   if ! release_prepare "$ATOMIC_RELEASES" "$sha" "$ref" __atomic_prepare_body; then
@@ -133,17 +158,12 @@ atomic_deploy() {
   echo "published: current -> $(pointer_target "$ATOMIC_CURRENT")"
 
   # ---------------------------------------------------------------- activate
-  # From here a failure is a ROLLBACK rather than a refusal, because the new
-  # release is already what a restart would boot. The previous release is still
-  # sealed on disk, so going back is a rename and not a rebuild.
-  if [ -n "$restart_cmd" ] && ! "$restart_cmd"; then
-    echo "DEPLOY FAILED: services did not restart onto $sha" >&2
-    __atomic_rollback "$previous"
-    return 1
-  fi
-  if [ -n "$verify_cmd" ] && ! "$verify_cmd" "$sha"; then
-    echo "DEPLOY FAILED: $sha did not verify after restart" >&2
-    __atomic_rollback "$previous"
+  # From here a failure is a ROLLBACK rather than a refusal. The previous
+  # release is still sealed on disk, so going back is a rename plus a restart.
+  local stage
+  if ! __atomic_activate "$sha"; then
+    echo "DEPLOY FAILED after publication; rolling back to $previous" >&2
+    atomic_rollback_transition "$previous"
     return 1
   fi
 
@@ -152,37 +172,86 @@ atomic_deploy() {
   return 0
 }
 
-__atomic_rollback() {
-  local previous="$1"
-  case "$previous" in
-    none|unmanaged:*)
-      echo "CANNOT ROLL BACK: previous release is '$previous'." >&2
+# Restart, health, running-release proof, public smoke -- in that order.
+#
+# SHARED BY DEPLOYMENT AND ROLLBACK, so a rollback cannot quietly be held to a
+# weaker standard than the deployment it is undoing. That asymmetry is exactly
+# how a rollback comes to mean "the pointer moved" while nothing was verified.
+#
+# LOOPBACK HEALTH IS NOT ENOUGH, which is why SMOKE is in this list. A service
+# can answer 200 on 127.0.0.1 while the public edge serves a stale shell or
+# refuses a route; the deploy is not finished until the routes the public
+# actually uses answer.
+__atomic_activate() {
+  local sha="$1"
+  if [ -n "${ATOMIC_FN_RESTART:-}" ] && ! "$ATOMIC_FN_RESTART"; then
+    echo "  activation failed: restart" >&2; return 1
+  fi
+  if [ -n "${ATOMIC_FN_HEALTH:-}" ] && ! "$ATOMIC_FN_HEALTH"; then
+    echo "  activation failed: loopback health" >&2; return 1
+  fi
+  if [ -n "${ATOMIC_FN_RUNNING:-}" ] && ! "$ATOMIC_FN_RUNNING" "$sha"; then
+    echo "  activation failed: processes are not running $sha" >&2; return 1
+  fi
+  if [ -n "${ATOMIC_FN_SMOKE:-}" ] && ! "$ATOMIC_FN_SMOKE"; then
+    echo "  activation failed: public smoke" >&2; return 1
+  fi
+  return 0
+}
+
+# Return to a previous release COMPLETELY, not just on paper.
+#
+# A POINTER MOVE IS NOT A ROLLBACK. This used to move `current` back, print
+# "RESTART THE SERVICES" and exit zero -- so the command reported success while
+# every process was still executing the release it had just rolled away from.
+# The operator was told to finish the job by hand at exactly the moment a
+# half-finished state is most expensive, and any automation reading the exit
+# code would have believed the system was restored.
+#
+# The transition is owned here, end to end, and the exit code means what it
+# says: pointer moved, services restarted, health passing, processes proven to
+# be running the rollback release, public edge answering.
+atomic_rollback_transition() {
+  local target="$1"
+  case "$target" in
+    none|unmanaged:*|'')
+      echo "CANNOT ROLL BACK: previous release is '${target:-none}'." >&2
       echo "  current -> $(pointer_target "$ATOMIC_CURRENT")" >&2
       echo "  This host has no earlier sealed release to return to." >&2
       return 1 ;;
   esac
-  echo "rolling back to $previous"
-  if release_rollback "$ATOMIC_RELEASES" "$previous" "$ATOMIC_CURRENT"; then
-    echo "rolled back: current -> $(pointer_target "$ATOMIC_CURRENT")"
-    echo "  RESTART THE SERVICES: they are still running the failed release." >&2
-    return 0
+
+  echo "rolling back to $target"
+  if ! release_rollback "$ATOMIC_RELEASES" "$target" "$ATOMIC_CURRENT"; then
+    echo "ROLLBACK FAILED at the pointer; current -> $(pointer_target "$ATOMIC_CURRENT")" >&2
+    return 1
   fi
-  echo "ROLLBACK FAILED; current -> $(pointer_target "$ATOMIC_CURRENT")" >&2
-  return 1
+  echo "  pointer: current -> $(pointer_target "$ATOMIC_CURRENT")"
+
+  if ! __atomic_activate "$target"; then
+    # LOUD, AND WITH THE STATE SPELLED OUT. The one thing an operator cannot
+    # act on is a rollback that failed without saying where it stopped.
+    echo "ROLLBACK INCOMPLETE for $target." >&2
+    echo "  pointer:   current -> $(pointer_target "$ATOMIC_CURRENT")" >&2
+    echo "  a restart from here would boot: $(pointer_sha "$ATOMIC_CURRENT" "$ATOMIC_RELEASES")" >&2
+    echo "  processes: NOT proven to be running $target" >&2
+    release_state "$ATOMIC_RELEASES" "$ATOMIC_CURRENT" "$ATOMIC_WWW" >&2
+    return 1
+  fi
+
+  atomic_record_state "$target" "rolled-back"
+  echo "ROLLED BACK to $target"
+  return 0
 }
 
 # What is live, what it replaced, and where to go back to.
-#
-# Written where an operator looks first, because the question after an incident
-# is never "what does the repository say" -- it is "what is this box running,
-# and what was it running an hour ago".
 atomic_record_state() {
   local sha="$1" previous="$2"
   local file="$ATOMIC_ROOT/DEPLOY-STATE.md"
   local tmp="$file.tmp.$$"
   {
     printf '# Deployment state\n\n'
-    printf 'Written by the deploy. The pointers below are the authority; a git\n'
+    printf 'Written by the deploy. The pointer below is the authority; a git\n'
     printf 'checkout under this root is not.\n\n'
     printf '| | |\n|---|---|\n'
     printf '| active | `%s` |\n' "$sha"
@@ -190,8 +259,11 @@ atomic_record_state() {
     printf '| release path | `%s/%s` |\n' "$ATOMIC_RELEASES" "$sha"
     printf '| cutover (UTC) | %s |\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf '\n## Rolling back\n\n'
-    printf 'The previous release is still sealed on disk. No rebuild is needed:\n\n'
-    printf '```\nbash deploy/atomic-deploy.sh %s rollback %s\n```\n\n' "${ATOMIC_ENV:-production}" "$previous"
+    printf 'The previous release is still sealed on disk, so no rebuild is\n'
+    printf 'needed. The command performs the WHOLE transition -- pointer,\n'
+    printf 'restart, health, running-release proof and public smoke -- rather\n'
+    printf 'than moving a pointer and leaving you to finish it:\n\n'
+    printf '```\nbash deploy/atomic-deploy.sh %s rollback <sha>\n```\n\n' "${ATOMIC_ENV:-production}"
     printf '## Pointers\n\n```\n'
     release_state "$ATOMIC_RELEASES" "$ATOMIC_CURRENT" "$ATOMIC_WWW"
     printf '```\n'

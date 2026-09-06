@@ -79,7 +79,7 @@ new_rig() {
   export ATOMIC_ENV=test
   export STUB_SYSTEMD_DIR="$RIG/systemd"
   export SYSTEMCTL="$HERE/stub-systemctl.sh"
-  mkdir -p "$ATOMIC_RELEASES" "$STUB_SYSTEMD_DIR"
+  mkdir -p "$ATOMIC_RELEASES" "$STUB_SYSTEMD_DIR" "$RIG/proc"
   # STRUCTURAL, installed once, exactly as the one-time convergence does. It is
   # never touched again -- if a deployment moves it, that is the split-release
   # defect returning and the tests below are what catch it.
@@ -88,6 +88,16 @@ new_rig() {
   unit_fixture videofy-test-account "$ATOMIC_CURRENT/services/account"
   unit_fixture videofy-test-gateway "$ATOMIC_CURRENT/services/realtime-gateway"
   UNITS="videofy-test-account videofy-test-gateway"
+  export ATOMIC_UNITS="$UNITS"
+  export ATOMIC_ENV_FILE="$RIG/env"
+  ATOMIC_FN_BUILD=build_body
+  ATOMIC_FN_PREFLIGHT=preflight_body
+  ATOMIC_FN_RESTART=restart_body
+  ATOMIC_FN_HEALTH=health_body
+  ATOMIC_FN_RUNNING=running_body
+  ATOMIC_FN_SMOKE=smoke_body
+  [ "${ATOMIC_FN_SMOKE_DISABLED:-0}" = "1" ] && ATOMIC_FN_SMOKE=""
+  for u in $UNITS; do printf 'none' > "$RIG/proc/$u"; done
 }
 
 unit_fixture() {
@@ -119,11 +129,54 @@ build_body() {
 PREFLIGHT_SHOULD_FAIL=0
 preflight_body() { [ "$PREFLIGHT_SHOULD_FAIL" = "1" ] && return 1; return 0; }
 
+# A REAL PROCESS-STATE MODEL, because "what a restart would boot" and "what is
+# currently serving" are different facts. A rollback that only moves the
+# pointer satisfies the first while failing the second, and the suite could not
+# see the difference until each unit had a process of its own to model. Each
+# unit has a file holding the release it is executing; only a restart changes it.
 RESTART_SHOULD_FAIL=0
-restart_body() { [ "$RESTART_SHOULD_FAIL" = "1" ] && return 1; return 0; }
+RESTART_ONLY_FIRST=0
+restart_body() {
+  [ "$RESTART_SHOULD_FAIL" = "1" ] && return 1
+  local now u first=1
+  now="$(cat "$ATOMIC_CURRENT/BUILT_SHA" 2>/dev/null || echo none)"
+  for u in $UNITS; do
+    # A PARTIAL ROLL: the first unit takes the new release and the rest do not,
+    # which is the mixture an interrupted restart actually leaves behind.
+    if [ "$RESTART_ONLY_FIRST" = "1" ] && [ "$first" = "0" ]; then continue; fi
+    printf '%s' "$now" > "$RIG/proc/$u"
+    first=0
+  done
+  [ "$RESTART_ONLY_FIRST" = "1" ] && return 1
+  return 0
+}
 
-VERIFY_SHOULD_FAIL=0
-verify_body() { [ "$VERIFY_SHOULD_FAIL" = "1" ] && return 1; return 0; }
+HEALTH_SHOULD_FAIL=0
+health_body() { [ "$HEALTH_SHOULD_FAIL" = "1" ] && return 1; return 0; }
+
+# The proof the pointer cannot give: every process is executing $1.
+RUNNING_SHOULD_FAIL=0
+running_body() {
+  [ "$RUNNING_SHOULD_FAIL" = "1" ] && return 1
+  local expected="$1" u
+  for u in $UNITS; do
+    [ "$(cat "$RIG/proc/$u" 2>/dev/null)" = "$expected" ] || return 1
+  done
+  return 0
+}
+
+SMOKE_SHOULD_FAIL=0
+smoke_body() { [ "$SMOKE_SHOULD_FAIL" = "1" ] && return 1; return 0; }
+
+# What every process is ACTUALLY executing right now, as a sorted unique list.
+#
+# One value means every service agrees; two means a mixture, which is the state
+# a pointer-only rollback leaves behind and which no pointer check can see.
+serving_now() {
+  local u
+  for u in $UNITS; do cat "$RIG/proc/$u" 2>/dev/null || echo none; echo; done \
+    | grep -v '^$' | sort -u | paste -sd, -
+}
 
 # WHAT A RESTARTING SERVICE WOULD BOOT, resolved the way systemd resolves it.
 simulate_restart() {
@@ -144,14 +197,13 @@ web_pointer_target() { readlink "$ATOMIC_WWW" 2>/dev/null || printf 'NOT-A-SYMLI
 deploy() {
   local sha="$1"
   BUILD_SHA="$sha"
-  # shellcheck disable=SC2086
-  atomic_deploy "$sha" "refs/test" build_body "$RIG/env" preflight_body \
-    restart_body verify_body $UNITS
+  atomic_deploy "$sha" "$sha"
 }
 
 reset_failures() {
   BUILD_SHOULD_FAIL=0; WEB_SHOULD_FAIL=0; PREFLIGHT_SHOULD_FAIL=0
-  RESTART_SHOULD_FAIL=0; VERIFY_SHOULD_FAIL=0
+  RESTART_SHOULD_FAIL=0; RESTART_ONLY_FIRST=0; HEALTH_SHOULD_FAIL=0
+  RUNNING_SHOULD_FAIL=0; SMOKE_SHOULD_FAIL=0
 }
 
 # shellcheck source=../lib/atomic-release.sh
@@ -192,6 +244,36 @@ if [ "$MUTATION" = "two-release-pointers" ]; then
     pointer_publish "$current" "$dir" || return 1
     sleep 0.02
     pointer_publish "$ATOMIC_WWW" "$dir/www"
+  }
+fi
+if [ "$MUTATION" = "rollback-pointer-only" ]; then
+  # The defect the CTO caught: rollback moves the pointer, says "restart the
+  # services", and exits zero while every process runs the abandoned release.
+  atomic_rollback_transition() {
+    release_rollback "$ATOMIC_RELEASES" "$1" "$ATOMIC_CURRENT" || return 1
+    echo "RESTART THE SERVICES"
+    return 0
+  }
+fi
+if [ "$MUTATION" = "no-smoke" ]; then
+  # Deployment stops at loopback health, as it did before the correction.
+  ATOMIC_FN_SMOKE_DISABLED=1
+fi
+if [ "$MUTATION" = "no-integrity" ]; then
+  # A release is trusted because it carries a marker, not because its bytes
+  # still match. Tampering then survives publication and rollback.
+  release_integrity_holds() { return 0; }
+fi
+if [ "$MUTATION" = "no-full-sha-rule" ]; then
+  assert_full_sha() { return 0; }
+fi
+if [ "$MUTATION" = "prepare-publishes" ]; then
+  # `prepare` quietly becomes a deployment.
+  atomic_prepare_only() {
+    local sha="$1" ref="$2"
+    __atomic_prepare_body() { "$ATOMIC_FN_BUILD" "$1"; }
+    release_prepare "$ATOMIC_RELEASES" "$sha" "$ref" __atomic_prepare_body || return 1
+    release_publish "$ATOMIC_RELEASES" "$sha" "$ATOMIC_CURRENT"
   }
 fi
 if [ "$MUTATION" = "no-dropin-guard" ]; then
@@ -254,9 +336,9 @@ observing_prepare() {
   OBSERVED="$OBSERVED $(simulate_restart)"
   return 0
 }
-# shellcheck disable=SC2086
-atomic_deploy "$B" refs/test observing_prepare "$RIG/env" preflight_body \
-  restart_body verify_body $UNITS >/dev/null 2>&1
+ATOMIC_FN_BUILD=observing_prepare
+atomic_deploy "$B" "$B" >/dev/null 2>&1
+ATOMIC_FN_BUILD=build_body
 check "a restart DURING preparation boots the old release" "$(echo $OBSERVED)" "$A"
 check "after publication a restart boots the new release" "$(simulate_restart)" "$B"
 check "the old release is still on disk" \
@@ -345,7 +427,7 @@ drop_rig
 
 new_rig; reset_failures
 deploy "$A" >/dev/null 2>&1
-VERIFY_SHOULD_FAIL=1
+HEALTH_SHOULD_FAIL=1
 deploy "$B" >/dev/null 2>&1
 check "a failed health verify rolls back to A" "$(simulate_restart)" "$A"
 check "web rolled back with it" "$(simulate_web_request)" "bundle-$A"
@@ -359,10 +441,10 @@ echo "rollback"
 new_rig; reset_failures
 deploy "$A" >/dev/null 2>&1
 deploy "$B" >/dev/null 2>&1
-release_rollback "$ATOMIC_RELEASES" "$A" "$ATOMIC_CURRENT" >/dev/null 2>&1
+atomic_rollback_transition "$A" >/dev/null 2>&1
 check "explicit rollback returns to A" "$(simulate_restart)" "$A"
 check "and returns the web assets too" "$(simulate_web_request)" "bundle-$A"
-if release_rollback "$ATOMIC_RELEASES" "$C" "$ATOMIC_CURRENT" >/dev/null 2>&1; then
+if atomic_rollback_transition "$C" >/dev/null 2>&1; then
   bad "rollback to a release this host never had" "it succeeded"
 else ok "rollback to an unknown release refuses"; fi
 drop_rig
@@ -493,7 +575,7 @@ drop_rig
 new_rig; reset_failures
 deploy "$A" >/dev/null 2>&1
 deploy "$B" >/dev/null 2>&1
-release_rollback "$ATOMIC_RELEASES" "$A" "$ATOMIC_CURRENT" >/dev/null 2>&1
+atomic_rollback_transition "$A" >/dev/null 2>&1
 check "rollback moves the API back" "$(simulate_restart)" "$A"
 check "and the site came with it, in the same rename" "$(simulate_web_request)" "bundle-$A"
 check "the web pointer still names current, not a release"   "$(web_pointer_target)" "$ATOMIC_CURRENT/www"
@@ -587,7 +669,7 @@ check "the release A directory is still intact for processes holding it open"   
 # 4. A planned restart fails while other services have already moved. The
 #    pointer is unaffected by process state, so the recovery is the same
 #    single rename regardless of how far the roll got.
-release_rollback "$ATOMIC_RELEASES" "$A" "$ATOMIC_CURRENT" >/dev/null 2>&1
+atomic_rollback_transition "$A" >/dev/null 2>&1
 check "rollback from a half-rolled restart returns everything to A" "$(simulate_restart)" "$A"
 check "including the site, atomically" "$(simulate_web_request)" "bundle-$A"
 
@@ -608,6 +690,225 @@ check "an unplanned single-service restart lands on the QUALIFIED release"   "$(
 # rather than its target tested nothing about the release.
 check "it can never land on an unqualified one"   "$(release_is_complete "$(readlink "$ATOMIC_CURRENT")" && echo sealed || echo unsealed)" "sealed"
 drop_rig
+
+# ====================== rollback is a COMPLETE version transition
+
+echo ""
+echo "rollback moves processes, not just a pointer"
+
+# THE DEFECT THIS SUITE COULD NOT SEE BEFORE. Rollback used to move `current`,
+# print "RESTART THE SERVICES" and exit zero -- success, while every process
+# still ran the release being abandoned. Without a process model the tests
+# agreed, because they only ever asked what a restart WOULD boot.
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+check "A is serving" "$(serving_now)" "$A"
+RESTART_ONLY_FIRST=1
+deploy "$B" >/dev/null 2>&1
+check "partial restart then rollback: pointer is back on A" "$(simulate_restart)" "$A"
+RESTART_ONLY_FIRST=0
+check "and every process is running A, not a mixture" "$(serving_now)" "$A"
+drop_rig
+
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+HEALTH_SHOULD_FAIL=1
+deploy "$B" >/dev/null 2>&1
+HEALTH_SHOULD_FAIL=0
+check "health failure rolls the pointer back" "$(simulate_restart)" "$A"
+check "health failure leaves every process on A" "$(serving_now)" "$A"
+drop_rig
+
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+SMOKE_SHOULD_FAIL=1
+deploy "$B" >/dev/null 2>&1
+SMOKE_SHOULD_FAIL=0
+check "public smoke failure rolls back the pointer" "$(simulate_restart)" "$A"
+check "public smoke failure leaves every process on A" "$(serving_now)" "$A"
+drop_rig
+
+# A deployment must FAIL when smoke fails -- not publish and advise.
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+SMOKE_SHOULD_FAIL=1
+if deploy "$B" >/dev/null 2>&1; then
+  bad "a smoke failure reported success" "exit 0"
+else ok "a smoke failure fails the deployment"; fi
+SMOKE_SHOULD_FAIL=0
+drop_rig
+
+# The rollback transition itself must fail loudly when it cannot complete.
+for stage in restart health smoke; do
+  new_rig; reset_failures
+  deploy "$A" >/dev/null 2>&1
+  deploy "$B" >/dev/null 2>&1
+  case "$stage" in
+    restart) RESTART_SHOULD_FAIL=1 ;;
+    health)  HEALTH_SHOULD_FAIL=1 ;;
+    smoke)   SMOKE_SHOULD_FAIL=1 ;;
+  esac
+  if atomic_rollback_transition "$A" >/dev/null 2>&1; then
+    bad "rollback with failing $stage reported success" "exit 0"
+  else ok "rollback fails loudly when $stage fails"; fi
+  reset_failures
+  drop_rig
+done
+
+# An explicit rollback that succeeds must move the processes too.
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+deploy "$B" >/dev/null 2>&1
+check "B is serving before rollback" "$(serving_now)" "$B"
+atomic_rollback_transition "$A" >/dev/null 2>&1
+check "explicit rollback: pointer on A" "$(simulate_restart)" "$A"
+check "explicit rollback: processes on A" "$(serving_now)" "$A"
+drop_rig
+
+# ============================== release integrity, not just a label
+
+echo ""
+echo "a sealed release must still BE what was sealed"
+
+# RELEASE.json proves a directory was once sealed and claims a SHA. It says
+# nothing about whether the dist a service is about to execute, or the bundle a
+# visitor is about to download, is still what passed the gates.
+tamper_case() {
+  local label="$1" action="$2"
+  new_rig; reset_failures
+  deploy "$A" >/dev/null 2>&1
+  BUILD_SHA="$B"
+  release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+  eval "$action"
+  if release_is_complete "$ATOMIC_RELEASES/$B"; then
+    bad "$label was still considered a release" "integrity passed"
+  else ok "$label invalidates the release"; fi
+  if release_publish "$ATOMIC_RELEASES" "$B" "$ATOMIC_CURRENT" >/dev/null 2>&1; then
+    bad "$label could still be published" "publish succeeded"
+  else ok "$label cannot be published"; fi
+  if atomic_rollback_transition "$B" >/dev/null 2>&1; then
+    bad "$label could still be rolled back to" "rollback succeeded"
+  else ok "$label cannot be rolled back to"; fi
+  check "$label left the pointer on A" "$(simulate_restart)" "$A"
+  drop_rig
+}
+tamper_case "a changed dist file"   'printf tampered > "$ATOMIC_RELEASES/$B/BUILT_SHA"'
+tamper_case "a changed web bundle"  'printf tampered > "$ATOMIC_RELEASES/$B/www/call-web/index.html"'
+tamper_case "a missing file"        'rm -f "$ATOMIC_RELEASES/$B/www/call-web/index.html"'
+tamper_case "an added runtime file" 'printf x > "$ATOMIC_RELEASES/$B/services/account/extra.js"'
+tamper_case "a deleted manifest"    'rm -f "$ATOMIC_RELEASES/$B/RELEASE.manifest.sha256"'
+
+# An untouched release stays reusable -- integrity must not be so strict that
+# an ordinary redeploy of the same SHA is refused.
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+BUILD_SHA="$B"
+release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+check "an unchanged sealed release is still reusable"   "$(release_is_complete "$ATOMIC_RELEASES/$B" && echo yes || echo no)" "yes"
+drop_rig
+
+# ============================== prepare-only
+
+echo ""
+echo "prepare builds a release and publishes nothing"
+
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+BUILD_SHA="$B"
+atomic_prepare_only "$B" "$B" >/dev/null 2>&1
+check "prepare sealed the release"   "$(release_is_complete "$ATOMIC_RELEASES/$B" && echo yes || echo no)" "yes"
+check "prepare did not move the pointer" "$(simulate_restart)" "$A"
+check "prepare did not change what is serving" "$(serving_now)" "$A"
+check "prepare did not touch the structural web pointer"   "$(web_pointer_target)" "$ATOMIC_CURRENT/www"
+# And the prepared release is publishable later with no rebuild.
+release_publish "$ATOMIC_RELEASES" "$B" "$ATOMIC_CURRENT" >/dev/null 2>&1
+check "the prepared release publishes later without rebuilding" "$(simulate_restart)" "$B"
+drop_rig
+
+# Prepare must work BEFORE convergence, when units still name the app tree.
+new_rig; reset_failures
+unit_fixture videofy-test-account /srv/videofy-prod/app/services/account
+unit_fixture videofy-test-gateway /srv/videofy-prod/app/services/realtime-gateway
+BUILD_SHA="$A"
+if atomic_prepare_only "$A" "$A" >/dev/null 2>&1; then
+  ok "prepare works on an unconverged host, where units still name the app tree"
+else bad "prepare refused on an unconverged host" "it must not"; fi
+drop_rig
+
+# ============================== the converged unit contract
+
+echo ""
+echo "the runbook's unit source actually resolves through current"
+
+# THE RUNBOOK WAS FALSE. It told operators to install
+# deploy/production/systemd/<unit>.service for the converged state, while those
+# files still name /srv/videofy-prod/app -- so following it exactly would have
+# converged the pointer and left every unit reading the old tree.
+REPO="$HERE/../.."
+for unit in videofy-prod-account videofy-prod-gateway videofy-prod-media-ingest; do
+  converged="$REPO/deploy/production/systemd-converged/$unit.service"
+  legacy="$REPO/deploy/production/systemd/$unit.service"
+  wd="$(grep -E '^WorkingDirectory=' "$converged" 2>/dev/null | head -1 | cut -d= -f2-)"
+  case "$wd" in
+    /srv/videofy-prod/current/services/*)
+      ok "$unit converged unit resolves through current" ;;
+    *) bad "$unit converged unit does not use the pointer" "WorkingDirectory=$wd" ;;
+  esac
+  # The legacy twin must KEEP naming the app tree: deploy.sh reconciles from
+  # that directory, and if it named `current` the legacy deploy would install
+  # current-based units on a host where `current` does not exist yet.
+  lwd="$(grep -E '^WorkingDirectory=' "$legacy" 2>/dev/null | head -1 | cut -d= -f2-)"
+  case "$lwd" in
+    /srv/videofy-prod/app/services/*)
+      ok "$unit legacy unit still names the app tree" ;;
+    *) bad "$unit legacy unit was changed" "WorkingDirectory=$lwd" ;;
+  esac
+done
+# And the two directories must be different files, or the separation is a lie.
+if diff -q "$REPO/deploy/production/systemd/videofy-prod-account.service"            "$REPO/deploy/production/systemd-converged/videofy-prod-account.service" >/dev/null 2>&1; then
+  bad "converged and legacy units are identical" "the migration would be a no-op"
+else ok "converged and legacy units are genuinely different"; fi
+
+# The gate accepts the converged contract and refuses the legacy one.
+new_rig; reset_failures
+unit_fixture videofy-test-account "$ATOMIC_CURRENT/services/account"
+if assert_units_resolve_through_pointer "$ATOMIC_CURRENT" videofy-test-account >/dev/null 2>&1; then
+  ok "a current-based unit satisfies the gate"
+else bad "a current-based unit was refused" "it must pass"; fi
+unit_fixture videofy-test-account /srv/videofy-prod/app/services/account
+if assert_units_resolve_through_pointer "$ATOMIC_CURRENT" videofy-test-account >/dev/null 2>&1; then
+  bad "an app-tree unit satisfied the gate" "it must be refused"
+else ok "an app-tree unit is refused before cutover"; fi
+drop_rig
+
+# ============================== the locked production SHA rule
+
+echo ""
+echo "production takes only a full 40-character SHA"
+
+# A branch is a moving target and a tag is a label somebody can repoint;
+# neither is a statement about which bytes were approved.
+for bad_ref in main v1.2.3 abc1234 HEAD "" "../../etc/passwd" "$(printf '%041d' 1 | tr 0 a)"; do
+  if assert_full_sha 'production ref' "$bad_ref" >/dev/null 2>&1; then
+    bad "production accepted '$bad_ref'" "it must be refused"
+  else ok "production refuses '${bad_ref:-<empty>}'"; fi
+done
+# NOT a counter-example, though it looked like one when this test was written:
+# forty DECIMAL digits are also forty valid lowercase HEX digits, so that string
+# is a well-formed SHA and must be ACCEPTED. Listing it among the refusals was a
+# test bug, and the suite caught it rather than the engine being wrong.
+if assert_full_sha 'production ref' "$(printf '%040d' 1)" >/dev/null 2>&1; then
+  ok "forty digits is valid hex and is accepted"
+else bad "a forty-digit SHA was refused" "digits are hex"; fi
+if assert_full_sha 'production ref' "$A" >/dev/null 2>&1; then
+  ok "production accepts a full lowercase 40-char SHA"
+else bad "a valid full SHA was refused" ""; fi
+# Uppercase is refused too: the whole chain is written in lowercase, and
+# accepting both would make two spellings of one release.
+if assert_full_sha 'production ref' "$(printf '%s' "$A" | tr 'a-f' 'A-F')" >/dev/null 2>&1; then
+  bad "an uppercase SHA was accepted" "one release must have one spelling"
+else ok "an uppercase SHA is refused"; fi
 
 # ============================================================ report
 

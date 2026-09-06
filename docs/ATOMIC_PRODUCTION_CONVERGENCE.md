@@ -147,8 +147,24 @@ This **refuses** while `/srv/videofy-prod/current` does not exist, and says so.
 That refusal is the expected outcome of step 1: it proves the engine is present
 and that the host is not yet converged, without touching anything.
 
-To build the release without publishing, run the preparation alone. The result
-is `releases/<sha>/`, sealed, which nothing points at and no service can reach.
+Build the first release with the supported command:
+
+```sh
+bash deploy/atomic-deploy.sh production prepare <full-40-char-sha>
+```
+
+`prepare` builds and seals `releases/<sha>/` and does nothing else: it creates
+no pointer, exchanges no `www`, installs no unit, restarts nothing and runs no
+migration. It works on an unconverged host — the unit gate is skipped there,
+because before convergence the units legitimately still name the app tree, and
+requiring otherwise would make it impossible to build the release the
+convergence needs. The configuration preflight still runs, because that is
+about the release rather than the host.
+
+An earlier draft of this document said to "run the preparation alone" and
+offered no command for it. An operator following that would have sourced
+internals and improvised, and an improvised first release is the one nothing
+later can verify.
 
 ### Step 2 — publish the pointers while nothing uses them
 
@@ -192,12 +208,31 @@ Least critical first. For each unit, in this order —
 `videofy-prod-media-ingest`:
 
 ```sh
-# WorkingDirectory=/srv/videofy-prod/current/services/<name>
-sudo install -m 0644 deploy/production/systemd/<unit>.service /etc/systemd/system/
+# from deploy/production/systemd-CONVERGED/, NOT deploy/production/systemd/
+sudo install -m 0644 deploy/production/systemd-converged/<unit>.service   /etc/systemd/system/<unit>.service
 sudo systemctl daemon-reload
 sudo systemctl restart <unit>
 curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:<port>/health
 ```
+
+**Two unit directories exist on purpose, and the difference between them is the
+whole migration:**
+
+| directory | `WorkingDirectory` | who installs it |
+|---|---|---|
+| `deploy/production/systemd/` | `/srv/videofy-prod/app/services/<name>` | `deploy.sh`, automatically |
+| `deploy/production/systemd-converged/` | `/srv/videofy-prod/current/services/<name>` | a human, once, here |
+
+`deploy.sh` reconciles only from the first directory and therefore **cannot
+reach** the converged units. That separation is what stops the legacy deploy
+from installing `current`-based units on a host where `current` does not exist
+yet — which would leave every service pointing at a path that is not there.
+
+An earlier draft of this runbook named `deploy/production/systemd/` for this
+step. Following it exactly would have moved the pointer and left every unit
+still reading the app tree: the procedure was false, and a test now asserts
+that the converged units resolve through `current` while the legacy twins
+still name the app tree.
 
 Each service is proven healthy on the pointer before the next is touched. A
 failure here is one service, and reverting it is one file and one restart.
@@ -267,6 +302,52 @@ every service to move in the same instant. Nothing here does: the services
 speak over HTTP and Socket.IO with the gateway tolerating reconnects, and the
 2026-09-05 incident already demonstrated the old gateway accepting a
 newer media-ingest across a version boundary in production.
+
+## Rollback is a complete version transition
+
+`atomic-deploy.sh <env> rollback <full-sha>` performs the **whole** transition
+and its exit code means it:
+
+```
+atomic pointer rollback -> restart every service -> wait for active
+  -> loopback health -> prove the processes are running the rollback release
+  -> public smoke -> report ROLLED BACK
+```
+
+An earlier version moved the pointer, printed `RESTART THE SERVICES` and exited
+zero. That reported success while every process was still executing the release
+being abandoned, told the operator to finish by hand at the moment a
+half-finished state is most expensive, and let any automation reading the exit
+code believe the system was restored. If any step fails now, the command fails
+loudly and prints the pointer, what a restart would boot, and that the
+processes are **not** proven to be running the target.
+
+The same applies automatically: a failed restart, failed health, failed
+running-release proof or **failed public smoke** after a deployment triggers
+this identical transition rather than leaving the new release published with a
+note advising a rollback.
+
+## Loopback health is not a deployment
+
+The deploy is not finished because `127.0.0.1` answered 200. A service can be
+healthy on loopback while the edge serves a stale shell or refuses a route —
+precisely the failure a loopback probe cannot see. The public smoke
+(`deploy/production/smoke.sh`, the existing one, not a second definition) runs
+from the machine issuing the deploy, through Cloudflare and Caddy.
+
+## A release must still BE what was sealed
+
+`RELEASE.json` proves a directory was once sealed and claims a SHA. It says
+nothing about whether the dist a service is about to execute, or the bundle a
+visitor is about to download, is still what passed the gates — and a release
+sits on disk for weeks as the thing a rollback returns to.
+
+So sealing also writes `RELEASE.manifest.sha256` over the whole runtime
+payload, and `release_is_complete` verifies it. A release whose bytes have
+changed — an edited dist file, an edited bundle, a deleted file, an **added**
+file, a removed manifest — stops being a release for reuse, publication and
+rollback alike. The manifest is never regenerated for an existing release:
+doing so would bless the tampering it exists to detect.
 
 ## What is deliberately NOT in this work package
 

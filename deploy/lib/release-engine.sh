@@ -22,15 +22,16 @@
 # because the bytes a service resolves are never the bytes a deployment is
 # working on.
 #
-#   releases/<sha>/          prepared once, then never written to again
-#   current -> releases/<sha>   what the services resolve
-#   www     -> releases/<sha>/www   what Caddy serves
+#   releases/<sha>/            prepared once, then never written to again
+#   current -> releases/<sha>      THE ONLY POINTER A DEPLOYMENT MOVES
+#   www     -> current/www         structural; installed once, never moves again
 #
 # Preparation writes only inside a candidate directory nothing points at.
-# Publication is a rename over a symlink -- one syscall, no interval in which
-# the pointer is missing or half-written. A failed preparation leaves both
-# pointers exactly where they were, which is why a failed deploy is not an
-# event the running system can observe at all.
+# Publication is ONE rename over a symlink -- a single syscall, with no interval
+# in which the pointer is missing or half-written, and none in which the API and
+# the site are on different releases. A failed preparation leaves the pointer
+# exactly where it was, which is why a failed deploy is not an event the running
+# system can observe at all.
 
 # shellcheck source=./release-paths.sh
 . "$(dirname "${BASH_SOURCE[0]}")/release-paths.sh"
@@ -64,6 +65,13 @@ release_is_complete() {
   # and the printed rollback command all confidently naming A. That is exactly
   # the ambiguous state this engine exists to make impossible.
   [ "$(release_recorded_sha "$dir")" = "$(basename "$dir")" ] || return 1
+  #
+  # AND THE BYTES MUST STILL BE THE SEALED ONES.
+  #
+  # Checked here rather than at each call site so that reuse, publication and
+  # rollback cannot disagree about what "complete" means. A tampered or
+  # truncated release stops being a release for every one of them at once.
+  release_integrity_holds "$dir" || return 1
   return 0
 }
 
@@ -73,6 +81,34 @@ release_recorded_sha() {
   sed -n 's/.*"sha": *"\([0-9a-f]\{40\}\)".*/\1/p' "$dir/RELEASE.json" 2>/dev/null | head -1
 }
 
+# Everything in a release whose bytes must not change after sealing.
+#
+# WHAT IS EXCLUDED AND WHY. `.git` is administration rather than payload and
+# its loose objects repack themselves; the seal files describe the manifest and
+# cannot be inside it. Everything else -- server dist, node_modules, the web
+# bundles Caddy serves -- IS the release, because any of it changing changes
+# what runs or what a visitor downloads.
+release_manifest_of() {
+  local dir="$1"
+  ( cd "$dir" && find . -type f       -not -path './.git/*'       -not -name 'RELEASE.json'       -not -name 'RELEASE.manifest.sha256'       -not -name '.RELEASE.json.tmp'       -print0 | LC_ALL=C sort -z | xargs -0 sha256sum )
+}
+
+# Does this release still contain the bytes it was sealed with?
+#
+# RELEASE.json ALONE PROVES ONLY THAT SOMETHING WAS ONCE SEALED and claims a
+# SHA. It says nothing about whether the dist a service is about to execute, or
+# the bundle a visitor is about to download, is still what passed the gates. A
+# release is on disk for weeks and is the thing a rollback returns to; "it had
+# a marker" is not the same as "it is intact".
+release_integrity_holds() {
+  local dir="$1"
+  [ -f "$dir/RELEASE.manifest.sha256" ] || return 1
+  # Compared as WHOLE CONTENT, not by re-running `sha256sum --check`, so that a
+  # file ADDED after sealing is caught too: `--check` only verifies the lines it
+  # is given and would happily pass a release carrying an extra runtime file.
+  [ "$(release_manifest_of "$dir")" = "$(cat "$dir/RELEASE.manifest.sha256")" ]
+}
+
 # Seal a prepared candidate.
 #
 # Written with a temporary file and a rename so that a process killed during
@@ -80,6 +116,11 @@ release_recorded_sha() {
 # half-written marker would be a release that reads complete and is not.
 release_seal() {
   local dir="$1" sha="$2" ref="$3" prepared_by="$4"
+  # THE MANIFEST IS WRITTEN BEFORE THE MARKER, and the marker is what makes the
+  # release readable at all -- so a process killed between them leaves a
+  # release with no marker, which is simply not a release, rather than one that
+  # claims completeness with no integrity record behind it.
+  release_manifest_of "$dir" > "$dir/RELEASE.manifest.sha256"
   local tmp="$dir/.RELEASE.json.tmp"
   cat > "$tmp" <<EOF
 {
