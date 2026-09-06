@@ -48,6 +48,29 @@ videofy_env "$ENV_NAME"
 . deploy/lib/transaction.sh
 TXN="$(transaction_nonce)"
 REMOTE_LIB="/tmp/videofy-atomic-$ENV_NAME-$TXN"
+
+# THE ENGINE MUST BE COMMITTED BYTES, NOT A WORKING TREE.
+#
+# During the first live production preparation this script was edited between
+# attempts to fix real transport defects -- and each attempt still reported the
+# candidate as a certified SHA. The application being deployed was exactly that
+# commit, but the machinery qualifying it was uncommitted operator-side code.
+# Nothing in the logs distinguished the two, so "13b739f passed its production
+# preflight" could have meant "some local edit passed it".
+#
+# Production therefore refuses to run a mutating operation from a dirty
+# deployment checkout, and ships the engine from committed bytes rather than
+# from whatever happens to be in the working tree.
+ENGINE_SHA="$(git rev-parse --verify --quiet HEAD || true)"
+
+assert_engine_is_committed() {
+  [ "$ENV_NAME" = "production" ] || return 0
+  # The rule itself lives in transaction.sh so it can be falsified by the test
+  # suite; this only decides which environments it applies to.
+  engine_is_committed "$PWD" "deployment engine" >/dev/null || return 1
+  echo "[$ENV_NAME] deployment engine $ENGINE_SHA (committed, clean)"
+  return 0
+}
 REMOTE_BUNDLE="/tmp/videofy-atomic-$ENV_NAME-$TXN.bundle"
 
 # REFUSED BEFORE ANYTHING MUTATES, not after activation.
@@ -96,6 +119,14 @@ resolve_production_sha() {
   printf '%s' "$resolved"
 }
 
+# The identity the services actually run as, required rather than guessed.
+if [ "$ENV_NAME" = "production" ] && [ -z "${VIDEOFY_SERVICE_USER:-}" ]; then
+  echo "REFUSED: VIDEOFY_SERVICE_USER is not set for production." >&2
+  echo "  The production configuration preflight must run as the identity that" >&2
+  echo "  boots the services; guessing it would test the wrong user and pass." >&2
+  exit 1
+fi
+
 resolve_sha() {
   if [ "$ENV_NAME" = "production" ]; then
     resolve_production_sha "$1"
@@ -116,7 +147,30 @@ resolve_sha() {
 # executable machinery before finding out.
 ship_engine() {
   local local_tar="/tmp/videofy-atomic-lib-$TXN.tgz"
-  tar -czf "$local_tar" deploy/lib || return 1
+  # NORMALISED TO LF BEFORE SHIPPING.
+  #
+  # This repository is worked on from Windows, where git's autocrlf materialises
+  # the shell libraries with CRLF. bash on the host then reads the trailing
+  # carriage return as part of the command and dies with a command-not-found
+  # naming an invisible character -- so the deployment engine is broken by the
+  # operating system of whoever ran it, which is not a property a production
+  # deploy is allowed to have.
+  #
+  # Stripped from a COPY, so the working tree is never rewritten as a side
+  # effect of deploying.
+  local staged="/tmp/videofy-atomic-stage-$TXN"
+  rm -rf "$staged"; mkdir -p "$staged/deploy"
+  # FROM THE COMMIT, NOT THE WORKING TREE, so what ran on the host can always
+  # be recovered from Git by the SHA printed in the deploy log. `git archive`
+  # is the working tree's opinion of nothing; it reads the object store.
+  if [ -n "$ENGINE_SHA" ] && git rev-parse --verify --quiet "$ENGINE_SHA:deploy/lib" >/dev/null 2>&1; then
+    git archive "$ENGINE_SHA" deploy/lib | tar -x -C "$staged" || return 1
+  else
+    cp -r deploy/lib "$staged/deploy/lib" || return 1
+  fi
+  shipment_normalise "$staged" || return 1
+  tar -czf "$local_tar" -C "$staged" deploy/lib || { rm -rf "$staged"; return 1; }
+  rm -rf "$staged"
   scp -q "$local_tar" "$VIDEOFY_SSH_HOST:$local_tar" || { rm -f "$local_tar"; return 1; }
   rm -f "$local_tar"
   # Unpacked via a staging directory that is also private, so two transactions
@@ -156,6 +210,28 @@ if [ "$ACTION" = "state" ]; then
   "
   exit 0
 fi
+
+# Ask the host whether it is provisioned at all, BEFORE trying to lock it.
+#
+# Ordered first so a half-provisioned host says so in its own words instead of
+# surfacing as lock contention -- which is exactly what happened on the first
+# live preparation and sent the operator looking for a deployment that was not
+# running.
+assert_atomic_bootstrap() {
+  local state
+  # The predicate is shipped inline with `declare -f` rather than sourced,
+  # because this runs BEFORE any machinery has been installed on the host.
+  # shellcheck disable=SC2029
+  state="$(ssh "$VIDEOFY_SSH_HOST" "
+    $(declare -f atomic_bootstrap_state)
+    atomic_bootstrap_state '$VIDEOFY_ROOT'
+  " 2>/dev/null)"
+  if [ "$state" != "ok" ]; then
+    atomic_bootstrap_refusal "$VIDEOFY_ROOT" "${state:-unreachable}" "$ENV_NAME"
+    return 1
+  fi
+  return 0
+}
 
 # ---------------------------------------------------- the transaction lock
 #
@@ -279,13 +355,15 @@ remote_rollback() {
   # shellcheck disable=SC2029
   ssh "$VIDEOFY_SSH_HOST" bash -s "$ENV_NAME" "$target" "$VIDEOFY_ROOT" "$REMOTE_LIB" \
     "$(printf '%s' "$VIDEOFY_UNITS" | tr ' ' ',')" \
-    "$VIDEOFY_ACCOUNT_PORT" "$VIDEOFY_GATEWAY_PORT" "$VIDEOFY_INGEST_PORT" <<'ROLLBACK'
+    "$VIDEOFY_ACCOUNT_PORT" "$VIDEOFY_GATEWAY_PORT" "$VIDEOFY_INGEST_PORT" \
+    "$VIDEOFY_SERVICE_USER" <<'ROLLBACK'
 set -euo pipefail
 ENV_NAME="$1"; TARGET="$2"; ROOT="$3"; LIB="$4"; UNITS_CSV="$5"
-ACCOUNT_PORT="$6"; GATEWAY_PORT="$7"; INGEST_PORT="$8"
+ACCOUNT_PORT="$6"; GATEWAY_PORT="$7"; INGEST_PORT="$8"; SERVICE_USER="${9:-}"
 export ATOMIC_ROOT="$ROOT" ATOMIC_RELEASES="$ROOT/releases"
 export ATOMIC_CURRENT="$ROOT/current" ATOMIC_WWW="$ROOT/www" ATOMIC_ENV="$ENV_NAME"
 export ATOMIC_UNITS="$(printf '%s' "$UNITS_CSV" | tr ',' ' ')"
+export ATOMIC_SERVICE_USER="$SERVICE_USER"
 # The caller owns the transaction for the whole rollback, smoke included.
 export ATOMIC_LOCK_EXTERNAL=1
 . "$LIB/atomic-release.sh"
@@ -305,6 +383,8 @@ if [ "$ACTION" = "rollback" ]; then
   TARGET="$(resolve_sha "${3:?usage: atomic-deploy.sh <env> rollback <sha>}")"
   # LOCK FIRST, THEN MACHINERY. A caller that loses the race must not have
   # written anything on the host by the time it finds out.
+  assert_engine_is_committed || exit 1
+  assert_atomic_bootstrap || exit 1
   transaction_begin hold_transaction_lock ship_engine || exit 1
   echo "[$ENV_NAME] rolling back to $TARGET"
   if ! remote_rollback "$TARGET"; then
@@ -333,10 +413,20 @@ else
 fi
 echo "[$ENV_NAME] candidate $SHA (prepare-only: $PREPARE_ONLY)"
 
+assert_engine_is_committed || exit 1
+assert_atomic_bootstrap || exit 1
 transaction_begin hold_transaction_lock ship_engine || exit 1
 
 BUNDLE="/tmp/videofy-atomic-$ENV_NAME-$TXN.bundle"
-git bundle create "$BUNDLE" "$SHA" 2>&1 | grep -v '^warning' || true
+# A BUNDLE PACKAGES REFS, NOT COMMITS. `git bundle create <file> <sha>` refuses
+# with "Refusing to create empty bundle": the sha names an object, and a bundle
+# needs a ref to put it under. So the commit gets a temporary ref of its own,
+# which is also what the remote fetches by name -- fetching a bare sha from a
+# bundle is not guaranteed either.
+BUNDLE_REF="refs/deploy/atomic-$TXN"
+git update-ref "$BUNDLE_REF" "$SHA"
+git bundle create "$BUNDLE" "$BUNDLE_REF" 2>&1 | grep -v '^warning' || true
+git update-ref -d "$BUNDLE_REF"
 [ -s "$BUNDLE" ] || { echo "DEPLOY FAILED: empty bundle"; exit 1; }
 scp -q "$BUNDLE" "$VIDEOFY_SSH_HOST:$REMOTE_BUNDLE"
 rm -f "$BUNDLE"
@@ -352,11 +442,11 @@ ssh "$VIDEOFY_SSH_HOST" bash -s \
   "$ENV_NAME" "$SHA" "$VIDEOFY_ROOT" "$REMOTE_LIB" "$VIDEOFY_PUBLIC_ORIGIN" \
   "$(printf '%s' "$VIDEOFY_UNITS" | tr ' ' ',')" "$VIDEOFY_ENV_DIR" \
   "$VIDEOFY_ACCOUNT_PORT" "$VIDEOFY_GATEWAY_PORT" "$VIDEOFY_INGEST_PORT" "$PREPARE_ONLY" \
-  "$REMOTE_BUNDLE" <<'REMOTE' || REMOTE_STATUS=$?
+  "$REMOTE_BUNDLE" "$BUNDLE_REF" "$VIDEOFY_SERVICE_USER" <<'REMOTE' || REMOTE_STATUS=$?
 set -euo pipefail
 ENV_NAME="$1"; SHA="$2"; ROOT="$3"; LIB="$4"; PUBLIC_ORIGIN="$5"
 UNITS_CSV="$6"; ENV_DIR="$7"; ACCOUNT_PORT="$8"; GATEWAY_PORT="$9"; INGEST_PORT="${10}"
-PREPARE_ONLY="${11}"; REMOTE_BUNDLE="${12}"
+PREPARE_ONLY="${11}"; REMOTE_BUNDLE="${12}"; BUNDLE_REF="${13}"; SERVICE_USER="${14}"
 
 export ATOMIC_ROOT="$ROOT"
 export ATOMIC_RELEASES="$ROOT/releases"
@@ -365,6 +455,7 @@ export ATOMIC_WWW="$ROOT/www"
 export ATOMIC_ENV="$ENV_NAME"
 export ATOMIC_UNITS="$(printf '%s' "$UNITS_CSV" | tr ',' ' ')"
 export ATOMIC_ENV_FILE="$ENV_DIR/media-ingest.env"
+export ATOMIC_SERVICE_USER="$SERVICE_USER"
 # The caller holds the transaction lock across this activation AND the public
 # smoke that follows it, so nothing here competes for it.
 export ATOMIC_LOCK_EXTERNAL=1
@@ -378,8 +469,8 @@ prepare() {
   candidate="$1"
   echo "preparing $SHA in $candidate"
   git init -q "$candidate"
-  git -C "$candidate" fetch -q "$REMOTE_BUNDLE" "$SHA"
-  git -C "$candidate" checkout -q --detach "$SHA"
+  git -C "$candidate" fetch -q "$REMOTE_BUNDLE" "$BUNDLE_REF"
+  git -C "$candidate" checkout -q --detach FETCH_HEAD
   actual="$(git -C "$candidate" rev-parse HEAD)"
   [ "$actual" = "$SHA" ] || { echo "REFUSED: candidate is $actual, expected $SHA"; return 1; }
 

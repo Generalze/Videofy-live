@@ -109,5 +109,63 @@ activation_running_release() {
 # The production-only startup rules, evaluated by a process that starts nothing.
 activation_preflight() {
   local candidate="$1" env_file="$2"
-  node "$(dirname "${BASH_SOURCE[0]}")/preflight-config.mjs" "$candidate" "$env_file"
+  #
+  # RUN AS THE SERVICE USER, not as the deploy user, and not as root.
+  #
+  # The environment file is 0640 root:<service group> and holds provider keys.
+  # The deploy user cannot read it, which is correct -- widening that to make a
+  # preflight work would hand the deployment account every production secret
+  # permanently, to answer a question that takes a second. Running as root
+  # would answer the wrong question entirely: root can read anything, so a pass
+  # would prove nothing about the identity that actually boots the service.
+  #
+  # The service user is the one that reads this file at startup, so evaluating
+  # the configuration AS that user is both the safe choice and the faithful
+  # one: it proves the process that will really run can reach what it needs.
+  #
+  # NO SILENT DEFAULT. An earlier version fell back to a hardcoded "videofy",
+  # which would have kept working while silently testing the wrong identity on
+  # any host that named its service user differently.
+  local runner="${ATOMIC_SERVICE_USER:-}"
+  if [ -z "$runner" ]; then
+    echo "PREFLIGHT FAILED: no service identity was configured." >&2
+    echo "  ATOMIC_SERVICE_USER must name the user this environment's services" >&2
+    echo "  run as; guessing it would test the wrong identity and still pass." >&2
+    return 1
+  fi
+
+  # THE CONFIGURED IDENTITY MUST BE THE ONE SYSTEMD ACTUALLY USES. Otherwise a
+  # preflight can pass as a user no service ever runs as.
+  local unit effective
+  for unit in ${ATOMIC_UNITS:-}; do
+    effective="$("$SYSTEMCTL" show "$unit" -p User --value 2>/dev/null)"
+    [ -n "$effective" ] || continue
+    if [ "$effective" != "$runner" ]; then
+      echo "PREFLIGHT FAILED: $unit runs as '$effective', not '$runner'." >&2
+      echo "  The configured service identity disagrees with systemd; a check" >&2
+      echo "  run as the wrong user proves nothing about the real startup." >&2
+      return 1
+    fi
+  done
+
+  local script
+  script="$(dirname "${BASH_SOURCE[0]}")/preflight-config.mjs"
+
+  # Each capability the real startup needs, proven as that identity and named
+  # separately, so a refusal says which one is missing rather than "it failed".
+  if ! sudo -n -u "$runner" test -x "$candidate" 2>/dev/null; then
+    echo "PREFLIGHT FAILED: $runner cannot traverse the candidate release." >&2
+    return 1
+  fi
+  if ! sudo -n -u "$runner" test -r "$candidate/services/media-ingest/dist/services/media-ingest/src/config.js" 2>/dev/null; then
+    echo "PREFLIGHT FAILED: $runner cannot read the candidate's config module." >&2
+    return 1
+  fi
+  if ! sudo -n -u "$runner" test -r "$env_file" 2>/dev/null; then
+    echo "PREFLIGHT FAILED: $runner cannot read $env_file" >&2
+    echo "  The service user must be able to read its own environment file;" >&2
+    echo "  do NOT widen the file's permissions to make this pass." >&2
+    return 1
+  fi
+  sudo -n -u "$runner" node "$script" "$candidate" "$env_file"
 }

@@ -58,6 +58,23 @@ install -d -o "$SVC" -g "$SVC" -m 0750 \
 install -d -o root -g root -m 0700 "$VIDEOFY_BACKUP_DIR"
 # Written by the deployer (stage-webapps runs unprivileged), read by Caddy.
 install -d -o "$DEPLOY_OWNER" -g root -m 0755 "$VIDEOFY_WWW_DIR"
+
+# THE ATOMIC RELEASE MODEL'S OWN PATHS.
+#
+# `$VIDEOFY_ROOT` is root-owned, correctly -- but the deploy user is the one
+# that creates releases and takes the transaction lock, and it cannot write
+# there. The first real production preparation failed on exactly this:
+#
+#   /srv/videofy-prod/.deploy.lock: Permission denied
+#   REFUSED: could not take the deployment transaction lock
+#
+# The lock file is created here rather than by the deploy, because a lock the
+# deploy has to create is a lock the deploy can fail to create -- and the
+# failure looks identical to somebody else holding it.
+install -d -o "$DEPLOY_OWNER" -g "$DEPLOY_OWNER" -m 0755 "$VIDEOFY_ROOT/releases"
+if [[ ! -e "$VIDEOFY_ROOT/.deploy.lock" ]]; then
+  install -o "$DEPLOY_OWNER" -g "$DEPLOY_OWNER" -m 0644 /dev/null "$VIDEOFY_ROOT/.deploy.lock"
+fi
 install -d -o caddy -g caddy -m 0755 /var/log/caddy
 # The LOG FILE too, not merely its directory. `caddy validate` never opens a
 # log file, so a root-owned one passes validation and then fails the restart

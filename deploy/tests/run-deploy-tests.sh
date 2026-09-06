@@ -101,8 +101,9 @@ new_rig() {
 }
 
 unit_fixture() {
-  local unit="$1" wd="$2"
+  local unit="$1" wd="$2" user="${3:-videofy}"
   printf '%s' "$wd"    > "$STUB_SYSTEMD_DIR/$unit.WorkingDirectory"
+  printf '%s' "$user"  > "$STUB_SYSTEMD_DIR/$unit.User"
   printf '10min'       > "$STUB_SYSTEMD_DIR/$unit.StartLimitIntervalUSec"
   printf '10'          > "$STUB_SYSTEMD_DIR/$unit.StartLimitBurst"
   : > "$STUB_SYSTEMD_DIR/$unit.DropInPaths"
@@ -228,6 +229,10 @@ reset_failures() {
 . "$LIB/atomic-release.sh"
 # shellcheck source=../lib/transaction.sh
 . "$LIB/transaction.sh"
+# Sourced HERE, above the mutation block, so a mutation that redefines one of
+# its functions is not silently undone by a later re-source inside a test --
+# which is exactly why `preflight-as-deploy-user` appeared to survive.
+. "$LIB/activation.sh"
 
 # Mutations disable exactly one guard, to prove the suite can see it go.
 if [ "$MUTATION" = "no-seal-check" ]; then
@@ -357,6 +362,26 @@ if [ "$MUTATION" = "shared-remote-lib" ]; then
   # The defect: every transaction computes the SAME machinery directory, so one
   # caller writes where another reads.
   transaction_nonce() { printf 'shared'; }
+fi
+if [ "$MUTATION" = "bootstrap-preflight-bypassed" ]; then
+  # The defect: an unprovisioned host is reported as a busy lock, and the
+  # operator waits for a deployment that is not running.
+  atomic_bootstrap_state() { printf 'ok'; return 0; }
+fi
+if [ "$MUTATION" = "shipping-normalization-bypassed" ]; then
+  # The defect: CRLF libraries reach the host and bash dies on an invisible
+  # character.
+  shipment_normalise() { return 0; }
+fi
+if [ "$MUTATION" = "no-engine-provenance" ]; then
+  # The defect: production accepts a working-tree engine, so a certified SHA
+  # can be qualified by uncommitted operator-side code.
+  engine_is_committed() { git -C "$1" rev-parse HEAD 2>/dev/null; return 0; }
+fi
+if [ "$MUTATION" = "preflight-as-deploy-user" ]; then
+  # The defect: the preflight accepts whatever identity it is handed, including
+  # none, instead of proving it is the one systemd actually boots with.
+  activation_preflight() { return 0; }
 fi
 if [ "$MUTATION" = "no-dropin-guard" ]; then
   assert_units_resolve_through_pointer() { return 0; }
@@ -1477,6 +1502,214 @@ check "mutating paths install machinery only through transaction_begin" \
 # The one bare call is `state`, which is read-only and takes no lock.
 check "the only unlocked ship is the read-only state path" \
   "$(sed -n "$((BARE_SHIP-8)),${BARE_SHIP}p" "$SCRIPT" | grep -c 'READ-ONLY')" "1"
+drop_rig
+
+# ============================== real-host transport findings
+
+echo ""
+echo "the five things only a real deployment could find"
+
+REPO_ROOT="$HERE/../.."
+DEPLOY_SH="$REPO_ROOT/deploy/atomic-deploy.sh"
+
+# A. BOOTSTRAP -- TESTED BY BEHAVIOUR.
+#
+# The first version of this grepped install.sh for two strings. That proved the
+# provisioning line exists and nothing about what a deploy does when it has not
+# been run -- which is the whole finding: the deploy reported a provisioning
+# failure as lock contention, and an operator waited for a deployment that was
+# not running.
+new_rig; reset_failures
+BOOT="$RIG/boot"
+
+# Nothing provisioned at all.
+mkdir -p "$BOOT"
+check "an unprovisioned root reports missing releases" \
+  "$(atomic_bootstrap_state "$BOOT" 2>/dev/null)" "missing-releases"
+
+# releases/ present, lock absent -- the exact state the host was in.
+mkdir -p "$BOOT/releases"
+check "releases without a lock reports the missing lock" \
+  "$(atomic_bootstrap_state "$BOOT" 2>/dev/null)" "missing-lock"
+
+# A directory where the lock file belongs.
+mkdir -p "$BOOT/.deploy.lock"
+check "a lock that is not a regular file is named as such" \
+  "$(atomic_bootstrap_state "$BOOT" 2>/dev/null)" "lock-not-a-regular-file"
+rmdir "$BOOT/.deploy.lock"
+
+# A file where releases/ belongs.
+rmdir "$BOOT/releases"; : > "$BOOT/releases"
+check "releases as a file is named as such" \
+  "$(atomic_bootstrap_state "$BOOT" 2>/dev/null)" "releases-not-a-directory"
+rm -f "$BOOT/releases"; mkdir -p "$BOOT/releases"
+
+# Fully provisioned.
+: > "$BOOT/.deploy.lock"
+check "a provisioned root passes" "$(atomic_bootstrap_state "$BOOT" 2>/dev/null)" "ok"
+
+# A root that does not exist at all.
+check "a missing root is named" \
+  "$(atomic_bootstrap_state "$RIG/nowhere" 2>/dev/null)" "missing-root"
+
+# THE DISTINCTION THAT MATTERS. A provisioned host whose lock is HELD must
+# report busy, never bootstrap-incomplete: the two demand opposite responses,
+# and conflating them is the original defect.
+printf '%s\n' \
+  ". \"$LIB/deploy-lock.sh\"" \
+  "export ATOMIC_ROOT=\"$BOOT\"" \
+  "atomic_lock_acquire || exit 9" \
+  "touch \"$BOOT/held\"" \
+  "for _ in \$(seq 1 200); do [ -f \"$BOOT/go\" ] && break; sleep 0.05; done" > "$BOOT/holder.sh"
+setsid bash "$BOOT/holder.sh" &
+BOOT_HOLDER=$!
+for _ in $(seq 1 100); do [ -f "$BOOT/held" ] && break; sleep 0.05; done
+check "a busy host still reports its bootstrap as ok, not incomplete" \
+  "$(atomic_bootstrap_state "$BOOT" 2>/dev/null)" "ok"
+ATOMIC_ROOT="$BOOT" atomic_lock_acquire >/dev/null 2>&1 \
+  && bad "the held lock was acquired" "it must refuse" \
+  || ok "and the lock itself reports BUSY, which is a different answer"
+BOOT_PGID="$(ps -o pgid= -p "$BOOT_HOLDER" 2>/dev/null | tr -d ' ')"
+[ -n "$BOOT_PGID" ] && kill -9 -"$BOOT_PGID" 2>/dev/null
+kill -9 "$BOOT_HOLDER" 2>/dev/null; wait "$BOOT_HOLDER" 2>/dev/null
+atomic_lock_release 2>/dev/null || true
+
+# The refusal must tell the operator what to run, and must deny it is a busy lock.
+BOOT_MSG="$(atomic_bootstrap_refusal "$BOOT" missing-lock production 2>&1)"
+case "$BOOT_MSG" in
+  *"NOT A BUSY LOCK"*) ok "the refusal explicitly denies lock contention" ;;
+  *) bad "the refusal does not distinguish itself from a busy lock" "$BOOT_MSG" ;;
+esac
+case "$BOOT_MSG" in
+  *install.sh*) ok "and names the bootstrap command to run" ;;
+  *) bad "the refusal does not say what to run" "$BOOT_MSG" ;;
+esac
+drop_rig
+
+# install.sh must still be the thing that provisions -- a deploy that creates
+# these itself would hide a half-provisioned host rather than report one.
+if grep -q 'VIDEOFY_ROOT/releases' "$REPO_ROOT/deploy/production/install.sh"; then
+  ok "install.sh provisions the release store"
+else bad "install.sh does not provision releases/" ""; fi
+
+# C. LF TRANSPORT -- ALSO BY BEHAVIOUR, through the real helper.
+new_rig; reset_failures
+SRCDIR="$RIG/src-lib"; SHIPDIR="$RIG/shipped"
+mkdir -p "$SRCDIR"
+printf 'say() { echo hi; }\r\nsay\r\n'      > "$SRCDIR/lib-a.sh"
+printf 'export const x = 1;\r\n'            > "$SRCDIR/lib-b.mjs"
+printf 'x = 1\r\n'                          > "$SRCDIR/lib-c.py"
+printf 'binary-ish\r\nkeep\r\n'             > "$SRCDIR/notcode.txt"
+SRC_TXT_BEFORE="$(sha256sum "$SRCDIR/notcode.txt" | cut -d' ' -f1)"
+SRC_SH_BEFORE="$(sha256sum "$SRCDIR/lib-a.sh" | cut -d' ' -f1)"
+
+cp -r "$SRCDIR" "$SHIPDIR"
+shipment_normalise "$SHIPDIR"
+
+# `grep -c` prints 0 AND EXITS 1 when there are no matches, so `|| echo 0`
+# appends a SECOND zero and the comparison fails on the good outcome. That
+# trap has now cost three assertions in this suite; counted once, here.
+cr_lines() { local n; n="$(grep -c $'\r' "$1" 2>/dev/null)"; [ -n "$n" ] || n=0; printf '%s' "$n"; }
+check "the shipped shell library has no CRLF" "$(cr_lines "$SHIPDIR/lib-a.sh")" "0"
+check "the shipped mjs has no CRLF"           "$(cr_lines "$SHIPDIR/lib-b.mjs")" "0"
+check "the shipped python has no CRLF"        "$(cr_lines "$SHIPDIR/lib-c.py")" "0"
+if bash -n "$SHIPDIR/lib-a.sh" 2>/dev/null; then
+  ok "the shipped shell library parses"
+else bad "the shipped library does not parse" ""; fi
+if ( . "$SHIPDIR/lib-a.sh" >/dev/null 2>&1 ); then
+  ok "and sourcing it succeeds"
+else bad "sourcing the shipped library failed" ""; fi
+# The CRLF original must still fail, or the fixture proved nothing.
+if bash -n "$SRCDIR/lib-a.sh" 2>/dev/null && ( . "$SRCDIR/lib-a.sh" >/dev/null 2>&1 ); then
+  bad "the CRLF original ran fine" "this platform cannot demonstrate the fault"
+else ok "the un-normalised original still fails, as it did on the host"; fi
+check "the source copy was never rewritten" \
+  "$(sha256sum "$SRCDIR/lib-a.sh" | cut -d' ' -f1)" "$SRC_SH_BEFORE"
+check "and non-code files are left alone" \
+  "$(sha256sum "$SHIPDIR/notcode.txt" | cut -d' ' -f1)" "$SRC_TXT_BEFORE"
+drop_rig
+
+# D. PREFLIGHT IDENTITY -- TESTED BY BEHAVIOUR, NOT BY GREP.
+#
+# The first version of these two cases asserted that the SOURCE contained
+# certain strings. Both mutations then SURVIVED at 223/223: replacing the
+# function changes behaviour and not one character of the file, so a grep sees
+# nothing. A test that cannot fail is not evidence, so these call the real
+# functions and assert what they do.
+new_rig; reset_failures
+
+# No configured identity: refuse rather than guess. Guessing would test a user
+# no service runs as, and pass.
+ATOMIC_SERVICE_USER="" ATOMIC_UNITS="videofy-test-account" \
+  activation_preflight "$RIG" "$RIG/env" >/dev/null 2>&1 \
+  && bad "the preflight ran with no configured identity" "it must refuse" \
+  || ok "the preflight refuses when no service identity is configured"
+
+# Configured identity disagrees with systemd's effective User: refuse. A check
+# run as the wrong user proves nothing about the real startup.
+unit_fixture videofy-test-account "$ATOMIC_CURRENT/services/account" videofy
+ATOMIC_SERVICE_USER="somebody-else" ATOMIC_UNITS="videofy-test-account" \
+  activation_preflight "$RIG" "$RIG/env" >/dev/null 2>&1 \
+  && bad "the preflight accepted an identity systemd does not use" "it must refuse" \
+  || ok "the preflight refuses when the identity disagrees with the unit"
+
+# The refusal must name the disagreement, or an operator cannot act on it.
+PREFLIGHT_ERR="$(ATOMIC_SERVICE_USER="somebody-else" ATOMIC_UNITS="videofy-test-account" \
+  activation_preflight "$RIG" "$RIG/env" 2>&1 || true)"
+case "$PREFLIGHT_ERR" in
+  *"runs as 'videofy'"*) ok "and says which identity systemd actually uses" ;;
+  *) bad "the refusal does not name the effective user" "$PREFLIGHT_ERR" ;;
+esac
+drop_rig
+
+# E. ENGINE PROVENANCE -- ALSO BY BEHAVIOUR.
+new_rig; reset_failures
+ENGREPO="$RIG/engine"
+mkdir -p "$ENGREPO/deploy/lib"
+git -C "$ENGREPO" init -q .
+printf 'committed\n' > "$ENGREPO/deploy/lib/activation.sh"
+git -C "$ENGREPO" add -A >/dev/null 2>&1
+git -C "$ENGREPO" -c user.email=t@t -c user.name=t commit -q -m engine
+
+ENG_SHA="$(engine_is_committed "$ENGREPO" 2>/dev/null)"
+check "a clean committed engine reports its sha" \
+  "$([ -n "$ENG_SHA" ] && echo reported || echo none)" "reported"
+check "and the sha is the engine's HEAD" \
+  "$ENG_SHA" "$(git -C "$ENGREPO" rev-parse HEAD)"
+
+# A modified tracked deploy file: exactly the state this incident created.
+printf 'edited locally\n' >> "$ENGREPO/deploy/lib/activation.sh"
+if engine_is_committed "$ENGREPO" >/dev/null 2>&1; then
+  bad "a modified activation.sh was accepted" "production could run uncommitted code"
+else ok "a modified deploy file refuses"; fi
+git -C "$ENGREPO" checkout -q -- deploy/lib/activation.sh
+
+# A modified preflight, named specifically because it is the file that decides
+# whether production configuration is acceptable.
+printf 'x\n' >> "$ENGREPO/deploy/lib/preflight-config.mjs" 2>/dev/null || \
+  printf 'x\n' > "$ENGREPO/deploy/lib/preflight-config.mjs"
+if engine_is_committed "$ENGREPO" >/dev/null 2>&1; then
+  bad "an uncommitted preflight-config.mjs was accepted" "the gate itself is unversioned"
+else ok "an untracked preflight-config.mjs refuses"; fi
+rm -f "$ENGREPO/deploy/lib/preflight-config.mjs"
+
+# An untracked executable beside the committed engine.
+printf 'evil\n' > "$ENGREPO/deploy/lib/extra.sh"
+if engine_is_committed "$ENGREPO" >/dev/null 2>&1; then
+  bad "an untracked deploy/lib file was accepted" "shipped bytes would be unversioned"
+else ok "an untracked file under deploy/lib refuses"; fi
+rm -f "$ENGREPO/deploy/lib/extra.sh"
+
+# Clean again: the gate must not be permanently sticky.
+if engine_is_committed "$ENGREPO" >/dev/null 2>&1; then
+  ok "a re-cleaned engine is accepted again"
+else bad "the gate stayed refused after cleaning" ""; fi
+
+# A directory that is not a Git repository at all cannot identify itself.
+mkdir -p "$RIG/notgit/deploy"
+if engine_is_committed "$RIG/notgit" >/dev/null 2>&1; then
+  bad "a non-repository was accepted as an engine" "it has no sha to record"
+else ok "an engine with no Git HEAD refuses"; fi
 drop_rig
 
 # ============================================================ report
