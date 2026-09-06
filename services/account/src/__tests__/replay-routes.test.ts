@@ -201,6 +201,8 @@ interface HarnessOptions {
   /** Other channels, reachable by id or handle, for the oracle tests. */
   readonly others?: readonly ReplayRouteChannel[];
   readonly now?: number;
+  /** Absent means this deployment has no deletion queue at all. */
+  readonly deletions?: boolean;
 }
 
 interface Harness {
@@ -209,6 +211,7 @@ interface Harness {
   readonly settings: ReturnType<typeof fakeSettings>;
   readonly overrides: ReturnType<typeof fakeOverrides>;
   readonly events: { event: string; detail: Record<string, string | number> }[];
+  readonly requested: { runId: string; requestId: string }[];
 }
 
 const OWN: string = 'ch_own';
@@ -226,6 +229,7 @@ async function harness(options: HarnessOptions = {}): Promise<Harness> {
   const settings = fakeSettings(options.settings === undefined ? null : options.settings);
   const overrides = fakeOverrides();
   const events: { event: string; detail: Record<string, string | number> }[] = [];
+  const requested: { runId: string; requestId: string }[] = [];
 
   const app = express();
   app.use(express.json());
@@ -235,6 +239,17 @@ async function harness(options: HarnessOptions = {}): Promise<Harness> {
     airings: fakeCatalogue(options.records ?? []),
     callerAccountId: () => (options.signedIn === false ? null : { accountId: 'acct_1' }),
     cursorSecret: CURSOR_SECRET,
+    ...(options.deletions === false
+      ? {}
+      : {
+          deletions: {
+            async request(runId: string, requestId: string) {
+              const already = requested.some((entry) => entry.runId === runId);
+              requested.push({ runId, requestId });
+              return already ? ('already-queued' as const) : ('queued' as const);
+            },
+          },
+        }),
     ownChannel: async () => (options.hasChannel === false ? null : own),
     channelById: async (channelId) => channels.get(channelId) ?? null,
     channelByHandle: async (handle) => handles.get(handle) ?? null,
@@ -252,6 +267,7 @@ async function harness(options: HarnessOptions = {}): Promise<Harness> {
     settings,
     overrides,
     events,
+    requested,
     close: () =>
       new Promise((resolve) => {
         server.close(() => resolve());
@@ -1237,6 +1253,94 @@ describe('the sealed page cursor', () => {
     );
     expect(spoofed.status).toBe(200);
     expect(spoofed.text).toBe(plain.text);
+  });
+});
+
+/* ================================================== removing a recording */
+
+describe('an owner removing one of their own recordings', () => {
+  const records = [
+    airing('run_mine', OWN, kept()),
+    airing('run_theirs', 'ch_other', kept()),
+    airing('run_nothing_kept', OWN, REPLAY_NOT_KEPT),
+  ];
+
+  it('queues a durable request and says the programme stays in history', async () => {
+    const h = await start({ records });
+    const answer = await call(h, 'POST', '/channels/mine/airings/run_mine/delete-replay', {});
+    expect(answer.status).toBe(202);
+    expect(answer.body['requested']).toBe(true);
+    expect(String(answer.body['message'])).toContain('stays in your broadcast history');
+    expect(h.requested.map((entry) => entry.runId)).toEqual(['run_mine']);
+  });
+
+  it('REFUSES a run belonging to another channel, with the missing answer', async () => {
+    /*
+     * THE MUTATION THIS CLOSES dropped the channel comparison. A run id arrives
+     * from a UI this service did not write, in a request anybody can construct,
+     * and it names an object in a shared archive -- so without this check it
+     * would be a capability to delete any recording on the platform.
+     *
+     * The same sentence a missing broadcast gets, because two answers would
+     * tell somebody which run ids on other channels are real.
+     */
+    const h = await start({ records });
+    const theirs = await call(h, 'POST', '/channels/mine/airings/run_theirs/delete-replay', {});
+    const missing = await call(h, 'POST', '/channels/mine/airings/run_imaginary/delete-replay', {});
+    expect(theirs.status).toBe(404);
+    expect(theirs.text).toBe(missing.text);
+    expect(h.requested).toEqual([]);
+  });
+
+  it('refuses without a session, before anything is queued', async () => {
+    const h = await start({ records, signedIn: false });
+    expect((await call(h, 'POST', '/channels/mine/airings/run_mine/delete-replay', {})).status).toBe(
+      401,
+    );
+    expect(h.requested).toEqual([]);
+  });
+
+  it('says there is nothing to remove when the operator kept nothing', async () => {
+    // Answered as itself rather than queued: the queue would settle it
+    // instantly and the operator would be told a removal was under way for a
+    // recording that never existed.
+    const h = await start({ records });
+    const answer = await call(
+      h,
+      'POST',
+      '/channels/mine/airings/run_nothing_kept/delete-replay',
+      {},
+    );
+    expect(answer.status).toBe(409);
+    expect(String(answer.body['error'])).toContain('nothing to remove');
+    expect(h.requested).toEqual([]);
+  });
+
+  it('is idempotent: asking twice is one request and the same shape of answer', async () => {
+    const h = await start({ records });
+    const first = await call(h, 'POST', '/channels/mine/airings/run_mine/delete-replay', {});
+    const second = await call(h, 'POST', '/channels/mine/airings/run_mine/delete-replay', {});
+    expect(first.status).toBe(202);
+    expect(second.status).toBe(202);
+    expect(second.body['alreadyRequested']).toBe(true);
+    // The same thing to the person pressing the button: this recording is going.
+    expect(second.body['requested']).toBe(true);
+  });
+
+  it('refuses plainly on a deployment with no deletion queue', async () => {
+    // "We noted your request" is the one answer that must never be given by
+    // something that noted nothing.
+    const h = await start({ records, deletions: false });
+    const answer = await call(h, 'POST', '/channels/mine/airings/run_mine/delete-replay', {});
+    expect(answer.status).toBe(503);
+    expect(String(answer.body['error'])).toContain('not available');
+  });
+
+  it('never carries a path, a key or an archive reference into the request', async () => {
+    const h = await start({ records });
+    await call(h, 'POST', '/channels/mine/airings/run_mine/delete-replay', {});
+    expect(JSON.stringify(h.requested)).not.toContain('/');
+    expect(JSON.stringify(h.requested)).not.toContain('.bin');
   });
 });
 

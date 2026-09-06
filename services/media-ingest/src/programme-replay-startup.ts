@@ -121,7 +121,24 @@ async function startObject(config: ReplayComposition): Promise<ReplayStartup> {
   const settings = config.object;
   if (settings === null) return { ready: false, detail: 'no object storage was configured' };
 
+  /*
+   * A STORE MAY BE SUPPLIED, SO THE GATE CAN BE TESTED IN ISOLATION.
+   *
+   * Without this the only object failure a test can produce is an unreachable
+   * endpoint -- and that is refused by the probe's own error path rather than by
+   * the capability verdict, so deleting the verdict check leaves every test
+   * green. A mutation run found exactly that. A store that answers perfectly and
+   * merely lies about the conditional is the one case that isolates the gate,
+   * and it cannot be built over a network.
+   *
+   * Never set in production: `readReplayConfig` cannot produce this field.
+   */
+  const supplied = (config as { __storeForTests?: ReplayObjectStore }).__storeForTests;
+
   let store: ReplayObjectStore;
+  if (supplied !== undefined) {
+    store = supplied;
+  } else
   try {
     store = new S3CompatibleObjectStore({
       endpoint: settings.endpoint,
