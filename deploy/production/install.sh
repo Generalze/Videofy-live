@@ -75,6 +75,54 @@ install -d -o "$DEPLOY_OWNER" -g "$DEPLOY_OWNER" -m 0755 "$VIDEOFY_ROOT/releases
 if [[ ! -e "$VIDEOFY_ROOT/.deploy.lock" ]]; then
   install -o "$DEPLOY_OWNER" -g "$DEPLOY_OWNER" -m 0644 /dev/null "$VIDEOFY_ROOT/.deploy.lock"
 fi
+
+# --- PUBLICATION AUTHORITY ---------------------------------------------------
+#
+# The deployment root stays root-owned: the deploy identity has no business
+# creating files beside the release store, the uploads or the environment
+# files. But publishing a release replaces $VIDEOFY_ROOT/current, and replacing
+# a symlink needs write permission on the directory that holds it.
+#
+# During the 2026-09-06 convergence that gap was closed by hand with sudo,
+# which is exactly the kind of undocumented requirement that works once and
+# then strands somebody at 3am. So the one privileged operation gets one
+# root-owned program that can perform it and nothing else.
+#
+# The verification libraries are installed as ROOT-OWNED COPIES. The helper
+# must never source the deployment's own libraries: those live in /tmp and
+# belong to the deploy identity, so sourcing them would turn a narrow helper
+# into a way to run arbitrary code as root.
+install -d -o root -g root -m 0755 /usr/local/lib/videofy
+# Resolved from this script's own location, not the caller's working
+# directory: install.sh is idempotent and is re-run from wherever the operator
+# happens to be standing.
+install -o root -g root -m 0644 "$HERE/../lib/release-paths.sh"  /usr/local/lib/videofy/release-paths.sh
+install -o root -g root -m 0644 "$HERE/../lib/release-engine.sh" /usr/local/lib/videofy/release-engine.sh
+install -o root -g root -m 0755 "$HERE/publish-current.sh"       /usr/local/sbin/videofy-publish-current
+
+# One command, one caller, no password prompt, and nothing else granted. This
+# does NOT remove any broader sudo the account may already hold -- narrowing
+# that is a separate, deliberate change (see docs) -- but it means a correctly
+# hardened account still has exactly what a deployment needs.
+#
+# VALIDATED BEFORE IT IS ANYWHERE sudo WILL READ IT. A malformed file in
+# /etc/sudoers.d locks everybody out of sudo -- and so does a well-formed one
+# caught half-written, because sudo reads the directory on every invocation.
+# So it is composed elsewhere, checked, and only then installed in one step.
+SUDOERS_TMP="$(mktemp)"
+cat > "$SUDOERS_TMP" <<SUDOERS
+# Publishing a release is the only privileged step in a deployment.
+$DEPLOY_OWNER ALL=(root) NOPASSWD: /usr/local/sbin/videofy-publish-current
+SUDOERS
+if ! visudo -c -f "$SUDOERS_TMP" >/dev/null; then
+  rm -f "$SUDOERS_TMP"
+  echo "REFUSED: generated sudoers entry did not validate; nothing installed" >&2
+  exit 1
+fi
+install -o root -g root -m 0440 "$SUDOERS_TMP" /etc/sudoers.d/videofy-publish
+rm -f "$SUDOERS_TMP"
+echo "publication authority installed: /usr/local/sbin/videofy-publish-current"
+
 install -d -o caddy -g caddy -m 0755 /var/log/caddy
 # The LOG FILE too, not merely its directory. `caddy validate` never opens a
 # log file, so a root-owned one passes validation and then fails the restart

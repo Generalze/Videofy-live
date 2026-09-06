@@ -358,7 +358,55 @@ release_publish() {
     echo "REFUSED: $dir is not a sealed release; nothing may point at it" >&2
     return 1
   }
-  pointer_publish "$current" "$dir"
+  #
+  # WHO IS ALLOWED TO REPLACE THE POINTER.
+  #
+  # Replacing a symlink needs write permission on the directory holding it, and
+  # on production that directory is root-owned -- deliberately, since the deploy
+  # identity has no business creating files beside the release store, the
+  # uploads or the environment files. So when the directory is not writable, the
+  # rename is performed by a root-owned helper that can do this one thing and
+  # nothing else.
+  #
+  # Where the directory IS writable (staging, and every test rig), the ordinary
+  # path is used. The atomic guarantee is identical either way: both end in a
+  # rename over the pointer.
+  if [ -w "$(dirname "$current")" ]; then
+    pointer_publish "$current" "$dir"
+  else
+    publication_authority_publish "$sha" "$current"
+  fi
+}
+
+# The publication helper, or a clear refusal.
+#
+# Overridable for tests, which supply a stub at a temporary path. On a real
+# host it is the root-owned program installed by install.sh.
+ATOMIC_PUBLISH_HELPER="${ATOMIC_PUBLISH_HELPER:-/usr/local/sbin/videofy-publish-current}"
+
+publication_authority_publish() {
+  local sha="$1" current="$2"
+  if [ ! -x "$ATOMIC_PUBLISH_HELPER" ]; then
+    echo "REFUSED: $(dirname "$current") is not writable and the publication" >&2
+    echo "  helper $ATOMIC_PUBLISH_HELPER is not installed." >&2
+    echo "  Nothing can move the pointer. Run deploy/production/install.sh." >&2
+    return 1
+  fi
+  # `-n`: never prompt. A deployment that stops for a password is a deployment
+  # that hangs in automation rather than failing.
+  sudo -n "$ATOMIC_PUBLISH_HELPER" "$sha" || {
+    echo "REFUSED: the publication helper would not publish $sha" >&2
+    return 1
+  }
+  # Verified from THIS side too. The helper reports success; the pointer is the
+  # authority, and a helper that lied would otherwise go unnoticed.
+  local landed
+  landed="$(pointer_target "$current")"
+  if [ "$landed" != "$(release_dir "$ATOMIC_RELEASES" "$sha")" ]; then
+    echo "REFUSED: after publication $current points at $landed, not $sha" >&2
+    return 1
+  fi
+  return 0
 }
 
 # Install the structural web pointer. ONE-TIME CONVERGENCE ONLY.

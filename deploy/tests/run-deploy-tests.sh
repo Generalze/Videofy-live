@@ -363,6 +363,27 @@ if [ "$MUTATION" = "shared-remote-lib" ]; then
   # caller writes where another reads.
   transaction_nonce() { printf 'shared'; }
 fi
+if [ "$MUTATION" = "no-publication-authority-preflight" ]; then
+  # The defect: the bootstrap pronounces a host ready without proving anything
+  # on it can move the pointer, so the deploy discovers it cannot publish only
+  # after a release has been built -- which is the 2026-09-06 incident.
+  atomic_bootstrap_state() {
+    local root="$1"
+    [ -e "$root" ] || { printf 'missing-root'; return 1; }
+    [ -d "$root/releases" ] || { printf 'missing-releases'; return 1; }
+    [ -f "$root/.deploy.lock" ] || { printf 'missing-lock'; return 1; }
+    printf 'ok'; return 0
+  }
+fi
+if [ "$MUTATION" = "trust-the-publisher" ]; then
+  # The defect: publication asks no questions -- it does not check that a
+  # publisher is installed, and it believes the exit code instead of reading
+  # the pointer back. A helper that reports success it never performed leaves
+  # production on the previous release while the deploy reports a new one.
+  publication_authority_publish() {
+    sudo -n "$ATOMIC_PUBLISH_HELPER" "$1" 2>/dev/null
+  }
+fi
 if [ "$MUTATION" = "bootstrap-preflight-bypassed" ]; then
   # The defect: an unprovisioned host is reported as a busy lock, and the
   # operator waits for a deployment that is not running.
@@ -1711,6 +1732,308 @@ if engine_is_committed "$RIG/notgit" >/dev/null 2>&1; then
   bad "a non-repository was accepted as an engine" "it has no sha to record"
 else ok "an engine with no Git HEAD refuses"; fi
 drop_rig
+
+# ======================================================= publication authority
+#
+# THE GAP THIS CLOSES. `/srv/videofy-prod` is root-owned, correctly. Replacing
+# a symlink needs write permission on the DIRECTORY that holds it, so the
+# deploy identity cannot move `current`. On 2026-09-06 that was discovered
+# after a release had already been built, and was closed by hand with sudo --
+# an undocumented requirement that works once and then strands the next person.
+#
+# Publication now goes through one root-owned program that can do this one
+# thing, and the ability to do it is proven BEFORE anything is built.
+#
+# These tests run the real script. Its root and library paths are compiled in
+# and it accepts an override for them ONLY when not running as uid 0, so the
+# override is unreachable through the sudo path the deployment actually uses.
+
+echo ""
+echo "the pointer moves through one narrow privileged program, or not at all"
+
+PUBLISH_SH="$REPO_ROOT/deploy/production/publish-current.sh"
+
+if [ "$MUTATION" = "wide-publication-paths" ]; then
+  # The defect: the privileged helper publishes whatever it is handed, so the
+  # deploy account gains a root-owned way to point production at something that
+  # never passed a gate. The helper is a separate program rather than a sourced
+  # function, so the mutation is applied to a COPY of it -- its verification
+  # lines removed and everything else byte-identical.
+  MUTDIR="$(mktemp -d "${TMPDIR:-/tmp}/videofy-mutpub-XXXXXX")"
+  PUBLISH_SH="$MUTDIR/publish-current.sh"
+  grep -vF \
+    -e 'assert_full_sha ' \
+    -e 'release_is_complete "$TARGET"' \
+    -e 'release_recorded_sha "$TARGET"' \
+    -e 'release_symlinks_stay_inside "$TARGET"' \
+    "$REPO_ROOT/deploy/production/publish-current.sh" > "$PUBLISH_SH"
+fi
+
+# `sudo` is shadowed for these cases, so the suite exercises the real call --
+# including the literal `sudo -n` in the engine -- while escalating nothing.
+sudo_stub() {
+  mkdir -p "$RIG/bin"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'while [ "${1-}" = "-n" ]; do shift; done' \
+    'exec "$@"' > "$RIG/bin/sudo"
+  chmod 755 "$RIG/bin/sudo"
+  PATH="$RIG/bin:$SAVED_PATH"
+}
+SAVED_PATH="$PATH"
+
+# EXACTLY WHAT install.sh PUTS IN /usr/local/lib/videofy, and nothing else.
+#
+# Handing the helper the whole of deploy/lib would let it depend on a file the
+# install never copies -- which works here and fails on the host at the moment
+# of publication, having already built a release. So the helper is tested
+# against the installed set alone.
+INSTALLED_LIB="$(mktemp -d "${TMPDIR:-/tmp}/videofy-instlib-XXXXXX")"
+cp "$LIB/release-paths.sh" "$LIB/release-engine.sh" "$INSTALLED_LIB/"
+check "install.sh installs exactly the libraries tested here" \
+  "$(grep -c 'usr/local/lib/videofy/' "$REPO_ROOT/deploy/production/install.sh")" "2"
+
+# The real helper, pointed at the rig. Everything else about it is untouched.
+publish_helper() {
+  VIDEOFY_PUBLISH_ROOT="$ATOMIC_ROOT" VIDEOFY_PUBLISH_LIB="$INSTALLED_LIB" \
+    bash "$PUBLISH_SH" "$@"
+}
+
+# ---- 9. A valid publish atomically replaces `current` ----
+
+new_rig; reset_failures
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+BUILD_SHA="$B"; release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+
+publish_helper "$A" >/dev/null 2>&1
+check "the helper publishes a sealed release" "$(simulate_restart)" "$A"
+check "and what it publishes is a symlink, not a copied tree" \
+  "$([ -L "$ATOMIC_CURRENT" ] && echo symlink || echo NOT-A-SYMLINK)" "symlink"
+check "the web pointer still names current, untouched by publication" \
+  "$(web_pointer_target)" "$ATOMIC_CURRENT/www"
+
+# ---- 10. A rollback is the same operation, through the same authority ----
+
+publish_helper "$B" >/dev/null 2>&1
+check "publishing forward moves the pointer" "$(simulate_restart)" "$B"
+publish_helper "$A" >/dev/null 2>&1
+check "and a rollback is the identical call, not a privileged special case" \
+  "$(simulate_restart)" "$A"
+
+# Publication leaves nothing behind. A `.publishing.NNN` link surviving a run
+# means a rename did not happen and the next operator finds debris.
+check "no publication temporary survives" \
+  "$(find "$ATOMIC_ROOT" -maxdepth 1 -name 'current.publishing.*' | wc -l | tr -d ' ')" "0"
+
+# ---- 4 + 8. Only a SHA is accepted, so no other path can be named ----
+
+SHOUTED="$(printf '%s' "$A" | tr 'abcdef' 'ABCDEF')"
+for ARG in 'not-a-sha' '../../etc' "../releases/$A" "$ATOMIC_RELEASES/$A" \
+           "$A extra" '' "${A}0" "$SHOUTED"; do
+  if publish_helper $ARG >/dev/null 2>&1; then
+    bad "the helper accepted [$ARG]" "only a 40-char sha may be published"
+  else ok "the helper refuses [$ARG]"; fi
+done
+check "and after every refusal the pointer is unchanged" "$(simulate_restart)" "$A"
+
+# ---- 5. An unsealed directory is not a release, whatever it is called ----
+
+mkdir -p "$ATOMIC_RELEASES/$C/services/account"
+if publish_helper "$C" >/dev/null 2>&1; then
+  bad "an unsealed directory was published" "it must refuse"
+else ok "an unsealed directory is refused"; fi
+check "the pointer did not move" "$(simulate_restart)" "$A"
+rm -rf "$ATOMIC_RELEASES/$C"
+
+# A sha with no directory at all.
+if publish_helper "$C" >/dev/null 2>&1; then
+  bad "a sha with no release was published" "it must refuse"
+else ok "a sha with no release directory is refused"; fi
+
+# ---- 6. A sealed release whose bytes changed is no longer that release ----
+
+BUILD_SHA="$C"; release_prepare "$ATOMIC_RELEASES" "$C" "$C" build_body >/dev/null 2>&1
+printf 'added after sealing' > "$ATOMIC_RELEASES/$C/services/account/extra.js"
+if publish_helper "$C" >/dev/null 2>&1; then
+  bad "a tampered release was published" "the manifest no longer describes it"
+else ok "a release whose bytes changed after sealing is refused"; fi
+rm -f "$ATOMIC_RELEASES/$C/services/account/extra.js"
+check "and the same release publishes once it is intact again" \
+  "$(publish_helper "$C" >/dev/null 2>&1; simulate_restart)" "$C"
+
+# A marker naming a different commit -- a release copied or restored by hand.
+sed -i "s/$C/$B/" "$ATOMIC_RELEASES/$C/RELEASE.json" 2>/dev/null || true
+if publish_helper "$C" >/dev/null 2>&1; then
+  bad "a release whose marker names another commit was published" "it must refuse"
+else ok "a release whose marker disagrees with its name is refused"; fi
+drop_rig
+
+# ---- 7. A link that reaches outside the release ----
+
+new_rig; reset_failures
+BUILD_SHA="$C"; release_prepare "$ATOMIC_RELEASES" "$C" "$C" build_body >/dev/null 2>&1
+ln -sfn /etc "$ATOMIC_RELEASES/$C/services/account/outside"
+# Re-sealed AROUND the escaping link, so integrity holds and only the
+# containment proof can catch it. Without this the test would pass for the
+# wrong reason and the containment check could be deleted unnoticed.
+release_manifest_of "$ATOMIC_RELEASES/$C" > "$ATOMIC_RELEASES/$C/RELEASE.manifest.sha256"
+check "the re-sealed release still satisfies integrity, isolating the next proof" \
+  "$(release_integrity_holds "$ATOMIC_RELEASES/$C" && echo intact || echo tampered)" "intact"
+if publish_helper "$C" >/dev/null 2>&1; then
+  bad "a release containing an escaping symlink was published" "it must refuse"
+else ok "a release whose link escapes it is refused"; fi
+drop_rig
+
+# ---- --check changes nothing ----
+
+new_rig; reset_failures
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+publish_helper "$A" >/dev/null 2>&1
+if publish_helper --check >/dev/null 2>&1; then
+  ok "--check reports the authority is available"
+else bad "--check failed" "the bootstrap depends on it"; fi
+check "and --check publishes nothing" "$(simulate_restart)" "$A"
+drop_rig
+
+# ---- 1. An unwritable root routes publication through the helper ----
+
+echo ""
+echo "an unwritable deployment root routes publication, it does not fail"
+
+new_rig; reset_failures
+sudo_stub
+AUTH="$RIG/helper.sh"; AUTH_LOG="$RIG/helper.log"; : > "$AUTH_LOG"
+# Stands in for the root-owned program: a real one runs as root and is not
+# bound by the directory permissions, which is the whole reason it exists.
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'case "${1-}" in --check) exit 0;; esac' \
+  "printf '%s\n' \"\$1\" >> \"$AUTH_LOG\"" \
+  "chmod u+w \"$ATOMIC_ROOT\"" \
+  "ln -sfn \"$ATOMIC_RELEASES/\$1\" \"$ATOMIC_CURRENT.p.\$\$\"" \
+  "mv -Tf \"$ATOMIC_CURRENT.p.\$\$\" \"$ATOMIC_CURRENT\"" \
+  "chmod 555 \"$ATOMIC_ROOT\"" > "$AUTH"
+chmod 755 "$AUTH"
+export ATOMIC_PUBLISH_HELPER="$AUTH"
+
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+BUILD_SHA="$B"; release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+chmod 555 "$ATOMIC_ROOT"
+check "the root really is unwritable, so the ordinary path cannot be taken" \
+  "$([ -w "$ATOMIC_ROOT" ] && echo writable || echo unwritable)" "unwritable"
+
+release_publish "$ATOMIC_RELEASES" "$A" "$ATOMIC_CURRENT" >/dev/null 2>&1
+check "publication succeeded anyway" "$(simulate_restart)" "$A"
+check "and it went through the helper, with exactly that sha" \
+  "$(tail -1 "$AUTH_LOG")" "$A"
+
+# 10, again: rollback must not acquire a different or wider authority.
+: > "$AUTH_LOG"
+release_rollback "$ATOMIC_RELEASES" "$B" "$ATOMIC_CURRENT" >/dev/null 2>&1
+check "rollback takes the same route" "$(tail -1 "$AUTH_LOG")" "$B"
+check "and lands where it said" "$(simulate_restart)" "$B"
+
+# An unsealed release is still refused BEFORE the privileged program is asked.
+: > "$AUTH_LOG"
+mkdir -p "$ATOMIC_RELEASES/$C"
+release_publish "$ATOMIC_RELEASES" "$C" "$ATOMIC_CURRENT" >/dev/null 2>&1 \
+  && bad "an unsealed release was published through the helper" "it must refuse" \
+  || ok "an unsealed release is refused before the helper is invoked"
+check "the helper was never called" "$(wc -c < "$AUTH_LOG" | tr -d ' ')" "0"
+chmod 755 "$ATOMIC_ROOT"
+drop_rig; PATH="$SAVED_PATH"; unset ATOMIC_PUBLISH_HELPER
+
+# ---- 2. No helper: refuse, and say what is missing ----
+
+new_rig; reset_failures
+sudo_stub
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+export ATOMIC_PUBLISH_HELPER="$RIG/not-installed"
+chmod 555 "$ATOMIC_ROOT"
+PUB_MSG="$(release_publish "$ATOMIC_RELEASES" "$A" "$ATOMIC_CURRENT" 2>&1)" \
+  && bad "publication succeeded with no helper installed" "it must refuse" \
+  || ok "publication refuses when nothing can move the pointer"
+case "$PUB_MSG" in
+  *install.sh*) ok "and names the command that installs it" ;;
+  *) bad "the refusal does not say what to run" "$PUB_MSG" ;;
+esac
+chmod 755 "$ATOMIC_ROOT"
+drop_rig; PATH="$SAVED_PATH"; unset ATOMIC_PUBLISH_HELPER
+
+# ---- A helper that reports success without publishing ----
+
+new_rig; reset_failures
+sudo_stub
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+LIAR="$RIG/liar.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$LIAR"; chmod 755 "$LIAR"
+export ATOMIC_PUBLISH_HELPER="$LIAR"
+chmod 555 "$ATOMIC_ROOT"
+release_publish "$ATOMIC_RELEASES" "$A" "$ATOMIC_CURRENT" >/dev/null 2>&1 \
+  && bad "a helper that published nothing was believed" "the pointer is the authority" \
+  || ok "a helper reporting success it did not perform is caught"
+chmod 755 "$ATOMIC_ROOT"
+drop_rig; PATH="$SAVED_PATH"; unset ATOMIC_PUBLISH_HELPER
+
+# ---- 2 + 3. Publication authority is proven before a release is built ----
+
+echo ""
+echo "publication authority is part of being provisioned, proven up front"
+
+new_rig; reset_failures
+sudo_stub
+BOOT2="$RIG/boot2"
+mkdir -p "$BOOT2/releases"; : > "$BOOT2/.deploy.lock"
+check "a writable root needs no helper at all" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "ok"
+
+chmod 555 "$BOOT2"
+export ATOMIC_PUBLISH_HELPER="$RIG/absent"
+check "an unwritable root with no helper is bootstrap-incomplete" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "missing-publication-helper"
+BOOT_MSG="$(atomic_bootstrap_refusal "$BOOT2" missing-publication-helper production 2>&1)"
+case "$BOOT_MSG" in
+  *"ATOMIC PUBLICATION BOOTSTRAP INCOMPLETE"*) ok "and the refusal names the gap in those words" ;;
+  *) bad "the refusal does not name the publication gap" "$BOOT_MSG" ;;
+esac
+case "$BOOT_MSG" in
+  *"NOT A BUSY LOCK"*) ok "and still distinguishes itself from lock contention" ;;
+  *) bad "the refusal could be read as a busy lock" "$BOOT_MSG" ;;
+esac
+
+H2="$RIG/h2"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$H2"; chmod 644 "$H2"
+export ATOMIC_PUBLISH_HELPER="$H2"
+check "a helper that is not executable is refused" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "publication-helper-not-executable"
+
+chmod 775 "$H2"
+check "a group-writable helper is refused" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "publication-helper-writable"
+
+chmod 757 "$H2"
+check "a world-writable helper is refused" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "publication-helper-writable"
+
+chmod 755 "$H2"
+check "a helper not owned by root is refused" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "publication-helper-not-root-owned"
+
+# Root-owned, non-writable, executable -- but this identity may not invoke it.
+export ATOMIC_PUBLISH_HELPER=/bin/false
+check "an installed helper this identity cannot run is refused" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "publication-authority-unavailable"
+
+# The one arrangement that passes: root-owned, not writable, and invocable.
+export ATOMIC_PUBLISH_HELPER=/bin/true
+check "an unwritable root WITH working publication authority passes" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "ok"
+chmod 755 "$BOOT2"
+drop_rig; PATH="$SAVED_PATH"; unset ATOMIC_PUBLISH_HELPER
+
+# The scratch trees this section made for itself.
+rm -rf "$INSTALLED_LIB"
+[ -n "${MUTDIR:-}" ] && rm -rf "$MUTDIR"
 
 # ============================================================ report
 
