@@ -65,6 +65,8 @@ export * from './playback.js';
 export * from './airing.js';
 /** Who may be told what about that history, and what a public answer looks like. */
 export * from './audience.js';
+/** Releasing bytes after retention, which is never what decides who may watch. */
+export * from './lifecycle-worker.js';
 /** An implementation with no storage, for tests and for development. */
 export * from './memory-archive.js';
 /*

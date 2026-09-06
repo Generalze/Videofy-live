@@ -70,13 +70,16 @@ function record(overrides: Partial<ReplayRecord> = {}): ReplayRecord {
   };
 }
 
+/** The instant every plan below is asked about. Fixtures retain under `keep`. */
+const NOW = 1_700_000_200_000;
+
 const URIS = {
   init: (generation: number) => `/replays/run_a/init/${String(generation)}`,
   segment: (segmentId: string) => `/replays/run_a/segments/${segmentId}`,
 };
 
 function rendered(overrides: Partial<ReplayRecord> = {}): string {
-  const playback = planReplayPlayback(record(overrides));
+  const playback = planReplayPlayback(record(overrides), NOW);
   if (!playback.playable) throw new Error(`unexpectedly unplayable: ${playback.detail}`);
   return renderReplayVodManifest(playback.plan, URIS);
 }
@@ -85,7 +88,7 @@ function rendered(overrides: Partial<ReplayRecord> = {}): string {
 
 describe('only a finished recording is something to play', () => {
   it('plans playback for an available recording', () => {
-    const playback = planReplayPlayback(record());
+    const playback = planReplayPlayback(record(), NOW);
     expect(playback.playable).toBe(true);
     if (!playback.playable) throw new Error('unreachable');
     expect(playback.plan.entries).toHaveLength(2);
@@ -108,7 +111,7 @@ describe('only a finished recording is something to play', () => {
        * fragments whose neighbours have not arrived; a failed one is not a
        * shorter programme; an expired or deleted one is supposed to be gone.
        */
-      const playback = planReplayPlayback(record({ status }));
+      const playback = planReplayPlayback(record({ status }), NOW);
       expect(playback.playable).toBe(false);
       if (playback.playable) throw new Error('unreachable');
       expect(playback.refusal).toBe('not-available');
@@ -121,7 +124,7 @@ describe('only a finished recording is something to play', () => {
 
 describe('an available recording is still checked before it is rendered', () => {
   it('refuses one holding nothing', () => {
-    const playback = planReplayPlayback(record({ segments: [] }));
+    const playback = planReplayPlayback(record({ segments: [] }), NOW);
     expect(playback.playable).toBe(false);
     if (playback.playable) throw new Error('unreachable');
     expect(playback.refusal).toBe('no-media');
@@ -130,6 +133,7 @@ describe('an available recording is still checked before it is rendered', () => 
   it('refuses a fragment that occupies no time', () => {
     const playback = planReplayPlayback(
       record({ segments: [segment(0, { endProgrammeTimeMs: 0 })] }),
+      NOW,
     );
     expect(playback.playable).toBe(false);
     if (playback.playable) throw new Error('unreachable');
@@ -139,6 +143,7 @@ describe('an available recording is still checked before it is rendered', () => 
   it('refuses a fragment that runs backwards', () => {
     const playback = planReplayPlayback(
       record({ segments: [segment(0, { startProgrammeTimeMs: 4000, endProgrammeTimeMs: 2000 })] }),
+      NOW,
     );
     expect(playback.playable).toBe(false);
     if (playback.playable) throw new Error('unreachable');
@@ -148,6 +153,7 @@ describe('an available recording is still checked before it is rendered', () => 
   it('refuses a duration that is not a number at all', () => {
     const playback = planReplayPlayback(
       record({ segments: [segment(0, { endProgrammeTimeMs: Number.POSITIVE_INFINITY })] }),
+      NOW,
     );
     expect(playback.playable).toBe(false);
     if (playback.playable) throw new Error('unreachable');
@@ -157,6 +163,7 @@ describe('an available recording is still checked before it is rendered', () => 
   it('refuses two fragments claiming the same programme time', () => {
     const playback = planReplayPlayback(
       record({ segments: [segment(0), segment(1, { startProgrammeTimeMs: 1000 })] }),
+      NOW,
     );
     expect(playback.playable).toBe(false);
     if (playback.playable) throw new Error('unreachable');
@@ -166,6 +173,7 @@ describe('an available recording is still checked before it is rendered', () => 
   it('refuses a fragment recorded out of order', () => {
     const playback = planReplayPlayback(
       record({ segments: [segment(2), segment(0)] }),
+      NOW,
     );
     expect(playback.playable).toBe(false);
     if (playback.playable) throw new Error('unreachable');
@@ -177,6 +185,7 @@ describe('an available recording is still checked before it is rendered', () => 
     // the recording would look complete in every listing.
     const playback = planReplayPlayback(
       record({ segments: [segment(0), segment(1, { startProgrammeTimeMs: 8000, endProgrammeTimeMs: 10_000 })] }),
+      NOW,
     );
     expect(playback.playable).toBe(false);
     if (playback.playable) throw new Error('unreachable');
@@ -186,6 +195,7 @@ describe('an available recording is still checked before it is rendered', () => 
   it('refuses a fragment whose generation was never kept', () => {
     const playback = planReplayPlayback(
       record({ segments: [segment(0), segment(1, { initGeneration: 1 })] }),
+      NOW,
     );
     expect(playback.playable).toBe(false);
     if (playback.playable) throw new Error('unreachable');
@@ -196,6 +206,7 @@ describe('an available recording is still checked before it is rendered', () => 
   it('refuses one id used twice', () => {
     const playback = planReplayPlayback(
       record({ segments: [segment(0), segment(0)] }),
+      NOW,
     );
     expect(playback.playable).toBe(false);
     if (playback.playable) throw new Error('unreachable');
@@ -207,7 +218,7 @@ describe('an available recording is still checked before it is rendered', () => 
     // A list that needs sorting to make sense is a list that is wrong, and
     // reordering it turns a detectable fault into a playlist that misbehaves.
     const shuffled = [segment(0), segment(2), segment(1)];
-    const playback = planReplayPlayback(record({ segments: shuffled }));
+    const playback = planReplayPlayback(record({ segments: shuffled }), NOW);
     expect(playback.playable).toBe(false);
   });
 
@@ -215,7 +226,7 @@ describe('an available recording is still checked before it is rendered', () => 
     // Delivery finding a problem is not authority to rewrite a lifecycle the
     // archive already committed.
     const held = record({ segments: [] });
-    planReplayPlayback(held);
+    planReplayPlayback(held, NOW);
     expect(held.status).toBe('available');
     expect(held.failure).toBeNull();
   });
@@ -300,7 +311,7 @@ describe('a broadcast whose encoder restarted', () => {
   };
 
   it('plans both generations, in the order they were used', () => {
-    const playback = planReplayPlayback(record(multi));
+    const playback = planReplayPlayback(record(multi), NOW);
     expect(playback.playable).toBe(true);
     if (!playback.playable) throw new Error('unreachable');
     expect(playback.plan.generations).toEqual([0, 1]);
@@ -337,5 +348,90 @@ describe('a broadcast whose encoder restarted', () => {
   it('treats an absent generation as the first one', () => {
     const manifest = rendered({ segments: [segment(0), segment(1, { initGeneration: 0 })] });
     expect(manifest.split('\n').filter((l) => l.startsWith('#EXT-X-MAP:'))).toHaveLength(1);
+  });
+});
+
+/* ====================================================== the expiry cutoff */
+
+describe('the expiry instant is the audience cutoff, not the worker', () => {
+  /*
+   * THE FAILURE THIS CLOSES. A recording retained under `expire` stays
+   * `available` until a background sweep moves it, and that sweep can be late,
+   * wedged, restarting, or switched off during an incident. If access depended
+   * on it, "kept for thirty days" would mean "thirty days, or until somebody
+   * notices" -- and from the outside nothing would look wrong, because the
+   * playlist renders perfectly.
+   */
+  const EXPIRES = 1_700_000_500_000;
+  const expiring = () =>
+    record({
+      retention: { policy: 'expire', expiresAtMs: EXPIRES },
+      expiresAtMs: EXPIRES,
+    });
+
+  it('plays before the instant', () => {
+    expect(planReplayPlayback(expiring(), EXPIRES - 1).playable).toBe(true);
+  });
+
+  it('refuses AT the instant, not a millisecond after', () => {
+    const playback = planReplayPlayback(expiring(), EXPIRES);
+    expect(playback.playable).toBe(false);
+    if (playback.playable) throw new Error('unreachable');
+    expect(playback.refusal).toBe('retention-elapsed');
+  });
+
+  it('refuses long after, while the record still says available', () => {
+    const held = expiring();
+    expect(held.status).toBe('available');
+    const playback = planReplayPlayback(held, EXPIRES + 30 * 86_400_000);
+    expect(playback.playable).toBe(false);
+    if (playback.playable) throw new Error('unreachable');
+    expect(playback.refusal).toBe('retention-elapsed');
+  });
+
+  it('says retention-elapsed rather than not-available, because they differ', () => {
+    // One means the archive has already moved it on; the other means it has
+    // not yet and the audience is refused anyway. Only one is somebody's fault.
+    const swept = planReplayPlayback(
+      record({ status: 'expired', retention: { policy: 'expire', expiresAtMs: EXPIRES }, expiresAtMs: EXPIRES }),
+      EXPIRES + 1,
+    );
+    expect(swept.playable).toBe(false);
+    if (swept.playable) throw new Error('unreachable');
+    expect(swept.refusal).toBe('not-available');
+  });
+
+  it('never expires a keep retention, however long ago the broadcast was', () => {
+    expect(planReplayPlayback(record(), NOW + 100 * 365 * 86_400_000).playable).toBe(true);
+  });
+
+  it('does not mutate the record it refuses on', () => {
+    /*
+     * A GET IS NOT A LIFECYCLE TRANSITION. The archive committed this record;
+     * refusing an audience is not authority to rewrite it.
+     */
+    const held = expiring();
+    const before = JSON.stringify(held);
+    planReplayPlayback(held, EXPIRES + 1);
+    expect(JSON.stringify(held)).toBe(before);
+    expect(held.status).toBe('available');
+    expect(held.history).toEqual([]);
+  });
+
+  it('refuses before it has an opinion about the media', () => {
+    // An expired recording whose segments are also corrupt is refused for
+    // being expired: the audience answer must not depend on the state of media
+    // they are not entitled to.
+    const playback = planReplayPlayback(
+      record({
+        retention: { policy: 'expire', expiresAtMs: EXPIRES },
+        expiresAtMs: EXPIRES,
+        segments: [],
+      }),
+      EXPIRES,
+    );
+    expect(playback.playable).toBe(false);
+    if (playback.playable) throw new Error('unreachable');
+    expect(playback.refusal).toBe('retention-elapsed');
   });
 });

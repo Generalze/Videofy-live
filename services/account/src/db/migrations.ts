@@ -1822,6 +1822,79 @@ const PROGRAMME_REPLAY_OVERRIDES: Migration = {
   `,
 };
 
+/**
+ * 030 -- requests to remove a recording, as durable work.
+ *
+ * WHY A QUEUE AND NOT A COLUMN. "This should be deleted" is a REQUEST, not a
+ * state of the recording: it arrives from somewhere else, it may be about a
+ * broadcast that is still on air, and it has to survive the process that
+ * received it dying two milliseconds later. A boolean on some other row would
+ * lose the attempt count, lose the ordering, and give two workers no way to
+ * avoid each other.
+ *
+ * AT-LEAST-ONCE, WHICH IS WHY EVERYTHING DOWNSTREAM IS IDEMPOTENT. A worker can
+ * remove a recording and die before recording that it did; the next pass has to
+ * be able to repeat the instruction rather than raise an incident about work
+ * that is already done. `ProgrammeReplayArchive.delete` is retry-safe for
+ * exactly this reason, and this table is shaped to lean on it.
+ *
+ * ONE RUN, ONE OUTSTANDING REQUEST. The unique index is partial -- it applies
+ * only while a request is unfinished -- so asking twice collapses onto one row,
+ * and a run deleted last year can be asked about again if it ever returns.
+ *
+ * `claim_expires_at` IS A LEASE, NOT A LOCK. Row locks vanish when a connection
+ * does, which is the correct behaviour inside one transaction and useless
+ * across a worker that was killed between claiming and settling. The lease
+ * makes an abandoned claim reclaimable after a bounded wait, without anybody
+ * having to notice the worker died.
+ *
+ * NOTHING HERE HOLDS A PATH. Same rule as every other Replay table: a run id,
+ * and never an object key, a bucket, an endpoint or a spool file.
+ */
+const PROGRAMME_REPLAY_DELETIONS: Migration = {
+  name: '030_programme_replay_deletions',
+  sql: `
+    CREATE TABLE IF NOT EXISTS programme_replay_deletions (
+      request_id        text        PRIMARY KEY,
+      run_id            text        NOT NULL,
+      requested_at_ms   bigint      NOT NULL,
+      -- 'pending' waiting to be claimed; 'done' finished with. A deferred or
+      -- retried request goes back to 'pending' with a later visible_at_ms,
+      -- because those are the same state to a claimer.
+      state             text        NOT NULL DEFAULT 'pending',
+      -- Not before this instant. Deferral and back-off both move it.
+      visible_at_ms     bigint      NOT NULL,
+      attempts          integer     NOT NULL DEFAULT 0,
+      -- Held by whichever worker claimed it, until this passes. See above:
+      -- a lease survives the worker not surviving.
+      claim_expires_at  bigint,
+      -- Why the last attempt did not finish. A sentence, never a driver's text.
+      last_detail       text,
+      created_at        timestamptz NOT NULL DEFAULT now(),
+      updated_at        timestamptz NOT NULL DEFAULT now(),
+
+      CONSTRAINT programme_replay_deletions_state
+        CHECK (state IN ('pending', 'done')),
+      CONSTRAINT programme_replay_deletions_attempts
+        CHECK (attempts >= 0)
+    );
+
+    /*
+     * ONE OUTSTANDING REQUEST PER RUN. Partial, so it constrains only the work
+     * that is still outstanding: asking twice for the same run collapses onto
+     * one row, and a run that was deleted long ago can be asked about again.
+     */
+    CREATE UNIQUE INDEX IF NOT EXISTS programme_replay_deletions_one_per_run
+      ON programme_replay_deletions (run_id)
+      WHERE state = 'pending';
+
+    -- The claim query's index: due work, oldest first.
+    CREATE INDEX IF NOT EXISTS programme_replay_deletions_due
+      ON programme_replay_deletions (visible_at_ms)
+      WHERE state = 'pending';
+  `,
+};
+
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
   ORGANIZATIONS,
@@ -1852,4 +1925,5 @@ export const MIGRATIONS: readonly Migration[] = [
   PROGRAMME_AIRINGS,
   CHANNEL_REPLAY_SETTINGS,
   PROGRAMME_REPLAY_OVERRIDES,
+  PROGRAMME_REPLAY_DELETIONS,
 ];

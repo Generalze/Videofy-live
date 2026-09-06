@@ -4,7 +4,7 @@
   "private": true,
   "author": "masterzee001",
   "license": "SEE LICENSE IN LICENSE.md",
-  "description": "Videofy Live – real-time multilingual video streaming and audio interpretation platform",
+  "description": "Videofy Live \u2013 real-time multilingual video streaming and audio interpretation platform",
   "workspaces": [
     "apps/*",
     "packages/*",
@@ -36,7 +36,8 @@
     "c-ai1:realtime-proof": "npm run build && node scripts/c-ai1-1d-realtime-proof.mjs",
     "c-ai1:production-acceptance": "npm run build && node scripts/c-ai1-1e-production-acceptance.mjs",
     "c-ai1:multilingual": "npm run build && node scripts/c-ai1-1f-multilingual-acceptance.mjs",
-    "test:migrations": "node scripts/migration-proof.mjs"
+    "test:migrations": "node scripts/migration-proof.mjs",
+    "test:object-store": "node scripts/object-archive-proof.mjs"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",

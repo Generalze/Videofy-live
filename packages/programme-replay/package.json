@@ -4,7 +4,7 @@
   "private": true,
   "author": "masterzee001",
   "license": "SEE LICENSE IN ../../LICENSE.md",
-  "description": "Programme Replay/VOD: retention policy, visibility, archive lifecycle. Storage-neutral contracts at the root; the Node filesystem archive lives behind the ./filesystem subpath.",
+  "description": "Programme Replay/VOD: retention policy, visibility, archive lifecycle. Storage-neutral contracts at the root; the Node filesystem archive lives behind ./filesystem and the S3-compatible object archive behind ./object.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -16,6 +16,10 @@
     "./filesystem": {
       "types": "./dist/filesystem.d.ts",
       "default": "./dist/filesystem.js"
+    },
+    "./object": {
+      "types": "./dist/object.d.ts",
+      "default": "./dist/object.js"
     }
   },
   "scripts": {

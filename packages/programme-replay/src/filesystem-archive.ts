@@ -56,6 +56,12 @@ import {
 } from './outcome.js';
 import { isReplayPolicy, isReplayVisibility } from './policy.js';
 import {
+  readyToRelease,
+  type ReplayLifecycleCandidate,
+  type ReplayLifecycleCandidateSource,
+  type ReplayLifecycleQuery,
+} from './lifecycle-worker.js';
+import {
   replayInitialisationPath,
   replayRunKey,
   replaySegmentPath,
@@ -219,7 +225,9 @@ function cloneState(state: RecordingState): RecordingState {
 
 /* ------------------------------------------------------------ the archive */
 
-export class FilesystemReplayArchive implements ProgrammeReplayArchive {
+export class FilesystemReplayArchive
+  implements ProgrammeReplayArchive, ReplayLifecycleCandidateSource
+{
   /** Loaded state, by run key. The disk is the authority; this is the copy. */
   private readonly runs = new Map<string, RecordingState>();
   /** Run ids whose operator asked for no replay, remembered durably. */
@@ -480,6 +488,39 @@ export class FilesystemReplayArchive implements ProgrammeReplayArchive {
   async describe(runId: string): Promise<ReplayRecord | null> {
     const state = this.runs.get(replayRunKey(runId));
     return state === undefined ? null : snapshotOf(state);
+  }
+
+  /**
+   * Runs whose retention and grace have both elapsed.
+   *
+   * THE ARCHIVE'S OWN STATE, WHICH IS THE POINT. Maintenance must not depend on
+   * the airing catalogue: that is a product projection, it can be stale, and it
+   * can be down -- and if expiry were driven from it, an outage there would keep
+   * expired media alive indefinitely. Retention would quietly become "until the
+   * catalogue is healthy", which is exactly the promise it is not allowed to be.
+   *
+   * FOR LIFECYCLE MAINTENANCE ONLY. This is a caretaker walking its own shelves,
+   * not a discovery API, and nothing on a product surface may be built on it.
+   *
+   * Bounded, and it hands back the little that is needed to decide: the worker
+   * re-reads every candidate authoritatively before it touches anything, so a
+   * stale or over-generous answer here costs a read rather than a mistake.
+   */
+  async dueForExpiry(query: ReplayLifecycleQuery): Promise<readonly ReplayLifecycleCandidate[]> {
+    const due: ReplayLifecycleCandidate[] = [];
+    for (const state of this.runs.values()) {
+      if (due.length >= query.limit) break;
+      if (state.status !== 'available' && state.status !== 'failed') continue;
+      if (state.retention.policy !== 'expire') continue;
+      if (!readyToRelease(state.retention, query.nowMs, query.graceMs)) continue;
+      due.push({
+        runId: state.identity.runId,
+        status: state.status,
+        retention: state.retention,
+        expiresAtMs: state.retention.expiresAtMs,
+      });
+    }
+    return due;
   }
 
   /* ------------------------------------------------------------ internals */

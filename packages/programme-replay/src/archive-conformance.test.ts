@@ -18,7 +18,7 @@
  * pass against memory and fail against a disk for reasons that have nothing to
  * do with the rule under test.
  */
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createReadStream, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -27,6 +27,8 @@ import type { ProgrammeMediaSegment } from '@videofy-live/programme-timeline';
 import type { ProgrammeReplayArchive } from './archive.js';
 import { FilesystemReplayArchive } from './filesystem.js';
 import { InMemoryReplayArchive } from './memory-archive.js';
+import { InMemoryObjectStore } from './memory-object-store.js';
+import { S3CompatibleReplayArchive, type ReplaySourceReader } from './object-archive.js';
 import type { ReplayInitialisation } from './media.js';
 
 const STARTED = 1_700_000_000_000;
@@ -114,6 +116,33 @@ function filesystemSubject(): Subject {
       for (const root of roots) rmSync(root, { recursive: true, force: true });
       roots.length = 0;
     },
+  };
+}
+
+/**
+ * The object-storage archive, over a store with no network.
+ *
+ * IN THE SAME SUITE AS THE OTHER TWO, DELIBERATELY. A third implementation of a
+ * frozen contract is only worth having if it is held to the identical rules --
+ * run isolation, exact-identity idempotence, retry-safe terminals, truthful
+ * failure -- rather than to a suite written around what it happens to do. The
+ * store lives in memory here so the conformance run needs nothing external; the
+ * real-service proof is a separate, opt-in suite.
+ */
+function objectSubject(): Subject {
+  return {
+    name: 'S3CompatibleReplayArchive',
+    create: async (now) => {
+      const store = new InMemoryObjectStore();
+      const source: ReplaySourceReader = {
+        async open(reference) {
+          return createReadStream(reference);
+        },
+      };
+      const { archive } = await S3CompatibleReplayArchive.open({ store, source, now });
+      return archive;
+    },
+    cleanup: () => undefined,
   };
 }
 
@@ -502,4 +531,5 @@ function conformsToTheReplayContract(subject: Subject): void {
 describe('every archive keeps the same promises', () => {
   conformsToTheReplayContract(inMemorySubject());
   conformsToTheReplayContract(filesystemSubject());
+  conformsToTheReplayContract(objectSubject());
 });

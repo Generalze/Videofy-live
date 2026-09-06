@@ -8,11 +8,17 @@
  * assembly: say what exists, in what order, against which initialisation
  * material, and let an ordinary HLS player do the rest.
  *
- * WHY IT IS PURE. This module has no filesystem, no HTTP and no clock. It takes
- * a `ReplayRecord` and gives back a plan, and the URIs are supplied by whoever
- * is serving. That is what lets the same plan be rendered by a service today
- * and by something in front of object storage later, and it is why the root of
- * this package can still be imported somewhere with no disk at all.
+ * WHY IT IS PURE. This module has no filesystem and no HTTP. It takes a
+ * `ReplayRecord` and an instant, and gives back a plan; the URIs are supplied
+ * by whoever is serving. That is what lets the same plan be rendered by a
+ * service today and by something in front of object storage later, and it is
+ * why the root of this package can still be imported somewhere with no disk at
+ * all.
+ *
+ * THE INSTANT IS PASSED IN, NEVER READ. Nothing here calls a clock: a function
+ * that decides who may watch something must be answerable to a test, and one
+ * that reads `Date.now()` cannot be asked what it would have said a second
+ * earlier. The caller has a clock; this has an argument.
  *
  * ONLY `available` IS PLAYABLE, and the check is not a formality. A recording
  * still being written has fragments whose neighbours have not arrived; a failed
@@ -31,11 +37,34 @@
  */
 
 import type { ReplayRecord } from './archive.js';
+import { expiryOf, type ReplayRetention } from './policy.js';
+
+/**
+ * Whether this retention has run out at the given instant.
+ *
+ * INCLUSIVE AT THE INSTANT ITSELF. "Kept for thirty days" ends when the thirty
+ * days end; a strict comparison would keep it playable for one more
+ * millisecond, which is not wrong so much as it is a decision nobody made.
+ * `keep` never runs out, so it answers false however long ago the broadcast was.
+ */
+function hasElapsed(retention: ReplayRetention, nowMs: number): boolean {
+  const at = expiryOf(retention);
+  return at !== null && nowMs >= at;
+}
 
 /** Why a recording cannot be played. Each one is a different fault. */
 export type ReplayPlaybackRefusal =
   /** The lifecycle says it is not something to play. */
   | 'not-available'
+  /**
+   * Its retention has run out, whatever the lifecycle still says.
+   *
+   * A SEPARATE REFUSAL FROM `not-available` ON PURPOSE. That one means the
+   * archive has already moved the recording on; this one means it has not yet,
+   * and the audience is refused anyway. They are different facts about the
+   * system and only one of them is somebody's fault.
+   */
+  | 'retention-elapsed'
   /** Available, and holding nothing. */
   | 'no-media'
   /** A fragment that occupies no time, or an impossible amount of it. */
@@ -98,13 +127,41 @@ function refuse(refusal: ReplayPlaybackRefusal, detail: string): ReplayPlayback 
  * TOTAL, AND FREE OF SIDE EFFECTS. A refusal here says the recording cannot be
  * rendered; it does not fail the replay, move its lifecycle, or write anything
  * down. Delivery discovering a problem is not authority to rewrite the history
- * an archive already committed.
+ * an archive already committed -- and that goes double for the expiry check
+ * below, which refuses an audience without touching the record it refused on.
+ *
+ * @param nowMs - the instant the audience is asking. Required, because the
+ * answer genuinely depends on it: see the retention check.
  */
-export function planReplayPlayback(record: ReplayRecord): ReplayPlayback {
+export function planReplayPlayback(record: ReplayRecord, nowMs: number): ReplayPlayback {
   if (record.status !== 'available') {
     return refuse(
       'not-available',
       `a replay in status ${record.status} is not something to play`,
+    );
+  }
+
+  /*
+   * THE EXPIRY INSTANT IS THE AUDIENCE CUTOFF, AND A WORKER IS NOT.
+   *
+   * A recording retained under `expire` is `available` right up until something
+   * moves it, and the thing that moves it is a background sweep -- which can be
+   * late, wedged, restarting, or turned off during an incident. Leaving access
+   * to depend on that would make an operator's promise that "these are kept for
+   * thirty days" mean "thirty days, or until somebody notices", and the gap is
+   * invisible from the outside: the playlist renders perfectly.
+   *
+   * So the clock decides, here, on every request. The worker still does the
+   * physical work; it is simply not what anybody's access depends on.
+   *
+   * AND THIS DOES NOT MUTATE ANYTHING. A GET is not a lifecycle transition. The
+   * record stays exactly as the archive committed it, and the sweep will move
+   * it when it runs -- possibly long after the last viewer was already refused.
+   */
+  if (hasElapsed(record.retention, nowMs)) {
+    return refuse(
+      'retention-elapsed',
+      'the retention period for this replay has passed',
     );
   }
   if (record.segments.length === 0) {

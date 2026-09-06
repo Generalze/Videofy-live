@@ -27,6 +27,12 @@ import type {
   ReplayRetentionReceipt,
 } from './archive.js';
 import { canTransition } from './lifecycle.js';
+import {
+  readyToRelease,
+  type ReplayLifecycleCandidate,
+  type ReplayLifecycleCandidateSource,
+  type ReplayLifecycleQuery,
+} from './lifecycle-worker.js';
 import type { ReplayInitialisation } from './media.js';
 import {
   replayOk,
@@ -50,7 +56,9 @@ import {
   type RecordingState,
 } from './recording.js';
 
-export class InMemoryReplayArchive implements ProgrammeReplayArchive {
+export class InMemoryReplayArchive
+  implements ProgrammeReplayArchive, ReplayLifecycleCandidateSource
+{
   private readonly recordings = new Map<string, RecordingState>();
 
   /**
@@ -234,6 +242,31 @@ export class InMemoryReplayArchive implements ProgrammeReplayArchive {
   async describe(runId: string): Promise<ReplayRecord | null> {
     const state = this.recordings.get(runId);
     return state === undefined ? null : snapshotOf(state);
+  }
+
+  /**
+   * Runs whose retention and grace have both elapsed.
+   *
+   * Present here for the same reason as on the durable archives: maintenance
+   * reads the ARCHIVE'S state and never the airing catalogue, so a projection
+   * being stale or down can never keep expired media alive. Having it on the
+   * memory archive too is what lets the worker be exercised without a disk.
+   */
+  async dueForExpiry(query: ReplayLifecycleQuery): Promise<readonly ReplayLifecycleCandidate[]> {
+    const due: ReplayLifecycleCandidate[] = [];
+    for (const state of this.recordings.values()) {
+      if (due.length >= query.limit) break;
+      if (state.status !== 'available' && state.status !== 'failed') continue;
+      if (state.retention.policy !== 'expire') continue;
+      if (!readyToRelease(state.retention, query.nowMs, query.graceMs)) continue;
+      due.push({
+        runId: state.identity.runId,
+        status: state.status,
+        retention: state.retention,
+        expiresAtMs: state.retention.expiresAtMs,
+      });
+    }
+    return due;
   }
 
   /* ------------------------------------------------------------- internals */

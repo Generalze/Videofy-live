@@ -37,6 +37,7 @@
 
 import type express from 'express';
 import {
+  hasExpired,
   planReplayPlayback,
   renderReplayVodManifest,
   type ProgrammeReplayArchive,
@@ -122,6 +123,15 @@ export interface ProgrammeReplayRoutesDeps {
   readonly archive: ProgrammeReplayArchive;
   readonly access: ReplayAudienceAccess;
   readonly delivery: ReplayMediaDelivery;
+  /**
+   * The clock the audience cutoff is taken against.
+   *
+   * INJECTED, BECAUSE ACCESS DEPENDS ON IT. A recording retained under `expire`
+   * is refused the instant its retention runs out, whether or not the sweep
+   * that will physically remove it has run -- and a rule about who may watch
+   * something has to be answerable to a test that can choose the time.
+   */
+  readonly now?: () => number;
   /** Counted for an operator: archived material that would not serve. */
   readonly onDeliveryProblem?: (problem: ReplayDeliveryProblem) => void;
 }
@@ -139,6 +149,20 @@ function denial(res: express.Response, verdict: Exclude<ReplayAudienceVerdict, '
   }
   res.status(404).json({ error: 'No such replay.' });
 }
+
+/**
+ * HTTP for a replay whose retention has run out, whatever its status says.
+ *
+ * 410, THE SAME ANSWER AS ONE THE SWEEP HAS ALREADY MOVED. A viewer must not be
+ * able to tell whether the worker has caught up -- partly because it is none of
+ * their business, and partly because a distinguishable answer would make the
+ * cutoff look advisory. Gone is gone, and a player that reads 410 stops rather
+ * than retrying against something that is never coming back.
+ */
+const RETENTION_ELAPSED = {
+  status: 410,
+  error: 'This replay is no longer available.',
+} as const;
 
 /** HTTP for a recording that exists and is not playable. */
 function statusForLifecycle(record: ReplayRecord): { readonly status: number; readonly error: string } {
@@ -168,6 +192,8 @@ export function registerProgrammeReplayRoutes(
   app: express.Express,
   deps: ProgrammeReplayRoutesDeps,
 ): void {
+  const now = deps.now ?? ((): number => Date.now());
+
   /**
    * Everything that must be true before a byte or a line is produced.
    *
@@ -226,7 +252,15 @@ export function registerProgrammeReplayRoutes(
     return record;
   };
 
-  /** Admission, plus the requirement that there is something to play. */
+  /**
+   * Admission, plus the requirement that there is something to play.
+   *
+   * EVERY playable route goes through here -- playlist, initialisation and
+   * segment alike -- which is what makes the retention cutoff below one rule
+   * rather than three that have to be kept in step. A manifest fetched a
+   * second before the expiry names objects that are refused a second after it,
+   * and that is the correct behaviour: the cutoff is per request.
+   */
   const admitPlayable = async (
     req: express.Request,
     res: express.Response,
@@ -236,6 +270,23 @@ export function registerProgrammeReplayRoutes(
     if (record.status !== 'available') {
       const outcome = statusForLifecycle(record);
       res.status(outcome.status).json({ error: outcome.error });
+      return null;
+    }
+    /*
+     * THE CLOCK, NOT THE WORKER, DECIDES WHO MAY WATCH.
+     *
+     * The record above still says `available`, and it will keep saying so
+     * until a background sweep moves it. That sweep can be late, wedged,
+     * restarting, or off during an incident -- and none of that may extend an
+     * audience's access by a millisecond. So the instant is checked here, on
+     * every request, and the sweep is left to do the physical work it is
+     * actually for.
+     *
+     * NOTHING IS MUTATED. A GET does not transition a lifecycle: the archive
+     * committed this record and only the archive moves it.
+     */
+    if (hasExpired(record, now())) {
+      res.status(RETENTION_ELAPSED.status).json({ error: RETENTION_ELAPSED.error });
       return null;
     }
     return record;
@@ -253,7 +304,7 @@ export function registerProgrammeReplayRoutes(
       const record = await admitPlayable(req, res);
       if (record === null) return;
 
-      const playback = planReplayPlayback(record);
+      const playback = planReplayPlayback(record, now());
       if (!playback.playable) {
         /*
          * Available, and not renderable. Refused rather than patched, and the

@@ -167,8 +167,46 @@ const PERMITTED_DEPENDENCIES = ['@videofy-live/media-ingress-wire', '@videofy-li
  */
 const ROOT_ENTRY = 'index.ts';
 const FILESYSTEM_ENTRY = 'filesystem.ts';
-const STORAGE_MODULES = [FILESYSTEM_ENTRY, 'filesystem-archive.ts', 'filesystem-layout.ts'];
-const PERMITTED_NODE_BUILTINS = ['node:crypto', 'node:fs/promises', 'node:path'];
+const OBJECT_ENTRY = 'object.ts';
+
+/**
+ * Every module the root is not allowed to reach.
+ *
+ * TWO BACKENDS NOW, AND THE RULE IS UNCHANGED. A second storage subpath is not
+ * a reason to relax anything: it is a second thing the contracts must not drag
+ * in. `./filesystem` brings `node:fs`; `./object` brings a signer, a stream
+ * conversion and a network client. An importer that only wants to know what a
+ * `ReplayDisposition` is -- a browser bundle, the account service -- must
+ * acquire neither.
+ */
+const STORAGE_MODULES = [
+  FILESYSTEM_ENTRY,
+  'filesystem-archive.ts',
+  'filesystem-layout.ts',
+  OBJECT_ENTRY,
+  'object-archive.ts',
+  'object-layout.ts',
+  'object-store.ts',
+  'memory-object-store.ts',
+];
+
+/**
+ * What storage may reach for, and nothing else.
+ *
+ * `node:stream` JOINED THIS LIST WITH THE OBJECT ARCHIVE, and it is worth being
+ * explicit about why it is not a widening of the rule. A store hands back a
+ * body that has to be piped to a viewer without being buffered whole; a stream
+ * is what that is. What is still absent is the interesting part: no
+ * `node:http`, no `node:net`, no `node:child_process`. The object client speaks
+ * over `fetch`, which is a global rather than an import, so a socket API
+ * appearing in this list later would be a question worth asking out loud.
+ */
+const PERMITTED_NODE_BUILTINS = [
+  'node:crypto',
+  'node:fs/promises',
+  'node:path',
+  'node:stream',
+];
 
 /**
  * Source with its comments removed.
@@ -326,14 +364,25 @@ describe('the root entrypoint gives you contracts, not a filesystem', () => {
     }
   });
 
-  it('names the filesystem archive only behind its own subpath', () => {
-    const reachable = graphFrom(FILESYSTEM_ENTRY);
-    expect(reachable).toContain('filesystem-archive.ts');
+  it('names each storage archive only behind its own subpath', () => {
+    const filesystem = graphFrom(FILESYSTEM_ENTRY);
+    expect(filesystem).toContain('filesystem-archive.ts');
+    const object = graphFrom(OBJECT_ENTRY);
+    expect(object).toContain('object-archive.ts');
+
+    /*
+     * THE SUBPATHS ARE SIBLINGS AND NEITHER REACHES THE OTHER. A deployment
+     * asks for the backend it runs; taking one must not bring the other's
+     * dependencies along, and a re-export between them would do exactly that
+     * while reading as tidiness.
+     */
+    expect(filesystem).not.toContain('object-archive.ts');
+    expect(object).not.toContain('filesystem-archive.ts');
 
     const exported = JSON.parse(readFileSync(join(PACKAGE_ROOT, 'package.json'), 'utf8')) as {
       exports?: Record<string, unknown>;
     };
-    expect(Object.keys(exported.exports ?? {}).sort()).toEqual(['.', './filesystem']);
+    expect(Object.keys(exported.exports ?? {}).sort()).toEqual(['.', './filesystem', './object']);
   });
 
   it('keeps the adapter out of the built root bundle too', () => {
