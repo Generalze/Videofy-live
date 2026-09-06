@@ -14,7 +14,7 @@
  * it does for the ingress direction.
  */
 import { createSocket, type Socket } from 'node:dgram';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RecordingMediaAdapterPort } from '@videofy-live/media-adapter-port';
 import type { TranslatedMediaPayload } from '@videofy-live/adapter-wire';
 import { SipCall } from '../call.js';
@@ -127,7 +127,11 @@ describe('translated audio leaves as real RTP', () => {
     expect(first.payloadType).toBe(0);
     // 20 ms at the 8 kHz RTP clock: 160 companded bytes, timestamp step 160.
     expect(first.payload.length).toBe(160);
-    expect(second.sequenceNumber - first.sequenceNumber).toBe(1);
+    // COMPARED IN 16-BIT SPACE. RTP sequence numbers are uint16 and the sender
+    // starts at a random value, as the specification requires -- so an ordinary
+    // subtraction reads the 65535 -> 0 step as -65535 and fails a correct
+    // implementation roughly once every 2600 runs. It did exactly that on main.
+    expect((second.sequenceNumber - first.sequenceNumber) & 0xffff).toBe(1);
     expect(second.rtpTimestamp - first.rtpTimestamp).toBe(160);
   });
 
@@ -150,8 +154,54 @@ describe('translated audio leaves as real RTP', () => {
 
     const numbers = h.received.map((d) => parseRtpPacket(d, Date.now()).sequenceNumber);
     for (let index = 1; index < numbers.length; index += 1) {
-      expect(numbers[index]! - numbers[index - 1]!).toBe(1);
+      // Modular, for the same reason: gapless means "+1 in uint16", and the
+      // wrap is correct behaviour rather than a gap.
+      expect((numbers[index]! - numbers[index - 1]!) & 0xffff).toBe(1);
     }
+    const stamps = h.received.map((d) => parseRtpPacket(d, Date.now()).rtpTimestamp);
+    for (let index = 1; index < stamps.length; index += 1) {
+      expect(stamps[index]! - stamps[index - 1]!).toBe(160);
+    }
+  });
+
+  it('PIN: the sequence stays gapless ACROSS the 16-bit wrap', async () => {
+    /*
+     * THE EDGE THAT BROKE CI, EXERCISED ON PURPOSE.
+     *
+     * The sender starts at a random sequence number, so 65535 -> 0 happens in
+     * about one run in 2600 -- often enough to fail a deployment gate at the
+     * worst possible moment, rarely enough that nobody can reproduce it. The
+     * modular assertions above are correct but would almost never actually
+     * evaluate the wrap, so this drives the sender there deliberately.
+     *
+     * The seam is the randomness itself: production keeps its random start
+     * (RFC 3550 requires one), and only the value it is given is pinned.
+     */
+    const seeded = vi.spyOn(Math, 'random').mockReturnValue(65534 / 0xffff);
+    let h: Awaited<ReturnType<typeof harness>>;
+    try {
+      h = await harness(0);
+    } finally {
+      // Restored immediately: only the CONSTRUCTION needs to be deterministic,
+      // and leaving Math.random stubbed would silently affect later tests.
+      seeded.mockRestore();
+    }
+
+    for (let sequence = 0; sequence < 5; sequence += 1) h.egress.accept(payload({ sequence }));
+    await h.settle();
+
+    const numbers = h.received.map((d) => parseRtpPacket(d, Date.now()).sequenceNumber);
+    expect(numbers.length).toBeGreaterThanOrEqual(3);
+    // The wrap really happened; without this the test could pass by never
+    // reaching the boundary it exists to cover.
+    expect(numbers[0]).toBe(65534);
+    expect(numbers).toContain(65535);
+    expect(numbers).toContain(0);
+    for (let index = 1; index < numbers.length; index += 1) {
+      expect((numbers[index]! - numbers[index - 1]!) & 0xffff).toBe(1);
+    }
+    // And the timestamp keeps advancing normally through the wrap: the two
+    // counters are independent, and a sequence wrap must not disturb the clock.
     const stamps = h.received.map((d) => parseRtpPacket(d, Date.now()).rtpTimestamp);
     for (let index = 1; index < stamps.length; index += 1) {
       expect(stamps[index]! - stamps[index - 1]!).toBe(160);
