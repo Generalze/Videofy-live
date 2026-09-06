@@ -381,7 +381,8 @@ release_publish() {
 # The publication helper, or a clear refusal.
 #
 # Overridable for tests, which supply a stub at a temporary path. On a real
-# host it is the root-owned program installed by install.sh.
+# host it is the root-owned program installed by
+# deploy/production/install-publication-authority.sh.
 ATOMIC_PUBLISH_HELPER="${ATOMIC_PUBLISH_HELPER:-/usr/local/sbin/videofy-publish-current}"
 
 publication_authority_publish() {
@@ -389,7 +390,10 @@ publication_authority_publish() {
   if [ ! -x "$ATOMIC_PUBLISH_HELPER" ]; then
     echo "REFUSED: $(dirname "$current") is not writable and the publication" >&2
     echo "  helper $ATOMIC_PUBLISH_HELPER is not installed." >&2
-    echo "  Nothing can move the pointer. Run deploy/production/install.sh." >&2
+    echo "  Nothing can move the pointer. This host is otherwise converged, so" >&2
+    echo "  install ONLY that capability -- it writes no unit and restarts" >&2
+    echo "  nothing:" >&2
+    echo "    sudo bash deploy/production/install-publication-authority.sh" >&2
     return 1
   fi
   # `-n`: never prompt. A deployment that stops for a password is a deployment

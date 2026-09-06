@@ -363,6 +363,29 @@ if [ "$MUTATION" = "shared-remote-lib" ]; then
   # caller writes where another reads.
   transaction_nonce() { printf 'shared'; }
 fi
+if [ "$MUTATION" = "remediate-via-full-installer" ]; then
+  # The defect: a converged host missing one symlink helper is told to rerun
+  # the full production installer -- which writes systemd units for the legacy
+  # /app layout and can restart coturn and Caddy, both shared with staging.
+  # The remediation would cost more than the fault it repairs.
+  atomic_bootstrap_refusal() {
+    local root="$1" state="$2" env_name="${3:-production}"
+    echo "REFUSED: ATOMIC DEPLOYMENT BOOTSTRAP INCOMPLETE ($state)." >&2
+    echo "  ATOMIC PUBLICATION BOOTSTRAP INCOMPLETE." >&2
+    echo "  THIS IS NOT A BUSY LOCK. Nothing else is deploying." >&2
+    echo "    sudo bash deploy/$env_name/install.sh" >&2
+  }
+  publication_authority_publish() {
+    local sha="$1" current="$2"
+    if [ ! -x "$ATOMIC_PUBLISH_HELPER" ]; then
+      echo "REFUSED: the publication helper is not installed." >&2
+      echo "  Run deploy/production/install.sh." >&2
+      return 1
+    fi
+    sudo -n "$ATOMIC_PUBLISH_HELPER" "$sha" || return 1
+    [ "$(pointer_target "$current")" = "$(release_dir "$ATOMIC_RELEASES" "$sha")" ]
+  }
+fi
 if [ "$MUTATION" = "no-publication-authority-preflight" ]; then
   # The defect: the bootstrap pronounces a host ready without proving anything
   # on it can move the pointer, so the deploy discovers it cannot publish only
@@ -1751,7 +1774,30 @@ drop_rig
 echo ""
 echo "the pointer moves through one narrow privileged program, or not at all"
 
-PUBLISH_SH="$REPO_ROOT/deploy/production/publish-current.sh"
+# WHAT IS UNDER TEST IS WHAT AN OPERATOR WOULD HAVE.
+#
+# The narrow installer runs first, into a scratch prefix, and every case below
+# uses the artefacts it produced. Handing the helper a hand-picked subset of
+# deploy/lib instead would let it depend on a file the installer never ships --
+# which works here and fails on the host at the moment of publication, having
+# already built a release.
+INSTALL_PA="$REPO_ROOT/deploy/production/install-publication-authority.sh"
+PA_PREFIX="$(mktemp -d "${TMPDIR:-/tmp}/videofy-pa-XXXXXX")"
+SAVED_PATH="$PATH"
+mkdir -p "$PA_PREFIX/bin"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'while [ "${1-}" = "-n" ]; do shift; done' \
+  'exec "$@"' > "$PA_PREFIX/bin/sudo"
+chmod 755 "$PA_PREFIX/bin/sudo"
+if PATH="$PA_PREFIX/bin:$SAVED_PATH" VIDEOFY_INSTALL_PREFIX="$PA_PREFIX" \
+   DEPLOY_OWNER="$(id -un)" bash "$INSTALL_PA" >/dev/null 2>&1; then
+  ok "the narrow installer provisions publication authority"
+else
+  bad "the narrow installer failed" "every case below tests what it installs"
+fi
+INSTALLED_LIB="$PA_PREFIX/usr/local/lib/videofy"
+PUBLISH_SH="$PA_PREFIX/usr/local/sbin/videofy-publish-current"
 
 if [ "$MUTATION" = "wide-publication-paths" ]; then
   # The defect: the privileged helper publishes whatever it is handed, so the
@@ -1780,18 +1826,6 @@ sudo_stub() {
   chmod 755 "$RIG/bin/sudo"
   PATH="$RIG/bin:$SAVED_PATH"
 }
-SAVED_PATH="$PATH"
-
-# EXACTLY WHAT install.sh PUTS IN /usr/local/lib/videofy, and nothing else.
-#
-# Handing the helper the whole of deploy/lib would let it depend on a file the
-# install never copies -- which works here and fails on the host at the moment
-# of publication, having already built a release. So the helper is tested
-# against the installed set alone.
-INSTALLED_LIB="$(mktemp -d "${TMPDIR:-/tmp}/videofy-instlib-XXXXXX")"
-cp "$LIB/release-paths.sh" "$LIB/release-engine.sh" "$INSTALLED_LIB/"
-check "install.sh installs exactly the libraries tested here" \
-  "$(grep -c 'usr/local/lib/videofy/' "$REPO_ROOT/deploy/production/install.sh")" "2"
 
 # The real helper, pointed at the rig. Everything else about it is untouched.
 publish_helper() {
@@ -1954,7 +1988,7 @@ PUB_MSG="$(release_publish "$ATOMIC_RELEASES" "$A" "$ATOMIC_CURRENT" 2>&1)" \
   && bad "publication succeeded with no helper installed" "it must refuse" \
   || ok "publication refuses when nothing can move the pointer"
 case "$PUB_MSG" in
-  *install.sh*) ok "and names the command that installs it" ;;
+  *install-publication-authority.sh*) ok "and names the narrow installer that provides it" ;;
   *) bad "the refusal does not say what to run" "$PUB_MSG" ;;
 esac
 chmod 755 "$ATOMIC_ROOT"
@@ -2031,8 +2065,166 @@ check "an unwritable root WITH working publication authority passes" \
 chmod 755 "$BOOT2"
 drop_rig; PATH="$SAVED_PATH"; unset ATOMIC_PUBLISH_HELPER
 
+
+# ---- the installation boundary ----
+#
+# A HOST MISSING PUBLICATION AUTHORITY IS OTHERWISE CONVERGED AND SERVING.
+# Telling its operator to rerun the full production installer would be advice
+# that writes systemd units for the legacy /app layout and can restart coturn
+# and Caddy, both shared with staging. The remediation has to be narrower than
+# the fault, and "narrower" is a claim about what a script DOES -- so it is
+# executed here, under a prefix, with everything it must not touch present and
+# hashed on both sides.
+
+echo ""
+echo "installing publication authority touches publication authority, and nothing else"
+
+new_rig; reset_failures
+sudo_stub
+PREFIX="$RIG/prefix"
+mkdir -p "$PREFIX/etc/systemd/system" "$PREFIX/usr/local/sbin" "$PREFIX/etc/sudoers.d"
+
+# The converged units, exactly as the host carries them.
+UNIT_DIR="$PREFIX/etc/systemd/system"
+for u in videofy-prod-account videofy-prod-gateway videofy-prod-media-ingest; do
+  printf '[Service]\nWorkingDirectory=/srv/videofy-prod/current/services/x\nUser=videofy\n' \
+    > "$UNIT_DIR/$u.service"
+done
+UNITS_BEFORE="$(cat "$UNIT_DIR"/videofy-prod-*.service | sha256sum)"
+
+# A converged pointer and web root, so "did not move them" is a measurement.
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+pointer_publish "$ATOMIC_CURRENT" "$ATOMIC_RELEASES/$A" >/dev/null 2>&1
+CURRENT_BEFORE="$(pointer_target "$ATOMIC_CURRENT")"
+WWW_BEFORE="$(web_pointer_target)"
+
+# systemctl is recorded rather than stubbed silent: "it did not restart
+# anything" is only evidence if a restart would have been visible.
+printf '%s\n' '#!/usr/bin/env bash' "printf '%s\n' \"\$*\" >> $RIG/systemctl.log" \
+  > "$RIG/bin/systemctl"
+chmod 755 "$RIG/bin/systemctl"
+: > "$RIG/systemctl.log"
+
+INSTALL_PA="$REPO_ROOT/deploy/production/install-publication-authority.sh"
+INSTALL_OUT="$(VIDEOFY_INSTALL_PREFIX="$PREFIX" DEPLOY_OWNER="$(id -un)" \
+  bash "$INSTALL_PA" 2>&1)"
+INSTALL_RC=$?
+check "the narrow installer succeeds" "$INSTALL_RC" "0"
+
+check "the helper is installed" \
+  "$([ -x "$PREFIX/usr/local/sbin/videofy-publish-current" ] && echo yes || echo no)" "yes"
+check "the verification libraries are installed beside it" \
+  "$([ -f "$PREFIX/usr/local/lib/videofy/release-paths.sh" ] && \
+     [ -f "$PREFIX/usr/local/lib/videofy/release-engine.sh" ] && echo yes || echo no)" "yes"
+check "the libraries are not writable by anyone but their owner" \
+  "$(stat -c '%a' "$PREFIX/usr/local/lib/videofy/release-engine.sh")" "644"
+check "and the helper is not either" \
+  "$(stat -c '%a' "$PREFIX/usr/local/sbin/videofy-publish-current")" "755"
+check "the sudoers entry is installed read-only" \
+  "$(stat -c '%a' "$PREFIX/etc/sudoers.d/videofy-publish")" "440"
+check "and it validates" \
+  "$(visudo -c -f "$PREFIX/etc/sudoers.d/videofy-publish" >/dev/null 2>&1 && echo valid || echo invalid)" "valid"
+case "$(cat "$PREFIX/etc/sudoers.d/videofy-publish")" in
+  *"NOPASSWD: /usr/local/sbin/videofy-publish-current"*)
+    ok "and grants exactly the publication command, by absolute path" ;;
+  *) bad "the sudoers entry does not grant the publication command" "" ;;
+esac
+case "$INSTALL_OUT" in
+  *"--check"*|*"proven"*) ok "the installer proves invocability rather than assuming it" ;;
+  *) bad "the installer does not prove the helper can be invoked" "$INSTALL_OUT" ;;
+esac
+
+# THE BOUNDARY ITSELF.
+check "no service unit was altered" \
+  "$(cat "$UNIT_DIR"/videofy-prod-*.service | sha256sum)" "$UNITS_BEFORE"
+check "no unit was added or removed" \
+  "$(find "$UNIT_DIR" -name '*.service' | wc -l | tr -d ' ')" "3"
+check "systemctl was never invoked -- no reload, no restart, no enable" \
+  "$(wc -c < "$RIG/systemctl.log" | tr -d ' ')" "0"
+check "the pointer did not move" "$(pointer_target "$ATOMIC_CURRENT")" "$CURRENT_BEFORE"
+check "www did not move" "$(web_pointer_target)" "$WWW_BEFORE"
+check "and what current resolves to is still the same release" \
+  "$(simulate_restart)" "$A"
+
+# IDEMPOTENT. The operator who is not sure whether it ran must be able to run
+# it again, and a second run must be a verification rather than a change.
+SECOND_RC=0
+VIDEOFY_INSTALL_PREFIX="$PREFIX" DEPLOY_OWNER="$(id -un)" bash "$INSTALL_PA" >/dev/null 2>&1 || SECOND_RC=$?
+check "running it twice is not an error" "$SECOND_RC" "0"
+check "and still changes no unit" \
+  "$(cat "$UNIT_DIR"/videofy-prod-*.service | sha256sum)" "$UNITS_BEFORE"
+check "and still restarts nothing" \
+  "$(wc -c < "$RIG/systemctl.log" | tr -d ' ')" "0"
+
+# It refuses rather than half-installing when what it produced is wrong.
+chmod 666 "$PREFIX/usr/local/sbin/videofy-publish-current"
+BAD_RC=0
+VIDEOFY_INSTALL_PREFIX="$PREFIX" DEPLOY_OWNER="$(id -un)" \
+  BROKEN_MODE=1 bash "$INSTALL_PA" >/dev/null 2>&1 || BAD_RC=$?
+check "a re-run repairs a helper somebody made writable" \
+  "$(stat -c '%a' "$PREFIX/usr/local/sbin/videofy-publish-current")" "755"
+
+drop_rig; PATH="$SAVED_PATH"
+
+# ---- the remediation an operator is given ----
+#
+# Naming the full installer here would send somebody to a script that writes
+# units and can restart coturn and Caddy, to fix one missing symlink helper.
+
+new_rig; reset_failures
+REM_MSG="$(atomic_bootstrap_refusal "$RIG/x" missing-publication-helper production 2>&1)"
+case "$REM_MSG" in
+  *install-publication-authority.sh*) ok "the publication refusal names the narrow installer" ;;
+  *) bad "the publication refusal does not name the narrow installer" "$REM_MSG" ;;
+esac
+case "$REM_MSG" in
+  *"deploy/production/install.sh"*)
+    bad "the publication refusal sends the operator to the full installer" \
+        "that script writes units and can restart coturn and Caddy" ;;
+  *) ok "and does not send the operator to the full production installer" ;;
+esac
+case "$REM_MSG" in
+  *"restarts nothing"*|*"writes no unit"*) ok "and says what the narrow installer will not do" ;;
+  *) bad "the refusal does not say the remediation is safe on a live host" "$REM_MSG" ;;
+esac
+
+# A genuinely unprovisioned root is the opposite case, and still gets the full
+# installer -- the distinction is the point, not a blanket rename.
+BOOT_MSG2="$(atomic_bootstrap_refusal "$RIG/x" missing-releases production 2>&1)"
+case "$BOOT_MSG2" in
+  *"deploy/production/install.sh"*) ok "an unprovisioned root still gets the full bootstrap" ;;
+  *) bad "an unprovisioned root was not told to run the full installer" "$BOOT_MSG2" ;;
+esac
+
+# The same rule applies to the engine's own publication failure.
+sudo_stub
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+export ATOMIC_PUBLISH_HELPER="$RIG/absent"
+chmod 555 "$ATOMIC_ROOT"
+ENG_MSG="$(release_publish "$ATOMIC_RELEASES" "$A" "$ATOMIC_CURRENT" 2>&1)" || true
+chmod 755 "$ATOMIC_ROOT"
+case "$ENG_MSG" in
+  *install-publication-authority.sh*) ok "the engine's publication refusal names the narrow installer" ;;
+  *) bad "the engine sends the operator to the wrong installer" "$ENG_MSG" ;;
+esac
+case "$ENG_MSG" in
+  *"deploy/production/install.sh"*)
+    bad "the engine's refusal names the full production installer" "it must not" ;;
+  *) ok "and not the full production installer" ;;
+esac
+drop_rig; PATH="$SAVED_PATH"; unset ATOMIC_PUBLISH_HELPER
+
+# ONE IMPLEMENTATION, NOT TWO. The full installer may call the narrow one; it
+# may not carry its own copy, because the copy that drifts is the one somebody
+# runs at three in the morning.
+if grep -q 'install-publication-authority.sh' "$REPO_ROOT/deploy/production/install.sh"; then
+  ok "the full installer delegates to the narrow one"
+else bad "the full installer does not delegate" "publication install would be duplicated"; fi
+check "and holds no second copy of the sudoers entry" \
+  "$(cr_lines 'sudoers.d/videofy-publish' "$REPO_ROOT/deploy/production/install.sh")" "0"
+
 # The scratch trees this section made for itself.
-rm -rf "$INSTALLED_LIB"
+rm -rf "$PA_PREFIX"
 [ -n "${MUTDIR:-}" ] && rm -rf "$MUTDIR"
 
 # ============================================================ report

@@ -28,7 +28,8 @@
 # to build a path.
 #
 # IT SOURCES ONLY ROOT-OWNED CODE. The verification helpers live in
-# /usr/local/lib/videofy, installed by install.sh and writable only by root.
+# /usr/local/lib/videofy, installed by install-publication-authority.sh and
+# writable only by root.
 # Sourcing the deployment's own libraries -- which live in /tmp and belong to
 # the deploy user -- would turn this into a way to run arbitrary code as root,
 # which is the precise opposite of its purpose.
@@ -71,7 +72,7 @@ die() { echo "REFUSED: $*" >&2; exit 1; }
 # -- it is that user's own code, running as that user.
 for module in release-paths.sh release-engine.sh; do
   file="$LIB/$module"
-  [ -f "$file" ] || die "$file is missing; reinstall with deploy/production/install.sh"
+  [ -f "$file" ] || die "$file is missing; run deploy/production/install-publication-authority.sh"
   if [ "$(id -u)" -eq 0 ]; then
     owner="$(stat -c '%U' "$file")"
     [ "$owner" = 'root' ] || die "$file is owned by $owner, not root"

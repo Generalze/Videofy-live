@@ -106,7 +106,7 @@ engine_is_committed() {
 # to do with each other.
 #
 # So the bootstrap is checked FIRST, as its own question, and answered in its
-# own words. Provisioning stays in `install.sh`: a deploy that silently creates
+# own words. Provisioning stays in the installers: a deploy that silently creates
 # the paths it needs would hide a half-provisioned host instead of reporting
 # one, and it would need write access to the root to do it -- which is exactly
 # the permission we are deliberately not granting.
@@ -191,10 +191,28 @@ atomic_bootstrap_refusal() {
       echo "  The publication helper is installed but this identity may not" >&2
       echo "  invoke it. Check the sudoers entry." >&2 ;;
   esac
-  echo "  THIS IS NOT A BUSY LOCK. Nothing else is deploying; the host was never" >&2
-  echo "  set up. Run the production bootstrap, which creates these as the deploy" >&2
-  echo "  owner without making the root itself writable:" >&2
-  echo "    sudo bash deploy/$env_name/install.sh" >&2
+  echo "  THIS IS NOT A BUSY LOCK. Nothing else is deploying." >&2
+  #
+  # THE REMEDIATION HAS TO MATCH THE FAULT.
+  #
+  # A host missing publication authority is otherwise CONVERGED AND SERVING.
+  # Sending its operator to the full production installer to fix one missing
+  # symlink helper would be advice that writes systemd units for the legacy
+  # /app layout and can restart coturn and Caddy -- both shared with staging,
+  # where a restart drops live relays or live requests. So the publication
+  # states get the narrow installer, and only a genuinely unprovisioned root
+  # gets the full one.
+  case "$state" in
+    missing-publication-helper|publication-helper-*|publication-authority-*)
+      echo "  Install ONLY this capability. It writes no unit, reloads nothing," >&2
+      echo "  restarts nothing, and does not touch app, www or the pointer:" >&2
+      echo "    sudo bash deploy/$env_name/install-publication-authority.sh" >&2 ;;
+    *)
+      echo "  The host was never set up. Run the production bootstrap, which" >&2
+      echo "  creates these as the deploy owner without making the root itself" >&2
+      echo "  writable:" >&2
+      echo "    sudo bash deploy/$env_name/install.sh" >&2 ;;
+  esac
 }
 
 # Make a shipment safe to execute on the host, whatever wrote it.
