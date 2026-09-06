@@ -47,6 +47,7 @@ export type UseReplayResult = ReplayState & {
   readonly saveSettings: () => void;
   readonly saveOverride: () => void;
   readonly loadMore: () => void;
+  readonly deleteReplay: (runId: string) => void;
 };
 
 export function useReplay(options: UseReplayOptions): UseReplayResult {
@@ -114,6 +115,9 @@ export function useReplay(options: UseReplayOptions): UseReplayResult {
     saveOverride,
     loadMore: () => {
       void controller.loadMoreHistory();
+    },
+    deleteReplay: (runId: string) => {
+      void controller.deleteReplay(runId);
     },
   };
 }

@@ -50,6 +50,10 @@ const BASE: ReplayPanelProps = {
   onSaveOverride: () => {},
   onLoadMore: () => {},
   onReload: () => {},
+  deletionRequested: [],
+  confirmingDelete: null,
+  onAskDelete: () => {},
+  onConfirmDelete: () => {},
 };
 
 function markup(overrides: Partial<ReplayPanelProps> = {}): string {
@@ -326,5 +330,68 @@ describe('a failure to reach the service', () => {
     expect(html).toContain('could not be reached');
     expect(html).toContain('Try again');
     expect(html).toContain('replay-policy');
+  });
+});
+
+/* ======================================================== removing a replay */
+
+describe('the Delete Replay control', () => {
+  it('says "Keep until I delete it", because that is what the operator can do', () => {
+    /*
+     * THE STORED POLICY IS UNCHANGED -- `{ policy: 'keep' }` means exactly what
+     * it always did. What changed is that the label names the exit, which is
+     * the control on every history row below it. "Indefinitely" reads as a
+     * promise the platform is making and leaves somebody wondering whether they
+     * are stuck with a recording.
+     */
+    const html = markup();
+    expect(html).toContain('Keep until I delete it');
+    expect(html).not.toContain('Keep indefinitely');
+  });
+
+  it('offers removal on a recording, and not on a broadcast that kept none', () => {
+    expect(markup({ airings: [withReplay()] })).toContain('Delete Replay');
+    expect(markup({ airings: [airing()] })).not.toContain('Delete Replay');
+  });
+
+  it('still offers it while a broadcast is recording, saying it will wait', () => {
+    /*
+     * Hiding it here would make the control unreliable in exactly the moment
+     * somebody is most likely to reach for it. The service DEFERS such a
+     * request rather than refusing it, and the label says so.
+     */
+    const html = markup({
+      airings: [withReplay({ status: 'recording', watchable: false })],
+    });
+    expect(html).toContain('after this broadcast finishes');
+  });
+
+  it('takes two presses, and the confirmation says what survives', () => {
+    const shown = markup({ airings: [withReplay()] });
+    expect(shown).not.toContain('Confirm Delete');
+
+    const confirming = markup({ airings: [withReplay()], confirmingDelete: 'run_a' });
+    expect(confirming).toContain('Confirm Delete');
+    expect(confirming).toContain('permanently removes the replay video');
+    expect(confirming).toContain('remain in your broadcast history');
+    expect(confirming).toContain('Cancel');
+  });
+
+  it('reports a removal as REQUESTED rather than done', () => {
+    /*
+     * The bytes are not gone yet: a durable request has been written and a
+     * worker does the removing. Claiming otherwise would look like a failure
+     * the moment the operator reloaded before the worker ran.
+     */
+    const html = markup({ airings: [withReplay()], deletionRequested: ['run_a'] });
+    expect(html).toContain('Removal requested');
+    expect(html).not.toContain('Confirm Delete');
+  });
+
+  it('offers nothing for a recording that is already gone', () => {
+    const html = markup({
+      airings: [withReplay({ status: 'deleted', watchable: false })],
+    });
+    expect(html).not.toContain('Delete Replay');
   });
 });

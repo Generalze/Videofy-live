@@ -45,7 +45,7 @@
  * addressed by run id, which the media service authorises for itself.
  */
 
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import type express from 'express';
 import {
   MAX_AIRING_PAGE,
@@ -73,6 +73,16 @@ import {
 } from '@videofy-live/programme-replay-policy';
 import type { ChannelVisibility } from '@videofy-live/shared-types';
 
+/**
+ * Asking for a recording to be removed, durably.
+ *
+ * IDEMPOTENT PER RUN. An operator who presses the button twice, or a client
+ * that retried, has asked for one thing once.
+ */
+export interface ReplayDeletionRequests {
+  request(runId: string, requestId: string, nowMs: number): Promise<'queued' | 'already-queued'>;
+}
+
 type OverridePolicy = NonNullable<ProgrammeReplayOverride['policy']>;
 type OverrideVisibility = NonNullable<ProgrammeReplayOverride['visibility']>;
 
@@ -90,6 +100,19 @@ export interface ReplayRouteDependencies {
   readonly settings: ChannelReplaySettingsStore;
   readonly overrides: ProgrammeReplayOverrideStore;
   readonly airings: ProgrammeAiringCatalogue;
+  /**
+   * Where an owner's request to remove a recording is written down.
+   *
+   * DURABLE, AND NOT AN ARCHIVE CALL. This service has no archive: it does not
+   * know where the media is and must not. What it can do is record, against an
+   * airing it has authorised the caller for, that the operator wants the
+   * recording gone -- and let the service that owns the bytes do the removing.
+   *
+   * Absent on a deployment with no deletion queue: the control then refuses
+   * rather than pretending, because "we noted your request" is the one answer
+   * that must never be given by something that noted nothing.
+   */
+  readonly deletions?: ReplayDeletionRequests;
   /** The existing operator identity. No new account auth system. */
   readonly callerAccountId: (req: express.Request) => ReplayRouteCaller | null;
   /** This caller's own channel, by session. Never by an id they supplied. */
@@ -718,6 +741,81 @@ export function registerReplayRoutes(app: express.Express, deps: ReplayRouteDepe
       next: ownerNextOf(page),
       pageSize: pageSize(query.value),
       channelPublished: published,
+    });
+  }));
+
+  /* -------------------------------------------------- removing a recording */
+
+  /**
+   * Remove the recording of one of my own airings.
+   *
+   * THE RUN ID IS A CLAIM, NOT AN AUTHORISATION. It arrives from a UI this
+   * service did not write, in a request anybody can construct, and it names an
+   * object in a shared archive. So the caller's channel is resolved from their
+   * SESSION, the airing is looked up by run id, and the two are required to
+   * agree -- a run belonging to another channel is refused with the same
+   * sentence as one that does not exist. Without that, a run id would be a
+   * capability to delete any recording on the platform.
+   *
+   * THE AIRING ROW IS NEVER TOUCHED. This removes a recording; the broadcast
+   * still happened, and history that edited itself when media was released
+   * would be a schedule that lies about the past. `programme_airings` keeps its
+   * row, the disposition eventually reads `deleted`, and the operator can still
+   * see that they were on air that Tuesday.
+   *
+   * A LIVE OR FINISHING BROADCAST IS NOT DESTROYED. The request is still
+   * recorded -- an operator who asked has asked -- and the worker defers it
+   * until the programme is over. Refusing outright would make the button
+   * unreliable in exactly the moment somebody is most likely to press it.
+   *
+   * AND IT IS A REQUEST, SO THE ANSWER SAYS SO. `202`, with wording the console
+   * repeats: the bytes have not gone yet, and a UI that claimed otherwise would
+   * be inventing a synchronous delete over an at-least-once queue.
+   */
+  app.post('/channels/mine/airings/:runId/delete-replay', guarded(async (req, res) => {
+    const channel = await ownChannel(req, res);
+    if (channel === null) return;
+    if (deps.deletions === undefined) {
+      res.status(503).json({
+        error: 'Replay deletion is not available on this deployment.',
+      });
+      return;
+    }
+
+    const runId = String(req.params['runId'] ?? '');
+    const record = runId === '' ? null : await deps.airings.findByRunId(runId);
+    /*
+     * ONE ANSWER FOR "NOT YOURS" AND "NOT THERE". Two would tell an operator
+     * which run ids on other channels are real.
+     */
+    if (record === null || record.identity.channelId !== channel.channelId) {
+      res.status(404).json({ error: 'No such broadcast.' });
+      return;
+    }
+
+    if (record.replay.disposition === 'none') {
+      /*
+       * Nothing was ever kept. Answered as its own thing rather than queued:
+       * the queue would settle it instantly as a no-op, and the operator would
+       * be told a removal was under way for a recording that never existed.
+       */
+      res.status(409).json({
+        error: 'No recording was kept for this broadcast, so there is nothing to remove.',
+      });
+      return;
+    }
+
+    const outcome = await deps.deletions.request(runId, `del_${randomUUID()}`, now());
+    deps.onEvent?.('replay.deletion.requested', { outcome });
+    res.status(202).json({
+      /*
+       * The same shape for a first request and a repeat, because they mean the
+       * same thing to the person pressing the button: this recording is going.
+       */
+      requested: true,
+      alreadyRequested: outcome === 'already-queued',
+      message:
+        'This replay will be removed shortly. The programme stays in your broadcast history.',
     });
   }));
 

@@ -75,6 +75,26 @@ export interface ReplayClient {
   readOverride(programmeId: string): Promise<OverrideResponse>;
   saveOverride(programmeId: string, body: Record<string, unknown>): Promise<OverrideResponse>;
   readHistory(after: AiringCursorDto | null): Promise<OwnerHistoryResponse>;
+  /**
+   * Ask for one of my own recordings to be removed.
+   *
+   * A REQUEST, AND THE ANSWER SAYS SO. The service writes it down durably and a
+   * worker does the removing; nothing here waits for bytes to disappear,
+   * because pretending to would make a reload before the worker ran look like a
+   * failure.
+   *
+   * THE RUN ID IS A CLAIM, NOT AN AUTHORISATION. The server resolves the
+   * caller's channel from their session and refuses a run that is not theirs --
+   * this client could send any string and would be told the same thing a
+   * missing broadcast gets.
+   */
+  deleteReplay(runId: string): Promise<DeleteReplayOutcome>;
+}
+
+export interface DeleteReplayOutcome {
+  readonly requested: boolean;
+  readonly alreadyRequested: boolean;
+  readonly message: string;
 }
 
 function base(url: string): string {
@@ -157,6 +177,15 @@ export function createReplayClient(options: ReplayClientOptions): ReplayClient {
         await call(`/operator/programmes/${encodeURIComponent(programmeId)}/replay-override`, {
           method: 'PUT',
           body: JSON.stringify(body),
+        }),
+      );
+    },
+
+    async deleteReplay(runId) {
+      return decode<DeleteReplayOutcome>(
+        await call(`/channels/mine/airings/${encodeURIComponent(runId)}/delete-replay`, {
+          method: 'POST',
+          body: JSON.stringify({}),
         }),
       );
     },

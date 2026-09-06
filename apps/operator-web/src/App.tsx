@@ -1362,6 +1362,11 @@ export default function App(): React.ReactElement {
     programmeId: ownChannelId,
     token: readOperatorSessionToken,
   });
+  /*
+   * WHICH ROW'S CONFIRMATION IS OPEN. Purely a screen state -- one at a time, so
+   * a list somebody is scrolling never has two irreversible buttons armed.
+   */
+  const [confirmingReplayDelete, setConfirmingReplayDelete] = useState<string | null>(null);
 
   const channelIdentity = useChannelIdentity({
     accountUrl: ACCOUNT_URL,
@@ -1634,6 +1639,13 @@ export default function App(): React.ReactElement {
           onSaveOverride={replay.saveOverride}
           onLoadMore={replay.loadMore}
           onReload={replay.reload}
+          deletionRequested={replay.deletionRequested}
+          confirmingDelete={confirmingReplayDelete}
+          onAskDelete={setConfirmingReplayDelete}
+          onConfirmDelete={(runId) => {
+            setConfirmingReplayDelete(null);
+            replay.deleteReplay(runId);
+          }}
         />
       </ConsolePage>
 

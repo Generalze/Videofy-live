@@ -1,6 +1,9 @@
 /** @author masterzee001 */
 import React from 'react';
 import {
+  DELETE_REPLAY_CONFIRMATION,
+  DELETE_REPLAY_CONFIRM_LABEL,
+  DELETE_REPLAY_PENDING,
   INHERIT,
   POLICY_DESCRIPTIONS,
   POLICY_LABELS,
@@ -11,6 +14,7 @@ import {
   VISIBILITY_LABELS,
   channelDraftProblem,
   describeAiringReplay,
+  describeDeleteReplay,
   describeResolution,
   describeSize,
   describeSources,
@@ -52,6 +56,25 @@ export interface ReplayPanelProps {
   readonly onSaveOverride: () => void;
   readonly onLoadMore: () => void;
   readonly onReload: () => void;
+  /** Runs whose removal has been asked for and not yet observed as done. */
+  readonly deletionRequested: readonly string[];
+  /** Which row's confirmation is open, or null. One at a time, deliberately. */
+  readonly confirmingDelete: string | null;
+  readonly onAskDelete: (runId: string | null) => void;
+  readonly onConfirmDelete: (runId: string) => void;
+}
+
+/**
+ * What the removal control says for this row, or null to leave it off.
+ *
+ * A row with no recording has nothing to remove and gets no button. A row still
+ * recording DOES get one, saying plainly that the removal waits for the
+ * broadcast to finish -- hiding it there would make the control unreliable in
+ * exactly the moment somebody is most likely to reach for it, and the service
+ * defers rather than refuses.
+ */
+function deleteLabel(airing: OwnerAiringDto): string | null {
+  return describeDeleteReplay(airing);
 }
 
 function days(value: string): number | null {
@@ -98,6 +121,8 @@ export function ReplayPanel(props: ReplayPanelProps): React.ReactElement {
     error,
     ingestUrl,
     nowMs,
+    deletionRequested,
+    confirmingDelete,
   } = props;
 
   if (unavailable) {
@@ -364,6 +389,46 @@ export function ReplayPanel(props: ReplayPanelProps): React.ReactElement {
                   Watch
                 </a>
               ) : null}
+
+              {/*
+                * REMOVING A RECORDING, WITH THE ONE SENTENCE THAT MATTERS.
+                *
+                * People hesitate over a delete button because they cannot tell
+                * how much it takes with it. The honest answer is reassuring --
+                * the video goes, the fact that they were on air does not -- and
+                * saying it in the confirmation is the difference between a
+                * control somebody uses and one they avoid.
+                *
+                * TWO PRESSES, NEVER ONE. This is irreversible and it sits on
+                * every row of a list somebody is scrolling.
+                */}
+              {deletionRequested.includes(airing.runId) ? (
+                <small role="status" data-testid="delete-pending">
+                  {DELETE_REPLAY_PENDING}
+                </small>
+              ) : deleteLabel(airing) === null ? null : confirmingDelete === airing.runId ? (
+                <span role="group" aria-label="Confirm removing this replay">
+                  <small>{DELETE_REPLAY_CONFIRMATION}</small>
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => props.onConfirmDelete(airing.runId)}
+                  >
+                    {DELETE_REPLAY_CONFIRM_LABEL}
+                  </button>
+                  <button type="button" onClick={() => props.onAskDelete(null)}>
+                    Cancel
+                  </button>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => props.onAskDelete(airing.runId)}
+                >
+                  {deleteLabel(airing)}
+                </button>
+              )}
             </li>
           );
         })}

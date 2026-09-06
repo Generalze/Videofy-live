@@ -358,6 +358,19 @@ export class ProgrammeTimelineRegistry {
     return this.runs.get(runId)?.identity.channelId ?? null;
   }
 
+  /**
+   * The whole identity of a run, or null when this process is not running it.
+   *
+   * Needed by anything that must ask a question about the BROADCAST rather than
+   * about one of its parts -- what an operator decided to keep, most of all,
+   * which is resolved per channel AND per programme. `channelOf` answers half of
+   * that, and a caller reassembling the other half from somewhere else would be
+   * a second source of truth about whose broadcast this is.
+   */
+  identityOf(runId: string): ProgrammeRunIdentity | null {
+    return this.runs.get(runId)?.identity ?? null;
+  }
+
   /** The broadcast is over. Its account and its cursor go with it. */
   release(runId: string): void {
     this.runs.delete(runId);

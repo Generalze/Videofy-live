@@ -37,13 +37,23 @@ export const REPLAY_POLICIES: readonly ReplayPolicy[] = ['keep', 'expire', 'none
 export const REPLAY_VISIBILITIES: readonly ReplayVisibility[] = ['public', 'unlisted', 'private'];
 
 export const POLICY_LABELS: Readonly<Record<ReplayPolicy, string>> = {
-  keep: 'Keep indefinitely',
+  /*
+   * "UNTIL I DELETE IT", NOT "INDEFINITELY".
+   *
+   * The stored policy is unchanged -- `{ policy: 'keep' }` means exactly what it
+   * always did. What changed is that the label now describes the thing the
+   * operator can actually do about it. "Indefinitely" reads as a promise the
+   * platform is making and leaves somebody wondering whether they are stuck with
+   * a recording; this names the exit, which is the Delete Replay control on
+   * every row of their history.
+   */
+  keep: 'Keep until I delete it',
   expire: 'Keep for a set time',
   none: 'Do not record',
 };
 
 export const POLICY_DESCRIPTIONS: Readonly<Record<ReplayPolicy, string>> = {
-  keep: 'Every broadcast is recorded and stays available until you remove it.',
+  keep: 'Every broadcast is recorded and stays available until you delete it yourself.',
   expire: 'Every broadcast is recorded and released automatically after the time you set.',
   none: 'Nothing is recorded. The broadcast still appears in your history — it happened — but there is no replay to watch.',
 };
@@ -337,4 +347,58 @@ export function describeSize(bytes: number): string {
  */
 export function replayPlaybackUrl(ingestUrl: string, runId: string): string {
   return `${ingestUrl.replace(/\/$/u, '')}/replays/${encodeURIComponent(runId)}/playlist.m3u8`;
+}
+
+/* ------------------------------------------------------- removing a recording */
+
+/**
+ * What an operator is asked before a recording goes.
+ *
+ * TWO SENTENCES, AND THE SECOND ONE IS THE POINT. People hesitate over a delete
+ * button because they cannot tell how much it takes with it -- and the honest
+ * answer here is reassuring: the video goes, the fact that they were on air
+ * does not. Saying so in the dialogue is the difference between a control
+ * somebody uses and one they avoid.
+ */
+export const DELETE_REPLAY_CONFIRMATION =
+  'This permanently removes the replay video. ' +
+  'The programme will remain in your broadcast history.';
+
+export const DELETE_REPLAY_LABEL = 'Delete Replay';
+export const DELETE_REPLAY_CONFIRM_LABEL = 'Confirm Delete';
+
+/**
+ * What a row says once a removal has been asked for.
+ *
+ * "REQUESTED", NOT "DELETED". The request is durable and a worker does the
+ * removing, which may be seconds later; a UI that reported the bytes gone the
+ * instant the button was pressed would be inventing a synchronous delete over an
+ * at-least-once queue -- and would look like it had failed if the operator
+ * reloaded before the worker ran.
+ */
+export const DELETE_REPLAY_PENDING = 'Removal requested. This replay will go shortly.';
+
+/**
+ * Whether this airing has a recording that could be removed.
+ *
+ * NOT THE SAME QUESTION AS "IS IT WATCHABLE". An expired or failed recording may
+ * still have bytes an operator wants gone, and a still-recording broadcast has a
+ * recording that must not be destroyed from a button -- the service defers that
+ * one, and the control says so rather than disappearing.
+ */
+export function canDeleteReplay(airing: OwnerAiringDto): boolean {
+  return airing.replay !== null && airing.replay.status !== 'deleted';
+}
+
+/** What the Delete Replay control should say for this row, or null to hide it. */
+export function describeDeleteReplay(airing: OwnerAiringDto): string | null {
+  const replay = airing.replay;
+  if (replay === null) return null;
+  if (replay.status === 'deleted') return null;
+  if (replay.status === 'recording' || replay.status === 'processing') {
+    // Honest about the deferral rather than hiding the control: the operator
+    // may still ask, and the request waits for the broadcast to finish.
+    return 'Delete Replay (after this broadcast finishes)';
+  }
+  return DELETE_REPLAY_LABEL;
 }

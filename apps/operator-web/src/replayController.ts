@@ -56,6 +56,16 @@ export interface ReplayState {
   readonly airings: readonly OwnerAiringDto[];
   readonly nextPage: AiringCursorDto | null;
   readonly loadingMore: boolean;
+  /**
+   * Runs whose removal has been asked for and not yet observed as done.
+   *
+   * HELD SEPARATELY FROM THE AIRING, deliberately. The airing still says
+   * whatever the archive last said, because that is what the archive last said;
+   * marking the row `deleted` locally would be this browser deciding a thing the
+   * service has not yet done, and a reload before the worker ran would appear to
+   * undo it. This is a note about a REQUEST, and it reads as one.
+   */
+  readonly deletionRequested: readonly string[];
   /** The service's sentence, shown as it worded it. */
   readonly error: string | null;
 }
@@ -74,6 +84,7 @@ export const INITIAL_REPLAY_STATE: ReplayState = {
   airings: [],
   nextPage: null,
   loadingMore: false,
+  deletionRequested: [],
   error: null,
 };
 
@@ -90,6 +101,7 @@ export interface ReplayController {
   readonly saveSettings: (body: Record<string, unknown>) => Promise<boolean>;
   readonly saveOverride: (body: Record<string, unknown>) => Promise<boolean>;
   readonly loadMoreHistory: () => Promise<void>;
+  readonly deleteReplay: (runId: string) => Promise<boolean>;
 }
 
 export function createReplayController(options: ReplayControllerOptions): ReplayController {
@@ -192,6 +204,29 @@ export function createReplayController(options: ReplayControllerOptions): Replay
       try {
         applyOverride(await options.client.saveOverride(options.programmeId, body));
         set({ saving: false });
+        return true;
+      } catch (thrown) {
+        fail(thrown);
+        return false;
+      }
+    },
+
+    async deleteReplay(runId) {
+      set({ saving: true, error: null });
+      try {
+        await options.client.deleteReplay(runId);
+        /*
+         * NOTED, NOT APPLIED. The recording is not gone yet and this does not
+         * pretend it is: the row keeps saying what the archive last said, and
+         * the note beside it says a removal was asked for. The next reload will
+         * show `deleted` once the worker has actually done it.
+         */
+        set({
+          saving: false,
+          deletionRequested: state.deletionRequested.includes(runId)
+            ? state.deletionRequested
+            : [...state.deletionRequested, runId],
+        });
         return true;
       } catch (thrown) {
         fail(thrown);

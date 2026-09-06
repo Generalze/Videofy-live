@@ -56,6 +56,7 @@ function airing(runId: string, startedAtMs = NOW): OwnerAiringDto {
 
 interface FakeOptions {
   readonly settings?: ChannelReplaySettingsDto | null;
+  readonly failDelete?: Error;
   readonly pages?: readonly OwnerHistoryResponse[];
   readonly failSettingsSave?: Error;
   readonly failOverrideSave?: Error;
@@ -80,7 +81,14 @@ function fakeClient(options: FakeOptions = {}) {
     },
   });
 
+  const deleted: string[] = [];
   const client: ReplayClient = {
+    async deleteReplay(runId): Promise<{ requested: boolean; alreadyRequested: boolean; message: string }> {
+      calls.push('deleteReplay');
+      if (options.failDelete) throw options.failDelete;
+      deleted.push(runId);
+      return { requested: true, alreadyRequested: false, message: 'noted' };
+    },
     async readChannelSettings(): Promise<ChannelReplayResponse> {
       calls.push('readChannelSettings');
       if (options.failEverything) throw options.failEverything;
@@ -130,7 +138,7 @@ function fakeClient(options: FakeOptions = {}) {
       return page ?? { airings: [], next: null, pageSize: 50, channelPublished: true };
     },
   };
-  return { client, calls, bodies };
+  return { client, calls, bodies, deleted };
 }
 
 function drive(fake: ReturnType<typeof fakeClient>, programmeId: string | null = 'prog_1') {
@@ -415,5 +423,48 @@ describe('history pages accumulate by cursor', () => {
     await controller.reload();
     await controller.loadMoreHistory();
     expect(controller.state().airings.map((a) => a.runId)).toEqual(['run_1', 'run_2', 'run_3']);
+  });
+});
+
+/* ============================================================ the removal */
+
+describe('asking for a recording to be removed', () => {
+  it('sends the request and notes it, without claiming the bytes have gone', async () => {
+    /*
+     * "REQUESTED", NOT "DELETED". The request is durable and a worker does the
+     * removing; a UI that marked the row deleted the instant the button was
+     * pressed would be deciding a thing the service has not done -- and would
+     * appear to undo itself on the next reload.
+     */
+    const fake = fakeClient();
+    const { controller } = drive(fake);
+    await controller.reload();
+
+    expect(await controller.deleteReplay('run_a')).toBe(true);
+    expect(fake.deleted).toEqual(['run_a']);
+    expect(controller.state().deletionRequested).toEqual(['run_a']);
+    // The airing still says what the archive last said, because it does.
+    expect(controller.state().airings[0]?.replay).toBeNull();
+  });
+
+  it('does not note it twice', async () => {
+    const fake = fakeClient();
+    const { controller } = drive(fake);
+    await controller.reload();
+    await controller.deleteReplay('run_a');
+    await controller.deleteReplay('run_a');
+    expect(controller.state().deletionRequested).toEqual(['run_a']);
+  });
+
+  it('a refused request notes nothing and shows the service sentence', async () => {
+    const fake = fakeClient({
+      failDelete: new ReplayRefusedError('No such broadcast.', null),
+    });
+    const { controller } = drive(fake);
+    await controller.reload();
+
+    expect(await controller.deleteReplay('somebody_elses_run')).toBe(false);
+    expect(controller.state().deletionRequested).toEqual([]);
+    expect(controller.state().error).toBe('No such broadcast.');
   });
 });

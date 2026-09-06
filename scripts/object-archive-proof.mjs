@@ -38,6 +38,7 @@ import {
   InMemoryObjectStore,
   S3CompatibleObjectStore,
   S3CompatibleReplayArchive,
+  probeObjectCapability,
   replaySegmentKey,
 } from '../packages/programme-replay/dist/object.js';
 import {
@@ -134,6 +135,25 @@ async function main() {
   // Created by the harness before this runs; proved reachable here.
   await store.list('', 1);
   check('the bucket is reachable and listable', true);
+
+  /* --- 1b ---------------------------------- THE PRODUCTION GATE, FIRST */
+  /*
+   * BEFORE ANY RECORDING TOUCHES THIS PROVIDER. The archive's compare-and-swap
+   * rests on a conditional create; a provider that accepts the header and
+   * overwrites anyway turns a refused write into a lost update. This is the
+   * same probe the service runs at startup, and a provider that fails it does
+   * not carry Replay.
+   */
+  const capability = await probeObjectCapability({ store });
+  check(
+    'the provider honours conditional creation (the production gate)',
+    capability.usable,
+    capability.usable ? '' : capability.detail,
+  );
+  if (!capability.usable) {
+    console.error('object archive proof: the provider FAILED the capability gate.');
+    process.exit(1);
+  }
 
   /* --- 2, 3 ------------------------------------- begin, init and segments */
   const first = (await S3CompatibleReplayArchive.open({ store, source, now: () => STARTED }))

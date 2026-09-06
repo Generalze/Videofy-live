@@ -20,3 +20,5 @@ export * from './object-store.js';
 export * from './object-archive.js';
 /** A store with no network, so the archive can be driven without one. */
 export * from './memory-object-store.js';
+/** Whether a real provider honours the conditional create the archive needs. */
+export * from './object-capability.js';

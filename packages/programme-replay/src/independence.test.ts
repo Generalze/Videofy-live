@@ -187,6 +187,7 @@ const STORAGE_MODULES = [
   'object-archive.ts',
   'object-layout.ts',
   'object-store.ts',
+  'object-capability.ts',
   'memory-object-store.ts',
 ];
 

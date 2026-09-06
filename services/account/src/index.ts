@@ -66,6 +66,8 @@ import {
 import { createPostgresChannelProfiles } from './db/channel-profiles-postgres.js';
 import { registerChannelRoutes } from './channel-routes.js';
 import { registerReplayRoutes } from './replay-routes.js';
+import { registerReplayInternalRoutes } from './replay-internal-routes.js';
+import { createPostgresReplayDeletionQueue } from './db/programme-replay-deletions-postgres.js';
 import { createPostgresChannelReplaySettings } from './db/channel-replay-settings-postgres.js';
 import { createPostgresProgrammeReplayOverrides } from './db/programme-replay-overrides-postgres.js';
 import { createPostgresAiringCatalogue } from './db/programme-airings-postgres.js';
@@ -993,10 +995,21 @@ if (databasePool) {
     secret,
     nowSeconds: () => Math.floor(Date.now() / 1000),
   });
+  const replaySettings = createPostgresChannelReplaySettings(databasePool);
+  const replayOverrides = createPostgresProgrammeReplayOverrides(databasePool);
+  const replayDeletions = createPostgresReplayDeletionQueue(databasePool);
+  const replayAirings = createPostgresAiringCatalogue(databasePool);
   registerReplayRoutes(app, {
-    settings: createPostgresChannelReplaySettings(databasePool),
-    overrides: createPostgresProgrammeReplayOverrides(databasePool),
-    airings: createPostgresAiringCatalogue(databasePool),
+    settings: replaySettings,
+    overrides: replayOverrides,
+    airings: replayAirings,
+    /*
+     * THE OWNER'S DELETE CONTROL, wired to the durable queue rather than to an
+     * archive. This service does not know where the media is and must not; what
+     * it can do is record, against an airing it has authorised the caller for,
+     * that the operator wants the recording gone.
+     */
+    deletions: replayDeletions,
     callerAccountId: replayCaller,
     /*
      * The PUBLIC page cursor is sealed with a key derived from this, so the
@@ -1027,6 +1040,32 @@ if (databasePool) {
       const owned = await channelProfiles.mine(accountId);
       return owned !== null && owned.channelId === programmeId;
     },
+    onEvent: (event, detail) => {
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify({ service: 'account', event, ...detail }));
+    },
+  });
+  /*
+   * AND THE MACHINE SIDE OF THE SAME STATE.
+   *
+   * The media service cannot read this database and should not: channel
+   * settings and programme overrides are validated by rules that live here, and
+   * a second service with an independent opinion about the schema is two places
+   * to be wrong. It asks a bounded, authenticated question instead -- and the
+   * deletion queue's claim/settle pair travels the same seam, so the archive
+   * stays on one side of the wall and the durable requests on the other.
+   *
+   * Registers nothing at all without an internal token, exactly as every other
+   * internal seam in this service: no token, no seam, no policy resolved, and
+   * therefore nothing recorded -- which is the correct failure rather than a
+   * guessed retention.
+   */
+  registerReplayInternalRoutes(app, {
+    settings: replaySettings,
+    overrides: replayOverrides,
+    deletions: replayDeletions,
+    airings: replayAirings,
+    internalAuth: resolveInternalIngressAuth(process.env),
     onEvent: (event, detail) => {
       // eslint-disable-next-line no-console
       console.log(JSON.stringify({ service: 'account', event, ...detail }));
