@@ -101,8 +101,9 @@ new_rig() {
 }
 
 unit_fixture() {
-  local unit="$1" wd="$2"
+  local unit="$1" wd="$2" user="${3:-videofy}"
   printf '%s' "$wd"    > "$STUB_SYSTEMD_DIR/$unit.WorkingDirectory"
+  printf '%s' "$user"  > "$STUB_SYSTEMD_DIR/$unit.User"
   printf '10min'       > "$STUB_SYSTEMD_DIR/$unit.StartLimitIntervalUSec"
   printf '10'          > "$STUB_SYSTEMD_DIR/$unit.StartLimitBurst"
   : > "$STUB_SYSTEMD_DIR/$unit.DropInPaths"
@@ -228,6 +229,10 @@ reset_failures() {
 . "$LIB/atomic-release.sh"
 # shellcheck source=../lib/transaction.sh
 . "$LIB/transaction.sh"
+# Sourced HERE, above the mutation block, so a mutation that redefines one of
+# its functions is not silently undone by a later re-source inside a test --
+# which is exactly why `preflight-as-deploy-user` appeared to survive.
+. "$LIB/activation.sh"
 
 # Mutations disable exactly one guard, to prove the suite can see it go.
 if [ "$MUTATION" = "no-seal-check" ]; then
@@ -357,6 +362,16 @@ if [ "$MUTATION" = "shared-remote-lib" ]; then
   # The defect: every transaction computes the SAME machinery directory, so one
   # caller writes where another reads.
   transaction_nonce() { printf 'shared'; }
+fi
+if [ "$MUTATION" = "no-engine-provenance" ]; then
+  # The defect: production accepts a working-tree engine, so a certified SHA
+  # can be qualified by uncommitted operator-side code.
+  engine_is_committed() { git -C "$1" rev-parse HEAD 2>/dev/null; return 0; }
+fi
+if [ "$MUTATION" = "preflight-as-deploy-user" ]; then
+  # The defect: the preflight accepts whatever identity it is handed, including
+  # none, instead of proving it is the one systemd actually boots with.
+  activation_preflight() { return 0; }
 fi
 if [ "$MUTATION" = "no-dropin-guard" ]; then
   assert_units_resolve_through_pointer() { return 0; }
@@ -1477,6 +1492,149 @@ check "mutating paths install machinery only through transaction_begin" \
 # The one bare call is `state`, which is read-only and takes no lock.
 check "the only unlocked ship is the read-only state path" \
   "$(sed -n "$((BARE_SHIP-8)),${BARE_SHIP}p" "$SCRIPT" | grep -c 'READ-ONLY')" "1"
+drop_rig
+
+# ============================== real-host transport findings
+
+echo ""
+echo "the five things only a real deployment could find"
+
+REPO_ROOT="$HERE/../.."
+DEPLOY_SH="$REPO_ROOT/deploy/atomic-deploy.sh"
+
+# A. BOOTSTRAP OWNERSHIP. The deployment root is root-owned and the deploy user
+#    creates releases and takes the lock there. install.sh must create both, or
+#    the first production preparation dies on "Permission denied" and reports
+#    it as a busy lock.
+if grep -q 'VIDEOFY_ROOT/releases' "$REPO_ROOT/deploy/production/install.sh"; then
+  ok "install.sh creates the releases directory for the deploy user"
+else bad "install.sh does not create releases/" "the first prepare cannot write"; fi
+if grep -q 'deploy.lock' "$REPO_ROOT/deploy/production/install.sh"; then
+  ok "install.sh creates the transaction lock file"
+else bad "install.sh does not create the lock file" "a missing lock reads as a held lock"; fi
+
+# B. BUNDLE TRANSPORT. `git bundle create <file> <sha>` refuses: a bundle
+#    packages refs, not commits. Proven against real git rather than asserted.
+new_rig; reset_failures
+SRC="$RIG/src"; mkdir -p "$SRC"
+git -C "$SRC" init -q .
+git -C "$SRC" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
+REAL_SHA="$(git -C "$SRC" rev-parse HEAD)"
+if git -C "$SRC" bundle create "$RIG/bare.bundle" "$REAL_SHA" >/dev/null 2>&1; then
+  bad "bundling a bare sha unexpectedly succeeded" "the guard would be pointless"
+else ok "bundling a bare sha refuses, as the real failure did"; fi
+git -C "$SRC" update-ref refs/deploy/t "$REAL_SHA"
+if git -C "$SRC" bundle create "$RIG/ref.bundle" refs/deploy/t >/dev/null 2>&1; then
+  ok "bundling a temporary ref succeeds"
+else bad "bundling a ref failed" "the fix does not work"; fi
+# And the far side can fetch it back to the exact commit.
+DST="$RIG/dst"; mkdir -p "$DST"; git -C "$DST" init -q .
+git -C "$DST" fetch -q "$RIG/ref.bundle" refs/deploy/t 2>/dev/null
+git -C "$DST" checkout -q --detach FETCH_HEAD 2>/dev/null
+check "the fetched commit is byte-identical to the requested sha" \
+  "$(git -C "$DST" rev-parse HEAD 2>/dev/null)" "$REAL_SHA"
+check "and the deploy ships by ref, not by bare sha" \
+  "$(grep -c 'git bundle create "\$BUNDLE" "\$BUNDLE_REF"' "$DEPLOY_SH")" "1"
+drop_rig
+
+# C. LF TRANSPORT. A CRLF library is fatal on the host: bash reads the trailing
+#    carriage return as part of the command.
+new_rig; reset_failures
+printf 'echo hello\r\necho world\r\n' > "$RIG/crlf.sh"
+if bash "$RIG/crlf.sh" >/dev/null 2>&1; then
+  ok "(this platform tolerates CRLF; the host does not, which is why we strip)"
+else ok "a CRLF script fails to run, exactly as it did on the host"; fi
+sed -i 's/\r$//' "$RIG/crlf.sh"
+if bash "$RIG/crlf.sh" >/dev/null 2>&1; then
+  ok "the same script runs once normalised to LF"
+else bad "LF normalisation did not fix it" ""; fi
+check "the deploy normalises what it ships" \
+  "$(grep -c "sed -i 's/.r\$//'" "$DEPLOY_SH")" "1"
+check "and it normalises a COPY, never the working tree" \
+  "$(grep -c 'videofy-atomic-stage' "$DEPLOY_SH")" "1"
+drop_rig
+
+# D. PREFLIGHT IDENTITY -- TESTED BY BEHAVIOUR, NOT BY GREP.
+#
+# The first version of these two cases asserted that the SOURCE contained
+# certain strings. Both mutations then SURVIVED at 223/223: replacing the
+# function changes behaviour and not one character of the file, so a grep sees
+# nothing. A test that cannot fail is not evidence, so these call the real
+# functions and assert what they do.
+new_rig; reset_failures
+
+# No configured identity: refuse rather than guess. Guessing would test a user
+# no service runs as, and pass.
+ATOMIC_SERVICE_USER="" ATOMIC_UNITS="videofy-test-account" \
+  activation_preflight "$RIG" "$RIG/env" >/dev/null 2>&1 \
+  && bad "the preflight ran with no configured identity" "it must refuse" \
+  || ok "the preflight refuses when no service identity is configured"
+
+# Configured identity disagrees with systemd's effective User: refuse. A check
+# run as the wrong user proves nothing about the real startup.
+unit_fixture videofy-test-account "$ATOMIC_CURRENT/services/account" videofy
+ATOMIC_SERVICE_USER="somebody-else" ATOMIC_UNITS="videofy-test-account" \
+  activation_preflight "$RIG" "$RIG/env" >/dev/null 2>&1 \
+  && bad "the preflight accepted an identity systemd does not use" "it must refuse" \
+  || ok "the preflight refuses when the identity disagrees with the unit"
+
+# The refusal must name the disagreement, or an operator cannot act on it.
+PREFLIGHT_ERR="$(ATOMIC_SERVICE_USER="somebody-else" ATOMIC_UNITS="videofy-test-account" \
+  activation_preflight "$RIG" "$RIG/env" 2>&1 || true)"
+case "$PREFLIGHT_ERR" in
+  *"runs as 'videofy'"*) ok "and says which identity systemd actually uses" ;;
+  *) bad "the refusal does not name the effective user" "$PREFLIGHT_ERR" ;;
+esac
+drop_rig
+
+# E. ENGINE PROVENANCE -- ALSO BY BEHAVIOUR.
+new_rig; reset_failures
+ENGREPO="$RIG/engine"
+mkdir -p "$ENGREPO/deploy/lib"
+git -C "$ENGREPO" init -q .
+printf 'committed\n' > "$ENGREPO/deploy/lib/activation.sh"
+git -C "$ENGREPO" add -A >/dev/null 2>&1
+git -C "$ENGREPO" -c user.email=t@t -c user.name=t commit -q -m engine
+
+ENG_SHA="$(engine_is_committed "$ENGREPO" 2>/dev/null)"
+check "a clean committed engine reports its sha" \
+  "$([ -n "$ENG_SHA" ] && echo reported || echo none)" "reported"
+check "and the sha is the engine's HEAD" \
+  "$ENG_SHA" "$(git -C "$ENGREPO" rev-parse HEAD)"
+
+# A modified tracked deploy file: exactly the state this incident created.
+printf 'edited locally\n' >> "$ENGREPO/deploy/lib/activation.sh"
+if engine_is_committed "$ENGREPO" >/dev/null 2>&1; then
+  bad "a modified activation.sh was accepted" "production could run uncommitted code"
+else ok "a modified deploy file refuses"; fi
+git -C "$ENGREPO" checkout -q -- deploy/lib/activation.sh
+
+# A modified preflight, named specifically because it is the file that decides
+# whether production configuration is acceptable.
+printf 'x\n' >> "$ENGREPO/deploy/lib/preflight-config.mjs" 2>/dev/null || \
+  printf 'x\n' > "$ENGREPO/deploy/lib/preflight-config.mjs"
+if engine_is_committed "$ENGREPO" >/dev/null 2>&1; then
+  bad "an uncommitted preflight-config.mjs was accepted" "the gate itself is unversioned"
+else ok "an untracked preflight-config.mjs refuses"; fi
+rm -f "$ENGREPO/deploy/lib/preflight-config.mjs"
+
+# An untracked executable beside the committed engine.
+printf 'evil\n' > "$ENGREPO/deploy/lib/extra.sh"
+if engine_is_committed "$ENGREPO" >/dev/null 2>&1; then
+  bad "an untracked deploy/lib file was accepted" "shipped bytes would be unversioned"
+else ok "an untracked file under deploy/lib refuses"; fi
+rm -f "$ENGREPO/deploy/lib/extra.sh"
+
+# Clean again: the gate must not be permanently sticky.
+if engine_is_committed "$ENGREPO" >/dev/null 2>&1; then
+  ok "a re-cleaned engine is accepted again"
+else bad "the gate stayed refused after cleaning" ""; fi
+
+# A directory that is not a Git repository at all cannot identify itself.
+mkdir -p "$RIG/notgit/deploy"
+if engine_is_committed "$RIG/notgit" >/dev/null 2>&1; then
+  bad "a non-repository was accepted as an engine" "it has no sha to record"
+else ok "an engine with no Git HEAD refuses"; fi
 drop_rig
 
 # ============================================================ report
