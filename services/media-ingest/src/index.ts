@@ -71,6 +71,14 @@ import { registerProgrammeEgressRoutes } from './programme-egress-routes.js';
 import { ProgrammeEgressAuthority } from './programme-egress.js';
 import { ProgrammeMediaStore } from './programme-media-store.js';
 import { ProgrammeMediaOrigin } from './programme-media-origin.js';
+import { readReplayConfig, describeReplayConfig } from './programme-replay-config.js';
+import { startReplay, type ReplayBackend } from './programme-replay-startup.js';
+import { createReplayAccountClient } from './programme-replay-account-client.js';
+import { ProgrammeReplayComposition } from './programme-replay-composition.js';
+import { createReplayAudienceAccess } from './programme-replay-audience.js';
+import { ProgrammeReplayWorker } from './programme-replay-worker.js';
+import { registerProgrammeReplayRoutes } from './programme-replay-routes.js';
+import { createAiringCatalogueClient } from './programme-airing-catalogue-client.js';
 import { ProgrammeDeliveryReporter } from './programme-delivery-reporter.js';
 import { recoverProgrammeMedia } from './programme-media-recovery.js';
 import {
@@ -360,6 +368,20 @@ const STABLE_UPTIME_MS = 60_000;
 let programmeSpoolFacts: SpoolReadiness | null = null;
 let programmeSpoolPressure: SpoolPressure | null = null;
 
+/**
+ * What to say about Replay on a health check.
+ *
+ * Read through a function rather than captured, because the composition below
+ * runs after this handler is registered -- and a captured `null` would report
+ * Replay as off on a deployment where it is running perfectly.
+ */
+function replayBackendState(): { readonly state: string; readonly detail?: string } {
+  if (replayBackend !== null) return { state: 'ready' };
+  return replayDegraded === null
+    ? { state: 'off' }
+    : { state: 'degraded', detail: replayDegraded };
+}
+
 app.get('/health', (_req, res) => {
   // "degraded", not "ok", when the gateway socket is down: the process is alive
   // and will happily accept and transcribe chunks, but nothing it produces can
@@ -379,10 +401,26 @@ app.get('/health', (_req, res) => {
   // which is worth seeing without having to know to look.
   const strandedVoiceCleanups = voiceProfileStore.pendingCleanups().length;
   const uptimeMs = Date.now() - processStartedAtMs;
+  /*
+   * REPLAY, AND ONLY WHETHER IT WORKS.
+   *
+   * Replay is optional relative to being on air, so a degraded one never moves
+   * this endpoint's status: a service that reported 503 because a bucket was
+   * misconfigured would take a working broadcast off every health check on the
+   * deployment. What it does do is SAY SO, because a subsystem that quietly
+   * records nothing is one nobody discovers until they go looking for a replay.
+   *
+   * AND IT NAMES NOTHING. No bucket, no endpoint, no volume, no credential --
+   * this endpoint is public, and "which bucket" is a fact about the
+   * infrastructure rather than about whether recording works. `startReplay`
+   * already strips paths and URLs out of the sentence it produces.
+   */
+  const replayHealth = replayBackendState();
   res.status(connected ? 200 : 503).json({
     status: connected ? 'ok' : 'degraded',
     service: 'media-ingest',
     gatewayConnected: connected,
+    replay: replayHealth,
     /**
      * How long this process has been running, and whether that is long enough
      * to mean anything. A checker that reads `stable: false` is being told
@@ -1520,6 +1558,127 @@ registerProgrammeEgressRoutes(app, {
     logger.warn('A request asked for programme media ahead of the public cursor');
   },
 });
+/* ========================================================== PROGRAMME REPLAY */
+
+/*
+ * REPLAY, COMPOSED IN ONE PLACE OR NOT AT ALL.
+ *
+ * Everything below is already built, frozen and tested. What has been missing
+ * is the JOIN, and both halves built with the join left to nobody is the repeat
+ * defect in this repository -- so it is made here, once, rather than scattered
+ * through the handlers that happen to be nearby.
+ *
+ * AND IT NEVER STOPS THE SERVICE. Every failure -- absent configuration, a
+ * misconfigured backend, a volume that will not open, an object provider that
+ * cannot be trusted with a compare-and-swap -- leaves `replayBackend` null and
+ * the broadcast path exactly as it was. Replay is optional relative to going on
+ * air, and that is enforced here rather than merely intended.
+ */
+const replayConfig = readReplayConfig(process.env);
+let replayBackend: ReplayBackend | null = null;
+let replayComposition: ProgrammeReplayComposition | null = null;
+let replayWorker: ProgrammeReplayWorker | null = null;
+let replayDegraded: string | null = replayConfig.enabled ? null : replayConfig.detail;
+
+if (replayConfig.enabled) {
+  const settings = replayConfig.value;
+  const startup = await startReplay(settings);
+  if (!startup.ready) {
+    replayDegraded = startup.detail;
+    logger.error('Programme replay is DEGRADED: the backend could not be started', {
+      backend: settings.backend,
+      detail: startup.detail,
+    });
+  } else {
+    replayBackend = startup.backend;
+    for (const run of startup.backend.corrupt) {
+      logger.error('A replay run could not be trusted and is refused', { reason: run.reason });
+    }
+
+    /*
+     * THE POLICY SEAM. The account service owns what an operator decided; this
+     * asks, with a deadline, and never guesses when the answer does not come.
+     */
+    const replayAccount = createReplayAccountClient({
+      accountInternalUrl: settings.accountInternalUrl,
+      internalToken: settings.internalToken,
+    });
+
+    replayComposition = new ProgrammeReplayComposition({
+      policy: replayAccount,
+      archive: startup.backend.archive,
+      /*
+       * HISTORY TRAVELS THE SAME WALL AS EVERYTHING ELSE. The catalogue is the
+       * account service's database; this writes to it through the authenticated
+       * internal seam rather than holding a connection string, so the media
+       * plane can start without it and a history outage is a row that lags.
+       */
+      catalogue: createAiringCatalogueClient({
+        accountInternalUrl: settings.accountInternalUrl,
+        internalToken: settings.internalToken,
+      }),
+      onDiagnostic: (diagnostic) => {
+        /*
+         * BOUNDED, AND NOT AN INCIDENT. A programme that could not resolve a
+         * policy went to air perfectly well; what did not happen is a
+         * recording, and an operator needs to be able to see that rather than
+         * discover it a week later looking for the replay.
+         */
+        logger.warn('Programme replay did not begin for this broadcast', {
+          runId: diagnostic.runId,
+          stage: diagnostic.stage,
+          outcome: diagnostic.outcome,
+          detail: diagnostic.detail,
+        });
+      },
+    });
+
+    /*
+     * MAINTENANCE. Not what enforces access -- the retention instant does that,
+     * per request -- but what actually releases the bytes.
+     */
+    replayWorker = new ProgrammeReplayWorker({
+      archive: startup.backend.archive,
+      candidates: startup.backend.candidates,
+      deletions: replayAccount,
+      catalogue: {
+        sync: async (record) => {
+          await replayComposition?.project(record);
+        },
+      },
+      cleanupGraceMs: settings.worker.cleanupGraceMs,
+      intervalMs: settings.worker.intervalMs,
+      batchLimit: settings.worker.batchLimit,
+      onPass: ({ expiry, deletion }) => {
+        if (expiry.refusal !== null) {
+          logger.error('A replay expiry pass could not run', { detail: expiry.refusal });
+        }
+        if (expiry.expired > 0 || expiry.failed > 0 || deletion.done > 0 || deletion.retried > 0) {
+          logger.info('Replay maintenance pass', {
+            expired: expiry.expired,
+            expiryFailed: expiry.failed,
+            deleted: deletion.done,
+            deletionRetried: deletion.retried,
+            catalogueLagged: expiry.catalogueLagged + deletion.catalogueLagged,
+          });
+        }
+      },
+    });
+    replayWorker.start();
+
+    logger.info('Programme replay ready', describeReplayConfig(replayConfig));
+  }
+} else if (replayConfig.kind === 'misconfigured') {
+  /*
+   * SOMEBODY ASKED FOR REPLAY AND GOT IT WRONG. Said loudly, because the
+   * failure mode of treating this like "Replay is off" is a deployment that
+   * believes it is recording and is not.
+   */
+  logger.error('Programme replay is MISCONFIGURED and will not run', {
+    detail: replayConfig.detail,
+  });
+}
+
 /*
  * THE PRODUCER, and the reason an operator cannot choose what it reads.
  *
@@ -1534,7 +1693,125 @@ const programmeOrigin = new ProgrammeMediaOrigin({
   timelines: programmeTimelines,
   egress: programmeEgress,
   spoolRoot: programmeMediaSpool,
+  /*
+   * THE CAPTURE SEAM, GATED PER RUN.
+   *
+   * A facade rather than the archive itself, because a run whose policy said
+   * `none` -- or whose policy never resolved -- must have nothing to offer to.
+   * `archiveFor` returns null for those, so the producer's Replay branch is
+   * inert instead of generating a refusal for every fragment of a broadcast.
+   *
+   * Live never waits on any of it: the store accepts the media first, and only
+   * complete accepted media is offered here, without being awaited.
+   */
+  ...(replayComposition === null
+    ? {}
+    : {
+        replay: {
+          begin: async (request) =>
+            replayComposition?.archiveFor(request.identity.runId)?.begin(request) ??
+            replayUnavailable(request.identity.runId),
+          retainInitialisation: async (runId, initialisation) =>
+            replayComposition?.archiveFor(runId)?.retainInitialisation(runId, initialisation) ??
+            replayUnavailable(runId),
+          retainSegment: async (runId, segment) =>
+            replayComposition?.archiveFor(runId)?.retainSegment(runId, segment) ??
+            replayUnavailable(runId),
+          finalise: async (runId) =>
+            replayComposition?.archiveFor(runId)?.finalise(runId) ?? replayUnavailable(runId),
+          fail: async (runId, reason, detail) =>
+            replayComposition?.archiveFor(runId)?.fail(runId, reason, detail) ??
+            replayUnavailable(runId),
+          expire: async (runId, nowMs) =>
+            replayComposition?.archiveFor(runId)?.expire(runId, nowMs) ?? replayUnavailable(runId),
+          delete: async (runId) =>
+            replayComposition?.archiveFor(runId)?.delete(runId) ?? replayUnavailable(runId),
+          describe: async (runId) =>
+            (await replayComposition?.archiveFor(runId)?.describe(runId)) ?? null,
+        },
+      }),
 });
+
+/** The gate's answer for a run this deployment is not recording. */
+function replayUnavailable(runId: string): {
+  ok: false;
+  failure: { reason: 'unknown-replay'; detail: string; liveImpact: 'none' };
+} {
+  return {
+    ok: false,
+    failure: {
+      reason: 'unknown-replay',
+      detail: `no replay was begun for run ${runId}`,
+      liveImpact: 'none',
+    },
+  };
+}
+
+/*
+ * A PROGRAMME OPENS: RESOLVE, RECORD THE AIRING, AND ONLY THEN MAYBE RECORD.
+ *
+ * This is the single place a broadcast becomes a replay. It runs off the
+ * timeline registry's own "a run opened" signal, so every path that puts a
+ * programme on air goes through it and none of them has to remember to.
+ */
+if (replayComposition !== null) {
+  programmeTimelines.onRunOpened((runId) => {
+    const identity = programmeTimelines.identityOf(runId);
+    if (identity === null) return;
+    /*
+     * NOT AWAITED. A live broadcast does not wait on an account service, and
+     * the composition is written so that every failure inside it is a
+     * diagnostic rather than an exception.
+     */
+    void replayComposition?.programmeOpened(identity, Date.now());
+  });
+}
+/*
+ * REPLAY PLAYBACK, REGISTERED ONLY WITH A BACKEND THAT STARTED.
+ *
+ * The archive and its delivery were paired at startup and cannot be chosen
+ * apart -- a filesystem archive with object delivery would find nothing, and an
+ * object archive with filesystem delivery would refuse every reference as
+ * non-canonical. Both are silent failures that only surface when somebody
+ * presses play on a recording made weeks earlier.
+ *
+ * AND THE AUDIENCE AUTHORITY IS THE LIVE ONE, NARROWED. `createReplayAudience
+ * Access` asks the same question the live media path asks -- may this caller
+ * watch this channel -- and only then lets the recording's own visibility
+ * narrow the answer. There is no second login system, and a replay tier can
+ * never widen what the channel decided.
+ */
+if (replayBackend !== null) {
+  registerProgrammeReplayRoutes(app, {
+    archive: replayBackend.archive,
+    delivery: replayBackend.delivery,
+    access: createReplayAudienceAccess({
+      channel: createProgrammeAudienceAccess({
+        channelOf: (runId) => programmeTimelines.channelOf(runId),
+        visibility: channelVisibility,
+        authenticate,
+        entitlement: operatorEntitlement,
+        internalTokenAllowed: (presented) =>
+          internalIngressRequestAllowed(config.internalIngressAuth, presented),
+      }),
+      authenticate,
+      entitlement: operatorEntitlement,
+    }),
+    onDeliveryProblem: (problem) => {
+      /*
+       * Archived material that would not serve. Counted for an operator; the
+       * run is named so they can look, and nothing about the requester is kept.
+       */
+      logger.warn('Replay media could not be served', {
+        runId: problem.runId,
+        refusal: problem.refusal,
+        object: problem.object,
+      });
+    },
+  });
+  logger.info('Programme replay playback ready', { backend: replayBackend.kind });
+}
+
 
 /*
  * RETENTION, ACTUALLY RUN.
@@ -1621,6 +1898,13 @@ app.delete('/programmes/:runId/media-origin', operatorOnly, (req, res) => {
       return;
     }
     await programmeOrigin.stop(runId);
+    /*
+     * THE BROADCAST IS OVER. The producer has already finalised the recording
+     * -- it knows when the last fragment landed and this does not -- so what
+     * happens here is bookkeeping: project whatever the finalisation turned out
+     * to be into history, and write down that the airing ended.
+     */
+    await replayComposition?.programmeClosed(runId, Date.now());
     res.status(200).json({ runId, producing: false });
   })();
 });

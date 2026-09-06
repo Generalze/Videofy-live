@@ -33,6 +33,8 @@ import { AudioVoicesAside, AudioVoicesPage } from './pages/AudioVoicesPage';
 import { buildVoiceRows } from './voiceRows';
 import { navigate } from './router';
 import { ChannelSettingsPanel } from './ChannelSettingsPanel';
+import { ReplayPanel } from './ReplayPanel';
+import { useReplay } from './useReplay';
 import {
   browserRandomBytes,
   generateJoinCode,
@@ -1346,6 +1348,26 @@ export default function App(): React.ReactElement {
     programmeId: ownChannelId,
   });
 
+  /*
+   * REPLAY STATE, on the Access page.
+   *
+   * SCOPED TO THE OPERATOR'S OWN CHANNEL, the same programme identity Pages 05
+   * and 07 use. It sits on Access rather than on a page of its own because
+   * Access is already where "who can watch this" is decided, and the console's
+   * ten pages are a locked directive -- adding an eleventh to hold three
+   * controls would be a product change nobody asked for.
+   */
+  const replay = useReplay({
+    accountUrl: ACCOUNT_URL,
+    programmeId: ownChannelId,
+    token: readOperatorSessionToken,
+  });
+  /*
+   * WHICH ROW'S CONFIRMATION IS OPEN. Purely a screen state -- one at a time, so
+   * a list somebody is scrolling never has two irreversible buttons armed.
+   */
+  const [confirmingReplayDelete, setConfirmingReplayDelete] = useState<string | null>(null);
+
   const channelIdentity = useChannelIdentity({
     accountUrl: ACCOUNT_URL,
     reloadKey: `${activeChannelId}:${channelReportedCategory ?? ''}`,
@@ -1588,6 +1610,42 @@ export default function App(): React.ReactElement {
           onGenerateCode={handleGenerateChannelCode}
           onSave={handleSaveChannelSettings}
           onMoveToOwnChannel={handleMoveToOwnChannel}
+        />
+        <ReplayPanel
+          unavailable={replay.unavailable}
+          loading={replay.loading}
+          saving={replay.saving}
+          configured={replay.settings !== null}
+          channelPublished={replay.channelPublished}
+          maxDurationDays={replay.maxDurationDays}
+          draft={replay.draft}
+          overrideDraft={replay.overrideDraft}
+          /*
+           * READ FROM WHAT IS STORED, not from the form. An operator who has
+           * ticked the box but not saved it may not yet set an override, and
+           * showing them otherwise would invite a refusal they cannot explain.
+           */
+          overridesAllowed={replay.settings?.allowOverrides === true}
+          resolution={replay.resolution}
+          airings={replay.airings}
+          hasMoreHistory={replay.nextPage !== null}
+          loadingMore={replay.loadingMore}
+          error={replay.error}
+          ingestUrl={INGEST_URL}
+          nowMs={Date.now()}
+          onDraftChange={replay.setDraft}
+          onOverrideChange={replay.setOverrideDraft}
+          onSaveSettings={replay.saveSettings}
+          onSaveOverride={replay.saveOverride}
+          onLoadMore={replay.loadMore}
+          onReload={replay.reload}
+          deletionRequested={replay.deletionRequested}
+          confirmingDelete={confirmingReplayDelete}
+          onAskDelete={setConfirmingReplayDelete}
+          onConfirmDelete={(runId) => {
+            setConfirmingReplayDelete(null);
+            replay.deleteReplay(runId);
+          }}
         />
       </ConsolePage>
 
