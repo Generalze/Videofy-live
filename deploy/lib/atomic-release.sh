@@ -52,6 +52,8 @@
 . "$(dirname "${BASH_SOURCE[0]}")/release-engine.sh"
 # shellcheck source=./effective-units.sh
 . "$(dirname "${BASH_SOURCE[0]}")/effective-units.sh"
+# shellcheck source=./deploy-lock.sh
+. "$(dirname "${BASH_SOURCE[0]}")/deploy-lock.sh"
 
 # Run every pre-cutover gate against a candidate that nothing points at yet.
 #
@@ -97,6 +99,7 @@ atomic_gate_candidate() {
 # It moves no pointer, touches no unit, restarts nothing.
 atomic_prepare_only() {
   local sha="$1" ref="$2"
+  atomic_lock_acquire || return 1
   assert_safe_path 'RELEASES_DIR' "$ATOMIC_RELEASES" || return 1
   assert_full_sha 'requested sha' "$sha" || return 1
 
@@ -122,6 +125,12 @@ atomic_prepare_only() {
 # The whole deployment, in the one order that keeps the invariant.
 atomic_deploy() {
   local sha="$1" ref="$2"
+
+  # ONE TRANSACTION OWNER. Held for the whole deployment, not just the rename:
+  # two concurrent deploys would publish over each other and then each fail its
+  # own running-release proof because the other's services are up.
+  atomic_lock_acquire || return 1
+  ATOMIC_LOCK_HELD=1
 
   assert_release_paths "$ATOMIC_ROOT" "$ATOMIC_RELEASES" "$ATOMIC_CURRENT" "$ATOMIC_WWW" || return 1
   assert_full_sha 'requested sha' "$sha" || return 1
@@ -167,9 +176,36 @@ atomic_deploy() {
     return 1
   fi
 
+  # ------------------------------------------------------------- finalise
+  #
+  # RECORDED ONLY AFTER THE SMOKE, WHICHEVER MACHINE RUNS IT.
+  #
+  # This used to write DEPLOY-STATE and print DEPLOYED here, and on production
+  # the public smoke runs on the CALLER -- so the box announced a completed
+  # deployment, and left a success record behind, while the smoke had not yet
+  # been attempted. Anything reading that state during the gap, including the
+  # rollback path's own "previous release" lookup, was reading a claim nobody
+  # had earned.
+  #
+  # When the smoke belongs to the caller, this returns having activated but not
+  # finalised, and the caller calls `atomic_finalize` once the edge answers.
+  if [ -z "${ATOMIC_FN_SMOKE:-}" ]; then
+    echo "ACTIVATED $sha (awaiting public smoke; NOT yet recorded)"
+    return 0
+  fi
+  atomic_finalize "$sha" "$previous"
+  return 0
+}
+
+# The last step, and the only place a deployment is called finished.
+#
+# Separate from `atomic_deploy` so the public smoke can run wherever it has to
+# -- the edge is reachable from the operator's machine, not from the box -- and
+# the record still cannot be written before it passes.
+atomic_finalize() {
+  local sha="$1" previous="$2"
   atomic_record_state "$sha" "$previous"
   echo "DEPLOYED $sha"
-  return 0
 }
 
 # Restart, health, running-release proof, public smoke -- in that order.
@@ -213,6 +249,13 @@ __atomic_activate() {
 # be running the rollback release, public edge answering.
 atomic_rollback_transition() {
   local target="$1"
+  # Taken unless the caller already owns it -- a rollback triggered from inside
+  # a failed deployment is part of that same transaction, and `flock` on an
+  # already-held descriptor in the same process would deadlock against itself.
+  if [ "${ATOMIC_LOCK_HELD:-0}" != "1" ]; then
+    atomic_lock_acquire || return 1
+    ATOMIC_LOCK_HELD=1
+  fi
   case "$target" in
     none|unmanaged:*|'')
       echo "CANNOT ROLL BACK: previous release is '${target:-none}'." >&2
@@ -239,6 +282,12 @@ atomic_rollback_transition() {
     return 1
   fi
 
+  if [ -z "${ATOMIC_FN_SMOKE:-}" ]; then
+    # Same rule as a deployment: a rollback is not complete until the public
+    # edge answers, and the record must not claim otherwise in the meantime.
+    echo "ROLLED BACK to $target (awaiting public smoke; NOT yet recorded)"
+    return 0
+  fi
   atomic_record_state "$target" "rolled-back"
   echo "ROLLED BACK to $target"
   return 0

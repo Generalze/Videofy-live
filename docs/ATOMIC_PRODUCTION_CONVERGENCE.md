@@ -349,6 +349,105 @@ file, a removed manifest — stops being a release for reuse, publication and
 rollback alike. The manifest is never regenerated for an existing release:
 doing so would bless the tampering it exists to detect.
 
+## Success is recorded only after the public edge answers
+
+The box does not write `DEPLOY-STATE.md` when its own checks pass. It stops at
+**activated** and says so. The caller then runs the public smoke — the edge is
+reachable from the operator's machine, not from the host — and only if that
+passes does it ask the box to finalise.
+
+```
+publish -> restart -> health -> running-process proof
+   -> PUBLIC SMOKE (on the caller)
+   -> record DEPLOY-STATE
+   -> DEPLOYED
+```
+
+An earlier version recorded and printed `DEPLOYED` on the box before the caller
+had attempted the smoke. During that window the success record was a claim
+nobody had earned — and worse, the rollback path reads that same file to decide
+which release to return to, so a failed smoke could have rolled back *to the
+release that had just failed*.
+
+Rollback follows the identical rule and finalises after its own smoke.
+
+**`DEPLOY_SKIP_SMOKE=1` is refused outright for production.** It used to return
+success with a caveat in the log, so a skipped smoke still produced a normal
+`DEPLOYED` line and a success record. Staging keeps the escape hatch, labelled
+`NOT provenance-complete`.
+
+## The seal covers the namespace, not only file contents
+
+The manifest records every entry's **type**: a file by content hash, a symlink
+by its target. An earlier manifest listed `-type f` only, which in this
+monorepo is a hole big enough to drive a release through — workspace linkage
+lives in `node_modules/@videofy-live/*` as symlinks, and repointing one changes
+which code executes while every ordinary file hash stays byte-identical.
+
+Targets are recorded **as written, unresolved**: resolving them would follow the
+link out of the release and hash whatever it points at today, which is the
+opposite of sealing. `release_symlinks_stay_inside` separately asserts no link
+escapes the release, so the sealed set is closed.
+
+## A corrupt ACTIVE release is an incident, not a redeploy
+
+Preparation moves an integrity-failing same-SHA directory aside and rebuilds —
+correct for an unused candidate, catastrophic for the live one. If `current`
+points at it, the rename leaves the pointer **dangling before any replacement
+exists**, and an external restart in that window boots nothing at all.
+
+So when the failing release is the active one, preparation **refuses** and
+changes nothing:
+
+```
+ACTIVE RELEASE INTEGRITY FAILURE: <sha> is live and its bytes have changed.
+  Nothing has been moved, deleted or overwritten; the pointer is untouched
+  and a restart still resolves this release.
+```
+
+Recovery is a deliberate choice between rolling back to a known-good release
+and investigating the corruption first — a decision this code does not have the
+facts to make.
+
+## One deployment at a time
+
+`prepare`, `deploy` and `rollback` each take an exclusive `flock` on
+`<root>/.deploy.lock` for the whole transaction. `state` is read-only and never
+locks, because a diagnostic that blocks during a deployment is useless exactly
+when it is needed.
+
+Atomic publication makes any single *instant* unambiguous; it does nothing for
+two multi-step transactions interleaving. Two deploys would publish over each
+other and then each fail its own running-release proof because the other's
+services are up.
+
+The lock is **kernel-owned**, not a lockfile: there is no stale state and
+nothing to delete by hand — which matters, because a lock someone must clear
+manually is a lock that will eventually be cleared while a deployment is
+running.
+
+One property is worth knowing before it surprises you at 3am. An `flock`
+belongs to the **open file description**, and every child a deployment spawns —
+`npm`, `git`, `node`, even a `sleep` — inherits it. So the lock is released
+when the process **tree** goes away, not merely when the command that took it
+does: a single orphaned child is enough to keep it held. That is the right
+conservative default, because an orphan may still be writing into a release —
+but it is baffling without evidence, so a refusal now lists the holding
+processes:
+
+```
+REFUSED: another deployment operation holds the lock at /srv/videofy-prod/.deploy.lock
+  ...
+  held by:
+    USER  PID  ACCESS COMMAND
+    claude 2500025 F.... sleep
+```
+
+If the named processes are genuinely dead work, kill that process group. Do not
+delete the lock file: removing it while a deployment holds it gives the next
+deployment a fresh file to lock and two owners running at once, which is the
+failure this exists to prevent.
+
 ## What is deliberately NOT in this work package
 
 - **Database migrations.** Replay's `027–030` remain HOLD. Release atomicity

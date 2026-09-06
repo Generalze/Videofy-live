@@ -107,10 +107,45 @@ ssh "$VIDEOFY_SSH_HOST" "rm -rf '$REMOTE_LIB' && mkdir -p '$REMOTE_LIB' && \
 # "the site works" means in a second place that can drift from the first.
 public_smoke() {
   if [ "${DEPLOY_SKIP_SMOKE:-0}" = "1" ]; then
-    echo "[$ENV_NAME] smoke SKIPPED by DEPLOY_SKIP_SMOKE=1 -- not provenance-complete"
+    # PRODUCTION CANNOT OPT OUT OF ITS OWN PROVENANCE.
+    #
+    # The old behaviour returned success and printed a caveat, so a skipped
+    # smoke still produced a normal DEPLOYED line and a success record, with
+    # the caveat living only in a log nobody reads afterwards. On staging that
+    # is a reasonable convenience; on production it lets "verified through the
+    # public edge" be false while every artefact says otherwise.
+    if [ "$ENV_NAME" = "production" ]; then
+      echo "REFUSED: DEPLOY_SKIP_SMOKE=1 is not permitted for production." >&2
+      echo "  A production deployment is complete when the public edge answers," >&2
+      echo "  or it is not complete. Fix the edge, or deploy to staging." >&2
+      return 1
+    fi
+    echo "[$ENV_NAME] smoke SKIPPED by DEPLOY_SKIP_SMOKE=1 -- NOT provenance-complete"
     return 0
   fi
   bash "$HERE/production/smoke.sh" "$ENV_NAME"
+}
+
+# Read the last COMPLETED deployment from the box.
+#
+# Trustworthy precisely because the box no longer records anything until the
+# smoke has passed: during an activation-but-not-finalised window this still
+# names the previous good release rather than the one being attempted.
+remote_active_record() {
+  ssh "$VIDEOFY_SSH_HOST"     "sed -n 's/^| active | .\(.*\). |$/\1/p' '$VIDEOFY_ROOT/DEPLOY-STATE.md' 2>/dev/null | head -1"
+}
+
+# Record the deployment on the box, AFTER the public smoke has passed here.
+remote_finalize() {
+  local sha="$1" previous="$2"
+  # shellcheck disable=SC2029
+  ssh "$VIDEOFY_SSH_HOST" "
+    export ATOMIC_ROOT='$VIDEOFY_ROOT' ATOMIC_RELEASES='$VIDEOFY_ROOT/releases'
+    export ATOMIC_CURRENT='$VIDEOFY_ROOT/current' ATOMIC_WWW='$VIDEOFY_ROOT/www'
+    export ATOMIC_ENV='$ENV_NAME'
+    . $REMOTE_LIB/atomic-release.sh
+    atomic_finalize '$sha' '$previous'
+  "
 }
 
 remote_rollback() {
@@ -147,9 +182,11 @@ if [ "$ACTION" = "rollback" ]; then
   fi
   if ! public_smoke; then
     echo "ROLLBACK INCOMPLETE: $TARGET is published and healthy on the box, but the"
-    echo "  public smoke failed. The edge, not the release, is the thing to look at."
+    echo "  public smoke failed. NO success was recorded -- the edge, not the"
+    echo "  release, is the thing to look at."
     exit 1
   fi
+  remote_finalize "$TARGET" "rolled-back"
   echo "[$ENV_NAME] ROLLED BACK to $TARGET"
   exit 0
 fi
@@ -169,6 +206,11 @@ BUNDLE="/tmp/videofy-atomic-$ENV_NAME.bundle"
 git bundle create "$BUNDLE" "$SHA" 2>&1 | grep -v '^warning' || true
 [ -s "$BUNDLE" ] || { echo "DEPLOY FAILED: empty bundle"; exit 1; }
 scp -q "$BUNDLE" "$VIDEOFY_SSH_HOST:/tmp/videofy-atomic.bundle"
+
+# Captured BEFORE the deployment: after a successful activation the box has
+# recorded nothing, so this is still the last completed release.
+PREVIOUS_RECORDED="$(remote_active_record)"
+[ -n "$PREVIOUS_RECORDED" ] || PREVIOUS_RECORDED=none
 
 REMOTE_STATUS=0
 # shellcheck disable=SC2029
@@ -269,7 +311,8 @@ fi
 # live for as long as it takes somebody to read the log.
 if ! public_smoke; then
   echo "DEPLOY FAILED: $SHA is healthy on the box but the public smoke failed."
-  PREVIOUS="$(ssh "$VIDEOFY_SSH_HOST" "sed -n 's/^| previous | \`\\(.*\\)\` |$/\\1/p' '$VIDEOFY_ROOT/DEPLOY-STATE.md' 2>/dev/null | head -1")"
+  echo "  Nothing was recorded as deployed: the box stopped at 'activated'."
+  PREVIOUS="$(remote_active_record)"
   if [ -n "$PREVIOUS" ] && [ "$PREVIOUS" != "none" ] && [ "$PREVIOUS" != "rolled-back" ]; then
     echo "  rolling back to $PREVIOUS"
     remote_rollback "$PREVIOUS" || { echo "  ROLLBACK ALSO FAILED -- inspect the host"; exit 1; }
@@ -281,4 +324,7 @@ if ! public_smoke; then
   exit 1
 fi
 
+# THE RECORD IS WRITTEN LAST, and only here. Everything above it is reversible
+# or already reversed; this is the deployment becoming a fact.
+remote_finalize "$SHA" "$PREVIOUS_RECORDED"
 echo "[$ENV_NAME] DEPLOYED $SHA"

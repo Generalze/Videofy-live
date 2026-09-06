@@ -108,7 +108,15 @@ unit_fixture() {
   : > "$STUB_SYSTEMD_DIR/$unit.DropInPaths"
 }
 
-drop_rig() { [ -n "${RIG:-}" ] && rm -rf "$RIG"; }
+drop_rig() {
+  # THE HARNESS IS ONE PROCESS RUNNING MANY DEPLOYMENTS. Every operation takes
+  # the lock and, in real life, gives it back by exiting. Here nothing exits,
+  # so the suite must hand it back explicitly between cases -- otherwise the
+  # first case owns it forever and the concurrency test waits on a holder that
+  # can never acquire. That hung the run, and it was the harness, not the lock.
+  atomic_lock_release 2>/dev/null || true
+  [ -n "${RIG:-}" ] && rm -rf "$RIG"
+}
 
 sha_of() { printf '%040d' "$1" | tr '0123456789' 'abcdef0123'; }
 
@@ -122,6 +130,11 @@ build_body() {
   [ "$BUILD_SHOULD_FAIL" = "1" ] && return 1
   mkdir -p "$candidate/www/call-web"
   printf 'bundle-%s' "$BUILD_SHA" > "$candidate/www/call-web/index.html"
+  # A workspace link of the shape npm creates, so integrity is tested against
+  # what this monorepo actually ships rather than against files alone.
+  mkdir -p "$candidate/node_modules/@videofy-live" "$candidate/packages/pkg"
+  printf 'pkg' > "$candidate/packages/pkg/index.js"
+  ln -sfn ../../packages/pkg "$candidate/node_modules/@videofy-live/pkg"
   [ "$WEB_SHOULD_FAIL" = "1" ] && return 1
   return 0
 }
@@ -195,9 +208,14 @@ simulate_web_request() {
 web_pointer_target() { readlink "$ATOMIC_WWW" 2>/dev/null || printf 'NOT-A-SYMLINK'; }
 
 deploy() {
-  local sha="$1"
+  local sha="$1" rc
   BUILD_SHA="$sha"
   atomic_deploy "$sha" "$sha"
+  rc=$?
+  # Handed back immediately, for the same reason as in drop_rig.
+  atomic_lock_release 2>/dev/null || true
+  ATOMIC_LOCK_HELD=0
+  return "$rc"
 }
 
 reset_failures() {
@@ -275,6 +293,41 @@ if [ "$MUTATION" = "prepare-publishes" ]; then
     release_prepare "$ATOMIC_RELEASES" "$sha" "$ref" __atomic_prepare_body || return 1
     release_publish "$ATOMIC_RELEASES" "$sha" "$ATOMIC_CURRENT"
   }
+fi
+if [ "$MUTATION" = "finalize-before-smoke" ]; then
+  # The defect: record and announce success before the edge is asked.
+  __atomic_activate() {
+    local sha="$1"
+    [ -n "${ATOMIC_FN_RESTART:-}" ] && ! "$ATOMIC_FN_RESTART" && return 1
+    [ -n "${ATOMIC_FN_HEALTH:-}" ] && ! "$ATOMIC_FN_HEALTH" && return 1
+    [ -n "${ATOMIC_FN_RUNNING:-}" ] && ! "$ATOMIC_FN_RUNNING" "$sha" && return 1
+    atomic_record_state "$sha" "pre-smoke"
+    [ -n "${ATOMIC_FN_SMOKE:-}" ] && ! "$ATOMIC_FN_SMOKE" && return 1
+    return 0
+  }
+fi
+if [ "$MUTATION" = "symlink-not-sealed" ]; then
+  # Content-only manifest: files hashed, symlinks invisible.
+  release_manifest_of() {
+    ( cd "$1" && find . -type f -not -path './.git/*' -not -name 'RELEASE.json' \
+        -not -name 'RELEASE.manifest.sha256' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum )
+  }
+fi
+if [ "$MUTATION" = "move-active-release-aside" ]; then
+  # Rename the live release out from under `current` during preparation.
+  release_prepare() {
+    local releases="$1" sha="$2" ref="$3" body="$4"
+    local final="$releases/$sha" candidate="$releases/.candidate-$sha.$$"
+    if [ -e "$final" ] && ! release_is_complete "$final"; then
+      mv -T "$final" "$final.unverified.$(date -u +%s)" || return 1
+    elif [ -e "$final" ]; then return 0; fi
+    mkdir -p "$candidate" && "$body" "$candidate" || return 1
+    release_seal "$candidate" "$sha" "$ref" test
+    mv -T "$candidate" "$final"
+  }
+fi
+if [ "$MUTATION" = "no-deploy-lock" ]; then
+  atomic_lock_acquire() { return 0; }
 fi
 if [ "$MUTATION" = "no-dropin-guard" ]; then
   assert_units_resolve_through_pointer() { return 0; }
@@ -909,6 +962,217 @@ else bad "a valid full SHA was refused" ""; fi
 if assert_full_sha 'production ref' "$(printf '%s' "$A" | tr 'a-f' 'A-F')" >/dev/null 2>&1; then
   bad "an uppercase SHA was accepted" "one release must have one spelling"
 else ok "an uppercase SHA is refused"; fi
+
+# ============================== finalise only after the smoke
+
+echo ""
+echo "success is recorded only after the public edge answers"
+
+state_file() { printf '%s/DEPLOY-STATE.md' "$ATOMIC_ROOT"; }
+recorded_active() { sed -n 's/^| active | .\(.*\). |$/\1/p' "$(state_file)" 2>/dev/null | head -1; }
+
+# THE DEFECT: the record was written after health and the running proof but
+# BEFORE the smoke, so a deployment the edge never confirmed still left a
+# success behind -- which the rollback path then read as "the previous good
+# release".
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+check "a completed deploy records A" "$(recorded_active)" "$A"
+SMOKE_SHOULD_FAIL=1
+deploy "$B" >/dev/null 2>&1
+SMOKE_SHOULD_FAIL=0
+check "a smoke failure never records B" "$(recorded_active)" "$A"
+check "and the pointer rolled back to A" "$(simulate_restart)" "$A"
+check "and the processes are on A" "$(serving_now)" "$A"
+drop_rig
+
+# The record must not exist even momentarily before the smoke. Proved from
+# INSIDE the smoke callback, which runs before finalisation.
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+SEEN_DURING_SMOKE=""
+smoke_body() { SEEN_DURING_SMOKE="$(recorded_active)"; return 0; }
+deploy "$B" >/dev/null 2>&1
+check "DEPLOY-STATE still named A while the smoke ran" "$SEEN_DURING_SMOKE" "$A"
+check "and names B only after the smoke passed" "$(recorded_active)" "$B"
+smoke_body() { [ "$SMOKE_SHOULD_FAIL" = "1" ] && return 1; return 0; }
+drop_rig
+
+# Rollback obeys the same rule.
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+deploy "$B" >/dev/null 2>&1
+SMOKE_SHOULD_FAIL=1
+atomic_rollback_transition "$A" >/dev/null 2>&1
+SMOKE_SHOULD_FAIL=0
+check "a rollback whose smoke fails never records success" "$(recorded_active)" "$B"
+drop_rig
+
+# ============================== symlink integrity
+
+echo ""
+echo "the seal covers the runtime namespace, not just file contents"
+
+# A WORKSPACE LINK IS RUNTIME. Repointing node_modules/@videofy-live/x changes
+# which code executes while every ordinary file hash stays identical, so a
+# content-only manifest seals nothing that matters in this monorepo.
+link_case() {
+  local label="$1" action="$2"
+  new_rig; reset_failures
+  deploy "$A" >/dev/null 2>&1
+  BUILD_SHA="$B"
+  release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+  eval "$action"
+  if release_is_complete "$ATOMIC_RELEASES/$B"; then
+    bad "$label was still considered a release" "integrity passed"
+  else ok "$label invalidates the release"; fi
+  if release_publish "$ATOMIC_RELEASES" "$B" "$ATOMIC_CURRENT" >/dev/null 2>&1; then
+    bad "$label could still be published" "publish succeeded"
+  else ok "$label cannot be published"; fi
+  drop_rig
+}
+link_case "a repointed symlink" \
+  'ln -sfn ../../packages/other "$ATOMIC_RELEASES/$B/node_modules/@videofy-live/pkg"'
+link_case "a deleted symlink" \
+  'rm -f "$ATOMIC_RELEASES/$B/node_modules/@videofy-live/pkg"'
+link_case "an added symlink" \
+  'ln -sfn ../../packages/pkg "$ATOMIC_RELEASES/$B/node_modules/@videofy-live/extra"'
+
+new_rig; reset_failures
+BUILD_SHA="$A"
+release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+check "an untouched release with workspace symlinks stays valid" \
+  "$(release_is_complete "$ATOMIC_RELEASES/$A" && echo yes || echo no)" "yes"
+check "and its symlinks resolve inside the release" \
+  "$(release_symlinks_stay_inside "$ATOMIC_RELEASES/$A" 2>/dev/null && echo inside || echo escapes)" "inside"
+ln -sfn /etc "$ATOMIC_RELEASES/$A/node_modules/@videofy-live/escape"
+check "a link pointing outside the release is refused" \
+  "$(release_symlinks_stay_inside "$ATOMIC_RELEASES/$A" 2>/dev/null && echo inside || echo escapes)" "escapes"
+drop_rig
+
+# ============================== never move the ACTIVE release aside
+
+echo ""
+echo "a corrupt ACTIVE release is an incident, not a redeploy"
+
+# THE HAZARD: preparation used to rename an integrity-failing same-SHA
+# directory out of the way. If `current` points at it, that leaves the pointer
+# DANGLING before any replacement exists -- an external restart in that window
+# boots nothing, the one thing this engine promises cannot happen.
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+printf 'corrupted' > "$ATOMIC_RELEASES/$A/BUILT_SHA"
+BUILD_SHA="$A"
+if release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1; then
+  bad "preparing over the corrupt ACTIVE release succeeded" "it must refuse"
+else ok "preparing over a corrupt ACTIVE release refuses"; fi
+check "current still exists" "$([ -L "$ATOMIC_CURRENT" ] && echo yes || echo no)" "yes"
+check "current still points at A" \
+  "$(pointer_target "$ATOMIC_CURRENT")" "$ATOMIC_RELEASES/$A"
+check "a restart still resolves something, never NOTHING" \
+  "$([ -e "$ATOMIC_CURRENT/BUILT_SHA" ] && echo resolves || echo NOTHING)" "resolves"
+check "nothing was moved aside" \
+  "$(ls -d "$ATOMIC_RELEASES/$A".unverified.* 2>/dev/null | wc -l | tr -d ' ')" "0"
+if deploy "$A" >/dev/null 2>&1; then
+  bad "deploying over the corrupt ACTIVE release succeeded" "it must refuse"
+else ok "deploying over a corrupt ACTIVE release refuses"; fi
+check "and current is still A afterwards" \
+  "$(pointer_target "$ATOMIC_CURRENT")" "$ATOMIC_RELEASES/$A"
+drop_rig
+
+# A corrupt NON-ACTIVE release may still be moved aside and rebuilt.
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+BUILD_SHA="$B"
+release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+printf 'corrupted' > "$ATOMIC_RELEASES/$B/BUILT_SHA"
+release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+check "a corrupt NON-active release is rebuilt cleanly" \
+  "$(release_is_complete "$ATOMIC_RELEASES/$B" && echo yes || echo no)" "yes"
+check "and the corrupt one was preserved" \
+  "$(ls -d "$ATOMIC_RELEASES/$B".unverified.* >/dev/null 2>&1 && echo kept || echo destroyed)" "kept"
+drop_rig
+
+# ============================== one deployment at a time
+
+echo ""
+echo "mutating operations are serialised by a kernel-owned lock"
+
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+# A REAL COMPETING PROCESS, not a simulated one: the whole point is that the
+# lock belongs to a process and is released when that process dies.
+printf '%s\n' \
+  ". \"$LIB/deploy-lock.sh\"" \
+  "export ATOMIC_ROOT=\"$ATOMIC_ROOT\"" \
+  "atomic_lock_acquire || exit 9" \
+  "touch \"$RIG/held\"" \
+  "for _ in \$(seq 1 200); do [ -f \"$RIG/release\" ] && break; sleep 0.05; done" > "$RIG/holder.sh"
+# The suite's own lock is handed back first: without this the holder can never
+# acquire, and the wait below would spin forever.
+atomic_lock_release 2>/dev/null || true
+ATOMIC_LOCK_HELD=0
+# setsid so the holder owns a process GROUP. An `flock` is held by the open
+# file description, which children inherit -- killing only the parent leaves a
+# `sleep` holding the lock, which is exactly what happened the first time this
+# test was written. A dying deployment takes its children with it, so the test
+# must model that rather than a single orphaned parent.
+setsid bash "$RIG/holder.sh" &
+HOLDER_PID=$!
+# BOUNDED. A wait with no ceiling is how a test harness leaves processes
+# spinning on a shared host; if the holder never signals, fail the case rather
+# than hang the run.
+HOLDER_READY=no
+for _ in $(seq 1 100); do
+  [ -f "$RIG/held" ] && { HOLDER_READY=yes; break; }
+  sleep 0.05
+done
+if [ "$HOLDER_READY" != yes ]; then
+  bad "the competing lock holder never started" "cannot test serialisation"
+fi
+
+BUILD_SHA="$B"
+if atomic_prepare_only "$B" "$B" >/dev/null 2>&1; then
+  bad "prepare ran while another operation held the lock" "it must refuse"
+else ok "prepare refuses while the lock is held"; fi
+if deploy "$B" >/dev/null 2>&1; then
+  bad "deploy ran while another operation held the lock" "it must refuse"
+else ok "deploy refuses while the lock is held"; fi
+if atomic_rollback_transition "$A" >/dev/null 2>&1; then
+  bad "rollback ran while another operation held the lock" "it must refuse"
+else ok "rollback refuses while the lock is held"; fi
+
+# KILLED, not asked to exit: the lock must be released by the kernel rather
+# than by cleanup code a crash would skip.
+# Killed by process GROUP, never by a `-f` pattern: a pattern kill in a test
+# harness once matched and stopped the live staging service.
+HOLDER_PGID="$(ps -o pgid= -p "$HOLDER_PID" 2>/dev/null | tr -d ' ')"
+[ -n "$HOLDER_PGID" ] && kill -9 -"$HOLDER_PGID" 2>/dev/null
+kill -9 "$HOLDER_PID" 2>/dev/null
+wait "$HOLDER_PID" 2>/dev/null
+# The kernel releases on process exit; give the group a moment to actually go.
+for _ in $(seq 1 40); do
+  flock -n "$ATOMIC_ROOT/.deploy.lock" true 2>/dev/null && break
+  sleep 0.05
+done
+BUILD_SHA="$B"
+if atomic_prepare_only "$B" "$B" >/dev/null 2>&1; then
+  ok "the lock is released when the holding process is killed"
+else bad "the lock survived the holder being killed" "stale lock"; fi
+atomic_lock_release 2>/dev/null || true
+if atomic_prepare_only "$B" "$B" >/dev/null 2>&1; then
+  ok "the lock is released after a successful operation"
+else bad "the lock was not released after success" ""; fi
+atomic_lock_release 2>/dev/null || true
+drop_rig
+
+# `state` is read-only and must never block on the lock.
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+if release_state "$ATOMIC_RELEASES" "$ATOMIC_CURRENT" "$ATOMIC_WWW" >/dev/null 2>&1; then
+  ok "state reads without taking the lock"
+else bad "state failed" ""; fi
+drop_rig
 
 # ============================================================ report
 

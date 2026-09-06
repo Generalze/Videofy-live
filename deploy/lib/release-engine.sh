@@ -90,7 +90,57 @@ release_recorded_sha() {
 # what runs or what a visitor downloads.
 release_manifest_of() {
   local dir="$1"
-  ( cd "$dir" && find . -type f       -not -path './.git/*'       -not -name 'RELEASE.json'       -not -name 'RELEASE.manifest.sha256'       -not -name '.RELEASE.json.tmp'       -print0 | LC_ALL=C sort -z | xargs -0 sha256sum )
+  (
+    cd "$dir" || return 1
+    # SYMLINKS ARE PART OF THE RUNTIME NAMESPACE, NOT DECORATION.
+    #
+    # An earlier manifest listed `-type f` only, which in this monorepo is a
+    # hole big enough to drive a release through: workspace linkage lives in
+    # `node_modules/@videofy-live/*` as symlinks, and repointing one changes
+    # which code executes while every ordinary file hash stays byte-identical.
+    # The seal would have passed, publication would have passed, and the
+    # runtime would have followed the altered link.
+    #
+    # So each entry records its TYPE as well as its identity: a file by content
+    # hash, a link by its target. A link that changes target, appears or
+    # disappears changes the manifest, because the manifest describes the
+    # namespace rather than a set of blobs.
+    find . \( -type f -o -type l \)       -not -path './.git/*'       -not -name 'RELEASE.json'       -not -name 'RELEASE.manifest.sha256'       -not -name '.RELEASE.json.tmp'       -print0 | LC_ALL=C sort -z | while IFS= read -r -d '' entry; do
+        if [ -L "$entry" ]; then
+          # The target is recorded as WRITTEN, unresolved. Resolving it would
+          # follow the link out of the release and hash whatever it happens to
+          # point at today, which is the opposite of sealing.
+          printf 'link %s -> %s
+' "$entry" "$(readlink "$entry")"
+        else
+          printf 'file %s %s
+' "$entry" "$(sha256sum < "$entry" | cut -d' ' -f1)"
+        fi
+      done
+  )
+}
+
+# Does every symlink in a release stay inside it?
+#
+# A release that reaches outside itself is not sealed, whatever its manifest
+# says: the bytes behind an escaping link are mutable state nobody versioned.
+# npm workspace links are relative and land back inside the release, which is
+# why this can be an assertion rather than an allowlist.
+release_symlinks_stay_inside() {
+  local dir="$1" entry target resolved escapes=0
+  local root
+  root="$(cd "$dir" && pwd -P)" || return 1
+  while IFS= read -r -d '' entry; do
+    target="$(cd "$(dirname "$dir/$entry")" && cd "$(dirname "$(readlink "$dir/$entry")")" 2>/dev/null && pwd -P)" || continue
+    resolved="$target"
+    case "$resolved/" in
+      "$root"/*) ;;
+      *)
+        echo "REFUSED: $entry points outside the release, at $resolved" >&2
+        escapes=1 ;;
+    esac
+  done < <(cd "$dir" && find . -type l -not -path './.git/*' -print0)
+  [ "$escapes" -eq 0 ]
 }
 
 # Does this release still contain the bytes it was sealed with?
@@ -205,6 +255,28 @@ release_prepare() {
     if release_is_complete "$final" && [ "$(release_recorded_sha "$final")" = "$sha" ]; then
       echo "release $sha already prepared and sealed; reusing"
       return 0
+    fi
+    #
+    # NEVER MOVE THE RELEASE THAT IS CURRENTLY LIVE.
+    #
+    # The move-aside below is right for an unused candidate and catastrophic
+    # for the active one. If `current` points at this release, renaming it
+    # leaves `current` DANGLING -- and it does so BEFORE a replacement has been
+    # built, let alone qualified. For however long the rebuild takes, an
+    # external restart resolves nothing at all: the exact invariant this engine
+    # exists to guarantee, broken by its own repair path.
+    #
+    # An active release that fails integrity is an incident, not a redeploy.
+    # Everything is left exactly where it is and the operator is told what
+    # happened, because the recovery depends on facts this code does not have.
+    if [ -n "${ATOMIC_CURRENT:-}" ] && [ "$(pointer_target "$ATOMIC_CURRENT")" = "$final" ]; then
+      echo "ACTIVE RELEASE INTEGRITY FAILURE: $sha is live and its bytes have changed." >&2
+      echo "  current -> $final" >&2
+      echo "  Nothing has been moved, deleted or overwritten; the pointer is untouched" >&2
+      echo "  and a restart still resolves this release." >&2
+      echo "  This is an incident: decide deliberately whether to roll back to a known" >&2
+      echo "  good release or to investigate the corruption first." >&2
+      return 1
     fi
     # A directory with the right name and no proof of what is in it. It is not
     # deleted -- it may be the wreckage of something worth reading -- and it is
