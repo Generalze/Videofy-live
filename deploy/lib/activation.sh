@@ -148,6 +148,43 @@ activation_preflight() {
     fi
   done
 
+  #
+  # ONE PROGRAM, NOT FOUR COMMANDS.
+  #
+  # This used to run `sudo -u $runner test` three times and then
+  # `sudo -u $runner node <script-from-/tmp>`. Making that work needs
+  #
+  #     claude ALL=(videofy) NOPASSWD: /usr/bin/node, /usr/bin/test
+  #
+  # in production's sudoers, and `node` with a caller-chosen script is
+  # arbitrary code execution as the service user -- with the script living
+  # under /tmp, owned by the deploy account. That is not a preflight
+  # permission, it is a second identity.
+  #
+  # Production instead grants exactly one program, whose environment file, node
+  # binary and implementation are compiled in, and which decides for itself
+  # whether the path it was handed is a real candidate. The three capability
+  # questions are asked inside it, so a refusal still names the missing one.
+  if [ "${ATOMIC_ENV:-}" = 'production' ]; then
+    local helper="${ATOMIC_PREFLIGHT_HELPER:-/usr/local/sbin/videofy-production-preflight}"
+    #
+    # NO FALLBACK. Dropping back to the generic commands here would mean the
+    # policy could be narrowed and the code would quietly keep asking for the
+    # grant that was just removed -- failing at the least useful moment, with
+    # a sudo error instead of an explanation.
+    if [ ! -x "$helper" ]; then
+      echo "PREFLIGHT FAILED: $helper is not installed." >&2
+      echo "  Production runs its preflight through one fixed program rather" >&2
+      echo "  than through generic node and test authority as $runner." >&2
+      echo "    sudo bash deploy/production/install-sudo-hardening.sh" >&2
+      return 1
+    fi
+    sudo -n -u "$runner" "$helper" "$candidate"
+    return $?
+  fi
+
+  # Non-production keeps the direct form: its sudo policy is separate, its
+  # environment file is not production's, and narrowing it is its own package.
   local script
   script="$(dirname "${BASH_SOURCE[0]}")/preflight-config.mjs"
 
