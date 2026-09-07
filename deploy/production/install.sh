@@ -75,6 +75,20 @@ install -d -o "$DEPLOY_OWNER" -g "$DEPLOY_OWNER" -m 0755 "$VIDEOFY_ROOT/releases
 if [[ ! -e "$VIDEOFY_ROOT/.deploy.lock" ]]; then
   install -o "$DEPLOY_OWNER" -g "$DEPLOY_OWNER" -m 0644 /dev/null "$VIDEOFY_ROOT/.deploy.lock"
 fi
+
+# --- PUBLICATION AUTHORITY ---------------------------------------------------
+#
+# DELEGATED, NOT DUPLICATED. Publication authority has one implementation, in
+# install-publication-authority.sh, and this is fresh-host provisioning calling
+# it. Two copies would drift, and the copy that drifted would be the one an
+# operator ran at three in the morning.
+#
+# The reverse direction is the one that matters: an ALREADY-CONVERGED host that
+# is merely missing publication authority must run the narrow installer, never
+# this one. This script writes systemd units and can touch coturn and Caddy --
+# both shared with staging -- which is remediation far costlier than the fault.
+DEPLOY_OWNER="$DEPLOY_OWNER" bash "$HERE/install-publication-authority.sh"
+
 install -d -o caddy -g caddy -m 0755 /var/log/caddy
 # The LOG FILE too, not merely its directory. `caddy validate` never opens a
 # log file, so a root-owned one passes validation and then fails the restart

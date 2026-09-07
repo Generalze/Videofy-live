@@ -363,6 +363,50 @@ if [ "$MUTATION" = "shared-remote-lib" ]; then
   # caller writes where another reads.
   transaction_nonce() { printf 'shared'; }
 fi
+if [ "$MUTATION" = "remediate-via-full-installer" ]; then
+  # The defect: a converged host missing one symlink helper is told to rerun
+  # the full production installer -- which writes systemd units for the legacy
+  # /app layout and can restart coturn and Caddy, both shared with staging.
+  # The remediation would cost more than the fault it repairs.
+  atomic_bootstrap_refusal() {
+    local root="$1" state="$2" env_name="${3:-production}"
+    echo "REFUSED: ATOMIC DEPLOYMENT BOOTSTRAP INCOMPLETE ($state)." >&2
+    echo "  ATOMIC PUBLICATION BOOTSTRAP INCOMPLETE." >&2
+    echo "  THIS IS NOT A BUSY LOCK. Nothing else is deploying." >&2
+    echo "    sudo bash deploy/$env_name/install.sh" >&2
+  }
+  publication_authority_publish() {
+    local sha="$1" current="$2"
+    if [ ! -x "$ATOMIC_PUBLISH_HELPER" ]; then
+      echo "REFUSED: the publication helper is not installed." >&2
+      echo "  Run deploy/production/install.sh." >&2
+      return 1
+    fi
+    sudo -n "$ATOMIC_PUBLISH_HELPER" "$sha" || return 1
+    [ "$(pointer_target "$current")" = "$(release_dir "$ATOMIC_RELEASES" "$sha")" ]
+  }
+fi
+if [ "$MUTATION" = "no-publication-authority-preflight" ]; then
+  # The defect: the bootstrap pronounces a host ready without proving anything
+  # on it can move the pointer, so the deploy discovers it cannot publish only
+  # after a release has been built -- which is the 2026-09-06 incident.
+  atomic_bootstrap_state() {
+    local root="$1"
+    [ -e "$root" ] || { printf 'missing-root'; return 1; }
+    [ -d "$root/releases" ] || { printf 'missing-releases'; return 1; }
+    [ -f "$root/.deploy.lock" ] || { printf 'missing-lock'; return 1; }
+    printf 'ok'; return 0
+  }
+fi
+if [ "$MUTATION" = "trust-the-publisher" ]; then
+  # The defect: publication asks no questions -- it does not check that a
+  # publisher is installed, and it believes the exit code instead of reading
+  # the pointer back. A helper that reports success it never performed leaves
+  # production on the previous release while the deploy reports a new one.
+  publication_authority_publish() {
+    sudo -n "$ATOMIC_PUBLISH_HELPER" "$1" 2>/dev/null
+  }
+fi
 if [ "$MUTATION" = "bootstrap-preflight-bypassed" ]; then
   # The defect: an unprovisioned host is reported as a busy lock, and the
   # operator waits for a deployment that is not running.
@@ -1711,6 +1755,627 @@ if engine_is_committed "$RIG/notgit" >/dev/null 2>&1; then
   bad "a non-repository was accepted as an engine" "it has no sha to record"
 else ok "an engine with no Git HEAD refuses"; fi
 drop_rig
+
+# ======================================================= publication authority
+#
+# THE GAP THIS CLOSES. `/srv/videofy-prod` is root-owned, correctly. Replacing
+# a symlink needs write permission on the DIRECTORY that holds it, so the
+# deploy identity cannot move `current`. On 2026-09-06 that was discovered
+# after a release had already been built, and was closed by hand with sudo --
+# an undocumented requirement that works once and then strands the next person.
+#
+# Publication now goes through one root-owned program that can do this one
+# thing, and the ability to do it is proven BEFORE anything is built.
+#
+# These tests run the real script. Its root and library paths are compiled in
+# and it accepts an override for them ONLY when not running as uid 0, so the
+# override is unreachable through the sudo path the deployment actually uses.
+
+echo ""
+echo "the pointer moves through one narrow privileged program, or not at all"
+
+# WHAT IS UNDER TEST IS WHAT AN OPERATOR WOULD HAVE.
+#
+# The narrow installer runs first, into a scratch prefix, and every case below
+# uses the artefacts it produced. Handing the helper a hand-picked subset of
+# deploy/lib instead would let it depend on a file the installer never ships --
+# which works here and fails on the host at the moment of publication, having
+# already built a release.
+INSTALL_PA="$REPO_ROOT/deploy/production/install-publication-authority.sh"
+
+if [ "$MUTATION" = "non-atomic-privileged-install" ]; then
+  # The defect: the installer writes THROUGH each destination instead of
+  # renaming over it. sudo reads /etc/sudoers.d on every invocation and a
+  # publication in flight is reading the helper, so both can catch a file that
+  # is neither the old one nor the new one -- for sudoers, a window in which
+  # nobody on the box can use sudo at all.
+  #
+  # `atomic_place` is one line in the installer precisely so this can replace
+  # it whole. The mode is carried across from the staged file, so the mutation
+  # is the loss of atomicity and nothing else.
+  MUTINST="$(mktemp -d "${TMPDIR:-/tmp}/videofy-mutinst-XXXXXX")"
+  # The installer resolves its sources relative to its own location, so the
+  # mutated copy needs the same shape around it.
+  mkdir -p "$MUTINST/production" "$MUTINST/lib"
+  cp "$REPO_ROOT/deploy/lib/release-paths.sh" "$REPO_ROOT/deploy/lib/release-engine.sh" "$MUTINST/lib/"
+  cp "$REPO_ROOT/deploy/production/publish-current.sh" "$MUTINST/production/"
+  printf '%s\n' 's#^atomic_place() .*#atomic_place() { m="$(stat -c "%a" "$1")"; chmod u+w "$2" 2>/dev/null || :; cat "$1" > "$2"; chmod "$m" "$2"; rm -f "$1"; }#' \
+    > "$MUTINST/mutate.sed"
+  sed -f "$MUTINST/mutate.sed" "$INSTALL_PA" > "$MUTINST/production/install-publication-authority.sh"
+  INSTALL_PA="$MUTINST/production/install-publication-authority.sh"
+fi
+
+PA_PREFIX="$(mktemp -d "${TMPDIR:-/tmp}/videofy-pa-XXXXXX")"
+SAVED_PATH="$PATH"
+mkdir -p "$PA_PREFIX/bin"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'while [ "${1-}" = "-n" ]; do shift; done' \
+  'exec "$@"' > "$PA_PREFIX/bin/sudo"
+chmod 755 "$PA_PREFIX/bin/sudo"
+if PATH="$PA_PREFIX/bin:$SAVED_PATH" VIDEOFY_INSTALL_PREFIX="$PA_PREFIX" \
+   DEPLOY_OWNER="$(id -un)" bash "$INSTALL_PA" >/dev/null 2>&1; then
+  ok "the narrow installer provisions publication authority"
+else
+  bad "the narrow installer failed" "every case below tests what it installs"
+fi
+INSTALLED_LIB="$PA_PREFIX/usr/local/lib/videofy"
+PUBLISH_SH="$PA_PREFIX/usr/local/sbin/videofy-publish-current"
+
+if [ "$MUTATION" = "wide-publication-paths" ]; then
+  # The defect: the privileged helper publishes whatever it is handed, so the
+  # deploy account gains a root-owned way to point production at something that
+  # never passed a gate. The helper is a separate program rather than a sourced
+  # function, so the mutation is applied to a COPY of it -- its verification
+  # lines removed and everything else byte-identical.
+  MUTDIR="$(mktemp -d "${TMPDIR:-/tmp}/videofy-mutpub-XXXXXX")"
+  PUBLISH_SH="$MUTDIR/publish-current.sh"
+  grep -vF \
+    -e 'assert_full_sha ' \
+    -e 'release_is_complete "$TARGET"' \
+    -e 'release_recorded_sha "$TARGET"' \
+    -e 'release_symlinks_stay_inside "$TARGET"' \
+    "$REPO_ROOT/deploy/production/publish-current.sh" > "$PUBLISH_SH"
+fi
+
+# `sudo` is shadowed for these cases, so the suite exercises the real call --
+# including the literal `sudo -n` in the engine -- while escalating nothing.
+sudo_stub() {
+  mkdir -p "$RIG/bin"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'while [ "${1-}" = "-n" ]; do shift; done' \
+    'exec "$@"' > "$RIG/bin/sudo"
+  chmod 755 "$RIG/bin/sudo"
+  PATH="$RIG/bin:$SAVED_PATH"
+}
+
+# The real helper, pointed at the rig. Everything else about it is untouched.
+publish_helper() {
+  VIDEOFY_PUBLISH_ROOT="$ATOMIC_ROOT" VIDEOFY_PUBLISH_LIB="$INSTALLED_LIB" \
+    bash "$PUBLISH_SH" "$@"
+}
+
+# ---- 9. A valid publish atomically replaces `current` ----
+
+new_rig; reset_failures
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+BUILD_SHA="$B"; release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+
+publish_helper "$A" >/dev/null 2>&1
+check "the helper publishes a sealed release" "$(simulate_restart)" "$A"
+check "and what it publishes is a symlink, not a copied tree" \
+  "$([ -L "$ATOMIC_CURRENT" ] && echo symlink || echo NOT-A-SYMLINK)" "symlink"
+check "the web pointer still names current, untouched by publication" \
+  "$(web_pointer_target)" "$ATOMIC_CURRENT/www"
+
+# ---- 10. A rollback is the same operation, through the same authority ----
+
+publish_helper "$B" >/dev/null 2>&1
+check "publishing forward moves the pointer" "$(simulate_restart)" "$B"
+publish_helper "$A" >/dev/null 2>&1
+check "and a rollback is the identical call, not a privileged special case" \
+  "$(simulate_restart)" "$A"
+
+# Publication leaves nothing behind. A `.publishing.NNN` link surviving a run
+# means a rename did not happen and the next operator finds debris.
+check "no publication temporary survives" \
+  "$(find "$ATOMIC_ROOT" -maxdepth 1 -name 'current.publishing.*' | wc -l | tr -d ' ')" "0"
+
+# ---- 4 + 8. Only a SHA is accepted, so no other path can be named ----
+
+SHOUTED="$(printf '%s' "$A" | tr 'abcdef' 'ABCDEF')"
+for ARG in 'not-a-sha' '../../etc' "../releases/$A" "$ATOMIC_RELEASES/$A" \
+           "$A extra" '' "${A}0" "$SHOUTED"; do
+  if publish_helper $ARG >/dev/null 2>&1; then
+    bad "the helper accepted [$ARG]" "only a 40-char sha may be published"
+  else ok "the helper refuses [$ARG]"; fi
+done
+check "and after every refusal the pointer is unchanged" "$(simulate_restart)" "$A"
+
+# ---- 5. An unsealed directory is not a release, whatever it is called ----
+
+mkdir -p "$ATOMIC_RELEASES/$C/services/account"
+if publish_helper "$C" >/dev/null 2>&1; then
+  bad "an unsealed directory was published" "it must refuse"
+else ok "an unsealed directory is refused"; fi
+check "the pointer did not move" "$(simulate_restart)" "$A"
+rm -rf "$ATOMIC_RELEASES/$C"
+
+# A sha with no directory at all.
+if publish_helper "$C" >/dev/null 2>&1; then
+  bad "a sha with no release was published" "it must refuse"
+else ok "a sha with no release directory is refused"; fi
+
+# ---- 6. A sealed release whose bytes changed is no longer that release ----
+
+BUILD_SHA="$C"; release_prepare "$ATOMIC_RELEASES" "$C" "$C" build_body >/dev/null 2>&1
+printf 'added after sealing' > "$ATOMIC_RELEASES/$C/services/account/extra.js"
+if publish_helper "$C" >/dev/null 2>&1; then
+  bad "a tampered release was published" "the manifest no longer describes it"
+else ok "a release whose bytes changed after sealing is refused"; fi
+rm -f "$ATOMIC_RELEASES/$C/services/account/extra.js"
+check "and the same release publishes once it is intact again" \
+  "$(publish_helper "$C" >/dev/null 2>&1; simulate_restart)" "$C"
+
+# A marker naming a different commit -- a release copied or restored by hand.
+sed -i "s/$C/$B/" "$ATOMIC_RELEASES/$C/RELEASE.json" 2>/dev/null || true
+if publish_helper "$C" >/dev/null 2>&1; then
+  bad "a release whose marker names another commit was published" "it must refuse"
+else ok "a release whose marker disagrees with its name is refused"; fi
+drop_rig
+
+# ---- 7. A link that reaches outside the release ----
+
+new_rig; reset_failures
+BUILD_SHA="$C"; release_prepare "$ATOMIC_RELEASES" "$C" "$C" build_body >/dev/null 2>&1
+ln -sfn /etc "$ATOMIC_RELEASES/$C/services/account/outside"
+# Re-sealed AROUND the escaping link, so integrity holds and only the
+# containment proof can catch it. Without this the test would pass for the
+# wrong reason and the containment check could be deleted unnoticed.
+release_manifest_of "$ATOMIC_RELEASES/$C" > "$ATOMIC_RELEASES/$C/RELEASE.manifest.sha256"
+check "the re-sealed release still satisfies integrity, isolating the next proof" \
+  "$(release_integrity_holds "$ATOMIC_RELEASES/$C" && echo intact || echo tampered)" "intact"
+if publish_helper "$C" >/dev/null 2>&1; then
+  bad "a release containing an escaping symlink was published" "it must refuse"
+else ok "a release whose link escapes it is refused"; fi
+drop_rig
+
+# ---- --check changes nothing ----
+
+new_rig; reset_failures
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+publish_helper "$A" >/dev/null 2>&1
+if publish_helper --check >/dev/null 2>&1; then
+  ok "--check reports the authority is available"
+else bad "--check failed" "the bootstrap depends on it"; fi
+check "and --check publishes nothing" "$(simulate_restart)" "$A"
+drop_rig
+
+# ---- 1. An unwritable root routes publication through the helper ----
+
+echo ""
+echo "an unwritable deployment root routes publication, it does not fail"
+
+new_rig; reset_failures
+sudo_stub
+AUTH="$RIG/helper.sh"; AUTH_LOG="$RIG/helper.log"; : > "$AUTH_LOG"
+# Stands in for the root-owned program: a real one runs as root and is not
+# bound by the directory permissions, which is the whole reason it exists.
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'case "${1-}" in --check) exit 0;; esac' \
+  "printf '%s\n' \"\$1\" >> \"$AUTH_LOG\"" \
+  "chmod u+w \"$ATOMIC_ROOT\"" \
+  "ln -sfn \"$ATOMIC_RELEASES/\$1\" \"$ATOMIC_CURRENT.p.\$\$\"" \
+  "mv -Tf \"$ATOMIC_CURRENT.p.\$\$\" \"$ATOMIC_CURRENT\"" \
+  "chmod 555 \"$ATOMIC_ROOT\"" > "$AUTH"
+chmod 755 "$AUTH"
+export ATOMIC_PUBLISH_HELPER="$AUTH"
+
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+BUILD_SHA="$B"; release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+chmod 555 "$ATOMIC_ROOT"
+check "the root really is unwritable, so the ordinary path cannot be taken" \
+  "$([ -w "$ATOMIC_ROOT" ] && echo writable || echo unwritable)" "unwritable"
+
+release_publish "$ATOMIC_RELEASES" "$A" "$ATOMIC_CURRENT" >/dev/null 2>&1
+check "publication succeeded anyway" "$(simulate_restart)" "$A"
+check "and it went through the helper, with exactly that sha" \
+  "$(tail -1 "$AUTH_LOG")" "$A"
+
+# 10, again: rollback must not acquire a different or wider authority.
+: > "$AUTH_LOG"
+release_rollback "$ATOMIC_RELEASES" "$B" "$ATOMIC_CURRENT" >/dev/null 2>&1
+check "rollback takes the same route" "$(tail -1 "$AUTH_LOG")" "$B"
+check "and lands where it said" "$(simulate_restart)" "$B"
+
+# An unsealed release is still refused BEFORE the privileged program is asked.
+: > "$AUTH_LOG"
+mkdir -p "$ATOMIC_RELEASES/$C"
+release_publish "$ATOMIC_RELEASES" "$C" "$ATOMIC_CURRENT" >/dev/null 2>&1 \
+  && bad "an unsealed release was published through the helper" "it must refuse" \
+  || ok "an unsealed release is refused before the helper is invoked"
+check "the helper was never called" "$(wc -c < "$AUTH_LOG" | tr -d ' ')" "0"
+chmod 755 "$ATOMIC_ROOT"
+drop_rig; PATH="$SAVED_PATH"; unset ATOMIC_PUBLISH_HELPER
+
+# ---- 2. No helper: refuse, and say what is missing ----
+
+new_rig; reset_failures
+sudo_stub
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+export ATOMIC_PUBLISH_HELPER="$RIG/not-installed"
+chmod 555 "$ATOMIC_ROOT"
+PUB_MSG="$(release_publish "$ATOMIC_RELEASES" "$A" "$ATOMIC_CURRENT" 2>&1)" \
+  && bad "publication succeeded with no helper installed" "it must refuse" \
+  || ok "publication refuses when nothing can move the pointer"
+case "$PUB_MSG" in
+  *install-publication-authority.sh*) ok "and names the narrow installer that provides it" ;;
+  *) bad "the refusal does not say what to run" "$PUB_MSG" ;;
+esac
+chmod 755 "$ATOMIC_ROOT"
+drop_rig; PATH="$SAVED_PATH"; unset ATOMIC_PUBLISH_HELPER
+
+# ---- A helper that reports success without publishing ----
+
+new_rig; reset_failures
+sudo_stub
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+LIAR="$RIG/liar.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$LIAR"; chmod 755 "$LIAR"
+export ATOMIC_PUBLISH_HELPER="$LIAR"
+chmod 555 "$ATOMIC_ROOT"
+release_publish "$ATOMIC_RELEASES" "$A" "$ATOMIC_CURRENT" >/dev/null 2>&1 \
+  && bad "a helper that published nothing was believed" "the pointer is the authority" \
+  || ok "a helper reporting success it did not perform is caught"
+chmod 755 "$ATOMIC_ROOT"
+drop_rig; PATH="$SAVED_PATH"; unset ATOMIC_PUBLISH_HELPER
+
+# ---- 2 + 3. Publication authority is proven before a release is built ----
+
+echo ""
+echo "publication authority is part of being provisioned, proven up front"
+
+new_rig; reset_failures
+sudo_stub
+BOOT2="$RIG/boot2"
+mkdir -p "$BOOT2/releases"; : > "$BOOT2/.deploy.lock"
+check "a writable root needs no helper at all" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "ok"
+
+chmod 555 "$BOOT2"
+export ATOMIC_PUBLISH_HELPER="$RIG/absent"
+check "an unwritable root with no helper is bootstrap-incomplete" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "missing-publication-helper"
+BOOT_MSG="$(atomic_bootstrap_refusal "$BOOT2" missing-publication-helper production 2>&1)"
+case "$BOOT_MSG" in
+  *"ATOMIC PUBLICATION BOOTSTRAP INCOMPLETE"*) ok "and the refusal names the gap in those words" ;;
+  *) bad "the refusal does not name the publication gap" "$BOOT_MSG" ;;
+esac
+case "$BOOT_MSG" in
+  *"NOT A BUSY LOCK"*) ok "and still distinguishes itself from lock contention" ;;
+  *) bad "the refusal could be read as a busy lock" "$BOOT_MSG" ;;
+esac
+
+H2="$RIG/h2"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$H2"; chmod 644 "$H2"
+export ATOMIC_PUBLISH_HELPER="$H2"
+check "a helper that is not executable is refused" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "publication-helper-not-executable"
+
+chmod 775 "$H2"
+check "a group-writable helper is refused" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "publication-helper-writable"
+
+chmod 757 "$H2"
+check "a world-writable helper is refused" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "publication-helper-writable"
+
+chmod 755 "$H2"
+check "a helper not owned by root is refused" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "publication-helper-not-root-owned"
+
+# Root-owned, non-writable, executable -- but this identity may not invoke it.
+export ATOMIC_PUBLISH_HELPER=/bin/false
+check "an installed helper this identity cannot run is refused" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "publication-authority-unavailable"
+
+# The one arrangement that passes: root-owned, not writable, and invocable.
+export ATOMIC_PUBLISH_HELPER=/bin/true
+check "an unwritable root WITH working publication authority passes" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "ok"
+chmod 755 "$BOOT2"
+drop_rig; PATH="$SAVED_PATH"; unset ATOMIC_PUBLISH_HELPER
+
+
+# ---- the installation boundary ----
+#
+# A HOST MISSING PUBLICATION AUTHORITY IS OTHERWISE CONVERGED AND SERVING.
+# Telling its operator to rerun the full production installer would be advice
+# that writes systemd units for the legacy /app layout and can restart coturn
+# and Caddy, both shared with staging. The remediation has to be narrower than
+# the fault, and "narrower" is a claim about what a script DOES -- so it is
+# executed here, under a prefix, with everything it must not touch present and
+# hashed on both sides.
+
+echo ""
+echo "installing publication authority touches publication authority, and nothing else"
+
+new_rig; reset_failures
+sudo_stub
+PREFIX="$RIG/prefix"
+mkdir -p "$PREFIX/etc/systemd/system" "$PREFIX/usr/local/sbin" "$PREFIX/etc/sudoers.d"
+
+# The converged units, exactly as the host carries them.
+UNIT_DIR="$PREFIX/etc/systemd/system"
+for u in videofy-prod-account videofy-prod-gateway videofy-prod-media-ingest; do
+  printf '[Service]\nWorkingDirectory=/srv/videofy-prod/current/services/x\nUser=videofy\n' \
+    > "$UNIT_DIR/$u.service"
+done
+UNITS_BEFORE="$(cat "$UNIT_DIR"/videofy-prod-*.service | sha256sum)"
+
+# A converged pointer and web root, so "did not move them" is a measurement.
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+pointer_publish "$ATOMIC_CURRENT" "$ATOMIC_RELEASES/$A" >/dev/null 2>&1
+CURRENT_BEFORE="$(pointer_target "$ATOMIC_CURRENT")"
+WWW_BEFORE="$(web_pointer_target)"
+
+# systemctl is recorded rather than stubbed silent: "it did not restart
+# anything" is only evidence if a restart would have been visible.
+printf '%s\n' '#!/usr/bin/env bash' "printf '%s\n' \"\$*\" >> $RIG/systemctl.log" \
+  > "$RIG/bin/systemctl"
+chmod 755 "$RIG/bin/systemctl"
+: > "$RIG/systemctl.log"
+
+# INSTALL_PA is set once, above, and MUST NOT be reassigned here: a mutation
+# points it at a deliberately broken copy, and re-deriving it from the
+# repository would quietly restore the real installer and let that mutation
+# survive. It did exactly that, and the suite reported a clean 323/0.
+INSTALL_OUT="$(VIDEOFY_INSTALL_PREFIX="$PREFIX" DEPLOY_OWNER="$(id -un)" \
+  bash "$INSTALL_PA" 2>&1)"
+INSTALL_RC=$?
+check "the narrow installer succeeds" "$INSTALL_RC" "0"
+
+check "the helper is installed" \
+  "$([ -x "$PREFIX/usr/local/sbin/videofy-publish-current" ] && echo yes || echo no)" "yes"
+check "the verification libraries are installed beside it" \
+  "$([ -f "$PREFIX/usr/local/lib/videofy/release-paths.sh" ] && \
+     [ -f "$PREFIX/usr/local/lib/videofy/release-engine.sh" ] && echo yes || echo no)" "yes"
+check "the libraries are not writable by anyone but their owner" \
+  "$(stat -c '%a' "$PREFIX/usr/local/lib/videofy/release-engine.sh")" "644"
+check "and the helper is not either" \
+  "$(stat -c '%a' "$PREFIX/usr/local/sbin/videofy-publish-current")" "755"
+check "the sudoers entry is installed read-only" \
+  "$(stat -c '%a' "$PREFIX/etc/sudoers.d/videofy-publish")" "440"
+check "and it validates" \
+  "$(visudo -c -f "$PREFIX/etc/sudoers.d/videofy-publish" >/dev/null 2>&1 && echo valid || echo invalid)" "valid"
+case "$(cat "$PREFIX/etc/sudoers.d/videofy-publish")" in
+  *"NOPASSWD: /usr/local/sbin/videofy-publish-current"*)
+    ok "and grants exactly the publication command, by absolute path" ;;
+  *) bad "the sudoers entry does not grant the publication command" "" ;;
+esac
+case "$INSTALL_OUT" in
+  *"--check"*|*"proven"*) ok "the installer proves invocability rather than assuming it" ;;
+  *) bad "the installer does not prove the helper can be invoked" "$INSTALL_OUT" ;;
+esac
+
+# THE BOUNDARY ITSELF.
+check "no service unit was altered" \
+  "$(cat "$UNIT_DIR"/videofy-prod-*.service | sha256sum)" "$UNITS_BEFORE"
+check "no unit was added or removed" \
+  "$(find "$UNIT_DIR" -name '*.service' | wc -l | tr -d ' ')" "3"
+check "systemctl was never invoked -- no reload, no restart, no enable" \
+  "$(wc -c < "$RIG/systemctl.log" | tr -d ' ')" "0"
+check "the pointer did not move" "$(pointer_target "$ATOMIC_CURRENT")" "$CURRENT_BEFORE"
+check "www did not move" "$(web_pointer_target)" "$WWW_BEFORE"
+check "and what current resolves to is still the same release" \
+  "$(simulate_restart)" "$A"
+
+# IDEMPOTENT. The operator who is not sure whether it ran must be able to run
+# it again, and a second run must be a verification rather than a change.
+SECOND_RC=0
+VIDEOFY_INSTALL_PREFIX="$PREFIX" DEPLOY_OWNER="$(id -un)" bash "$INSTALL_PA" >/dev/null 2>&1 || SECOND_RC=$?
+check "running it twice is not an error" "$SECOND_RC" "0"
+check "and still changes no unit" \
+  "$(cat "$UNIT_DIR"/videofy-prod-*.service | sha256sum)" "$UNITS_BEFORE"
+check "and still restarts nothing" \
+  "$(wc -c < "$RIG/systemctl.log" | tr -d ' ')" "0"
+
+# It refuses rather than half-installing when what it produced is wrong.
+chmod 666 "$PREFIX/usr/local/sbin/videofy-publish-current"
+BAD_RC=0
+VIDEOFY_INSTALL_PREFIX="$PREFIX" DEPLOY_OWNER="$(id -un)" \
+  BROKEN_MODE=1 bash "$INSTALL_PA" >/dev/null 2>&1 || BAD_RC=$?
+check "a re-run repairs a helper somebody made writable" \
+  "$(stat -c '%a' "$PREFIX/usr/local/sbin/videofy-publish-current")" "755"
+
+drop_rig; PATH="$SAVED_PATH"
+
+# ---- the remediation an operator is given ----
+#
+# Naming the full installer here would send somebody to a script that writes
+# units and can restart coturn and Caddy, to fix one missing symlink helper.
+
+new_rig; reset_failures
+REM_MSG="$(atomic_bootstrap_refusal "$RIG/x" missing-publication-helper production 2>&1)"
+case "$REM_MSG" in
+  *install-publication-authority.sh*) ok "the publication refusal names the narrow installer" ;;
+  *) bad "the publication refusal does not name the narrow installer" "$REM_MSG" ;;
+esac
+case "$REM_MSG" in
+  *"deploy/production/install.sh"*)
+    bad "the publication refusal sends the operator to the full installer" \
+        "that script writes units and can restart coturn and Caddy" ;;
+  *) ok "and does not send the operator to the full production installer" ;;
+esac
+case "$REM_MSG" in
+  *"restarts nothing"*|*"writes no unit"*) ok "and says what the narrow installer will not do" ;;
+  *) bad "the refusal does not say the remediation is safe on a live host" "$REM_MSG" ;;
+esac
+
+# A genuinely unprovisioned root is the opposite case, and still gets the full
+# installer -- the distinction is the point, not a blanket rename.
+BOOT_MSG2="$(atomic_bootstrap_refusal "$RIG/x" missing-releases production 2>&1)"
+case "$BOOT_MSG2" in
+  *"deploy/production/install.sh"*) ok "an unprovisioned root still gets the full bootstrap" ;;
+  *) bad "an unprovisioned root was not told to run the full installer" "$BOOT_MSG2" ;;
+esac
+
+# The same rule applies to the engine's own publication failure.
+sudo_stub
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+export ATOMIC_PUBLISH_HELPER="$RIG/absent"
+chmod 555 "$ATOMIC_ROOT"
+ENG_MSG="$(release_publish "$ATOMIC_RELEASES" "$A" "$ATOMIC_CURRENT" 2>&1)" || true
+chmod 755 "$ATOMIC_ROOT"
+case "$ENG_MSG" in
+  *install-publication-authority.sh*) ok "the engine's publication refusal names the narrow installer" ;;
+  *) bad "the engine sends the operator to the wrong installer" "$ENG_MSG" ;;
+esac
+case "$ENG_MSG" in
+  *"deploy/production/install.sh"*)
+    bad "the engine's refusal names the full production installer" "it must not" ;;
+  *) ok "and not the full production installer" ;;
+esac
+drop_rig; PATH="$SAVED_PATH"; unset ATOMIC_PUBLISH_HELPER
+
+# ONE IMPLEMENTATION, NOT TWO. The full installer may call the narrow one; it
+# may not carry its own copy, because the copy that drifts is the one somebody
+# runs at three in the morning.
+if grep -q 'install-publication-authority.sh' "$REPO_ROOT/deploy/production/install.sh"; then
+  ok "the full installer delegates to the narrow one"
+else bad "the full installer does not delegate" "publication install would be duplicated"; fi
+check "and holds no second copy of the sudoers entry" \
+  "$(cr_lines 'sudoers.d/videofy-publish' "$REPO_ROOT/deploy/production/install.sh")" "0"
+
+
+# ---- every privileged replacement is a rename ----
+#
+# THE INVARIANT. sudo reads /etc/sudoers.d on every single invocation, and a
+# publication in flight is reading the helper and the libraries it sources.
+# `install` and `cp` open the destination and write through it, so a reader can
+# catch a file that is neither the old one nor the new one -- for sudoers, a
+# window in which nobody on the box can use sudo at all.
+#
+# rename(2) has no such window, and the difference is OBSERVABLE: a reader
+# holding the old file open keeps reading the complete old file, and the
+# destination gets a new inode. Both are asserted, because either one alone
+# could be satisfied by an unlink-and-recreate that still has a gap.
+
+echo ""
+echo "a live host is never shown a half-written privileged file"
+
+new_rig; reset_failures
+sudo_stub
+PFX="$RIG/atomic"
+mkdir -p "$PFX/etc/sudoers.d" "$PFX/usr/local/sbin" "$PFX/usr/local/lib/videofy"
+
+# A converged host: publication authority already installed, and an OLD sudoers
+# entry that a concurrent sudo could be reading at the instant we replace it.
+OLD_SUDOERS="$PFX/etc/sudoers.d/videofy-publish"
+printf '%s\n' '# OLD ENTRY' "$(id -un) ALL=(root) NOPASSWD: /usr/local/sbin/videofy-publish-current" \
+  > "$OLD_SUDOERS"
+chmod 0440 "$OLD_SUDOERS"
+OLD_TEXT="$(cat "$OLD_SUDOERS")"
+OLD_INODE="$(stat -c '%i' "$OLD_SUDOERS")"
+
+# An old helper too, so the same question can be asked of a root-owned
+# executable that a publisher may be part-way through reading.
+OLD_HELPER="$PFX/usr/local/sbin/videofy-publish-current"
+printf '#!/usr/bin/env bash\n# OLD HELPER\nexit 0\n' > "$OLD_HELPER"
+chmod 0755 "$OLD_HELPER"
+OLD_HELPER_TEXT="$(cat "$OLD_HELPER")"
+OLD_HELPER_INODE="$(stat -c '%i' "$OLD_HELPER")"
+
+# THE CONCURRENT READER. Opened before the installer runs and read after it, so
+# what it sees is what a sudo invocation that started just before the swap
+# would see. Under rename it is the complete old file; under a write-through
+# replacement it is the new content, or a truncated fragment of it.
+exec 9< "$OLD_SUDOERS"
+exec 8< "$OLD_HELPER"
+
+ATOMIC_RC=0
+PATH="$RIG/bin:$SAVED_PATH" VIDEOFY_INSTALL_PREFIX="$PFX" DEPLOY_OWNER="$(id -un)" \
+  bash "$INSTALL_PA" >/dev/null 2>&1 || ATOMIC_RC=$?
+check "the installer replaces an existing installation" "$ATOMIC_RC" "0"
+
+READER_SAW="$(cat <&9)"; exec 9<&-
+READER_SAW_HELPER="$(cat <&8)"; exec 8<&-
+check "a sudo invocation already reading the old entry still sees it, whole" \
+  "$READER_SAW" "$OLD_TEXT"
+check "and a publisher already reading the old helper still sees that, whole" \
+  "$READER_SAW_HELPER" "$OLD_HELPER_TEXT"
+
+# The other half of the same fact: the destination is a DIFFERENT file now.
+# A write-through replacement keeps the inode, which is precisely how the old
+# content could have been destroyed under the reader's feet.
+check "the sudoers entry is a new inode, so it was renamed into place" \
+  "$([ "$(stat -c '%i' "$OLD_SUDOERS")" != "$OLD_INODE" ] && echo renamed || echo written-through)" \
+  "renamed"
+check "and so is the helper" \
+  "$([ "$(stat -c '%i' "$OLD_HELPER")" != "$OLD_HELPER_INODE" ] && echo renamed || echo written-through)" \
+  "renamed"
+
+# And the new content actually landed.
+case "$(cat "$OLD_SUDOERS")" in
+  *"install-publication-authority.sh"*) ok "the new sudoers entry is the one that landed" ;;
+  *) bad "the new sudoers entry did not land" "$(cat "$OLD_SUDOERS")" ;;
+esac
+check "the helper that landed is byte-identical to the one in the repository" \
+  "$(sha256sum < "$OLD_HELPER")" "$(sha256sum < "$REPO_ROOT/deploy/production/publish-current.sh")"
+
+# Nothing staged is left lying about -- and in /etc/sudoers.d a leftover would
+# be a second, stale grant if it were ever named without a dot.
+check "no staged file survives in the sudoers directory" \
+  "$(find "$PFX/etc/sudoers.d" -name '.videofy-publish.*' | wc -l | tr -d ' ')" "0"
+check "nor beside the helper" \
+  "$(find "$PFX/usr/local/sbin" -name '.videofy-publish-current.*' | wc -l | tr -d ' ')" "0"
+check "nor beside the libraries" \
+  "$(find "$PFX/usr/local/lib/videofy" -name '.*.staging.*' | wc -l | tr -d ' ')" "0"
+drop_rig; PATH="$SAVED_PATH"
+
+# ---- a sudoers entry that does not parse changes nothing ----
+
+new_rig; reset_failures
+sudo_stub
+PFX2="$RIG/reject"
+mkdir -p "$PFX2/etc/sudoers.d"
+GOOD="$PFX2/etc/sudoers.d/videofy-publish"
+printf '%s\n' '# OLD ENTRY' "$(id -un) ALL=(root) NOPASSWD: /usr/local/sbin/videofy-publish-current" > "$GOOD"
+chmod 0440 "$GOOD"
+GOOD_SUM="$(sha256sum < "$GOOD")"
+GOOD_INODE="$(stat -c '%i' "$GOOD")"
+
+# A deploy owner that cannot appear in a sudoers rule, so the generated entry
+# is rejected by visudo rather than by a check of our own.
+REJECT_RC=0
+REJECT_OUT="$(PATH="$RIG/bin:$SAVED_PATH" VIDEOFY_INSTALL_PREFIX="$PFX2" \
+  DEPLOY_OWNER='not a valid, user name' bash "$INSTALL_PA" 2>&1)" || REJECT_RC=$?
+if [ "$REJECT_RC" -ne 0 ]; then ok "an entry that does not parse is refused"
+else bad "an unparseable sudoers entry was installed" "$REJECT_OUT"; fi
+check "and the existing entry is byte-identical" "$(sha256sum < "$GOOD")" "$GOOD_SUM"
+check "and is still the same file, never reopened" "$(stat -c '%i' "$GOOD")" "$GOOD_INODE"
+check "and nothing was staged and left behind" \
+  "$(find "$PFX2/etc/sudoers.d" -name '.videofy-publish.*' | wc -l | tr -d ' ')" "0"
+
+# THE REPORT MUST BE TRUE. Saying "nothing was installed" after the helper and
+# libraries have already landed is a rollback claim the script cannot honour --
+# so the sudoers text is prepared and validated before anything is placed.
+case "$REJECT_OUT" in
+  *"nothing was installed"*) ok "and the refusal says nothing was installed" ;;
+  *) bad "the refusal does not describe what happened" "$REJECT_OUT" ;;
+esac
+check "which is true: no helper was installed" \
+  "$([ -e "$PFX2/usr/local/sbin/videofy-publish-current" ] && echo installed || echo absent)" "absent"
+check "and no library either" \
+  "$([ -e "$PFX2/usr/local/lib/videofy/release-engine.sh" ] && echo installed || echo absent)" "absent"
+drop_rig; PATH="$SAVED_PATH"
+
+# The scratch trees this section made for itself.
+rm -rf "$PA_PREFIX"
+[ -n "${MUTDIR:-}" ] && rm -rf "$MUTDIR"
+[ -n "${MUTINST:-}" ] && rm -rf "$MUTINST"
 
 # ============================================================ report
 

@@ -106,7 +106,7 @@ engine_is_committed() {
 # to do with each other.
 #
 # So the bootstrap is checked FIRST, as its own question, and answered in its
-# own words. Provisioning stays in `install.sh`: a deploy that silently creates
+# own words. Provisioning stays in the installers: a deploy that silently creates
 # the paths it needs would hide a half-provisioned host instead of reporting
 # one, and it would need write access to the root to do it -- which is exactly
 # the permission we are deliberately not granting.
@@ -126,6 +126,38 @@ atomic_bootstrap_state() {
   if ! ( exec 8>>"$root/.deploy.lock" ) 2>/dev/null; then
     printf 'lock-not-openable'; return 1
   fi
+  #
+  # AND SOMETHING MUST BE ABLE TO MOVE THE POINTER.
+  #
+  # On 2026-09-06 everything above this passed and the convergence still could
+  # not publish: the root is root-owned, so the deploy identity cannot replace
+  # `current`, and that was discovered only AFTER a release had been built.
+  # Publication authority is part of being provisioned, so it is proven here.
+  if [ ! -w "$root" ]; then
+    local helper="${ATOMIC_PUBLISH_HELPER:-/usr/local/sbin/videofy-publish-current}"
+    [ -e "$helper" ] || { printf 'missing-publication-helper'; return 1; }
+    [ -x "$helper" ] || { printf 'publication-helper-not-executable'; return 1; }
+    # Writability is tested before ownership because it is the more specific
+    # objection: a helper somebody else can rewrite is a helper that runs
+    # somebody else's code as root, whoever happens to own the file today.
+    #
+    # Tested as BITS, not as a digit pattern. The first version of this matched
+    # the mode string against *[2367], which only ever inspects the LAST
+    # character -- so 0775, group-writable by exactly the account that must not
+    # be able to rewrite it, passed. Masking with 0022 asks the question that
+    # was meant: may anyone but the owner write this?
+    local helper_mode
+    helper_mode="$(stat -c '%a' "$helper" 2>/dev/null)"
+    if [ -z "$helper_mode" ] || [ $(( 0$helper_mode & 0022 )) -ne 0 ]; then
+      printf 'publication-helper-writable'; return 1
+    fi
+    [ "$(stat -c '%U' "$helper" 2>/dev/null)" = 'root' ] || {
+      printf 'publication-helper-not-root-owned'; return 1; }
+    # Invocability, proven rather than assumed: an installed helper the deploy
+    # account may not actually run is the same outage, discovered later.
+    sudo -n "$helper" --check >/dev/null 2>&1 || {
+      printf 'publication-authority-unavailable'; return 1; }
+  fi
   printf 'ok'
   return 0
 }
@@ -143,11 +175,44 @@ atomic_bootstrap_refusal() {
     missing-lock)             echo "  $root/.deploy.lock does not exist." >&2 ;;
     lock-not-a-regular-file)  echo "  $root/.deploy.lock is not a regular file." >&2 ;;
     lock-not-openable)        echo "  $root/.deploy.lock cannot be opened by the deploy identity." >&2 ;;
+    missing-publication-helper)
+      echo "  $root is root-owned, so the deploy identity cannot replace" >&2
+      echo "  $root/current, and the publication helper is not installed." >&2
+      echo "  ATOMIC PUBLICATION BOOTSTRAP INCOMPLETE." >&2 ;;
+    publication-helper-not-executable)
+      echo "  The publication helper exists but is not executable." >&2 ;;
+    publication-helper-not-root-owned)
+      echo "  The publication helper is not owned by root; it would run the" >&2
+      echo "  deploy identity's own code with root privilege." >&2 ;;
+    publication-helper-writable)
+      echo "  The publication helper is group- or world-writable, which is the" >&2
+      echo "  same problem by another route." >&2 ;;
+    publication-authority-unavailable)
+      echo "  The publication helper is installed but this identity may not" >&2
+      echo "  invoke it. Check the sudoers entry." >&2 ;;
   esac
-  echo "  THIS IS NOT A BUSY LOCK. Nothing else is deploying; the host was never" >&2
-  echo "  set up. Run the production bootstrap, which creates these as the deploy" >&2
-  echo "  owner without making the root itself writable:" >&2
-  echo "    sudo bash deploy/$env_name/install.sh" >&2
+  echo "  THIS IS NOT A BUSY LOCK. Nothing else is deploying." >&2
+  #
+  # THE REMEDIATION HAS TO MATCH THE FAULT.
+  #
+  # A host missing publication authority is otherwise CONVERGED AND SERVING.
+  # Sending its operator to the full production installer to fix one missing
+  # symlink helper would be advice that writes systemd units for the legacy
+  # /app layout and can restart coturn and Caddy -- both shared with staging,
+  # where a restart drops live relays or live requests. So the publication
+  # states get the narrow installer, and only a genuinely unprovisioned root
+  # gets the full one.
+  case "$state" in
+    missing-publication-helper|publication-helper-*|publication-authority-*)
+      echo "  Install ONLY this capability. It writes no unit, reloads nothing," >&2
+      echo "  restarts nothing, and does not touch app, www or the pointer:" >&2
+      echo "    sudo bash deploy/$env_name/install-publication-authority.sh" >&2 ;;
+    *)
+      echo "  The host was never set up. Run the production bootstrap, which" >&2
+      echo "  creates these as the deploy owner without making the root itself" >&2
+      echo "  writable:" >&2
+      echo "    sudo bash deploy/$env_name/install.sh" >&2 ;;
+  esac
 }
 
 # Make a shipment safe to execute on the host, whatever wrote it.
