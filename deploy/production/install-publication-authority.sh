@@ -12,17 +12,31 @@
 # relays or live requests. Nobody should have to reinstall production to gain
 # one capability.
 #
-# So this does the five things publication authority consists of, and refuses
-# to be anything else. It does not write a unit, does not daemon-reload, does
-# not restart, does not touch Caddy, coturn, the environment files, the
-# database, app, www, the pointer, or Replay, and it does not widen or narrow
-# any sudo grant that already exists.
+# So this does the things publication authority consists of, and refuses to be
+# anything else. It does not write a unit, does not daemon-reload, does not
+# restart, does not touch Caddy, coturn, the environment files, the database,
+# app, www, the pointer, or Replay, and it does not widen or narrow any sudo
+# grant that already exists.
 #
 #   sudo bash deploy/production/install-publication-authority.sh
 #
 # Idempotent: re-running it re-installs the same bytes and re-proves the same
 # facts. Running it on a host that already has publication authority is a
 # verification, not a change.
+#
+# EVERY REPLACEMENT IS A RENAME. This runs on a live host, against files that
+# other processes read at unpredictable moments: sudo reads /etc/sudoers.d on
+# every single invocation, and a publication in flight is reading the helper
+# and the libraries it sources. `install` and `cp` open the destination and
+# write through it, so for as long as that takes, a reader sees a file that is
+# neither the old one nor the new one. For a sudoers file that is a window in
+# which nobody on the box can use sudo; for the helper it is a window in which
+# a publisher executes half a program.
+#
+# rename(2) has no such window. Each file is staged beside its destination, on
+# the same filesystem, given its final ownership and mode, verified, and only
+# then renamed over the top. A reader holding the old file open keeps reading
+# the old file, complete, until it closes.
 #
 # TESTABILITY. VIDEOFY_INSTALL_PREFIX relocates every destination under a
 # directory, which is how the installation boundary is proven behaviourally --
@@ -38,8 +52,10 @@ PREFIX="${VIDEOFY_INSTALL_PREFIX:-}"
 DEPLOY_OWNER="${DEPLOY_OWNER:-${SUDO_USER:-root}}"
 
 LIB_DIR="$PREFIX/usr/local/lib/videofy"
-SBIN_PATH="$PREFIX/usr/local/sbin/videofy-publish-current"
-SUDOERS_PATH="$PREFIX/etc/sudoers.d/videofy-publish"
+SBIN_DIR="$PREFIX/usr/local/sbin"
+SBIN_PATH="$SBIN_DIR/videofy-publish-current"
+SUDOERS_DIR="$PREFIX/etc/sudoers.d"
+SUDOERS_PATH="$SUDOERS_DIR/videofy-publish"
 # The sudoers entry always authorises the REAL path, because that is the path a
 # deployment will invoke. Under a prefix the two differ, and that is the one
 # thing a rehearsal cannot rehearse.
@@ -47,9 +63,24 @@ SUDOERS_CMD='/usr/local/sbin/videofy-publish-current'
 
 die() { echo "REFUSED: $*" >&2; exit 1; }
 
+# THE ATOMIC STEP, on one line so that a mutation can replace it wholesale and
+# the suite can prove the difference is visible.
+atomic_place() { mv -Tf "$1" "$2"; }
+
+# A staging name in the DESTINATION DIRECTORY -- rename(2) cannot cross a
+# filesystem, so staging in /tmp and moving would be a copy again.
+#
+# The leading dot matters in /etc/sudoers.d: sudo's includedir skips any file
+# whose name contains a `.` or ends in `~`, so a staged entry is never read as
+# configuration while it waits. The final name deliberately has no dot.
+staged_name() { printf '%s/.%s.staging.%s' "$(dirname "$1")" "$(basename "$1")" "$$"; }
+
+STAGED_FILES=()
+cleanup() { local f; for f in ${STAGED_FILES[@]+"${STAGED_FILES[@]}"}; do rm -f "$f"; done; }
+trap cleanup EXIT
+
 if [ -z "$PREFIX" ]; then
   [ "$(id -u)" -eq 0 ] || die 'run with sudo: sudo bash deploy/production/install-publication-authority.sh'
-  # Root-owned, and owned by root specifically -- see the ownership proof below.
   OWNER='root'
   INSTALL_OWNER=(-o root -g root)
 else
@@ -60,43 +91,106 @@ else
   INSTALL_OWNER=()
 fi
 
-# --- 1 + 2. the verification libraries and the program itself ----------------
+# Stage a file beside where it will live, with its final ownership and mode.
+# Nothing is replaced here -- this only creates the candidate.
+#
+# The path is returned in STAGED rather than printed, because a command
+# substitution runs in a subshell and the record of what to clean up would die
+# with it -- leaving staged files behind on a failure, which is the one moment
+# they matter.
+STAGED=''
+stage() {
+  local src="$1" final="$2" mode="$3"
+  STAGED="$(staged_name "$final")"
+  STAGED_FILES+=("$STAGED")
+  install "${INSTALL_OWNER[@]+"${INSTALL_OWNER[@]}"}" -m "$mode" "$src" "$STAGED"
+}
+
+# Create a directory only if it is absent. /etc/sudoers.d already exists on a
+# real host, sometimes at 0750, and re-installing it would change a mode this
+# script has no business changing.
+ensure_dir() {
+  [ -d "$1" ] || install -d "${INSTALL_OWNER[@]+"${INSTALL_OWNER[@]}"}" -m 0755 "$1"
+}
+
+# --- the sudoers entry, PREPARED AND VALIDATED FIRST -------------------------
+#
+# Ordered before anything is installed so that the one failure an operator is
+# most likely to hit -- a sudoers entry that does not parse -- can be reported
+# with the words "nothing was installed" and have them be literally true.
+ensure_dir "$SUDOERS_DIR"
+SUDOERS_TEXT="$(mktemp)"
+STAGED_FILES+=("$SUDOERS_TEXT")
+cat > "$SUDOERS_TEXT" <<SUDOERS
+# Publishing a release is the only privileged step in a deployment.
+# Installed by deploy/production/install-publication-authority.sh
+$DEPLOY_OWNER ALL=(root) NOPASSWD: $SUDOERS_CMD
+SUDOERS
+stage "$SUDOERS_TEXT" "$SUDOERS_PATH" 0440; SUDOERS_STAGED="$STAGED"
+if ! visudo -c -f "$SUDOERS_STAGED" >/dev/null 2>&1; then
+  die "the generated sudoers entry does not parse; nothing was installed and $SUDOERS_PATH is unchanged"
+fi
+
+# --- the verification libraries and the program itself -----------------------
 #
 # ROOT-OWNED COPIES, deliberately. The helper must never source the
 # deployment's own shipped libraries: those live under /tmp and belong to the
 # deploy identity, so sourcing them would turn a narrow root-owned helper into
 # a way to run arbitrary code as root.
-install -d "${INSTALL_OWNER[@]+"${INSTALL_OWNER[@]}"}" -m 0755 "$LIB_DIR"
-install -d "${INSTALL_OWNER[@]+"${INSTALL_OWNER[@]}"}" -m 0755 "$(dirname "$SBIN_PATH")"
-install "${INSTALL_OWNER[@]+"${INSTALL_OWNER[@]}"}" -m 0644 "$HERE/../lib/release-paths.sh"  "$LIB_DIR/release-paths.sh"
-install "${INSTALL_OWNER[@]+"${INSTALL_OWNER[@]}"}" -m 0644 "$HERE/../lib/release-engine.sh" "$LIB_DIR/release-engine.sh"
-install "${INSTALL_OWNER[@]+"${INSTALL_OWNER[@]}"}" -m 0755 "$HERE/publish-current.sh"       "$SBIN_PATH"
+ensure_dir "$LIB_DIR"
+ensure_dir "$SBIN_DIR"
+stage "$HERE/../lib/release-paths.sh"  "$LIB_DIR/release-paths.sh"  0644; PATHS_STAGED="$STAGED"
+stage "$HERE/../lib/release-engine.sh" "$LIB_DIR/release-engine.sh" 0644; ENGINE_STAGED="$STAGED"
+stage "$HERE/publish-current.sh"       "$SBIN_PATH"                 0755; SBIN_STAGED="$STAGED"
 
-# --- 3. the sudoers entry ----------------------------------------------------
-#
-# VALIDATED BEFORE IT IS ANYWHERE sudo WILL READ IT. A malformed file in
-# /etc/sudoers.d locks everybody out of sudo -- and so does a well-formed one
-# caught half-written, because sudo reads that directory on every invocation.
-# So it is composed elsewhere, checked, and installed in one step.
-#
-# It GRANTS one command to one account. It does not remove or narrow any
-# broader grant the account already holds; narrowing that is a separate,
-# deliberate change with its own dry-run.
-install -d "${INSTALL_OWNER[@]+"${INSTALL_OWNER[@]}"}" -m 0755 "$(dirname "$SUDOERS_PATH")"
-SUDOERS_TMP="$(mktemp)"
-cat > "$SUDOERS_TMP" <<SUDOERS
-# Publishing a release is the only privileged step in a deployment.
-# Installed by deploy/production/install-publication-authority.sh
-$DEPLOY_OWNER ALL=(root) NOPASSWD: $SUDOERS_CMD
-SUDOERS
-if ! visudo -c -f "$SUDOERS_TMP" >/dev/null; then
-  rm -f "$SUDOERS_TMP"
-  die 'the generated sudoers entry did not validate; nothing was installed'
+# Everything is staged and the sudoers text parses. From here each replacement
+# is a single rename, so a concurrent reader of any of these files sees the
+# complete old one or the complete new one.
+atomic_place "$PATHS_STAGED"  "$LIB_DIR/release-paths.sh"
+atomic_place "$ENGINE_STAGED" "$LIB_DIR/release-engine.sh"
+atomic_place "$SBIN_STAGED"   "$SBIN_PATH"
+
+# The sudoers entry last, because it is what makes the rest reachable: until it
+# lands, the deploy account simply cannot invoke a helper that may be mid-swap.
+SUDOERS_PREV=''
+if [ -f "$SUDOERS_PATH" ]; then
+  # Kept under a dotted name so sudo will not read it, and restored by rename
+  # rather than by copying it back.
+  SUDOERS_PREV="$SUDOERS_DIR/.videofy-publish.previous.$$"
+  STAGED_FILES+=("$SUDOERS_PREV")
+  cp -p "$SUDOERS_PATH" "$SUDOERS_PREV"
 fi
-install "${INSTALL_OWNER[@]+"${INSTALL_OWNER[@]}"}" -m 0440 "$SUDOERS_TMP" "$SUDOERS_PATH"
-rm -f "$SUDOERS_TMP"
+atomic_place "$SUDOERS_STAGED" "$SUDOERS_PATH"
 
-# --- 4. prove what was installed, rather than assume it ----------------------
+# THE WHOLE CONFIGURATION, not just the file this wrote.
+#
+# A file that parses alone can still be rejected in combination, and the cost
+# of being wrong is that nobody on the box can use sudo. So the global check
+# runs after the rename and, if it fails, the previous state is put back the
+# same way it was replaced.
+sudoers_restore() {
+  if [ -n "$SUDOERS_PREV" ] && [ -f "$SUDOERS_PREV" ]; then
+    atomic_place "$SUDOERS_PREV" "$SUDOERS_PATH"
+  else
+    rm -f "$SUDOERS_PATH"
+  fi
+}
+if [ -z "$PREFIX" ]; then
+  if ! visudo -c >/dev/null 2>&1; then
+    sudoers_restore
+    die "the sudo configuration as a whole did not validate; $SUDOERS_PATH was restored"
+  fi
+else
+  # Under a prefix the real /etc/sudoers is not the configuration under test,
+  # and validating it would report on the host instead of the rehearsal.
+  if ! visudo -c -f "$SUDOERS_PATH" >/dev/null 2>&1; then
+    sudoers_restore
+    die "the installed sudoers entry did not validate; $SUDOERS_PATH was restored"
+  fi
+fi
+rm -f "$SUDOERS_PREV"
+
+# --- prove what was installed, rather than assume it -------------------------
 #
 # `install` can succeed and still leave the wrong thing in place: a pre-existing
 # file with a stickier mode, a directory somebody widened by hand. The point of
@@ -121,7 +215,7 @@ verify_file "$LIB_DIR/release-engine.sh" 0644
 verify_file "$SBIN_PATH"                 0755
 verify_file "$SUDOERS_PATH"              0440
 
-# --- 5. prove the deploy identity can actually use it ------------------------
+# --- prove the deploy identity can actually use it ---------------------------
 #
 # An installed helper the deploy account may not invoke is the same outage,
 # discovered later and further along. `-n` never prompts: an installer that
@@ -142,11 +236,12 @@ else
   CHECK_AS=(env "VIDEOFY_PUBLISH_LIB=$LIB_DIR" sudo -n "$SBIN_PATH" --check)
 fi
 if ! "${CHECK_AS[@]}" >/dev/null 2>&1; then
-  die "$SBIN_PATH is installed but $DEPLOY_OWNER cannot invoke it under sudo"
+  die "$SBIN_PATH and $SUDOERS_PATH are installed, but $DEPLOY_OWNER cannot invoke the helper under sudo"
 fi
 
 echo "publication authority installed and proven:"
 echo "  $SBIN_PATH"
 echo "  $LIB_DIR/{release-paths,release-engine}.sh"
 echo "  $SUDOERS_PATH  ($DEPLOY_OWNER -> $SUDOERS_CMD)"
-echo "no unit was written, nothing was reloaded, and nothing was restarted."
+echo "every replacement was a rename; no unit was written, nothing was reloaded,"
+echo "and nothing was restarted."

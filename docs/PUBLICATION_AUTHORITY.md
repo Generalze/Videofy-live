@@ -36,12 +36,34 @@ The narrow installer does exactly five things:
 
 1. installs `/usr/local/lib/videofy/{release-paths,release-engine}.sh` (root:root, 0644)
 2. installs `/usr/local/sbin/videofy-publish-current` (root:root, 0755)
-3. installs `/etc/sudoers.d/videofy-publish` (0440) — composed in a temp file,
-   `visudo -c`-validated, then installed in one step, because sudo reads that
-   directory on every invocation and must never see a half-written file
+3. installs `/etc/sudoers.d/videofy-publish` (0440), `visudo -c`-validated
+   before it is placed and the whole sudo configuration validated after
 4. **verifies** the resulting ownership and modes rather than trusting `install`
 5. runs `videofy-publish-current --check` under `sudo -n` **as the deploy
    account**, since root could invoke it whatever sudoers says
+
+**Every replacement is a rename.** This runs on a live host against files other
+processes read at unpredictable moments: `sudo` reads `/etc/sudoers.d` on *every
+single invocation*, and a publication in flight is reading the helper and the
+libraries it sources. `install` and `cp` open the destination and write through
+it, so for as long as that takes a reader sees a file that is neither the old
+one nor the new one — for sudoers, a window in which nobody on the box can use
+sudo at all.
+
+So each file is staged **beside its destination**, on the same filesystem
+(`rename(2)` cannot cross one), given its final ownership and mode, verified,
+and only then renamed over the top. Staged names begin with a dot, which matters
+in `/etc/sudoers.d`: sudo's `includedir` skips any filename containing a `.` or
+ending in `~`, so a staged entry is never read as configuration while it waits.
+The final name deliberately has no dot.
+
+The sudoers entry goes last, and the previous one is kept under a dotted name
+and restored **by rename** if the global `visudo -c` then fails.
+
+**The failure report is true.** The sudoers text is composed and validated
+*before* anything is placed, so a refusal that says "nothing was installed" is
+literally accurate — there is no helper and no library on disk at that point.
+That ordering exists for the sentence, not the other way round.
 
 It writes no unit, does not `daemon-reload`, restarts nothing, and does not
 touch Caddy, coturn, the environment files, the database, `app`, `www`, the
@@ -120,7 +142,7 @@ against — passed it. It is now a bit test, `$(( 0$mode & 0022 ))`.
 Run on `c7-eu-01` (Linux 6.8, ext4); the suite refuses to run where `ln -s` is
 emulated.
 
-- **306 passed, 0 failed** (was 233).
+- **323 passed, 0 failed** (was 233).
 - New mutations, each of which must turn the suite red:
   - `no-publication-authority-preflight` — bootstrap pronounces a host ready
     without proving anything can move the pointer.
@@ -131,6 +153,9 @@ emulated.
     since it is a program rather than a sourced function.
   - `remediate-via-full-installer` — a converged host missing one symlink helper
     is routed back to the full production installer.
+  - `non-atomic-privileged-install` — the installer writes through each
+    destination instead of renaming over it. It kills exactly the four
+    atomicity assertions and nothing else.
 
 The publication cases run against **what the narrow installer actually
 installed** into a scratch prefix, not against a hand-picked subset of
@@ -154,6 +179,22 @@ on both sides:
 | **`current` unchanged** | `readlink` before and after, and what a restart would boot |
 | **`www` unchanged** | the structural pointer still names `current/www` |
 | idempotent | a second run succeeds, changes no unit, restarts nothing |
+
+### Atomic replacement
+
+The difference between a rename and a write-through is observable, and both
+halves are asserted — either alone could be satisfied by an unlink-and-recreate
+that still leaves a gap:
+
+| Asserted | How |
+|---|---|
+| a reader mid-swap sees the **complete old** sudoers entry | a file descriptor opened before the installer runs, read after it |
+| the same for the **helper** a publisher may be reading | a second descriptor, same technique |
+| the destination is a **new inode** | `stat -c %i` before and after; a write-through keeps it |
+| the new content actually landed | the helper is byte-identical to the repository copy |
+| nothing staged survives | no `.videofy-publish.*` or `.*.staging.*` in any destination |
+| an entry that does not parse changes nothing | existing file byte-identical **and same inode** |
+| the refusal's claim is true | no helper and no library exist after that refusal |
 
 The ten cases named in the work package are covered behaviourally, by running
 the real script and the real functions:

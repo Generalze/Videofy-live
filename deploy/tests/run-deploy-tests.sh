@@ -1782,6 +1782,29 @@ echo "the pointer moves through one narrow privileged program, or not at all"
 # which works here and fails on the host at the moment of publication, having
 # already built a release.
 INSTALL_PA="$REPO_ROOT/deploy/production/install-publication-authority.sh"
+
+if [ "$MUTATION" = "non-atomic-privileged-install" ]; then
+  # The defect: the installer writes THROUGH each destination instead of
+  # renaming over it. sudo reads /etc/sudoers.d on every invocation and a
+  # publication in flight is reading the helper, so both can catch a file that
+  # is neither the old one nor the new one -- for sudoers, a window in which
+  # nobody on the box can use sudo at all.
+  #
+  # `atomic_place` is one line in the installer precisely so this can replace
+  # it whole. The mode is carried across from the staged file, so the mutation
+  # is the loss of atomicity and nothing else.
+  MUTINST="$(mktemp -d "${TMPDIR:-/tmp}/videofy-mutinst-XXXXXX")"
+  # The installer resolves its sources relative to its own location, so the
+  # mutated copy needs the same shape around it.
+  mkdir -p "$MUTINST/production" "$MUTINST/lib"
+  cp "$REPO_ROOT/deploy/lib/release-paths.sh" "$REPO_ROOT/deploy/lib/release-engine.sh" "$MUTINST/lib/"
+  cp "$REPO_ROOT/deploy/production/publish-current.sh" "$MUTINST/production/"
+  printf '%s\n' 's#^atomic_place() .*#atomic_place() { m="$(stat -c "%a" "$1")"; chmod u+w "$2" 2>/dev/null || :; cat "$1" > "$2"; chmod "$m" "$2"; rm -f "$1"; }#' \
+    > "$MUTINST/mutate.sed"
+  sed -f "$MUTINST/mutate.sed" "$INSTALL_PA" > "$MUTINST/production/install-publication-authority.sh"
+  INSTALL_PA="$MUTINST/production/install-publication-authority.sh"
+fi
+
 PA_PREFIX="$(mktemp -d "${TMPDIR:-/tmp}/videofy-pa-XXXXXX")"
 SAVED_PATH="$PATH"
 mkdir -p "$PA_PREFIX/bin"
@@ -2105,7 +2128,10 @@ printf '%s\n' '#!/usr/bin/env bash' "printf '%s\n' \"\$*\" >> $RIG/systemctl.log
 chmod 755 "$RIG/bin/systemctl"
 : > "$RIG/systemctl.log"
 
-INSTALL_PA="$REPO_ROOT/deploy/production/install-publication-authority.sh"
+# INSTALL_PA is set once, above, and MUST NOT be reassigned here: a mutation
+# points it at a deliberately broken copy, and re-deriving it from the
+# repository would quietly restore the real installer and let that mutation
+# survive. It did exactly that, and the suite reported a clean 323/0.
 INSTALL_OUT="$(VIDEOFY_INSTALL_PREFIX="$PREFIX" DEPLOY_OWNER="$(id -un)" \
   bash "$INSTALL_PA" 2>&1)"
 INSTALL_RC=$?
@@ -2223,9 +2249,133 @@ else bad "the full installer does not delegate" "publication install would be du
 check "and holds no second copy of the sudoers entry" \
   "$(cr_lines 'sudoers.d/videofy-publish' "$REPO_ROOT/deploy/production/install.sh")" "0"
 
+
+# ---- every privileged replacement is a rename ----
+#
+# THE INVARIANT. sudo reads /etc/sudoers.d on every single invocation, and a
+# publication in flight is reading the helper and the libraries it sources.
+# `install` and `cp` open the destination and write through it, so a reader can
+# catch a file that is neither the old one nor the new one -- for sudoers, a
+# window in which nobody on the box can use sudo at all.
+#
+# rename(2) has no such window, and the difference is OBSERVABLE: a reader
+# holding the old file open keeps reading the complete old file, and the
+# destination gets a new inode. Both are asserted, because either one alone
+# could be satisfied by an unlink-and-recreate that still has a gap.
+
+echo ""
+echo "a live host is never shown a half-written privileged file"
+
+new_rig; reset_failures
+sudo_stub
+PFX="$RIG/atomic"
+mkdir -p "$PFX/etc/sudoers.d" "$PFX/usr/local/sbin" "$PFX/usr/local/lib/videofy"
+
+# A converged host: publication authority already installed, and an OLD sudoers
+# entry that a concurrent sudo could be reading at the instant we replace it.
+OLD_SUDOERS="$PFX/etc/sudoers.d/videofy-publish"
+printf '%s\n' '# OLD ENTRY' "$(id -un) ALL=(root) NOPASSWD: /usr/local/sbin/videofy-publish-current" \
+  > "$OLD_SUDOERS"
+chmod 0440 "$OLD_SUDOERS"
+OLD_TEXT="$(cat "$OLD_SUDOERS")"
+OLD_INODE="$(stat -c '%i' "$OLD_SUDOERS")"
+
+# An old helper too, so the same question can be asked of a root-owned
+# executable that a publisher may be part-way through reading.
+OLD_HELPER="$PFX/usr/local/sbin/videofy-publish-current"
+printf '#!/usr/bin/env bash\n# OLD HELPER\nexit 0\n' > "$OLD_HELPER"
+chmod 0755 "$OLD_HELPER"
+OLD_HELPER_TEXT="$(cat "$OLD_HELPER")"
+OLD_HELPER_INODE="$(stat -c '%i' "$OLD_HELPER")"
+
+# THE CONCURRENT READER. Opened before the installer runs and read after it, so
+# what it sees is what a sudo invocation that started just before the swap
+# would see. Under rename it is the complete old file; under a write-through
+# replacement it is the new content, or a truncated fragment of it.
+exec 9< "$OLD_SUDOERS"
+exec 8< "$OLD_HELPER"
+
+ATOMIC_RC=0
+PATH="$RIG/bin:$SAVED_PATH" VIDEOFY_INSTALL_PREFIX="$PFX" DEPLOY_OWNER="$(id -un)" \
+  bash "$INSTALL_PA" >/dev/null 2>&1 || ATOMIC_RC=$?
+check "the installer replaces an existing installation" "$ATOMIC_RC" "0"
+
+READER_SAW="$(cat <&9)"; exec 9<&-
+READER_SAW_HELPER="$(cat <&8)"; exec 8<&-
+check "a sudo invocation already reading the old entry still sees it, whole" \
+  "$READER_SAW" "$OLD_TEXT"
+check "and a publisher already reading the old helper still sees that, whole" \
+  "$READER_SAW_HELPER" "$OLD_HELPER_TEXT"
+
+# The other half of the same fact: the destination is a DIFFERENT file now.
+# A write-through replacement keeps the inode, which is precisely how the old
+# content could have been destroyed under the reader's feet.
+check "the sudoers entry is a new inode, so it was renamed into place" \
+  "$([ "$(stat -c '%i' "$OLD_SUDOERS")" != "$OLD_INODE" ] && echo renamed || echo written-through)" \
+  "renamed"
+check "and so is the helper" \
+  "$([ "$(stat -c '%i' "$OLD_HELPER")" != "$OLD_HELPER_INODE" ] && echo renamed || echo written-through)" \
+  "renamed"
+
+# And the new content actually landed.
+case "$(cat "$OLD_SUDOERS")" in
+  *"install-publication-authority.sh"*) ok "the new sudoers entry is the one that landed" ;;
+  *) bad "the new sudoers entry did not land" "$(cat "$OLD_SUDOERS")" ;;
+esac
+check "the helper that landed is byte-identical to the one in the repository" \
+  "$(sha256sum < "$OLD_HELPER")" "$(sha256sum < "$REPO_ROOT/deploy/production/publish-current.sh")"
+
+# Nothing staged is left lying about -- and in /etc/sudoers.d a leftover would
+# be a second, stale grant if it were ever named without a dot.
+check "no staged file survives in the sudoers directory" \
+  "$(find "$PFX/etc/sudoers.d" -name '.videofy-publish.*' | wc -l | tr -d ' ')" "0"
+check "nor beside the helper" \
+  "$(find "$PFX/usr/local/sbin" -name '.videofy-publish-current.*' | wc -l | tr -d ' ')" "0"
+check "nor beside the libraries" \
+  "$(find "$PFX/usr/local/lib/videofy" -name '.*.staging.*' | wc -l | tr -d ' ')" "0"
+drop_rig; PATH="$SAVED_PATH"
+
+# ---- a sudoers entry that does not parse changes nothing ----
+
+new_rig; reset_failures
+sudo_stub
+PFX2="$RIG/reject"
+mkdir -p "$PFX2/etc/sudoers.d"
+GOOD="$PFX2/etc/sudoers.d/videofy-publish"
+printf '%s\n' '# OLD ENTRY' "$(id -un) ALL=(root) NOPASSWD: /usr/local/sbin/videofy-publish-current" > "$GOOD"
+chmod 0440 "$GOOD"
+GOOD_SUM="$(sha256sum < "$GOOD")"
+GOOD_INODE="$(stat -c '%i' "$GOOD")"
+
+# A deploy owner that cannot appear in a sudoers rule, so the generated entry
+# is rejected by visudo rather than by a check of our own.
+REJECT_RC=0
+REJECT_OUT="$(PATH="$RIG/bin:$SAVED_PATH" VIDEOFY_INSTALL_PREFIX="$PFX2" \
+  DEPLOY_OWNER='not a valid, user name' bash "$INSTALL_PA" 2>&1)" || REJECT_RC=$?
+if [ "$REJECT_RC" -ne 0 ]; then ok "an entry that does not parse is refused"
+else bad "an unparseable sudoers entry was installed" "$REJECT_OUT"; fi
+check "and the existing entry is byte-identical" "$(sha256sum < "$GOOD")" "$GOOD_SUM"
+check "and is still the same file, never reopened" "$(stat -c '%i' "$GOOD")" "$GOOD_INODE"
+check "and nothing was staged and left behind" \
+  "$(find "$PFX2/etc/sudoers.d" -name '.videofy-publish.*' | wc -l | tr -d ' ')" "0"
+
+# THE REPORT MUST BE TRUE. Saying "nothing was installed" after the helper and
+# libraries have already landed is a rollback claim the script cannot honour --
+# so the sudoers text is prepared and validated before anything is placed.
+case "$REJECT_OUT" in
+  *"nothing was installed"*) ok "and the refusal says nothing was installed" ;;
+  *) bad "the refusal does not describe what happened" "$REJECT_OUT" ;;
+esac
+check "which is true: no helper was installed" \
+  "$([ -e "$PFX2/usr/local/sbin/videofy-publish-current" ] && echo installed || echo absent)" "absent"
+check "and no library either" \
+  "$([ -e "$PFX2/usr/local/lib/videofy/release-engine.sh" ] && echo installed || echo absent)" "absent"
+drop_rig; PATH="$SAVED_PATH"
+
 # The scratch trees this section made for itself.
 rm -rf "$PA_PREFIX"
 [ -n "${MUTDIR:-}" ] && rm -rf "$MUTDIR"
+[ -n "${MUTINST:-}" ] && rm -rf "$MUTINST"
 
 # ============================================================ report
 
