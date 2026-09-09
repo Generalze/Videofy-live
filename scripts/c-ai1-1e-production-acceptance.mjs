@@ -289,6 +289,7 @@ const callContext = {
   mediaSessionMode: 'live-conversation',
   targetLanguage: 'es',
 };
+const programmeRun = { channelId: 'ch_acceptance', programmeId: 'programme_acceptance', runId: 'run_acceptance' };
 
 // --- Call ------------------------------------------------------------------
 
@@ -373,6 +374,7 @@ const callContext = {
     sessionId: 'programme_acceptance',
     broadcastId: 'bc_prog',
     mediaSessionMode: 'programme',
+    programme: programmeRun,
   };
   await speak(bridge, programmeContext, [...'v'.repeat(18), ...'q'.repeat(8)]);
   await delay(500);
@@ -412,7 +414,7 @@ const callContext = {
   check(
     'every context the bridge can produce is live',
     ['live-conversation', 'programme'].every(
-      (mode) => serviceContextForMode(mode).mediaMode === 'live',
+      (mode) => serviceContextForMode(mode, programmeRun)?.mediaMode === 'live',
     ),
   );
 }

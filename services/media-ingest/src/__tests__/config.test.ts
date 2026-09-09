@@ -21,6 +21,7 @@ const SHARED_ENV_KEYS = [
   'TEXT_TO_SPEECH_SUPPORTED_LANGUAGES',
   'OPUS_MT_LANGUAGE_MODELS',
   'DEEPGRAM_API_KEY',
+  'ELEVENLABS_API_KEY',
   'PROGRAMME_MEDIA_ORIGIN_INPUT',
   'PROGRAMME_SAFETY_DELAY_MS',
   'PROGRAMME_MEDIA_DELIVERY',
@@ -67,11 +68,10 @@ describe('AI runtime profile config', () => {
     },
   );
 
-  it('PIN: the commercial-cloud refusal names every blocked service context', () => {
+  it('PIN: the unconfigured commercial-cloud refusal names every blocked service context', () => {
     // C-AI1.1A replaced a blanket throw that said only "cannot start in P6-G0".
-    // The refusal is unchanged; what changed is that the REGISTRY now decides it
-    // and says which service contexts have no eligible provider, so an operator
-    // is not left guessing what would fix it.
+    // The registry decides the refusal and says which service contexts have no
+    // eligible provider, so an operator is not left guessing what would fix it.
     process.env['AI_RUNTIME_PROFILE'] = 'commercial-cloud';
 
     let message = '';
@@ -84,24 +84,29 @@ describe('AI runtime profile config', () => {
     expect(message).toContain('programme:live');
     expect(message).toContain('programme:uploaded');
     expect(message).toContain('certified');
+    expect(message).not.toContain('language route');
+  });
+
+  it('PIN: commercial-cloud starts when static provider eligibility is satisfied', () => {
+    process.env['AI_RUNTIME_PROFILE'] = 'commercial-cloud';
+    process.env['DEEPGRAM_API_KEY'] = 'test-present-only';
+
+    expect(loadConfig().aiRuntimeProfile).toBe('commercial-cloud');
   });
 
   it('PIN: no credential VALUE can reach the refusal message', () => {
     // The gate reads env vars only through a presence predicate. A secret in a
     // startup error goes straight into a log aggregator.
     process.env['AI_RUNTIME_PROFILE'] = 'commercial-cloud';
-    process.env['DEEPGRAM_API_KEY'] = 'sk-do-not-leak-me-0123456789';
+    process.env['ELEVENLABS_API_KEY'] = 'sk-do-not-leak-me-0123456789';
+
+    let message = '';
     try {
-      let message = '';
-      try {
-        loadConfig();
-      } catch (error) {
-        message = error instanceof Error ? error.message : String(error);
-      }
-      expect(message).not.toContain('sk-do-not-leak-me-0123456789');
-    } finally {
-      delete process.env['DEEPGRAM_API_KEY'];
+      loadConfig();
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
     }
+    expect(message).not.toContain('sk-do-not-leak-me-0123456789');
   });
 
   it('rejects an unknown profile name', () => {
