@@ -59,7 +59,7 @@ export const videofyCall = {
   /** True when this build carries the native layer. */
   available: native !== null,
 
-  /** Bound to the account and the session's expiry: the receiver rings for nobody else, and for nobody past it. */
+  /** Bound to the account and short native-ring expiry: the receiver rings for nobody else, and for nobody past it. */
   setRingCredential(gatewayUrl: string, token: string, accountId: string, expiresAtMs: number): void {
     native?.setRingCredential(gatewayUrl, token, accountId, expiresAtMs);
   },
@@ -119,6 +119,11 @@ export const videofyCall = {
   },
   onTimeout(listener: (callId: string) => void): EventSubscription | null {
     return native?.addListener('timeout', (payload) => {
+      if (typeof payload['callId'] === 'string') listener(payload['callId'] as string);
+    }) ?? null;
+  },
+  onEnded(listener: (callId: string) => void): EventSubscription | null {
+    return native?.addListener('ended', (payload) => {
       if (typeof payload['callId'] === 'string') listener(payload['callId'] as string);
     }) ?? null;
   },

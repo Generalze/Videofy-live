@@ -453,6 +453,7 @@ export type CallJoinFailureCode =
 export type DirectCallWireState =
   | 'calling'
   | 'ringing'
+  | 'answering'
   | 'answered'
   | 'connecting'
   | 'connected'

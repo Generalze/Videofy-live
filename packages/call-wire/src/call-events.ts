@@ -40,7 +40,7 @@ export const CALL_EVENTS = {
   RECEIVE_TRACKS: 'call:receive:tracks',
   /**
    * DIRECT CALL LIFECYCLE (founder ruling 2026-08-28): the server-owned
-   * telephone state -- calling, ringing, answered, connecting, connected,
+   * telephone state -- calling, ringing, answering, answered, connecting, connected,
    * reconnecting, busy, declined, no_answer, unavailable, network, ended --
    * broadcast to the call room on every transition. Words on screens come
    * from THIS, never from a push result or a video tile.

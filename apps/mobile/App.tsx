@@ -75,6 +75,10 @@ import { createDirectCallApi } from './src/call/directCallApi';
 import { routeCallPush, shouldDismissIncoming } from './src/call/incomingCallRouting';
 import { foregroundPresentationFor } from './src/push/callNotificationPresentation';
 import { videofyCall } from './src/native/videofyCall';
+import {
+  NATIVE_RING_CREDENTIAL_REFRESH_MS,
+  nativeRingCredentialExpiresAt,
+} from './src/native/ringCredentialPolicy';
 import { createAppLock } from './src/auth/appLock';
 import { LockScreen } from './src/screens/LockScreen';
 import { PUBLIC_ENDPOINTS } from './src/config/publicEnv';
@@ -246,6 +250,13 @@ function AppInner(): JSX.Element {
   /** Somebody's profile, opened from their picture or name anywhere. */
   const [viewingPerson, setViewingPerson] = useState<ContactPerson | null>(null);
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
+  const [nativeEndRequest, setNativeEndRequest] = useState<{
+    readonly callId: string;
+    readonly token: number;
+  } | null>(null);
+  const activeCallRef = useRef<ActiveCall | null>(null);
+  activeCallRef.current = activeCall;
+  const nativeEndSerial = useRef(0);
   /** An incoming direct call the server confirmed is live. */
   const [incomingCall, setIncomingCall] = useState<{
     callId: string;
@@ -464,6 +475,7 @@ function AppInner(): JSX.Element {
     const pending = videofyCall.consumePendingAnswer(signedInAccountId);
     if (pending !== null) {
       setIncomingCall(null);
+      setNativeEndRequest(null);
       setActiveCall({
         kind: 'direct',
         callId: pending.callId,
@@ -480,6 +492,7 @@ function AppInner(): JSX.Element {
     });
     const answer = videofyCall.onAnswer((call) => {
       setIncomingCall(null);
+      setNativeEndRequest(null);
       setActiveCall({
         kind: 'direct',
         callId: call.callId,
@@ -489,11 +502,19 @@ function AppInner(): JSX.Element {
     });
     const decline = videofyCall.onDecline(() => setIncomingCall(null));
     const timeout = videofyCall.onTimeout(() => setIncomingCall(null));
+    const ended = videofyCall.onEnded((callId) => {
+      setIncomingCall((current) => (current?.callId === callId ? null : current));
+      const current = activeCallRef.current;
+      if (current?.kind === 'direct' && current.callId === callId) {
+        setNativeEndRequest({ callId, token: ++nativeEndSerial.current });
+      }
+    });
     return () => {
       incoming?.remove();
       answer?.remove();
       decline?.remove();
       timeout?.remove();
+      ended?.remove();
     };
     /*
      * ACCOUNT ID IS A REAL DEPENDENCY. The cold-start answer is consumed FOR a
@@ -503,14 +524,23 @@ function AppInner(): JSX.Element {
      */
   }, [signedInAccountId]);
 
-  /* The ring credential: the native receiver's key to the gateway, bound to this account and the session's expiry. */
+  /* The native ring credential: short-lived and refreshed only while the account session is valid in JS. */
   useEffect(() => {
     if (!videofyCall.available) return;
-    const token = state.status === 'signed-in' ? auth.callSessionToken() : null;
-    const expiresAt = auth.sessionExpiresAtMs();
-    if (token === null || state.status !== 'signed-in' || expiresAt === null)
+    if (state.status !== 'signed-in') {
       videofyCall.clearRingCredential();
-    else videofyCall.setRingCredential(GATEWAY_BASE_URL, token, state.accountId, expiresAt);
+      return;
+    }
+
+    const refresh = (): void => {
+      const token = auth.callSessionToken();
+      const expiresAt = nativeRingCredentialExpiresAt(auth.sessionExpiresAtMs());
+      if (token === null || expiresAt === null) videofyCall.clearRingCredential();
+      else videofyCall.setRingCredential(GATEWAY_BASE_URL, token, state.accountId, expiresAt);
+    };
+    refresh();
+    const timer = setInterval(refresh, NATIVE_RING_CREDENTIAL_REFRESH_MS);
+    return () => clearInterval(timer);
   }, [state]);
 
   useEffect(() => {
@@ -714,6 +744,7 @@ function AppInner(): JSX.Element {
   }, []);
 
   const callContact = useCallback((person: ContactPerson) => {
+    setNativeEndRequest(null);
     setActiveCall({
       kind: 'direct',
       callId: `ring-${randomId('').slice(0, 8)}`,
@@ -758,6 +789,7 @@ function AppInner(): JSX.Element {
           mode={ringing.mode}
           onAnswer={() => {
             setIncomingCall(null);
+            setNativeEndRequest(null);
             videofyCall.reportAnswered(ringing.callId);
             setActiveCall({
               kind: 'direct',
@@ -795,6 +827,9 @@ function AppInner(): JSX.Element {
           {...(callLanguages.speak === undefined ? {} : { speakLanguage: callLanguages.speak })}
           {...(callLanguages.hear === undefined ? {} : { hearLanguage: callLanguages.hear })}
           sessionToken={auth.callSessionToken()}
+          nativeEndToken={
+            nativeEndRequest?.callId === activeCall.callId ? nativeEndRequest.token : undefined
+          }
           onRing={
             ringPeer === null
               ? undefined
@@ -805,6 +840,9 @@ function AppInner(): JSX.Element {
           }
           onLeave={() => {
             videofyCall.reportCallEnded(activeCall.callId);
+            setNativeEndRequest((current) =>
+              current?.callId === activeCall.callId ? null : current,
+            );
             setActiveCall(null);
           }}
         />
@@ -943,6 +981,7 @@ function AppInner(): JSX.Element {
                 title: setup?.title ?? null,
                 ...(setup === undefined ? {} : { setup }),
               });
+              setNativeEndRequest(null);
               setActiveCall({
                 kind: 'conference',
                 callId,

@@ -102,7 +102,7 @@ describe('DirectCallLifecycle', () => {
     expect(legacyZero.lifecycle.get('ring-1')?.state).toBe('no_answer');
   });
 
-  it('UNAVAILABLE requires an explicit no-routable-device dispatch', () => {
+  it('no-routable-device keeps the ring window open, then becomes unavailable', () => {
     const h = harness();
     h.create();
     h.lifecycle.noteRingDispatch('ring-1', {
@@ -113,10 +113,12 @@ describe('DirectCallLifecycle', () => {
       failed: 0,
       pruned: 0,
     });
+    expect(h.lifecycle.get('ring-1')?.state).toBe('calling');
+    h.fire(RINGING_WINDOW_MS);
     expect(h.lifecycle.get('ring-1')?.state).toBe('unavailable');
   });
 
-  it('provider dispatch failure is a network failure, not peer unavailable', () => {
+  it('provider dispatch failure keeps the ring window open, then becomes network', () => {
     const h = harness();
     h.create();
     h.lifecycle.noteRingDispatch('ring-1', {
@@ -127,7 +129,43 @@ describe('DirectCallLifecycle', () => {
       failed: 1,
       pruned: 0,
     });
+    expect(h.lifecycle.get('ring-1')?.state).toBe('calling');
+    h.fire(RINGING_WINDOW_MS);
     expect(h.lifecycle.get('ring-1')?.state).toBe('network');
+  });
+
+  it('a late device ringing ack beats a no-routable-device dispatch', () => {
+    const h = harness();
+    h.create();
+    h.lifecycle.noteRingDispatch('ring-1', {
+      status: 'no-routable-device',
+      reachedDevices: 0,
+      attempted: 0,
+      delivered: 0,
+      failed: 0,
+      pruned: 0,
+    });
+    expect(h.lifecycle.ringingAck('ring-1', 'acct_peer')).toBe(true);
+    expect(h.lifecycle.get('ring-1')?.state).toBe('ringing');
+    h.fire(RINGING_WINDOW_MS);
+    expect(h.lifecycle.get('ring-1')?.state).toBe('no_answer');
+  });
+
+  it('a late browser ringing ack beats a provider dispatch failure', () => {
+    const h = harness();
+    h.create();
+    h.lifecycle.noteRingDispatch('ring-1', {
+      status: 'provider-failed',
+      reachedDevices: 0,
+      attempted: 1,
+      delivered: 0,
+      failed: 1,
+      pruned: 0,
+    });
+    expect(h.lifecycle.ringingAck('ring-1', 'acct_peer')).toBe(true);
+    expect(h.lifecycle.get('ring-1')?.state).toBe('ringing');
+    h.fire(RINGING_WINDOW_MS);
+    expect(h.lifecycle.get('ring-1')?.state).toBe('no_answer');
   });
 
   it('unknown zero dispatch does not invent peer unavailability', () => {
@@ -147,12 +185,13 @@ describe('DirectCallLifecycle', () => {
     h.lifecycle.ringingAck('ring-1', 'acct_peer');
     expect(h.lifecycle.answering('ring-1', 'acct_stranger')).toBe(false);
     expect(h.lifecycle.answering('ring-1', 'acct_peer')).toBe(true);
-    // The original 30 s window no longer ends the call...
+    expect(h.lifecycle.get('ring-1')?.state).toBe('answering');
+    // The original 30 s window no longer ends the call.
     h.fire(RINGING_WINDOW_MS);
-    expect(h.lifecycle.get('ring-1')?.state).toBe('ringing');
+    expect(h.lifecycle.get('ring-1')?.state).toBe('answering');
     // ...the answer grace does, if nobody joins.
     h.fire(ANSWER_GRACE_MS);
-    expect(h.lifecycle.get('ring-1')?.state).toBe('no_answer');
+    expect(h.lifecycle.get('ring-1')?.state).toBe('network');
   });
 
   it('a stale push must not ring: the pre-join check answers expired', () => {

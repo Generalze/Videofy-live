@@ -674,6 +674,8 @@ export class CallRuntime {
     this.callLiveRouteApproved = dependencies.callLiveRouteApproved;
     this.directCalls = new DirectCallLifecycle({
       now: () => this.now(),
+      setTimer: (callback, delayMs) => this.setTimer(callback, delayMs),
+      clearTimer: (timer) => this.clearTimer(timer as ReturnType<typeof setTimeout>),
       onState: (wire, previous) => {
         // Both sides read the same truth; the callee before joining reads it
         // over HTTP (pre-join check), everybody in the room reads it here.
@@ -1085,47 +1087,6 @@ export class CallRuntime {
     }
 
     /*
-     * STARTING A CALL IS THE GATED ACT, and this is the moment it happens: the
-     * store creates a call when a join names one that does not exist, so a join
-     * to an unknown id IS the host action.
-     *
-     * Checked here rather than in the store because the store is deliberately
-     * pure -- it knows about seats and revisions, not about C7 accounts. And
-     * checked BEFORE the store is touched, so a refused host never leaves a
-     * half-created call behind for the next person to walk into.
-     *
-     * A resume is exempt: it rejoins a seat in a call that already exists, and
-     * its credential is the private resumeToken the store verifies.
-     */
-    if (
-      typeof requestedCallId === 'string' &&
-      !isResumeAttempt &&
-      this.store.snapshot(requestedCallId) === null
-    ) {
-      const mayHost = this.authorizeCallHost
-        ? await this.authorizeCallHost(typeof sessionToken === 'string' ? sessionToken : null)
-        : false;
-      if (!mayHost) {
-        logger.info('Call host refused', { callId: requestedCallId });
-        return {
-          ok: false,
-          code: 'host-not-authorized',
-          error: USER_FACING_ERRORS.hostNotAuthorized,
-        };
-      }
-    }
-
-    const verifiedOwnerId =
-      typeof sessionToken === 'string' && sessionToken.length > 0
-        ? (this.verifyVoiceIdentity?.(sessionToken) ?? null)
-        : null;
-    // A token that was presented and did not verify is reported back, so the
-    // browser can say "personal voice is not active" instead of leaving someone
-    // wondering why they sound like a stranger. It never says WHY.
-    const voiceIdentityRejected =
-      typeof sessionToken === 'string' && sessionToken.length > 0 && verifiedOwnerId === null;
-
-    /*
      * A DIRECT CALL IS PERSONAL AND ITS MODE IS THE PAIR'S (founder ruling
      * 2026-08-28). Only at creation -- the store locks callMode afterwards,
      * and a second joiner naming a peer changes nothing. The client's
@@ -1139,14 +1100,60 @@ export class CallRuntime {
       typeof requestedCallId === 'string' &&
       !isResumeAttempt &&
       this.store.snapshot(requestedCallId) === null;
-    let directOverride: { callType: 'personal'; callMode: 'normal' | 'translated' } | null = null;
-    if (creating && typeof directPeerAccountId === 'string' && directPeerAccountId.length > 0) {
-      const pairMode = this.resolveDirectCallMode
-        ? await this.resolveDirectCallMode(
-            typeof sessionToken === 'string' ? sessionToken : null,
-            directPeerAccountId,
-          )
+    const sessionTokenForAccount = typeof sessionToken === 'string' ? sessionToken : null;
+    const directPeer =
+      typeof directPeerAccountId === 'string' && directPeerAccountId.length > 0
+        ? directPeerAccountId
         : null;
+    /*
+     * STARTING A CALL IS THE GATED ACT, and this is the moment it happens: the
+     * store creates a call when a join names one that does not exist, so a join
+     * to an unknown id IS the host action.
+     *
+     * Checked here rather than in the store because the store is deliberately
+     * pure -- it knows about seats and revisions, not about C7 accounts. And
+     * checked BEFORE the store is touched, so a refused host never leaves a
+     * half-created call behind for the next person to walk into.
+     *
+     * The host gate and direct-pair lookup both call the account service, so a
+     * direct call starts them together and waits for both before any store write
+     * or ring dispatch. A resume is exempt: it rejoins a seat in a call that
+     * already exists, and its credential is the private resumeToken the store
+     * verifies.
+     */
+    const hostAuthPromise =
+      creating
+        ? this.authorizeCallHost
+          ? this.authorizeCallHost(sessionTokenForAccount).catch(() => false)
+          : Promise.resolve(false)
+        : Promise.resolve(true);
+    const pairModePromise =
+      creating && directPeer !== null && this.resolveDirectCallMode
+        ? this.resolveDirectCallMode(sessionTokenForAccount, directPeer).catch(() => null)
+        : Promise.resolve<'normal' | 'translated' | null>(null);
+    const mayHost = await hostAuthPromise;
+    if (!mayHost) {
+      logger.info('Call host refused', { callId: requestedCallId });
+      return {
+        ok: false,
+        code: 'host-not-authorized',
+        error: USER_FACING_ERRORS.hostNotAuthorized,
+      };
+    }
+
+    const verifiedOwnerId =
+      typeof sessionToken === 'string' && sessionToken.length > 0
+        ? (this.verifyVoiceIdentity?.(sessionToken) ?? null)
+        : null;
+    // A token that was presented and did not verify is reported back, so the
+    // browser can say "personal voice is not active" instead of leaving someone
+    // wondering why they sound like a stranger. It never says WHY.
+    const voiceIdentityRejected =
+      typeof sessionToken === 'string' && sessionToken.length > 0 && verifiedOwnerId === null;
+
+    let directOverride: { callType: 'personal'; callMode: 'normal' | 'translated' } | null = null;
+    if (creating && directPeer !== null) {
+      const pairMode = await pairModePromise;
       directOverride = { callType: 'personal', callMode: pairMode ?? 'normal' };
 
       /*
@@ -1223,7 +1230,7 @@ export class CallRuntime {
     }
     if (
       directOverride !== null &&
-      typeof directPeerAccountId === 'string' &&
+      directPeer !== null &&
       verifiedOwnerId !== null
     ) {
       // The telephone starts the moment the call exists. BUSY is asked of
@@ -1232,10 +1239,10 @@ export class CallRuntime {
       this.directCalls.create({
         callId: (raw as { callId: string }).callId,
         callerAccountId: verifiedOwnerId,
-        peerAccountId: directPeerAccountId,
+        peerAccountId: directPeer,
         callerName: (joinInput as { displayName?: string }).displayName ?? 'Caller',
         mode: directOverride.callMode,
-        peerBusy: this.store.hasConnectedAccount(directPeerAccountId),
+        peerBusy: this.store.hasConnectedAccount(directPeer),
       });
     } else if (!creating && verifiedOwnerId !== null) {
       /*

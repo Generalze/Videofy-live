@@ -80,7 +80,7 @@ describe('createDirectCallApi', () => {
 describe('directStateWords', () => {
   it('has a human sentence for every state and never a code', () => {
     for (const state of [
-      'calling', 'ringing', 'answered', 'connecting', 'connected', 'reconnecting',
+      'calling', 'ringing', 'answering', 'answered', 'connecting', 'connected', 'reconnecting',
       'busy', 'declined', 'no_answer', 'unavailable', 'network', 'ended',
     ]) {
       const words = directStateWords(state, 'Zoe');

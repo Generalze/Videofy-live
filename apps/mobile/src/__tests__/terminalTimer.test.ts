@@ -36,7 +36,7 @@ describe('every terminal state the server can send is terminal here', () => {
   );
 
   it('holds nothing else, so a live call is never mistaken for a dead one', () => {
-    for (const live of ['calling', 'ringing', 'answered', 'connecting', 'connected', 'reconnecting']) {
+    for (const live of ['calling', 'ringing', 'answering', 'answered', 'connecting', 'connected', 'reconnecting']) {
       expect(TERMINAL_DIRECT_STATES.has(live)).toBe(false);
     }
   });

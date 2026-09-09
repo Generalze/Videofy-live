@@ -39,17 +39,22 @@ export interface PushDispatchSummary {
 export interface PushDispatcherOptions {
   readonly devices: DeviceStore;
   readonly providers: readonly PushProvider[];
+  readonly callSendDeadlineMs?: number | undefined;
   readonly onEvent?: (event: string, detail: Record<string, string | number>) => void;
 }
+
+export const CALL_PUSH_SEND_DEADLINE_MS = 2_500;
 
 export class PushDispatcher {
   private readonly devices: DeviceStore;
   private readonly providers: readonly PushProvider[];
+  private readonly callSendDeadlineMs: number;
   private readonly onEvent: PushDispatcherOptions['onEvent'];
 
   constructor(options: PushDispatcherOptions) {
     this.devices = options.devices;
     this.providers = options.providers;
+    this.callSendDeadlineMs = options.callSendDeadlineMs ?? CALL_PUSH_SEND_DEADLINE_MS;
     this.onEvent = options.onEvent;
   }
 
@@ -110,7 +115,15 @@ export class PushDispatcher {
           return null;
         }
         try {
-          return { target, result: await provider.send(target, payload) };
+          return {
+            target,
+            result: await this.sendWithDeadline(
+              provider,
+              target,
+              payload,
+              notification.kind === 'call' ? this.callSendDeadlineMs : null,
+            ),
+          };
         } catch (error) {
           /*
            * A provider that throws is treated as a TRANSIENT failure. An
@@ -168,6 +181,33 @@ export class PushDispatcher {
     });
 
     return summary;
+  }
+
+  private async sendWithDeadline(
+    provider: PushProvider,
+    target: PushTarget,
+    payload: PushNotification,
+    deadlineMs: number | null,
+  ): Promise<PushSendResult> {
+    const send = provider.send(target, payload);
+    if (deadlineMs === null) return send;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<PushSendResult>((resolve) => {
+      timer = setTimeout(
+        () =>
+          resolve({
+            ok: false,
+            permanent: false,
+            reason: `${provider.name} send deadline exceeded`,
+          }),
+        deadlineMs,
+      );
+    });
+    try {
+      return await Promise.race([send, timeout]);
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
   }
 }
 

@@ -11,6 +11,7 @@
  *   CALLING      the call exists; the peer's devices are being reached
  *   RINGING      at least one of the peer's devices ACKNOWLEDGED showing
  *                the incoming-call surface (a push being sent is not this)
+ *   ANSWERING    the peer tapped Answer; their app is starting/joining
  *   ANSWERED     the peer joined the session
  *   CONNECTING   media negotiating
  *   CONNECTED    two-way audio proven: the gateway has ROUTED frames from
@@ -32,6 +33,7 @@
 export type DirectCallState =
   | 'calling'
   | 'ringing'
+  | 'answering'
   | 'answered'
   | 'connecting'
   | 'connected'
@@ -73,7 +75,7 @@ export const RINGING_WINDOW_MS = 30_000;
  * person TAPPED ANSWER, the window is re-armed with this grace so the
  * answer never lands on a call already marked no-answer.
  */
-export const ANSWER_GRACE_MS = 15_000;
+export const ANSWER_GRACE_MS = 45_000;
 /** Media recovery window before a drop becomes a NETWORK failure. */
 /**
  * A phone that changes network (wifi to data, a lift, a stairwell) needs
@@ -190,6 +192,12 @@ function legacyDispatch(reachedDevices: number): DirectRingDispatchReport {
   };
 }
 
+function unansweredExpiryState(status: DirectRingDispatchStatus): DirectCallState {
+  if (status === 'no-routable-device') return 'unavailable';
+  if (status === 'provider-failed') return 'network';
+  return 'no_answer';
+}
+
 export class DirectCallLifecycle {
   private readonly calls = new Map<string, DirectCallRecord>();
   private readonly timers = new Map<string, unknown>();
@@ -245,10 +253,7 @@ export class DirectCallLifecycle {
     }
     this.arm(record, 'ringing-window', RINGING_WINDOW_MS, () => {
       if (record.state === 'calling' || record.state === 'ringing') {
-        this.transition(
-          record,
-          record.ringDispatchStatus === 'no-routable-device' ? 'unavailable' : 'no_answer',
-        );
+        this.transition(record, unansweredExpiryState(record.ringDispatchStatus));
       }
     });
     return toDirectCallWire(record);
@@ -266,15 +271,13 @@ export class DirectCallLifecycle {
     const report = typeof dispatch === 'number' ? legacyDispatch(dispatch) : dispatch;
     record.reachedDevices = report.reachedDevices;
     record.ringDispatchStatus = report.status;
-    if (record.state !== 'calling') return;
-    if (report.status === 'no-routable-device') this.transition(record, 'unavailable');
-    if (report.status === 'provider-failed') this.transition(record, 'network');
   }
 
   /** A peer device says it is SHOWING the incoming call. This is what Ringing means. */
   ringingAck(callId: string, accountId: string): boolean {
     const record = this.calls.get(callId);
     if (!record || record.peerAccountId !== accountId) return false;
+    record.ringDispatchStatus = 'accepted';
     if (record.state === 'calling') this.transition(record, 'ringing');
     return !TERMINAL_STATES.has(record.state);
   }
@@ -288,11 +291,10 @@ export class DirectCallLifecycle {
     const record = this.calls.get(callId);
     if (!record || record.peerAccountId !== accountId) return false;
     if (record.state !== 'calling' && record.state !== 'ringing') return false;
-    if (record.state === 'calling') this.transition(record, 'ringing');
+    this.transition(record, 'answering');
     record.expiresAtMs = this.now() + ANSWER_GRACE_MS;
     this.arm(record, 'ringing-window', ANSWER_GRACE_MS, () => {
-      if (record.state === 'calling' || record.state === 'ringing')
-        this.transition(record, 'no_answer');
+      if (record.state === 'answering') this.transition(record, 'network');
     });
     return true;
   }
@@ -311,7 +313,7 @@ export class DirectCallLifecycle {
   peerJoined(callId: string, accountId: string): void {
     const record = this.calls.get(callId);
     if (!record || record.peerAccountId !== accountId) return;
-    if (record.state === 'calling' || record.state === 'ringing') {
+    if (record.state === 'calling' || record.state === 'ringing' || record.state === 'answering') {
       this.disarm(record, 'ringing-window');
       record.answeredAtMs = this.now();
       this.transition(record, 'answered');

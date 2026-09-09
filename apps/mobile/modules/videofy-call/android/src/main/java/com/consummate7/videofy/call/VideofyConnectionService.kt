@@ -120,11 +120,18 @@ class VideofyConnection(
   }
 
   override fun onDisconnect() {
-    VideofyCallModule.emitDecline(callId)
+    when (NativeCallPolicy.disconnectAction(phase())) {
+      NativeDisconnectAction.DECLINE -> CallActionReceiver.decline(context, callId)
+      NativeDisconnectAction.END -> VideofyCallModule.emitEnded(callId)
+      NativeDisconnectAction.IGNORE -> {}
+    }
     end(DisconnectCause(DisconnectCause.LOCAL))
   }
 
   override fun onAbort() {
+    if (NativeCallPolicy.disconnectAction(phase()) == NativeDisconnectAction.END) {
+      VideofyCallModule.emitEnded(callId)
+    }
     end(DisconnectCause(DisconnectCause.CANCELED))
   }
 
@@ -159,6 +166,15 @@ class VideofyConnection(
     } catch (_: Exception) {}
     TelecomBridge.unregister(callId)
   }
+
+  private fun phase(): NativeCallPhase =
+    when {
+      ended -> NativeCallPhase.ENDED
+      state == STATE_RINGING -> NativeCallPhase.RINGING
+      state == STATE_DIALING -> NativeCallPhase.DIALING
+      state == STATE_ACTIVE -> NativeCallPhase.ACTIVE
+      else -> NativeCallPhase.OTHER
+    }
 
   private fun routeName(route: Int): String = when (route) {
     CallAudioState.ROUTE_SPEAKER -> "speaker"

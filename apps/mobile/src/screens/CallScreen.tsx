@@ -130,6 +130,7 @@ export interface CallScreenProps {
    * and for conferences -- which is also how the screen knows its role.
    */
   readonly onRing?: ((callId: string) => Promise<RingDispatchPayload | null>) | undefined;
+  readonly nativeEndToken?: number | undefined;
   readonly onLeave: () => void;
 }
 
@@ -140,12 +141,18 @@ export function CallScreen({
   hearLanguage,
   sessionToken,
   onRing,
+  nativeEndToken,
   onLeave,
 }: CallScreenProps): JSX.Element {
   const callId = call.callId;
   const role: 'caller' | 'callee' = onRing === undefined ? 'callee' : 'caller';
   const connection = useRef<CallConnection | null>(null);
+  const onLeaveRef = useRef(onLeave);
   const bottomInset = useBottomInset();
+
+  useEffect(() => {
+    onLeaveRef.current = onLeave;
+  }, [onLeave]);
 
   const [localUrl, setLocalUrl] = useState<string | null>(null);
   const [remotes, setRemotes] = useState<Record<string, { url: string | null; state: string }>>({});
@@ -389,6 +396,16 @@ export function CallScreen({
     if (call.kind === 'direct' && onRing !== undefined)
       videofyCall.reportOutgoingCall(callId, call.peer.name);
 
+    const finishFailedJoin = (message: string): void => {
+      if (!live) return;
+      setError(message);
+      if (call.kind === 'direct') videofyCall.reportCallEnded(callId);
+      link.leave();
+      setTimeout(() => {
+        if (live) onLeaveRef.current();
+      }, 2500);
+    };
+
     void (async () => {
       try {
         const ack = await link.join({ startMedia: onRing === undefined });
@@ -403,7 +420,7 @@ export function CallScreen({
           link.reportRingResult(report);
         }
         if (!ack.ok) {
-          setError(
+          finishFailedJoin(
             ack.code === 'host-not-authorized'
               ? 'Verify your email before starting a call. You can still join a call somebody invites you to.'
               : (ack.error ?? 'The call service refused this call.'),
@@ -411,7 +428,7 @@ export function CallScreen({
         }
       } catch (thrown) {
         if (live) {
-          setError(
+          finishFailedJoin(
             thrown instanceof Error && /permission|denied/iu.test(thrown.message)
               ? 'Microphone access is needed for a call.'
               : 'Could not start the call.',
@@ -547,8 +564,7 @@ export function CallScreen({
     setChosenRoute(speakerOn ? 'earpiece' : 'speaker');
   }, [speakerOn]);
 
-  /** Direct: end for both, acknowledged. Conference: leave my seat. */
-  const hangUp = useCallback(() => {
+  const requestDirectEnd = useCallback((leaveDelayMs: number) => {
     if (call.kind !== 'direct') {
       onLeave();
       return;
@@ -572,9 +588,19 @@ export function CallScreen({
     const link = connection.current;
     setEnding(true);
     void (link?.end() ?? Promise.resolve(false)).finally(() => {
-      setTimeout(() => onLeave(), 600);
+      setTimeout(() => onLeave(), leaveDelayMs);
     });
   }, [call.kind, onLeave, terminal]);
+
+  useEffect(() => {
+    if (nativeEndToken === undefined || call.kind !== 'direct') return;
+    requestDirectEnd(0);
+  }, [call.kind, nativeEndToken, requestDirectEnd]);
+
+  /** Direct: end for both, acknowledged. Conference: leave my seat. */
+  const hangUp = useCallback(() => {
+    requestDirectEnd(600);
+  }, [requestDirectEnd]);
 
   const tiles = Object.entries(remotes);
   const peerVideo = tiles.find(([, tile]) => tile.url !== null)?.[1].url ?? null;

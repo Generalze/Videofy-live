@@ -498,7 +498,48 @@ describe('CallRuntime join and ingest plan handling', () => {
     expect(direct.store.snapshot('ring-normal')?.callMode).toBe('normal');
   });
 
-  it('does not turn provider ring dispatch failure into peer unavailable', async () => {
+  it('starts host authorization and direct pair-mode lookup together', async () => {
+    let allowHost!: (value: boolean) => void;
+    let resolvePair!: (value: 'normal' | 'translated' | null) => void;
+    const events: string[] = [];
+    const authorize = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          events.push('host-started');
+          allowHost = resolve;
+        }),
+    );
+    const resolver = vi.fn(
+      () =>
+        new Promise<'normal' | 'translated' | null>((resolve) => {
+          events.push('pair-started');
+          resolvePair = resolve;
+        }),
+    );
+    const direct = createHarness(
+      () => 'acct_00000000000000aa',
+      authorize,
+      resolver,
+      () => true,
+    );
+    const pending = join(direct, new FakeSocket('socket-a'), {
+      ...JOIN_A,
+      callId: 'ring-concurrent',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+
+    await Promise.resolve();
+    expect(events).toEqual(['host-started', 'pair-started']);
+    expect(direct.store.snapshot('ring-concurrent')).toBeNull();
+
+    allowHost(true);
+    resolvePair('normal');
+    const ack = await pending;
+    expect(ack.ok).toBe(true);
+  });
+
+  it('does not turn provider ring dispatch failure into an immediate terminal call', async () => {
     const direct = createHarness(
       () => 'acct_00000000000000aa',
       undefined,
@@ -535,8 +576,109 @@ describe('CallRuntime join and ingest plan handling', () => {
     const states = roomEmissions(direct, CALL_EVENTS.DIRECT_STATE).map(
       (emission) => (emission.payload as { state?: string }).state,
     );
-    expect(states).toContain('network');
+    expect(direct.runtime.directCalls.get('ring-provider-failed')?.state).toBe('calling');
+    expect(states).not.toContain('network');
     expect(states).not.toContain('unavailable');
+
+    firePendingTimers(direct);
+    const timeoutStates = roomEmissions(direct, CALL_EVENTS.DIRECT_STATE).map(
+      (emission) => (emission.payload as { state?: string }).state,
+    );
+    expect(timeoutStates).toContain('network');
+    expect(timeoutStates).not.toContain('unavailable');
+  });
+
+  it('does not terminate a no-routable-device ring report before the ring window', async () => {
+    const direct = createHarness(
+      () => 'acct_00000000000000aa',
+      undefined,
+      async () => 'normal',
+    );
+    const socket = new FakeSocket('socket-a');
+    const ack = await join(direct, socket, {
+      ...JOIN_A,
+      callId: 'ring-no-device',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+    expect(ack.ok).toBe(true);
+    direct.emitToRoom.mockClear();
+
+    await socket.trigger(
+      CALL_EVENTS.DIRECT_RING_RESULT,
+      {
+        callId: 'ring-no-device',
+        reachedDevices: 0,
+        ringDispatch: {
+          status: 'no-routable-device',
+          attempted: 0,
+          delivered: 0,
+          failed: 0,
+          pruned: 0,
+          unreachablePlatforms: [],
+        },
+      },
+      vi.fn(),
+    );
+
+    const states = roomEmissions(direct, CALL_EVENTS.DIRECT_STATE).map(
+      (emission) => (emission.payload as { state?: string }).state,
+    );
+    expect(direct.runtime.directCalls.get('ring-no-device')?.state).toBe('calling');
+    expect(states).not.toContain('unavailable');
+    expect(states).not.toContain('network');
+
+    firePendingTimers(direct);
+    const timeoutStates = roomEmissions(direct, CALL_EVENTS.DIRECT_STATE).map(
+      (emission) => (emission.payload as { state?: string }).state,
+    );
+    expect(timeoutStates).toContain('unavailable');
+    expect(timeoutStates).not.toContain('network');
+  });
+
+  it('keeps the call alive when a ringing ack arrives after a no-device dispatch', async () => {
+    const direct = createHarness(
+      () => 'acct_00000000000000aa',
+      undefined,
+      async () => 'normal',
+    );
+    const socket = new FakeSocket('socket-a');
+    const ack = await join(direct, socket, {
+      ...JOIN_A,
+      callId: 'ring-late-ack',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+    expect(ack.ok).toBe(true);
+    direct.emitToRoom.mockClear();
+
+    await socket.trigger(
+      CALL_EVENTS.DIRECT_RING_RESULT,
+      {
+        callId: 'ring-late-ack',
+        reachedDevices: 0,
+        ringDispatch: {
+          status: 'no-routable-device',
+          attempted: 0,
+          delivered: 0,
+          failed: 0,
+          pruned: 0,
+          unreachablePlatforms: [],
+        },
+      },
+      vi.fn(),
+    );
+    direct.runtime.directCalls.ringingAck('ring-late-ack', 'acct_00000000000000bb');
+
+    expect(direct.runtime.directCalls.get('ring-late-ack')?.state).toBe('ringing');
+    firePendingTimers(direct);
+    expect(direct.runtime.directCalls.get('ring-late-ack')?.state).toBe('no_answer');
+    const lateStates = roomEmissions(direct, CALL_EVENTS.DIRECT_STATE).map(
+      (emission) => (emission.payload as { state?: string }).state,
+    );
+    expect(lateStates).toContain('ringing');
+    expect(lateStates).toContain('no_answer');
+    expect(lateStates).not.toContain('unavailable');
   });
 
   it('does not turn legacy zero-device ring reports into peer unavailable', async () => {

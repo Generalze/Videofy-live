@@ -305,6 +305,7 @@ export type CallJoinFailureCode =
 export type DirectCallSnapshotState =
   | 'calling'
   | 'ringing'
+  | 'answering'
   | 'answered'
   | 'connecting'
   | 'connected'

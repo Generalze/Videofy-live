@@ -61,7 +61,7 @@ describe('the row beneath the timer follows the server', () => {
   });
 
   it('warns for every non-connected live state', () => {
-    for (const state of ['calling', 'ringing', 'answered', 'connecting', 'reconnecting']) {
+    for (const state of ['calling', 'ringing', 'answering', 'answered', 'connecting', 'reconnecting']) {
       expect(connectedRow(state, ORIGIN, PEER).warn, state).toBe(true);
     }
   });
@@ -78,7 +78,7 @@ describe('liveStateOf separates "doing now" from "reached the end"', () => {
   });
 
   it('agrees with isTerminal on all twelve states', () => {
-    const live = ['calling', 'ringing', 'answered', 'connecting', 'connected', 'reconnecting'];
+    const live = ['calling', 'ringing', 'answering', 'answered', 'connecting', 'connected', 'reconnecting'];
     const done = ['busy', 'declined', 'no_answer', 'unavailable', 'network', 'ended'];
     for (const state of live) {
       expect(isTerminal(state), state).toBe(false);

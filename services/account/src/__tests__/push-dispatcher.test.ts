@@ -7,7 +7,7 @@
  * tokens, the other as a message preview on a lock screen belonging to somebody
  * the message was not for.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DeviceStore } from '../device-store.js';
 import { PushDispatcher, createRecordingPushProvider } from '../push/push-dispatcher.js';
 import type { PushNotification, PushProvider, PushSendResult } from '../push/push-provider.js';
@@ -106,6 +106,35 @@ describe('fanning out', () => {
     expect(summary.failed).toBe(1);
     // A thrown error is transient: never unregister a phone over a network blip.
     expect(summary.pruned).toHaveLength(0);
+  });
+
+  it('bounds a hung provider for call pushes', async () => {
+    vi.useFakeTimers();
+    try {
+      const devices = await withDevices(1);
+      const hanging: PushProvider = {
+        name: 'hanging',
+        platforms: ['ios', 'android', 'web'],
+        async send() {
+          return new Promise<PushSendResult>(() => {});
+        },
+      };
+
+      const pending = new PushDispatcher({
+        devices,
+        providers: [hanging],
+        callSendDeadlineMs: 10,
+      }).notify('acct_a', RING);
+      await vi.advanceTimersByTimeAsync(10);
+      const summary = await pending;
+
+      expect(summary.attempted).toBe(1);
+      expect(summary.delivered).toBe(0);
+      expect(summary.failed).toBe(1);
+      expect(summary.pruned).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -45,6 +45,7 @@ class IncomingCallService : Service() {
   private val handler = Handler(Looper.getMainLooper())
   private var wakeLock: PowerManager.WakeLock? = null
   private var ringing: String? = null
+  private var presented: String? = null
 
   override fun onBind(intent: Intent?): IBinder? = null
 
@@ -103,16 +104,10 @@ class IncomingCallService : Service() {
       }
       callerName = verdict.callerName.ifBlank { callerName }
       mode = verdict.mode
-      val live = validator.ackRinging(callId)
-      store.mark(callId, "t6_ringing_acked")
-      if (!live) {
-        handler.post { finish(callId, "not-live") }
-        return@execute
-      }
+      val resolvedCallerId = verdict.callerAccountId.ifBlank { callerId }
       handler.post {
         if (ringing != callId) return@post
         expiresAtFor[callId] = expiresAt
-        val resolvedCallerId = verdict.callerAccountId.ifBlank { callerId }
         /*
          * Validated: now, and only now, the ring. Offered to Telecom first
          * (phase 2): when it accepts, it calls back onShowIncomingCallUi and
@@ -134,6 +129,9 @@ class IncomingCallService : Service() {
   /** The ring itself: CallStyle on the ringtone channel, vibration, the incoming event, the timeout. */
   fun present(callId: String, callerId: String, callerName: String, mode: String) {
     if (ringing != callId) return
+    if (presented == callId) return
+    if (presented != null) return
+    presented = callId
     val notification = buildNotification(callId, callerId, callerName, mode, validating = false)
     /*
      * A NEW NOTIFICATION, NOT A REWRITE. Android fires a full-screen intent
@@ -153,6 +151,21 @@ class IncomingCallService : Service() {
     val remaining = if (expiresAt > 0) expiresAt - System.currentTimeMillis() else 30_000L
     handler.postDelayed({ if (ringing == callId) finish(callId, "timeout") }, remaining.coerceIn(3_000L, 45_000L))
     startRingWatch(callId)
+    ackPresentedRing(callId)
+  }
+
+  private fun ackPresentedRing(callId: String) {
+    RingStore(this).mark(callId, "t6_ringing_ack_started")
+    executor.execute {
+      val credential = RingStore(this@IncomingCallService).credential()
+      val live =
+        if (credential == null) false
+        else CallValidator(credential.gatewayUrl, credential.token).ackRinging(callId)
+      RingStore(this@IncomingCallService).mark(callId, "t6_ringing_acked")
+      handler.post {
+        if (ringing == callId && !live) finish(callId, "not-live")
+      }
+    }
   }
 
   /**
@@ -204,6 +217,7 @@ class IncomingCallService : Service() {
     if (reason != "answered") TelecomBridge.end(callId, missed = reason == "timeout")
     expiresAtFor.remove(callId)
     ringing = null
+    presented = null
     stopVibration()
     notificationManager().cancel(NOTIFICATION_ID)
     notificationManager().cancel(SILENT_NOTIFICATION_ID)

@@ -10,8 +10,8 @@ import org.json.JSONObject
  *
  * THE RING CREDENTIAL IS BOUND TO AN ACCOUNT AND AN EXPIRY. It lets the
  * receiver ask the gateway "should I ring?" when no JS exists. It is written
- * on sign-in with the account id and the session's expiry, read back only
- * while unexpired, and cleared on sign-out, expiry, revocation and any 401.
+ * with the account id and a short native-ring expiry, read back only while
+ * unexpired, and cleared on sign-out, expiry, revocation and any 401.
  *
  * THE PENDING ACTION IS BOUND THE SAME WAY. An Answer parked for a cold app
  * carries the account it was for and when it was parked; it is consumed only

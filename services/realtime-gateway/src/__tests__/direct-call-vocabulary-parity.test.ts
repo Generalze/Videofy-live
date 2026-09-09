@@ -46,10 +46,10 @@ const AUTHORITY = unionMembers(
   'DirectCallState',
 );
 
-describe('the gateway is the authority, and it says twelve things', () => {
-  it('lists exactly the twelve states', () => {
+describe('the gateway is the authority, and it says thirteen things', () => {
+  it('lists exactly the thirteen states', () => {
     expect(AUTHORITY).toEqual([
-      'calling', 'ringing', 'answered', 'connecting', 'connected', 'reconnecting',
+      'calling', 'ringing', 'answering', 'answered', 'connecting', 'connected', 'reconnecting',
       'busy', 'declined', 'no_answer', 'unavailable', 'network', 'ended',
     ]);
   });

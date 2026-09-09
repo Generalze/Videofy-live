@@ -22,13 +22,13 @@ import org.json.JSONObject
  *   canUseFullScreenIntent()              Android 14+: the permission a person can revoke
  *
  * Events: 'incoming' (the native ring is up; the app may show its own
- * surface but must not ack again), 'answer', 'decline', 'timeout'.
+ * surface but must not ack again), 'answer', 'decline', 'timeout', 'ended'.
  */
 class VideofyCallModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("VideofyCall")
-    Events("incoming", "answer", "decline", "timeout", "audioRoute")
+    Events("incoming", "answer", "decline", "timeout", "ended", "audioRoute")
 
     OnCreate {
       instance = this@VideofyCallModule
@@ -36,7 +36,7 @@ class VideofyCallModule : Module() {
     }
     OnDestroy { if (instance === this@VideofyCallModule) instance = null }
 
-    // Bound to the account and the session's expiry; see RingStore.
+    // Bound to the account and a short native-ring expiry; see RingStore.
     Function("setRingCredential") { gatewayUrl: String, token: String, accountId: String, expiresAtMs: Double ->
       RingStore(context()).setCredential(gatewayUrl, token, accountId, expiresAtMs.toLong())
     }
@@ -133,6 +133,9 @@ class VideofyCallModule : Module() {
     }
     fun emitTimeout(callId: String) {
       instance?.emit("timeout", Bundle().apply { putString("callId", callId) })
+    }
+    fun emitEnded(callId: String) {
+      instance?.emit("ended", Bundle().apply { putString("callId", callId) })
     }
     fun emitAudioRoute(callId: String, route: String) {
       instance?.emit("audioRoute", Bundle().apply { putString("callId", callId); putString("route", route) })

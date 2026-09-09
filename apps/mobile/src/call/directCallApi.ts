@@ -84,6 +84,8 @@ export function directStateWords(state: string, peerName: string): string {
       return `Calling ${peerName}…`;
     case 'ringing':
       return 'Ringing…';
+    case 'answering':
+      return `${peerName} answered`;
     case 'answered':
       return `${peerName} answered`;
     case 'connecting':
