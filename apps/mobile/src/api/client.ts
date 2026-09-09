@@ -55,7 +55,8 @@ export interface MeCounts {
   readonly saved: number;
 }
 
-export type ReportReason = 'spam' | 'harassment' | 'hate' | 'sexual' | 'violence' | 'abuse' | 'impersonation' | 'other';
+export type ReportReason =
+  'spam' | 'harassment' | 'hate' | 'sexual' | 'violence' | 'abuse' | 'impersonation' | 'other';
 
 export interface ContactsResponse {
   readonly contacts: readonly ContactPerson[];
@@ -85,9 +86,18 @@ export interface WireMessage {
   readonly editedAtMs?: number | null;
   readonly retractedAtMs?: number | null;
   readonly replyToMessageId?: string | null;
-  readonly replyTo?: { readonly messageId: string; readonly senderId: string; readonly kind: 'text' | 'voice'; readonly preview: string } | null;
+  readonly replyTo?: {
+    readonly messageId: string;
+    readonly senderId: string;
+    readonly kind: 'text' | 'voice';
+    readonly preview: string;
+  } | null;
   readonly forwardedFrom?: { readonly messageId: string; readonly senderId: string } | null;
-  readonly reactions?: readonly { readonly emoji: string; readonly count: number; readonly mine: boolean }[];
+  readonly reactions?: readonly {
+    readonly emoji: string;
+    readonly count: number;
+    readonly mine: boolean;
+  }[];
   readonly pinnedByMe?: boolean;
 }
 
@@ -166,6 +176,75 @@ export type ApiResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly status: number | 'network'; readonly error: string };
 
+export type RingDispatchStatus = 'accepted' | 'no-routable-device' | 'provider-failed' | 'unknown';
+
+export interface RingDispatchReport {
+  readonly status: RingDispatchStatus;
+  readonly reachedDevices: number;
+  readonly attempted: number;
+  readonly delivered: number;
+  readonly failed: number;
+  readonly pruned: number;
+  readonly unreachablePlatforms: readonly string[];
+}
+
+export interface RingResponse {
+  readonly callId: string;
+  readonly reachedDevices: number;
+  readonly ringDispatch: RingDispatchReport;
+}
+
+function numberField(body: Record<string, unknown>, key: string, fallback: number): number {
+  const value = body[key];
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.floor(value))
+    : fallback;
+}
+
+function ringDispatchStatus(value: unknown, reachedDevices: number): RingDispatchStatus {
+  if (
+    value === 'accepted' ||
+    value === 'no-routable-device' ||
+    value === 'provider-failed' ||
+    value === 'unknown'
+  ) {
+    return value;
+  }
+  return reachedDevices > 0 ? 'accepted' : 'unknown';
+}
+
+function parseRingResponse(reply: unknown): RingResponse {
+  const body =
+    typeof reply === 'object' && reply !== null ? (reply as Record<string, unknown>) : {};
+  const rawDispatch =
+    typeof body['ringDispatch'] === 'object' && body['ringDispatch'] !== null
+      ? (body['ringDispatch'] as Record<string, unknown>)
+      : {};
+  const reachedDevices = numberField(
+    body,
+    'reachedDevices',
+    numberField(rawDispatch, 'delivered', -1),
+  );
+  const unreachablePlatforms = Array.isArray(rawDispatch['unreachablePlatforms'])
+    ? rawDispatch['unreachablePlatforms'].filter(
+        (entry): entry is string => typeof entry === 'string',
+      )
+    : [];
+  return {
+    callId: typeof body['callId'] === 'string' ? body['callId'] : '',
+    reachedDevices,
+    ringDispatch: {
+      status: ringDispatchStatus(rawDispatch['status'], reachedDevices),
+      reachedDevices,
+      attempted: numberField(rawDispatch, 'attempted', reachedDevices > 0 ? reachedDevices : 0),
+      delivered: numberField(rawDispatch, 'delivered', Math.max(0, reachedDevices)),
+      failed: numberField(rawDispatch, 'failed', 0),
+      pruned: numberField(rawDispatch, 'pruned', 0),
+      unreachablePlatforms,
+    },
+  };
+}
+
 async function request<T>(
   authorizedFetch: AuthorizedFetch,
   path: string,
@@ -220,26 +299,60 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
     // ---- social (social-routes.ts) -------------------------------------
     /** People the viewer might know: mutual contacts first, then new on C7. Never anyone already related. */
     suggestions: () =>
-      request(authorizedFetch, '/contacts/suggestions', undefined, (body) => (body as { suggestions: SuggestedPerson[] }).suggestions),
+      request(
+        authorizedFetch,
+        '/contacts/suggestions',
+        undefined,
+        (body) => (body as { suggestions: SuggestedPerson[] }).suggestions,
+      ),
     /** I am here (or busy). Sent while the app is in the foreground; 120 s without one reads as away. */
     heartbeat: (state: 'active' | 'busy') =>
       request(authorizedFetch, '/presence/heartbeat', json({ state }), () => undefined),
     /** Presence for accepted contacts only; ids that are not yours are simply absent. */
     presence: (ids: readonly string[]) =>
-      request(authorizedFetch, `/presence?ids=${encodeURIComponent(ids.join(','))}`, undefined, (body) => (body as { presence: Record<string, PresenceState> }).presence),
+      request(
+        authorizedFetch,
+        `/presence?ids=${encodeURIComponent(ids.join(','))}`,
+        undefined,
+        (body) => (body as { presence: Record<string, PresenceState> }).presence,
+      ),
     /** Bio, availability, notifications: PATCH what changed. */
-    updateProfile: (input: { bio?: string; availability?: Availability; notificationsEnabled?: boolean }) =>
-      request(authorizedFetch, '/profile', { ...json(input), method: 'PATCH' }, (body) => body as { bio: string; availability: Availability; notificationsEnabled: boolean }),
+    updateProfile: (input: {
+      bio?: string;
+      availability?: Availability;
+      notificationsEnabled?: boolean;
+    }) =>
+      request(
+        authorizedFetch,
+        '/profile',
+        { ...json(input), method: 'PATCH' },
+        (body) =>
+          body as { bio: string; availability: Availability; notificationsEnabled: boolean },
+      ),
     /** Follow a channel; `remind` = push me when it goes live. Omitting remind keeps the earlier choice. */
     setFollow: (channelId: string, following: boolean, remind?: boolean) =>
-      request(authorizedFetch, `/channels/${encodeURIComponent(channelId)}/follow`, { ...json({ following, ...(remind === undefined ? {} : { remind }) }), method: 'PUT' }, (body) => body as { following: boolean; remind: boolean }),
+      request(
+        authorizedFetch,
+        `/channels/${encodeURIComponent(channelId)}/follow`,
+        { ...json({ following, ...(remind === undefined ? {} : { remind }) }), method: 'PUT' },
+        (body) => body as { following: boolean; remind: boolean },
+      ),
     follows: () =>
-      request(authorizedFetch, '/channels/follows', undefined, (body) => (body as { follows: ChannelFollow[] }).follows),
+      request(
+        authorizedFetch,
+        '/channels/follows',
+        undefined,
+        (body) => (body as { follows: ChannelFollow[] }).follows,
+      ),
     /** Public: how many people follow each channel. */
     channelInterest: (ids: readonly string[]) =>
-      request(authorizedFetch, `/channels/interest?ids=${encodeURIComponent(ids.join(','))}`, undefined, (body) => (body as { counts: Record<string, number> }).counts),
-    counts: () =>
-      request(authorizedFetch, '/me/counts', undefined, (body) => body as MeCounts),
+      request(
+        authorizedFetch,
+        `/channels/interest?ids=${encodeURIComponent(ids.join(','))}`,
+        undefined,
+        (body) => (body as { counts: Record<string, number> }).counts,
+      ),
+    counts: () => request(authorizedFetch, '/me/counts', undefined, (body) => body as MeCounts),
 
     // ---- messaging (message-routes.ts) ---------------------------------
     conversations: () =>
@@ -270,37 +383,124 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
         json({ body, ...(replyToMessageId === undefined ? {} : { replyToMessageId }) }),
         (reply) => (reply as { message: WireMessage }).message,
       ),
-    sendVoice: (accountId: string, audioBase64: string, durationMs: number, replyToMessageId?: string) =>
+    sendVoice: (
+      accountId: string,
+      audioBase64: string,
+      durationMs: number,
+      replyToMessageId?: string,
+    ) =>
       request(
         authorizedFetch,
         `/messages/with/${accountId}/voice`,
-        json({ audioBase64, durationMs, ...(replyToMessageId === undefined ? {} : { replyToMessageId }) }),
+        json({
+          audioBase64,
+          durationMs,
+          ...(replyToMessageId === undefined ? {} : { replyToMessageId }),
+        }),
         (reply) => (reply as { message: WireMessage }).message,
       ),
     /* Message actions: each word means exactly what the server does. */
     forwardMessage: (toAccountId: string, messageId: string) =>
-      request(authorizedFetch, `/messages/with/${toAccountId}/forward`, json({ messageId }), (reply) => (reply as { message: WireMessage }).message),
+      request(
+        authorizedFetch,
+        `/messages/with/${toAccountId}/forward`,
+        json({ messageId }),
+        (reply) => (reply as { message: WireMessage }).message,
+      ),
     editMessage: (messageId: string, body: string) =>
-      request(authorizedFetch, `/messages/${encodeURIComponent(messageId)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ body }) }, (reply) => (reply as { message: WireMessage }).message),
+      request(
+        authorizedFetch,
+        `/messages/${encodeURIComponent(messageId)}`,
+        {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ body }),
+        },
+        (reply) => (reply as { message: WireMessage }).message,
+      ),
     retractMessage: (messageId: string) =>
-      request(authorizedFetch, `/messages/${encodeURIComponent(messageId)}/retract`, { method: 'POST' }, (reply) => (reply as { message: WireMessage }).message),
+      request(
+        authorizedFetch,
+        `/messages/${encodeURIComponent(messageId)}/retract`,
+        { method: 'POST' },
+        (reply) => (reply as { message: WireMessage }).message,
+      ),
     hideMessage: (messageId: string) =>
-      request(authorizedFetch, `/messages/${encodeURIComponent(messageId)}/hide`, { method: 'POST' }, () => undefined),
+      request(
+        authorizedFetch,
+        `/messages/${encodeURIComponent(messageId)}/hide`,
+        { method: 'POST' },
+        () => undefined,
+      ),
     unhideMessage: (messageId: string) =>
-      request(authorizedFetch, `/messages/${encodeURIComponent(messageId)}/hide`, { method: 'DELETE' }, () => undefined),
+      request(
+        authorizedFetch,
+        `/messages/${encodeURIComponent(messageId)}/hide`,
+        { method: 'DELETE' },
+        () => undefined,
+      ),
     /** Report a person or one of their messages. Metadata only: ids, a reason, the reporter's words; never the content. */
-    report: (input: { accountId: string; messageId?: string; reason: ReportReason; note?: string }) =>
-      request(authorizedFetch, '/reports', json(input), (reply) => (reply as { reportId: string }).reportId),
+    report: (input: {
+      accountId: string;
+      messageId?: string;
+      reason: ReportReason;
+      note?: string;
+    }) =>
+      request(
+        authorizedFetch,
+        '/reports',
+        json(input),
+        (reply) => (reply as { reportId: string }).reportId,
+      ),
     reactToMessage: (messageId: string, emoji: string | null) =>
-      request(authorizedFetch, `/messages/${encodeURIComponent(messageId)}/reaction`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ emoji }) }, (reply) => (reply as { reactions: readonly { emoji: string; count: number; mine: boolean }[] }).reactions),
+      request(
+        authorizedFetch,
+        `/messages/${encodeURIComponent(messageId)}/reaction`,
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ emoji }),
+        },
+        (reply) =>
+          (reply as { reactions: readonly { emoji: string; count: number; mine: boolean }[] })
+            .reactions,
+      ),
     pinMessage: (messageId: string, pinned: boolean) =>
-      request(authorizedFetch, `/messages/${encodeURIComponent(messageId)}/pin`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pinned }) }, (reply) => (reply as { pinnedByMe: boolean }).pinnedByMe),
+      request(
+        authorizedFetch,
+        `/messages/${encodeURIComponent(messageId)}/pin`,
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ pinned }),
+        },
+        (reply) => (reply as { pinnedByMe: boolean }).pinnedByMe,
+      ),
     pinnedMessages: (accountId: string) =>
-      request(authorizedFetch, `/messages/with/${accountId}/pinned`, undefined, (body) => (body as { messages: WireMessage[] }).messages),
+      request(
+        authorizedFetch,
+        `/messages/with/${accountId}/pinned`,
+        undefined,
+        (body) => (body as { messages: WireMessage[] }).messages,
+      ),
     searchMessages: (accountId: string, q: string) =>
-      request(authorizedFetch, `/messages/with/${accountId}/search?q=${encodeURIComponent(q)}`, undefined, (body) => (body as { messages: WireMessage[] }).messages),
+      request(
+        authorizedFetch,
+        `/messages/with/${accountId}/search?q=${encodeURIComponent(q)}`,
+        undefined,
+        (body) => (body as { messages: WireMessage[] }).messages,
+      ),
     conversationSettings: (accountId: string, settings: { muted?: boolean; archived?: boolean }) =>
-      request(authorizedFetch, `/messages/with/${accountId}/settings`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) }, (reply) => reply as { muted: boolean; archived: boolean }),
+      request(
+        authorizedFetch,
+        `/messages/with/${accountId}/settings`,
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(settings),
+        },
+        (reply) => reply as { muted: boolean; archived: boolean },
+      ),
     conversationMode: (accountId: string) =>
       request(
         authorizedFetch,
@@ -321,7 +521,12 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
       listeningLanguage?: string;
     }) => request(authorizedFetch, '/accounts/languages', json(languages), () => undefined),
     setDefaultLanguage: (defaultLanguage: string) =>
-      request(authorizedFetch, '/accounts/default-language', json({ defaultLanguage }), () => undefined),
+      request(
+        authorizedFetch,
+        '/accounts/default-language',
+        json({ defaultLanguage }),
+        () => undefined,
+      ),
     markRead: (accountId: string) =>
       request(authorizedFetch, `/messages/with/${accountId}/read`, json({}), () => undefined),
 
@@ -332,12 +537,7 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
      * being the creator. The call screen joins first, then rings.
      */
     ring: (accountId: string, callId: string) =>
-      request(
-        authorizedFetch,
-        `/contacts/${accountId}/ring`,
-        json({ callId }),
-        (reply) => reply as { callId: string; reachedDevices: number },
-      ),
+      request(authorizedFetch, `/contacts/${accountId}/ring`, json({ callId }), parseRingResponse),
 
     // ---- profile and verification (routes.ts) --------------------------
     me: () =>
@@ -377,7 +577,12 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
       request(authorizedFetch, '/accounts/display-name', json({ displayName }), () => undefined),
     /** routes.ts POST /accounts/discovery: whether people can find you by username. Off is the default. */
     setDiscoverable: (discoverable: boolean) =>
-      request(authorizedFetch, '/accounts/discovery', json({ discoverable }), (body) => body as { discoverable: boolean }),
+      request(
+        authorizedFetch,
+        '/accounts/discovery',
+        json({ discoverable }),
+        (body) => body as { discoverable: boolean },
+      ),
     /** avatar-routes.ts: PUT judges the bytes; DELETE clears. */
     setAvatar: (image: string) =>
       request(

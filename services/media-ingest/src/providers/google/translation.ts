@@ -2,40 +2,13 @@
 /**
  * Google Cloud Translation v3, against the existing MT contract.
  *
- * EVIDENCE (read 2026-08-22):
- *   POST https://translation.googleapis.com/v3/projects/{PROJECT}:translateText
- *   body: contents[], targetLanguageCode, sourceLanguageCode (optional), mimeType
- *   response: translations[].translatedText
- *   auth: Application Default Credentials is the documented recommendation
- *   v3 = Advanced; v2 = Basic
- *   -- docs.cloud.google.com/translate/docs/translate-text
- *
- * NO STREAMING. The API is request/response, and the registry records
- * `translation.streaming: 'no'` for exactly that reason. Incremental
- * translation of a growing clause is a thing we might want later; pretending
- * this endpoint provides it would be inventing a capability.
- *
- * CREDENTIALS ARE NOT ACQUIRED HERE. `authorize` is injected. Application
- * Default Credentials resolves differently in every environment -- a key file
- * locally, a metadata server on a VM, a workload identity in a cluster -- and
- * an adapter that hard-coded one of those would be an adapter that only works
- * on the machine it was written on. Nothing here reads a credential from disk
- * or environment.
- *
- * THE AUTHORIZER RETURNS HEADERS, NOT A TOKEN, and that is the C-AI1.1F fix.
- * ADC resolves a token AND the project whose quota and billing the call is
- * attributed to. Asking it only for the token discarded the second, the
- * `x-goog-user-project` header went unsent, and Google answered 403 -- a
- * permissions error for a caller whose permissions were fine. See
- * `./authorization.ts` for why the resource project and the quota project are
- * two different things.
+ * Uses the official `@google-cloud/translate` v3 client. It remains a
+ * request/response text translator only: no STT, no TTS, no streaming audio.
+ * The caller selects it through the route registry and the Nigerian MT router;
+ * this adapter does not widen any language route by itself.
  */
+import { GOOGLE_CLOUD_TRANSLATION_MODEL_ID } from '@videofy-live/translation-routes';
 import { MediaIngestError } from '../../ingest-error.js';
-import {
-  createAdcAuthorizer,
-  googleRequestHeaders,
-  type GoogleAuthorizer,
-} from './authorization.js';
 import type {
   ProviderHealthCheck,
   TimestampedTranslationProvider,
@@ -43,157 +16,305 @@ import type {
   TranslationProviderResult,
 } from '../../translation-provider.js';
 
-export interface GoogleTranslationConfig {
-  /**
-   * The RESOURCE project: whose Translation resources are addressed. Appears
-   * in the URL. Not necessarily the project that pays -- see `quotaProjectId`.
-   */
-  readonly projectId: string;
-  /** Application Default Credentials, resolved upstream. Returns headers. */
-  readonly authorize: GoogleAuthorizer;
-  /**
-   * The QUOTA project, when the deployment wants to state it rather than
-   * inherit whatever the credential carries. Wins over the credential's own.
-   */
-  readonly quotaProjectId?: string | null;
-  readonly baseUrl?: string;
-  readonly timeoutMs?: number;
-  /** Cloud Translation location. `global` unless a data-region policy says otherwise. */
-  readonly location?: string;
-  readonly fetchImpl?: typeof fetch;
-  readonly log?: (line: string, detail?: Record<string, unknown>) => void;
+export interface GoogleTranslateTextRequest {
+  parent: string;
+  contents: string[];
+  sourceLanguageCode?: string;
+  targetLanguageCode: string;
+  mimeType: string;
 }
 
+export interface GoogleTranslateCallOptions {
+  timeout?: number;
+  otherArgs?: { headers?: Record<string, string> };
+}
+
+export interface GoogleTranslateClient {
+  locationPath(projectId: string, location: string): string;
+  translateText(
+    request: GoogleTranslateTextRequest,
+    options?: GoogleTranslateCallOptions,
+  ): Promise<[{ translations?: Array<{ translatedText?: string | null }> }]>;
+  getProjectId?(): Promise<string> | string;
+  close?(): Promise<void> | void;
+}
+
+export interface GoogleTranslateClientOptions {
+  projectId: string;
+  keyFilename?: string;
+  quotaProjectId?: string;
+}
+
+export interface GoogleTranslationConfig {
+  /**
+   * The RESOURCE project: whose Translation resources are addressed. Not
+   * necessarily the quota project.
+   */
+  readonly projectId: string;
+  /** Service-account key file path. Null uses Application Default Credentials. */
+  readonly credentialsFile?: string | null;
+  /** Explicit quota project, when it must not be inherited from the credential. */
+  readonly quotaProjectId?: string | null;
+  /** Cloud Translation location. `global` unless a data-region policy says otherwise. */
+  readonly location?: string;
+  readonly timeoutMs?: number;
+  readonly client?: GoogleTranslateClient;
+  readonly createClient?: (
+    options: GoogleTranslateClientOptions,
+  ) => GoogleTranslateClient | Promise<GoogleTranslateClient>;
+}
+
+type GoogleTranslateModule = {
+  v3: {
+    TranslationServiceClient: new (options: GoogleTranslateClientOptions) => GoogleTranslateClient;
+  };
+};
+
 export class GoogleTimestampedTranslationProvider implements TimestampedTranslationProvider {
-  readonly name = 'google-cloud:translate-v3';
+  readonly name = GOOGLE_CLOUD_TRANSLATION_MODEL_ID;
+  private clientPromise: Promise<GoogleTranslateClient> | null = null;
 
   constructor(private readonly config: GoogleTranslationConfig) {}
 
   async translate(input: TranslationProviderInput): Promise<TranslationProviderResult> {
     const started = Date.now();
-    const location = this.config.location ?? 'global';
-    const base = this.config.baseUrl ?? 'https://translation.googleapis.com';
-    const url = `${base}/v3/projects/${encodeURIComponent(this.config.projectId)}/locations/${location}:translateText`;
+    const timeoutMs = this.config.timeoutMs ?? 10_000;
+    const client = await this.resolveClient();
+    const request: GoogleTranslateTextRequest = {
+      parent: client.locationPath(this.config.projectId, this.config.location ?? 'global'),
+      contents: [input.sourceText],
+      sourceLanguageCode: input.sourceLanguage,
+      targetLanguageCode: input.targetLanguage,
+      mimeType: 'text/plain',
+    };
 
-    const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), this.config.timeoutMs ?? 10_000);
-    let response: Response;
     try {
-      const authorization = await this.config.authorize();
-      response = await (this.config.fetchImpl ?? fetch)(url, {
-        method: 'POST',
-        headers: {
-          ...googleRequestHeaders(authorization, this.config.quotaProjectId),
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          contents: [input.sourceText],
-          // Sent explicitly rather than relying on detection: the platform
-          // already knows the speaker's language, and letting the vendor guess
-          // would make one more thing able to disagree with session policy.
-          sourceLanguageCode: input.sourceLanguage,
-          targetLanguageCode: input.targetLanguage,
-          mimeType: 'text/plain',
-        }),
-        signal: abort.signal,
-      });
+      const [payload] = await client.translateText(request, this.callOptions(timeoutMs));
+      const translatedText = payload.translations?.[0]?.translatedText;
+      if (typeof translatedText !== 'string') {
+        throw new MediaIngestError(
+          'Google translation response contained no translatedText.',
+          'translation-failed',
+          502,
+        );
+      }
+      return {
+        translatedText,
+        providerName: this.name,
+        modelId: GOOGLE_CLOUD_TRANSLATION_MODEL_ID,
+        providerLatencyMs: Date.now() - started,
+      };
     } catch (error) {
-      throw new MediaIngestError(
-        `Google translation request failed: ${error instanceof Error ? error.message : 'unknown'}`,
-        'translation-failed',
-        502,
-      );
-    } finally {
-      clearTimeout(timer);
+      throw classifyGoogleTranslationError(error);
     }
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      // 400 for an unsupported pair is a routing fact the composite provider
-      // acts on, so it gets its own code rather than a generic failure.
-      const code = response.status === 400 ? 'unsupported-language' : 'translation-failed';
-      throw new MediaIngestError(
-        // Google's body names the actual problem -- a disabled API, a missing
-        // quota project, the wrong service. A bare status code sends whoever
-        // reads it guessing, which is exactly what happened with the 403 this
-        // wave exists to fix.
-        `Google translation returned ${response.status}: ${body.slice(0, 400)}`,
-        code,
-        response.status === 400 ? 400 : 502,
-      );
-    }
-
-    const payload = (await response.json()) as {
-      translations?: { translatedText?: string }[];
-    };
-    const translatedText = payload.translations?.[0]?.translatedText;
-    if (typeof translatedText !== 'string') {
-      throw new MediaIngestError(
-        'Google translation response contained no translatedText.',
-        'translation-failed',
-        502,
-      );
-    }
-
-    return {
-      translatedText,
-      providerName: this.name,
-      modelId: 'translate-v3-translateText',
-      providerLatencyMs: Date.now() - started,
-    };
   }
 
   async healthCheck(): Promise<ProviderHealthCheck> {
-    // Deliberately does NOT translate anything: a health check that spends money
-    // on every probe is one that gets disabled, and then nothing is checked.
+    const started = Date.now();
     try {
-      await this.config.authorize();
+      const client = await this.resolveClient();
+      if (client.getProjectId) await client.getProjectId();
       return {
         provider: this.name,
         status: 'ready',
-        modelId: 'translate-v3-translateText',
-        latencyMs: null,
+        modelId: GOOGLE_CLOUD_TRANSLATION_MODEL_ID,
+        latencyMs: Date.now() - started,
         error: null,
       };
     } catch (error) {
+      const classified = classifyGoogleTranslationError(error);
       return {
         provider: this.name,
         status: 'failed',
-        modelId: 'translate-v3-translateText',
-        latencyMs: null,
-        error: error instanceof Error ? error.message : 'unknown',
+        modelId: GOOGLE_CLOUD_TRANSLATION_MODEL_ID,
+        latencyMs: Date.now() - started,
+        error: classified.message,
       };
     }
   }
+
+  dispose(): void {
+    const close = async (): Promise<void> => {
+      const client = this.config.client ?? (this.clientPromise ? await this.clientPromise : null);
+      await client?.close?.();
+    };
+    void close();
+    this.clientPromise = null;
+  }
+
+  private async resolveClient(): Promise<GoogleTranslateClient> {
+    if (this.config.client) return this.config.client;
+    if (!this.clientPromise) {
+      const createClient = this.config.createClient ?? createDefaultGoogleTranslateClient;
+      this.clientPromise = Promise.resolve(createClient(this.clientOptions()));
+    }
+    return await this.clientPromise;
+  }
+
+  private clientOptions(): GoogleTranslateClientOptions {
+    return {
+      projectId: this.config.projectId,
+      ...(this.config.credentialsFile ? { keyFilename: this.config.credentialsFile } : {}),
+      ...(this.config.quotaProjectId ? { quotaProjectId: this.config.quotaProjectId } : {}),
+    };
+  }
+
+  private callOptions(timeoutMs: number): GoogleTranslateCallOptions {
+    return {
+      timeout: timeoutMs,
+      ...(this.config.quotaProjectId
+        ? { otherArgs: { headers: { 'x-goog-user-project': this.config.quotaProjectId } } }
+        : {}),
+    };
+  }
+}
+
+async function createDefaultGoogleTranslateClient(
+  options: GoogleTranslateClientOptions,
+): Promise<GoogleTranslateClient> {
+  const translate = (await import('@google-cloud/translate')) as unknown as GoogleTranslateModule;
+  return new translate.v3.TranslationServiceClient(options);
+}
+
+function classifyGoogleTranslationError(error: unknown): MediaIngestError {
+  if (error instanceof MediaIngestError) return error;
+
+  const detail = safeGoogleErrorDetail(error);
+  const lower = detail.toLowerCase();
+  const status = googleStatus(error);
+  const code = googleCode(error);
+
+  if (status === 400 || code === 3 || lower.includes('invalid argument')) {
+    return new MediaIngestError(
+      `Google translation rejected the language pair or request: ${detail}`,
+      'unsupported-language',
+      400,
+    );
+  }
+  if (
+    status === 429 ||
+    code === 8 ||
+    lower.includes('quota') ||
+    lower.includes('resource exhausted')
+  ) {
+    return new MediaIngestError(
+      `Google translation quota is unavailable: ${detail}`,
+      'translation-quota-exceeded',
+      429,
+    );
+  }
+  if (
+    lower.includes('api has not been used') ||
+    lower.includes('api is disabled') ||
+    lower.includes('it is disabled')
+  ) {
+    return new MediaIngestError(
+      `Google translation API is unavailable: ${detail}`,
+      'translation-api-unavailable',
+      502,
+    );
+  }
+  if (
+    status === 401 ||
+    status === 403 ||
+    code === 16 ||
+    lower.includes('credential') ||
+    lower.includes('authentication') ||
+    lower.includes('permission denied') ||
+    lower.includes('key file') ||
+    lower.includes('enoent')
+  ) {
+    return new MediaIngestError(
+      `Google translation credentials are unavailable or invalid: ${detail}`,
+      'translation-credentials-unavailable',
+      503,
+    );
+  }
+  if (
+    status === 408 ||
+    status === 504 ||
+    code === 4 ||
+    lower.includes('deadline') ||
+    lower.includes('timed out') ||
+    lower.includes('timeout')
+  ) {
+    return new MediaIngestError(`Google translation timed out: ${detail}`, 'translation-timeout', 504);
+  }
+  if (
+    (status !== null && status >= 500) ||
+    code === 14 ||
+    lower.includes('unavailable') ||
+    lower.includes('econn') ||
+    lower.includes('network')
+  ) {
+    return new MediaIngestError(
+      `Google translation API is unavailable: ${detail}`,
+      'translation-api-unavailable',
+      502,
+    );
+  }
+  return new MediaIngestError(`Google translation failed: ${detail}`, 'translation-failed', 502);
+}
+
+function googleStatus(error: unknown): number | null {
+  const value = (error as { status?: unknown; statusCode?: unknown })?.status;
+  if (typeof value === 'number') return value;
+  const statusCode = (error as { statusCode?: unknown })?.statusCode;
+  return typeof statusCode === 'number' ? statusCode : null;
+}
+
+function googleCode(error: unknown): number | null {
+  const code = (error as { code?: unknown })?.code;
+  if (typeof code === 'number') return code;
+  if (typeof code === 'string' && /^\d+$/u.test(code)) return Number(code);
+  return null;
+}
+
+function safeGoogleErrorDetail(error: unknown): string {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : 'unknown Google translation failure';
+  return message
+    .replace(
+      /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/gu,
+      '[redacted private key]',
+    )
+    .replace(/"private_key"\s*:\s*"[^"]+"/giu, '"private_key":"[redacted]"')
+    .slice(0, 400);
 }
 
 /**
- * The documented way to construct this adapter from the environment.
+ * The documented environment construction for the official client.
  *
- * Exists so the two projects are named in one place rather than being
- * rediscovered at each call site:
- *
- *   GOOGLE_TRANSLATE_PROJECT_ID   the RESOURCE project, required
- *   GOOGLE_CLOUD_QUOTA_PROJECT    the QUOTA project, optional. Unset means
- *                                 "use whatever the credential carries", which
- *                                 is right on a laptop and usually wrong in a
- *                                 deployment that bills a specific project.
- *
- * Returns null rather than throwing when the resource project is absent: a
- * provider that has not been configured is not an error, it is a provider that
- * was not selected.
+ *   GOOGLE_TRANSLATE_PROJECT_ID         resource project, required
+ *   GOOGLE_TRANSLATE_CREDENTIALS_FILE   service account key file, optional
+ *   GOOGLE_APPLICATION_CREDENTIALS      ADC key file fallback, optional
+ *   GOOGLE_CLOUD_QUOTA_PROJECT          quota project, optional
+ *   GOOGLE_TRANSLATE_LOCATION           location, default global
  */
 export function createGoogleTranslationProviderFromEnv(
   env: NodeJS.ProcessEnv = process.env,
-  authorize: GoogleAuthorizer = createAdcAuthorizer({
-    quotaProjectId: env['GOOGLE_CLOUD_QUOTA_PROJECT'] ?? null,
-  }),
 ): GoogleTimestampedTranslationProvider | null {
-  const projectId = env['GOOGLE_TRANSLATE_PROJECT_ID'];
-  if (projectId === undefined || projectId === '') return null;
+  const projectId = env['GOOGLE_TRANSLATE_PROJECT_ID']?.trim();
+  if (!projectId) return null;
+  const timeoutMs = parseTimeout(env['GOOGLE_TRANSLATE_TIMEOUT_MS']);
   return new GoogleTimestampedTranslationProvider({
     projectId,
-    authorize,
-    quotaProjectId: env['GOOGLE_CLOUD_QUOTA_PROJECT'] ?? null,
+    credentialsFile:
+      env['GOOGLE_TRANSLATE_CREDENTIALS_FILE']?.trim() ||
+      env['GOOGLE_APPLICATION_CREDENTIALS']?.trim() ||
+      null,
+    quotaProjectId: env['GOOGLE_CLOUD_QUOTA_PROJECT']?.trim() || null,
+    location: env['GOOGLE_TRANSLATE_LOCATION']?.trim() || 'global',
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
   });
+}
+
+function parseTimeout(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }

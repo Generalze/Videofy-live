@@ -161,7 +161,8 @@ function createHarness(
       return null;
     }),
     getSessionCounters: vi.fn(
-      (sessionId: string, revision: number) => sessionCounters.get(`${sessionId}:${revision}`) ?? null,
+      (sessionId: string, revision: number) =>
+        sessionCounters.get(`${sessionId}:${revision}`) ?? null,
     ),
   };
   const transcriptLog = new RecordingTranscriptLog();
@@ -200,7 +201,9 @@ function createHarness(
       (_callId: string, _speakerParticipantId: string, _data: MediaAudioDataLike) => {},
     ),
     syncSpeakers: vi.fn((_callId: string, _participantIds: readonly string[]) => {}),
-    trackMapping: vi.fn(() => [] as { slot: number; mid: string | null; speakerParticipantId: string | null }[]),
+    trackMapping: vi.fn(
+      () => [] as { slot: number; mid: string | null; speakerParticipantId: string | null }[],
+    ),
     closePeer: vi.fn((_callId: string, _participantId: string, _reason: string) => {}),
     closeCall: vi.fn((_callId: string, _reason: string) => {}),
     count: vi.fn(() => 0),
@@ -210,18 +213,18 @@ function createHarness(
   let mediaHandlers: CallMediaPeerHandlers | null = null;
   let receiveHandlers: CallReceivePeerHandlers | null = null;
   const runtime = new CallRuntime({
-      /*
-       * These exercise call MECHANICS, not the host gate. CallRuntime refuses
-       * every host when no authorizer is supplied -- the fail-closed default --
-       * so a harness that omitted one would be testing the gate by accident and
-       * reporting it as a broken call.
-       */
-      authorizeCallHost: authorizeCallHost ?? (async () => true),
-      // `null` wires NO authority, so the fail-closed default is reachable.
-      ...(callLiveRouteApproved === null
-        ? {}
-        : { callLiveRouteApproved: callLiveRouteApproved ?? (() => true) }),
-      ...(resolveDirectCallMode ? { resolveDirectCallMode } : {}),
+    /*
+     * These exercise call MECHANICS, not the host gate. CallRuntime refuses
+     * every host when no authorizer is supplied -- the fail-closed default --
+     * so a harness that omitted one would be testing the gate by accident and
+     * reporting it as a broken call.
+     */
+    authorizeCallHost: authorizeCallHost ?? (async () => true),
+    // `null` wires NO authority, so the fail-closed default is reachable.
+    ...(callLiveRouteApproved === null
+      ? {}
+      : { callLiveRouteApproved: callLiveRouteApproved ?? (() => true) }),
+    ...(resolveDirectCallMode ? { resolveDirectCallMode } : {}),
     store,
     emitToRoom,
     ingestControl,
@@ -269,7 +272,11 @@ function createHarness(
     setSessionCounters: (
       sessionId: string,
       revision: number,
-      counters: { evictedChunkCount: number; skippedFrameCount: number; submissionFailureCount: number },
+      counters: {
+        evictedChunkCount: number;
+        skippedFrameCount: number;
+        submissionFailureCount: number;
+      },
     ) => {
       sessionCounters.set(`${sessionId}:${revision}`, counters);
     },
@@ -491,8 +498,86 @@ describe('CallRuntime join and ingest plan handling', () => {
     expect(direct.store.snapshot('ring-normal')?.callMode).toBe('normal');
   });
 
+  it('does not turn provider ring dispatch failure into peer unavailable', async () => {
+    const direct = createHarness(
+      () => 'acct_00000000000000aa',
+      undefined,
+      async () => 'normal',
+    );
+    const socket = new FakeSocket('socket-a');
+    const ack = await join(direct, socket, {
+      ...JOIN_A,
+      callId: 'ring-provider-failed',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+    expect(ack.ok).toBe(true);
+    direct.emitToRoom.mockClear();
+
+    const ringAck = vi.fn();
+    await socket.trigger(
+      CALL_EVENTS.DIRECT_RING_RESULT,
+      {
+        callId: 'ring-provider-failed',
+        reachedDevices: 0,
+        ringDispatch: {
+          status: 'provider-failed',
+          attempted: 1,
+          delivered: 0,
+          failed: 1,
+          pruned: 0,
+          unreachablePlatforms: [],
+        },
+      },
+      ringAck,
+    );
+
+    const states = roomEmissions(direct, CALL_EVENTS.DIRECT_STATE).map(
+      (emission) => (emission.payload as { state?: string }).state,
+    );
+    expect(states).toContain('network');
+    expect(states).not.toContain('unavailable');
+  });
+
+  it('does not turn legacy zero-device ring reports into peer unavailable', async () => {
+    const direct = createHarness(
+      () => 'acct_00000000000000aa',
+      undefined,
+      async () => 'normal',
+    );
+    const socket = new FakeSocket('socket-a');
+    const ack = await join(direct, socket, {
+      ...JOIN_A,
+      callId: 'ring-legacy-zero',
+      directPeerAccountId: 'acct_00000000000000bb',
+      sessionToken: 'ana-token',
+    });
+    expect(ack.ok).toBe(true);
+    direct.emitToRoom.mockClear();
+
+    const ringAck = vi.fn();
+    await socket.trigger(
+      CALL_EVENTS.DIRECT_RING_RESULT,
+      {
+        callId: 'ring-legacy-zero',
+        reachedDevices: 0,
+      },
+      ringAck,
+    );
+
+    const states = roomEmissions(direct, CALL_EVENTS.DIRECT_STATE).map(
+      (emission) => (emission.payload as { state?: string }).state,
+    );
+    expect(states).not.toContain('unavailable');
+    expect(states).not.toContain('network');
+  });
+
   it('a direct call whose pair mode cannot be resolved is a NORMAL call', async () => {
-    const direct = createHarness(() => 'acct_00000000000000aa', undefined, async () => null);
+    const direct = createHarness(
+      () => 'acct_00000000000000aa',
+      undefined,
+      async () => null,
+    );
     await join(direct, new FakeSocket('socket-a'), {
       ...JOIN_A,
       callId: 'ring-def',
@@ -1264,7 +1349,9 @@ describe('CallRuntime lifecycle: disconnect, reaper, leave, resume', () => {
       ],
     });
     // The other participant's pipeline keeps running.
-    expect(harness.ingestControl.stopSession).not.toHaveBeenCalledWith('call_demo_participant_2_r1');
+    expect(harness.ingestControl.stopSession).not.toHaveBeenCalledWith(
+      'call_demo_participant_2_r1',
+    );
 
     // The disconnect grace reaper is armed with the configured window.
     expect(harness.timers).toHaveLength(1);
@@ -1504,8 +1591,12 @@ describe('CallRuntime lifecycle: disconnect, reaper, leave, resume', () => {
     await flushAsync();
     expect(harness.ingestControl.deleteSession).toHaveBeenCalledWith('call_demo_participant_1_r2');
     expect(harness.ingestControl.deleteSession).toHaveBeenCalledWith('call_demo_participant_2_r1');
-    expect(harness.ingestControl.deleteSession).not.toHaveBeenCalledWith('call_demo_participant_1_r3');
-    expect(harness.ingestControl.deleteSession).not.toHaveBeenCalledWith('call_demo_participant_2_r2');
+    expect(harness.ingestControl.deleteSession).not.toHaveBeenCalledWith(
+      'call_demo_participant_1_r3',
+    );
+    expect(harness.ingestControl.deleteSession).not.toHaveBeenCalledWith(
+      'call_demo_participant_2_r2',
+    );
   });
 
   it('stops the still-active old revision before recreating when resume happens without a disconnect', async () => {
@@ -1781,7 +1872,10 @@ describe('HttpMediaTranscriptionSubmissionClient call session creation', () => {
         raw += chunk.toString('utf8');
       });
       request.on('end', () => {
-        requests.push({ url: request.url ?? '', body: JSON.parse(raw || '{}') as Record<string, unknown> });
+        requests.push({
+          url: request.url ?? '',
+          body: JSON.parse(raw || '{}') as Record<string, unknown>,
+        });
         response.statusCode = 200;
         response.end('{}');
       });
@@ -1870,18 +1964,28 @@ describe('CallRuntime caption language changes', () => {
     if (!ackA.ok) throw new Error('join A failed');
 
     const ack = vi.fn();
-    await socketA.trigger(CALL_EVENTS.SET_CAPTION_LANGUAGE, {
-      callId: 'demo',
-      participantId: ackA.participantId,
-      hearLanguage: 'fr',
-    }, ack);
+    await socketA.trigger(
+      CALL_EVENTS.SET_CAPTION_LANGUAGE,
+      {
+        callId: 'demo',
+        participantId: ackA.participantId,
+        hearLanguage: 'fr',
+      },
+      ack,
+    );
 
     expect(ack).toHaveBeenCalledWith({ ok: true });
     const states = roomEmissions(harness, CALL_EVENTS.STATE);
-    const latest = states.at(-1)?.payload as { participants: { participantId: string; hearLanguage: string }[] };
-    expect(latest.participants.find((p) => p.participantId === ackA.participantId)?.hearLanguage).toBe('fr');
+    const latest = states.at(-1)?.payload as {
+      participants: { participantId: string; hearLanguage: string }[];
+    };
+    expect(
+      latest.participants.find((p) => p.participantId === ackA.participantId)?.hearLanguage,
+    ).toBe('fr');
     // Beto asked for nothing and must not have been re-languaged.
-    expect(latest.participants.find((p) => p.participantId !== ackA.participantId)?.hearLanguage).toBe('es');
+    expect(
+      latest.participants.find((p) => p.participantId !== ackA.participantId)?.hearLanguage,
+    ).toBe('es');
   });
 
   it('refuses a participant trying to re-language somebody else', async () => {
@@ -1893,15 +1997,21 @@ describe('CallRuntime caption language changes', () => {
 
     const ack = vi.fn();
     // Beto's socket, Ana's participantId: the binding check is the whole defence.
-    await socketB.trigger(CALL_EVENTS.SET_CAPTION_LANGUAGE, {
-      callId: 'demo',
-      participantId: ackA.participantId,
-      hearLanguage: 'fr',
-    }, ack);
+    await socketB.trigger(
+      CALL_EVENTS.SET_CAPTION_LANGUAGE,
+      {
+        callId: 'demo',
+        participantId: ackA.participantId,
+        hearLanguage: 'fr',
+      },
+      ack,
+    );
 
     expect(ack.mock.calls[0]?.[0]).toEqual({ ok: false, error: expect.any(String) });
     const state = harness.store.snapshot('demo');
-    expect(state?.participants.find((p) => p.participantId === ackA.participantId)?.hearLanguage).toBe('en');
+    expect(
+      state?.participants.find((p) => p.participantId === ackA.participantId)?.hearLanguage,
+    ).toBe('en');
   });
 
   it('rejects a language the call cannot produce, without changing anything', async () => {
@@ -1910,11 +2020,15 @@ describe('CallRuntime caption language changes', () => {
     if (!ackA.ok) throw new Error('join A failed');
 
     const ack = vi.fn();
-    await socketA.trigger(CALL_EVENTS.SET_CAPTION_LANGUAGE, {
-      callId: 'demo',
-      participantId: ackA.participantId,
-      hearLanguage: 'kl',
-    }, ack);
+    await socketA.trigger(
+      CALL_EVENTS.SET_CAPTION_LANGUAGE,
+      {
+        callId: 'demo',
+        participantId: ackA.participantId,
+        hearLanguage: 'kl',
+      },
+      ack,
+    );
 
     expect((ack.mock.calls[0]?.[0] as { ok: boolean }).ok).toBe(false);
     expect(harness.store.snapshot('demo')?.participants[0]?.hearLanguage).toBe('en');

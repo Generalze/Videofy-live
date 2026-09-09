@@ -58,13 +58,8 @@ import { join } from 'node:path';
 import express from 'express';
 import type { AccountStore } from './account-store.js';
 import type { ContactStore } from './contact-store.js';
-import type {
-  EditRefusal,
-  MessageRecord,
-  MessageStore,
-  SendRefusal,
-} from './message-store.js';
-import type { PushDispatcher } from './push/push-dispatcher.js';
+import type { EditRefusal, MessageRecord, MessageStore, SendRefusal } from './message-store.js';
+import type { PushDispatchSummary, PushDispatcher } from './push/push-dispatcher.js';
 import type { Caller } from './routes.js';
 
 export interface MessageRouteDependencies {
@@ -127,6 +122,44 @@ export interface MessageTranslationDisposition {
   readonly status: 'not-requested' | 'same-language' | 'translated' | 'unavailable';
   readonly reason: string | null;
   readonly provider: string | null;
+}
+
+export type RingDispatchStatus = 'accepted' | 'no-routable-device' | 'provider-failed' | 'unknown';
+
+export interface RingDispatchReport {
+  readonly status: RingDispatchStatus;
+  readonly attempted: number;
+  readonly delivered: number;
+  readonly failed: number;
+  readonly pruned: number;
+  readonly unreachablePlatforms: readonly string[];
+}
+
+export function classifyRingDispatch(summary: PushDispatchSummary): RingDispatchReport {
+  const pruned = summary.pruned.length;
+  const unreachablePlatforms = summary.unreachablePlatforms;
+  let status: RingDispatchStatus = 'unknown';
+  if (summary.delivered > 0) {
+    status = 'accepted';
+  } else if (summary.attempted === 0 && unreachablePlatforms.length === 0) {
+    status = 'no-routable-device';
+  } else if (unreachablePlatforms.length > 0 || summary.failed > pruned) {
+    status = 'provider-failed';
+  } else if (
+    summary.attempted > 0 &&
+    summary.failed === summary.attempted &&
+    pruned === summary.failed
+  ) {
+    status = 'no-routable-device';
+  }
+  return {
+    status,
+    attempted: summary.attempted,
+    delivered: summary.delivered,
+    failed: summary.failed,
+    pruned,
+    unreachablePlatforms,
+  };
 }
 
 /** The rendering (if any) and the honest account of how it went. */
@@ -268,10 +301,7 @@ function sendEditRefusal(res: express.Response, reason: EditRefusal): void {
   }
 }
 
-export function registerMessageRoutes(
-  app: express.Express,
-  deps: MessageRouteDependencies,
-): void {
+export function registerMessageRoutes(app: express.Express, deps: MessageRouteDependencies): void {
   const refuse = (res: express.Response): void => {
     res.status(404).json({ error: 'Not found.' });
   };
@@ -937,7 +967,8 @@ export function registerMessageRoutes(
   ): Promise<{ status: string; reason: string | null; provider: string | null }> => {
     const { sourceLanguage, targetLanguage } = languagePairFor(senderId, recipientId);
     const decision = await routeDecisionFor(sourceLanguage, targetLanguage);
-    if (decision.kind === 'bypass') return { status: 'same-language', reason: null, provider: null };
+    if (decision.kind === 'bypass')
+      return { status: 'same-language', reason: null, provider: null };
     if (decision.kind === 'unavailable') {
       return { status: 'unavailable', reason: decision.reason, provider: null };
     }
@@ -995,176 +1026,167 @@ export function registerMessageRoutes(
    * deliberate DoS boundary and raising it everywhere to serve one endpoint
    * would quietly remove it.
    */
-  app.post(
-    '/messages/with/:accountId/voice',
-    express.json({ limit: '6mb' }),
-    async (req, res) => {
-      const resolved = reachableTarget(req, res);
-      if (resolved === null) return;
+  app.post('/messages/with/:accountId/voice', express.json({ limit: '6mb' }), async (req, res) => {
+    const resolved = reachableTarget(req, res);
+    if (resolved === null) return;
 
-      const payload = req.body as
-        | { audioBase64?: unknown; durationMs?: unknown; replyToMessageId?: unknown }
-        | undefined;
-      const audioBase64 = typeof payload?.audioBase64 === 'string' ? payload.audioBase64 : '';
-      const durationMs = typeof payload?.durationMs === 'number' ? payload.durationMs : 0;
+    const payload = req.body as
+      { audioBase64?: unknown; durationMs?: unknown; replyToMessageId?: unknown } | undefined;
+    const audioBase64 = typeof payload?.audioBase64 === 'string' ? payload.audioBase64 : '';
+    const durationMs = typeof payload?.durationMs === 'number' ? payload.durationMs : 0;
 
-      if (audioBase64.length === 0 || durationMs <= 0 || durationMs > MAX_VOICE_DURATION_MS) {
-        res.status(400).json({ error: 'Voice notes can be up to two minutes.' });
-        return;
-      }
+    if (audioBase64.length === 0 || durationMs <= 0 || durationMs > MAX_VOICE_DURATION_MS) {
+      res.status(400).json({ error: 'Voice notes can be up to two minutes.' });
+      return;
+    }
 
-      // A bad quote is refused BEFORE any audio touches the disk.
-      const replyToMessageId = replyPointer(payload);
-      if (
-        replyToMessageId !== undefined &&
-        !(await deps.messages.canReplyTo(
-          resolved.caller.accountId,
-          resolved.targetId,
-          replyToMessageId,
-        ))
-      ) {
-        res.status(400).json({ error: sendRefusalText('bad-reply') });
-        return;
-      }
-
-      let audio: Buffer;
-      try {
-        audio = Buffer.from(audioBase64, 'base64');
-      } catch {
-        res.status(400).json({ error: 'That recording could not be read.' });
-        return;
-      }
-      if (audio.length === 0 || audio.length > MAX_VOICE_BYTES) {
-        res.status(400).json({ error: 'That recording is too large.' });
-        return;
-      }
-
-      await mkdir(deps.mediaDir, { recursive: true });
-      const mediaName = `vn_${randomBytes(12).toString('hex')}`;
-      const mediaPath = join(deps.mediaDir, `${mediaName}.m4a`);
-      await writeFile(mediaPath, audio);
-
-      /*
-       * TRANSLATED MODE, SAME RULE AS TEXT, AND THE SAME REGISTRY GATE.
-       *
-       * A voice note's TRANSLATION STAGE is the only part this ruling
-       * governs: original audio -> approved recognition -> the approved
-       * OPUS route -> approved speech. The route gate is asked about the
-       * text pair, because the middle stage is the one being ruled on.
-       *
-       * The ORIGINAL recording is already on disk above and stays
-       * authoritative. A refused route, a dead engine or a timeout means the
-       * recipient hears WHAT WAS ACTUALLY SAID with translation honestly
-       * unavailable -- never invented speech. Events carry stage, languages
-       * and reasons only; never audio, never words.
-       */
-      let rendering:
-        | {
-            translatedMediaPath: string;
-            translatedLanguage: string;
-            translatedBody: string;
-            translatedDurationMs: number;
-          }
-        | undefined;
-      let translation: MessageTranslationDisposition = NOT_REQUESTED;
-      const pair = messagePair(resolved.caller.accountId, resolved.targetId);
-      const conversationMode = await deps.conversationModes.get(pair.low, pair.high);
-      if (conversationMode?.mode === 'translated') {
-        const { sourceLanguage, targetLanguage } = languagePairFor(
-          resolved.caller.accountId,
-          resolved.targetId,
-        );
-        const decision = await routeDecisionFor(sourceLanguage, targetLanguage);
-        if (decision.kind === 'bypass') {
-          translation = { status: 'same-language', reason: null, provider: null };
-          deps.onEvent?.('message.voice.translate', {
-            source: sourceLanguage,
-            target: targetLanguage ?? 'unset',
-            ok: -1,
-            stage: 'skip',
-            reason: 'same-language',
-            chargeable: 0,
-          });
-        } else if (decision.kind === 'unavailable' || targetLanguage === null) {
-          const reason = decision.kind === 'unavailable' ? decision.reason : 'no-target-language';
-          translation = { status: 'unavailable', reason, provider: null };
-          deps.onEvent?.('message.voice.translate', {
-            source: sourceLanguage,
-            target: targetLanguage ?? 'unset',
-            ok: 0,
-            stage: 'route',
-            reason,
-            chargeable: 0,
-          });
-        } else {
-          const outcome = (
-            await withinDeliveryBudget<VoiceNoteTranslationOutcome>(
-              deps.voiceTranslator.translate({
-                audio,
-                mime: 'audio/mp4',
-                sourceLanguage,
-                targetLanguage,
-                durationMs: Math.round(durationMs),
-                route: { provider: decision.provider, modelId: decision.modelId },
-              }),
-              { ok: false, stage: 'translation-timeout' },
-              voiceBudgetMs,
-            )
-          ).value;
-          if (outcome.ok && outcome.rendering.translatedText.trim().length > 0) {
-            const extension = outcome.rendering.mime.includes('wav') ? 'wav' : 'm4a';
-            const translatedMediaPath = join(
-              deps.mediaDir,
-              `${mediaName}-translated-${targetLanguage}.${extension}`,
-            );
-            try {
-              await writeFile(translatedMediaPath, outcome.rendering.audio);
-              rendering = {
-                translatedMediaPath,
-                translatedLanguage: targetLanguage,
-                translatedBody: outcome.rendering.translatedText,
-                translatedDurationMs: outcome.rendering.durationMs,
-              };
-            } catch {
-              // Disk refused the derived file; the original is untouched.
-            }
-          }
-          const stage = outcome.ok
-            ? rendering === undefined
-              ? 'store'
-              : 'ok'
-            : outcome.stage;
-          translation =
-            rendering === undefined
-              ? { status: 'unavailable', reason: stage, provider: decision.provider }
-              : { status: 'translated', reason: null, provider: decision.provider };
-          deps.onEvent?.('message.voice.translate', {
-            source: sourceLanguage,
-            target: targetLanguage,
-            ok: rendering === undefined ? 0 : 1,
-            stage,
-            provider: decision.provider,
-            chargeable: rendering === undefined ? 0 : 1,
-          });
-        }
-      }
-
-      const message = await deps.messages.sendVoice(
+    // A bad quote is refused BEFORE any audio touches the disk.
+    const replyToMessageId = replyPointer(payload);
+    if (
+      replyToMessageId !== undefined &&
+      !(await deps.messages.canReplyTo(
         resolved.caller.accountId,
         resolved.targetId,
-        mediaPath,
-        Math.round(durationMs),
-        { replyToMessageId },
-        rendering,
+        replyToMessageId,
+      ))
+    ) {
+      res.status(400).json({ error: sendRefusalText('bad-reply') });
+      return;
+    }
+
+    let audio: Buffer;
+    try {
+      audio = Buffer.from(audioBase64, 'base64');
+    } catch {
+      res.status(400).json({ error: 'That recording could not be read.' });
+      return;
+    }
+    if (audio.length === 0 || audio.length > MAX_VOICE_BYTES) {
+      res.status(400).json({ error: 'That recording is too large.' });
+      return;
+    }
+
+    await mkdir(deps.mediaDir, { recursive: true });
+    const mediaName = `vn_${randomBytes(12).toString('hex')}`;
+    const mediaPath = join(deps.mediaDir, `${mediaName}.m4a`);
+    await writeFile(mediaPath, audio);
+
+    /*
+     * TRANSLATED MODE, SAME RULE AS TEXT, AND THE SAME REGISTRY GATE.
+     *
+     * A voice note's TRANSLATION STAGE is the only part this ruling
+     * governs: original audio -> approved recognition -> the approved
+     * OPUS route -> approved speech. The route gate is asked about the
+     * text pair, because the middle stage is the one being ruled on.
+     *
+     * The ORIGINAL recording is already on disk above and stays
+     * authoritative. A refused route, a dead engine or a timeout means the
+     * recipient hears WHAT WAS ACTUALLY SAID with translation honestly
+     * unavailable -- never invented speech. Events carry stage, languages
+     * and reasons only; never audio, never words.
+     */
+    let rendering:
+      | {
+          translatedMediaPath: string;
+          translatedLanguage: string;
+          translatedBody: string;
+          translatedDurationMs: number;
+        }
+      | undefined;
+    let translation: MessageTranslationDisposition = NOT_REQUESTED;
+    const pair = messagePair(resolved.caller.accountId, resolved.targetId);
+    const conversationMode = await deps.conversationModes.get(pair.low, pair.high);
+    if (conversationMode?.mode === 'translated') {
+      const { sourceLanguage, targetLanguage } = languagePairFor(
+        resolved.caller.accountId,
+        resolved.targetId,
       );
-      notifyMessage(resolved.targetId, message);
-      deps.onEvent?.('message.sent', { kind: 'voice' });
-      res.status(201).json({
-        message: viewToWire(await deps.messages.viewOne(resolved.caller.accountId, message)),
-        translation,
-      });
-    },
-  );
+      const decision = await routeDecisionFor(sourceLanguage, targetLanguage);
+      if (decision.kind === 'bypass') {
+        translation = { status: 'same-language', reason: null, provider: null };
+        deps.onEvent?.('message.voice.translate', {
+          source: sourceLanguage,
+          target: targetLanguage ?? 'unset',
+          ok: -1,
+          stage: 'skip',
+          reason: 'same-language',
+          chargeable: 0,
+        });
+      } else if (decision.kind === 'unavailable' || targetLanguage === null) {
+        const reason = decision.kind === 'unavailable' ? decision.reason : 'no-target-language';
+        translation = { status: 'unavailable', reason, provider: null };
+        deps.onEvent?.('message.voice.translate', {
+          source: sourceLanguage,
+          target: targetLanguage ?? 'unset',
+          ok: 0,
+          stage: 'route',
+          reason,
+          chargeable: 0,
+        });
+      } else {
+        const outcome = (
+          await withinDeliveryBudget<VoiceNoteTranslationOutcome>(
+            deps.voiceTranslator.translate({
+              audio,
+              mime: 'audio/mp4',
+              sourceLanguage,
+              targetLanguage,
+              durationMs: Math.round(durationMs),
+              route: { provider: decision.provider, modelId: decision.modelId },
+            }),
+            { ok: false, stage: 'translation-timeout' },
+            voiceBudgetMs,
+          )
+        ).value;
+        if (outcome.ok && outcome.rendering.translatedText.trim().length > 0) {
+          const extension = outcome.rendering.mime.includes('wav') ? 'wav' : 'm4a';
+          const translatedMediaPath = join(
+            deps.mediaDir,
+            `${mediaName}-translated-${targetLanguage}.${extension}`,
+          );
+          try {
+            await writeFile(translatedMediaPath, outcome.rendering.audio);
+            rendering = {
+              translatedMediaPath,
+              translatedLanguage: targetLanguage,
+              translatedBody: outcome.rendering.translatedText,
+              translatedDurationMs: outcome.rendering.durationMs,
+            };
+          } catch {
+            // Disk refused the derived file; the original is untouched.
+          }
+        }
+        const stage = outcome.ok ? (rendering === undefined ? 'store' : 'ok') : outcome.stage;
+        translation =
+          rendering === undefined
+            ? { status: 'unavailable', reason: stage, provider: decision.provider }
+            : { status: 'translated', reason: null, provider: decision.provider };
+        deps.onEvent?.('message.voice.translate', {
+          source: sourceLanguage,
+          target: targetLanguage,
+          ok: rendering === undefined ? 0 : 1,
+          stage,
+          provider: decision.provider,
+          chargeable: rendering === undefined ? 0 : 1,
+        });
+      }
+    }
+
+    const message = await deps.messages.sendVoice(
+      resolved.caller.accountId,
+      resolved.targetId,
+      mediaPath,
+      Math.round(durationMs),
+      { replyToMessageId },
+      rendering,
+    );
+    notifyMessage(resolved.targetId, message);
+    deps.onEvent?.('message.sent', { kind: 'voice' });
+    res.status(201).json({
+      message: viewToWire(await deps.messages.viewOne(resolved.caller.accountId, message)),
+      translation,
+    });
+  });
 
   app.post('/messages/with/:accountId/read', async (req, res) => {
     const resolved = reachableTarget(req, res);
@@ -1289,11 +1311,13 @@ export function registerMessageRoutes(
       collapseId: callId,
       ttlSeconds: RING_WINDOW_SECONDS,
     });
+    const ringDispatch = classifyRingDispatch(summary);
     deps.onEvent?.('direct_call.push', {
       attempted: summary.attempted,
       delivered: summary.delivered,
       fcmMs: Date.now() - issuedAtMs,
       mode: pairMode,
+      status: ringDispatch.status,
     });
 
     // The browser half of the ring: phones got a push above, laptops poll.
@@ -1304,13 +1328,17 @@ export function registerMessageRoutes(
       atMs: Date.now(),
     });
 
-    deps.onEvent?.('contact.ring', { delivered: summary.delivered, attempted: summary.attempted });
+    deps.onEvent?.('contact.ring', {
+      delivered: summary.delivered,
+      attempted: summary.attempted,
+      status: ringDispatch.status,
+    });
     /*
-     * `reachedDevices: 0` is a real answer the caller should see: it means the
-     * contact has no registered phone and will not ring, and the caller can
-     * stop waiting rather than sit in an empty call.
+     * `reachedDevices: 0` is not enough by itself. The status says whether the
+     * peer has no routable device, or whether push failed before a phone could
+     * be reached.
      */
-    res.json({ callId, reachedDevices: summary.delivered });
+    res.json({ callId, reachedDevices: summary.delivered, ringDispatch });
   });
 
   /**

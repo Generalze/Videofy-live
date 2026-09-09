@@ -673,6 +673,9 @@ describe('authentication requirements are three different things, not one list',
     if (google.requirements.auth.kind === 'application-default-credentials') {
       // Discoverable, so an operator can see what MIGHT supply ADC...
       expect(google.requirements.auth.possibleSourceEnvVars).toContain(
+        'GOOGLE_TRANSLATE_CREDENTIALS_FILE',
+      );
+      expect(google.requirements.auth.possibleSourceEnvVars).toContain(
         'GOOGLE_APPLICATION_CREDENTIALS',
       );
     }
@@ -740,7 +743,10 @@ describe('authentication requirements are three different things, not one list',
     expect(describedEnvVarNames(google.requirements)).toEqual([
       'GOOGLE_APPLICATION_CREDENTIALS',
       'GOOGLE_CLOUD_QUOTA_PROJECT',
+      'GOOGLE_TRANSLATE_CREDENTIALS_FILE',
+      'GOOGLE_TRANSLATE_LOCATION',
       'GOOGLE_TRANSLATE_PROJECT_ID',
+      'GOOGLE_TRANSLATE_TIMEOUT_MS',
     ]);
   });
 });

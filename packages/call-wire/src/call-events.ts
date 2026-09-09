@@ -46,7 +46,7 @@ export const CALL_EVENTS = {
    * from THIS, never from a push result or a video tile.
    */
   DIRECT_STATE: 'call:direct:state',
-  /** The caller reports the account service's ring dispatch (devices reached). */
+  /** The caller reports the account service's ring dispatch status and counts. */
   DIRECT_RING_RESULT: 'call:direct:ring-result',
   SET_CAPTION_LANGUAGE: 'call:caption-language',
   /**

@@ -11,7 +11,8 @@
     "android": "expo run:android",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "eas-build-post-install": "cd ../.. && npm run build -w packages/shared-types -w packages/call-wire -w packages/language-catalogue -w packages/call-client-core -w packages/account-trust",
+    "validate-public-env": "node scripts/validate-public-env.mjs",
+    "eas-build-post-install": "cd ../.. && npm run build -w packages/shared-types -w packages/call-wire -w packages/language-catalogue -w packages/call-client-core -w packages/account-trust && cd apps/mobile && npm run validate-public-env",
     "lint": "eslint App.tsx src --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
   },
   "dependencies": {

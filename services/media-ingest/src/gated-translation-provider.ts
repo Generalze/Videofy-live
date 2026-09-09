@@ -41,6 +41,10 @@ export interface GateObserver {
     readonly targetLanguage: string;
     readonly billable: boolean;
     readonly billingKey?: string;
+    readonly providerName?: string;
+    readonly fallbackProviderName?: string | null;
+    readonly fallbackUsed?: boolean;
+    readonly providerFailureCode?: string | null;
     /** Identifiers the engine failed to give back. Empty is the only good value. */
     readonly corruptedIdentifiers?: readonly string[];
   }): void;
@@ -90,6 +94,7 @@ export class GatedTranslationProvider implements TimestampedTranslationProvider 
     try {
       result = await this.options.inner.translate({
         ...input,
+        routeProvider: decision.provider,
         // Identifiers masked. The engine never sees a phone number it can round.
         sourceText: decision.textForEngine,
       });
@@ -133,6 +138,10 @@ export class GatedTranslationProvider implements TimestampedTranslationProvider 
       targetLanguage: input.targetLanguage,
       billable: true,
       billingKey: decision.billingKey,
+      providerName: result.providerName ?? decision.provider ?? this.options.inner.name,
+      fallbackProviderName: result.fallbackProviderName ?? null,
+      fallbackUsed: result.fallbackUsed ?? false,
+      providerFailureCode: result.providerFailureCode ?? null,
       corruptedIdentifiers: [],
     });
     return {

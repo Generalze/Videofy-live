@@ -80,6 +80,22 @@ describe('1. an approved call-live direction is allowed', () => {
     expect(authority.approved('en', 'fr')).toBe(true);
     expect(authority.explain('en', 'fr')).toMatch(/approved for call-live/u);
   });
+
+  it('allows an explicitly approved Google Nigerian MT route for call-live', () => {
+    const authority = authorityFor(
+      route({
+        sourceLanguage: 'en',
+        targetLanguage: 'yo',
+        provider: 'google-cloud',
+        modelId: 'google-cloud:translate-v3',
+        executionClass: 'cloud',
+        serviceScopes: scopes({ 'call-live': 'approved' }),
+      }),
+    );
+
+    expect(authority.approved('en', 'yo')).toBe(true);
+    expect(authority.approved('yo', 'en')).toBe(false);
+  });
 });
 
 describe('2-3. approval for another scope is not approval for a call', () => {

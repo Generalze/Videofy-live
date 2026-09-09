@@ -79,6 +79,12 @@ const NOT_REACHABLE =
   'provider directly with its own model list. "The model works at this latency" is ' +
   'established; "the service can serve this pair today" is NOT.';
 
+const NIGERIAN_FALLBACK_ONLY =
+  'THE DEPLOYED SERVICE CAN NOW INVOKE THIS DIRECTION ONLY AS OPUS-MT FALLBACK BEHIND ' +
+  'AN EXPLICITLY APPROVED GOOGLE NIGERIAN ROUTE. That fallback availability does not ' +
+  'approve the route, clear human review, establish commercial-use obligations or move ' +
+  'call-live out of refused.';
+
 const UNAPPROVED = {
   messaging: 'unapproved',
   'programme-live': 'unapproved',
@@ -242,7 +248,7 @@ opus(
       `"The next morning." -- the farewell is simply gone. A separate ` +
       `artefact-integrity pass found "Sunana Zoe kuma ina zaune a Legas." (my name is ` +
       `Zoe and I live in Lagos) returned as "My name comes, and I sit in I do not know ` +
-      `what to say." ${MALFORMED} ${NOT_REACHABLE}`,
+      `what to say." ${MALFORMED} ${NIGERIAN_FALLBACK_ONLY}`,
   ),
   CALL_LIVE_REFUSED,
 );
@@ -280,7 +286,7 @@ opus(
       `meaning. THE ONE THAT DECIDES THIS RECORD: "Enwetala m ego ahu, daalu." -- I have ` +
       `received the money, thank you -- was returned as "I had found the money, and I ` +
       `lost it." A money confirmation delivered as a money loss, in fluent English, on a ` +
-      `route that scored 8/8 on every automated gate. ${MALFORMED} ${NOT_REACHABLE}`,
+      `route that scored 8/8 on every automated gate. ${MALFORMED} ${NIGERIAN_FALLBACK_ONLY}`,
   ),
   CALL_LIVE_REFUSED,
 );
@@ -322,7 +328,7 @@ opus(
       `(we will see each other tomorrow morning) returned as "We will see ourselves in ` +
       `the future." A separate artefact-integrity pass found "Oruko mi ni Zoe, mo n gbe ` +
       `ni Eko." (my name is Zoe, I live in Lagos) returned as "I lived in Eriko, and I ` +
-      `lived on the island of Ekoko." ${MALFORMED} ${NOT_REACHABLE}`,
+      `lived on the island of Ekoko." ${MALFORMED} ${NIGERIAN_FALLBACK_ONLY}`,
   ),
   CALL_LIVE_REFUSED,
 );
@@ -381,8 +387,9 @@ const document = {
     'deleted or reformatted, and long input either times out for 120 s or is silently ' +
     'truncated to its first sentence; (3) 4.8-9.1 s median for one short chat line, and ' +
     'that on a loaded box, so the idle-box figure that would decide live use is ' +
-    'unmeasured; (4) four directions (pt->en, ha->en, ig->en, yo->en) the deployed ' +
-    'service cannot invoke at all. ' +
+    'unmeasured; (4) pt->en remains absent from DEFAULT_OPUS_MT_LANGUAGE_MODELS, while ' +
+    'ha->en, ig->en and yo->en are reachable only as OPUS-MT fallback behind an ' +
+    'explicitly approved Google Nigerian route. Fallback reachability approves no route. ' +
     'THE SIX NIGERIAN DIRECTIONS ARE call-live REFUSED, not merely unapproved. Refused ' +
     'is a decision, and this one is made: reading the X->en output found 3-4 materially ' +
     'wrong meanings in 8 for each of ha, ig and yo -- including a money confirmation ' +

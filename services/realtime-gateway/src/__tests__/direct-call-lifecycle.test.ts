@@ -88,17 +88,57 @@ describe('DirectCallLifecycle', () => {
     expect(h.lifecycle.decline('ring-1', 'acct_peer')).toBe(false);
   });
 
-  it('NO ANSWER after the ringing window; UNAVAILABLE when the ring reached nobody', () => {
+  it('NO ANSWER after the ringing window; legacy zero is not treated as unavailable', () => {
     const h = harness();
     h.create();
     h.lifecycle.noteRingDispatch('ring-1', 1);
     h.fire(RINGING_WINDOW_MS);
     expect(h.lifecycle.get('ring-1')?.state).toBe('no_answer');
 
-    const none = harness();
-    none.create();
-    none.lifecycle.noteRingDispatch('ring-1', 0);
-    expect(none.lifecycle.get('ring-1')?.state).toBe('unavailable');
+    const legacyZero = harness();
+    legacyZero.create();
+    legacyZero.lifecycle.noteRingDispatch('ring-1', 0);
+    legacyZero.fire(RINGING_WINDOW_MS);
+    expect(legacyZero.lifecycle.get('ring-1')?.state).toBe('no_answer');
+  });
+
+  it('UNAVAILABLE requires an explicit no-routable-device dispatch', () => {
+    const h = harness();
+    h.create();
+    h.lifecycle.noteRingDispatch('ring-1', {
+      status: 'no-routable-device',
+      reachedDevices: 0,
+      attempted: 0,
+      delivered: 0,
+      failed: 0,
+      pruned: 0,
+    });
+    expect(h.lifecycle.get('ring-1')?.state).toBe('unavailable');
+  });
+
+  it('provider dispatch failure is a network failure, not peer unavailable', () => {
+    const h = harness();
+    h.create();
+    h.lifecycle.noteRingDispatch('ring-1', {
+      status: 'provider-failed',
+      reachedDevices: 0,
+      attempted: 1,
+      delivered: 0,
+      failed: 1,
+      pruned: 0,
+    });
+    expect(h.lifecycle.get('ring-1')?.state).toBe('network');
+  });
+
+  it('unknown zero dispatch does not invent peer unavailability', () => {
+    const h = harness();
+    h.create();
+    h.lifecycle.noteRingDispatch('ring-1', {
+      status: 'unknown',
+      reachedDevices: 0,
+    });
+    h.fire(RINGING_WINDOW_MS);
+    expect(h.lifecycle.get('ring-1')?.state).toBe('no_answer');
   });
 
   it('ANSWERING holds the ringing window open while a cold app comes up', () => {
@@ -177,8 +217,17 @@ describe('DirectCallLifecycle', () => {
     const wire = h.create();
     expect(Object.keys(wire).sort()).toEqual(
       [
-        'callId', 'callerAccountId', 'callerName', 'expiresAtMs', 'mode', 'peerAccountId',
-        'state', 'updatedAtMs', 'answeredAtMs', 'connectedAtMs', 'endedByAccountId',
+        'callId',
+        'callerAccountId',
+        'callerName',
+        'expiresAtMs',
+        'mode',
+        'peerAccountId',
+        'state',
+        'updatedAtMs',
+        'answeredAtMs',
+        'connectedAtMs',
+        'endedByAccountId',
       ].sort(),
     );
   });

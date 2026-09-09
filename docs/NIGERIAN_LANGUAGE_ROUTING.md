@@ -2,6 +2,12 @@
 
 Owner: masterzee001. Ruling date: 30 Aug 2026. Applies to `ha`, `ig`, `yo`, `pcm`.
 
+This document is about text-to-speech routing. Machine translation for `en<->yo|ig|ha`
+is separate: the policy lives in `packages/translation-routes/src/nigerian-policy.ts`,
+the runtime selector is `NIGERIAN_TRANSLATION_PRIMARY`, and the Google setup/runbook is
+`docs/GOOGLE_TRANSLATION_SETUP.md`. Google Cloud Translation does not replace 9jaLingo,
+STT, TTS or the Nigerian voice fallback chain described here.
+
 ## The rule
 
 For those four target languages the text-to-speech chain is:

@@ -392,17 +392,20 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
         // application-default login`, none of which set this. Requiring it
         // marked a running deployment disabled for lacking a key file it was
         // deliberately not using -- and would do so again on Contabo.
-        possibleSourceEnvVars: ['GOOGLE_APPLICATION_CREDENTIALS'],
+        possibleSourceEnvVars: ['GOOGLE_TRANSLATE_CREDENTIALS_FILE', 'GOOGLE_APPLICATION_CREDENTIALS'],
       },
       // The QUOTA project override. Absent means "use the credential's own",
       // which is a valid answer and never a fault.
-      optionalEnvVars: ['GOOGLE_CLOUD_QUOTA_PROJECT'],
+      optionalEnvVars: [
+        'GOOGLE_CLOUD_QUOTA_PROJECT',
+        'GOOGLE_TRANSLATE_CREDENTIALS_FILE',
+        'GOOGLE_TRANSLATE_LOCATION',
+        'GOOGLE_TRANSLATE_TIMEOUT_MS',
+      ],
     },
-    // `integrated` on the live observation below. C-AI1.1F: the adapter was
-    // asking ADC for a bearer token only, which discarded the quota project ADC
-    // had already resolved, so `x-goog-user-project` went unsent and Google
-    // answered 403 -- a permissions error for a caller whose permissions were
-    // fine. Fixed, then run end to end against the real API.
+    // `integrated` on the live observation below. The runtime adapter now uses
+    // the official @google-cloud/translate v3 client and keeps the quota project
+    // in per-call options instead of hand-rolling the REST request.
     integrationStage: 'integrated',
     capabilities: {
       translation: { requestResponse: 'yes', streaming: 'no' },
@@ -414,7 +417,7 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
       `mimeType; translations[].translatedText; Application Default Credentials)`,
     models: [
       {
-        modelId: 'translate-v3-translateText',
+        modelId: 'google-cloud:translate-v3',
         purpose: 'Synchronous request/response translation (Cloud Translation Advanced).',
         capabilities: { translation: { requestResponse: 'yes', streaming: 'no' } },
         verifiedLanguages: ['en', 'es'],
@@ -427,7 +430,7 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
         observedAt: '2026-08-22',
         environment: 'development',
         capability: 'translation',
-        modelId: 'translate-v3-translateText',
+        modelId: 'google-cloud:translate-v3',
         sampleCount: 1,
         summary:
           'Credential-gated en->es smoke: PASS, via ADC with the quota project ' +

@@ -74,6 +74,15 @@ import {
 } from '../conference/admission';
 import { createDirectCallApi, terminalStateAfterFailedResume } from './directCallApi';
 import type { ConferenceSetup } from '../conference/conferenceSetup';
+import {
+  legacyReachedDevicesFor,
+  UNKNOWN_RING_DISPATCH,
+  type RingDispatchPayload,
+  type RingDispatchStatus,
+} from './ringDispatch';
+
+export { legacyReachedDevicesFor, UNKNOWN_RING_DISPATCH };
+export type { RingDispatchPayload, RingDispatchStatus };
 
 /** The gateway refuses a knock nobody answers in 60 s; the phone stops waiting at the same moment. */
 const KNOCK_TIMEOUT_MS = 60_000;
@@ -220,7 +229,12 @@ export type CallVideoDiagnostic =
   | { readonly kind: 'acquisition-failed'; readonly error: string }
   | { readonly kind: 'attached'; readonly participantId: string; readonly outcome: string }
   | { readonly kind: 'attach-failed'; readonly participantId: string; readonly error: string }
-  | { readonly kind: 'outbound'; readonly participantId: string; readonly frames: number; readonly bytes: number }
+  | {
+      readonly kind: 'outbound';
+      readonly participantId: string;
+      readonly frames: number;
+      readonly bytes: number;
+    }
   | { readonly kind: 'outbound-silent'; readonly participantId: string; readonly rebuilt: boolean }
   | {
       readonly kind: 'rebuild-verdict';
@@ -229,7 +243,12 @@ export type CallVideoDiagnostic =
       readonly frames: number;
       readonly connectionState: string;
     }
-  | { readonly kind: 'inbound'; readonly participantId: string; readonly frames: number; readonly bytes: number };
+  | {
+      readonly kind: 'inbound';
+      readonly participantId: string;
+      readonly frames: number;
+      readonly bytes: number;
+    };
 
 export type CallTransportEvent =
   | { readonly kind: 'socket-lost'; readonly reason: string }
@@ -280,6 +299,7 @@ export class CallConnection {
    */
   private resumeCredentials: CallResumeCredentials | null = null;
   private joinForm: CallJoinFormState | null = null;
+  private iceServers: RTCIceServer[] | null = null;
 
   constructor(options: CallConnectionOptions) {
     this.options = options;
@@ -330,7 +350,10 @@ export class CallConnection {
         video: { facingMode: 'user' },
       })) as unknown as LocalStream;
     } catch (error) {
-      this.options.onVideoDiagnostic?.({ kind: 'acquisition-failed', error: error instanceof Error ? error.message : 'getUserMedia failed' });
+      this.options.onVideoDiagnostic?.({
+        kind: 'acquisition-failed',
+        error: error instanceof Error ? error.message : 'getUserMedia failed',
+      });
       return null;
     }
     this.camera = stream;
@@ -366,7 +389,11 @@ export class CallConnection {
           });
           mesh.rebuildPeer(result.participantId);
         } else {
-          this.options.onVideoDiagnostic?.({ kind: 'attached', participantId: result.participantId, outcome: result.outcome });
+          this.options.onVideoDiagnostic?.({
+            kind: 'attached',
+            participantId: result.participantId,
+            outcome: result.outcome,
+          });
         }
       }
       void this.watchOutboundVideo(mesh);
@@ -383,17 +410,35 @@ export class CallConnection {
       const stats = await mesh.videoStats();
       let allMoving = stats.length > 0;
       for (const row of stats) {
-        this.options.onVideoDiagnostic?.({ kind: 'outbound', participantId: row.participantId, frames: row.outboundFrames, bytes: row.outboundBytes });
-        this.options.onVideoDiagnostic?.({ kind: 'inbound', participantId: row.participantId, frames: row.inboundFrames, bytes: row.inboundBytes });
+        this.options.onVideoDiagnostic?.({
+          kind: 'outbound',
+          participantId: row.participantId,
+          frames: row.outboundFrames,
+          bytes: row.outboundBytes,
+        });
+        this.options.onVideoDiagnostic?.({
+          kind: 'inbound',
+          participantId: row.participantId,
+          frames: row.inboundFrames,
+          bytes: row.inboundBytes,
+        });
         if (row.outboundFrames === 0 && row.outboundBytes === 0) allMoving = false;
       }
       if (allMoving) return;
       if (sample === 3) {
         for (const row of stats) {
-          if (row.outboundFrames === 0 && row.outboundBytes === 0 && !rebuilt.has(row.participantId)) {
+          if (
+            row.outboundFrames === 0 &&
+            row.outboundBytes === 0 &&
+            !rebuilt.has(row.participantId)
+          ) {
             rebuilt.add(row.participantId);
             const done = mesh.rebuildPeer(row.participantId);
-            this.options.onVideoDiagnostic?.({ kind: 'outbound-silent', participantId: row.participantId, rebuilt: done });
+            this.options.onVideoDiagnostic?.({
+              kind: 'outbound-silent',
+              participantId: row.participantId,
+              rebuilt: done,
+            });
           }
         }
       }
@@ -414,7 +459,10 @@ export class CallConnection {
    * A rebuilt peer has to offer, answer and gather again, so it is given
    * longer than the first watch before its verdict is recorded either way.
    */
-  private async verifyRebuiltVideo(mesh: CallVideoMesh, rebuilt: ReadonlySet<string>): Promise<void> {
+  private async verifyRebuiltVideo(
+    mesh: CallVideoMesh,
+    rebuilt: ReadonlySet<string>,
+  ): Promise<void> {
     for (let sample = 0; sample < 8; sample += 1) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       if (this.mesh !== mesh || this.camera === null) return;
@@ -473,8 +521,7 @@ export class CallConnection {
     return fetchIceServers(this.options.gatewayUrl, { timeoutMs: 5000 });
   }
 
-  async join(): Promise<CallJoinAck> {
-    const local = await this.openLocalMedia();
+  async join({ startMedia = true }: { readonly startMedia?: boolean } = {}): Promise<CallJoinAck> {
     // Fetched WHILE the socket connects, not before: on a real phone each of
     // these is a TLS round trip, and the answer-to-audio budget is two seconds.
     const icePromise = this.resolveIceServers();
@@ -502,6 +549,7 @@ export class CallConnection {
     });
     this.socket = socket;
     const ice = await icePromise;
+    this.iceServers = ice;
     this.options.onIceServers?.(ice.length);
 
     const form = {
@@ -532,25 +580,23 @@ export class CallConnection {
      * hand-rolled timer is gone with it: Socket.IO owns that now.
      */
     const ack = await new Promise<CallJoinAck>((resolve) => {
-      socket
-        .timeout(ACK_TIMEOUT_MS)
-        .emit(
-          CALL_EVENTS.JOIN,
-          {
-            ...buildCallJoinPayload(form, undefined, this.options.sessionToken),
-            ...(this.options.directPeerAccountId === undefined
-              ? {}
-              : { directPeerAccountId: this.options.directPeerAccountId }),
-            ...this.setupFields(),
-          },
-          (error: unknown, reply?: CallJoinAck) => {
-            resolve(
-              error
-                ? { ok: false, error: 'The call service did not respond.' }
-                : (reply ?? { ok: false, error: 'The call service gave an unexpected reply.' }),
-            );
-          },
-        );
+      socket.timeout(ACK_TIMEOUT_MS).emit(
+        CALL_EVENTS.JOIN,
+        {
+          ...buildCallJoinPayload(form, undefined, this.options.sessionToken),
+          ...(this.options.directPeerAccountId === undefined
+            ? {}
+            : { directPeerAccountId: this.options.directPeerAccountId }),
+          ...this.setupFields(),
+        },
+        (error: unknown, reply?: CallJoinAck) => {
+          resolve(
+            error
+              ? { ok: false, error: 'The call service did not respond.' }
+              : (reply ?? { ok: false, error: 'The call service gave an unexpected reply.' }),
+          );
+        },
+      );
     });
 
     if (!ack.ok) {
@@ -612,7 +658,7 @@ export class CallConnection {
       this.knocking = mergeKnock(this.knocking, raw);
       this.options.onKnocking?.(this.knocking);
     });
-    socket.on(CALL_EVENTS.ADMISSION, (raw: unknown) => this.handleAdmission(socket, raw, ice, local));
+    socket.on(CALL_EVENTS.ADMISSION, (raw: unknown) => this.handleAdmission(socket, raw, ice));
 
     if (ack.admission === 'pending') {
       /*
@@ -622,15 +668,7 @@ export class CallConnection {
        * thing a knocker may do.
        */
       this.options.onAdmission?.('pending');
-      /*
-       * NOTHING IS HELD WHILE WAITING. The microphone (and the camera, if
-       * the screen had already turned it on) is released so the privacy
-       * indicator goes dark at the door; admission re-opens the microphone
-       * before the legs negotiate, and the camera control starts from off.
-       */
-      for (const track of local.getTracks()) track.stop();
-      this.local = null;
-      void this.setCameraEnabled(false);
+      // Nothing is held while waiting; media starts only after admission.
       /*
        * A knocker whose socket dropped while waiting gets no answer, ever:
        * the gateway forgets the knock on disconnect. Mirror its 60 s
@@ -645,8 +683,32 @@ export class CallConnection {
       return ack;
     }
 
-    await this.enterCall(socket, ack.participantId, ice, local, null);
+    if (startMedia) await this.startMedia();
     return ack;
+  }
+
+  /**
+   * Start local media and voice/video signalling after the call exists.
+   *
+   * Direct callers must be able to ring first. Android microphone permission or
+   * slow media acquisition cannot be allowed to prevent the callee from ever
+   * seeing an incoming call.
+   */
+  async startMedia(): Promise<boolean> {
+    const socket = this.socket;
+    const participantId = this.participantId;
+    const ice = this.iceServers;
+    if (socket === null || participantId === null || ice === null) return false;
+    if (this.mesh !== null) return true;
+    let local: LocalStream;
+    try {
+      local = await this.openLocalMedia();
+    } catch {
+      this.options.onError('Microphone access is needed for a call.');
+      return false;
+    }
+    await this.enterCall(socket, participantId, ice, local, null);
+    return true;
   }
 
   /**
@@ -865,7 +927,7 @@ export class CallConnection {
    * mesh and voice legs built now. Refused (or nobody answered in time):
    * reported, and the disconnect the gateway follows with is expected.
    */
-  private handleAdmission(socket: Socket, raw: unknown, ice: RTCIceServer[], local: LocalStream): void {
+  private handleAdmission(socket: Socket, raw: unknown, ice: RTCIceServer[]): void {
     const admission = parseAdmission(raw);
     if (this.knockTimer !== null) {
       clearTimeout(this.knockTimer);
@@ -883,15 +945,19 @@ export class CallConnection {
     this.deliverConferenceInfo(admission.snapshot);
     // Told first, so the waiting screen lifts while the legs negotiate.
     this.options.onAdmission?.('admitted');
-    // The microphone was released at the door (see the pending branch); open it again.
-    void (this.local === null ? this.openLocalMedia() : Promise.resolve(local)).then(
+    // Open the microphone only once the person has been admitted.
+    void this.openLocalMedia().then(
       (fresh) => this.enterCall(socket, participantId, ice, fresh, admission.snapshot),
       () => this.options.onAdmission?.({ refused: 'refused' }),
     );
   }
 
   /** The three setup fields, only when a setup was given; nothing invented otherwise. */
-  private setupFields(): { title?: string; privacy?: ConferenceSetup['privacy']; targetLanguages?: string[] } {
+  private setupFields(): {
+    title?: string;
+    privacy?: ConferenceSetup['privacy'];
+    targetLanguages?: string[];
+  } {
     const setup = this.options.setup;
     if (setup === undefined) return {};
     return {
@@ -920,19 +986,24 @@ export class CallConnection {
     const participantId = this.participantId;
     if (socket === null || participantId === null) return { ok: false, error: 'not-in-call' };
     return new Promise((resolve) => {
-      socket.timeout(5_000).emit(
-        CALL_EVENTS.ADMIT,
-        { callId: this.options.callId, participantId, targetParticipantId, admit },
-        (error: unknown, reply?: { ok?: boolean; error?: unknown }) => {
-          if (error || reply?.ok !== true) {
-            resolve({ ok: false, error: typeof reply?.error === 'string' ? reply.error : 'no-reply' });
-            return;
-          }
-          this.knocking = withoutSeat(this.knocking, targetParticipantId);
-          this.options.onKnocking?.(this.knocking);
-          resolve({ ok: true });
-        },
-      );
+      socket
+        .timeout(5_000)
+        .emit(
+          CALL_EVENTS.ADMIT,
+          { callId: this.options.callId, participantId, targetParticipantId, admit },
+          (error: unknown, reply?: { ok?: boolean; error?: unknown }) => {
+            if (error || reply?.ok !== true) {
+              resolve({
+                ok: false,
+                error: typeof reply?.error === 'string' ? reply.error : 'no-reply',
+              });
+              return;
+            }
+            this.knocking = withoutSeat(this.knocking, targetParticipantId);
+            this.options.onKnocking?.(this.knocking);
+            resolve({ ok: true });
+          },
+        );
     });
   }
 
@@ -1059,11 +1130,13 @@ export class CallConnection {
     const participantId = this.participantId;
     if (socket === null || participantId === null) return false;
     return new Promise((resolve) => {
-      socket.timeout(5_000).emit(
-        CALL_EVENTS.END,
-        { callId: this.options.callId, participantId },
-        (error: unknown, reply?: { ok?: boolean }) => resolve(!error && reply?.ok === true),
-      );
+      socket
+        .timeout(5_000)
+        .emit(
+          CALL_EVENTS.END,
+          { callId: this.options.callId, participantId },
+          (error: unknown, reply?: { ok?: boolean }) => resolve(!error && reply?.ok === true),
+        );
     });
   }
   private knownParticipants = new Set<string>();
@@ -1101,25 +1174,38 @@ export class CallConnection {
         if (!report) return;
         let inboundPackets = 0;
         let iceState = 'unknown';
-        report.forEach((entry: { type?: string; kind?: string; packetsReceived?: number; state?: string }) => {
-          if (entry.type === 'inbound-rtp' && entry.kind === 'audio') {
-            inboundPackets += entry.packetsReceived ?? 0;
-          }
-          if (entry.type === 'transport' && typeof entry.state === 'string') iceState = entry.state;
-        });
+        report.forEach(
+          (entry: { type?: string; kind?: string; packetsReceived?: number; state?: string }) => {
+            if (entry.type === 'inbound-rtp' && entry.kind === 'audio') {
+              inboundPackets += entry.packetsReceived ?? 0;
+            }
+            if (entry.type === 'transport' && typeof entry.state === 'string')
+              iceState = entry.state;
+          },
+        );
         this.options.onVoiceStats?.({ inboundPackets, iceState });
       })();
     }, 2000);
   }
 
   /**
-   * Tell the telephone how many devices the ring reached. Zero becomes
-   * UNAVAILABLE at once instead of thirty seconds of "Calling…".
+   * Tell the telephone what account-service ring dispatch proved. Zero only
+   * means UNAVAILABLE when the account service says there was no routable
+   * device; provider failure is a network problem, not peer availability.
    */
-  reportRingResult(reachedDevices: number): void {
+  reportRingResult(dispatch: RingDispatchPayload): void {
     this.socket?.emit(CALL_EVENTS.DIRECT_RING_RESULT, {
       callId: this.options.callId,
-      reachedDevices,
+      reachedDevices: legacyReachedDevicesFor(dispatch),
+      ringDispatch: {
+        status: dispatch.status,
+        reachedDevices: dispatch.reachedDevices,
+        attempted: dispatch.attempted,
+        delivered: dispatch.delivered,
+        failed: dispatch.failed,
+        pruned: dispatch.pruned,
+        unreachablePlatforms: dispatch.unreachablePlatforms,
+      },
     });
   }
 
@@ -1158,6 +1244,7 @@ export class CallConnection {
     this.receivePeer = null;
     this.participantId = null;
     this.resumeCredentials = null;
+    this.iceServers = null;
     this.knocking = [];
     this.socket?.disconnect();
     this.socket = null;

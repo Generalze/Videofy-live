@@ -27,6 +27,20 @@ export {
 } from './route-record.js';
 
 export {
+  GOOGLE_CLOUD_TRANSLATION_MODEL_ID,
+  GOOGLE_CLOUD_TRANSLATION_PROVIDER,
+  NIGERIAN_MACHINE_TRANSLATION_LANGUAGES,
+  NIGERIAN_TRANSLATION_PRIMARY_CHOICES,
+  isApprovedGoogleNigerianTranslationRoute,
+  isGoogleCloudTranslationProvider,
+  isNigerianMachineTranslationLanguage,
+  isNigerianMachineTranslationPair,
+  providerMatchesTranslationProvider,
+  type NigerianMachineTranslationLanguage,
+  type NigerianTranslationPrimary,
+} from './nigerian-policy.js';
+
+export {
   parseRouteDocument,
   type DocumentParse,
   type DocumentProblem,

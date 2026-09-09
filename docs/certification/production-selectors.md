@@ -42,6 +42,7 @@ TRANSCRIPTION_PROVIDER=off
 STREAMING_TRANSCRIPTION_PROVIDER=deepgram-nova
 STREAMING_SYNTHESIS_PROVIDER=chain
 TRANSLATION_PROVIDER=opus-mt
+NIGERIAN_TRANSLATION_PRIMARY=opus-mt
 TEXT_TO_SPEECH_PROVIDER=piper
 DEEPGRAM_MODEL=nova-3
 ELEVENLABS_MODEL=eleven_flash_v2_5
@@ -56,6 +57,7 @@ One line of evidence for each:
 | `STREAMING_TRANSCRIPTION_PROVIDER` | `deepgram-nova` | 32 real-time samples through the deployed adapter from c7-eu-01: en-US mean WER 0.0111 and en-NG mean WER 0.0175 over 12 samples each, es 0.0000 over 8; median finalisation 284 / 319 / 343 ms from the last voiced sample. Bad key fails closed (401 at connect); 4 s of silence and 4 s of broadband noise invented no words. `docs/certification/deepgram.md`. |
 | `STREAMING_SYNTHESIS_PROVIDER` | `chain` | The three-way fallback was driven with real vendor refusals: primary refuses → Azure serves 4.175 s of audio, 0 errors; primary healthy → Azure never called; **everybody refuses → the caller is told once, and silence is never served as if it were speech**. A single-vendor value here would discard the Nigerian ordering entirely. `docs/certification/tts-providers.md`. |
 | `TRANSLATION_PROVIDER` | `opus-mt` | Twelve directions benchmarked twice through the deployed provider, medians within 1.3%. This selects the ENGINE only. Which *directions* production may invoke is decided by `packages/translation-routes`, and today it approves none — see *What this configuration does not turn on*. `docs/certification/opus-benchmarks.md`. |
+| `NIGERIAN_TRANSLATION_PRIMARY` | `opus-mt` | Google Cloud Translation is wired only behind `google-cloud`, only for `en<->yo|ig|ha`, and only with OPUS-MT fallback. Leave it off until `scripts/nigerian-translation-screen.mjs` proves lower p95 than OPUS-MT and the route document records human review, licence and scope approval. `docs/GOOGLE_TRANSLATION_SETUP.md`. |
 | `TEXT_TO_SPEECH_PROVIDER` | `piper` | Unchanged, and unavailable: Piper is not installed on the box and no lane measured it. The selector admits only `mock`, `piper` and `piper+mms`, so there is no honest "off" — `piper` is the value that fails where somebody can see it, and `mock` is the value that succeeds while inventing speech. Batch synthesis is unavailable alongside batch transcription; one missing runtime, one unavailable path. |
 | `DEEPGRAM_MODEL` | `nova-3` | **Must be written explicitly, not left blank.** Blank falls through to a hardcoded default in `live-provider-wiring.ts`, so a change to that default would silently change the production model with no configuration diff to review. `nova-3` is the model every accuracy figure above was measured on. |
 | `ELEVENLABS_MODEL` | `eleven_flash_v2_5` | Same reason. Measured present-but-empty on staging, which means the model came from a code default; the fallback chain reported its own provider name as `elevenlabs-streaming:eleven_flash_v2_5`, so that is the model the numbers describe. |
@@ -122,8 +124,10 @@ independent, so closing any one changes nothing on its own:
    truncated to its first sentence.
 3. **Latency is 4.8–9.1 s median for one short chat line**, and that on a box under load
    8.4–9.3 on 8 vCPU. The idle-box figure that would decide live use is unmeasured.
-4. **Four directions the deployed service cannot invoke at all** — `pt->en`, `ha->en`,
-   `ig->en`, `yo->en` are absent from `DEFAULT_OPUS_MT_LANGUAGE_MODELS`.
+4. **One OPUS direction the deployed service still cannot invoke** - `pt->en` remains
+   absent from `DEFAULT_OPUS_MT_LANGUAGE_MODELS`. `ha->en`, `ig->en` and `yo->en` are
+   configured only so OPUS-MT can serve as fallback behind an explicitly approved Google
+   Nigerian route; that changes fallback reachability, not approval.
 
 The messaging path consults that registry (`services/account/src/index.ts` →
 `loadTranslationRouteRegistry()`), so **translated conversations will deliver the
@@ -133,8 +137,10 @@ is the ruling working as written: an uncertified route may not be invoked. If a 
 needs translated chat, the honest way to get it is a human reviewer signing off a
 direction, not an edit to the document.
 
-`TRANSLATION_PROVIDER=opus-mt` is still the right value. It says which engine serves an
-approved direction, not which directions are approved.
+`TRANSLATION_PROVIDER=opus-mt` is still the right default. It says which engine serves an
+approved non-Google direction, not which directions are approved. `NIGERIAN_TRANSLATION_PRIMARY=opus-mt`
+keeps Google off; set it to `google-cloud` only after the benchmark and route-document
+approval steps above.
 
 ---
 

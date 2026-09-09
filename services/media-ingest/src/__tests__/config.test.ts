@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   DEFAULT_OPUS_MT_LANGUAGE_MODELS,
   DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES,
+  PRODUCTION_GOOGLE_TRANSLATION_CREDENTIALS_PATH,
   loadConfig,
 } from '../config.js';
 
@@ -14,12 +15,28 @@ const SHARED_ENV_KEYS = [
   'PIPER_VOICE_LANGUAGE',
   'PIPER_MODEL_PATH',
   'PIPER_CONFIG_PATH',
+  'TRANSCRIPTION_PROVIDER',
   'TRANSCRIPTION_SOURCE_LANGUAGE',
+  'STREAMING_TRANSCRIPTION_PROVIDER',
+  'STREAMING_SYNTHESIS_PROVIDER',
   'FASTER_WHISPER_MODEL_SIZE',
   'TRANSLATION_TARGET_LANGUAGE',
   'TRANSLATION_SUPPORTED_TARGET_LANGUAGES',
   'TEXT_TO_SPEECH_SUPPORTED_LANGUAGES',
   'OPUS_MT_LANGUAGE_MODELS',
+  'TRANSLATION_PROVIDER',
+  'TRANSLATION_FALLBACK_PROVIDER',
+  'NIGERIAN_TRANSLATION_PRIMARY',
+  'GOOGLE_TRANSLATE_PROJECT_ID',
+  'GOOGLE_TRANSLATE_CREDENTIALS_FILE',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'GOOGLE_CLOUD_QUOTA_PROJECT',
+  'GOOGLE_TRANSLATE_LOCATION',
+  'GOOGLE_TRANSLATE_TIMEOUT_MS',
+  'C7_ENVIRONMENT',
+  'NODE_ENV',
+  'TEXT_TO_SPEECH_PROVIDER',
+  'TRANSLATION_ROUTES_DOCUMENT',
   'DEEPGRAM_API_KEY',
   'PROGRAMME_MEDIA_ORIGIN_INPUT',
   'PROGRAMME_SAFETY_DELAY_MS',
@@ -38,6 +55,13 @@ beforeEach(() => {
   // deterministic value must set it explicitly.
   // Prevent a developer's root .env from changing the deterministic P6-G0 default.
   process.env['AI_RUNTIME_PROFILE'] = '';
+  process.env['NIGERIAN_TRANSLATION_PRIMARY'] = 'opus-mt';
+  process.env['GOOGLE_TRANSLATE_PROJECT_ID'] = '';
+  process.env['GOOGLE_TRANSLATE_CREDENTIALS_FILE'] = '';
+  process.env['GOOGLE_APPLICATION_CREDENTIALS'] = '';
+  process.env['GOOGLE_CLOUD_QUOTA_PROJECT'] = '';
+  process.env['GOOGLE_TRANSLATE_LOCATION'] = '';
+  process.env['GOOGLE_TRANSLATE_TIMEOUT_MS'] = '10000';
 });
 
 afterEach(() => {
@@ -229,6 +253,9 @@ describe('English and Spanish runtime prerequisites', () => {
     // English–French is the constant development pair; both directions stay pinned.
     expect(DEFAULT_OPUS_MT_LANGUAGE_MODELS).toContain('en:fr:Helsinki-NLP/opus-mt-en-fr');
     expect(DEFAULT_OPUS_MT_LANGUAGE_MODELS).toContain('fr:en:Helsinki-NLP/opus-mt-fr-en');
+    expect(DEFAULT_OPUS_MT_LANGUAGE_MODELS).toContain('ha:en:Helsinki-NLP/opus-mt-ha-en');
+    expect(DEFAULT_OPUS_MT_LANGUAGE_MODELS).toContain('ig:en:Helsinki-NLP/opus-mt-ig-en');
+    expect(DEFAULT_OPUS_MT_LANGUAGE_MODELS).toContain('yo:en:Helsinki-NLP/opus-mt-yo-en');
   });
 
   it('supports the multilingual small opt-in, English target, and explicit ES-to-EN OPUS-MT', () => {
@@ -252,6 +279,88 @@ describe('English and Spanish runtime prerequisites', () => {
       modelId: 'Helsinki-NLP/opus-mt-es-en',
       localPath: null,
     });
+  });
+});
+
+describe('Nigerian Google translation config', () => {
+  function enableGooglePrimary(): void {
+    process.env['TRANSLATION_PROVIDER'] = 'opus-mt';
+    process.env['NIGERIAN_TRANSLATION_PRIMARY'] = 'google-cloud';
+    process.env['GOOGLE_TRANSLATE_PROJECT_ID'] = 'project-e11a8346-7d3c-49c6-8a8';
+  }
+
+  function productionBase(): void {
+    process.env['C7_ENVIRONMENT'] = 'production';
+    process.env['TRANSCRIPTION_PROVIDER'] = 'off';
+    process.env['STREAMING_TRANSCRIPTION_PROVIDER'] = 'off';
+    process.env['STREAMING_SYNTHESIS_PROVIDER'] = 'off';
+    process.env['TEXT_TO_SPEECH_PROVIDER'] = 'piper';
+    process.env['TRANSLATION_ROUTES_DOCUMENT'] = 'C:/routes/translation-routes.json';
+  }
+
+  it('defaults to OPUS-MT primary with no Google project required', () => {
+    const config = loadConfig();
+
+    expect(config.nigerianTranslationPrimary).toBe('opus-mt');
+    expect(config.googleTranslateProjectId).toBeNull();
+    expect(config.googleTranslateCredentialsFile).toBeNull();
+    expect(config.googleTranslateQuotaProjectId).toBeNull();
+    expect(config.googleTranslateLocation).toBe('global');
+    expect(config.googleTranslateTimeoutMs).toBe(10000);
+  });
+
+  it('accepts the explicit Google Nigerian primary configuration', () => {
+    enableGooglePrimary();
+    process.env['GOOGLE_TRANSLATE_CREDENTIALS_FILE'] = '/etc/videofy/google-translation.json';
+    process.env['GOOGLE_CLOUD_QUOTA_PROJECT'] = 'quota-project';
+    process.env['GOOGLE_TRANSLATE_TIMEOUT_MS'] = '4321';
+
+    const config = loadConfig();
+
+    expect(config.nigerianTranslationPrimary).toBe('google-cloud');
+    expect(config.translationProvider).toBe('opus-mt');
+    expect(config.googleTranslateProjectId).toBe('project-e11a8346-7d3c-49c6-8a8');
+    expect(config.googleTranslateCredentialsFile).toBe('/etc/videofy/google-translation.json');
+    expect(config.googleTranslateQuotaProjectId).toBe('quota-project');
+    expect(config.googleTranslateLocation).toBe('global');
+    expect(config.googleTranslateTimeoutMs).toBe(4321);
+  });
+
+  it('rejects Google Nigerian primary without a resource project', () => {
+    process.env['TRANSLATION_PROVIDER'] = 'opus-mt';
+    process.env['NIGERIAN_TRANSLATION_PRIMARY'] = 'google-cloud';
+    process.env['GOOGLE_TRANSLATE_PROJECT_ID'] = '';
+
+    expect(() => loadConfig()).toThrow(/requires GOOGLE_TRANSLATE_PROJECT_ID/);
+  });
+
+  it('rejects Google Nigerian primary without OPUS-MT as the fallback provider', () => {
+    process.env['TRANSLATION_PROVIDER'] = 'm2m100';
+    process.env['NIGERIAN_TRANSLATION_PRIMARY'] = 'google-cloud';
+    process.env['GOOGLE_TRANSLATE_PROJECT_ID'] = 'project-e11a8346-7d3c-49c6-8a8';
+
+    expect(() => loadConfig()).toThrow(/requires TRANSLATION_PROVIDER=opus-mt/);
+  });
+
+  it('uses the production credential path when Google Nigerian primary is enabled', () => {
+    productionBase();
+    enableGooglePrimary();
+    process.env['GOOGLE_TRANSLATE_CREDENTIALS_FILE'] = '';
+    process.env['GOOGLE_APPLICATION_CREDENTIALS'] = '';
+
+    expect(loadConfig().googleTranslateCredentialsFile).toBe(
+      PRODUCTION_GOOGLE_TRANSLATION_CREDENTIALS_PATH,
+    );
+  });
+
+  it('rejects any other production credential path', () => {
+    productionBase();
+    enableGooglePrimary();
+    process.env['GOOGLE_APPLICATION_CREDENTIALS'] = 'C:/tmp/google-translation.json';
+
+    expect(() => loadConfig()).toThrow(
+      new RegExp(PRODUCTION_GOOGLE_TRANSLATION_CREDENTIALS_PATH.replace(/\//gu, '\\/')),
+    );
   });
 });
 

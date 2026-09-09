@@ -28,7 +28,16 @@ import * as Notifications from 'expo-notifications';
  * resolves without an import. It is exported from 'react' instead.
  */
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import { AppState, BackHandler, Platform, Pressable, StyleSheet, Text, ToastAndroid, View } from 'react-native';
+import {
+  AppState,
+  BackHandler,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  ToastAndroid,
+  View,
+} from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { AuthSessionManager, type AuthState } from './src/auth/authSessionManager';
 import { createSecureSessionStore } from './src/auth/secureSessionStore';
@@ -68,14 +77,10 @@ import { foregroundPresentationFor } from './src/push/callNotificationPresentati
 import { videofyCall } from './src/native/videofyCall';
 import { createAppLock } from './src/auth/appLock';
 import { LockScreen } from './src/screens/LockScreen';
+import { PUBLIC_ENDPOINTS } from './src/config/publicEnv';
 
-/** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
-const GATEWAY_BASE_URL =
-  process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
-
-/** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
-const ACCOUNT_BASE_URL =
-  process.env['EXPO_PUBLIC_ACCOUNT_URL'] ?? 'https://staging.consummate7.com/auth';
+const GATEWAY_BASE_URL = PUBLIC_ENDPOINTS.gatewayUrl;
+const ACCOUNT_BASE_URL = PUBLIC_ENDPOINTS.accountUrl;
 
 /*
  * THE BRAND SCREEN, NOT A WHITE FRAME (founder ruling 29 Aug 2026). The OS
@@ -459,14 +464,28 @@ function AppInner(): JSX.Element {
     const pending = videofyCall.consumePendingAnswer(signedInAccountId);
     if (pending !== null) {
       setIncomingCall(null);
-      setActiveCall({ kind: 'direct', callId: pending.callId, peer: { accountId: pending.callerAccountId, name: pending.callerName }, ring: false });
+      setActiveCall({
+        kind: 'direct',
+        callId: pending.callId,
+        peer: { accountId: pending.callerAccountId, name: pending.callerName },
+        ring: false,
+      });
     }
     const incoming = videofyCall.onIncoming((call) => {
-      setIncomingCall({ callId: call.callId, caller: { accountId: call.callerAccountId, name: call.callerName }, mode: call.mode });
+      setIncomingCall({
+        callId: call.callId,
+        caller: { accountId: call.callerAccountId, name: call.callerName },
+        mode: call.mode,
+      });
     });
     const answer = videofyCall.onAnswer((call) => {
       setIncomingCall(null);
-      setActiveCall({ kind: 'direct', callId: call.callId, peer: { accountId: call.callerAccountId, name: call.callerName }, ring: false });
+      setActiveCall({
+        kind: 'direct',
+        callId: call.callId,
+        peer: { accountId: call.callerAccountId, name: call.callerName },
+        ring: false,
+      });
     });
     const decline = videofyCall.onDecline(() => setIncomingCall(null));
     const timeout = videofyCall.onTimeout(() => setIncomingCall(null));
@@ -489,7 +508,8 @@ function AppInner(): JSX.Element {
     if (!videofyCall.available) return;
     const token = state.status === 'signed-in' ? auth.callSessionToken() : null;
     const expiresAt = auth.sessionExpiresAtMs();
-    if (token === null || state.status !== 'signed-in' || expiresAt === null) videofyCall.clearRingCredential();
+    if (token === null || state.status !== 'signed-in' || expiresAt === null)
+      videofyCall.clearRingCredential();
     else videofyCall.setRingCredential(GATEWAY_BASE_URL, token, state.accountId, expiresAt);
   }, [state]);
 
@@ -535,8 +555,12 @@ function AppInner(): JSX.Element {
       if (result.ok) setMe(result.value);
       if (result.ok) {
         setCallName(result.value.displayName ?? result.value.username);
-        const speak = callLanguageOrUndefined(result.value.spokenLanguage ?? result.value.defaultLanguage);
-        const hear = callLanguageOrUndefined(result.value.listeningLanguage ?? result.value.defaultLanguage);
+        const speak = callLanguageOrUndefined(
+          result.value.spokenLanguage ?? result.value.defaultLanguage,
+        );
+        const hear = callLanguageOrUndefined(
+          result.value.listeningLanguage ?? result.value.defaultLanguage,
+        );
         setCallLanguages({
           ...(speak === undefined ? {} : { speak }),
           ...(hear === undefined ? {} : { hear }),
@@ -584,11 +608,21 @@ function AppInner(): JSX.Element {
       const now = Date.now();
       if (now - lastBackAt.current < 2_000) return false;
       lastBackAt.current = now;
-      if (Platform.OS === 'android') ToastAndroid.show('Press back again to exit', ToastAndroid.SHORT);
+      if (Platform.OS === 'android')
+        ToastAndroid.show('Press back again to exit', ToastAndroid.SHORT);
       return true;
     });
     return () => subscription.remove();
-  }, [activeCall, incomingCall, locked, viewingChannel, viewingPerson, chatWith, addingContact, tab]);
+  }, [
+    activeCall,
+    incomingCall,
+    locked,
+    viewingChannel,
+    viewingPerson,
+    chatWith,
+    addingContact,
+    tab,
+  ]);
 
   /*
    * PRESENCE. A heartbeat a minute while the app is on screen -- 'busy' in a
@@ -639,11 +673,14 @@ function AppInner(): JSX.Element {
       void auth.renewIfNeeded();
     };
     void judge();
-    void auth.authorizedFetch('/sessions/current').then(async (response) => {
-      if (response === null || !response.ok || !live) return;
-      const body = (await response.json()) as { email?: string };
-      if (live && typeof body.email === 'string') setLockEmail(body.email);
-    }).catch(() => undefined);
+    void auth
+      .authorizedFetch('/sessions/current')
+      .then(async (response) => {
+        if (response === null || !response.ok || !live) return;
+        const body = (await response.json()) as { email?: string };
+        if (live && typeof body.email === 'string') setLockEmail(body.email);
+      })
+      .catch(() => undefined);
     const subscription = AppState.addEventListener('change', (next) => {
       if (next === 'active') void judge();
       else void appLock.leftForeground(Date.now());
@@ -748,7 +785,11 @@ function AppInner(): JSX.Element {
           call={
             activeCall.kind === 'direct'
               ? { kind: 'direct', callId: activeCall.callId, peer: activeCall.peer }
-              : { kind: 'conference', callId: activeCall.callId, ...(activeCall.setup === undefined ? {} : { setup: activeCall.setup }) }
+              : {
+                  kind: 'conference',
+                  callId: activeCall.callId,
+                  ...(activeCall.setup === undefined ? {} : { setup: activeCall.setup }),
+                }
           }
           displayName={callName ?? state.accountId}
           {...(callLanguages.speak === undefined ? {} : { speakLanguage: callLanguages.speak })}
@@ -759,7 +800,7 @@ function AppInner(): JSX.Element {
               ? undefined
               : async (callId) => {
                   const result = await api.ring(ringPeer.accountId, callId);
-                  return result.ok ? result.value.reachedDevices : null;
+                  return result.ok ? result.value.ringDispatch : null;
                 }
           }
           onLeave={() => {
@@ -889,7 +930,9 @@ function AppInner(): JSX.Element {
             self={me === null ? null : { username: me.username, displayName: me.displayName }}
           />
         )}
-        {tab === 'programmes' && <ProgrammesScreen api={api} onOpen={setViewingChannel} openChannelId={openChannelId} />}
+        {tab === 'programmes' && (
+          <ProgrammesScreen api={api} onOpen={setViewingChannel} openChannelId={openChannelId} />
+        )}
         {tab === 'conf' && (
           <CallHomeScreen
             emailVerified={emailVerified}
@@ -900,7 +943,11 @@ function AppInner(): JSX.Element {
                 title: setup?.title ?? null,
                 ...(setup === undefined ? {} : { setup }),
               });
-              setActiveCall({ kind: 'conference', callId, ...(setup === undefined ? {} : { setup }) });
+              setActiveCall({
+                kind: 'conference',
+                callId,
+                ...(setup === undefined ? {} : { setup }),
+              });
             }}
           />
         )}

@@ -18,6 +18,9 @@
 import { useEffect, useState, type JSX } from 'react';
 import { Image, StyleSheet, Text, View } from 'react-native';
 import { bytesToBase64 } from './voiceNotes';
+import { avatarCacheVersion, subscribeAvatarInvalidation } from './avatarCache';
+
+export { invalidateAvatar } from './avatarCache';
 
 interface AvatarConfig {
   /** The app's authorised fetch: a path on the account service, the session attached. */
@@ -35,14 +38,20 @@ export function configureAvatars(next: AvatarConfig): void {
 const pictures = new Map<string, string | null>();
 const inFlight = new Map<string, Promise<string | null>>();
 
-export type AvatarImageState = { readonly state: 'loaded' } | { readonly state: 'failed'; readonly detail: string };
+export type AvatarImageState =
+  { readonly state: 'loaded' } | { readonly state: 'failed'; readonly detail: string };
 
-async function fetchPicture(accountId: string, version: number): Promise<{ uri: string | null; detail: string | null }> {
+async function fetchPicture(
+  accountId: string,
+  version: number,
+): Promise<{ uri: string | null; detail: string | null }> {
   const current = config;
   if (current === null) return { uri: null, detail: 'avatars not configured' };
   let response: Response | null;
   try {
-    response = await current.fetch(`/avatars/${encodeURIComponent(accountId)}${version > 0 ? `?v=${version}` : ''}`);
+    response = await current.fetch(
+      `/avatars/${encodeURIComponent(accountId)}${version > 0 ? `?v=${version}` : ''}`,
+    );
   } catch {
     return { uri: null, detail: 'network' };
   }
@@ -84,11 +93,19 @@ export function AvatarView({
   readonly version?: number;
   readonly size?: number;
 }): JSX.Element {
-  const key = `${accountId}#${version}`;
+  const [invalidationTick, setInvalidationTick] = useState(0);
+  const cacheVersion = avatarCacheVersion(accountId, version);
+  const key = `${accountId}#${cacheVersion}`;
   const [uri, setUri] = useState<string | null>(() => pictures.get(key) ?? null);
   const [attempt, setAttempt] = useState(0);
 
+  useEffect(
+    () => subscribeAvatarInvalidation(accountId, () => setInvalidationTick((tick) => tick + 1)),
+    [accountId],
+  );
+
   useEffect(() => {
+    void invalidationTick;
     let live = true;
     const cached = pictures.get(key);
     if (cached !== undefined) {
@@ -96,16 +113,20 @@ export function AvatarView({
       if (cached !== null) onImageState?.({ state: 'loaded' });
       return undefined;
     }
-    const pending = inFlight.get(key) ?? (() => {
-      const promise = fetchPicture(accountId, version).then((result) => {
-        // Only a definite answer is remembered; a transient failure is retried below.
-        if (result.uri !== null || result.detail === null) pictures.set(key, result.uri);
-        inFlight.delete(key);
-        return result.uri ?? (result.detail === null ? null : Promise.reject(new Error(result.detail)));
-      });
-      inFlight.set(key, promise);
-      return promise;
-    })();
+    const pending =
+      inFlight.get(key) ??
+      (() => {
+        const promise = fetchPicture(accountId, cacheVersion).then((result) => {
+          // Only a definite answer is remembered; a transient failure is retried below.
+          if (result.uri !== null || result.detail === null) pictures.set(key, result.uri);
+          inFlight.delete(key);
+          return (
+            result.uri ?? (result.detail === null ? null : Promise.reject(new Error(result.detail)))
+          );
+        });
+        inFlight.set(key, promise);
+        return promise;
+      })();
     let retry: ReturnType<typeof setTimeout> | null = null;
     pending.then(
       (found) => {
@@ -115,7 +136,10 @@ export function AvatarView({
       },
       (error: unknown) => {
         if (!live) return;
-        onImageState?.({ state: 'failed', detail: error instanceof Error ? error.message : 'fetch failed' });
+        onImageState?.({
+          state: 'failed',
+          detail: error instanceof Error ? error.message : 'fetch failed',
+        });
         retry = setTimeout(() => setAttempt((count) => count + 1), 60_000);
       },
     );
@@ -125,7 +149,7 @@ export function AvatarView({
     };
     // onImageState is a reporting callback; re-running on its identity would refetch on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, accountId, version, attempt]);
+  }, [key, accountId, cacheVersion, attempt, invalidationTick]);
 
   const circle = {
     width: size,

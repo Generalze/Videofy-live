@@ -24,6 +24,7 @@ import {
   type ConversationModePort,
 } from '../conversation-modes.js';
 import { PushDispatcher, createRecordingPushProvider } from '../push/push-dispatcher.js';
+import type { PushProvider } from '../push/push-provider.js';
 import { registerMessageRoutes } from '../message-routes.js';
 import {
   createTranslationRouteRegistryFromRecords,
@@ -55,7 +56,11 @@ interface Harness {
   /** How many times the voice-note translator was asked; the fake returns a WAV stub. */
   voiceTranslations: () => number;
   /** Every text-translation call the routes made, with the route they named. */
-  translatorCalls: () => readonly { sourceLanguage: string; targetLanguage: string; provider: string }[];
+  translatorCalls: () => readonly {
+    sourceLanguage: string;
+    targetLanguage: string;
+    provider: string;
+  }[];
   store: AccountStore;
 }
 
@@ -101,7 +106,7 @@ export function approvedRoute(
 }
 
 async function harness(
-  options: { routes?: readonly TranslationRouteRecord[] } = {},
+  options: { routes?: readonly TranslationRouteRecord[]; providers?: readonly PushProvider[] } = {},
 ): Promise<Harness> {
   const contacts = new ContactStore();
   const devices = new DeviceStore();
@@ -123,8 +128,7 @@ async function harness(
    * OPUS-MT, so the existing expectations exercise the APPROVED path. A test
    * that wants a missing or refused route passes its own records.
    */
-  const routes =
-    options.routes ?? [approvedRoute('en', 'es'), approvedRoute('es', 'en')];
+  const routes = options.routes ?? [approvedRoute('en', 'es'), approvedRoute('es', 'en')];
   const translatorCalls: { sourceLanguage: string; targetLanguage: string; provider: string }[] =
     [];
   const app = express();
@@ -148,7 +152,7 @@ async function harness(
     store,
     contacts,
     messages: new MessageStore({ port: createInMemoryMessagePort() }),
-    push: new PushDispatcher({ devices, providers: [provider] }),
+    push: new PushDispatcher({ devices, providers: options.providers ?? [provider] }),
     rings,
     conversationModes,
     // The fake translator marks its output so a test can tell rendering from original.
@@ -393,9 +397,18 @@ describe('ringing a contact', () => {
       method: 'POST',
       body: JSON.stringify({}),
     });
-    const body = (await response.json()) as { callId: string; reachedDevices: number };
+    const body = (await response.json()) as {
+      callId: string;
+      reachedDevices: number;
+      ringDispatch: { status: string; attempted: number; delivered: number };
+    };
     expect(body.callId.length).toBeGreaterThan(0);
     expect(body.reachedDevices).toBe(1);
+    expect(body.ringDispatch).toMatchObject({
+      status: 'accepted',
+      attempted: 1,
+      delivered: 1,
+    });
 
     const ring = app.provider.sent[0]?.notification;
     expect(ring?.urgency).toBe('high');
@@ -413,7 +426,51 @@ describe('ringing a contact', () => {
       method: 'POST',
       body: JSON.stringify({}),
     });
-    expect(((await response.json()) as { reachedDevices: number }).reachedDevices).toBe(0);
+    const body = (await response.json()) as {
+      reachedDevices: number;
+      ringDispatch: { status: string; attempted: number; delivered: number };
+    };
+    expect(body.reachedDevices).toBe(0);
+    expect(body.ringDispatch).toMatchObject({
+      status: 'no-routable-device',
+      attempted: 0,
+      delivered: 0,
+    });
+  });
+
+  it('reports provider failure separately from no registered phone', async () => {
+    const provider: PushProvider = {
+      name: 'failing-provider',
+      platforms: ['ios', 'android', 'web'],
+      async send() {
+        return { ok: false, permanent: false, reason: 'provider timeout' };
+      },
+    };
+    app = await harness({ providers: [provider] });
+    await befriend(app.contacts, 'acct_a', 'acct_b');
+
+    const response = await app.as('acct_a', '/contacts/acct_b/ring', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    const body = (await response.json()) as {
+      reachedDevices: number;
+      ringDispatch: {
+        status: string;
+        attempted: number;
+        delivered: number;
+        failed: number;
+        pruned: number;
+      };
+    };
+    expect(body.reachedDevices).toBe(0);
+    expect(body.ringDispatch).toMatchObject({
+      status: 'provider-failed',
+      attempted: 1,
+      delivered: 0,
+      failed: 1,
+      pruned: 0,
+    });
   });
 
   it('refuses to ring a non-contact with the uniform 404', async () => {
@@ -463,7 +520,9 @@ describe('translated conversations', () => {
         method: 'POST',
         body: JSON.stringify({ body: 'hello there' }),
       })
-    ).json()) as { message: { body: string; translatedBody: string | null; translatedLanguage: string | null } };
+    ).json()) as {
+      message: { body: string; translatedBody: string | null; translatedLanguage: string | null };
+    };
     expect(sent.message.body).toBe('hello there');
     expect(sent.message.translatedBody).toBe('[es] hello there');
     expect(sent.message.translatedLanguage).toBe('es');
@@ -579,12 +638,12 @@ describe('translated voice notes', () => {
 
     // Same door as the original: a non-participant and an anonymous caller.
     await befriend(app.contacts, a, 'acct_c');
-    expect(
-      (await app.as('acct_c', `/messages/${message.messageId}/voice/translated`)).status,
-    ).toBe(404);
-    expect(
-      (await fetch(`${app.url}/messages/${message.messageId}/voice/translated`)).status,
-    ).toBe(401);
+    expect((await app.as('acct_c', `/messages/${message.messageId}/voice/translated`)).status).toBe(
+      404,
+    );
+    expect((await fetch(`${app.url}/messages/${message.messageId}/voice/translated`)).status).toBe(
+      401,
+    );
   });
 
   it('a normal conversation never asks the engine', async () => {

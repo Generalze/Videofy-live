@@ -21,7 +21,7 @@
  *   DECLINED     the peer pressed Decline
  *   NO_ANSWER    nobody accepted within the ringing window
  *   UNAVAILABLE  the ring reached no device at all
- *   NETWORK      the recovery window ran out
+ *   NETWORK      media recovery ran out, or the ring provider failed
  *   ENDED        somebody hung up
  *
  * Pure with respect to time: `now` and timers are injected, so the machine
@@ -42,6 +42,18 @@ export type DirectCallState =
   | 'unavailable'
   | 'network'
   | 'ended';
+
+export type DirectRingDispatchStatus =
+  'accepted' | 'no-routable-device' | 'provider-failed' | 'unknown';
+
+export interface DirectRingDispatchReport {
+  readonly status: DirectRingDispatchStatus;
+  readonly reachedDevices: number;
+  readonly attempted?: number | undefined;
+  readonly delivered?: number | undefined;
+  readonly failed?: number | undefined;
+  readonly pruned?: number | undefined;
+}
 
 export const TERMINAL_STATES: ReadonlySet<DirectCallState> = new Set([
   'busy',
@@ -84,6 +96,8 @@ export interface DirectCallRecord {
   updatedAtMs: number;
   /** Devices the push reached, as the account service reported. -1 unknown. */
   reachedDevices: number;
+  /** The account service's semantic dispatch result. Counts alone are ambiguous. */
+  ringDispatchStatus: DirectRingDispatchStatus;
   /** The timeline, metadata only: state -> when it was entered. */
   readonly timeline: { state: DirectCallState; atMs: number }[];
   /** When the peer joined; null until answered. */
@@ -119,7 +133,8 @@ export interface DirectCallOutcomeRecord {
   readonly answeredAtMs: number | null;
   readonly connectedAtMs: number | null;
   readonly endedAtMs: number;
-  readonly outcome: 'completed' | 'missed' | 'declined' | 'busy' | 'unavailable' | 'network' | 'failed';
+  readonly outcome:
+    'completed' | 'missed' | 'declined' | 'busy' | 'unavailable' | 'network' | 'failed';
   readonly endedByAccountId: string | null;
 }
 
@@ -168,6 +183,13 @@ function outcomeOf(state: DirectCallState): DirectCallOutcomeRecord['outcome'] {
   }
 }
 
+function legacyDispatch(reachedDevices: number): DirectRingDispatchReport {
+  return {
+    status: reachedDevices > 0 ? 'accepted' : 'unknown',
+    reachedDevices,
+  };
+}
+
 export class DirectCallLifecycle {
   private readonly calls = new Map<string, DirectCallRecord>();
   private readonly timers = new Map<string, unknown>();
@@ -210,6 +232,7 @@ export class DirectCallLifecycle {
       state: 'calling',
       updatedAtMs: at,
       reachedDevices: -1,
+      ringDispatchStatus: 'unknown',
       timeline: [{ state: 'calling', atMs: at }],
       answeredAtMs: null,
       connectedAtMs: null,
@@ -222,7 +245,10 @@ export class DirectCallLifecycle {
     }
     this.arm(record, 'ringing-window', RINGING_WINDOW_MS, () => {
       if (record.state === 'calling' || record.state === 'ringing') {
-        this.transition(record, record.reachedDevices === 0 ? 'unavailable' : 'no_answer');
+        this.transition(
+          record,
+          record.ringDispatchStatus === 'no-routable-device' ? 'unavailable' : 'no_answer',
+        );
       }
     });
     return toDirectCallWire(record);
@@ -233,12 +259,16 @@ export class DirectCallLifecycle {
     return record ? toDirectCallWire(record) : null;
   }
 
-  /** The caller's ring dispatch result. Zero devices is honest: UNAVAILABLE at once. */
-  noteRingDispatch(callId: string, reachedDevices: number): void {
+  /** The caller's ring dispatch result, with the account service's semantic status. */
+  noteRingDispatch(callId: string, dispatch: number | DirectRingDispatchReport): void {
     const record = this.calls.get(callId);
     if (!record || TERMINAL_STATES.has(record.state)) return;
-    record.reachedDevices = reachedDevices;
-    if (reachedDevices === 0 && record.state === 'calling') this.transition(record, 'unavailable');
+    const report = typeof dispatch === 'number' ? legacyDispatch(dispatch) : dispatch;
+    record.reachedDevices = report.reachedDevices;
+    record.ringDispatchStatus = report.status;
+    if (record.state !== 'calling') return;
+    if (report.status === 'no-routable-device') this.transition(record, 'unavailable');
+    if (report.status === 'provider-failed') this.transition(record, 'network');
   }
 
   /** A peer device says it is SHOWING the incoming call. This is what Ringing means. */
@@ -261,7 +291,8 @@ export class DirectCallLifecycle {
     if (record.state === 'calling') this.transition(record, 'ringing');
     record.expiresAtMs = this.now() + ANSWER_GRACE_MS;
     this.arm(record, 'ringing-window', ANSWER_GRACE_MS, () => {
-      if (record.state === 'calling' || record.state === 'ringing') this.transition(record, 'no_answer');
+      if (record.state === 'calling' || record.state === 'ringing')
+        this.transition(record, 'no_answer');
     });
     return true;
   }

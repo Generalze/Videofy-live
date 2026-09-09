@@ -1,5 +1,10 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import {
+  isGoogleCloudTranslationProvider,
+  isNigerianMachineTranslationPair,
+  providerMatchesTranslationProvider,
+} from '@videofy-live/translation-routes';
 import { MediaIngestError } from './ingest-error.js';
 import {
   PYTHON_WORKER_LOOP,
@@ -24,6 +29,8 @@ export interface TranslationProviderInput {
   sourceLanguage: string;
   targetLanguage: string;
   sourceText: string;
+  /** Provider id approved by the route gate for this exact source->target. */
+  routeProvider?: string | undefined;
   startMs: number;
   endMs: number;
 }
@@ -33,6 +40,10 @@ export interface TranslationProviderResult {
   providerName?: string;
   modelId?: string | null;
   providerLatencyMs?: number | null;
+  primaryProviderName?: string | null;
+  fallbackProviderName?: string | null;
+  fallbackUsed?: boolean;
+  providerFailureCode?: string | null;
 }
 
 export interface TimestampedTranslationProvider {
@@ -273,6 +284,14 @@ export interface CompositeTranslationProviderOptions {
   primaryUnsupportedPairs?: readonly TranslationLanguagePair[];
 }
 
+export interface NigerianFallbackTranslationProviderOptions {
+  primary: TimestampedTranslationProvider;
+  fallback: TimestampedTranslationProvider;
+  defaultProvider?: TimestampedTranslationProvider;
+  primaryTimeoutMs: number;
+  fallbackTimeoutMs?: number;
+}
+
 /**
  * Per-pair fallback chain: routes every request to the quality-preferred
  * primary provider unless the (source,target) pair is known to be unsupported
@@ -328,6 +347,88 @@ export class CompositeTimestampedTranslationProvider implements TimestampedTrans
     this.primary.dispose?.();
     this.fallback.dispose?.();
   }
+}
+
+/**
+ * Google is a Nigerian MT primary only after the route document approved that
+ * exact provider for en<->yo|ig|ha. OPUS remains the fallback and the default
+ * for every other route; the routeProvider field prevents a provider switch
+ * from overriding the registry's provider evidence.
+ */
+export class NigerianFallbackTranslationProvider implements TimestampedTranslationProvider {
+  readonly name: string;
+  private readonly primary: TimestampedTranslationProvider;
+  private readonly fallback: TimestampedTranslationProvider;
+  private readonly defaultProvider: TimestampedTranslationProvider;
+  private readonly primaryTimeoutMs: number;
+  private readonly fallbackTimeoutMs: number;
+
+  constructor(options: NigerianFallbackTranslationProviderOptions) {
+    this.primary = options.primary;
+    this.fallback = options.fallback;
+    this.defaultProvider = options.defaultProvider ?? options.fallback;
+    this.primaryTimeoutMs = options.primaryTimeoutMs;
+    this.fallbackTimeoutMs = options.fallbackTimeoutMs ?? options.primaryTimeoutMs;
+    this.name = `${options.primary.name}->${options.fallback.name}:nigerian`;
+  }
+
+  async translate(input: TranslationProviderInput): Promise<TranslationProviderResult> {
+    if (!isNigerianMachineTranslationPair(input.sourceLanguage, input.targetLanguage)) {
+      return await this.defaultProvider.translate(input);
+    }
+
+    if (providerMatchesTranslationProvider('opus-mt', input.routeProvider)) {
+      return await this.fallback.translate(input);
+    }
+
+    if (!isGoogleCloudTranslationProvider(input.routeProvider)) {
+      return await this.defaultProvider.translate(input);
+    }
+
+    try {
+      const result = await translateWithTimeout(this.primary, input, this.primaryTimeoutMs);
+      return {
+        ...result,
+        primaryProviderName: this.primary.name,
+        fallbackProviderName: this.fallback.name,
+        fallbackUsed: false,
+      };
+    } catch (error) {
+      const failureCode = providerFailureCode(error);
+      const result = await translateWithTimeout(this.fallback, input, this.fallbackTimeoutMs);
+      return {
+        ...result,
+        primaryProviderName: this.primary.name,
+        fallbackProviderName: this.fallback.name,
+        fallbackUsed: true,
+        providerFailureCode: failureCode,
+      };
+    }
+  }
+
+  async healthCheck(): Promise<ProviderHealthCheck> {
+    const health = this.primary.healthCheck
+      ? await this.primary.healthCheck()
+      : {
+          provider: this.primary.name,
+          status: 'ready' as const,
+          modelId: null,
+          latencyMs: null,
+          error: null,
+        };
+    return { ...health, fallbackProvider: this.fallback.name };
+  }
+
+  dispose(): void {
+    for (const provider of new Set([this.primary, this.fallback, this.defaultProvider])) {
+      provider.dispose?.();
+    }
+  }
+}
+
+function providerFailureCode(error: unknown): string {
+  if (error instanceof MediaIngestError) return error.code;
+  return 'translation-failed';
 }
 
 function languagePairKey(sourceLanguage: string, targetLanguage: string): string {

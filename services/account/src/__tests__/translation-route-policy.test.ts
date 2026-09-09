@@ -2,10 +2,11 @@
  * THE MESSAGING TRANSLATION RULING, PINNED.
  *
  * These are the rules a reviewer should be able to read off the test names:
- * same language never translates, an approved LOCAL route translates and
- * OPUS-MT wins where it stands, and every other shape -- no record, a refusal,
- * an unapproved scope, a missing licence, an absent evidence block, a cloud
- * route, the OPPOSITE direction -- refuses with a reason. The refusal is the
+ * same language never translates, an approved route translates, OPUS-MT wins
+ * where it stands except for approved Google Nigerian MT, and every other shape
+ * -- no record, a refusal, an unapproved scope, a missing licence, an absent
+ * evidence block, a non-Nigerian cloud route, the OPPOSITE direction -- refuses
+ * with a reason. The refusal is the
  * point: refusing means the original is delivered, not that anything fails.
  *
  * The function under test is pure, so none of these can pass for the wrong
@@ -129,6 +130,49 @@ describe('an approved local route translates', () => {
   });
 });
 
+describe('an approved Google Nigerian MT route translates through Google', () => {
+  it('allows Google Cloud Translation for an approved English to Yoruba route', () => {
+    const google = route({
+      provider: 'google-cloud',
+      modelId: 'google-cloud:translate-v3',
+      executionClass: 'cloud',
+    });
+    expect(isApprovedForMessaging(google, 'en', 'yo')).toBe(true);
+    expect(
+      decideMessagingRoute({ sourceLanguage: 'en', targetLanguage: 'yo', records: [google] }),
+    ).toEqual({
+      kind: 'approved',
+      provider: 'google-cloud',
+      modelId: 'google-cloud:translate-v3',
+      executionClass: 'cloud',
+    });
+  });
+
+  it('prefers approved Google over OPUS-MT only for the Nigerian directions', () => {
+    const google = route({
+      provider: 'google-cloud',
+      modelId: 'google-cloud:translate-v3',
+      executionClass: 'cloud',
+      technicalEvidence: {
+        sampleCount: 10,
+        successRate: 0.8,
+        latencyMs: { min: 100, median: 200, mean: 220, max: 400 },
+        recordedAt: '2026-09-07T00:00:00.000Z',
+      },
+    });
+    const decision = decideMessagingRoute({
+      sourceLanguage: 'en',
+      targetLanguage: 'yo',
+      records: [route(), google],
+    });
+    expect(decision).toMatchObject({
+      kind: 'approved',
+      provider: 'google-cloud',
+      executionClass: 'cloud',
+    });
+  });
+});
+
 describe('directions are separate records', () => {
   it('en->yo approved says nothing about yo->en', () => {
     expect(
@@ -177,16 +221,32 @@ describe('service scopes are separate approvals', () => {
 
 describe('no automatic paid cloud fallback', () => {
   it('an approved CLOUD route is never taken automatically', () => {
-    const cloud = route({ executionClass: 'cloud', provider: 'a-paid-vendor' });
+    const cloud = route({
+      sourceLanguage: 'en',
+      targetLanguage: 'fr',
+      executionClass: 'cloud',
+      provider: 'a-paid-vendor',
+    });
     expect(
-      decideMessagingRoute({ sourceLanguage: 'en', targetLanguage: 'yo', records: [cloud] }),
+      decideMessagingRoute({ sourceLanguage: 'en', targetLanguage: 'fr', records: [cloud] }),
     ).toEqual({ kind: 'unavailable', reason: 'cloud-only' });
   });
 
   it('a cloud route beside an approved local one does not displace it', () => {
-    const cloud = route({ executionClass: 'cloud', provider: 'a-paid-vendor' });
+    const local = route({
+      sourceLanguage: 'en',
+      targetLanguage: 'fr',
+      provider: 'opus-mt',
+      modelId: 'Helsinki-NLP/opus-mt-en-fr',
+    });
+    const cloud = route({
+      sourceLanguage: 'en',
+      targetLanguage: 'fr',
+      executionClass: 'cloud',
+      provider: 'a-paid-vendor',
+    });
     expect(
-      decideMessagingRoute({ sourceLanguage: 'en', targetLanguage: 'yo', records: [cloud, route()] }),
+      decideMessagingRoute({ sourceLanguage: 'en', targetLanguage: 'fr', records: [cloud, local] }),
     ).toMatchObject({ kind: 'approved', provider: 'opus-mt', executionClass: 'local' });
   });
 });
@@ -305,15 +365,33 @@ describe('the gate adapter', () => {
     expect(await registry.routesFor('en', 'ha')).toHaveLength(0);
   });
 
-  it('an allowed CLOUD route is still refused by the messaging rule', async () => {
+  it('an allowed non-Nigerian CLOUD route is still refused by the messaging rule', async () => {
     // The registry may approve a cloud route for messaging; this path still
     // will not take it automatically. Rule 4 lives here, above the gate.
-    const cloud = route({ executionClass: 'cloud', provider: 'a-paid-vendor' });
+    const cloud = route({
+      sourceLanguage: 'en',
+      targetLanguage: 'fr',
+      executionClass: 'cloud',
+      provider: 'a-paid-vendor',
+    });
     const { registry } = gate({ allowed: true, route: cloud });
+    const records = await registry.routesFor('en', 'fr');
+    expect(
+      decideMessagingRoute({ sourceLanguage: 'en', targetLanguage: 'fr', records }),
+    ).toEqual({ kind: 'unavailable', reason: 'cloud-only' });
+  });
+
+  it('an allowed Google Nigerian CLOUD route passes through the gate adapter', async () => {
+    const google = route({
+      provider: 'google-cloud',
+      modelId: 'google-cloud:translate-v3',
+      executionClass: 'cloud',
+    });
+    const { registry } = gate({ allowed: true, route: google });
     const records = await registry.routesFor('en', 'yo');
     expect(
       decideMessagingRoute({ sourceLanguage: 'en', targetLanguage: 'yo', records }),
-    ).toEqual({ kind: 'unavailable', reason: 'cloud-only' });
+    ).toMatchObject({ kind: 'approved', provider: 'google-cloud', executionClass: 'cloud' });
   });
 });
 

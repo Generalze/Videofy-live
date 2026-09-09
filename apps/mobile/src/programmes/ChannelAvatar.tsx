@@ -20,9 +20,9 @@ import { useEffect, useState, type JSX } from 'react';
 import { Image, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { channelAvatarUri, type ChannelSummary } from '../api/channelDirectory';
 import { initials } from './programmeCatalogue';
+import { PUBLIC_ENDPOINTS } from '../config/publicEnv';
 
-/** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. Staging mounts the account service at /auth. */
-const ACCOUNT_URL = process.env['EXPO_PUBLIC_ACCOUNT_URL'] ?? 'https://staging.consummate7.com/auth';
+const ACCOUNT_URL = PUBLIC_ENDPOINTS.accountUrl;
 
 /** Retry a failed picture after the account service's cache window. */
 const RETRY_MS = 60_000;
@@ -55,8 +55,14 @@ export function ChannelAvatar({
 
   const tile = { width: size, height: size, borderRadius: radius };
   return (
-    <View style={[styles.tile, live && styles.tileLive, tile, style]} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-      <Text style={[styles.letters, { fontSize: Math.round(size * 0.31) }]}>{initials(channel.displayName)}</Text>
+    <View
+      style={[styles.tile, live && styles.tileLive, tile, style]}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+    >
+      <Text style={[styles.letters, { fontSize: Math.round(size * 0.31) }]}>
+        {initials(channel.displayName)}
+      </Text>
       {uri !== null && !failed ? (
         <Image
           source={{ uri }}

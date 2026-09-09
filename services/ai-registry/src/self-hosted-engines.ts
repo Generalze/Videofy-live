@@ -232,10 +232,10 @@ export const SELF_HOSTED_ENGINES: readonly SelfHostedEngine[] = [
     evidence: OPUS_MT_EVIDENCE,
     notes:
       'Twelve directions benchmarked on staging 2026-08-30 (docs/certification/' +
-      'opus-benchmarks.md), twice, medians within 1.3%. Four of them -- pt->en, ' +
-      'ha->en, ig->en and yo->en -- have benchmark evidence but are NOT in ' +
-      'DEFAULT_OPUS_MT_LANGUAGE_MODELS, so the deployed service refuses them ' +
-      'with unsupported-language. The model works; the service cannot reach it.',
+      'opus-benchmarks.md), twice, medians within 1.3%. The Nigerian reverse ' +
+      'routes are now configured only so OPUS-MT can serve as fallback behind ' +
+      'an explicitly approved Google Nigerian route. This still approves no ' +
+      'direction: route authority remains in packages/translation-routes.',
   },
   {
     engineId: 'm2m100',

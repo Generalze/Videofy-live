@@ -5,36 +5,41 @@
  * spends a single provider call.
  *
  * OPUS-MT IS THE PRIMARY TRANSLATOR FOR ORDINARY TEXT MESSAGING wherever an
- * APPROVED route exists. Four rules, in order, and no fifth:
+ * APPROVED route exists, except the narrow Google Nigerian MT route approved
+ * by the route document. Four rules, in order, and no fifth:
  *
  *  1. SAME LANGUAGE BYPASSES TRANSLATION ENTIRELY. No provider call, no
  *     chargeable translation event, nothing to be honest about. Two people
  *     writing the same language are not using a translation product.
- *  2. AN APPROVED ROUTE TRANSLATES LOCALLY. Approved means the registry says
- *     so for THIS direction and THIS service scope -- en->yo is not yo->en,
- *     and a route approved for messaging is not thereby approved for the
- *     live programme or call paths.
+ *  2. AN APPROVED ROUTE TRANSLATES THROUGH ITS APPROVED PROVIDER. Approved
+ *     means the registry says so for THIS direction and THIS service scope --
+ *     en->yo is not yo->en, and a route approved for messaging is not thereby
+ *     approved for the live programme or call paths. Cloud remains refused
+ *     here except for Google Cloud Translation on en<->yo|ig|ha.
  *  3. A MISSING, REFUSED OR FAILING ROUTE DELIVERS THE ORIGINAL and says
  *     translation is unavailable. Honestly: `unavailable` with a reason, not
  *     silence, and never invented words.
  *  4. NO AUTOMATIC PAID CLOUD FALLBACK. A `cloud` execution class is never
  *     selected automatically here, however approved it may be for other
- *     purposes; a route this path may take is a LOCAL one. Nothing in this
- *     file may reach a vendor, and nothing downstream of it may be reached
- *     without a decision from here.
+ *     purposes, except the explicit Google Nigerian MT route. Nothing
+ *     downstream may reach any vendor without a decision from here.
  *
  * THE REGISTRY IS AUTHORITATIVE, NOT THIS FILE. The record type and the gate
  * both come from `@videofy-live/translation-routes`; nothing here re-states
  * what a record IS, because a second copy of a contract is worse than no copy
  * -- it compiles while it drifts. What this file adds is the three rules that
  * belong to MESSAGING and to nowhere else: the same-language bypass, OPUS-MT
- * first among approved routes, and no automatic cloud route. Those cannot
+ * first except for approved Google Nigerian MT, and no automatic cloud route. Those cannot
  * live in the registry, because the registry answers the same question for
  * the live programme and live calls, which are ruled on separately.
  */
 
 import {
+  GOOGLE_CLOUD_TRANSLATION_PROVIDER,
+  isApprovedGoogleNigerianTranslationRoute,
+  isNigerianMachineTranslationPair,
   normaliseLanguageTag,
+  providerMatchesTranslationProvider,
   type TranslationRouteRecord,
 } from '@videofy-live/translation-routes';
 
@@ -55,6 +60,7 @@ export interface TranslationRouteRegistry {
 
 /** The founder's primary translator for ordinary text messaging. */
 export const PRIMARY_MESSAGING_PROVIDER = 'opus-mt';
+export const NIGERIAN_MESSAGING_PRIMARY_PROVIDER = GOOGLE_CLOUD_TRANSLATION_PROVIDER;
 
 /** Why a message is going out untranslated. Reported, never guessed at. */
 export type MessagingRouteUnavailableReason =
@@ -66,7 +72,7 @@ export type MessagingRouteUnavailableReason =
   | 'refused'
   /** Records exist but none is approved for messaging in production. */
   | 'unapproved'
-  /** The only approved routes are cloud ones; rule 4 forbids taking them here. */
+  /** The only approved routes are cloud ones that rule 4 still forbids here. */
   | 'cloud-only';
 
 export type MessagingRouteDecision =
@@ -75,12 +81,12 @@ export type MessagingRouteDecision =
       readonly kind: 'approved';
       readonly provider: string;
       readonly modelId: string;
-      readonly executionClass: 'local';
+      readonly executionClass: TranslationRouteRecord['executionClass'];
     }
   | { readonly kind: 'unavailable'; readonly reason: MessagingRouteUnavailableReason };
 
 /**
- * Approved FOR MESSAGING, IN PRODUCTION, LOCALLY. Every clause is a separate
+ * Approved FOR MESSAGING, IN PRODUCTION. Every clause is a separate
  * refusal an auditor can point at:
  *
  *  - the direction must match exactly (en->yo never stands in for yo->en);
@@ -92,7 +98,8 @@ export type MessagingRouteDecision =
  *  - human review must not be outstanding or failed;
  *  - the licence must permit commercial use -- CC-BY-NC weights are exactly
  *    the trap this clause exists for;
- *  - the execution class must be local (rule 4).
+ *  - cloud execution is allowed only for Google Cloud Translation on the
+ *    Nigerian MT directions named in the shared route policy.
  */
 export function isApprovedForMessaging(
   record: TranslationRouteRecord,
@@ -102,7 +109,12 @@ export function isApprovedForMessaging(
   if (!matchesDirection(record, sourceLanguage, targetLanguage)) return false;
   if (record.serviceScopes.messaging !== 'approved') return false;
   if (record.productionApproved !== true) return false;
-  if (record.executionClass !== 'local') return false;
+  if (
+    record.executionClass !== 'local' &&
+    !isApprovedGoogleNigerianTranslationRoute(record, sourceLanguage, targetLanguage)
+  ) {
+    return false;
+  }
   if (record.humanReviewStatus === 'failed') return false;
   if (record.humanReviewStatus === 'required-not-done') return false;
   if (record.licenceStatus.commercialUse !== 'permitted') return false;
@@ -133,22 +145,42 @@ function matchesDirection(
 }
 
 /**
- * OPUS-MT FIRST, then the best-evidenced of whatever else is approved.
+ * OPUS-MT FIRST except for Google-approved Nigerian MT, then the best-evidenced
+ * of whatever else is approved.
  * Deterministic to the last tiebreak: a route chosen differently on two
  * boxes is a route nobody can certify.
  */
-function preferPrimary(a: TranslationRouteRecord, b: TranslationRouteRecord): number {
-  const aPrimary = a.provider === PRIMARY_MESSAGING_PROVIDER ? 0 : 1;
-  const bPrimary = b.provider === PRIMARY_MESSAGING_PROVIDER ? 0 : 1;
-  if (aPrimary !== bPrimary) return aPrimary - bPrimary;
-  const aRate = a.technicalEvidence?.successRate ?? 0;
-  const bRate = b.technicalEvidence?.successRate ?? 0;
-  if (aRate !== bRate) return bRate - aRate;
-  const aLatency = a.technicalEvidence?.latencyMs.median ?? Number.POSITIVE_INFINITY;
-  const bLatency = b.technicalEvidence?.latencyMs.median ?? Number.POSITIVE_INFINITY;
-  if (aLatency !== bLatency) return aLatency - bLatency;
-  if (a.provider !== b.provider) return a.provider < b.provider ? -1 : 1;
-  return a.modelId < b.modelId ? -1 : a.modelId > b.modelId ? 1 : 0;
+function preferPrimary(
+  sourceLanguage: string,
+  targetLanguage: string,
+): (a: TranslationRouteRecord, b: TranslationRouteRecord) => number {
+  const nigerianPair = isNigerianMachineTranslationPair(sourceLanguage, targetLanguage);
+  return (a, b) => {
+    const aRank = messagingProviderRank(a.provider, nigerianPair);
+    const bRank = messagingProviderRank(b.provider, nigerianPair);
+    if (aRank !== bRank) return aRank - bRank;
+    const aRate = a.technicalEvidence?.successRate ?? 0;
+    const bRate = b.technicalEvidence?.successRate ?? 0;
+    if (aRate !== bRate) return bRate - aRate;
+    const aLatency = a.technicalEvidence?.latencyMs.median ?? Number.POSITIVE_INFINITY;
+    const bLatency = b.technicalEvidence?.latencyMs.median ?? Number.POSITIVE_INFINITY;
+    if (aLatency !== bLatency) return aLatency - bLatency;
+    if (a.provider !== b.provider) return a.provider < b.provider ? -1 : 1;
+    return a.modelId < b.modelId ? -1 : a.modelId > b.modelId ? 1 : 0;
+  };
+}
+
+function messagingProviderRank(provider: string, nigerianPair: boolean): number {
+  if (
+    nigerianPair &&
+    providerMatchesTranslationProvider(NIGERIAN_MESSAGING_PRIMARY_PROVIDER, provider)
+  ) {
+    return 0;
+  }
+  if (providerMatchesTranslationProvider(PRIMARY_MESSAGING_PROVIDER, provider)) {
+    return nigerianPair ? 1 : 0;
+  }
+  return nigerianPair ? 2 : 1;
 }
 
 /**
@@ -177,14 +209,14 @@ export function decideMessagingRoute(input: {
 
   const approved = forDirection
     .filter((record) => isApprovedForMessaging(record, sourceLanguage, targetLanguage))
-    .sort(preferPrimary);
+    .sort(preferPrimary(sourceLanguage, targetLanguage));
   const chosen = approved[0];
   if (chosen !== undefined) {
     return {
       kind: 'approved',
       provider: chosen.provider,
       modelId: chosen.modelId,
-      executionClass: 'local',
+      executionClass: chosen.executionClass,
     };
   }
 
@@ -200,7 +232,8 @@ export function decideMessagingRoute(input: {
     (record) =>
       record.executionClass === 'cloud' &&
       record.serviceScopes.messaging === 'approved' &&
-      record.productionApproved,
+      record.productionApproved &&
+      !isApprovedGoogleNigerianTranslationRoute(record, sourceLanguage, targetLanguage),
   );
   return { kind: 'unavailable', reason: cloudOnly ? 'cloud-only' : 'unapproved' };
 }

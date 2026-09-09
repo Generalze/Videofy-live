@@ -54,7 +54,9 @@ import { reportRingTimeline } from '../call/ringTimeline';
 import {
   CallConnection,
   type CallTransportEvent,
+  type RingDispatchPayload,
   type RemoteStream,
+  UNKNOWN_RING_DISPATCH,
 } from '../call/callConnection';
 import {
   admissionWords,
@@ -64,12 +66,11 @@ import {
   type KnockingSeat,
 } from '../conference/admission';
 import type { ConferenceSetup } from '../conference/conferenceSetup';
+import { CALL_DIAGNOSTICS_ENABLED, PUBLIC_ENDPOINTS } from '../config/publicEnv';
 
-/** Not a secret; compiled into the bundle like every EXPO_PUBLIC_ value. */
-const GATEWAY_URL = process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
-
-/** The developer switch. Off in every build a person installs. */
-const DIAGNOSTICS = process.env['EXPO_PUBLIC_CALL_DIAGNOSTICS'] === '1';
+const GATEWAY_URL = PUBLIC_ENDPOINTS.gatewayUrl;
+const DIAGNOSTICS = CALL_DIAGNOSTICS_ENABLED;
+const BUILD_LABEL = PUBLIC_ENDPOINTS.buildLabel;
 
 /**
  * An optional local override, normally empty. ICE servers come from the
@@ -128,7 +129,7 @@ export interface CallScreenProps {
    * joins first, becoming the host, and rings second). Absent when answering
    * and for conferences -- which is also how the screen knows its role.
    */
-  readonly onRing?: ((callId: string) => Promise<number | null>) | undefined;
+  readonly onRing?: ((callId: string) => Promise<RingDispatchPayload | null>) | undefined;
   readonly onLeave: () => void;
 }
 
@@ -162,6 +163,7 @@ export function CallScreen({
   const [voice, setVoice] = useState<{ inboundPackets: number; iceState: string } | null>(null);
   const [iceCount, setIceCount] = useState<number | null>(null);
   const [transportLog, setTransportLog] = useState<readonly string[]>([]);
+  const [ringDispatch, setRingDispatch] = useState<RingDispatchPayload | null>(null);
   const [roster, setRoster] = useState<
     readonly { participantId: string; displayName: string; accountId?: string }[]
   >([]);
@@ -274,7 +276,10 @@ export function CallScreen({
         stamp(stream === null ? 'video_remote_null' : 'video_remote_stream');
         setRemotes((current) => ({
           ...current,
-          [id]: { url: stream === null ? null : stream.toURL(), state: current[id]?.state ?? 'new' },
+          [id]: {
+            url: stream === null ? null : stream.toURL(),
+            state: current[id]?.state ?? 'new',
+          },
         }));
       },
       onPeerState: (id, state) => {
@@ -323,7 +328,10 @@ export function CallScreen({
       onEnded: () => {
         // ENDED reaches conferences too; for a direct call the telephone's
         // own 'ended' usually arrives first and this is a no-op.
-        if (live) setServerState((current) => (current !== null && TERMINAL_DIRECT_STATES.has(current) ? current : 'ended'));
+        if (live)
+          setServerState((current) =>
+            current !== null && TERMINAL_DIRECT_STATES.has(current) ? current : 'ended',
+          );
       },
       onTransport: (event: CallTransportEvent) => {
         if (!live) return;
@@ -335,7 +343,10 @@ export function CallScreen({
               : event.kind === 'resumed'
                 ? 'seat resumed, voice renegotiated'
                 : `resume failed: ${event.error}`;
-        setTransportLog((current) => [...current.slice(-4), `${new Date().toLocaleTimeString()} ${line}`]);
+        setTransportLog((current) => [
+          ...current.slice(-4),
+          `${new Date().toLocaleTimeString()} ${line}`,
+        ]);
       },
       onIceServers: (count) => {
         if (live) setIceCount(count);
@@ -357,8 +368,15 @@ export function CallScreen({
           videoStamps.current['video_rebuild_frames'] = event.frames;
           videoStamps.current['video_rebuild_state'] = PEER_STATE_CODE[event.connectionState] ?? 0;
         }
-        if (event.kind === 'outbound-silent' || event.kind === 'attach-failed' || event.kind === 'acquisition-failed') {
-          setTransportLog((current) => [...current.slice(-4), `${new Date().toLocaleTimeString()} video ${event.kind}`]);
+        if (
+          event.kind === 'outbound-silent' ||
+          event.kind === 'attach-failed' ||
+          event.kind === 'acquisition-failed'
+        ) {
+          setTransportLog((current) => [
+            ...current.slice(-4),
+            `${new Date().toLocaleTimeString()} video ${event.kind}`,
+          ]);
         }
       },
       onError: (message) => {
@@ -368,19 +386,21 @@ export function CallScreen({
     connection.current = link;
 
     // The caller's call is Telecom's too (phase 2): audio focus and routing owned by the OS.
-    if (call.kind === 'direct' && onRing !== undefined) videofyCall.reportOutgoingCall(callId, call.peer.name);
+    if (call.kind === 'direct' && onRing !== undefined)
+      videofyCall.reportOutgoingCall(callId, call.peer.name);
 
     void (async () => {
       try {
-        await link.openLocalMedia();
-        if (!live) return;
-        const ack = await link.join();
+        const ack = await link.join({ startMedia: onRing === undefined });
         if (!live) return;
         if (ack.ok) setJoined(true);
         if (ack.ok && onRing !== undefined) {
-          const reached = await onRing(callId);
-          // Zero devices is UNAVAILABLE now, not after thirty seconds of "Calling…".
-          link.reportRingResult(reached ?? -1);
+          void link.startMedia();
+          const dispatch = await onRing(callId);
+          // Zero devices is only UNAVAILABLE when the account service says no device was routable.
+          const report = dispatch ?? UNKNOWN_RING_DISPATCH;
+          setRingDispatch(report);
+          link.reportRingResult(report);
         }
         if (!ack.ok) {
           setError(
@@ -484,12 +504,14 @@ export function CallScreen({
   const answerKnock = useCallback((participantId: string, admit: boolean) => {
     setAnswering(true);
     const link = connection.current;
-    void (link?.admit(participantId, admit) ?? Promise.resolve({ ok: false as const, error: 'not-in-call' })).then(
-      (result) => {
-        setAnswering(false);
-        if (!result.ok) setError(admit ? 'Could not let them in. Try again.' : 'Could not answer. Try again.');
-      },
-    );
+    void (
+      link?.admit(participantId, admit) ??
+      Promise.resolve({ ok: false as const, error: 'not-in-call' })
+    ).then((result) => {
+      setAnswering(false);
+      if (!result.ok)
+        setError(admit ? 'Could not let them in. Try again.' : 'Could not answer. Try again.');
+    });
   }, []);
 
   // Audio route follows the camera unless the person chose.
@@ -569,6 +591,11 @@ export function CallScreen({
       : 'Conference';
   const knock = knockWords(knocking);
   const firstKnock = knocking[0];
+  const ringSummary =
+    ringDispatch === null
+      ? ''
+      : ` | ring ${ringDispatch.status} ${ringDispatch.delivered}/${ringDispatch.attempted}`;
+  const buildSummary = BUILD_LABEL.length > 0 ? `build ${BUILD_LABEL} | ` : '';
 
   return (
     <View style={styles.screen}>
@@ -596,7 +623,10 @@ export function CallScreen({
             accessibilityRole="button"
             disabled={answering}
             onPress={() => answerKnock(firstKnock.participantId, false)}
-            style={({ pressed }) => [styles.knockRefuse, (pressed || answering) && styles.knockPressed]}
+            style={({ pressed }) => [
+              styles.knockRefuse,
+              (pressed || answering) && styles.knockPressed,
+            ]}
           >
             <Text style={styles.knockRefuseLabel}>Refuse</Text>
           </Pressable>
@@ -604,7 +634,10 @@ export function CallScreen({
             accessibilityRole="button"
             disabled={answering}
             onPress={() => answerKnock(firstKnock.participantId, true)}
-            style={({ pressed }) => [styles.knockAdmit, (pressed || answering) && styles.knockPressed]}
+            style={({ pressed }) => [
+              styles.knockAdmit,
+              (pressed || answering) && styles.knockPressed,
+            ]}
           >
             <Text style={styles.knockAdmitLabel}>Admit</Text>
           </Pressable>
@@ -623,7 +656,9 @@ export function CallScreen({
                   {call.peer.name}
                 </Text>
                 <Text style={styles.peerVideoTimer}>
-                  {elapsedMs !== null ? formatElapsed(elapsedMs) : stateLine(serverState, role, call.peer.name)}
+                  {elapsedMs !== null
+                    ? formatElapsed(elapsedMs)
+                    : stateLine(serverState, role, call.peer.name)}
                 </Text>
               </View>
             </View>
@@ -642,31 +677,41 @@ export function CallScreen({
               {elapsedMs !== null && connectedRowState.show ? (
                 <>
                   {/*
-                    * THE TIMER SHOWS WHEN; THE WORDS SHOW WHAT.
-                    *
-                    * `connectedAtMs` says when two-way audio was FIRST proven
-                    * and never moves again -- which is exactly right for a
-                    * duration and exactly wrong for a status. This row used to
-                    * read "Connected" whenever that value existed, so a server
-                    * that had gone back to `connecting` after a renegotiation
-                    * still showed Connected, and the screen quietly disagreed
-                    * with the call.
-                    *
-                    * The elapsed time keeps running across a reconnect, because
-                    * the call did not restart; the sentence beneath it is
-                    * whatever the server currently says.
-                    */}
+                   * THE TIMER SHOWS WHEN; THE WORDS SHOW WHAT.
+                   *
+                   * `connectedAtMs` says when two-way audio was FIRST proven
+                   * and never moves again -- which is exactly right for a
+                   * duration and exactly wrong for a status. This row used to
+                   * read "Connected" whenever that value existed, so a server
+                   * that had gone back to `connecting` after a renegotiation
+                   * still showed Connected, and the screen quietly disagreed
+                   * with the call.
+                   *
+                   * The elapsed time keeps running across a reconnect, because
+                   * the call did not restart; the sentence beneath it is
+                   * whatever the server currently says.
+                   */}
                   <Text style={styles.timer}>{formatElapsed(elapsedMs)}</Text>
                   <View style={styles.stateRow}>
-                    <View style={[styles.stateDot, connectedRowState.warn && styles.stateDotWarn]} />
-                    <Text style={[styles.stateLine, styles.stateConnected, connectedRowState.warn && styles.stateWarn]}>
+                    <View
+                      style={[styles.stateDot, connectedRowState.warn && styles.stateDotWarn]}
+                    />
+                    <Text
+                      style={[
+                        styles.stateLine,
+                        styles.stateConnected,
+                        connectedRowState.warn && styles.stateWarn,
+                      ]}
+                    >
                       {connectedRowState.words}
                     </Text>
                   </View>
                 </>
               ) : (
                 <>
-                  <Text style={styles.stateLine}>{stateLine(serverState, role, call.peer.name)}</Text>
+                  <Text style={styles.stateLine}>
+                    {stateLine(serverState, role, call.peer.name)}
+                  </Text>
                   {terminal && elapsedMs !== null && (
                     <Text style={styles.timerSmall}>{formatElapsed(elapsedMs)}</Text>
                   )}
@@ -751,9 +796,9 @@ export function CallScreen({
       {DIAGNOSTICS && (
         <View style={styles.diagBox}>
           <Text style={styles.diag}>
-            {`joined ${joined} · you ${legs.publish} · them ${legs.receive}${
-              voice === null ? '' : ` · ${voice.inboundPackets} pkts · ice ${voice.iceState}`
-            } · ice servers ${iceCount ?? '?'} · state ${serverState ?? '-'}`}
+            {`${buildSummary}joined ${joined} | you ${legs.publish} | them ${legs.receive}${
+              voice === null ? '' : ` | ${voice.inboundPackets} pkts | ice ${voice.iceState}`
+            } | ice servers ${iceCount ?? '?'} | state ${serverState ?? '-'}${ringSummary}`}
           </Text>
           {transportLog.map((line) => (
             <Text key={line} style={styles.diag}>
@@ -773,19 +818,37 @@ export function CallScreen({
         <GlassDock>
           <View style={styles.controlsRow}>
             <RoundControl
-              icon={<Icon name={muted ? 'mic-off' : 'mic'} size={26} color={muted ? CALL_COLORS.ground : CALL_COLORS.text} />}
+              icon={
+                <Icon
+                  name={muted ? 'mic-off' : 'mic'}
+                  size={26}
+                  color={muted ? CALL_COLORS.ground : CALL_COLORS.text}
+                />
+              }
               label={muted ? 'Unmute' : 'Mute'}
               active={muted}
               onPress={toggleMute}
             />
             <RoundControl
-              icon={<Icon name="speaker" size={26} color={speakerOn ? CALL_COLORS.ground : CALL_COLORS.text} />}
+              icon={
+                <Icon
+                  name="speaker"
+                  size={26}
+                  color={speakerOn ? CALL_COLORS.ground : CALL_COLORS.text}
+                />
+              }
               label="Speaker"
               active={speakerOn}
               onPress={toggleSpeaker}
             />
             <RoundControl
-              icon={<Icon name={cameraOn ? 'camera' : 'camera-off'} size={26} color={cameraOn ? CALL_COLORS.ground : CALL_COLORS.text} />}
+              icon={
+                <Icon
+                  name={cameraOn ? 'camera' : 'camera-off'}
+                  size={26}
+                  color={cameraOn ? CALL_COLORS.ground : CALL_COLORS.text}
+                />
+              }
               label={cameraOn ? 'Camera on' : 'Camera off'}
               active={cameraOn}
               disabled={cameraStarting}
@@ -816,7 +879,11 @@ export function CallScreen({
           {admission === 'pending' && (
             <>
               <Text style={styles.hint}>The host sees your name and decides.</Text>
-              <Pressable accessibilityRole="button" onPress={onLeave} style={({ pressed }) => [styles.admissionCancel, pressed && styles.knockPressed]}>
+              <Pressable
+                accessibilityRole="button"
+                onPress={onLeave}
+                style={({ pressed }) => [styles.admissionCancel, pressed && styles.knockPressed]}
+              >
                 <Text style={styles.admissionCancelLabel}>Cancel</Text>
               </Pressable>
             </>
@@ -832,14 +899,29 @@ const styles = StyleSheet.create({
   top: { paddingTop: 52, paddingHorizontal: 22 },
   stage: { flex: 1, justifyContent: 'center' },
   identity: { alignItems: 'center', gap: 10, paddingHorizontal: 28 },
-  peerName: { color: CALL_COLORS.text, fontSize: 34, fontWeight: '600', fontFamily: 'serif', marginTop: 6, textAlign: 'center', letterSpacing: -0.3 },
+  peerName: {
+    color: CALL_COLORS.text,
+    fontSize: 34,
+    fontWeight: '600',
+    fontFamily: 'serif',
+    marginTop: 6,
+    textAlign: 'center',
+    letterSpacing: -0.3,
+  },
   stateLine: { color: CALL_COLORS.muted, fontSize: 16, textAlign: 'center' },
   stateConnected: { color: CALL_COLORS.teal },
   stateWarn: { color: '#d9a441' },
   stateRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   stateDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: CALL_COLORS.teal },
   stateDotWarn: { backgroundColor: '#d9a441' },
-  modePill: { borderRadius: 999, borderWidth: 1, borderColor: 'rgba(62,201,192,0.5)', paddingHorizontal: 14, paddingVertical: 5, backgroundColor: 'rgba(62,201,192,0.08)' },
+  modePill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(62,201,192,0.5)',
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+    backgroundColor: 'rgba(62,201,192,0.08)',
+  },
   modePillLabel: { color: CALL_COLORS.teal, fontSize: 13, fontWeight: '600' },
   cameraNotice: {
     marginTop: 18,
@@ -867,8 +949,20 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   timerSmall: { color: CALL_COLORS.muted, fontSize: 18, fontVariant: ['tabular-nums'] },
-  hint: { color: CALL_COLORS.faint, fontSize: 13, textAlign: 'center', lineHeight: 19, marginTop: 8 },
-  code: { color: CALL_COLORS.teal, fontSize: 24, fontFamily: 'monospace', letterSpacing: 2, marginTop: 6 },
+  hint: {
+    color: CALL_COLORS.faint,
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 19,
+    marginTop: 8,
+  },
+  code: {
+    color: CALL_COLORS.teal,
+    fontSize: 24,
+    fontFamily: 'monospace',
+    letterSpacing: 2,
+    marginTop: 6,
+  },
 
   peerVideoWrap: { flex: 1, marginHorizontal: 12, borderRadius: 24, overflow: 'hidden' },
   peerVideo: { flex: 1, backgroundColor: CALL_COLORS.navy },
@@ -924,7 +1018,14 @@ const styles = StyleSheet.create({
   dockWrap: { paddingHorizontal: 14 },
   controlsRow: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'flex-start' },
 
-  confTitle: { color: CALL_COLORS.text, fontSize: 20, fontWeight: '600', fontFamily: 'serif', marginTop: 10, letterSpacing: -0.2 },
+  confTitle: {
+    color: CALL_COLORS.text,
+    fontSize: 20,
+    fontWeight: '600',
+    fontFamily: 'serif',
+    marginTop: 10,
+    letterSpacing: -0.2,
+  },
 
   knockBanner: {
     marginTop: 12,
@@ -941,9 +1042,22 @@ const styles = StyleSheet.create({
   },
   knockHeadline: { color: CALL_COLORS.text, fontSize: 15, fontWeight: '600' },
   knockOthers: { color: CALL_COLORS.muted, fontSize: 12 },
-  knockRefuse: { borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)', paddingHorizontal: 14, paddingVertical: 8 },
+  knockRefuse: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
   knockRefuseLabel: { color: CALL_COLORS.text, fontSize: 14, fontWeight: '600' },
-  knockAdmit: { borderRadius: 999, backgroundColor: '#128a84', borderWidth: 1, borderColor: 'rgba(62,201,192,0.7)', paddingHorizontal: 16, paddingVertical: 8 },
+  knockAdmit: {
+    borderRadius: 999,
+    backgroundColor: '#128a84',
+    borderWidth: 1,
+    borderColor: 'rgba(62,201,192,0.7)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
   knockAdmitLabel: { color: '#ffffff', fontSize: 14, fontWeight: '600' },
   knockPressed: { opacity: 0.6 },
 
@@ -959,8 +1073,22 @@ const styles = StyleSheet.create({
     gap: 16,
     paddingHorizontal: 32,
   },
-  admissionTitle: { color: CALL_COLORS.text, fontSize: 26, fontWeight: '600', fontFamily: 'serif', textAlign: 'center', letterSpacing: -0.3 },
+  admissionTitle: {
+    color: CALL_COLORS.text,
+    fontSize: 26,
+    fontWeight: '600',
+    fontFamily: 'serif',
+    textAlign: 'center',
+    letterSpacing: -0.3,
+  },
   admissionLine: { color: CALL_COLORS.text, fontSize: 18, textAlign: 'center' },
-  admissionCancel: { marginTop: 12, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(255,255,255,0.18)', paddingHorizontal: 28, paddingVertical: 12 },
+  admissionCancel: {
+    marginTop: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+  },
   admissionCancelLabel: { color: CALL_COLORS.text, fontSize: 16, fontWeight: '600' },
 });

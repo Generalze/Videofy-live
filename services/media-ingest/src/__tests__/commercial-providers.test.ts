@@ -26,7 +26,12 @@ import {
 } from '../providers/deepgram/transport.js';
 import { DeepgramBatchTranscriptionProvider } from '../providers/deepgram/batch-stt.js';
 import { GoogleTimestampedTranslationProvider } from '../providers/google/translation.js';
-import type { GoogleTranslationConfig } from '../providers/google/translation.js';
+import type {
+  GoogleTranslateCallOptions,
+  GoogleTranslateClient,
+  GoogleTranslateTextRequest,
+  GoogleTranslationConfig,
+} from '../providers/google/translation.js';
 import {
   ElevenLabsStreamingSynthesisProvider,
   ElevenLabsTextToSpeechProvider,
@@ -260,36 +265,45 @@ describe('Deepgram batch', () => {
 // --- Google translation ----------------------------------------------------
 
 describe('Google translation', () => {
-  function google(
-    status: number,
-    payload: unknown,
-    overrides: Partial<GoogleTranslationConfig> = {},
-  ) {
-    const seen: {
-      url: string;
-      body: Record<string, unknown>;
-      headers: Record<string, string>;
-    }[] = [];
+  function google(response: { payload?: unknown; error?: unknown } = {}, overrides: Partial<GoogleTranslationConfig> = {}) {
+    const seen: { request: GoogleTranslateTextRequest; options?: GoogleTranslateCallOptions }[] = [];
+    let healthChecks = 0;
+    let closed = false;
+    const client: GoogleTranslateClient = {
+      locationPath: (projectId, location) => `projects/${projectId}/locations/${location}`,
+      translateText: async (request, options) => {
+        seen.push(options === undefined ? { request } : { request, options });
+        if (response.error !== undefined) throw response.error;
+        return [
+          (response.payload ?? { translations: [{ translatedText: 'hola' }] }) as {
+            translations?: Array<{ translatedText?: string | null }>;
+          },
+        ];
+      },
+      getProjectId: async () => {
+        healthChecks += 1;
+        return 'proj';
+      },
+      close: async () => {
+        closed = true;
+      },
+    };
     const provider = new GoogleTimestampedTranslationProvider({
       projectId: 'proj',
-      authorize: async () => ({
-        headers: { authorization: 'Bearer tok', 'x-goog-user-project': 'quota-proj' },
-        quotaProjectId: 'quota-proj',
-      }),
-      fetchImpl: (async (url: string, init: RequestInit) => {
-        seen.push({
-          url: String(url),
-          body: JSON.parse(String(init.body)),
-          headers: init.headers as Record<string, string>,
-        });
-        return new Response(
-          typeof payload === 'string' ? payload : JSON.stringify(payload),
-          { status },
-        );
-      }) as unknown as typeof fetch,
+      client,
+      timeoutMs: 1234,
       ...overrides,
     });
-    return { provider, seen };
+    return {
+      provider,
+      seen,
+      get healthChecks() {
+        return healthChecks;
+      },
+      get closed() {
+        return closed;
+      },
+    };
   }
 
   const input = {
@@ -298,92 +312,144 @@ describe('Google translation', () => {
   };
 
   it('sends the documented v3 shape and reads translatedText', async () => {
-    const g = google(200, { translations: [{ translatedText: 'hola' }] });
+    const g = google({ payload: { translations: [{ translatedText: 'hola' }] } });
     const result = await g.provider.translate(input);
-    expect(result.translatedText).toBe('hola');
-    expect(g.seen[0]!.url).toContain('/v3/projects/proj/locations/global:translateText');
-    expect(g.seen[0]!.body).toMatchObject({
+    expect(result).toMatchObject({
+      translatedText: 'hola',
+      providerName: 'google-cloud:translate-v3',
+      modelId: 'google-cloud:translate-v3',
+    });
+    expect(g.seen[0]!.request).toMatchObject({
+      parent: 'projects/proj/locations/global',
       contents: ['hello'], sourceLanguageCode: 'en', targetLanguageCode: 'es', mimeType: 'text/plain',
     });
+    expect(g.seen[0]!.options).toMatchObject({ timeout: 1234 });
   });
 
-  it('PIN: the quota project reaches the wire as x-goog-user-project', async () => {
-    const g = google(200, { translations: [{ translatedText: 'hola' }] });
+  it('PIN: the quota project reaches the client call as x-goog-user-project', async () => {
+    const g = google({}, { quotaProjectId: 'quota-proj' });
     await g.provider.translate(input);
-    // The whole of C-AI1.1F. Asking ADC for only a token discarded this
-    // header, and Google answered 403 -- a permissions error for a caller
-    // whose permissions were fine.
-    expect(g.seen[0]!.headers['x-goog-user-project']).toBe('quota-proj');
-    expect(g.seen[0]!.headers['authorization']).toBe('Bearer tok');
+    expect(g.seen[0]!.options?.otherArgs?.headers?.['x-goog-user-project']).toBe('quota-proj');
   });
 
   it('PIN: the resource project and the quota project stay separate', async () => {
-    const g = google(200, { translations: [{ translatedText: 'hola' }] }, {
+    const g = google({}, {
       projectId: 'resource-project',
       quotaProjectId: 'billing-project',
     });
     await g.provider.translate(input);
     // A service account in one project calling a resource in another is
     // ordinary. Collapsing the two would break exactly that case.
-    expect(g.seen[0]!.url).toContain('/v3/projects/resource-project/');
-    expect(g.seen[0]!.url).not.toContain('billing-project');
-    expect(g.seen[0]!.headers['x-goog-user-project']).toBe('billing-project');
-  });
-
-  it('PIN: an explicit quota project overrides the credential', async () => {
-    const g = google(200, { translations: [{ translatedText: 'hola' }] }, {
-      quotaProjectId: 'stated-by-deployment',
-    });
-    await g.provider.translate(input);
-    // A deployment told which project to bill is stating policy; a credential's
-    // quota project is whatever `gcloud` last set on somebody's laptop.
-    expect(g.seen[0]!.headers['x-goog-user-project']).toBe('stated-by-deployment');
+    expect(g.seen[0]!.request.parent).toBe('projects/resource-project/locations/global');
+    expect(g.seen[0]!.request.parent).not.toContain('billing-project');
+    expect(g.seen[0]!.options?.otherArgs?.headers?.['x-goog-user-project']).toBe('billing-project');
   });
 
   it('PIN: no quota project sends no header, rather than an empty one', async () => {
-    const g = google(200, { translations: [{ translatedText: 'hola' }] }, {
-      authorize: async () => ({ headers: { authorization: 'Bearer tok' }, quotaProjectId: null }),
-    });
+    const g = google();
     await g.provider.translate(input);
-    // An empty `x-goog-user-project` is not "no quota project", it is a
-    // malformed one, and Google rejects it differently -- sending whoever
-    // debugs it to look in entirely the wrong place.
-    expect(g.seen[0]!.headers).not.toHaveProperty('x-goog-user-project');
+    expect(g.seen[0]!.options?.otherArgs?.headers).toBeUndefined();
   });
 
-  it('PIN: a failure carries Google own words, not just a status code', async () => {
-    const g = google(
-      403,
-      '{"error":{"code":403,"message":"Cloud Translation API has not been used in project 12345 before or it is disabled","status":"PERMISSION_DENIED"}}',
-    );
-    // "HTTP 403" cost a live validation session. The body names the actual
-    // problem every time; the status code names it never.
-    await expect(g.provider.translate(input)).rejects.toMatchObject({
-      code: 'translation-failed',
+  it('constructs the official client with project, key file and quota project', async () => {
+    let options: unknown = null;
+    const provider = new GoogleTimestampedTranslationProvider({
+      projectId: 'resource-project',
+      credentialsFile: '/etc/videofy/google-translation.json',
+      quotaProjectId: 'billing-project',
+      createClient: (clientOptions) => {
+        options = clientOptions;
+        return {
+          locationPath: (projectId, location) => `projects/${projectId}/locations/${location}`,
+          translateText: async () => [{ translations: [{ translatedText: 'ok' }] }],
+        };
+      },
     });
-    await expect(g.provider.translate(input)).rejects.toThrow(/PERMISSION_DENIED/);
+    await provider.translate(input);
+    expect(options).toEqual({
+      projectId: 'resource-project',
+      keyFilename: '/etc/videofy/google-translation.json',
+      quotaProjectId: 'billing-project',
+    });
+  });
+
+  it('PIN: a disabled API failure carries Google own words, not just a status code', async () => {
+    const error = Object.assign(
+      new Error('Cloud Translation API has not been used in project 12345 before or it is disabled'),
+      { code: 7, status: 403 },
+    );
+    const g = google({ error });
+    await expect(g.provider.translate(input)).rejects.toMatchObject({
+      code: 'translation-api-unavailable',
+    });
     await expect(g.provider.translate(input)).rejects.toThrow(/has not been used in project/);
   });
 
-  it('PIN: a 400 becomes unsupported-language so the composite can reroute', async () => {
-    const g = google(400, { error: 'unsupported' });
+  it('PIN: INVALID_ARGUMENT becomes unsupported-language so the fallback can reroute', async () => {
+    const g = google({
+      error: Object.assign(new Error('INVALID_ARGUMENT: unsupported target language'), { code: 3 }),
+    });
     // The existing composite learns unsupported PAIRS from this exact code. A
     // generic failure would retry the same doomed pair forever.
     await expect(g.provider.translate(input)).rejects.toMatchObject({ code: 'unsupported-language' });
   });
 
-  it('PIN: the health check does not spend money', async () => {
-    let called = 0;
-    const provider = new GoogleTimestampedTranslationProvider({
-      projectId: 'p',
-      authorize: async () => ({ headers: { authorization: 'Bearer tok' }, quotaProjectId: null }),
-      fetchImpl: (async () => { called += 1; return new Response('{}', { status: 200 }); }) as unknown as typeof fetch,
+  it('classifies credential failures without leaking private key material', async () => {
+    const g = google({
+      error: Object.assign(
+        new Error('Could not load credentials {"private_key":"SECRET-PRIVATE-KEY"}'),
+        { code: 16 },
+      ),
     });
-    const health = await provider.healthCheck();
+    let message = '';
+    try {
+      await g.provider.translate(input);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+      expect(error).toMatchObject({ code: 'translation-credentials-unavailable' });
+    }
+    expect(message).not.toContain('SECRET-PRIVATE-KEY');
+    expect(message).toContain('[redacted]');
+  });
+
+  it('classifies quota exhaustion separately', async () => {
+    const g = google({
+      error: Object.assign(new Error('RESOURCE_EXHAUSTED: quota exceeded'), { code: 8 }),
+    });
+    await expect(g.provider.translate(input)).rejects.toMatchObject({
+      code: 'translation-quota-exceeded',
+      statusCode: 429,
+    });
+  });
+
+  it('classifies network and service availability failures separately', async () => {
+    const g = google({
+      error: Object.assign(new Error('UNAVAILABLE: network connection reset'), { code: 14 }),
+    });
+    await expect(g.provider.translate(input)).rejects.toMatchObject({
+      code: 'translation-api-unavailable',
+    });
+  });
+
+  it('rejects a malformed translation response', async () => {
+    const g = google({ payload: { translations: [{}] } });
+    await expect(g.provider.translate(input)).rejects.toMatchObject({ code: 'translation-failed' });
+  });
+
+  it('PIN: the health check does not spend money', async () => {
+    const g = google();
+    const health = await g.provider.healthCheck();
     expect(health.status).toBe('ready');
     // A probe that translates on every check is one that gets disabled, and
     // then nothing is checked at all.
-    expect(called).toBe(0);
+    expect(g.seen).toHaveLength(0);
+    expect(g.healthChecks).toBe(1);
+  });
+
+  it('closes the official client without exposing credential contents', () => {
+    const g = google();
+    g.provider.dispose();
+    expect(g.closed).toBe(true);
   });
 });
 

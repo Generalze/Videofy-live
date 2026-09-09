@@ -157,6 +157,24 @@ describe('an approved exact route invokes the provider once', () => {
     expect(h.outcomes[0]).toMatchObject({ action: 'translate', billable: true });
   });
 
+  it('passes the route-approved provider id to the inner provider', async () => {
+    const spy = spyProvider();
+    const provider = new GatedTranslationProvider({
+      inner: spy.provider,
+      gate: createTranslationGate({
+        gate: {
+          mayTranslate: () => ({ allowed: true, route: { provider: 'google-cloud' } }),
+        },
+        scope: 'programme-live',
+      }),
+    });
+
+    await provider.translate(input({ targetLanguage: 'yo' }));
+
+    expect(spy.calls).toHaveLength(1);
+    expect(spy.calls[0]?.routeProvider).toBe('google-cloud');
+  });
+
   it('hands the engine masked text, never a raw identifier', async () => {
     const h = build(['en->fr:programme-live']);
     await h.provider.translate(input({ sourceText: 'Call 08031234567 today.' }));

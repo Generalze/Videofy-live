@@ -64,6 +64,8 @@ import {
   DirectCallLifecycle,
   TERMINAL_STATES,
   type DirectCallOutcomeRecord,
+  type DirectRingDispatchReport,
+  type DirectRingDispatchStatus,
   type DirectCallWire,
 } from './direct-call-lifecycle.js';
 import { CallTranscriptLog } from './call-transcript-log.js';
@@ -85,6 +87,55 @@ const GOVERNANCE_ACTIONS: readonly GovernanceAction[] = [
   'revoke-secretary',
   'transfer-chair',
 ];
+
+function directRingDispatchStatus(
+  value: unknown,
+  reachedDevices: number,
+): DirectRingDispatchStatus {
+  if (
+    value === 'accepted' ||
+    value === 'no-routable-device' ||
+    value === 'provider-failed' ||
+    value === 'unknown'
+  ) {
+    return value;
+  }
+  return reachedDevices > 0 ? 'accepted' : 'unknown';
+}
+
+function optionalCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.floor(value))
+    : undefined;
+}
+
+function countOrUnknown(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(-1, Math.floor(value))
+    : fallback;
+}
+
+function readDirectRingDispatch(payload: {
+  readonly reachedDevices?: unknown;
+  readonly ringDispatch?: unknown;
+}): DirectRingDispatchReport | null {
+  if (typeof payload.reachedDevices !== 'number' || !Number.isFinite(payload.reachedDevices))
+    return null;
+  const legacyReachedDevices = Math.max(-1, Math.floor(payload.reachedDevices));
+  const body =
+    typeof payload.ringDispatch === 'object' && payload.ringDispatch !== null
+      ? (payload.ringDispatch as Record<string, unknown>)
+      : {};
+  const reachedDevices = countOrUnknown(body['reachedDevices'], legacyReachedDevices);
+  return {
+    status: directRingDispatchStatus(body['status'], reachedDevices),
+    reachedDevices,
+    attempted: optionalCount(body['attempted']),
+    delivered: optionalCount(body['delivered']),
+    failed: optionalCount(body['failed']),
+    pruned: optionalCount(body['pruned']),
+  };
+}
 
 /**
  * P6.1B native call runtime, gateway side. `@videofy-live/call-session` owns
@@ -207,8 +258,7 @@ export interface CallConnectJoinGrant {
 }
 
 export type CallConnectJoinDecision =
-  | { ok: true; grant: CallConnectJoinGrant }
-  | { ok: false; code: string; message: string };
+  { ok: true; grant: CallConnectJoinGrant } | { ok: false; code: string; message: string };
 
 export interface CallConnectJoinAuthority {
   authorizeJoin(connectToken: string, origin: string | null): CallConnectJoinDecision;
@@ -283,12 +333,22 @@ export interface CallTranscriptionBridgeLike {
     sessionId: string,
     revision: number,
     mediaMs: number,
-  ): { sequence: number; startMs: number; endMs: number; capturedAtMs: number; submittedAtMs: number | null } | null;
+  ): {
+    sequence: number;
+    startMs: number;
+    endMs: number;
+    capturedAtMs: number;
+    submittedAtMs: number | null;
+  } | null;
   /** Backpressure/failure counters harvested into the call summary at teardown. */
   getSessionCounters?(
     sessionId: string,
     revision: number,
-  ): { evictedChunkCount: number; skippedFrameCount: number; submissionFailureCount: number } | null;
+  ): {
+    evictedChunkCount: number;
+    skippedFrameCount: number;
+    submissionFailureCount: number;
+  } | null;
 }
 
 export interface CallRuntimeDependencies {
@@ -530,14 +590,15 @@ export class CallRuntime {
   private readonly disconnectGraceMs: number;
   private readonly verifyVoiceIdentity: ((sessionToken: string) => string | null) | undefined;
   private readonly authorizeCallHost:
-    | ((sessionToken: string | null) => Promise<boolean>)
-    | undefined;
+    ((sessionToken: string | null) => Promise<boolean>) | undefined;
   private readonly callLiveRouteApproved:
-    | ((sourceLanguage: string, targetLanguage: string) => boolean)
-    | undefined;
+    ((sourceLanguage: string, targetLanguage: string) => boolean) | undefined;
 
   private readonly resolveDirectCallMode:
-    | ((sessionToken: string | null, peerAccountId: string) => Promise<'normal' | 'translated' | null>)
+    | ((
+        sessionToken: string | null,
+        peerAccountId: string,
+      ) => Promise<'normal' | 'translated' | null>)
     | undefined;
   /** The telephone. See direct-call-lifecycle.ts. */
   readonly directCalls: DirectCallLifecycle;
@@ -546,7 +607,10 @@ export class CallRuntime {
   private readonly directProbes = new Map<string, ReturnType<typeof setInterval>>();
   private readonly governanceAudit: ((event: GovernanceAuditEvent) => void) | undefined;
   private readonly connectAuthority: CallConnectJoinAuthority | undefined;
-  private readonly setTimer: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
+  private readonly setTimer: (
+    callback: () => void,
+    delayMs: number,
+  ) => ReturnType<typeof setTimeout>;
   private readonly clearTimer: (timer: ReturnType<typeof setTimeout>) => void;
   private readonly transcriptLog: CallTranscriptLog;
   private readonly now: () => number;
@@ -634,7 +698,8 @@ export class CallRuntime {
     });
     this.governanceAudit = dependencies.governanceAudit;
     this.connectAuthority = dependencies.connectAuthority;
-    this.playbackLedger = dependencies.playbackLedger ?? new CallPlaybackLedger({ nowMs: this.now });
+    this.playbackLedger =
+      dependencies.playbackLedger ?? new CallPlaybackLedger({ nowMs: this.now });
     this.acousticObserver =
       dependencies.acousticObserver ??
       new CallAcousticRoomObserver({
@@ -678,15 +743,20 @@ export class CallRuntime {
       this.deliverAck(ack, this.handleLeave(socket, raw));
     });
     this.onGuarded(socket, CALL_EVENTS.DIRECT_RING_RESULT, (raw, ack) => {
-      const payload = raw as { callId?: unknown; reachedDevices?: unknown } | null;
+      const payload = raw as {
+        callId?: unknown;
+        reachedDevices?: unknown;
+        ringDispatch?: unknown;
+      } | null;
       const binding = this.socketBindings.get(socket.id);
+      const dispatch = payload === null ? null : readDirectRingDispatch(payload);
       if (
         binding &&
         typeof payload?.callId === 'string' &&
         payload.callId === binding.callId &&
-        typeof payload.reachedDevices === 'number'
+        dispatch !== null
       ) {
-        this.directCalls.noteRingDispatch(payload.callId, Math.max(-1, Math.floor(payload.reachedDevices)));
+        this.directCalls.noteRingDispatch(payload.callId, dispatch);
       }
       this.deliverAck(ack, { ok: true });
     });
@@ -782,10 +852,7 @@ export class CallRuntime {
   }
 
   /** Owner-only transcript-download policy; the snapshot carries it to everyone. */
-  handleSetTranscriptPolicy(
-    socket: CallSocketLike,
-    raw: unknown,
-  ): { ok: boolean; error?: string } {
+  handleSetTranscriptPolicy(socket: CallSocketLike, raw: unknown): { ok: boolean; error?: string } {
     const binding = this.requireBinding(socket, raw);
     if (!binding) return { ok: false, error: USER_FACING_ERRORS.notInCall };
     const parsed = CallTranscriptPolicyPayloadSchema.safeParse(raw);
@@ -1154,7 +1221,11 @@ export class CallRuntime {
     if (!result.ok) {
       return { ok: false, code: result.code, error: result.message };
     }
-    if (directOverride !== null && typeof directPeerAccountId === 'string' && verifiedOwnerId !== null) {
+    if (
+      directOverride !== null &&
+      typeof directPeerAccountId === 'string' &&
+      verifiedOwnerId !== null
+    ) {
       // The telephone starts the moment the call exists. BUSY is asked of
       // the store -- one connected seat per account, anywhere -- and decided
       // before anybody is rung.
@@ -1179,7 +1250,12 @@ export class CallRuntime {
        */
       this.directCalls.peerJoined((raw as { callId: string }).callId, verifiedOwnerId);
     }
-    return this.completeJoin(socket, (raw as { callId: string }).callId, result, voiceIdentityRejected);
+    return this.completeJoin(
+      socket,
+      (raw as { callId: string }).callId,
+      result,
+      voiceIdentityRejected,
+    );
   }
 
   /**
@@ -1218,10 +1294,7 @@ export class CallRuntime {
       // partner-facing truth is "this token does not work here".
       return { ok: false, code: 'AUTH_INVALID_TOKEN', error: 'This join token is not valid.' };
     }
-    const decision = this.connectAuthority.authorizeJoin(
-      connectToken,
-      callSocketOrigin(socket),
-    );
+    const decision = this.connectAuthority.authorizeJoin(connectToken, callSocketOrigin(socket));
     if (!decision.ok) {
       return { ok: false, code: decision.code, error: decision.message };
     }
@@ -1277,9 +1350,15 @@ export class CallRuntime {
     if (previous && (previous.callId !== callId || previous.participantId !== participantId)) {
       // One call identity per socket in this wave; the abandoned seat follows
       // the normal disconnect path (kept for resume, reaped after grace).
-      this.detachParticipantTransport(previous.callId, previous.participantId, 'rejoined with a different identity');
+      this.detachParticipantTransport(
+        previous.callId,
+        previous.participantId,
+        'rejoined with a different identity',
+      );
       this.store.markDisconnected(previous.callId, previous.participantId);
-      const previousState = this.participants.get(participantKey(previous.callId, previous.participantId));
+      const previousState = this.participants.get(
+        participantKey(previous.callId, previous.participantId),
+      );
       if (previousState) {
         previousState.connected = false;
         previousState.socketId = null;
@@ -1544,7 +1623,12 @@ export class CallRuntime {
     // 'allow': a knocker withdrawing is the one act its binding permits.
     const binding = this.requireBinding(socket, raw, 'allow');
     if (!binding) return { ok: false };
-    return this.finalizeLeave(binding.callId, binding.participantId, socket, 'participant left the call');
+    return this.finalizeLeave(
+      binding.callId,
+      binding.participantId,
+      socket,
+      'participant left the call',
+    );
   }
 
   /**
@@ -1651,7 +1735,8 @@ export class CallRuntime {
     state.publishSerial += 1;
     const serial = state.publishSerial;
     this.publishPeerIndex.set(peerKey, { callId, participantId });
-    const broadcastId = this.currentEntryFor(state)?.plan.broadcastId ?? `callcast_${callId}_${participantId}`;
+    const broadcastId =
+      this.currentEntryFor(state)?.plan.broadcastId ?? `callcast_${callId}_${participantId}`;
     // A republish (reconnect, renegotiation) replaces the previous backend peer.
     this.mediaPeers.closeSession(peerKey, 'superseded by a new call publish offer');
     try {
@@ -1697,7 +1782,8 @@ export class CallRuntime {
         type: 'ice-candidate',
         protocolVersion: WEBRTC_SIGNALLING_PROTOCOL_VERSION,
         messageId: `msg_${randomUUID()}`,
-        broadcastId: this.currentEntryFor(state)?.plan.broadcastId ?? `callcast_${callId}_${participantId}`,
+        broadcastId:
+          this.currentEntryFor(state)?.plan.broadcastId ?? `callcast_${callId}_${participantId}`,
         sessionId: peerKey,
         peerId: callPublisherPeerId(participantId),
         senderRole: 'broadcaster',
@@ -1729,7 +1815,11 @@ export class CallRuntime {
     if (!parsedOffer.success) return { ok: false, error: USER_FACING_ERRORS.receive };
     const sdp = parsedOffer.data.sdp;
     try {
-      const answerSdp = await this.receivePeers.acceptOffer(binding.callId, binding.participantId, sdp);
+      const answerSdp = await this.receivePeers.acceptOffer(
+        binding.callId,
+        binding.participantId,
+        sdp,
+      );
       // A freshly negotiated peer has empty slots. Binding here is what makes a
       // reconnect recover its speakers without waiting for the next membership
       // change, which might never come in a settled call.
@@ -2289,8 +2379,7 @@ export class CallRuntime {
       // recipient reading captions (an empty-target session runs STT-only).
       // Otherwise creation stays deferred: the next membership change mints a
       // fresh revision-scoped session anyway.
-      const sessionNeeded =
-        plan.targetLanguages.length > 0 || plan.sameLanguageCaptionsNeeded;
+      const sessionNeeded = plan.targetLanguages.length > 0 || plan.sameLanguageCaptionsNeeded;
       if (!sessionNeeded || entry.active) {
         continue;
       }
@@ -2616,8 +2705,10 @@ export class CallRuntime {
         typeof echoCancellation === 'boolean' || typeof echoCancellation === 'string'
           ? (echoCancellation as boolean | 'all' | 'remote-only')
           : null,
-      noiseSuppression: typeof settings['noiseSuppression'] === 'boolean' ? settings['noiseSuppression'] : null,
-      autoGainControl: typeof settings['autoGainControl'] === 'boolean' ? settings['autoGainControl'] : null,
+      noiseSuppression:
+        typeof settings['noiseSuppression'] === 'boolean' ? settings['noiseSuppression'] : null,
+      autoGainControl:
+        typeof settings['autoGainControl'] === 'boolean' ? settings['autoGainControl'] : null,
       deviceLabel: typeof settings['deviceLabel'] === 'string' ? settings['deviceLabel'] : null,
     });
     this.transcriptLog.append({
@@ -3209,8 +3300,12 @@ function nearestRankPercentile(samples: number[], percentile: number): number | 
 function participantIdFromPlan(plan: CallIngestPlan, callId: string): string | null {
   const prefix = `${CALL_INGEST_SESSION_PREFIX}${callId}_`;
   const suffix = `_r${plan.mediaRevision}`;
-  if (!plan.ingestSessionId.startsWith(prefix) || !plan.ingestSessionId.endsWith(suffix)) return null;
-  const participantId = plan.ingestSessionId.slice(prefix.length, plan.ingestSessionId.length - suffix.length);
+  if (!plan.ingestSessionId.startsWith(prefix) || !plan.ingestSessionId.endsWith(suffix))
+    return null;
+  const participantId = plan.ingestSessionId.slice(
+    prefix.length,
+    plan.ingestSessionId.length - suffix.length,
+  );
   return participantId.length > 0 ? participantId : null;
 }
 

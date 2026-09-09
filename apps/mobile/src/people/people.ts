@@ -13,9 +13,9 @@
  * other code is shown as itself, upper-cased, rather than hidden.
  */
 import type { ContactPerson, PresenceState, SuggestedPerson } from '../api/client';
+import { PUBLIC_ENDPOINTS } from '../config/publicEnv';
 
-/** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
-export const WEB_URL = process.env['EXPO_PUBLIC_WEB_URL'] ?? 'https://staging.consummate7.com';
+export const WEB_URL = PUBLIC_ENDPOINTS.webUrl;
 
 export const LANGUAGE_NAMES: Readonly<Record<string, string>> = {
   en: 'English',
@@ -53,12 +53,18 @@ export function personName(person: {
 }
 
 /** What "Share contact" puts on the clipboard or in the share sheet. */
-export function contactShareMessage(name: string, username: string, webUrl: string = WEB_URL): string {
+export function contactShareMessage(
+  name: string,
+  username: string,
+  webUrl: string = WEB_URL,
+): string {
   return `${name} on C7 Videofy Live: @${username} - ${webUrl}/add/${username}`;
 }
 
 /** The line under a suggested person's handle. */
-export function suggestionSubtitle(person: Pick<SuggestedPerson, 'reason' | 'mutualCount'>): string {
+export function suggestionSubtitle(
+  person: Pick<SuggestedPerson, 'reason' | 'mutualCount'>,
+): string {
   if (person.reason === 'mutual-contacts' && person.mutualCount > 0) {
     return person.mutualCount === 1 ? '1 mutual contact' : `${person.mutualCount} mutual contacts`;
   }

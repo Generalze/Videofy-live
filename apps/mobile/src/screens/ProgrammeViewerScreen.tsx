@@ -45,9 +45,9 @@ import { ChannelAvatar } from '../programmes/ChannelAvatar';
 import { useChannelInterest } from '../programmes/useChannelInterest';
 import { C7, C7Ground, Chip } from '../ui/c7';
 import { Icon } from '../ui/icons';
+import { PUBLIC_ENDPOINTS } from '../config/publicEnv';
 
-const GATEWAY_URL = process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
-const LISTEN_URL = process.env['EXPO_PUBLIC_LISTEN_URL'] ?? `${GATEWAY_URL}/listen`;
+const LISTEN_URL = PUBLIC_ENDPOINTS.listenUrl;
 
 export interface ProgrammeViewerScreenProps {
   readonly channel: ChannelSummary;
@@ -55,7 +55,11 @@ export interface ProgrammeViewerScreenProps {
   readonly onBack: () => void;
 }
 
-export function ProgrammeViewerScreen({ channel, api, onBack }: ProgrammeViewerScreenProps): JSX.Element {
+export function ProgrammeViewerScreen({
+  channel,
+  api,
+  onBack,
+}: ProgrammeViewerScreenProps): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -96,15 +100,27 @@ export function ProgrammeViewerScreen({ channel, api, onBack }: ProgrammeViewerS
     <View style={styles.fill}>
       <C7Ground />
       <View style={styles.header}>
-        <Pressable onPress={onBack} accessibilityRole="button" accessibilityLabel="Back" hitSlop={8} style={styles.back}>
+        <Pressable
+          onPress={onBack}
+          accessibilityRole="button"
+          accessibilityLabel="Back"
+          hitSlop={8}
+          style={styles.back}
+        >
           <Icon name="chevron" size={22} color={C7.text} />
         </Pressable>
         <ChannelAvatar channel={channel} size={40} radius={20} live={channel.live} />
         <View style={{ flex: 1, gap: 3 }}>
-          <Text style={styles.title} numberOfLines={1}>{channel.displayName}</Text>
+          <Text style={styles.title} numberOfLines={1}>
+            {channel.displayName}
+          </Text>
           <View style={styles.metaRow}>
             {handle !== null && <Text style={styles.handle}>{handle}</Text>}
-            {channel.live ? <Chip label="Live" tone="live" /> : <Chip label="Off air" tone="amber" />}
+            {channel.live ? (
+              <Chip label="Live" tone="live" />
+            ) : (
+              <Chip label="Off air" tone="amber" />
+            )}
             <Text style={styles.meta}>{describeVisibility(channel.visibility)}</Text>
             {count !== null && (
               <>
@@ -119,11 +135,19 @@ export function ProgrammeViewerScreen({ channel, api, onBack }: ProgrammeViewerS
           disabled={busy}
           accessibilityRole="button"
           accessibilityState={{ selected: following, disabled: busy }}
-          accessibilityLabel={following ? 'Stop reminders for this channel' : 'Tell me when this channel goes live'}
-          style={({ pressed }) => [styles.follow, following && styles.followOn, (pressed || busy) && styles.pressed]}
+          accessibilityLabel={
+            following ? 'Stop reminders for this channel' : 'Tell me when this channel goes live'
+          }
+          style={({ pressed }) => [
+            styles.follow,
+            following && styles.followOn,
+            (pressed || busy) && styles.pressed,
+          ]}
         >
           <Icon name="bell" size={18} color={following ? C7.ground : C7.teal} />
-          <Text style={[styles.followLabel, following && styles.followLabelOn]}>{following ? 'Following' : 'Interested'}</Text>
+          <Text style={[styles.followLabel, following && styles.followLabelOn]}>
+            {following ? 'Following' : 'Interested'}
+          </Text>
         </Pressable>
         {shareUrl !== null && (
           <Pressable
@@ -143,7 +167,14 @@ export function ProgrammeViewerScreen({ channel, api, onBack }: ProgrammeViewerS
         {failed ? (
           <View style={styles.centre}>
             <Text style={styles.stateText}>The programme could not be loaded.</Text>
-            <Pressable onPress={() => { setFailed(false); setLoading(true); }} accessibilityRole="button" style={styles.retry}>
+            <Pressable
+              onPress={() => {
+                setFailed(false);
+                setLoading(true);
+              }}
+              accessibilityRole="button"
+              style={styles.retry}
+            >
               <Text style={styles.retryLabel}>Try again</Text>
             </Pressable>
           </View>
@@ -174,7 +205,16 @@ export function ProgrammeViewerScreen({ channel, api, onBack }: ProgrammeViewerS
 
 const styles = StyleSheet.create({
   fill: { flex: 1, backgroundColor: C7.ground },
-  header: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingTop: 50, paddingHorizontal: 14, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: C7.panelEdge },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingTop: 50,
+    paddingHorizontal: 14,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: C7.panelEdge,
+  },
   back: { transform: [{ rotate: '180deg' }], padding: 4 },
   title: { color: C7.text, fontSize: 18, fontWeight: '600', fontFamily: 'serif' },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
@@ -182,9 +222,26 @@ const styles = StyleSheet.create({
   metaDot: { color: C7.faint, fontSize: 12 },
   metaTeal: { color: C7.teal, fontSize: 12, fontWeight: '600' },
   handle: { color: C7.teal, fontSize: 12, fontWeight: '600' },
-  share: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(62,201,192,0.5)' },
+  share: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(62,201,192,0.5)',
+  },
   copied: { color: C7.teal, fontSize: 12, paddingHorizontal: 14, paddingVertical: 6 },
-  follow: { flexDirection: 'row', alignItems: 'center', gap: 6, borderRadius: 999, borderWidth: 1, borderColor: 'rgba(62,201,192,0.5)', paddingHorizontal: 12, paddingVertical: 7 },
+  follow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(62,201,192,0.5)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
   followOn: { backgroundColor: C7.teal, borderColor: C7.teal },
   followLabel: { color: C7.teal, fontSize: 13, fontWeight: '700' },
   followLabelOn: { color: C7.ground },
@@ -192,9 +249,22 @@ const styles = StyleSheet.create({
   stage: { flex: 1 },
   web: { flex: 1, backgroundColor: C7.ground },
   centre: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 24 },
-  overlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(7,11,18,0.85)' },
+  overlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(7,11,18,0.85)',
+  },
   stateText: { color: C7.muted, fontSize: 14, textAlign: 'center' },
-  retry: { borderRadius: 999, borderWidth: 1, borderColor: C7.teal, paddingHorizontal: 16, paddingVertical: 9 },
+  retry: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: C7.teal,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+  },
   retryLabel: { color: C7.teal, fontSize: 14, fontWeight: '700' },
   pressed: { opacity: 0.75 },
 });

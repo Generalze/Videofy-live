@@ -31,7 +31,16 @@
  * its code." (founder ruling 29 Aug 2026, LOCKED)
  */
 import { useCallback, useEffect, useState, type JSX } from 'react';
-import { ActivityIndicator, AppState, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  AppState,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { normalizeCallCode } from '@videofy-live/call-client-core';
 import { C7, Chip, GlassCard, PrimaryButton, SectionHeading } from '../ui/c7';
 import { Icon, type IconName } from '../ui/icons';
@@ -44,7 +53,11 @@ import {
   type ConferenceSetup,
 } from '../conference/conferenceSetup';
 import { fetchConferenceStatuses } from '../conference/conferenceStatus';
-import { recentConferences, similarSetup, type RecentConference } from '../conference/recentConferences';
+import {
+  recentConferences,
+  similarSetup,
+  type RecentConference,
+} from '../conference/recentConferences';
 import {
   agoWords,
   conferenceTitle,
@@ -53,16 +66,17 @@ import {
   startedWords,
   type PublicConference,
 } from '../conference/publicConferences';
+import { PUBLIC_ENDPOINTS } from '../config/publicEnv';
 
-/** Not a secret; compiled into the bundle like every EXPO_PUBLIC_ value. */
-const GATEWAY_URL = process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
+const GATEWAY_URL = PUBLIC_ENDPOINTS.gatewayUrl;
 
 const ADJECTIVES = ['amber', 'bright', 'calm', 'clear', 'coral', 'gentle', 'golden', 'quiet'];
 const NOUNS = ['river', 'harbour', 'meadow', 'summit', 'lantern', 'compass', 'orchard', 'beacon'];
 
 /** A fresh code. Start and "Start similar" both come here; a code is never reused. */
 function generateCallCode(): string {
-  const pick = (words: readonly string[]): string => words[Math.floor(Math.random() * words.length)] ?? 'call';
+  const pick = (words: readonly string[]): string =>
+    words[Math.floor(Math.random() * words.length)] ?? 'call';
   const digits = String(Math.floor(Math.random() * 90) + 10);
   return `${pick(ADJECTIVES)}-${pick(NOUNS)}-${digits}`;
 }
@@ -112,7 +126,10 @@ export function CallHomeScreen({ emailVerified, onJoin }: CallHomeScreenProps): 
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const refresh = useCallback(async () => {
-    const [listing, remembered] = await Promise.all([fetchPublicConferences(GATEWAY_URL), recentConferences.read()]);
+    const [listing, remembered] = await Promise.all([
+      fetchPublicConferences(GATEWAY_URL),
+      recentConferences.read(),
+    ]);
     setPublicCalls(listing);
     setRecent(remembered);
     setNowMs(Date.now());
@@ -136,7 +153,11 @@ export function CallHomeScreen({ emailVerified, onJoin }: CallHomeScreenProps): 
   }, [refresh]);
 
   return (
-    <ScrollView style={styles.fill} contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
+    <ScrollView
+      style={styles.fill}
+      contentContainerStyle={styles.screen}
+      keyboardShouldPersistTaps="handled"
+    >
       <GlassCard accent style={{ gap: 14 }}>
         <View style={styles.head}>
           <View style={styles.orb}>
@@ -175,10 +196,20 @@ export function CallHomeScreen({ emailVerified, onJoin }: CallHomeScreenProps): 
                   accessibilityRole="button"
                   accessibilityState={{ selected: active }}
                   onPress={() => setPrivacy(choice.key)}
-                  style={({ pressed }) => [styles.tier, active && styles.tierActive, pressed && styles.pressed]}
+                  style={({ pressed }) => [
+                    styles.tier,
+                    active && styles.tierActive,
+                    pressed && styles.pressed,
+                  ]}
                 >
-                  <Icon name={PRIVACY_ICON[choice.key]} size={18} color={active ? C7.teal : C7.muted} />
-                  <Text style={[styles.tierLabel, active && styles.tierLabelActive]}>{choice.label}</Text>
+                  <Icon
+                    name={PRIVACY_ICON[choice.key]}
+                    size={18}
+                    color={active ? C7.teal : C7.muted}
+                  />
+                  <Text style={[styles.tierLabel, active && styles.tierLabelActive]}>
+                    {choice.label}
+                  </Text>
                 </Pressable>
               );
             })}
@@ -188,9 +219,15 @@ export function CallHomeScreen({ emailVerified, onJoin }: CallHomeScreenProps): 
 
         <Text style={styles.explain}>Translation is not active on mobile conferences yet.</Text>
 
-        <PrimaryButton label="Start Conference" onPress={start} leading={<Icon name="camera" size={18} color="#ffffff" />} />
+        <PrimaryButton
+          label="Start Conference"
+          onPress={start}
+          leading={<Icon name="camera" size={18} color="#ffffff" />}
+        />
         {emailVerified === false && (
-          <Text style={styles.warn}>Starting a conference needs a verified email (see Profile). Joining one works now.</Text>
+          <Text style={styles.warn}>
+            Starting a conference needs a verified email (see Profile). Joining one works now.
+          </Text>
         )}
       </GlassCard>
 
@@ -214,10 +251,19 @@ export function CallHomeScreen({ emailVerified, onJoin }: CallHomeScreenProps): 
           placeholderTextColor={C7.faint}
           onSubmitEditing={() => normalised.length > 0 && onJoin(normalised)}
         />
-        <PrimaryButton label="Join Conference" onPress={() => onJoin(normalised)} disabled={normalised.length === 0} />
+        <PrimaryButton
+          label="Join Conference"
+          onPress={() => onJoin(normalised)}
+          disabled={normalised.length === 0}
+        />
       </GlassCard>
 
-      <SectionHeading title="Public conferences" subtitle="Open to anyone, right now." action="Refresh" onAction={() => void refresh()} />
+      <SectionHeading
+        title="Public conferences"
+        subtitle="Open to anyone, right now."
+        action="Refresh"
+        onAction={() => void refresh()}
+      />
       <GlassCard padded={false}>
         {publicCalls === null && (
           <View style={styles.rowEmpty}>
@@ -234,7 +280,11 @@ export function CallHomeScreen({ emailVerified, onJoin }: CallHomeScreenProps): 
             key={entry.callId}
             accessibilityRole="button"
             onPress={() => onJoin(entry.callId)}
-            style={({ pressed }) => [styles.row, index > 0 && styles.rowDivider, pressed && styles.pressed]}
+            style={({ pressed }) => [
+              styles.row,
+              index > 0 && styles.rowDivider,
+              pressed && styles.pressed,
+            ]}
           >
             <View style={styles.rowIcon}>
               <Icon name="globe" size={20} color={C7.teal} />
@@ -269,7 +319,11 @@ export function CallHomeScreen({ emailVerified, onJoin }: CallHomeScreenProps): 
                 key={entry.callId}
                 accessibilityRole="button"
                 onPress={() => onJoin(entry.callId)}
-                style={({ pressed }) => [styles.row, index > 0 && styles.rowDivider, pressed && styles.pressed]}
+                style={({ pressed }) => [
+                  styles.row,
+                  index > 0 && styles.rowDivider,
+                  pressed && styles.pressed,
+                ]}
               >
                 <View style={styles.rowIcon}>
                   <Icon name="clock" size={20} color={C7.muted} />
@@ -303,7 +357,11 @@ export function CallHomeScreen({ emailVerified, onJoin }: CallHomeScreenProps): 
                   {meta}
                 </Text>
                 <View style={styles.rowActions}>
-                  <View accessibilityRole="button" accessibilityState={{ disabled: true }} style={[styles.smallButton, styles.smallButtonDisabled]}>
+                  <View
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: true }}
+                    style={[styles.smallButton, styles.smallButtonDisabled]}
+                  >
                     <Text style={styles.smallButtonLabel}>Join</Text>
                   </View>
                   <Pressable
@@ -321,7 +379,9 @@ export function CallHomeScreen({ emailVerified, onJoin }: CallHomeScreenProps): 
         })}
       </GlassCard>
 
-      <Text style={styles.footnote}>To call a contact directly, use Call beside their name in People.</Text>
+      <Text style={styles.footnote}>
+        To call a contact directly, use Call beside their name in People.
+      </Text>
     </ScrollView>
   );
 }
@@ -330,30 +390,105 @@ const styles = StyleSheet.create({
   fill: { flex: 1 },
   screen: { padding: 16, gap: 14, paddingBottom: 40 },
   head: { flexDirection: 'row', alignItems: 'center', gap: 14 },
-  orb: { width: 64, height: 64, borderRadius: 32, backgroundColor: C7.tealSoft, borderWidth: 1, borderColor: 'rgba(62,201,192,0.4)', alignItems: 'center', justifyContent: 'center' },
-  orbBadge: { position: 'absolute', right: -2, bottom: -2, width: 22, height: 22, borderRadius: 11, backgroundColor: C7.teal, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: C7.ground },
-  title: { color: C7.text, fontSize: 24, fontWeight: '600', fontFamily: 'serif', letterSpacing: -0.2 },
+  orb: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: C7.tealSoft,
+    borderWidth: 1,
+    borderColor: 'rgba(62,201,192,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  orbBadge: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: C7.teal,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: C7.ground,
+  },
+  title: {
+    color: C7.text,
+    fontSize: 24,
+    fontWeight: '600',
+    fontFamily: 'serif',
+    letterSpacing: -0.2,
+  },
   body: { color: C7.muted, fontSize: 14, lineHeight: 19 },
   field: { gap: 8 },
   label: { color: C7.text, fontSize: 14, fontWeight: '600' },
   explain: { color: C7.muted, fontSize: 13, lineHeight: 18 },
-  input: { backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: C7.panelEdge, borderRadius: 14, paddingHorizontal: 16, paddingVertical: 13, color: C7.text, fontSize: 17, letterSpacing: 1 },
+  input: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1,
+    borderColor: C7.panelEdge,
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    color: C7.text,
+    fontSize: 17,
+    letterSpacing: 1,
+  },
   tierRow: { flexDirection: 'row', gap: 8 },
-  tier: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: 14, borderWidth: 1, borderColor: C7.panelEdge, backgroundColor: 'rgba(255,255,255,0.04)', paddingVertical: 11, paddingHorizontal: 8 },
+  tier: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: C7.panelEdge,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    paddingVertical: 11,
+    paddingHorizontal: 8,
+  },
   tierActive: { borderColor: C7.teal, backgroundColor: C7.tealSoft },
   tierLabel: { color: C7.muted, fontSize: 14, fontWeight: '600' },
   tierLabelActive: { color: C7.teal },
   warn: { color: C7.amber, fontSize: 13, lineHeight: 19 },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 12 },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
   rowDivider: { borderTopWidth: 1, borderTopColor: C7.panelEdge },
   rowEmpty: { paddingHorizontal: 16, paddingVertical: 18, alignItems: 'center' },
-  rowIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.05)', borderWidth: 1, borderColor: C7.panelEdge, alignItems: 'center', justifyContent: 'center' },
+  rowIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1,
+    borderColor: C7.panelEdge,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   rowTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   rowTitle: { color: C7.text, fontSize: 16, fontWeight: '600' },
   rowTitleEnded: { color: C7.muted, flexShrink: 1 },
   rowMeta: { color: C7.muted, fontSize: 13 },
   rowActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 },
-  smallButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, backgroundColor: C7.tealDeep, borderWidth: 1, borderColor: 'rgba(62,201,192,0.7)' },
+  smallButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: C7.tealDeep,
+    borderWidth: 1,
+    borderColor: 'rgba(62,201,192,0.7)',
+  },
   smallButtonDisabled: { opacity: 0.35 },
   smallButtonLabel: { color: '#ffffff', fontSize: 13, fontWeight: '700' },
   empty: { color: C7.faint, fontSize: 13, textAlign: 'center' },

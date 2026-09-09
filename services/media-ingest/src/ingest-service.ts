@@ -9,6 +9,11 @@ import type {
   ProgrammeMediaDelivery,
 } from '@videofy-live/shared-types';
 import { SOCKET_EVENTS, programmeDeliveryPolicy } from '@videofy-live/shared-types';
+import {
+  GOOGLE_CLOUD_TRANSLATION_MODEL_ID,
+  NIGERIAN_MACHINE_TRANSLATION_LANGUAGES,
+  type NigerianTranslationPrimary,
+} from '@videofy-live/translation-routes';
 import type { IngestConfig } from './config.js';
 import { MockProvider, type MediaProvider } from './providers/index.js';
 import { logger } from './logger.js';
@@ -29,12 +34,14 @@ import {
 import {
   CompositeTimestampedTranslationProvider,
   M2m100TimestampedTranslationProvider,
+  NigerianFallbackTranslationProvider,
   Nllb200TimestampedTranslationProvider,
   createTimestampedTranslationProvider,
   type M2m100Config,
   type Nllb200Config,
   type TimestampedTranslationProvider,
 } from './translation-provider.js';
+import { GoogleTimestampedTranslationProvider } from './providers/google/translation.js';
 import {
   createTextToSpeechProvider,
   type TextToSpeechProvider,
@@ -108,6 +115,12 @@ export type TranslationWiringConfig = Pick<
   IngestConfig,
   | 'translationProvider'
   | 'translationFallbackProvider'
+  | 'nigerianTranslationPrimary'
+  | 'googleTranslateProjectId'
+  | 'googleTranslateCredentialsFile'
+  | 'googleTranslateQuotaProjectId'
+  | 'googleTranslateLocation'
+  | 'googleTranslateTimeoutMs'
   | 'translationTimeoutMs'
   | 'translationSupportedTargetLanguages'
   | 'argosPythonExecutable'
@@ -180,7 +193,23 @@ function opusMtCoveredLanguages(config: TranslationWiringConfig): string[] {
   );
 }
 
+function nigerianGooglePrimaryActive(config: {
+  nigerianTranslationPrimary: NigerianTranslationPrimary;
+}): boolean {
+  return config.nigerianTranslationPrimary === 'google-cloud';
+}
+
+function nigerianGoogleTargetLanguages(config: TranslationWiringConfig): string[] {
+  const googleTargets = new Set(['en', ...NIGERIAN_MACHINE_TRANSLATION_LANGUAGES]);
+  return config.translationSupportedTargetLanguages.filter((language) =>
+    googleTargets.has(language.toLowerCase()),
+  );
+}
+
 export function resolveTranslationLanguages(config: TranslationWiringConfig): string[] {
+  if (nigerianGooglePrimaryActive(config) && config.translationProvider === 'opus-mt') {
+    return [...new Set([...opusMtCoveredLanguages(config), ...nigerianGoogleTargetLanguages(config)])];
+  }
   // The multilingual fallback restores the full configured bound: coverage is
   // the union of OPUS-MT pairs and the massively multilingual fallback set
   // (M2M100 or NLLB-200).
@@ -201,6 +230,11 @@ export function buildTranslationModelIds(config: TranslationWiringConfig): Map<s
   if (translationFallbackActive(config)) {
     for (const language of resolveTranslationLanguages(config)) {
       if (!modelIds.has(language)) modelIds.set(language, translationFallbackModelId(config));
+    }
+  }
+  if (nigerianGooglePrimaryActive(config)) {
+    for (const language of nigerianGoogleTargetLanguages(config)) {
+      modelIds.set(language, GOOGLE_CLOUD_TRANSLATION_MODEL_ID);
     }
   }
   return modelIds;
@@ -244,10 +278,8 @@ export function buildTranslationProvider(
     },
     m2m100: m2m100Config,
   });
-  if (!translationFallbackActive(config)) {
-    return primary;
-  }
-  if (config.translationFallbackProvider === 'nllb200') {
+  let defaultProvider: TimestampedTranslationProvider = primary;
+  if (translationFallbackActive(config) && config.translationFallbackProvider === 'nllb200') {
     // NLLB-200 (CC-BY-NC-4.0, non-commercial use only) replaces M2M100 where
     // its output degenerates (empirically: Yoruba repetition loops).
     const nllb200Config: Nllb200Config = {
@@ -260,15 +292,35 @@ export function buildTranslationProvider(
       maxConcurrency: config.nllb200MaxConcurrency,
       allowModelDownload: config.nllb200AllowModelDownload,
     };
-    return new CompositeTimestampedTranslationProvider({
+    defaultProvider = new CompositeTimestampedTranslationProvider({
       primary,
       fallback: new Nllb200TimestampedTranslationProvider(nllb200Config),
     });
+  } else if (translationFallbackActive(config)) {
+    defaultProvider = new CompositeTimestampedTranslationProvider({
+      primary,
+      fallback: new M2m100TimestampedTranslationProvider(m2m100Config),
+    });
   }
-  return new CompositeTimestampedTranslationProvider({
-    primary,
-    fallback: new M2m100TimestampedTranslationProvider(m2m100Config),
-  });
+  if (nigerianGooglePrimaryActive(config)) {
+    if (config.googleTranslateProjectId === null) {
+      throw new Error('Google Nigerian translation requires GOOGLE_TRANSLATE_PROJECT_ID.');
+    }
+    return new NigerianFallbackTranslationProvider({
+      primary: new GoogleTimestampedTranslationProvider({
+        projectId: config.googleTranslateProjectId,
+        credentialsFile: config.googleTranslateCredentialsFile,
+        quotaProjectId: config.googleTranslateQuotaProjectId,
+        location: config.googleTranslateLocation,
+        timeoutMs: config.googleTranslateTimeoutMs,
+      }),
+      fallback: primary,
+      defaultProvider,
+      primaryTimeoutMs: config.googleTranslateTimeoutMs,
+      fallbackTimeoutMs: config.translationTimeoutMs,
+    });
+  }
+  return defaultProvider;
 }
 
 export function programmeTimestampMs(

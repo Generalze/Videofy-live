@@ -16,6 +16,7 @@ import {
 import {
   CompositeTimestampedTranslationProvider,
   M2m100TimestampedTranslationProvider,
+  NigerianFallbackTranslationProvider,
   OpusMtTimestampedTranslationProvider,
 } from '../translation-provider.js';
 
@@ -98,6 +99,12 @@ function wiringConfig(overrides: Partial<TranslationWiringConfig> = {}): Transla
   return {
     translationProvider: 'opus-mt',
     translationFallbackProvider: 'none',
+    nigerianTranslationPrimary: 'opus-mt',
+    googleTranslateProjectId: null,
+    googleTranslateCredentialsFile: null,
+    googleTranslateQuotaProjectId: null,
+    googleTranslateLocation: 'global',
+    googleTranslateTimeoutMs: 10_000,
     translationTimeoutMs: 30_000,
     translationSupportedTargetLanguages: ['fr', 'es', 'ar', 'yo'],
     argosPythonExecutable: 'python',
@@ -146,6 +153,44 @@ describe('translation fallback wiring', () => {
       new Map([
         ['fr', 'Helsinki-NLP/opus-mt-en-fr'],
         ['ar', 'Helsinki-NLP/opus-mt-en-ar'],
+      ]),
+    );
+  });
+
+  it('wraps Google Nigerian primary over OPUS without widening other OPUS coverage', () => {
+    const config = wiringConfig({
+      nigerianTranslationPrimary: 'google-cloud',
+      googleTranslateProjectId: 'project-e11a8346-7d3c-49c6-8a8',
+      googleTranslateCredentialsFile: '/etc/videofy/google-translation.json',
+      translationSupportedTargetLanguages: ['fr', 'es', 'ar', 'yo', 'ig', 'ha', 'en'],
+      opusMtLanguageModels: [
+        {
+          sourceLanguage: 'en',
+          targetLanguage: 'fr',
+          modelId: 'Helsinki-NLP/opus-mt-en-fr',
+          localPath: null,
+        },
+        {
+          sourceLanguage: 'en',
+          targetLanguage: 'ar',
+          modelId: 'Helsinki-NLP/opus-mt-en-ar',
+          localPath: null,
+        },
+      ],
+    });
+
+    expect(resolveTranslationLanguages(config)).toEqual(['fr', 'ar', 'yo', 'ig', 'ha', 'en']);
+    const provider = buildTranslationProvider(config);
+    expect(provider).toBeInstanceOf(NigerianFallbackTranslationProvider);
+    expect(provider.name).toBe('google-cloud:translate-v3->opus-mt:nigerian');
+    expect(buildTranslationModelIds(config)).toEqual(
+      new Map([
+        ['fr', 'Helsinki-NLP/opus-mt-en-fr'],
+        ['ar', 'Helsinki-NLP/opus-mt-en-ar'],
+        ['yo', 'google-cloud:translate-v3'],
+        ['ig', 'google-cloud:translate-v3'],
+        ['ha', 'google-cloud:translate-v3'],
+        ['en', 'google-cloud:translate-v3'],
       ]),
     );
   });

@@ -71,7 +71,18 @@ describe('request shapes', () => {
   });
 
   it('rings through the contacts route with the callId the caller joined', async () => {
-    const { api, sent } = harness({ callId: 'ring-1', reachedDevices: 1 });
+    const { api, sent } = harness({
+      callId: 'ring-1',
+      reachedDevices: 1,
+      ringDispatch: {
+        status: 'accepted',
+        attempted: 1,
+        delivered: 1,
+        failed: 0,
+        pruned: 0,
+        unreachablePlatforms: [],
+      },
+    });
     const result = await api.ring('acct_b', 'ring-1');
     expect(sent[0]).toEqual({
       path: '/contacts/acct_b/ring',
@@ -79,6 +90,43 @@ describe('request shapes', () => {
       body: { callId: 'ring-1' },
     });
     expect(result.ok && result.value.reachedDevices).toBe(1);
+    expect(result.ok && result.value.ringDispatch.status).toBe('accepted');
+  });
+
+  it('keeps provider failure distinct from no routable device in the ring response', async () => {
+    const { api } = harness({
+      callId: 'ring-1',
+      reachedDevices: 0,
+      ringDispatch: {
+        status: 'provider-failed',
+        attempted: 1,
+        delivered: 0,
+        failed: 1,
+        pruned: 0,
+        unreachablePlatforms: [],
+      },
+    });
+    const result = await api.ring('acct_b', 'ring-1');
+    expect(result.ok && result.value.ringDispatch).toMatchObject({
+      status: 'provider-failed',
+      reachedDevices: 0,
+      attempted: 1,
+      failed: 1,
+    });
+  });
+
+  it('keeps legacy zero-device ring responses unknown until semantic dispatch arrives', async () => {
+    const { api } = harness({
+      callId: 'ring-legacy',
+      reachedDevices: 0,
+    });
+    const result = await api.ring('acct_b', 'ring-legacy');
+    expect(result.ok && result.value.ringDispatch).toMatchObject({
+      status: 'unknown',
+      reachedDevices: 0,
+      attempted: 0,
+      delivered: 0,
+    });
   });
 
   it('reads the profile out of /me, including the nested profile block', async () => {

@@ -13,6 +13,7 @@ import {
   CompositeTimestampedTranslationProvider,
   MockTimestampedTranslationProvider,
   M2m100TimestampedTranslationProvider,
+  NigerianFallbackTranslationProvider,
   NLLB_LANGUAGE_CODES,
   Nllb200TimestampedTranslationProvider,
   OpusMtTimestampedTranslationProvider,
@@ -21,6 +22,7 @@ import {
   type Nllb200ProviderOptions,
   type TimestampedTranslationProvider,
   type TranslationProviderInput,
+  type TranslationProviderResult,
 } from '../translation-provider.js';
 
 type WorkerHandler = (
@@ -795,7 +797,7 @@ describe('NLLB-200 translation provider', () => {
 
 interface StubProviderOptions {
   name: string;
-  translate?: (input: TranslationProviderInput) => Promise<never> | never;
+  translate?: (input: TranslationProviderInput) => Promise<TranslationProviderResult> | TranslationProviderResult;
 }
 
 function stubProvider(options: StubProviderOptions) {
@@ -1000,5 +1002,137 @@ describe('composite translation fallback chain', () => {
     });
     expect(m2m100Worker.requests).toHaveLength(1);
     expect(opusWorker.requests).toHaveLength(1);
+  });
+});
+
+describe('Nigerian Google primary with OPUS fallback', () => {
+  it('routes non-Nigerian pairs to the existing default provider only', async () => {
+    const google = stubProvider({ name: 'google-cloud:translate-v3' });
+    const opus = stubProvider({ name: 'opus-mt' });
+    const router = new NigerianFallbackTranslationProvider({
+      primary: google.provider,
+      fallback: opus.provider,
+      defaultProvider: opus.provider,
+      primaryTimeoutMs: 1000,
+      fallbackTimeoutMs: 1000,
+    });
+
+    await expect(
+      router.translate(input({ targetLanguage: 'fr', routeProvider: 'google-cloud' })),
+    ).resolves.toMatchObject({ providerName: 'opus-mt' });
+    expect(google.calls).toHaveLength(0);
+    expect(opus.calls).toHaveLength(1);
+  });
+
+  it('uses Google first when the approved route provider is Google Nigerian MT', async () => {
+    const google = stubProvider({ name: 'google-cloud:translate-v3' });
+    const opus = stubProvider({ name: 'opus-mt' });
+    const router = new NigerianFallbackTranslationProvider({
+      primary: google.provider,
+      fallback: opus.provider,
+      primaryTimeoutMs: 1000,
+      fallbackTimeoutMs: 1000,
+    });
+
+    await expect(
+      router.translate(input({ targetLanguage: 'yo', routeProvider: 'google-cloud' })),
+    ).resolves.toMatchObject({
+      providerName: 'google-cloud:translate-v3',
+      primaryProviderName: 'google-cloud:translate-v3',
+      fallbackProviderName: 'opus-mt',
+      fallbackUsed: false,
+    });
+    expect(google.calls).toHaveLength(1);
+    expect(opus.calls).toHaveLength(0);
+  });
+
+  it('uses OPUS only when the approved Nigerian route provider is OPUS-MT', async () => {
+    const google = stubProvider({ name: 'google-cloud:translate-v3' });
+    const opus = stubProvider({ name: 'opus-mt' });
+    const router = new NigerianFallbackTranslationProvider({
+      primary: google.provider,
+      fallback: opus.provider,
+      primaryTimeoutMs: 1000,
+      fallbackTimeoutMs: 1000,
+    });
+
+    await expect(
+      router.translate(input({ targetLanguage: 'yo', routeProvider: 'opus-mt' })),
+    ).resolves.toMatchObject({ providerName: 'opus-mt' });
+    expect(google.calls).toHaveLength(0);
+    expect(opus.calls).toHaveLength(1);
+  });
+
+  it('does not call Google without an explicit route-provider approval', async () => {
+    const google = stubProvider({ name: 'google-cloud:translate-v3' });
+    const opus = stubProvider({ name: 'opus-mt' });
+    const router = new NigerianFallbackTranslationProvider({
+      primary: google.provider,
+      fallback: opus.provider,
+      defaultProvider: opus.provider,
+      primaryTimeoutMs: 1000,
+      fallbackTimeoutMs: 1000,
+    });
+
+    await expect(router.translate(input({ targetLanguage: 'yo' }))).resolves.toMatchObject({
+      providerName: 'opus-mt',
+    });
+    expect(google.calls).toHaveLength(0);
+    expect(opus.calls).toHaveLength(1);
+  });
+
+  it('falls back to OPUS when Google fails and records fallback provenance', async () => {
+    const google = stubProvider({
+      name: 'google-cloud:translate-v3',
+      translate: () => {
+        throw new MediaIngestError('Google unavailable.', 'translation-api-unavailable', 502);
+      },
+    });
+    const opus = stubProvider({ name: 'opus-mt' });
+    const router = new NigerianFallbackTranslationProvider({
+      primary: google.provider,
+      fallback: opus.provider,
+      primaryTimeoutMs: 1000,
+      fallbackTimeoutMs: 1000,
+    });
+
+    await expect(
+      router.translate(input({ targetLanguage: 'ha', routeProvider: 'google-cloud' })),
+    ).resolves.toMatchObject({
+      providerName: 'opus-mt',
+      primaryProviderName: 'google-cloud:translate-v3',
+      fallbackProviderName: 'opus-mt',
+      fallbackUsed: true,
+      providerFailureCode: 'translation-api-unavailable',
+    });
+    expect(google.calls).toHaveLength(1);
+    expect(opus.calls).toHaveLength(1);
+  });
+
+  it('throws when both Google and OPUS fail so the gate can deliver the original', async () => {
+    const google = stubProvider({
+      name: 'google-cloud:translate-v3',
+      translate: () => {
+        throw new MediaIngestError('Google timed out.', 'translation-timeout', 504);
+      },
+    });
+    const opus = stubProvider({
+      name: 'opus-mt',
+      translate: () => {
+        throw new MediaIngestError('OPUS-MT failed.', 'translation-failed', 500);
+      },
+    });
+    const router = new NigerianFallbackTranslationProvider({
+      primary: google.provider,
+      fallback: opus.provider,
+      primaryTimeoutMs: 1000,
+      fallbackTimeoutMs: 1000,
+    });
+
+    await expect(
+      router.translate(input({ targetLanguage: 'ig', routeProvider: 'google-cloud' })),
+    ).rejects.toMatchObject({ code: 'translation-failed' });
+    expect(google.calls).toHaveLength(1);
+    expect(opus.calls).toHaveLength(1);
   });
 });

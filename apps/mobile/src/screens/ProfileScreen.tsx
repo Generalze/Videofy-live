@@ -14,14 +14,31 @@
  * unlocks hosting; phone and identity gate commercial products.
  */
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { AvatarView } from '../media/AvatarView';
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import { AvatarView, invalidateAvatar } from '../media/AvatarView';
 import { pickAvatar } from '../media/avatarPicker';
 import type { Api, MeCounts, Profile, VerificationStatus } from '../api/client';
 import type { RegistrationOutcome } from '../push/deviceRegistrationService';
 import { C7, Chip, GlassCard } from '../ui/c7';
 import { Icon } from '../ui/icons';
-import { AboutMeRow, AvailabilityRow, CountsRow, NotificationsRow, PrivacyRow, Row, UpgradeRow, VoiceRow } from './profileRows';
+import {
+  AboutMeRow,
+  AvailabilityRow,
+  CountsRow,
+  NotificationsRow,
+  PrivacyRow,
+  Row,
+  UpgradeRow,
+  VoiceRow,
+} from './profileRows';
 import {
   canHear,
   canSpeak,
@@ -47,7 +64,9 @@ const SHOWN_SEARCHED = 14;
 export interface ProfileScreenProps {
   readonly api: Api;
   /** Fetches the picture the way the app would, and reports status / type / size. */
-  readonly probeAvatar: (accountId: string) => Promise<{ status: number; contentType: string; bytes: number } | null>;
+  readonly probeAvatar: (
+    accountId: string,
+  ) => Promise<{ status: number; contentType: string; bytes: number } | null>;
   readonly deviceOutcome: RegistrationOutcome | null;
   readonly onRetryDevice: () => Promise<void>;
   readonly onSignOut: () => Promise<void>;
@@ -58,9 +77,26 @@ export interface ProfileScreenProps {
   readonly sessionToken: () => string | null;
 }
 
-type OpenRow = 'languages' | 'name' | 'about' | 'availability' | 'verification' | 'notifications' | 'privacy' | 'voice';
+type OpenRow =
+  | 'languages'
+  | 'name'
+  | 'about'
+  | 'availability'
+  | 'verification'
+  | 'notifications'
+  | 'privacy'
+  | 'voice';
 
-export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, onSignOut, biometricsPreferred, onBiometricsPreferred, sessionToken }: ProfileScreenProps): JSX.Element {
+export function ProfileScreen({
+  api,
+  probeAvatar,
+  deviceOutcome,
+  onRetryDevice,
+  onSignOut,
+  biometricsPreferred,
+  onBiometricsPreferred,
+  sessionToken,
+}: ProfileScreenProps): JSX.Element {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [verification, setVerification] = useState<VerificationStatus | null>(null);
   const [counts, setCounts] = useState<MeCounts | null>(null);
@@ -119,9 +155,10 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
       setPictureNotice(result.error === 'network' ? 'Could not reach C7.' : String(result.error));
       return;
     }
+    if (profile !== null) invalidateAvatar(profile.accountId);
     setAvatarEpoch((epoch) => epoch + 1);
     setPictureNotice('Picture updated.');
-  }, [api]);
+  }, [api, profile]);
 
   const load = useCallback(async () => {
     const [me, status, tally] = await Promise.all([api.me(), api.verification(), api.counts()]);
@@ -178,17 +215,24 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
 
   const spokenLanguage = profile?.spokenLanguage ?? profile?.defaultLanguage ?? null;
   const listeningLanguage = profile?.listeningLanguage ?? profile?.defaultLanguage ?? null;
-  const choices = useMemo(
-    () => languageChoices(capabilities ?? undefined),
-    [capabilities],
-  );
+  const choices = useMemo(() => languageChoices(capabilities ?? undefined), [capabilities]);
   const shown = languageQuery.trim().length === 0 ? SHOWN_UNSEARCHED : SHOWN_SEARCHED;
   const spokenOptions = useMemo(
-    () => filterChoices(withChosenFirst(choices.filter(canSpeak), spokenLanguage), languageQuery, shown),
+    () =>
+      filterChoices(
+        withChosenFirst(choices.filter(canSpeak), spokenLanguage),
+        languageQuery,
+        shown,
+      ),
     [choices, spokenLanguage, languageQuery, shown],
   );
   const listeningOptions = useMemo(
-    () => filterChoices(withChosenFirst(choices.filter(canHear), listeningLanguage), languageQuery, shown),
+    () =>
+      filterChoices(
+        withChosenFirst(choices.filter(canHear), listeningLanguage),
+        languageQuery,
+        shown,
+      ),
     [choices, listeningLanguage, languageQuery, shown],
   );
 
@@ -200,7 +244,8 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
    */
   const chosenWarning = useMemo(() => {
     const flagged = choices.filter(
-      (choice) => choice.degraded && (choice.code === spokenLanguage || choice.code === listeningLanguage),
+      (choice) =>
+        choice.degraded && (choice.code === spokenLanguage || choice.code === listeningLanguage),
     );
     if (flagged.length === 0) return null;
     return `${flagged.map((choice) => choice.label).join(' and ')}: this deployment has no specialist voice for it yet, so spoken output is a degraded rendering. Text stays correct.`;
@@ -230,7 +275,12 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
           <ActivityIndicator color={C7.teal} />
         ) : (
           <View style={styles.identityRow}>
-            <Pressable onPress={() => void changePicture()} accessibilityRole="button" accessibilityLabel="Change picture" style={styles.avatarRing}>
+            <Pressable
+              onPress={() => void changePicture()}
+              accessibilityRole="button"
+              accessibilityLabel="Change picture"
+              style={styles.avatarRing}
+            >
               <AvatarView
                 key={avatarEpoch}
                 version={avatarEpoch}
@@ -247,15 +297,21 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
               </View>
             </Pressable>
             <View style={{ flex: 1, gap: 6 }}>
-              <Text style={styles.name}>{profile.displayName ?? profile.username ?? profile.accountId}</Text>
+              <Text style={styles.name}>
+                {profile.displayName ?? profile.username ?? profile.accountId}
+              </Text>
               <View style={styles.handleRow}>
                 <Text style={styles.handle}>@{profile.username ?? profile.accountId}</Text>
                 <Chip label="C7" tone="teal" />
               </View>
-              {profile.bio.trim().length > 0 && <Text style={styles.bio}>{profile.bio.trim()}</Text>}
+              {profile.bio.trim().length > 0 && (
+                <Text style={styles.bio}>{profile.bio.trim()}</Text>
+              )}
               <Text style={styles.email}>{profile.email}</Text>
               {pictureNotice !== null && <Text style={styles.pictureNotice}>{pictureNotice}</Text>}
-              {pictureDiagnosis !== null && <Text style={styles.pictureNotice}>{pictureDiagnosis}</Text>}
+              {pictureDiagnosis !== null && (
+                <Text style={styles.pictureNotice}>{pictureDiagnosis}</Text>
+              )}
             </View>
           </View>
         )}
@@ -266,7 +322,11 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
       <Row
         icon="translate"
         title="Languages & Voice"
-        subtitle={profile === null ? undefined : `Primary ${languageName(profile.defaultLanguage)} · I speak ${languageName(profile.spokenLanguage ?? profile.defaultLanguage)} · I prefer to hear ${languageName(profile.listeningLanguage ?? profile.defaultLanguage)}`}
+        subtitle={
+          profile === null
+            ? undefined
+            : `Primary ${languageName(profile.defaultLanguage)} · I speak ${languageName(profile.spokenLanguage ?? profile.defaultLanguage)} · I prefer to hear ${languageName(profile.listeningLanguage ?? profile.defaultLanguage)}`
+        }
         open={open === 'languages'}
         onPress={toggle('languages')}
       >
@@ -294,7 +354,9 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
                   onPress={() => void setLanguage({ spokenLanguage: choice.code })}
                 />
               ))}
-              {spokenOptions.length === 0 && <Text style={styles.hint}>No language matches that.</Text>}
+              {spokenOptions.length === 0 && (
+                <Text style={styles.hint}>No language matches that.</Text>
+              )}
             </View>
 
             <Text style={styles.label}>I prefer to hear</Text>
@@ -308,7 +370,9 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
                   onPress={() => void setLanguage({ listeningLanguage: choice.code })}
                 />
               ))}
-              {listeningOptions.length === 0 && <Text style={styles.hint}>No language matches that.</Text>}
+              {listeningOptions.length === 0 && (
+                <Text style={styles.hint}>No language matches that.</Text>
+              )}
             </View>
 
             {chosenWarning !== null && <Text style={styles.pictureNotice}>{chosenWarning}</Text>}
@@ -321,24 +385,67 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
         )}
       </Row>
 
-      <Row icon="profile" title="Name shown in calls" subtitle={profile?.displayName ?? 'Not set'} open={open === 'name'} onPress={toggle('name')}>
+      <Row
+        icon="profile"
+        title="Name shown in calls"
+        subtitle={profile?.displayName ?? 'Not set'}
+        open={open === 'name'}
+        onPress={toggle('name')}
+      >
         <View style={styles.nameRow}>
-          <TextInput style={styles.input} value={draftName} onChangeText={setDraftName} placeholder="Your name" placeholderTextColor={C7.faint} maxLength={40} />
-          <Pressable onPress={() => void saveName()} disabled={busy} accessibilityRole="button" style={[styles.smallButton, busy && styles.disabled]}>
+          <TextInput
+            style={styles.input}
+            value={draftName}
+            onChangeText={setDraftName}
+            placeholder="Your name"
+            placeholderTextColor={C7.faint}
+            maxLength={40}
+          />
+          <Pressable
+            onPress={() => void saveName()}
+            disabled={busy}
+            accessibilityRole="button"
+            style={[styles.smallButton, busy && styles.disabled]}
+          >
             <Text style={styles.smallButtonLabel}>Save</Text>
           </Pressable>
         </View>
-        <Text style={styles.hint}>Your username is how people add you and cannot change. This name is what they see, and can.</Text>
+        <Text style={styles.hint}>
+          Your username is how people add you and cannot change. This name is what they see, and
+          can.
+        </Text>
       </Row>
 
-      {profile !== null && <AboutMeRow api={api} bio={profile.bio} onChanged={reload} open={open === 'about'} onToggle={toggle('about')} />}
+      {profile !== null && (
+        <AboutMeRow
+          api={api}
+          bio={profile.bio}
+          onChanged={reload}
+          open={open === 'about'}
+          onToggle={toggle('about')}
+        />
+      )}
 
-      {profile !== null && <AvailabilityRow api={api} availability={profile.availability} onChanged={reload} open={open === 'availability'} onToggle={toggle('availability')} />}
+      {profile !== null && (
+        <AvailabilityRow
+          api={api}
+          availability={profile.availability}
+          onChanged={reload}
+          open={open === 'availability'}
+          onToggle={toggle('availability')}
+        />
+      )}
 
       <Row
         icon="shield"
         title="Verification"
-        subtitle={verification === null ? undefined : emailVerified ? 'Email verified · you can start calls' : 'Verify your email to start calls'}
+        subtitle={
+          verification === null
+            ? undefined
+            : emailVerified
+              ? 'Email verified · you can start calls'
+              : 'Verify your email to start calls'
+        }
         open={open === 'verification'}
         onPress={toggle('verification')}
       >
@@ -352,15 +459,26 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
               ] as const
             ).map(([label, state]) => (
               <View key={label} style={styles.checkRow}>
-                <Text style={state === 'verified' ? styles.checkDone : styles.checkPending}>{state === 'verified' ? '✓' : '·'}</Text>
-                <Text style={styles.checkLabel}>{label} · {state}</Text>
+                <Text style={state === 'verified' ? styles.checkDone : styles.checkPending}>
+                  {state === 'verified' ? '✓' : '·'}
+                </Text>
+                <Text style={styles.checkLabel}>
+                  {label} · {state}
+                </Text>
               </View>
             ))}
             <Text style={styles.hint}>
-              {emailVerified ? 'You can start calls. Phone and identity checks unlock commercial products later.' : 'You can already join calls and message contacts.'}
+              {emailVerified
+                ? 'You can start calls. Phone and identity checks unlock commercial products later.'
+                : 'You can already join calls and message contacts.'}
             </Text>
             {!emailVerified && (
-              <Pressable onPress={() => void sendEmail()} disabled={busy} accessibilityRole="button" style={[styles.smallButton, styles.selfStart, busy && styles.disabled]}>
+              <Pressable
+                onPress={() => void sendEmail()}
+                disabled={busy}
+                accessibilityRole="button"
+                style={[styles.smallButton, styles.selfStart, busy && styles.disabled]}
+              >
                 <Text style={styles.smallButtonLabel}>Send verification email</Text>
               </Pressable>
             )}
@@ -388,13 +506,22 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
         onToggle={toggle('privacy')}
       />
 
-      <VoiceRow sessionToken={sessionToken} enrolledLanguage={profile?.spokenLanguage ?? profile?.defaultLanguage ?? 'en'} open={open === 'voice'} onToggle={toggle('voice')} />
+      <VoiceRow
+        sessionToken={sessionToken}
+        enrolledLanguage={profile?.spokenLanguage ?? profile?.defaultLanguage ?? 'en'}
+        open={open === 'voice'}
+        onToggle={toggle('voice')}
+      />
 
       <UpgradeRow />
 
       {notice !== null && <Text style={styles.notice}>{notice}</Text>}
 
-      <Pressable onPress={() => void onSignOut()} accessibilityRole="button" style={({ pressed }) => [styles.signOut, pressed && styles.pressed]}>
+      <Pressable
+        onPress={() => void onSignOut()}
+        accessibilityRole="button"
+        style={({ pressed }) => [styles.signOut, pressed && styles.pressed]}
+      >
         <Text style={styles.signOutLabel}>Sign out</Text>
       </Pressable>
     </ScrollView>
@@ -413,8 +540,26 @@ const styles = StyleSheet.create({
   identity: { padding: 18 },
   identityRow: { flexDirection: 'row', alignItems: 'center', gap: 18 },
   avatarRing: { borderRadius: 60, borderWidth: 2, borderColor: C7.teal, padding: 3 },
-  avatarEdit: { position: 'absolute', right: 2, bottom: 2, width: 24, height: 24, borderRadius: 12, backgroundColor: C7.teal, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: C7.ground },
-  name: { color: C7.text, fontSize: 28, fontWeight: '600', fontFamily: 'serif', letterSpacing: -0.3 },
+  avatarEdit: {
+    position: 'absolute',
+    right: 2,
+    bottom: 2,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: C7.teal,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: C7.ground,
+  },
+  name: {
+    color: C7.text,
+    fontSize: 28,
+    fontWeight: '600',
+    fontFamily: 'serif',
+    letterSpacing: -0.3,
+  },
   handleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   handle: { color: C7.muted, fontSize: 15 },
   bio: { color: C7.text, fontSize: 14, lineHeight: 20, opacity: 0.9 },
@@ -424,8 +569,27 @@ const styles = StyleSheet.create({
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   hint: { color: C7.muted, fontSize: 13, lineHeight: 19 },
   nameRow: { flexDirection: 'row', gap: 8 },
-  input: { flex: 1, backgroundColor: 'rgba(255,255,255,0.04)', borderWidth: 1, borderColor: C7.panelEdge, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, color: C7.text, fontSize: 15 },
-  smallButton: { paddingHorizontal: 14, borderRadius: 12, backgroundColor: C7.tealDeep, borderWidth: 1, borderColor: 'rgba(62,201,192,0.7)', alignItems: 'center', justifyContent: 'center', minHeight: 40 },
+  input: {
+    flex: 1,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderWidth: 1,
+    borderColor: C7.panelEdge,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    color: C7.text,
+    fontSize: 15,
+  },
+  smallButton: {
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: C7.tealDeep,
+    borderWidth: 1,
+    borderColor: 'rgba(62,201,192,0.7)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 40,
+  },
   selfStart: { alignSelf: 'flex-start', paddingVertical: 9 },
   disabled: { opacity: 0.45 },
   smallButtonLabel: { color: '#ffffff', fontSize: 13, fontWeight: '700' },

@@ -275,7 +275,7 @@ describe('rule 1: the same language bypasses translation entirely', () => {
   });
 });
 
-describe('rule 2: an approved route translates locally', () => {
+describe('rule 2: an approved route translates through its approved provider', () => {
   it('renders for the reader and names the approved route to the engine', async () => {
     app = await harness({ routes: [route()] });
     const { a, b } = await pair(app, 'en', 'yo');
@@ -302,6 +302,35 @@ describe('rule 2: an approved route translates locally', () => {
     const { a, b } = await pair(app, 'en', 'yo');
     await send(app, a, b, 'good morning');
     expect(app.textCalls()[0]?.provider).toBe('opus-mt');
+  });
+
+  it('routes approved Nigerian Google MT to Google Cloud Translation', async () => {
+    app = await harness({
+      routes: [
+        route({
+          provider: 'google-cloud',
+          modelId: 'google-cloud:translate-v3',
+          executionClass: 'cloud',
+        }),
+      ],
+    });
+    const { a, b } = await pair(app, 'en', 'yo');
+    const sent = await send(app, a, b, 'good morning');
+
+    expect(sent.message.translatedBody).toBe('[yo] good morning');
+    expect(sent.translation).toEqual({
+      status: 'translated',
+      reason: null,
+      provider: 'google-cloud',
+    });
+    expect(app.textCalls()).toEqual([
+      {
+        sourceLanguage: 'en',
+        targetLanguage: 'yo',
+        provider: 'google-cloud',
+        modelId: 'google-cloud:translate-v3',
+      },
+    ]);
   });
 });
 
@@ -486,6 +515,31 @@ describe('the voice-note translation stage obeys the same ruling', () => {
     expect(sent.message.translatedAudioAvailable).toBe(true);
     expect(sent.translation).toEqual({ status: 'translated', reason: null, provider: 'opus-mt' });
     expect(app.voiceCalls()[0]?.modelId).toBe('Helsinki-NLP/opus-mt-en-yo');
+  });
+
+  it('approved Nigerian Google MT also governs voice-note text translation', async () => {
+    app = await harness({
+      routes: [
+        route({
+          provider: 'google-cloud',
+          modelId: 'google-cloud:translate-v3',
+          executionClass: 'cloud',
+        }),
+      ],
+    });
+    const { a, b } = await pair(app, 'en', 'yo');
+    const sent = await sendNote(app, a, b);
+
+    expect(sent.message.translatedAudioAvailable).toBe(true);
+    expect(sent.translation).toEqual({
+      status: 'translated',
+      reason: null,
+      provider: 'google-cloud',
+    });
+    expect(app.voiceCalls()[0]).toMatchObject({
+      provider: 'google-cloud',
+      modelId: 'google-cloud:translate-v3',
+    });
   });
 
   it('a refused route delivers the ORIGINAL audio and invents no speech', async () => {

@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@google-cloud/translate": "^10.0.1",
     "@videofy-live/account-tokens": "*",
     "@videofy-live/ai-registry": "*",
     "@videofy-live/language-catalogue": "*",

@@ -4,6 +4,10 @@ import {
   parseRuntimeProfile,
   type RuntimeProfile,
 } from '@videofy-live/ai-registry';
+import {
+  NIGERIAN_TRANSLATION_PRIMARY_CHOICES,
+  type NigerianTranslationPrimary,
+} from '@videofy-live/translation-routes';
 import { loadRootEnv, readCsv, readNonNegativeInt, readPort, readPositiveInt } from './env.js';
 import {
   resolveInternalIngressAuth,
@@ -18,6 +22,8 @@ import { resolve } from 'node:path';
  * translation/TTS target and es→en has an explicit ordered OPUS-MT route.
  */
 export const DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES = 'fr,es,de,pt,it,ja,zh,ar,yo,ha,ig,en';
+export const PRODUCTION_GOOGLE_TRANSLATION_CREDENTIALS_PATH =
+  '/etc/videofy/google-translation.json';
 /*
  * The Nigerian pairs are here because a voice without a translation is a
  * language we can pronounce and cannot deliver: 9jaLingo speaks Yoruba,
@@ -31,12 +37,16 @@ export const DEFAULT_TRANSLATION_SUPPORTED_TARGET_LANGUAGES = 'fr,es,de,pt,it,ja
  * (`>>yor<<` is present), so nothing here has to name the token and get it
  * wrong. Igbo and Hausa have direct models and use them.
  *
+ * The reverse Nigerian models are present so they can serve as the OPUS
+ * fallback behind an approved Google Nigerian route. They still cannot run
+ * unless the route registry approves the exact source->target and provider.
+ *
  * Nigerian Pidgin (pcm) is deliberately absent: no OPUS-MT model translates
  * into it, so it stays honestly untranslatable rather than being routed
  * through something that would answer in the wrong language.
  */
 export const DEFAULT_OPUS_MT_LANGUAGE_MODELS =
-  'en:fr:Helsinki-NLP/opus-mt-en-fr,fr:en:Helsinki-NLP/opus-mt-fr-en,en:es:Helsinki-NLP/opus-mt-en-es,en:pt:Helsinki-NLP/opus-mt-en-ROMANCE,es:en:Helsinki-NLP/opus-mt-es-en,en:ha:Helsinki-NLP/opus-mt-en-ha,en:ig:Helsinki-NLP/opus-mt-en-ig,en:yo:Helsinki-NLP/opus-mt-en-alv';
+  'en:fr:Helsinki-NLP/opus-mt-en-fr,fr:en:Helsinki-NLP/opus-mt-fr-en,en:es:Helsinki-NLP/opus-mt-en-es,en:pt:Helsinki-NLP/opus-mt-en-ROMANCE,es:en:Helsinki-NLP/opus-mt-es-en,en:ha:Helsinki-NLP/opus-mt-en-ha,ha:en:Helsinki-NLP/opus-mt-ha-en,en:ig:Helsinki-NLP/opus-mt-en-ig,ig:en:Helsinki-NLP/opus-mt-ig-en,en:yo:Helsinki-NLP/opus-mt-en-alv,yo:en:Helsinki-NLP/opus-mt-yo-en';
 
 export interface IngestConfig {
   aiRuntimeProfile: RuntimeProfile;
@@ -187,6 +197,12 @@ export interface IngestConfig {
    */
   translationRoutesDocument: string | null;
   translationFallbackProvider: 'none' | 'm2m100' | 'nllb200';
+  nigerianTranslationPrimary: NigerianTranslationPrimary;
+  googleTranslateProjectId: string | null;
+  googleTranslateCredentialsFile: string | null;
+  googleTranslateQuotaProjectId: string | null;
+  googleTranslateLocation: string;
+  googleTranslateTimeoutMs: number;
   translationTimeoutMs: number;
   translationTargetLanguage: string;
   translationSupportedTargetLanguages: string[];
@@ -522,8 +538,36 @@ export function loadConfig(): IngestConfig {
     translationFallbackProvider !== 'nllb200'
   ) {
     throw new Error(
-      `TRANSLATION_FALLBACK_PROVIDER must be "none", "m2m100", or "nllb200"; received "${translationFallbackProvider}"`,
+        `TRANSLATION_FALLBACK_PROVIDER must be "none", "m2m100", or "nllb200"; received "${translationFallbackProvider}"`,
     );
+  }
+  const nigerianTranslationPrimary = selectorOrDefault(
+    'NIGERIAN_TRANSLATION_PRIMARY',
+    'opus-mt',
+    NIGERIAN_TRANSLATION_PRIMARY_CHOICES,
+  ) as NigerianTranslationPrimary;
+  const googleTranslateProjectId = process.env['GOOGLE_TRANSLATE_PROJECT_ID']?.trim() || null;
+  const googleTranslateCredentialsFile = readGoogleTranslateCredentialsFile(
+    process.env,
+    environment,
+    nigerianTranslationPrimary,
+  );
+  const googleTranslateQuotaProjectId =
+    process.env['GOOGLE_CLOUD_QUOTA_PROJECT']?.trim() || null;
+  const googleTranslateLocation = process.env['GOOGLE_TRANSLATE_LOCATION']?.trim() || 'global';
+  const googleTranslateTimeoutMs = readPositiveInt('GOOGLE_TRANSLATE_TIMEOUT_MS', 10_000);
+  if (nigerianTranslationPrimary === 'google-cloud') {
+    if (translationProvider !== 'opus-mt') {
+      throw new Error(
+        'NIGERIAN_TRANSLATION_PRIMARY=google-cloud requires TRANSLATION_PROVIDER=opus-mt ' +
+          'so OPUS-MT remains the fallback.',
+      );
+    }
+    if (googleTranslateProjectId === null) {
+      throw new Error(
+        'NIGERIAN_TRANSLATION_PRIMARY=google-cloud requires GOOGLE_TRANSLATE_PROJECT_ID.',
+      );
+    }
   }
   /*
    * `streaming` routes uploaded programmes through the SAME synthesis stack the
@@ -722,6 +766,12 @@ export function loadConfig(): IngestConfig {
     translationProvider,
     translationRoutesDocument: process.env['TRANSLATION_ROUTES_DOCUMENT']?.trim() || null,
     translationFallbackProvider,
+    nigerianTranslationPrimary,
+    googleTranslateProjectId,
+    googleTranslateCredentialsFile,
+    googleTranslateQuotaProjectId,
+    googleTranslateLocation,
+    googleTranslateTimeoutMs,
     translationTimeoutMs: readPositiveInt('TRANSLATION_TIMEOUT_MS', 30_000),
     translationTargetLanguage:
       process.env['TRANSLATION_TARGET_LANGUAGE'] ?? process.env['TARGET_LANGUAGE'] ?? 'fr',
@@ -793,6 +843,31 @@ export function loadConfig(): IngestConfig {
     translatedLanguages: readCsv('TRANSLATED_LANGUAGES', 'fr'),
     logLevel: process.env['LOG_LEVEL'] ?? 'info',
   };
+}
+
+function readGoogleTranslateCredentialsFile(
+  env: NodeJS.ProcessEnv,
+  environment: string,
+  nigerianTranslationPrimary: NigerianTranslationPrimary,
+): string | null {
+  const raw =
+    env['GOOGLE_TRANSLATE_CREDENTIALS_FILE']?.trim() ||
+    env['GOOGLE_APPLICATION_CREDENTIALS']?.trim() ||
+    null;
+  if (nigerianTranslationPrimary !== 'google-cloud') return raw;
+  if (environment !== 'production') return raw;
+  if (raw === null) return PRODUCTION_GOOGLE_TRANSLATION_CREDENTIALS_PATH;
+  if (normaliseCredentialPathForPolicy(raw) !== PRODUCTION_GOOGLE_TRANSLATION_CREDENTIALS_PATH) {
+    throw new Error(
+      'NIGERIAN_TRANSLATION_PRIMARY=google-cloud in production requires the Google ' +
+        `translation credential file at ${PRODUCTION_GOOGLE_TRANSLATION_CREDENTIALS_PATH}.`,
+    );
+  }
+  return PRODUCTION_GOOGLE_TRANSLATION_CREDENTIALS_PATH;
+}
+
+function normaliseCredentialPathForPolicy(value: string): string {
+  return value.replace(/\\/gu, '/').replace(/\/+/gu, '/');
 }
 
 function readPiperVoices(legacyVoice: {

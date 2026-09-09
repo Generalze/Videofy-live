@@ -33,6 +33,7 @@ DEEPGRAM_API_KEY DEEPGRAM_MODEL
 ELEVENLABS_API_KEY ELEVENLABS_DEFAULT_VOICE_ID ELEVENLABS_MODEL
 AZURE_SPEECH_KEY AZURE_SPEECH_REGION AZURE_DEFAULT_VOICE_ID
 GOOGLE_TRANSLATE_PROJECT_ID GOOGLE_CLOUD_QUOTA_PROJECT
+GOOGLE_TRANSLATE_LOCATION GOOGLE_TRANSLATE_TIMEOUT_MS
 NAIJALINGO_API_KEY NAIJALINGO_BASE_URL NAIJALINGO_MODEL
 NAIJALINGO_AUTH_HEADER NAIJALINGO_AUTH_SCHEME
 NAIJALINGO_VOICE_BY_LANGUAGE NAIJALINGO_VOICE_IDS NAIJALINGO_DEFAULT_VOICE
@@ -41,6 +42,7 @@ NAIJALINGO_RESPONSE_FORMAT NAIJALINGO_SAMPLE_RATE
 
 # Never copied: the environment's own identity and posture.
 FORBIDDEN="C7_ENVIRONMENT AI_RUNTIME_PROFILE TRANSCRIPTION_PROVIDER TRANSLATION_PROVIDER
+NIGERIAN_TRANSLATION_PRIMARY
 DATABASE_URL INTERNAL_WEBRTC_TOKEN VIDEOFY_AUTH_SECRET CONNECT_AUTH_SECRET
 CHANNEL_ID_SALT OPERATOR_CONSOLE_ACCOUNT_IDS PLATFORM_OPERATOR_ACCOUNT_IDS
 C7_PUBLIC_ORIGIN GATEWAY_URL MEDIA_INGEST_URL ACCOUNT_SERVICE_URL PORT HOST"
@@ -77,18 +79,21 @@ fi
 # The credential IDENTITY is shared, the FILE is not: production must not
 # depend on a file living under another environment's configuration, or
 # tightening staging's permissions one day silently breaks production.
-SRC_ADC="$(grep -E '^GOOGLE_APPLICATION_CREDENTIALS=' "$FROM_DIR/media-ingest.env" 2>/dev/null | head -1 | cut -d= -f2-)" || true
+SRC_ADC="$(grep -E '^GOOGLE_TRANSLATE_CREDENTIALS_FILE=' "$FROM_DIR/media-ingest.env" 2>/dev/null | head -1 | cut -d= -f2-)" || true
+if [ -z "${SRC_ADC:-}" ]; then
+  SRC_ADC="$(grep -E '^GOOGLE_APPLICATION_CREDENTIALS=' "$FROM_DIR/media-ingest.env" 2>/dev/null | head -1 | cut -d= -f2-)" || true
+fi
 if [ -n "${SRC_ADC:-}" ] && [ -f "$SRC_ADC" ]; then
-  DST_ADC="$TO_DIR/google-service-account.json"
-  install -m 0640 -o root -g videofy "$SRC_ADC" "$DST_ADC"
+  DST_ADC="/etc/videofy/google-translation.json"
+  install -D -m 0640 -o root -g videofy "$SRC_ADC" "$DST_ADC"
   tmp="$(mktemp "$TO_DIR/media-ingest.env.XXXXXX")"
   chown --reference="$TO_DIR/media-ingest.env" "$tmp"; chmod --reference="$TO_DIR/media-ingest.env" "$tmp"
-  grep -vE '^GOOGLE_APPLICATION_CREDENTIALS=' "$TO_DIR/media-ingest.env" > "$tmp" || true
-  printf 'GOOGLE_APPLICATION_CREDENTIALS=%s\n' "$DST_ADC" >> "$tmp"
+  grep -vE '^(GOOGLE_TRANSLATE_CREDENTIALS_FILE|GOOGLE_APPLICATION_CREDENTIALS)=' "$TO_DIR/media-ingest.env" > "$tmp" || true
+  printf 'GOOGLE_TRANSLATE_CREDENTIALS_FILE=%s\n' "$DST_ADC" >> "$tmp"
   mv "$tmp" "$TO_DIR/media-ingest.env"
   echo "  copied  Google service account -> $DST_ADC (0640 root:videofy, contents not displayed)"
 else
-  echo "  skip    Google service account (no GOOGLE_APPLICATION_CREDENTIALS file in $FROM_DIR)"
+  echo "  skip    Google service account (no Google credential file in $FROM_DIR)"
 fi
 
 echo "done. Provider credentials are shared; runtime posture, secrets and certification are not."

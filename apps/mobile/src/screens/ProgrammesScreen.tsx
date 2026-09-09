@@ -57,8 +57,9 @@ import { ChannelAvatar } from '../programmes/ChannelAvatar';
 import { useChannelInterest } from '../programmes/useChannelInterest';
 import { C7, Chip, GlassCard, SectionHeading } from '../ui/c7';
 import { Icon } from '../ui/icons';
+import { PUBLIC_ENDPOINTS } from '../config/publicEnv';
 
-const GATEWAY_URL = process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
+const GATEWAY_URL = PUBLIC_ENDPOINTS.gatewayUrl;
 /** One stable empty list, so the memos and the push-open effect do not re-run on every render before the directory arrives. */
 const NO_CHANNELS: readonly ChannelSummary[] = [];
 
@@ -91,16 +92,28 @@ function InterestBell({
       disabled={busy}
       accessibilityRole="button"
       accessibilityState={{ selected: following, disabled: busy }}
-      accessibilityLabel={following ? `Stop reminders for ${channel.displayName}` : `Tell me when ${channel.displayName} goes live`}
+      accessibilityLabel={
+        following
+          ? `Stop reminders for ${channel.displayName}`
+          : `Tell me when ${channel.displayName} goes live`
+      }
       hitSlop={6}
-      style={({ pressed }) => [styles.bell, following && styles.bellOn, (pressed || busy) && styles.pressed]}
+      style={({ pressed }) => [
+        styles.bell,
+        following && styles.bellOn,
+        (pressed || busy) && styles.pressed,
+      ]}
     >
       <Icon name="bell" size={18} color={following ? C7.ground : C7.teal} />
     </Pressable>
   );
 }
 
-export function ProgrammesScreen({ api, onOpen, openChannelId = null }: ProgrammesScreenProps): JSX.Element {
+export function ProgrammesScreen({
+  api,
+  onOpen,
+  openChannelId = null,
+}: ProgrammesScreenProps): JSX.Element {
   const [channels, setChannels] = useState<readonly ChannelSummary[] | null>(null);
   const [link, setLink] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [query, setQuery] = useState('');
@@ -162,14 +175,22 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
     <ScrollView style={styles.fill} contentContainerStyle={styles.screen}>
       {featured !== null && (
         <GlassCard accent style={styles.featured}>
-          <ChannelAvatar channel={featured} size={110} radius={14} live style={styles.featuredArt} />
+          <ChannelAvatar
+            channel={featured}
+            size={110}
+            radius={14}
+            live
+            style={styles.featuredArt}
+          />
           <View style={{ flex: 1, gap: 8 }}>
             <View style={styles.chipRow}>
               <Chip label="Featured" tone="teal" />
               <Chip label="Live now" tone="live" />
               {featuredCategory !== null && <Chip label={featuredCategory} />}
             </View>
-            <Text style={styles.featuredTitle} numberOfLines={2}>{featured.displayName}</Text>
+            <Text style={styles.featuredTitle} numberOfLines={2}>
+              {featured.displayName}
+            </Text>
             {featuredHandle !== null && <Text style={styles.handle}>{featuredHandle}</Text>}
             {featuredNow !== null && (
               <Text style={styles.now} numberOfLines={2}>
@@ -184,7 +205,11 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
               </View>
             )}
             <View style={styles.featuredActions}>
-              <Pressable onPress={() => onOpen(featured)} accessibilityRole="button" style={({ pressed }) => [styles.watch, pressed && styles.pressed]}>
+              <Pressable
+                onPress={() => onOpen(featured)}
+                accessibilityRole="button"
+                style={({ pressed }) => [styles.watch, pressed && styles.pressed]}
+              >
                 <Icon name="programmes" size={18} color="#ffffff" />
                 <Text style={styles.watchLabel}>Watch</Text>
               </Pressable>
@@ -201,9 +226,18 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
 
       <View style={styles.chipBlock}>
         <Text style={styles.chipLabel}>Filter</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.filters}
+        >
           {filters.map((entry) => (
-            <Chip key={entry} label={FILTER_LABELS[entry]} active={filter === entry} onPress={() => setChosenFilter(entry)} />
+            <Chip
+              key={entry}
+              label={FILTER_LABELS[entry]}
+              active={filter === entry}
+              onPress={() => setChosenFilter(entry)}
+            />
           ))}
         </ScrollView>
       </View>
@@ -211,13 +245,19 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
       {categories.length > 0 && (
         <View style={styles.chipBlock}>
           <Text style={styles.chipLabel}>Category</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.filters}
+          >
             {categories.map((entry) => (
               <Chip
                 key={entry.id}
                 label={entry.label}
                 active={category === entry.id}
-                onPress={() => setChosenCategory((current) => (current === entry.id ? null : entry.id))}
+                onPress={() =>
+                  setChosenCategory((current) => (current === entry.id ? null : entry.id))
+                }
               />
             ))}
           </ScrollView>
@@ -227,7 +267,10 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
       <Text style={styles.hint}>Interested = we tell you when it goes live.</Text>
       {notice !== null && <Text style={styles.notice}>{notice}</Text>}
 
-      <SectionHeading title="Discoverable channels" subtitle="Public channels you can watch and join." />
+      <SectionHeading
+        title="Discoverable channels"
+        subtitle="Public channels you can watch and join."
+      />
       <View style={styles.search}>
         <Icon name="search" size={18} color={C7.muted} />
         <TextInput
@@ -242,7 +285,11 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
       </View>
 
       {channels === null && (
-        <Text style={styles.empty}>{link === 'disconnected' ? 'Could not reach C7 Streams. Check your connection.' : 'Finding channels…'}</Text>
+        <Text style={styles.empty}>
+          {link === 'disconnected'
+            ? 'Could not reach C7 Streams. Check your connection.'
+            : 'Finding channels…'}
+        </Text>
       )}
       {channels !== null && visible.length === 0 && <Text style={styles.empty}>{emptyWords}</Text>}
       {visible.map((channel) => {
@@ -252,15 +299,30 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
         const handle = handleLabel(channel.handle);
         const now = nowPlaying(channel);
         return (
-          <Pressable key={channel.channelId} onPress={() => onOpen(channel)} accessibilityRole="button" style={({ pressed }) => pressed && styles.pressed}>
+          <Pressable
+            key={channel.channelId}
+            onPress={() => onOpen(channel)}
+            accessibilityRole="button"
+            style={({ pressed }) => pressed && styles.pressed}
+          >
             <GlassCard padded={false} style={styles.row}>
               <ChannelAvatar channel={channel} size={58} radius={12} live={channel.live} />
               <View style={{ flex: 1, gap: 5 }}>
                 <View style={styles.titleRow}>
-                  <Text style={styles.rowTitle} numberOfLines={1}>{channel.displayName}</Text>
-                  {channel.live ? <Chip label="Live" tone="live" /> : <Chip label="Off air" tone="amber" />}
+                  <Text style={styles.rowTitle} numberOfLines={1}>
+                    {channel.displayName}
+                  </Text>
+                  {channel.live ? (
+                    <Chip label="Live" tone="live" />
+                  ) : (
+                    <Chip label="Off air" tone="amber" />
+                  )}
                 </View>
-                {handle !== null && <Text style={styles.handle} numberOfLines={1}>{handle}</Text>}
+                {handle !== null && (
+                  <Text style={styles.handle} numberOfLines={1}>
+                    {handle}
+                  </Text>
+                )}
                 {now !== null && (
                   <Text style={styles.now} numberOfLines={1}>
                     <Text style={styles.nowLabel}>Now: </Text>
@@ -268,7 +330,11 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
                   </Text>
                 )}
                 <View style={styles.metaRow}>
-                  <Icon name={channel.visibility === 'public' ? 'globe' : 'lock'} size={14} color={C7.muted} />
+                  <Icon
+                    name={channel.visibility === 'public' ? 'globe' : 'lock'}
+                    size={14}
+                    color={C7.muted}
+                  />
                   <Text style={styles.meta}>{describeVisibility(channel.visibility)}</Text>
                   {count !== null && (
                     <>
@@ -285,7 +351,12 @@ export function ProgrammesScreen({ api, onOpen, openChannelId = null }: Programm
                   </View>
                 )}
               </View>
-              <InterestBell channel={channel} following={following} busy={pending.has(channel.channelId)} onPress={() => toggle(channel.channelId)} />
+              <InterestBell
+                channel={channel}
+                following={following}
+                busy={pending.has(channel.channelId)}
+                onPress={() => toggle(channel.channelId)}
+              />
             </GlassCard>
           </Pressable>
         );
@@ -301,15 +372,40 @@ const styles = StyleSheet.create({
   featuredArt: { alignSelf: 'flex-start' },
   featuredTitle: { color: C7.text, fontSize: 24, fontWeight: '600', fontFamily: 'serif' },
   featuredActions: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 4 },
-  watch: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: C7.tealDeep, borderRadius: 999, paddingVertical: 11 },
+  watch: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: C7.tealDeep,
+    borderRadius: 999,
+    paddingVertical: 11,
+  },
   watchLabel: { color: '#ffffff', fontSize: 15, fontWeight: '600' },
   chipRow: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start' },
   chipBlock: { gap: 6 },
-  chipLabel: { color: C7.faint, fontSize: 11, letterSpacing: 1, fontWeight: '700', textTransform: 'uppercase' },
+  chipLabel: {
+    color: C7.faint,
+    fontSize: 11,
+    letterSpacing: 1,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
   filters: { flexDirection: 'row', gap: 8, paddingRight: 8 },
   hint: { color: C7.muted, fontSize: 12, marginTop: -6 },
   notice: { color: C7.amber, fontSize: 12, marginTop: -6 },
-  search: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 999, borderWidth: 1, borderColor: C7.panelEdge, backgroundColor: 'rgba(255,255,255,0.04)', paddingHorizontal: 14, paddingVertical: 4 },
+  search: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: C7.panelEdge,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+  },
   searchInput: { flex: 1, color: C7.text, fontSize: 15, paddingVertical: 8 },
   empty: { color: C7.muted, fontSize: 14, textAlign: 'center', paddingVertical: 18 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12 },
@@ -322,7 +418,16 @@ const styles = StyleSheet.create({
   meta: { color: C7.muted, fontSize: 12 },
   metaDot: { color: C7.faint, fontSize: 12 },
   metaTeal: { color: C7.teal, fontSize: 12, fontWeight: '600' },
-  bell: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(62,201,192,0.5)', backgroundColor: 'rgba(62,201,192,0.06)' },
+  bell: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(62,201,192,0.5)',
+    backgroundColor: 'rgba(62,201,192,0.06)',
+  },
   bellOn: { backgroundColor: C7.teal, borderColor: C7.teal },
   pressed: { opacity: 0.75 },
 });

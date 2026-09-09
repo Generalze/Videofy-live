@@ -149,9 +149,40 @@ describe('every terminal outcome becomes history, not only the happy one', () =>
     h.create();
     // Zero devices reached: unavailable now, not after thirty seconds of
     // "Calling…".
-    h.lifecycle.noteRingDispatch('ring-1', 0);
+    h.lifecycle.noteRingDispatch('ring-1', {
+      status: 'no-routable-device',
+      reachedDevices: 0,
+      attempted: 0,
+      delivered: 0,
+      failed: 0,
+      pruned: 0,
+    });
     expect(h.outcomes).toHaveLength(1);
     expect(h.outcomes[0]?.outcome).toBe('unavailable');
+  });
+
+  it('a legacy zero-device report is recorded as missed, not unavailable', () => {
+    const h = harness();
+    h.create();
+    h.lifecycle.noteRingDispatch('ring-1', 0);
+    expect(h.outcomes).toHaveLength(0);
+    h.fire(RINGING_WINDOW_MS);
+    expect(h.outcomes[0]?.outcome).toBe('missed');
+  });
+
+  it('a provider ring failure is recorded as network, not unavailable', () => {
+    const h = harness();
+    h.create();
+    h.lifecycle.noteRingDispatch('ring-1', {
+      status: 'provider-failed',
+      reachedDevices: 0,
+      attempted: 1,
+      delivered: 0,
+      failed: 1,
+      pruned: 0,
+    });
+    expect(h.outcomes).toHaveLength(1);
+    expect(h.outcomes[0]?.outcome).toBe('network');
   });
 
   it('a connected call whose media never recovers is recorded as a network failure', () => {

@@ -20,9 +20,9 @@
  *
  * Nothing here logs. Not the audio, not the token, not the profile id.
  */
+import { PUBLIC_ENDPOINTS } from '../config/publicEnv';
 
-/** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. Staging mounts media-ingest at /media (deploy/staging/Caddyfile). */
-export const INGEST_URL = process.env['EXPO_PUBLIC_INGEST_URL'] ?? 'https://staging.consummate7.com/media';
+export const INGEST_URL = PUBLIC_ENDPOINTS.ingestUrl;
 
 /** The consent wording the person accepted; the same version the web app records. */
 export const VOICE_CONSENT_TEXT_VERSION = 'voice-consent-v1';
@@ -78,7 +78,10 @@ function wordsIn(body: Record<string, unknown>, key: 'error' | 'message'): strin
 }
 
 /** The words for what the enrollment route answered (voice-enrollment-route.ts). */
-export function readEnrolmentReply(status: number, body: Record<string, unknown>): EnrolmentOutcome {
+export function readEnrolmentReply(
+  status: number,
+  body: Record<string, unknown>,
+): EnrolmentOutcome {
   if (status === 201 || status === 202) {
     const ready = body['personalVoiceReady'] === true;
     return {
@@ -86,12 +89,18 @@ export function readEnrolmentReply(status: number, body: Record<string, unknown>
       personalVoiceReady: ready,
       message: ready
         ? 'Your voice is ready. Translated speech will sound like you.'
-        : (wordsIn(body, 'message') ?? 'Your recording was saved. Personal voice is not available yet.'),
+        : (wordsIn(body, 'message') ??
+          'Your recording was saved. Personal voice is not available yet.'),
     };
   }
   if (status === 401) return { ok: false, message: 'Sign in again to record your voice.' };
-  if (status === 413) return { ok: false, message: 'That recording is too long. Keep it under 30 seconds.' };
-  if (status === 415) return { ok: false, message: wordsIn(body, 'error') ?? 'That recording format is not supported yet.' };
+  if (status === 413)
+    return { ok: false, message: 'That recording is too long. Keep it under 30 seconds.' };
+  if (status === 415)
+    return {
+      ok: false,
+      message: wordsIn(body, 'error') ?? 'That recording format is not supported yet.',
+    };
   return { ok: false, message: wordsIn(body, 'error') ?? 'Your voice could not be saved.' };
 }
 
@@ -124,15 +133,18 @@ export async function enrolVoice(input: EnrolVoiceInput): Promise<EnrolmentOutco
   }
 
   try {
-    const uploaded = await input.fetch(`${input.ingestUrl}/voice-profiles/${encodeURIComponent(voiceProfileId)}/enrollment`, {
-      method: 'POST',
-      headers: {
-        'content-type': input.mimeType,
-        authorization,
-        'x-videofy-enrolled-language': input.enrolledLanguage,
+    const uploaded = await input.fetch(
+      `${input.ingestUrl}/voice-profiles/${encodeURIComponent(voiceProfileId)}/enrollment`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': input.mimeType,
+          authorization,
+          'x-videofy-enrolled-language': input.enrolledLanguage,
+        },
+        body: input.audio,
       },
-      body: input.audio,
-    });
+    );
     return readEnrolmentReply(uploaded.status, await bodyOf(uploaded));
   } catch {
     return { ok: false, message: 'Could not reach C7. Check your connection and try again.' };
@@ -145,28 +157,44 @@ export interface DeleteVoiceOutcome {
 }
 
 /** "Delete my voice": everything this account holds (voice-withdrawal-route.ts DELETE /voice-profiles). */
-export async function deleteVoice(input: { readonly fetch: FetchLike; readonly ingestUrl: string; readonly token: string }): Promise<DeleteVoiceOutcome> {
+export async function deleteVoice(input: {
+  readonly fetch: FetchLike;
+  readonly ingestUrl: string;
+  readonly token: string;
+}): Promise<DeleteVoiceOutcome> {
   try {
     const response = await input.fetch(`${input.ingestUrl}/voice-profiles`, {
       method: 'DELETE',
       headers: { authorization: `Bearer ${input.token}` },
     });
     const body = await bodyOf(response);
-    if (!response.ok) return { ok: false, message: wordsIn(body, 'error') ?? 'Your voice could not be deleted.' };
+    if (!response.ok)
+      return { ok: false, message: wordsIn(body, 'error') ?? 'Your voice could not be deleted.' };
     return {
       ok: true,
-      message: wordsIn(body, 'message') ?? (body['deleted'] === 0 ? 'There was no recorded voice to delete.' : 'Your voice was deleted.'),
+      message:
+        wordsIn(body, 'message') ??
+        (body['deleted'] === 0
+          ? 'There was no recorded voice to delete.'
+          : 'Your voice was deleted.'),
     };
   } catch {
     // A comforting success here would be the worst thing this function could say.
-    return { ok: false, message: 'Your voice could not be deleted. Check your connection and try again.' };
+    return {
+      ok: false,
+      message: 'Your voice could not be deleted. Check your connection and try again.',
+    };
   }
 }
 
 /** What is on file, from GET /voice-profiles/mine; null when the service could not be asked. */
 export type VoiceStatus = 'none' | 'saved' | 'ready';
 
-export async function voiceStatus(input: { readonly fetch: FetchLike; readonly ingestUrl: string; readonly token: string }): Promise<VoiceStatus | null> {
+export async function voiceStatus(input: {
+  readonly fetch: FetchLike;
+  readonly ingestUrl: string;
+  readonly token: string;
+}): Promise<VoiceStatus | null> {
   try {
     const response = await input.fetch(`${input.ingestUrl}/voice-profiles/mine`, {
       headers: { authorization: `Bearer ${input.token}` },
