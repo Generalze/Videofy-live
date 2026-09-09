@@ -322,8 +322,9 @@ function assertRuntimeProfileStartable(profile: RuntimeProfile): void {
         'AI_RUNTIME_PROFILE=commercial-cloud cannot start.',
         'No certified provider is available for:',
         ...blockers.map((blocker) => `  - ${blocker}`),
-        'Certification is per provider + capability + language route + service category,',
-        'and requires recorded benchmark evidence (C-AI1.2).',
+        'Static startup eligibility checks provider evidence, capability, execution mode,',
+        'service category, and credential/config presence.',
+        'Runtime health is checked after startup before traffic is routed.',
       ];
       throw new Error(lines.join('\n'));
     }

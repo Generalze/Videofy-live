@@ -37,6 +37,7 @@ import {
 import {
   COMMERCIAL_PROVIDERS,
   findCommercialProvider,
+  stageEvidenceComplaints,
   type CommercialProvider,
 } from './commercial-providers.js';
 
@@ -50,6 +51,7 @@ export type ServiceSelectionIssueCode =
   | 'execution-mode-unsupported'
   | 'execution-mode-unverified'
   | 'partial-results-unsupported'
+  | 'certification-evidence-insufficient'
   | 'health-not-serving';
 
 export interface ServiceSelectionIssue {
@@ -76,6 +78,23 @@ export interface EvaluateServiceSelectionInput {
   readonly minimumStage: ProviderIntegrationStage;
   /** Observed health. Defaults to `unknown`, which does NOT accept traffic. */
   readonly health?: ProviderRuntimeHealth;
+  readonly administrativelyDisabled?: boolean;
+  /**
+   * Whether external identity (ADC, workload identity, a metadata server)
+   * actually resolved. Omitted means unverified, which FAILS CLOSED for any
+   * provider that authenticates that way. See `resolveOperationalState`.
+   */
+  readonly externalAuthResolved?: boolean;
+  /** Predicate over env var NAMES. No credential value enters this module. */
+  readonly isPresent: (envVarName: string) => boolean;
+  readonly provider?: CommercialProvider;
+}
+
+export interface StaticServiceSelectionInput {
+  readonly providerId: string;
+  readonly service: ProviderServiceContext;
+  /** Minimum stage this deployment demands. Production should require `certified`. */
+  readonly minimumStage: ProviderIntegrationStage;
   readonly administrativelyDisabled?: boolean;
   /**
    * Whether external identity (ADC, workload identity, a metadata server)
@@ -237,6 +256,127 @@ export function evaluateServiceSelection(
   };
 }
 
+/**
+ * Static startup eligibility for commercial profiles.
+ *
+ * This deliberately does NOT read runtime health. A process that has not
+ * started cannot have probed its vendors yet; using `unknown` health here makes
+ * startup depend on a post-start observation and creates a circular readiness
+ * gate. Runtime selection remains fail-closed in `evaluateServiceSelection`.
+ */
+export function evaluateStaticServiceSelection(
+  input: StaticServiceSelectionInput,
+): ServiceSelectionReport {
+  EvaluateServiceSelectionSchema.parse({
+    providerId: input.providerId,
+    service: input.service,
+    minimumStage: input.minimumStage,
+  });
+
+  const issues: ServiceSelectionIssue[] = [];
+  const provider = input.provider ?? findCommercialProvider(input.providerId);
+
+  if (provider === undefined) {
+    return {
+      providerId: input.providerId,
+      service: input.service,
+      eligibleAsPrimary: false,
+      eligibleAsFallback: false,
+      missingCredentials: [],
+      issues: [
+        {
+          code: 'provider-unknown',
+          message: `Provider ${input.providerId} is not registered.`,
+        },
+      ],
+    };
+  }
+
+  const operational = resolveOperationalState({
+    requirements: provider.requirements,
+    ...(input.administrativelyDisabled === undefined
+      ? {}
+      : { administrativelyDisabled: input.administrativelyDisabled }),
+    ...(input.externalAuthResolved === undefined
+      ? {}
+      : { externalAuthResolved: input.externalAuthResolved }),
+    isPresent: input.isPresent,
+  });
+  if (operational.state === 'disabled') {
+    issues.push({
+      code: 'provider-operationally-disabled',
+      message: `Provider ${provider.providerId} is disabled: ${operational.reason}.`,
+    });
+  }
+
+  if (!stageAtLeast(provider.integrationStage, input.minimumStage)) {
+    issues.push({
+      code: 'integration-stage-insufficient',
+      message:
+        `Provider ${provider.providerId} is at stage '${provider.integrationStage}' ` +
+        `but this deployment requires at least '${input.minimumStage}'.`,
+    });
+  }
+
+  for (const complaint of stageEvidenceComplaints(provider)) {
+    issues.push({
+      code: 'certification-evidence-insufficient',
+      message: complaint,
+    });
+  }
+
+  const policy = executionPolicyFor(input.service);
+  const transcription = provider.capabilities.transcription;
+
+  if (transcription === undefined) {
+    issues.push({
+      code: 'capability-not-declared',
+      message: `Provider ${provider.providerId} declares no transcription capability.`,
+    });
+  } else {
+    const flagFor = (mode: ProviderExecutionMode) =>
+      mode === 'streaming' ? transcription.streaming : transcription.batch;
+
+    const primaryFlag = flagFor(policy.primaryTranscriptionMode);
+    const primaryModeOk = capabilitySupported(primaryFlag);
+    if (!primaryModeOk) {
+      issues.push({
+        code: primaryFlag === 'unverified' ? 'execution-mode-unverified' : 'execution-mode-unsupported',
+        message:
+          `${serviceContextKey(input.service)} wants a ${policy.primaryTranscriptionMode} ` +
+          `primary (${policy.primaryStrength}); ${provider.providerId} reports ` +
+          `'${primaryFlag}'. ${policy.rationale}`,
+      });
+    }
+
+    if (policy.requiresPartialResults && !capabilitySupported(transcription.partialResults)) {
+      issues.push({
+        code: 'partial-results-unsupported',
+        message:
+          `${serviceContextKey(input.service)} needs interim results for realtime ` +
+          `captions; ${provider.providerId} reports '${transcription.partialResults}'.`,
+      });
+    }
+  }
+
+  const blockingIssues = issues.filter((issue) => {
+    if (policy.primaryStrength === 'preferred') {
+      return issue.code !== 'execution-mode-unsupported' && issue.code !== 'execution-mode-unverified';
+    }
+    return true;
+  });
+
+  return {
+    providerId: provider.providerId,
+    service: input.service,
+    eligibleAsPrimary: blockingIssues.length === 0,
+    // Startup does not choose fallback routing; runtime health decides that later.
+    eligibleAsFallback: false,
+    issues,
+    missingCredentials: operational.missingCredentials,
+  };
+}
+
 /** Throwing form, for startup gates. Names every reason, not just the first. */
 export function assertServiceSelectionReady(input: EvaluateServiceSelectionInput): void {
   const report = evaluateServiceSelection(input);
@@ -270,7 +410,7 @@ export function commercialProfileBlockers(input: {
   for (const service of services) {
     const eligible = COMMERCIAL_PROVIDER_IDS.filter(
       (providerId) =>
-        evaluateServiceSelection({
+        evaluateStaticServiceSelection({
           providerId,
           service,
           minimumStage: input.minimumStage,

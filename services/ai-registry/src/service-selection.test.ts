@@ -13,6 +13,7 @@ import {
   capabilitySupported,
   commercialProfileBlockers,
   evaluateServiceSelection,
+  evaluateStaticServiceSelection,
   executionPolicyFor,
   findCommercialModel,
   findCommercialProvider,
@@ -33,6 +34,15 @@ const PROG_UPLOAD: ProviderServiceContext = { serviceCategory: 'programme', medi
 
 const present = () => true;
 const absent = () => false;
+const deepgramCredential = (name: string) => name === 'DEEPGRAM_API_KEY';
+
+const certifiedTranscriptionObservation: CommercialProvider['liveObservations'][number] = {
+  observedAt: '2026-08-30',
+  environment: 'test',
+  capability: 'transcription',
+  sampleCount: 5,
+  summary: 'multi-run certification evidence for static selection tests',
+};
 
 function provider(overrides: Partial<CommercialProvider> = {}): CommercialProvider {
   return {
@@ -51,6 +61,13 @@ function provider(overrides: Partial<CommercialProvider> = {}): CommercialProvid
     liveObservations: [],
     ...overrides,
   };
+}
+
+function evidencedProvider(overrides: Partial<CommercialProvider> = {}): CommercialProvider {
+  return provider({
+    liveObservations: [certifiedTranscriptionObservation],
+    ...overrides,
+  });
 }
 
 describe('the three axes are independent', () => {
@@ -443,14 +460,91 @@ describe('commercial provider records', () => {
 });
 
 describe('fail-closed commercial resolution', () => {
-  it('PIN: no commercial service is startable today, and it says why', () => {
-    const blockers = commercialProfileBlockers({ minimumStage: 'certified', isPresent: present });
-    // Nothing is certified and no capability is verified, so all three service
-    // contexts are blocked. This is the fail-closed behaviour §21.6 specified
-    // and nothing called until now.
-    expect(blockers).toHaveLength(3);
-    expect(blockers.join('\n')).toContain('call:live');
-    expect(blockers.join('\n')).toContain('programme:uploaded');
+  it('PIN: certified + credentials + suitable capability passes static startup eligibility', () => {
+    const report = evaluateStaticServiceSelection({
+      providerId: 'deepgram',
+      service: CALL,
+      minimumStage: 'certified',
+      isPresent: deepgramCredential,
+    });
+
+    expect(report.eligibleAsPrimary).toBe(true);
+    expect(report.issues.map((i) => i.code)).not.toContain('health-not-serving');
+    expect(
+      commercialProfileBlockers({ minimumStage: 'certified', isPresent: deepgramCredential }),
+    ).toEqual([]);
+  });
+
+  it('PIN: certification below the required startup stage fails', () => {
+    const p = evidencedProvider({ integrationStage: 'integrated' });
+    const report = evaluateStaticServiceSelection({
+      providerId: p.providerId,
+      provider: p,
+      service: CALL,
+      minimumStage: 'certified',
+      isPresent: present,
+    });
+
+    expect(report.eligibleAsPrimary).toBe(false);
+    expect(report.issues.map((i) => i.code)).toContain('integration-stage-insufficient');
+  });
+
+  it('PIN: missing required credential/config fails static startup eligibility', () => {
+    const p = evidencedProvider();
+    const report = evaluateStaticServiceSelection({
+      providerId: p.providerId,
+      provider: p,
+      service: CALL,
+      minimumStage: 'certified',
+      isPresent: absent,
+    });
+
+    expect(report.eligibleAsPrimary).toBe(false);
+    expect(report.missingCredentials).toEqual(['TEST_VENDOR_API_KEY']);
+    expect(report.issues.map((i) => i.code)).toContain('provider-operationally-disabled');
+  });
+
+  it('PIN: unknown runtime health after boot carries no traffic', () => {
+    const p = evidencedProvider();
+    const report = evaluateServiceSelection({
+      providerId: p.providerId,
+      provider: p,
+      service: CALL,
+      minimumStage: 'certified',
+      isPresent: present,
+    });
+
+    expect(report.eligibleAsPrimary).toBe(false);
+    expect(report.issues.map((i) => i.code)).toContain('health-not-serving');
+  });
+
+  it('PIN: healthy runtime health is routable after startup', () => {
+    const p = evidencedProvider();
+    const report = evaluateServiceSelection({
+      providerId: p.providerId,
+      provider: p,
+      service: CALL,
+      minimumStage: 'certified',
+      health: 'healthy',
+      isPresent: present,
+    });
+
+    expect(report.eligibleAsPrimary).toBe(true);
+    expect(report.issues).toEqual([]);
+  });
+
+  it('PIN: removing certification evidence fails static startup eligibility', () => {
+    const p = provider({ integrationStage: 'certified', liveObservations: [] });
+    const report = evaluateStaticServiceSelection({
+      providerId: p.providerId,
+      provider: p,
+      service: CALL,
+      minimumStage: 'certified',
+      isPresent: present,
+    });
+
+    expect(report.eligibleAsPrimary).toBe(false);
+    expect(report.issues.map((i) => i.code)).toContain('certification-evidence-insufficient');
   });
 
   it('PIN: an unregistered provider is refused, not defaulted', () => {
