@@ -386,6 +386,27 @@ if [ "$MUTATION" = "remediate-via-full-installer" ]; then
     [ "$(pointer_target "$current")" = "$(release_dir "$ATOMIC_RELEASES" "$sha")" ]
   }
 fi
+if [ "$MUTATION" = "generic-node-authority" ]; then
+  # The defect: production goes back to running a caller-chosen script as the
+  # service user. The script lives under /tmp and belongs to the deploy
+  # account, so the grant it needs is a second identity, not a permission.
+  activation_preflight() {
+    local candidate="$1" env_file="$2" runner="${ATOMIC_SERVICE_USER:-videofy}"
+    sudo -n -u "$runner" node "$(dirname "${BASH_SOURCE[0]}")/preflight-config.mjs" \
+      "$candidate" "$env_file"
+  }
+fi
+if [ "$MUTATION" = "generic-test-authority" ]; then
+  # The defect: the capability checks go back to generic `test` as the service
+  # user -- readable-file oracle over every path that identity can reach.
+  activation_preflight() {
+    local candidate="$1" env_file="$2" runner="${ATOMIC_SERVICE_USER:-videofy}"
+    sudo -n -u "$runner" test -x "$candidate" || return 1
+    sudo -n -u "$runner" test -r "$env_file" || return 1
+    local helper="${ATOMIC_PREFLIGHT_HELPER:-/usr/local/sbin/videofy-production-preflight}"
+    sudo -n -u "$runner" "$helper" "$candidate"
+  }
+fi
 if [ "$MUTATION" = "no-publication-authority-preflight" ]; then
   # The defect: the bootstrap pronounces a host ready without proving anything
   # on it can move the pointer, so the deploy discovers it cannot publish only
@@ -2371,6 +2392,368 @@ check "which is true: no helper was installed" \
 check "and no library either" \
   "$([ -e "$PFX2/usr/local/lib/videofy/release-engine.sh" ] && echo installed || echo absent)" "absent"
 drop_rig; PATH="$SAVED_PATH"
+
+
+# ==================================================== bounded deploy privilege
+#
+# WHAT THIS REPLACES. The deploy account held `claude ALL=(ALL) NOPASSWD: ALL`
+# -- root, spelled at length. Removing it requires the privileges an ordinary
+# atomic deployment and rollback actually use to exist first, and there are
+# three: move the pointer, restart the three named services, and evaluate the
+# candidate's startup configuration as the service user.
+#
+# The last one used to be `sudo -u videofy node <script>` and
+# `sudo -u videofy test <path>`, with the script living under /tmp and owned by
+# the deploy account. `node` with a caller-chosen script is arbitrary code
+# execution as the service user: not a preflight permission, a second identity.
+#
+# The contract is therefore enforced INSIDE one fixed program, because a
+# sudoers wildcard is a pattern match on a string the caller supplies -- it
+# cannot canonicalise, cannot follow a symlink, and cannot tell
+# `/srv/videofy-prod/releases-scratch` from `/srv/videofy-prod/releases`.
+
+echo ""
+echo "the service identity is reachable through one program, with one argument"
+
+PREFLIGHT_SRC="$REPO_ROOT/deploy/production/production-preflight.sh"
+INSTALL_SH="$REPO_ROOT/deploy/production/install-sudo-hardening.sh"
+
+if [ "$MUTATION" = "candidate-containment-bypassed" ]; then
+  # The defect: the helper trusts the path it is handed, so the one grant that
+  # runs as the service user becomes "execute any config.js you can write".
+  MUTPRE="$(mktemp -d "${TMPDIR:-/tmp}/videofy-mutpre-XXXXXX")"
+  # ALL FOUR containment guards, not two. The first version of this mutation
+  # removed the "outside the store" and basename-shape refusals and SURVIVED at
+  # 384/0, because the parent-directory check still caught every path the tests
+  # offered. A mutation that leaves a guard standing measures nothing.
+  grep -vF \
+    -e 'outside $RELEASES' \
+    -e 'the release store itself is not a candidate' \
+    -e 'is nested below' \
+    -e 'is not a release or an in-flight candidate' \
+    "$PREFLIGHT_SRC" > "$MUTPRE/production-preflight.sh"
+  PREFLIGHT_SRC="$MUTPRE/production-preflight.sh"
+fi
+if [ "$MUTATION" = "service-name-wildcard" ]; then
+  # The defect: one tidy pattern authorises restarting anything that ever
+  # carries the prefix, including units this deployment must not touch.
+  MUTSUD="$(mktemp -d "${TMPDIR:-/tmp}/videofy-mutsud-XXXXXX")"
+  sed 's#^  activate="$activate$SYSTEMCTL restart $unit"#  activate="$activate$SYSTEMCTL restart videofy-prod-*"#' \
+    "$INSTALL_SH" > "$MUTSUD/install-sudo-hardening.sh"
+  INSTALL_SH="$MUTSUD/install-sudo-hardening.sh"
+fi
+if [ "$MUTATION" = "systemctl-enable-authority" ]; then
+  # The defect: provisioning authority smuggled into deployment authority.
+  MUTSUD="$(mktemp -d "${TMPDIR:-/tmp}/videofy-mutsud-XXXXXX")"
+  sed "s#^  printf 'Cmnd_Alias VIDEOFY_PREFLIGHT#  printf 'Cmnd_Alias VIDEOFY_ENABLE = /usr/bin/systemctl enable videofy-prod-account\\\\n'\n  printf 'Cmnd_Alias VIDEOFY_PREFLIGHT#" \
+    "$INSTALL_SH" > "$MUTSUD/install-sudo-hardening.sh"
+  INSTALL_SH="$MUTSUD/install-sudo-hardening.sh"
+fi
+if [ "$MUTATION" = "broad-nopasswd-all" ]; then
+  # The defect: the thing this package exists to remove, quietly re-added.
+  MUTSUD="$(mktemp -d "${TMPDIR:-/tmp}/videofy-mutsud-XXXXXX")"
+  sed "s#^  printf '%s ALL=(root) NOPASSWD: VIDEOFY_PUBLISH, VIDEOFY_ACTIVATE\\\\n' \"\$DEPLOY_OWNER\"#  printf '%s ALL=(ALL) NOPASSWD: ALL\\\\n' \"\$DEPLOY_OWNER\"#" \
+    "$INSTALL_SH" > "$MUTSUD/install-sudo-hardening.sh"
+  INSTALL_SH="$MUTSUD/install-sudo-hardening.sh"
+fi
+
+# A copy of the helper with only its four compiled-in constants repointed at a
+# rig. They are compiled in ON PURPOSE -- an environment override on a program
+# whose entire job is to refuse caller-chosen paths would be the hole itself --
+# so the substitution is asserted to touch exactly those four lines and nothing
+# else.
+PF_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/videofy-pfroot-XXXXXX")"
+PF="$PF_ROOT/videofy-production-preflight"
+mkdir -p "$PF_ROOT/releases" "$PF_ROOT/releases-scratch" "$PF_ROOT/env" "$PF_ROOT/lib" "$PF_ROOT/elsewhere"
+NODE_BIN="$(command -v node || echo /usr/bin/node)"
+cp "$REPO_ROOT/deploy/lib/preflight-config.mjs" "$PF_ROOT/lib/preflight-config.mjs"
+chmod 0644 "$PF_ROOT/lib/preflight-config.mjs"
+printf 'C7_ENVIRONMENT=production\nSOME_KEY=value\n' > "$PF_ROOT/env/media-ingest.env"
+sed \
+  -e "s#^readonly RELEASES=.*#readonly RELEASES='$PF_ROOT/releases'#" \
+  -e "s#^readonly ENV_FILE=.*#readonly ENV_FILE='$PF_ROOT/env/media-ingest.env'#" \
+  -e "s#^readonly NODE=.*#readonly NODE='$NODE_BIN'#" \
+  -e "s#^readonly IMPL=.*#readonly IMPL='$PF_ROOT/lib/preflight-config.mjs'#" \
+  -e "s#^readonly IMPL_OWNER=.*#readonly IMPL_OWNER='$(id -un)'#" \
+  "$PREFLIGHT_SRC" > "$PF"
+chmod 755 "$PF"
+# Asserted by VALUE, not by counting changed lines: on this host `node` really
+# is at /usr/bin/node, so that substitution is a no-op and a diff count would
+# come out 4 or 5 depending on the machine.
+for CONST in RELEASES ENV_FILE NODE IMPL IMPL_OWNER; do
+  if grep -q "^readonly $CONST=" "$PF"; then ok "the copy still defines $CONST"
+  else bad "the copy lost the $CONST constant" "the substitution missed it"; fi
+done
+check "and it differs from the shipped helper ONLY in those constants" \
+  "$(diff "$PREFLIGHT_SRC" "$PF" | grep -c '^< readonly ')" \
+  "$(diff "$PREFLIGHT_SRC" "$PF" | grep -c '^< ')"
+
+# A candidate of the shape the engine really produces, with a config module
+# that loads -- so a pass means the implementation ran, not that a check was
+# skipped.
+make_candidate() {
+  local dir="$1" providers="${2:-deepgram}"
+  mkdir -p "$dir/services/media-ingest/dist/services/media-ingest/src"
+  # The monorepo ships ESM, and Node decides that from the nearest package.json
+  # -- so the fixture carries one, or `config.js` would fail to import for a
+  # reason that has nothing to do with what is being tested.
+  printf '{"type":"module"}\n' > "$dir/package.json"
+  printf 'export function loadConfig() { return { transcriptionProvider: "%s", textToSpeechProvider: "elevenlabs", translationProvider: "opus-mt" }; }\n' \
+    "$providers" > "$dir/services/media-ingest/dist/services/media-ingest/src/config.js"
+}
+CAND="$PF_ROOT/releases/.candidate-$A.20260907T000000Z-1234-99"
+make_candidate "$CAND"
+SEALED="$PF_ROOT/releases/$A"
+make_candidate "$SEALED"
+
+# ---- the shapes it must accept ----
+
+if "$PF" "$CAND" >/dev/null 2>&1; then ok "an in-flight candidate is evaluated"
+else bad "a real candidate was refused" "$("$PF" "$CAND" 2>&1 | tail -3)"; fi
+if "$PF" "$SEALED" >/dev/null 2>&1; then ok "a sealed release is evaluated, so rollback uses the same primitive"
+else bad "a sealed release was refused" "$("$PF" "$SEALED" 2>&1 | tail -3)"; fi
+if "$PF" --check >/dev/null 2>&1; then ok "--check reports the authority is available"
+else bad "--check failed" "the host proof depends on it"; fi
+
+# It really runs the implementation: a fabricating provider must be caught.
+make_candidate "$CAND" mock
+if "$PF" "$CAND" >/dev/null 2>&1; then
+  bad "a candidate configured to fabricate output passed" "the implementation cannot have run"
+else ok "a fabricating provider is caught, so the implementation genuinely runs"; fi
+make_candidate "$CAND"
+
+# ---- the shapes it must refuse ----
+
+REFUSALS_OK=1
+try_refuse() {
+  local label="$1"; shift
+  if "$PF" "$@" >/dev/null 2>&1; then
+    bad "the preflight accepted $label" "it must refuse"; REFUSALS_OK=0
+  else ok "the preflight refuses $label"; fi
+}
+try_refuse "a path outside the release store"      "$PF_ROOT/elsewhere"
+try_refuse "a prefix lookalike (releases-scratch)" "$PF_ROOT/releases-scratch/$A"
+try_refuse "a relative path"                       "releases/$A"
+try_refuse "a traversal"                           "$PF_ROOT/releases/../elsewhere"
+try_refuse "the release store itself"              "$PF_ROOT/releases"
+try_refuse "the filesystem root"                   "/"
+try_refuse "an empty argument"                     ""
+try_refuse "a directory nested below the store"    "$PF_ROOT/releases/$A/services"
+try_refuse "a name that is not a release"          "$PF_ROOT/releases/scratch"
+try_refuse "a short sha"                           "$PF_ROOT/releases/abc123"
+
+# THE ACTUAL ATTACK, which the shape checks alone do not describe: a tree the
+# caller controls that is candidate-shaped AND loads. Refusing
+# `$PF_ROOT/elsewhere` proves little, since it has no config module to import
+# and would fail for that reason whatever the containment rules said. These
+# would each run the caller's code as the service identity if containment were
+# removed, which is exactly what the grant must not permit.
+EVIL_OUT="$PF_ROOT/elsewhere/.candidate-$A.20260907T000000Z-1-1"
+make_candidate "$EVIL_OUT"
+try_refuse "a loadable candidate-shaped tree outside the store" "$EVIL_OUT"
+
+EVIL_NEAR="$PF_ROOT/releases-scratch/.candidate-$A.20260907T000000Z-1-1"
+make_candidate "$EVIL_NEAR"
+try_refuse "the same tree in a prefix lookalike directory" "$EVIL_NEAR"
+
+# A SYMLINK IS JUDGED BY WHERE IT LANDS, not by how it is spelled -- and this
+# one is inside the store, correctly named, and resolves to the caller's tree.
+ln -sfn "$EVIL_OUT" "$PF_ROOT/releases/.candidate-$B.20260907T000000Z-1-1"
+try_refuse "a correctly-named symlink resolving outside the store" \
+  "$PF_ROOT/releases/.candidate-$B.20260907T000000Z-1-1"
+rm -f "$PF_ROOT/releases/.candidate-$B.20260907T000000Z-1-1"
+
+ln -sfn "$PF_ROOT/elsewhere" "$PF_ROOT/releases/$B"
+try_refuse "a symlink escaping the store"          "$PF_ROOT/releases/$B"
+rm -f "$PF_ROOT/releases/$B"
+
+# ---- the argument surface is one path, and nothing else ----
+#
+# The environment file is compiled in. If it could be named, this grant would
+# read as "any file you like, as the identity that can read the secrets".
+if "$PF" "$CAND" "$PF_ROOT/env/media-ingest.env" >/dev/null 2>&1; then
+  bad "the preflight accepted a second argument" "an env file must not be selectable"
+else ok "a second argument is refused, so no env file can be named"; fi
+if "$PF" "$CAND" --env /etc/shadow >/dev/null 2>&1; then
+  bad "the preflight accepted an env-file option" "it must refuse"
+else ok "there is no option to name an environment file"; fi
+
+# ---- and it will not run an implementation somebody else could rewrite ----
+chmod 0664 "$PF_ROOT/lib/preflight-config.mjs"
+if "$PF" "$CAND" >/dev/null 2>&1; then
+  bad "the preflight ran a group-writable implementation" "that is arbitrary code as the service user"
+else ok "a group-writable implementation is refused"; fi
+chmod 0644 "$PF_ROOT/lib/preflight-config.mjs"
+mv "$PF_ROOT/lib/preflight-config.mjs" "$PF_ROOT/lib/moved.mjs"
+if "$PF" "$CAND" >/dev/null 2>&1; then
+  bad "the preflight ran with no implementation installed" "it must refuse"
+else ok "a missing implementation is refused, naming what to run"; fi
+mv "$PF_ROOT/lib/moved.mjs" "$PF_ROOT/lib/preflight-config.mjs"
+
+# ---- production activation reaches the service user only through it ----
+
+echo ""
+echo "production asks nothing generic of the service identity"
+
+new_rig; reset_failures
+mkdir -p "$RIG/bin"
+# Recording stubs: "node was never invoked as the service user" is only
+# evidence if invoking it would have been visible.
+printf '%s\n' '#!/usr/bin/env bash' "printf '%s\n' \"\$*\" >> $RIG/sudo.log" 'exit 0' > "$RIG/bin/sudo"
+chmod 755 "$RIG/bin/sudo"
+: > "$RIG/sudo.log"
+SAVED_PATH2="$PATH"; PATH="$RIG/bin:$PATH"
+
+export ATOMIC_ENV=production ATOMIC_SERVICE_USER=videofy ATOMIC_UNITS=''
+export ATOMIC_PREFLIGHT_HELPER="$PF"
+activation_preflight "$CAND" "$PF_ROOT/env/media-ingest.env" >/dev/null 2>&1
+PF_CALL="$(cat "$RIG/sudo.log")"
+case "$PF_CALL" in
+  *"-n -u videofy $PF $CAND"*) ok "production invokes the fixed helper as the service user" ;;
+  *) bad "production did not invoke the helper" "$PF_CALL" ;;
+esac
+case "$PF_CALL" in
+  *" node "*) bad "production still invokes generic node as the service user" "$PF_CALL" ;;
+  *) ok "and never invokes generic node" ;;
+esac
+case "$PF_CALL" in
+  *" test "*) bad "production still invokes generic test as the service user" "$PF_CALL" ;;
+  *) ok "and never invokes generic test" ;;
+esac
+check "exactly one privileged call is made for the preflight" \
+  "$(wc -l < "$RIG/sudo.log" | tr -d ' ')" "1"
+
+# NO FALLBACK. A missing helper must refuse, not quietly ask for the grant that
+# was just removed -- which would fail later, with a sudo error instead of an
+# explanation.
+: > "$RIG/sudo.log"
+export ATOMIC_PREFLIGHT_HELPER="$RIG/absent-helper"
+NOFALL="$(activation_preflight "$CAND" "$PF_ROOT/env/media-ingest.env" 2>&1)" \
+  && bad "production preflighted with no helper installed" "it must refuse" \
+  || ok "a missing helper refuses instead of falling back"
+check "and nothing was asked of the service identity" \
+  "$(wc -c < "$RIG/sudo.log" | tr -d ' ')" "0"
+case "$NOFALL" in
+  *install-sudo-hardening.sh*) ok "and the refusal names the installer that provides it" ;;
+  *) bad "the refusal does not say what to run" "$NOFALL" ;;
+esac
+unset ATOMIC_ENV ATOMIC_PREFLIGHT_HELPER ATOMIC_SERVICE_USER ATOMIC_UNITS
+PATH="$SAVED_PATH2"
+drop_rig
+
+# ---- the policy the installer writes ----
+
+echo ""
+echo "the deploy identity is granted what a deployment uses, and nothing more"
+
+new_rig; reset_failures
+sudo_stub
+SPFX="$RIG/policy"
+mkdir -p "$SPFX/etc/sudoers.d" "$SPFX/etc/systemd/system"
+for u in videofy-prod-account videofy-prod-gateway videofy-prod-media-ingest; do
+  printf '[Service]\nUser=videofy\n' > "$SPFX/etc/systemd/system/$u.service"
+done
+POLICY_UNITS_BEFORE="$(cat "$SPFX/etc/systemd/system"/*.service | sha256sum)"
+printf '%s\n' '#!/usr/bin/env bash' "printf '%s\n' \"\$*\" >> $RIG/systemctl.log" > "$RIG/bin/systemctl"
+chmod 755 "$RIG/bin/systemctl"; : > "$RIG/systemctl.log"
+
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+pointer_publish "$ATOMIC_CURRENT" "$ATOMIC_RELEASES/$A" >/dev/null 2>&1
+POLICY_CURRENT_BEFORE="$(pointer_target "$ATOMIC_CURRENT")"
+POLICY_WWW_BEFORE="$(web_pointer_target)"
+
+POLICY_RC=0
+PATH="$RIG/bin:$SAVED_PATH" VIDEOFY_INSTALL_PREFIX="$SPFX" DEPLOY_OWNER=claude \
+  VIDEOFY_SERVICE_USER=videofy bash "$INSTALL_SH" >/dev/null 2>&1 || POLICY_RC=$?
+check "the hardening installer succeeds" "$POLICY_RC" "0"
+
+# THE RULES, NOT THE COMMENTARY. The file explains what it deliberately omits,
+# naming `systemctl enable`, `daemon-reload`, Caddy and coturn -- so searching
+# the whole file finds every forbidden string inside the sentence saying it is
+# forbidden. Only the directives decide what is granted.
+POLICY="$(grep -v '^[[:space:]]*#' "$SPFX/etc/sudoers.d/videofy-deploy" 2>/dev/null)"
+check "and the policy it wrote parses" \
+  "$(visudo -c -f "$SPFX/etc/sudoers.d/videofy-deploy" >/dev/null 2>&1 && echo valid || echo invalid)" "valid"
+
+# Each service named exactly, and nothing that could stand for another.
+for u in videofy-prod-account videofy-prod-gateway videofy-prod-media-ingest; do
+  case "$POLICY" in
+    *"/usr/bin/systemctl restart $u"*) ok "restart authority for $u is present" ;;
+    *) bad "no restart authority for $u" "$POLICY" ;;
+  esac
+done
+policy_forbids() {
+  local label="$1" needle="$2"
+  case "$POLICY" in
+    *"$needle"*) bad "the policy grants $label" "$needle" ;;
+    *) ok "the policy does not grant $label" ;;
+  esac
+}
+policy_forbids "systemctl enable"           'systemctl enable'
+policy_forbids "daemon-reload"              'daemon-reload'
+policy_forbids "a wildcard service name"    'restart videofy-prod-*'
+policy_forbids "generic node"               '/usr/bin/node'
+policy_forbids "generic test"               '/usr/bin/test'
+policy_forbids "a root shell"               '/bin/bash'
+policy_forbids "blanket authority"          'NOPASSWD: ALL'
+policy_forbids "an unrestricted runas"      'ALL=(ALL:ALL)'
+policy_forbids "chown"                      '/bin/chown'
+policy_forbids "chmod"                      '/bin/chmod'
+policy_forbids "caddy"                      'caddy'
+policy_forbids "coturn"                     'coturn'
+case "$POLICY" in
+  *'claude ALL=(root) NOPASSWD: VIDEOFY_PUBLISH, VIDEOFY_ACTIVATE'*)
+    ok "root authority is exactly publication plus the named restarts" ;;
+  *) bad "the root-authority line is not the bounded one" "$POLICY" ;;
+esac
+case "$POLICY" in
+  *'claude ALL=(videofy) NOPASSWD: VIDEOFY_PREFLIGHT'*)
+    ok "service-user authority is exactly the fixed preflight" ;;
+  *) bad "the service-user line is not the bounded one" "$POLICY" ;;
+esac
+check "publication authority is still granted, unchanged" \
+  "$(printf '%s' "$POLICY" | grep -c 'videofy-publish-current')" "1"
+
+# The installer is a policy change, not a deployment.
+check "no service unit was altered" \
+  "$(cat "$SPFX/etc/systemd/system"/*.service | sha256sum)" "$POLICY_UNITS_BEFORE"
+check "systemctl was never invoked" \
+  "$(wc -c < "$RIG/systemctl.log" | tr -d ' ')" "0"
+check "the pointer did not move" "$(pointer_target "$ATOMIC_CURRENT")" "$POLICY_CURRENT_BEFORE"
+check "www did not move" "$(web_pointer_target)" "$POLICY_WWW_BEFORE"
+check "no staged file survives" \
+  "$(find "$SPFX/etc/sudoers.d" "$SPFX/usr/local/sbin" -name '.*' -type f 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+# Rerunnable, and the replacement is a rename like every other privileged one.
+POLICY_INODE="$(stat -c '%i' "$SPFX/etc/sudoers.d/videofy-deploy")"
+exec 7< "$SPFX/etc/sudoers.d/videofy-deploy"
+POLICY_TEXT_BEFORE="$(cat "$SPFX/etc/sudoers.d/videofy-deploy")"
+# The second run writes DIFFERENT content, so "the reader saw the old file" is
+# a real observation rather than two identical strings agreeing.
+PATH="$RIG/bin:$SAVED_PATH" VIDEOFY_INSTALL_PREFIX="$SPFX" DEPLOY_OWNER=claude \
+  VIDEOFY_SERVICE_USER=videofy VIDEOFY_UNITS='videofy-prod-account videofy-prod-gateway' \
+  bash "$INSTALL_SH" >/dev/null 2>&1
+check "a second run succeeds and still parses" \
+  "$(visudo -c -f "$SPFX/etc/sudoers.d/videofy-deploy" >/dev/null 2>&1 && echo valid || echo invalid)" "valid"
+check "a reader mid-swap still sees the complete previous policy" \
+  "$(cat <&7)" "$POLICY_TEXT_BEFORE"
+exec 7<&-
+check "and the policy file is a new inode, so it was renamed into place" \
+  "$([ "$(stat -c '%i' "$SPFX/etc/sudoers.d/videofy-deploy")" != "$POLICY_INODE" ] && echo renamed || echo written-through)" \
+  "renamed"
+
+# IT DOES NOT REMOVE THE BROAD GRANT. That is a separate act, taken on the host
+# with a root session open, after the narrow policy is proven.
+printf '%s\n' 'claude ALL=(ALL) NOPASSWD: ALL' > "$SPFX/etc/sudoers.d/claude"
+PATH="$RIG/bin:$SAVED_PATH" VIDEOFY_INSTALL_PREFIX="$SPFX" DEPLOY_OWNER=claude \
+  VIDEOFY_SERVICE_USER=videofy bash "$INSTALL_SH" >/dev/null 2>&1
+check "an existing broad grant is left exactly where it was" \
+  "$(cat "$SPFX/etc/sudoers.d/claude")" "claude ALL=(ALL) NOPASSWD: ALL"
+drop_rig; PATH="$SAVED_PATH"
+
+rm -rf "$PF_ROOT"
+[ -n "${MUTPRE:-}" ] && rm -rf "$MUTPRE"
+[ -n "${MUTSUD:-}" ] && rm -rf "$MUTSUD"
 
 # The scratch trees this section made for itself.
 rm -rf "$PA_PREFIX"
