@@ -18,7 +18,7 @@ import { safeParseProgrammeDeliveryPolicy } from '@videofy-live/media-contracts'
 const INGEST = readFileSync(
   fileURLToPath(new URL('../ingest-service.ts', import.meta.url)),
   'utf8',
-);
+).replace(/\r\n/gu, '\n');
 
 describe('the policy is on the wire', () => {
   it('is announced on connection, before state and before health', () => {
