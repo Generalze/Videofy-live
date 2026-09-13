@@ -345,6 +345,9 @@ fi
 if [ "$MUTATION" = "stale-finalize-allowed" ]; then
   atomic_finalize() { atomic_record_state "$1" "$2"; echo "DEPLOYED $1"; }
 fi
+if [ "$MUTATION" = "state-record-failure-ignored" ]; then
+  atomic_finalize() { atomic_record_state "$1" "$2"; echo "DEPLOYED $1"; }
+fi
 if [ "$MUTATION" = "no-symlink-containment" ]; then
   release_symlinks_stay_inside() { return 0; }
 fi
@@ -996,6 +999,21 @@ if atomic_prepare_only "$A" "$A" >/dev/null 2>&1; then
 else bad "prepare refused on an unconverged host" "it must not"; fi
 drop_rig
 
+# A release sealed by prepare-only still has to satisfy the full deploy gates
+# before publication. The prepare seal proves the bytes, not that this host's
+# effective systemd contract is safe for cutover.
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+BUILD_SHA="$B"
+atomic_prepare_only "$B" "$B" >/dev/null 2>&1
+unit_fixture videofy-test-account /srv/videofy-prod/app/services/account
+unit_fixture videofy-test-gateway /srv/videofy-prod/app/services/realtime-gateway
+if deploy "$B" >/dev/null 2>&1; then
+  bad "a reused prepare-only release bypassed the full deploy gates" "it published"
+else ok "a reused prepare-only release still runs the full deploy gates"; fi
+check "and the pointer stayed on the last completed release" "$(simulate_restart)" "$A"
+drop_rig
+
 # ============================== the converged unit contract
 
 echo ""
@@ -1085,6 +1103,54 @@ recorded_active() { sed -n 's/^| active | .\(.*\). |$/\1/p' "$(state_file)" 2>/d
 new_rig; reset_failures
 deploy "$A" >/dev/null 2>&1
 check "a completed deploy records A" "$(recorded_active)" "$A"
+BUILD_SHA="$B"
+release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+release_publish "$ATOMIC_RELEASES" "$B" "$ATOMIC_CURRENT" >/dev/null 2>&1
+restart_body >/dev/null 2>&1
+chmod 555 "$ATOMIC_ROOT"
+export ATOMIC_STATE_HELPER="$RIG/not-installed"
+PERM_RC=0
+PERM_OUT="$(atomic_finalize "$B" "$A" 2>&1)" || PERM_RC=$?
+chmod 755 "$ATOMIC_ROOT"; unset ATOMIC_STATE_HELPER
+check "an unwritable root with no state helper makes finalisation nonzero" \
+  "$([ "$PERM_RC" -ne 0 ] && echo nonzero || echo zero)" "nonzero"
+case "$PERM_OUT" in
+  *"DEPLOYED $B"*) bad "finalisation printed DEPLOYED when state authority was absent" "$PERM_OUT" ;;
+  *) ok "state-authority failure emits no DEPLOYED line" ;;
+esac
+check "and that failed write left the prior state record intact" "$(recorded_active)" "$A"
+FINALIZE_RC=0
+FINALIZE_OUT="$((
+  atomic_record_state() { return 73; }
+  atomic_finalize "$B" "$A"
+) 2>&1)" || FINALIZE_RC=$?
+check "a DEPLOY-STATE write failure makes finalisation nonzero" \
+  "$([ "$FINALIZE_RC" -ne 0 ] && echo nonzero || echo zero)" "nonzero"
+case "$FINALIZE_OUT" in
+  *"DEPLOYED $B"*) bad "finalisation printed DEPLOYED after a failed state write" "$FINALIZE_OUT" ;;
+  *) ok "finalisation does not print DEPLOYED unless DEPLOY-STATE is committed" ;;
+esac
+check "and the old deployment record survives the failed finalisation" "$(recorded_active)" "$A"
+drop_rig
+
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
+DEPLOY_RC=0
+DEPLOY_OUT="$((
+  atomic_record_state() { return 73; }
+  deploy "$B"
+) 2>&1)" || DEPLOY_RC=$?
+check "a finalisation-record failure makes the deploy nonzero" \
+  "$([ "$DEPLOY_RC" -ne 0 ] && echo nonzero || echo zero)" "nonzero"
+case "$DEPLOY_OUT" in
+  *"DEPLOYED $B"*) bad "the deploy printed DEPLOYED after finalisation failed" "$DEPLOY_OUT" ;;
+  *) ok "the deploy emits no DEPLOYED line after finalisation failed" ;;
+esac
+check "and deploy failure leaves DEPLOY-STATE on the prior completed release" "$(recorded_active)" "$A"
+drop_rig
+
+new_rig; reset_failures
+deploy "$A" >/dev/null 2>&1
 SMOKE_SHOULD_FAIL=1
 deploy "$B" >/dev/null 2>&1
 SMOKE_SHOULD_FAIL=0
@@ -1546,6 +1612,14 @@ check "mutating paths install machinery only through transaction_begin" \
 # The one bare call is `state`, which is read-only and takes no lock.
 check "the only unlocked ship is the read-only state path" \
   "$(sed -n "$((BARE_SHIP-8)),${BARE_SHIP}p" "$SCRIPT" | grep -c 'READ-ONLY')" "1"
+if grep -q 'if ! remote_finalize "$SHA" "$PREVIOUS_RECORDED"' "$SCRIPT"; then
+  ok "the top-level deploy checks remote finalisation explicitly"
+else bad "the top-level deploy does not guard remote finalisation" "a failed DEPLOY-STATE write could exit zero"; fi
+FINALIZE_BLOCK="$(grep -n -A5 'if ! remote_finalize "$SHA" "$PREVIOUS_RECORDED"' "$SCRIPT")"
+case "$FINALIZE_BLOCK" in
+  *"exit 1"* ) ok "and finalisation failure exits nonzero before DEPLOYED" ;;
+  *) bad "the finalisation failure path does not exit nonzero" "$FINALIZE_BLOCK" ;;
+esac
 drop_rig
 
 # ============================== real-host transport findings
@@ -1799,6 +1873,7 @@ if [ "$MUTATION" = "non-atomic-privileged-install" ]; then
   mkdir -p "$MUTINST/production" "$MUTINST/lib"
   cp "$REPO_ROOT/deploy/lib/release-paths.sh" "$REPO_ROOT/deploy/lib/release-engine.sh" "$MUTINST/lib/"
   cp "$REPO_ROOT/deploy/production/publish-current.sh" "$MUTINST/production/"
+  cp "$REPO_ROOT/deploy/production/record-deploy-state.sh" "$MUTINST/production/"
   printf '%s\n' 's#^atomic_place() .*#atomic_place() { m="$(stat -c "%a" "$1")"; chmod u+w "$2" 2>/dev/null || :; cat "$1" > "$2"; chmod "$m" "$2"; rm -f "$1"; }#' \
     > "$MUTINST/mutate.sed"
   sed -f "$MUTINST/mutate.sed" "$INSTALL_PA" > "$MUTINST/production/install-publication-authority.sh"
@@ -1821,6 +1896,7 @@ else
 fi
 INSTALLED_LIB="$PA_PREFIX/usr/local/lib/videofy"
 PUBLISH_SH="$PA_PREFIX/usr/local/sbin/videofy-publish-current"
+STATE_SH="$PA_PREFIX/usr/local/sbin/videofy-record-deploy-state"
 
 if [ "$MUTATION" = "wide-publication-paths" ]; then
   # The defect: the privileged helper publishes whatever it is handed, so the
@@ -1854,6 +1930,11 @@ sudo_stub() {
 publish_helper() {
   VIDEOFY_PUBLISH_ROOT="$ATOMIC_ROOT" VIDEOFY_PUBLISH_LIB="$INSTALLED_LIB" \
     bash "$PUBLISH_SH" "$@"
+}
+
+state_helper() {
+  VIDEOFY_RECORD_ROOT="$ATOMIC_ROOT" VIDEOFY_RECORD_LIB="$INSTALLED_LIB" \
+    bash "$STATE_SH" "$@"
 }
 
 # ---- 9. A valid publish atomically replaces `current` ----
@@ -1950,6 +2031,32 @@ if publish_helper --check >/dev/null 2>&1; then
   ok "--check reports the authority is available"
 else bad "--check failed" "the bootstrap depends on it"; fi
 check "and --check publishes nothing" "$(simulate_restart)" "$A"
+drop_rig
+
+# ---- State recording helper: exact path, exact release, atomic replacement ----
+
+new_rig; reset_failures
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+publish_helper "$A" >/dev/null 2>&1
+rm -f "$ATOMIC_ROOT/DEPLOY-STATE.md"
+if state_helper "$A" none >/dev/null 2>&1; then
+  ok "the state helper records the active sealed release"
+else bad "the state helper refused a valid active release" ""; fi
+check "and DEPLOY-STATE names that release" "$(recorded_active)" "$A"
+check "and no state temporary survives" \
+  "$(find "$ATOMIC_ROOT" -maxdepth 1 -name 'DEPLOY-STATE.md.tmp.*' | wc -l | tr -d ' ')" "0"
+BUILD_SHA="$B"; release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+if state_helper "$B" none >/dev/null 2>&1; then
+  bad "the state helper recorded a release current does not name" "it must refuse"
+else ok "the state helper refuses a release current does not name"; fi
+for ARG in 'not-a-sha' '../../etc' "$A extra" '' "${A}0" "$SHOUTED"; do
+  if state_helper $ARG none >/dev/null 2>&1; then
+    bad "the state helper accepted [$ARG]" "only a 40-char active sha may be recorded"
+  else ok "the state helper refuses active [$ARG]"; fi
+done
+if state_helper "$A" 'not-a-sha' >/dev/null 2>&1; then
+  bad "the state helper accepted an unvalidated previous release" "it must refuse"
+else ok "the state helper validates the previous release field"; fi
 drop_rig
 
 # ---- 1. An unwritable root routes publication through the helper ----
@@ -2081,17 +2188,44 @@ export ATOMIC_PUBLISH_HELPER=/bin/false
 check "an installed helper this identity cannot run is refused" \
   "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "publication-authority-unavailable"
 
-# The one arrangement that passes: root-owned, not writable, and invocable.
+# Once publication authority is present, finalisation authority is proven too.
 export ATOMIC_PUBLISH_HELPER=/bin/true
-check "an unwritable root WITH working publication authority passes" \
+export ATOMIC_STATE_HELPER="$RIG/absent-state"
+check "an unwritable root with no state helper is bootstrap-incomplete" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "missing-state-helper"
+
+printf '#!/usr/bin/env bash\nexit 0\n' > "$H2"; chmod 644 "$H2"
+export ATOMIC_STATE_HELPER="$H2"
+check "a state helper that is not executable is refused" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "state-helper-not-executable"
+
+chmod 775 "$H2"
+check "a group-writable state helper is refused" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "state-helper-writable"
+
+chmod 757 "$H2"
+check "a world-writable state helper is refused" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "state-helper-writable"
+
+chmod 755 "$H2"
+check "a state helper not owned by root is refused" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "state-helper-not-root-owned"
+
+export ATOMIC_STATE_HELPER=/bin/false
+check "an installed state helper this identity cannot run is refused" \
+  "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "state-authority-unavailable"
+
+# The one arrangement that passes: both helpers root-owned, not writable, and invocable.
+export ATOMIC_STATE_HELPER=/bin/true
+check "an unwritable root WITH working publication and state authority passes" \
   "$(atomic_bootstrap_state "$BOOT2" 2>/dev/null)" "ok"
 chmod 755 "$BOOT2"
-drop_rig; PATH="$SAVED_PATH"; unset ATOMIC_PUBLISH_HELPER
+drop_rig; PATH="$SAVED_PATH"; unset ATOMIC_PUBLISH_HELPER ATOMIC_STATE_HELPER
 
 
 # ---- the installation boundary ----
 #
-# A HOST MISSING PUBLICATION AUTHORITY IS OTHERWISE CONVERGED AND SERVING.
+# A HOST MISSING PUBLICATION/FINALISATION AUTHORITY IS OTHERWISE CONVERGED AND SERVING.
 # Telling its operator to rerun the full production installer would be advice
 # that writes systemd units for the legacy /app layout and can restart coturn
 # and Caddy, both shared with staging. The remediation has to be narrower than
@@ -2100,7 +2234,7 @@ drop_rig; PATH="$SAVED_PATH"; unset ATOMIC_PUBLISH_HELPER
 # hashed on both sides.
 
 echo ""
-echo "installing publication authority touches publication authority, and nothing else"
+echo "installing publication/finalisation authority touches only that authority"
 
 new_rig; reset_failures
 sudo_stub
@@ -2139,6 +2273,8 @@ check "the narrow installer succeeds" "$INSTALL_RC" "0"
 
 check "the helper is installed" \
   "$([ -x "$PREFIX/usr/local/sbin/videofy-publish-current" ] && echo yes || echo no)" "yes"
+check "the state helper is installed" \
+  "$([ -x "$PREFIX/usr/local/sbin/videofy-record-deploy-state" ] && echo yes || echo no)" "yes"
 check "the verification libraries are installed beside it" \
   "$([ -f "$PREFIX/usr/local/lib/videofy/release-paths.sh" ] && \
      [ -f "$PREFIX/usr/local/lib/videofy/release-engine.sh" ] && echo yes || echo no)" "yes"
@@ -2146,14 +2282,21 @@ check "the libraries are not writable by anyone but their owner" \
   "$(stat -c '%a' "$PREFIX/usr/local/lib/videofy/release-engine.sh")" "644"
 check "and the helper is not either" \
   "$(stat -c '%a' "$PREFIX/usr/local/sbin/videofy-publish-current")" "755"
+check "and the state helper is not either" \
+  "$(stat -c '%a' "$PREFIX/usr/local/sbin/videofy-record-deploy-state")" "755"
 check "the sudoers entry is installed read-only" \
   "$(stat -c '%a' "$PREFIX/etc/sudoers.d/videofy-publish")" "440"
 check "and it validates" \
   "$(visudo -c -f "$PREFIX/etc/sudoers.d/videofy-publish" >/dev/null 2>&1 && echo valid || echo invalid)" "valid"
 case "$(cat "$PREFIX/etc/sudoers.d/videofy-publish")" in
-  *"NOPASSWD: /usr/local/sbin/videofy-publish-current"*)
-    ok "and grants exactly the publication command, by absolute path" ;;
-  *) bad "the sudoers entry does not grant the publication command" "" ;;
+  *"NOPASSWD: /usr/local/sbin/videofy-publish-current, /usr/local/sbin/videofy-record-deploy-state"*)
+    ok "and grants exactly the publication and state commands, by absolute path" ;;
+  *) bad "the sudoers entry does not grant the exact helper commands" "$(cat "$PREFIX/etc/sudoers.d/videofy-publish")" ;;
+esac
+case "$(cat "$PREFIX/etc/sudoers.d/videofy-publish")" in
+  *"NOPASSWD: ALL"*|*"/bin/sh"*|*"/bin/bash"*|*"/srv/videofy-prod"*)
+    bad "the sudoers entry grants broader root authority than the two helpers" "$(cat "$PREFIX/etc/sudoers.d/videofy-publish")" ;;
+  *) ok "and grants no broad root filesystem write authority" ;;
 esac
 case "$INSTALL_OUT" in
   *"--check"*|*"proven"*) ok "the installer proves invocability rather than assuming it" ;;
@@ -2287,6 +2430,11 @@ printf '#!/usr/bin/env bash\n# OLD HELPER\nexit 0\n' > "$OLD_HELPER"
 chmod 0755 "$OLD_HELPER"
 OLD_HELPER_TEXT="$(cat "$OLD_HELPER")"
 OLD_HELPER_INODE="$(stat -c '%i' "$OLD_HELPER")"
+OLD_STATE_HELPER="$PFX/usr/local/sbin/videofy-record-deploy-state"
+printf '#!/usr/bin/env bash\n# OLD STATE HELPER\nexit 0\n' > "$OLD_STATE_HELPER"
+chmod 0755 "$OLD_STATE_HELPER"
+OLD_STATE_HELPER_TEXT="$(cat "$OLD_STATE_HELPER")"
+OLD_STATE_HELPER_INODE="$(stat -c '%i' "$OLD_STATE_HELPER")"
 
 # THE CONCURRENT READER. Opened before the installer runs and read after it, so
 # what it sees is what a sudo invocation that started just before the swap
@@ -2294,6 +2442,7 @@ OLD_HELPER_INODE="$(stat -c '%i' "$OLD_HELPER")"
 # replacement it is the new content, or a truncated fragment of it.
 exec 9< "$OLD_SUDOERS"
 exec 8< "$OLD_HELPER"
+exec 7< "$OLD_STATE_HELPER"
 
 ATOMIC_RC=0
 PATH="$RIG/bin:$SAVED_PATH" VIDEOFY_INSTALL_PREFIX="$PFX" DEPLOY_OWNER="$(id -un)" \
@@ -2302,10 +2451,13 @@ check "the installer replaces an existing installation" "$ATOMIC_RC" "0"
 
 READER_SAW="$(cat <&9)"; exec 9<&-
 READER_SAW_HELPER="$(cat <&8)"; exec 8<&-
+READER_SAW_STATE_HELPER="$(cat <&7)"; exec 7<&-
 check "a sudo invocation already reading the old entry still sees it, whole" \
   "$READER_SAW" "$OLD_TEXT"
 check "and a publisher already reading the old helper still sees that, whole" \
   "$READER_SAW_HELPER" "$OLD_HELPER_TEXT"
+check "and a finaliser already reading the old state helper still sees that, whole" \
+  "$READER_SAW_STATE_HELPER" "$OLD_STATE_HELPER_TEXT"
 
 # The other half of the same fact: the destination is a DIFFERENT file now.
 # A write-through replacement keeps the inode, which is precisely how the old
@@ -2316,6 +2468,9 @@ check "the sudoers entry is a new inode, so it was renamed into place" \
 check "and so is the helper" \
   "$([ "$(stat -c '%i' "$OLD_HELPER")" != "$OLD_HELPER_INODE" ] && echo renamed || echo written-through)" \
   "renamed"
+check "and so is the state helper" \
+  "$([ "$(stat -c '%i' "$OLD_STATE_HELPER")" != "$OLD_STATE_HELPER_INODE" ] && echo renamed || echo written-through)" \
+  "renamed"
 
 # And the new content actually landed.
 case "$(cat "$OLD_SUDOERS")" in
@@ -2324,6 +2479,8 @@ case "$(cat "$OLD_SUDOERS")" in
 esac
 check "the helper that landed is byte-identical to the one in the repository" \
   "$(sha256sum < "$OLD_HELPER")" "$(sha256sum < "$REPO_ROOT/deploy/production/publish-current.sh")"
+check "the state helper that landed is byte-identical to the one in the repository" \
+  "$(sha256sum < "$OLD_STATE_HELPER")" "$(sha256sum < "$REPO_ROOT/deploy/production/record-deploy-state.sh")"
 
 # Nothing staged is left lying about -- and in /etc/sudoers.d a leftover would
 # be a second, stale grant if it were ever named without a dot.
@@ -2331,6 +2488,8 @@ check "no staged file survives in the sudoers directory" \
   "$(find "$PFX/etc/sudoers.d" -name '.videofy-publish.*' | wc -l | tr -d ' ')" "0"
 check "nor beside the helper" \
   "$(find "$PFX/usr/local/sbin" -name '.videofy-publish-current.*' | wc -l | tr -d ' ')" "0"
+check "nor beside the state helper" \
+  "$(find "$PFX/usr/local/sbin" -name '.videofy-record-deploy-state.*' | wc -l | tr -d ' ')" "0"
 check "nor beside the libraries" \
   "$(find "$PFX/usr/local/lib/videofy" -name '.*.staging.*' | wc -l | tr -d ' ')" "0"
 drop_rig; PATH="$SAVED_PATH"
@@ -2368,6 +2527,8 @@ case "$REJECT_OUT" in
 esac
 check "which is true: no helper was installed" \
   "$([ -e "$PFX2/usr/local/sbin/videofy-publish-current" ] && echo installed || echo absent)" "absent"
+check "and no state helper was installed" \
+  "$([ -e "$PFX2/usr/local/sbin/videofy-record-deploy-state" ] && echo installed || echo absent)" "absent"
 check "and no library either" \
   "$([ -e "$PFX2/usr/local/lib/videofy/release-engine.sh" ] && echo installed || echo absent)" "absent"
 drop_rig; PATH="$SAVED_PATH"

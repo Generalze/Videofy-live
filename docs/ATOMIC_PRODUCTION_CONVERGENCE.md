@@ -1,7 +1,8 @@
 # Atomic production convergence
 
-**Status: the engine is built and tested. The convergence has NOT been run.**
-Production is untouched and remains in the split state described below.
+**Status: production has been converged to the atomic release layout.**
+The split state below is retained as historical incident context, not as the
+current production topology.
 
 ## The problem this closes
 
@@ -102,7 +103,7 @@ The new model **only reads**:
 
 Unit changes are a separate, separately reviewed act.
 
-## The current split state
+## Historical split state before convergence
 
 ```
 videofy-prod-media-ingest   /srv/videofy-prod/release-980619e   980619e
@@ -118,9 +119,11 @@ convergence removes.
 
 ---
 
-# The one-time convergence procedure
+# Historical one-time convergence procedure
 
-**NOT AUTHORISED TO RUN. Each step is a separate CTO gate.**
+**DO NOT RUN on already converged production.** This procedure is retained for
+audit and disaster-recovery context; each step originally required a separate
+CTO gate.
 
 The procedure assumes throughout that an external restart may happen between
 any two steps, and is ordered so that no such restart lands on unqualified code.
@@ -370,6 +373,12 @@ which release to return to, so a failed smoke could have rolled back *to the
 release that had just failed*.
 
 Rollback follows the identical rule and finalises after its own smoke.
+
+The state record is part of finalisation, not an advisory log write. On a
+root-owned production root, `DEPLOY-STATE.md` is replaced by the narrow
+`videofy-record-deploy-state` helper installed with publication authority. If
+that record cannot be committed, finalisation exits non-zero and no `DEPLOYED`
+line is emitted.
 
 **`DEPLOY_SKIP_SMOKE=1` is refused outright for production, before anything is
 built, published or restarted.** It first returned success with a caveat in the

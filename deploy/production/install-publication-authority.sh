@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # @author masterzee001
 #
-# Install the publication authority, and NOTHING ELSE.
+# Install the publication/finalisation authority, and NOTHING ELSE.
 #
 # WHY THIS IS SEPARATE FROM install.sh. A host that is missing publication
 # authority is, in every case that matters, a host that is otherwise CONVERGED
@@ -12,21 +12,21 @@
 # relays or live requests. Nobody should have to reinstall production to gain
 # one capability.
 #
-# So this does the things publication authority consists of, and refuses to be
-# anything else. It does not write a unit, does not daemon-reload, does not
-# restart, does not touch Caddy, coturn, the environment files, the database,
-# app, www, the pointer, or Replay, and it does not widen or narrow any sudo
-# grant that already exists.
+# So this does the things atomic publication/finalisation authority consists of,
+# and refuses to be anything else. It does not write a unit, does not
+# daemon-reload, does not restart, does not touch Caddy, coturn, the environment
+# files, the database, app, www, the pointer, or Replay, and it does not alter
+# any sudo grant outside this narrow helper entry.
 #
 #   sudo bash deploy/production/install-publication-authority.sh
 #
 # Idempotent: re-running it re-installs the same bytes and re-proves the same
-# facts. Running it on a host that already has publication authority is a
+# facts. Running it on a host that already has this authority is a
 # verification, not a change.
 #
 # EVERY REPLACEMENT IS A RENAME. This runs on a live host, against files that
 # other processes read at unpredictable moments: sudo reads /etc/sudoers.d on
-# every single invocation, and a publication in flight is reading the helper
+# every single invocation, and a deploy or finalise in flight is reading a helper
 # and the libraries it sources. `install` and `cp` open the destination and
 # write through it, so for as long as that takes, a reader sees a file that is
 # neither the old one nor the new one. For a sudoers file that is a window in
@@ -54,12 +54,13 @@ DEPLOY_OWNER="${DEPLOY_OWNER:-${SUDO_USER:-root}}"
 LIB_DIR="$PREFIX/usr/local/lib/videofy"
 SBIN_DIR="$PREFIX/usr/local/sbin"
 SBIN_PATH="$SBIN_DIR/videofy-publish-current"
+STATE_PATH="$SBIN_DIR/videofy-record-deploy-state"
 SUDOERS_DIR="$PREFIX/etc/sudoers.d"
 SUDOERS_PATH="$SUDOERS_DIR/videofy-publish"
 # The sudoers entry always authorises the REAL path, because that is the path a
 # deployment will invoke. Under a prefix the two differ, and that is the one
 # thing a rehearsal cannot rehearse.
-SUDOERS_CMD='/usr/local/sbin/videofy-publish-current'
+SUDOERS_CMD='/usr/local/sbin/videofy-publish-current, /usr/local/sbin/videofy-record-deploy-state'
 
 die() { echo "REFUSED: $*" >&2; exit 1; }
 
@@ -122,7 +123,8 @@ ensure_dir "$SUDOERS_DIR"
 SUDOERS_TEXT="$(mktemp)"
 STAGED_FILES+=("$SUDOERS_TEXT")
 cat > "$SUDOERS_TEXT" <<SUDOERS
-# Publishing a release is the only privileged step in a deployment.
+# Publishing a release and recording its post-smoke state are the only
+# privileged filesystem steps in an atomic deployment.
 # Installed by deploy/production/install-publication-authority.sh
 $DEPLOY_OWNER ALL=(root) NOPASSWD: $SUDOERS_CMD
 SUDOERS
@@ -142,6 +144,7 @@ ensure_dir "$SBIN_DIR"
 stage "$HERE/../lib/release-paths.sh"  "$LIB_DIR/release-paths.sh"  0644; PATHS_STAGED="$STAGED"
 stage "$HERE/../lib/release-engine.sh" "$LIB_DIR/release-engine.sh" 0644; ENGINE_STAGED="$STAGED"
 stage "$HERE/publish-current.sh"       "$SBIN_PATH"                 0755; SBIN_STAGED="$STAGED"
+stage "$HERE/record-deploy-state.sh"   "$STATE_PATH"                0755; STATE_STAGED="$STAGED"
 
 # Everything is staged and the sudoers text parses. From here each replacement
 # is a single rename, so a concurrent reader of any of these files sees the
@@ -149,6 +152,7 @@ stage "$HERE/publish-current.sh"       "$SBIN_PATH"                 0755; SBIN_S
 atomic_place "$PATHS_STAGED"  "$LIB_DIR/release-paths.sh"
 atomic_place "$ENGINE_STAGED" "$LIB_DIR/release-engine.sh"
 atomic_place "$SBIN_STAGED"   "$SBIN_PATH"
+atomic_place "$STATE_STAGED"  "$STATE_PATH"
 
 # The sudoers entry last, because it is what makes the rest reachable: until it
 # lands, the deploy account simply cannot invoke a helper that may be mid-swap.
@@ -213,6 +217,7 @@ verify_file() {
 verify_file "$LIB_DIR/release-paths.sh"  0644
 verify_file "$LIB_DIR/release-engine.sh" 0644
 verify_file "$SBIN_PATH"                 0755
+verify_file "$STATE_PATH"                0755
 verify_file "$SUDOERS_PATH"              0440
 
 # --- prove the deploy identity can actually use it ---------------------------
@@ -224,23 +229,30 @@ if [ -z "$PREFIX" ]; then
   if [ "$DEPLOY_OWNER" != 'root' ]; then
     # As the account that will actually do it, not as root -- root can invoke
     # it whatever sudoers says, so proving it from here would prove nothing.
-    CHECK_AS=(sudo -n -u "$DEPLOY_OWNER" sudo -n "$SBIN_PATH" --check)
+    CHECK_PUBLISH=(sudo -n -u "$DEPLOY_OWNER" sudo -n "$SBIN_PATH" --check)
+    CHECK_STATE=(sudo -n -u "$DEPLOY_OWNER" sudo -n "$STATE_PATH" --check)
   else
-    CHECK_AS=(sudo -n "$SBIN_PATH" --check)
+    CHECK_PUBLISH=(sudo -n "$SBIN_PATH" --check)
+    CHECK_STATE=(sudo -n "$STATE_PATH" --check)
   fi
 else
-  # Under a prefix the helper's compiled-in library path is not where these
-  # were just installed, so it is pointed at the copies this run produced --
+  # Under a prefix the helpers' compiled-in library path is not where these
+  # were just installed, so they are pointed at the copies this run produced --
   # otherwise the check would pass or fail on the real host's state, which is
   # the one thing a rehearsal must never consult.
-  CHECK_AS=(env "VIDEOFY_PUBLISH_LIB=$LIB_DIR" sudo -n "$SBIN_PATH" --check)
+  CHECK_PUBLISH=(env "VIDEOFY_PUBLISH_LIB=$LIB_DIR" sudo -n "$SBIN_PATH" --check)
+  CHECK_STATE=(env "VIDEOFY_RECORD_LIB=$LIB_DIR" sudo -n "$STATE_PATH" --check)
 fi
-if ! "${CHECK_AS[@]}" >/dev/null 2>&1; then
-  die "$SBIN_PATH and $SUDOERS_PATH are installed, but $DEPLOY_OWNER cannot invoke the helper under sudo"
+if ! "${CHECK_PUBLISH[@]}" >/dev/null 2>&1; then
+  die "$SBIN_PATH and $SUDOERS_PATH are installed, but $DEPLOY_OWNER cannot invoke the publication helper under sudo"
+fi
+if ! "${CHECK_STATE[@]}" >/dev/null 2>&1; then
+  die "$STATE_PATH and $SUDOERS_PATH are installed, but $DEPLOY_OWNER cannot invoke the state helper under sudo"
 fi
 
-echo "publication authority installed and proven:"
+echo "atomic publication/finalisation authority installed and proven:"
 echo "  $SBIN_PATH"
+echo "  $STATE_PATH"
 echo "  $LIB_DIR/{release-paths,release-engine}.sh"
 echo "  $SUDOERS_PATH  ($DEPLOY_OWNER -> $SUDOERS_CMD)"
 echo "every replacement was a rename; no unit was written, nothing was reloaded,"

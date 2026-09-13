@@ -1,7 +1,7 @@
-# Publication authority
+# Publication and finalisation authority
 
-**Status:** implemented, qualified, not yet applied to the production host.
-**Branch:** `p8/publication-authority`, based on `e9b81e5` (the live release).
+**Status:** implemented in the repository. Applying or updating this authority on
+the production host is a separate gated operation.
 
 ## The gap
 
@@ -9,9 +9,10 @@
 correct: the deploy identity has no business creating files beside the live
 release store, the uploads directory or the environment files.
 
-But publishing a release replaces `/srv/videofy-prod/current`, and replacing a
-symlink requires write permission on the **directory that contains it**, not on
-the symlink. So the deploy identity cannot publish.
+But publishing a release replaces `/srv/videofy-prod/current`, and finalising a
+deployment replaces `/srv/videofy-prod/DEPLOY-STATE.md`. Both operations require
+write permission on the **directory that contains the entry**. So the deploy
+identity cannot publish or record completion directly.
 
 During the 2026-09-06 convergence this surfaced *after* a release had already
 been built, and was closed by hand with `sudo`. That is an undocumented
@@ -32,15 +33,16 @@ would be advice that writes systemd units for the legacy `/app` layout and can
 restart coturn and Caddy — both shared with staging, where a restart drops live
 relays or live requests. That is remediation costing more than the fault.
 
-The narrow installer does exactly five things:
+The narrow installer does exactly six things:
 
 1. installs `/usr/local/lib/videofy/{release-paths,release-engine}.sh` (root:root, 0644)
 2. installs `/usr/local/sbin/videofy-publish-current` (root:root, 0755)
-3. installs `/etc/sudoers.d/videofy-publish` (0440), `visudo -c`-validated
+3. installs `/usr/local/sbin/videofy-record-deploy-state` (root:root, 0755)
+4. installs `/etc/sudoers.d/videofy-publish` (0440), `visudo -c`-validated
    before it is placed and the whole sudo configuration validated after
-4. **verifies** the resulting ownership and modes rather than trusting `install`
-5. runs `videofy-publish-current --check` under `sudo -n` **as the deploy
-   account**, since root could invoke it whatever sudoers says
+5. **verifies** the resulting ownership and modes rather than trusting `install`
+6. runs both helpers' `--check` under `sudo -n` **as the deploy account**, since
+   root could invoke them whatever sudoers says
 
 **Every replacement is a rename.** This runs on a live host against files other
 processes read at unpredictable moments: `sudo` reads `/etc/sudoers.d` on *every
@@ -67,7 +69,8 @@ That ordering exists for the sentence, not the other way round.
 
 It writes no unit, does not `daemon-reload`, restarts nothing, and does not
 touch Caddy, coturn, the environment files, the database, `app`, `www`, the
-pointer, or Replay. It grants one command and **removes no existing grant**.
+pointer, or Replay. It grants exactly the two helper commands and **removes no
+existing grant**.
 
 `install.sh` calls it for fresh-host provisioning — delegation, not a second
 copy, because the copy that drifts is the one somebody runs at three in the
@@ -79,7 +82,7 @@ how the boundary is proven: "it touches nothing else" is a claim about what the
 script *does*, so the tests execute it. Root is required whenever the prefix is
 empty — the only case that can reach a real host.
 
-### 1. One privileged program
+### 1. Two narrow privileged programs
 
 `deploy/production/publish-current.sh`, installed as
 `/usr/local/sbin/videofy-publish-current` (root:root, 0755).
@@ -110,6 +113,19 @@ videofy-publish-current <sha>` — the process is root and the override is
 unreachable. (`sudo` also resets the environment, so the variables never
 arrive; the uid test is the guarantee that does not depend on how sudoers is
 written.) Anyone who can run it as root without sudo is already root.
+
+`deploy/production/record-deploy-state.sh`, installed as
+`/usr/local/sbin/videofy-record-deploy-state` (root:root, 0755).
+
+```
+videofy-record-deploy-state <active-sha> <previous-sha|none|rolled-back>
+videofy-record-deploy-state --check
+```
+
+It accepts only a full active SHA and a constrained previous-release field,
+verifies that `current` already names that active SHA, re-proves the release is
+sealed and intact, then atomically replaces only `DEPLOY-STATE.md`. A failed
+state write is a failed finalisation, and no `DEPLOYED` line is valid without it.
 
 ### 2. Routing, not a second code path
 
@@ -171,7 +187,7 @@ on both sides:
 |---|---|
 | helper installed and executable | `-x` on the installed path |
 | root-owned libraries beside it | both files present, mode 644 |
-| sudoers validates, grants one command | `visudo -c`, and the entry names the absolute path |
+| sudoers validates, grants only the helper commands | `visudo -c`, and the entry names the absolute paths |
 | `--check` passes | the installer refuses unless it does |
 | **service units unchanged** | `sha256sum` of all three `videofy-prod-*.service` |
 | **no unit added or removed** | file count in the unit directory |
@@ -217,14 +233,15 @@ the real script and the real functions:
 The deploy identity on `c7-eu-01` is **`claude`** (it owns
 `/srv/videofy-prod/releases`); the service identity is **`videofy`**.
 
-An atomic deployment needs exactly four privileged things:
+An atomic deployment needs exactly five privileged things:
 
 | # | Command | Why |
 |---|---------|-----|
 | 1 | `/usr/local/sbin/videofy-publish-current` | move `current`; also `--check` at bootstrap |
-| 2 | `/usr/bin/systemctl restart videofy-prod-account videofy-prod-gateway videofy-prod-media-ingest` (and singly) | rolling activation |
-| 3 | `/usr/bin/systemctl enable` on those same units | idempotent, only on a fresh unit |
-| 4 | `sudo -n -u videofy test …` / `sudo -n -u videofy node …` | preflight runs **as the service user**, never as root, to prove the service can traverse, read and load the candidate |
+| 2 | `/usr/local/sbin/videofy-record-deploy-state` | atomically record `DEPLOY-STATE.md` after public smoke |
+| 3 | `/usr/bin/systemctl restart videofy-prod-account videofy-prod-gateway videofy-prod-media-ingest` (and singly) | rolling activation |
+| 4 | `/usr/bin/systemctl enable` on those same units | idempotent, only on a fresh unit |
+| 5 | `sudo -n -u videofy test …` / `sudo -n -u videofy node …` | preflight runs **as the service user**, never as root, to prove the service can traverse, read and load the candidate |
 
 Deliberately **not** on the list:
 
@@ -240,7 +257,8 @@ Deliberately **not** on the list:
 Proposed `/etc/sudoers.d/videofy-deploy`:
 
 ```
-Cmnd_Alias VIDEOFY_PUBLISH  = /usr/local/sbin/videofy-publish-current
+Cmnd_Alias VIDEOFY_PUBLISH  = /usr/local/sbin/videofy-publish-current, \
+                              /usr/local/sbin/videofy-record-deploy-state
 Cmnd_Alias VIDEOFY_ACTIVATE = /usr/bin/systemctl restart videofy-prod-account, \
                               /usr/bin/systemctl restart videofy-prod-gateway, \
                               /usr/bin/systemctl restart videofy-prod-media-ingest, \
