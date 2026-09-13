@@ -10,6 +10,7 @@
 # DEPLOY-STATE.md.
 #
 #   videofy-record-deploy-state <active-sha> <previous-sha|none|rolled-back>
+#   videofy-record-deploy-state --reconcile <active-sha> <previous-sha|none|rolled-back> <YYYY-MM-DDTHH:MM:SSZ>
 #   videofy-record-deploy-state --check
 #
 # The active release is a SHA, not a path. The helper verifies that current
@@ -36,6 +37,12 @@ readonly STATE_FILE="$ROOT/DEPLOY-STATE.md"
 
 die() { echo "REFUSED: $*" >&2; exit 1; }
 
+strict_utc_timestamp() {
+  local value="$1"
+  [[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+  [ "$(date -u -d "$value" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" = "$value" ]
+}
+
 for module in release-paths.sh release-engine.sh; do
   file="$LIB/$module"
   [ -f "$file" ] || die "$file is missing; run deploy/production/install-publication-authority.sh"
@@ -52,19 +59,31 @@ done
 # shellcheck source=/dev/null
 . "$LIB/release-engine.sh"
 
+MODE='finalize'
 case "${1-}" in
   --check)
     echo 'deployment state recording authority available'
     exit 0
     ;;
+  --reconcile)
+    MODE='reconcile'
+    shift
+    [ "$#" -eq 3 ] || die 'usage: videofy-record-deploy-state --reconcile <active-sha> <previous-sha|none|rolled-back> <YYYY-MM-DDTHH:MM:SSZ>'
+    ;;
   '')
-    die 'usage: videofy-record-deploy-state <active-sha> <previous-sha|none|rolled-back> | --check'
+    die 'usage: videofy-record-deploy-state <active-sha> <previous-sha|none|rolled-back> | videofy-record-deploy-state --reconcile <active-sha> <previous-sha|none|rolled-back> <YYYY-MM-DDTHH:MM:SSZ> | --check'
     ;;
 esac
 
-[ "$#" -eq 2 ] || die 'exactly two arguments are accepted'
+[ "$MODE" = 'reconcile' ] || [ "$#" -eq 2 ] || die 'exactly two arguments are accepted'
 SHA="$1"
 PREVIOUS="$2"
+if [ "$MODE" = 'reconcile' ]; then
+  CUTOVER_UTC="$3"
+  strict_utc_timestamp "$CUTOVER_UTC" || die 'reconciliation cutover timestamp is not strict UTC YYYY-MM-DDTHH:MM:SSZ'
+else
+  CUTOVER_UTC=''
+fi
 
 assert_full_sha 'active release sha' "$SHA" || exit 1
 case "$PREVIOUS" in
@@ -87,6 +106,13 @@ release_is_complete "$TARGET" || die "$TARGET is not a sealed, intact release"
 [ "$(release_recorded_sha "$TARGET")" = "$SHA" ] || die "$TARGET/RELEASE.json does not name $SHA"
 release_symlinks_stay_inside "$TARGET" >/dev/null 2>&1 || die "$TARGET contains a symlink that escapes it"
 
+if [ "$MODE" = 'reconcile' ]; then
+  RECORDED_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+else
+  CUTOVER_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  RECORDED_UTC=''
+fi
+
 TMP="$STATE_FILE.tmp.$$"
 trap 'rm -f "$TMP"' EXIT
 umask 022
@@ -94,11 +120,18 @@ umask 022
   printf '# Deployment state\n\n'
   printf 'Written by the deploy. The pointer below is the authority; a git\n'
   printf 'checkout under this root is not.\n\n'
+  if [ "$MODE" = 'reconcile' ]; then
+    printf 'This file was written as a historical reconciliation. The cutover\n'
+    printf 'timestamp below is the original observed cutover, not the file write time.\n\n'
+  fi
   printf '| | |\n|---|---|\n'
   printf '| active | `%s` |\n' "$SHA"
   printf '| previous | `%s` |\n' "$PREVIOUS"
   printf '| release path | `%s/%s` |\n' "$RELEASES" "$SHA"
-  printf '| cutover (UTC) | %s |\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '| cutover (UTC) | %s |\n' "$CUTOVER_UTC"
+  if [ "$MODE" = 'reconcile' ]; then
+    printf '| reconciliation recorded (UTC) | %s |\n' "$RECORDED_UTC"
+  fi
   printf '\n## Rolling back\n\n'
   printf 'The previous release is still sealed on disk, so no rebuild is\n'
   printf 'needed. The command performs the WHOLE transition -- pointer,\n'

@@ -1095,6 +1095,14 @@ echo "success is recorded only after the public edge answers"
 
 state_file() { printf '%s/DEPLOY-STATE.md' "$ATOMIC_ROOT"; }
 recorded_active() { sed -n 's/^| active | .\(.*\). |$/\1/p' "$(state_file)" 2>/dev/null | head -1; }
+recorded_previous() { sed -n 's/^| previous | .\(.*\). |$/\1/p' "$(state_file)" 2>/dev/null | head -1; }
+recorded_cutover() { sed -n 's/^| cutover (UTC) | \(.*\) |$/\1/p' "$(state_file)" 2>/dev/null | head -1; }
+recorded_reconciled_at() { sed -n 's/^| reconciliation recorded (UTC) | \(.*\) |$/\1/p' "$(state_file)" 2>/dev/null | head -1; }
+is_strict_utc_timestamp() {
+  local value="$1"
+  [[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+  [ "$(date -u -d "$value" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" = "$value" ]
+}
 
 # THE DEFECT: the record was written after health and the running proof but
 # BEFORE the smoke, so a deployment the edge never confirmed still left a
@@ -2043,6 +2051,19 @@ if state_helper "$A" none >/dev/null 2>&1; then
   ok "the state helper records the active sealed release"
 else bad "the state helper refused a valid active release" ""; fi
 check "and DEPLOY-STATE names that release" "$(recorded_active)" "$A"
+NORMAL_BEFORE="$(date -u +%s)"
+state_helper "$A" none >/dev/null 2>&1
+NORMAL_AFTER="$(date -u +%s)"
+NORMAL_CUTOVER="$(recorded_cutover)"
+NORMAL_CUTOVER_EPOCH="$(date -u -d "$NORMAL_CUTOVER" +%s 2>/dev/null || echo invalid)"
+if [ "$NORMAL_CUTOVER_EPOCH" != invalid ] &&
+   [ "$NORMAL_CUTOVER_EPOCH" -ge "$NORMAL_BEFORE" ] &&
+   [ "$NORMAL_CUTOVER_EPOCH" -le "$NORMAL_AFTER" ]; then
+  ok "normal state finalisation records the current time"
+else
+  bad "normal state finalisation did not use the current time" "cutover=$NORMAL_CUTOVER before=$NORMAL_BEFORE after=$NORMAL_AFTER"
+fi
+check "normal state finalisation is not marked as reconciliation" "$(recorded_reconciled_at)" ""
 check "and no state temporary survives" \
   "$(find "$ATOMIC_ROOT" -maxdepth 1 -name 'DEPLOY-STATE.md.tmp.*' | wc -l | tr -d ' ')" "0"
 BUILD_SHA="$B"; release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
@@ -2057,6 +2078,57 @@ done
 if state_helper "$A" 'not-a-sha' >/dev/null 2>&1; then
   bad "the state helper accepted an unvalidated previous release" "it must refuse"
 else ok "the state helper validates the previous release field"; fi
+drop_rig
+
+# ---- State reconciliation: historical cutover, present-tense proof ----
+
+new_rig; reset_failures
+BUILD_SHA="$A"; release_prepare "$ATOMIC_RELEASES" "$A" "$A" build_body >/dev/null 2>&1
+BUILD_SHA="$B"; release_prepare "$ATOMIC_RELEASES" "$B" "$B" build_body >/dev/null 2>&1
+publish_helper "$B" >/dev/null 2>&1
+HISTORICAL_CUTOVER='2026-09-12T23:36:29Z'
+if state_helper --reconcile "$B" "$A" "$HISTORICAL_CUTOVER" >/dev/null 2>&1; then
+  ok "reconciliation records an already-active sealed release"
+else bad "reconciliation refused a valid active release" ""; fi
+check "reconciliation records the active release" "$(recorded_active)" "$B"
+check "reconciliation records the previous release" "$(recorded_previous)" "$A"
+check "reconciliation preserves the original cutover time" "$(recorded_cutover)" "$HISTORICAL_CUTOVER"
+check "reconciliation labels the state file as historical" \
+  "$(grep -q 'historical reconciliation' "$(state_file)" && echo yes || echo no)" "yes"
+RECORDED_AT="$(recorded_reconciled_at)"
+if [ -n "$RECORDED_AT" ] && is_strict_utc_timestamp "$RECORDED_AT"; then
+  ok "reconciliation separately records when the state file was written"
+else
+  bad "reconciliation did not write its own recorded-at timestamp" "$RECORDED_AT"
+fi
+
+for BAD_TS in '2026-09-12 23:36:29Z' '2026-09-12T23:36:29+00:00' '2026-99-12T23:36:29Z'; do
+  if state_helper --reconcile "$B" "$A" "$BAD_TS" >/dev/null 2>&1; then
+    bad "reconciliation accepted malformed timestamp [$BAD_TS]" "it must require strict UTC"
+  else ok "reconciliation refuses malformed timestamp [$BAD_TS]"; fi
+done
+
+publish_helper "$A" >/dev/null 2>&1
+if state_helper --reconcile "$B" "$A" "$HISTORICAL_CUTOVER" >/dev/null 2>&1; then
+  bad "reconciliation recorded a release current does not name" "it must refuse"
+else ok "reconciliation refuses a mismatched current SHA"; fi
+
+mkdir -p "$ATOMIC_RELEASES/$C/services/account"
+pointer_publish "$ATOMIC_CURRENT" "$ATOMIC_RELEASES/$C" >/dev/null 2>&1
+if state_helper --reconcile "$C" "$A" "$HISTORICAL_CUTOVER" >/dev/null 2>&1; then
+  bad "reconciliation recorded an unsealed release" "it must refuse"
+else ok "reconciliation refuses an unsealed release"; fi
+
+rm -f "$ATOMIC_ROOT/DEPLOY-STATE.md"
+publish_helper "$B" >/dev/null 2>&1
+INJECTED_TS="$(printf '2026-09-12T23:36:29Z\n| active | `injected` |')"
+if state_helper --reconcile "$B" "$A" "$INJECTED_TS" >/dev/null 2>&1; then
+  bad "reconciliation accepted injected timestamp content" "timestamp must be data, not state content"
+else ok "reconciliation refuses injected timestamp content"; fi
+if state_helper --reconcile "$B" "$A" "$HISTORICAL_CUTOVER" "$ATOMIC_ROOT/elsewhere" >/dev/null 2>&1; then
+  bad "reconciliation accepted an arbitrary output path" "only DEPLOY-STATE.md may be written"
+else ok "reconciliation accepts no arbitrary output path"; fi
+check "no injected state file was created" "$([ -e "$ATOMIC_ROOT/elsewhere" ] && echo exists || echo absent)" "absent"
 drop_rig
 
 # ---- 1. An unwritable root routes publication through the helper ----
