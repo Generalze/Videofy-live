@@ -341,6 +341,7 @@ remote_finalize() {
     export ATOMIC_ROOT='$VIDEOFY_ROOT' ATOMIC_RELEASES='$VIDEOFY_ROOT/releases'
     export ATOMIC_CURRENT='$VIDEOFY_ROOT/current' ATOMIC_WWW='$VIDEOFY_ROOT/www'
     export ATOMIC_ENV='$ENV_NAME' ATOMIC_LOCK_EXTERNAL=1
+    export ATOMIC_STATE_HELPER='/usr/local/sbin/videofy-record-deploy-state'
     export ATOMIC_UNITS='$VIDEOFY_UNITS'
     export ACCOUNT_PORT='$VIDEOFY_ACCOUNT_PORT' GATEWAY_PORT='$VIDEOFY_GATEWAY_PORT' INGEST_PORT='$VIDEOFY_INGEST_PORT'
     . $REMOTE_LIB/atomic-release.sh
@@ -397,7 +398,11 @@ if [ "$ACTION" = "rollback" ]; then
     echo "  release, is the thing to look at."
     exit 1
   fi
-  remote_finalize "$TARGET" "rolled-back"
+  if ! remote_finalize "$TARGET" "rolled-back"; then
+    echo "ROLLBACK FINALIZATION FAILED. The target is active on the box, but"
+    echo "  DEPLOY-STATE.md was not updated. Inspect the host before proceeding."
+    exit 1
+  fi
   echo "[$ENV_NAME] ROLLED BACK to $TARGET"
   exit 0
 fi
@@ -555,5 +560,10 @@ fi
 
 # THE RECORD IS WRITTEN LAST, and only here. Everything above it is reversible
 # or already reversed; this is the deployment becoming a fact.
-remote_finalize "$SHA" "$PREVIOUS_RECORDED"
+if ! remote_finalize "$SHA" "$PREVIOUS_RECORDED"; then
+  echo "DEPLOY FINALIZATION FAILED: $SHA is active on the box, but"
+  echo "  DEPLOY-STATE.md was not updated. No DEPLOYED line is being emitted."
+  echo "  Inspect current, DEPLOY-STATE.md and service state before proceeding."
+  exit 1
+fi
 echo "[$ENV_NAME] DEPLOYED $SHA"

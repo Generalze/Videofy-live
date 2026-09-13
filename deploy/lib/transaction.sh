@@ -127,14 +127,16 @@ atomic_bootstrap_state() {
     printf 'lock-not-openable'; return 1
   fi
   #
-  # AND SOMETHING MUST BE ABLE TO MOVE THE POINTER.
+  # AND SOMETHING MUST BE ABLE TO MOVE THE POINTER AND RECORD COMPLETION.
   #
   # On 2026-09-06 everything above this passed and the convergence still could
   # not publish: the root is root-owned, so the deploy identity cannot replace
   # `current`, and that was discovered only AFTER a release had been built.
-  # Publication authority is part of being provisioned, so it is proven here.
+  # Publication/finalisation authority is part of being provisioned, so it is
+  # proven here.
   if [ ! -w "$root" ]; then
     local helper="${ATOMIC_PUBLISH_HELPER:-/usr/local/sbin/videofy-publish-current}"
+    local state_helper="${ATOMIC_STATE_HELPER:-/usr/local/sbin/videofy-record-deploy-state}"
     [ -e "$helper" ] || { printf 'missing-publication-helper'; return 1; }
     [ -x "$helper" ] || { printf 'publication-helper-not-executable'; return 1; }
     # Writability is tested before ownership because it is the more specific
@@ -157,6 +159,17 @@ atomic_bootstrap_state() {
     # account may not actually run is the same outage, discovered later.
     sudo -n "$helper" --check >/dev/null 2>&1 || {
       printf 'publication-authority-unavailable'; return 1; }
+    [ -e "$state_helper" ] || { printf 'missing-state-helper'; return 1; }
+    [ -x "$state_helper" ] || { printf 'state-helper-not-executable'; return 1; }
+    local state_helper_mode
+    state_helper_mode="$(stat -c '%a' "$state_helper" 2>/dev/null)"
+    if [ -z "$state_helper_mode" ] || [ $(( 0$state_helper_mode & 0022 )) -ne 0 ]; then
+      printf 'state-helper-writable'; return 1
+    fi
+    [ "$(stat -c '%U' "$state_helper" 2>/dev/null)" = 'root' ] || {
+      printf 'state-helper-not-root-owned'; return 1; }
+    sudo -n "$state_helper" --check >/dev/null 2>&1 || {
+      printf 'state-authority-unavailable'; return 1; }
   fi
   printf 'ok'
   return 0
@@ -190,6 +203,21 @@ atomic_bootstrap_refusal() {
     publication-authority-unavailable)
       echo "  The publication helper is installed but this identity may not" >&2
       echo "  invoke it. Check the sudoers entry." >&2 ;;
+    missing-state-helper)
+      echo "  $root is root-owned, so the deploy identity cannot replace" >&2
+      echo "  $root/DEPLOY-STATE.md, and the state helper is not installed." >&2
+      echo "  ATOMIC FINALISATION BOOTSTRAP INCOMPLETE." >&2 ;;
+    state-helper-not-executable)
+      echo "  The deployment-state helper exists but is not executable." >&2 ;;
+    state-helper-not-root-owned)
+      echo "  The deployment-state helper is not owned by root; it would run" >&2
+      echo "  the deploy identity's own code with root privilege." >&2 ;;
+    state-helper-writable)
+      echo "  The deployment-state helper is group- or world-writable, which" >&2
+      echo "  is the same problem by another route." >&2 ;;
+    state-authority-unavailable)
+      echo "  The deployment-state helper is installed but this identity may" >&2
+      echo "  not invoke it. Check the sudoers entry." >&2 ;;
   esac
   echo "  THIS IS NOT A BUSY LOCK. Nothing else is deploying." >&2
   #
@@ -203,7 +231,7 @@ atomic_bootstrap_refusal() {
   # states get the narrow installer, and only a genuinely unprovisioned root
   # gets the full one.
   case "$state" in
-    missing-publication-helper|publication-helper-*|publication-authority-*)
+    missing-publication-helper|publication-helper-*|publication-authority-*|missing-state-helper|state-helper-*|state-authority-*)
       echo "  Install ONLY this capability. It writes no unit, reloads nothing," >&2
       echo "  restarts nothing, and does not touch app, www or the pointer:" >&2
       echo "    sudo bash deploy/$env_name/install-publication-authority.sh" >&2 ;;

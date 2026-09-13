@@ -135,9 +135,13 @@ atomic_deploy() {
   assert_release_paths "$ATOMIC_ROOT" "$ATOMIC_RELEASES" "$ATOMIC_CURRENT" "$ATOMIC_WWW" || return 1
   assert_full_sha 'requested sha' "$sha" || return 1
 
-  local previous
+  local previous final reused_existing_release=0
   previous="$(pointer_sha "$ATOMIC_CURRENT" "$ATOMIC_RELEASES")"
   echo "previous release: $previous"
+  final="$(release_dir "$ATOMIC_RELEASES" "$sha")" || return 1
+  if [ -e "$final" ] && release_is_complete "$final"; then
+    reused_existing_release=1
+  fi
 
   # ---------------------------------------------------------------- prepare
   # Everything below happens inside a directory nothing resolves. An external
@@ -155,6 +159,18 @@ atomic_deploy() {
     echo "  current still -> $(pointer_target "$ATOMIC_CURRENT")" >&2
     echo "  A restart right now boots $previous, which passed its gates." >&2
     return 1
+  fi
+  if [ "$reused_existing_release" = "1" ]; then
+    # A prepare-only seal proves the release bytes and configuration preflight.
+    # It does not prove the full-deploy host gates, because prepare deliberately
+    # skips the effective-systemd gate for unconverged hosts.
+    echo "gate: reused release full deployment qualification"
+    if ! atomic_gate_candidate "$final"; then
+      echo "DEPLOY FAILED before the cutover boundary." >&2
+      echo "  current still -> $(pointer_target "$ATOMIC_CURRENT")" >&2
+      echo "  A restart right now boots $previous, which passed its gates." >&2
+      return 1
+    fi
   fi
 
   # ------------------------------------------------- the authorised boundary
@@ -194,7 +210,6 @@ atomic_deploy() {
     return 0
   fi
   atomic_finalize "$sha" "$previous"
-  return 0
 }
 
 # The last step, and the only place a deployment is called finished.
@@ -232,7 +247,10 @@ atomic_finalize() {
     echo "REFUSED to finalise $sha: the processes are not running it." >&2
     return 1
   fi
-  atomic_record_state "$sha" "$previous"
+  if ! atomic_record_state "$sha" "$previous"; then
+    echo "REFUSED to finalise $sha: DEPLOY-STATE.md was not committed." >&2
+    return 1
+  fi
   echo "DEPLOYED $sha"
 }
 
@@ -316,8 +334,34 @@ atomic_rollback_transition() {
     echo "ROLLED BACK to $target (awaiting public smoke; NOT yet recorded)"
     return 0
   fi
-  atomic_record_state "$target" "rolled-back"
+  if ! atomic_record_state "$target" "rolled-back"; then
+    echo "ROLLBACK FINALIZATION FAILED for $target: DEPLOY-STATE.md was not committed." >&2
+    return 1
+  fi
   echo "ROLLED BACK to $target"
+  return 0
+}
+
+ATOMIC_STATE_HELPER="${ATOMIC_STATE_HELPER:-/usr/local/sbin/videofy-record-deploy-state}"
+
+state_record_authority_record() {
+  local sha="$1" previous="$2" file="$ATOMIC_ROOT/DEPLOY-STATE.md" recorded
+  if [ ! -x "$ATOMIC_STATE_HELPER" ]; then
+    echo "REFUSED: $(dirname "$file") is not writable and the deployment-state" >&2
+    echo "  helper $ATOMIC_STATE_HELPER is not installed." >&2
+    echo "  Install only the narrow publication/finalisation authority:" >&2
+    echo "    sudo bash deploy/production/install-publication-authority.sh" >&2
+    return 1
+  fi
+  sudo -n "$ATOMIC_STATE_HELPER" "$sha" "$previous" || {
+    echo "REFUSED: the deployment-state helper would not record $sha" >&2
+    return 1
+  }
+  recorded="$(sed -n 's/^| active | .\(.*\). |$/\1/p' "$file" 2>/dev/null | head -1)"
+  if [ "$recorded" != "$sha" ]; then
+    echo "REFUSED: after state recording $file names ${recorded:-nothing}, not $sha" >&2
+    return 1
+  fi
   return 0
 }
 
@@ -326,7 +370,16 @@ atomic_record_state() {
   local sha="$1" previous="$2"
   local file="$ATOMIC_ROOT/DEPLOY-STATE.md"
   local tmp="$file.tmp.$$"
-  {
+  assert_full_sha 'active release sha' "$sha" || return 1
+  case "$previous" in
+    none|rolled-back) ;;
+    *) assert_full_sha 'previous release sha' "$previous" || return 1 ;;
+  esac
+  if [ ! -w "$(dirname "$file")" ]; then
+    state_record_authority_record "$sha" "$previous"
+    return $?
+  fi
+  if ! {
     printf '# Deployment state\n\n'
     printf 'Written by the deploy. The pointer below is the authority; a git\n'
     printf 'checkout under this root is not.\n\n'
@@ -344,6 +397,9 @@ atomic_record_state() {
     printf '## Pointers\n\n```\n'
     release_state "$ATOMIC_RELEASES" "$ATOMIC_CURRENT" "$ATOMIC_WWW"
     printf '```\n'
-  } > "$tmp"
-  mv -f "$tmp" "$file"
+  } > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv -f "$tmp" "$file" || { rm -f "$tmp"; return 1; }
 }

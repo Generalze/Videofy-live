@@ -76,6 +76,9 @@ jobs:
       - name: Run cross-process integration smoke
         run: npm run test:integration
 
+      - name: Run deployment-engine tests
+        run: bash deploy/tests/run-deploy-tests.sh
+
   # ---------------------------------------------------------------------------
   # THE ANDROID NATIVE GATE.
   #
